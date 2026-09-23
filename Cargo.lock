@@ -2481,6 +2481,9 @@ dependencies = [
 [[package]]
 name = "cs_inspect"
 version = "0.0.0"
+dependencies = [
+ "cs_types",
+]
 
 [[package]]
 name = "cs_net"
