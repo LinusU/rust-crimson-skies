@@ -8,9 +8,11 @@
 //! missing retail content (F00 non-negotiable behavior 2).
 //!
 //! Determinism: [`TICK_HZ`] fixes both the manual frame delta and the fixed
-//! timestep to the same exactly representable duration, so every
+//! timestep to the same exactly representable duration, and the manual
+//! clock's baseline instant is seeded at build time, so every
 //! [`step`](SyntheticScene::step) call advances the world by exactly one
-//! simulation tick and one Avian integration step.
+//! simulation tick and one Avian integration step — the first one included
+//! (see `docs/findings/2026-09-23-t334-first-frame-fixed-step.md`).
 
 use core::{fmt, time::Duration};
 
@@ -19,7 +21,7 @@ use bevy::{
     app::App,
     ecs::world::World,
     prelude::{Entity, MinimalPlugins, Resource, Transform, TransformPlugin, Vec3},
-    time::{Fixed, Time, TimeUpdateStrategy},
+    time::{Fixed, Real, Time, TimeUpdateStrategy},
 };
 use cs_types::{
     BodyKind, BodySample, SceneMarker, SceneProvenance, SpecError, SyntheticBodySpec, Tick,
@@ -109,6 +111,19 @@ impl SyntheticSceneBuilder {
         app.insert_resource(TimeUpdateStrategy::ManualDuration(frame));
         app.insert_resource(Time::<Fixed>::from_seconds(1.0 / TICK_HZ));
         app.insert_resource(SceneMarkerResource(SceneMarker(SceneProvenance::Synthetic)));
+
+        // The first `update_with_duration` only establishes the real clock's
+        // baseline instant and reports a zero delta, so the first update
+        // would accumulate nothing and run no fixed step (bevy_time 0.19.1
+        // `real.rs`: `update_with_instant` returns early while `last_update`
+        // is `None`). Seed that baseline at the startup instant: every
+        // counted `App::update` then produces the full manual delta and
+        // exactly one fixed step, and all three clocks report
+        // `elapsed == ticks * timestep`.
+        let startup = app.world().resource::<Time<Real>>().startup();
+        app.world_mut()
+            .resource_mut::<Time<Real>>()
+            .update_with_instant(startup);
 
         let rigid_body = match spec.kind {
             BodyKind::Dynamic => RigidBody::Dynamic,
