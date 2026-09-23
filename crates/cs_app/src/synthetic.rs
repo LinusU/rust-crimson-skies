@@ -17,6 +17,7 @@ use core::{fmt, time::Duration};
 use avian3d::prelude::{Collider, LinearVelocity, PhysicsPlugins, Position, RigidBody};
 use bevy::{
     app::App,
+    ecs::world::World,
     prelude::{Entity, MinimalPlugins, Resource, Transform, TransformPlugin, Vec3},
     time::{Fixed, Time, TimeUpdateStrategy},
 };
@@ -70,9 +71,35 @@ pub struct SyntheticScene {
     ticks: u64,
 }
 
-impl SyntheticScene {
+/// Configures the scene's [`App`] before plugin finalization.
+///
+/// This is the seam later stages use to add their own systems to the pinned
+/// Bevy/Avian schedules: the closure runs after the synthetic body exists and
+/// before [`App::finish`], so systems registered here take part in the very
+/// first tick. F00-B uses it to place schedule probes (see
+/// `docs/findings/2026-09-23-pinned-bevy-0.19-avian-0.7-schedule-api.md`).
+pub struct SyntheticSceneBuilder {
+    spec: SyntheticBodySpec,
+    configure: Option<ConfigureHook>,
+}
+
+/// One deferred configuration step of a [`SyntheticSceneBuilder`].
+type ConfigureHook = Box<dyn FnOnce(&mut App)>;
+
+impl SyntheticSceneBuilder {
+    /// Registers extra plugins, systems or resources on the scene's world.
+    ///
+    /// The closure receives the [`App`] that will become the scene; it must
+    /// not finalize the plugin lifecycle itself ([`App::finish`] and
+    /// [`App::cleanup`] are called by [`SyntheticSceneBuilder::build`]).
+    pub fn configure(mut self, configure: impl FnOnce(&mut App) + 'static) -> Self {
+        self.configure = Some(Box::new(configure));
+        self
+    }
+
     /// Builds the scene, rejecting an invalid spec before any world exists.
-    pub fn new(spec: SyntheticBodySpec) -> Result<Self, SyntheticSceneError> {
+    pub fn build(self) -> Result<SyntheticScene, SyntheticSceneError> {
+        let spec = self.spec;
         spec.validate().map_err(SyntheticSceneError::InvalidBody)?;
 
         let mut app = App::new();
@@ -102,6 +129,10 @@ impl SyntheticScene {
             ))
             .id();
 
+        if let Some(configure) = self.configure {
+            configure(&mut app);
+        }
+
         // Finalize plugin construction before the first manual update.
         //
         // `App::run` would do this for us; driving the world through
@@ -112,12 +143,36 @@ impl SyntheticScene {
         app.finish();
         app.cleanup();
 
-        Ok(Self {
+        Ok(SyntheticScene {
             app,
             body,
             spec,
             ticks: 0,
         })
+    }
+}
+
+impl SyntheticScene {
+    /// Starts building a scene from a typed spec.
+    ///
+    /// [`SyntheticScene::new`] is this builder with no extra configuration.
+    pub fn builder(spec: SyntheticBodySpec) -> SyntheticSceneBuilder {
+        SyntheticSceneBuilder {
+            spec,
+            configure: None,
+        }
+    }
+
+    /// Builds the scene, rejecting an invalid spec before any world exists.
+    pub fn new(spec: SyntheticBodySpec) -> Result<Self, SyntheticSceneError> {
+        Self::builder(spec).build()
+    }
+
+    /// Read-only access to the scene's world, for evidence, diagnostics and
+    /// schedule probes. Mutation goes through [`Self::step`] so the tick
+    /// counter cannot drift from the world state.
+    pub fn world(&self) -> &World {
+        self.app.world()
     }
 
     /// Advances the world by `ticks` simulation ticks, exactly one Avian
