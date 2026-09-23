@@ -1,5 +1,6 @@
-//! Claim-record admission checks, ledger validation and the audit wiring for
-//! the evidence ledger (F01-A, F01-B, F01-C).
+//! Claim-record admission checks, ledger validation, the audit wiring for
+//! the evidence ledger (F01-A, F01-B, F01-C) and the release-inventory
+//! provenance gate (F01-D).
 //!
 //! `cs-inspect` owns command-line inspection and conversion diagnostics. This
 //! module is the inspector's front end for the canonical records in
@@ -9,13 +10,23 @@
 //! [`audit_claims`] wires the two together the way the `audit` command and
 //! content exports consume them: fresh observations in, a report preserving
 //! every disagreement and its adjudication state out.
+//!
+//! The F01-D half produces the release inventory — [`scan_inventory_dir`]
+//! for shipped trees and [`committed_inventory`] for the git-tracked file
+//! set — and feeds it to [`cs_types::evidence::check_release_inventory`]
+//! through [`audit_release_inventory`], which applies this repository's
+//! declared [`AUTHORED_CONTENT_ROOTS`].
 
 use std::fmt;
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use cs_types::evidence::{
     Adjudication, ClaimError, ClaimId, ClaimRecord, ClaimStatus, ContentHash, EvidenceRecord,
-    EvidenceSource, Fingerprint, FingerprintIndex, FingerprintKind, LedgerReport,
-    ObservationIndexError, ObservationLocator, ObservationMethod, ObservedFingerprint, SourceSpan,
+    EvidenceSource, Fingerprint, FingerprintIndex, FingerprintKind, INVENTORY_HEADER_LEN,
+    InventoryEntry, InventoryReport, LedgerReport, ObservationIndexError, ObservationLocator,
+    ObservationMethod, ObservedFingerprint, SourceSpan, TEXT_SAMPLE_LEN, check_release_inventory,
 };
 
 /// One claim refused by the admission check, with the error that sank it.
@@ -329,4 +340,276 @@ pub fn synthetic_fingerprint_index() -> FingerprintIndex {
         },
     }])
     .expect("the fixture index has no conflicting observations")
+}
+
+/* ------------------------------------------------------------------ */
+/* Release-inventory provenance (F01-D)                                */
+/* ------------------------------------------------------------------ */
+
+/// The authored-content roots this repository declares for release
+/// inventories (F01-D). Committed binary lookalikes are legitimate only
+/// beneath them. `fixtures/synthetic` is a protected path — Rally refuses
+/// merges that touch it — so membership there is owner-controlled
+/// provenance, not an agent's say-so.
+pub const AUTHORED_CONTENT_ROOTS: &[&str] = &["fixtures/synthetic"];
+
+/// Why inventory production failed (F01-D).
+///
+/// Every variant is loud: an inventory that cannot be produced is an error,
+/// never an empty — and therefore clean — report.
+#[derive(Debug)]
+pub enum InventoryError {
+    /// A directory walk or file read failed.
+    Io {
+        /// The path that could not be read.
+        path: PathBuf,
+        /// The underlying error.
+        source: std::io::Error,
+    },
+    /// `git ls-files` could not be started at all.
+    GitSpawn(std::io::Error),
+    /// A git command exited without success — for example on a directory
+    /// that is not a checkout at all.
+    GitFailed {
+        /// The command that failed (`rev-parse` or `ls-files`).
+        command: &'static str,
+        /// The exit code, when one was reported.
+        code: Option<i32>,
+        /// What git printed to stderr.
+        stderr: String,
+    },
+    /// `root` is inside a checkout but is not its work-tree root. The
+    /// committed inventory is defined for a whole checkout: `git ls-files`
+    /// under a subdirectory quietly reports only the tracked prefix, so
+    /// accepting it would silently produce a partial — possibly empty —
+    /// inventory.
+    NotCheckoutRoot {
+        /// The root the caller asked for.
+        root: PathBuf,
+        /// The work-tree root git actually resolved.
+        toplevel: PathBuf,
+    },
+    /// A path was not valid UTF-8. The record cannot name it, so skipping
+    /// it would silently drop it from the inventory.
+    NonUtf8Path(PathBuf),
+}
+
+impl fmt::Display for InventoryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io { path, source } => {
+                write!(
+                    f,
+                    "cannot read inventory entry {}: {source}",
+                    path.display()
+                )
+            }
+            Self::GitSpawn(error) => {
+                write!(f, "cannot run `git ls-files`: {error}")
+            }
+            Self::GitFailed {
+                command,
+                code,
+                stderr,
+            } => write!(
+                f,
+                "`git {command}` failed (exit {code:?}): {}",
+                stderr.trim()
+            ),
+            Self::NotCheckoutRoot { root, toplevel } => write!(
+                f,
+                "{} is inside a checkout but is not its work-tree root ({})",
+                root.display(),
+                toplevel.display()
+            ),
+            Self::NonUtf8Path(path) => write!(
+                f,
+                "inventory path {} is not valid UTF-8 and cannot be recorded",
+                path.display()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for InventoryError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Io { source, .. } => Some(source),
+            Self::GitSpawn(error) => Some(error),
+            Self::GitFailed { .. } | Self::NotCheckoutRoot { .. } | Self::NonUtf8Path(_) => None,
+        }
+    }
+}
+
+/// The binary sniff behind [`InventoryEntry::text`]: NUL bytes or invalid
+/// UTF-8 mean binary content. When the sample is a strict prefix of a
+/// longer file, a multi-byte sequence truncated by the sample boundary does
+/// not condemn it.
+fn is_text_sample(sample: &[u8], complete: bool) -> bool {
+    if sample.contains(&0) {
+        return false;
+    }
+    match std::str::from_utf8(sample) {
+        Ok(_) => true,
+        Err(error) => !complete && error.error_len().is_none(),
+    }
+}
+
+/// Reads one file into an [`InventoryEntry`]: the leading
+/// [`INVENTORY_HEADER_LEN`] bytes for signature checks and a text verdict
+/// over up to [`TEXT_SAMPLE_LEN`] bytes. `relative` is the slash-separated
+/// path the inventory records.
+fn read_entry(root: &Path, relative: &str) -> Result<InventoryEntry, InventoryError> {
+    let full = root.join(relative);
+    let io = |source: std::io::Error| InventoryError::Io {
+        path: full.clone(),
+        source,
+    };
+    let metadata = std::fs::metadata(&full).map_err(io)?;
+    let mut sample = Vec::new();
+    std::fs::File::open(&full)
+        .map_err(io)?
+        .take(TEXT_SAMPLE_LEN as u64)
+        .read_to_end(&mut sample)
+        .map_err(io)?;
+    let complete = sample.len() as u64 >= metadata.len();
+    Ok(InventoryEntry {
+        path: relative.to_owned(),
+        len: metadata.len(),
+        header: sample[..sample.len().min(INVENTORY_HEADER_LEN)].to_vec(),
+        text: is_text_sample(&sample, complete),
+    })
+}
+
+/// The slash-separated path `path` has relative to `root`, or an error when
+/// it cannot be represented in a record.
+fn relative_path(root: &Path, path: &Path) -> Result<String, InventoryError> {
+    let relative = path.strip_prefix(root).unwrap_or(path);
+    let mut parts = Vec::new();
+    for component in relative.components() {
+        if let std::path::Component::Normal(part) = component {
+            parts.push(
+                part.to_str()
+                    .ok_or_else(|| InventoryError::NonUtf8Path(path.to_path_buf()))?,
+            );
+        }
+    }
+    Ok(parts.join("/"))
+}
+
+/// Produces an [`InventoryEntry`] for every regular file beneath `root`,
+/// with slash-separated paths relative to `root` and the list sorted by
+/// path. Symlinks are read through to their target's content — the check
+/// judges the bytes, not the link. This is the producer for
+/// release-artifact directories and fixture trees; the committed-tree
+/// producer is [`committed_inventory`].
+pub fn scan_inventory_dir(root: &Path) -> Result<Vec<InventoryEntry>, InventoryError> {
+    let mut entries = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let children = std::fs::read_dir(&dir).map_err(|source| InventoryError::Io {
+            path: dir.clone(),
+            source,
+        })?;
+        for child in children {
+            let child = child.map_err(|source| InventoryError::Io {
+                path: dir.clone(),
+                source,
+            })?;
+            let path = child.path();
+            // fs::metadata follows symlinks: a link to a regular file is
+            // scanned as the content it resolves to.
+            let metadata = std::fs::metadata(&path).map_err(|source| InventoryError::Io {
+                path: path.clone(),
+                source,
+            })?;
+            if metadata.is_dir() {
+                stack.push(path);
+            } else if metadata.is_file() {
+                let relative = relative_path(root, &path)?;
+                entries.push(read_entry(root, &relative)?);
+            }
+        }
+    }
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(entries)
+}
+
+/// The committed release inventory of a git checkout (F01-D): the
+/// `git ls-files` path set — tracked files only, so ignored build output
+/// and private directories never enter it — with content read from the
+/// worktree.
+///
+/// Paths come from `git ls-files -z`, which reports raw unquoted names.
+/// The bytes are the worktree's current bytes, so a staged-but-edited
+/// binary is scanned as it would actually be committed.
+///
+/// `root` must be the work-tree root: `git ls-files` under a subdirectory
+/// of a checkout exits 0 while reporting only the tracked prefix, so
+/// without the check a mispointed root would silently produce a partial —
+/// possibly empty — clean inventory. Any git failure is an
+/// [`InventoryError`], never a clean report.
+pub fn committed_inventory(root: &Path) -> Result<Vec<InventoryEntry>, InventoryError> {
+    let git_failed =
+        |command: &'static str, output: &std::process::Output| InventoryError::GitFailed {
+            command,
+            code: output.status.code(),
+            stderr: String::from_utf8_lossy(&output.stderr).into_owned(),
+        };
+    let toplevel = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["rev-parse", "--show-toplevel"])
+        .output()
+        .map_err(InventoryError::GitSpawn)?;
+    if !toplevel.status.success() {
+        return Err(git_failed("rev-parse --show-toplevel", &toplevel));
+    }
+    let toplevel = PathBuf::from(String::from_utf8_lossy(&toplevel.stdout).trim());
+    let canonical = |path: &Path| -> Result<PathBuf, InventoryError> {
+        std::fs::canonicalize(path).map_err(|source| InventoryError::Io {
+            path: path.to_path_buf(),
+            source,
+        })
+    };
+    let (requested, resolved) = (canonical(root)?, canonical(&toplevel)?);
+    if requested != resolved {
+        return Err(InventoryError::NotCheckoutRoot {
+            root: root.to_path_buf(),
+            toplevel,
+        });
+    }
+
+    let output = Command::new("git")
+        .arg("-C")
+        .arg(root)
+        .args(["ls-files", "-z"])
+        .output()
+        .map_err(InventoryError::GitSpawn)?;
+    if !output.status.success() {
+        return Err(git_failed("ls-files -z", &output));
+    }
+    let mut entries = Vec::new();
+    for raw in output.stdout.split(|byte| *byte == 0) {
+        if raw.is_empty() {
+            continue;
+        }
+        let relative = std::str::from_utf8(raw).map_err(|_| {
+            InventoryError::NonUtf8Path(root.join(String::from_utf8_lossy(raw).as_ref()))
+        })?;
+        entries.push(read_entry(root, relative)?);
+    }
+    entries.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(entries)
+}
+
+/// Producer→consumer wiring for the release-inventory check (F01-D): the
+/// committed or shipped file set in, a violation report out, using this
+/// repository's declared [`AUTHORED_CONTENT_ROOTS`].
+///
+/// Like [`audit_claims`] this is stateless: nothing is allocated, opened or
+/// cached, a refused scan is retried by producing the inventory again, and
+/// the report preserves every violation rather than collapsing to a count.
+pub fn audit_release_inventory(entries: &[InventoryEntry]) -> InventoryReport {
+    check_release_inventory(entries, AUTHORED_CONTENT_ROOTS)
 }
