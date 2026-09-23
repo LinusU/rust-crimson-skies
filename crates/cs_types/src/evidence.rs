@@ -712,7 +712,8 @@ pub struct UncheckedDependency {
 /// Every claim lands in exactly one disposition: `rejected` (broke a rule),
 /// `invalidated` (a dependency went stale) or `valid` (neither). Fingerprinted
 /// evidence that could not be re-checked is additionally listed in
-/// `unchecked` regardless of disposition.
+/// `unchecked` for `valid` and `invalidated` claims; a rejected claim's
+/// evidence is not evaluated at all, since its standing is already refused.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct LedgerReport {
     /// Claims admitted by every rule with no stale dependency, input order.
@@ -770,8 +771,9 @@ impl LedgerReport {
 /// reported unchecked rather than silently trusted.
 ///
 /// Claims that broke a rule are reported `rejected` and are not evaluated for
-/// invalidation: their standing is already refused. A claim may appear in
-/// `unchecked` and still be `valid` — unconfirmed is not falsified.
+/// invalidation or unchecked dependencies: their standing is already refused.
+/// A claim may appear in `unchecked` and still be `valid` — unconfirmed is
+/// not falsified.
 pub fn validate_ledger(claims: &[ClaimRecord], observed: &FingerprintIndex) -> LedgerReport {
     let mut report = LedgerReport::default();
 
