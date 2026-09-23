@@ -8,7 +8,9 @@
         "headers": {
           "Authorization": "Bearer {env:RALLY_AGENT_TOKEN}"
         },
-        "timeout": 60000
+        "timeout": {
+          "request": 60000
+        }
       }
     }
   }
