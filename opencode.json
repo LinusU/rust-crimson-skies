@@ -7,7 +7,8 @@
         "url": "https://rally.linusu.com/mcp",
         "headers": {
           "Authorization": "Bearer {env:RALLY_AGENT_TOKEN}"
-        }
+        },
+        "timeout": 60000
       }
     }
   }
