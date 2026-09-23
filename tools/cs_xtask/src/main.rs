@@ -1,6 +1,6 @@
 //! `cs_xtask` — the workspace's reproducible testing and packaging gates.
 //!
-//! Two commands, both local (the owner's F00-C note keeps task-specific
+//! Three commands, all local (the owner's F00-C note keeps task-specific
 //! discovery out of CI):
 //!
 //! * `test-select --prefix <prefix>` runs the task's positive test selection
@@ -9,6 +9,10 @@
 //!   `--exact`.
 //! * `verify-ci` checks that the owner-maintained workflow still runs the
 //!   workspace gates ([`ci`]).
+//! * `verify-bootstrap` checks the whole platform bootstrap
+//!   ([`bootstrap`]): every required workspace member is listed with a real
+//!   manifest, the Bevy/Avian/toolchain pins are frozen, and the CI gates
+//!   are still there.
 //!
 //! Exit codes: 0 gate passed, 1 the gate failed, 2 the request itself was
 //! invalid. Failures are printed on stderr, never returned as success.
@@ -17,6 +21,7 @@ use std::env;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
+use cs_xtask::bootstrap;
 use cs_xtask::ci;
 use cs_xtask::test_select;
 
@@ -41,6 +46,12 @@ COMMANDS
     verify-ci [--workspace-root <dir>]
         Check that .github/workflows/ci.yml still runs cargo fmt, cargo
         clippy with -D warnings and the workspace test suite.
+    verify-bootstrap [--workspace-root <dir>]
+        Check the whole platform bootstrap: every workspace member required
+        by the F00 deliverable is listed in [workspace] members with a real
+        [package] manifest, Cargo.lock and rust-toolchain.toml still freeze
+        the Bevy 0.19 / Avian3d 0.7 pair and an exact toolchain, and the CI
+        workflow keeps its gates.
 
 OPTIONS
     --prefix <prefix>       Task test prefix, e.g. accept_f00_c_
@@ -73,6 +84,7 @@ fn main() -> ExitCode {
         }
         "test-select" => run_test_select(&args[1..]),
         "verify-ci" => run_verify_ci(&args[1..]),
+        "verify-bootstrap" => run_verify_bootstrap(&args[1..]),
         other => {
             eprintln!("cs-xtask: unknown command {other:?}");
             eprint!("{USAGE}");
@@ -176,6 +188,43 @@ fn run_verify_ci(args: &[String]) -> ExitCode {
             println!(
                 "verify-ci: {} runs cargo fmt, cargo clippy with -D warnings and \
  the workspace test suite",
+                ci::WORKFLOW_PATH
+            );
+            ExitCode::from(EXIT_OK)
+        }
+        Err(error) => gate_failed(&error.to_string()),
+    }
+}
+
+/// Runs the platform bootstrap gate: required workspace members with real
+/// manifests, frozen pins, intact CI gates — all four checks must pass.
+fn run_verify_bootstrap(args: &[String]) -> ExitCode {
+    let options = match parse_options(args, false) {
+        Ok(options) => options,
+        Err(error) => return usage_error(&error),
+    };
+    if let Err(error) = require_workspace(&options.workspace_root) {
+        return gate_failed(&error);
+    }
+
+    match bootstrap::verify_workspace(&options.workspace_root) {
+        Ok(report) => {
+            println!(
+                "verify-bootstrap: {} required workspace members are listed in \
+ [workspace] members, each with a [package] manifest",
+                bootstrap::REQUIRED_MEMBERS.len()
+            );
+            println!(
+                "verify-bootstrap: pins frozen — bevy {}, avian3d {}, workspace \
+ rust-version {}, toolchain {}",
+                report.pins.bevy,
+                report.pins.avian3d,
+                report.pins.rust_version,
+                report.pins.toolchain_channel
+            );
+            println!(
+                "verify-bootstrap: {} keeps cargo fmt, cargo clippy with -D warnings \
+ and the workspace test suite",
                 ci::WORKFLOW_PATH
             );
             ExitCode::from(EXIT_OK)

@@ -10,10 +10,15 @@
 //!   empty or failing one (F00-C).
 //! * [`ci`] checks that the owner-maintained workflow keeps running the
 //!   workspace gates (F00-C).
+//! * [`bootstrap`] requires every workspace member the F00 deliverable names
+//!   to be listed with a real manifest, and composes the pin and CI guards so
+//!   one command freezes the platform bootstrap (F00-D).
 //!
-//! The `cs_xtask` binary exposes `test-select` and `verify-ci`; packaging
-//! and coverage commands arrive with later tooling tasks.
+//! The `cs_xtask` binary exposes `test-select`, `verify-ci` and
+//! `verify-bootstrap`; packaging and coverage commands arrive with later
+//! tooling tasks.
 
+pub mod bootstrap;
 pub mod ci;
 pub mod pins;
 pub mod test_select;
