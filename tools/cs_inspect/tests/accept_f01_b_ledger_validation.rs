@@ -11,9 +11,9 @@
 
 use cs_inspect::evidence::{check_ledger, synthetic_claim_fixture, synthetic_fingerprint_index};
 use cs_types::evidence::{
-    ClaimId, ClaimRecord, ClaimStatus, ContentHash, EvidenceRecord, EvidenceSource, Fingerprint,
-    FingerprintIndex, FingerprintKind, LedgerError, ObservationIndexError, ObservationLocator,
-    ObservationMethod, ObservedFingerprint, SourceSpan, UncheckedReason,
+    Adjudication, ClaimId, ClaimRecord, ClaimStatus, ContentHash, EvidenceRecord, EvidenceSource,
+    Fingerprint, FingerprintIndex, FingerprintKind, LedgerError, ObservationIndexError,
+    ObservationLocator, ObservationMethod, ObservedFingerprint, SourceSpan, UncheckedReason,
 };
 
 const HASH_A: [u8; 32] = [0xaa; 32];
@@ -274,6 +274,7 @@ fn accept_f01_b_duplicate_claim_ids_are_all_rejected() {
 #[test]
 fn accept_f01_b_dispute_of_unknown_claim_is_rejected() {
     let mut contradicting = claim("test.contradiction", ClaimStatus::Contradicted, vec![]);
+    contradicting.adjudication = Some(Adjudication::Open);
     contradicting.disputes = vec![
         ClaimId::new("test.missing").expect("valid id"),
         ClaimId::new("test.also-missing").expect("valid id"),
@@ -297,6 +298,7 @@ fn accept_f01_b_dispute_of_unknown_claim_is_rejected() {
     // When the disputed claim exists, the contradiction stands: the ledger
     // preserves disagreement instead of picking the convenient source.
     let mut present = claim("test.contested", ClaimStatus::Contradicted, vec![]);
+    present.adjudication = Some(Adjudication::Open);
     present.disputes = vec![ClaimId::new("test.ok").expect("valid id")];
     let claims = vec![claim("test.ok", ClaimStatus::Designed, vec![]), present];
     let report = check_ledger(&claims, &FingerprintIndex::new());

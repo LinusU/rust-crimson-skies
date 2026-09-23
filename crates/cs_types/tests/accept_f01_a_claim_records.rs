@@ -7,9 +7,9 @@
 //! neutering that implementation makes them fail.
 
 use cs_types::evidence::{
-    ClaimError, ClaimId, ClaimIdError, ClaimRecord, ClaimStatus, ContentHash, EvidenceRecord,
-    EvidenceSource, Fingerprint, FingerprintKind, HashError, MAX_CLAIM_ID_LEN, ObservationLocator,
-    ObservationMethod, SourceSpan, TestOutcome,
+    Adjudication, ClaimError, ClaimId, ClaimIdError, ClaimRecord, ClaimStatus, ContentHash,
+    EvidenceRecord, EvidenceSource, Fingerprint, FingerprintKind, HashError, MAX_CLAIM_ID_LEN,
+    ObservationLocator, ObservationMethod, SourceSpan, TestOutcome,
 };
 
 /// A content hash standing in for fingerprinted original data in tests.
@@ -172,7 +172,7 @@ fn accept_f01_a_contradicted_claim_must_name_its_disputes() {
 
     let mut disputed = claim(ClaimStatus::Contradicted, vec![]);
     disputed.disputes = vec![ClaimId::new("test.other-claim").expect("valid id")];
-    disputed.adjudication = Some("awaiting adjudication".to_owned());
+    disputed.adjudication = Some(Adjudication::Open);
     assert_eq!(
         disputed.validate(),
         Ok(()),

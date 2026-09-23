@@ -10,9 +10,10 @@
 //! This module also carries the set-level ledger rules added by F01-B:
 //! [`validate_ledger`] rejects duplicate ids and dangling disputes and
 //! invalidates claims whose fingerprinted evidence no longer matches the
-//! [`FingerprintIndex`] of freshly observed data. Wiring the ledger into
-//! `cs-inspect` commands is F01-C. Nothing in this module is derived from
-//! original game data.
+//! [`FingerprintIndex`] of freshly observed data. F01-C replaced the free-text
+//! adjudication note with the typed [`Adjudication`] state machine and wired
+//! the ledger into `cs-inspect`'s audit path. Nothing in this module is
+//! derived from original game data.
 
 use std::fmt;
 
@@ -362,6 +363,39 @@ pub struct TestOutcome {
     pub failed: u32,
 }
 
+/// Where the adjudication of a recorded dispute stands (F01-C).
+///
+/// Adjudication never merges or deletes the disagreeing claims: whatever the
+/// state, every side keeps its record, status and evidence in the ledger. The
+/// state only tracks where the *disagreement* stands (spec F01, AC03).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Adjudication {
+    /// The disagreement is on record; no ruling has been issued.
+    Open,
+    /// A ruling was issued. `upholds` names the claim the ruling keeps
+    /// standing — it must be a party to the recorded dispute, meaning the
+    /// claim itself or one of its `disputes` — and `rationale` carries the
+    /// reasoning. Claims the ruling does not uphold stay in the ledger with
+    /// their `contradicted` status and evidence; nothing is rewritten or
+    /// dropped.
+    Ruled {
+        /// The claim the ruling keeps standing.
+        upholds: ClaimId,
+        /// Why the ruling went that way.
+        rationale: String,
+    },
+}
+
+impl Adjudication {
+    /// The short state label for diagnostics: `open` or `ruled`.
+    pub const fn state_label(&self) -> &'static str {
+        match self {
+            Self::Open => "open",
+            Self::Ruled { .. } => "ruled",
+        }
+    }
+}
+
 /// One factual compatibility claim and everything that backs or contests it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ClaimRecord {
@@ -376,9 +410,11 @@ pub struct ClaimRecord {
     /// Other claims this record disagrees with. Contradictions are preserved,
     /// never resolved by picking the convenient source.
     pub disputes: Vec<ClaimId>,
-    /// Free-text adjudication note for a contradiction. The typed
-    /// adjudication state machine is wired by F01-C.
-    pub adjudication: Option<String>,
+    /// The typed adjudication state of the recorded dispute (F01-C). A
+    /// `contradicted` claim must carry one — AC03 preserves the adjudication
+    /// state, not just the fact of disagreement — and a claim that disputes
+    /// nothing may not carry one.
+    pub adjudication: Option<Adjudication>,
 }
 
 /// Why a [`ClaimRecord`] failed the per-record admission rules.
@@ -393,6 +429,18 @@ pub enum ClaimError {
     UnverifiedOriginalEvidence,
     /// A `contradicted` claim names no claim it disagrees with.
     ContradictionWithoutDispute,
+    /// A `contradicted` claim carries no adjudication state.
+    ContradictionWithoutAdjudication,
+    /// An adjudication state was recorded on a claim that disputes nothing.
+    AdjudicationWithoutDispute,
+    /// A ruling upholds a claim that is not a party to the recorded dispute.
+    RulingOutsideDispute {
+        /// The claim the ruling named: neither this claim nor one of its
+        /// disputes.
+        upheld: ClaimId,
+    },
+    /// A ruling's rationale was empty or all whitespace.
+    EmptyRationale,
     /// A claim cannot dispute itself.
     SelfDispute,
     /// A locator was present but its container named nothing.
@@ -419,6 +467,19 @@ impl fmt::Display for ClaimError {
                 f,
                 "a contradicted claim must name the claims it disagrees with"
             ),
+            Self::ContradictionWithoutAdjudication => {
+                write!(f, "a contradicted claim must carry its adjudication state")
+            }
+            Self::AdjudicationWithoutDispute => {
+                write!(f, "an adjudication state requires a recorded dispute")
+            }
+            Self::RulingOutsideDispute { upheld } => write!(
+                f,
+                "a ruling can only uphold a party to the dispute, not {upheld}"
+            ),
+            Self::EmptyRationale => {
+                write!(f, "a ruling's rationale must not be empty text")
+            }
             Self::SelfDispute => write!(f, "a claim cannot dispute itself"),
             Self::EmptyLocatorContainer => {
                 write!(f, "an observation locator must name its container")
@@ -486,6 +547,24 @@ impl ClaimRecord {
         }
         if self.status == ClaimStatus::Contradicted && self.disputes.is_empty() {
             return Err(ClaimError::ContradictionWithoutDispute);
+        }
+        if self.status == ClaimStatus::Contradicted && self.adjudication.is_none() {
+            return Err(ClaimError::ContradictionWithoutAdjudication);
+        }
+        if let Some(adjudication) = &self.adjudication {
+            if self.disputes.is_empty() {
+                return Err(ClaimError::AdjudicationWithoutDispute);
+            }
+            if let Adjudication::Ruled { upholds, rationale } = adjudication {
+                if *upholds != self.id && !self.disputes.contains(upholds) {
+                    return Err(ClaimError::RulingOutsideDispute {
+                        upheld: upholds.clone(),
+                    });
+                }
+                if rationale.trim().is_empty() {
+                    return Err(ClaimError::EmptyRationale);
+                }
+            }
         }
         Ok(())
     }
@@ -588,6 +667,13 @@ impl FingerprintIndex {
             .iter()
             .find(|entry| entry.container == container && entry.fingerprint.kind == kind)
             .map(|entry| entry.fingerprint.sha256)
+    }
+
+    /// The observations the index holds, in insertion order. Consumers that
+    /// re-emit an index as producer input — for example feeding a stored
+    /// index into `cs-inspect`'s audit — go through this view.
+    pub fn observations(&self) -> &[ObservedFingerprint] {
+        &self.entries
     }
 
     /// How many distinct (kind, container) pairs the index holds.
