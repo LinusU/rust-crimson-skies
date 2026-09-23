@@ -55,3 +55,14 @@ cs_net = { path = "crates/cs_net" }
 cs_script = { path = "crates/cs_script" }
 cs_sim = { path = "crates/cs_sim" }
 cs_types = { path = "crates/cs_types" }
+
+# Keep the linked `__eh_frame` under the Apple linker's 16 MiB compact-unwind
+# encoding limit (task #336, docs/findings/2026-09-23-t336-*): at opt-level 0
+# the dependency graph emits ~17 MiB of DWARF unwind data, so FDEs past the
+# 16 MiB mark get compact-unwind entries whose dwarf offset wraps to 0 —
+# unwinding through those frames aborts instead of unwinding. Optimizing
+# dependencies shrinks the section back under the limit. This is also the
+# upstream-recommended dev setting for Bevy: unoptimized engine code is too
+# slow to run interactively.
+[profile.dev.package."*"]
+opt-level = 3
