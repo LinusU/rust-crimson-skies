@@ -1,0 +1,37 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/cs_app",
+    "crates/cs_assets",
+    "crates/cs_content",
+    "crates/cs_formats",
+    "crates/cs_net",
+    "crates/cs_script",
+    "crates/cs_sim",
+    "crates/cs_types",
+    "tools/cs_inspect",
+    "tools/cs_xtask",
+]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.98"
+license = "MIT"
+publish = false
+
+[workspace.dependencies]
+# Intended baseline (docs/research/SOURCES.md, S01/S11): Bevy 0.19 + Avian3d 0.7.
+# The caret ranges cannot drift to a different minor; the exact patch is pinned
+# in Cargo.lock and every downstream gate runs with --locked.
+avian3d = "0.7"
+bevy = "0.19"
+
+cs_app = { path = "crates/cs_app" }
+cs_assets = { path = "crates/cs_assets" }
+cs_content = { path = "crates/cs_content" }
+cs_formats = { path = "crates/cs_formats" }
+cs_net = { path = "crates/cs_net" }
+cs_script = { path = "crates/cs_script" }
+cs_sim = { path = "crates/cs_sim" }
+cs_types = { path = "crates/cs_types" }

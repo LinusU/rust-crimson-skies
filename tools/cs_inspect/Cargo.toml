@@ -1,0 +1,14 @@
+[package]
+name = "cs_inspect"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+autobins = false
+
+[dependencies]
+
+[[bin]]
+name = "cs-inspect"
+path = "src/main.rs"

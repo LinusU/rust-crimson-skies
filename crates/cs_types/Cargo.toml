@@ -1,0 +1,10 @@
+[package]
+name = "cs_types"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Intentionally dependency-free: ids, units and cross-boundary records must
+# not drag in Bevy, Avian or any renderer (docs/01-ARCHITECTURE.md).
