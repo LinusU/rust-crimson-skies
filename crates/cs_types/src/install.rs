@@ -15,9 +15,12 @@
 //! identity.
 //!
 //! This module defines the records, their validation rules and the identity
-//! encoding only. Walking a real installation, reading bytes and detecting
-//! families arrive with F02-B; `cs-inspect` report wiring with F02-C.
-//! Nothing in this module is derived from original game data.
+//! encoding. Walking a real installation, reading bytes and computing the
+//! SHA-256 values carried by [`InstallFileRecord`] arrive with F02-B in
+//! `cs_assets` (`discover`, `fingerprint`, `AnalysisCache`); `cs-inspect`
+//! report wiring is F02-C work; family labels are emitted by the format
+//! tasks (F05/F06/F07) as they recognize layouts. Nothing in this module is
+//! derived from original game data.
 
 use std::fmt;
 use std::fmt::Write as _;
