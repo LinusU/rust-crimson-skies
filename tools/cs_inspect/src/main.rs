@@ -1,19 +1,52 @@
 //! `cs-inspect` — the command-line inspection binary.
 //!
-//! F00-A ships only the workspace bootstrap guard: the subcommands from
-//! `docs/contracts/CLI-EVIDENCE.md` (`inventory`, `catalog`, `resolve`,
-//! `closure`, `scripts`, `handling`, `audit`) arrive with later tasks. Until
-//! then the binary refuses invalid input with a nonzero exit code and a
-//! diagnostic naming the missing command — a failure is never returned as
-//! success.
+//! `--help` and `--version` exit 0 without a GPU or a retail installation and
+//! without starting any asset discovery (F00 non-negotiable behavior 3). The
+//! subcommands from `docs/contracts/CLI-EVIDENCE.md` (`inventory`, `catalog`,
+//! `resolve`, `closure`, `scripts`, `handling`, `audit`) arrive with later
+//! tasks. Until then the binary refuses invalid input with a nonzero exit code
+//! and a diagnostic naming the missing command — a failure is never returned
+//! as success.
 
 use std::process::ExitCode;
 
 /// Exit code for invalid input or unsupported content (CLI-EVIDENCE contract).
 const EXIT_INVALID_INPUT: u8 = 2;
 
+const HELP_TEXT: &str = "\
+cs-inspect — inspect a Crimson Skies installation
+
+USAGE
+    cs-inspect [OPTIONS] <COMMAND>
+
+OPTIONS
+    -h, --help       Print this help text and exit 0
+    -V, --version    Print the version and exit 0
+
+COMMANDS
+    inventory  catalog  resolve  closure  scripts  handling  audit
+
+`--help` and `--version` read no environment variable and open no
+installation. The commands themselves are not implemented in this workspace
+stage; they are documented in docs/contracts/CLI-EVIDENCE.md.
+";
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
+    for arg in &args {
+        match arg.as_str() {
+            "--help" | "-h" => {
+                print!("{HELP_TEXT}");
+                return ExitCode::SUCCESS;
+            }
+            "--version" | "-V" => {
+                println!("cs-inspect {}", env!("CARGO_PKG_VERSION"));
+                return ExitCode::SUCCESS;
+            }
+            _ => {}
+        }
+    }
+
     if args.is_empty() {
         eprintln!(
             "cs-inspect: missing command; expected one of inventory, catalog, resolve, closure, \
