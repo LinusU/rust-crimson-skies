@@ -1,0 +1,64 @@
+name: CI
+
+on:
+  push:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  rust:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check for a Cargo workspace
+        id: workspace
+        run: |
+          if [ -f Cargo.toml ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::No Cargo workspace yet (F00-A creates it); skipping Rust checks."
+          fi
+
+      - name: Install Bevy system dependencies
+        if: steps.workspace.outputs.present == 'true'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+
+      - name: Install the toolchain from rust-toolchain.toml
+        if: steps.workspace.outputs.present == 'true'
+        run: rustup show active-toolchain || rustup toolchain install
+
+      - uses: Swatinem/rust-cache@v2
+        if: steps.workspace.outputs.present == 'true'
+
+      - name: cargo fmt
+        if: steps.workspace.outputs.present == 'true'
+        run: cargo fmt --all -- --check
+
+      - name: cargo clippy
+        if: steps.workspace.outputs.present == 'true'
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+
+      - name: cargo test
+        if: steps.workspace.outputs.present == 'true'
+        run: cargo test --workspace --locked
+
+  pack:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Synthetic fixtures are reproducible
+        run: |
+          python3 tools/make_synthetic_fixtures.py --out "$RUNNER_TEMP/fixtures"
+          for f in "$RUNNER_TEMP"/fixtures/*; do cmp "$f" "fixtures/synthetic/$(basename "$f")"; done
+
+      - name: No binary files outside the synthetic fixtures
+        run: |
+          bad=$(git ls-files -z | xargs -0 -n1 sh -c 'case "$0" in fixtures/synthetic/*) ;; *) if [ -s "$0" ] && ! grep -Iq . "$0"; then echo "$0"; fi ;; esac')
+          if [ -n "$bad" ]; then echo "Binary files need owner review:"; echo "$bad"; exit 1; fi
