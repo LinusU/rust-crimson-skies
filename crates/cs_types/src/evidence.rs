@@ -7,10 +7,12 @@
 //! test success travels in a separate [`TestOutcome`] field and never doubles
 //! as an evidence status (spec F01, "Deliverable and interfaces").
 //!
-//! These are the records plus their per-record admission rules only.
-//! Set-level ledger validation and fingerprint invalidation are F01-B; wiring
-//! them into `cs-inspect` commands is F01-C. Nothing in this module is
-//! derived from original game data.
+//! This module also carries the set-level ledger rules added by F01-B:
+//! [`validate_ledger`] rejects duplicate ids and dangling disputes and
+//! invalidates claims whose fingerprinted evidence no longer matches the
+//! [`FingerprintIndex`] of freshly observed data. Wiring the ledger into
+//! `cs-inspect` commands is F01-C. Nothing in this module is derived from
+//! original game data.
 
 use std::fmt;
 
@@ -181,6 +183,23 @@ pub enum FingerprintKind {
     /// A produced artifact: tool output, synthetic fixture, report. Never
     /// original data.
     Artifact,
+}
+
+impl FingerprintKind {
+    /// The schema-vocabulary name of the kind.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Installation => "installation",
+            Self::Content => "content",
+            Self::Artifact => "artifact",
+        }
+    }
+}
+
+impl fmt::Display for FingerprintKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
 }
 
 /// An exact revision or game fingerprint: which thing was hashed and its
@@ -470,4 +489,364 @@ impl ClaimRecord {
         }
         Ok(())
     }
+}
+
+/// A fingerprint freshly observed for one asset container.
+///
+/// `container` is the asset identity an [`ObservationLocator`] names (an
+/// archive path, a file member or a document anchor); `fingerprint` is what
+/// the current observation measured there.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ObservedFingerprint {
+    /// The container whose content was hashed.
+    pub container: String,
+    /// The digest measured now.
+    pub fingerprint: Fingerprint,
+}
+
+/// Why a set of [`ObservedFingerprint`]s was refused.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ObservationIndexError {
+    /// Two observations name the same kind and container but measured
+    /// different digests; the index refuses to choose between them.
+    ConflictingObservations {
+        /// The role of the conflicting fingerprint.
+        kind: FingerprintKind,
+        /// The container both observations name.
+        container: String,
+    },
+}
+
+impl fmt::Display for ObservationIndexError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ConflictingObservations { kind, container } => write!(
+                f,
+                "conflicting {kind} observations for container {container:?}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ObservationIndexError {}
+
+/// The fingerprints currently observed for the assets a ledger depends on.
+///
+/// Entries are keyed by (kind, container): the role the hash plays plus the
+/// asset identity an [`ObservationLocator`] names. An evidence record depends
+/// on an entry when both match; if the recorded digest differs from the
+/// observed one the dependent claim is invalidated by [`validate_ledger`].
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct FingerprintIndex {
+    entries: Vec<ObservedFingerprint>,
+}
+
+impl FingerprintIndex {
+    /// An empty index: every fingerprinted dependency reports unchecked.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Builds an index from observations.
+    ///
+    /// Two observations of the same (kind, container) with different digests
+    /// are a contradiction in the input, not something to average out: the
+    /// build refuses them with
+    /// [`ObservationIndexError::ConflictingObservations`]. Identical
+    /// duplicates collapse to one entry.
+    pub fn from_observations(
+        observations: Vec<ObservedFingerprint>,
+    ) -> Result<Self, ObservationIndexError> {
+        let mut index = Self::new();
+        for observation in observations {
+            let existing = index
+                .entries
+                .iter()
+                .find(|entry| {
+                    entry.container == observation.container
+                        && entry.fingerprint.kind == observation.fingerprint.kind
+                })
+                .map(|entry| entry.fingerprint.sha256);
+            match existing {
+                Some(sha256) if sha256 != observation.fingerprint.sha256 => {
+                    return Err(ObservationIndexError::ConflictingObservations {
+                        kind: observation.fingerprint.kind,
+                        container: observation.container,
+                    });
+                }
+                Some(_) => {}
+                None => index.entries.push(observation),
+            }
+        }
+        Ok(index)
+    }
+
+    /// The digest currently observed for `kind` + `container`, if the pair
+    /// was observed at all.
+    pub fn current(&self, kind: FingerprintKind, container: &str) -> Option<ContentHash> {
+        self.entries
+            .iter()
+            .find(|entry| entry.container == container && entry.fingerprint.kind == kind)
+            .map(|entry| entry.fingerprint.sha256)
+    }
+
+    /// How many distinct (kind, container) pairs the index holds.
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether the index holds no observations.
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+}
+
+/// Why a claim was refused by the ledger-level rules (F01-B).
+///
+/// These are violations one record cannot see on its own; per-record failures
+/// surface through [`LedgerError::Record`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LedgerError {
+    /// The record itself failed [`ClaimRecord::validate`].
+    Record(ClaimError),
+    /// Another claim in the set uses the same id. The ledger refuses to
+    /// choose between them, so every occurrence is rejected.
+    DuplicateId,
+    /// The claim disputes an id that no claim in the set carries.
+    UnknownDispute {
+        /// The disputed id that does not exist in the set.
+        disputed: ClaimId,
+    },
+}
+
+impl fmt::Display for LedgerError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Record(error) => write!(f, "{error}"),
+            Self::DuplicateId => {
+                write!(f, "another claim in the ledger already uses this id")
+            }
+            Self::UnknownDispute { disputed } => {
+                write!(f, "disputed claim {disputed} is not in the ledger")
+            }
+        }
+    }
+}
+
+impl std::error::Error for LedgerError {}
+
+/// One claim refused by ledger validation, with the reason.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LedgerRejection {
+    pub claim: ClaimId,
+    pub error: LedgerError,
+}
+
+/// One evidence record whose recorded digest no longer matches the observed
+/// one: the asset changed underneath the claim.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StaleEvidence {
+    /// The container the stale observation names.
+    pub container: String,
+    /// The role of the changed fingerprint.
+    pub kind: FingerprintKind,
+    /// The digest the evidence recorded.
+    pub recorded: ContentHash,
+    /// The digest the index observes now.
+    pub observed: ContentHash,
+}
+
+/// A claim whose standing is revoked because observed data changed beneath
+/// its evidence (spec F01, non-negotiable behavior 1).
+///
+/// Invalidation never deletes or rewrites the claim: it stays in the ledger
+/// with its original status and evidence, and this report entry explains why
+/// it no longer stands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClaimInvalidation {
+    pub claim: ClaimId,
+    /// Every evidence record whose fingerprint went stale.
+    pub stale: Vec<StaleEvidence>,
+}
+
+/// Why a fingerprinted evidence record could not be re-checked.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum UncheckedReason {
+    /// The record carries a fingerprint but no locator, so it cannot be tied
+    /// to an observed asset.
+    MissingLocator,
+    /// The index holds no observation for the record's kind and container.
+    NotObserved,
+}
+
+impl fmt::Display for UncheckedReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingLocator => {
+                f.write_str("fingerprinted evidence has no observation locator")
+            }
+            Self::NotObserved => {
+                f.write_str("no current observation for this fingerprinted container")
+            }
+        }
+    }
+}
+
+/// Fingerprinted evidence the index can neither confirm nor refute.
+///
+/// An unchecked dependency does not invalidate its claim — nothing showed it
+/// stale — but a strict audit must see it rather than treat silence as a
+/// confirmation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UncheckedDependency {
+    pub claim: ClaimId,
+    /// The role of the fingerprint that could not be re-checked.
+    pub kind: FingerprintKind,
+    /// The container the evidence names, when it names one.
+    pub container: Option<String>,
+    pub reason: UncheckedReason,
+}
+
+/// The result of validating a claim set against observed fingerprints.
+///
+/// Every claim lands in exactly one disposition: `rejected` (broke a rule),
+/// `invalidated` (a dependency went stale) or `valid` (neither). Fingerprinted
+/// evidence that could not be re-checked is additionally listed in
+/// `unchecked` regardless of disposition.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LedgerReport {
+    /// Claims admitted by every rule with no stale dependency, input order.
+    pub valid: Vec<ClaimId>,
+    /// Claims refused by per-record or set-level rules, input order.
+    pub rejected: Vec<LedgerRejection>,
+    /// Claims whose fingerprinted evidence went stale, input order.
+    pub invalidated: Vec<ClaimInvalidation>,
+    /// Fingerprinted evidence the index cannot confirm or refute, input order.
+    pub unchecked: Vec<UncheckedDependency>,
+}
+
+impl LedgerReport {
+    /// Every claim stands and every fingerprinted dependency was confirmed:
+    /// no rejection, no invalidation and nothing left unchecked.
+    pub fn is_clean(&self) -> bool {
+        self.rejected.is_empty() && self.invalidated.is_empty() && self.unchecked.is_empty()
+    }
+
+    /// One stderr-suitable diagnostic line per problem, in input order.
+    pub fn diagnostic_lines(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        for rejection in &self.rejected {
+            lines.push(format!(
+                "claim {} rejected: {}",
+                rejection.claim, rejection.error
+            ));
+        }
+        for invalidation in &self.invalidated {
+            for stale in &invalidation.stale {
+                lines.push(format!(
+                    "claim {} invalidated: {} fingerprint of {:?} changed from {} to {}",
+                    invalidation.claim, stale.kind, stale.container, stale.recorded, stale.observed
+                ));
+            }
+        }
+        for unchecked in &self.unchecked {
+            let target = unchecked.container.as_deref().unwrap_or("<no locator>");
+            lines.push(format!(
+                "claim {} unchecked: {} fingerprint of {:?}: {}",
+                unchecked.claim, unchecked.kind, target, unchecked.reason
+            ));
+        }
+        lines
+    }
+}
+
+/// Validates a claim set as a ledger (F01-B).
+///
+/// On top of each record's own [`ClaimRecord::validate`], this enforces the
+/// set-level rules — duplicate ids and disputes that name no claim in the
+/// set — and re-checks every fingerprinted evidence record against
+/// `observed`. A recorded digest that differs from the current observation
+/// invalidates the dependent claim; a dependency the index does not cover is
+/// reported unchecked rather than silently trusted.
+///
+/// Claims that broke a rule are reported `rejected` and are not evaluated for
+/// invalidation: their standing is already refused. A claim may appear in
+/// `unchecked` and still be `valid` — unconfirmed is not falsified.
+pub fn validate_ledger(claims: &[ClaimRecord], observed: &FingerprintIndex) -> LedgerReport {
+    let mut report = LedgerReport::default();
+
+    let mut occurrences: std::collections::BTreeMap<&ClaimId, usize> =
+        std::collections::BTreeMap::new();
+    for claim in claims {
+        *occurrences.entry(&claim.id).or_insert(0) += 1;
+    }
+    let known: std::collections::BTreeSet<&ClaimId> = claims.iter().map(|c| &c.id).collect();
+
+    for claim in claims {
+        let mut errors: Vec<LedgerError> = Vec::new();
+        if let Err(error) = claim.validate() {
+            errors.push(LedgerError::Record(error));
+        }
+        if occurrences[&claim.id] > 1 {
+            errors.push(LedgerError::DuplicateId);
+        }
+        for disputed in &claim.disputes {
+            if !known.contains(disputed) {
+                errors.push(LedgerError::UnknownDispute {
+                    disputed: disputed.clone(),
+                });
+            }
+        }
+        if !errors.is_empty() {
+            report
+                .rejected
+                .extend(errors.into_iter().map(|error| LedgerRejection {
+                    claim: claim.id.clone(),
+                    error,
+                }));
+            continue;
+        }
+
+        let mut stale: Vec<StaleEvidence> = Vec::new();
+        for evidence in &claim.evidence {
+            let Some(fingerprint) = evidence.fingerprint else {
+                continue;
+            };
+            let Some(locator) = &evidence.locator else {
+                report.unchecked.push(UncheckedDependency {
+                    claim: claim.id.clone(),
+                    kind: fingerprint.kind,
+                    container: None,
+                    reason: UncheckedReason::MissingLocator,
+                });
+                continue;
+            };
+            match observed.current(fingerprint.kind, &locator.container) {
+                Some(observed_hash) if observed_hash != fingerprint.sha256 => {
+                    stale.push(StaleEvidence {
+                        container: locator.container.clone(),
+                        kind: fingerprint.kind,
+                        recorded: fingerprint.sha256,
+                        observed: observed_hash,
+                    });
+                }
+                Some(_) => {}
+                None => report.unchecked.push(UncheckedDependency {
+                    claim: claim.id.clone(),
+                    kind: fingerprint.kind,
+                    container: Some(locator.container.clone()),
+                    reason: UncheckedReason::NotObserved,
+                }),
+            }
+        }
+        if stale.is_empty() {
+            report.valid.push(claim.id.clone());
+        } else {
+            report.invalidated.push(ClaimInvalidation {
+                claim: claim.id.clone(),
+                stale,
+            });
+        }
+    }
+    report
 }
