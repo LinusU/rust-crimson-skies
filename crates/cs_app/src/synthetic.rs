@@ -103,7 +103,14 @@ impl SyntheticScene {
             .id();
 
         // Finalize plugin construction before the first manual update.
+        //
+        // `App::run` would do this for us; driving the world through
+        // `App::update` directly means the plugin lifecycle must be closed
+        // here, and Bevy documents `cleanup` as the counterpart that exists
+        // "for situations where you want to use App::update". A plugin that
+        // defers work to `Plugin::cleanup` must not silently never run it.
         app.finish();
+        app.cleanup();
 
         Ok(Self {
             app,
