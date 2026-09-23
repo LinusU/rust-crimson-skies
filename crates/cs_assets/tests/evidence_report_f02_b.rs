@@ -44,7 +44,7 @@ use cs_assets::install::{Discovery, content_fingerprint, discover, fingerprint, 
 #[test]
 #[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_GAME_DIR"]
 fn evidence_report_f02_b_writes_the_acceptance_report() {
-    let evidence_dir = PathBuf::from(env_var("CS_EVIDENCE_DIR"));
+    let evidence_dir = workspace_path(&env_var("CS_EVIDENCE_DIR"));
     let candidate_tree = env_var("CS_CANDIDATE_TREE");
     let argv: Vec<String> = env_var("CS_EVIDENCE_ARGV")
         .split_whitespace()
@@ -228,6 +228,17 @@ fn env_var(name: &str) -> String {
              (crates/cs_assets/tests/evidence_report_f02_b.rs)"
         )
     })
+}
+
+/// Cargo runs a test binary with its working directory set to the *package*
+/// root, so a path like `private/evidence/F02-B` written relative to the
+/// workspace root in the module doc must be re-anchored here.
+fn workspace_path(as_described: &str) -> PathBuf {
+    let path = PathBuf::from(as_described);
+    if path.is_absolute() {
+        return path;
+    }
+    Path::new(&git(&["rev-parse", "--show-toplevel"])).join(path)
 }
 
 fn git(args: &[&str]) -> String {
