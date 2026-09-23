@@ -132,6 +132,9 @@ mod macho {
     fn u32be(bytes: &[u8], at: usize) -> u32 {
         u32::from_be_bytes(bytes[at..at + 4].try_into().unwrap())
     }
+    fn u64be(bytes: &[u8], at: usize) -> u64 {
+        u64::from_be_bytes(bytes[at..at + 8].try_into().unwrap())
+    }
     fn u64le(bytes: &[u8], at: usize) -> u64 {
         u64::from_le_bytes(bytes[at..at + 8].try_into().unwrap())
     }
@@ -151,7 +154,12 @@ mod macho {
         for i in 0..nfat {
             let at = 8 + i * entry_size;
             if u32be(bytes, at) == CPU_TYPE_ARM64 {
-                let offset = u32be(bytes, at + 8) as usize;
+                // fat_arch_64 stores the slice offset as u64, fat_arch as u32.
+                let offset = if magic == FAT_MAGIC_64 {
+                    u64be(bytes, at + 8) as usize
+                } else {
+                    u32be(bytes, at + 8) as usize
+                };
                 assert_eq!(
                     u32le(bytes, offset),
                     MH_MAGIC_64,
