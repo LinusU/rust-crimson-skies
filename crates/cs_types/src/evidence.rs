@@ -15,8 +15,12 @@
 //! the ledger into `cs-inspect`'s audit path. F01-D added the
 //! release-inventory provenance check: [`check_release_inventory`] detects
 //! committed executables, original data, bundled media and unidentified
-//! binaries in the shipped file set (spec F01, AC04). Nothing in this module
-//! is derived from original game data.
+//! binaries in the shipped file set (spec F01, AC04). Rally task #337
+//! tightened `verified_original` further: only evidence recorded with a
+//! direct-observation method — byte inspection, tool probe or runtime
+//! observation — can back it; authored, inferred and document-review
+//! records cannot. Nothing in this module is derived from original game
+//! data.
 
 use std::fmt;
 
@@ -274,6 +278,23 @@ pub enum ObservationMethod {
     Authored,
 }
 
+impl ObservationMethod {
+    /// Whether the method directly observes the data under claim.
+    ///
+    /// Only `ByteInspection`, `ToolProbe` and `RuntimeObservation` qualify:
+    /// `verified_original` means someone looked at fingerprinted original
+    /// bytes or at the running original program. `DocumentReview` reports
+    /// what a cited source *says* — that backs `documented`, even when the
+    /// document describes original data — and `Inference` and `Authored`
+    /// are not observations at all.
+    pub const fn is_direct_observation(self) -> bool {
+        matches!(
+            self,
+            Self::ByteInspection | Self::ToolProbe | Self::RuntimeObservation
+        )
+    }
+}
+
 /// One piece of evidence backing (or refuting) a claim.
 ///
 /// `fingerprint` and `locator` are optional on the record because some
@@ -295,15 +316,20 @@ pub struct EvidenceRecord {
 
 impl EvidenceRecord {
     /// Whether this record can support `verified_original`: it fingerprints
-    /// original installation or content data and locates the observation.
-    /// Synthetic fixture content can never verify originality, regardless of
-    /// the fingerprint kind its recorder attached.
+    /// original installation or content data, locates the observation and
+    /// records a method that directly observes the data
+    /// ([`ObservationMethod::is_direct_observation`]). Synthetic fixture
+    /// content can never verify originality, regardless of the fingerprint
+    /// kind its recorder attached; authored or inferred records are not
+    /// observations and cannot verify it either, even when they point at
+    /// fingerprinted original data.
     pub fn verifies_original(&self) -> bool {
         !matches!(self.source, EvidenceSource::SyntheticFixture)
             && self
                 .fingerprint
                 .is_some_and(Fingerprint::identifies_original)
             && self.locator.is_some()
+            && self.method.is_direct_observation()
     }
 }
 
@@ -427,8 +453,9 @@ pub enum ClaimError {
     EmptySubject,
     /// The status requires at least one evidence record.
     MissingEvidence { status: ClaimStatus },
-    /// A `verified_original` claim has no evidence that both fingerprints
-    /// original data (installation or content) and locates the observation.
+    /// A `verified_original` claim has no evidence that fingerprints
+    /// original data (installation or content), locates the observation and
+    /// records a direct-observation method.
     UnverifiedOriginalEvidence,
     /// A `contradicted` claim names no claim it disagrees with.
     ContradictionWithoutDispute,
@@ -464,7 +491,8 @@ impl fmt::Display for ClaimError {
             Self::UnverifiedOriginalEvidence => write!(
                 f,
                 "a verified_original claim requires evidence that fingerprints original \
-                 installation or content data and locates the observation"
+                 installation or content data, locates the observation and was made by \
+                 byte inspection, tool probe or runtime observation"
             ),
             Self::ContradictionWithoutDispute => write!(
                 f,
