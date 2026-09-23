@@ -7,6 +7,8 @@
 
 use std::fmt;
 
+pub mod evidence;
+
 /// Zero-based simulation tick. Integer ticks are the only time value that may
 /// cross crate boundaries.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
