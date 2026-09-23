@@ -326,6 +326,43 @@ fn accept_f01_d_committed_tree_of_this_repo_is_clean() {
     );
 }
 
+/// The directory walk follows directory symlinks to judge shipped bytes,
+/// but each resolved directory is scanned once: a cyclic link (`self ->
+/// .`) cannot loop the producer forever, and a second link to the same
+/// target is not walked again.
+#[cfg(unix)]
+#[test]
+fn accept_f01_d_scan_inventory_dir_survives_symlink_cycles() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
+        .join("target/f01-d-inventory-fixtures/symlink-cycle");
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("inner")).expect("the fixture tree must be creatable");
+    fs::write(root.join("inner/data.txt"), "authored text\n").expect("writable");
+    std::os::unix::fs::symlink(".", root.join("inner/self")).expect("symlink self");
+    std::os::unix::fs::symlink("inner", root.join("again")).expect("symlink again");
+
+    let entries = scan_inventory_dir(&root).expect("a cyclic tree must still scan");
+    assert_eq!(
+        entries
+            .iter()
+            .filter(|entry| entry.path == "inner/data.txt")
+            .count(),
+        1,
+        "the real file is recorded exactly once: {entries:?}"
+    );
+    assert!(
+        !entries
+            .iter()
+            .any(|entry| entry.path.starts_with("inner/self/") || entry.path.starts_with("again/")),
+        "linked directories are not re-walked: {entries:?}"
+    );
+    assert!(
+        audit_release_inventory(&entries).is_clean(),
+        "authored text has nothing to answer for"
+    );
+}
+
 /// A mispointed inventory is an error, never a clean report: `git
 /// ls-files` under a subdirectory of a checkout exits 0 while reporting
 /// only the tracked prefix (here: nothing, `target/` is ignored), so the

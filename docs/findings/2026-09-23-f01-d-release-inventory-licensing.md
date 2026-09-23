@@ -20,14 +20,14 @@ installation was opened read-only; nothing from it was copied or committed).
   producers `scan_inventory_dir` and `committed_inventory` (git
   `ls-files` + worktree bytes), `audit_release_inventory` wiring and
   `InventoryError`.
-- `tools/cs_inspect/tests/accept_f01_d_release_inventory.rs` (new): ten
-  `accept_f01_d_*` tests over the production path.
+- `tools/cs_inspect/tests/accept_f01_d_release_inventory.rs` (new):
+  eleven `accept_f01_d_*` tests over the production path.
 - Observable failure if the implementation is removed or stubbed: a
   committed inventory containing a PE executable next to ordinary sources
   reports clean (AC04). Covered by
   `accept_f01_d_committed_retail_binary_is_detected`; making
   `check_release_inventory` return an empty `violations` list fails six of
-  the ten tests.
+  the eleven tests.
 
 ## Design decisions
 
@@ -81,7 +81,7 @@ installation was opened read-only; nothing from it was copied or committed).
 
 | observation | value |
 |---|---|
-| tracked files inventoried | 211 (`git ls-files | wc -l` agrees) |
+| tracked files inventoried | 220 on the submitted tree (`git ls-files | wc -l` agrees) |
 | violations | 0 |
 | binaries present | only under `fixtures/synthetic/` (`*.bm`, `*.rof`, `*.interp`), exempt as declared authored content |
 
@@ -145,7 +145,12 @@ this slice* and repaired inside it: `git ls-files` under a checkout
 subdirectory exits 0 with a truncated (empty for ignored dirs) listing,
 which would have produced a vacuously clean inventory — the producer now
 refuses non-work-tree roots (`NotCheckoutRoot`, covered by
-`accept_f01_d_subdirectory_of_a_checkout_fails_loudly`).
+`accept_f01_d_subdirectory_of_a_checkout_fails_loudly`). Review added a
+second repair: `scan_inventory_dir` followed directory symlinks with no
+visited set, so a cyclic link (`self -> .`) looped the walk forever — each
+resolved directory is now scanned once, and linked directories wait until
+every real directory has been walked so entries record the real name
+(`accept_f01_d_scan_inventory_dir_survives_symlink_cycles`).
 
 ## Recorded open questions (not guessed)
 

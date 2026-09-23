@@ -500,36 +500,67 @@ fn relative_path(root: &Path, path: &Path) -> Result<String, InventoryError> {
 /// Produces an [`InventoryEntry`] for every regular file beneath `root`,
 /// with slash-separated paths relative to `root` and the list sorted by
 /// path. Symlinks are read through to their target's content — the check
-/// judges the bytes, not the link. This is the producer for
-/// release-artifact directories and fixture trees; the committed-tree
+/// judges the bytes, not the link — except for directories: each resolved
+/// directory is scanned once, so a symlink cycle cannot loop the walk
+/// forever. Linked directories are walked only after every real
+/// directory, so a file is always recorded under its real name, never an
+/// alias that `read_dir` happened to yield first. This is the producer
+/// for release-artifact directories and fixture trees; the committed-tree
 /// producer is [`committed_inventory`].
 pub fn scan_inventory_dir(root: &Path) -> Result<Vec<InventoryEntry>, InventoryError> {
     let mut entries = Vec::new();
     let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
+    let mut linked = Vec::new();
+    let mut visited = std::collections::HashSet::new();
+    while let Some(dir) = stack.pop().or_else(|| linked.pop()) {
+        // Canonicalize resolves directory symlinks; a directory already
+        // scanned through another name or link must not be walked again.
+        let canonical = std::fs::canonicalize(&dir).map_err(|source| InventoryError::Io {
+            path: dir.clone(),
+            source,
+        })?;
+        if !visited.insert(canonical) {
+            continue;
+        }
         let children = std::fs::read_dir(&dir).map_err(|source| InventoryError::Io {
             path: dir.clone(),
             source,
         })?;
+        // Linked directories wait in `linked` until the real-directory
+        // stack is empty, so no alias can claim a directory before its
+        // real path has been walked.
+        let mut dirs = Vec::new();
         for child in children {
             let child = child.map_err(|source| InventoryError::Io {
                 path: dir.clone(),
                 source,
             })?;
             let path = child.path();
-            // fs::metadata follows symlinks: a link to a regular file is
-            // scanned as the content it resolves to.
-            let metadata = std::fs::metadata(&path).map_err(|source| InventoryError::Io {
+            // DirEntry::file_type does not follow links; a symlink's
+            // target kind needs fs::metadata, which does.
+            let file_type = child.file_type().map_err(|source| InventoryError::Io {
                 path: path.clone(),
                 source,
             })?;
-            if metadata.is_dir() {
-                stack.push(path);
-            } else if metadata.is_file() {
+            if file_type.is_symlink() {
+                let metadata = std::fs::metadata(&path).map_err(|source| InventoryError::Io {
+                    path: path.clone(),
+                    source,
+                })?;
+                if metadata.is_dir() {
+                    linked.push(path);
+                } else if metadata.is_file() {
+                    let relative = relative_path(root, &path)?;
+                    entries.push(read_entry(root, &relative)?);
+                }
+            } else if file_type.is_dir() {
+                dirs.push(path);
+            } else if file_type.is_file() {
                 let relative = relative_path(root, &path)?;
                 entries.push(read_entry(root, &relative)?);
             }
         }
+        stack.extend(dirs);
     }
     entries.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(entries)
