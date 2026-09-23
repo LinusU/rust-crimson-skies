@@ -12,8 +12,11 @@
 //! invalidates claims whose fingerprinted evidence no longer matches the
 //! [`FingerprintIndex`] of freshly observed data. F01-C replaced the free-text
 //! adjudication note with the typed [`Adjudication`] state machine and wired
-//! the ledger into `cs-inspect`'s audit path. Nothing in this module is
-//! derived from original game data.
+//! the ledger into `cs-inspect`'s audit path. F01-D added the
+//! release-inventory provenance check: [`check_release_inventory`] detects
+//! committed executables, original data, bundled media and unidentified
+//! binaries in the shipped file set (spec F01, AC04). Nothing in this module
+//! is derived from original game data.
 
 use std::fmt;
 
@@ -933,6 +936,386 @@ pub fn validate_ledger(claims: &[ClaimRecord], observed: &FingerprintIndex) -> L
             report.invalidated.push(ClaimInvalidation {
                 claim: claim.id.clone(),
                 stale,
+            });
+        }
+    }
+    report
+}
+
+/* ------------------------------------------------------------------ */
+/* Release-inventory provenance (F01-D)                                */
+/* ------------------------------------------------------------------ */
+
+/// Bytes a producer samples from the start of a file to fill
+/// [`InventoryEntry::header`]. Every signature in the check tables fits in
+/// it.
+pub const INVENTORY_HEADER_LEN: usize = 512;
+
+/// Bytes a producer may sample to decide [`InventoryEntry::text`]: the
+/// usual binary sniff — a NUL byte or invalid UTF-8 inside the sample means
+/// binary content.
+pub const TEXT_SAMPLE_LEN: usize = 8192;
+
+/// One file in a committed or shipped release inventory (F01-D).
+///
+/// `path` is the slash-separated path relative to the inventory root — the
+/// `git ls-files` spelling for the committed tree, or a package-relative
+/// name for a release archive. `header` carries up to
+/// [`INVENTORY_HEADER_LEN`] leading bytes for signature checks. `text`
+/// records whether the producer's sample — up to [`TEXT_SAMPLE_LEN`]
+/// leading bytes, or the whole file when smaller — decoded as UTF-8 without
+/// NUL bytes; it is a sample verdict, not a whole-file guarantee.
+///
+/// The record intentionally carries no content hash: detection here is by
+/// signature, name and provenance location. Identity matching against
+/// fingerprinted original files belongs to the F02 installation inventory,
+/// which owns hashing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InventoryEntry {
+    /// Slash-separated path relative to the inventory root.
+    pub path: String,
+    /// Total file size in bytes.
+    pub len: u64,
+    /// Leading bytes sampled for signature checks.
+    pub header: Vec<u8>,
+    /// Whether the producer's text sample decoded as UTF-8 without NULs.
+    pub text: bool,
+}
+
+/// Executable-image signatures (leading bytes → name). An executable is
+/// prohibited anywhere in the inventory — authored roots excuse authored
+/// data lookalikes, never executables.
+pub const EXECUTABLE_SIGNATURES: &[(&[u8], &str)] = &[
+    (b"MZ", "MZ (DOS/PE executable)"),
+    (b"\x7fELF", "ELF executable"),
+    (&[0xfe, 0xed, 0xfa, 0xce], "Mach-O 32-bit"),
+    (&[0xfe, 0xed, 0xfa, 0xcf], "Mach-O 64-bit"),
+    (&[0xce, 0xfa, 0xed, 0xfe], "Mach-O 32-bit byte-swapped"),
+    (&[0xcf, 0xfa, 0xed, 0xfe], "Mach-O 64-bit byte-swapped"),
+    (&[0xca, 0xfe, 0xba, 0xbe], "Mach-O fat"),
+    (&[0xbe, 0xba, 0xfe, 0xca], "Mach-O fat byte-swapped"),
+];
+
+/// Original-data container signatures checked on binary entries outside the
+/// authored roots. The INTERP-family signature `0x08971119` (little-endian
+/// on disk) is an `observed_tool` lead from `docs/research/FORMAT-NOTES.md`;
+/// authored synthetic fixtures legitimately carry it, which is why the
+/// check is provenance-aware rather than signature-only.
+pub const GAME_DATA_SIGNATURES: &[(&[u8], &str)] = &[(
+    &[0x19, 0x11, 0x97, 0x08],
+    "INTERP/ZBD-family signature 0x08971119",
+)];
+
+/// Media, image and font signatures checked on binary entries outside the
+/// authored roots.
+pub const MEDIA_SIGNATURES: &[(&[u8], &str)] = &[
+    (b"RIFF", "RIFF media (WAV/AVI)"),
+    (b"OggS", "Ogg media"),
+    (b"ID3", "MP3 audio with ID3 tag"),
+    (b"BM", "BMP bitmap"),
+    (b"\x89PNG\r\n\x1a\n", "PNG image"),
+    (&[0xff, 0xd8, 0xff], "JPEG image"),
+    (b"GIF8", "GIF image"),
+    (b"DDS ", "DDS texture"),
+    (b"OTTO", "OpenType/CFF font"),
+    (b"ttcf", "TrueType collection"),
+    (&[0x00, 0x01, 0x00, 0x00], "TrueType font"),
+    (b"true", "TrueType font"),
+    (b"wOFF", "WOFF font"),
+    (b"wOF2", "WOFF2 font"),
+];
+
+/// Document signatures checked even on text entries outside the authored
+/// roots: PDF and RTF are text-compatible formats, so a clean text sample
+/// must not excuse a copied manual.
+pub const DOCUMENT_SIGNATURES: &[(&[u8], &str)] =
+    &[(b"%PDF", "PDF document"), (b"{\\rtf", "RTF document")];
+
+/// Extensions that name an executable image outright.
+pub const EXECUTABLE_EXTENSIONS: &[&str] = &[
+    "exe", "dll", "com", "sys", "ocx", "cpl", "scr", "drv", "msi",
+];
+
+/// Extensions that name original game data or installer containers.
+pub const GAME_DATA_EXTENSIONS: &[&str] = &[
+    "zbd", "rof", "bm", "gamez", "interp", "big", "cab", "icd", "ifr",
+];
+
+/// Extensions that name bundled media, fonts or manuals — extracted art,
+/// voice, fonts and commercial manuals per spec F01 non-negotiable
+/// behavior 2.
+pub const MEDIA_DOC_EXTENSIONS: &[&str] = &[
+    "wav", "mp3", "ogg", "flac", "aif", "aiff", "mid", "midi", "bmp", "tga", "png", "jpg", "jpeg",
+    "gif", "dds", "tif", "tiff", "ico", "ttf", "otf", "ttc", "fnt", "fon", "woff", "woff2", "pdf",
+    "rtf", "doc", "docx", "chm", "hlp", "mpg", "mpeg", "avi", "bik", "smk", "wmv", "mov", "mp4",
+];
+
+/// The policy an inventory entry violates (spec F01, non-negotiable
+/// behavior 2: no game executables, decompiled game source, extracted art,
+/// voice, fonts or commercial manuals in fixtures or releases).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ProhibitedContent {
+    /// An executable image — PE/COFF, ELF or Mach-O — or a name that claims
+    /// one. Prohibited everywhere, authored roots included.
+    ExecutableImage,
+    /// Original game data: a container signature or a game-data name
+    /// outside the authored roots.
+    GameData,
+    /// Bundled media, a font, or a manual/document outside the authored
+    /// roots.
+    MediaOrDocument,
+    /// Non-text content outside the authored roots that no rule recognized:
+    /// a binary with no declared provenance.
+    UnidentifiedBinary,
+}
+
+impl ProhibitedContent {
+    /// The short label for diagnostics.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::ExecutableImage => "executable image",
+            Self::GameData => "original game data",
+            Self::MediaOrDocument => "media, font or document",
+            Self::UnidentifiedBinary => "unidentified binary",
+        }
+    }
+}
+
+impl fmt::Display for ProhibitedContent {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+/// What condemned an [`InventoryEntry`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum InventoryMatch {
+    /// A leading-bytes signature, named by the check tables.
+    Signature(&'static str),
+    /// The lowercased extension that matched.
+    Extension(String),
+    /// Non-text content nothing recognized.
+    NonText,
+}
+
+impl fmt::Display for InventoryMatch {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Signature(name) => write!(f, "signature {name}"),
+            Self::Extension(ext) => write!(f, "extension .{ext}"),
+            Self::NonText => f.write_str("non-text content"),
+        }
+    }
+}
+
+/// One prohibited entry in a release inventory.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InventoryViolation {
+    /// The inventory path that broke the policy.
+    pub path: String,
+    /// Which prohibition it broke.
+    pub content: ProhibitedContent,
+    /// The signature, extension or binary fact that condemned it.
+    pub matched: InventoryMatch,
+}
+
+/// The result of checking a release inventory (F01-D).
+///
+/// Like the ledger report, the outcome is a list, not a bare pass/fail:
+/// every violating entry is named with its reason so diagnostics and
+/// review can see exactly what was condemned.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct InventoryReport {
+    /// Entries examined.
+    pub checked: usize,
+    /// Every prohibited entry, in input order.
+    pub violations: Vec<InventoryViolation>,
+}
+
+impl InventoryReport {
+    /// No prohibited content was found.
+    pub fn is_clean(&self) -> bool {
+        self.violations.is_empty()
+    }
+
+    /// One stderr-suitable diagnostic line per violation, in input order.
+    pub fn diagnostic_lines(&self) -> Vec<String> {
+        self.violations
+            .iter()
+            .map(|violation| {
+                format!(
+                    "inventory entry {:?} prohibited: {} ({})",
+                    violation.path, violation.content, violation.matched
+                )
+            })
+            .collect()
+    }
+}
+
+/// The final component's extension, lowercased — `None` when there is none
+/// or when the name is a dotfile (`.gitignore` is a name, not an
+/// extension).
+fn entry_extension(path: &str) -> Option<String> {
+    let name = path.rsplit('/').next()?;
+    let (stem, ext) = name.rsplit_once('.')?;
+    if stem.is_empty() || ext.is_empty() {
+        return None;
+    }
+    Some(ext.to_lowercase())
+}
+
+/// Normalizes a producer-supplied path for the authored-root test:
+/// backslashes become slashes and a leading `./` is dropped.
+fn normalize_inventory_path(path: &str) -> String {
+    let mut normalized = path.replace('\\', "/");
+    while let Some(rest) = normalized.strip_prefix("./") {
+        normalized = rest.to_owned();
+    }
+    normalized
+}
+
+/// Whether `path` sits beneath one of the authored roots. Comparison is
+/// ASCII case-insensitive: on a case-insensitive filesystem a differently
+/// cased spelling is the same directory, so the exemption must match it —
+/// and a lookalike directory that merely dodges the check by case is not a
+/// declared authored root either way the comparison lands.
+fn under_authored_root(path: &str, authored_roots: &[&str]) -> bool {
+    let path = normalize_inventory_path(path);
+    authored_roots.iter().any(|root| {
+        let root = normalize_inventory_path(root);
+        let root = root.trim_matches('/');
+        path.len() > root.len()
+            && path.as_bytes()[root.len()] == b'/'
+            && path[..root.len()].eq_ignore_ascii_case(root)
+    })
+}
+
+/// The first signature in `table` present at the start of `header`.
+fn match_signature<'a>(header: &[u8], table: &'a [(&'a [u8], &'a str)]) -> Option<&'a str> {
+    table
+        .iter()
+        .find(|(signature, _)| header.starts_with(signature))
+        .map(|(_, name)| *name)
+}
+
+/// An MP3 frame sync word: `0xff` followed by three set sync bits.
+fn is_mp3_sync(header: &[u8]) -> bool {
+    header.len() >= 2 && header[0] == 0xff && header[1] & 0xe0 == 0xe0
+}
+
+/// The per-entry policy: which prohibition `entry` breaks, if any.
+///
+/// Order matters. Executables are condemned before the authored-root
+/// exemption is consulted, so a committed binary cannot hide inside a
+/// declared authored directory. Data and media rules apply only outside the
+/// authored roots — authored lookalike fixtures are the legitimate reason
+/// those roots exist. Extension rules apply to text and binary entries
+/// alike: a name that claims a retail container or a commercial document is
+/// suspect even when its content happens to decode as text. Anything
+/// non-text nothing recognized still falls to
+/// [`ProhibitedContent::UnidentifiedBinary`], so a renamed original file
+/// cannot slip through by dropping its extension and signature.
+fn classify_entry(
+    entry: &InventoryEntry,
+    authored_roots: &[&str],
+) -> Option<(ProhibitedContent, InventoryMatch)> {
+    let extension = entry_extension(&entry.path);
+
+    if !entry.text
+        && let Some(name) = match_signature(&entry.header, EXECUTABLE_SIGNATURES)
+    {
+        return Some((
+            ProhibitedContent::ExecutableImage,
+            InventoryMatch::Signature(name),
+        ));
+    }
+    if let Some(ext) = &extension
+        && EXECUTABLE_EXTENSIONS.contains(&ext.as_str())
+    {
+        return Some((
+            ProhibitedContent::ExecutableImage,
+            InventoryMatch::Extension(ext.clone()),
+        ));
+    }
+
+    if under_authored_root(&entry.path, authored_roots) {
+        return None;
+    }
+
+    if !entry.text
+        && let Some(name) = match_signature(&entry.header, GAME_DATA_SIGNATURES)
+    {
+        return Some((ProhibitedContent::GameData, InventoryMatch::Signature(name)));
+    }
+    if let Some(name) = match_signature(&entry.header, DOCUMENT_SIGNATURES) {
+        return Some((
+            ProhibitedContent::MediaOrDocument,
+            InventoryMatch::Signature(name),
+        ));
+    }
+    if !entry.text {
+        if let Some(name) = match_signature(&entry.header, MEDIA_SIGNATURES) {
+            return Some((
+                ProhibitedContent::MediaOrDocument,
+                InventoryMatch::Signature(name),
+            ));
+        }
+        if is_mp3_sync(&entry.header) {
+            return Some((
+                ProhibitedContent::MediaOrDocument,
+                InventoryMatch::Signature("MP3 frame sync"),
+            ));
+        }
+    }
+    if let Some(ext) = &extension
+        && GAME_DATA_EXTENSIONS.contains(&ext.as_str())
+    {
+        return Some((
+            ProhibitedContent::GameData,
+            InventoryMatch::Extension(ext.clone()),
+        ));
+    }
+    if let Some(ext) = &extension
+        && MEDIA_DOC_EXTENSIONS.contains(&ext.as_str())
+    {
+        return Some((
+            ProhibitedContent::MediaOrDocument,
+            InventoryMatch::Extension(ext.clone()),
+        ));
+    }
+    if !entry.text {
+        return Some((
+            ProhibitedContent::UnidentifiedBinary,
+            InventoryMatch::NonText,
+        ));
+    }
+    None
+}
+
+/// Checks a release inventory for committed prohibited content (spec F01,
+/// AC04 and non-negotiable behavior 2).
+///
+/// `entries` is the shipped or committed file set; `authored_roots` are the
+/// slash-separated subtrees the owner declares as authored content (this
+/// repository's is `fixtures/synthetic`, a protected path). Executable
+/// images are condemned wherever they sit; original data, bundled media and
+/// unidentified binaries only outside the authored roots. Violations are
+/// reported, never silently dropped — the report names every offending
+/// entry with what condemned it.
+pub fn check_release_inventory(
+    entries: &[InventoryEntry],
+    authored_roots: &[&str],
+) -> InventoryReport {
+    let mut report = InventoryReport {
+        checked: entries.len(),
+        ..InventoryReport::default()
+    };
+    for entry in entries {
+        if let Some((content, matched)) = classify_entry(entry, authored_roots) {
+            report.violations.push(InventoryViolation {
+                path: entry.path.clone(),
+                content,
+                matched,
             });
         }
     }
