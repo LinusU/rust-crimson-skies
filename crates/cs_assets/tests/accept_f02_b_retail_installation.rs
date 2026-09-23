@@ -202,7 +202,7 @@ fn accept_f02_b_retail_installation_inventories_every_regular_file() {
         .iter()
         .filter(|lead| {
             let expected = format!("zbd/{lead}");
-            !diagnosed_groups.iter().any(|group| *group == expected)
+            !diagnosed_groups.contains(&expected)
         })
         .map(|lead| (*lead).to_owned())
         .collect();

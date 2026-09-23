@@ -57,9 +57,7 @@ fn shape(discovery: &Discovery) -> Vec<(String, u64, cs_types::evidence::Content
             )
         })
         .collect();
-    rows.sort_by(|left, right| {
-        (left.0.as_str(), left.1).cmp(&(right.0.as_str(), right.1))
-    });
+    rows.sort_by(|left, right| (left.0.as_str(), left.1).cmp(&(right.0.as_str(), right.1)));
     rows
 }
 
