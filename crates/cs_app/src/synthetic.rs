@@ -17,12 +17,20 @@ use core::{fmt, time::Duration};
 use avian3d::prelude::{Collider, LinearVelocity, PhysicsPlugins, Position, RigidBody};
 use bevy::{
     app::App,
-    prelude::{Entity, MinimalPlugins, Transform, TransformPlugin, Vec3},
+    prelude::{Entity, MinimalPlugins, Resource, Transform, TransformPlugin, Vec3},
     time::{Fixed, Time, TimeUpdateStrategy},
 };
 use cs_types::{
     BodyKind, BodySample, SceneMarker, SceneProvenance, SpecError, SyntheticBodySpec, Tick,
 };
+
+/// Bevy-side storage for the dependency-free [`SceneMarker`].
+///
+/// `cs_types` must stay Bevy-free (F00 non-negotiable behavior 1), so the
+/// provenance record cannot implement `Resource` itself; this wrapper is the
+/// only place the marker enters the ECS world.
+#[derive(Resource, Clone, Copy)]
+struct SceneMarkerResource(SceneMarker);
 
 /// Fixed simulation rate of the synthetic scene, in ticks per second.
 ///
@@ -73,7 +81,7 @@ impl SyntheticScene {
         let frame = Duration::from_secs_f64(1.0 / TICK_HZ);
         app.insert_resource(TimeUpdateStrategy::ManualDuration(frame));
         app.insert_resource(Time::<Fixed>::from_seconds(1.0 / TICK_HZ));
-        app.insert_resource(SceneMarker(SceneProvenance::Synthetic));
+        app.insert_resource(SceneMarkerResource(SceneMarker(SceneProvenance::Synthetic)));
 
         let rigid_body = match spec.kind {
             BodyKind::Dynamic => RigidBody::Dynamic,
@@ -133,7 +141,7 @@ impl SyntheticScene {
     /// Reads the provenance marker out of the world itself, so a scene that
     /// lost its `SYNTHETIC` marking fails loudly instead of passing silently.
     pub fn provenance(&self) -> SceneProvenance {
-        self.app.world().resource::<SceneMarker>().0
+        self.app.world().resource::<SceneMarkerResource>().0.0
     }
 
     /// The typed input this scene was built from.
