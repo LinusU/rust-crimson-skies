@@ -1,17 +1,21 @@
-//! Claim-record admission checks and ledger validation for the evidence
-//! ledger (F01-A, F01-B).
+//! Claim-record admission checks, ledger validation and the audit wiring for
+//! the evidence ledger (F01-A, F01-B, F01-C).
 //!
 //! `cs-inspect` owns command-line inspection and conversion diagnostics. This
 //! module is the inspector's front end for the canonical records in
 //! [`cs_types::evidence`]: [`check_claims`] runs the per-record admission
-//! rules, and [`check_ledger`] runs the full ledger validation — set-level
-//! rules plus dependency invalidation against freshly observed fingerprints.
-//! The `audit` command wiring arrives with F01-C.
+//! rules, [`check_ledger`] runs the full ledger validation — set-level rules
+//! plus dependency invalidation against freshly observed fingerprints — and
+//! [`audit_claims`] wires the two together the way the `audit` command and
+//! content exports consume them: fresh observations in, a report preserving
+//! every disagreement and its adjudication state out.
+
+use std::fmt;
 
 use cs_types::evidence::{
-    ClaimError, ClaimId, ClaimRecord, ClaimStatus, ContentHash, EvidenceRecord, EvidenceSource,
-    Fingerprint, FingerprintIndex, FingerprintKind, LedgerReport, ObservationLocator,
-    ObservationMethod, ObservedFingerprint, SourceSpan,
+    Adjudication, ClaimError, ClaimId, ClaimRecord, ClaimStatus, ContentHash, EvidenceRecord,
+    EvidenceSource, Fingerprint, FingerprintIndex, FingerprintKind, LedgerReport,
+    ObservationIndexError, ObservationLocator, ObservationMethod, ObservedFingerprint, SourceSpan,
 };
 
 /// One claim refused by the admission check, with the error that sank it.
@@ -78,6 +82,140 @@ pub fn check_claims(claims: &[ClaimRecord]) -> ClaimReport {
 /// it the ledger under review and the fingerprints it just measured.
 pub fn check_ledger(claims: &[ClaimRecord], observed: &FingerprintIndex) -> LedgerReport {
     cs_types::evidence::validate_ledger(claims, observed)
+}
+
+/// Why an audit could not run at all (F01-C).
+///
+/// The producer stage — folding freshly observed fingerprints into a
+/// [`FingerprintIndex`] — can fail on its own; the error propagates to the
+/// caller instead of being folded into an empty index that would silently
+/// mark every fingerprinted dependency unchecked.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AuditError {
+    /// Two observations of the same (kind, container) disagree; the audit
+    /// refuses to arbitrate between them.
+    ConflictingObservations(ObservationIndexError),
+}
+
+impl fmt::Display for AuditError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ConflictingObservations(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for AuditError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::ConflictingObservations(error) => Some(error),
+        }
+    }
+}
+
+/// One edge of a recorded dispute: the claim under dispute and whether the
+/// audited set actually contains it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DisputeEdge {
+    /// The claim the edge points at.
+    pub disputed: ClaimId,
+    /// Whether a claim with this id exists in the audited set. Absent targets
+    /// are also rejected by the ledger rules as `UnknownDispute`; the flag
+    /// keeps the contradiction view truthful even for a rejected claim.
+    pub present: bool,
+}
+
+/// One recorded disagreement as the audit reports it (spec F01, AC03).
+///
+/// The report names both sides of the dispute and carries the claim's typed
+/// adjudication state; it never merges the disagreeing records or picks the
+/// convenient source.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContradictionReport {
+    /// The claim carrying `contradicted` status.
+    pub claim: ClaimId,
+    /// The disputes it records, in recorded order.
+    pub edges: Vec<DisputeEdge>,
+    /// The adjudication state on the record.
+    pub adjudication: Option<Adjudication>,
+}
+
+/// The audit's consumer-facing report (F01-C): the ledger dispositions plus
+/// the preserved disagreement view.
+///
+/// A report is what the `audit` command renders and what content exports
+/// attach as provenance; `None` adjudication on a contradicted claim is a
+/// record-level defect the ledger report already rejects, so the view never
+/// has to hide it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AuditReport {
+    /// Ledger validation over the audited claim set.
+    pub ledger: LedgerReport,
+    /// One entry per `contradicted` claim, in input order — including
+    /// rejected ones, so a malformed contradiction stays visible rather than
+    /// disappearing with its claim's standing.
+    pub contradictions: Vec<ContradictionReport>,
+}
+
+impl AuditReport {
+    /// The audit passed: every claim stands and every fingerprinted
+    /// dependency was confirmed against the fresh observations.
+    pub fn is_clean(&self) -> bool {
+        self.ledger.is_clean()
+    }
+
+    /// One stderr-suitable diagnostic line per ledger problem.
+    pub fn diagnostic_lines(&self) -> Vec<String> {
+        self.ledger.diagnostic_lines()
+    }
+}
+
+/// Runs the audit: ledger validation wired to its producer and its consumer
+/// (F01-C).
+///
+/// Producer side: `observations` are the fingerprints the caller just
+/// measured; they are folded into a [`FingerprintIndex`] here. Conflicting
+/// observations of one (kind, container) abort the audit with
+/// [`AuditError::ConflictingObservations`] — the conflict is an input
+/// contradiction, not something an index may average out.
+///
+/// Consumer side: the returned [`AuditReport`] carries the ledger
+/// dispositions and, for every `contradicted` claim, both sides of the
+/// disagreement plus its adjudication state.
+///
+/// The audit is stateless: it borrows the claim set, consumes the
+/// observations and returns a complete report. There is no partial state to
+/// tear down, and a failed audit is retried by calling again with corrected
+/// observations — nothing from the refused run survives.
+pub fn audit_claims(
+    claims: &[ClaimRecord],
+    observations: Vec<ObservedFingerprint>,
+) -> Result<AuditReport, AuditError> {
+    let observed = FingerprintIndex::from_observations(observations)
+        .map_err(AuditError::ConflictingObservations)?;
+    let ledger = check_ledger(claims, &observed);
+    let known: std::collections::BTreeSet<&ClaimId> =
+        claims.iter().map(|claim| &claim.id).collect();
+    let contradictions = claims
+        .iter()
+        .filter(|claim| claim.status == ClaimStatus::Contradicted)
+        .map(|claim| ContradictionReport {
+            claim: claim.id.clone(),
+            edges: claim
+                .disputes
+                .iter()
+                .map(|disputed| DisputeEdge {
+                    disputed: disputed.clone(),
+                    present: known.contains(disputed),
+                })
+                .collect(),
+            adjudication: claim.adjudication.clone(),
+        })
+        .collect();
+    Ok(AuditReport {
+        ledger,
+        contradictions,
+    })
 }
 
 /// SHA-256 of `fixtures/synthetic/flat-uncompressed.rof`, an authored
