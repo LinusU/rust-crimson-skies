@@ -1,16 +1,17 @@
-//! Claim-record admission checks for the evidence ledger (F01-A).
+//! Claim-record admission checks and ledger validation for the evidence
+//! ledger (F01-A, F01-B).
 //!
 //! `cs-inspect` owns command-line inspection and conversion diagnostics. This
 //! module is the inspector's front end for the canonical records in
-//! [`cs_types::evidence`]: it checks a set of claims and reports which were
-//! admitted and which were rejected, naming the rejecting error per claim.
-//! Set-level ledger rules — duplicate ids, dependency invalidation when a
-//! fingerprint changes — arrive with F01-B, and the `audit` command wiring
-//! with F01-C.
+//! [`cs_types::evidence`]: [`check_claims`] runs the per-record admission
+//! rules, and [`check_ledger`] runs the full ledger validation — set-level
+//! rules plus dependency invalidation against freshly observed fingerprints.
+//! The `audit` command wiring arrives with F01-C.
 
 use cs_types::evidence::{
     ClaimError, ClaimId, ClaimRecord, ClaimStatus, ContentHash, EvidenceRecord, EvidenceSource,
-    Fingerprint, FingerprintKind, ObservationLocator, ObservationMethod, SourceSpan,
+    Fingerprint, FingerprintIndex, FingerprintKind, LedgerReport, ObservationLocator,
+    ObservationMethod, ObservedFingerprint, SourceSpan,
 };
 
 /// One claim refused by the admission check, with the error that sank it.
@@ -65,6 +66,18 @@ pub fn check_claims(claims: &[ClaimRecord]) -> ClaimReport {
         }
     }
     report
+}
+
+/// Runs the ledger rules over a claim set against freshly observed
+/// fingerprints (F01-B).
+///
+/// This is the inspector's entry point for
+/// [`cs_types::evidence::validate_ledger`]: per-record admission, duplicate
+/// ids, dangling disputes and invalidation of claims whose fingerprinted
+/// evidence no longer matches `observed`. The `audit` command (F01-C) feeds
+/// it the ledger under review and the fingerprints it just measured.
+pub fn check_ledger(claims: &[ClaimRecord], observed: &FingerprintIndex) -> LedgerReport {
+    cs_types::evidence::validate_ledger(claims, observed)
 }
 
 /// SHA-256 of `fixtures/synthetic/flat-uncompressed.rof`, an authored
@@ -161,4 +174,21 @@ pub fn synthetic_claim_fixture() -> Vec<ClaimRecord> {
             adjudication: None,
         },
     ]
+}
+
+/// The [`FingerprintIndex`] that confirms [`synthetic_claim_fixture`]: every
+/// fingerprinted fixture container at its current digest.
+///
+/// Mutating one digest (or dropping the entry) is how tests and the future
+/// `audit` command exercise dependency invalidation without touching the
+/// owner's installation.
+pub fn synthetic_fingerprint_index() -> FingerprintIndex {
+    FingerprintIndex::from_observations(vec![ObservedFingerprint {
+        container: "fixtures/synthetic/flat-uncompressed.rof".to_owned(),
+        fingerprint: Fingerprint {
+            kind: FingerprintKind::Artifact,
+            sha256: ContentHash::from_bytes(FLAT_ROF_FIXTURE_SHA256),
+        },
+    }])
+    .expect("the fixture index has no conflicting observations")
 }
