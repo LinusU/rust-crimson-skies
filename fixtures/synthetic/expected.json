@@ -1,0 +1,67 @@
+{
+  "provenance": "All bytes newly authored by tools/make_synthetic_fixtures.py; no retail content.",
+  "bm": {
+    "width": 2,
+    "height": 3,
+    "bytes": 64,
+    "rgb_first": [
+      255,
+      0,
+      0
+    ],
+    "rgb_last": [
+      255,
+      0,
+      255
+    ],
+    "mask_first": [
+      0,
+      255,
+      0
+    ],
+    "rgba_last": [
+      160,
+      170,
+      180,
+      255
+    ]
+  },
+  "rof": {
+    "names": [
+      "HELLO.TXT",
+      "EMPTY.DAT"
+    ],
+    "record_ids": [
+      101,
+      102
+    ],
+    "payload_utf8": "Newly authored synthetic archive.\n",
+    "compressed_length_semantics": "not tested or established"
+  },
+  "interp": {
+    "signature": 144118041,
+    "version": 7,
+    "names": [
+      "synthetic_probe"
+    ],
+    "raw_tokens": [
+      [
+        "SYNTHETIC",
+        "alpha",
+        "beta"
+      ],
+      [
+        "VALUE",
+        "42"
+      ]
+    ],
+    "mission_language_semantics": "not tested or established"
+  },
+  "sha256": {
+    "bad-version.interp": "ba77dfacba90e2bc79c0b43c3053d7ef42c161e92a7c6ec3d4a6144d2681aad0",
+    "flat-uncompressed.rof": "97a2d7565f88be3b53204ab0e6eb5e39fff886c080156f97a9e5365f2743a123",
+    "rectangular.bm": "2a146c5be6bc115583040b5f61c010995cb4048930f5b3f1b58dcda505f144bb",
+    "synthetic.interp": "9174d97c110874cb053f2236cadc6366c0667428b60145de4273c783ef898019",
+    "truncated.bm": "5ae11fe697fb074d689981299a96cdec3e0e9c043a1cb344081bcbd5e4dbeb96"
+  }
+}

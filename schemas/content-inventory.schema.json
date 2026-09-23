@@ -1,0 +1,101 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/crimson-skies/content-inventory.schema.json",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "install_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "locale": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "version_evidence": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "entries": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "logical_key": {
+            "type": "string"
+          },
+          "source_path": {
+            "type": "string"
+          },
+          "container_kind": {
+            "type": "string"
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "length": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "classification": {
+            "enum": [
+              "required",
+              "optional",
+              "unused_with_reason",
+              "unknown"
+            ]
+          },
+          "parse_status": {
+            "enum": [
+              "unparsed",
+              "parsed",
+              "unsupported",
+              "invalid"
+            ]
+          },
+          "consumer_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "reason": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "logical_key",
+          "source_path",
+          "container_kind",
+          "offset",
+          "length",
+          "sha256",
+          "classification",
+          "parse_status",
+          "consumer_ids",
+          "reason"
+        ],
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "install_sha256",
+    "locale",
+    "version_evidence",
+    "entries"
+  ],
+  "additionalProperties": false
+}

@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "work_order": "M04",
+  "discovery_title": "The Sinister Sub",
+  "verified": false,
+  "install_sha256": null,
+  "catalog_id": null,
+  "world_id": null,
+  "program_id": null,
+  "closure_sha256": null,
+  "source_spans": [],
+  "required_actor_ids": [],
+  "objective_ids": [],
+  "interaction_ids": [],
+  "media_ids": [],
+  "stunt_ids": [],
+  "reward_ids": [],
+  "difficulty_ids": [],
+  "unknowns": [
+    "Not yet bound to original data"
+  ],
+  "evidence_ids": []
+}

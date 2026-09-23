@@ -1,0 +1,13 @@
+/target/
+/private/
+/original/
+/assets/original/
+/research-output/
+/cache/
+/captures/
+.env
+.env.*
+!.env.example
+.DS_Store
+__pycache__/
+*.pyc

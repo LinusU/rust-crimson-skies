@@ -1,0 +1,201 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/crimson-skies/mission-binding.schema.json",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "work_order": {
+      "type": "string"
+    },
+    "discovery_title": {
+      "type": "string"
+    },
+    "verified": {
+      "type": "boolean"
+    },
+    "install_sha256": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "catalog_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "world_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "program_id": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "closure_sha256": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "source_spans": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "asset_id": {
+            "type": "string"
+          },
+          "offset": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "length": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        },
+        "required": [
+          "asset_id",
+          "offset",
+          "length",
+          "sha256"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "required_actor_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "objective_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "interaction_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "media_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "stunt_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "reward_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "difficulty_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "unknowns": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "evidence_ids": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  },
+  "required": [
+    "schema_version",
+    "work_order",
+    "discovery_title",
+    "verified",
+    "install_sha256",
+    "catalog_id",
+    "world_id",
+    "program_id",
+    "closure_sha256",
+    "source_spans",
+    "required_actor_ids",
+    "objective_ids",
+    "interaction_ids",
+    "media_ids",
+    "stunt_ids",
+    "reward_ids",
+    "difficulty_ids",
+    "unknowns",
+    "evidence_ids"
+  ],
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "verified": {
+            "const": true
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "install_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "closure_sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "catalog_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "world_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "program_id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "unknowns": {
+            "maxItems": 0
+          },
+          "source_spans": {
+            "minItems": 1
+          },
+          "evidence_ids": {
+            "minItems": 1
+          }
+        }
+      }
+    }
+  ]
+}

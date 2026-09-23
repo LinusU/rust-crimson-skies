@@ -1,0 +1,154 @@
+[
+  {
+    "id": "S01",
+    "title": "MM2 repository baseline",
+    "url": "https://github.com/LinusU/rust-mm2/tree/5e0751a17fc46bf751f04aa6984a947cf30ff1fb",
+    "notes": "Inspected AGENTS.md, Cargo.toml, docs/ralph/PLAN.md and directory metadata. Reuse workflow principles, not MM2 game formats.",
+    "evidence": "Repository snapshot; code/configuration observation.",
+    "accessed": "2026-09-21"
+  },
+  {
+    "id": "S02",
+    "title": "mech3ax project and compatibility history",
+    "url": "https://github.com/TerranMechworks/mech3ax",
+    "notes": "Current README/CHANGELOG plus legacy v0.6.0 source. CS support varies by subcommand and version. EUPL-1.2; do not assume permissive code reuse.",
+    "evidence": "Source implementation and author-maintained history; supported-corpus limits apply.",
+    "accessed": "2026-09-21"
+  },
+  {
+    "id": "S03",
+    "title": "Crimson Skies to Blender pipeline",
+    "url": "https://github.com/rozab/crimsonskies2blend/blob/main/everything2blend.py",
+    "notes": "File blob 32f936506045088f3b080690bcf1858a25864308. Observed v0.6.0 extractor invocation, world-group list, PLANES.ZBD and texture merging.",
+    "evidence": "Working community source; not a complete engine or parity oracle.",
+    "accessed": "2026-09-21"
+  },
+  {
+    "id": "S04",
+    "title": "Crimson Skies Blender project documentation",
+    "url": "https://github.com/rozab/crimsonskies2blend",
+    "notes": "Explains installation-based extraction and reported broken/missing geometry/material cases.",
+    "evidence": "Community author report; validate locally.",
+    "accessed": "2026-09-21"
+  },
+  {
+    "id": "S05",
+    "title": "ROF extractor source",
+    "url": "https://github.com/rozab/crimsonskies2blend/blob/main/extract_rof.py",
+    "notes": "File blob 3cd197de1fc6ff00d18cd832160316ec79cd5d8f. Directory structure, flags and zlib use observed; compressed length semantics not resolved.",
+    "evidence": "Source observation; no supplied retail corpus was tested.",
+    "accessed": "2026-09-21"
+  },
+  {
+    "id": "S06",
+    "title": "mech3ax CLI and supported families",
+    "url": "https://github.com/TerranMechworks/mech3ax/blob/main/README.md",
+    "notes": "Reader, sounds, interp, textures and other family-specific subcommands. Output schemas are explicitly unstable.",
+    "evidence": "Project documentation; do not assume every game supports every command.",
+    "accessed": "2026-09-21"
+  },
+  {
+    "id": "S07",
+    "title": "Legacy INTERP parser",
+    "url": "https://github.com/TerranMechworks/mech3ax/blob/d3521a9721be731d365504568ddcd78e3f9846bb/crates/mech3ax-interp/src/interp.rs",
+    "notes": "File blob 2f6ecb6c2021c076e3d896efe3470952acee50f8. Header, index and NUL-separated line representation inspected.",
+    "evidence": "Exact pinned source; still requires CS input verification.",
+    "accessed": "2026-09-21"
+  },
+  {
+    "id": "S08",
+    "title": "Plane mesh/material conversion reference",
+    "url": "https://github.com/rozab/crimsonskies2blend/blob/main/plane2blend.py",
+    "notes": "File blob 0a17bdbf79ac1876a78d00fffc53fa764096a7e8. Scene/mesh/material fields and Blender-specific conversion observed.",
+    "evidence": "Exporter contains simplifications and omissions; not a runtime fidelity specification.",
+    "accessed": "2026-09-21"
+  },
+  {
+    "id": "S09",
+    "title": "BM layer extractor",
+    "url": "https://github.com/rozab/crimsonskies2blend/blob/main/extract_bm.py",
+    "notes": "File blob ec196de05f532cc3c286ccf8fead363bf76e5c63. Height-first dimensions and RGB/masks/RGBA planes.",
+    "evidence": "Observed subset; extra variants remain unverified.",
+    "accessed": "2026-09-21"
+  },
+  {
+    "id": "S10",
+    "title": "Livery composition helper",
+    "url": "https://github.com/rozab/crimsonskies2blend/blob/main/set_paintjob.py",
+    "notes": "File blob ccf7c4ea065c17a44d354e8d703561cdc94dd518. Airframe prefixes, faction masks and composition behavior.",
+    "evidence": "Tool behavior, not proof of original palettes or blending precision.",
+    "accessed": "2026-09-21"
+  },
+  {
+    "id": "S11",
+    "title": "Avian API documentation",
+    "url": "https://docs.rs/avian3d/latest/avian3d/",
+    "notes": "Official crate documentation consulted. Use the exact version resolved during F00; MM2 baseline is Bevy 0.19 / Avian3d 0.7.",
+    "evidence": "Mutable official API documentation; bootstrap compilation remains mandatory.",
+    "accessed": "2026-09-21"
+  },
+  {
+    "id": "S12",
+    "title": "Separate static-recompilation project",
+    "url": "https://github.com/sp00nznet/crimsonskies",
+    "notes": "README blob 722a04012718574b99c3a8a77df6207a01901d2a. Asset/GOS/program references are investigation leads; its own status lists gameplay and asset work pending.",
+    "evidence": "Author report, not a completed game or verified mission-format specification. Do not import generated game code.",
+    "accessed": "2026-09-21"
+  },
+  {
+    "id": "S13",
+    "title": "Original PC manual, HTML rehost",
+    "url": "https://manualmachine.com/gamespc/crimsonskies/1119420-user-manual/",
+    "notes": "Original authored manual; use printed sections on campaign, construction, briefing, flight, instruments, targeting and multiplayer. Read in HTML, not bundled.",
+    "evidence": "Primary game documentation rehosted by a third party; exact target-edition behavior still needs observation.",
+    "accessed": "2026-09-21"
+  },
+  {
+    "id": "S14",
+    "title": "Aaron Cloutier firsthand mission guide",
+    "url": "https://gamefaqs.gamespot.com/pc/914280-crimson-skies/faqs/9275",
+    "notes": "Version 0.95; page updated 2001-01-16. Used for mission discovery labels and coverage cues, not authoritative scripts, timings or counts.",
+    "evidence": "Firsthand observations with acknowledged uncertainty and occasional spelling errors.",
+    "accessed": "2026-09-21"
+  },
+  {
+    "id": "S15",
+    "title": "Independent German firsthand walkthrough",
+    "url": "https://www.kultloesungen.de/doku.php/crimsonskies",
+    "notes": "Author reports German v1.02, hard difficulty. Useful independent branch/behavior checks.",
+    "evidence": "Different language/difficulty; do not silently merge its observations with another edition.",
+    "accessed": "2026-09-21"
+  },
+  {
+    "id": "S16",
+    "title": "PrismML model/server documentation",
+    "url": "https://docs.prismml.com/models/bonsai-27b",
+    "notes": "Official documentation describes OpenAI-compatible tool calls. Exact Bonsai 2 model id, weights, template and server build must be selected and probed locally.",
+    "evidence": "General current family documentation; not a benchmark or guarantee about the users chosen quantization.",
+    "accessed": "2026-09-21"
+  },
+  {
+    "id": "S17",
+    "title": "Resolved legacy extractor release",
+    "url": "https://github.com/TerranMechworks/mech3ax/commit/d3521a9721be731d365504568ddcd78e3f9846bb",
+    "notes": "Tag v0.6.0 resolved through the commits API to d3521a9721be731d365504568ddcd78e3f9846bb. Commit date is 2024-02-10; CHANGELOG prints a conflicting year. Pin the commit, not the date.",
+    "evidence": "Git commit identity independently resolved; no reference binary bundled.",
+    "accessed": "2026-09-21"
+  },
+  {
+    "id": "S18",
+    "title": "Bonsai 2 official release announcement",
+    "url": "https://prismml.com/news/bonsai-2-27b",
+    "notes": "Published 2026-09-17. Identifies Bonsai 2 as the Qwen3.8-based model, distinct from the earlier Bonsai 27B. Used for exact family identification, not as evidence that this coding project will succeed.",
+    "evidence": "Official release announcement; performance claims were not locally benchmarked.",
+    "accessed": "2026-09-21"
+  },
+  {
+    "id": "S19",
+    "title": "Official Bonsai demo native tool-calling documentation",
+    "url": "https://github.com/PrismML-Eng/Bonsai-demo/blob/main/TOOLS.md",
+    "notes": "Documents standard OpenAI tools/tool_calls round trips, the llama-server Jinja template and native MLX tool-call support. The associated README describes Bonsai 2 as the current default and its model-format/fork requirements.",
+    "evidence": "Official serving documentation; mutable branch, exact local server/model/template must still be probed.",
+    "accessed": "2026-09-21"
+  }
+]

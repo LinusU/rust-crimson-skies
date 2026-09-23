@@ -1,0 +1,266 @@
+[
+  {
+    "id": "M01",
+    "discovery_title": "The Lost Treasure",
+    "cue": "treasure search",
+    "source_ids": [
+      "S14",
+      "S15"
+    ],
+    "catalog_id": null,
+    "status": "unverified"
+  },
+  {
+    "id": "M02",
+    "discovery_title": "The Bomber Heist",
+    "cue": "bomber capture",
+    "source_ids": [
+      "S14",
+      "S15"
+    ],
+    "catalog_id": null,
+    "status": "unverified"
+  },
+  {
+    "id": "M03",
+    "discovery_title": "The Secret Invasion",
+    "cue": "installation destruction",
+    "source_ids": [
+      "S14",
+      "S15"
+    ],
+    "catalog_id": null,
+    "status": "unverified"
+  },
+  {
+    "id": "M04",
+    "discovery_title": "The Sinister Sub",
+    "cue": "submarine discovery",
+    "source_ids": [
+      "S14",
+      "S15"
+    ],
+    "catalog_id": null,
+    "status": "unverified"
+  },
+  {
+    "id": "M05",
+    "discovery_title": "The Union Jack's Revenge",
+    "cue": "carrier defense",
+    "source_ids": [
+      "S14",
+      "S15"
+    ],
+    "catalog_id": null,
+    "status": "unverified"
+  },
+  {
+    "id": "M06",
+    "discovery_title": "The Red Menace",
+    "cue": "airborne extraction",
+    "source_ids": [
+      "S14",
+      "S15"
+    ],
+    "catalog_id": null,
+    "status": "unverified"
+  },
+  {
+    "id": "M07",
+    "discovery_title": "The Pilfered Prototype",
+    "cue": "prototype theft",
+    "source_ids": [
+      "S14",
+      "S15"
+    ],
+    "catalog_id": null,
+    "status": "unverified"
+  },
+  {
+    "id": "M08",
+    "discovery_title": "The Petrol Plot",
+    "cue": "fuel operation",
+    "source_ids": [
+      "S14",
+      "S15"
+    ],
+    "catalog_id": null,
+    "status": "unverified"
+  },
+  {
+    "id": "M09",
+    "discovery_title": "Perils for Blake",
+    "cue": "exposed broadside",
+    "source_ids": [
+      "S14",
+      "S15"
+    ],
+    "catalog_id": null,
+    "status": "unverified"
+  },
+  {
+    "id": "M10",
+    "discovery_title": "Mercy's Errand",
+    "cue": "hospital defense",
+    "source_ids": [
+      "S14",
+      "S15"
+    ],
+    "catalog_id": null,
+    "status": "unverified"
+  },
+  {
+    "id": "M11",
+    "discovery_title": "The Stolen Scarlet",
+    "cue": "moving rescue",
+    "source_ids": [
+      "S14",
+      "S15"
+    ],
+    "catalog_id": null,
+    "status": "unverified"
+  },
+  {
+    "id": "M12",
+    "discovery_title": "The Great Plane Robbery",
+    "cue": "large-aircraft escort",
+    "source_ids": [
+      "S14",
+      "S15"
+    ],
+    "catalog_id": null,
+    "status": "unverified"
+  },
+  {
+    "id": "M13",
+    "discovery_title": "The Nefarious Trap",
+    "cue": "stunt ambush",
+    "source_ids": [
+      "S14",
+      "S15"
+    ],
+    "catalog_id": null,
+    "status": "unverified"
+  },
+  {
+    "id": "M14",
+    "discovery_title": "Clash of the Dreadnaughts",
+    "cue": "capital battle",
+    "source_ids": [
+      "S14",
+      "S15"
+    ],
+    "catalog_id": null,
+    "status": "unverified"
+  },
+  {
+    "id": "M15",
+    "discovery_title": "The Fight for the Figaro",
+    "cue": "capital capture",
+    "source_ids": [
+      "S14",
+      "S15"
+    ],
+    "catalog_id": null,
+    "status": "unverified"
+  },
+  {
+    "id": "M16",
+    "discovery_title": "Raid on the Rocky Express",
+    "cue": "train rescue",
+    "source_ids": [
+      "S14",
+      "S15"
+    ],
+    "catalog_id": null,
+    "status": "unverified"
+  },
+  {
+    "id": "M17",
+    "discovery_title": "The Pirate's Duel",
+    "cue": "forced autogyro",
+    "source_ids": [
+      "S14",
+      "S15"
+    ],
+    "catalog_id": null,
+    "status": "unverified"
+  },
+  {
+    "id": "M18",
+    "discovery_title": "Deceit at Devil's Horn",
+    "cue": "hostage exchange",
+    "source_ids": [
+      "S14",
+      "S15"
+    ],
+    "catalog_id": null,
+    "status": "unverified"
+  },
+  {
+    "id": "M19",
+    "discovery_title": "Rescue the Black Swan",
+    "cue": "aircraft theft",
+    "source_ids": [
+      "S14",
+      "S15"
+    ],
+    "catalog_id": null,
+    "status": "unverified"
+  },
+  {
+    "id": "M20",
+    "discovery_title": "Unholy Alliance",
+    "cue": "shifting allegiance",
+    "source_ids": [
+      "S14",
+      "S15"
+    ],
+    "catalog_id": null,
+    "status": "unverified"
+  },
+  {
+    "id": "M21",
+    "discovery_title": "Death on the Docks",
+    "cue": "guided approach",
+    "source_ids": [
+      "S14",
+      "S15"
+    ],
+    "catalog_id": null,
+    "status": "unverified"
+  },
+  {
+    "id": "M22",
+    "discovery_title": "Runaway Witness",
+    "cue": "evacuation pickup",
+    "source_ids": [
+      "S14",
+      "S15"
+    ],
+    "catalog_id": null,
+    "status": "unverified"
+  },
+  {
+    "id": "M23",
+    "discovery_title": "Criminal Exodus",
+    "cue": "escape interception",
+    "source_ids": [
+      "S14",
+      "S15"
+    ],
+    "catalog_id": null,
+    "status": "unverified"
+  },
+  {
+    "id": "M24",
+    "discovery_title": "Battle over Broadway",
+    "cue": "final pursuit",
+    "source_ids": [
+      "S14",
+      "S15"
+    ],
+    "catalog_id": null,
+    "status": "unverified"
+  }
+]

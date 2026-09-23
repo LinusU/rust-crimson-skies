@@ -1,0 +1,271 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://example.invalid/crimson-skies/evidence.schema.json",
+  "type": "object",
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "task_id": {
+      "type": "string"
+    },
+    "candidate_tree": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
+    },
+    "engine": {
+      "type": "object",
+      "properties": {
+        "rust": {
+          "type": "string"
+        },
+        "bevy": {
+          "type": "string"
+        },
+        "avian": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "rust",
+        "bevy",
+        "avian"
+      ],
+      "additionalProperties": false
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "command": {
+      "type": "object",
+      "properties": {
+        "argv": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "cwd": {
+          "type": "string"
+        },
+        "exit_code": {
+          "type": "integer"
+        }
+      },
+      "required": [
+        "argv",
+        "cwd",
+        "exit_code"
+      ],
+      "additionalProperties": false
+    },
+    "source": {
+      "type": "object",
+      "properties": {
+        "install_sha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "content_sha256": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      },
+      "required": [
+        "install_sha256",
+        "content_sha256"
+      ],
+      "additionalProperties": false
+    },
+    "seed": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "ticks": {
+      "type": "object",
+      "properties": {
+        "start": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "start",
+        "end"
+      ],
+      "additionalProperties": false
+    },
+    "overrides": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "capabilities": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "synthetic",
+          "retail",
+          "gpu",
+          "audio",
+          "network_local",
+          "network_real",
+          "human_play",
+          "human_review"
+        ]
+      },
+      "uniqueItems": true,
+      "minItems": 1
+    },
+    "tests": {
+      "type": "object",
+      "properties": {
+        "discovered": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "executed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "passed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "failed": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "ignored": {
+          "type": "integer",
+          "minimum": 0
+        }
+      },
+      "required": [
+        "discovered",
+        "executed",
+        "passed",
+        "failed",
+        "ignored"
+      ],
+      "additionalProperties": false
+    },
+    "assertions": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "pass",
+              "fail",
+              "unknown"
+            ]
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "required": [
+          "id",
+          "status",
+          "evidence"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "kind": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "sha256",
+          "kind"
+        ],
+        "additionalProperties": false
+      }
+    },
+    "unknowns": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    },
+    "review": {
+      "type": "object",
+      "properties": {
+        "identity": {
+          "type": "string"
+        },
+        "method": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "identity",
+        "method"
+      ],
+      "additionalProperties": false
+    },
+    "claim": {
+      "enum": [
+        "implemented",
+        "checked",
+        "verified_original",
+        "release_approved"
+      ]
+    }
+  },
+  "required": [
+    "schema_version",
+    "task_id",
+    "candidate_tree",
+    "engine",
+    "created_at",
+    "command",
+    "source",
+    "seed",
+    "ticks",
+    "overrides",
+    "capabilities",
+    "tests",
+    "assertions",
+    "artifacts",
+    "unknowns",
+    "review",
+    "claim"
+  ],
+  "additionalProperties": false
+}
