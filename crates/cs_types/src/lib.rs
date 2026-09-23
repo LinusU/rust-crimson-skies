@@ -8,6 +8,7 @@
 use std::fmt;
 
 pub mod evidence;
+pub mod install;
 
 /// Zero-based simulation tick. Integer ticks are the only time value that may
 /// cross crate boundaries.
