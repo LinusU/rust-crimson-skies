@@ -14,7 +14,7 @@
 //!
 //! This module is the gate that does notice: [`verify_workspace`] requires
 //! every [`REQUIRED_MEMBERS`] entry to be listed explicitly (globs do not
-//! count — an auditable list is the point), requires each listed member to
+//! count — an auditable list is the point), requires each required member to
 //! ship a `[package]` manifest, and then composes the two existing guards so
 //! one command freezes the whole bootstrap:
 //!
