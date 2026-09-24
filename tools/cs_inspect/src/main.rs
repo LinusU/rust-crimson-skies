@@ -2,11 +2,13 @@
 //!
 //! `--help` and `--version` exit 0 without a GPU or a retail installation and
 //! without starting any asset discovery (F00 non-negotiable behavior 3). The
-//! subcommands from `docs/contracts/CLI-EVIDENCE.md` (`inventory`, `catalog`,
+//! `inventory` command (F02-C) runs production discovery over the selected
+//! installation and writes the inventory and dependency-impact report. The
+//! remaining subcommands from `docs/contracts/CLI-EVIDENCE.md` (`catalog`,
 //! `resolve`, `closure`, `scripts`, `handling`, `audit`) arrive with later
-//! tasks. Until then the binary refuses invalid input with a nonzero exit code
-//! and a diagnostic naming the missing command — a failure is never returned
-//! as success.
+//! tasks. Until then the binary refuses invalid input with a nonzero exit
+//! code and a diagnostic naming the missing command — a failure is never
+//! returned as success.
 
 use std::process::ExitCode;
 
@@ -24,11 +26,17 @@ OPTIONS
     -V, --version    Print the version and exit 0
 
 COMMANDS
-    inventory  catalog  resolve  closure  scripts  handling  audit
+    inventory [--cs-path <dir>] [--out <file>]
+        Inventory the selected installation (--cs-path wins over
+        CS_GAME_DIR) and write the JSON inventory and dependency-impact
+        report to --out, or stdout without it.
+
+    catalog  resolve  closure  scripts  handling  audit
+        Not implemented in this workspace stage; they are documented in
+        docs/contracts/CLI-EVIDENCE.md.
 
 `--help` and `--version` read no environment variable and open no
-installation. The commands themselves are not implemented in this workspace
-stage; they are documented in docs/contracts/CLI-EVIDENCE.md.
+installation.
 ";
 
 fn main() -> ExitCode {
@@ -47,16 +55,21 @@ fn main() -> ExitCode {
         }
     }
 
-    if args.is_empty() {
-        eprintln!(
-            "cs-inspect: missing command; expected one of inventory, catalog, resolve, closure, \
-             scripts, handling, audit (see docs/contracts/CLI-EVIDENCE.md)"
-        );
-        return ExitCode::from(EXIT_INVALID_INPUT);
+    match args.first().map(String::as_str) {
+        None => {
+            eprintln!(
+                "cs-inspect: missing command; expected one of inventory, catalog, resolve, \
+                 closure, scripts, handling, audit (see docs/contracts/CLI-EVIDENCE.md)"
+            );
+            ExitCode::from(EXIT_INVALID_INPUT)
+        }
+        Some("inventory") => cs_inspect::install::inventory_command(&args[1..]),
+        Some(command) => {
+            eprintln!(
+                "cs-inspect: unsupported command {command:?}; this workspace stage implements \
+                 only `inventory`"
+            );
+            ExitCode::from(EXIT_INVALID_INPUT)
+        }
     }
-    eprintln!(
-        "cs-inspect: unsupported arguments [{}]; this workspace stage implements no commands yet",
-        args.join(" ")
-    );
-    ExitCode::from(EXIT_INVALID_INPUT)
 }

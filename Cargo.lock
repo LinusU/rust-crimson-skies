@@ -2482,6 +2482,7 @@ dependencies = [
 name = "cs_inspect"
 version = "0.0.0"
 dependencies = [
+ "cs_assets",
  "cs_types",
 ]
 
