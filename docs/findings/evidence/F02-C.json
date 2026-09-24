@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "F02-C",
+ "candidate_tree": "b20de8c5516337b3005758832316ebcdb0b41ea3",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-09-24T04:08:58Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_f02_c_", "--include-ignored"], "cwd": "/Users/jakob/coding/rust-crimson-skies/devin-1", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 8, "executed": 8, "passed": 8, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_f02_c_missing_mission_archive_stays_visible_and_counted", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f02_c_inventory_report_counts_unavailable_archives", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f02_c_complete_layout_reports_nothing_unavailable", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f02_c_inventory_command_writes_json_to_stdout", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f02_c_inventory_command_writes_the_report", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f02_c_cs_path_wins_over_cs_game_dir", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f02_c_inventory_failures_propagate_named_exit_codes", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f02_c_retail_inventory_reports_every_expected_archive", "status": "pass", "evidence": ["cargo-test.log"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "bba726a14a1401a55aac508864fe71f506998a66a9920cdb8f58207b475fa808", "kind": "log"}, {"path": "inventory-report.json", "sha256": "ea1f700ec8e5ff72f626220de83e200a1953ef47012dcdb9d176037943f4f38d", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "devin-1 (implementing agent, self-check; the Rally reviewer regenerates this report on the rebased commit)", "method": "acceptance suite run locally with the retail capability; this harness derives every field from the recorded log, production discovery of $CS_GAME_DIR, the cs-inspect inventory output, rustc and Cargo.lock; validated with tools/validate_evidence.py --require-pass"},
+ "claim": "implemented"
+}
