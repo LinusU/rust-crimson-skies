@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "F02-B",
+ "candidate_tree": "13dc603b48a17c8b2cca72044a04bc853abc58ff",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-09-24T01:11:16Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_f02_b_", "--include-ignored"], "cwd": "/Users/jakob/coding/rust-crimson-skies/devin-1", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 8, "executed": 8, "passed": 8, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_f02_b_discovery_failures_are_named", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f02_b_symbolic_links_are_reported_and_never_followed", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f02_b_diagnosis_reports_candidates_case_insensitively", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f02_b_cache_entries_match_key_and_digest", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f02_b_one_byte_edit_changes_fingerprint_and_invalidates_cache", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f02_b_retail_installation_inventories_every_regular_file", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f02_b_sha256_streaming_matches_one_shot", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f02_b_sha256_matches_published_vectors", "status": "pass", "evidence": ["cargo-test.log"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "8c0d6d2ac0cfae9c3955ee4d81aa2f9da41c71c0bcb9b0fe3dcd2eb63470f49a", "kind": "log"}, {"path": "discovery-summary.json", "sha256": "54879e0135ae4ed61aee09ff3417884f6188affe0ab584486f347df216b94f57", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "opencode-1 (implementing agent, self-check; the Rally reviewer regenerates this report on the rebased commit)", "method": "acceptance suite run locally with the retail capability; this harness derives every field from the recorded log, production discovery of $CS_GAME_DIR, rustc and Cargo.lock; validated with tools/validate_evidence.py --require-pass"},
+ "claim": "implemented"
+}
