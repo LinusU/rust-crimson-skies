@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "F02-D",
+ "candidate_tree": "254e52b60a11b8f97e4b03978038056e3f767b12",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-09-24T04:55:23Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_f02_d_", "--include-ignored"], "cwd": "/Users/jakob/coding/rust-crimson-skies/devin-1", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 13, "executed": 13, "passed": 13, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_f02_d_gameplay_scope_marks_unclassified_dependencies", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f02_d_unobserved_shapes_stay_unknown", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f02_d_every_retail_file_shape_is_classified", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f02_d_audit_command_exits_three_when_not_ready", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f02_d_audit_cs_path_wins_over_cs_game_dir", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f02_d_audit_command_exits_zero_when_ready", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f02_d_audit_failures_propagate_named_exit_codes", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f02_d_audit_finds_every_file_and_names_each_role", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f02_d_partial_installation_never_passes_full_content_readiness", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f02_d_unclassified_gameplay_file_fails_readiness", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f02_d_strict_fails_unclassified_files_outside_gameplay_scope", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f02_d_complete_installation_passes_full_content_readiness", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f02_d_retail_audit_classifies_every_file_and_passes_readiness", "status": "pass", "evidence": ["cargo-test.log"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "73a9232977347f44a898380a6f70ac4b25d68680d76e61d87e5f001e330485d5", "kind": "log"}, {"path": "audit-report.json", "sha256": "c71b83e1b5379a27ad23e94a7c5d803f2a519ceaeceafb0de336798e0854b238", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "devin-1 (implementing agent, self-check; the Rally reviewer regenerates this report on the rebased commit)", "method": "acceptance suite run locally with the retail capability; this harness derives every field from the recorded log, production discovery of $CS_GAME_DIR, the cs-inspect audit output, rustc and Cargo.lock; validated with tools/validate_evidence.py --require-pass"},
+ "claim": "implemented"
+}
