@@ -509,6 +509,14 @@ pub struct Diagnosis {
     pub total_bytes: u64,
     /// Entries that were observed and deliberately not inventoried.
     pub skipped: Vec<SkippedEntry>,
+    /// Every directory observed below the host root, original spellings
+    /// preserved, sorted by logical key. Consumers that need the real
+    /// directory set — for example the F02-C dependency-impact report, which
+    /// derives mission directories under each world group — read it from
+    /// here rather than inferring directories from file paths, so a
+    /// directory that carries no regular file still reports its expected
+    /// archives as unavailable instead of being silently omitted.
+    pub directories: Vec<RelativePath>,
     /// The installation's top-level `zbd` directory as spelled on disk,
     /// found case-insensitively; `None` when it is absent.
     pub zbd_dir: Option<RelativePath>,
@@ -766,6 +774,8 @@ fn diagnose(
     directories: &[RelativePath],
     skipped: Vec<SkippedEntry>,
 ) -> Diagnosis {
+    let mut sorted_directories = directories.to_vec();
+    sorted_directories.sort_by_key(|directory| directory.logical_key());
     let zbd_dir = directories
         .iter()
         .find(|directory| directory.logical_key() == "zbd")
@@ -816,6 +826,7 @@ fn diagnose(
         directory_count: directories.len(),
         total_bytes: manifest.files.iter().map(|row| row.size_bytes).sum(),
         skipped,
+        directories: sorted_directories,
         zbd_dir,
         planes_zbd,
         world_groups,
