@@ -1,5 +1,5 @@
-//! The synthetic installation-inventory fixture (F02-A) and the `inventory`
-//! command's report wiring (F02-C).
+//! The synthetic installation-inventory fixture (F02-A), the `inventory`
+//! command's report wiring (F02-C) and the `audit` command (F02-D).
 //!
 //! [`synthetic_install_fixture`] builds a small authored inventory through
 //! the canonical [`InstallManifest`] constructor, so tests and the
@@ -18,6 +18,14 @@
 //! lists every expected archive the observed layout depends on; an expected
 //! archive that is missing stays a visible `available: false` row counted in
 //! the unavailable total, never an omission (spec F02 AC03).
+//!
+//! [`audit_command`] is the F02-D audit: it classifies every inventoried
+//! file through `cs_assets::install::classify`, composes the dependency-
+//! impact report and evaluates the full-content readiness check — every
+//! expected archive available and zero unclassified gameplay files (spec
+//! F02 AC04: a partial installation never passes). Unclassified files
+//! outside the gameplay scope fail only under `--strict`; a failure is a
+//! nonzero exit, never a logged success (CLI-EVIDENCE).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
@@ -27,11 +35,11 @@ use std::io;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
-use cs_assets::install::{self, Diagnosis, Discovery, DiscoveryError};
+use cs_assets::install::{self, Diagnosis, Discovery, DiscoveryError, FileRoleKind};
 use cs_types::evidence::ContentHash;
 use cs_types::install::{
-    FileFamily, FileRole, InstallFileRecord, InstallManifest, ManifestError, ParseState,
-    RelativePath,
+    FileFamily, FileRole, InstallFileRecord, InstallManifest, InstallationClass, ManifestError,
+    ParseState, RelativePath,
 };
 
 /// Builds the minimal synthetic installation inventory for `host_root`.
@@ -666,4 +674,460 @@ fn jstr(value: &str) -> String {
     }
     out.push('"');
     out
+}
+
+// --- F02-D: the full-installation audit --------------------------------------
+
+/// Report schema label carried as `"report"` in the audit JSON output.
+/// Versioned like [`INVENTORY_REPORT_VERSION`].
+pub const AUDIT_REPORT_VERSION: &str = "cs-inspect-audit/v1";
+
+/// The only audit scope this stage implements (`--scope all`): every
+/// inventoried file is classified and every expected archive checked.
+pub const AUDIT_SCOPE_ALL: &str = "all";
+
+/// One audit finding: an inventoried file, the role the evidence-bound
+/// [`install::classify`] rules assigned and the rule's basis.
+///
+/// Classified and unclassified files are both findings — the audit's job is
+/// to classify *every* file, so an unknown row is a finding that names its
+/// file, never a silent skip (spec F02 non-negotiable behavior 4;
+/// IDENTITY-CONTENT: collections cannot exclude failed entries).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuditFinding {
+    /// The case-folded logical key of the file.
+    pub logical_key: String,
+    /// The preserved on-disk spelling.
+    pub spelling: RelativePath,
+    /// The role kind the rules assigned (`Unknown` when none matched).
+    pub kind: FileRoleKind,
+    /// The materialized role.
+    pub role: FileRole,
+    /// The basis: why the file holds this role.
+    pub basis: &'static str,
+    /// Whether the file sits under a gameplay content root
+    /// (`zbd/` or `gosdata/`). Only discriminates unclassified rows.
+    pub gameplay_scope: bool,
+}
+
+/// The audit of one discovered installation: a classification finding for
+/// every inventoried file plus the F02-C dependency-impact report the
+/// readiness check consumes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InstallAudit {
+    /// One finding per manifest row, in manifest order.
+    pub findings: Vec<AuditFinding>,
+    /// The expected-archive availability report.
+    pub impact: DependencyImpact,
+}
+
+impl InstallAudit {
+    /// The findings whose role stayed [`FileRole::Unknown`] inside the
+    /// gameplay scope — unclassified gameplay dependencies that fail
+    /// completeness (spec F02 non-negotiable behavior 4).
+    pub fn unclassified_gameplay(&self) -> Vec<&AuditFinding> {
+        self.findings
+            .iter()
+            .filter(|finding| finding.kind == FileRoleKind::Unknown && finding.gameplay_scope)
+            .collect()
+    }
+
+    /// The findings whose role stayed [`FileRole::Unknown`] outside the
+    /// gameplay scope: still unclassified, still reported, but not evidence
+    /// of missing gameplay content on their own. `--strict` fails on them.
+    pub fn unclassified_other(&self) -> Vec<&AuditFinding> {
+        self.findings
+            .iter()
+            .filter(|finding| finding.kind == FileRoleKind::Unknown && !finding.gameplay_scope)
+            .collect()
+    }
+
+    /// How many findings carry `kind`.
+    pub fn role_count(&self, kind: FileRoleKind) -> usize {
+        self.findings
+            .iter()
+            .filter(|finding| finding.kind == kind)
+            .count()
+    }
+}
+
+/// Audits one [`Discovery`] (F02-D): every manifest row is classified
+/// through the production [`install::classify`] rules and the dependency-
+/// impact report is composed alongside.
+pub fn install_audit(found: &Discovery) -> InstallAudit {
+    let findings = found
+        .manifest
+        .files
+        .iter()
+        .map(|row| {
+            let logical_key = row.relative_spelling.logical_key();
+            let classification = install::classify(&logical_key);
+            AuditFinding {
+                gameplay_scope: install::in_gameplay_scope(&logical_key),
+                logical_key,
+                spelling: row.relative_spelling.clone(),
+                kind: classification.role,
+                role: classification.role.to_role(),
+                basis: classification.basis,
+            }
+        })
+        .collect();
+    InstallAudit {
+        findings,
+        impact: dependency_impact(found),
+    }
+}
+
+/// The outcome of the full-content readiness check (spec F02 AC04).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReadinessCheck {
+    /// Whether the installation passes full-content readiness.
+    pub full_content_ready: bool,
+    /// Every reason readiness failed, with the exact paths/keys affected.
+    /// Empty iff `full_content_ready` — a pass has no failures.
+    pub failures: Vec<String>,
+}
+
+/// Evaluates the full-content readiness check over one audit (F02-D).
+///
+/// Readiness requires every expected archive available (the F02-C
+/// dependency-impact denominator, which no observed file set can shrink)
+/// **and** zero unclassified gameplay files — an unknown gameplay
+/// dependency fails completeness (spec F02 non-negotiable behavior 4), so a
+/// partial installation can never pass (AC04). `strict` additionally fails
+/// on unclassified files outside the gameplay scope: they are not proven
+/// gameplay dependencies, but a strict audit classifies every file.
+pub fn full_content_readiness(audit: &InstallAudit, strict: bool) -> ReadinessCheck {
+    let mut failures = Vec::new();
+    if audit.impact.unavailable_count() > 0 {
+        failures.push(format!(
+            "{} expected archives unavailable (impacted dependents: {})",
+            audit.impact.unavailable_count(),
+            audit.impact.impacted_dependents().join(", ")
+        ));
+    }
+    let gameplay: Vec<&str> = audit
+        .unclassified_gameplay()
+        .iter()
+        .map(|finding| finding.logical_key.as_str())
+        .collect();
+    if !gameplay.is_empty() {
+        failures.push(format!(
+            "{} unclassified gameplay files: {}",
+            gameplay.len(),
+            gameplay.join(", ")
+        ));
+    }
+    if strict {
+        let other: Vec<&str> = audit
+            .unclassified_other()
+            .iter()
+            .map(|finding| finding.logical_key.as_str())
+            .collect();
+        if !other.is_empty() {
+            failures.push(format!(
+                "{} unclassified files outside the gameplay scope (strict): {}",
+                other.len(),
+                other.join(", ")
+            ));
+        }
+    }
+    ReadinessCheck {
+        full_content_ready: failures.is_empty(),
+        failures,
+    }
+}
+
+/// Why the `audit` command failed.
+#[derive(Debug)]
+pub enum AuditError {
+    /// The command line was malformed: an unknown flag, a missing value or
+    /// an unsupported `--scope`.
+    Usage(String),
+    /// Neither `--cs-path` nor `CS_GAME_DIR` selected an installation: the
+    /// `retail` capability is unavailable (CLI-EVIDENCE exit code 4).
+    MissingInstallation,
+    /// Production discovery refused the installation; the
+    /// [`DiscoveryError`] names the host path it happened at.
+    Discovery(DiscoveryError),
+    /// The `--out` report could not be written or renamed into place.
+    Output {
+        /// The requested output path.
+        path: PathBuf,
+        /// Why the write or the rename failed.
+        source: io::Error,
+    },
+}
+
+impl fmt::Display for AuditError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Usage(message) => write!(f, "{message}"),
+            Self::MissingInstallation => write!(
+                f,
+                "no installation selected: pass --cs-path <dir> or set CS_GAME_DIR"
+            ),
+            Self::Discovery(error) => write!(f, "{error}"),
+            Self::Output { path, source } => {
+                write!(f, "cannot write report to {}: {source}", path.display())
+            }
+        }
+    }
+}
+
+impl std::error::Error for AuditError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Discovery(error) => Some(error),
+            Self::Output { source, .. } => Some(source),
+            Self::Usage(_) | Self::MissingInstallation => None,
+        }
+    }
+}
+
+impl From<DiscoveryError> for AuditError {
+    fn from(error: DiscoveryError) -> Self {
+        Self::Discovery(error)
+    }
+}
+
+/// Parsed `audit` arguments.
+struct AuditArgs {
+    /// The explicit `--cs-path`, which wins over `CS_GAME_DIR`.
+    cs_path: Option<PathBuf>,
+    /// The audit scope; only [`AUDIT_SCOPE_ALL`] is implemented.
+    scope: String,
+    /// Whether strict mode also fails on unclassified files outside the
+    /// gameplay scope.
+    strict: bool,
+    /// The `--out` report path; `None` writes the report to stdout.
+    out: Option<PathBuf>,
+}
+
+fn parse_audit_args(args: &[String]) -> Result<AuditArgs, AuditError> {
+    let mut parsed = AuditArgs {
+        cs_path: None,
+        scope: AUDIT_SCOPE_ALL.to_owned(),
+        strict: false,
+        out: None,
+    };
+    let mut cursor = args.iter();
+    while let Some(arg) = cursor.next() {
+        match arg.as_str() {
+            "--strict" => parsed.strict = true,
+            flag @ ("--cs-path" | "--scope" | "--out") => {
+                let Some(value) = cursor.next() else {
+                    return Err(AuditError::Usage(format!(
+                        "cs-inspect audit: {flag} needs a value"
+                    )));
+                };
+                match flag {
+                    "--cs-path" => parsed.cs_path = Some(PathBuf::from(value)),
+                    "--scope" => parsed.scope = value.to_owned(),
+                    _ => parsed.out = Some(PathBuf::from(value)),
+                }
+            }
+            other => {
+                return Err(AuditError::Usage(format!(
+                    "cs-inspect audit: unsupported argument {other:?}; \
+                     expected --cs-path <dir>, --scope <scope>, --strict \
+                     and/or --out <file>"
+                )));
+            }
+        }
+    }
+    if parsed.scope != AUDIT_SCOPE_ALL {
+        return Err(AuditError::Usage(format!(
+            "cs-inspect audit: unsupported scope {:?}; this stage implements \
+             --scope {AUDIT_SCOPE_ALL} only",
+            parsed.scope
+        )));
+    }
+    Ok(parsed)
+}
+
+/// Runs the `audit` command: discovery, classification, readiness and the
+/// JSON report out (F02-D).
+///
+/// `--cs-path` wins over `CS_GAME_DIR`; with neither the exit is 4. Exit
+/// codes follow `docs/contracts/CLI-EVIDENCE.md`: `0` when the installation
+/// passes full-content readiness, `3` when it does not (failed validation —
+/// the report still lists the exact failures), `2` for invalid input or an
+/// unsupported `--scope`, `4` for a missing installation and `1` for a
+/// discovery or output failure. `--out` uses the same atomic write as
+/// `inventory`; without it the JSON goes to stdout.
+pub fn audit_command(args: &[String]) -> ExitCode {
+    match audit_command_result(args, std::env::var_os("CS_GAME_DIR")) {
+        Ok((report_path, ready)) => {
+            if let Some(path) = report_path {
+                eprintln!("cs-inspect: wrote audit report to {}", path.display());
+            }
+            if ready {
+                ExitCode::SUCCESS
+            } else {
+                eprintln!("cs-inspect: full-content readiness check failed");
+                ExitCode::from(3)
+            }
+        }
+        Err((code, error)) => {
+            eprintln!("cs-inspect: {error}");
+            code
+        }
+    }
+}
+
+/// The fallible body of [`audit_command`], returning the `--out` path that
+/// was written (`None` for stdout) and the readiness verdict, or the exit
+/// code and named error.
+fn audit_command_result(
+    args: &[String],
+    env_cs_path: Option<OsString>,
+) -> Result<(Option<PathBuf>, bool), (ExitCode, AuditError)> {
+    let parsed = parse_audit_args(args).map_err(|error| (ExitCode::from(2), error))?;
+    let cs_path = parsed.cs_path.or_else(|| {
+        env_cs_path
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    });
+    let Some(cs_path) = cs_path else {
+        return Err((ExitCode::from(4), AuditError::MissingInstallation));
+    };
+    let found = install::discover(&cs_path).map_err(|error| (ExitCode::from(1), error.into()))?;
+    let audit = install_audit(&found);
+    let ready = full_content_readiness(&audit, parsed.strict).full_content_ready;
+    let report = audit_report_json(&found, &audit, parsed.strict);
+    match parsed.out {
+        Some(out) => {
+            write_audit_report(&out, &report).map_err(|error| (ExitCode::from(1), error))?;
+            Ok((Some(out), ready))
+        }
+        None => {
+            println!("{report}");
+            Ok((None, ready))
+        }
+    }
+}
+
+/// Writes the audit report atomically, sharing [`InventoryError`]'s
+/// sibling-temp-file protocol through a private copy.
+fn write_audit_report(out: &Path, report: &str) -> Result<(), AuditError> {
+    let mut temp_name = out.as_os_str().to_owned();
+    temp_name.push(format!(".tmp-{}", std::process::id()));
+    let temp = PathBuf::from(temp_name);
+    let write_result = fs::write(&temp, report).and_then(|()| fs::rename(&temp, out));
+    if let Err(source) = write_result {
+        let _ = fs::remove_file(&temp);
+        return Err(AuditError::Output {
+            path: out.to_path_buf(),
+            source,
+        });
+    }
+    Ok(())
+}
+
+/// Renders the `audit` report for one [`Discovery`] and its [`InstallAudit`]
+/// as JSON (F02-D): fingerprints over the actual installation bytes, the
+/// readiness verdict with its exact failures, the role accounting and one
+/// finding per inventoried file — unclassified rows named, never omitted.
+pub fn audit_report_json(found: &Discovery, audit: &InstallAudit, strict: bool) -> String {
+    let readiness = full_content_readiness(audit, strict);
+    let class = if readiness.full_content_ready {
+        InstallationClass::Full
+    } else {
+        InstallationClass::Partial
+    };
+
+    let findings: Vec<String> = audit
+        .findings
+        .iter()
+        .map(|finding| {
+            format!(
+                "{{\"logical_key\": {}, \"spelling\": {}, \"role\": {}, \"basis\": {}}}",
+                jstr(&finding.logical_key),
+                jstr(finding.spelling.as_str()),
+                role_json(&finding.role),
+                jstr(finding.basis),
+            )
+        })
+        .collect();
+    let unclassified_gameplay: Vec<String> = audit
+        .unclassified_gameplay()
+        .iter()
+        .map(|finding| jstr(&finding.logical_key))
+        .collect();
+    let unclassified_other: Vec<String> = audit
+        .unclassified_other()
+        .iter()
+        .map(|finding| jstr(&finding.logical_key))
+        .collect();
+    let failures: Vec<String> = readiness
+        .failures
+        .iter()
+        .map(|failure| jstr(failure))
+        .collect();
+    let impacted: Vec<String> = audit
+        .impact
+        .impacted_dependents()
+        .iter()
+        .map(|dependent| jstr(dependent))
+        .collect();
+    let unavailable: Vec<String> = audit
+        .impact
+        .archives
+        .iter()
+        .filter(|archive| !archive.available())
+        .map(|archive| jstr(&archive.logical_key))
+        .collect();
+
+    format!(
+        "{{\n\
+         \x20\"report\": {},\n\
+         \x20\"host_root\": {},\n\
+         \x20\"fingerprints\": {{\"install_sha256\": {}, \"content_sha256\": {}}},\n\
+         \x20\"scope\": {},\n\
+         \x20\"strict\": {},\n\
+         \x20\"classes\": [{}],\n\
+         \x20\"readiness\": {{\"full_content\": {}, \"failures\": [{}]}},\n\
+         \x20\"counts\": {{\"files\": {}, \"unclassified_gameplay\": {}, \
+         \"unclassified_other\": {}, \"roles\": {{\"consumed\": {}, \
+         \"needed-unimplemented\": {}, \"optional-media\": {}, \"unused\": {}, \
+         \"platform-support\": {}, \"unknown\": {}}}}},\n\
+         \x20\"dependency_impact\": {{\"summary\": {{\"expected\": {}, \"available\": {}, \
+         \"unavailable\": {}, \"impacted_dependents\": {}}}, \"impacted_dependents\": [{}], \
+         \"unavailable\": [{}]}},\n\
+         \x20\"unclassified\": {{\"gameplay\": [{}], \"other\": [{}]}},\n\
+         \x20\"files\": [{}]\n\
+         }}\n",
+        jstr(AUDIT_REPORT_VERSION),
+        jstr(&found.manifest.host_root.to_string_lossy()),
+        jstr(&install::fingerprint(&found.manifest).to_hex()),
+        jstr(&install::content_fingerprint(&found.manifest).to_hex()),
+        jstr(AUDIT_SCOPE_ALL),
+        strict,
+        jstr(class.label()),
+        readiness.full_content_ready,
+        failures.join(", "),
+        audit.findings.len(),
+        unclassified_gameplay.len(),
+        unclassified_other.len(),
+        audit.role_count(FileRoleKind::Consumed),
+        audit.role_count(FileRoleKind::NeededUnimplemented),
+        audit.role_count(FileRoleKind::OptionalMedia),
+        audit
+            .findings
+            .iter()
+            .filter(|finding| matches!(finding.kind, FileRoleKind::UnusedWithReason(_)))
+            .count(),
+        audit.role_count(FileRoleKind::PlatformSupport),
+        audit.role_count(FileRoleKind::Unknown),
+        audit.impact.expected_count(),
+        audit.impact.available_count(),
+        audit.impact.unavailable_count(),
+        impacted.len(),
+        impacted.join(", "),
+        unavailable.join(", "),
+        unclassified_gameplay.join(", "),
+        unclassified_other.join(", "),
+        findings.join(", "),
+    )
 }

@@ -1,5 +1,5 @@
-//! The typed installation-inventory path (F02-A) plus safe discovery,
-//! hashing and diagnosis (F02-B).
+//! The typed installation-inventory path (F02-A), safe discovery,
+//! hashing and diagnosis (F02-B), and audit classification (F02-D).
 //!
 //! [`inventory`] turns discovered host paths plus their per-file facts into
 //! the validated typed output, an [`InstallManifest`]: it derives each
@@ -21,6 +21,12 @@
 //! still match (spec F02-B: a one-byte edit changes the fingerprint and
 //! invalidates the cache entries). The original installation is opened
 //! read-only; no discovered content is ever written back.
+//!
+//! [`classify`] is the F02-D audit classification: it assigns every
+//! inventoried file its spec-F02 role from evidence-bound rules over the
+//! observed layout, leaves non-matching files [`FileRole::Unknown`], and
+//! [`in_gameplay_scope`] marks which unknowns are gameplay dependencies
+//! that fail completeness.
 
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
@@ -1072,5 +1078,173 @@ impl AnalysisCache {
             applied += 1;
         }
         Ok(applied)
+    }
+}
+
+// --- F02-D: audit classification --------------------------------------------
+
+/// Extensions whose files are native binaries wherever they sit in the
+/// tree: the OS loader consumed them for the original executable, and the
+/// reimplementation never parses their bytes as game data. They are
+/// platform/support content (spec F02 non-negotiable behavior 4).
+const PLATFORM_BINARY_EXTENSIONS: [&str; 3] = ["dll", "exe", "icd"];
+
+/// Installer/setup support files observed at the retail installation root,
+/// by logical file name. `00000409.*` are InstallShield engine data files
+/// (locale `0x0409`) and `ebusetup.sem` is setup-package data: none of them
+/// is gameplay content.
+const PLATFORM_SUPPORT_FILES: [&str; 3] = ["00000409.016", "00000409.256", "ebusetup.sem"];
+
+/// The content-tree roots that hold gameplay data: the `zbd/` archive tree
+/// and the `gosdata/` asset tree of the observed installation. An
+/// unclassified file under one of these roots is an unclassified *gameplay*
+/// dependency; an unclassified file anywhere else is still unclassified but
+/// does not by itself prove missing gameplay content.
+const GAMEPLAY_SCOPE_ROOTS: [&str; 2] = ["zbd/", "gosdata/"];
+
+/// The audit classification of one inventoried file (F02-D).
+///
+/// `role` is the spec-F02 classification (`consumed`,
+/// `needed-unimplemented`, `optional-media`, `unused-with-reason`,
+/// `platform-support` or the explicit `unknown`); `basis` names the rule
+/// that produced it, so the audit report can show *why* a file holds its
+/// role instead of asserting it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Classification {
+    /// The assigned role kind; materialize it with
+    /// [`FileRoleKind::to_role`].
+    pub role: FileRoleKind,
+    /// The stable label of the rule that assigned the role.
+    pub basis: &'static str,
+}
+
+/// The role vocabulary [`classify`] assigns, as a copyable mirror of
+/// [`FileRole`] whose `unused` payload is a rule-provided `&'static str`:
+/// a static classification can never smuggle in an empty reason.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FileRoleKind {
+    /// See [`FileRole::Consumed`].
+    Consumed,
+    /// See [`FileRole::NeededUnimplemented`].
+    NeededUnimplemented,
+    /// See [`FileRole::OptionalMedia`].
+    OptionalMedia,
+    /// See [`FileRole::UnusedWithReason`]; the reason is part of the rule.
+    UnusedWithReason(&'static str),
+    /// See [`FileRole::PlatformSupport`].
+    PlatformSupport,
+    /// See [`FileRole::Unknown`].
+    Unknown,
+}
+
+impl FileRoleKind {
+    /// Materializes this kind as an owned [`FileRole`].
+    pub fn to_role(self) -> FileRole {
+        match self {
+            Self::Consumed => FileRole::Consumed,
+            Self::NeededUnimplemented => FileRole::NeededUnimplemented,
+            Self::OptionalMedia => FileRole::OptionalMedia,
+            Self::UnusedWithReason(reason) => FileRole::UnusedWithReason(reason.to_owned()),
+            Self::PlatformSupport => FileRole::PlatformSupport,
+            Self::Unknown => FileRole::Unknown,
+        }
+    }
+}
+
+/// Whether `logical_key` sits under a gameplay content root
+/// ([`GAMEPLAY_SCOPE_ROOTS`]), case-folded like every logical key.
+///
+/// The scope only discriminates *unclassified* files: an unknown file under
+/// `zbd/` or `gosdata/` is an unclassified gameplay dependency and fails
+/// completeness (spec F02 non-negotiable behavior 4), while an unknown file
+/// outside the content trees is still reported but is not evidence of
+/// missing gameplay content on its own.
+pub fn in_gameplay_scope(logical_key: &str) -> bool {
+    GAMEPLAY_SCOPE_ROOTS
+        .iter()
+        .any(|root| logical_key.starts_with(root))
+}
+
+/// Classifies one inventoried file by its logical key (F02-D).
+///
+/// Every rule is bound to an observed property of the retail installation:
+/// native binaries (`dll`/`exe`/`icd`) and named installer leftovers are
+/// platform/support content; `zbd/` members are game archives awaiting the
+/// F06 reader; `gosdata` ROF containers await F05, its TGA images await
+/// F08, its MPG videos are optional media and `crimsonff.ifr` is a
+/// force-feedback resource awaiting a consumer. A file no rule matches
+/// stays [`FileRole::Unknown`] — the audit reports it, and inside the
+/// gameplay scope it fails completeness, instead of being guessed at.
+pub fn classify(logical_key: &str) -> Classification {
+    let name = logical_key.rsplit('/').next().unwrap_or(logical_key);
+    let extension = name
+        .rsplit_once('.')
+        .map(|(_, extension)| extension)
+        .unwrap_or("");
+
+    // The name-specific rules run before the extension rules so a file
+    // cannot be swept into a broad bucket by a shared suffix.
+    if name == "crimsonff.ifr" {
+        return Classification {
+            role: FileRoleKind::NeededUnimplemented,
+            basis: "force-feedback effect resource observed at the installation root; \
+                    no consumer is implemented",
+        };
+    }
+    if PLATFORM_SUPPORT_FILES.contains(&name) {
+        return Classification {
+            role: FileRoleKind::PlatformSupport,
+            basis: "installer/setup support data observed at the installation root",
+        };
+    }
+    if PLATFORM_BINARY_EXTENSIONS.contains(&extension) {
+        return Classification {
+            role: FileRoleKind::PlatformSupport,
+            basis: "native executable or library; never parsed as game data",
+        };
+    }
+    if extension == "rtf" {
+        return Classification {
+            role: FileRoleKind::PlatformSupport,
+            basis: "rich-text documentation (readme/license), not gameplay data",
+        };
+    }
+    if let Some(rest) = logical_key.strip_prefix("zbd/") {
+        if extension == "zbd" && !rest.is_empty() {
+            return Classification {
+                role: FileRoleKind::NeededUnimplemented,
+                basis: "zbd archive in the observed zbd content tree; the F06 reader \
+                        is not implemented",
+            };
+        }
+        return Classification {
+            role: FileRoleKind::Unknown,
+            basis: "non-zbd member inside the zbd content tree; no rule matches",
+        };
+    }
+    if logical_key.starts_with("gosdata/assets/graphics/mpg/") && extension == "mpg" {
+        return Classification {
+            role: FileRoleKind::OptionalMedia,
+            basis: "cutscene video under gosdata/assets/graphics/mpg; absence does \
+                    not block gameplay content",
+        };
+    }
+    if logical_key.starts_with("gosdata/assets/graphics/") && extension == "tga" {
+        return Classification {
+            role: FileRoleKind::NeededUnimplemented,
+            basis: "tga image under gosdata/assets/graphics; the F08 decoder is not \
+                    implemented",
+        };
+    }
+    if logical_key.starts_with("gosdata/assets/") && extension == "rof" {
+        return Classification {
+            role: FileRoleKind::NeededUnimplemented,
+            basis: "rof container under gosdata/assets; the F05 reader is not \
+                    implemented",
+        };
+    }
+    Classification {
+        role: FileRoleKind::Unknown,
+        basis: "no classification rule matched",
     }
 }
