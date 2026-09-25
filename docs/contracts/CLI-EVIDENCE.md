@@ -27,6 +27,18 @@ cs --cs-path "$CS_GAME_DIR" --mission <id> --cam=<x,y,z,yaw,pitch> --capture-tic
 
 `--cam` uses canonical world meters, yaw/pitch in **degrees for human CLI only**, and a documented rotation convention. Simulation and internal file APIs use radians. Capture mode records overrides and never changes a production profile by default. Headless simulation and GPU capture are distinct; a GPU capture may use offscreen rendering but cannot be faked by an empty window or static fixture.
 
+### `--seed` (owner ruling, 2026-09-25; proposal in `docs/findings/2026-09-23-t335-synthetic-seed-semantics.md`)
+
+`--seed <u64>` is the **root seed of a run**. It is optional; omitting it keeps today's behavior and today's trace bytes exactly. For now only the synthetic headless scene consumes it: `--seed` without `--synthetic` is `Invalid` until another stage specifies its consumer. Input replays will record the root seed when they exist.
+
+- **Typed input:** `SyntheticRequest.seed: Option<u64>`. `None` runs the canonical `SyntheticBodySpec::falling_box` fixture unchanged.
+- **Generator:** SplitMix64, hand-written in `cs_types` (no dependency). Every consumer draws its own domain-separated stream: the stream seed is the SplitMix64 output of `root_seed ^ DOMAIN`, with a documented `u64` domain constant per consumer, so adding a consumer never shifts another consumer's values. The synthetic body is the first domain.
+- **Unit floats:** convert a draw to `[0, 1)` as `(x >> 11) as f64 * 2^-53` and to `[-a, a]` as `a * (2u - 1)`. This is exact integer-to-float arithmetic, so the values are bit-identical on every platform.
+- **What the synthetic seed varies:** only the lateral components. `position_m[0]` and `position_m[2]` each get an offset in `[-2, 2]` m, and `linear_velocity_m_s[0]` and `linear_velocity_m_s[2]` each get an offset in `[-4, 4]` m/s. Drop height, vertical velocity, extents and body kind stay at the fixture values. The result must pass `SyntheticBodySpec::validate`. These bounds are authored development values, not original-game data.
+- **Proof in the trace:** the trace header carries `"seed": <u64>` or `"seed": null`, so every trace states which seed produced it.
+- **CLI errors** mirror `--ticks`: a missing value is `Unsupported`, a value that is not a `u64` is `Invalid` naming `--seed`, the later of duplicate flags wins, and `--help` documents the flag.
+- **Required tests:** the same seed twice gives identical trace bytes. Two different seeds give different tick-0 samples and diverging traces, so an implementation that parses but ignores the seed fails. No seed gives the unchanged canonical trace. The header carries the seed. `--seed abc` and `--seed` without `--synthetic` are rejected.
+
 ## Evidence record minimum
 
 Task/feature/mission id; candidate Git tree hash; engine/toolchain versions; timestamp; command argv and working directory; exit code; installation/canonical-content hash; seed and tick range; enabled overrides/assists/mods; capability class; actual test counts; assertions; artifact paths and SHA-256; unresolved issues; reviewer identity/method. See `schemas/evidence.schema.json`.
