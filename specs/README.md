@@ -67,3 +67,48 @@
 - [F62: Differential corpus, fuzzing, and regression closure](F62-differential-corpus-fuzzing-and-regression-closure.md)
 - [F63: Final integration and complete-playable release gate](F63-final-integration-and-complete-playable-release-gate.md)
 - [F64: Legacy custom aircraft and optional save import](F64-legacy-custom-aircraft-and-optional-save-import.md)
+
+## Owner ruling 2026-09-28: first-playable sequencing (AUDIT-PLAN-SYNC, #356)
+
+After the 2026-09-28 audit the owner corrected the Rally queue so that one real original mission can become playable before the whole campaign harness exists. This is a scheduling correction, **not a reduction in product scope**: every full-campaign and final-release criterion in these sheets still applies. Rally is the live task DAG; this section mirrors it. Task keys are followed by their Rally id.
+
+Reading rule: a stage's `Dependencies:` line names sheet stages (and, for M01, the named Rally tasks below). Where Rally holds additional dependencies on tasks that have no sheet stage, the table below lists them. Nothing else differs. `tools/tests/test_plan_sync.py` checks the sheets and this table against the Rally snapshot committed as `docs/findings/2026-09-28-audit-plan-sync-rally-snapshot.json`; refresh the snapshot from Rally whenever a later owner ruling changes the DAG.
+
+### Resequenced stages
+
+- **F50-A (#190)** now depends on F14-A (#53), F13-A (#49) and F16-A (#65) only. It defines the engine-independent mission binding/coverage schema early: subsystem identities and explicit unresolved dependency rows instead of every subsystem's runtime schema. Its previous scheduling dependencies on the 23 subsystem A stages (F18-A, F19-A, F20-A, F24-A, F25-A, F27-A, F28-A, F29-A, F32-A, F33-A, F34-A, F35-A, F36-A, F38-A, F39-A, F40-A, F41-A, F42-A, F43-A, F44-A, F45-A, F46-A, F47-A) are removed; they remain transitive prerequisites of F50-B through its C-stage dependencies. F50-B/C/D and their acceptance are unchanged.
+- **F63-A (#252)** now depends on F01-A (#5), F50-A (#190) and AUDIT-EVIDENCE-MODEL (#354). It defines machine-readable criteria from the evidence model and the binding schema, not from already working game systems. The removed A-stage dependencies (F26-A, F47-A, F49-A, F52-A, F53-A, F56-A, F58-A, F60-A, F61-A, F62-A) remain required product categories in its criteria and transitive prerequisites of F63-B. F63-B/C/D keep full product integration and human approval.
+- **M01-B (#259)** now depends on M01-A (#258), F38-C (#158) and VS-M01-RUNTIME (#359) instead of the complete-campaign F50-C (#206). F50-C still gates M02-B through M24-B, F63-B and, through F50-D, final approval.
+- **M01-C (#260)** additionally consumes VS-M01-CONTROLLED-RUNS (#360) and stays blocked on the owner's `human_play`.
+
+### Additional Rally dependencies
+
+| Stage | Rally id | Additional Rally dependencies | Why |
+| --- | --- | --- | --- |
+| F12-D | #48 | #351, #356 | Configuration verification waits for the keyed field list reading rules (F12-keyed-list-reading-rules). |
+| F13-D | #52 | #356, #358 | The language plan needs the first original reference capture (REF-OWNER-FIRST-CAPTURE); the complete language still needs all further evidence. |
+| F17-D | #72 | #341, #342, #352, #356 | Faithful rendering review needs the original lookup order (F04-D-original-order), archive-member collisions (F04-D-member-collisions) and texture-archive selection (F08-C-texture-archive-selection). |
+| F18-B | #86 | #333, #356 | World collision needs Avian collider-from-mesh on a real asset stack (F00-A-followup-avian-mesh-colliders). |
+| F24-C | #95 | #356 | Acceptance split between synthetic wiring (F24-C) and original-reference comparison (F24-D), see the F24 sheet. |
+| F24-D | #96 | #356, #358 | Calibration consumes the first original handling capture; the complete roster still needs further captures. |
+| F26-D | #104 | #356, #358 | Same as F24-D for the complete handling roster. |
+| F50-A | #190 | #356 | Resequenced, see above. |
+| F59-C | #238 | #354, #356 | Evidence commands produce the versioned evidence model (AUDIT-EVIDENCE-MODEL). |
+| F63-A | #252 | #354, #356 | Resequenced, see above. |
+| F63-C | #331 | #333, #339, #341, #342, #351, #352, #353, #354, #355, #356, #358, #360, #361 | Release acceptance also needs these verification tasks; F63-D depends on F63-C, so they are transitive release prerequisites. |
+| M01-B | #259 | #356 | Resequenced, see above. |
+
+No existing dependency was removed except the three resequencings above.
+
+### Tasks without a sheet stage
+
+- **AUDIT-EVIDENCE-INTEGRITY (#353)**, depends on no task: structural evidence validation. Blocked at capture time (its CI step needs workflow permission); it is **not merged**.
+- **AUDIT-EVIDENCE-MODEL (#354)**, depends on #353: separates task success from unresolved product limitations. **AUDIT-EVIDENCE-PRODUCERS (#355)**, depends on #354: regenerates affected reports through their producers, never by hand. **AUDIT-WINDOWS-CI (#361)**, depends on #353: real Windows build/test coverage; #339 (VFS same-file check on non-Unix hosts) waits for it.
+- **REF-CAPTURE-PROTOCOL (#357)**, depends on F01-A: agent-prepared reproducible reference capture records.
+- **REF-OWNER-FIRST-CAPTURE (#358)**, depends on #357: the owner's original M01 and baseline handling capture, with no other dependency. It coordinates collection with #341 but does not wait for the complete eight-world lookup survey; #341 remains a separate fidelity/release requirement. Owner-blocked until actual captures exist.
+- **VS-M01-RUNTIME (#359)**, depends on F15-C, F17-C, F18-C, F24-C, F29-C, F30-C, F21-C, F27-C, F37-C, F39-C, F38-C, F41-C, M01-A and #356: wires the actual first mission into the normal application. It needs the full actual first-mission dependency closure; mechanisms discovered beyond this initial list block it until implemented. The initial list does not prove complete M01 support.
+- **VS-M01-CONTROLLED-RUNS (#360)**, depends on F59-B, M01-B, #358 and #359: controller-driven success, failure and retry evidence against the original reference. Automated input is not `human_play`.
+
+### First-mission path
+
+M01-A (#258) → VS-M01-RUNTIME (#359) → M01-B (#259) → VS-M01-CONTROLLED-RUNS (#360) → M01-C (#260, human). #359 does not depend on #259, so there is no mutual wait, and no task on this path depends on F50-B, F50-C or F50-D. The path is not a shortcut around any mission-required behavior: M01 still needs its complete dependency closure, original data and every M01 sheet criterion, and F50 remains the complete-campaign gate (F50-D depends on M01-C).
