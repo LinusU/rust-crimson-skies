@@ -19,6 +19,10 @@
 //! `specs/F07-interp-loading-script-container.md` (stage F07-A,
 //! [`interp`]).
 //!
+//! Texture image descriptors and base-level decoding:
+//! `specs/F08-texture-archives-and-conventional-image-decoding.md` (stage
+//! F08-A, [`texture`]).
+//!
 //! The fixtures exercised below are newly authored synthetic bytes; nothing
 //! here is derived from original game data.
 
@@ -26,6 +30,7 @@ pub mod error;
 pub mod interp;
 pub mod io;
 pub mod rof;
+pub mod texture;
 pub mod zbd;
 
 pub use error::{ParseError, ParseErrorKind};
@@ -39,6 +44,9 @@ pub use rof::{
     DIRECTORY_ENTRYPOINT, DIRECTORY_HEADER_BYTES, FLAG_COMPRESSED, FLAG_DIRECTORY, KNOWN_FLAG_MASK,
     RECORD_BYTES, RofDirectory, RofEntries, RofEntry, RofError, RofFlags, RofRawHeader,
     RofRawRecord, read_directory,
+};
+pub use texture::{
+    DecodedImage, DescriptorError, ImageDescriptor, TextureError, decode_base_level,
 };
 pub use zbd::{
     DispatchBasis, HeaderStatus, RoleStatus, ZbdDispatch, ZbdDispatchError, ZbdFamily, ZbdProbe,
