@@ -21,11 +21,13 @@
 //!   name ends in its NUL, no name holds an interior NUL, and the declared
 //!   `name_length` values (which count the name *plus* its terminator, as
 //!   authored in the synthetic fixture) sum to exactly `names_length`;
-//! * the two length fields stay separate: `raw_length` and
-//!   `raw_length_on_disk` are exposed as `length` and `length_on_disk`
-//!   without any interpretation, because the reference extractor reads
-//!   `length` for compressed members and ignores `length_on_disk` and no
-//!   local corpus has resolved the difference (spec non-negotiable #4);
+//! * the two length fields stay separate: the on-disk words `length` and
+//!   `length_on_disk` ([S05]) are exposed as [`RofRawRecord::raw_length`]
+//!   and [`RofRawRecord::raw_length_on_disk`] without any interpretation,
+//!   because the reference extractor reads `length` for compressed members
+//!   and ignores `length_on_disk` and no local corpus has resolved the
+//!   difference (spec non-negotiable #4, and the F05 deliverable names the
+//!   preserved fields `raw_length` / `raw_length_on_disk`);
 //! * `flags` is kept as raw bits: `FLAG_DIRECTORY` / `FLAG_COMPRESSED` are
 //!   the two observed bits ([S05]), anything else survives untouched so a
 //!   later stage can surface `UnsupportedLayout` *before* it extracts a span
@@ -161,21 +163,24 @@ pub struct RofRawHeader {
 /// reinterpretation — so the allocation budget charged for a decoded table
 /// matches the memory it occupies.
 ///
-/// `length` and `length_on_disk` are **not** named `raw_length` /
-/// `raw_length_on_disk` in the file; they are kept as two independent
-/// values and neither is interpreted here (spec F05, non-negotiable #4).
-/// Likewise `start` and `length` are recorded, never bounds-checked:
+/// The on-disk words are `length` and `length_on_disk` ([S05]); the F05
+/// deliverable asks the reader to preserve them as `raw_length` and
+/// `raw_length_on_disk`, and that `raw_` prefix is the reminder that
+/// neither is interpreted here (spec F05, non-negotiable #4): they are two
+/// independent values, never collapsed into one.
+///
+/// Likewise `start` and the lengths are recorded, never bounds-checked:
 /// a nested block or member extent can only be validated against the whole
 /// file, which is F05-B.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct RofRawRecord {
     /// Absolute offset of the entry's data or nested directory block.
     pub start: u32,
-    /// First length field, verbatim.
-    pub length: u32,
-    /// Second length field, verbatim; deliberately not collapsed into
-    /// [`Self::length`].
-    pub length_on_disk: u32,
+    /// First length field, verbatim (on-disk word `length`).
+    pub raw_length: u32,
+    /// Second length field, verbatim (on-disk word `length_on_disk`);
+    /// deliberately not collapsed into [`Self::raw_length`].
+    pub raw_length_on_disk: u32,
     /// Raw `flags` word.
     pub flags: RofFlags,
     /// Declared byte length of this entry's name *including* its NUL.
@@ -604,8 +609,8 @@ fn decode_record(record: &[u8]) -> RofRawRecord {
     };
     RofRawRecord {
         start: word(0),
-        length: word(4),
-        length_on_disk: word(8),
+        raw_length: word(4),
+        raw_length_on_disk: word(8),
         flags: RofFlags(word(12)),
         name_length: word(16),
         id: word(20),

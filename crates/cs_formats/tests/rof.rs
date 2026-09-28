@@ -27,8 +27,8 @@ const CONTAINER: &str = "synthetic/f05_a_tree.rof";
 #[derive(Clone, Copy)]
 struct RawRecord {
     start: u32,
-    length: u32,
-    length_on_disk: u32,
+    raw_length: u32,
+    raw_length_on_disk: u32,
     flags: u32,
     name_length: u32,
     id: u32,
@@ -40,8 +40,8 @@ impl RawRecord {
     fn file(name: &'static str, id: u32) -> Self {
         Self {
             start: 0,
-            length: 0,
-            length_on_disk: 0,
+            raw_length: 0,
+            raw_length_on_disk: 0,
             flags: 0,
             name_length: name.len() as u32 + 1,
             id,
@@ -65,8 +65,8 @@ impl RawRecord {
     /// `tools/make_synthetic_fixtures.py` does.
     fn at(mut self, start: u32, length: u32) -> Self {
         self.start = start;
-        self.length = length;
-        self.length_on_disk = length;
+        self.raw_length = length;
+        self.raw_length_on_disk = length;
         self
     }
 }
@@ -91,8 +91,8 @@ fn block(entry_count: u32, names_length: u32, records: &[RawRecord], names: &[u8
     bytes.extend_from_slice(&names_length.to_le_bytes());
     for record in records {
         bytes.extend_from_slice(&record.start.to_le_bytes());
-        bytes.extend_from_slice(&record.length.to_le_bytes());
-        bytes.extend_from_slice(&record.length_on_disk.to_le_bytes());
+        bytes.extend_from_slice(&record.raw_length.to_le_bytes());
+        bytes.extend_from_slice(&record.raw_length_on_disk.to_le_bytes());
         bytes.extend_from_slice(&record.flags.to_le_bytes());
         bytes.extend_from_slice(&record.name_length.to_le_bytes());
         bytes.extend_from_slice(&record.id.to_le_bytes());
@@ -349,8 +349,8 @@ fn accept_f05_a_shared_flat_fixture_matches_independent_assertions() {
 
     let first = directory.record(0).expect("first record");
     assert_eq!(first.start, 76);
-    assert_eq!(first.length, 34);
-    assert_eq!(first.length_on_disk, 34);
+    assert_eq!(first.raw_length, 34);
+    assert_eq!(first.raw_length_on_disk, 34);
     assert_eq!(first.flags, RofFlags(0));
     assert_eq!(first.name_length, 10, "the name plus its NUL");
     assert_eq!(first.id, 101);
@@ -358,8 +358,8 @@ fn accept_f05_a_shared_flat_fixture_matches_independent_assertions() {
     // The zero-length entry: an empty member is parsed, not rejected.
     let second = directory.record(1).expect("second record");
     assert_eq!(second.start, 110);
-    assert_eq!(second.length, 0);
-    assert_eq!(second.length_on_disk, 0);
+    assert_eq!(second.raw_length, 0);
+    assert_eq!(second.raw_length_on_disk, 0);
     assert_eq!(second.id, 102);
 
     // The bytes after the block are the authored payload, byte for byte.
@@ -374,8 +374,8 @@ fn accept_f05_a_shared_flat_fixture_matches_independent_assertions() {
 fn accept_f05_a_raw_fields_are_preserved_verbatim() {
     let records = [RawRecord {
         start: 4096,
-        length: 7,
-        length_on_disk: 11,
+        raw_length: 7,
+        raw_length_on_disk: 11,
         flags: 0x8,
         name_length: 2,
         id: 0xDEAD_BEEF,
@@ -388,10 +388,10 @@ fn accept_f05_a_raw_fields_are_preserved_verbatim() {
 
     let record = directory.record(0).expect("the single record");
     assert_eq!(record.start, 4096, "extents are recorded, not checked here");
-    assert_eq!(record.length, 7);
-    assert_eq!(record.length_on_disk, 11);
+    assert_eq!(record.raw_length, 7);
+    assert_eq!(record.raw_length_on_disk, 11);
     assert_ne!(
-        record.length, record.length_on_disk,
+        record.raw_length, record.raw_length_on_disk,
         "the two length fields must not be collapsed into one"
     );
     assert_eq!(record.flags, RofFlags(0x8));

@@ -83,8 +83,10 @@ it. Verified by mutation after implementation (results below).
   without its terminator, borrowed from the input, with no UTF-8
   assumption (spec non-negotiable #2; the reference `.decode()`s and would
   fail on a non-UTF-8 locale).
-- **Raw fields are not reinterpreted.** `length` and `length_on_disk` are
-  two independent fields that are never collapsed (non-negotiable #4), and
+- **Raw fields are not reinterpreted.** The on-disk words `length` and
+  `length_on_disk` are exposed as two independent fields `raw_length` and
+  `raw_length_on_disk` (the names the F05 deliverable asks the reader to
+  preserve them under) and are never collapsed (non-negotiable #4), and
   unknown flag bits survive verbatim with `has_unknown_bits()` /
   `unknown_bits()` so a consumer can surface `UnsupportedLayout` *before*
   it reads a span (non-negotiable #5). This stage extracts no span at all,
@@ -108,7 +110,7 @@ it. Verified by mutation after implementation (results below).
 | --- | --- |
 | `accept_f05_a_tree_with_two_directories_duplicate_basenames_and_stable_ids` | AC01 / minimum scenario: root with two directory entries (offsets, ids), both child blocks parsed through production code, `readme.txt` in both directories with ids 11/21, ids identical on a re-read and on an owned copy, exact block lengths 98/77/77 |
 | `accept_f05_a_shared_flat_fixture_matches_independent_assertions` | the committed Python-authored fixture: header, names, ids, every record field, `block_len == 76 < 110`, payload bytes verbatim, zero-length entry accepted |
-| `accept_f05_a_raw_fields_are_preserved_verbatim` | asymmetric `length`/`length_on_disk` kept apart, unknown flag bit preserved with `unknown_bits()`, observed bits still meaningful, `size_of::<RofRawRecord>() == 24` |
+| `accept_f05_a_raw_fields_are_preserved_verbatim` | asymmetric `raw_length`/`raw_length_on_disk` kept apart, unknown flag bit preserved with `unknown_bits()`, observed bits still meaningful, `size_of::<RofRawRecord>() == 24` |
 | `accept_f05_a_name_table_declared_length_mismatch_is_rejected` | both directions of the declared-length mismatch, with container/offset/declared/described |
 | `accept_f05_a_name_without_terminator_is_rejected` | `unterminated_name`, offset of the name table |
 | `accept_f05_a_zero_length_name_is_rejected` | `empty_name` |
@@ -135,14 +137,15 @@ cs_formats --test rof` (exit 101 each), source restored afterwards:
 | Mutation | Failing tests |
 | --- | --- |
 | `validate_names` returns immediately (validation removed) | name-table mismatch, no terminator, interior NUL, zero-length name (4) |
-| `length_on_disk` decoded from the `length` word (fields collapsed) | raw fields preserved (1) |
+| `raw_length_on_disk` decoded from the `raw_length` word (fields collapsed) | raw fields preserved (1) |
 | `allocation.reserve(...)` removed (no budget charge) | budget refusal, truncation/ledger (2) |
 | `id` decoded as `0` (identity not preserved) | raw fields, AC01 tree, shared fixture (3) |
 
 ## Recorded unknowns (not guessed here)
 
 1. **Compressed-length semantics** — which of `length` /
-   `length_on_disk` is stored and which decoded. The reference reads
+   `length_on_disk` (exposed as `raw_length` / `raw_length_on_disk`) is
+   stored and which decoded. The reference reads
    `length` for compressed members and ignores `length_on_disk`; no local
    corpus resolves it (spec non-negotiable #4, F05-D blocker).
 2. **Directory record length fields** — the reference ignores both for
@@ -192,3 +195,25 @@ no new tasks were filed with `create_tasks`.
 Checked by its own tests only: synthetic fixtures cannot certify
 original-data behaviour (spec F05, "Evidence and completion"). This stage
 does not mount, extract or decompress anything.
+
+## Review (F05-A review pass)
+
+- **Fix applied:** the two length fields were exposed as `length` /
+  `length_on_disk`; the F05 deliverable says "Preserve the two length
+  fields as `raw_length` and `raw_length_on_disk` until a local corpus
+  resolves their meaning". `RofRawRecord` now uses those spec names (the
+  on-disk words keep their observed names in the docs and in
+  `docs/research/FORMAT-NOTES.md`), with `decode_record`, the test
+  builders and the assertions updated to match. No other stage consumes
+  this type yet (`F05-B` is still `todo`), so this was the cheapest moment;
+  it also puts the "uninterpreted" marker inside every later
+  `record.raw_length` read.
+- **Reviewer verification:** `cargo fmt --all -- --check`,
+  `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`,
+  `cargo test --workspace --locked`,
+  `cargo test --workspace --locked -- accept_f05_a_ --include-ignored`
+  (10 tests) and `cargo run -p cs_xtask --locked -- test-select --prefix accept_f05_a_`
+  all exit 0 after the fix. Independent mutation probe: making
+  `validate_names` return early makes 4 of the 10 tests fail
+  (`cargo test -p cs_formats --test rof`, exit 101), source restored.
+
