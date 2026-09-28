@@ -8,15 +8,17 @@
 //! The fixture is deliberately minimal — two headers and a handful of
 //! installation paths — because this stage decides *which reader a
 //! container is routed to*, not what a reader parses (F06-B does that).
-//! The second header is important: only the INTERP header layout is
-//! documented in the research pack, so its bytes are plain authored
-//! content that matches no documented signature and dispatch has to say so
-//! (`HeaderStatus::Unvalidated`) instead of pretending it checked them.
+//! The second header is important: it is plain authored content that
+//! matches no documented signature, so where a role routes it to a family
+//! without a header rule dispatch has to say so (`HeaderStatus::Unvalidated`)
+//! instead of pretending it checked them. Task #340 documented the GameZ and
+//! animation signatures, so the AC01 pair is now two documented headers.
 
 mod readers;
 
 use cs_formats::zbd::{
-    CONTENT_ROOT, DispatchBasis, HeaderStatus, INTERP_SIGNATURE, INTERP_VERSION,
+    CONTENT_ROOT, DispatchBasis, GAMEZ_SIGNATURE, GAMEZ_VERSION, HeaderStatus, INTERP_SIGNATURE,
+    INTERP_VERSION,
     INTERP_VERSION_OFFSET, OUTSIDE_CONTENT_ROOT, RoleStatus, UNOBSERVED_NAME, ZBD_FAMILY_INVENTORY,
     ZbdDispatch, ZbdDispatchError, ZbdFamily, ZbdProbe, ZbdReaderId, ZbdRole, dispatch,
     family_record, role_for_path,
@@ -46,13 +48,23 @@ fn interp_header_with_version(version: u32) -> Vec<u8> {
     bytes
 }
 
-/// A second synthetic ZBD-family header: authored bytes that begin with no
-/// documented signature.
+/// The GameZ header words task #340 read from the pinned mech3ax v0.6.0
+/// source: signature `0x02971222`, Crimson Skies version 42, then an
+/// authored field.
+fn gamez_header() -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(12);
+    bytes.extend_from_slice(&GAMEZ_SIGNATURE.to_le_bytes());
+    bytes.extend_from_slice(&GAMEZ_VERSION.to_le_bytes());
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes
+}
+
+/// Authored bytes that begin with no documented signature.
 ///
-/// Nothing here claims these bytes are any real family's layout — the
-/// research pack documents no header for five of the six families (spec F06
-/// research boundary), so dispatch must route this container on its
-/// observed role and record the header as unvalidated.
+/// Nothing here claims these bytes are any real family's layout — three of
+/// the six families have no header signature (task #340 findings), so
+/// dispatch must route such a container on its observed role and record the
+/// header as unvalidated.
 fn other_header() -> Vec<u8> {
     vec![
         0x5A, 0x01, 0x00, 0x00, 0x10, 0x00, 0x00, 0x00, 0xFF, 0x00, 0x7A, 0x02, 0x00, 0x00, 0x00,
@@ -84,12 +96,12 @@ fn accept_f06_a_two_distinct_headers_route_to_different_readers() {
     let first = dispatch_at(&interp_path, &interp)
         .expect("a documented signature at an observed role name dispatches");
 
-    // Header two: authored bytes that match no documented signature, at the
-    // observed location of a different family.
+    // Header two: the documented GameZ header at the observed location of a
+    // different family.
     let planes_path = path("zbd/planes.zbd");
-    let other = other_header();
+    let other = gamez_header();
     let second = dispatch_at(&planes_path, &other)
-        .expect("an observed role name dispatches even without a documented header");
+        .expect("the documented GameZ header at its observed role name dispatches");
 
     // Two distinct synthetic ZBD-family headers…
     assert_ne!(interp, other, "the two fixtures must be distinct headers");
@@ -120,7 +132,14 @@ fn accept_f06_a_two_distinct_headers_route_to_different_readers() {
 
     assert_eq!(second.family(), ZbdFamily::GameZ);
     assert_eq!(second.reader(), ZbdReaderId::GameZ);
-    assert_eq!(second.basis(), DispatchBasis::RoleOnly);
+    assert_eq!(second.basis(), DispatchBasis::HeaderAndRole);
+    assert!(matches!(
+        second.header_status(),
+        HeaderStatus::Validated {
+            signature: GAMEZ_SIGNATURE,
+            version: GAMEZ_VERSION,
+        }
+    ));
 
     // Both decisions round-trip through the inventory rows they name.
     assert_eq!(first.record(), family_record(ZbdFamily::Interp));
@@ -148,14 +167,14 @@ fn accept_f06_a_role_only_dispatch_records_an_unvalidated_header() {
     let expected_reason = family_record(ZbdFamily::Texture)
         .header_rule()
         .undocumented_reason()
-        .expect("the texture family has no documented header layout");
+        .expect("the texture family has no header signature");
     match decided.header_status() {
         HeaderStatus::Unvalidated { reason } => {
             assert!(!reason.is_empty(), "an unvalidated header carries why");
             assert_eq!(reason, expected_reason);
         }
         HeaderStatus::Validated { .. } => {
-            panic!("no texture header layout is documented; dispatch must not claim validation")
+            panic!("the texture header has no signature; dispatch must not claim validation")
         }
     }
 
@@ -440,29 +459,33 @@ fn accept_f06_a_role_inventory_covers_every_observed_archive_name() {
         (
             "zbd/c1/rtexture15.zbd",
             ZbdFamily::Texture,
-            ClaimStatus::Inferred,
+            ClaimStatus::Documented,
         ),
         (
             "zbd/c2b/rtexture9.zbd",
             ZbdFamily::Texture,
-            ClaimStatus::Inferred,
+            ClaimStatus::Documented,
         ),
-        ("zbd/c1/zrdr.zbd", ZbdFamily::Reader, ClaimStatus::Inferred),
+        ("zbd/rimage.zbd", ZbdFamily::Texture, ClaimStatus::Documented),
+        ("zbd/zrdr.zbd", ZbdFamily::Reader, ClaimStatus::Documented),
+        ("zbd/c1/zrdr.zbd", ZbdFamily::Reader, ClaimStatus::Documented),
         (
             "zbd/c1/cam_anim.zbd",
             ZbdFamily::Animation,
-            ClaimStatus::Inferred,
+            ClaimStatus::Documented,
         ),
         (
             "zbd/c1/m02/mis_anim.zbd",
             ZbdFamily::Animation,
-            ClaimStatus::Inferred,
+            ClaimStatus::Documented,
         ),
         (
             "zbd/c1/ia1/zrdr.zbd",
             ZbdFamily::Reader,
-            ClaimStatus::Inferred,
+            ClaimStatus::Documented,
         ),
+        ("ZBD/soundsl.zbd", ZbdFamily::Sound, ClaimStatus::Documented),
+        ("zbd/soundsh.zbd", ZbdFamily::Sound, ClaimStatus::Documented),
     ];
 
     for (spelling, expected_family, expected_evidence) in observed {
@@ -523,12 +546,15 @@ fn accept_f06_a_family_inventory_declares_one_reader_per_family() {
             record.family().file_family_label()
         );
 
-        // Evidence classes are honest: a documented signature cites itself,
-        // an undocumented layout says so and is `unknown`.
+        // Evidence classes are honest: a signature rule cites where it was
+        // documented (or, for a version no source states, where it was
+        // observed), an undocumented layout says so and is `unknown`.
         match record.header_rule().signature() {
-            Some(rule) => assert_eq!(
-                record.header_rule().evidence(),
-                ClaimStatus::Documented,
+            Some(rule) => assert!(
+                matches!(
+                    record.header_rule().evidence(),
+                    ClaimStatus::Documented | ClaimStatus::ObservedTool
+                ),
                 "{family:?} cites {source}",
                 source = rule.source()
             ),
@@ -556,9 +582,8 @@ fn accept_f06_a_family_inventory_declares_one_reader_per_family() {
     }
 
     // Every row of the static inventory is a row for a known family, and
-    // every rule it carries claims only evidence this stage can support
-    // (`verified_original` and `observed_tool` would both be lies here:
-    // nothing was probed against the installation).
+    // every role rule it carries claims only evidence a source can support
+    // (`verified_original` would be a lie: an agent never awards it).
     let mut rows = 0;
     for record in ZBD_FAMILY_INVENTORY.iter() {
         assert!(ZbdFamily::ALL.contains(&record.family()));
@@ -573,12 +598,16 @@ fn accept_f06_a_family_inventory_declares_one_reader_per_family() {
     }
     assert_eq!(rows, ZBD_FAMILY_INVENTORY.len());
 
-    // Sound is the recorded unknown: no archive name in committed evidence
-    // has been tied to sound bytes, so it owns no role rule at all.
-    assert!(
-        family_record(ZbdFamily::Sound).role_rules().is_empty(),
-        "the sound family's role rules must stay empty until an archive is observed"
-    );
+    // Since task #340 every family owns at least one observed role rule —
+    // the sound family's is `ZBD/sounds*.zbd` — so dispatch can reach every
+    // reader slot.
+    for record in ZBD_FAMILY_INVENTORY.iter() {
+        assert!(
+            !record.role_rules().is_empty(),
+            "{:?} has no observed archive name",
+            record.family()
+        );
+    }
 }
 
 #[test]
@@ -593,7 +622,8 @@ fn accept_f06_a_role_rules_apply_only_at_their_observed_level() {
         "zbd/rtexture2.zbd",
         "zbd/c1/mis_anim.zbd",
         "zbd/c1/m02/cam_anim.zbd",
-        "zbd/zrdr.zbd",
+        "zbd/c1/soundsl.zbd",
+        "zbd/c1/rimage.zbd",
         "zbd/c1/m02/extra/zrdr.zbd",
     ];
     for spelling in misplaced {

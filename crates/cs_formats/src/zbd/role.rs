@@ -9,7 +9,11 @@
 //! `interp.zbd` and `planes.zbd` at the `zbd` level, the four archives every
 //! world group carries (`cam_anim.zbd`, `gamez.zbd`, `texture.zbd`,
 //! `zrdr.zbd`), the varying `rtexture*.zbd` names and the two archives every
-//! mission directory carries (`mis_anim.zbd`, `zrdr.zbd`).
+//! mission directory carries (`mis_anim.zbd`, `zrdr.zbd`). Task #340 added
+//! the remaining `zbd`-level archives (`rimage.zbd`, `soundsh.zbd`,
+//! `soundsl.zbd`, `zrdr.zbd`) and tied every name to its family through the
+//! pinned mech3ax v0.6.0 README
+//! (`docs/findings/2026-09-28-t340-zbd-family-headers-and-archive-names.md`).
 //!
 //! This module performs no I/O: it matches a `&RelativePath` the caller has
 //! already discovered against a static table, so parsing stays independent
@@ -48,7 +52,8 @@ pub const UNOBSERVED_NAME: &str =
 /// matches nowhere else.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RoleLevel {
-    /// Directly under `zbd/` (`interp.zbd`, `planes.zbd`).
+    /// Directly under `zbd/` (`interp.zbd`, `planes.zbd`, `rimage.zbd`,
+    /// `soundsh.zbd`, `soundsl.zbd`, `zrdr.zbd`).
     ContentRoot,
     /// Directly inside a world group directory (`zbd/c1/gamez.zbd`).
     WorldGroup,
@@ -125,9 +130,10 @@ impl fmt::Display for RolePattern {
 ///
 /// `evidence` is honest about *how* the pattern was tied to its family:
 /// `documented` for a name a cited source states (an `interp` container, the
-/// `gamez`/`texture` CLI examples), `inferred` for a name whose family comes
-/// from reading the observed basename (`zrdr`, `cam_anim`, `mis_anim`,
-/// `rtexture`). An inferred rule may route a container to a reader that then
+/// `gamez`/`texture` CLI examples, the mech3ax v0.6.0 README list that task
+/// #340 cites for `zrdr`, `sounds*`, `rtexture*`, `rimage`, `cam_anim` and
+/// `mis_anim`), `inferred` for a name whose family comes only from reading the
+/// observed basename (none today). An inferred rule may route a container to a reader that then
 /// rejects its bytes — which is the visible failure spec F06 AC02 wants,
 /// never a silent fallback.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -154,8 +160,8 @@ impl RoleRule {
         }
     }
 
-    /// A rule for the observed `rtexture*.zbd` shape at the observed
-    /// `levels`.
+    /// A rule for an observed name shape whose middle varies
+    /// (`rtexture*.zbd`, `sounds*.zbd`) at the observed `levels`.
     pub const fn prefixed(
         prefix: &'static str,
         suffix: &'static str,

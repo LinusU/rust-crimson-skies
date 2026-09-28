@@ -18,9 +18,9 @@
 //! checked member extents, consumed and uncovered ranges, a strict status,
 //! the records the stage cannot interpret, and the family gate that refuses
 //! one family's bytes to another family's reader. Neither stage reads a member
-//! index out of container bytes yet: no reader or sound header layout is
-//! documented, so the index is an input ([`zbd::MemberTable`]) and every entry
-//! reports the recorded unknown (task #340).
+//! index out of container bytes yet: task #340 recorded the trailer layout but
+//! nothing reads it (task #343), so the index is an input
+//! ([`zbd::MemberTable`]) and every entry reports the recorded unknown.
 //!
 //! The raw INTERP loading-script records follow:
 //! `specs/F07-interp-loading-script-container.md` (stage F07-A,

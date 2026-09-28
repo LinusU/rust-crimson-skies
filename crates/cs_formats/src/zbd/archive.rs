@@ -12,8 +12,9 @@
 //!   index declares it. The index is an **input**, not an assumption: F06-B
 //!   claims no knowledge of where inside a reader or sound archive that index
 //!   lives or how a name, id and extent are laid out inside it, because the
-//!   committed research pack documents that layout for neither family (spec F06
-//!   "Research boundary"; task #340 owns reading it from the pinned source).
+//!   layout was not documented when F06-B landed (spec F06 "Research boundary").
+//!   Task #340 has since recorded it — a version-one table at the end of the
+//!   file — and task #343 owns reading it.
 //!   The family beside that index is never the caller's word either: a family
 //!   an observed role names comes from the two-key dispatch
 //!   ([`MemberTable::from_dispatch`]), and a family no key names yet can only be
@@ -242,10 +243,10 @@ impl<'a> MemberTable<'a> {
 
     /// The member index of a container **no** dispatch key names yet.
     ///
-    /// This is the sound family's only route today: F06-A recorded that no
-    /// `.zbd` archive name in committed evidence is tied to sound bytes, so
-    /// `dispatch` cannot route to `ZbdFamily::Sound` (see task #340). The
-    /// header status is [`HeaderStatus::Unvalidated`] with the family's own
+    /// Since task #340 every family owns an observed role rule (the sound
+    /// family's is `ZBD/sounds*.zbd`), so this refuses every family today; it
+    /// stays as the guard for a family a later stage adds before its archive
+    /// names are observed. The header status is [`HeaderStatus::Unvalidated`] with the family's own
     /// recorded reason, so the reader still cannot pretend it checked bytes.
     ///
     /// A family an observed installation role **does** name is refused with

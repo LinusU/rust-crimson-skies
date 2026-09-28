@@ -12,8 +12,9 @@
 //! `INTERP.ZBD` header is documented (`docs/research/FORMAT-NOTES.md`, "INTERP
 //! observed subset" [S07]) — so every entry comes back as
 //! [`EncodingEvidence::Undeclared`] carrying the family's own recorded reason.
-//! Spec F06's research boundary requires the layout to be read from the pinned
-//! source and checked against the installation first (task #340); until then
+//! Task #340 read the archive layout from the pinned source (a member table at
+//! the end of the file, no leading header) but no entry encoding; until the
+//! table is read (task #343) and an encoding is documented
 //! the entries are an inventory, not an interpretation, which is what
 //! non-negotiable #3 ("archive structural parse success does not prove
 //! semantic interpretation") demands.
@@ -34,7 +35,7 @@ use crate::io::ParseContext;
 ///
 /// One variant on purpose: the pack documents no reader encoding, so this stage
 /// can only ever report that it does not know. A future stage that reads the
-/// layout from the pinned source and checks it against the installation (#340)
+/// encoding from the pinned source and checks it against the installation
 /// adds the documented case here; until then `ClaimStatus::Unknown` is the
 /// honest class and no entry may be decoded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

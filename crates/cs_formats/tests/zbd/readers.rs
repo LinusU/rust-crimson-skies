@@ -7,8 +7,8 @@
 //! no original game data, no `CS_GAME_DIR` access.
 //!
 //! The fixtures are two containers and two member indexes. The containers are
-//! opaque to this stage on purpose: no reader or sound header layout is
-//! documented, so the tests supply the member index the family's own reader
+//! opaque to this stage on purpose: the member table at the end of a reader or
+//! sound archive is not read yet (task #343), so the tests supply the member index the family's own reader
 //! would declare (`MemberTable`) and assert what the production code does with
 //! it — the family gate, the bounds, the retained bytes and spans, the consumed
 //! and uncovered ranges, and the strict status. Nothing here duplicates the
@@ -94,11 +94,20 @@ fn span(offset: u64, length: u64) -> SourceSpan {
     SourceSpan { offset, length }
 }
 
-/// The caller-named sound table, the only route to the sound family while no
-/// dispatch key names it (F06-A's recorded unknown; task #340).
-fn named_sound_table<'a>(members: &'a [MemberExtent<'a>]) -> MemberTable<'a> {
-    MemberTable::named(CONTAINER, ZbdFamily::Sound, members)
-        .expect("the sound family owns no observed role rule, so no dispatch names it")
+/// The first bytes of an authored sound archive. Task #340 found that sound
+/// archives carry no leading header — their index sits at the end of the file
+/// and the first member (a RIFF file) starts at offset 0 — so these bytes only
+/// have to avoid every documented signature.
+const SOUND_LEADING_BYTES: &[u8] = b"RIFF\x24\x00\x00\x00WAVE";
+
+/// The sound table of an archive dispatched at its observed role
+/// (`ZBD/sounds*.zbd`, task #340).
+fn sound_table<'a>(members: &'a [MemberExtent<'a>]) -> MemberTable<'a> {
+    let sound_path = path("zbd/soundsl.zbd");
+    let dispatched = dispatch_at(&sound_path, SOUND_LEADING_BYTES)
+        .expect("`ZBD/sounds*.zbd` dispatches to the sound family");
+    assert_eq!(dispatched.family(), ZbdFamily::Sound);
+    MemberTable::from_dispatch(&dispatched, members)
 }
 
 /// Reads the reader archive `table` declares inside `bytes`, asserting that the
@@ -200,14 +209,17 @@ fn accept_f06_b_a_dispatch_routed_family_cannot_be_named_by_the_caller() {
     assert!(message.contains(CONTAINER), "message: {message}");
 
     // The refusal tracks the inventory rather than a hard-coded list: a family
-    // can be named exactly while no observed role rule names it. Today that is
-    // the sound family alone (F06-A's recorded unknown, task #340).
+    // can be named exactly while no observed role rule names it. Since task
+    // #340 tied the sound family to `ZBD/sounds*.zbd`, no family is left.
     let nameable: Vec<ZbdFamily> = ZbdFamily::ALL
         .iter()
         .copied()
         .filter(|family| MemberTable::named(CONTAINER, *family, &members).is_ok())
         .collect();
-    assert_eq!(nameable, vec![ZbdFamily::Sound]);
+    assert_eq!(nameable, Vec::<ZbdFamily>::new());
+    let error = MemberTable::named(CONTAINER, ZbdFamily::Sound, &members)
+        .expect_err("`ZBD/sounds*.zbd` names the sound family, so only a dispatch may say it");
+    assert_eq!(error.code(), "family_routable_by_dispatch");
 
     // The valid INTERP container of the scenario above cannot be laundered
     // into the reader reader either: its bytes reach a reader only through the
@@ -338,15 +350,20 @@ fn accept_f06_b_duplicate_member_names_and_ids_are_preserved() {
 
 #[test]
 fn accept_f06_b_sound_entries_retain_spans_and_unknown_descriptor_fields() {
-    // Sound has no observed archive name, so its table is the documented
-    // caller-named route (F06-A recorded that unknown; task #340 owns it).
+    // The sound table comes from a dispatch at the observed sound archive name
+    // (task #340); the archive has no header to validate.
     let members = [
         MemberExtent::new(b"gun_loop", Some(11), span(FIRST, 16)),
         MemberExtent::new(b"engine_loop", Some(12), span(SECOND, 16)),
     ];
-    let table = named_sound_table(&members);
+    let table = sound_table(&members);
     assert_eq!(table.family(), ZbdFamily::Sound);
-    assert_eq!(table.origin(), FamilyOrigin::NamedByCaller);
+    assert_eq!(
+        table.origin(),
+        FamilyOrigin::Dispatched {
+            basis: DispatchBasis::RoleOnly
+        }
+    );
     assert!(matches!(
         table.header_status(),
         HeaderStatus::Unvalidated { .. }
@@ -355,7 +372,7 @@ fn accept_f06_b_sound_entries_retain_spans_and_unknown_descriptor_fields() {
     let bytes = body();
     let mut context = ParseContext::with_defaults(CONTAINER);
     let archive = read_sound_archive(&mut context, &table, &bytes)
-        .expect("the caller-named sound container is in bounds");
+        .expect("the dispatched sound container is in bounds");
 
     assert_eq!(archive.family(), ZbdFamily::Sound);
     assert_eq!(archive.len(), 2);
@@ -369,14 +386,14 @@ fn accept_f06_b_sound_entries_retain_spans_and_unknown_descriptor_fields() {
     assert_eq!(first.name(), b"gun_loop");
 
     // …while every declared descriptor field stays unknown instead of being
-    // invented. This stage documents no sound header, so a rate, a channel
-    // count or a loop point would be a fabricated game value (spec F06 research
-    // boundary; AGENTS.md "unknown means unknown").
+    // invented. No member's WAVE header is read yet (task #344), so a rate, a
+    // channel count or a loop point would be a fabricated game value (spec F06
+    // research boundary; AGENTS.md "unknown means unknown").
     let descriptor = first.descriptor();
     let expected_reason = cs_formats::zbd::family_record(ZbdFamily::Sound)
         .header_rule()
         .undocumented_reason()
-        .expect("the sound family's header layout is recorded as undocumented");
+        .expect("the sound family has no header rule");
     for field in [
         descriptor.format().reason(),
         descriptor.channels().reason(),
@@ -598,7 +615,7 @@ fn accept_f06_b_unsupported_records_are_listed_with_their_spans() {
 
     // The sound reader reports the same shape over its own entries.
     let sound_members = [MemberExtent::new(b"gun_loop", Some(11), span(FIRST, 16))];
-    let sound_table = named_sound_table(&sound_members);
+    let sound_table = sound_table(&sound_members);
     let sound = read_sound_archive(&mut context, &sound_table, &bytes)
         .expect("the sound table is in bounds");
     let sound_unsupported = sound.unsupported_records();
@@ -709,9 +726,9 @@ fn accept_f06_b_the_listing_charge_is_exact_and_never_widens_the_ledger() {
 
 #[test]
 fn accept_f06_b_nothing_this_stage_produces_claims_documented_bytes() {
-    // The reader family is name-inferred (F06-A: `zrdr.zbd` -> reader), and no
-    // reader or sound layout is documented. Every claim these readers make must
-    // therefore carry `unknown` / `inferred` evidence, never `documented` or
+    // The reader family's archive name is documented (task #340), but no reader
+    // entry encoding is. Every claim these readers make about entry bytes must
+    // therefore carry `unknown` evidence, never `documented` or
     // `verified_original` — a test suite pass is not original verification.
     let zrdr_path = path("zbd/c1/zrdr.zbd");
     let header = vec![0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];

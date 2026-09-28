@@ -26,14 +26,17 @@
 //! * [`reader_archive`] and [`sound_archive`] are the two readers this
 //!   stage implements (F06-B "reader and sound container subset with
 //!   bounds"). They hand out each member's verbatim bytes with its source
-//!   span and its evidence, and they decode nothing: no reader or sound
-//!   header layout is documented, so every entry reports the recorded
-//!   unknown instead (stage F06-B; task #340 owns reading those layouts).
+//!   span and its evidence, and they decode nothing: the member table at the
+//!   end of a reader or sound archive is not read yet (task #343) and no
+//!   entry encoding is documented, so every entry reports the recorded
+//!   unknown instead (stage F06-B).
 //!
 //! The evidence behind every rule, the design decisions and the recorded
 //! unknowns are written down in
 //! `docs/findings/2026-09-28-f06-a-zbd-family-inventory-and-dispatch.md` and
-//! `docs/findings/2026-09-28-f06-b-reader-and-sound-container-bounds.md`.
+//! `docs/findings/2026-09-28-f06-b-reader-and-sound-container-bounds.md`;
+//! the task #340 header signatures and archive names in
+//! `docs/findings/2026-09-28-t340-zbd-family-headers-and-archive-names.md`.
 //! The fixtures exercised by `crates/cs_formats/tests/zbd/` are newly
 //! authored synthetic bytes; nothing here is derived from original game
 //! data.
@@ -57,8 +60,10 @@ pub use dispatch::{
 };
 pub use family::{ZBD_FAMILY_INVENTORY, ZbdFamily, ZbdFamilyRecord, ZbdReaderId, family_record};
 pub use header::{
-    HeaderProbe, HeaderRule, INTERP_SIGNATURE, INTERP_SIGNATURE_OFFSET, INTERP_VERSION,
-    INTERP_VERSION_OFFSET, SignatureRule,
+    ANIMATION_SIGNATURE, ANIMATION_SIGNATURE_OFFSET, ANIMATION_VERSION, ANIMATION_VERSION_OFFSET,
+    GAMEZ_SIGNATURE, GAMEZ_SIGNATURE_OFFSET, GAMEZ_VERSION, GAMEZ_VERSION_OFFSET, HeaderProbe,
+    HeaderRule, INTERP_SIGNATURE, INTERP_SIGNATURE_OFFSET, INTERP_VERSION, INTERP_VERSION_OFFSET,
+    SignatureRule,
 };
 pub use reader_archive::{
     EncodingEvidence, ReaderArchive, ReaderEntry, ReaderError, read_reader_archive,

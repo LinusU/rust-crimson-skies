@@ -6,12 +6,24 @@
 //! header variants must be read from the pinned source and checked against
 //! the installed game (`specs/F06-…`, "Research boundary").
 //!
-//! Exactly **one** ZBD header layout is documented in the committed research
-//! pack: the INTERP loading-script container — a little-endian `u32`
-//! signature `0x08971119` at offset 0 followed by a little-endian `u32`
-//! version `7` at offset 4 (`docs/research/FORMAT-NOTES.md`, "INTERP
-//! observed subset" [S07]; the 12-byte header is repeated in
-//! `specs/F07-interp-loading-script-container.md`).
+//! Three ZBD families start with a signature/version header:
+//!
+//! - the INTERP loading-script container — a little-endian `u32` signature
+//!   `0x08971119` at offset 0 followed by a little-endian `u32` version `7`
+//!   at offset 4 (`docs/research/FORMAT-NOTES.md`, "INTERP observed subset"
+//!   [S07]; the 12-byte header is repeated in
+//!   `specs/F07-interp-loading-script-container.md`);
+//! - GameZ — signature `0x02971222`, Crimson Skies version `42`, read from the
+//!   pinned mech3ax v0.6.0 source [S02] and matched by every retail
+//!   `gamez.zbd`/`planes.zbd` (task #340 findings);
+//! - animation — signature `0x08170616`, read from the same source (which
+//!   documents the MechWarrior 3/Recoil/Pirate's Moon versions only), with the
+//!   Crimson Skies version `53` observed in every retail `cam_anim.zbd` and
+//!   `mis_anim.zbd` (task #340 findings).
+//!
+//! The sound, reader and texture families have no signature: the first two
+//! are indexed by a table at the *end* of the file, the third starts with two
+//! constant words (`0`, `1`) that distinguish nothing (task #340 findings).
 //!
 //! A family's [`HeaderRule`] is therefore either a documented
 //! [`HeaderRule::Signature`] rule or an explicit
@@ -37,6 +49,39 @@ pub const INTERP_VERSION_OFFSET: usize = 4;
 
 /// The documented INTERP version ([S07]).
 pub const INTERP_VERSION: u32 = 7;
+
+/// Offset of the GameZ signature word.
+pub const GAMEZ_SIGNATURE_OFFSET: usize = 0;
+
+/// The GameZ signature: `SIGNATURE` in `crates/mech3ax-gamez/src/gamez/common.rs`
+/// of the pinned mech3ax v0.6.0 source [S02], shared by every game that
+/// source supports.
+pub const GAMEZ_SIGNATURE: u32 = 0x0297_1222;
+
+/// Offset of the GameZ version word (bytes `4..8`).
+pub const GAMEZ_VERSION_OFFSET: usize = 4;
+
+/// The Crimson Skies GameZ version: `VERSION_CS` in the same file [S02].
+pub const GAMEZ_VERSION: u32 = 42;
+
+/// Offset of the animation signature word.
+pub const ANIMATION_SIGNATURE_OFFSET: usize = 0;
+
+/// The animation signature: `SIGNATURE` in
+/// `crates/mech3ax-anim/src/parse.rs` of the pinned mech3ax v0.6.0 source
+/// [S02].
+pub const ANIMATION_SIGNATURE: u32 = 0x0817_0616;
+
+/// Offset of the animation version word (bytes `4..8`).
+pub const ANIMATION_VERSION_OFFSET: usize = 4;
+
+/// The Crimson Skies animation version.
+///
+/// The pinned source lists only the other games' versions (28, 39, 50) and
+/// does not read Crimson Skies animations, so this value is *observed*: it is
+/// the version word of all 61 retail `cam_anim.zbd`/`mis_anim.zbd` archives
+/// (task #340 findings), not a documented one.
+pub const ANIMATION_VERSION: u32 = 53;
 
 /// How one family's container header is recognized, if it is known at all.
 ///

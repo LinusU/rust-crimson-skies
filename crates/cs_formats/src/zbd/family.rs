@@ -11,15 +11,22 @@
 //! `docs/findings/2026-09-28-f06-a-zbd-family-inventory-and-dispatch.md`.
 //!
 //! Every rule is evidence-labelled (`cs_types::evidence::ClaimStatus`):
-//! `documented` where a cited source states it, `inferred` where the family
-//! comes from reading an observed basename, `unknown` where nothing is known
-//! yet. No rule here was written from an uninspected file layout.
+//! `documented` where a cited source states it, `observed_tool` where a value
+//! was read from the retail installation but no source states it, `inferred`
+//! where the family comes from reading an observed basename, `unknown` where
+//! nothing is known yet. No rule here was written from an uninspected file
+//! layout; the task #340 rules cite the pinned mech3ax v0.6.0 source (commit
+//! `d3521a9721be731d365504568ddcd78e3f9846bb`, `docs/research/SOURCES.md`
+//! S02/S06) and
+//! `docs/findings/2026-09-28-t340-zbd-family-headers-and-archive-names.md`.
 
 use cs_types::evidence::ClaimStatus;
 use cs_types::install::FileFamily;
 
 use super::header::{
-    HeaderRule, INTERP_SIGNATURE, INTERP_SIGNATURE_OFFSET, INTERP_VERSION, INTERP_VERSION_OFFSET,
+    ANIMATION_SIGNATURE, ANIMATION_SIGNATURE_OFFSET, ANIMATION_VERSION, ANIMATION_VERSION_OFFSET,
+    GAMEZ_SIGNATURE, GAMEZ_SIGNATURE_OFFSET, GAMEZ_VERSION, GAMEZ_VERSION_OFFSET, HeaderRule,
+    INTERP_SIGNATURE, INTERP_SIGNATURE_OFFSET, INTERP_VERSION, INTERP_VERSION_OFFSET,
     SignatureRule,
 };
 use super::role::{RoleLevel, RoleRule};
@@ -192,16 +199,19 @@ impl ZbdFamilyRecord {
     }
 }
 
-/// Citation fragment shared by the four rules whose family assignment was
-/// read from the observed basenames themselves (F02-C/F02-D findings).
-const OBSERVED_NAMES: &str = "observed basenames (docs/findings/2026-09-24-f02-c-cs-inspect-inventory-dependency-impact.md, \
-     docs/findings/2026-09-24-f02-d-installation-audit.md); family read from the name — inferred";
+/// Why the sound and reader families have no header rule: their archives
+/// keep their index at the end of the file, not in a leading header.
+const INDEXED_AT_END: &str = "no leading header: the pinned mech3ax v0.6.0 source reads sound and reader archives \
+     (`crates/mech3ax-archive/src/archive.rs`, Crimson Skies = version one) from a trailer — \
+     u32 version 1 and u32 member count in the last 8 bytes, preceded by the 148-byte member \
+     table — and the retail archives start with member data (task #340 findings)";
 
-/// Why five of the six families have no header rule: the reference CLI
-/// selects those families by subcommand, and the committed pack records no
-/// header layout for them (spec F06 "Research boundary").
-const UNDOCUMENTED_BY_SUBCOMMAND: &str = "no header layout is documented for this family; the reference CLI selects it by subcommand \
-     (docs/research/SOURCES.md S06) and spec F06 forbids asserting a universal ZBD header";
+/// Why the texture family has no header rule: its documented leading words
+/// are constants, not a signature.
+const TEXTURE_HEADER_NOT_A_SIGNATURE: &str = "the documented texture header (`crates/mech3ax-image/src/textures.rs` in mech3ax v0.6.0: \
+     u32 0 at offset 0, u32 1 at offset 4) holds no signature — two constant words that other \
+     data can carry too, so it cannot identify the family; the reference CLI selects it by \
+     subcommand (task #340 findings)";
 
 /// The inventory: one row per family, in the order the F06 deliverable
 /// names them.
@@ -215,35 +225,47 @@ pub static ZBD_FAMILY_INVENTORY: [ZbdFamilyRecord; 6] = [
         family: ZbdFamily::Sound,
         reader: ZbdReaderId::Sound,
         header_rule: HeaderRule::Undocumented {
-            reason: UNDOCUMENTED_BY_SUBCOMMAND,
+            reason: INDEXED_AT_END,
         },
-        role_rules: &[],
-        source: "spec F06 deliverable names a sound reader; no `.zbd` archive name in committed \
-                 evidence has been tied to sound bytes (recorded unknown, F06-A findings)",
+        role_rules: &[RoleRule::prefixed(
+            "sounds",
+            ".zbd",
+            &[RoleLevel::ContentRoot],
+            ClaimStatus::Documented,
+            "mech3ax v0.6.0 README: `sounds*.zbd` are sound archives, supported for Crimson Skies \
+             [S02, S06]; observed as `ZBD/soundsl.zbd` and `ZBD/soundsh.zbd` (task #340 findings)",
+        )],
+        source: "mech3ax v0.6.0 README and `unzbd sounds` (\"Extract 'sounds*.zbd' archives\") \
+                 [S02, S06]; the two retail archives sit directly under `ZBD/` (task #340 findings)",
     },
     // --- reader --------------------------------------------------------
     ZbdFamilyRecord {
         family: ZbdFamily::Reader,
         reader: ZbdReaderId::Reader,
         header_rule: HeaderRule::Undocumented {
-            reason: UNDOCUMENTED_BY_SUBCOMMAND,
+            reason: INDEXED_AT_END,
         },
         role_rules: &[RoleRule::exact(
             "zrdr.zbd",
-            &[RoleLevel::WorldGroup, RoleLevel::Mission],
-            ClaimStatus::Inferred,
-            OBSERVED_NAMES,
+            &[
+                RoleLevel::ContentRoot,
+                RoleLevel::WorldGroup,
+                RoleLevel::Mission,
+            ],
+            ClaimStatus::Documented,
+            "mech3ax v0.6.0 README: `zrdr.zbd`/`reader*.zbd` are reader archives, supported for \
+             Crimson Skies [S02, S06]; observed at `ZBD/`, in every world group and in every \
+             mission directory (task #340 findings)",
         )],
-        source: "spec F06 deliverable names a reader archive; `zrdr.zbd` (every world group and \
-                 every mission directory) is the only committed-evidence candidate — inference, \
-                 confirmed by F06-B/D",
+        source: "mech3ax v0.6.0 README and `unzbd reader` (\"Extract 'reader*.zbd'/'zrdr.zbd' \
+                 archives\") [S02, S06]",
     },
     // --- texture -------------------------------------------------------
     ZbdFamilyRecord {
         family: ZbdFamily::Texture,
         reader: ZbdReaderId::Texture,
         header_rule: HeaderRule::Undocumented {
-            reason: UNDOCUMENTED_BY_SUBCOMMAND,
+            reason: TEXTURE_HEADER_NOT_A_SIGNATURE,
         },
         role_rules: &[
             RoleRule::exact(
@@ -257,12 +279,20 @@ pub static ZBD_FAMILY_INVENTORY: [ZbdFamilyRecord; 6] = [
                 "rtexture",
                 ".zbd",
                 &[RoleLevel::WorldGroup],
-                ClaimStatus::Inferred,
-                OBSERVED_NAMES,
+                ClaimStatus::Documented,
+                "mech3ax v0.6.0 README: `rtexture*.zbd` are image/texture packages [S02, S06]; \
+                 observed in the world groups (task #340 findings)",
+            ),
+            RoleRule::exact(
+                "rimage.zbd",
+                &[RoleLevel::ContentRoot],
+                ClaimStatus::Documented,
+                "mech3ax v0.6.0 README: `rimage.zbd` is an image/texture package [S02, S06]; \
+                 observed as `ZBD/rimage.zbd` (task #340 findings)",
             ),
         ],
-        source: "docs/research/SOURCES.md S06 (`textures` subcommand) and the FORMAT-NOTES \
-                 workflow example; the `rtexture*` shape is name-inferred",
+        source: "docs/research/SOURCES.md S06 (`textures` subcommand), the FORMAT-NOTES workflow \
+                 example and the mech3ax v0.6.0 README list of image/texture packages [S02]",
     },
     // --- interp --------------------------------------------------------
     ZbdFamilyRecord {
@@ -292,9 +322,16 @@ pub static ZBD_FAMILY_INVENTORY: [ZbdFamilyRecord; 6] = [
     ZbdFamilyRecord {
         family: ZbdFamily::GameZ,
         reader: ZbdReaderId::GameZ,
-        header_rule: HeaderRule::Undocumented {
-            reason: UNDOCUMENTED_BY_SUBCOMMAND,
-        },
+        header_rule: HeaderRule::Signature(SignatureRule::new(
+            GAMEZ_SIGNATURE_OFFSET,
+            GAMEZ_SIGNATURE,
+            GAMEZ_VERSION_OFFSET,
+            GAMEZ_VERSION,
+            "mech3ax v0.6.0 `crates/mech3ax-gamez/src/gamez/common.rs` (`SIGNATURE`, \
+             `VERSION_CS`) and `gamez/cs/mod.rs` (`HeaderCsC`: u32 signature @0, u32 version @4) \
+             [S02]; matched by all 9 retail GameZ archives (task #340 findings)",
+            ClaimStatus::Documented,
+        )),
         role_rules: &[
             RoleRule::exact(
                 "planes.zbd",
@@ -312,32 +349,42 @@ pub static ZBD_FAMILY_INVENTORY: [ZbdFamilyRecord; 6] = [
             ),
         ],
         source: "specs/F10 (planes and world geometry are GameZ data); docs/research/FINDINGS.md \
-                 and SOURCES.md S02/S03/S06",
+                 and SOURCES.md S02/S03/S06; header from mech3ax v0.6.0 [S02]",
     },
     // --- animation -----------------------------------------------------
     ZbdFamilyRecord {
         family: ZbdFamily::Animation,
         reader: ZbdReaderId::Animation,
-        header_rule: HeaderRule::Undocumented {
-            reason: UNDOCUMENTED_BY_SUBCOMMAND,
-        },
+        header_rule: HeaderRule::Signature(SignatureRule::new(
+            ANIMATION_SIGNATURE_OFFSET,
+            ANIMATION_SIGNATURE,
+            ANIMATION_VERSION_OFFSET,
+            ANIMATION_VERSION,
+            "signature: mech3ax v0.6.0 `crates/mech3ax-anim/src/parse.rs` (`SIGNATURE`, u32 @0, \
+             u32 version @4) [S02]; version 53: observed in all 61 retail `cam_anim.zbd`/\
+             `mis_anim.zbd` archives — the pinned source documents no Crimson Skies version \
+             (task #340 findings)",
+            ClaimStatus::ObservedTool,
+        )),
         role_rules: &[
             RoleRule::exact(
                 "cam_anim.zbd",
                 &[RoleLevel::WorldGroup],
-                ClaimStatus::Inferred,
-                OBSERVED_NAMES,
+                ClaimStatus::Documented,
+                "mech3ax v0.6.0 README: `anim.zbd`/`cam_anim.zbd`/`mis_anim.zbd` are one \
+                 animation family, not yet read for Crimson Skies [S02, S06]",
             ),
             RoleRule::exact(
                 "mis_anim.zbd",
                 &[RoleLevel::Mission],
-                ClaimStatus::Inferred,
-                OBSERVED_NAMES,
+                ClaimStatus::Documented,
+                "mech3ax v0.6.0 README: `anim.zbd`/`cam_anim.zbd`/`mis_anim.zbd` are one \
+                 animation family, not yet read for Crimson Skies [S02, S06]",
             ),
         ],
-        source: "spec F06 deliverable names an animation reader; `cam_anim.zbd` (every world \
-                 group) and `mis_anim.zbd` (every mission directory) are the only \
-                 committed-evidence candidates — inference, confirmed by F06-B/D",
+        source: "spec F06 deliverable names an animation reader; the mech3ax v0.6.0 README ties \
+                 `cam_anim.zbd` (every world group) and `mis_anim.zbd` (every mission directory) \
+                 to it [S02, S06]",
     },
 ];
 

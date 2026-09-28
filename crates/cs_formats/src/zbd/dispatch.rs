@@ -383,7 +383,9 @@ impl std::error::Error for ZbdDispatchError {}
 /// 1. **The observed role names a family.** If that family's header rule is
 ///    documented, the probe must validate: [`HeaderProbe::TooShort`] becomes
 ///    [`ZbdDispatchError::HeaderTooShort`], [`HeaderProbe::Mismatch`] becomes
-///    [`ZbdDispatchError::HeaderMismatch`], a wrong version becomes
+///    [`ZbdDispatchError::HeaderRoleConflict`] when another family's
+///    documented signature matches and [`ZbdDispatchError::HeaderMismatch`]
+///    otherwise, a wrong version becomes
 ///    [`ZbdDispatchError::UnsupportedHeaderVersion`], and a match dispatches
 ///    on [`DispatchBasis::HeaderAndRole`]. If the family's header rule is
 ///    undocumented, the probe is still checked against *every* documented
@@ -450,13 +452,28 @@ fn dispatch_with_role<'a>(
                 available,
                 role_rule: rule,
             }),
-            HeaderProbe::Mismatch => Err(ZbdDispatchError::HeaderMismatch {
-                container: probe.container.to_owned(),
-                family,
-                expected_signature: signature.value(),
-                available: probe.header.len(),
-                role_rule: rule,
-            }),
+            HeaderProbe::Mismatch => {
+                // Another family's documented signature is a family
+                // disagreement, which outranks a plain mismatch.
+                if let Some((header_family, contradicting, _version)) =
+                    documented_header_match(probe.header)
+                {
+                    return Err(ZbdDispatchError::HeaderRoleConflict {
+                        container: probe.container.to_owned(),
+                        header_family,
+                        role_family: family,
+                        signature: contradicting.value(),
+                        role_rule: rule,
+                    });
+                }
+                Err(ZbdDispatchError::HeaderMismatch {
+                    container: probe.container.to_owned(),
+                    family,
+                    expected_signature: signature.value(),
+                    available: probe.header.len(),
+                    role_rule: rule,
+                })
+            }
             HeaderProbe::Match { version } => {
                 if version != signature.version() {
                     return Err(ZbdDispatchError::UnsupportedHeaderVersion {

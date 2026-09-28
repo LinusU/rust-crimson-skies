@@ -9,11 +9,11 @@
 //! span and a descriptor whose fields report the recorded unknown.
 //!
 //! What it deliberately does not do: name a sample format, a channel count, a
-//! rate or a loop point. The committed research pack documents no sound
-//! container header, and no `.zbd` archive name has been tied to sound bytes at
-//! all (F06-A findings, "Recorded unknowns"); spec F06's research boundary
-//! requires those header variants to be read from the pinned source and checked
-//! against the installation first (task #340). Until then every descriptor field
+//! rate or a loop point. Task #340 tied the family to `ZBD/sounds*.zbd` and found
+//! that those archives have no leading header: the member table sits at the end
+//! of the file and the members are RIFF/WAVE files (task #340 findings). Reading
+//! that table (task #343) and each member's WAVE header (task #344) is still
+//! to come. Until then every descriptor field
 //! is [`SoundField::Unknown`] carrying the family's own recorded reason, so
 //! nothing downstream can read a fabricated `22050 Hz` as a measured value.
 //!
@@ -331,14 +331,11 @@ impl std::error::Error for SoundError {
 /// Reads the sound container `table` declares inside `bytes`.
 ///
 /// `bytes` is the whole container; `table` is its member index (see
-/// [`MemberTable`] for why the index is an input in this stage). Today the only
-/// way to build a sound table is [`MemberTable::named`], and only because no
-/// dispatch key names the sound family yet (F06-A findings; task #340) — which
-/// is also why a family dispatch *does* name, such as a dispatched reader or
-/// interp container, is refused there with
-/// [`RoutableFamily`](super::archive::RoutableFamily) instead of being named
-/// sound, and a table built from such a dispatch is refused here with
-/// [`SoundError::Family`], exactly as the reader reader refuses it.
+/// [`MemberTable`] for why the index is an input in this stage). A sound table
+/// comes from a dispatch of a `ZBD/sounds*.zbd` archive (task #340); a table
+/// built from the dispatch of another family, such as a reader or interp
+/// container, is refused here with [`SoundError::Family`], exactly as the
+/// reader reader refuses it.
 ///
 /// # Errors
 ///
