@@ -31,16 +31,16 @@ left out and never defaulted to a plausible value.
 | --- | --- | --- |
 | `id` | Stable record id within its reference set | — |
 | `source` | `original_observed` / `remake_sample` / `synthetic_fixture` | must agree with `claim`; must equal the series' source |
-| `claim` | `original_behavior` / `remake_behavior` / `worksheet_only` | `original_behavior` requires `original_observed` **and** a flight-observing basis |
-| `role` | `calibration` or `holdout` | a record carrying the reserved maneuver may not be `calibration` |
-| `identity` | original edition, executable SHA-256, installation SHA-256 | all three required for `original_observed`; `Unknown`+reason otherwise |
-| `settings` | difficulty, assists, other settings | recorded, never defaulted |
-| `mission`, `airframe`, `loadout` | original identities as observed | `Unknown`+reason until measured; no guessed catalog ids |
-| `worksheet` | `first_mission_branch` (branch + spawn context) or `baseline_flight` (probe maneuver) | see the two companion worksheets |
+| `claim` | `original_behavior` / `remake_behavior` / `worksheet_only` | `original_behavior` requires `original_observed`; **every** behavior claim requires a flight-observing basis |
+| `role` | `calibration` or `holdout` | a record carrying the reserved maneuver may not be `calibration`; a calibration record of a reference set must be `original_observed` |
+| `identity` | original edition, executable SHA-256, installation SHA-256 | all three required for `original_observed` (a blank edition counts as missing); `Unknown`+reason otherwise |
+| `settings` | difficulty, assists, other settings | recorded, never defaulted; `difficulty` and `assists` required once the record offers a behavior claim |
+| `mission`, `airframe`, `loadout` | original identities as observed | `Unknown`+reason until measured; no guessed catalog ids; required once the record offers a behavior claim |
+| `worksheet` | `first_mission_branch` (branch + spawn context) or `baseline_flight` (probe maneuver) | see the two companion worksheets; a first-mission row that offers a behavior claim must record its branch and spawn context |
 | `timebase` | clock, origin (what `t = 0` means), time unit, nominal sample rate, **measured** timing uncertainty and its method | all five required once samples exist; a non-positive rate, an empty origin/clock/unit or an uncertainty without a measurement method is ambiguous |
 | `units` | quantity/unit pairs with conversion provenance (reported by tool / converted with a factor / unknown+reason) | every observed pair and the time unit must be declared; no unit is inferred |
-| `series` | input/time samples and their source | empty series = no capture yet |
-| `basis` | what the record was observed with: runtime observation, instrumented capture, file-access trace, synthetic simulation | non-empty for a usable record; only the first two observe flight |
+| `series` | input/time samples and their source | empty series = no capture yet; samples carrying no observation at all = nothing measured = unavailable |
+| `basis` | what the record was observed with: runtime observation, instrumented capture, file-access trace, synthetic simulation | non-empty for a usable record; only the first two observe flight, and a behavior claim needs one of them |
 | `observer`, `capture_method` | who observed, with what equipment/software/procedure | required for a usable record |
 | `artifacts` | private artifact spellings + required SHA-256 + role | `/`-relative under one private root; no `..`, no absolute paths; re-hashed on every validation |
 | `notes` | free-form, including fixture/limitation notes | — |
@@ -54,14 +54,22 @@ encoding: a capture of raw axes converts them and declares the conversion in `un
 `validate_capture(record, context)` returns all three lists; a record is valid only when both are
 empty. Defects are reported even when data is also missing.
 
-* **Invalid (defect, must be corrected):** missing fingerprint, ambiguous timebase, non-finite
-  value, artifact hash mismatch, unsafe artifact path, undeclared unit, unusable conversion factor,
-  source/claim contradiction (a synthetic record labeled original), mixed original/remake sources,
-  a behavior claim whose only basis is a file trace, the reserved holdout used as calibration data.
-* **Unavailable (data not captured yet, never a pass):** no samples, no artifact, artifact root not
-  supplied (unchecked ≠ matching), artifact not readable, missing observer/method/basis, no
-  calibration record, reserved holdout not captured, holdout not original-observed.
+* **Invalid (defect, must be corrected):** missing fingerprint (including an asserted-but-blank
+  edition), ambiguous timebase, non-finite value, artifact hash mismatch, unsafe artifact path,
+  undeclared unit, unusable conversion factor, source/claim contradiction (a synthetic record labeled
+  original), mixed original/remake sources, a behavior claim — for the original or for the remake —
+  with no flight-observing basis, the reserved holdout used as calibration data.
+* **Unavailable (data not captured yet, never a pass):** no samples, samples carrying no observed
+  quantity at all, no artifact, artifact root not supplied (unchecked ≠ matching), artifact not
+  readable, missing observer/method/basis, a behavior claim that does not state its mission,
+  airframe, loadout, difficulty or assists (or, on a first-mission row, its branch or spawn context),
+  no calibration record, a calibration record that is not `original_observed`, reserved holdout not
+  captured, holdout not original-observed.
 * **Valid:** everything present, consistent and re-hashed.
+
+`worksheet_only` records are held to no identity requirement — they offer no behavior — but their
+samples, artifacts, observer, method and basis are still required, so a placeholder row stays
+*unavailable*.
 
 "Missing capture data is unavailable not pass" is enforced by the unavailable branch, not by
 convention: an empty worksheet, a missing file and an unchecked root all land there and can never
@@ -75,6 +83,12 @@ calibration records, so **fitting acceleration alone can never establish handlin
 the reserved maneuver has been captured as original data the outcome becomes `Ready`, which means
 only that a comparison *can be run* — never that a tolerance was met. F26 owns the comparison, its
 tolerances and its deviation reports.
+
+Every record that feeds the comparison is original evidence: a calibration record that is not
+`original_observed` reports `calibration data is not original-observed`, and one non-original record
+among the holdouts reports `reserved holdout … is not original-observed evidence`. Fitting on
+authored synthetic (or remake) data and checking an original holdout would promote data of one
+class into a claim about the other, so it never reaches `Ready`.
 
 Reserve the maneuver **before** selecting tolerances or fitting, and record the rationale in the
 set. Do not read the holdout while fitting.
@@ -98,12 +112,12 @@ workstreams fingerprint the same private file:
 Only paths, hashes and tool/platform identity are shared; the trace contents stay in `private/`.
 
 **Limitation, enforced in code:** a file trace records *which files the original opened*, never
-*how the aircraft flew* or *why a mission branch was taken*. A record offered as
-`original_behavior` whose only basis is a file trace is refused
-(`FileTraceCannotSupportFlightBehavior`). The same record shared as `worksheet_only` metadata
-validates. The trace therefore cannot move `PRECEDENCE_ORDER_STATUS` or any handling claim by
-itself; #341's own acceptance (summarise, compare with `SessionBuilder::mount_installation`, file
-mismatches) still applies.
+*how the aircraft flew* or *why a mission branch was taken*. Any record offered as behavior
+evidence — `original_behavior` **or** `remake_behavior` — whose only basis is a file trace (or
+authored synthetic data) is refused (`NoFlightObservingBasis`). The same record shared as
+`worksheet_only` metadata validates. The trace therefore cannot move `PRECEDENCE_ORDER_STATUS` or
+any handling claim by itself; #341's own acceptance (summarise, compare with
+`SessionBuilder::mount_installation`, file mismatches) still applies.
 
 ## Companion worksheets
 

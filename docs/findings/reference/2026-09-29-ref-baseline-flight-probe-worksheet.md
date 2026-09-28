@@ -31,11 +31,11 @@ Per row:
 
 | Group | What to record | If not known |
 | --- | --- | --- |
-| Provenance | edition, executable SHA-256, installation SHA-256; `mission`/`airframe`/`loadout` identities as observed | `Unknown` + reason; `original_observed` requires the fingerprints |
+| Provenance | edition, executable SHA-256, installation SHA-256; `mission`/`airframe`/`loadout` identities as observed | `Unknown` + reason; `original_observed` requires the fingerprints, and a behavior row also needs the mission, airframe, loadout, difficulty and assists |
 | Settings | difficulty, assists (every modern assist off unless the row says otherwise, and then named), other settings | `Unknown` + reason |
 | Initial conditions | altitude/attitude/speed state as observed at `t = 0`, mass/loadout configuration | `Unknown` + reason; **no assumed spawn or start state** |
 | Timebase | clock, origin, time unit, measured nominal rate, measured timing uncertainty + method | all five required once samples exist; original frame pacing is measured, never assumed |
-| Input/time series | `FlightInput` per sample in contract ranges plus observed quantities, each with a declared unit | empty series = unavailable |
+| Input/time series | `FlightInput` per sample in contract ranges plus observed quantities, each with a declared unit | empty series = unavailable; a series with no observed quantity = nothing measured = unavailable |
 | Units | every observed pair + (`time`, time unit), each with conversion provenance | never guessed |
 | Basis | runtime observation and/or instrumented capture; the #341 file trace only as extra metadata | a behavior claim needs a flight-observing basis |
 | Observer/method | who flew/observed, equipment, software, procedure | required |
@@ -49,8 +49,9 @@ must never enter a fit:
 1. Choose and record the reserved maneuver **before** selecting tolerances or fitting anything.
    Record the rationale in the reservation.
 2. The reservation is enforced in code: a record carrying the reserved maneuver but marked
-   `calibration` is a defect, and a set whose holdout is missing (or is not `original_observed`)
-   never reaches `Ready`.
+   `calibration` is a defect, and a set whose holdout is missing, whose holdout is not entirely
+   `original_observed`, or whose calibration rows are not `original_observed` never reaches
+   `Ready`.
 3. While only calibration rows exist — acceleration alone, however perfectly fitted — the outcome is
    `unavailable: reserved holdout not captured`. That is the point: **fitting acceleration alone
    cannot establish handling fidelity.**
@@ -75,9 +76,10 @@ missing — never as a pass.
 ## Refusals to expect
 
 Same set as the first-mission worksheet: missing fingerprints, ambiguous timebase, non-finite
-values, hash mismatches, undeclared units, source/claim contradictions, a file trace alone behind a
-behavior claim, and missing observer/method — see
-`2026-09-29-ref-capture-record.md`.
+values, hash mismatches, undeclared units, source/claim contradictions, a file trace (or authored
+synthetic data) alone behind a behavior claim, and missing observer/method — plus a probe row that
+does not state its airframe, loadout, difficulty or assists, or whose samples carry no observed
+quantity, which reads *unavailable* — see `2026-09-29-ref-capture-record.md`.
 
 ## Out of scope
 

@@ -51,12 +51,15 @@ original. A row that has not been observed yet stays `worksheet_only` and valida
 | Situation | Outcome |
 | --- | --- |
 | Row written but no run captured (no samples, no artifacts) | `unavailable` — never a pass |
-| Original claimed without edition/executable/installation fingerprints | `invalid: missing fingerprint` |
+| Original claimed without edition/executable/installation fingerprints (or with a blank edition) | `invalid: missing fingerprint` |
 | Samples present but clock/origin/rate/uncertainty not established, or uncertainty has no method | `invalid: ambiguous timebase` |
 | A quantity observed in an undeclared unit | `invalid: undeclared unit` |
 | Artifact file changed since the record was written | `invalid: artifact hash mismatch` |
 | `source = synthetic_fixture` (or `remake_sample`) with `claim = original_behavior` | `invalid: source/claim mismatch` |
-| Only a file-access trace behind an `original_behavior` claim | `invalid: no flight-observing basis` |
+| Only a file-access trace (or authored synthetic data) behind a behavior claim | `invalid: no flight-observing basis` |
+| Behavior row that does not state mission, airframe, loadout, difficulty or assists | `unavailable` |
+| Behavior row that does not state its branch or spawn context | `unavailable` |
+| Row whose samples carry no observed quantity | `unavailable` |
 | Observer/method not recorded | `unavailable` |
 
 ## Out of scope

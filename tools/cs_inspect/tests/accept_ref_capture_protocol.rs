@@ -108,6 +108,8 @@ fn original_record(tree: &TempArtifacts) -> CaptureRecord {
     record.mission = Measurement::Known("fixture mission (authored)".to_owned());
     record.airframe = Measurement::Known("fixture airframe (authored)".to_owned());
     record.loadout = Measurement::Known("fixture loadout (authored)".to_owned());
+    record.settings.difficulty = Measurement::Known("fixture difficulty (authored)".to_owned());
+    record.settings.assists = Measurement::Known(Vec::new());
     record.basis = vec![CaptureBasis::RuntimeObservation {
         detail: "fixture observation (authored)".to_owned(),
     }];
@@ -529,7 +531,7 @@ fn accept_ref_capture_protocol_file_trace_alone_cannot_support_flight_behavior()
     );
     assert_eq!(
         report.invalid,
-        [CaptureError::FileTraceCannotSupportFlightBehavior {
+        [CaptureError::NoFlightObservingBasis {
             claim: RecordClaim::OriginalBehavior
         }],
         "a file trace alone cannot back a behavior claim"
@@ -659,5 +661,287 @@ fn accept_ref_capture_protocol_acceleration_alone_cannot_establish_fidelity() {
                 })
         ),
         "a synthetic holdout is not original evidence"
+    );
+}
+
+/// A behavior claim needs a basis that really observes flight — for the
+/// original **and** for this reimplementation. Authored synthetic data and the
+/// #341 file-access trace record no flight, so neither can back either claim;
+/// the same metadata offered as `worksheet_only` still validates.
+#[test]
+fn accept_ref_capture_protocol_behavior_claim_requires_flight_observing_basis() {
+    let tree = TempArtifacts::new("behavior-basis");
+    let context = ValidationContext::with_artifact_root(tree.root());
+
+    // A remake behavior claim cannot rest on authored synthetic data.
+    let mut synthetic_basis = original_record(&tree);
+    synthetic_basis.id = "fixture.remake-synthetic".to_owned();
+    synthetic_basis.source = SampleSource::RemakeSample;
+    synthetic_basis.series.source = SampleSource::RemakeSample;
+    synthetic_basis.claim = RecordClaim::RemakeBehavior;
+    synthetic_basis.basis = vec![CaptureBasis::SyntheticSimulation {
+        detail: "fixture: authored samples, no runtime".to_owned(),
+    }];
+    let report = validate_capture(&synthetic_basis, &context);
+    assert_eq!(
+        report.invalid,
+        [CaptureError::NoFlightObservingBasis {
+            claim: RecordClaim::RemakeBehavior
+        }],
+        "a remake claim cannot rest on authored data: {:?}",
+        report.diagnostic_lines()
+    );
+    assert!(
+        report.unavailable.is_empty(),
+        "nothing else is missing: {:?}",
+        report.diagnostic_lines()
+    );
+
+    // ... and not on a file-access trace either.
+    let trace_bytes = b"authored fixture file-access trace";
+    tree.write("traces/lookup-order.pml", trace_bytes);
+    let mut file_trace = synthetic_basis.clone();
+    file_trace.basis = vec![CaptureBasis::FileAccessTrace {
+        trace: FileAccessTraceRef {
+            task: "Rally #341".to_owned(),
+            tool: "fixture trace tool".to_owned(),
+            platform: "fixture platform".to_owned(),
+            relative_path: "traces/lookup-order.pml".to_owned(),
+            sha256: cs_assets::install::sha256(trace_bytes),
+            covers: vec!["fixture world group".to_owned()],
+        },
+    }];
+    let report = validate_capture(&file_trace, &context);
+    assert_eq!(
+        report.invalid,
+        [CaptureError::NoFlightObservingBasis {
+            claim: RecordClaim::RemakeBehavior
+        }],
+        "a file trace cannot back a remake claim either: {:?}",
+        report.diagnostic_lines()
+    );
+
+    // Sharing the same trace as worksheet metadata is still fine.
+    file_trace.claim = RecordClaim::WorksheetOnly;
+    let report = validate_capture(&file_trace, &context);
+    assert!(
+        report.is_valid(),
+        "worksheet metadata still validates: {:?}",
+        report.diagnostic_lines()
+    );
+}
+
+/// The reference set is original evidence end to end: a synthetic calibration
+/// record may not feed an original-fidelity fit, and one non-original record
+/// among the holdouts disqualifies the holdout.
+#[test]
+fn accept_ref_capture_protocol_reference_set_requires_original_records() {
+    let tree = TempArtifacts::new("set-provenance");
+    let context = ValidationContext::with_artifact_root(tree.root());
+    let holdout = HoldoutReservation {
+        maneuver: ManeuverKind::Turn,
+        rationale: "fixture: reserved before fitting".to_owned(),
+    };
+    let calibration = original_record(&tree);
+    let mut holdout_record = original_record(&tree);
+    holdout_record.id = "fixture.holdout-turn".to_owned();
+    holdout_record.role = SampleRole::Holdout;
+    holdout_record.worksheet = Worksheet::BaselineFlight {
+        maneuver: ManeuverKind::Turn,
+    };
+
+    // Fitting on authored synthetic data is not an original reference fit.
+    let mut synthetic_calibration = synthetic_record(&tree);
+    synthetic_calibration.id = "fixture.synthetic-calibration".to_owned();
+    let set = ReferenceSet {
+        holdout: holdout.clone(),
+        records: vec![
+            calibration.clone(),
+            holdout_record.clone(),
+            synthetic_calibration,
+        ],
+    };
+    let outcome = fidelity_comparison(&set, &context);
+    assert!(
+        matches!(
+            &outcome,
+            FidelityComparison::Unavailable(reasons)
+                if reasons.contains(&UnavailableReason::CalibrationNotOriginal {
+                    record: "fixture.synthetic-calibration".to_owned()
+                })
+        ),
+        "synthetic calibration data must not reach an original fit: {outcome:?}"
+    );
+    assert!(!outcome.is_ready(), "never ready on synthetic calibration");
+
+    // One non-original record among the holdouts disqualifies the holdout.
+    let mut synthetic_holdout = holdout_record.clone();
+    synthetic_holdout.id = "fixture.synthetic-holdout".to_owned();
+    synthetic_holdout.source = SampleSource::SyntheticFixture;
+    synthetic_holdout.series.source = SampleSource::SyntheticFixture;
+    synthetic_holdout.claim = RecordClaim::WorksheetOnly;
+    synthetic_holdout.basis = vec![CaptureBasis::SyntheticSimulation {
+        detail: "fixture".to_owned(),
+    }];
+    let set = ReferenceSet {
+        holdout,
+        records: vec![calibration, holdout_record, synthetic_holdout],
+    };
+    let outcome = fidelity_comparison(&set, &context);
+    assert!(
+        matches!(
+            &outcome,
+            FidelityComparison::Unavailable(reasons)
+                if reasons
+                    .contains(&UnavailableReason::HoldoutNotOriginal {
+                        maneuver: "turn".to_owned()
+                    })
+        ),
+        "a mixed holdout is not original evidence: {outcome:?}"
+    );
+    assert!(!outcome.is_ready(), "never ready on a mixed holdout");
+}
+
+/// Samples without a single observed quantity measure nothing: the record is
+/// missing capture data, never a pass and never a defect.
+#[test]
+fn accept_ref_capture_protocol_record_without_observations_is_unavailable() {
+    let tree = TempArtifacts::new("no-observations");
+    let mut record = synthetic_record(&tree);
+    for sample in &mut record.series.samples {
+        sample.observations.clear();
+    }
+
+    let report = validate_capture(&record, &ValidationContext::with_artifact_root(tree.root()));
+    assert!(
+        !report.is_valid(),
+        "a record that observed nothing is not a pass"
+    );
+    assert!(!report.is_invalid(), "incomplete, not defective");
+    assert!(report.is_unavailable(), "{:?}", report.diagnostic_lines());
+    assert_eq!(
+        report.unavailable,
+        [UnavailableReason::NoObservations {
+            record: record.id.clone()
+        }]
+    );
+}
+
+/// An asserted-but-blank edition identifies no edition, so it counts as a
+/// missing fingerprint rather than as a recorded one.
+#[test]
+fn accept_ref_capture_protocol_blank_fingerprint_is_missing() {
+    let tree = TempArtifacts::new("blank-fingerprint");
+    let mut record = original_record(&tree);
+    record.identity.edition = Measurement::Known("   ".to_owned());
+
+    let report = validate_capture(&record, &ValidationContext::with_artifact_root(tree.root()));
+    assert_eq!(
+        report.invalid,
+        [CaptureError::MissingFingerprint {
+            field: FingerprintField::Edition
+        }],
+        "an empty edition name fingerprints no edition: {:?}",
+        report.diagnostic_lines()
+    );
+}
+
+/// The first-mission branch worksheet row is exercised too: a row that records
+/// no branch (or no spawn context) is incomplete, and the same row with its
+/// context recorded validates.
+#[test]
+fn accept_ref_capture_protocol_first_mission_branch_row_needs_its_context() {
+    let tree = TempArtifacts::new("first-mission");
+    let context = ValidationContext::with_artifact_root(tree.root());
+
+    let mut row = original_record(&tree);
+    row.id = "fixture.first-mission-branch".to_owned();
+    row.worksheet = Worksheet::FirstMissionBranch {
+        branch: Measurement::Unknown {
+            reason: "not recorded".to_owned(),
+        },
+        spawn_context: Measurement::Known("fixture spawn context (authored)".to_owned()),
+    };
+    let report = validate_capture(&row, &context);
+    assert!(!report.is_valid(), "no branch recorded is not a pass");
+    assert!(!report.is_invalid(), "missing data, not a defect");
+    assert!(report.is_unavailable(), "{:?}", report.diagnostic_lines());
+    assert_eq!(
+        report.unavailable,
+        [UnavailableReason::MissingCaptureContext {
+            record: row.id.clone(),
+            detail: "branch identity (not recorded)".to_owned(),
+        }],
+        "the diagnostic names what is missing: {:?}",
+        report.diagnostic_lines()
+    );
+
+    row.worksheet = Worksheet::FirstMissionBranch {
+        branch: Measurement::Known("fixture branch label (authored)".to_owned()),
+        spawn_context: Measurement::Known("fixture spawn context (authored)".to_owned()),
+    };
+    let report = validate_capture(&row, &context);
+    assert!(
+        report.is_valid(),
+        "the same row with its context recorded is valid: {:?}",
+        report.diagnostic_lines()
+    );
+    assert_eq!(report.unavailable, []);
+}
+
+/// A record offered as behavior evidence must state what it was about — the
+/// mission, airframe and loadout it observed and the difficulty and assists it
+/// ran under. Missing identity reads unavailable, never valid; a worksheet-only
+/// record claims no behavior and needs none.
+#[test]
+fn accept_ref_capture_protocol_missing_identities_are_unavailable_not_pass() {
+    let tree = TempArtifacts::new("identities");
+    let context = ValidationContext::with_artifact_root(tree.root());
+
+    let mut record = original_record(&tree);
+    record.airframe = Measurement::Unknown {
+        reason: "not recorded".to_owned(),
+    };
+    record.loadout = Measurement::Known("   ".to_owned());
+    record.settings.difficulty = Measurement::Unknown {
+        reason: "not selected".to_owned(),
+    };
+    record.settings.assists = Measurement::Unknown {
+        reason: "not recorded".to_owned(),
+    };
+
+    let report = validate_capture(&record, &context);
+    assert!(
+        !report.is_valid(),
+        "a behavior record without its identities is not a pass"
+    );
+    assert!(!report.is_invalid(), "missing data, not a defect");
+    assert!(report.is_unavailable(), "{:?}", report.diagnostic_lines());
+    for detail in [
+        "airframe identity (not recorded)",
+        "loadout identity is blank",
+        "difficulty (not selected)",
+        "assists (not recorded)",
+    ] {
+        assert!(
+            report
+                .unavailable
+                .contains(&UnavailableReason::MissingCaptureContext {
+                    record: record.id.clone(),
+                    detail: detail.to_owned(),
+                }),
+            "missing {detail} must be reported: {:?}",
+            report.diagnostic_lines()
+        );
+    }
+
+    // The synthetic fixture claims no behavior, so its unknown identities do
+    // not stop it from validating as the well-formed record it is.
+    let worksheet = synthetic_record(&tree);
+    let report = validate_capture(&worksheet, &context);
+    assert!(
+        report.is_valid(),
+        "the worksheet-only fixture stays valid: {:?}",
+        report.diagnostic_lines()
     );
 }

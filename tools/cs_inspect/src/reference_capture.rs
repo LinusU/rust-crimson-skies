@@ -21,8 +21,9 @@
 //!   a synthetic record labeled original. Defects are reported even when data
 //!   is also missing.
 //! * [`CaptureReport::is_unavailable`] — the record is honestly incomplete:
-//!   capture data (samples, artifacts, observer, capture method) is not there
-//!   yet. Never a pass, never silently promoted.
+//!   capture data (samples and the observations they carry, artifacts, the
+//!   identities a behavior claim is about, observer, capture method) is not
+//!   there yet. Never a pass, never silently promoted.
 //!
 //! Provenance is explicit and separable: [`SampleSource`] says how the samples
 //! were produced, [`RecordClaim`] says what the record is offered as, and the
@@ -41,8 +42,9 @@
 //! The file-access trace requested by Rally #341 (`F04-D-original-order`) is
 //! shared as metadata ([`FileAccessTraceRef`]): which files the original
 //! opened is valuable provenance, but a file trace records *what was read*, not
-//! *how the aircraft flew*, so it can never be the basis of a behavior claim
-//! ([`CaptureError::FileTraceCannotSupportFlightBehavior`]).
+//! *how the aircraft flew*, so it can never be the basis of a behavior claim —
+//! for the original **or** for this reimplementation
+//! ([`CaptureError::NoFlightObservingBasis`]).
 //!
 //! No original unit, spawn coordinate, tick rate or timing is hardcoded here:
 //! units ([`UnitDeclaration`]), the timebase ([`Timebase`]) and every identity
@@ -193,9 +195,10 @@ impl fmt::Display for FingerprintField {
 /// The original an original-observed capture is fingerprinted against.
 ///
 /// All three fields are required when [`CaptureRecord::source`] is
-/// [`SampleSource::OriginalObserved`] ([`CaptureError::MissingFingerprint`]).
-/// For every other source they are `Unknown` with a reason: a synthetic
-/// fixture never fingerprints an original it did not run.
+/// [`SampleSource::OriginalObserved`] ([`CaptureError::MissingFingerprint`]);
+/// an asserted-but-blank edition counts as missing, because an empty name
+/// identifies no edition. For every other source they are `Unknown` with a
+/// reason: a synthetic fixture never fingerprints an original it did not run.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OriginalIdentity {
     /// Which original edition produced the samples.
@@ -499,7 +502,7 @@ pub struct ArtifactRef {
 /// ([`validate_capture`]). A file trace answers *which files the original
 /// opened*; it cannot answer *how the aircraft flew*, so it may accompany a
 /// record but can never be the observation that supports a behavior claim
-/// ([`CaptureError::FileTraceCannotSupportFlightBehavior`]).
+/// ([`CaptureError::NoFlightObservingBasis`]).
 #[derive(Clone, Debug, PartialEq)]
 pub struct FileAccessTraceRef {
     /// The task the trace belongs to (e.g. `Rally #341`).
@@ -703,11 +706,13 @@ pub enum CaptureError {
         /// The source its series states.
         series: SampleSource,
     },
-    /// The record claims original flight/mission behavior but nothing it was
-    /// observed with can show flight: a file-access trace (Rally #341) records
-    /// which files were opened, never how the aircraft flew, and authored
-    /// synthetic data records no runtime at all.
-    FileTraceCannotSupportFlightBehavior {
+    /// The record claims flight/mission behavior — for the original or for
+    /// this reimplementation — but nothing it was observed with can show
+    /// flight: a file-access trace (Rally #341) records which files were
+    /// opened, never how the aircraft flew, and authored synthetic data
+    /// records no runtime at all. A behavior claim needs a flight-observing
+    /// basis ([`CaptureBasis::observes_flight`]).
+    NoFlightObservingBasis {
         /// The claim that has no flight-observing basis behind it.
         claim: RecordClaim,
     },
@@ -757,10 +762,11 @@ impl fmt::Display for CaptureError {
                 f,
                 "record source {record} differs from its series source {series}"
             ),
-            Self::FileTraceCannotSupportFlightBehavior { claim } => write!(
+            Self::NoFlightObservingBasis { claim } => write!(
                 f,
                 "claim {claim} has no flight-observing basis: a file-access trace \
-                 records file access, not flight"
+                 records file access and authored synthetic data records no \
+                 runtime, so neither shows how the aircraft flew"
             ),
             Self::HoldoutUsedForCalibration { maneuver } => write!(
                 f,
@@ -777,6 +783,13 @@ pub enum UnavailableReason {
     /// The record has no samples yet.
     NoSamples {
         /// The record that has no samples.
+        record: String,
+    },
+    /// The record has samples but not one observed quantity among them, so
+    /// nothing was actually measured: an input/time series with no observation
+    /// carries no capture data to compare.
+    NoObservations {
+        /// The record whose samples carry no observation.
         record: String,
     },
     /// The record references no private artifact, so nothing can be re-checked.
@@ -799,7 +812,11 @@ pub enum UnavailableReason {
         /// The unreadable artifact spelling.
         path: String,
     },
-    /// Observer, capture method or capture basis is not recorded.
+    /// Required capture context is not recorded: the observer or capture
+    /// method, the capture basis, or — for a record offered as behavior
+    /// evidence — the identities the claim is about (mission, airframe,
+    /// loadout, difficulty, assists) and the subject of its own worksheet row
+    /// (branch and spawn context for a first-mission row).
     MissingCaptureContext {
         /// The record missing its capture context.
         record: String,
@@ -813,11 +830,18 @@ pub enum UnavailableReason {
         /// The reserved maneuver.
         maneuver: String,
     },
-    /// The reserved holdout exists but is not original-observed, so it cannot
-    /// support a claim about the original.
+    /// The reserved holdout exists but at least one of its records is not
+    /// original-observed, so it cannot support a claim about the original.
     HoldoutNotOriginal {
         /// The reserved maneuver.
         maneuver: String,
+    },
+    /// A calibration record of the reference set is not original-observed, so
+    /// fitting on it would promote synthetic or remake data into an
+    /// original-fidelity comparison.
+    CalibrationNotOriginal {
+        /// The record that is not original evidence.
+        record: String,
     },
 }
 
@@ -825,6 +849,9 @@ impl fmt::Display for UnavailableReason {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NoSamples { record } => write!(f, "record {record}: no samples captured yet"),
+            Self::NoObservations { record } => {
+                write!(f, "record {record}: samples carry no observed quantity")
+            }
             Self::NoArtifacts { record } => {
                 write!(f, "record {record}: no private artifact referenced")
             }
@@ -846,6 +873,12 @@ impl fmt::Display for UnavailableReason {
                 f,
                 "set: reserved holdout {maneuver} is not original-observed evidence"
             ),
+            Self::CalibrationNotOriginal { record } => {
+                write!(
+                    f,
+                    "record {record}: calibration data is not original-observed"
+                )
+            }
         }
     }
 }
@@ -962,14 +995,34 @@ fn text_missing(measurement: &Measurement<String>) -> bool {
     }
 }
 
+/// Records a required text measurement that is absent or blank as missing
+/// capture context, naming the field and — when there is one — the reason the
+/// value was never captured. A present, non-blank value adds nothing.
+fn require_text(report: &mut CaptureReport, field: &str, measurement: &Measurement<String>) {
+    let detail = match measurement {
+        Measurement::Unknown { reason } => format!("{field} ({reason})"),
+        Measurement::Known(text) if text.trim().is_empty() => format!("{field} is blank"),
+        Measurement::Known(_) => return,
+    };
+    report
+        .unavailable
+        .push(UnavailableReason::MissingCaptureContext {
+            record: report.record.clone(),
+            detail,
+        });
+}
+
 /// Fingerprints an original-observed record must carry.
+///
+/// An absent fingerprint is `Unknown`, and an asserted-but-blank edition
+/// counts as absent too: an empty name fingerprints no edition.
 fn check_fingerprints(record: &CaptureRecord, invalid: &mut Vec<CaptureError>) {
     if record.source != SampleSource::OriginalObserved {
         return;
     }
     for (present, field) in [
         (
-            record.identity.edition.is_known(),
+            !text_missing(&record.identity.edition),
             FingerprintField::Edition,
         ),
         (
@@ -1008,8 +1061,16 @@ fn check_source_and_claim(record: &CaptureRecord, invalid: &mut Vec<CaptureError
     }
 }
 
-/// Observer, capture method and basis: missing context is unavailable, a
-/// behavior claim without a flight-observing basis is a defect.
+/// Basis, observer, capture method and — for a behavior claim — the identities
+/// the claim is about: missing context is unavailable, a behavior claim with
+/// no flight-observing basis is a defect.
+///
+/// The basis rule covers **every** behavior claim, not just one about the
+/// original: a file-access trace records which files were opened and authored
+/// synthetic data records no runtime, so neither can back a claim about how
+/// the aircraft flew, whoever it is claimed for. A `worksheet_only` record
+/// offers no behavior, so it is held to no identity requirement — its missing
+/// samples and artifacts still report it as unavailable.
 fn check_capture_context(record: &CaptureRecord, report: &mut CaptureReport) {
     if record.basis.is_empty() {
         report
@@ -1018,28 +1079,15 @@ fn check_capture_context(record: &CaptureRecord, report: &mut CaptureReport) {
                 record: report.record.clone(),
                 detail: "no capture basis recorded".to_owned(),
             });
-    } else if record.claim == RecordClaim::OriginalBehavior
+    } else if record.claim != RecordClaim::WorksheetOnly
         && !record.basis.iter().any(CaptureBasis::observes_flight)
     {
-        report
-            .invalid
-            .push(CaptureError::FileTraceCannotSupportFlightBehavior {
-                claim: record.claim,
-            });
+        report.invalid.push(CaptureError::NoFlightObservingBasis {
+            claim: record.claim,
+        });
     }
 
-    if text_missing(&record.observer) {
-        report
-            .unavailable
-            .push(UnavailableReason::MissingCaptureContext {
-                record: report.record.clone(),
-                detail: record
-                    .observer
-                    .unknown_reason()
-                    .map(|reason| format!("observer identity ({reason})"))
-                    .unwrap_or_else(|| "observer identity is blank".to_owned()),
-            });
-    }
+    require_text(report, "observer identity", &record.observer);
     match &record.capture_method {
         Measurement::Unknown { reason } => {
             report
@@ -1068,6 +1116,30 @@ fn check_capture_context(record: &CaptureRecord, report: &mut CaptureReport) {
                     });
             }
         }
+    }
+
+    if record.claim == RecordClaim::WorksheetOnly {
+        return;
+    }
+    require_text(report, "mission identity", &record.mission);
+    require_text(report, "airframe identity", &record.airframe);
+    require_text(report, "loadout identity", &record.loadout);
+    require_text(report, "difficulty", &record.settings.difficulty);
+    if let Measurement::Unknown { reason } = &record.settings.assists {
+        report
+            .unavailable
+            .push(UnavailableReason::MissingCaptureContext {
+                record: report.record.clone(),
+                detail: format!("assists ({reason})"),
+            });
+    }
+    if let Worksheet::FirstMissionBranch {
+        branch,
+        spawn_context,
+    } = &record.worksheet
+    {
+        require_text(report, "branch identity", branch);
+        require_text(report, "spawn context", spawn_context);
     }
 }
 
@@ -1289,6 +1361,16 @@ pub fn validate_capture(record: &CaptureRecord, ctx: &ValidationContext) -> Capt
     } else {
         check_timebase(record, &mut report.invalid);
         check_units(record, &mut report.invalid);
+        if record
+            .series
+            .samples
+            .iter()
+            .all(|sample| sample.observations.is_empty())
+        {
+            report.unavailable.push(UnavailableReason::NoObservations {
+                record: record.id.clone(),
+            });
+        }
     }
     if record.artifacts.is_empty() {
         report.unavailable.push(UnavailableReason::NoArtifacts {
@@ -1308,8 +1390,8 @@ pub fn validate_capture(record: &CaptureRecord, ctx: &ValidationContext) -> Capt
 /// exists to compare against.
 #[derive(Clone, Debug, PartialEq)]
 pub enum FidelityComparison {
-    /// Calibration data and the reserved holdout are both present as
-    /// original-observed, defect-free records.
+    /// Every calibration record and every record of the reserved holdout are
+    /// original-observed and defect-free.
     Ready {
         /// Ids of the records that may be fitted.
         calibration: Vec<String>,
@@ -1349,10 +1431,15 @@ impl FidelityComparison {
 ///
 /// Every record is validated first; any defect makes the whole set
 /// [`FidelityComparison::Invalid`]. The set is `Ready` only when it holds at
-/// least one calibration record **and** a captured, original-observed record
-/// for the reserved holdout maneuver. Fitting acceleration alone therefore
-/// stays `Unavailable`: without the held-out maneuver there is nothing the fit
-/// did not see.
+/// least one calibration record **and** a captured record for the reserved
+/// holdout maneuver, with **every** participating record — calibration and
+/// holdout alike — original-observed: fitting on synthetic or remake data and
+/// validating on an original holdout would promote data of one class into a
+/// claim about the other, so it reads `Unavailable`
+/// ([`UnavailableReason::CalibrationNotOriginal`],
+/// [`UnavailableReason::HoldoutNotOriginal`]). Fitting acceleration alone
+/// therefore stays `Unavailable`: without the held-out maneuver there is
+/// nothing the fit did not see.
 ///
 /// The reservation is enforced, not merely documented: a record carrying the
 /// reserved maneuver but marked `Calibration` is a defect
@@ -1375,7 +1462,14 @@ pub fn fidelity_comparison(set: &ReferenceSet, ctx: &ValidationContext) -> Fidel
                     maneuver: set.holdout.maneuver.label().to_owned(),
                 });
             }
-            SampleRole::Calibration => calibration.push(record.id.clone()),
+            SampleRole::Calibration => {
+                if record.source != SampleSource::OriginalObserved {
+                    unavailable.push(UnavailableReason::CalibrationNotOriginal {
+                        record: record.id.clone(),
+                    });
+                }
+                calibration.push(record.id.clone());
+            }
             SampleRole::Holdout if reserved => holdout.push(record),
             SampleRole::Holdout => {}
         }
@@ -1391,9 +1485,9 @@ pub fn fidelity_comparison(set: &ReferenceSet, ctx: &ValidationContext) -> Fidel
         unavailable.push(UnavailableReason::HoldoutNotCaptured {
             maneuver: set.holdout.maneuver.label().to_owned(),
         });
-    } else if !holdout
+    } else if holdout
         .iter()
-        .any(|record| record.source == SampleSource::OriginalObserved)
+        .any(|record| record.source != SampleSource::OriginalObserved)
     {
         unavailable.push(UnavailableReason::HoldoutNotOriginal {
             maneuver: set.holdout.maneuver.label().to_owned(),
