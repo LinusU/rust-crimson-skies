@@ -33,6 +33,10 @@
 //!   reader archive into the member extents those readers list (task #343).
 //! * [`wave`] reads the RIFF/WAVE header of one sound member into the
 //!   descriptor [`sound_archive`] reports (task #344).
+//! * [`sound_sample`] decodes a member's `data` payload under the format its
+//!   own WAVE header declares (stage F06-C). Uncompressed PCM only: an ADPCM
+//!   member is an [`sound_sample::SampleError::UnsupportedFormat`] row
+//!   carrying its declared tag, never an approximation.
 //!
 //! The evidence behind every rule, the design decisions and the recorded
 //! unknowns are written down in
@@ -43,7 +47,9 @@
 //! the task #343 member index in
 //! `docs/findings/2026-09-28-t343-zbd-version-one-member-index.md`;
 //! the task #344 WAVE headers in
-//! `docs/findings/2026-09-28-t344-zbd-sound-member-wave-headers.md`.
+//! `docs/findings/2026-09-28-t344-zbd-sound-member-wave-headers.md`; and
+//! stage F06-C's sample decode and VFS wiring in
+//! `docs/findings/2026-09-28-f06-c-vfs-members-and-audio-assets.md`.
 //! The fixtures exercised by `crates/cs_formats/tests/zbd/` are newly
 //! authored synthetic bytes; nothing here is derived from original game
 //! data.
@@ -55,6 +61,7 @@ pub mod header;
 pub mod reader_archive;
 pub mod role;
 pub mod sound_archive;
+pub mod sound_sample;
 pub mod trailer;
 pub mod wave;
 
@@ -84,6 +91,10 @@ pub use role::{
 pub use sound_archive::{
     SAMPLES_NOT_DECODED_REASON, SoundArchive, SoundDescriptor, SoundEntry, SoundError, SoundField,
     read_sound_archive,
+};
+pub use sound_sample::{
+    DecodedSound, PcmLayout, SAMPLE_ENTRYPOINT, SAMPLE_VALUE_BYTES, SampleError, SampleFormat,
+    SampleFormatError, decode_payload, decode_sound_sample,
 };
 pub use trailer::{
     EntryAnomaly, INDEX_ENTRY_BYTES, INDEX_NAME_BYTES, INDEX_ROW_BYTES, INDEX_UNEXPLAINED_BYTES,
