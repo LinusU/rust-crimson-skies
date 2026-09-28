@@ -41,13 +41,18 @@ with a nonzero strict status).
 whatever family the table happens to declare), the container at
 `zbd/interp.zbd` whose bytes carry the **documented** INTERP signature
 `0x08971119` / version `7` — a valid header — is read by the reader-family
-reader and `accept_f06_b_valid_header_with_incompatible_family_data_fails_explicitly`
-fails at `assert_eq!(mismatch.actual(), ZbdFamily::Interp)`: the reader-archive
+reader and the test for that scenario fails at
+`assert_eq!(mismatch.actual(), ZbdFamily::Interp)`: the reader-archive
 reader claims a container whose dispatch decided the `interp` family, which is
 exactly the silent fallback spec F06 AC02 forbids. The mirrored failure — the
 reader family's own container handed to the sound reader, or a member whose
-declared extent runs past the container — is covered by the same test and by
-`accept_f06_b_member_extents_are_bounds_checked`.
+declared extent runs past the container — is covered by the same test and by the
+bounds test. (As committed, those two tests are called
+`accept_f06_b_valid_interp_header_is_not_reader_family_data` and
+`accept_f06_b_a_corrupt_member_fails_its_content_but_not_its_siblings`; the
+pre-edit plan above used the provisional names
+`accept_f06_b_valid_header_with_incompatible_family_data_fails_explicitly` and
+`accept_f06_b_member_extents_are_bounds_checked`.)
 
 ## Why this slice is bounds first
 
@@ -84,6 +89,10 @@ name, id and extent are laid out inside it.
 * `require_family` is the gate. It returns `FamilyMismatch` (container, expected
   family + reader slot, actual family, origin and the header status that *did*
   validate) and there is no code path from it to another reader.
+* `MemberTable::named` is the caller-named route, and it is **refused** for
+  every family an observed role already names: such a family must be named by
+  the two-key dispatch (`RoutableFamily`, code
+  `family_routable_by_dispatch`; see "Review round 1" below).
 * `list_members` walks the index once, checks `offset + length` per member with
   checked arithmetic against the container's length, records a per-member
   `MemberError` and keeps going, merges the consumed ranges, and books the row
@@ -118,7 +127,10 @@ verbatim content, their span and a `SoundDescriptor` whose four fields are
   bytes, so `ZbdFamily::Sound` owns no role rule and `dispatch` cannot route to
   it. Rather than inventing an archive name, `MemberTable::named` is the
   documented route and it still reports `HeaderStatus::Unvalidated` with the
-  family's own reason: naming a family is not validating its bytes.
+  family's own reason: naming a family is not validating its bytes. It is also
+  the *only* family it will name: a family an observed role already names is
+  refused with `RoutableFamily`, because only the dispatch checks the role and
+  any documented header (review round 1 below).
 - **Per-member errors, not a fatal listing.** Spec F06 non-negotiable #4
   requires a listing to continue past an invalid member and show every error,
   so `MemberError` lives on the row and `ContainerError` is reserved for the
@@ -155,15 +167,17 @@ through them, `MemberTable`, dispatch).
 | Test | Covers |
 | --- | --- |
 | `valid_interp_header_is_not_reader_family_data` | **AC02, the stage's minimum scenario**: a container whose INTERP header *validated* is refused by the reader reader with `family_mismatch`, carrying the validated header status; no archive is produced |
+| `a_dispatch_routed_family_cannot_be_named_by_the_caller` | the other half of AC02: a family an observed role names cannot be asserted by a caller, so foreign bytes cannot be laundered past the gate; the refusal tracks the inventory (only the unrouted sound family is nameable). Added in review round 1 |
 | `each_reader_refuses_the_other_family_in_both_directions` | the mirror: reader-family data refused by the sound reader; both gates are real |
 | `reader_entries_retain_bytes_names_ids_and_spans` | non-negotiable #2/#3: verbatim content, raw name bytes, ids, `SourceSpan`, declared order, whole-body accounting, `ContainerStatus::Clean` |
 | `duplicate_member_names_and_ids_are_preserved` | two rows with the same name *and* id stay distinct rows with distinct spans and bytes |
 | `sound_entries_retain_spans_and_unknown_descriptor_fields` | non-negotiable #2 for sound: span + bytes retained; format/channels/rate/loop metadata all `Unknown` with the family's recorded reason |
-| `a_corrupt_member_fails_its_content_but_not_its_siblings` | non-negotiable #4 + "with bounds": out-of-bounds and overflowing extents yield no bytes, valid siblings stay readable, both failure codes/offsets, `Failed { failures: 2 }`, consumed ranges exclude the failures |
+| `a_corrupt_member_fails_its_content_but_not_its_siblings` | non-negotiable #4 + "with bounds": out-of-bounds and overflowing extents yield no bytes, valid siblings stay readable, both failure codes/offsets, `Failed { failures: 2 }`, consumed ranges exclude the failures, and a failed member is a failure rather than an unsupported record |
 | `gaps_and_overlaps_are_reported_in_ranges` | merged consumed ranges, interior gap and tail reported as uncovered, overlap is not corruption |
 | `an_empty_index_lists_nothing_and_claims_nothing` | zero-member container: nothing consumed, whole body uncovered, still clean |
 | `unsupported_records_are_listed_with_their_spans` | the deliverable's "unsupported records", both readers, with identity, span and a non-empty reason |
-| `the_listing_is_bounded_by_the_parse_allocation_budget` | F03: a zero-budget parse refuses the row table with `AllocationBudgetExceeded`, scoped `zbd.container.members`; the retry on a healthy context succeeds (no stale charge) |
+| `the_listing_is_bounded_by_the_parse_allocation_budget` | F03: a zero-budget parse refuses the row table with `AllocationBudgetExceeded`, scoped `zbd.container.members`; the refusal books nothing, widens nothing and leaves no nesting behind, and the same bytes read on a context that has the budget |
+| `the_listing_charge_is_exact_and_never_widens_the_ledger` | the charge is the memory the listing really holds (`MEMBER_ROW_BYTES == size_of::<MemberRow>()`, `SOURCE_SPAN_BYTES == size_of::<SourceSpan>()`); one byte short is refused, the exact charge fits, and a second listing on the same parse neither fits nor hands back the first one's charge. Added in review round 1 |
 | `nothing_this_stage_produces_claims_documented_bytes` | evidence honesty: entries stay `ClaimStatus::Unknown`, spans are the contract's `SourceSpan` |
 
 The eleven F06-A tests in `tests/zbd/main.rs` still pass unchanged.
@@ -217,3 +231,85 @@ enforcement point on this target and no test distinguishes it.
 
 No follow-up task was filed: #340 already owns the header layouts and the
 archive names, and this stage adds no new unknown beyond what it records here.
+
+## Review round 1
+
+Reviewer: `bunny-1` (Rally review claim on #26). What the review changed, and
+why — the design itself was accepted: the member index is an input because the
+committed pack documents no reader or sound layout (spec F06 non-negotiable #1
+and its research boundary), and the stage implements the half of a family reader
+that needs no field offset.
+
+### 1. A caller could assert a dispatch-routed family (fixed)
+
+`MemberTable::named(container, family, members)` accepted **any** family. Since
+the member index is an input and the family gate compares the *declared* family
+against the reader's own, a caller could launder another family's bytes into a
+reader:
+
+```rust
+// Before: succeeds, and the reader reader returns an archive.
+let table = MemberTable::named("zbd/interp.zbd", ZbdFamily::Reader, &members);
+read_reader_archive(&mut context, &table, &interp_bytes)?; // Ok(ReaderArchive)
+```
+
+The result does carry `FamilyOrigin::NamedByCaller` and
+`HeaderStatus::Unvalidated`, so it was not *silent* — but the reader never looks
+at the bytes, so nothing after the fact can tell that a container whose header
+validated as `interp` was read as a reader archive. That is the outcome spec F06
+AC02 rules out, reached through the API instead of through a missing check.
+
+`MemberTable::named` now refuses any family that owns an observed role rule
+(`RoutableFamily`, code `family_routable_by_dispatch`, carrying the container,
+the family and the inventory citation): such a family must be named by the
+two-key dispatch, which checks the role and — for `interp` — the documented
+signature, and fails loudly on a contradicting one. The sound family, which owns
+no role rule, is unaffected and keeps the caller-named route it exists for. The
+gate is the inventory's own `role_rules()`, not a hard-coded list, so it follows
+whatever #340 establishes: naming a family becomes legal exactly when dispatch
+stops being able to reach it.
+
+Pinned by `accept_f06_b_a_dispatch_routed_family_cannot_be_named_by_the_caller`,
+which also asserts the invariant against the inventory (only
+`ZbdFamily::Sound` is nameable today) and replays the valid-INTERP scenario to
+show the bytes can only reach a reader through the dispatch that refuses them.
+
+### 2. The budget test claimed teardown it did not test (fixed)
+
+`the_listing_is_bounded_by_the_parse_allocation_budget` asserted "the refused
+attempt left the ledger alone" and then retried on a **different**
+`ParseContext`, which cannot observe the ledger of the first. It now asserts the
+starved context's own ledger (`used() == 0`, `limit()` unchanged,
+`recursion().depth() == 0`), and a new
+`accept_f06_b_the_listing_charge_is_exact_and_never_widens_the_ledger` pins the
+property the doc comments claim: `MEMBER_ROW_BYTES`/`SOURCE_SPAN_BYTES` are the
+`size_of` of the types they charge for, the exact charge is accepted and one byte
+less is refused, and a second listing of the same container on the same parse
+neither fits nor gives the first listing's charge back.
+
+### 3. Smaller fixes
+
+- A member that failed its bounds check is a failure, not an unsupported record;
+  `unsupported_records()` says so with its `is_readable()` filter, and the
+  corrupt-member test now pins which rows may appear in it.
+- The pre-edit plan named two tests that were committed under other names; the
+  observable-failure paragraph now says which is which instead of citing tests
+  that do not exist.
+- `crates/cs_formats/src/lib.rs` (wiring): the crate doc described the ZBD
+  module as the F06-A inventory and dispatch only. It now names the F06-B subset
+  and, explicitly, that neither stage reads a member index out of container
+  bytes yet.
+
+### Probes run in this round
+
+Applied to production code, run with `cargo test -p cs_formats --test zbd` (24
+tests), then reverted: `named` accepts any family →
+`a_dispatch_routed_family_cannot_be_named_by_the_caller`; the range list is not
+charged → `the_listing_charge_is_exact_and_never_widens_the_ledger`;
+`MEMBER_ROW_BYTES` overstated by 2× → same test; `unsupported_records` drops
+its `is_readable()` filter → `a_corrupt_member_fails_its_content_but_not_its_siblings`;
+`require_family` removed from `read_sound_archive` →
+`each_reader_refuses_the_other_family_in_both_directions`. The implementer's
+earlier probes still hold, including the one that changed nothing and is
+recorded above.
+
