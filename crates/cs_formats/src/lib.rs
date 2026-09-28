@@ -43,6 +43,11 @@
 //! `specs/F10-gamez-mesh-topology-and-material-records.md` (stage F10-A,
 //! [`gamez`]).
 //!
+//! The inventory of text configuration dialects, the lossless line scan and
+//! the lossless nodes of the keyed field list dialect:
+//! `specs/F12-text-configuration-strings-and-pe-resources.md` (stage F12-A,
+//! [`text`]).
+//!
 //! The ROF reader spans both F05 stages of `specs/F05-rof-directory-trees-
 //! and-compressed-members.md`: [`rof`] defines the raw block (F05-A,
 //! [`read_directory`]) and follows the tree and reads members through a
@@ -57,6 +62,7 @@ pub mod gamez;
 pub mod interp;
 pub mod io;
 pub mod rof;
+pub mod text;
 pub mod texture;
 pub mod zbd;
 
