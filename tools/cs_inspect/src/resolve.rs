@@ -608,3 +608,296 @@ fn jstr(value: &str) -> String {
     out.push('"');
     out
 }
+
+#[cfg(test)]
+mod tests {
+    //! F04-C acceptance tests for the `resolve` command. Every tree is
+    //! newly authored fixture bytes under the system temporary directory;
+    //! the retail test reads `$CS_GAME_DIR` read-only and writes only below
+    //! `private/`.
+
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    /// A disposable directory, removed on drop.
+    struct Temp(PathBuf);
+
+    impl Temp {
+        fn new(label: &str) -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "cs-f04-c-{label}-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            let _ = fs::remove_dir_all(&root);
+            fs::create_dir_all(&root).expect("temp dir is created");
+            Self(root)
+        }
+
+        fn write(&self, spelling: &str, bytes: &[u8]) {
+            let path = self.0.join(spelling);
+            fs::create_dir_all(path.parent().expect("has a parent")).expect("dirs");
+            fs::write(path, bytes).expect("bytes are written");
+        }
+    }
+
+    impl Drop for Temp {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn install() -> Temp {
+        let tree = Temp::new("install");
+        tree.write("ZBD/c1/texture.zbd", b"world one texture bytes");
+        tree.write("ZBD/c2/texture.zbd", b"world two texture bytes, longer");
+        tree
+    }
+
+    fn args(list: &[&str]) -> Vec<String> {
+        list.iter().map(|arg| (*arg).to_owned()).collect()
+    }
+
+    fn path_arg(path: &Path) -> &str {
+        path.to_str().expect("temp paths are UTF-8")
+    }
+
+    /// The command wires the session end to end: the world key resolves to
+    /// the selected world's bytes, the report carries the fingerprint, the
+    /// span, every ordered attempt and the designed status, and the
+    /// explicit export writes exactly those bytes outside the installation.
+    #[test]
+    fn accept_f04_c_cli_resolves_world_texture_with_trace_and_export() {
+        let tree = install();
+        let private = Temp::new("private");
+        let out = private.0.join("resolve.json");
+        let export = private.0.join("export");
+        fs::create_dir(&export).expect("export dir");
+
+        let run = resolve_command_result(
+            &args(&[
+                "--cs-path",
+                path_arg(&tree.0),
+                "--world",
+                "zbd/C2",
+                "--asset",
+                "world:Texture.zbd",
+                "--out",
+                path_arg(&out),
+                "--export-dir",
+                path_arg(&export),
+            ]),
+            None,
+        );
+        assert_eq!(run.exit_code, 0, "{:?}", run.diagnostics);
+        assert_eq!(run.out.as_deref(), Some(out.as_path()));
+        let report = fs::read_to_string(&out).expect("the report is written");
+        assert_eq!(Some(&report), run.report.as_ref());
+
+        let found = install::discover(&tree.0).expect("fixture discovers");
+        let fingerprint = install::fingerprint(&found.manifest).to_hex();
+        let digest = install::sha256(b"world two texture bytes, longer").to_hex();
+        for needle in [
+            format!("\"install_sha256\": \"{fingerprint}\""),
+            "\"world_group\": \"zbd/C2\"".to_owned(),
+            "\"status\": \"resolved\", \"mount\": \"world-1\"".to_owned(),
+            "\"container_path\": \"ZBD/c2\", \"member_key\": \"texture.zbd\"".to_owned(),
+            format!("\"member_sha256\": \"{digest}\""),
+            "\"precedence_status\": \"designed\"".to_owned(),
+            "{\"mount\": \"world-0\", \"container\": \"ZBD/c1\", \"precedence\": \
+             \"mission_world\", \"outcome\": \"scope_mismatch\"}"
+                .to_owned(),
+            "{\"mount\": \"world-1\", \"container\": \"ZBD/c2\", \"precedence\": \
+             \"mission_world\", \"outcome\": \"selected\"}"
+                .to_owned(),
+            format!("\"status\": \"written\""),
+            format!("\"sha256\": \"{digest}\""),
+        ] {
+            assert!(report.contains(&needle), "missing {needle} in {report}");
+        }
+        assert_eq!(
+            fs::read(export.join("texture.zbd")).expect("the export is written"),
+            b"world two texture bytes, longer"
+        );
+    }
+
+    /// A key no mount holds exits 3 and still writes the trace that says
+    /// why; an unknown world is invalid input.
+    #[test]
+    fn accept_f04_c_cli_unresolved_key_exits_3_with_trace() {
+        let tree = install();
+        let run = resolve_command_result(
+            &args(&[
+                "--cs-path",
+                path_arg(&tree.0),
+                "--asset",
+                "world:texture.zbd",
+            ]),
+            None,
+        );
+        assert_eq!(run.exit_code, 3);
+        let report = run.report.expect("the trace is reported on failure");
+        assert!(report.contains("\"status\": \"not_found\""), "{report}");
+        assert!(
+            report.contains("\"outcome\": \"scope_mismatch\""),
+            "{report}"
+        );
+        assert!(
+            run.diagnostics
+                .iter()
+                .any(|line| line.contains("no mount holds"))
+        );
+
+        let unknown_world = resolve_command_result(
+            &args(&[
+                "--cs-path",
+                path_arg(&tree.0),
+                "--world",
+                "zbd/c9",
+                "--asset",
+                "world:texture.zbd",
+            ]),
+            None,
+        );
+        assert_eq!(unknown_world.exit_code, 2);
+        assert!(unknown_world.report.is_none());
+    }
+
+    /// Nothing is ever written inside the installation: `--out` and
+    /// `--export-dir` there are refused before anything runs.
+    #[test]
+    fn accept_f04_c_cli_refuses_outputs_inside_installation() {
+        let tree = install();
+        let private = Temp::new("private-inside");
+        let export = private.0.join("export");
+        fs::create_dir(&export).expect("export dir");
+        let inside_out = tree.0.join("ZBD").join("resolve.json");
+        let inside_export = tree.0.join("ZBD");
+
+        for extra in [
+            ["--out", path_arg(&inside_out)],
+            ["--export-dir", path_arg(&inside_export)],
+        ] {
+            let mut list = vec![
+                "--cs-path",
+                path_arg(&tree.0),
+                "--world",
+                "zbd/c1",
+                "--asset",
+                "world:texture.zbd",
+            ];
+            list.extend(extra);
+            let run = resolve_command_result(&args(&list), None);
+            assert_eq!(run.exit_code, 2, "{:?}", run.diagnostics);
+            assert!(run.report.is_none());
+        }
+        assert!(!inside_out.exists());
+        let mut listing: Vec<String> = fs::read_dir(tree.0.join("ZBD"))
+            .expect("listable")
+            .map(|entry| {
+                entry
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .into_owned()
+            })
+            .collect();
+        listing.sort();
+        assert_eq!(listing, ["c1", "c2"], "the installation is unchanged");
+    }
+
+    /// Invalid input and a missing installation fail with their contract
+    /// exit codes, never a success.
+    #[test]
+    fn accept_f04_c_cli_invalid_input_and_missing_installation() {
+        let tree = install();
+        for (list, code) in [
+            (vec!["--asset", "world:../escape.dds"], 2),
+            (vec!["--asset", "texture.zbd"], 2),
+            (vec!["--world", "zbd/c1"], 2),
+            (vec!["--asset", "world:texture.zbd", "--bogus", "x"], 2),
+            (vec!["--asset"], 2),
+        ] {
+            let mut full = vec!["--cs-path", path_arg(&tree.0)];
+            full.extend(list.iter().copied());
+            let run = resolve_command_result(&args(&full), None);
+            assert_eq!(run.exit_code, code, "{list:?}: {:?}", run.diagnostics);
+            assert!(run.report.is_none());
+        }
+        let missing = resolve_command_result(&args(&["--asset", "world:texture.zbd"]), None);
+        assert_eq!(missing.exit_code, 4);
+        let from_env = resolve_command_result(
+            &args(&["--world", "zbd/c1", "--asset", "world:texture.zbd"]),
+            Some(tree.0.clone().into_os_string()),
+        );
+        assert_eq!(from_env.exit_code, 0, "{:?}", from_env.diagnostics);
+    }
+
+    /// Retail: the installation mounts into one session with the designed
+    /// layout; the first world group that holds a `texture.zbd` resolves
+    /// it from its own directory, and the trace lists every other world
+    /// group as skipped for its scope. The report is written below
+    /// `private/`. Fails loudly without `CS_GAME_DIR`.
+    #[test]
+    #[ignore = "requires CS_GAME_DIR"]
+    fn accept_f04_c_retail_world_resolves_its_own_texture() {
+        let game = std::env::var_os("CS_GAME_DIR")
+            .filter(|value| !value.is_empty())
+            .expect("CS_GAME_DIR must name the retail installation for this test");
+        let root = PathBuf::from(game);
+        let found = install::discover(&root).expect("the retail installation is discovered");
+        let groups = &found.diagnosis.world_groups;
+        let group = groups
+            .iter()
+            .find(|group| {
+                let wanted = format!("{}/texture.zbd", group.logical_key());
+                found
+                    .manifest
+                    .files
+                    .iter()
+                    .any(|row| row.relative_spelling.logical_key() == wanted)
+            })
+            .expect("a retail world group holds its own texture.zbd");
+
+        let private = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../private/f04-c");
+        fs::create_dir_all(&private).expect("the private output dir is created");
+        let out = private.join("resolve-retail.json");
+        let run = resolve_command_result(
+            &args(&[
+                "--cs-path",
+                path_arg(&root),
+                "--world",
+                group.as_str(),
+                "--asset",
+                "world:texture.zbd",
+                "--out",
+                path_arg(&out),
+            ]),
+            None,
+        );
+        assert_eq!(run.exit_code, 0, "{group}: {:?}", run.diagnostics);
+        let report = fs::read_to_string(&out).expect("the report is written");
+        let fingerprint = install::fingerprint(&found.manifest).to_hex();
+        assert!(report.contains(&format!("\"install_sha256\": \"{fingerprint}\"")));
+        assert!(
+            report.contains(&format!("\"container_path\": \"{}\"", group.as_str())),
+            "{report}"
+        );
+        for (index, other) in groups.iter().enumerate() {
+            let outcome = if other == group {
+                "selected"
+            } else {
+                "scope_mismatch"
+            };
+            let attempt = format!(
+                "{{\"mount\": \"world-{index}\", \"container\": \"{}\", \"precedence\": \
+                 \"mission_world\", \"outcome\": \"{outcome}\"}}",
+                other.as_str()
+            );
+            assert!(report.contains(&attempt), "missing {attempt}");
+        }
+        assert!(report.contains("\"precedence_status\": \"designed\""));
+    }
+}
