@@ -118,9 +118,9 @@ restored with `git checkout --`:
 | Mutation | Failing tests |
 | --- | --- |
 | `mask_weighted_color` uses `mask` instead of `inverted` | 6 |
-| `alpha_over_opaque` always returns the destination | 3 |
-| `multiply` rounds instead of truncating | 1 |
-| `compose` ignores the mask planes (returns the base) | 6 |
+| `alpha_over_opaque` always returns the destination | 1 |
+| `multiply` rounds instead of truncating | 4 |
+| `compose` ignores the mask planes (returns the base) | 4 |
 | `source_fingerprint` omits the mask planes | 1 |
 
 ## Recorded unknowns
