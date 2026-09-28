@@ -548,8 +548,19 @@ pub(crate) fn read_whole_member(
     member: &MemberRecord,
 ) -> Result<Vec<u8>, ReadError> {
     let bytes = source::read_member_range(mount, member, 0, member.size_bytes())?;
+    check_member_digest(mount, member, &bytes)?;
+    Ok(bytes)
+}
+
+/// Checks the bytes of a whole member against the digest recorded when it
+/// was mounted.
+pub(crate) fn check_member_digest(
+    mount: &Mount,
+    member: &MemberRecord,
+    bytes: &[u8],
+) -> Result<(), ReadError> {
     if let Some(mounted) = member.sha256() {
-        let found = crate::install::sha256(&bytes);
+        let found = crate::install::sha256(bytes);
         if found != mounted {
             let path = mount
                 .host_root()
@@ -563,5 +574,5 @@ pub(crate) fn read_whole_member(
             });
         }
     }
-    Ok(bytes)
+    Ok(())
 }

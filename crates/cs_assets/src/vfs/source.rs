@@ -404,6 +404,16 @@ pub enum ReadError {
         /// The digest of the bytes read now.
         found: ContentHash,
     },
+    /// A pending read was cancelled before it finished. The bytes read so
+    /// far were discarded; nothing was delivered.
+    Cancelled {
+        /// The mount the read was issued against.
+        mount: String,
+        /// Bytes read before the cancellation was observed.
+        read: u64,
+        /// The member's length.
+        total: u64,
+    },
     /// The read itself failed.
     Io {
         /// The host path.
@@ -458,6 +468,11 @@ impl fmt::Display for ReadError {
                 path.display(),
                 mounted.to_hex(),
                 found.to_hex()
+            ),
+            Self::Cancelled { mount, read, total } => write!(
+                f,
+                "the read from mount {mount} was cancelled after {read} of {total} bytes; \
+                 nothing was delivered"
             ),
             Self::Io { path, source } => write!(f, "cannot read {}: {source}", path.display()),
         }

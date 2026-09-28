@@ -20,6 +20,8 @@
 //!   so it can still complete after the session closed; the bytes it
 //!   produces carry the issuing generation, and
 //!   [`ContentSession::accept`] delivers them only to that same session.
+//!   It reads in chunks and checks a [`ReadCancel`] before each, so a world
+//!   switch can cancel it from another thread mid-read (spec F04 AC04).
 //! * [`ContentSession::close`] is the teardown: the session is consumed,
 //!   its mounts are released, and what was released is reported.
 //!
@@ -29,7 +31,7 @@
 use std::fmt;
 use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 use cs_types::asset_id::{
     AssetKey, MountId, MountNamespace, PrecedenceClass, ResolveContext, WorldGroup,
@@ -263,18 +265,55 @@ impl CompletedRead {
     }
 }
 
+/// How many bytes a [`PendingRead`] reads between two cancellation checks.
+pub const PENDING_READ_CHUNK: u64 = 1 << 20;
+
+/// A shareable cancel switch for one [`PendingRead`].
+///
+/// It can be handed to another thread than the one completing the read —
+/// typically the thread that switches worlds. Cancelling is sticky and
+/// observed before every chunk, so a read in flight stops at the next
+/// chunk boundary with [`ReadError::Cancelled`] and delivers nothing.
+#[derive(Clone, Debug, Default)]
+pub struct ReadCancel(Arc<AtomicBool>);
+
+impl ReadCancel {
+    /// Asks the read to stop.
+    pub fn cancel(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+
+    /// Whether [`ReadCancel::cancel`] was called.
+    pub fn is_cancelled(&self) -> bool {
+        self.0.load(Ordering::Acquire)
+    }
+}
+
+/// How far a [`PendingRead`] has come, reported after every chunk.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReadProgress {
+    /// Bytes read so far.
+    pub read: u64,
+    /// The member's length.
+    pub total: u64,
+}
+
 /// A read issued by a session and not yet performed.
 ///
 /// It holds a shared handle on its mount's description and the resolution
 /// it is for — never an open file — so it stays valid when the session is
 /// closed: completing it re-checks the member against that description,
-/// opens the file read-only, reads, verifies the digest and closes it.
-/// Dropping it cancels the read; nothing was opened yet.
+/// then reads it in [`PENDING_READ_CHUNK`]-sized ranges (each opening the
+/// file read-only and closing it again), verifies the digest and delivers.
+/// Dropping it before completing cancels the read; a [`ReadCancel`] from
+/// [`PendingRead::cancel_handle`] cancels it while another thread is
+/// completing it.
 #[derive(Debug)]
 pub struct PendingRead {
     generation: SessionGeneration,
     mount: Arc<Mount>,
     resolved: ResolvedAsset,
+    cancel: ReadCancel,
 }
 
 impl PendingRead {
@@ -283,10 +322,51 @@ impl PendingRead {
         self.generation
     }
 
+    /// A switch that cancels this read from anywhere, even while it is
+    /// being completed on another thread.
+    pub fn cancel_handle(&self) -> ReadCancel {
+        self.cancel.clone()
+    }
+
     /// Performs the read: the whole member, digest-checked.
     pub fn complete(self) -> Result<CompletedRead, ReadError> {
+        self.complete_with(|_| {})
+    }
+
+    /// Performs the read like [`PendingRead::complete`], reporting progress
+    /// after every chunk. Cancellation is checked before every chunk; a
+    /// cancelled read returns [`ReadError::Cancelled`] and its partial
+    /// bytes are dropped.
+    pub fn complete_with(
+        self,
+        mut progress: impl FnMut(ReadProgress),
+    ) -> Result<CompletedRead, ReadError> {
         let member = resolve::member_matching(&self.mount, &self.resolved)?;
-        let bytes = resolve::read_whole_member(&self.mount, member)?;
+        let total = member.size_bytes();
+        let mut bytes = Vec::new();
+        let mut read = 0;
+        loop {
+            if self.cancel.is_cancelled() {
+                return Err(ReadError::Cancelled {
+                    mount: self.mount.id().to_string(),
+                    read,
+                    total,
+                });
+            }
+            if read == total {
+                break;
+            }
+            let length = PENDING_READ_CHUNK.min(total - read);
+            bytes.extend(source::read_member_range(
+                &self.mount,
+                member,
+                read,
+                length,
+            )?);
+            read += length;
+            progress(ReadProgress { read, total });
+        }
+        resolve::check_member_digest(&self.mount, member, &bytes)?;
         Ok(CompletedRead {
             generation: self.generation,
             key: self.resolved.key,
@@ -372,6 +452,7 @@ impl ContentSession {
             generation: self.generation,
             mount,
             resolved: asset.resolved.clone(),
+            cancel: ReadCancel::default(),
         })
     }
 

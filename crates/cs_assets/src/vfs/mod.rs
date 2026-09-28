@@ -53,8 +53,9 @@ pub use resolve::{
     ResolvedAsset, Vfs,
 };
 pub use session::{
-    CompletedRead, ContentSession, INSTALL_NAMESPACE, PendingRead, SessionAsset, SessionBuilder,
-    SessionError, SessionGeneration, SessionRejection, SessionTeardown, WORLD_NAMESPACE,
+    CompletedRead, ContentSession, INSTALL_NAMESPACE, PENDING_READ_CHUNK, PendingRead, ReadCancel,
+    ReadProgress, SessionAsset, SessionBuilder, SessionError, SessionGeneration, SessionRejection,
+    SessionTeardown, WORLD_NAMESPACE,
 };
 pub use source::{
     MountedDirectory, ReadError, RejectReason, RejectedEntry, SourceError, mount_directory,
