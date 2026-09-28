@@ -7,8 +7,11 @@
 
 use std::fmt;
 
+use random::{SYNTHETIC_BODY_DOMAIN, SplitMix64, unit_f64};
+
 pub mod evidence;
 pub mod install;
+pub mod random;
 
 /// Zero-based simulation tick. Integer ticks are the only time value that may
 /// cross crate boundaries.
@@ -110,6 +113,31 @@ impl SyntheticBodySpec {
         }
     }
 
+    /// Applies a run's root seed to this fixture (F00-SEED, contract
+    /// `docs/contracts/CLI-EVIDENCE.md`, section "`--seed`").
+    ///
+    /// Only the lateral components move, each by an offset drawn from the
+    /// synthetic body's own domain-separated SplitMix64 stream: `position_m[0]`
+    /// and `position_m[2]` by `[-2, 2]` m, `linear_velocity_m_s[0]` and
+    /// `linear_velocity_m_s[2]` by `[-4, 4]` m/s. Drop height, vertical
+    /// velocity, extents and body kind keep their fixture values, so a seeded
+    /// body is still "one box dropped from 10 m", just from a different point
+    /// in the air. The bounds are authored development values, not original
+    /// game data.
+    ///
+    /// The offsets are f32 values below 4 m built from a 53-bit fraction, so
+    /// the result is finite for every root seed and always passes
+    /// [`SyntheticBodySpec::validate`].
+    pub fn seeded(self, root_seed: u64) -> Self {
+        let mut stream = SplitMix64::for_domain(root_seed, SYNTHETIC_BODY_DOMAIN);
+        let mut spec = self;
+        spec.position_m[0] += lateral_offset(&mut stream, POSITION_SEED_BOUND_M);
+        spec.position_m[2] += lateral_offset(&mut stream, POSITION_SEED_BOUND_M);
+        spec.linear_velocity_m_s[0] += lateral_offset(&mut stream, VELOCITY_SEED_BOUND_M_S);
+        spec.linear_velocity_m_s[2] += lateral_offset(&mut stream, VELOCITY_SEED_BOUND_M_S);
+        spec
+    }
+
     /// Validates the typed input before any world is built.
     ///
     /// Every failure names the offending field so the caller can report which
@@ -139,6 +167,19 @@ impl SyntheticBodySpec {
         }
         Ok(())
     }
+}
+
+/// Lateral position bound of [`SyntheticBodySpec::seeded`], in meters.
+const POSITION_SEED_BOUND_M: f64 = 2.0;
+/// Lateral velocity bound of [`SyntheticBodySpec::seeded`], in m/s.
+const VELOCITY_SEED_BOUND_M_S: f64 = 4.0;
+
+/// One symmetric offset drawn from the stream: `a * (2u - 1)` with the unit
+/// float `u` of the contract, so the result lies in `[-a, a)` and is produced
+/// by exact integer-to-float arithmetic.
+fn lateral_offset(stream: &mut SplitMix64, bound: f64) -> f32 {
+    let unit = unit_f64(stream.next_u64());
+    (bound * (2.0 * unit - 1.0)) as f32
 }
 
 /// Typed output: one sample read back from a simulated body.
