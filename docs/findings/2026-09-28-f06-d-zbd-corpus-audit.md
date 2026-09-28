@@ -131,3 +131,12 @@ Mutation probes (applied, `accept_f06_d_` run, restored):
   audit reports them as `readable`, never as decoded.
 - The content of the texture, interp, GameZ and animation containers is not
   read here; each row names the feature that owns it.
+
+## Review fix
+
+`SoundAssets::entry(index)` (F06-C) indexed the list of assets, which skips
+members that failed their bounds check. After such a member it returned the
+next member's asset, although its doc promised a lookup by declared position.
+The review made it look the asset up by declared position. The F06-C test
+that had pinned the shifted result now asserts the declared positions, and
+the audit uses `entry` directly.
