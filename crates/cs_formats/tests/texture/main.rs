@@ -11,6 +11,7 @@
 //! the byte builders, so a decoder that swaps rows and columns or flips the
 //! image the wrong number of times fails on a named coordinate.
 
+mod bmp;
 mod mips;
 mod zbd_package;
 
