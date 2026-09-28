@@ -37,6 +37,11 @@
 //! `specs/F10-gamez-mesh-topology-and-material-records.md` (stage F10-A,
 //! [`gamez`]).
 //!
+//! The ROF reader spans both F05 stages of `specs/F05-rof-directory-trees-
+//! and-compressed-members.md`: [`rof`] defines the raw block (F05-A,
+//! [`read_directory`]) and follows the tree and reads members through a
+//! bounded zlib decoder (F05-B, [`read_tree`] and [`read_member`]).
+//!
 //! The fixtures exercised below are newly authored synthetic bytes; nothing
 //! here is derived from original game data.
 
@@ -62,8 +67,9 @@ pub use interp::{
 pub use io::{AllocationBudget, ParseContext, Reader, RecursionBudget, RecursionGuard};
 pub use rof::{
     DIRECTORY_ENTRYPOINT, DIRECTORY_HEADER_BYTES, FLAG_COMPRESSED, FLAG_DIRECTORY, KNOWN_FLAG_MASK,
-    RECORD_BYTES, RofDirectory, RofEntries, RofEntry, RofError, RofFlags, RofRawHeader,
-    RofRawRecord, read_directory,
+    RECORD_BYTES, RofDirectory, RofEntries, RofEntry, RofError, RofFlags, RofLimits, RofMember,
+    RofMemberRead, RofRawHeader, RofRawRecord, RofTree, RofTreeDirectory, TREE_ENTRYPOINT,
+    read_directory, read_member, read_tree,
 };
 pub use texture::{
     DecodedImage, DescriptorError, ImageDescriptor, TextureError, decode_base_level,

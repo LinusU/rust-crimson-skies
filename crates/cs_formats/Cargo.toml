@@ -8,6 +8,14 @@ publish.workspace = true
 
 [dependencies]
 cs_types.workspace = true
+# Pure-Rust DEFLATE/zlib (no C toolchain, no system zlib): the bounded
+# decoder `cs_formats::read_member` needs for spec F05 non-negotiable #3
+# ("compressed data uses a bounded zlib decoder only after the entry extent
+# is established"). Its exact byte accounting is what lets the reader report
+# the trailing bytes a stream did not consume (non-negotiable #4). The crate
+# was already in Cargo.lock through Bevy's asset stack, so this adds no new
+# package to the graph.
+miniz_oxide = "0.9"
 
 [dev-dependencies]
 cs_assets.workspace = true
