@@ -30,4 +30,6 @@ Texture upscaling/generation, new campaigns, new fiction, voice replacement, ope
 
 Research used the linked MM2 repository, public source code, the original manual as an HTML rehost, firsthand walkthroughs and official engine/model documentation. No user retail files were supplied. No original Crimson Skies executable was run. No Rust game was compiled by the pack author. The game-format references are valuable but incomplete. In particular, original mission program semantics and some archive details remain discovery gates.
 
+Access to the original files (`retail`) is not the same as running the original game, and neither is human judgment. Reference captures of original behavior come only from actual original runs supplied through the owner; preparing their protocol and tooling can be automated, the captures cannot be fabricated. Human play and review stay with the owner, and loopback is never real-network evidence.
+
 This pack specifies how to close those gaps and what must fail until then. It does not falsely fill them with plausible constants, scene coordinates, opcode tables or mission scripts.

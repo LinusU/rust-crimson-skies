@@ -41,6 +41,14 @@ Do not load the whole repository into context. For a task `F05-B` read, in this 
 
 `human_play`, `human_review` and `network_real` are never available to an agent: they need the owner. Tasks that require them are blocked until the owner can supply the evidence.
 
+Three different things are easy to confuse:
+
+- **`retail`** means read access to the original files. It is not evidence that the original executable ran, and it is never evidence of how the original behaves.
+- **Running the original game** produces reference captures (for example REF-OWNER-FIRST-CAPTURE). Agents may automate the preparation of capture protocols and tooling, but an original capture comes only from an actual original run supplied through the owner; it can never be synthesized from files, a new simulation or a walkthrough.
+- **Human judgment** (`human_play`, `human_review`) is the owner playing, looking and listening. Automated or controller-driven runs are useful evidence but are not `human_play`.
+
+Capabilities are granted only by the owner. Loopback or several processes on one machine are `network_local`, never `network_real`.
+
 ## Checks before every push
 
 ```sh
