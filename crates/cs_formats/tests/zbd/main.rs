@@ -16,6 +16,7 @@
 
 mod readers;
 mod t340;
+mod t343;
 
 use cs_formats::zbd::{
     CONTENT_ROOT, DispatchBasis, GAMEZ_SIGNATURE, GAMEZ_VERSION, HeaderStatus, INTERP_SIGNATURE,
