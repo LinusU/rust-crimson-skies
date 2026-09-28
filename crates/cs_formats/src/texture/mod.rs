@@ -17,19 +17,25 @@
 //! * [`zbd`] (stage F08-B.02) reads the Crimson Skies ZBD texture package
 //!   (`texture.zbd`, `rtexture*.zbd`, `rimage.zbd`) into one descriptor and
 //!   one borrowed stored level per texture.
+//! * [`bmp`] (stage F08-B.03) reads conventional 4 and 8 bpp `BI_RGB` BMPs,
+//!   recognised by content rather than by name, into one descriptor and
+//!   one unpacked index level.
 //!
 //! Design decisions and recorded unknowns are in
 //! `docs/findings/2026-09-28-f08-a-image-descriptors-and-asymmetric-fixture.md`,
-//! `docs/findings/2026-09-28-f08-b-01-mip-level-decoding.md` and
-//! `docs/findings/2026-09-28-f08-b-02-zbd-texture-package.md`.
+//! `docs/findings/2026-09-28-f08-b-01-mip-level-decoding.md`,
+//! `docs/findings/2026-09-28-f08-b-02-zbd-texture-package.md` and
+//! `docs/findings/2026-09-28-f08-b-03-conventional-bmp.md`.
 //! The fixtures exercised by `crates/cs_formats/tests/texture/` are newly
 //! authored synthetic bytes; nothing here is derived from original game
 //! data.
 
+pub mod bmp;
 pub mod decode;
 pub mod descriptor;
 pub mod zbd;
 
+pub use bmp::{BmpError, BmpImage, looks_like_bmp, read_bmp};
 pub use decode::{
     DecodedFormat, DecodedImage, DecodedLevels, TextureError, decode_base_level, decode_levels,
 };
