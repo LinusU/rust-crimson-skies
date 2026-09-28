@@ -142,6 +142,10 @@ fn accept_t335_domain_separation_keeps_streams_independent() {
 /// `SyntheticBodySpec::seeded` moves the lateral position by at most 2 m and
 /// the lateral velocity by at most 4 m/s, leaves every other field at the
 /// fixture value, and always produces a spec that passes `validate`.
+///
+/// It also has to *move* something: a `seeded` that accepts the root seed and
+/// then returns the canonical fixture untouched passes every bound above and
+/// is caught by the movement assertion here.
 #[test]
 fn accept_t335_seeded_spec_varies_only_the_lateral_components() {
     let base = canonical();
@@ -168,6 +172,15 @@ fn accept_t335_seeded_spec_varies_only_the_lateral_components() {
         assert_eq!(
             seeded.half_extents_m, base.half_extents_m,
             "seed {root_seed}: the extents must not move"
+        );
+
+        // The seed must really move the body: an implementation that accepts
+        // the root seed and then ignores it keeps every offset at zero and
+        // fails here, not only in the collision test below.
+        assert_ne!(
+            seeded, base,
+            "seed {root_seed}: the lateral components must move away from the \
+             canonical fixture, otherwise the seed is being ignored"
         );
 
         for axis in [0usize, 2] {
