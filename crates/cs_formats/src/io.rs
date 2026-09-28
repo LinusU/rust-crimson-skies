@@ -279,8 +279,10 @@ impl<'a> Reader<'a> {
 /// nothing but the [`ParseError`] it returns. Charging happens only on
 /// success: a refused request leaves the budget exactly as it was.
 ///
-/// A budget belongs to one parse. Constructing (or cloning) one starts fresh
-/// accounting, so no code path can widen another parse's limit.
+/// A budget belongs to one parse: it is constructed at zero use, and a clone
+/// is an independent ledger that carries the same `limit` and the same `used`
+/// bytes — never a shared counter and never a wider allowance — so no code
+/// path can quietly enlarge what one parse may allocate.
 #[derive(Clone, Debug)]
 pub struct AllocationBudget {
     /// Provenance label carried by this budget's errors.
@@ -294,10 +296,12 @@ pub struct AllocationBudget {
 impl AllocationBudget {
     /// The designed default budget: 64 MiB per parse.
     ///
-    /// Large enough for the biggest decoded buffers the engine expects
-    /// (a 4096² RGBA8 texture is 64 MiB), small enough that a hostile count is
-    /// refused long before it becomes a real allocation. Any other limit must
-    /// be passed explicitly to [`Self::new`] by code that tests it.
+    /// Large enough for the biggest decoded buffers the engine is expected to
+    /// need (a 4096² RGBA8 texture is 64 MiB), small enough that a hostile
+    /// count is refused long before it becomes a real allocation. Like every
+    /// default here it is a *designed* budget, not a measured original value.
+    /// Any other limit must be passed explicitly to [`Self::new`] by code
+    /// that tests it.
     pub const DEFAULT_LIMIT: u64 = 64 * 1024 * 1024;
 
     /// A budget of `limit` bytes whose errors name `container`.
@@ -448,10 +452,12 @@ pub struct RecursionBudget {
 impl RecursionBudget {
     /// The designed default limit: 32 nested levels.
     ///
-    /// Deep enough for the deepest legitimate nesting observed in the
-    /// engine's own content model, shallow enough that a hostile or cyclic
-    /// structure fails fast instead of overflowing the stack. Any other limit
-    /// must be passed explicitly to [`Self::new`] by code that tests it.
+    /// Deep enough for the deepest legitimate nesting the engine's content
+    /// model is expected to need, shallow enough that a hostile or cyclic
+    /// structure fails fast instead of overflowing the stack. This is a
+    /// *designed* budget (EvidenceClass `Designed`): no original game value is
+    /// observed or implied. Any other limit must be passed explicitly to
+    /// [`Self::new`] by code that tests it.
     pub const DEFAULT_MAX_DEPTH: u32 = 32;
 
     /// A budget of `max_depth` levels whose errors name `container`.
