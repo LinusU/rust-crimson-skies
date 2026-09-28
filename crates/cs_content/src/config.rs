@@ -783,18 +783,24 @@ impl<'a> TuningSchema<'a> {
                     });
                 }
             } else {
-                // A non-negative value is checked against the largest value the
-                // width addresses, signed or unsigned: `u8` stops at 255 and
-                // `i8` at 127.
-                let high = match self.spec.width.unsigned_range() {
-                    Some((_, unsigned_high)) => unsigned_high as f64,
-                    None => {
-                        self.spec
-                            .width
-                            .signed_range()
-                            .expect("a whole-number width")
-                            .1 as f64
-                    }
+                // A non-negative value is checked against the largest value its
+                // *declared* type addresses: an unsigned field stops at its
+                // width's unsigned maximum, a signed one at its signed maximum.
+                // So `200` is an overflow of `i8` (whose span is -128..=127)
+                // even though it fits `u8`, and never becomes a `Tuning` that
+                // claims the signed type could carry it.
+                let high = if self.spec.signed {
+                    self.spec
+                        .width
+                        .signed_range()
+                        .expect("a whole-number width")
+                        .1 as f64
+                } else {
+                    self.spec
+                        .width
+                        .unsigned_range()
+                        .expect("a whole-number width")
+                        .1 as f64
                 };
                 if value > high {
                     return Err(TuneError::Overflow {
@@ -837,7 +843,7 @@ impl<'a> TuningSchema<'a> {
     ///   values;
     /// * a `0x`-prefixed hexadecimal value — `ObservedTool`:
     ///   [`cs_formats::text::LexicalFeature::HexValues`];
-    /// * a single `.` separating whole and fractional digits — `Inferred`: the
+    /// * a single `.`, with digits on at least one side — `Inferred`: the
     ///   survey found **no** fractional value in either member, so this
     ///   spelling is a *designed* reading rule and not a measured one. It is
     ///   recorded as an unknown in
@@ -886,8 +892,8 @@ impl<'a> TuningSchema<'a> {
             }
             value
         } else {
-            // At most one `.`, with digits on at least one side: `5.5` reads,
-            // `5.`, `.5`, `5..5` and `5.5.5` do not.
+            // At most one `.`, and not both sides empty: `5.5`, `5.` and `.5`
+            // read; `5..5`, `5.5.5` and a bare `.` do not.
             let mut parts = digits.splitn(3, |byte| *byte == b'.');
             let whole = parts.next().expect("a first part");
             let fraction = parts.next();
@@ -1522,6 +1528,60 @@ HUGEFLOAT=1.7976931348623159e999\r\n";
         assert!(!ValueWidth::Bits32.is_float());
         assert_eq!(ValueWidth::Float64.signed_range(), None);
         assert_eq!(ValueWidth::Float32.unsigned_range(), None);
+    }
+
+    /// A signed width is bounded by its *own* maximum, not the unsigned
+    /// maximum of the same bit count: `200` fits `u8` but not `i8`, and must
+    /// be an overflow rather than a `Tuning` whose `as_signed` value the
+    /// declared type could not carry (AC02).
+    #[test]
+    fn accept_f12_b_signed_widths_reject_values_above_their_signed_maximum() {
+        // `(width, a value between the signed maximum and the unsigned
+        // maximum of the same bit count, the signed maximum when it is
+        // exactly representable as `f64`)`. `i64::MAX` is not, because the
+        // value reader accumulates digits into an `f64`; the 64-bit boundary
+        // is therefore deliberately not asserted, only the strictly greater
+        // value.
+        let cases = [
+            (ValueWidth::Bits8, 200u64, Some(127i64)),
+            (ValueWidth::Bits16, 40_000, Some(32_767)),
+            (ValueWidth::Bits32, 3_000_000_000, Some(2_147_483_647)),
+            (ValueWidth::Bits64, 10_000_000_000_000_000_000, None),
+        ];
+        for (width, between, max) in cases {
+            let over = format!("V={between}\r\n");
+            let mut context = ParseContext::with_defaults("fixture");
+            let document =
+                ConfigDocument::read(&mut context, source(LAYOUT, over.len()), over.as_bytes())
+                    .expect("reads");
+            assert_eq!(
+                tune(&document, b"V", FieldSpec::integer(width, true), 0),
+                Err(TuneError::Overflow { width }),
+                "{width:?} signed must refuse {between}, above its signed maximum"
+            );
+            // The same value is fine in the unsigned field of the same width,
+            // so the refusal is the signedness' and not the value's shape.
+            assert_eq!(
+                tune(&document, b"V", FieldSpec::integer(width, false), 0).map(|t| t.as_unsigned()),
+                Ok(Some(between)),
+                "{width:?} unsigned accepts {between}"
+            );
+
+            let Some(max) = max else { continue };
+            let at_max = format!("V={max}\r\n");
+            let mut context = ParseContext::with_defaults("fixture");
+            let document = ConfigDocument::read(
+                &mut context,
+                source(LAYOUT, at_max.len()),
+                at_max.as_bytes(),
+            )
+            .expect("reads");
+            assert_eq!(
+                tune(&document, b"V", FieldSpec::integer(width, true), 0).map(|t| t.as_signed()),
+                Ok(Some(max)),
+                "{width:?} signed accepts its own maximum {max}"
+            );
+        }
     }
 
     /// Only members the inventory routes to a reader become documents.
