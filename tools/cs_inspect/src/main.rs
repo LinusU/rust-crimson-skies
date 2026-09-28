@@ -7,8 +7,10 @@
 //! the `audit` command (F02-D) classifies every inventoried file and runs
 //! the full-content readiness check, and the `resolve` command (F04-C)
 //! resolves one asset key in a mounted content session and reports its
-//! trace, and the `zbd-audit` command (F06-D) lists every ZBD container
-//! and member with a strict status. The remaining subcommands from
+//! trace, the `zbd-audit` command (F06-D) lists every ZBD container and
+//! member with a strict status, and the `interp` command (F07-B) decodes
+//! and validates one INTERP loading-script container and reports its
+//! lossless tokens. The remaining subcommands from
 //! `docs/contracts/CLI-EVIDENCE.md` (`catalog`, `closure`, `scripts`,
 //! `handling`) arrive with later tasks.
 //! Until then the binary refuses invalid input with a nonzero exit code and
@@ -56,6 +58,15 @@ COMMANDS
         is corrupt, and with --strict also when any content is left
         uninterpreted. Never claims playability.
 
+    interp --file <path> [--out <file>] [--raw]
+        Decode and validate one INTERP loading-script container (F07-B). The
+        JSON report holds the header, every script's origin and extent, and
+        each line's arguments as offsets and byte strings; names and
+        arguments have no established encoding, so they are reported as
+        length and hex, never as text. --raw adds the unvalidated raw
+        records next to the decoded tokens. Exits 0 when the container
+        decodes with no findings, 3 when it is refused or has findings.
+
     catalog  closure  scripts  handling
         Not implemented in this workspace stage; they are documented in
         docs/contracts/CLI-EVIDENCE.md.
@@ -84,7 +95,8 @@ fn main() -> ExitCode {
         None => {
             eprintln!(
                 "cs-inspect: missing command; expected one of inventory, audit, resolve, \
-                 zbd-audit, catalog, closure, scripts, handling (see docs/contracts/CLI-EVIDENCE.md)"
+                 zbd-audit, interp, catalog, closure, scripts, handling (see \
+                 docs/contracts/CLI-EVIDENCE.md)"
             );
             ExitCode::from(EXIT_INVALID_INPUT)
         }
@@ -92,10 +104,11 @@ fn main() -> ExitCode {
         Some("audit") => cs_inspect::install::audit_command(&args[1..]),
         Some("resolve") => cs_inspect::resolve::resolve_command(&args[1..]),
         Some("zbd-audit") => cs_inspect::zbd::zbd_audit_command(&args[1..]),
+        Some("interp") => cs_inspect::interp::interp_command(&args[1..]),
         Some(command) => {
             eprintln!(
                 "cs-inspect: unsupported command {command:?}; this workspace stage implements \
-                 only `inventory`, `audit`, `resolve` and `zbd-audit`"
+                 only `inventory`, `audit`, `resolve`, `zbd-audit` and `interp`"
             );
             ExitCode::from(EXIT_INVALID_INPUT)
         }

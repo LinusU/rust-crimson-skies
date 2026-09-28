@@ -962,7 +962,7 @@ fn accept_f07_b_decoded_records_are_booked_once_and_refusals_charge_nothing() {
         image.finish()
     };
     decode_interp(&mut short, &small).expect("the retry fits what the refusal left");
-    assert!(short.allocation().used() <= charge - 1);
+    assert!(short.allocation().used() < charge);
 
     // Charges accumulate: a second full decode on the same context does not
     // fit any more.

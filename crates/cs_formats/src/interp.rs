@@ -1132,9 +1132,7 @@ pub fn decode_interp<'bytes>(
 
             // Phase 2: book every decoded record in one reservation.
             let bytes = decoded_record_bytes(reader.container(), &walk)?;
-            if let Err(error) = allocation.reserve("records", index_end, 1, bytes) {
-                return Err(error);
-            }
+            allocation.reserve("records", index_end, 1, bytes)?;
 
             // Phase 3: build. Every line's data already ended with a 0x00 and
             // held exactly `argument_count` of them, so the split below is
