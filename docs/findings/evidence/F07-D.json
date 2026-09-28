@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "F07-D",
+ "candidate_tree": "18ba5f144dc8241dc24adc96d22c559ee34e891d",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-09-28T21:16:26Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_f07_d_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/agent-4", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 12, "executed": 12, "passed": 12, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_f07_d_behavior_command_is_carried_without_a_dependency_or_a_failure", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f07_d_unsupported_command_yields_its_offset_and_world_not_a_loaded_state", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f07_d_classification_table_refuses_ambiguous_or_untraceable_entries", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f07_d_behavior_command_is_carried_without_blocking", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f07_d_loading_registry_maps_to_loading_classifications", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f07_d_audit_reports_every_distinct_head_and_its_completeness", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f07_d_unknown_head_stays_unclassified_and_blocks", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f07_d_unsupported_command_blocks_with_its_source_offset", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f07_d_cli_refuses_a_malformed_classification", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f07_d_cli_reports_an_unsupported_command_with_its_offset_and_world", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f07_d_cli_audits_every_head_and_reports_completeness", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f07_d_retail_interp_audit_classifies_every_head", "status": "pass", "evidence": ["cargo-test.log"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "b1e4e339a977bbd12f91edc6f41cb84d168a2d7e85b76a5b0985c7b92e674c3f", "kind": "log"}, {"path": "interp-audit.json", "sha256": "a423541414544e539660e61e2e21d0140cb7596f2f5c1d26ab37c72b8bed382c", "kind": "json"}, {"path": "retail-opcode-classes.txt", "sha256": "71c1c0ecb4605c0a53d6ebd4e3cc90a8b829937b40e19d5e163dc5d839f1e708", "kind": "txt"}],
+ "unknowns": [],
+ "review": {"identity": "deepseek-1 (implementing agent)", "method": "acceptance suite run locally with the retail capability; this harness derives every field from the recorded log, production discovery of $CS_GAME_DIR, and the production `cs-inspect interp --plan --classes` run over $CS_GAME_DIR/ZBD/interp.zbd (interp-audit.json; SHA-256 f5251cb559db1992320247b9674d159a149572e077bc8579ae34d5fbd16254c7), whose committed classification (retail-opcode-classes.txt) classifies all 85 distinct heads of the 98 scripts / 5083 lines, so the F07-D audit is complete and reports 0 unknown heads, 952 unsupported lines and 4131 behavior lines; every unsupported line names its source offset and affected world and no dependency is invented. The classes are a corpus-inferred claim (status `inferred`) recorded in docs/findings/2026-09-28-f07-d-retail-opcode-classes.md; their limitations are the F07-D findings, not hidden, and the report run exits 3 because the unsupported lines block their worlds. Validated with tools/validate_evidence.py --require-pass"},
+ "claim": "implemented"
+}
