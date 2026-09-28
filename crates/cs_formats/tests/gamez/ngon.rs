@@ -311,3 +311,80 @@ fn accept_f10_b_untriangulable_outlines_are_reported_not_fanned() {
     assert!(topology.triangles.iter().all(|t| t.polygon == 1));
     assert_eq!(topology.triangles.len(), 3);
 }
+
+/// Integer orientation of `(a, b, c)`, for building fixtures independently
+/// of the triangulator's `f64` predicates.
+fn orient(a: [i64; 2], b: [i64; 2], c: [i64; 2]) -> i64 {
+    (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+}
+
+/// Edges `i` and `j` of `outline` properly cross (fixtures have no three
+/// collinear corners, so touching without crossing cannot happen).
+fn edges_cross(outline: &[[i64; 2]], i: usize, j: usize) -> bool {
+    let n = outline.len();
+    let (a, b) = (outline[i], outline[(i + 1) % n]);
+    let (c, d) = (outline[j], outline[(j + 1) % n]);
+    (orient(a, b, c) > 0) != (orient(a, b, d) > 0) && (orient(c, d, a) > 0) != (orient(c, d, b) > 0)
+}
+
+#[test]
+fn accept_f10_b_random_simple_outlines_are_covered_exactly() {
+    // Deterministic xorshift, so a failure names a reproducible outline.
+    let mut state: u64 = 0x5eed_f10b;
+    let mut next = move |bound: u64| {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state % bound
+    };
+    let mut checked = 0;
+    while checked < 500 {
+        // Distinct grid points with no three collinear, untangled by 2-opt
+        // into a simple outline of either winding, concave or not.
+        let n = 4 + next(9) as usize;
+        let mut outline: Vec<[i64; 2]> = Vec::new();
+        let mut attempts = 0;
+        while outline.len() < n && attempts < 1000 {
+            attempts += 1;
+            let p = [next(16) as i64, next(16) as i64];
+            let collinear = (0..outline.len())
+                .any(|i| (i + 1..outline.len()).any(|j| orient(outline[i], outline[j], p) == 0));
+            if !outline.contains(&p) && !collinear {
+                outline.push(p);
+            }
+        }
+        if outline.len() < n {
+            continue;
+        }
+        let crossing = |outline: &[[i64; 2]]| {
+            (0..n).find_map(|i| {
+                (i + 2..n)
+                    .filter(|&j| !(i == 0 && j == n - 1))
+                    .find(|&j| edges_cross(outline, i, j))
+                    .map(|j| (i, j))
+            })
+        };
+        let mut untangled = false;
+        for _ in 0..10_000 {
+            match crossing(&outline) {
+                Some((i, j)) => outline[i + 1..=j].reverse(),
+                None => {
+                    untangled = true;
+                    break;
+                }
+            }
+        }
+        if !untangled {
+            continue;
+        }
+
+        let outline: Vec<[f32; 3]> = outline
+            .iter()
+            .map(|&[x, y]| [x as f32, y as f32, 0.0])
+            .collect();
+        let topology = outline_mesh(outline.clone()).topology();
+        assert!(topology.is_complete(), "{outline:?}: {:?}", topology.faces);
+        assert_covers_exactly(&outline, &topology);
+        checked += 1;
+    }
+}
