@@ -30,9 +30,13 @@
 //! `specs/F08-texture-archives-and-conventional-image-decoding.md` (stage
 //! F08-A, [`texture`]).
 //!
+//! The BM multilayer livery layout: `specs/F09-bm-multilayer-liveries-and-
+//! paint-composition.md` (stage F09-A, [`bm`]).
+//!
 //! The fixtures exercised below are newly authored synthetic bytes; nothing
 //! here is derived from original game data.
 
+pub mod bm;
 pub mod error;
 pub mod interp;
 pub mod io;
@@ -40,6 +44,10 @@ pub mod rof;
 pub mod texture;
 pub mod zbd;
 
+pub use bm::{
+    BM_BYTES_PER_PIXEL, BM_ENTRYPOINT, BM_HEADER_BYTES, BM_STORED_ROW_ORDER, BmError, BmFile,
+    BmPlane, BmRawHeader, BmUnsupportedTail, read_bm,
+};
 pub use error::{ParseError, ParseErrorKind};
 pub use interp::{
     INDEX_ENTRY_BYTES, INTERP_ENTRYPOINT, INTERP_HEADER_BYTES, InterpError, InterpFile,
