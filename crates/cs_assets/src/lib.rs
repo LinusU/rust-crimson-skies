@@ -9,7 +9,8 @@
 //! and `resolve(context, key)`. [`zbd`] is the F06-C wiring: a ZBD container
 //! resolved through a content session is dispatched, its own trailer member
 //! index is read, and its sound members become sound assets with the samples
-//! their own WAVE headers declare. Allowed dependencies:
+//! their own WAVE headers declare; its F06-D corpus audit gives every
+//! container and member a row. Allowed dependencies:
 //! [`cs_types`] and [`cs_formats`]. The original installation at
 //! `$CS_GAME_DIR` is read-only and nothing derived from it is committed to
 //! Git.

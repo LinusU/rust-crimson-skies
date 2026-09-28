@@ -22,6 +22,15 @@
 //!   a [`SoundAsset`] carrying its identity, its span, the WAVE header its
 //!   member declares, and its [`SoundReadiness`].
 //!
+//! * **the corpus audit (stage F06-D).** [`audit_container`] and
+//!   [`audit_containers`] run the producer over every ZBD container of a
+//!   session and give each container and each member of the sound and reader
+//!   families a row: `decoded`, `readable` (sound, not interpreted, with the
+//!   reason) or `failed` (with a stable code). A corrupt container or member
+//!   is a row beside its valid siblings, never a reason to stop (spec F06
+//!   non-negotiable #4, AC04); [`ZbdAudit::passes`] is the strict status the
+//!   `cs-inspect zbd-audit` command exits with.
+//!
 //! # What this stage does not do
 //!
 //! * It does not decode ADPCM. Task #344 measured that every retail member is
@@ -57,10 +66,10 @@ use std::fmt;
 use cs_formats::ParseContext;
 use cs_formats::zbd::{
     ArchiveListing, ContainerStatus, DispatchBasis, HeaderStatus, IndexError, MemberStatus,
-    MemberTable, ReaderError, RoleStatus, RoutableFamily, SampleError, SoundArchive, SoundEntry,
-    SoundError, UnsupportedRecord, VersionOneIndex, WaveError, WaveHeader, ZbdDispatch,
+    MemberTable, ReaderArchive, ReaderError, RoleStatus, RoutableFamily, SampleError, SoundArchive,
+    SoundEntry, SoundError, UnsupportedRecord, VersionOneIndex, WaveError, WaveHeader, ZbdDispatch,
     ZbdDispatchError, ZbdFamily, ZbdProbe, ZbdReaderId, decode_sound_sample, dispatch,
-    read_sound_archive, read_version_one_index,
+    read_reader_archive, read_sound_archive, read_version_one_index,
 };
 use cs_types::asset_id::{AssetKey, MountId, SourceSpan};
 use cs_types::evidence::SourceSpan as ByteSpan;
@@ -513,6 +522,29 @@ impl ZbdContainer {
         Ok(read_sound_archive(context, table, index.data())?)
     }
 
+    /// Reads the reader archive of a container the two keys routed to the
+    /// reader family, from the member index its own trailer declares
+    /// (stage F06-D: the corpus audit lists reader members through the same
+    /// producer as sound members).
+    ///
+    /// `index` and `table` are as in [`Self::sound_archive`].
+    ///
+    /// # Errors
+    ///
+    /// [`ZbdError::ForeignIndex`] when `index` was not read from this
+    /// container's own bytes or `table` carries another container's label,
+    /// and [`ZbdError::Reader`] when the family gate or the listing refuses the
+    /// container.
+    pub fn reader_archive<'c>(
+        &'c self,
+        context: &mut ParseContext,
+        index: &'c VersionOneIndex<'c>,
+        table: &'c MemberTable<'c>,
+    ) -> Result<ReaderArchive<'c>, ZbdError> {
+        self.require_own_index(index, table)?;
+        Ok(read_reader_archive(context, table, index.data())?)
+    }
+
     /// Refuses an index or table that describes another container's members.
     ///
     /// The index must slice exactly this container's bytes (its data starts
@@ -893,6 +925,430 @@ impl<'a> SoundAssets<'a> {
         self.entries
             .iter()
             .filter(|entry| entry.readiness.is_decoded())
+    }
+}
+
+// --- Corpus audit (stage F06-D) ---------------------------------------------
+
+/// What the audit established about one member of a member-listed container.
+///
+/// Three outcomes, never "playable": spec F06 non-negotiable #4 lets a
+/// diagnostic listing continue past an invalid member and show every error, but
+/// forbids it to advertise playability.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MemberVerdict {
+    /// The member's content was interpreted under its own declaration.
+    Decoded {
+        /// What was decoded, e.g. the declared format and the frame count.
+        detail: String,
+    },
+    /// The member is structurally sound (in bounds, and for a sound member a
+    /// readable WAVE header) but its content is not interpreted by any
+    /// reader this stage has. `reason` says why, quoting the member's own
+    /// declaration where there is one.
+    Readable {
+        /// Why the content is not interpreted.
+        reason: String,
+    },
+    /// The member is corrupt: out of bounds, an unreadable WAVE header, or a
+    /// payload that contradicts its own declared format.
+    Failed {
+        /// Stable code of the failure.
+        code: &'static str,
+        /// Human explanation, carrying values and never member bytes.
+        reason: String,
+    },
+}
+
+impl MemberVerdict {
+    /// Stable lowercase label for reports.
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::Decoded { .. } => "decoded",
+            Self::Readable { .. } => "readable",
+            Self::Failed { .. } => "failed",
+        }
+    }
+
+    /// Whether the member is corrupt.
+    pub const fn is_failed(&self) -> bool {
+        matches!(self, Self::Failed { .. })
+    }
+}
+
+/// One member row of the audit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MemberAudit {
+    /// Position in the container's declared index.
+    pub index: usize,
+    /// The name bytes exactly as the index spells them (duplicates stay
+    /// separate rows).
+    pub name: Vec<u8>,
+    /// Where the index says the member lives inside the container.
+    pub span: ByteSpan,
+    /// The index entry's recorded deviations from the pinned source's
+    /// assertions (task #343's [`cs_formats::zbd::EntryAnomaly`] codes).
+    pub anomalies: Vec<&'static str>,
+    /// What the audit established.
+    pub verdict: MemberVerdict,
+}
+
+/// What the audit established about one container.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ContainerVerdict {
+    /// The container's own member index was read and every member has a row.
+    Listed,
+    /// The container was opened and routed, but its family's members are not
+    /// listed by any F06 reader; `reason` names the feature that reads it.
+    NotListed {
+        /// Why no member rows exist.
+        reason: &'static str,
+    },
+    /// The container could not be opened, routed, indexed or listed.
+    Failed {
+        /// The stable [`ZbdError::code`].
+        code: &'static str,
+        /// The error's explanation.
+        reason: String,
+    },
+}
+
+impl ContainerVerdict {
+    /// Stable lowercase label for reports.
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::Listed => "listed",
+            Self::NotListed { .. } => "not_listed",
+            Self::Failed { .. } => "failed",
+        }
+    }
+}
+
+/// One container row of the audit, with the trace of how it was produced.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContainerAudit {
+    /// The key the container was resolved with.
+    pub key: AssetKey,
+    /// The mount that served it, when it resolved.
+    pub mount: Option<String>,
+    /// The session generation that read it, when it was read.
+    pub generation: Option<u64>,
+    /// The installation-relative path dispatch was matched against, when the
+    /// container opened.
+    pub path: Option<String>,
+    /// The container's length in bytes, when it was read.
+    pub container_len: Option<u64>,
+    /// The family the two keys named, when they named one.
+    pub family: Option<ZbdFamily>,
+    /// Which key identified the family ([`DispatchBasis::label`]).
+    pub basis: Option<&'static str>,
+    /// What the header bytes established: `validated` or `unvalidated`.
+    pub header: Option<&'static str>,
+    /// One row per declared member, for a listed container.
+    pub members: Vec<MemberAudit>,
+    /// Byte ranges of the data region no member claims.
+    pub uncovered: Vec<ByteSpan>,
+    /// The container's own outcome.
+    pub verdict: ContainerVerdict,
+}
+
+impl ContainerAudit {
+    /// Rows whose member is corrupt.
+    pub fn failed_members(&self) -> impl Iterator<Item = &MemberAudit> + '_ {
+        self.members.iter().filter(|row| row.verdict.is_failed())
+    }
+
+    /// How many members were decoded.
+    pub fn decoded_members(&self) -> usize {
+        self.count(|verdict| matches!(verdict, MemberVerdict::Decoded { .. }))
+    }
+
+    /// How many members are sound but not interpreted.
+    pub fn readable_members(&self) -> usize {
+        self.count(|verdict| matches!(verdict, MemberVerdict::Readable { .. }))
+    }
+
+    fn count(&self, wanted: impl Fn(&MemberVerdict) -> bool) -> usize {
+        self.members
+            .iter()
+            .filter(|row| wanted(&row.verdict))
+            .count()
+    }
+
+    /// Corruption in this container: the container itself failing counts
+    /// once, and every failed member counts once.
+    pub fn failures(&self) -> usize {
+        usize::from(matches!(self.verdict, ContainerVerdict::Failed { .. }))
+            + self.failed_members().count()
+    }
+
+    /// Content this container holds that no reader interpreted: a container
+    /// that is not member-listed counts once, and every readable member,
+    /// index anomaly and uncovered range counts once.
+    pub fn uninterpreted(&self) -> usize {
+        usize::from(matches!(self.verdict, ContainerVerdict::NotListed { .. }))
+            + self.readable_members()
+            + self
+                .members
+                .iter()
+                .map(|row| row.anomalies.len())
+                .sum::<usize>()
+            + self.uncovered.len()
+    }
+}
+
+/// The audit of every ZBD container of a session.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ZbdAudit {
+    /// One row per audited container, in the order they were audited.
+    pub containers: Vec<ContainerAudit>,
+}
+
+impl ZbdAudit {
+    /// Corrupt containers and members, summed over every container.
+    pub fn failures(&self) -> usize {
+        self.containers.iter().map(ContainerAudit::failures).sum()
+    }
+
+    /// Uninterpreted content, summed over every container.
+    pub fn uninterpreted(&self) -> usize {
+        self.containers
+            .iter()
+            .map(ContainerAudit::uninterpreted)
+            .sum()
+    }
+
+    /// Whether the audit passes: nothing is corrupt, and under `strict`
+    /// nothing is left uninterpreted either.
+    pub fn passes(&self, strict: bool) -> bool {
+        self.failures() == 0 && (!strict || self.uninterpreted() == 0)
+    }
+}
+
+/// The feature that reads a family F06 does not member-list.
+const fn not_listed_reason(family: ZbdFamily) -> &'static str {
+    match family {
+        ZbdFamily::Texture => {
+            "texture packages are not member-listed by F06; their reader is F08 (texture archives)"
+        }
+        ZbdFamily::Interp => {
+            "interp containers are not member-listed by F06; their reader is F07 (interp loading)"
+        }
+        ZbdFamily::GameZ => {
+            "GameZ containers are not member-listed by F06; their reader is F10 (GameZ mesh \
+             topology)"
+        }
+        ZbdFamily::Animation => {
+            "animation containers are not member-listed by F06; the Crimson Skies animation body \
+             is undocumented (task #340) and belongs to F20 (object animation)"
+        }
+        ZbdFamily::Sound | ZbdFamily::Reader => "sound and reader containers are member-listed",
+    }
+}
+
+/// Audits one ZBD container of `session`: opens it through the VFS producer,
+/// reads its own member index and gives every member a row.
+///
+/// Never fails: every failure is the row's [`ContainerVerdict::Failed`] or a
+/// member's [`MemberVerdict::Failed`], so one corrupt container or member
+/// cannot hide its siblings (spec F06 non-negotiable #4, AC04).
+pub fn audit_container(session: &ContentSession, key: &AssetKey) -> ContainerAudit {
+    let mut row = ContainerAudit {
+        key: key.clone(),
+        mount: None,
+        generation: None,
+        path: None,
+        container_len: None,
+        family: None,
+        basis: None,
+        header: None,
+        members: Vec::new(),
+        uncovered: Vec::new(),
+        verdict: ContainerVerdict::Listed,
+    };
+    let container = match ZbdContainer::open(session, key) {
+        Ok(container) => container,
+        Err(error) => {
+            if let Ok(asset) = session.resolve(key) {
+                row.mount = Some(asset.resolved().mount.as_str().to_owned());
+                row.generation = Some(asset.generation().get());
+            }
+            row.verdict = ContainerVerdict::Failed {
+                code: error.code(),
+                reason: error.to_string(),
+            };
+            return row;
+        }
+    };
+    row.mount = Some(container.mount().as_str().to_owned());
+    row.generation = Some(container.generation().get());
+    row.path = Some(container.path().as_str().to_owned());
+    row.container_len = Some(container.bytes().len() as u64);
+    if let ZbdRouting::Routed {
+        family,
+        basis,
+        header_status,
+        ..
+    } = *container.routing()
+    {
+        row.family = Some(family);
+        row.basis = Some(basis.label());
+        row.header = Some(match header_status {
+            HeaderStatus::Validated { .. } => "validated",
+            HeaderStatus::Unvalidated { .. } => "unvalidated",
+        });
+    }
+    let family = container.family();
+    if !cs_formats::zbd::indexed_by_trailer(family) {
+        row.verdict = ContainerVerdict::NotListed {
+            reason: not_listed_reason(family),
+        };
+        return row;
+    }
+    if let Err(error) = list_container(&container, &mut row) {
+        row.members.clear();
+        row.uncovered.clear();
+        row.verdict = ContainerVerdict::Failed {
+            code: error.code(),
+            reason: error.to_string(),
+        };
+    }
+    row
+}
+
+/// Reads `container`'s own index and fills `row` with one member row each.
+fn list_container(container: &ZbdContainer, row: &mut ContainerAudit) -> Result<(), ZbdError> {
+    let mut context = ParseContext::with_defaults(container.label());
+    let index = container.index(&mut context)?;
+    let table = index.member_table();
+    let anomalies = |position: usize| -> Vec<&'static str> {
+        index
+            .entry(position)
+            .map(|entry| entry.anomalies().map(|anomaly| anomaly.code()).collect())
+            .unwrap_or_default()
+    };
+    let bounds_failure = |listing: &ArchiveListing<'_>, position: usize| {
+        listing
+            .row(position)
+            .and_then(|member| member.error())
+            .map(|error| MemberVerdict::Failed {
+                code: error.code(),
+                reason: error.to_string(),
+            })
+    };
+    match container.family() {
+        ZbdFamily::Sound => {
+            let assets = container.sound_assets(&mut context, &index, &table)?;
+            let listing = assets.listing();
+            for (position, member) in listing.rows().iter().enumerate() {
+                let verdict = match bounds_failure(listing, position) {
+                    Some(failed) => failed,
+                    None => {
+                        let asset = assets
+                            .entries()
+                            .iter()
+                            .find(|asset| asset.index() == position)
+                            .expect("a readable member is a sound asset");
+                        sound_verdict(&mut context, asset)
+                    }
+                };
+                row.members.push(MemberAudit {
+                    index: position,
+                    name: member.name().to_vec(),
+                    span: member.span(),
+                    anomalies: anomalies(position),
+                    verdict,
+                });
+            }
+            row.uncovered = listing.uncovered_ranges();
+        }
+        ZbdFamily::Reader => {
+            let archive = container.reader_archive(&mut context, &index, &table)?;
+            let listing = archive.listing();
+            for (position, member) in listing.rows().iter().enumerate() {
+                let verdict = bounds_failure(listing, position).unwrap_or_else(|| {
+                    let entry = archive.entry(position).expect("a readable member");
+                    MemberVerdict::Readable {
+                        reason: entry.encoding().reason().to_owned(),
+                    }
+                });
+                row.members.push(MemberAudit {
+                    index: position,
+                    name: member.name().to_vec(),
+                    span: member.span(),
+                    anomalies: anomalies(position),
+                    verdict,
+                });
+            }
+            row.uncovered = listing.uncovered_ranges();
+        }
+        other => {
+            row.verdict = ContainerVerdict::NotListed {
+                reason: not_listed_reason(other),
+            };
+        }
+    }
+    Ok(())
+}
+
+/// The verdict of one in-bounds sound member, from its [`SoundReadiness`].
+fn sound_verdict(context: &mut ParseContext, asset: &SoundAsset<'_>) -> MemberVerdict {
+    match asset.readiness() {
+        SoundReadiness::Decoded {
+            frames,
+            samples_per_frame,
+        } => {
+            let detail = match asset.wave() {
+                Ok(header) => format!(
+                    "{} tag {:#06x}, {} Hz, {} bits, {samples_per_frame} channel(s), {frames} \
+                     frames",
+                    header.format_name().unwrap_or("unnamed"),
+                    header.format_tag(),
+                    header.rate_hz(),
+                    header.bits_per_sample(),
+                ),
+                Err(_) => format!("{frames} frames of {samples_per_frame} samples"),
+            };
+            MemberVerdict::Decoded { detail }
+        }
+        SoundReadiness::UnsupportedFormat { tag, name } => MemberVerdict::Readable {
+            reason: format!(
+                "the member declares format tag {tag:#06x} ({}), which this stage does not decode",
+                name.unwrap_or("unnamed")
+            ),
+        },
+        SoundReadiness::UnreadableHeader { reason } => match asset.wave() {
+            Err(error) => MemberVerdict::Failed {
+                code: error.code(),
+                reason: error.to_string(),
+            },
+            // The readiness was taken from this same header read, so this arm
+            // only keeps the verdict total.
+            Ok(_) => MemberVerdict::Failed {
+                code: "unreadable_header",
+                reason: (*reason).to_owned(),
+            },
+        },
+        SoundReadiness::Undecodable { code } => MemberVerdict::Failed {
+            code,
+            reason: asset
+                .decode(context)
+                .err()
+                .map_or_else(|| (*code).to_owned(), |error| error.to_string()),
+        },
+    }
+}
+
+/// Audits every container in `keys`, in order.
+pub fn audit_containers<'k>(
+    session: &ContentSession,
+    keys: impl IntoIterator<Item = &'k AssetKey>,
+) -> ZbdAudit {
+    ZbdAudit {
+        containers: keys
+            .into_iter()
+            .map(|key| audit_container(session, key))
+            .collect(),
     }
 }
 
