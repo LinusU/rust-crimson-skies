@@ -11,12 +11,17 @@
 //! and parsing must stay independent of renderer, window, network, game state
 //! and asset-directory enumeration.
 //!
+//! On top of those primitives sits the ZBD family inventory and its
+//! two-key dispatch: `specs/F06-zbd-families-reader-archives-and-
+//! sound-containers.md` (stage F06-A, [`zbd`]).
+//!
 //! The fixtures exercised below are newly authored synthetic bytes; nothing
 //! here is derived from original game data.
 
 pub mod error;
 pub mod io;
 pub mod rof;
+pub mod zbd;
 
 pub use error::{ParseError, ParseErrorKind};
 pub use io::{AllocationBudget, ParseContext, Reader, RecursionBudget, RecursionGuard};
@@ -24,4 +29,8 @@ pub use rof::{
     DIRECTORY_ENTRYPOINT, DIRECTORY_HEADER_BYTES, FLAG_COMPRESSED, FLAG_DIRECTORY, KNOWN_FLAG_MASK,
     RECORD_BYTES, RofDirectory, RofEntries, RofEntry, RofError, RofFlags, RofRawHeader,
     RofRawRecord, read_directory,
+};
+pub use zbd::{
+    DispatchBasis, HeaderStatus, RoleStatus, ZbdDispatch, ZbdDispatchError, ZbdFamily, ZbdProbe,
+    ZbdReaderId, dispatch,
 };
