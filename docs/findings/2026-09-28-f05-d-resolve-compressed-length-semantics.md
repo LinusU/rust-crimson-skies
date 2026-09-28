@@ -248,6 +248,22 @@ the file above are the implementer's and which are not:
 - **Filed F05-E** for `docs/research/FORMAT-NOTES.md`, which still calls this
   question unresolved. It is a protected path, so this task could not and must
   not edit it.
+- **Adapted one call site outside the owner paths.**
+  `crates/cs_formats/src/text/tests.rs` (F12-A, which reached `main` while this
+  branch was in review) builds a `cs_formats::RofMember` by hand, and renaming
+  `length_end` / `length_on_disk_end` to `stored_end` is a public API change
+  in `cs_formats`: that struct literal stopped compiling with
+  `E0560: no field named length_end`, so the tree could not be left as it was.
+  The adaptation is one field and one comment, and it also makes that helper
+  correct rather than lucky: it had been passing `raw_length` (the *decoded*
+  count) as the extent and only got the right bytes back because
+  `zlib.decompress` stops at the stream end — the same tolerance this file
+  documents for the reference extractor. Its doc comment additionally claimed
+  `read_tree` "refuses the retail archive for its overlapping extents, which
+  F05-D owns", which this stage made false. F12-A's ten tests pass unchanged.
+  The alternative — keeping the old field names — would put a field called
+  `length_end` holding a decoded byte count back into the public API, which is
+  the exact confusion this stage exists to remove, so the rename stands.
 
 Everything else was re-verified rather than taken on trust: the census, the
 tiling, the 418 overlapping spans and the `(127, 1768)` out-of-bounds extent
