@@ -14,6 +14,7 @@
 mod bmp;
 mod mips;
 mod tga;
+mod variants;
 mod zbd_package;
 
 use cs_formats::ParseErrorKind;
