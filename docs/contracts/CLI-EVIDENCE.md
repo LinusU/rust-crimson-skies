@@ -45,6 +45,17 @@ Task/feature/mission id; candidate Git tree hash; engine/toolchain versions; tim
 
 Capabilities are `synthetic`, `retail`, `gpu`, `audio`, `network_local`, `network_real`, `human_play`, `human_review`. They are non-interchangeable. File existence does not prove a capability was exercised. A WAV generated without an audio device counts as a decode artifact, not audible playback review.
 
+### Structural validation (schema v1)
+
+`tools/validate_evidence.py` checks these v1 structural rules. It rejects a report rather than accepting a dangling or contradictory record; structural validity is still not semantic verification or a security boundary.
+
+- **Test accounting describes the declared task selection.** `tests.discovered` counts only the tests selected for this task, never unrelated filtered workspace tests. Exactly `discovered == executed + ignored` and `executed == passed + failed`. Counts for a report that is meant to prove the task must include at least one execution.
+- **Every evidence reference is a real artifact path.** Each string in `assertions[].evidence` is a nonempty canonical relative path using forward slashes only: no absolute POSIX paths, no Windows drive or UNC spellings, no backslashes, no `.`/`..`/empty path components and no control characters. It must name an artifact declared in `artifacts`, and that declared file must exist under `--artifact-root` with a matching SHA-256.
+- **Uniqueness.** Assertion ids are unique and artifact declarations are unique by canonical path.
+- **Path safety.** `artifacts[].path` follows the same canonical-relative rule; a symlink on any component of the path under the artifact root is rejected, as are malformed nested field shapes (a shape error is a validation error, not a traceback).
+- **`--require-pass` for a reported success.** Beyond the structural checks it requires `command.exit_code == 0`, at least one discovered and executed selected acceptance test, `passed > 0`, `failed == 0`, `ignored == 0` (every selected acceptance test must actually run), and every assertion `pass` with at least one evidence reference.
+- A nonpassing report may carry `unknown` assertions with empty evidence, but any reference it does present must still name a declared, existing, hash-matching artifact. The v1 `unknowns`/`claim` semantics are unchanged here; separating task success from unresolved product limitations is a separate versioned model.
+
 ## Verification levels
 
 `implemented`: candidate code exists. `checked`: external build/test and fresh review passed. `verified_original`: fingerprinted original-data/reference evidence supports the specified behavior. `release_approved`: owner approved the aggregate candidate. Each level stores independent evidence; changing code/content invalidates affected approvals. A Rally merge (green CI plus an agent review) only awards `checked`.
