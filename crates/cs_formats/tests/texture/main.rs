@@ -13,6 +13,7 @@
 
 mod bmp;
 mod mips;
+mod retail;
 mod tga;
 mod variants;
 mod zbd_package;
