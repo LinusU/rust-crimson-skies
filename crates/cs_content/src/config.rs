@@ -155,12 +155,12 @@ pub enum ConfigError {
     /// The dialect inventory covers no such member.
     UnknownDialect {
         /// The member's source.
-        source: SourceSpan,
+        source: Box<SourceSpan>,
     },
     /// The member's dialect has no configuration reader.
     NoReader {
         /// The member's source.
-        source: SourceSpan,
+        source: Box<SourceSpan>,
         /// Its dialect.
         dialect: TextDialect,
         /// The spec stage that owns its reader.
@@ -169,7 +169,7 @@ pub enum ConfigError {
     /// The bytes handed in are not as long as the source says.
     LengthMismatch {
         /// The member's source.
-        source: SourceSpan,
+        source: Box<SourceSpan>,
         /// The byte count handed in.
         actual: u64,
     },
@@ -235,18 +235,20 @@ impl ConfigDocument {
         bytes: &[u8],
     ) -> Result<Self, ConfigError> {
         let Some(dialect) = dialect_for_member(source.container_path(), source.member_key()) else {
-            return Err(ConfigError::UnknownDialect { source });
+            return Err(ConfigError::UnknownDialect {
+                source: Box::new(source),
+            });
         };
         if let DialectReader::Deferred { stage, .. } = dialect.record().reader {
             return Err(ConfigError::NoReader {
-                source,
+                source: Box::new(source),
                 dialect,
                 stage,
             });
         }
         if bytes.len() as u64 != source.length() {
             return Err(ConfigError::LengthMismatch {
-                source,
+                source: Box::new(source),
                 actual: bytes.len() as u64,
             });
         }
