@@ -13,9 +13,9 @@
 //! observed subset" [S07]) — so every entry comes back as
 //! [`EncodingEvidence::Undeclared`] carrying the family's own recorded reason.
 //! Task #340 read the archive layout from the pinned source (a member table at
-//! the end of the file, no leading header) but no entry encoding; until the
-//! table is read (task #343) and an encoding is documented
-//! the entries are an inventory, not an interpretation, which is what
+//! the end of the file, no leading header) but no entry encoding; task #343
+//! reads that table ([`crate::zbd::trailer`]), and until an encoding is
+//! documented the entries are an inventory, not an interpretation, which is what
 //! non-negotiable #3 ("archive structural parse success does not prove
 //! semantic interpretation") demands.
 
@@ -281,8 +281,10 @@ impl std::error::Error for ReaderError {
 
 /// Reads the reader archive `table` declares inside `bytes`.
 ///
-/// `bytes` is the whole container; `table` is its member index (see
-/// [`MemberTable`] for why the index is an input in this stage). The family gate
+/// `bytes` is the container's member data; `table` is its member index (see
+/// [`MemberTable`] for why the index is an input). For a retail archive both
+/// come from [`crate::zbd::read_version_one_index`]: `index.member_table()` and
+/// `index.data()`, the bytes before the index. The family gate
 /// runs first: a container of another family — including one whose header
 /// **validated** for that other family — produces
 /// [`ReaderError::Family`] and no archive at all, which is the explicit failure

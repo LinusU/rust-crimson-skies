@@ -11,9 +11,9 @@
 //! What it deliberately does not do: name a sample format, a channel count, a
 //! rate or a loop point. Task #340 tied the family to `ZBD/sounds*.zbd` and found
 //! that those archives have no leading header: the member table sits at the end
-//! of the file and the members are RIFF/WAVE files (task #340 findings). Reading
-//! that table (task #343) and each member's WAVE header (task #344) is still
-//! to come. Until then every descriptor field
+//! of the file and the members are RIFF/WAVE files (task #340 findings). Task
+//! #343 reads that table ([`crate::zbd::trailer`]); reading each member's WAVE
+//! header (task #344) is still to come. Until then every descriptor field
 //! is [`SoundField::Unknown`] carrying the family's own recorded reason, so
 //! nothing downstream can read a fabricated `22050 Hz` as a measured value.
 //!
@@ -330,8 +330,10 @@ impl std::error::Error for SoundError {
 
 /// Reads the sound container `table` declares inside `bytes`.
 ///
-/// `bytes` is the whole container; `table` is its member index (see
-/// [`MemberTable`] for why the index is an input in this stage). A sound table
+/// `bytes` is the container's member data; `table` is its member index (see
+/// [`MemberTable`] for why the index is an input). For a retail archive both
+/// come from [`crate::zbd::read_version_one_index`]: `index.member_table()` and
+/// `index.data()`, the bytes before the index. A sound table
 /// comes from a dispatch of a `ZBD/sounds*.zbd` archive (task #340); a table
 /// built from the dispatch of another family, such as a reader or interp
 /// container, is refused here with [`SoundError::Family`], exactly as the

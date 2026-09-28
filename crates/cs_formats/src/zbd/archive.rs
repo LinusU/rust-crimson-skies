@@ -14,7 +14,9 @@
 //!   lives or how a name, id and extent are laid out inside it, because the
 //!   layout was not documented when F06-B landed (spec F06 "Research boundary").
 //!   Task #340 has since recorded it — a version-one table at the end of the
-//!   file — and task #343 owns reading it.
+//!   file — and task #343 reads it ([`crate::zbd::trailer`]), producing the
+//!   extents this type takes; the table stays an input so the bounds layer
+//!   does not depend on any one index layout.
 //!   The family beside that index is never the caller's word either: a family
 //!   an observed role names comes from the two-key dispatch
 //!   ([`MemberTable::from_dispatch`]), and a family no key names yet can only be

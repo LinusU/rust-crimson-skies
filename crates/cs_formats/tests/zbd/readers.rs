@@ -8,8 +8,9 @@
 //!
 //! The fixtures are two containers and two member indexes. The containers are
 //! opaque to this stage on purpose: the member table at the end of a reader or
-//! sound archive is not read yet (task #343), so the tests supply the member index the family's own reader
-//! would declare (`MemberTable`) and assert what the production code does with
+//! sound archive is read by `read_version_one_index` (task #343, `t343.rs`),
+//! independently of these bounds, so the tests supply the member index the
+//! family's own reader would declare (`MemberTable`) and assert what the production code does with
 //! it — the family gate, the bounds, the retained bytes and spans, the consumed
 //! and uncovered ranges, and the strict status. Nothing here duplicates the
 //! bounds logic: the assertions read the production listing.
