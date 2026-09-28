@@ -56,7 +56,9 @@ Dependencies: F24-B. Required capabilities: ordinary build/test.
 
 Work only on this stage. Wire the implemented path into its actual producer and consumer; include teardown/retry and error propagation.
 
-Required task-test prefix: `accept_f24_c_`. Minimum scenario: Sustained turn, roll, acceleration and stall recovery traces remain within approved reference envelopes.
+Required task-test prefix: `accept_f24_c_`. Minimum scenario: Loadout, damage, instrument and profile selection reach the production flight model; sustained turn, roll, acceleration and stall recovery traces remain within the declared synthetic envelopes and are reported as synthetic, not original-reference, results.
+
+Owner ruling 2026-09-28 ([owner ruling](README.md#owner-ruling-2026-09-28-first-playable-sequencing-audit-plan-sync-356)): F24-C accepts the synthetic wiring of loadouts, damage, instruments and profile selection. The comparison of these traces against original reference envelopes (AC03) is not dropped; it is required in F24-D.
 
 Before editing, list the specific functions/files and one observable failure. If the slice exceeds one format variant, one focused system behavior or one bounded UI path, follow TASK-SPLITTING.md rather than producing a giant change. Preserve all parent acceptance criteria.
 
@@ -68,6 +70,8 @@ Dependencies: F24-C. Required capabilities: retail.
 Work only on this stage. Collect actual integration/reference evidence; repair discovered regressions without weakening the specification. Missing capabilities or original data block this stage.
 
 Required task-test prefix: `accept_f24_d_`. Minimum scenario: Switching render FPS changes no force integration count or command sampling.
+
+Owner ruling 2026-09-28 ([owner ruling](README.md#owner-ruling-2026-09-28-first-playable-sequencing-audit-plan-sync-356)): this stage also waits for REF-OWNER-FIRST-CAPTURE (#358) and additionally requires AC03 against the original: sustained turn, roll, acceleration and stall recovery traces of every original fixed-wing airframe remain within envelopes derived from fingerprinted original reference captures. The first capture covers one airframe and loadout; the rest of the roster still needs its own captures, and a missing reference reports unavailable, not pass.
 
 Before editing, list the specific functions/files and one observable failure. If the slice exceeds one format variant, one focused system behavior or one bounded UI path, follow TASK-SPLITTING.md rather than producing a giant change. Preserve all parent acceptance criteria.
 
