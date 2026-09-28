@@ -1374,8 +1374,8 @@ mod tests {
             artifact(&log_path, "log"),
             artifact(&audit_path, "json"),
             super::jstr(
-                "claude-1 (implementing agent, self-check; the Rally reviewer regenerates this \
-                 report on the rebased commit)"
+                "claude-1 (implementing agent, then Rally reviewer; regenerated on the reviewed \
+                 and rebased commit)"
             ),
             super::jstr(&method),
         );
