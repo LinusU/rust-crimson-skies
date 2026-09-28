@@ -1,0 +1,118 @@
+{
+ "schema_version": 1,
+ "task_id": "F05-D",
+ "candidate_tree": "1b12b905f28af8e232dbf9d3fc064eb9933e134b",
+ "engine": {
+  "rust": "rustc 1.98.1 (48a229cea 2026-09-01)",
+  "bevy": "0.19.1",
+  "avian": "0.7.0"
+ },
+ "created_at": "2026-09-28T21:11:57Z",
+ "command": {
+  "argv": [
+   "cargo",
+   "test",
+   "--workspace",
+   "--locked",
+   "--",
+   "accept_f05_d_",
+   "--include-ignored"
+  ],
+  "cwd": "/Users/linus/coding/rust-crimson-skies/agent-3",
+  "exit_code": 0
+ },
+ "source": {
+  "install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978",
+  "content_sha256": "869f5afcfa632f19c9cfef7a4a1fa1024471a15b7747fab373513a61b50cd23e"
+ },
+ "seed": 0,
+ "ticks": {
+  "start": 0,
+  "end": 0
+ },
+ "overrides": [],
+ "capabilities": [
+  "retail",
+  "synthetic"
+ ],
+ "tests": {
+  "discovered": 6,
+  "executed": 6,
+  "passed": 6,
+  "failed": 0,
+  "ignored": 0
+ },
+ "assertions": [
+  {
+   "id": "accept_f05_d_a_declared_length_that_disagrees_with_the_bytes_is_refused",
+   "status": "pass",
+   "evidence": [
+    "cargo-test.log"
+   ]
+  },
+  {
+   "id": "accept_f05_d_overlaps_are_computed_from_the_stored_extent",
+   "status": "pass",
+   "evidence": [
+    "cargo-test.log"
+   ]
+  },
+  {
+   "id": "accept_f05_d_retail_members_tile_their_container_and_match_the_reference_profile",
+   "status": "pass",
+   "evidence": [
+    "cargo-test.log",
+    "reference-comparison.json"
+   ]
+  },
+  {
+   "id": "accept_f05_d_the_decoded_word_is_not_a_range_of_the_container",
+   "status": "pass",
+   "evidence": [
+    "cargo-test.log"
+   ]
+  },
+  {
+   "id": "rof::tests::accept_f05_d_rof_audit_reports_both_words_for_every_member",
+   "status": "pass",
+   "evidence": [
+    "cargo-test.log"
+   ]
+  },
+  {
+   "id": "rof::tests::accept_f05_d_the_mount_records_stored_extents_that_tile_the_container",
+   "status": "pass",
+   "evidence": [
+    "cargo-test.log"
+   ]
+  }
+ ],
+ "artifacts": [
+  {
+   "path": "cargo-test.log",
+   "sha256": "6284e9383ea597efe51c5d5a27dcd8770e7b9602c00aa03b4bb6ae4d7943a4b6",
+   "kind": "log"
+  },
+  {
+   "path": "rof-audit-crimson.json",
+   "sha256": "c00357ba7dc032a12dc9b51cc37d702c8652abc47f863adcdf3050d31b670799",
+   "kind": "json"
+  },
+  {
+   "path": "rof-audit-crimptch.json",
+   "sha256": "55f9be89ca8db3c01656b100b8ad092f5de8e97a092b71f5c5eb08ac49bcd07b",
+   "kind": "json"
+  },
+  {
+   "path": "reference-comparison.json",
+   "sha256": "7707c5eae932dfa899c1912f3b12f9e1be4bd980c8369e01305c903f4c1a2383",
+   "kind": "json"
+  }
+ ],
+ "unknowns": [],
+ "review": {
+  "identity": "bunny-1 (implementing agent, self-check; the Rally reviewer regenerates this report on the rebased commit)",
+  "method": "The F05-D acceptance suite was run with the retail capability available, so the ignored test ran too: six tests, all passing (cargo-test.log). The audit of each container is the production `cs-inspect rof --audit` report, which reads every member through the production reader and reports both length words, the decoded count, trailing bytes, the stored and decoded digests and the container's byte coverage. The independent reference is the pinned S05 extractor (commit 214b170bf330041b411634dbb9fb392d54c2db7a, file sha256 96374b5df3911e1bbaa7400b4637cfe5876afb37e674a735b43541157903588e), run unmodified except for its ROF_PATH constant and the empty data/ directory it assumes; its per-file sha256 digests were compared with the production decoded digests for every member of both containers, and reference-comparison.json records the result. install_sha256 is the installation fingerprint the production discovery reports; content_sha256 is the sha256 of the two containers' relative paths and digests, sorted, joined with newlines (see the F05-D findings for the individual container digests). No seed, no ticks and no overrides: this stage reads containers, it does not simulate. The report's `unknowns` is empty because nothing in the report's scope is unresolved; the research questions that remain open (a directory record's length words, flag bits other than 1 and 2, non-UTF-8 names, non-zero trailing bytes) are recorded as unknowns in docs/findings/2026-09-28-f05-d-resolve-compressed-length-semantics.md and are not guessed here. The claim is `implemented`: this branch has not been reviewed, and only a fresh review may call the semantics checked."
+ },
+ "claim": "implemented"
+}
