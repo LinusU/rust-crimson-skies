@@ -14,8 +14,14 @@
 //! unclassified and every world's plan fails with the line's source offset and
 //! the world it affects rather than reporting a loaded state.
 //!
+//! [`textures`] is the F08-C wiring
+//! (`specs/F08-texture-archives-and-conventional-image-decoding.md`,
+//! `### F08-C`): texture archives resolved through a content session, the
+//! image catalog they populate, and the handoff to the GPU upload boundary.
+//!
 //! [`cs_types`]: cs_types
 //! [`cs_formats`]: cs_formats
 //! [`cs_assets`]: cs_assets
 
 pub mod loading;
+pub mod textures;
