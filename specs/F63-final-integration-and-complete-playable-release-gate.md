@@ -30,7 +30,9 @@ These are minimum discriminating tests. Add regression cases for every discovere
 
 ### F63-A: Define machine-readable complete-playable criteria
 
-Dependencies: F26-A, F47-A, F49-A, F50-A, F52-A, F53-A, F56-A, F58-A, F60-A, F61-A, F62-A. Required capabilities: ordinary build/test.
+Dependencies: F01-A, F50-A. Required capabilities: ordinary build/test.
+
+Owner ruling 2026-09-28 ([AUDIT-PLAN-SYNC](README.md#owner-ruling-2026-09-28-first-playable-sequencing-audit-plan-sync-356)): this stage moves early and also waits for AUDIT-EVIDENCE-MODEL (#354). Derive the machine-readable criteria from the evidence model and the F50-A binding/coverage schema, not from already working game systems. Define three separate milestones (one real original mission, complete single-player candidate, complete Ultimate release) and enumerate every product category of this sheet, including the deliverables of F26, F47, F49, F52, F53, F56, F58, F60, F61 and F62 whose A stages are no longer scheduling prerequisites; they stay required criteria. Keep implemented, checked, original-verified and release-approved separate. Data not yet available is `not_assessed`, never assumed. Synthetic manifests can never grant original verification. F63-B/C/D keep full product integration and human approval.
 
 Work only on this stage. Define typed inputs/outputs and a minimal synthetic fixture first; do not jump ahead to a whole runtime.
 
@@ -53,6 +55,8 @@ Before editing, list the specific functions/files and one observable failure. If
 ### F63-C: Execute full product acceptance and fix regressions
 
 Dependencies: F63-B, F56-D, F58-D, F64-D, M01-C, M02-C, M03-C, M04-C, M05-C, M06-C, M07-C, M08-C, M09-C, M10-C, M11-C, M12-C, M13-C, M14-C, M15-C, M16-C, M17-C, M18-C, M19-C, M20-C, M21-C, M22-C, M23-C, M24-C. Required capabilities: retail, gpu, audio, network_real, human_play, human_review.
+
+Owner ruling 2026-09-28: this stage also waits for the verification tasks listed in the [owner ruling](README.md#owner-ruling-2026-09-28-first-playable-sequencing-audit-plan-sync-356): world collision (#333), non-Unix VFS hardening (#339), original lookup order (#341), archive-member collisions (#342), keyed-list reading rules (#351), texture-archive selection (#352), the evidence integrity, model and producer work (#353, #354, #355), this plan sync (#356), the first original capture (#358), M01 controlled runs (#360) and Windows CI (#361). F63-D depends on this stage, so all of them gate release approval.
 
 Work only on this stage. Wire the implemented path into its actual producer and consumer; include teardown/retry and error propagation.
 
