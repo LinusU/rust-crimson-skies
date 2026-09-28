@@ -194,6 +194,14 @@ pub enum LexicalFeature {
 pub enum DialectReader {
     /// [`crate::text::keyed_list::read_keyed_list`].
     KeyedList,
+    /// [`crate::text::resource_header::read_resource_header`], which turns
+    /// the `.H` members into lossless nodes and interprets only the one value
+    /// shape the survey found.
+    ResourceHeader,
+    /// [`crate::pe_resources::read_pe_resources`], the bounded, cycle-checked
+    /// resource-directory reader. It reads the image's resource section as
+    /// inert data and never loads a DLL.
+    PeResources,
     /// No reader in this crate yet; `stage` is the spec stage that owns it.
     Deferred {
         /// The owning spec stage.
@@ -201,6 +209,19 @@ pub enum DialectReader {
         /// Why it is not read here.
         reason: &'static str,
     },
+}
+
+impl DialectReader {
+    /// The entrypoint label of the reader this variant names, or `None` when
+    /// no reader exists for the dialect yet.
+    pub const fn entrypoint(self) -> Option<&'static str> {
+        match self {
+            Self::KeyedList => Some(crate::text::keyed_list::KEYED_LIST_ENTRYPOINT),
+            Self::ResourceHeader => Some(crate::text::resource_header::RESOURCE_HEADER_ENTRYPOINT),
+            Self::PeResources => Some(crate::pe_resources::PE_RESOURCES_ENTRYPOINT),
+            Self::Deferred { .. } => None,
+        }
+    }
 }
 
 /// One inventory row.
@@ -308,13 +329,12 @@ pub static TEXT_DIALECT_INVENTORY: [DialectRecord; 6] = [
             LexicalFeature::Defines,
         ],
         grammar: ClaimStatus::ObservedTool,
-        reader: DialectReader::Deferred {
-            stage: "F12-B",
-            reason: "the header-to-resource id mapping needs the PE resource reader",
-        },
+        reader: DialectReader::ResourceHeader,
         unknowns: &[
             "whether the shipped game reads these headers at run time",
             "which PE image each header describes beyond its own comment",
+            "which of the two members names which PE image",
+            "the two non-#define members' relationship to each other",
         ],
     },
     DialectRecord {
@@ -332,6 +352,7 @@ pub static TEXT_DIALECT_INVENTORY: [DialectRecord; 6] = [
             stage: "F13-A",
             reason: "it names script symbols; its consumer is the script inventory",
         },
+
         unknowns: &[
             "whether the shipped game reads it",
             "which scripts each symbol belongs to",
@@ -357,13 +378,14 @@ pub static TEXT_DIALECT_INVENTORY: [DialectRecord; 6] = [
         encoding: ObservedEncoding::Binary,
         features: &[],
         grammar: ClaimStatus::Documented,
-        reader: DialectReader::Deferred {
-            stage: "F12-B",
-            reason: "the bounded, cycle-checked resource directory reader",
-        },
+        reader: DialectReader::PeResources,
         unknowns: &[
             "which resource types, ids and languages each image carries",
             "the code pages of their string tables",
+            "whether the game reaches these strings through the Win32 resource \
+             API, through its own resource headers, or through both",
+            "whether a `langui.dll` localized install keeps the same block ids \
+             (only an English installation was surveyed)",
         ],
     },
     DialectRecord {

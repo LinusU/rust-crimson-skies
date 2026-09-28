@@ -377,7 +377,7 @@ fn rof_entries(rof: &[u8], offset: u32) -> Vec<(String, crate::RofRawRecord)> {
 /// the member through the production bounded reader. (The member is built by
 /// hand because this walk stops at the wanted name; `read_tree` walks the
 /// retail archive too now that F05-D resolved which length word is the extent.)
-fn retail_member(rof: &[u8], path: &str) -> Vec<u8> {
+pub(crate) fn retail_member(rof: &[u8], path: &str) -> Vec<u8> {
     let mut offset = 0u32;
     let segments: Vec<&str> = path.split('/').collect();
     for (depth, segment) in segments.iter().enumerate() {
@@ -411,7 +411,7 @@ fn retail_member(rof: &[u8], path: &str) -> Vec<u8> {
     unreachable!("paths have at least one segment")
 }
 
-fn retail_rof() -> Vec<u8> {
+pub(crate) fn retail_rof() -> Vec<u8> {
     let dir = std::env::var_os("CS_GAME_DIR")
         .expect("CS_GAME_DIR is not set: this test needs the original installation");
     let path = std::path::PathBuf::from(dir).join(CRIMSON_ROF);

@@ -66,6 +66,9 @@ pub mod error;
 pub mod gamez;
 pub mod interp;
 pub mod io;
+pub mod pe_resources;
+#[cfg(test)]
+mod pe_resources_tests;
 pub mod rof;
 pub mod script_raw;
 pub mod text;
@@ -89,6 +92,15 @@ pub use interp::{
     plan_interp_loading_classified, read_interp,
 };
 pub use io::{AllocationBudget, ParseContext, Reader, RecursionBudget, RecursionGuard};
+pub use pe_resources::{
+    COFF_HEADER_BYTES, DATA_DIRECTORY_BYTES, DOS_LFANEW_OFFSET, DOS_MAGIC, DataDirectory, HIGH_BIT,
+    LANG_ENGLISH_US, LANG_NEUTRAL, OFFSET_MASK, OPTIONAL_MAGIC_PE32, OPTIONAL_MAGIC_PE32PLUS,
+    PE_MAGIC, PE_RESOURCES_ENTRYPOINT, PeError, PeLayout, PeResources, PeSection,
+    RESOURCE_DATA_ENTRY_BYTES, RESOURCE_DIRECTORY_ENTRY_BYTES, RESOURCE_DIRECTORY_HEADER_BYTES,
+    RESOURCE_DIRECTORY_INDEX, RT_STRING, ResourceData, ResourceKey, ResourceLeaf, RvaSpan,
+    SECTION_HEADER_BYTES, SIZE_OF_HEADERS_OFFSET, STRING_UNITS_PER_BLOCK, StringBlock, StringUnit,
+    read_pe_layout, read_pe_resources, string_id,
+};
 pub use rof::{
     DIRECTORY_ENTRYPOINT, DIRECTORY_HEADER_BYTES, FLAG_COMPRESSED, FLAG_DIRECTORY, KNOWN_FLAG_MASK,
     RECORD_BYTES, RofDirectory, RofEntries, RofEntry, RofError, RofFlags, RofLimits, RofMember,

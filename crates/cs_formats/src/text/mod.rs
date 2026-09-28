@@ -10,6 +10,9 @@
 //! * [`keyed_list`] turns the one configuration dialect with a reader
 //!   ([`dialect::TextDialect::KeyedList`]) into one node per line: blank,
 //!   comment, section, entry with quote-aware fields, or unclassified.
+//! * [`resource_header`] reads the `#define NAME value` resource-id headers
+//!   ([`dialect::TextDialect::ResourceHeader`]) that name the same ids
+//!   [`crate::pe_resources`] walks in a PE resource directory (stage F12-B).
 //!
 //! The survey, the design decisions and the recorded unknowns are written
 //! down in
@@ -20,9 +23,12 @@
 pub mod dialect;
 pub mod keyed_list;
 pub mod lines;
+pub mod resource_header;
 
 #[cfg(test)]
 mod tests;
+#[cfg(test)]
+mod tests_f12_b;
 
 pub use dialect::{
     DialectReader, DialectRecord, LexicalFeature, MemberRule, ObservedEncoding,
@@ -34,4 +40,8 @@ pub use keyed_list::{
 };
 pub use lines::{
     LINES_ENTRYPOINT, LineTerminator, TerminatorCounts, TextLine, TextLines, scan_lines,
+};
+pub use resource_header::{
+    Define, HeaderLookup, MAX_RESOURCE_ID, RESOURCE_HEADER_ENTRYPOINT, ResourceHeader,
+    ResourceHeaderKind, ResourceHeaderLine, ResourceIdValue, read_resource_header,
 };
