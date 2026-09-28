@@ -57,12 +57,40 @@
 //!   [`DecodedInterp::findings`], never as a failure and never silently
 //!   dropped.
 //!
-//! What is deliberately **not** here (F07-C/F07-D): which tokens are loading
-//! commands, what they resolve to, the loading plan and its dependency
-//! tracing, and any classification of the mission language. Names and
-//! arguments are bytes, not `str`: no encoding is established for them, so
-//! the "encoding" validation `docs/research/FORMAT-NOTES.md` asks for stays
-//! unknown and no [`String`] is built here.
+//! **F07-C** adds [`plan_interp_loading`], which turns a validated container
+//! into a loading plan *without touching a filesystem*:
+//!
+//! * [`LoadCommandTable`] is the registry of commands somebody has classified
+//!   as resource-loading, each with the argument positions that spell an asset
+//!   key, a [`ClaimStatus`] and where the classification came from. It is
+//!   **empty by default and this stage ships no entries**: no retail evidence
+//!   exists yet (F07-D measures it), so an unclassified head token is not
+//!   quietly treated as a loading command and not quietly treated as a
+//!   non-loading one either;
+//! * every line of every script becomes a [`PlanLine`], classified as a
+//!   registered loading command with the tokens its key is spelled by
+//!   ([`PlanLineKind::Loading`]), a registered command whose stored arguments
+//!   do not match its registered domain ([`PlanLineKind::Malformed`]) or
+//!   unclassified ([`PlanLineKind::Unclassified`]);
+//! * each script keeps its [`ScriptOrigin`] — index position, index-entry
+//!   offset, script offset, terminator and end — so two scripts with equal
+//!   names never collapse into one plan entry, and the `timestamp` word is
+//!   carried as `raw_timestamp` metadata only (non-negotiable #5: content
+//!   hashes, computed by the consumer that owns the hashing, determine
+//!   identity; nothing here keys a cache on a name or a timestamp);
+//! * [`PlanStats`] counts raw records, lines, classified commands,
+//!   malformed commands, unclassified commands and distinct heads, which is
+//!   the "count raw records, decoded instructions, unknown instructions"
+//!   tally `docs/contracts/SCRIPT-MISSION.md` asks a source adapter for.
+//!
+//! Resolving a plan against a real installation — asset keys, the VFS,
+//! dependency spans and the session lifecycle — is the consumer's job
+//! (`cs_content::loading`), because this crate must not depend on the VFS.
+//! Which commands load resources and which refer to game behaviour is F07-D's
+//! measurement and is **not** decided here: names and arguments are bytes, not
+//! `str`, so no encoding is established for them, the "encoding" validation
+//! `docs/research/FORMAT-NOTES.md` asks for stays unknown and no [`String`] is
+//! built from a container's own bytes.
 //!
 //! Every fixture exercised below is newly authored synthetic bytes; nothing
 //! here is derived from original game data.
@@ -121,13 +149,44 @@
 //! assert_eq!(line.len(), line.argument_count() as usize);
 //! assert!(decoded.findings().is_empty());
 //! ```
+//!
+//! The loading plan (stage F07-C) classifies the same lines. No command is
+//! registered by default, so this line is unclassified and the plan says so
+//! with its offset rather than pretending it named an asset:
+//!
+//! ```
+//! use cs_formats::{LoadCommandTable, ParseContext, decode_interp, plan_interp_loading};
+//!
+//! let mut bytes = Vec::new();
+//! for word in [0x0897_1119u32, 7, 1] {
+//!     bytes.extend_from_slice(&word.to_le_bytes());
+//! }
+//! let mut name = [0u8; 120];
+//! name[..4].copy_from_slice(b"demo");
+//! bytes.extend_from_slice(&name);
+//! bytes.extend_from_slice(&0u32.to_le_bytes()); // timestamp
+//! bytes.extend_from_slice(&140u32.to_le_bytes()); // script offset
+//! bytes.extend_from_slice(&6u32.to_le_bytes()); // line size
+//! bytes.extend_from_slice(&2u32.to_le_bytes()); // argument count
+//! bytes.extend_from_slice(b"ab\0cd\0");
+//! bytes.extend_from_slice(&0u32.to_le_bytes()); // terminator
+//!
+//! let table = LoadCommandTable::new(); // nothing is classified yet
+//! let mut context = ParseContext::with_defaults("synthetic/interp_doc.interp");
+//! let decoded = decode_interp(&mut context, &bytes).expect("the container validates");
+//! let plan = plan_interp_loading(&decoded, &table);
+//! assert_eq!(plan.stats().unclassified_commands, 1);
+//! assert!(!plan.is_complete());
+//! ```
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::mem::size_of;
 
 use crate::error::ParseError;
 use crate::io::{AllocationBudget, ParseContext, Reader};
 use crate::zbd::{INTERP_SIGNATURE, INTERP_VERSION};
+use cs_types::evidence::ClaimStatus;
 
 /// Error scope stamped onto failures raised inside [`read_interp`].
 pub const INTERP_ENTRYPOINT: &str = "interp";
@@ -1020,6 +1079,11 @@ impl fmt::Display for InterpFinding {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DecodedInterp<'a> {
     header: InterpRawHeader,
+    /// The container the tokens point into, borrowed read-only. Exposed so a
+    /// consumer that has to hash or re-read a script's own bytes (F07-C's
+    /// content-hash identity, non-negotiable #5) does not have to be handed a
+    /// second copy of the same slice and hope it is the same one.
+    bytes: &'a [u8],
     index_end: u64,
     container_len: u64,
     scripts: Vec<InterpScript<'a>>,
@@ -1030,6 +1094,12 @@ impl<'a> DecodedInterp<'a> {
     /// The container header.
     pub fn header(&self) -> InterpRawHeader {
         self.header
+    }
+
+    /// The whole container, borrowed: the bytes every token offset and every
+    /// line offset in this result is relative to.
+    pub fn bytes(&self) -> &'a [u8] {
+        self.bytes
     }
 
     /// Every validated script, in index order.
@@ -1130,8 +1200,8 @@ pub fn decode_interp<'bytes>(
             };
 
             // Phase 2: book every decoded record in one reservation.
-            let bytes = decoded_record_bytes(reader.container(), &walk)?;
-            allocation.reserve("records", index_end, 1, bytes)?;
+            let record_bytes = decoded_record_bytes(reader.container(), &walk)?;
+            allocation.reserve("records", index_end, 1, record_bytes)?;
 
             // Phase 3: build. Every line's data already ended with a 0x00 and
             // held exactly `argument_count` of them, so the split below is
@@ -1165,6 +1235,7 @@ pub fn decode_interp<'bytes>(
 
             Ok(Ok(DecodedInterp {
                 header,
+                bytes,
                 index_end,
                 container_len,
                 scripts,
@@ -1484,4 +1555,804 @@ fn check_arguments(
         });
     }
     Ok(u32::try_from(delimiters).unwrap_or(u32::MAX))
+}
+
+// ---------------------------------------------------------------------------
+// Stage F07-C: the loading plan
+// ---------------------------------------------------------------------------
+
+/// Where a registered loading command keeps the parts of an asset key, counted
+/// as argument positions from the head token, which is position 0.
+///
+/// The positions describe the *stored* line, so a registration is a claim
+/// about the command's argument domain and can be wrong. A line that does not
+/// carry the registered positions is reported as
+/// [`PlanLineKind::Malformed`] with the position that is missing or empty,
+/// never padded, skipped or read from a neighbouring argument.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeyArguments {
+    /// Position of the mount-namespace argument, required.
+    pub namespace: usize,
+    /// Position of the logical-path argument, required.
+    pub path: usize,
+    /// Position of the variant argument, when the command spells one. When
+    /// `None` the consumer resolves under its own default variant.
+    pub variant: Option<usize>,
+}
+
+/// Whether a registered command's key is spelled literally where it stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeySpelling {
+    /// The argument's bytes are the key. The consumer may resolve them.
+    Literal,
+    /// The command's argument is assembled from other arguments (a variable,
+    /// a join, a computed name) before any key exists, so there is nothing to
+    /// resolve at plan time.
+    ///
+    /// This is a *registration's* claim, not a guess made from the bytes: the
+    /// plan never decides on its own that some spelling is "really" a
+    /// variable reference, because the variable syntax of the loading
+    /// language is unmeasured (F07-D).
+    Composed,
+}
+
+impl KeySpelling {
+    /// Stable lowercase identifier for logs and structured diagnostics.
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Literal => "literal",
+            Self::Composed => "composed",
+        }
+    }
+}
+
+/// One command registered as a resource-loading command.
+///
+/// A registration is a claim about the original format, so it carries how much
+/// is known about it ([`status`]) and where the claim came from
+/// ([`source`], a doc section, a finding or a probe run). Nothing in this
+/// crate registers anything by itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoadCommand {
+    /// The head spelling that identifies the command, as stored bytes. It is
+    /// never decoded: no encoding is established for arguments
+    /// (non-negotiable #1).
+    pub spelling: Vec<u8>,
+    /// Where the key's parts are.
+    pub arguments: KeyArguments,
+    /// Whether the key is spelled literally where it stands.
+    pub spelling_kind: KeySpelling,
+    /// How much is known about this command. A registration may not claim
+    /// [`ClaimStatus::VerifiedOriginal`] on its own: that status belongs to a
+    /// fingerprinted evidence record, never to a table somebody typed.
+    pub status: ClaimStatus,
+    /// Where the classification came from, recorded so a claim can be traced.
+    /// Empty is refused by [`LoadCommandTable::insert`].
+    pub source: String,
+}
+
+/// Why a registration was refused.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TableError {
+    /// The spelling was empty, so it would match every line that has a head.
+    EmptySpelling,
+    /// The source was empty, so the claim could not be traced.
+    EmptySource,
+    /// A key argument sat at position 0, which is the head token itself: a
+    /// command cannot name an asset with its own name.
+    HeadArgument {
+        /// Which argument: `namespace` or `path`.
+        part: KeyPart,
+    },
+    /// The namespace and path arguments, or two arguments of one key, name the
+    /// same position, which could not be two different values.
+    RepeatedArgument {
+        /// Which argument repeated the earlier one.
+        part: KeyPart,
+        /// The position both of them name.
+        position: usize,
+    },
+    /// A second registration claims the same spelling. One spelling, one
+    /// argument domain: a duplicate would make the plan's classification
+    /// depend on table order.
+    Duplicate {
+        /// Position of the first registration of this spelling.
+        first: usize,
+        /// Position of the refused one.
+        second: usize,
+    },
+    /// A registration claimed [`ClaimStatus::VerifiedOriginal`], which only a
+    /// fingerprinted evidence record may award.
+    SelfAwardedVerifiedOriginal,
+}
+
+impl fmt::Display for TableError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::EmptySpelling => write!(f, "a loading command's spelling must not be empty"),
+            Self::EmptySource => {
+                write!(
+                    f,
+                    "a loading command must record where its classification came from"
+                )
+            }
+            Self::HeadArgument { part } => write!(
+                f,
+                "the {} argument cannot be position 0: that is the head token itself",
+                part.label()
+            ),
+            Self::RepeatedArgument { part, position } => write!(
+                f,
+                "the {} argument repeats another part of the same key at position {position}",
+                part.label()
+            ),
+            Self::Duplicate { first, second } => write!(
+                f,
+                "loading command {second} re-registers the spelling of command {first}"
+            ),
+            Self::SelfAwardedVerifiedOriginal => write!(
+                f,
+                "a command table may not claim verified_original: that status belongs to a \
+                 fingerprinted evidence record"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for TableError {}
+
+/// One part of an asset key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyPart {
+    /// The mount namespace.
+    Namespace,
+    /// The logical path.
+    Path,
+    /// The variant.
+    Variant,
+}
+
+impl KeyPart {
+    /// Stable lowercase identifier for logs and structured diagnostics.
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Namespace => "namespace",
+            Self::Path => "path",
+            Self::Variant => "variant",
+        }
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Namespace => "namespace",
+            Self::Path => "path",
+            Self::Variant => "variant",
+        }
+    }
+}
+
+/// The commands somebody has registered as resource-loading.
+///
+/// **The table this crate builds is empty and stays empty.** Which commands
+/// load resources is F07-D's measurement over the installed container
+/// (non-negotiable #3: this container does not by itself identify the full
+/// mission language, so a head token may be a loading command, a game-behaviour
+/// command or neither). A caller supplies the registrations it has evidence
+/// for; every head token the table does not name is unclassified, and an
+/// unclassified line fails the plan of the world it belongs to.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LoadCommandTable {
+    commands: Vec<LoadCommand>,
+}
+
+impl LoadCommandTable {
+    /// A table with no registrations: every line is unclassified.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Registers one command, refusing the registrations that would make the
+    /// plan's classification ambiguous or self-awarding.
+    ///
+    /// Registrations are matched by exact bytes, so two spellings that differ
+    /// only in case are two commands — the plan does not fold case, because no
+    /// evidence says the original loader does.
+    pub fn insert(&mut self, command: LoadCommand) -> Result<usize, TableError> {
+        if command.spelling.is_empty() {
+            return Err(TableError::EmptySpelling);
+        }
+        if command.source.trim().is_empty() {
+            return Err(TableError::EmptySource);
+        }
+        if command.status == ClaimStatus::VerifiedOriginal {
+            return Err(TableError::SelfAwardedVerifiedOriginal);
+        }
+        if command.arguments.namespace == 0 {
+            return Err(TableError::HeadArgument {
+                part: KeyPart::Namespace,
+            });
+        }
+        if command.arguments.path == 0 {
+            return Err(TableError::HeadArgument {
+                part: KeyPart::Path,
+            });
+        }
+        if command.arguments.path == command.arguments.namespace {
+            return Err(TableError::RepeatedArgument {
+                part: KeyPart::Path,
+                position: command.arguments.path,
+            });
+        }
+        if let Some(variant) = command.arguments.variant {
+            if variant == 0 {
+                return Err(TableError::HeadArgument {
+                    part: KeyPart::Variant,
+                });
+            }
+            if variant == command.arguments.namespace || variant == command.arguments.path {
+                return Err(TableError::RepeatedArgument {
+                    part: KeyPart::Variant,
+                    position: variant,
+                });
+            }
+        }
+        if let Some(first) = self.find(&command.spelling) {
+            return Err(TableError::Duplicate {
+                first,
+                second: self.commands.len(),
+            });
+        }
+        self.commands.push(command);
+        Ok(self.commands.len() - 1)
+    }
+
+    /// Registers every command of `commands`, stopping at the first refusal
+    /// and leaving the table as it was: either the whole set is registered or
+    /// none of it is, so a table never mixes a half-applied classification.
+    pub fn extend(
+        &mut self,
+        commands: impl IntoIterator<Item = LoadCommand>,
+    ) -> Result<(), TableError> {
+        let mut staged = self.clone();
+        for command in commands {
+            staged.insert(command)?;
+        }
+        *self = staged;
+        Ok(())
+    }
+
+    /// The registration of `spelling`, by exact bytes.
+    pub fn get(&self, spelling: &[u8]) -> Option<(usize, &LoadCommand)> {
+        self.find(spelling)
+            .map(|index| (index, &self.commands[index]))
+    }
+
+    /// Every registration, in insertion order.
+    pub fn commands(&self) -> &[LoadCommand] {
+        &self.commands
+    }
+
+    /// How many commands are registered.
+    pub fn len(&self) -> usize {
+        self.commands.len()
+    }
+
+    /// Whether no command is registered.
+    pub fn is_empty(&self) -> bool {
+        self.commands.is_empty()
+    }
+
+    fn find(&self, spelling: &[u8]) -> Option<usize> {
+        self.commands
+            .iter()
+            .position(|command| command.spelling == spelling)
+    }
+}
+
+/// Where one script lives in its container, and therefore where a failure
+/// about it points.
+///
+/// Equal names are not an identity: two entries may carry the same name, the
+/// same `timestamp` and even the same body, and this record still differs
+/// between them (spec F07 AC03). Nothing here may be used as a cache key —
+/// the consumer computes a content hash over
+/// `script_offset..end` for identity (non-negotiable #5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScriptOrigin {
+    index: usize,
+    entry_offset: u64,
+    script_offset: u32,
+    terminator_offset: u64,
+    end: u64,
+}
+
+impl ScriptOrigin {
+    /// Position of the script's index entry, `0..script_count`.
+    pub fn index(&self) -> usize {
+        self.index
+    }
+
+    /// Absolute offset of the index entry.
+    pub fn entry_offset(&self) -> u64 {
+        self.entry_offset
+    }
+
+    /// The stored `script_offset` word.
+    pub fn script_offset(&self) -> u32 {
+        self.script_offset
+    }
+
+    /// Absolute offset of the zero `size` word that ended the script.
+    pub fn terminator_offset(&self) -> u64 {
+        self.terminator_offset
+    }
+
+    /// Absolute offset just past the terminator: the bytes this script
+    /// occupies, and the range a consumer hashes for identity.
+    pub fn end(&self) -> u64 {
+        self.end
+    }
+}
+
+/// Why a registered command's stored arguments do not match its registration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MalformedKey {
+    /// The line has fewer arguments than the registration names.
+    MissingArgument {
+        /// The position the registration names.
+        position: usize,
+    },
+    /// The named argument holds no bytes, so it names no value.
+    EmptyArgument {
+        /// The position the registration names.
+        position: usize,
+    },
+}
+
+impl MalformedKey {
+    /// Stable lowercase identifier for logs and structured diagnostics.
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::MissingArgument { .. } => "missing_argument",
+            Self::EmptyArgument { .. } => "empty_argument",
+        }
+    }
+
+    /// The argument position the registration named.
+    pub const fn position(self) -> usize {
+        match self {
+            Self::MissingArgument { position } | Self::EmptyArgument { position } => position,
+        }
+    }
+}
+
+impl fmt::Display for MalformedKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissingArgument { position } => {
+                write!(f, "the line has no argument at position {position}")
+            }
+            Self::EmptyArgument { position } => {
+                write!(f, "the argument at position {position} is empty")
+            }
+        }
+    }
+}
+
+/// The three argument tokens a registered command spells its key with, and
+/// the absolute offset each of them occupies.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeyTokens<'a> {
+    namespace: InterpToken<'a>,
+    path: InterpToken<'a>,
+    variant: Option<InterpToken<'a>>,
+}
+
+impl<'a> KeyTokens<'a> {
+    /// The mount-namespace argument, as stored bytes.
+    pub fn namespace(&self) -> InterpToken<'a> {
+        self.namespace
+    }
+
+    /// The logical-path argument, as stored bytes.
+    pub fn path(&self) -> InterpToken<'a> {
+        self.path
+    }
+
+    /// The variant argument, when the registration names one.
+    pub fn variant(&self) -> Option<InterpToken<'a>> {
+        self.variant
+    }
+}
+
+/// What one line of a script turned out to be.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlanLineKind<'a> {
+    /// A registered loading command whose stored arguments carry the key its
+    /// registration names.
+    Loading {
+        /// Position of the registration in the plan's own command snapshot.
+        command: usize,
+        /// The tokens the key is spelled with.
+        key: KeyTokens<'a>,
+    },
+    /// A registered command whose stored arguments do not match its
+    /// registration. The line is not interpreted at all, because there is
+    /// nothing to interpret.
+    Malformed {
+        /// Position of the registration in the plan's own command snapshot.
+        command: usize,
+        /// What the line is missing.
+        reason: MalformedKey,
+    },
+    /// The head token is not registered as a loading command.
+    ///
+    /// This is the state every line of a container is in while the table is
+    /// empty, and it is a failure, not a guess: the plan cannot say this line
+    /// loads nothing, only that nobody has established what it does.
+    Unclassified,
+}
+
+impl PlanLineKind<'_> {
+    /// Stable lowercase identifier for logs and structured diagnostics.
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::Loading { .. } => "loading",
+            Self::Malformed { .. } => "malformed",
+            Self::Unclassified => "unclassified",
+        }
+    }
+
+    /// Whether this line contributes an asset the consumer may resolve.
+    pub const fn is_loading(&self) -> bool {
+        matches!(self, Self::Loading { .. })
+    }
+
+    /// Whether this line stops its script's plan from being usable.
+    pub const fn is_blocking(&self) -> bool {
+        !self.is_loading()
+    }
+}
+
+/// One line of a script as the loading plan sees it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlanLine<'a> {
+    position: usize,
+    line: InterpLine<'a>,
+    head_offset: u64,
+    kind: PlanLineKind<'a>,
+}
+
+impl<'a> PlanLine<'a> {
+    /// Position of the line inside its script.
+    pub fn position(&self) -> usize {
+        self.position
+    }
+
+    /// The decoded line, tokens and raw record both.
+    pub fn line(&self) -> &InterpLine<'a> {
+        &self.line
+    }
+
+    /// Absolute offset of the line's `size` word: the offset a diagnostic
+    /// about this line quotes.
+    pub fn source_offset(&self) -> u64 {
+        self.line.offset()
+    }
+
+    /// Absolute offset of the head token's first byte.
+    pub fn head_offset(&self) -> u64 {
+        self.head_offset
+    }
+
+    /// The head token, as stored bytes.
+    pub fn head(&self) -> InterpToken<'a> {
+        self.line.head().expect("a line always has a head token")
+    }
+
+    /// How the line was classified.
+    pub fn kind(&self) -> &PlanLineKind<'a> {
+        &self.kind
+    }
+
+    /// Whether this line stops its script's plan from being usable.
+    pub fn is_blocking(&self) -> bool {
+        self.kind.is_blocking()
+    }
+}
+
+/// One script's place in the loading plan.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PlanScript<'a> {
+    origin: ScriptOrigin,
+    name: &'a [u8],
+    raw_timestamp: u32,
+    lines: Vec<PlanLine<'a>>,
+}
+
+impl<'a> PlanScript<'a> {
+    /// Where the script lives: index position, entry offset, script offset,
+    /// terminator and end.
+    pub fn origin(&self) -> ScriptOrigin {
+        self.origin
+    }
+
+    /// The name bytes, exactly as stored. Not an identity.
+    pub fn name(&self) -> &'a [u8] {
+        self.name
+    }
+
+    /// The `timestamp` word, verbatim. Metadata only: it is never a cache
+    /// identifier and never a plan identity (non-negotiable #5).
+    pub fn raw_timestamp(&self) -> u32 {
+        self.raw_timestamp
+    }
+
+    /// Every line, in stored order.
+    pub fn lines(&self) -> &[PlanLine<'a>] {
+        &self.lines
+    }
+
+    /// The line at `position`, or `None` when it is out of range.
+    pub fn line(&self, position: usize) -> Option<&PlanLine<'a>> {
+        self.lines.get(position)
+    }
+
+    /// How many lines the script has.
+    pub fn len(&self) -> usize {
+        self.lines.len()
+    }
+
+    /// Whether the script has no lines.
+    pub fn is_empty(&self) -> bool {
+        self.lines.is_empty()
+    }
+
+    /// Whether every line of this script is a usable loading command.
+    ///
+    /// A script with no lines is usable: a script that loads nothing is not
+    /// the same as one whose commands are unknown.
+    pub fn is_usable(&self) -> bool {
+        self.lines.iter().all(|line| !line.is_blocking())
+    }
+
+    /// The lines that block this script, in stored order.
+    pub fn blocking_lines(&self) -> impl Iterator<Item = &PlanLine<'a>> {
+        self.lines.iter().filter(|line| line.is_blocking())
+    }
+}
+
+/// The tally `docs/contracts/SCRIPT-MISSION.md` asks a source adapter for:
+/// how much was read, how much decoded, and how much is not understood.
+///
+/// Nothing here is a success measure. A plan whose `unclassified_commands` is
+/// large has read a great deal and understood little.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PlanStats {
+    /// Scripts in the container.
+    pub scripts: usize,
+    /// Lines decoded across every script.
+    pub lines: usize,
+    /// Lines that matched a registered loading command.
+    pub loading_commands: usize,
+    /// Lines whose arguments did not match their registration.
+    pub malformed_commands: usize,
+    /// Lines whose head token is not registered.
+    pub unclassified_commands: usize,
+    /// Distinct head spellings seen, whether or not they are registered.
+    pub distinct_heads: usize,
+    /// Lines in scripts that are not usable, so a caller can tell a container
+    /// with one bad command from one where every script is affected.
+    pub blocked_scripts: usize,
+}
+
+/// A validated container turned into a loading plan.
+///
+/// The plan owns a **snapshot** of the command table it was built with
+/// ([`Self::commands`]) rather than borrowing it, so a plan stays readable
+/// after the table it was classified against has been dropped or extended, and
+/// a report cannot be read against a different table than the one that
+/// produced it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct InterpLoadPlan<'a> {
+    commands: Vec<LoadCommand>,
+    scripts: Vec<PlanScript<'a>>,
+    stats: PlanStats,
+}
+
+impl<'a> InterpLoadPlan<'a> {
+    /// The command snapshot this plan was built with, in registration order.
+    pub fn commands(&self) -> &[LoadCommand] {
+        &self.commands
+    }
+
+    /// The registration at `index`, or `None` when it is out of range.
+    pub fn command(&self, index: usize) -> Option<&LoadCommand> {
+        self.commands.get(index)
+    }
+
+    /// Every script, in index order.
+    pub fn scripts(&self) -> &[PlanScript<'a>] {
+        &self.scripts
+    }
+
+    /// The script at `index`, or `None` when the index is out of range.
+    pub fn script(&self, index: usize) -> Option<&PlanScript<'a>> {
+        self.scripts.get(index)
+    }
+
+    /// The tally of what was read, decoded and not understood.
+    pub fn stats(&self) -> PlanStats {
+        self.stats
+    }
+
+    /// Whether every line of every script is a usable loading command.
+    pub fn is_complete(&self) -> bool {
+        self.scripts.iter().all(PlanScript::is_usable)
+    }
+
+    /// The scripts that are not usable, in index order.
+    pub fn blocked_scripts(&self) -> impl Iterator<Item = &PlanScript<'a>> {
+        self.scripts.iter().filter(|script| !script.is_usable())
+    }
+}
+
+/// Turns a validated container into a loading plan.
+///
+/// Every line of every script becomes a [`PlanLine`], classified against
+/// `table` by exact head bytes. This function never decides what a command
+/// *means*: it only reports which registered command a line matched, which
+/// argument positions spell that command's key, and — for every line no
+/// registration matched — that the line is unclassified, with its offset.
+///
+/// The plan is a read of the container, not an execution of it: a line that
+/// names a key the caller has not registered as loading is not interpreted, a
+/// line whose arguments contradict a registration is not repaired, and nothing
+/// here resolves a path, a world or an asset. The consumer owns all of that
+/// (`cs_content::loading`).
+///
+/// # Panics
+///
+/// Never. Every input is either classified or reported.
+pub fn plan_interp_loading<'a>(
+    decoded: &DecodedInterp<'a>,
+    table: &LoadCommandTable,
+) -> InterpLoadPlan<'a> {
+    let mut heads: BTreeSet<&[u8]> = BTreeSet::new();
+    let mut stats = PlanStats {
+        scripts: decoded.scripts().len(),
+        ..PlanStats::default()
+    };
+    let scripts = decoded
+        .scripts()
+        .iter()
+        .map(|script| {
+            let lines: Vec<PlanLine<'a>> = script
+                .lines()
+                .iter()
+                .enumerate()
+                .map(|(position, line)| {
+                    let head_offset = line
+                        .head()
+                        .expect("a line always has a head token")
+                        .offset();
+                    heads.insert(line.head().expect("a line always has a head token").bytes());
+                    stats.lines += 1;
+                    let kind = classify_line(line, table, &mut stats);
+                    PlanLine {
+                        position,
+                        line: line.clone(),
+                        head_offset,
+                        kind,
+                    }
+                })
+                .collect();
+            let usable = lines.iter().all(|line| !line.is_blocking());
+            if !usable {
+                stats.blocked_scripts += 1;
+            }
+            PlanScript {
+                origin: ScriptOrigin {
+                    index: script.entry().index,
+                    entry_offset: script.entry().entry_offset,
+                    script_offset: script.entry().script_offset,
+                    terminator_offset: script.terminator_offset(),
+                    end: script.end(),
+                },
+                name: script.name(),
+                raw_timestamp: script.entry().raw_timestamp,
+                lines,
+            }
+        })
+        .collect();
+    stats.distinct_heads = heads.len();
+    InterpLoadPlan {
+        commands: table.commands().to_vec(),
+        scripts,
+        stats,
+    }
+}
+
+/// Classifies one line against `table`, counting the outcome in `stats`.
+fn classify_line<'a>(
+    line: &InterpLine<'a>,
+    table: &LoadCommandTable,
+    stats: &mut PlanStats,
+) -> PlanLineKind<'a> {
+    let head = line.head().expect("a line always has a head token");
+    let Some((index, registration)) = table.get(head.bytes()) else {
+        stats.unclassified_commands += 1;
+        return PlanLineKind::Unclassified;
+    };
+    let arguments = registration.arguments;
+    let token = |position: usize| line.tokens().get(position).copied();
+    let mut key = KeyTokens {
+        namespace: match token(arguments.namespace) {
+            Some(namespace) if !namespace.is_empty() => namespace,
+            Some(_) => {
+                stats.malformed_commands += 1;
+                return PlanLineKind::Malformed {
+                    command: index,
+                    reason: MalformedKey::EmptyArgument {
+                        position: arguments.namespace,
+                    },
+                };
+            }
+            None => {
+                stats.malformed_commands += 1;
+                return PlanLineKind::Malformed {
+                    command: index,
+                    reason: MalformedKey::MissingArgument {
+                        position: arguments.namespace,
+                    },
+                };
+            }
+        },
+        path: match token(arguments.path) {
+            Some(path) if !path.is_empty() => path,
+            Some(_) => {
+                stats.malformed_commands += 1;
+                return PlanLineKind::Malformed {
+                    command: index,
+                    reason: MalformedKey::EmptyArgument {
+                        position: arguments.path,
+                    },
+                };
+            }
+            None => {
+                stats.malformed_commands += 1;
+                return PlanLineKind::Malformed {
+                    command: index,
+                    reason: MalformedKey::MissingArgument {
+                        position: arguments.path,
+                    },
+                };
+            }
+        },
+        variant: None,
+    };
+    if let Some(position) = arguments.variant {
+        match token(position) {
+            Some(variant) if !variant.is_empty() => key.variant = Some(variant),
+            Some(_) => {
+                stats.malformed_commands += 1;
+                return PlanLineKind::Malformed {
+                    command: index,
+                    reason: MalformedKey::EmptyArgument { position },
+                };
+            }
+            None => {
+                stats.malformed_commands += 1;
+                return PlanLineKind::Malformed {
+                    command: index,
+                    reason: MalformedKey::MissingArgument { position },
+                };
+            }
+        }
+    }
+    stats.loading_commands += 1;
+    PlanLineKind::Loading {
+        command: index,
+        key,
+    }
 }

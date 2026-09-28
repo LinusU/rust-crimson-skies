@@ -1054,3 +1054,577 @@ fn accept_f07_b_hostile_headers_and_out_of_range_offsets_are_refused() {
         }]
     );
 }
+
+// ---------------------------------------------------------------------------
+// Stage F07-C: the loading plan
+// ---------------------------------------------------------------------------
+
+use cs_formats::{
+    KeyArguments, KeyPart, KeySpelling, LoadCommand, LoadCommandTable, MalformedKey, PlanLineKind,
+    PlanStats, ScriptOrigin, TableError, plan_interp_loading,
+};
+use cs_types::evidence::ClaimStatus;
+
+/// One line's arguments as a data block: the argument count equals the `0x00`
+/// delimiters, which is what the decoder requires.
+fn args<'a>(tokens: impl IntoIterator<Item = &'a [u8]>) -> (u32, Vec<u8>) {
+    let mut data = Vec::new();
+    let mut count = 0u32;
+    for token in tokens {
+        data.extend_from_slice(token);
+        data.push(0);
+        count += 1;
+    }
+    (count, data)
+}
+
+/// A registration a test supplies. Every test in this section states its
+/// claim status honestly: `Designed` for a rule invented to exercise the
+/// machinery, and nothing higher.
+fn registration(spelling: &[u8], namespace: usize, path: usize) -> LoadCommand {
+    LoadCommand {
+        spelling: spelling.to_vec(),
+        arguments: KeyArguments {
+            namespace,
+            path,
+            variant: None,
+        },
+        spelling_kind: KeySpelling::Literal,
+        status: ClaimStatus::Designed,
+        source: "synthetic test table: exercises the plan, not an original command".to_owned(),
+    }
+}
+
+fn plan_of<'a>(bytes: &'a [u8], table: &LoadCommandTable) -> cs_formats::InterpLoadPlan<'a> {
+    let decoded = decode(bytes).expect("the container validates");
+    plan_interp_loading(&decoded, table)
+}
+
+/// AC03 on the plan: two scripts with equal names — the same name, the same
+/// `timestamp` and even the same body — keep distinct origins in the plan, so
+/// a consumer can tell them apart without inventing an identity out of the
+/// name or the timestamp (non-negotiable #5).
+#[test]
+fn accept_f07_c_equal_names_keep_distinct_origins() {
+    let first = index_end(2);
+    let second = first + body(&[&line(1, b"ONE\0")]).len() as u32;
+    let mut image = Image::new(&[(b"twin", first), (b"twin", second)]);
+    image.put(first, &body(&[&line(1, b"ONE\0")]));
+    image.put(second, &body(&[&line(1, b"TWO\0")]));
+    let mut bytes = image.finish();
+    // The same timestamp in both entries: the plan must not use it as identity.
+    for entry in 0..2 {
+        let at = INTERP_HEADER_BYTES + entry * INDEX_ENTRY_BYTES + NAME_FIELD_BYTES;
+        bytes[at..at + 4].copy_from_slice(&0x1234_5678u32.to_le_bytes());
+    }
+
+    let table = LoadCommandTable::new();
+    let plan = plan_of(&bytes, &table);
+    assert_eq!(plan.scripts().len(), 2);
+    let [a, b] = plan.scripts() else {
+        panic!("two scripts expected")
+    };
+    assert_eq!(a.name(), b.name(), "the names are equal");
+    assert_eq!(a.raw_timestamp(), b.raw_timestamp());
+    assert_eq!(a.raw_timestamp(), 0x1234_5678);
+
+    // The origins differ in every field a consumer can point at, so the plan
+    // never has to fall back on the name to say which script is which.
+    let origin_a: ScriptOrigin = a.origin();
+    let origin_b: ScriptOrigin = b.origin();
+    assert_ne!(origin_a, origin_b);
+    assert_eq!((origin_a.index(), origin_b.index()), (0, 1));
+    assert_eq!(
+        (origin_a.entry_offset(), origin_b.entry_offset()),
+        (12, 140)
+    );
+    assert_eq!(
+        (origin_a.script_offset(), origin_b.script_offset()),
+        (first, second)
+    );
+    // Each origin names the byte range a consumer hashes for identity, and the
+    // two ranges are the two different bodies: `size`, `argument_count`,
+    // "ONE\0" and the terminator, then the same shape around "TWO\0".
+    let expected_first = body(&[&line(1, b"ONE\0")]);
+    let expected_second = body(&[&line(1, b"TWO\0")]);
+    assert_eq!(
+        origin_a.end(),
+        u64::from(first) + expected_first.len() as u64
+    );
+    assert_eq!(
+        origin_b.end(),
+        u64::from(second) + expected_second.len() as u64
+    );
+    assert_eq!(
+        &bytes[first as usize..origin_a.end() as usize],
+        expected_first
+    );
+    assert_eq!(
+        &bytes[second as usize..origin_b.end() as usize],
+        expected_second
+    );
+    // The two ranges are disjoint and the scripts keep index order.
+    assert!(origin_a.end() <= u64::from(second));
+    assert_eq!(second, first + expected_first.len() as u32);
+
+    // Two entries pointing at one offset really are one body, and the plan
+    // says so through the offsets rather than by collapsing them.
+    let mut shared = Image::new(&[(b"twin", first), (b"twin", first)]);
+    shared.put(first, &body(&[&line(1, b"ONE\0")]));
+    let shared = shared.finish();
+    let plan = plan_of(&shared, &table);
+    assert_eq!(plan.scripts().len(), 2);
+    assert_ne!(plan.scripts()[0].origin(), plan.scripts()[1].origin());
+    assert_eq!(
+        plan.scripts()[0].origin().script_offset(),
+        plan.scripts()[1].origin().script_offset()
+    );
+}
+
+/// An empty table classifies nothing: every line is unclassified, the plan is
+/// incomplete, and the blocking lines carry the offsets a consumer reports.
+/// This is the state every container is in until F07-D measures the real
+/// commands, and it must fail the plan rather than assume the lines load
+/// nothing.
+#[test]
+fn accept_f07_c_unregistered_command_is_unclassified_with_its_offset() {
+    let (count, data) = args([b"LoadGameGen".as_slice(), b"models/plane.flt", b"plane"]);
+    let start = index_end(1);
+    let mut image = Image::new(&[(b"load", start)]);
+    image.put(start, &body(&[&line(count, &data)]));
+    let bytes = image.finish();
+
+    let plan = plan_of(&bytes, &LoadCommandTable::new());
+    assert!(!plan.is_complete());
+    assert_eq!(plan.stats().scripts, 1);
+    assert_eq!(plan.stats().lines, 1);
+    assert_eq!(plan.stats().unclassified_commands, 1);
+    assert_eq!(plan.stats().loading_commands, 0);
+    assert_eq!(plan.stats().malformed_commands, 0);
+    assert_eq!(plan.stats().blocked_scripts, 1);
+    assert_eq!(plan.stats().distinct_heads, 1);
+    assert_eq!(plan.blocked_scripts().count(), 1);
+    assert!(
+        plan.commands().is_empty(),
+        "the plan carries the table it used"
+    );
+
+    let script = plan.script(0).expect("one script");
+    assert!(!script.is_usable());
+    let blocking = script.blocking_lines().collect::<Vec<_>>();
+    assert_eq!(blocking.len(), 1);
+    let entry = blocking[0];
+    assert_eq!(*entry.kind(), PlanLineKind::Unclassified);
+    assert_eq!(entry.kind().code(), "unclassified");
+    assert_eq!(entry.head().bytes(), b"LoadGameGen");
+    // The offsets a diagnostic needs: the line's `size` word and the head
+    // token's first byte inside it.
+    assert_eq!(entry.source_offset(), u64::from(start));
+    assert_eq!(entry.head_offset(), u64::from(start) + 8);
+    assert_eq!(
+        &bytes[entry.head_offset() as usize..entry.head_offset() as usize + 11],
+        b"LoadGameGen"
+    );
+}
+
+/// A registered command is matched by exact bytes and its key is read from the
+/// argument positions the registration names. Registration is not
+/// interpretation: a `Composed` key is carried through as a token the consumer
+/// cannot resolve, and the claim's status and source travel with the plan.
+#[test]
+fn accept_f07_c_registered_command_spellings_its_key_from_named_arguments() {
+    let (count, data) = args([b"loadmesh".as_slice(), b"world", b"c1/plane.flt", b"hi"]);
+    let start = index_end(1);
+    let mut image = Image::new(&[(b"load", start)]);
+    image.put(start, &body(&[&line(count, &data)]));
+    let bytes = image.finish();
+
+    let mut table = LoadCommandTable::new();
+    let mut with_variant = registration(b"loadmesh", 1, 2);
+    with_variant.arguments.variant = Some(3);
+    with_variant.status = ClaimStatus::ObservedTool;
+    with_variant.source = "synthetic test table: a rule with a variant".to_owned();
+    let composed = LoadCommand {
+        spelling: b"loadmesh".to_vec(),
+        arguments: KeyArguments {
+            namespace: 1,
+            path: 2,
+            variant: None,
+        },
+        spelling_kind: KeySpelling::Composed,
+        status: ClaimStatus::Inferred,
+        source: "synthetic test table: the same spelling, composed".to_owned(),
+    };
+    table.insert(with_variant).expect("the rule registers");
+    assert_eq!(
+        table.insert(composed.clone()),
+        Err(TableError::Duplicate {
+            first: 0,
+            second: 1
+        })
+    );
+
+    let plan = plan_of(&bytes, &table);
+    assert!(plan.is_complete());
+    assert_eq!(plan.stats().loading_commands, 1);
+    assert_eq!(plan.stats().unclassified_commands, 0);
+    assert_eq!(plan.stats().blocked_scripts, 0);
+
+    // The plan keeps the table it was built with, so a report cannot be read
+    // against a different table later.
+    assert_eq!(plan.commands().len(), 1);
+    let rule = plan.command(0).expect("the snapshot holds the rule");
+    assert_eq!(rule.spelling, b"loadmesh");
+    assert_eq!(rule.arguments.variant, Some(3));
+    assert_eq!(rule.status, ClaimStatus::ObservedTool);
+    assert_eq!(rule.spelling_kind.code(), "literal");
+
+    let entry = plan
+        .script(0)
+        .expect("one script")
+        .line(0)
+        .expect("one line");
+    assert!(!entry.is_blocking());
+    let PlanLineKind::Loading { command, key } = *entry.kind() else {
+        panic!("expected a loading line, got {:?}", entry.kind())
+    };
+    assert_eq!(command, 0);
+    assert_eq!(key.namespace().bytes(), b"world");
+    assert_eq!(key.path().bytes(), b"c1/plane.flt");
+    assert_eq!(
+        key.variant().map(|token| token.bytes()),
+        Some(b"hi".as_slice())
+    );
+    // Each part keeps the absolute offset of its own bytes: the registration
+    // names position 1 for the namespace, 2 for the path and 3 for the
+    // variant, so the head token at position 0 is not among them.
+    let data_start = u64::from(start) + 8;
+    assert_eq!(
+        &bytes[data_start as usize..data_start as usize + 8],
+        b"loadmesh"
+    );
+    assert_eq!(key.namespace().offset(), data_start + 9);
+    assert_eq!(key.path().offset(), data_start + 15);
+    assert_eq!(
+        key.variant().map(|token| token.offset()),
+        Some(data_start + 28)
+    );
+    assert_eq!(
+        &bytes[key.path().offset() as usize..key.path().offset() as usize + 12],
+        b"c1/plane.flt"
+    );
+    assert!(plan.script(0).expect("one script").is_usable());
+    assert_eq!(plan.blocked_scripts().count(), 0);
+}
+
+/// A registered command whose stored arguments do not match its registration
+/// is `Malformed`, with the position that is missing or empty — never padded,
+/// skipped, or read out of a neighbouring argument.
+#[test]
+fn accept_f07_c_mismatched_arguments_are_malformed_not_repaired() {
+    let start = index_end(1);
+    let mut table = LoadCommandTable::new();
+    table
+        .insert(registration(b"loadmesh", 1, 2))
+        .expect("the rule registers");
+    let mut with_variant = registration(b"loadvariant", 1, 2);
+    with_variant.arguments.variant = Some(3);
+    table.insert(with_variant).expect("the rule registers");
+
+    let cases: [(&[u8], Vec<Vec<u8>>, MalformedKey); 4] = [
+        (
+            b"loadmesh",
+            vec![b"loadmesh".to_vec()],
+            MalformedKey::MissingArgument { position: 1 },
+        ),
+        (
+            b"loadmesh",
+            vec![b"loadmesh".to_vec(), b"".to_vec(), b"a.flt".to_vec()],
+            MalformedKey::EmptyArgument { position: 1 },
+        ),
+        (
+            b"loadmesh",
+            vec![b"loadmesh".to_vec(), b"world".to_vec()],
+            MalformedKey::MissingArgument { position: 2 },
+        ),
+        (
+            b"loadvariant",
+            vec![
+                b"loadvariant".to_vec(),
+                b"world".to_vec(),
+                b"a.flt".to_vec(),
+            ],
+            MalformedKey::MissingArgument { position: 3 },
+        ),
+    ];
+
+    for (spelling, tokens, expected) in cases {
+        let (count, data) = args(tokens.iter().map(Vec::as_slice));
+        let mut image = Image::new(&[(b"load", start)]);
+        image.put(start, &body(&[&line(count, &data)]));
+        let bytes = image.finish();
+        let plan = plan_of(&bytes, &table);
+        assert!(!plan.is_complete(), "{spelling:?} with {tokens:?}");
+        assert_eq!(plan.stats().loading_commands, 0);
+        assert_eq!(plan.stats().malformed_commands, 1);
+        assert_eq!(plan.stats().unclassified_commands, 0);
+        let entry = plan
+            .script(0)
+            .and_then(|script| script.line(0))
+            .expect("one script with one line");
+        let PlanLineKind::Malformed { command, reason } = *entry.kind() else {
+            panic!(
+                "expected a malformed line for {spelling:?}, got {:?}",
+                entry.kind()
+            )
+        };
+        assert_eq!(reason, expected, "{spelling:?} with {tokens:?}");
+        assert_eq!(reason.code(), expected.code());
+        assert_eq!(reason.position(), expected.position());
+        assert!(
+            reason
+                .to_string()
+                .contains(&expected.position().to_string())
+        );
+        // The failure names the registration that did not match, so a
+        // consumer can find the rule to correct.
+        let rule = plan
+            .command(command)
+            .expect("the plan kept its rule snapshot");
+        assert_eq!(rule.spelling, spelling);
+        assert_eq!(entry.head().bytes(), spelling);
+    }
+}
+
+/// The table refuses the registrations that would make classification
+/// ambiguous, untraceable or self-awarding, and it refuses them *before* any
+/// plan exists, so a rejected table never produces a plan at all.
+#[test]
+fn accept_f07_c_command_table_refuses_ambiguous_registrations() {
+    let mut table = LoadCommandTable::new();
+    assert!(table.is_empty());
+    assert_eq!(table.get(b"loadmesh"), None);
+
+    let mut empty = registration(b"", 1, 2);
+    empty.source = "x".to_owned();
+    assert_eq!(table.insert(empty), Err(TableError::EmptySpelling));
+
+    let mut unsourced = registration(b"loadmesh", 1, 2);
+    unsourced.source = "   ".to_owned();
+    assert_eq!(table.insert(unsourced), Err(TableError::EmptySource));
+
+    let mut self_awarded = registration(b"loadmesh", 1, 2);
+    self_awarded.status = ClaimStatus::VerifiedOriginal;
+    assert_eq!(
+        table.insert(self_awarded),
+        Err(TableError::SelfAwardedVerifiedOriginal)
+    );
+
+    for (part, arguments) in [
+        (
+            KeyPart::Namespace,
+            KeyArguments {
+                namespace: 0,
+                path: 2,
+                variant: None,
+            },
+        ),
+        (
+            KeyPart::Path,
+            KeyArguments {
+                namespace: 1,
+                path: 0,
+                variant: None,
+            },
+        ),
+        (
+            KeyPart::Variant,
+            KeyArguments {
+                namespace: 1,
+                path: 2,
+                variant: Some(0),
+            },
+        ),
+    ] {
+        let mut rule = registration(b"loadmesh", 1, 2);
+        rule.arguments = arguments;
+        assert_eq!(table.insert(rule), Err(TableError::HeadArgument { part }));
+    }
+    for (part, arguments) in [
+        (
+            KeyPart::Path,
+            KeyArguments {
+                namespace: 1,
+                path: 1,
+                variant: None,
+            },
+        ),
+        (
+            KeyPart::Variant,
+            KeyArguments {
+                namespace: 1,
+                path: 2,
+                variant: Some(2),
+            },
+        ),
+        (
+            KeyPart::Variant,
+            KeyArguments {
+                namespace: 2,
+                path: 3,
+                variant: Some(2),
+            },
+        ),
+    ] {
+        let mut rule = registration(b"loadmesh", 1, 2);
+        rule.arguments = arguments;
+        assert_eq!(
+            table.insert(rule),
+            Err(TableError::RepeatedArgument {
+                part,
+                position: arguments.variant.unwrap_or(arguments.path)
+            })
+        );
+    }
+
+    // None of the refused registrations was kept, so the table is still empty
+    // and still classifies nothing.
+    assert!(table.is_empty());
+    assert_eq!(table.len(), 0);
+
+    // A whole set applies or none of it does.
+    assert_eq!(
+        table.extend([
+            registration(b"loadmesh", 1, 2),
+            registration(b"loadmesh", 2, 3)
+        ]),
+        Err(TableError::Duplicate {
+            first: 0,
+            second: 1
+        })
+    );
+    assert!(table.is_empty());
+    table
+        .extend([
+            registration(b"loadmesh", 1, 2),
+            registration(b"loadother", 1, 3),
+        ])
+        .expect("two distinct rules apply");
+    assert_eq!(table.len(), 2);
+    assert_eq!(table.get(b"loadmesh").map(|(index, _)| index), Some(0));
+    assert_eq!(table.get(b"loadother").map(|(index, _)| index), Some(1));
+    assert_eq!(
+        table.get(b"loadMesh"),
+        None,
+        "matching is byte-exact, not folded"
+    );
+    assert_eq!(table.get(b"load"), None, "a prefix does not match");
+}
+
+/// The stats are a tally of what was read, decoded and not understood, summed
+/// over every script — the shape `docs/contracts/SCRIPT-MISSION.md` asks a
+/// source adapter for. A container with one classified line among unclassified
+/// ones reports both.
+#[test]
+fn accept_f07_c_stats_tally_every_script_and_head() {
+    let (a_count, a_data) = args([b"loadmesh".as_slice(), b"world", b"a.flt"]);
+    let (b_count, b_data) = args([b"loadmesh".as_slice(), b"world", b"b.flt"]);
+    let (c_count, c_data) = args([b"quit".as_slice()]);
+    // The second script's offset is derived from the first script's whole
+    // stored body, so the two scripts are back to back and nothing is
+    // unclaimed.
+    let first_body = body(&[&line(a_count, &a_data), &line(c_count, &c_data)]);
+    let second_body = body(&[&line(b_count, &b_data)]);
+    let first = index_end(2);
+    let second = first + first_body.len() as u32;
+    let mut image = Image::new(&[(b"one", first), (b"two", second)]);
+    image.put(first, &first_body);
+    image.put(second, &second_body);
+    let bytes = image.finish();
+    assert!(decode(&bytes).expect("valid").findings().is_empty());
+
+    let mut table = LoadCommandTable::new();
+    table
+        .insert(registration(b"loadmesh", 1, 2))
+        .expect("registered");
+    let plan = plan_of(&bytes, &table);
+    let stats = plan.stats();
+    assert_eq!(stats.scripts, 2);
+    assert_eq!(stats.lines, 3);
+    assert_eq!(stats.loading_commands, 2);
+    assert_eq!(stats.unclassified_commands, 1);
+    assert_eq!(stats.malformed_commands, 0);
+    assert_eq!(stats.distinct_heads, 2, "loadmesh and quit");
+    assert_eq!(
+        stats.blocked_scripts, 1,
+        "only the script with `quit` is blocked"
+    );
+    assert!(!plan.is_complete());
+    assert_eq!(plan.blocked_scripts().count(), 1);
+    assert_eq!(
+        plan.blocked_scripts().next().map(|s| s.name()),
+        Some(&b"one"[..])
+    );
+    assert_eq!(
+        stats.lines,
+        stats.loading_commands + stats.unclassified_commands + stats.malformed_commands
+    );
+    assert_eq!(plan.script(1).expect("two scripts").is_usable(), true);
+
+    // A container with no scripts plans to nothing and is complete: there is
+    // nothing unclassified to fail on.
+    let empty = Image::new(&[]).finish();
+    let plan = plan_of(&empty, &table);
+    assert!(plan.is_complete());
+    assert_eq!(
+        plan.stats(),
+        PlanStats {
+            scripts: 0,
+            ..plan.stats()
+        }
+    );
+    assert_eq!(plan.stats().lines, 0);
+    assert_eq!(plan.stats().blocked_scripts, 0);
+}
+
+/// The plan is a read of the container: it never resolves, executes or repairs
+/// anything. A registered command whose key is spelled literally still leaves
+/// the resolution, the world and the dependencies to the consumer, and the
+/// plan says nothing about them.
+#[test]
+fn accept_f07_c_plan_reads_the_container_without_resolving_or_executing() {
+    // A `..` component and a `%VAR%` reference: neither is repaired, dropped
+    // nor resolved here, and the plan keeps both tokens exactly.
+    let (count, data) = args([b"loadmesh".as_slice(), b"world", b"..\\data\\c1.flt"]);
+    let start = index_end(1);
+    let mut image = Image::new(&[(b"load", start)]);
+    image.put(start, &body(&[&line(count, &data)]));
+    let bytes = image.finish();
+
+    let mut table = LoadCommandTable::new();
+    table
+        .insert(registration(b"loadmesh", 1, 2))
+        .expect("registered");
+    let plan = plan_of(&bytes, &table);
+    assert!(plan.is_complete());
+    let entry = plan.script(0).and_then(|s| s.line(0)).expect("one line");
+    let PlanLineKind::Loading { key, .. } = *entry.kind() else {
+        panic!("expected a loading line")
+    };
+    assert_eq!(key.path().bytes(), b"..\\data\\c1.flt");
+    assert_eq!(key.variant(), None);
+    // The whole line is still there, losslessly, for the consumer to judge.
+    assert_eq!(entry.line().data(), b"loadmesh\0world\0..\\data\\c1.flt\0");
+    assert_eq!(entry.line().argument_count(), 3);
+    let rebuilt: Vec<u8> = entry
+        .line()
+        .tokens()
+        .iter()
+        .flat_map(|token| {
+            let mut bytes = token.bytes().to_vec();
+            bytes.push(0);
+            bytes
+        })
+        .collect();
+    assert_eq!(rebuilt, entry.line().data());
+}

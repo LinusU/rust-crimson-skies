@@ -22,10 +22,13 @@
 //! from the version-one trailer task #340 recorded ([`zbd::trailer`]). Every
 //! entry still reports the recorded unknown for its content.
 //!
-//! The raw INTERP loading-script records and their validated, lossless token
-//! decoding follow:
+//! The raw INTERP loading-script records, their validated, lossless token
+//! decoding and the loading plan built on a validated container:
 //! `specs/F07-interp-loading-script-container.md` (stage F07-A,
-//! [`interp::read_interp`], and stage F07-B, [`interp::decode_interp`]).
+//! [`interp::read_interp`], stage F07-B, [`interp::decode_interp`], and
+//! stage F07-C, [`interp::plan_interp_loading`] and the command table it
+//! classifies against, which ships empty because no retail evidence exists
+//! yet).
 //!
 //! Texture image descriptors, level decoding, the ZBD texture package and
 //! conventional BMPs and TGAs:
@@ -63,9 +66,11 @@ pub use bm::{
 pub use error::{ParseError, ParseErrorKind};
 pub use interp::{
     DecodedInterp, INDEX_ENTRY_BYTES, INTERP_ENTRYPOINT, INTERP_HEADER_BYTES, InterpError,
-    InterpFile, InterpFinding, InterpLine, InterpRawHeader, InterpRawIndexEntry, InterpRawLine,
-    InterpRawScript, InterpScript, InterpToken, LINE_HEADER_BYTES, NAME_FIELD_BYTES, RawArgument,
-    RawArguments, TERMINATOR_BYTES, decode_interp, read_interp,
+    InterpFile, InterpFinding, InterpLine, InterpLoadPlan, InterpRawHeader, InterpRawIndexEntry,
+    InterpRawLine, InterpRawScript, InterpScript, InterpToken, KeyArguments, KeyPart, KeySpelling,
+    KeyTokens, LINE_HEADER_BYTES, LoadCommand, LoadCommandTable, MalformedKey, NAME_FIELD_BYTES,
+    PlanLine, PlanLineKind, PlanScript, PlanStats, RawArgument, RawArguments, ScriptOrigin,
+    TERMINATOR_BYTES, TableError, decode_interp, plan_interp_loading, read_interp,
 };
 pub use io::{AllocationBudget, ParseContext, Reader, RecursionBudget, RecursionGuard};
 pub use rof::{
