@@ -26,7 +26,8 @@
 //! Nothing here writes: files are opened read-only, nothing is extracted,
 //! and a read returns owned bytes (non-negotiable behavior 5). A read opens
 //! the file afresh and closes it before returning, so no file handle
-//! outlives the call; the session mount lifecycle is F04-C.
+//! outlives the call; the session mount lifecycle is
+//! [`crate::vfs::session`].
 
 use std::ffi::OsString;
 use std::fmt;
@@ -355,6 +356,15 @@ pub enum ReadError {
         /// The mount id the resolution named.
         mount: String,
     },
+    /// The resolution or the read bytes were stamped by another content
+    /// session — typically the one a world switch replaced. They are
+    /// refused, never reused across sessions.
+    ForeignSession {
+        /// The session asked to read or accept.
+        session: u64,
+        /// The session that stamped the asset or read.
+        issued_by: u64,
+    },
     /// The mount has no host bytes behind it (declared members only).
     NoBacking {
         /// The mount id.
@@ -410,6 +420,10 @@ impl fmt::Display for ReadError {
             Self::StaleResolution { mount } => write!(
                 f,
                 "the resolution no longer matches mount {mount}; resolve the key again"
+            ),
+            Self::ForeignSession { session, issued_by } => write!(
+                f,
+                "session#{session} refuses an asset or read issued by session#{issued_by}"
             ),
             Self::NoBacking { mount } => write!(f, "mount {mount} has no host bytes to read"),
             Self::OutOfRange {

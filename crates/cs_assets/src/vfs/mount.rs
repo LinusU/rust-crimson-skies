@@ -534,6 +534,11 @@ impl MountBuilder {
         self.insert(variant, member)
     }
 
+    /// The id the mount will be registered under.
+    pub(crate) fn id(&self) -> &MountId {
+        &self.id
+    }
+
     /// The container label every span of this mount will record.
     pub(crate) fn container(&self) -> &str {
         &self.container
