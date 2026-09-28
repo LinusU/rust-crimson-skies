@@ -1874,4 +1874,69 @@ mod tests {
         // the container it was given.
         assert_eq!(temp.entries(&temp.install()), vec!["audit.rof".to_owned()]);
     }
+
+    /// `--audit` is an interface the F05-D evidence is produced through, so it
+    /// has to be *findable*: a flag only `docs/findings` mentions is a flag
+    /// nobody running `cs-inspect rof` can discover. This pins the help text
+    /// and the usage diagnostic to the flag, so an edit that renames or drops
+    /// it fails here instead of shipping a command whose main mode is
+    /// undocumented.
+    #[test]
+    fn accept_f05_d_the_help_text_and_usage_diagnostic_document_the_audit_flag() {
+        // The parser's own refusal names every accepted flag, so neither an
+        // unknown nor a removed one can pass unnoticed.
+        let error =
+            parse_rof_args(&args(&["--auditt", "x"])).expect_err("an unsupported flag is refused");
+        let message = error.to_string();
+        assert!(message.contains("--audit"), "{message}");
+        assert!(message.contains("--max-decoded-bytes"), "{message}");
+
+        // `--audit` is a switch, not a flag with a value: the spelling after it
+        // is still the container.
+        let parsed =
+            parse_rof_args(&args(&["--audit", "--container", "a.rof"])).expect("no value needed");
+        assert!(parsed.audit);
+        assert_eq!(parsed.container.as_deref(), Some("a.rof"));
+
+        // The help text the binary prints. `include_str!` keeps this honest
+        // without reaching into the binary's private constant.
+        let source = include_str!("main.rs");
+        let usage = source
+            .split("const HELP_TEXT: &str = \"\\")
+            .nth(1)
+            .and_then(|rest| rest.split("\";").next())
+            .expect("main.rs holds the help text");
+        // The synopsis a user copies flags from, not the prose below it. The
+        // `rof` synopsis wraps onto a second line of bracketed flags, so it is
+        // the command's own line plus every continuation that starts with one
+        // — the indented prose after it is documentation, not flags.
+        let lines: Vec<&str> = usage.lines().collect();
+        let start = lines
+            .iter()
+            .position(|line| line.trim_start().starts_with("rof "))
+            .expect("the help text lists the rof command");
+        let mut synopsis = lines[start].trim().to_owned();
+        for line in &lines[start + 1..] {
+            if line.trim_start().starts_with('[') {
+                synopsis.push(' ');
+                synopsis.push_str(line.trim());
+            } else {
+                break;
+            }
+        }
+        assert!(
+            synopsis.contains("--audit"),
+            "the synopsis omits --audit: {synopsis}"
+        );
+        // And it says what the audit reports, not only that the flag exists:
+        // the resolved length profile is what a reader of `--help` is after.
+        for needle in [
+            "length words",
+            "stored extent",
+            "directory blocks",
+            "trailing bytes",
+        ] {
+            assert!(usage.contains(needle), "the help text omits {needle:?}");
+        }
+    }
 }

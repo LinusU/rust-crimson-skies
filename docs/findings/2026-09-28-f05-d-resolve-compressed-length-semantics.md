@@ -89,11 +89,11 @@ that none belongs in this pack.
   stored extent and `RofSource::read`'s rebuilt member.
 - `tools/cs_inspect/src/rof.rs`: `--audit`, `AuditReport`, `audit_container`,
   `spans_json`, `RofOutcomes`, the new `declared_decoded_len` in the member
-  list, and the `cs-inspect rof --audit` help text.
-- `crates/cs_formats/Cargo.toml` (**wiring**): `miniz_oxide` as a
-  dev-dependency so the retail test can re-read a member the way the
-  reference profile does. The crate already depends on the same version, so
-  **`Cargo.lock` has no diff** and the dependency graph is unchanged.
+  list, and the test that keeps the flag documented in `--help`.
+- `tools/cs_inspect/src/main.rs` (**wiring**): the `rof` synopsis and its prose
+  in `HELP_TEXT` name `--audit` and say what the audit reports. The flag was
+  otherwise only in a findings file, so nobody running `cs-inspect rof` could
+  find it.
 - `crates/cs_formats/tests/rof.rs`: the F05-D tests, and the F05-A/B tests
   re-authored for the resolved profile.
 - `docs/findings/evidence/F05-D.json` (this stage's evidence report) and
@@ -154,7 +154,7 @@ reproduced on retail by the same commands F05-C recorded.
   `RofSource::coverage()` answer "do the container's bytes add up?" — the
   question the resolution was measured with — without re-reading anything.
 
-## Test inventory (6 tests, prefix `accept_f05_d_`)
+## Test inventory (7 tests, prefix `accept_f05_d_`)
 
 | Test | What it pins down |
 | --- | --- |
@@ -163,6 +163,7 @@ reproduced on retail by the same commands F05-C recorded.
 | `accept_f05_d_a_declared_length_that_disagrees_with_the_bytes_is_refused` | a compressed and an uncompressed member whose declared count is wrong are refused with the code, container, offset, declared and observed counts; the ledger is untouched and the refusal repeats; the agreeing case still reads; trailing bytes are reported, not refused |
 | `accept_f05_d_the_mount_records_stored_extents_that_tile_the_container` *(cs_assets)* | the mount keeps both words, indexes and digests the stored extents, spans the stored length, `coverage()` is exact, both members read through the production reader, a session resolves both to spans of the stored length, and the exchanged-word container is refused at the mount with a fresh builder untouched |
 | `accept_f05_d_rof_audit_reports_both_words_for_every_member` *(cs_inspect)* | the audit's profile string, census, exact coverage, per-member words/digests/trailing count, a member the reader refuses named with its code and exit 3 while its sibling is still audited, and nothing written but the report |
+| `accept_f05_d_the_help_text_and_usage_diagnostic_document_the_audit_flag` *(cs_inspect)* | `--audit` is in the `rof` synopsis a user copies flags from, the usage diagnostic names it, it is a switch rather than a flag with a value, and the help says what the audit reports — a flag only this file mentioned would be unfindable |
 | `accept_f05_d_retail_members_tile_their_container_and_match_the_reference_profile` *(retail, `#[ignore]`)* | **AC04 on private data:** both containers walk; blocks and stored extents tile each exactly; every compressed member is an exact stream with zero trailing bytes; every uncompressed member's words agree; and every member's bytes equal what the reference extractor's read profile produces, member for member |
 
 The F05-A/B fixtures were re-authored for the resolved profile (a
@@ -180,8 +181,8 @@ states the wrong decoded count is refused instead of being read.
 | `cargo fmt --all -- --check` | 0 |
 | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
 | `cargo test --workspace --locked` | 0 |
-| `cargo test --workspace --locked -- accept_f05_d_ --include-ignored` | 0 (6 tests: 4 `cs_formats`, 1 `cs_assets`, 1 `cs_inspect`; 1 ignored without `CS_GAME_DIR`) |
-| `cargo run -p cs_xtask --locked -- test-select --prefix accept_f05_d_` | 0 (6 selected, 6 passed, each re-run alone with `--exact`) |
+| `cargo test --workspace --locked -- accept_f05_d_ --include-ignored` | 0 (7 tests: 4 `cs_formats`, 1 `cs_assets`, 2 `cs_inspect`; 1 ignored without `CS_GAME_DIR`) |
+| `cargo run -p cs_xtask --locked -- test-select --prefix accept_f05_d_` | 0 (7 selected, 7 passed, each re-run alone with `--exact`) |
 | `cs-inspect rof --cs-path "$CS_GAME_DIR" --container GOSDATA/ASSETS/crimptch.rof --audit --out …` | 0 |
 | `cs-inspect rof --cs-path "$CS_GAME_DIR" --container GOSDATA/ASSETS/crimson.rof --audit --out …` | 0 |
 | `python3 private/research/run_reference.py` (the pinned S05 script, unmodified but for `ROF_PATH`) | 0 (846 + 1 files, 0 digest mismatches) |
@@ -206,13 +207,66 @@ M1 and M4 also fail the retail test, which is the point: they are the two
 regressions this stage exists to repair, and only retail data shows them as
 what they are.
 
+The reviewing agent re-applied M1–M6 independently and got the same verdicts
+(M1: 6 failing, M2: 4, M3: 2, M4: 6, M5: 2, M6: 1), and added two of its own
+for the help-text regression guard: **M7** removing `--audit` from the `rof`
+synopsis in `HELP_TEXT` and **M8** replacing the audit's help prose with a
+one-liner. Both fail
+`accept_f05_d_the_help_text_and_usage_diagnostic_document_the_audit_flag`
+and nothing else.
+
+## Review (bunny-1, reviewing agent)
+
+What the review changed on this branch, so the next reader knows which parts of
+the file above are the implementer's and which are not:
+
+- **Dropped a redundant wiring edit.** The branch added `miniz_oxide` to
+  `crates/cs_formats/Cargo.toml`'s `[dev-dependencies]` for the retail test's
+  reference profile. A package's `[dependencies]` are already in scope for all
+  of its targets, so `cargo test -p cs_formats --no-run` builds the test
+  without it; the comment claiming otherwise was wrong. `Cargo.toml` is back
+  to its `main` content and **`Cargo.lock` never changed**.
+- **Fixed two module-doc claims that contradicted the resolution.** The
+  F05-B bullet still said "both length words of *every* record" are
+  bounds-checked as extents, and the resolved-profile section still said "Both
+  words are still validated as extents". Both describe the reading F05-D
+  measured to be wrong — the one that refused `crimptch.rof`. They now say
+  what the code does: the stored word of every record is checked, the decoded
+  word is not (and is checked where it is a real claim instead). The
+  `ExtentOutOfBounds::length` doc said the same thing more quietly and was
+  corrected with it.
+- **Documented `--audit`.** The flag shipped without appearing in
+  `cs-inspect --help`, so the interface the F05-D evidence is produced through
+  was unfindable. The synopsis and the prose now name it, and a test holds both
+  to that.
+- **Merged two duplicated match arms** in `RofError::offset` and
+  `in_block`, which had `DecodedLengthMismatch` split out of the or-pattern
+  for no reason.
+- **Corrected the flag census** in the unknowns above: 870 records, not "867
+  file records" (867 is `crimson.rof`'s record count; 847 are file records
+  across both containers).
+- **Filed F05-E** for `docs/research/FORMAT-NOTES.md`, which still calls this
+  question unresolved. It is a protected path, so this task could not and must
+  not edit it.
+
+Everything else was re-verified rather than taken on trust: the census, the
+tiling, the 418 overlapping spans and the `(127, 1768)` out-of-bounds extent
+under the first-word profile, the container digests and the installation
+fingerprint all reproduce from a from-scratch probe that does not use the Rust
+reader at all, and the AC04 comparison was redone from the pinned script's
+846 + 1 output files with an independent comparison (0 mismatches, identical
+key sets, and every `stored_sha256` in the audit re-derived from the container
+bytes: 847/847).
+
 ## Recorded unknowns (not guessed)
 
 1. **A directory record's two length words.** `0` in all 23 observed
    directory records. Meaning unknown; the reader never uses them and only
    refuses one that reaches past the end of the container.
-2. **Flags other than 1 and 2.** Only `0x0` and `0x2` occur in 867 file
-   records. A bit with no observed meaning is still `unsupported_layout`.
+2. **Flags other than 1 and 2.** The census over all 870 records of both
+   containers is `0x0` (428), `0x1` (23) and `0x2` (419) — nothing else
+   occurs, and 847 of those records are file entries. A bit with no observed
+   meaning is still `unsupported_layout`.
 3. **Non-UTF-8 names.** No retail name contains a byte above 127 (846 + 1
    members, longest name 34 bytes, deepest path 4), so `NonUtf8Name` is
    still unexercised by original data. The refusal stays.
@@ -261,11 +315,14 @@ what they are.
 
 ## Status
 
-**Checked, not recreated** (AGENTS.md rule 8). The six `accept_f05_d_*`
+**Checked, not recreated** (AGENTS.md rule 8). The seven `accept_f05_d_*`
 tests, `cargo fmt`, `cargo clippy -D warnings` and `cargo test --workspace`
-pass on this commit, and the six mutation probes above show which
+pass on this commit, and the eight mutation probes above show which
 production lines they depend on. What this stage certifies is the
 *semantics of the two length words* and that the resolved profile yields
 byte-identical member content to the pinned reference extractor on all 847
 members of the original installation. It certifies nothing about how the
 game uses those members.
+
+`docs/research/FORMAT-NOTES.md` still describes the length fields as
+unresolved; it is a protected path, so task F05-E carries that correction.

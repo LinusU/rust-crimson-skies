@@ -8,8 +8,10 @@
 //! the full-content readiness check, and the `resolve` command (F04-C)
 //! resolves one asset key in a mounted content session and reports its
 //! trace, and the `rof` command (F05-C) mounts one ROF container into a
-//! content session, reports every member it holds and optionally reads
-//! and exports one of them, the `zbd-audit` command (F06-D) lists every
+//! content session, reports every member it holds, optionally reads
+//! and exports one of them and — with `--audit` (F05-D) — reads every
+//! member to report both length words of each record and how the
+//! container's bytes divide, the `zbd-audit` command (F06-D) lists every
 //! ZBD container and member with a strict status, and the `interp`
 //! command (F07-B) decodes and validates one INTERP loading-script
 //! container and reports its lossless tokens, and with `--plan` reads the
@@ -57,13 +59,18 @@ COMMANDS
         Exits 0 when resolved, 3 when not found or ambiguous.
 
     rof [--cs-path <dir>] --container <spelling> [--member <spelling>]
-        [--max-decoded-bytes <n>] [--out <file>] [--export-dir <dir>]
+        [--max-decoded-bytes <n>] [--audit] [--out <file>] [--export-dir <dir>]
         Mount one ROF container of the installation into a content
         session and report every member it holds: spelling, id, stored
         extent, compression bit and digest. --member reads one member
         through the bounded decoder and --export-dir writes its decoded
-        bytes into a private directory outside the installation. Exits 0
-        when mounted, 3 when the container or the member is refused.
+        bytes into a private directory outside the installation. --audit
+        reads every member instead of one and reports both length words of
+        each record, the bytes the read produced, the trailing bytes inside
+        each stored extent, the stored and decoded digests and how the
+        container's bytes divide between its directory blocks and its
+        members' stored extents. Exits 0 when mounted, 3 when the
+        container, the member or the audit is refused.
 
     zbd-audit [--cs-path <dir>] [--strict] [--out <file>]
         Audit every ZBD container of the installation family by family:

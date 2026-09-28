@@ -37,14 +37,16 @@
 //!   up to more bytes than the container holds, so a shared or cyclic block
 //!   cannot make the traversal run away (spec non-negotiable #3);
 //! * every extent is established against the container length before
-//!   anything is read: both length words of *every* record — directory
+//!   anything is read: the **stored** word of *every* record — directory
 //!   records included — and the header a nested block must fit inside, so
 //!   a member or directory pointer that reaches past the end is an
 //!   [`RofError::ExtentOutOfBounds`], and no span is extracted
 //!   from an entry whose `flags` hold a bit or a combination with no
 //!   observed meaning, or from extents that overlap — spec non-negotiable
 //!   #5 says to surface [`RofError::UnsupportedLayout`] absent evidence of
-//!   legitimate sharing;
+//!   legitimate sharing. (F05-D narrowed this: the *decoded* word of a file
+//!   entry is no longer treated as a span of the file, because it is not
+//!   one — see below.)
 //! * [`read_member`] decodes one established extent through a **bounded**
 //!   zlib decoder: the decoded bytes are capped by
 //!   [`RofLimits::max_decoded_bytes`] (an expansion bomb is refused as
@@ -91,9 +93,13 @@
 //! The resolved profile is what the reader acts on: the stored extent is
 //! `[start, start + raw_length_on_disk)`, the decoded byte count must be
 //! exactly `raw_length` ([`RofError::DecodedLengthMismatch`] otherwise), and
-//! the overlap check compares stored extents. Both words are still validated
-//! as extents, because both are recorded fields whose reach inside the
-//! container is a fact worth proving.
+//! the overlap check compares stored extents. The **decoded** word of a file
+//! entry is deliberately *not* bounds-checked against the container — that
+//! check is the reading the measurement below refutes, and it is exactly what
+//! refused `GOSDATA/ASSETS/crimptch.rof` before this stage. It is checked
+//! where it is a real claim instead: [`read_member`] must reproduce it
+//! exactly, and a *directory* record's two words — which have no observed
+//! meaning at all — are still refused if either reaches past the end.
 //!
 //! What is deliberately **not** resolved: the two length words of a
 //! **directory** record, which are `0` in every directory record of both
@@ -556,9 +562,10 @@ pub enum RofError {
         offset: u64,
         /// Absolute start of the extent.
         start: u64,
-        /// Declared byte length of the extent: `raw_length` or
-        /// `raw_length_on_disk` for a file entry, [`DIRECTORY_HEADER_BYTES`]
-        /// for the smallest directory block.
+        /// Declared byte length of the extent: `raw_length_on_disk` (the
+        /// stored count) for any record, `raw_length` for a *directory*
+        /// record whose uninterpreted word is checked, or
+        /// [`DIRECTORY_HEADER_BYTES`] for the smallest directory block.
         length: u64,
         /// Length of the container the extent was checked against.
         file_len: u64,
@@ -675,8 +682,8 @@ impl RofError {
             | Self::ExtentOutOfBounds { offset, .. }
             | Self::ExpansionBomb { offset, .. }
             | Self::UnsupportedLayout { offset, .. }
-            | Self::DecodeFailure { offset, .. } => *offset,
-            Self::DecodedLengthMismatch { offset, .. } => *offset,
+            | Self::DecodeFailure { offset, .. }
+            | Self::DecodedLengthMismatch { offset, .. } => *offset,
         }
     }
 
@@ -739,6 +746,8 @@ impl RofError {
                 offset: offset + delta,
                 index,
             },
+            // The traversal's own failures carry absolute offsets and no
+            // scope, so they are never rebased.
             Self::Cycle { .. }
             | Self::ExtentOutOfBounds { .. }
             | Self::ExpansionBomb { .. }
