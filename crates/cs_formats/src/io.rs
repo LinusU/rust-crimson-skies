@@ -20,7 +20,9 @@
 //!    hands out one reader and both budgets under a single provenance label,
 //!    rolls an attempt's charges back when it fails (so the attempt can be
 //!    retried) and stamps the entrypoint's name onto the error as it
-//!    propagates out ([`ParseError::in_scope`], stage F03-C).
+//!    propagates out ([`ParseError::in_scope`], stage F03-C). The reader it
+//!    hands out borrows the attempt's own bytes, so an attempt returns
+//!    bounded fields as slices instead of being forced to copy them.
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -583,6 +585,8 @@ impl Drop for RecursionGuard<'_> {
 ///   one attempt as three *separate* references, so holding a
 ///   [`RecursionGuard`] never blocks a reservation and vice versa — the
 ///   nesting that non-negotiable #2 and #3 require of a real parser;
+/// * the reader borrows the attempt's own bytes, so an attempt can return a
+///   bounded field as a slice of the input instead of a heap copy of it;
 /// * a failed attempt rolls its allocation charges back to what the ledger
 ///   held before it and leaves the recursion depth at zero (its guards drop
 ///   with it), so the same context can retry the bytes honestly;
@@ -676,15 +680,22 @@ impl ParseContext {
     ///   otherwise: same container, same absolute offset, same kind and
     ///   conditions.
     ///
+    /// The reader is tied to the lifetime of `bytes`, so an attempt can hand
+    /// borrowed input straight back out — [`Reader::read_bytes`],
+    /// [`Reader::read_str`] and [`Reader::sub_reader`] return slices into the
+    /// bytes, not copies of them. A parser therefore never has to copy a
+    /// bounded field onto the heap just to return it; the buffers it does
+    /// allocate are the ones it reserves against the budget.
+    ///
     /// A successful attempt keeps its charges: the ledger of one parse only
     /// accumulates, and a refused reservation was never charged in the first
     /// place.
-    pub fn parse<T>(
+    pub fn parse<'bytes, T>(
         &mut self,
         entrypoint: &str,
-        bytes: &[u8],
+        bytes: &'bytes [u8],
         f: impl FnOnce(
-            &mut Reader<'_>,
+            &mut Reader<'bytes>,
             &mut AllocationBudget,
             &RecursionBudget,
         ) -> Result<T, ParseError>,

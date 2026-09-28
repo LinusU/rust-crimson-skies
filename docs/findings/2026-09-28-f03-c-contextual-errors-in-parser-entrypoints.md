@@ -12,7 +12,7 @@ data appears in this change.
 | `crates/cs_formats/src/io.rs` | `ParseContext { new, with_defaults, container, allocation, recursion, parse }` — the entrypoint that hands one attempt a reader, the allocation budget and the recursion budget under a single provenance label, rolls a failed attempt's charges back and scopes the error as it propagates out — plus the private `AllocationBudget::rollback_to` it uses |
 | `crates/cs_formats/src/error.rs` | `ParseError::in_scope(scope)`: prefixes the logical field path with the name of the entrypoint the error crossed, leaving container, absolute offset, kind and expected/observed untouched |
 | `crates/cs_formats/src/lib.rs` | wiring only: re-export of `ParseContext`, doc comment naming F03-C |
-| `crates/cs_formats/tests/` | three new `accept_f03_c_*` integration-test binaries (8 tests) |
+| `crates/cs_formats/tests/` | four new `accept_f03_c_*` integration-test binaries (9 tests: three binaries / 8 tests from the implementer, one binary / 1 test added in review) |
 
 Nothing in F03-A or F03-B changed behaviour: `Reader` operations and budget
 operations already produced contextual errors; this stage is the integration
@@ -64,19 +64,40 @@ implied by any of this (EvidenceClass `Designed` in
    through it, and truncating it at every one of the 23 byte boundaries still
    yields a scoped `UnexpectedEof` naming the field, the absolute offset and
    the expected/observed byte counts — never a panic.
+7. **The attempt's reader is tied to its bytes (added in review).** `parse`
+   takes `bytes: &'bytes [u8]` and hands the closure `&mut Reader<'bytes>`,
+   so an attempt can *return* a bounded field as a slice of the input
+   (`Reader::read_bytes`, `read_str`, `read_bounded_cstr`, `sub_reader`)
+   instead of a heap copy of it. The signature as first submitted used a
+   higher-ranked `&mut Reader<'_>` with a fixed return type `T`, which cannot
+   name the reader's lifetime: a probe returning `reader.read_str(...)`
+   straight out of the entrypoint failed to compile with
+   `lifetime may not live long enough` (exit 101). That would have forced
+   every consumer of the entrypoint (F05+, F06+, F12+) to copy each bounded
+   field onto the heap just to return it — an allocation that by-passes
+   `AllocationBudget` and undercuts non-negotiable #2. Nothing that compiled
+   before stops compiling: the reader is covariant in its lifetime, so
+   callers passing a shorter borrow still work.
 
 ## Sensitivity evidence
 
-Four temporary mutations, each applied to `crates/cs_formats/src/io.rs` and
-reverted immediately afterwards (verified byte-for-byte against a saved copy
-with `cmp` after each probe):
+Four temporary mutations from implementation plus one from review, each
+applied to `crates/cs_formats/src/io.rs` and reverted immediately afterwards
+(verified byte-for-byte against a saved copy with `cmp` after each probe).
+The four implementation probes ran against the 8 tests that existed then; the
+review probe ran against all 9:
 
-| mutation | result (`cargo test -p cs_formats -- accept_f03_c_ --no-fail-fast`) |
+| mutation | result (`cargo test -p cs_formats --locked --no-fail-fast -- accept_f03_c_`) |
 |---|---|
 | `parse`: drop only `Err(error.in_scope(entrypoint))` → `Err(error)` | exit **101**; **6 of 8** FAILED (only the two all-success tests pass) |
 | `parse`: drop only `self.allocation.rollback_to(mark)` | exit **101**; **3 of 8** FAILED: budget provenance, teardown/retry, hostile attempts |
 | `Reader::take`: `if available < len` → `if false && available < len` | exit **101**; **4 of 8** FAILED, including the unaligned truncation sweep |
 | `parse`: `Reader::new(self.container.clone(), bytes)` → `Reader::new("", bytes)` | exit **101**; **3 of 8** FAILED (container assertions) |
+| **review**: revert `parse` to `parse<T>` with `&mut Reader<'_>` (decision 7) | exit **101**; `accept_f03_c_entrypoint_hands_back_borrowed_input` fails to compile with `lifetime may not live long enough`, **0 of 9** tests run |
+
+The first two probes were re-run during review and reproduced exactly (6/8
+and 3/8 failed, exit 101 each) with the file restored byte-identically
+afterwards.
 
 The "one observable failure" named before editing holds: without the
 `in_scope` call in `parse`,
@@ -92,7 +113,12 @@ The "one observable failure" named before editing holds: without the
 | `cargo test --workspace --locked` | 0 (72 passing test-result units, including the new `ParseContext` doctest) |
 | `cargo test --workspace --locked -- accept_f03_c_ --include-ignored` | 0 (**8** tests, all passing) |
 | `cargo run -p cs_xtask --locked -- test-select --prefix accept_f03_c_` | 0 (8 selected, 8 re-ran `--exact`) |
-| the five mutation probes above | 101 / FAILED (expected) |
+| the four mutation probes above | 101 / FAILED (expected) |
+| **review** `cargo fmt --all -- --check` | 0 |
+| **review** `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
+| **review** `cargo test --workspace --locked` | 0 (73 test-result units: 172 passed, 0 failed, 7 ignored) |
+| **review** `cargo test --workspace --locked -- accept_f03_c_ --include-ignored` | 0 (**9** tests, all passing) |
+| **review** the two re-run mutation probes and the signature probe | 101 / FAILED (expected) |
 
 ## Open point for a later stage (recorded, not guessed)
 
