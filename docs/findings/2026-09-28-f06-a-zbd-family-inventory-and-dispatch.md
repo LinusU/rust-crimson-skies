@@ -77,7 +77,7 @@ family assignment is `EvidenceClass::Inferred` and an unobserved one is
 
 | Family (label) | Reader slot | Header rule | Observed role rules (basename under `zbd/`) | Evidence |
 | --- | --- | --- | --- | --- |
-| interp (`zbd.interp`) | `Interp` | signature `0x08971119` @0 + version `7` @4 | `interp.zbd` | header: `Documented` — `docs/research/FORMAT-NOTES.md` "INTERP observed subset" [S07], repeated in `specs/F07`; name: `Documented` — `docs/research/FINDINGS.md` (`INTERP.ZBD` observed at `ZBD/interp.zbd`) |
+| interp (`zbd.interp`) | `Interp` | signature `0x08971119` @0 + version `7` @4 | `interp.zbd` | header: `Documented` — `docs/research/FORMAT-NOTES.md` "INTERP observed subset" [S07], repeated in `specs/F07`; name: `Documented` — `docs/research/FINDINGS.md` (`INTERP.ZBD` is the loading-script container) and the F02-C findings (observed at `ZBD/interp.zbd`) |
 | gamez (`zbd.gamez`) | `GameZ` | none documented | `planes.zbd`, `gamez.zbd` | `Documented` — `specs/F10` ("GameZ data that supplies world geometry and PLANES.ZBD meshes"), `docs/research/FINDINGS.md` (`ZBD/PLANES.ZBD`, world-specific `gamez.zbd`), CLI example `unzbd cs gamez <PLANES.ZBD>` [S06] |
 | texture (`zbd.texture`) | `Texture` | none documented | `texture.zbd`, `rtexture*.zbd` | `texture.zbd`: `Documented` — CLI example `unzbd cs textures <texture.zbd>` [S06]; `rtexture*`: `Inferred` from the observed names (`docs/findings/2026-09-24-f02-c…`, `accept_f02_d_classification.rs`) |
 | reader (`zbd.reader`) | `Reader` | none documented | `zrdr.zbd` | `Inferred` from the observed name (present in every group and mission directory, F02-C/F02-D findings) |

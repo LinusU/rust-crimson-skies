@@ -272,8 +272,9 @@ pub static ZBD_FAMILY_INVENTORY: [ZbdFamilyRecord; 6] = [
         role_rules: &[RoleRule::exact(
             "interp.zbd",
             ClaimStatus::Documented,
-            "docs/research/FINDINGS.md: `INTERP.ZBD` is a loading-script container, observed at \
-             `ZBD/interp.zbd` [S06, S07]",
+            "docs/research/FINDINGS.md: `INTERP.ZBD` is a loading-script container [S06, S07]; \
+             observed at `ZBD/interp.zbd` \
+             (docs/findings/2026-09-24-f02-c-cs-inspect-inventory-dependency-impact.md)",
         )],
         source: "docs/research/FORMAT-NOTES.md 'INTERP observed subset' [S07]: u32 signature \
                  0x08971119, u32 version 7, u32 script count",
