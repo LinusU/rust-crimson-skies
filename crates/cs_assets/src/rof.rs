@@ -20,12 +20,14 @@
 //! **What the mount records.** One member per file entry, spelled as its
 //! root-relative path joined with `/`. The [`SourceSpan`] a resolution
 //! returns is the member's *stored* extent in the container — offset
-//! `start`, length `raw_length`, digest of exactly those bytes — because a
-//! span is provenance inside a file (IDENTITY-CONTENT: "treat offsets as
-//! unsigned checked ranges") and `raw_length` is the field the reference
-//! extractor reads ([S05]). Which of the two on-disk length words is
-//! stored and which decoded is the F05-D retail question; nothing here
-//! decides it from a field name.
+//! `start`, length `raw_length_on_disk`, digest of exactly those bytes —
+//! because a span is provenance inside a file (IDENTITY-CONTENT: "treat
+//! offsets as unsigned checked ranges") and that word is the member's
+//! measured stored length (F05-D). The record's other length word, the
+//! decoded count, is kept next to it in
+//! [`RofMemberInfo::declared_decoded_len`] rather than folded into the
+//! span: it is a number of *output* bytes, and no range of the container
+//! holds them.
 //!
 //! **Why reads do not go through `Vfs::read_all`.** The F04 read path
 //! ([`crate::vfs::source`]) reads a *host file* range: it refuses any
@@ -369,9 +371,14 @@ pub struct RofMemberInfo {
     pub id: u32,
     /// First byte of the stored extent inside the container.
     pub offset: u64,
-    /// Stored length: the record's `raw_length`, the field the reference
-    /// extractor reads ([S05]).
+    /// Stored length: the record's `raw_length_on_disk` word, the extent the
+    /// member occupies in the container (F05-D, measured on the original
+    /// installation — the *other* word is the decoded length).
     pub stored_len: u64,
+    /// Declared decoded length: the record's `raw_length` word, which a read
+    /// reproduces exactly (F05-D). Equal to [`Self::stored_len`] for an
+    /// uncompressed member and larger for a compressed one.
+    pub declared_decoded_len: u64,
     /// Whether the record carries the observed compression bit (flag 2).
     pub compressed: bool,
     /// SHA-256 of the stored extent — exactly the bytes the resolution's
@@ -379,11 +386,37 @@ pub struct RofMemberInfo {
     pub sha256: ContentHash,
 }
 
-/// What one member adds to the index: the record the reader needs to read
+/// What one mounted member adds to the index: the record the reader needs to read
 /// it again, next to the info above.
 struct RofMemberData {
     info: RofMemberInfo,
     record: RofRawRecord,
+}
+
+/// How a container's bytes divide between its directory blocks and its
+/// members' stored extents (see [`RofSource::coverage`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RofCoverage {
+    /// Bytes in the container.
+    pub container_len: u64,
+    /// Bytes owned by exactly one block or member extent.
+    pub covered: u64,
+    /// `[start, end)` ranges no block or member claims, in order. Empty for
+    /// a container that tiles exactly, which is what both containers of the
+    /// original installation do.
+    pub gaps: Vec<(u64, u64)>,
+    /// `[start, end)` extents that claim bytes another one already owns.
+    /// [`cs_formats::read_tree`] refuses a container with any, so a mounted
+    /// container reports none; a mount that ever held one would say so here
+    /// instead of reading a span twice.
+    pub overlaps: Vec<(u64, u64)>,
+}
+
+impl RofCoverage {
+    /// Whether the container's blocks and members tile it exactly.
+    pub fn is_exact(&self) -> bool {
+        self.gaps.is_empty() && self.overlaps.is_empty() && self.covered == self.container_len
+    }
 }
 
 /// One mounted ROF container: the bytes the mount was built from, indexed
@@ -412,6 +445,13 @@ pub struct RofSource {
     limits: RofLimits,
     /// Every file member, in the container's depth-first walk order.
     members: Vec<RofMemberData>,
+    /// Every directory block the walk visited, as its `[start, end)` extent
+    /// inside the container.
+    ///
+    /// Kept so a consumer can audit how the container's bytes are divided
+    /// (see [`RofSource::coverage`]); a mount never reads them, because a
+    /// block is a table, not content.
+    block_extents: Vec<(u64, u64)>,
     /// `logical_key()` -> index into [`Self::members`], mirroring the
     /// mount's member index exactly.
     index: BTreeMap<String, usize>,
@@ -468,6 +508,62 @@ impl RofSource {
         self.members.iter().map(|data| &data.info)
     }
 
+    /// Every directory block the walk visited, as its `[start, end)` extent
+    /// inside the container, in the same depth-first order as
+    /// [`Self::members`].
+    pub fn blocks(&self) -> impl Iterator<Item = (u64, u64)> + '_ {
+        self.block_extents.iter().copied()
+    }
+
+    /// How the container's bytes divide between its directory blocks and
+    /// its members' **stored** extents — the audit F05-D measures the
+    /// resolved length profile with.
+    ///
+    /// A container whose blocks and members tile it exactly — no gap, no
+    /// overlap, no byte left over — is a container whose length words
+    /// describe every byte it holds, which is the property both containers
+    /// of the original installation have. Computing it costs one sort of
+    /// the extents and touches no member content, so a mount can answer it
+    /// without reading anything.
+    pub fn coverage(&self) -> RofCoverage {
+        let mut spans: Vec<(u64, u64)> = self
+            .block_extents
+            .iter()
+            .copied()
+            .chain(
+                self.members
+                    .iter()
+                    .map(|data| (data.info.offset, data.info.offset + data.info.stored_len)),
+            )
+            .filter(|(start, end)| end > start)
+            .collect();
+        spans.sort_unstable();
+        let mut covered = RofCoverage {
+            container_len: self.bytes.len() as u64,
+            covered: 0,
+            gaps: Vec::new(),
+            overlaps: Vec::new(),
+        };
+        let mut cursor = 0u64;
+        for (start, end) in spans {
+            if start > cursor {
+                covered.gaps.push((cursor, start));
+            } else if start < cursor {
+                // `read_tree` refuses overlapping extents, so this cannot
+                // happen for a mounted container; the audit reports it
+                // rather than hiding it if it ever does.
+                covered.overlaps.push((start, end));
+                continue;
+            }
+            covered.covered += end - start;
+            cursor = end;
+        }
+        if cursor < covered.container_len {
+            covered.gaps.push((cursor, covered.container_len));
+        }
+        covered
+    }
+
     /// What the mount records about `key`'s member, if this source holds
     /// it. The namespace and variant are checked exactly as the mount
     /// checks them, so a key of another key space is never answered.
@@ -487,14 +583,11 @@ impl RofSource {
         let data = &self.members[self.lookup(key)?];
         let context = ParseContext::with_defaults(self.container.as_str());
         let start = data.info.offset;
-        let stored = u64::from(data.record.raw_length);
-        let on_disk = u64::from(data.record.raw_length_on_disk);
         let member = RofMember {
             path: self.segments(&data.info.spelling),
             record: data.record,
             start,
-            length_end: start + stored,
-            length_on_disk_end: start + on_disk,
+            stored_end: start + data.info.stored_len,
         };
         read_member(&context, &self.bytes, &member, &self.limits)
             .map_err(|source| RofReadError::Format { source })
@@ -561,11 +654,15 @@ pub fn mount_rof(
 /// * its spelling is the member's root-relative path joined with `/`,
 ///   validated as a key (`RofMountError::InvalidMemberPath` otherwise, and
 ///   `RofMountError::NonUtf8Name` when it is not UTF-8);
-/// * its extent is `start .. start + raw_length`, already proven inside
-///   the container by the walk;
+/// * its extent is `start .. start + raw_length_on_disk` — the member's
+///   **stored** extent, measured in F05-D — already proven inside the
+///   container by the walk;
 /// * its digest is the SHA-256 of exactly those stored bytes, so the
 ///   [`SourceSpan`](cs_types::asset_id::SourceSpan) a resolution returns
-///   describes bytes that exist and hash to what the span says.
+///   describes bytes that exist and hash to what the span says. The
+///   record's other length word (the decoded count) is kept beside it in
+///   [`RofMemberInfo::declared_decoded_len`] so a consumer can see both
+///   numbers of a compressed member without re-reading the container.
 ///
 /// **Nothing is written anywhere, and a refusal leaves no trace**: every
 /// error above is returned before the [`Mount`] is built, so a caller
@@ -591,7 +688,12 @@ pub fn mount_rof_with_limits(
         read_tree(&mut context, &bytes).map_err(|source| RofMountError::Format { source })?;
 
     let mut members = Vec::with_capacity(tree.members().len());
+    let mut block_extents = Vec::with_capacity(tree.directories().len());
     let mut index = BTreeMap::new();
+    for directory in tree.directories() {
+        let start = directory.offset;
+        block_extents.push((start, start + directory.directory.block_len() as u64));
+    }
     for member in tree.members() {
         let offset = member.start;
         let spelling = join_spelling(&member.path, &container, offset)?;
@@ -606,7 +708,7 @@ pub fn mount_rof_with_limits(
         // container; the `get` is that same claim checked once more before
         // a slice exists, so a producer that ever broke the contract would
         // be refused here instead of panicking.
-        let stored_len = u64::from(member.record.raw_length);
+        let stored_len = member.stored_len();
         let end = offset + stored_len;
         let start_index = usize::try_from(offset).expect("offset <= container length");
         let end_index = usize::try_from(end).expect("end <= container length");
@@ -635,6 +737,7 @@ pub fn mount_rof_with_limits(
                 id: member.record.id,
                 offset,
                 stored_len,
+                declared_decoded_len: member.declared_decoded_len(),
                 compressed: member.record.flags.is_compressed(),
                 sha256: digest,
             },
@@ -655,6 +758,7 @@ pub fn mount_rof_with_limits(
             bytes,
             limits,
             members,
+            block_extents,
             index,
         },
     })

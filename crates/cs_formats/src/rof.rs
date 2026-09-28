@@ -22,13 +22,11 @@
 //!   name ends in its NUL, no name holds an interior NUL, and the declared
 //!   `name_length` values (which count the name *plus* its terminator, as
 //!   authored in the synthetic fixture) sum to exactly `names_length`;
-//! * the two length fields stay separate: the on-disk words `length` and
-//!   `length_on_disk` ([S05]) are exposed as [`RofRawRecord::raw_length`]
-//!   and [`RofRawRecord::raw_length_on_disk`] without any interpretation,
-//!   because the reference extractor reads `length` for compressed members
-//!   and ignores `length_on_disk` and no local corpus has resolved the
-//!   difference (spec non-negotiable #4, and the F05 deliverable names the
-//!   preserved fields `raw_length` / `raw_length_on_disk`).
+//! * the two length fields stay separate and **verbatim**: the on-disk words
+//!   `length` and `length_on_disk` ([S05]) are exposed as
+//!   [`RofRawRecord::raw_length`] and
+//!   [`RofRawRecord::raw_length_on_disk`]. The `raw_` prefix says the words
+//!   are kept as authored; what they *mean* is F05-D's answer, below.
 //!
 //! The second stage (**F05-B**) follows those blocks and reads members:
 //!
@@ -48,18 +46,60 @@
 //!   #5 says to surface [`RofError::UnsupportedLayout`] absent evidence of
 //!   legitimate sharing;
 //! * [`read_member`] decodes one established extent through a **bounded**
-//!   zlib decoder: the stored extent is the record's `raw_length` (the
-//!   field the reference extractor reads [S05]), the decoded bytes are
-//!   capped by [`RofLimits::max_decoded_bytes`] (an expansion bomb is
-//!   refused as [`RofError::ExpansionBomb`]), and the bytes the stream did
-//!   not consume are reported as trailing data rather than silently
-//!   dropped (spec non-negotiable #3 and #4).
+//!   zlib decoder: the decoded bytes are capped by
+//!   [`RofLimits::max_decoded_bytes`] (an expansion bomb is refused as
+//!   [`RofError::ExpansionBomb`]), and the bytes the stream did not consume
+//!   are reported as trailing data rather than silently dropped (spec
+//!   non-negotiable #3 and #4).
 //!
-//! What is deliberately **not** here: mounting into the VFS and inspection
-//! (F05-C) and the compressed-length semantics, which stay unresolved until
-//! a retail corpus can compare them (F05-D). Names are returned as bytes,
-//! not `str`: locales are not guaranteed to be UTF-8 (spec non-negotiable
-//! #2).
+//! # The two length words, resolved (F05-D)
+//!
+//! Spec F05's deliverable asks for the words to be preserved "until a local
+//! corpus resolves their meaning", and non-negotiable #4 asks the reader to
+//! probe asymmetric fixtures and real compressed members rather than
+//! reinterpret the words from their English names. A retail corpus does
+//! resolve them, and the answer is **not** what the reference extractor's
+//! source suggests ([S05] reads the first word and ignores the second):
+//!
+//! | word | offset | measured meaning |
+//! | --- | --- | --- |
+//! | `length` | +4 | **decoded** byte count of the member ([`RofRawRecord::raw_length`]) |
+//! | `length_on_disk` | +8 | **stored** byte count: how many bytes at `start` the member occupies ([`RofRawRecord::raw_length_on_disk`]) |
+//!
+//! The measurement, on both private containers of the original
+//! installation (846 + 1 members, evidence in
+//! `docs/findings/2026-09-28-f05-d-resolve-compressed-length-semantics.md`):
+//!
+//! * the 419 compressed members are **exact**: the `raw_length_on_disk`
+//!   extent is a complete zlib stream that reaches its end inside the
+//!   extent (no trailing byte in any of them) and decodes to exactly
+//!   `raw_length` bytes;
+//! * the 428 uncompressed members have `raw_length == raw_length_on_disk`, so
+//!   the two words agree exactly where there is nothing to expand;
+//! * under the stored profile the directory blocks and the member extents
+//!   **tile both containers byte for byte** — no gap, no overlap, no unused
+//!   tail byte. Under the first-word profile the same containers show 418
+//!   overlapping spans and one extent that reaches 971 bytes past the end of
+//!   its 797-byte file.
+//!
+//! So the reference extractor is *tolerant, not right*: it hands the first
+//! word's (too long, usually reaching into the following members) byte count
+//! to zlib, and zlib stops at the stream end, so its **decoded output is
+//! still the member's bytes**. The reference's extents are not the members'
+//! extents, which is why this reader does not copy them.
+//!
+//! The resolved profile is what the reader acts on: the stored extent is
+//! `[start, start + raw_length_on_disk)`, the decoded byte count must be
+//! exactly `raw_length` ([`RofError::DecodedLengthMismatch`] otherwise), and
+//! the overlap check compares stored extents. Both words are still validated
+//! as extents, because both are recorded fields whose reach inside the
+//! container is a fact worth proving.
+//!
+//! What is deliberately **not** resolved: the two length words of a
+//! **directory** record, which are `0` in every directory record of both
+//! containers, so their meaning there stays unknown and is never used.
+//! Names are returned as bytes, not `str`: locales are not guaranteed to be
+//! UTF-8 (spec non-negotiable #2).
 //!
 //! A *root* directory is the bytes from offset zero of the file; a nested
 //! directory is the bytes from its record's `start`. [`read_directory`]
@@ -242,9 +282,21 @@ pub struct RofRawHeader {
 ///
 /// The on-disk words are `length` and `length_on_disk` ([S05]); the F05
 /// deliverable asks the reader to preserve them as `raw_length` and
-/// `raw_length_on_disk`, and that `raw_` prefix is the reminder that
-/// neither is interpreted here (spec F05, non-negotiable #4): they are two
-/// independent values, never collapsed into one.
+/// `raw_length_on_disk`, and that `raw_` prefix is the reminder that the
+/// struct reports what the container holds rather than what the fields are
+/// called (spec F05, non-negotiable #4). F05-D resolved their meaning on the
+/// original installation, and it is the opposite of the order their English
+/// names suggest (see the module documentation for the measurement):
+///
+/// * [`Self::raw_length_on_disk`] (the word at +8) is the **stored** count:
+///   how many bytes at [`Self::start`] the member occupies in the container;
+/// * [`Self::raw_length`] (the word at +4) is the **decoded** count: how
+///   many bytes the member is once read, which equals the stored count
+///   exactly when the member is not compressed.
+///
+/// The two are never collapsed into one: a container is free to disagree
+/// with itself, and [`read_member`] refuses that with
+/// [`RofError::DecodedLengthMismatch`] rather than picking a word.
 ///
 /// Likewise `start` and the lengths are recorded, never bounds-checked
 /// here: a nested block or member extent can only be validated against the
@@ -253,10 +305,15 @@ pub struct RofRawHeader {
 pub struct RofRawRecord {
     /// Absolute offset of the entry's data or nested directory block.
     pub start: u32,
-    /// First length field, verbatim (on-disk word `length`).
+    /// First length field, verbatim (on-disk word `length`): the member's
+    /// **decoded** byte count, measured (F05-D; see the module
+    /// documentation). For a *directory* record the word is `0` in every
+    /// observed record, so its meaning there is unknown and unused.
     pub raw_length: u32,
-    /// Second length field, verbatim (on-disk word `length_on_disk`);
-    /// deliberately not collapsed into [`Self::raw_length`].
+    /// Second length field, verbatim (on-disk word `length_on_disk`): the
+    /// member's **stored** byte count, measured (F05-D). Deliberately not
+    /// collapsed into [`Self::raw_length`], which is a different number for
+    /// every compressed member.
     pub raw_length_on_disk: u32,
     /// Raw `flags` word.
     pub flags: RofFlags,
@@ -544,6 +601,28 @@ pub enum RofError {
         /// What the decoder reported. Never payload bytes.
         detail: String,
     },
+    /// The bytes the read produced are not as long as the record's
+    /// `raw_length` word, so the container's two length words do not
+    /// describe the same member.
+    ///
+    /// F05-D measured what the words mean (`raw_length_on_disk` is stored,
+    /// `raw_length` is decoded), so this is not a length choice the reader
+    /// made and the member failed: it is the container disagreeing with the
+    /// one profile every observed container follows. Refused rather than
+    /// reported, because a member whose declared size is wrong is a member no
+    /// consumer can trust (spec F05 non-negotiable #4 forbids silently
+    /// reinterpreting those fields, and truncating or padding to the declared
+    /// count would be the same silence with more damage).
+    DecodedLengthMismatch {
+        /// Container label the bytes came from.
+        container: String,
+        /// Absolute offset of the member's stored extent.
+        offset: u64,
+        /// The record's `raw_length` word: the decoded count it declares.
+        declared: u64,
+        /// Bytes the read actually produced.
+        observed: u64,
+    },
 }
 
 impl RofError {
@@ -560,6 +639,7 @@ impl RofError {
             Self::ExpansionBomb { .. } => "expansion_bomb",
             Self::UnsupportedLayout { .. } => "unsupported_layout",
             Self::DecodeFailure { .. } => "decode_failure",
+            Self::DecodedLengthMismatch { .. } => "decoded_length_mismatch",
         }
     }
 
@@ -575,7 +655,8 @@ impl RofError {
             | Self::ExtentOutOfBounds { container, .. }
             | Self::ExpansionBomb { container, .. }
             | Self::UnsupportedLayout { container, .. }
-            | Self::DecodeFailure { container, .. } => container,
+            | Self::DecodeFailure { container, .. }
+            | Self::DecodedLengthMismatch { container, .. } => container,
         }
     }
 
@@ -595,6 +676,7 @@ impl RofError {
             | Self::ExpansionBomb { offset, .. }
             | Self::UnsupportedLayout { offset, .. }
             | Self::DecodeFailure { offset, .. } => *offset,
+            Self::DecodedLengthMismatch { offset, .. } => *offset,
         }
     }
 
@@ -661,7 +743,8 @@ impl RofError {
             | Self::ExtentOutOfBounds { .. }
             | Self::ExpansionBomb { .. }
             | Self::UnsupportedLayout { .. }
-            | Self::DecodeFailure { .. } => self,
+            | Self::DecodeFailure { .. }
+            | Self::DecodedLengthMismatch { .. } => self,
         }
     }
 }
@@ -759,6 +842,16 @@ impl fmt::Display for RofError {
             } => write!(
                 f,
                 "member at offset {offset} in {container} failed to decode: {detail}"
+            ),
+            Self::DecodedLengthMismatch {
+                container,
+                offset,
+                declared,
+                observed,
+            } => write!(
+                f,
+                "member at offset {offset} in {container} reads to {observed} bytes but its \
+                 record declares {declared}"
             ),
         }
     }
@@ -1085,15 +1178,19 @@ pub struct RofTreeDirectory<'a> {
     pub directory: RofDirectory<'a>,
 }
 
-/// A file member of a [`RofTree`], with **both** declared extents
-/// validated against the container length.
+/// A file member of a [`RofTree`], with its **stored** extent validated
+/// against the container length.
 ///
-/// The two length words stay separate and uninterpreted (spec F05,
-/// non-negotiable #4): [`Self::length_end`] is `start + raw_length` and
-/// [`Self::length_on_disk_end`] is `start + raw_length_on_disk`, and which
-/// of the two means "stored" is exactly what a retail corpus still has to
-/// resolve (F05-D). The reader acts on `raw_length` alone, because that is
-/// the field the reference extractor reads ([S05]).
+/// The two length words keep their measured meanings (F05-D; see the module
+/// documentation) and are never collapsed: [`Self::stored_len`] is the
+/// record's `raw_length_on_disk` word — the bytes the member occupies in the
+/// container, and the only extent any reader may slice — while
+/// [`Self::declared_decoded_len`] is its `raw_length` word, the byte count
+/// the member must read to. Only the stored word is a range of the file:
+/// [`Self::stored_end`] is `start` plus it, proven `<= container_len` by
+/// [`read_tree`]. The decoded word is deliberately *not* a range, because the
+/// member's decoded bytes are not at any offset of the container; there is
+/// no end to keep.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RofMember<'a> {
     /// Path segments from the root, the member's own name last.
@@ -1102,10 +1199,29 @@ pub struct RofMember<'a> {
     pub record: RofRawRecord,
     /// Absolute start of the member (`start`, zero-extended to `u64`).
     pub start: u64,
-    /// `start + raw_length`, validated `<= container_len`.
-    pub length_end: u64,
-    /// `start + raw_length_on_disk`, validated `<= container_len`.
-    pub length_on_disk_end: u64,
+    /// `start + raw_length_on_disk`: the end of the **stored** extent, the
+    /// span a read slices and the overlap check compares.
+    pub stored_end: u64,
+}
+
+impl RofMember<'_> {
+    /// Stored byte count: the record's `raw_length_on_disk` word, the extent
+    /// this member occupies in the container (F05-D, measured).
+    pub fn stored_len(&self) -> u64 {
+        u64::from(self.record.raw_length_on_disk)
+    }
+
+    /// Declared decoded byte count: the record's `raw_length` word, which a
+    /// read must reproduce exactly (F05-D, measured).
+    pub fn declared_decoded_len(&self) -> u64 {
+        u64::from(self.record.raw_length)
+    }
+
+    /// Whether the member's stored bytes are a zlib stream (observed
+    /// compression bit, flag 2).
+    pub fn is_compressed(&self) -> bool {
+        self.record.flags.is_compressed()
+    }
 }
 
 /// The whole directory tree: every block and every file member, in
@@ -1142,26 +1258,35 @@ impl<'a> RofTree<'a> {
     }
 }
 
-/// What one [`read_member`] call returned, with the selected profile's two
+/// What one [`read_member`] call returned, with the resolved profile's two
 /// lengths reported side by side (spec F05 acceptance AC02).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RofMemberRead {
     /// The decoded bytes: a verbatim copy of the extent for an
     /// uncompressed member, the bounded zlib decoder's output for a
-    /// compressed one.
+    /// compressed one. Always exactly [`Self::declared_len`] bytes, or the
+    /// read failed.
     pub data: Vec<u8>,
-    /// Bytes taken from the container: the member's `raw_length` extent,
-    /// which is the field the reference extractor reads for compressed
-    /// members ([S05]). Never the `raw_length_on_disk` word.
+    /// Bytes taken from the container: the member's
+    /// `raw_length_on_disk` extent (F05-D, measured as the stored count).
+    /// Never the `raw_length` word, which is the decoded count.
     pub stored_len: u64,
     /// Bytes of [`Self::stored_len`] the zlib stream did not consume:
     /// data sitting after the end of the stream inside the same extent
     /// (spec F05, non-negotiable #4 asks for exact boundaries and trailing
-    /// data rather than a silent skip).
+    /// data rather than a silent skip). `0` for every compressed member of
+    /// both containers of the original installation; a member that has some
+    /// is still returned, with the count reported here.
     pub trailing_len: u64,
     /// Decoded byte count ([`Self::data`].`len()`), always
-    /// `<= RofLimits::max_decoded_bytes`.
+    /// `<= RofLimits::max_decoded_bytes` and always equal to
+    /// [`Self::declared_len`].
     pub decoded_len: u64,
+    /// The record's `raw_length` word, the decoded count the container
+    /// declares. Reported next to the observed [`Self::decoded_len`] so a
+    /// caller auditing a container sees both numbers even though the reader
+    /// refuses a read in which they differ.
+    pub declared_len: u64,
 }
 
 /// Walks the whole directory tree of `file` and returns every block and
@@ -1282,7 +1407,10 @@ struct Plan<'bytes> {
     members: Vec<RofMember<'bytes>>,
     /// Non-empty `[start, end)` extents of every visited block and every
     /// member. Only spans the reader would actually touch: a directory
-    /// block's bytes and a member's `raw_length` extent.
+    /// block's bytes and a member's **stored** extent (`raw_length_on_disk`,
+    /// the count F05-D measured). Comparing the decoded word's span instead
+    /// would report a compressed member as overlapping its successor,
+    /// because the decoded count is larger than the bytes it occupies.
     spans: Vec<(u64, u64)>,
     /// Path slice headers the tree keeps (`Vec<&[u8]>` buffers), counted
     /// so the booking covers them.
@@ -1533,31 +1661,42 @@ impl<'ctx, 'bytes> Walker<'ctx, 'bytes> {
                     });
                 }
             }
-            // Every record declares two extents and both must lie inside
-            // the container before either is offered to a reader —
-            // directory records included: their length words have no
-            // observed meaning and the reference extractor ignores them
-            // ([S05]), so a word that reaches past the end is exactly the
-            // outside-file pointer AC03 refuses, surfaced here instead of
-            // being read later. `u32 + u32` widened to `u64` cannot
+            // The **stored** word is the entry's extent in the container, so
+            // it must lie inside the container before any byte of it is
+            // read — for a directory record too, where the word is `0` in
+            // every observed record and the block's own header is the real
+            // bound checked above. `u32 + u32` widened to `u64` cannot
             // overflow.
-            let length_end = start + u64::from(record.raw_length);
-            let length_on_disk_end = start + u64::from(record.raw_length_on_disk);
-            if length_end > file_len {
-                return Err(RofError::ExtentOutOfBounds {
-                    container: container.to_owned(),
-                    offset: start,
-                    start,
-                    length: u64::from(record.raw_length),
-                    file_len,
-                });
-            }
-            if length_on_disk_end > file_len {
+            let stored_end = start + u64::from(record.raw_length_on_disk);
+            if stored_end > file_len {
                 return Err(RofError::ExtentOutOfBounds {
                     container: container.to_owned(),
                     offset: start,
                     start,
                     length: u64::from(record.raw_length_on_disk),
+                    file_len,
+                });
+            }
+            // The **decoded** word is a count of bytes the member produces,
+            // not a span of the file: the member's own bytes stop where its
+            // stored extent stops, and its decoded bytes are not anywhere in
+            // the container. So this word is *not* bounds-checked against the
+            // container — doing so is exactly the reading F05-D measured to
+            // be wrong, and it is what refused
+            // `GOSDATA/ASSETS/crimptch.rof` before this stage (a member
+            // whose decoded count runs 971 bytes past the end of a 797-byte
+            // file is ordinary, not corrupt). It is checked where it is a
+            // real claim instead: a *directory* record's two words have no
+            // observed meaning at all (both are `0` in every record of both
+            // containers), so a nonzero one that reaches past the end is data
+            // this reader cannot interpret and is refused rather than walked.
+            let declared_end = start + u64::from(record.raw_length);
+            if flags.is_directory() && declared_end > file_len {
+                return Err(RofError::ExtentOutOfBounds {
+                    container: container.to_owned(),
+                    offset: start,
+                    start,
+                    length: u64::from(record.raw_length),
                     file_len,
                 });
             }
@@ -1584,13 +1723,16 @@ impl<'ctx, 'bytes> Walker<'ctx, 'bytes> {
                 path: member_path,
                 record,
                 start,
-                length_end,
-                length_on_disk_end,
+                stored_end,
             });
             // Only non-empty spans can share bytes: an empty member
-            // extracts nothing, so it cannot overlap anything.
-            if length_end > start {
-                self.plan.spans.push((start, length_end));
+            // extracts nothing, so it cannot overlap anything. The span is
+            // the member's *stored* extent (F05-D): the decoded word
+            // describes bytes the member produces, not bytes it occupies,
+            // so comparing it would make every compressed member look as if
+            // it ran over its successor.
+            if stored_end > start {
+                self.plan.spans.push((start, stored_end));
             }
         }
         self.ancestors.pop();
@@ -1602,29 +1744,37 @@ impl<'ctx, 'bytes> Walker<'ctx, 'bytes> {
 /// through a **bounded** zlib decoder for a compressed one.
 ///
 /// The order of operations is the spec's (non-negotiable #3): the extent
-/// is established first — `start + raw_length` must lie inside the
+/// is established first — `start + raw_length_on_disk` must lie inside the
 /// container — and only then does the decoder see a single input byte. The
 /// flags decide how the span may be read at all: an unobserved word is
 /// refused as [`RofError::UnsupportedLayout`] instead of being guessed at
 /// (non-negotiable #5), which makes this function safe to call with a
 /// hand-built [`RofMember`] as well as one from [`read_tree`].
 ///
-/// The selected read profile, stated in full because the two length words
-/// are still unresolved (spec F05, non-negotiable #4):
+/// The read profile, stated in full because the two length words are the
+/// resolved question of this stage (spec F05, non-negotiable #4; F05-D,
+/// module documentation for the measurement):
 ///
-/// * **stored** = `raw_length` bytes at `start`. That is the extent the
-///   reference extractor reads for a compressed member ([S05]); the
-///   `raw_length_on_disk` word is validated as an extent by [`read_tree`]
-///   but never read here, exactly as the reference ignores it. Which word
-///   is "stored" and which is "decoded" in the original stays a retail
-///   question (F05-D).
+/// * **stored** = `raw_length_on_disk` bytes at `start`, the member's own
+///   extent in the container. This is the word the reference extractor does
+///   *not* read ([S05] hands the other word to zlib and lets the stream end
+///   bound the read); the measurement is why this reader does.
 /// * **decoded** = what the zlib decoder produces from those bytes, capped
 ///   by [`RofLimits::max_decoded_bytes`]; a stream that would exceed the
 ///   cap fails as [`RofError::ExpansionBomb`] before the excess is
 ///   appended.
+/// * **declared** = the record's `raw_length` word, which the read must
+///   reproduce exactly. A read that produces a different count is refused as
+///   [`RofError::DecodedLengthMismatch`], for a compressed *and* an
+///   uncompressed member alike: it means the container's two words do not
+///   describe the same member, which is not something this reader may paper
+///   over by choosing a word.
 /// * **trailing** = stored bytes after the end of the zlib stream, which
 ///   are reported in [`RofMemberRead::trailing_len`] rather than silently
-///   dropped, so an extent that runs past its stream stays visible.
+///   dropped, so an extent that runs past its stream stays visible. Every
+///   compressed member of both containers of the original installation has
+///   `0` there, which is what makes the stored word the member's exact
+///   boundary rather than an upper bound on one.
 ///
 /// The decoded buffer is the caller's: it is not booked against the
 /// parse's allocation budget, because that budget has no way to release a
@@ -1635,9 +1785,11 @@ impl<'ctx, 'bytes> Walker<'ctx, 'bytes> {
 ///
 /// [`RofError::ExtentOutOfBounds`] when the extent is not inside the
 /// container, [`RofError::UnsupportedLayout`] for flags this reader cannot
-/// explain, [`RofError::ExpansionBomb`] past the limit, and
+/// explain, [`RofError::ExpansionBomb`] past the limit,
 /// [`RofError::DecodeFailure`] for a truncated, corrupt or checksum-mismatched
-/// stream. A failure never leaves partial output behind.
+/// stream and [`RofError::DecodedLengthMismatch`] when the read does not
+/// reproduce the record's `raw_length` word. A failure never leaves partial
+/// output behind.
 pub fn read_member(
     context: &ParseContext,
     file: &[u8],
@@ -1646,9 +1798,10 @@ pub fn read_member(
 ) -> Result<RofMemberRead, RofError> {
     let container = context.container();
     let start = member.start;
-    let stored_len = u64::from(member.record.raw_length);
+    let stored_len = member.stored_len();
+    let declared_len = member.declared_decoded_len();
 
-    // 1. Establish the extent. `start + raw_length` is computed with
+    // 1. Establish the extent. `start + raw_length_on_disk` is computed with
     //    checked arithmetic (a hand-built member can carry anything) and
     //    must end inside the container.
     let end = start.checked_add(stored_len).ok_or_else(|| {
@@ -1656,8 +1809,8 @@ pub fn read_member(
             container.to_owned(),
             start,
             "member.extent",
-            "start + length to fit in u64".to_owned(),
-            format!("start {start} plus length {stored_len}"),
+            "start + stored length to fit in u64".to_owned(),
+            format!("start {start} plus stored length {stored_len}"),
         ))
     })?;
     if end > file.len() as u64 {
@@ -1694,25 +1847,40 @@ pub fn read_member(
     }
 
     let extent = &file[start as usize..end as usize];
-    if flags.is_compressed() {
-        return decode_zlib(container, start, extent, limits);
-    }
+    let read = if flags.is_compressed() {
+        decode_zlib(container, start, extent, limits, declared_len)?
+    } else {
+        // 3. An uncompressed member is its own extent, byte for byte.
+        if stored_len > limits.max_decoded_bytes {
+            return Err(RofError::ExpansionBomb {
+                container: container.to_owned(),
+                offset: start,
+                limit: limits.max_decoded_bytes,
+                observed: stored_len,
+            });
+        }
+        RofMemberRead {
+            data: extent.to_vec(),
+            stored_len,
+            decoded_len: stored_len,
+            trailing_len: 0,
+            declared_len,
+        }
+    };
 
-    // 3. An uncompressed member is its own extent, byte for byte.
-    if stored_len > limits.max_decoded_bytes {
-        return Err(RofError::ExpansionBomb {
+    // 4. The declared decoded count is a claim about this member, and the
+    //    resolved profile is what makes it checkable: `raw_length` is the
+    //    byte count the member reads to (F05-D). A container that says
+    //    otherwise is refused rather than truncated, padded or believed.
+    if read.decoded_len != declared_len {
+        return Err(RofError::DecodedLengthMismatch {
             container: container.to_owned(),
             offset: start,
-            limit: limits.max_decoded_bytes,
-            observed: stored_len,
+            declared: declared_len,
+            observed: read.decoded_len,
         });
     }
-    Ok(RofMemberRead {
-        data: extent.to_vec(),
-        stored_len,
-        decoded_len: stored_len,
-        trailing_len: 0,
-    })
+    Ok(read)
 }
 
 /// The bounded zlib decoder: stream `input` through `miniz_oxide` in
@@ -1723,11 +1891,16 @@ pub fn read_member(
 /// truncation, and the adler32 trailer is verified before `StreamEnd`
 /// (`Data` on a mismatch). Both map to [`RofError::DecodeFailure`]: no
 /// partial output ever leaves this function.
+///
+/// `declared_len` is the record's `raw_length` word, carried through so the
+/// returned read can report the container's claim beside the observed count;
+/// [`read_member`] is what compares the two.
 fn decode_zlib(
     container: &str,
     offset: u64,
     input: &[u8],
     limits: &RofLimits,
+    declared_len: u64,
 ) -> Result<RofMemberRead, RofError> {
     let mut state = InflateState::new_boxed(DataFormat::Zlib);
     let mut data: Vec<u8> = Vec::new();
@@ -1763,6 +1936,7 @@ fn decode_zlib(
                     decoded_len: data.len() as u64,
                     stored_len: input.len() as u64,
                     trailing_len: rest.len() as u64,
+                    declared_len,
                     data,
                 });
             }

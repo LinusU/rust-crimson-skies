@@ -3,7 +3,7 @@
 //!
 //! ```text
 //! cs-inspect rof [--cs-path <dir>] --container <spelling>
-//!     [--member <spelling>] [--max-decoded-bytes <n>]
+//!     [--member <spelling>] [--max-decoded-bytes <n>] [--audit]
 //!     [--out <file>] [--export-dir <dir>]
 //! ```
 //!
@@ -15,7 +15,13 @@
 //! and digest the mount recorded. `--member` resolves and reads one member
 //! through the bounded decoder, and `--export-dir` hands its **decoded**
 //! bytes to the explicit private research export of spec F04
-//! non-negotiable behavior 5.
+//! non-negotiable behavior 5. `--audit` reads **every** member instead of
+//! one and adds the per-member audit: both length words of every record, the
+//! bytes the read produced, the trailing bytes inside each stored extent and
+//! the digest of the decoded content, plus how the container's bytes divide
+//! between its directory blocks and its members' stored extents. That is
+//! the evidence spec F05's F05-D stage measures the resolved length
+//! profile with, so it is a plain read: it writes nothing but the report.
 //!
 //! Neither `--out` nor `--export-dir` may lie inside the installation, and
 //! nothing here writes anywhere but those two: a container the reader
@@ -132,6 +138,7 @@ struct RofArgs {
     max_decoded_bytes: Option<u64>,
     out: Option<PathBuf>,
     export_dir: Option<PathBuf>,
+    audit: bool,
 }
 
 fn parse_rof_args(args: &[String]) -> Result<RofArgs, RofCommandError> {
@@ -139,6 +146,12 @@ fn parse_rof_args(args: &[String]) -> Result<RofArgs, RofCommandError> {
     let mut cursor = args.iter();
     while let Some(arg) = cursor.next() {
         let flag = arg.as_str();
+        // `--audit` is the one flag that carries no value: it switches on
+        // the whole-container read, not an argument.
+        if flag == "--audit" {
+            parsed.audit = true;
+            continue;
+        }
         if !matches!(
             flag,
             "--cs-path"
@@ -150,7 +163,7 @@ fn parse_rof_args(args: &[String]) -> Result<RofArgs, RofCommandError> {
         ) {
             return Err(RofCommandError::Usage(format!(
                 "cs-inspect rof: unsupported argument {flag:?}; expected --cs-path, \
-                 --container, --member, --max-decoded-bytes, --out, --export-dir"
+                 --container, --member, --max-decoded-bytes, --audit, --out, --export-dir"
             )));
         }
         let Some(value) = cursor.next() else {
@@ -405,6 +418,22 @@ pub fn rof_command_result(args: &[String], env_cs_path: Option<OsString>) -> Rof
         }
     }
 
+    // `--audit` reads *every* member of a mounted container through the
+    // production reader and reports the two length words of each side by
+    // side with the decoded digest. A container that did not mount has no
+    // members to audit, and the mount's own refusal already produced the
+    // report and the exit code, so the audit is reported as skipped rather
+    // than inventing a second verdict.
+    let audit = match (parsed.audit, source.as_ref()) {
+        (false, _) => AuditReport::skipped(),
+        (true, None) => AuditReport::skipped(),
+        (true, Some(source)) => {
+            let audit = audit_container(source, &mut diagnostics);
+            exit_code = exit_code.max(audit.exit_code);
+            audit
+        }
+    };
+
     let report = rof_report_json(
         &session,
         &cs_path,
@@ -413,6 +442,7 @@ pub fn rof_command_result(args: &[String], env_cs_path: Option<OsString>) -> Rof
         mount_failure.as_ref(),
         &read,
         &export,
+        &audit,
     );
     let generation = session.generation();
     let teardown = session.close();
@@ -663,13 +693,183 @@ impl ExportReport {
     }
 }
 
+/// What a whole-container audit produced (spec F05, F05-D: "audit all
+/// private ROF members").
+///
+/// The audit is the evidence the resolved length profile is measured with:
+/// for every member it reports the record's two length words, the bytes the
+/// read produced, the trailing bytes inside the stored extent and the
+/// digest of the decoded content, plus the container census (how the bytes
+/// divide, how many members are compressed, the largest expansion) — all
+/// from the production reader, so the numbers cannot be from a parallel
+/// implementation.
+#[derive(Debug)]
+struct AuditReport {
+    json: String,
+    exit_code: u8,
+}
+
+impl AuditReport {
+    fn skipped() -> Self {
+        Self {
+            json: "{\"status\": \"skipped\"}".to_owned(),
+            exit_code: 0,
+        }
+    }
+}
+
+/// The length profile the audit was taken under, spelled out in the report
+/// so a reader never has to infer which word was used for what.
+const AUDIT_PROFILE: &str =
+    "stored = record word +8 (length_on_disk); decoded = record word +4 (length)";
+
+/// Reads every member of `source` and renders the audit.
+fn audit_container(source: &RofSource, diagnostics: &mut Vec<String>) -> AuditReport {
+    let mut compressed = 0usize;
+    let mut uncompressed = 0usize;
+    let mut stored_bytes = 0u64;
+    let mut declared_bytes = 0u64;
+    let mut trailing_bytes = 0u64;
+    // The member that expands the most, as the two numbers it expands
+    // between: an audit that only says "79x" cannot be checked.
+    let mut widest: Option<(String, u64, u64)> = None;
+    let mut listed: Vec<String> = Vec::new();
+    let mut failures: Vec<String> = Vec::new();
+
+    for info in source.members() {
+        // The mount indexed every member by this spelling, so the key is
+        // there; a key this call cannot build would be a mount bug, and it
+        // is reported as an unreadable member rather than skipped.
+        let read: Result<RofMemberRead, (String, String)> =
+            match AssetKey::from_spelling(ROF_NAMESPACE, &info.spelling, "default") {
+                Ok(key) => source
+                    .read(&key)
+                    .map_err(|error| (error.code().to_owned(), error.to_string())),
+                Err(error) => Err(("unknown_member".to_owned(), error.to_string())),
+            };
+        let read = match read {
+            Ok(read) => read,
+            Err((code, detail)) => {
+                failures.push(format!(
+                    "{{\"spelling\": {}, \"offset\": {}, \"code\": {}}}",
+                    jstr(&info.spelling),
+                    info.offset,
+                    jstr(&code)
+                ));
+                diagnostics.push(format!(
+                    "cs-inspect rof: {} at offset {}: {detail}",
+                    info.spelling, info.offset
+                ));
+                continue;
+            }
+        };
+        if info.compressed {
+            compressed += 1;
+        } else {
+            uncompressed += 1;
+        }
+        stored_bytes += read.stored_len;
+        declared_bytes += read.declared_len;
+        trailing_bytes += read.trailing_len;
+        if read.stored_len > 0
+            && widest
+                .as_ref()
+                .is_none_or(|(_, best_stored, best_declared)| {
+                    u128::from(read.declared_len) * u128::from(*best_stored)
+                        > u128::from(*best_declared) * u128::from(read.stored_len)
+                })
+        {
+            widest = Some((info.spelling.clone(), read.stored_len, read.declared_len));
+        }
+        listed.push(format!(
+            "{{\"spelling\": {}, \"id\": {}, \"offset\": {}, \"compressed\": {}, \
+              \"stored_len\": {}, \"declared_len\": {}, \"decoded_len\": {}, \
+              \"trailing_len\": {}, \"stored_sha256\": {}, \"decoded_sha256\": {}}}",
+            jstr(&info.spelling),
+            info.id,
+            info.offset,
+            info.compressed,
+            read.stored_len,
+            read.declared_len,
+            read.decoded_len,
+            read.trailing_len,
+            jstr(&info.sha256.to_hex()),
+            jstr(&install::sha256(&read.data).to_hex())
+        ));
+    }
+
+    let coverage = source.coverage();
+    if !coverage.is_exact() {
+        diagnostics.push(format!(
+            "cs-inspect rof: the container is not tiled exactly: {} gap(s), {} overlap(s)",
+            coverage.gaps.len(),
+            coverage.overlaps.len()
+        ));
+    }
+    let blocks: Vec<String> = source
+        .blocks()
+        .map(|(start, end)| format!("[{start}, {end}]"))
+        .collect();
+    let widest_json = widest.map_or_else(
+        || "null".to_owned(),
+        |(spelling, stored, declared)| {
+            format!(
+                "{{\"spelling\": {}, \"stored_len\": {}, \"declared_len\": {}}}",
+                jstr(&spelling),
+                stored,
+                declared
+            )
+        },
+    );
+    let json = format!(
+        "{{\"status\": \"audited\", \"profile\": {}, \"member_count\": {}, \"block_count\": {}, \
+          \"compressed\": {}, \"uncompressed\": {}, \"stored_bytes\": {}, \"declared_bytes\": {}, \
+          \"trailing_bytes\": {}, \"read_failures\": {}, \"widest_member\": {}, \
+          \"coverage\": {{\"container_len\": {}, \"covered\": {}, \"exact\": {}, \"gaps\": {}, \
+          \"overlaps\": {}}}, \"blocks\": [{}], \"members\": [{}]}}",
+        jstr(AUDIT_PROFILE),
+        source.member_count(),
+        blocks.len(),
+        compressed,
+        uncompressed,
+        stored_bytes,
+        declared_bytes,
+        trailing_bytes,
+        failures.len(),
+        widest_json,
+        coverage.container_len,
+        coverage.covered,
+        coverage.is_exact(),
+        spans_json(&coverage.gaps),
+        spans_json(&coverage.overlaps),
+        blocks.join(", "),
+        listed.join(", "),
+    );
+    // A member that does not read is refused content, and a container that
+    // does not tile exactly is content this reader does not fully
+    // understand: both are validation failures (3), never a silent pass.
+    let failed = !failures.is_empty() || !coverage.is_exact();
+    AuditReport {
+        json,
+        exit_code: u8::from(failed) * 3,
+    }
+}
+
+/// Renders `[start, end)` spans as a JSON array of two-element arrays.
+fn spans_json(spans: &[(u64, u64)]) -> String {
+    let listed: Vec<String> = spans
+        .iter()
+        .map(|(start, end)| format!("[{start}, {end}]"))
+        .collect();
+    format!("[{}]", listed.join(", "))
+}
+
 /// The mount refusal the report carries: its stable code, the container
 /// offset it points at, and the diagnostic text.
 #[derive(Debug)]
 struct MountFailure {
     json: String,
 }
-
 impl MountFailure {
     fn mount(error: &RofMountError) -> Self {
         Self {
@@ -703,6 +903,7 @@ fn rof_report_json(
     mount_failure: Option<&MountFailure>,
     read: &ReadReport,
     export: &ExportReport,
+    audit: &AuditReport,
 ) -> String {
     let context = session.context();
     let (status, mount_json) = match session.mounts().next() {
@@ -728,11 +929,12 @@ fn rof_report_json(
                 .map(|member| {
                     format!(
                         "{{\"spelling\": {}, \"id\": {}, \"offset\": {}, \"stored_len\": {}, \
-                         \"compressed\": {}, \"sha256\": {}}}",
+                         \"declared_decoded_len\": {}, \"compressed\": {}, \"sha256\": {}}}",
                         jstr(&member.spelling),
                         member.id,
                         member.offset,
                         member.stored_len,
+                        member.declared_decoded_len,
                         member.compressed,
                         jstr(&member.sha256.to_hex())
                     )
@@ -759,7 +961,8 @@ fn rof_report_json(
          \x20\"session\": {{\"generation\": {}}},\n\
          \x20\"precedence_status\": {},\n\
          \x20\"read\": {},\n\
-         \x20\"export\": {}\n\
+         \x20\"export\": {},\n\
+         \x20\"audit\": {}\n\
          }}\n",
         jstr(ROF_REPORT_VERSION),
         jstr(&host_root.to_string_lossy()),
@@ -774,6 +977,7 @@ fn rof_report_json(
         jstr(PRECEDENCE_ORDER_STATUS.label()),
         read.json,
         export.json,
+        audit.json,
     )
 }
 
