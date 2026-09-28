@@ -152,4 +152,46 @@ observed content root `zbd/` (all 184 retail `.zbd` archives live there —
 
 ## Test inventory (`accept_f06_a_*`)
 
-Filled in after implementation, together with the mutation probes, below.
+All in `crates/cs_formats/tests/zbd/main.rs`; every one calls
+`cs_formats::zbd::dispatch` / `role_for_path` / the inventory table.
+
+| Test | Covers |
+| --- | --- |
+| `two_distinct_headers_route_to_different_readers` | AC01: documented INTERP header at `zbd/interp.zbd` → `Interp` (header+role); authored non-INTERP header at `zbd/planes.zbd` → `GameZ` (role only) |
+| `role_only_dispatch_records_an_unvalidated_header` | `HeaderStatus::Unvalidated` carries the family's recorded reason; case-insensitive role match; evidence-labelled role rule |
+| `documented_header_without_a_known_role_routes_to_the_interp_reader` | `HeaderOnly` basis outside `zbd/` and for an unobserved basename, with the two distinct reasons |
+| `header_and_role_disagree_fails_instead_of_falling_back` | AC02 preview: INTERP signature at `planes.zbd` → `header_role_conflict`; non-INTERP bytes at `interp.zbd` → `header_mismatch` |
+| `role_that_names_a_documented_family_requires_its_signature` | wrong signature / too-short probe at `interp.zbd` |
+| `unsupported_header_version_fails_explicitly` | documented signature with an undocumented version, with and without a role |
+| `unknown_header_and_unknown_role_are_rejected` | `unknown_family`: nothing is routed by extension alone |
+| `dispatch_failures_carry_a_container_and_a_stable_code` | every error variant: stable `code()`, container label, no probe bytes in the message |
+| `role_inventory_covers_every_observed_archive_name` | every archive name in the F02-C/F02-D findings maps to its family; `texture.zbd` vs `rtexture*` disjoint |
+| `family_inventory_declares_one_reader_per_family` | six rows, unique reader slots, valid `FileFamily` labels, `Sound` still without a role rule |
+
+## Mutation probes
+
+Each mutation was applied to production code, the `zbd` test target run,
+and the file restored with `git checkout`:
+
+| Mutation | Failing tests |
+| --- | --- |
+| `dispatch` hard-codes `ZbdReaderId::Interp` as the reader | `two_distinct_headers_…`, `role_only_dispatch_…` |
+| role-only branch skips the documented-signature conflict check | `header_and_role_disagree_…`, `dispatch_failures_carry_…` |
+| version check removed (`if false`) | `unsupported_header_version_…`, `dispatch_failures_carry_…` |
+| `HeaderMismatch` replaced by a fallback to header-only dispatch | `role_that_names_a_documented_family_…`, `header_and_role_disagree_…`, `dispatch_failures_carry_…` |
+| `role_for_path` ignores the GameZ rows | `two_distinct_headers_…`, `role_inventory_covers_…`, `header_and_role_disagree_…`, `dispatch_failures_carry_…` |
+
+## Recorded unknowns (filed as follow-up tasks)
+
+- **Sound family archive names.** No `.zbd` basename in committed evidence
+  is tied to sound bytes, so `ZbdFamily::Sound` has no role rule and no
+  probe can reach the sound reader yet. Needs the pinned source (S02/S06)
+  and a retail check (F06-B/F06-D).
+- **Header layouts for sound, reader, texture, GameZ and animation.** Only
+  the INTERP signature/version is documented; the other five families
+  dispatch on role alone with `HeaderStatus::Unvalidated`. Each needs its
+  header read from the pinned mech3ax 0.6 source and checked against the
+  installation before a `SignatureRule` is added.
+- **Name-inferred role rules** (`zrdr.zbd` → reader, `cam_anim.zbd` /
+  `mis_anim.zbd` → animation, `rtexture*.zbd` → texture) are
+  `ClaimStatus::Inferred` and must be confirmed against real bytes.
