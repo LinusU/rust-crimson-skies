@@ -24,8 +24,11 @@
 //! [`textures`] is the F08-D `texture-audit` command: every ZBD texture
 //! decoded through the F08-C upload boundary and compared texel by texel
 //! with a pinned reference extraction, with an optional private contact
-//! sheet.
+//! sheet. [`catalog`] is the F14-A synthetic content-catalog fixture: ready
+//! and unsupported stable-id rows through the canonical `cs_content`
+//! constructor, never a retail entry.
 
+pub mod catalog;
 pub mod evidence;
 pub mod install;
 pub mod interp;
