@@ -50,6 +50,11 @@ silently keep one of them.
   At read time every component below the root is re-checked with
   `symlink_metadata`, and on Unix the opened file must have the same
   (device, inode) as the checked path, closing the check/open window.
+  Review added two checks: the root itself is re-checked at read time (a
+  root swapped for a link is refused), and while mounting the file opened
+  for hashing must be the same regular file the walk saw, so a link
+  swapped in between walk and hash is refused instead of hashing its
+  target (a race window; not covered by a deterministic test).
 - **Reads are random, read-only and owned.** `Vfs::read_range(resolved,
   start, length)` checks the range against the member before opening,
   opens the file read-only, verifies the on-disk length still equals the
@@ -76,6 +81,7 @@ silently keep one of them.
 | Read-time component/inode checks removed | `member_swapped_for_link_after_mount_is_not_read` |
 | Staleness, length and digest checks removed | `world_mounts_read_their_own_bytes`, `changed_member_is_refused_and_mounting_writes_nothing` |
 | Spelling validation bypassed (`..` rewritten) | `escaping_host_name_is_refused` |
+| Read-time root link check disabled (review) | `mount_root_swapped_for_link_after_mount_is_not_read` |
 
 The equal-priority cross-mount ambiguity (AC02 over two mounted
 directories) is decided by the F04-A `Vfs::resolve` rule; its test fails if
