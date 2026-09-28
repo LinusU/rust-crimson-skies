@@ -40,6 +40,6 @@ pub use header::{
     INTERP_VERSION_OFFSET, SignatureRule,
 };
 pub use role::{
-    CONTENT_ROOT, OUTSIDE_CONTENT_ROOT, RolePattern, RoleRule, UNOBSERVED_NAME, ZbdRole,
+    CONTENT_ROOT, OUTSIDE_CONTENT_ROOT, RoleLevel, RolePattern, RoleRule, UNOBSERVED_NAME, ZbdRole,
     role_for_path,
 };

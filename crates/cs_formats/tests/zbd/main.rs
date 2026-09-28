@@ -578,3 +578,43 @@ fn accept_f06_a_family_inventory_declares_one_reader_per_family() {
         "the sound family's role rules must stay empty until an archive is observed"
     );
 }
+
+#[test]
+fn accept_f06_a_role_rules_apply_only_at_their_observed_level() {
+    // Each name was observed at one directory level (F02-C/F02-D findings);
+    // the same basename anywhere else is not evidence of the same family.
+    let misplaced = [
+        "zbd/c1/planes.zbd",
+        "zbd/c1/m02/interp.zbd",
+        "zbd/gamez.zbd",
+        "zbd/c1/m02/texture.zbd",
+        "zbd/rtexture2.zbd",
+        "zbd/c1/mis_anim.zbd",
+        "zbd/c1/m02/cam_anim.zbd",
+        "zbd/zrdr.zbd",
+        "zbd/c1/m02/extra/zrdr.zbd",
+    ];
+    for spelling in misplaced {
+        assert_eq!(
+            role_for_path(&path(spelling)),
+            ZbdRole::Unrecognized {
+                reason: UNOBSERVED_NAME
+            },
+            "{spelling} is not at a level its name was observed at"
+        );
+    }
+
+    // So a misplaced `planes.zbd` is not routed to GameZ on its name alone:
+    // without a documented signature it dispatches nothing.
+    let error = dispatch_at(&path("zbd/c1/planes.zbd"), &other_header())
+        .expect_err("a name outside its observed level is no role evidence");
+    assert_eq!(error.code(), "unknown_family");
+
+    // Every rule lists at least one level, and each observed spelling in
+    // `role_inventory_covers_every_observed_archive_name` sits at one of them.
+    for record in ZBD_FAMILY_INVENTORY.iter() {
+        for rule in record.role_rules() {
+            assert!(!rule.levels().is_empty(), "{} has no level", rule.pattern());
+        }
+    }
+}

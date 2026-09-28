@@ -35,8 +35,41 @@ pub const CONTENT_ROOT: &str = "zbd/";
 pub const OUTSIDE_CONTENT_ROOT: &str = "the path is outside the observed `zbd/` content root";
 
 /// Why a path matched no role rule: it is inside [`CONTENT_ROOT`] but its
-/// basename matches no observed archive name.
-pub const UNOBSERVED_NAME: &str = "the archive basename matches no observed role rule";
+/// basename matches no archive name observed at its directory level.
+pub const UNOBSERVED_NAME: &str =
+    "the archive basename matches no role rule observed at its directory level";
+
+/// The directory level under [`CONTENT_ROOT`] an archive name was observed
+/// at (F02-C/F02-D findings: `zbd/<name>`, `zbd/<group>/<name>`,
+/// `zbd/<group>/<mission>/<name>`).
+///
+/// A name observed at one level says nothing about the same name at
+/// another, so every [`RoleRule`] lists the levels it was observed at and
+/// matches nowhere else.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum RoleLevel {
+    /// Directly under `zbd/` (`interp.zbd`, `planes.zbd`).
+    ContentRoot,
+    /// Directly inside a world group directory (`zbd/c1/gamez.zbd`).
+    WorldGroup,
+    /// Directly inside a mission directory of a world group
+    /// (`zbd/c1/m02/mis_anim.zbd`).
+    Mission,
+}
+
+impl RoleLevel {
+    /// The level of a path given its components below [`CONTENT_ROOT`]
+    /// (including the basename), or `None` when it is deeper than any
+    /// observed level.
+    pub const fn from_depth(components: usize) -> Option<Self> {
+        match components {
+            1 => Some(Self::ContentRoot),
+            2 => Some(Self::WorldGroup),
+            3 => Some(Self::Mission),
+            _ => None,
+        }
+    }
+}
 
 /// How a role rule recognizes a logical basename.
 ///
@@ -100,33 +133,39 @@ impl fmt::Display for RolePattern {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RoleRule {
     pattern: RolePattern,
+    levels: &'static [RoleLevel],
     evidence: ClaimStatus,
     source: &'static str,
 }
 
 impl RoleRule {
-    /// A rule for an exact observed basename.
+    /// A rule for an exact observed basename at the observed `levels`.
     pub const fn exact(
         basename: &'static str,
+        levels: &'static [RoleLevel],
         evidence: ClaimStatus,
         source: &'static str,
     ) -> Self {
         Self {
             pattern: RolePattern::Exact(basename),
+            levels,
             evidence,
             source,
         }
     }
 
-    /// A rule for the observed `rtexture*.zbd` shape.
+    /// A rule for the observed `rtexture*.zbd` shape at the observed
+    /// `levels`.
     pub const fn prefixed(
         prefix: &'static str,
         suffix: &'static str,
+        levels: &'static [RoleLevel],
         evidence: ClaimStatus,
         source: &'static str,
     ) -> Self {
         Self {
             pattern: RolePattern::Prefixed { prefix, suffix },
+            levels,
             evidence,
             source,
         }
@@ -135,6 +174,16 @@ impl RoleRule {
     /// The basename pattern.
     pub const fn pattern(self) -> RolePattern {
         self.pattern
+    }
+
+    /// The directory levels this name was observed at.
+    pub const fn levels(self) -> &'static [RoleLevel] {
+        self.levels
+    }
+
+    /// Whether this rule matches `basename` at `level`.
+    pub fn matches(self, level: RoleLevel, basename: &str) -> bool {
+        self.levels.contains(&level) && self.pattern.matches(basename)
     }
 
     /// Evidence class of this rule.
@@ -187,8 +236,9 @@ impl ZbdRole {
 /// Resolves the observed installation role of `path`.
 ///
 /// The logical key (case-folded, `/`-separated) must start with
-/// [`CONTENT_ROOT`]; its basename is then matched against every role rule in
-/// [`ZBD_FAMILY_INVENTORY`], in inventory order. The patterns are authored
+/// [`CONTENT_ROOT`]; its basename and [`RoleLevel`] are then matched against
+/// every role rule in [`ZBD_FAMILY_INVENTORY`], in inventory order. A path
+/// deeper than the mission level matches nothing. The patterns are authored
 /// disjoint (`Exact("texture.zbd")` never matches `rtexture2.zbd`), so the
 /// first match wins and no rule can shadow another.
 pub fn role_for_path(path: &RelativePath) -> ZbdRole {
@@ -201,9 +251,14 @@ pub fn role_for_path(path: &RelativePath) -> ZbdRole {
     // `RelativePath` rejects empty components, so `within_root` is non-empty
     // and carries at least its final component.
     let basename = within_root.rsplit('/').next().unwrap_or(within_root);
+    let Some(level) = RoleLevel::from_depth(within_root.split('/').count()) else {
+        return ZbdRole::Unrecognized {
+            reason: UNOBSERVED_NAME,
+        };
+    };
     for record in ZBD_FAMILY_INVENTORY.iter() {
         for rule in record.role_rules() {
-            if rule.pattern().matches(basename) {
+            if rule.matches(level, basename) {
                 return ZbdRole::Observed {
                     family: record.family(),
                     rule: *rule,

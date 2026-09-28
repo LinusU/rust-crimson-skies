@@ -22,7 +22,7 @@ use super::header::{
     HeaderRule, INTERP_SIGNATURE, INTERP_SIGNATURE_OFFSET, INTERP_VERSION, INTERP_VERSION_OFFSET,
     SignatureRule,
 };
-use super::role::RoleRule;
+use super::role::{RoleLevel, RoleRule};
 
 /// One ZBD family: a `spec F06` reader target, not a file layout.
 ///
@@ -230,6 +230,7 @@ pub static ZBD_FAMILY_INVENTORY: [ZbdFamilyRecord; 6] = [
         },
         role_rules: &[RoleRule::exact(
             "zrdr.zbd",
+            &[RoleLevel::WorldGroup, RoleLevel::Mission],
             ClaimStatus::Inferred,
             OBSERVED_NAMES,
         )],
@@ -247,11 +248,18 @@ pub static ZBD_FAMILY_INVENTORY: [ZbdFamilyRecord; 6] = [
         role_rules: &[
             RoleRule::exact(
                 "texture.zbd",
+                &[RoleLevel::WorldGroup],
                 ClaimStatus::Documented,
                 "docs/research/FORMAT-NOTES.md workflow example `unzbd cs textures <texture.zbd>` \
                  [S06]",
             ),
-            RoleRule::prefixed("rtexture", ".zbd", ClaimStatus::Inferred, OBSERVED_NAMES),
+            RoleRule::prefixed(
+                "rtexture",
+                ".zbd",
+                &[RoleLevel::WorldGroup],
+                ClaimStatus::Inferred,
+                OBSERVED_NAMES,
+            ),
         ],
         source: "docs/research/SOURCES.md S06 (`textures` subcommand) and the FORMAT-NOTES \
                  workflow example; the `rtexture*` shape is name-inferred",
@@ -271,6 +279,7 @@ pub static ZBD_FAMILY_INVENTORY: [ZbdFamilyRecord; 6] = [
         )),
         role_rules: &[RoleRule::exact(
             "interp.zbd",
+            &[RoleLevel::ContentRoot],
             ClaimStatus::Documented,
             "docs/research/FINDINGS.md: `INTERP.ZBD` is a loading-script container [S06, S07]; \
              observed at `ZBD/interp.zbd` \
@@ -289,12 +298,14 @@ pub static ZBD_FAMILY_INVENTORY: [ZbdFamilyRecord; 6] = [
         role_rules: &[
             RoleRule::exact(
                 "planes.zbd",
+                &[RoleLevel::ContentRoot],
                 ClaimStatus::Documented,
                 "specs/F10: 'GameZ data that supplies world geometry and PLANES.ZBD meshes'; \
                  docs/research/FINDINGS.md `ZBD/PLANES.ZBD`",
             ),
             RoleRule::exact(
                 "gamez.zbd",
+                &[RoleLevel::WorldGroup],
                 ClaimStatus::Documented,
                 "docs/research/FINDINGS.md: world-specific `gamez.zbd`; CLI example `unzbd cs \
                  gamez <PLANES.ZBD>` [S06]",
@@ -311,8 +322,18 @@ pub static ZBD_FAMILY_INVENTORY: [ZbdFamilyRecord; 6] = [
             reason: UNDOCUMENTED_BY_SUBCOMMAND,
         },
         role_rules: &[
-            RoleRule::exact("cam_anim.zbd", ClaimStatus::Inferred, OBSERVED_NAMES),
-            RoleRule::exact("mis_anim.zbd", ClaimStatus::Inferred, OBSERVED_NAMES),
+            RoleRule::exact(
+                "cam_anim.zbd",
+                &[RoleLevel::WorldGroup],
+                ClaimStatus::Inferred,
+                OBSERVED_NAMES,
+            ),
+            RoleRule::exact(
+                "mis_anim.zbd",
+                &[RoleLevel::Mission],
+                ClaimStatus::Inferred,
+                OBSERVED_NAMES,
+            ),
         ],
         source: "spec F06 deliverable names an animation reader; `cam_anim.zbd` (every world \
                  group) and `mis_anim.zbd` (every mission directory) are the only \
