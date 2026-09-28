@@ -1,0 +1,96 @@
+# F07-D retail opcode classification for ZBD/interp.zbd (SHA-256
+# f5251cb559db1992320247b9674d159a149572e077bc8579ae34d5fbd16254c7).
+# One entry per distinct head spelling (85 heads, 5083 lines, 98 scripts),
+# in descending occurrence order. Class, evidence status and provenance only:
+# no argument bytes and no script bodies are recorded here. Unknown heads block;
+# none are left unknown by this classification.
+#
+# loading     <spelling> <ns> <path> [<variant|->] <literal|composed> <status> <source...>
+# unsupported <spelling> <status> <source...>
+# behavior    <spelling> <status> <source...>
+
+behavior    FindNode inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    NodeSetActive inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+unsupported LoadGameGen inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    SetIntersectSurface inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    SetAltitudeSurface inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+unsupported CycleTextureSetMap inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    AddChild inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    FindSubNode inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    Object3DSetScroll inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    DeleteChildFromDB inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    set inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+unsupported source inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    AddClutterTemplates inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    NodeSetDescription inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+unsupported SetModelDirectory inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    WorldPartitionSetActive inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+unsupported RdrAddPath inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+unsupported SetTextureDirectory inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    Quit inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    CycleTextureSetOn inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    CycleTextureSetSpeed inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    CycleTextureSetLooping inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    CreateUniqueMaterials inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    DeleteTree inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    Object3DTranslate inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    CameraSetHorizon inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+unsupported mkdir inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    Object3DRotate inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    NewObject3D inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+unsupported RdrSetPath inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+unsupported LoadSoils inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    WorldOrigin inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    WorldExtents inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    WorldPartition inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    WorldPartitionInclusionTolerance inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    WorldSetVirtualPartition inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    WorldSetVirtualPartitionMapSize inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    LightNew inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    LightSetActive inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    WorldAddLight inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    WorldSetFogState inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+unsupported LensFlareTexture inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+unsupported GameZReadZBDFile inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    endif inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    MipBias inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    DeleteChild inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    ifdef inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    CameraSetHorizonXZ inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+unsupported GameZWriteZBDFile inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+unsupported AnimSetZRDRFile inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+unsupported AnimSetZBDFile inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    NewWindow inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    WindowOrigin inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    WindowResolution inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    NewCamera inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    CameraSetActive inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    CameraSetWorld inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    CameraSetWindow inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+unsupported PrintUsedTextures inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+unsupported AnimAddZBDFile inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    ifndef inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+unsupported LightMapTexture inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    FindSubNodeNode inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    CameraSetObjectHSETest inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    NewDisplay inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    DisplayOrigin inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    DisplayResolution inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    DisplaySetClearColor inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+unsupported GameGenTranslatePaths inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    SetBFETolerance inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    SetCoplanarTolerance inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    SetColinearTolerance inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    PerspectiveTexture inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    SetPerspectiveAdaptiveCorrection inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    SetPerspectiveTextureDeltaX inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    SetPerspectiveTextureFarZ inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    SetPerspectiveInverseZTolerance inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    SetInverseZTolerance inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    SetSmallPolygonRejectArea inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    GameGenSetSubfacePriorityOffset inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    NewWorld inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    GameGenSetWorld inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+unsupported WriteTextureSetMap inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+behavior    VideoSetDither inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method
+unsupported DeleteFile inferred docs/findings/2026-09-28-f07-d-retail-opcode-classes.md#method

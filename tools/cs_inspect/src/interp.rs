@@ -90,8 +90,9 @@ use cs_assets::install::{self, DiscoveryError};
 use cs_assets::vfs::{ContentSession, SessionBuilder, SessionError};
 use cs_content::loading::{DependencyState, LoadingError, LoadingPlanReport, resolve_loading_plan};
 use cs_formats::{
-    DecodedInterp, InterpError, KeyArguments, KeySpelling, LoadCommand, LoadCommandTable,
-    ParseContext, decode_interp, plan_interp_loading, read_interp,
+    ClassifiedOpcode, DecodedInterp, InterpError, KeyArguments, KeySpelling, LoadCommand,
+    LoadCommandTable, OpcodeAudit, OpcodeClass, OpcodeClassTable, ParseContext,
+    audit_interp_opcodes, decode_interp, plan_interp_loading_classified, read_interp,
 };
 use cs_types::asset_id::{ResolveContext, WorldGroup};
 use cs_types::evidence::ClaimStatus;
@@ -152,6 +153,28 @@ pub enum InterpCommandError {
         /// Why it was refused.
         reason: String,
     },
+    /// `--classes` was given but the file could not be read.
+    Classes {
+        /// The classification path.
+        path: PathBuf,
+        /// Why.
+        source: io::Error,
+    },
+    /// A line of the classification was refused, or the classification as a
+    /// whole was.
+    ClassesRefused {
+        /// The classification path.
+        path: PathBuf,
+        /// 1-based line number of the offending entry, or `0` when the whole
+        /// classification was refused (it is applied all or nothing, so no
+        /// single line is at fault on its own).
+        line: usize,
+        /// The entry as it was read, or `<classification>` for a whole-set
+        /// refusal.
+        rule: String,
+        /// Why it was refused.
+        reason: String,
+    },
     /// Discovery refused the installation.
     Discovery(DiscoveryError),
     /// A mount of the session was refused. The builder is dropped, which
@@ -205,6 +228,30 @@ impl fmt::Display for InterpCommandError {
                 "command table {} line {line} ({rule:?}) is refused: {reason}",
                 path.display()
             ),
+            Self::Classes { path, source } => {
+                write!(f, "cannot read classification {}: {source}", path.display())
+            }
+            Self::ClassesRefused {
+                path,
+                line,
+                rule,
+                reason,
+            } if *line == 0 => write!(
+                f,
+                "classification {} is refused as a whole ({reason}); it is applied all or \
+                 nothing, so no entry of it was applied",
+                path.display()
+            ),
+            Self::ClassesRefused {
+                path,
+                line,
+                rule,
+                reason,
+            } => write!(
+                f,
+                "classification {} line {line} ({rule:?}) is refused: {reason}",
+                path.display()
+            ),
             Self::Discovery(error) => write!(f, "{error}"),
             Self::Session(error) => write!(f, "{error}"),
             Self::World(message) => write!(f, "{message}"),
@@ -223,6 +270,7 @@ struct InterpArgs {
     raw: bool,
     plan: bool,
     commands: Option<PathBuf>,
+    classes: Option<PathBuf>,
     cs_path: Option<PathBuf>,
     world: Option<String>,
 }
@@ -241,11 +289,11 @@ fn parse_interp_args(args: &[String]) -> Result<InterpArgs, InterpCommandError> 
                 parsed.plan = true;
                 continue;
             }
-            "--file" | "--out" | "--commands" | "--cs-path" | "--world" => {}
+            "--file" | "--out" | "--commands" | "--classes" | "--cs-path" | "--world" => {}
             other => {
                 return Err(InterpCommandError::Usage(format!(
                     "cs-inspect interp: unsupported argument {other:?}; expected --file, --out, \
-                     --raw, --plan, --commands, --cs-path or --world"
+                     --raw, --plan, --commands, --classes, --cs-path or --world"
                 )));
             }
         }
@@ -258,9 +306,20 @@ fn parse_interp_args(args: &[String]) -> Result<InterpArgs, InterpCommandError> 
             "--file" => parsed.file = Some(PathBuf::from(value)),
             "--out" => parsed.out = Some(PathBuf::from(value)),
             "--commands" => parsed.commands = Some(PathBuf::from(value)),
+            "--classes" => parsed.classes = Some(PathBuf::from(value)),
             "--cs-path" => parsed.cs_path = Some(PathBuf::from(value)),
             _ => parsed.world = Some(value.clone()),
         }
+    }
+    // The two tables answer the same question at different widths: `--commands`
+    // is the F07-C loading registry, `--classes` the F07-D classification that
+    // contains it. Supplying both would be two sources of truth for one line.
+    if parsed.commands.is_some() && parsed.classes.is_some() {
+        return Err(InterpCommandError::Usage(
+            "cs-inspect interp: --commands and --classes are mutually exclusive; --classes \
+             subsumes --commands (a `loading` entry carries the same rule)"
+                .to_owned(),
+        ));
     }
     Ok(parsed)
 }
@@ -423,6 +482,13 @@ pub fn interp_command_result(args: &[String]) -> InterpRun {
         for failure in plan.report().failures() {
             diagnostics.push(failure.to_string());
         }
+        if !plan.audit.is_complete() {
+            diagnostics.push(format!(
+                "{label}: {} of {} distinct opcode heads are unclassified (F07-D audit)",
+                plan.audit.unknown_heads(),
+                plan.audit.distinct_heads(),
+            ));
+        }
     }
 
     let report = interp_report_json(&label, &decoded, raw.as_ref(), plan.as_ref());
@@ -432,7 +498,7 @@ pub fn interp_command_result(args: &[String]) -> InterpRun {
     // loading plan is the same kind of anomaly.
     let plan_incomplete = plan
         .as_ref()
-        .map(|plan| !plan.report().is_complete())
+        .map(|plan| !plan.report().is_complete() || !plan.audit.is_complete())
         .unwrap_or(false);
     let exit_code = if !decoded.findings().is_empty() || plan_incomplete {
         EXIT_FAILED_VALIDATION
@@ -476,6 +542,9 @@ pub struct PlanRun<'a> {
     report: LoadingPlanReport,
     session: Option<ContentSession>,
     plan: cs_formats::InterpLoadPlan<'a>,
+    /// The audit over every distinct head of the same container, against the
+    /// same classification the plan was built from.
+    audit: OpcodeAudit,
 }
 
 impl PlanRun<'_> {
@@ -506,17 +575,23 @@ fn build_plan<'a>(
     label: &str,
     diagnostics: &mut Vec<String>,
 ) -> Result<PlanRun<'a>, Box<(u8, InterpCommandError)>> {
-    let table = match &parsed.commands {
-        Some(path) => match read_command_table(path) {
-            Ok(table) => table,
+    let classes = if let Some(path) = &parsed.classes {
+        match read_class_table(path) {
+            Ok(classes) => classes,
             Err(error) => return Err(Box::new((EXIT_INVALID_INPUT, error))),
-        },
-        None => LoadCommandTable::new(),
+        }
+    } else if let Some(path) = &parsed.commands {
+        match read_command_table(path) {
+            Ok(table) => OpcodeClassTable::from_load_commands(table.commands()),
+            Err(error) => return Err(Box::new((EXIT_INVALID_INPUT, error))),
+        }
+    } else {
+        OpcodeClassTable::new()
     };
-    if table.is_empty() && parsed.commands.is_none() {
+    if classes.is_empty() && parsed.classes.is_none() && parsed.commands.is_none() {
         diagnostics.push(format!(
-            "{label}: no command table was given, so every line is unclassified: which \
-             commands load resources is unmeasured (F07-D)"
+            "{label}: no classification or command table was given, so every head is \
+             unclassified: which commands load resources is unmeasured (F07-D)"
         ));
     }
 
@@ -555,7 +630,8 @@ fn build_plan<'a>(
         session = Some(builder.open());
     }
 
-    let plan = plan_interp_loading(decoded, &table);
+    let plan = plan_interp_loading_classified(decoded, &classes);
+    let audit = audit_interp_opcodes(decoded, &classes);
     let report = match resolve_loading_plan(session.as_ref(), decoded, &plan) {
         Ok(report) => report,
         Err(error) => {
@@ -571,6 +647,7 @@ fn build_plan<'a>(
         report,
         session,
         plan,
+        audit,
     })
 }
 
@@ -639,19 +716,9 @@ fn read_command_table(path: &Path) -> Result<LoadCommandTable, InterpCommandErro
                 )));
             }
         };
-        let status = match fields[5] {
-            "documented" => ClaimStatus::Documented,
-            "observed_tool" => ClaimStatus::ObservedTool,
-            "inferred" => ClaimStatus::Inferred,
-            "designed" => ClaimStatus::Designed,
-            "unknown" => ClaimStatus::Unknown,
-            other => {
-                return Err(refused(format!(
-                    "{other:?} is not an evidence status; expected one of documented, \
-                     observed_tool, inferred, designed, unknown (verified_original may only be \
-                     awarded by fingerprinted evidence, never by a table)"
-                )));
-            }
+        let status = match parse_claim_status(fields[5]) {
+            Some(status) => status,
+            None => return Err(refused(unknown_status_message(fields[5]))),
         };
         rules.push(LoadCommand {
             spelling: fields[0].as_bytes().to_vec(),
@@ -672,6 +739,159 @@ fn read_command_table(path: &Path) -> Result<LoadCommandTable, InterpCommandErro
             path: path.to_path_buf(),
             line: 0,
             rule: "<table>".to_owned(),
+            reason: error.to_string(),
+        });
+    }
+    Ok(table)
+}
+
+/// The evidence status one field names, or `None` for anything else.
+///
+/// `verified_original` is deliberately absent: only a fingerprinted evidence
+/// record may award it, never a table a caller wrote.
+fn parse_claim_status(field: &str) -> Option<ClaimStatus> {
+    match field {
+        "documented" => Some(ClaimStatus::Documented),
+        "observed_tool" => Some(ClaimStatus::ObservedTool),
+        "inferred" => Some(ClaimStatus::Inferred),
+        "designed" => Some(ClaimStatus::Designed),
+        "unknown" => Some(ClaimStatus::Unknown),
+        _ => None,
+    }
+}
+
+/// The one wording every table uses to refuse an unknown evidence status.
+fn unknown_status_message(field: &str) -> String {
+    format!(
+        "{field:?} is not an evidence status; expected one of documented, observed_tool, \
+         inferred, designed, unknown (verified_original may only be awarded by fingerprinted \
+         evidence, never by a table)"
+    )
+}
+
+/// Reads an opcode classification: one entry per line, `#` comments and blanks
+/// ignored.
+///
+/// ```text
+/// loading     <spelling> <ns-arg> <path-arg> [<variant-arg|->] <literal|composed> <status> <source...>
+/// unsupported <spelling> <status> <source...>
+/// behavior    <spelling> <status> <source...>
+/// ```
+///
+/// A `loading` entry is a command-table rule with its class in front; the other
+/// classes carry only a spelling and a provenance. The whole classification is
+/// applied all or nothing, so an entry the table itself refuses (a duplicate
+/// spelling, a key argument at position 0, an empty source) is reported against
+/// the classification rather than against one line.
+fn read_class_table(path: &Path) -> Result<OpcodeClassTable, InterpCommandError> {
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(source) => {
+            return Err(InterpCommandError::Classes {
+                path: path.to_path_buf(),
+                source,
+            });
+        }
+    };
+    let mut opcodes = Vec::new();
+    for (number, line) in text.lines().enumerate() {
+        let entry = line.trim();
+        if entry.is_empty() || entry.starts_with('#') {
+            continue;
+        }
+        let fields: Vec<&str> = entry.split_whitespace().collect();
+        let refused = |reason: String| InterpCommandError::ClassesRefused {
+            path: path.to_path_buf(),
+            line: number + 1,
+            rule: entry.to_owned(),
+            reason,
+        };
+        let class = fields[0];
+        let position = |field: &str, what: &str| {
+            field.parse::<usize>().map_err(|error| {
+                refused(format!(
+                    "the {what} argument {field:?} is not a position: {error}"
+                ))
+            })
+        };
+        let opcode = match class {
+            "loading" => {
+                if fields.len() < 7 {
+                    return Err(refused(format!(
+                        "a loading entry needs <spelling> <ns-arg> <path-arg> \
+                         [<variant-arg|->] <literal|composed> <status> <source>, found {} field(s)",
+                        fields.len()
+                    )));
+                }
+                let variant = match fields[4] {
+                    "-" => None,
+                    field => Some(position(field, "variant")?),
+                };
+                let spelling_kind = match fields[5] {
+                    "literal" => KeySpelling::Literal,
+                    "composed" => KeySpelling::Composed,
+                    other => {
+                        return Err(refused(format!(
+                            "the key spelling kind must be `literal` or `composed`, found {other:?}"
+                        )));
+                    }
+                };
+                let status = match parse_claim_status(fields[6]) {
+                    Some(status) => status,
+                    None => return Err(refused(unknown_status_message(fields[6]))),
+                };
+                ClassifiedOpcode {
+                    spelling: fields[1].as_bytes().to_vec(),
+                    class: OpcodeClass::Loading {
+                        arguments: KeyArguments {
+                            namespace: position(fields[2], "namespace")?,
+                            path: position(fields[3], "path")?,
+                            variant,
+                        },
+                        spelling_kind,
+                    },
+                    status,
+                    source: fields[7..].join(" "),
+                }
+            }
+            "unsupported" | "behavior" => {
+                if fields.len() < 3 {
+                    return Err(refused(format!(
+                        "a {class} entry needs <spelling> <status> <source>, found {} field(s)",
+                        fields.len()
+                    )));
+                }
+                let status = match parse_claim_status(fields[2]) {
+                    Some(status) => status,
+                    None => return Err(refused(unknown_status_message(fields[2]))),
+                };
+                ClassifiedOpcode {
+                    spelling: fields[1].as_bytes().to_vec(),
+                    class: if class == "unsupported" {
+                        OpcodeClass::Unsupported
+                    } else {
+                        OpcodeClass::Behavior
+                    },
+                    status,
+                    source: fields[3..].join(" "),
+                }
+            }
+            other => {
+                return Err(refused(format!(
+                    "the class must be `loading`, `unsupported` or `behavior`, found {other:?}"
+                )));
+            }
+        };
+        opcodes.push(opcode);
+    }
+    // `extend` applies every entry or none, so a refused classification never
+    // yields a partially classified plan.
+    let mut table = OpcodeClassTable::new();
+    if let Err(error) = table.extend(opcodes) {
+        return Err(InterpCommandError::ClassesRefused {
+            path: path.to_path_buf(),
+            line: 0,
+            rule: "<classification>".to_owned(),
             reason: error.to_string(),
         });
     }
@@ -821,6 +1041,36 @@ fn plan_json(run: &PlanRun<'_>) -> String {
             )
         })
         .collect();
+    let opcodes: Vec<String> = plan
+        .opcodes()
+        .iter()
+        .map(|opcode| {
+            format!(
+                "{{\"spelling\": {}, \"class\": {}, \"status\": {}, \"source\": {}}}",
+                jbytes(&opcode.spelling),
+                jstr(opcode.class.code()),
+                jstr(opcode.status.label()),
+                jstr(&opcode.source),
+            )
+        })
+        .collect();
+    let heads: Vec<String> = run
+        .audit
+        .entries()
+        .iter()
+        .map(|entry| {
+            let class = entry
+                .classification()
+                .and_then(|index| run.audit.opcode(index))
+                .map_or("unknown", |opcode| opcode.class.code());
+            format!(
+                "{{\"spelling\": {}, \"occurrences\": {}, \"class\": {}}}",
+                jbytes(entry.spelling()),
+                entry.occurrences(),
+                jstr(class),
+            )
+        })
+        .collect();
     let dependencies: Vec<String> = report
         .dependencies()
         .iter()
@@ -920,8 +1170,12 @@ fn plan_json(run: &PlanRun<'_>) -> String {
         "{{\n  \"container_sha256\": {},\n  \"world\": {},\n  \
          \"installation_sha256\": {},\n  \"session_generation\": {},\n  \
          \"status\": {},\n  \"complete\": {},\n  \"summary\": {},\n  \
-         \"commands\": [{}],\n  \"stats\": {{\"scripts\": {}, \"lines\": {}, \
-         \"loading_commands\": {}, \"malformed_commands\": {}, \"unclassified_commands\": {}, \
+         \"commands\": [{}],\n  \"opcodes\": [{}],\n  \
+         \"opcode_audit\": {{\"lines\": {}, \"distinct_heads\": {}, \"unknown_heads\": {}, \
+         \"complete\": {}, \"heads\": [{}]}},\n  \
+         \"stats\": {{\"scripts\": {}, \"lines\": {}, \
+         \"loading_commands\": {}, \"malformed_commands\": {}, \"unsupported_commands\": {}, \
+         \"behavior_commands\": {}, \"unclassified_commands\": {}, \
          \"distinct_heads\": {}, \"blocked_scripts\": {}}},\n  \
          \"dependencies\": [{}],\n  \"failures\": [{}],\n  \"resolved\": {}, \
          \"dynamic_lookups\": {},\n  \"scripts\": [{}]\n  }}",
@@ -946,10 +1200,18 @@ fn plan_json(run: &PlanRun<'_>) -> String {
         report.is_complete(),
         jstr(&report.describe()),
         commands.join(", "),
+        opcodes.join(",\n    "),
+        run.audit.lines(),
+        run.audit.distinct_heads(),
+        run.audit.unknown_heads(),
+        run.audit.is_complete(),
+        heads.join(",\n    "),
         stats.scripts,
         stats.lines,
         stats.loading_commands,
         stats.malformed_commands,
+        stats.unsupported_commands,
+        stats.behavior_commands,
         stats.unclassified_commands,
         stats.distinct_heads,
         stats.blocked_scripts,
@@ -1087,7 +1349,10 @@ mod tests {
     //! `CS_GAME_DIR` access.
 
     use super::*;
+    use std::collections::VecDeque;
+    use std::process::Command;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
 
@@ -1762,5 +2027,730 @@ mod tests {
             "{:?}",
             run.diagnostics
         );
+    }
+
+    // --- Stage F07-D: opcode classification and audit through the command.
+
+    /// A classification file with one `behavior` entry for `SetCamera` and one
+    /// `loading` entry for `LoadGameGen`.
+    fn classes_with_behavior(tree: &Temp) -> PathBuf {
+        tree.write(
+            "classes.txt",
+            b"# synthetic classification: exercises the audit, not an original command\n\
+              behavior    SetCamera    inferred docs/findings/<synthetic>.md\n\
+              loading     LoadGameGen  1 2 - literal designed docs/findings/<synthetic>.md\n",
+        )
+    }
+
+    /// AC04 end to end: a command the classification calls resource-loading but
+    /// with no supported key domain yields its source offset and its affected
+    /// world through the command, exits non-zero and reports no dependency.
+    #[test]
+    fn accept_f07_d_cli_reports_an_unsupported_command_with_its_offset_and_world() {
+        let tree = installation("classes-unsupported");
+        let classes = tree.write(
+            "classes.txt",
+            b"unsupported SetDir inferred docs/findings/<synthetic>.md\n",
+        );
+        let bytes = image(&[(b"load", &[b"SetDir\0world\0subdir\0"])]);
+        let path = tree.write("unsupported.interp", &bytes);
+        fn path_arg(path: &Path) -> &str {
+            path.to_str().expect("temp paths are UTF-8")
+        }
+
+        let run = interp_command_result(&args(&[
+            "--file",
+            path_arg(&path),
+            "--plan",
+            "--classes",
+            path_arg(&classes),
+            "--cs-path",
+            path_arg(&tree.0),
+            "--world",
+            "zbd/c1",
+        ]));
+        assert_eq!(
+            run.exit_code, EXIT_FAILED_VALIDATION,
+            "{:?}",
+            run.diagnostics
+        );
+        let report = run.report.expect("the plan is reported");
+        assert!(
+            is_well_formed_json(&report),
+            "the plan report is a JSON document:\n{report}"
+        );
+
+        // The classification is the one supplied, and the audit is complete:
+        // the only head of this container is classified.
+        assert!(
+            report.contains(
+                "\"opcodes\": [{\"spelling\": {\"length\": 6, \"hex\": \"536574446972\"}, \
+                 \"class\": \"unsupported\""
+            ),
+            "{report}"
+        );
+        assert!(
+            report.contains(
+                "\"opcode_audit\": {\"lines\": 1, \"distinct_heads\": 1, \"unknown_heads\": 0, \
+                 \"complete\": true"
+            ),
+            "{report}"
+        );
+        assert!(
+            report.contains(
+                "\"code\": \"unsupported_command\", \"script\": 0, \"line\": 0, \
+                 \"source_offset\": 140, \"head_offset\": 148, \"world\": \"zbd/c1\""
+            ),
+            "{report}"
+        );
+        // It is not a fake loaded state: no dependency, no resolved key.
+        assert!(report.contains("\"dependencies\": []"), "{report}");
+        assert!(report.contains("\"unsupported_commands\": 1"), "{report}");
+        assert!(report.contains("\"loading_commands\": 0"), "{report}");
+        assert!(report.contains("\"state\": \"blocked\""), "{report}");
+        assert!(!report.contains("\"status\": \"resolved\""), "{report}");
+        assert!(
+            run.diagnostics
+                .iter()
+                .any(|line| line.contains("unsupported_command at offset 140")),
+            "{:?}",
+            run.diagnostics
+        );
+        assert!(
+            run.diagnostics
+                .iter()
+                .any(|line| line.contains("affects world zbd/c1")),
+            "{:?}",
+            run.diagnostics
+        );
+    }
+
+    /// The audit names every distinct head and its class, and completeness is a
+    /// checked property: leaving one head unclassified keeps the audit and the
+    /// run incomplete even when every *other* line is understood.
+    #[test]
+    fn accept_f07_d_cli_audits_every_head_and_reports_completeness() {
+        let tree = installation("classes-audit");
+        let bytes = image(&[(
+            b"load",
+            &[
+                b"SetCamera\0follow\0target\0",
+                b"LoadGameGen\0world\0plane.flt\0",
+            ],
+        )]);
+        let path = tree.write("audit.interp", &bytes);
+        fn path_arg(path: &Path) -> &str {
+            path.to_str().expect("temp paths are UTF-8")
+        }
+        let run_args = |classes: &Path| {
+            args(&[
+                "--file",
+                path_arg(&path),
+                "--plan",
+                "--classes",
+                path_arg(classes),
+                "--cs-path",
+                path_arg(&tree.0),
+                "--world",
+                "zbd/c1",
+            ])
+        };
+
+        // One head is classified, the other is not: the audit is 1 of 2.
+        let partial = tree.write(
+            "partial-classes.txt",
+            b"behavior SetCamera inferred docs/findings/<synthetic>.md\n",
+        );
+        let run = interp_command_result(&run_args(&partial));
+        assert_eq!(
+            run.exit_code, EXIT_FAILED_VALIDATION,
+            "{:?}",
+            run.diagnostics
+        );
+        let report = run.report.expect("the plan is reported");
+        assert!(
+            report.contains(
+                "\"opcode_audit\": {\"lines\": 2, \"distinct_heads\": 2, \"unknown_heads\": 1, \
+                 \"complete\": false"
+            ),
+            "{report}"
+        );
+        // Both heads are named, with their occurrence counts and classes.
+        assert!(
+            report.contains(
+                "{\"spelling\": {\"length\": 9, \"hex\": \"53657443616d657261\"}, \
+                 \"occurrences\": 1, \"class\": \"behavior\"}"
+            ),
+            "{report}"
+        );
+        assert!(
+            report.contains(
+                "{\"spelling\": {\"length\": 11, \"hex\": \"4c6f616447616d6547656e\"}, \
+                 \"occurrences\": 1, \"class\": \"unknown\"}"
+            ),
+            "{report}"
+        );
+        assert!(report.contains("\"unclassified_commands\": 1"), "{report}");
+        assert!(
+            run.diagnostics
+                .iter()
+                .any(|line| line.contains("1 of 2 distinct opcode heads are unclassified")),
+            "{:?}",
+            run.diagnostics
+        );
+
+        // Classify every head: the audit is complete and, because the loading
+        // key resolves and the behavior line contributes nothing, so is the
+        // plan. A `behavior` line does not block its world.
+        let classes = classes_with_behavior(&tree);
+        let run = interp_command_result(&run_args(&classes));
+        assert_eq!(run.exit_code, 0, "{:?}", run.diagnostics);
+        let report = run.report.expect("a complete plan is reported");
+        assert!(
+            report.contains("\"distinct_heads\": 2, \"unknown_heads\": 0, \"complete\": true"),
+            "{report}"
+        );
+        assert!(report.contains("\"status\": \"complete\""), "{report}");
+        assert!(report.contains("\"behavior_commands\": 1"), "{report}");
+        assert!(report.contains("\"loading_commands\": 1"), "{report}");
+        assert!(report.contains("\"resolved\": 1"), "{report}");
+        assert!(report.contains("\"failures\": []"), "{report}");
+        assert!(report.contains("\"class\": \"behavior\""), "{report}");
+    }
+
+    /// A classification is read whole or refused whole, and `--classes` and
+    /// `--commands` cannot both be supplied.
+    #[test]
+    fn accept_f07_d_cli_refuses_a_malformed_classification() {
+        let tree = installation("classes-refused");
+        let bytes = image(&[(b"load", &[b"LoadGameGen\0world\0plane.flt\0"])]);
+        let path = tree.write("classes-refused.interp", &bytes);
+        fn path_arg(path: &Path) -> &str {
+            path.to_str().expect("temp paths are UTF-8")
+        }
+        let run_args = |classes: &Path| {
+            args(&[
+                "--file",
+                path_arg(&path),
+                "--plan",
+                "--classes",
+                path_arg(classes),
+            ])
+        };
+
+        // An unknown class keyword, an unknown status and a duplicate spelling
+        // are all invalid input, before any plan is built.
+        let bad_class = tree.write(
+            "bad-class.txt",
+            b"nonsense Foo inferred docs/findings/x.md\n",
+        );
+        let run = interp_command_result(&run_args(&bad_class));
+        assert_eq!(run.exit_code, EXIT_INVALID_INPUT);
+        assert!(run.report.is_none());
+        assert!(
+            run.diagnostics[0].contains("the class must be `loading`, `unsupported` or `behavior`"),
+            "{:?}",
+            run.diagnostics
+        );
+
+        let bad_status = tree.write("bad-status.txt", b"behavior Foo bogus docs/findings/x.md\n");
+        let run = interp_command_result(&run_args(&bad_status));
+        assert_eq!(run.exit_code, EXIT_INVALID_INPUT);
+        assert!(
+            run.diagnostics[0].contains("is not an evidence status"),
+            "{:?}",
+            run.diagnostics
+        );
+
+        let duplicate = tree.write(
+            "duplicate.txt",
+            b"behavior Foo inferred docs/findings/x.md\n\
+              behavior Foo inferred docs/findings/x.md\n",
+        );
+        let run = interp_command_result(&run_args(&duplicate));
+        assert_eq!(run.exit_code, EXIT_INVALID_INPUT);
+        assert!(
+            run.diagnostics[0].contains("is refused as a whole"),
+            "{:?}",
+            run.diagnostics
+        );
+
+        // A missing classification is named as such, not read as empty.
+        let missing = tree.0.join("nope.txt");
+        let run = interp_command_result(&run_args(&missing));
+        assert_eq!(run.exit_code, EXIT_INVALID_INPUT);
+        assert!(run.diagnostics[0].contains("cannot read classification"));
+
+        // Two sources of truth for one line are refused.
+        let classes = classes_with_behavior(&tree);
+        let commands = table(&tree, "loadmesh");
+        let run = interp_command_result(&args(&[
+            "--file",
+            path_arg(&path),
+            "--plan",
+            "--commands",
+            path_arg(&commands),
+            "--classes",
+            path_arg(&classes),
+        ]));
+        assert_eq!(run.exit_code, EXIT_INVALID_INPUT);
+        assert!(
+            run.diagnostics[0].contains("mutually exclusive"),
+            "{:?}",
+            run.diagnostics
+        );
+    }
+
+    // --- retail ---------------------------------------------------------------
+
+    /// SHA-256 of the installed `ZBD/interp.zbd` this stage audited.
+    const RETAIL_INTERP_SHA256: &str =
+        "f5251cb559db1992320247b9674d159a149572e077bc8579ae34d5fbd16254c7";
+
+    /// Workspace-relative path of the committed classification of that file.
+    const RETAIL_CLASSES: &str = "docs/findings/2026-09-28-f07-d-retail-opcode-classes.txt";
+
+    fn game_dir() -> PathBuf {
+        let dir = std::env::var_os("CS_GAME_DIR")
+            .expect("CS_GAME_DIR is not set: this test needs the original installation");
+        let dir = PathBuf::from(dir);
+        assert!(
+            dir.is_dir(),
+            "CS_GAME_DIR is not a directory: {}",
+            dir.display()
+        );
+        dir
+    }
+
+    fn workspace_root() -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    }
+
+    fn path_str(path: &Path) -> &str {
+        path.to_str().expect("workspace paths are UTF-8")
+    }
+
+    /// The installed container, audited with the committed classification:
+    /// every distinct head is classified, so the audit is complete, and this
+    /// stage's minimum scenario is visible on real bytes — an unsupported
+    /// loading command names its source offset and its affected world and never
+    /// reports a loaded state.
+    ///
+    /// The second half proves the classification is load-bearing: with an empty
+    /// classification the same container has 85 unknown heads.
+    #[test]
+    #[ignore = "requires CS_GAME_DIR"]
+    fn accept_f07_d_retail_interp_audit_classifies_every_head() {
+        let root = game_dir();
+        let container_path = root.join("ZBD").join("interp.zbd");
+        let classes = workspace_root().join(RETAIL_CLASSES);
+        assert!(
+            classes.is_file(),
+            "the committed classification is missing: {}",
+            classes.display()
+        );
+        let bytes = fs::read(&container_path).expect("the retail container is readable");
+        assert_eq!(
+            install::sha256(&bytes).to_hex(),
+            RETAIL_INTERP_SHA256,
+            "the installed container is not the one F07-D audited"
+        );
+
+        let run = interp_command_result(&args(&[
+            "--file",
+            path_str(&container_path),
+            "--plan",
+            "--classes",
+            path_str(&classes),
+            "--cs-path",
+            path_str(&root),
+            "--world",
+            "zbd/c1",
+        ]));
+        assert_eq!(
+            run.exit_code, EXIT_FAILED_VALIDATION,
+            "{:?}",
+            run.diagnostics
+        );
+        let report = run.report.expect("the audit is reported");
+        assert!(is_well_formed_json(&report), "{report}");
+
+        // The decoder read the whole container: no unclaimed region.
+        assert!(report.contains("\"script_count\": 98"), "{report}");
+        assert!(report.contains("\"container_bytes\": 188296"), "{report}");
+        assert!(report.contains("\"findings\": []"), "{report}");
+
+        // Every distinct head is classified, and no line is unclassified.
+        assert!(
+            report.contains(
+                "\"opcode_audit\": {\"lines\": 5083, \"distinct_heads\": 85, \
+                 \"unknown_heads\": 0, \"complete\": true"
+            ),
+            "{report}"
+        );
+        assert!(report.contains("\"unclassified_commands\": 0"), "{report}");
+        assert!(report.contains("\"behavior_commands\": 4131"), "{report}");
+        assert!(report.contains("\"unsupported_commands\": 952"), "{report}");
+        assert!(report.contains("\"loading_commands\": 0"), "{report}");
+
+        // AC04 on real bytes: an unsupported command yields its source offset
+        // and its affected world, and nothing is reported loaded.
+        assert!(
+            report.contains(
+                "\"code\": \"unsupported_command\", \"script\": 0, \"line\": 0, \
+                 \"source_offset\": 12556, \"head_offset\": 12564, \"world\": \"zbd/c1\""
+            ),
+            "{report}"
+        );
+        assert!(report.contains("\"dependencies\": []"), "{report}");
+        assert!(!report.contains("\"status\": \"resolved\""), "{report}");
+
+        // The committed classification is load-bearing: with an empty one, the
+        // same container has 85 unknown heads and every line is unclassified.
+        let scratch = Temp::new("retail-partial");
+        let empty = scratch.write("empty-classes.txt", b"# no classifications\n");
+        let run = interp_command_result(&args(&[
+            "--file",
+            path_str(&container_path),
+            "--plan",
+            "--classes",
+            path_str(&empty),
+            "--cs-path",
+            path_str(&root),
+            "--world",
+            "zbd/c1",
+        ]));
+        assert_eq!(run.exit_code, EXIT_FAILED_VALIDATION);
+        let report = run.report.expect("the empty audit is reported");
+        assert!(
+            report.contains(
+                "\"opcode_audit\": {\"lines\": 5083, \"distinct_heads\": 85, \
+                 \"unknown_heads\": 85, \"complete\": false"
+            ),
+            "{report}"
+        );
+        assert!(
+            report.contains("\"unclassified_commands\": 5083"),
+            "{report}"
+        );
+    }
+
+    // --- evidence harness -----------------------------------------------------
+
+    fn env_var(name: &str) -> String {
+        std::env::var(name).unwrap_or_else(|_| {
+            panic!("{name} is not set: run the sequence in the evidence harness doc comment")
+        })
+    }
+
+    fn command_output(program: &str, args: &[&str]) -> String {
+        let output = Command::new(program)
+            .args(args)
+            .output()
+            .unwrap_or_else(|error| panic!("{program} runs: {error}"));
+        assert!(output.status.success(), "{program} {args:?} failed");
+        String::from_utf8_lossy(&output.stdout).trim().to_string()
+    }
+
+    fn locked_version(package: &str) -> String {
+        let lock = fs::read_to_string(workspace_root().join("Cargo.lock")).expect("Cargo.lock");
+        let mut wanted = false;
+        for line in lock.lines().map(str::trim) {
+            if line == "[[package]]" {
+                wanted = false;
+            } else if let Some(name) = line.strip_prefix("name = \"") {
+                wanted = name.trim_end_matches('"') == package;
+            } else if let Some(version) = line.strip_prefix("version = \"")
+                && wanted
+            {
+                return version.trim_end_matches('"').to_owned();
+            }
+        }
+        panic!("package {package:?} is not in Cargo.lock");
+    }
+
+    fn short_name(name: &str) -> &str {
+        name.rsplit("::").next().unwrap_or(name)
+    }
+
+    /// Libtest totals plus `(test, "pass" | "fail")` for tests starting with
+    /// `prefix`, from a recorded `cargo test` output.
+    fn parse_suite(log: &str, prefix: &str) -> ([u64; 3], Vec<(String, &'static str)>) {
+        let mut totals = [0u64; 3];
+        let mut results: Vec<(String, &'static str)> = Vec::new();
+        let mut pending: VecDeque<String> = VecDeque::new();
+        let record = |results: &mut Vec<(String, &'static str)>, name: String, status| {
+            if !results.iter().any(|(seen, _)| *seen == name) {
+                results.push((name, status));
+            }
+        };
+        for line in log.lines() {
+            let trimmed = line.trim_start();
+            if let Some(summary) = trimmed.strip_prefix("test result:") {
+                for segment in summary.split(';') {
+                    let words: Vec<&str> = segment.split_whitespace().collect();
+                    if let Some(pair) = words.windows(2).find(|p| p[0].parse::<u64>().is_ok()) {
+                        let count: u64 = pair[0].parse().expect("checked");
+                        match pair[1] {
+                            "passed" => totals[0] += count,
+                            "failed" => totals[1] += count,
+                            "ignored" => totals[2] += count,
+                            _ => {}
+                        }
+                    }
+                }
+                continue;
+            }
+            if !pending.is_empty() && (trimmed == "ok" || trimmed == "FAILED") {
+                let name = pending.pop_front().expect("pending");
+                record(
+                    &mut results,
+                    name,
+                    if trimmed == "ok" { "pass" } else { "fail" },
+                );
+                continue;
+            }
+            let mut cursor = trimmed;
+            while let Some(position) = cursor.find("test ") {
+                let after = &cursor[position + 5..];
+                let Some(separator) = after.find(" ... ") else {
+                    break;
+                };
+                let name = after[..separator].to_owned();
+                let tail = &after[separator + 5..];
+                cursor = tail;
+                if !short_name(&name).starts_with(prefix) {
+                    continue;
+                }
+                match tail.split_whitespace().next() {
+                    Some("ok") => record(&mut results, name, "pass"),
+                    Some("FAILED") => record(&mut results, name, "fail"),
+                    _ => pending.push_back(name),
+                }
+            }
+        }
+        (totals, results)
+    }
+
+    fn iso_utc_now() -> String {
+        let seconds = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("the clock is after 1970")
+            .as_secs() as i64;
+        let days = seconds.div_euclid(86_400);
+        let rest = seconds.rem_euclid(86_400);
+        let z = days + 719_468;
+        let era = z.div_euclid(146_097);
+        let doe = z.rem_euclid(146_097);
+        let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+        let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+        let mp = (5 * doy + 2) / 153;
+        let day = doy - (153 * mp + 2) / 5 + 1;
+        let month = if mp < 10 { mp + 3 } else { mp - 9 };
+        let year = yoe + era * 400 + i64::from(month <= 2);
+        format!(
+            "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+            rest / 3_600,
+            (rest % 3_600) / 60,
+            rest % 60
+        )
+    }
+
+    /// Evidence-report harness for F07-D (`docs/contracts/CLI-EVIDENCE.md`,
+    /// schema `schemas/evidence.schema.json`). Not an acceptance test: it fails
+    /// loudly when its inputs are missing. From the workspace root:
+    ///
+    /// 1. ```sh
+    ///    mkdir -p private/evidence/F07-D
+    ///    cargo test --workspace --locked -- accept_f07_d_ --include-ignored \
+    ///      2>&1 | tee private/evidence/F07-D/cargo-test.log
+    ///    ```
+    ///    (record the exit status of `cargo test`, e.g. `${pipestatus[1]}` in zsh.)
+    /// 2. ```sh
+    ///    CS_EVIDENCE_DIR=private/evidence/F07-D \
+    ///    CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') \
+    ///    CS_EVIDENCE_ARGV="cargo test --workspace --locked -- accept_f07_d_ --include-ignored" \
+    ///    CS_EVIDENCE_EXIT_CODE=<status from step 1> \
+    ///      cargo test --locked -p cs_inspect --lib -- evidence_report_f07_d --ignored
+    ///    ```
+    ///    This runs the production `interp --plan --classes` command over
+    ///    `$CS_GAME_DIR/ZBD/interp.zbd` and keeps its report as the artifact
+    ///    `interp-audit.json`.
+    /// 3. ```sh
+    ///    python3 tools/validate_evidence.py private/evidence/F07-D/acceptance.json \
+    ///      --artifact-root private/evidence/F07-D --require-pass
+    ///    ```
+    /// 4. Commit a copy of `acceptance.json` as `docs/findings/evidence/F07-D.json`.
+    #[test]
+    #[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_GAME_DIR"]
+    fn evidence_report_f07_d_writes_the_acceptance_report() {
+        let evidence_dir = {
+            let described = PathBuf::from(env_var("CS_EVIDENCE_DIR"));
+            if described.is_absolute() {
+                described
+            } else {
+                workspace_root().join(described)
+            }
+        };
+        let candidate_tree = env_var("CS_CANDIDATE_TREE");
+        let argv: Vec<String> = env_var("CS_EVIDENCE_ARGV")
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect();
+        assert!(
+            !argv.is_empty(),
+            "CS_EVIDENCE_ARGV must hold the acceptance command"
+        );
+        let exit_code: i32 = env_var("CS_EVIDENCE_EXIT_CODE")
+            .parse()
+            .expect("CS_EVIDENCE_EXIT_CODE must be the exit status of the acceptance run");
+        let root = game_dir();
+        assert_eq!(
+            candidate_tree,
+            command_output("git", &["rev-parse", "HEAD^{tree}"]),
+            "CS_CANDIDATE_TREE must be the tree of the tested commit"
+        );
+
+        let log_path = evidence_dir.join("cargo-test.log");
+        let log = fs::read_to_string(&log_path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", log_path.display()));
+        let ([passed, failed, ignored], results) = parse_suite(&log, "accept_f07_d_");
+        assert!(
+            passed > 0 && !results.is_empty(),
+            "no accept_f07_d_ tests in the log"
+        );
+        let retail = "accept_f07_d_retail_interp_audit_classifies_every_head";
+        let status = results
+            .iter()
+            .find(|(name, _)| short_name(name) == retail)
+            .map(|(_, status)| *status)
+            .unwrap_or_else(|| panic!("{retail} did not run: use --include-ignored"));
+        assert_eq!(status, "pass", "{retail} must pass");
+
+        // The production command over the installation, kept as the artifact.
+        let container_path = root.join("ZBD").join("interp.zbd");
+        let classes = workspace_root().join(RETAIL_CLASSES);
+        let audit_path = evidence_dir.join("interp-audit.json");
+        let audited = interp_command_result(&args(&[
+            "--file",
+            path_str(&container_path),
+            "--plan",
+            "--classes",
+            path_str(&classes),
+            "--cs-path",
+            path_str(&root),
+            "--world",
+            "zbd/c1",
+            "--out",
+            path_str(&audit_path),
+        ]));
+        assert_eq!(audited.out.as_deref(), Some(audit_path.as_path()));
+        let report = audited.report.expect("the retail audit is reported");
+        assert!(
+            report.contains(
+                "\"opcode_audit\": {\"lines\": 5083, \"distinct_heads\": 85, \
+                 \"unknown_heads\": 0, \"complete\": true"
+            ),
+            "the retail audit must classify every head: {report}"
+        );
+        assert!(report.contains("\"unclassified_commands\": 0"), "{report}");
+        assert!(report.contains("\"unsupported_commands\": 952"), "{report}");
+        assert!(report.contains("\"behavior_commands\": 4131"), "{report}");
+        assert!(
+            report.contains(
+                "\"source_offset\": 12556, \"head_offset\": 12564, \"world\": \"zbd/c1\""
+            ),
+            "{report}"
+        );
+
+        // The classification is copied into the artifact root, so the evidence
+        // is self-contained and its hash is recorded beside the report.
+        let classes_copy = evidence_dir.join("retail-opcode-classes.txt");
+        fs::copy(&classes, &classes_copy)
+            .unwrap_or_else(|error| panic!("copy {}: {error}", classes.display()));
+
+        let found = cs_assets::install::discover(&root).expect("discovery");
+        let install_sha256 = cs_assets::install::fingerprint(&found.manifest).to_hex();
+        let content_sha256 = cs_assets::install::content_fingerprint(&found.manifest).to_hex();
+
+        let artifact = |path: &Path, kind: &str| {
+            let bytes = fs::read(path).expect("artifact is readable");
+            format!(
+                "{{\"path\": {}, \"sha256\": \"{}\", \"kind\": \"{kind}\"}}",
+                super::jstr(&path.file_name().expect("name").to_string_lossy()),
+                cs_assets::install::sha256(&bytes).to_hex()
+            )
+        };
+        let method = format!(
+            "acceptance suite run locally with the retail capability; this harness derives every \
+             field from the recorded log, production discovery of $CS_GAME_DIR, and the \
+             production `cs-inspect interp --plan --classes` run over \
+             $CS_GAME_DIR/ZBD/interp.zbd (interp-audit.json; SHA-256 {RETAIL_INTERP_SHA256}), \
+             whose committed classification (retail-opcode-classes.txt) classifies all 85 \
+             distinct heads of the 98 scripts / 5083 lines, so the F07-D audit is complete and \
+             reports 0 unknown heads, 952 unsupported lines and 4131 behavior lines; every \
+             unsupported line names its source offset and affected world and no dependency is \
+             invented. The classes are a corpus-inferred claim (status `inferred`) recorded in \
+             docs/findings/2026-09-28-f07-d-retail-opcode-classes.md; their limitations are the \
+             F07-D findings, not hidden, and the report run exits {} because the unsupported \
+             lines block their worlds. Validated with tools/validate_evidence.py --require-pass",
+            audited.exit_code
+        );
+        let report = format!(
+            "{{\n\
+             \x20\"schema_version\": 1,\n\
+             \x20\"task_id\": \"F07-D\",\n\
+             \x20\"candidate_tree\": {},\n\
+             \x20\"engine\": {{\"rust\": {}, \"bevy\": {}, \"avian\": {}}},\n\
+             \x20\"created_at\": {},\n\
+             \x20\"command\": {{\"argv\": [{}], \"cwd\": {}, \"exit_code\": {exit_code}}},\n\
+             \x20\"source\": {{\"install_sha256\": {}, \"content_sha256\": {}}},\n\
+             \x20\"seed\": 0,\n\
+             \x20\"ticks\": {{\"start\": 0, \"end\": 0}},\n\
+             \x20\"overrides\": [],\n\
+             \x20\"capabilities\": [\"retail\", \"synthetic\"],\n\
+             \x20\"tests\": {{\"discovered\": {}, \"executed\": {}, \"passed\": {passed}, \"failed\": {failed}, \"ignored\": {ignored}}},\n\
+             \x20\"assertions\": [{}],\n\
+             \x20\"artifacts\": [{}, {}, {}],\n\
+             \x20\"unknowns\": [],\n\
+             \x20\"review\": {{\"identity\": {}, \"method\": {}}},\n\
+             \x20\"claim\": \"implemented\"\n\
+             }}\n",
+            super::jstr(&candidate_tree),
+            super::jstr(&command_output("rustc", &["--version"])),
+            super::jstr(&locked_version("bevy")),
+            super::jstr(&locked_version("avian3d")),
+            super::jstr(&iso_utc_now()),
+            argv.iter()
+                .map(|arg| super::jstr(arg))
+                .collect::<Vec<_>>()
+                .join(", "),
+            super::jstr(&command_output("git", &["rev-parse", "--show-toplevel"])),
+            super::jstr(&install_sha256),
+            super::jstr(&content_sha256),
+            passed + failed + ignored,
+            passed + failed,
+            results
+                .iter()
+                .map(|(name, status)| format!(
+                    "{{\"id\": {}, \"status\": \"{status}\", \"evidence\": [\"cargo-test.log\"]}}",
+                    super::jstr(short_name(name))
+                ))
+                .collect::<Vec<_>>()
+                .join(", "),
+            artifact(&log_path, "log"),
+            artifact(&audit_path, "json"),
+            artifact(&classes_copy, "txt"),
+            super::jstr("deepseek-1 (implementing agent)"),
+            super::jstr(&method),
+        );
+        let out = evidence_dir.join("acceptance.json");
+        fs::write(&out, &report).unwrap_or_else(|error| panic!("write {}: {error}", out.display()));
+        assert!(
+            failed == 0 && exit_code == 0,
+            "the acceptance run failed (exit {exit_code}, {failed} failed): the report was \
+             written honestly and must not validate"
+        );
+        println!("wrote {}", out.display());
     }
 }
