@@ -41,8 +41,8 @@ use std::process::ExitCode;
 
 use cs_assets::install::{self, DiscoveryError};
 use cs_assets::vfs::{
-    ContentSession, ExportDirectory, ExportError, ResolutionTrace, ResolveError, SessionAsset,
-    SessionBuilder, SessionError, SourceError, export_asset,
+    ConflictOrigin, ContentSession, ExportDirectory, ExportError, ResolutionTrace, ResolveError,
+    SessionAsset, SessionBuilder, SessionError, SourceError, export_asset,
 };
 use cs_types::asset_id::{
     AssetKey, AssetKeyError, LabelError, MissionScope, ResolveContext, WorldGroup,
@@ -489,25 +489,27 @@ pub fn resolve_report_json(
         Err(ResolveError::Ambiguous {
             candidates, trace, ..
         }) => {
-            let rendered: Vec<String> = candidates
-                .iter()
-                .map(|origin| {
-                    format!(
-                        "{{\"mount\": {}, \"container\": {}, \"member_spelling\": {}, \
-                         \"precedence\": {}, \"sha256\": {}}}",
-                        jstr(origin.mount.as_str()),
-                        jstr(&origin.container),
-                        jstr(&origin.member_spelling),
-                        jstr(origin.precedence.label()),
-                        origin
-                            .sha256
-                            .map_or_else(|| "null".to_owned(), |hash| jstr(&hash.to_hex())),
-                    )
-                })
-                .collect();
+            let rendered: Vec<String> = candidates.iter().map(origin_json).collect();
             (
                 format!(
                     "{{\"status\": \"ambiguous\", \"candidates\": [{}]}}",
+                    rendered.join(", ")
+                ),
+                trace.as_ref(),
+            )
+        }
+        Err(ResolveError::UnmeasuredOrder {
+            selected,
+            shadowed,
+            trace,
+            ..
+        }) => {
+            let rendered: Vec<String> = shadowed.iter().map(origin_json).collect();
+            (
+                format!(
+                    "{{\"status\": \"blocked_unmeasured_order\", \"selected\": {}, \
+                     \"shadowed\": [{}]}}",
+                    origin_json(selected),
                     rendered.join(", ")
                 ),
                 trace.as_ref(),
@@ -572,6 +574,20 @@ pub fn resolve_report_json(
 }
 
 /// The ordered attempts of a trace as a JSON array.
+fn origin_json(origin: &ConflictOrigin) -> String {
+    format!(
+        "{{\"mount\": {}, \"container\": {}, \"member_spelling\": {}, \
+         \"precedence\": {}, \"sha256\": {}}}",
+        jstr(origin.mount.as_str()),
+        jstr(&origin.container),
+        jstr(&origin.member_spelling),
+        jstr(origin.precedence.label()),
+        origin
+            .sha256
+            .map_or_else(|| "null".to_owned(), |hash| jstr(&hash.to_hex())),
+    )
+}
+
 fn trace_json(trace: &ResolutionTrace) -> String {
     let attempts: Vec<String> = trace
         .attempts

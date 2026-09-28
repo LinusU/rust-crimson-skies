@@ -357,6 +357,7 @@ pub struct Mount {
     container: String,
     members: BTreeMap<MemberKey, MemberRecord>,
     backing: Backing,
+    retail: bool,
 }
 
 impl Mount {
@@ -393,6 +394,13 @@ impl Mount {
             Backing::Declared => None,
             Backing::Directory(root) => Some(root),
         }
+    }
+
+    /// Whether the mount's bytes are original installation data
+    /// ([`MountBuilder::retail`]). Only retail sources are subject to the
+    /// unmeasured-order block of `Vfs::resolve_blocking_unmeasured`.
+    pub fn is_retail(&self) -> bool {
+        self.retail
     }
 
     /// How many members the mount holds.
@@ -448,6 +456,7 @@ pub struct MountBuilder {
     container: String,
     members: BTreeMap<MemberKey, MemberRecord>,
     backing: Backing,
+    retail: bool,
 }
 
 impl MountBuilder {
@@ -471,7 +480,17 @@ impl MountBuilder {
             container: container.to_owned(),
             members: BTreeMap::new(),
             backing: Backing::Declared,
+            retail: false,
         }
+    }
+
+    /// Declares that the mount's bytes are original installation data, so
+    /// a lookup that only the unmeasured precedence order decides between
+    /// it and another retail mount is blocked (spec F04 non-negotiable
+    /// behavior 2).
+    pub fn retail(mut self) -> Self {
+        self.retail = true;
+        self
     }
 
     /// Binds the mount to a world group.
@@ -620,6 +639,7 @@ impl MountBuilder {
             container: self.container,
             members: self.members,
             backing: self.backing,
+            retail: self.retail,
         })
     }
 }

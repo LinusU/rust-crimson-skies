@@ -25,8 +25,12 @@
 //!    at all returns [`ResolveError::NotFound`] carrying the attempts.
 //!
 //! The ordering that decides step 3 is reported as
-//! [`PRECEDENCE_ORDER_STATUS`] on every trace: `designed` until F04-D
-//! measures original lookup behavior, never presented as measured.
+//! [`PRECEDENCE_ORDER_STATUS`] on every trace: `designed` until original
+//! lookup behavior is measured, never presented as measured. F04-D found
+//! no way to measure it with the available capabilities (see
+//! `docs/findings/`), so [`Vfs::resolve_blocking_unmeasured`] — the
+//! lookup content sessions use — refuses any retail answer that step 3
+//! alone decided between different bytes.
 
 use std::fmt;
 use std::sync::Arc;
@@ -198,6 +202,22 @@ pub enum ResolveError {
         /// The attempts made.
         trace: Box<ResolutionTrace>,
     },
+    /// A retail mount won over other retail mounts that hold different
+    /// (or unhashed) bytes for the key, and the only thing that decided
+    /// between them is the precedence order — which is still `designed`,
+    /// not measured. Spec F04 non-negotiable behavior 2: "label the
+    /// baseline order designed and block conflicting retail resolutions".
+    /// Returned by [`Vfs::resolve_blocking_unmeasured`] only.
+    UnmeasuredOrder {
+        /// The key that was asked for.
+        key: Box<AssetKey>,
+        /// The origin the designed order would have served.
+        selected: ConflictOrigin,
+        /// Every lower-ranked origin with different or unknown bytes.
+        shadowed: Vec<ConflictOrigin>,
+        /// The attempts made.
+        trace: Box<ResolutionTrace>,
+    },
 }
 
 impl fmt::Display for ResolveError {
@@ -225,6 +245,23 @@ impl fmt::Display for ResolveError {
                 let rendered: Vec<String> =
                     candidates.iter().map(ConflictOrigin::to_string).collect();
                 write!(f, "{}; attempts: {trace}", rendered.join(" vs. "))
+            }
+            Self::UnmeasuredOrder {
+                key,
+                selected,
+                shadowed,
+                trace,
+            } => {
+                let rendered: Vec<String> =
+                    shadowed.iter().map(ConflictOrigin::to_string).collect();
+                write!(
+                    f,
+                    "{key} is blocked: {selected} would shadow {} with different bytes, \
+                     and the precedence order that decides it is {}, not measured; \
+                     attempts: {trace}",
+                    rendered.join(", "),
+                    trace.precedence_status.label()
+                )
             }
         }
     }
@@ -455,6 +492,56 @@ impl Vfs {
             precedence: mount.precedence(),
             span,
             trace,
+        })
+    }
+
+    /// [`Vfs::resolve`], refusing an answer that only the unmeasured
+    /// precedence order decided between retail sources.
+    ///
+    /// When a retail mount ([`Mount::is_retail`]) wins over other retail
+    /// mounts that hold the key with different or unhashed bytes, the
+    /// result depends on [`PRECEDENCE_ORDER_STATUS`]. While that is
+    /// anything but `verified_original` the lookup fails with
+    /// [`ResolveError::UnmeasuredOrder`] naming every origin. Non-retail
+    /// sources and opted-in mods are exempt (their order is the caller's
+    /// or user's choice, not an original-behavior claim), and shadowed
+    /// copies with identical digests are no conflict (either order yields
+    /// the same bytes). Content sessions resolve through this.
+    pub fn resolve_blocking_unmeasured(
+        &self,
+        context: &ResolveContext,
+        key: &AssetKey,
+    ) -> Result<ResolvedAsset, ResolveError> {
+        let resolved = self.resolve(context, key)?;
+        let mount = self
+            .mounts()
+            .find(|mount| *mount.id() == resolved.mount)
+            .expect("the selected mount is registered");
+        if PRECEDENCE_ORDER_STATUS == ClaimStatus::VerifiedOriginal
+            || resolved.precedence == PrecedenceClass::Mod
+            || !mount.is_retail()
+        {
+            return Ok(resolved);
+        }
+        let selected_sha256 = resolved.span.member_sha256();
+        let shadowed: Vec<ConflictOrigin> = resolved
+            .trace
+            .attempts
+            .iter()
+            .filter(|attempt| attempt.outcome == AttemptOutcome::Candidate)
+            .filter_map(|attempt| self.mounts().find(|other| *other.id() == attempt.mount))
+            .filter(|other| other.is_retail() && other.precedence() != PrecedenceClass::Mod)
+            .map(|other| origin_of(other, key))
+            .filter(|origin| selected_sha256.is_none() || origin.sha256 != selected_sha256)
+            .collect();
+        if shadowed.is_empty() {
+            return Ok(resolved);
+        }
+        Err(ResolveError::UnmeasuredOrder {
+            key: Box::new(key.clone()),
+            selected: origin_of(mount, key),
+            shadowed,
+            trace: Box::new(resolved.trace),
         })
     }
 

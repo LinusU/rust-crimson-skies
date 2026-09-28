@@ -163,6 +163,8 @@ impl SessionBuilder {
 
     /// Mounts an installation with the **designed** baseline layout:
     ///
+    /// Both kinds are [`MountBuilder::retail`] sources.
+    ///
     /// * `install` — the whole tree at `host_root`, [`PrecedenceClass::Shared`],
     ///   namespace [`INSTALL_NAMESPACE`], container label `.`;
     /// * `world-<n>` — each discovered world group directory (F02-B
@@ -184,7 +186,8 @@ impl SessionBuilder {
             MountNamespace::new(INSTALL_NAMESPACE).expect("a valid label"),
             PrecedenceClass::Shared,
             ".",
-        );
+        )
+        .retail();
         self.mount_directory(install, host_root)?;
         for (index, group) in diagnosis.world_groups.iter().enumerate() {
             let world = MountBuilder::new(
@@ -193,7 +196,8 @@ impl SessionBuilder {
                 PrecedenceClass::MissionWorld,
                 group.as_str(),
             )
-            .with_world_group(WorldGroup::from_relative(group.clone()));
+            .with_world_group(WorldGroup::from_relative(group.clone()))
+            .retail();
             let mut root = host_root.to_path_buf();
             root.extend(group.as_str().split(['/', '\\']));
             self.mount_directory(world, &root)?;
@@ -416,9 +420,11 @@ impl ContentSession {
 
     /// Resolves `key` against this session's context and mounts, stamping
     /// the answer with this session's generation. A failure carries the
-    /// same trace as [`Vfs::resolve`].
+    /// same trace as [`Vfs::resolve`]; an answer the unmeasured precedence
+    /// order alone decided between different retail bytes is refused
+    /// ([`Vfs::resolve_blocking_unmeasured`]).
     pub fn resolve(&self, key: &AssetKey) -> Result<SessionAsset, ResolveError> {
-        let resolved = self.vfs.resolve(&self.context, key)?;
+        let resolved = self.vfs.resolve_blocking_unmeasured(&self.context, key)?;
         Ok(SessionAsset {
             generation: self.generation,
             resolved,
