@@ -712,7 +712,7 @@ mod tests {
             "{\"mount\": \"world-1\", \"container\": \"ZBD/c2\", \"precedence\": \
              \"mission_world\", \"outcome\": \"selected\"}"
                 .to_owned(),
-            format!("\"status\": \"written\""),
+            "\"status\": \"written\"".to_owned(),
             format!("\"sha256\": \"{digest}\""),
         ] {
             assert!(report.contains(&needle), "missing {needle} in {report}");
