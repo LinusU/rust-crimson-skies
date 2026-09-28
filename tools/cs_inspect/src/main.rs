@@ -5,9 +5,10 @@
 //! `inventory` command (F02-C) runs production discovery over the selected
 //! installation and writes the inventory and dependency-impact report, and
 //! the `audit` command (F02-D) classifies every inventoried file and runs
-//! the full-content readiness check. The remaining subcommands from
-//! `docs/contracts/CLI-EVIDENCE.md` (`catalog`, `resolve`, `closure`,
-//! `scripts`, `handling`) arrive with later tasks. Until then the binary
+//! the full-content readiness check, and the `resolve` command (F04-C)
+//! resolves one asset key in a mounted content session and reports its
+//! trace. The remaining subcommands from `docs/contracts/CLI-EVIDENCE.md`
+//! (`catalog`, `closure`, `scripts`, `handling`) arrive with later tasks. Until then the binary
 //! refuses invalid input with a nonzero exit code and a diagnostic naming
 //! the missing command — a failure is never returned as success.
 
@@ -37,7 +38,16 @@ COMMANDS
         and run the full-content readiness check. Exits 0 when the
         installation passes, 3 when it does not.
 
-    catalog  resolve  closure  scripts  handling
+    resolve [--cs-path <dir>] --asset <namespace>:<path> [--variant <v>]
+            [--world <group>] [--locale <l>] [--mission <m>] [--out <file>]
+            [--export-dir <dir>]
+        Mount the installation into one content session and resolve the key
+        (namespaces: install, world). The JSON report holds the span, every
+        ordered attempt and the precedence status. --export-dir writes the
+        resolved member into a private directory outside the installation.
+        Exits 0 when resolved, 3 when not found or ambiguous.
+
+    catalog  closure  scripts  handling
         Not implemented in this workspace stage; they are documented in
         docs/contracts/CLI-EVIDENCE.md.
 
@@ -64,17 +74,18 @@ fn main() -> ExitCode {
     match args.first().map(String::as_str) {
         None => {
             eprintln!(
-                "cs-inspect: missing command; expected one of inventory, audit, catalog, \
-                 resolve, closure, scripts, handling (see docs/contracts/CLI-EVIDENCE.md)"
+                "cs-inspect: missing command; expected one of inventory, audit, resolve, \
+                 catalog, closure, scripts, handling (see docs/contracts/CLI-EVIDENCE.md)"
             );
             ExitCode::from(EXIT_INVALID_INPUT)
         }
         Some("inventory") => cs_inspect::install::inventory_command(&args[1..]),
         Some("audit") => cs_inspect::install::audit_command(&args[1..]),
+        Some("resolve") => cs_inspect::resolve::resolve_command(&args[1..]),
         Some(command) => {
             eprintln!(
                 "cs-inspect: unsupported command {command:?}; this workspace stage implements \
-                 only `inventory` and `audit`"
+                 only `inventory`, `audit` and `resolve`"
             );
             ExitCode::from(EXIT_INVALID_INPUT)
         }

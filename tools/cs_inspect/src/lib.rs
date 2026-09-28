@@ -8,7 +8,10 @@
 //! installation-inventory fixture, the F02-C `inventory` command's
 //! report wiring (the dependency-impact report and the JSON renderer)
 //! and the F02-D `audit` command (per-file classification and the
-//! full-content readiness check).
+//! full-content readiness check). [`resolve`] is the F04-C `resolve`
+//! command: one lookup in a mounted content session, reported with its
+//! resolution trace, plus the explicit private export.
 
 pub mod evidence;
 pub mod install;
+pub mod resolve;
