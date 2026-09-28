@@ -22,9 +22,10 @@
 //! from the version-one trailer task #340 recorded ([`zbd::trailer`]). Every
 //! entry still reports the recorded unknown for its content.
 //!
-//! The raw INTERP loading-script records follow:
+//! The raw INTERP loading-script records and their validated, lossless token
+//! decoding follow:
 //! `specs/F07-interp-loading-script-container.md` (stage F07-A,
-//! [`interp`]).
+//! [`interp::read_interp`], and stage F07-B, [`interp::decode_interp`]).
 //!
 //! Texture image descriptors and base-level decoding:
 //! `specs/F08-texture-archives-and-conventional-image-decoding.md` (stage
@@ -60,9 +61,10 @@ pub use bm::{
 };
 pub use error::{ParseError, ParseErrorKind};
 pub use interp::{
-    INDEX_ENTRY_BYTES, INTERP_ENTRYPOINT, INTERP_HEADER_BYTES, InterpError, InterpFile,
-    InterpRawHeader, InterpRawIndexEntry, InterpRawLine, InterpRawScript, LINE_HEADER_BYTES,
-    NAME_FIELD_BYTES, RawArgument, RawArguments, TERMINATOR_BYTES, read_interp,
+    DecodedInterp, INDEX_ENTRY_BYTES, INTERP_ENTRYPOINT, INTERP_HEADER_BYTES, InterpError,
+    InterpFile, InterpFinding, InterpLine, InterpRawHeader, InterpRawIndexEntry, InterpRawLine,
+    InterpRawScript, InterpScript, InterpToken, LINE_HEADER_BYTES, NAME_FIELD_BYTES, RawArgument,
+    RawArguments, TERMINATOR_BYTES, decode_interp, read_interp,
 };
 pub use io::{AllocationBudget, ParseContext, Reader, RecursionBudget, RecursionGuard};
 pub use rof::{
