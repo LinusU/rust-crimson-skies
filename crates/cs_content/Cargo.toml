@@ -7,5 +7,6 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+cs_assets.workspace = true
 cs_formats.workspace = true
 cs_types.workspace = true
