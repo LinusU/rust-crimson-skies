@@ -48,6 +48,11 @@
 //! `specs/F12-text-configuration-strings-and-pe-resources.md` (stage F12-A,
 //! [`text`]).
 //!
+//! The inventory of candidate script containers and its disassembly-neutral
+//! evidence schema:
+//! `specs/F13-mission-language-discovery-and-compatibility-closure.md`
+//! (stage F13-A, [`script_raw`]).
+//!
 //! The ROF reader spans both F05 stages of `specs/F05-rof-directory-trees-
 //! and-compressed-members.md`: [`rof`] defines the raw block (F05-A,
 //! [`read_directory`]) and follows the tree and reads members through a
@@ -62,6 +67,7 @@ pub mod gamez;
 pub mod interp;
 pub mod io;
 pub mod rof;
+pub mod script_raw;
 pub mod text;
 pub mod texture;
 pub mod zbd;
