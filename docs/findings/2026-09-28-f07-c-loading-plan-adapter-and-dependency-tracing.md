@@ -167,8 +167,9 @@ this paragraph certifies nothing about command semantics.
 
 ## Tests
 
-`cargo test --workspace --locked -- accept_f07_c_ --include-ignored` — 19
-tests, all passing; each also passes alone with `--exact`.
+`cargo test --workspace --locked -- accept_f07_c_ --include-ignored` — 21
+tests, all passing (19 at hand-over, 2 added by review); each also passes
+alone with `--exact`.
 
 ### `crates/cs_formats/tests/interp.rs` (7)
 
@@ -182,7 +183,7 @@ tests, all passing; each also passes alone with `--exact`.
 | `stats_tally_every_script_and_head` | the SCRIPT-MISSION tally over two scripts and three lines, the sum identity across the three classifications, and an empty container |
 | `plan_reads_the_container_without_resolving_or_executing` | a `..` path survives into the plan unrepaired and the line stays lossless; the plan resolves nothing |
 
-### `crates/cs_content/src/loading.rs` (7 unit tests)
+### `crates/cs_content/src/loading.rs` (8 unit tests)
 
 | Test | Covers |
 | --- | --- |
@@ -193,8 +194,9 @@ tests, all passing; each also passes alone with `--exact`.
 | `identity_is_a_content_hash_not_a_name_or_a_timestamp` | the container hash and each script's own-extent hash against independently computed digests; a timestamp change moves the container hash and not the script hash |
 | `equal_names_keep_distinct_origins_and_hashes` | **AC03 through the adapter.** Equal names, equal timestamps, different bodies: distinct origins, distinct hashes, and one resolved plus one `not_found` dependency so the two are distinguishable in the report too |
 | `a_plan_against_foreign_bytes_is_refused` | each plan builds against its own bytes; pairing one plan with another container's bytes returns `LoadingError::Extent` naming the script and the length |
+| `a_blocked_script_still_counts_its_unresolved_dependencies` | *(review)* one unclassified line and one unresolvable key in one script: the state carries both counts, and both failures are in the report with their own codes |
 
-### `tools/cs_inspect/src/interp.rs` (5 unit tests)
+### `tools/cs_inspect/src/interp.rs` (6 unit tests)
 
 | Test | Covers |
 | --- | --- |
@@ -203,6 +205,7 @@ tests, all passing; each also passes alone with `--exact`.
 | `cli_counts_composed_keys_as_dynamic_lookups` | a `composed` table entry: one dynamic lookup, zero resolved, no key, the script `ready` while the plan is `incomplete` |
 | `cli_refuses_a_malformed_command_table` | six refused tables (too few fields, a non-numeric position, an unknown spelling kind, `verified_original`, a head argument, a duplicate), an unreadable table, and an unsupported flag — all exit 2 with no report |
 | `cli_refuses_an_undecodable_container_before_planning` | `--plan` on bytes the decoder refuses exits 3 with the decoder's code and no report |
+| `cli_reports_both_problems_and_keeps_the_containers_findings` | *(review)* a blocked script with a failed dependency renders both counts next to its state, and a refused command table keeps the decoder's own `unclaimed` finding on stderr |
 
 ### Mutation probes (each reverted)
 
@@ -227,15 +230,94 @@ a comment saying why, and the test now asserts those two predicates directly,
 so the property is stated once instead of twice. That is the only change the
 probes produced.
 
+## Review (bunny-1, 2026-09-28)
+
+Reviewed against `### F07-C`, the sheet's non-negotiables, `AGENTS.md` and this
+file. The design held up: the command table ships empty and the plan fails
+closed, classification is separated from resolution so `cs_formats` stays free
+of the VFS, identity is a content hash over the script's own bytes, argument
+bytes are never repaired, and every test calls production code. The
+implementing agent's own probes were re-run independently (below) and all
+reproduced.
+
+### Defects found and fixed
+
+1. **`ScriptState` dropped a whole class of failure.** The state was matched as
+   `(blocking, failing)` with `(_, failing) => Incomplete`, so a script holding
+   *both* an unclassified line and an unresolvable key was reported
+   `incomplete` — although `Incomplete`'s own doc says "every line is
+   classified" — and the count of blocking lines was discarded. A caller
+   switching on the state to find the lines it could not read found none.
+   `Blocked` now carries `failures` beside `lines`, the match prefers `Blocked`
+   whenever a line is unclassified, and `blocking_lines()` /
+   `failed_dependencies()` expose both counts (the CLI renders them per script).
+   Covered by `a_blocked_script_still_counts_its_unresolved_dependencies` and
+   `cli_reports_both_problems_and_keeps_the_containers_findings`.
+2. **`LoadingFailure::code`'s doc listed a code the type never produces.** It
+   claimed `unclassified`, `malformed`, `unresolved` or `invalid_key`, but a
+   failed lookup carries the *VFS* class (`not_found`, `ambiguous`,
+   `unmeasured_order`) or `no_session` — never `unresolved`, which is a *state*
+   not a code. The doc now states the codes that are actually emitted and that
+   no two are synonyms.
+3. **A documented exit code and an unconstructible error variant.** The
+   `interp` module doc promised `4` for "no installation selected where one was
+   required" and declared `InterpCommandError::MissingInstallation`, but no path
+   in the command can return 4: `--plan` without an installation still builds
+   the plan and reports every registered command as `no_session`. A missing
+   installation is recorded, not fatal, so the doc now says the command never
+   exits 4 and why, and the dead variant is gone. (The other subcommands do
+   exit 4, so the removal is specific to `interp`, not a change of convention.)
+4. **A failed `--plan` swallowed what the decoder had already found.** The
+   plan's failure path replaced the diagnostics vector, so a refused command
+   table or a refused installation also discarded the container's own
+   `unclaimed`/name findings — the anomalies the owner has to see. The
+   accumulated diagnostics are now kept and the refusal is appended to them.
+5. **Smaller, same spirit:** the command-table reader's doc promised a line
+   number for every refusal, but a rule the *table* refuses (duplicate
+   spelling, position 0, empty source) is refused all-or-nothing and reported
+   as `line 0 ("<table>")`; the doc and the message now say that instead of
+   implying a line that does not exist. The neutral variant label is taken from
+   `AssetVariant::default()` rather than re-spelled as `"default"` in
+   `loading.rs`. Two test helpers wrote their command tables into the system
+   temporary directory and never removed them; they now write into the test's
+   own disposable directory.
+
+### Reviewer probes (each applied, observed, reverted)
+
+| Probe | Effect |
+| --- | --- |
+| `PlanLineKind::is_blocking` returns `false` | 3 tests fail |
+| the script content hash taken over `bytes[..end]` | 2 tests fail |
+| the session-generation check in `read_dependency` disabled | `report_reads_only_through_the_session_that_resolved_it` fails |
+| the `ScriptState` match reverted to "the failure count wins" | `a_blocked_script_still_counts_its_unresolved_dependencies` fails |
+| the per-script state counts rendered as `0` | `cli_reports_both_problems_and_keeps_the_containers_findings` fails |
+| `failed_with` back to `failed` (earlier diagnostics dropped) | `cli_reports_both_problems_and_keeps_the_containers_findings` fails |
+
+### Reviewer commands
+
+`cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets
+--all-features --locked -- -D warnings` and `cargo test --workspace --locked`
+(pass, 423 tests) all green on the review commit; the 21 task tests pass
+together and each alone with `--exact`. The synthetic fixture was re-run
+through the real binary: exit 3, `"status": "incomplete"`, 2 unclassified
+commands, and the report parses as JSON.
+
+### Still open (unchanged, and none of it is a merge blocker)
+
+The five unknowns below are F07-D's and F13's measurement, not gaps in this
+stage. No new task was filed by the review either: every one of them is
+already in F07-D's or F13's scope, and filing them again would put the same
+work in the queue twice.
+
 ## Commands run
 
 | Command | Result |
 | --- | --- |
 | `cargo fmt --all -- --check` | pass |
 | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | pass |
-| `cargo test --workspace --locked` | pass, no failures |
-| `cargo test --workspace --locked -- accept_f07_c_ --include-ignored` | 19 tests, all pass |
-| each of the 19 with `--exact` | all pass alone |
+| `cargo test --workspace --locked` | pass, no failures (423 tests on the review commit) |
+| `cargo test --workspace --locked -- accept_f07_c_ --include-ignored` | 21 tests, all pass (19 at hand-over, 2 added by review) |
+| each of the 21 with `--exact` | all pass alone |
 | `cargo run -p cs_inspect --bin cs-inspect -- interp --file <authored container> --plan` | exit 3, plan `incomplete`, every line `unclassified`, as designed |
 | `cargo run -p cs_inspect --bin cs-inspect -- interp --file fixtures/synthetic/synthetic.interp --plan` | exit 3, `SYNTHETIC` and `VALUE` unclassified, report parses as JSON |
 

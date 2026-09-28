@@ -62,9 +62,17 @@
 //! input (no `--file`, an unreadable path, a path that is not a file, a
 //! malformed command table); `3` the bytes are not a valid INTERP container,
 //! they decoded with findings, or the loading plan is incomplete — all
-//! reported anomalies rather than clean passes; `4` no installation selected
-//! where one was required; `1` a runtime failure. A decode failure is never
-//! reported as success, and an incomplete plan never exits 0.
+//! reported anomalies rather than clean passes; `1` a runtime failure. A
+//! decode failure is never reported as success, and an incomplete plan never
+//! exits 0.
+//!
+//! This command never exits `4`. Unlike `inventory`/`resolve`/`audit`, it does
+//! not *require* an installation: `--plan` without `--cs-path` and without
+//! `CS_GAME_DIR` still classifies the container and reports every registered
+//! command as `no_session`, because the classification is worth having without
+//! an installation and a missing one is recorded in the report rather than
+//! thrown away. The exit code is decided by the plan's completeness, which
+//! that report says is false.
 //!
 //! This command is the F07-B/F07-C *consumer*: it makes the decoder and the
 //! plan reachable outside the library crates. It executes nothing. A command
@@ -131,19 +139,19 @@ pub enum InterpCommandError {
         /// Why.
         source: io::Error,
     },
-    /// A line of the command table was refused, with its line number and why.
+    /// A line of the command table was refused, or the table as a whole was.
     CommandsRefused {
         /// The table path.
         path: PathBuf,
-        /// 1-based line number of the offending rule.
+        /// 1-based line number of the offending rule, or `0` when the whole
+        /// table was refused (it is applied all or nothing, so no single line
+        /// is at fault on its own).
         line: usize,
-        /// The rule as it was read.
+        /// The rule as it was read, or `<table>` for a whole-table refusal.
         rule: String,
         /// Why it was refused.
         reason: String,
     },
-    /// `--cs-path` or `CS_GAME_DIR` named no installation.
-    MissingInstallation,
     /// Discovery refused the installation.
     Discovery(DiscoveryError),
     /// A mount of the session was refused. The builder is dropped, which
@@ -181,15 +189,21 @@ impl fmt::Display for InterpCommandError {
                 line,
                 rule,
                 reason,
+            } if *line == 0 => write!(
+                f,
+                "command table {} is refused as a whole ({reason}); it is applied all or nothing, \
+                 so no line of it was applied",
+                path.display()
+            ),
+            Self::CommandsRefused {
+                path,
+                line,
+                rule,
+                reason,
             } => write!(
                 f,
                 "command table {} line {line} ({rule:?}) is refused: {reason}",
                 path.display()
-            ),
-            Self::MissingInstallation => write!(
-                f,
-                "no installation selected: pass --cs-path <dir> or set CS_GAME_DIR to resolve \
-                 the plan's keys"
             ),
             Self::Discovery(error) => write!(f, "{error}"),
             Self::Session(error) => write!(f, "{error}"),
@@ -282,11 +296,22 @@ pub struct InterpRun {
 
 impl InterpRun {
     fn failed(exit_code: u8, error: &InterpCommandError) -> Self {
+        Self::failed_with(exit_code, error, Vec::new())
+    }
+
+    /// A run that failed *after* something was already observed. The earlier
+    /// observations — the decoder's findings, the note about a missing command
+    /// table — stay on stderr: a later failure does not un-happen them, and a
+    /// refused command table must not swallow the findings of the container it
+    /// was going to plan.
+    fn failed_with(exit_code: u8, error: &InterpCommandError, earlier: Vec<String>) -> Self {
+        let mut diagnostics = earlier;
+        diagnostics.push(error.to_string());
         Self {
             exit_code,
             report: None,
             out: None,
-            diagnostics: vec![error.to_string()],
+            diagnostics,
         }
     }
 }
@@ -384,7 +409,12 @@ pub fn interp_command_result(args: &[String]) -> InterpRun {
     let plan = if parsed.plan {
         match build_plan(&parsed, &decoded, &label, &mut diagnostics) {
             Ok(plan) => Some(plan),
-            Err(failure) => return InterpRun::failed(failure.0, &failure.1),
+            // Whatever the decoder already reported stays on stderr: a plan
+            // that could not be built does not make the container's findings
+            // disappear.
+            Err(failure) => {
+                return InterpRun::failed_with(failure.0, &failure.1, diagnostics);
+            }
         }
     } else {
         None
@@ -552,9 +582,12 @@ fn build_plan<'a>(
 ///
 /// The whole line is whitespace-split and the source may hold spaces, so the
 /// first six fields are the rule and the rest is the provenance. A rule that
-/// does not parse, names a position that is not a number, carries an unknown
-/// status or is refused by the table is a usage error with its line number —
-/// a table is never partially applied.
+/// does not parse, names a position that is not a number or carries an unknown
+/// status is a usage error naming *its* line. A rule the **table** refuses (a
+/// duplicate spelling, a key argument at position 0, an empty source) is
+/// reported against the whole table instead, because the table is applied all
+/// or nothing: a table is never partially applied, so there is no single line
+/// that caused the refusal on its own.
 fn read_command_table(path: &Path) -> Result<LoadCommandTable, InterpCommandError> {
     let text = match fs::read_to_string(path) {
         Ok(text) => text,
@@ -861,7 +894,7 @@ fn plan_json(run: &PlanRun<'_>) -> String {
                 "{{\"index\": {}, \"entry_offset\": {}, \"script_offset\": {}, \
                  \"terminator_offset\": {}, \"end\": {}, \"name\": {}, \
                  \"timestamp_metadata_only\": {}, \"content_sha256\": {}, \"state\": {}, \
-                 \"dependencies\": [{}]}}",
+                 \"blocking_lines\": {}, \"failed_dependencies\": {}, \"dependencies\": [{}]}}",
                 script.origin.index(),
                 script.origin.entry_offset(),
                 script.origin.script_offset(),
@@ -871,6 +904,8 @@ fn plan_json(run: &PlanRun<'_>) -> String {
                 script.raw_timestamp,
                 jstr(&script.content_sha256.to_hex()),
                 jstr(script.state.code()),
+                script.state.blocking_lines(),
+                script.state.failed_dependencies(),
                 script
                     .dependencies
                     .iter()
@@ -1292,22 +1327,19 @@ mod tests {
         tree
     }
 
-    /// A command table with one rule: `loadmesh world 2 literal`.
-    fn table(spelling: &str) -> PathBuf {
-        let path = std::env::temp_dir().join(format!(
-            "cs-f07-c-table-{}-{}.txt",
-            spelling,
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::write(
-            &path,
+    /// A command table with one rule: `loadmesh 1 2 - literal designed ...`.
+    ///
+    /// Written inside the test's own disposable directory, so a run leaves
+    /// nothing behind in the system temporary directory.
+    fn table(tree: &Temp, spelling: &str) -> PathBuf {
+        tree.write(
+            &format!("{spelling}-table.txt"),
             format!(
                 "# synthetic table: exercises the plan, not an original command\n\
                  {spelling} 1 2 - literal designed docs/findings/<synthetic>.md\n"
-            ),
+            )
+            .as_bytes(),
         )
-        .expect("the table is written");
-        path
     }
 
     /// AC04: a command nobody has classified yields its source offset and the
@@ -1403,13 +1435,84 @@ mod tests {
         );
     }
 
+    /// A script that is blocked *and* whose key did not resolve reports both
+    /// counts, and a command table that is refused does not swallow what the
+    /// decoder already found: a later failure does not un-happen the
+    /// container's own anomalies.
+    #[test]
+    fn accept_f07_c_cli_reports_both_problems_and_keeps_the_containers_findings() {
+        let tree = installation("plan-mixed");
+        let commands = table(&tree, "loadmesh");
+        // The first line is registered and unresolvable, the second is not
+        // classified at all.
+        let bytes = image(&[(b"load", &[b"loadmesh\0world\0absent.flt\0", b"Quit\0"])]);
+        let path = tree.write("mixed.interp", &bytes);
+        // Twelve unclaimed bytes after the script, which the decoder retains
+        // as a finding and the command reports on stderr.
+        let mut gapped = bytes.clone();
+        let script_end = gapped.len();
+        gapped.extend_from_slice(&[0xAB; 12]);
+        let gapped_path = tree.write("gapped.interp", &gapped);
+        fn path_arg(path: &Path) -> &str {
+            path.to_str().expect("temp paths are UTF-8")
+        }
+
+        let run = interp_command_result(&args(&[
+            "--file",
+            path_arg(&path),
+            "--plan",
+            "--commands",
+            path_arg(&commands),
+            "--cs-path",
+            path_arg(&tree.0),
+            "--world",
+            "zbd/c1",
+        ]));
+        assert_eq!(run.exit_code, EXIT_FAILED_VALIDATION);
+        let report = run.report.expect("the plan is reported");
+        assert!(
+            is_well_formed_json(&report),
+            "the plan report is a JSON document:\n{report}"
+        );
+        // One unclassified line and one dependency that did not resolve: the
+        // script's own state names both, so neither is hidden behind the
+        // other.
+        assert!(
+            report.contains(
+                "\"state\": \"blocked\", \"blocking_lines\": 1, \"failed_dependencies\": 1"
+            ),
+            "{report}"
+        );
+        assert!(report.contains("\"code\": \"not_found\""), "{report}");
+        assert!(report.contains("\"code\": \"unclassified\""), "{report}");
+
+        // A command table that is refused exits 2, and the findings the
+        // decoder retained for the same container are still on stderr.
+        let bad_table = tree.write("bad-table.txt", b"loadmesh 1 2 - literal\n");
+        let run = interp_command_result(&args(&[
+            "--file",
+            path_arg(&gapped_path),
+            "--plan",
+            "--commands",
+            path_arg(&bad_table),
+        ]));
+        assert_eq!(run.exit_code, EXIT_INVALID_INPUT);
+        assert!(run.report.is_none());
+        let diagnostic = run.diagnostics.join("\n");
+        assert!(diagnostic.contains("is refused"), "{diagnostic}");
+        assert!(
+            diagnostic.contains(&format!("unclaimed bytes at offset {script_end}")),
+            "the container's own finding survives the table refusal: {diagnostic}"
+        );
+    }
+
     /// A registered command is resolved through the mounted session: the
     /// dependency carries the key, the world's own bytes' span and the site
     /// that asked for it, and the report is complete.
     #[test]
     fn accept_f07_c_cli_resolves_registered_commands_through_the_session() {
         let tree = installation("plan-resolve");
-        let commands = table("loadmesh");
+        let commands = table(&tree, "loadmesh");
         // A world-scoped key is spelled relative to the world group, which is
         // how the VFS mounts each group: `ZBD/c1/plane.flt` answers
         // `world:plane.flt` for the context that selected `zbd/c1`.
@@ -1509,15 +1612,10 @@ mod tests {
     #[test]
     fn accept_f07_c_cli_counts_composed_keys_as_dynamic_lookups() {
         let tree = installation("plan-composed");
-        let commands = std::env::temp_dir().join(format!(
-            "cs-f07-c-composed-{}.txt",
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        fs::write(
-            &commands,
-            "loadmesh 1 2 - composed inferred docs/findings/<synthetic>.md\n",
-        )
-        .expect("the table is written");
+        let commands = tree.write(
+            "composed-table.txt",
+            b"loadmesh 1 2 - composed inferred docs/findings/<synthetic>.md\n",
+        );
         let bytes = image(&[(b"load", &[b"loadmesh\0world\0%ZBD_DIR%/c1/plane.flt\0"])]);
         let path = tree.write("composed.interp", &bytes);
         fn path_arg(path: &Path) -> &str {
@@ -1557,7 +1655,6 @@ mod tests {
             report.contains("the key is assembled at run time (composed)"),
             "{report}"
         );
-        let _ = fs::remove_file(&commands);
     }
 
     /// A command table is read whole or refused whole: a malformed rule, an

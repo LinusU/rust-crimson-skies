@@ -87,7 +87,7 @@ use std::fmt;
 use cs_assets::install::Sha256;
 use cs_assets::vfs::{ContentSession, ReadError, SessionAsset, SessionGeneration};
 use cs_formats::{InterpLoadPlan, KeySpelling, LoadCommand, PlanLineKind, PlanStats, ScriptOrigin};
-use cs_types::asset_id::{AssetKey, AssetKeyError, SourceSpan, WorldGroup};
+use cs_types::asset_id::{AssetKey, AssetKeyError, AssetVariant, SourceSpan, WorldGroup};
 use cs_types::evidence::ContentHash;
 
 /// How one dependency of a loading plan ended.
@@ -211,8 +211,13 @@ impl LoadingDependency {
 /// affects.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LoadingFailure {
-    /// Stable lowercase identifier: `unclassified`, `malformed`,
-    /// `unresolved` or `invalid_key`.
+    /// Stable lowercase identifier. A line the plan could not classify is
+    /// `unclassified` or `malformed`; a dependency whose arguments are not a
+    /// key is `invalid_key`; a dependency that was looked up and not answered
+    /// carries the VFS's own failure class instead: `not_found`, `ambiguous`,
+    /// `unmeasured_order`, or `no_session` when no session was given to
+    /// search. A caller can therefore branch on *why* a key was not resolved,
+    /// and no code here is a synonym for another.
     pub code: &'static str,
     /// Where the failure is in the container.
     pub site: DependencySite,
@@ -261,14 +266,22 @@ pub enum ScriptState {
     /// for those, and the report's `dynamic_lookups` names them.
     Ready,
     /// The script is blocked: at least one line was unclassified or
-    /// malformed.
+    /// malformed, so at least one line of it is not understood at all.
+    ///
+    /// A script can be blocked *and* hold a dependency that did not resolve,
+    /// so `failures` is carried here as well. Reporting only one of the two
+    /// would hide the other from a caller that switches on this state, and
+    /// both are in [`LoadingPlanReport::failures`] with their own codes.
     Blocked {
-        /// How many lines block it.
+        /// How many lines are unclassified or malformed.
         lines: usize,
+        /// How many of the script's dependencies did not resolve. Zero when
+        /// every registered line resolved (or was a dynamic lookup).
+        failures: usize,
     },
     /// Every line is classified, but at least one dependency did not resolve.
     Incomplete {
-        /// How many lines block it.
+        /// How many of the script's dependencies did not resolve.
         failures: usize,
     },
 }
@@ -287,6 +300,22 @@ impl ScriptState {
     /// script unready; they keep the *plan* incomplete.
     pub const fn is_ready(self) -> bool {
         matches!(self, Self::Ready)
+    }
+
+    /// How many lines of this script are unclassified or malformed.
+    pub const fn blocking_lines(self) -> usize {
+        match self {
+            Self::Ready | Self::Incomplete { .. } => 0,
+            Self::Blocked { lines, .. } => lines,
+        }
+    }
+
+    /// How many of this script's dependencies did not resolve.
+    pub const fn failed_dependencies(self) -> usize {
+        match self {
+            Self::Ready => 0,
+            Self::Blocked { failures, .. } | Self::Incomplete { failures } => failures,
+        }
     }
 }
 
@@ -773,8 +802,11 @@ pub fn resolve_loading_plan<'a>(
 
         let state = match (blocking, failing) {
             (0, 0) => ScriptState::Ready,
-            (blocking, 0) => ScriptState::Blocked { lines: blocking },
-            (_, failing) => ScriptState::Incomplete { failures: failing },
+            (0, failing) => ScriptState::Incomplete { failures: failing },
+            // Both kinds of problem are reported, not one in place of the
+            // other: a caller that switches on the state must not have to
+            // re-walk the failures to discover the lines it could not read.
+            (lines, failures) => ScriptState::Blocked { lines, failures },
         };
         scripts.push(LoadingScript {
             origin,
@@ -906,7 +938,11 @@ fn build_key(key: &cs_formats::KeyTokens<'_>) -> Result<AssetKey, (&'static str,
     let path = part("path", key.path())?;
     let variant = match key.variant() {
         Some(token) => part("variant", token)?,
-        None => "default".to_owned(),
+        // A registration that names no variant position resolves under the
+        // engine's own neutral variant label, taken from `cs_types` rather
+        // than spelled again here: it is authored engine design, not a value
+        // observed in an original container.
+        None => AssetVariant::default().as_str().to_owned(),
     };
     AssetKey::from_spelling(&namespace, &path, &variant).map_err(|error: AssetKeyError| {
         let part = match &error {
@@ -1219,6 +1255,52 @@ mod tests {
             report.read_dependency(&open, 1),
             Err(LoadingError::NotReadable { index: 1, .. })
         ));
+        open.close();
+    }
+
+    /// A script can be blocked *and* hold a dependency that did not resolve.
+    /// Both counts have to survive into its state, because a caller that
+    /// switches on the state is how the two problems get told apart: a report
+    /// that named only the unresolved dependency would leave the unclassified
+    /// line visible only to a reader who re-walks every failure.
+    #[test]
+    fn accept_f07_c_a_blocked_script_still_counts_its_unresolved_dependencies() {
+        let tree = Temp::new("mixed");
+        tree.write("ZBD/c1/plane.flt", b"world one plane");
+        // Line 0 is a registered command whose key nothing holds; line 1 is a
+        // command no registration claims.
+        let bytes = container(b"load", &[b"loadmesh\0world\0absent.flt\0", b"Quit\0"]);
+        let mut table = LoadCommandTable::new();
+        table
+            .insert(registration(b"loadmesh", KeySpelling::Literal))
+            .expect("the rule registers");
+        let decoded = decode_interp(&mut ParseContext::with_defaults("load.interp"), &bytes)
+            .expect("the container validates");
+        let plan = plan_interp_loading(&decoded, &table);
+        let open = session(&tree, "zbd/c1").expect("the session opens");
+        let report = resolve_loading_plan(Some(&open), &decoded, &plan).expect("the plan builds");
+
+        let state = report.script(0).expect("one script").state;
+        assert_eq!(
+            state,
+            ScriptState::Blocked {
+                lines: 1,
+                failures: 1
+            },
+            "the unclassified line and the unresolved key are both reported"
+        );
+        assert_eq!(state.code(), "blocked");
+        assert!(!state.is_ready());
+        assert_eq!(state.blocking_lines(), 1);
+        assert_eq!(state.failed_dependencies(), 1);
+        // And both problems really are in the report, with their own codes.
+        let codes: Vec<&str> = report
+            .failures()
+            .iter()
+            .map(|failure| failure.code)
+            .collect();
+        assert_eq!(codes, ["not_found", "unclassified"]);
+        assert!(!report.is_complete());
         open.close();
     }
 
