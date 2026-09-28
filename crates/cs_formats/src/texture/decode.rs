@@ -19,8 +19,7 @@ use crate::error::ParseError;
 use crate::io::{AllocationBudget, Reader};
 
 use super::descriptor::{
-    AlphaSource, AlphaTest, ColorSpace, Extent, ImageDescriptor, PaletteEntry, PixelFormat,
-    RowOrder,
+    AlphaSource, AlphaTest, ColorSpace, Extent, ImageDescriptor, Palette, PixelFormat, RowOrder,
 };
 
 /// Channel layout of [`DecodedImage::texels`].
@@ -30,14 +29,19 @@ pub enum DecodedFormat {
     Rgb8,
     /// Red, green, blue, stored alpha.
     Rgba8,
+    /// One little-endian 16-bit [`PixelFormat::Rgb565`] word per texel,
+    /// exactly as stored or as a [`Palette::Rgb565`] entry states it.
+    Rgb565,
 }
 
 impl DecodedFormat {
-    /// Bytes per decoded texel.
+    /// Bytes per decoded texel (for [`Self::Rgb565`] the two bytes of one
+    /// packed word, not its three channels).
     pub const fn channels(self) -> usize {
         match self {
             Self::Rgb8 => 3,
             Self::Rgba8 => 4,
+            Self::Rgb565 => 2,
         }
     }
 }
@@ -50,6 +54,7 @@ pub struct DecodedImage {
     format: DecodedFormat,
     texels: Vec<u8>,
     indices: Option<Vec<u8>>,
+    alpha: Option<Vec<u8>>,
     alpha_source: AlphaSource,
     alpha_test: AlphaTest,
     color_space: ColorSpace,
@@ -91,6 +96,30 @@ impl DecodedImage {
     pub fn index(&self, x: u32, y: u32) -> Option<u8> {
         let at = self.position(x, y)?;
         self.indices.as_ref()?.get(at).copied()
+    }
+
+    /// The stored [`PixelFormat::Rgb565`] word of texel `(x, y)`, for a
+    /// [`DecodedFormat::Rgb565`] image.
+    pub fn texel565(&self, x: u32, y: u32) -> Option<u16> {
+        if self.format != DecodedFormat::Rgb565 {
+            return None;
+        }
+        let bytes = self.texel(x, y)?;
+        Some(u16::from_le_bytes([bytes[0], bytes[1]]))
+    }
+
+    /// The separate coverage plane of an [`AlphaSource::Plane`] image, one
+    /// byte per texel in the same order as [`Self::texels`], values as
+    /// stored.
+    pub fn alpha(&self) -> Option<&[u8]> {
+        self.alpha.as_deref()
+    }
+
+    /// The coverage byte of texel `(x, y)` for an [`AlphaSource::Plane`]
+    /// image.
+    pub fn alpha_at(&self, x: u32, y: u32) -> Option<u8> {
+        let at = self.position(x, y)?;
+        self.alpha.as_ref()?.get(at).copied()
     }
 
     /// Where coverage comes from, carried unchanged from the descriptor.
@@ -281,7 +310,9 @@ impl std::error::Error for TextureError {}
 /// Decodes the base level of `descriptor` from exactly `stored`.
 ///
 /// `stored` holds the base level only, rows of `width * bytes_per_texel`
-/// bytes without padding, in the descriptor's [`RowOrder`]. `container`
+/// bytes without padding, in the descriptor's [`RowOrder`]; for
+/// [`AlphaSource::Plane`] they are followed by the coverage plane, rows of
+/// `width` bytes in the same row order. `container`
 /// labels errors; `budget` is charged for the decoded buffers before they
 /// are allocated.
 pub fn decode_base_level(
@@ -365,26 +396,15 @@ fn decode_level(
     stored: &[u8],
     budget: &mut AllocationBudget,
 ) -> Result<DecodedImage, TextureError> {
+    let (color, plane) = split_level(container, descriptor, extent, field, stored)?;
     let format = descriptor.format();
-    let expected = extent.texel_count() * u64::from(format.bytes_per_texel());
-    let mut reader = Reader::new(container, stored);
-    let stored_len = reader.checked_byte_len(
-        field,
-        extent.texel_count(),
-        u64::from(format.bytes_per_texel()),
-    )?;
-    let bytes = reader.read_bytes(field, stored_len)?;
-    if !reader.is_empty() {
-        return Err(TextureError::TrailingBytes {
-            container: container.to_owned(),
-            expected,
-            observed: stored.len() as u64,
-        });
-    }
 
-    let decoded_format = match format {
-        PixelFormat::Rgba8 => DecodedFormat::Rgba8,
-        PixelFormat::Rgb8 | PixelFormat::Indexed8 => DecodedFormat::Rgb8,
+    let decoded_format = match (format, descriptor.palette()) {
+        (PixelFormat::Rgba8, _) => DecodedFormat::Rgba8,
+        (PixelFormat::Rgb565, _) | (PixelFormat::Indexed8, Some(Palette::Rgb565(_))) => {
+            DecodedFormat::Rgb565
+        }
+        (PixelFormat::Rgb8, _) | (PixelFormat::Indexed8, _) => DecodedFormat::Rgb8,
     };
     let texel_len = budget.reserve(
         "texture.decoded_texels",
@@ -396,31 +416,46 @@ fn decode_level(
         PixelFormat::Indexed8 => {
             Some(budget.reserve("texture.decoded_indices", 0, extent.texel_count(), 1)?)
         }
-        PixelFormat::Rgb8 | PixelFormat::Rgba8 => None,
+        PixelFormat::Rgb8 | PixelFormat::Rgba8 | PixelFormat::Rgb565 => None,
+    };
+    let alpha_len = match plane {
+        Some(_) => Some(budget.reserve("texture.decoded_alpha", 0, extent.texel_count(), 1)?),
+        None => None,
     };
 
     let row_len = extent.width as usize * format.bytes_per_texel() as usize;
+    let plane_row_len = extent.width as usize;
     let height = extent.height as usize;
     let mut texels = Vec::with_capacity(texel_len);
     let mut indices = index_len.map(Vec::with_capacity);
+    let mut alpha = alpha_len.map(Vec::with_capacity);
     for y in 0..height {
-        let stored_row = match descriptor.row_order() {
-            RowOrder::TopDown => y,
-            RowOrder::BottomUp => height - 1 - y,
-        };
+        let stored_row = stored_row(descriptor, height, y);
         let row_start = stored_row * row_len;
-        let row = &bytes[row_start..row_start + row_len];
+        let row = &color[row_start..row_start + row_len];
         match (format, descriptor.palette()) {
             (PixelFormat::Indexed8, Some(palette)) => {
                 for (x, &index) in row.iter().enumerate() {
                     let entry = lookup(container, palette, index, row_start + x, x, y)?;
-                    texels.extend_from_slice(&[entry.r, entry.g, entry.b]);
+                    match palette {
+                        Palette::Rgb8(entries) => {
+                            let entry = entries[entry];
+                            texels.extend_from_slice(&[entry.r, entry.g, entry.b]);
+                        }
+                        Palette::Rgb565(entries) => {
+                            texels.extend_from_slice(&entries[entry].to_le_bytes());
+                        }
+                    }
                 }
                 if let Some(indices) = indices.as_mut() {
                     indices.extend_from_slice(row);
                 }
             }
             _ => texels.extend_from_slice(row),
+        }
+        if let (Some(plane), Some(alpha)) = (plane, alpha.as_mut()) {
+            let plane_start = stored_row * plane_row_len;
+            alpha.extend_from_slice(&plane[plane_start..plane_start + plane_row_len]);
         }
     }
 
@@ -429,30 +464,104 @@ fn decode_level(
         format: decoded_format,
         texels,
         indices,
+        alpha,
         alpha_source: descriptor.alpha_source(),
         alpha_test: descriptor.alpha_test(),
         color_space: descriptor.color_space(),
     })
 }
 
+/// Checks every palette index of one level of `descriptor` at `extent`
+/// without decoding or allocating anything.
+///
+/// Performs the same length and palette checks as [`decode_base_level`]
+/// and reports the same errors, in the same canonical texel order, so a
+/// variant reader can reject a bad image while it reads the container and
+/// leave the decoding (and its allocation) to the consumer.
+pub(crate) fn check_level(
+    container: &str,
+    descriptor: &ImageDescriptor,
+    extent: Extent,
+    stored: &[u8],
+) -> Result<(), TextureError> {
+    let (color, _) = split_level(container, descriptor, extent, "texture.base_level", stored)?;
+    let Some(palette) = descriptor.palette() else {
+        return Ok(());
+    };
+    let width = extent.width as usize;
+    let height = extent.height as usize;
+    for y in 0..height {
+        let row_start = stored_row(descriptor, height, y) * width;
+        for (x, &index) in color[row_start..row_start + width].iter().enumerate() {
+            lookup(container, palette, index, row_start + x, x, y)?;
+        }
+    }
+    Ok(())
+}
+
+/// Splits exactly `stored` into the level's color texels and, for
+/// [`AlphaSource::Plane`], its coverage plane.
+fn split_level<'a>(
+    container: &str,
+    descriptor: &ImageDescriptor,
+    extent: Extent,
+    field: &'static str,
+    stored: &'a [u8],
+) -> Result<(&'a [u8], Option<&'a [u8]>), TextureError> {
+    let format = descriptor.format();
+    let mut reader = Reader::new(container, stored);
+    let color_len = reader.checked_byte_len(
+        field,
+        extent.texel_count(),
+        u64::from(format.bytes_per_texel()),
+    )?;
+    let color = reader.read_bytes(field, color_len)?;
+    let plane = match descriptor.alpha_source() {
+        AlphaSource::Plane => {
+            let plane_len =
+                reader.checked_byte_len("texture.alpha_plane", extent.texel_count(), 1)?;
+            Some(reader.read_bytes("texture.alpha_plane", plane_len)?)
+        }
+        _ => None,
+    };
+    if !reader.is_empty() {
+        return Err(TextureError::TrailingBytes {
+            container: container.to_owned(),
+            expected: descriptor.level_bytes(extent),
+            observed: stored.len() as u64,
+        });
+    }
+    Ok((color, plane))
+}
+
+/// The stored row that holds canonical row `y` (from the top).
+fn stored_row(descriptor: &ImageDescriptor, height: usize, y: usize) -> usize {
+    match descriptor.row_order() {
+        RowOrder::TopDown => y,
+        RowOrder::BottomUp => height - 1 - y,
+    }
+}
+
+/// The palette position `index` names, or the error naming the texel.
 fn lookup(
     container: &str,
-    palette: &[PaletteEntry],
+    palette: &Palette,
     index: u8,
     offset: usize,
     x: usize,
     y: usize,
-) -> Result<PaletteEntry, TextureError> {
-    palette
-        .get(usize::from(index))
-        .copied()
-        .ok_or_else(|| TextureError::PaletteIndexOutOfRange {
-            container: container.to_owned(),
-            offset: offset as u64,
-            // Both are below MAX_DIMENSION, so they fit in u32.
-            x: x as u32,
-            y: y as u32,
-            index,
-            entries: palette.len(),
-        })
+) -> Result<usize, TextureError> {
+    let entries = palette.len();
+    if usize::from(index) < entries {
+        return Ok(usize::from(index));
+    }
+    Err(TextureError::PaletteIndexOutOfRange {
+        container: container.to_owned(),
+        offset: offset as u64,
+        // Both are below MAX_DIMENSION, so they fit in u32.
+        x: x as u32,
+        y: y as u32,
+        index,
+        entries,
+    })
 }

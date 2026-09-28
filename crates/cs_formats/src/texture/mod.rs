@@ -32,5 +32,6 @@ pub use decode::{
 };
 pub use descriptor::{
     AlphaSource, AlphaTest, ColorSpace, DescriptorError, DescriptorParts, Extent, ImageDescriptor,
-    MAX_DIMENSION, MAX_MIP_LEVELS, MAX_PALETTE_ENTRIES, PaletteEntry, PixelFormat, RowOrder,
+    MAX_DIMENSION, MAX_MIP_LEVELS, MAX_PALETTE_ENTRIES, Palette, PaletteEntry, PixelFormat,
+    RowOrder,
 };

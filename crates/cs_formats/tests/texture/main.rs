@@ -18,7 +18,7 @@ use cs_formats::io::AllocationBudget;
 use cs_formats::texture::{
     AlphaSource, AlphaTest, ColorSpace, DecodedFormat, DecodedImage, DescriptorError,
     DescriptorParts, Extent, ImageDescriptor, MAX_DIMENSION, MAX_MIP_LEVELS, MAX_PALETTE_ENTRIES,
-    PaletteEntry, PixelFormat, RowOrder, TextureError, decode_base_level,
+    Palette, PaletteEntry, PixelFormat, RowOrder, TextureError, decode_base_level,
 };
 
 /// Provenance label carried by every result and error these tests assert on.
@@ -74,7 +74,7 @@ fn parts(extent: Extent, format: PixelFormat, row_order: RowOrder) -> Descriptor
         extent,
         format,
         row_order,
-        palette: (format == PixelFormat::Indexed8).then(palette),
+        palette: (format == PixelFormat::Indexed8).then(|| Palette::Rgb8(palette())),
         mips: Vec::new(),
         alpha_source: AlphaSource::Unknown,
         alpha_test: AlphaTest::Unknown,
@@ -398,13 +398,16 @@ fn accept_f08_a_descriptor_rejects_inconsistent_parts() {
     p.palette = None;
     assert_eq!(reject(p).code(), "palette_missing");
     let mut p = indexed();
-    p.palette = Some(Vec::new());
+    p.palette = Some(Palette::Rgb8(Vec::new()));
     assert_eq!(reject(p).code(), "palette_size");
     let mut p = indexed();
-    p.palette = Some(vec![PaletteEntry::new(0, 0, 0); MAX_PALETTE_ENTRIES + 1]);
+    p.palette = Some(Palette::Rgb8(vec![
+        PaletteEntry::new(0, 0, 0);
+        MAX_PALETTE_ENTRIES + 1
+    ]));
     assert_eq!(reject(p).code(), "palette_size");
     let mut p = rgb();
-    p.palette = Some(palette());
+    p.palette = Some(Palette::Rgb8(palette()));
     assert_eq!(reject(p).code(), "palette_not_allowed");
 
     let mut p = rgb();

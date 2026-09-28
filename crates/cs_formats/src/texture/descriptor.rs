@@ -8,13 +8,15 @@
 //! fact says so ([`AlphaSource::Unknown`], [`AlphaTest::Unknown`],
 //! [`ColorSpace::Unknown`]) instead of letting the decoder assume one.
 //!
-//! No Crimson Skies texture variant is described here. The research
-//! boundary of spec F08 forbids assuming DXTC, 565, indexed color or any
-//! other encoding until an archive variant establishes it; the
-//! [`PixelFormat`]s below are the conventional, self-describing layouts a
-//! variant reader (F08-B) or a conventional TGA/BMP/TIFF reader can map
-//! established bytes onto. Adding a variant means adding a format here with
-//! its evidence, not reinterpreting an existing one.
+//! The research boundary of spec F08 forbids assuming DXTC, 565, indexed
+//! color or any other encoding until an archive variant establishes it. The
+//! 8-bit [`PixelFormat`]s are the conventional, self-describing layouts a
+//! conventional TGA/BMP/TIFF reader maps established bytes onto;
+//! [`PixelFormat::Rgb565`], [`Palette::Rgb565`] and [`AlphaSource::Plane`]
+//! were added with the ZBD texture package variant (stage F08-B.02,
+//! [`crate::texture::zbd`]), whose layout establishes them. Adding a variant
+//! means adding a format here with its evidence, not reinterpreting an
+//! existing one.
 
 use std::fmt;
 
@@ -80,6 +82,11 @@ pub enum PixelFormat {
     Rgba8,
     /// One byte per texel indexing [`ImageDescriptor::palette`].
     Indexed8,
+    /// One little-endian 16-bit word per texel, red in bits 15–11, green in
+    /// bits 10–5, blue in bits 4–0. The word is kept as stored: expanding
+    /// it to 8-bit channels is a presentation decision, not a decoding one
+    /// (non-negotiable #3).
+    Rgb565,
 }
 
 impl PixelFormat {
@@ -89,6 +96,7 @@ impl PixelFormat {
             Self::Rgb8 => 3,
             Self::Rgba8 => 4,
             Self::Indexed8 => 1,
+            Self::Rgb565 => 2,
         }
     }
 
@@ -98,6 +106,7 @@ impl PixelFormat {
             Self::Rgb8 => "rgb8",
             Self::Rgba8 => "rgba8",
             Self::Indexed8 => "indexed8",
+            Self::Rgb565 => "rgb565",
         }
     }
 }
@@ -138,6 +147,31 @@ impl PaletteEntry {
     }
 }
 
+/// The palette of an indexed image, entries in stored order.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum Palette {
+    /// 8-bit red, green, blue entries.
+    Rgb8(Vec<PaletteEntry>),
+    /// 16-bit entries laid out like [`PixelFormat::Rgb565`], kept as
+    /// stored.
+    Rgb565(Vec<u16>),
+}
+
+impl Palette {
+    /// Number of entries.
+    pub fn len(&self) -> usize {
+        match self {
+            Self::Rgb8(entries) => entries.len(),
+            Self::Rgb565(entries) => entries.len(),
+        }
+    }
+
+    /// Whether the palette has no entries.
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+}
+
 /// Where an image's coverage (alpha) comes from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum AlphaSource {
@@ -146,6 +180,17 @@ pub enum AlphaSource {
     Opaque,
     /// The stored alpha channel of [`PixelFormat::Rgba8`] is coverage.
     Channel,
+    /// Each level stores a separate plane of one coverage byte per texel
+    /// directly after its color texels, in the same row order. Not allowed
+    /// with [`PixelFormat::Rgba8`], which already stores a channel.
+    Plane,
+    /// Texels whose stored [`PixelFormat::Rgb565`] word equals `value` are
+    /// transparent. The texel keeps its stored value; the key is metadata,
+    /// not a baked alpha (non-negotiable #1).
+    StoredValueKey {
+        /// The transparent stored word.
+        value: u16,
+    },
     /// Texels whose palette index equals `index` are transparent. The
     /// palette entry keeps its color; the key is metadata, not a baked alpha.
     PaletteKey {
@@ -197,7 +242,7 @@ pub struct DescriptorParts {
     pub row_order: RowOrder,
     /// The palette; required for [`PixelFormat::Indexed8`] and forbidden
     /// otherwise.
-    pub palette: Option<Vec<PaletteEntry>>,
+    pub palette: Option<Palette>,
     /// Extents of the stored mip levels below the base level, largest
     /// first; empty when the image has only its base level.
     pub mips: Vec<Extent>,
@@ -226,8 +271,10 @@ impl ImageDescriptor {
     /// F08-B establishes, so it is not assumed here); a palette is present
     /// exactly for [`PixelFormat::Indexed8`], non-empty and at most
     /// [`MAX_PALETTE_ENTRIES`]; [`AlphaSource::Channel`] only with a stored
-    /// alpha channel; [`AlphaSource::PaletteKey`] only with a palette that
-    /// has the keyed entry.
+    /// alpha channel; [`AlphaSource::Plane`] only without one;
+    /// [`AlphaSource::StoredValueKey`] only with [`PixelFormat::Rgb565`];
+    /// [`AlphaSource::PaletteKey`] only with a palette that has the keyed
+    /// entry.
     pub fn new(parts: DescriptorParts) -> Result<Self, DescriptorError> {
         check_extent(None, parts.extent)?;
         if parts.mips.len() > MAX_MIP_LEVELS {
@@ -281,8 +328,18 @@ impl ImageDescriptor {
                     format: parts.format,
                 });
             }
+            AlphaSource::Plane if parts.format == PixelFormat::Rgba8 => {
+                return Err(DescriptorError::AlphaPlaneWithChannel {
+                    format: parts.format,
+                });
+            }
+            AlphaSource::StoredValueKey { .. } if parts.format != PixelFormat::Rgb565 => {
+                return Err(DescriptorError::StoredValueKeyFormat {
+                    format: parts.format,
+                });
+            }
             AlphaSource::PaletteKey { index } => {
-                let entries = parts.palette.as_ref().map_or(0, Vec::len);
+                let entries = parts.palette.as_ref().map_or(0, Palette::len);
                 if usize::from(index) >= entries {
                     return Err(DescriptorError::PaletteKeyOutOfRange { index, entries });
                 }
@@ -309,8 +366,8 @@ impl ImageDescriptor {
     }
 
     /// The palette of an indexed image.
-    pub fn palette(&self) -> Option<&[PaletteEntry]> {
-        self.parts.palette.as_deref()
+    pub fn palette(&self) -> Option<&Palette> {
+        self.parts.palette.as_ref()
     }
 
     /// Extents of the stored mip levels below the base level, largest first.
@@ -334,9 +391,23 @@ impl ImageDescriptor {
     }
 
     /// Exact stored byte length of the base level: rows of
-    /// `width * bytes_per_texel` with no row padding.
+    /// `width * bytes_per_texel` with no row padding, followed by the alpha
+    /// plane for [`AlphaSource::Plane`].
     pub fn base_level_bytes(&self) -> u64 {
-        self.parts.extent.texel_count() * u64::from(self.parts.format.bytes_per_texel())
+        self.level_bytes(self.parts.extent)
+    }
+
+    /// Exact stored byte length of a level of `extent`, as
+    /// [`Self::base_level_bytes`] counts it.
+    pub fn level_bytes(&self, extent: Extent) -> u64 {
+        extent.texel_count() * self.stored_bytes_per_texel()
+    }
+
+    /// Stored bytes per texel of one level: the texel itself plus, for
+    /// [`AlphaSource::Plane`], its coverage byte.
+    pub fn stored_bytes_per_texel(&self) -> u64 {
+        let plane = u64::from(self.parts.alpha_source == AlphaSource::Plane);
+        u64::from(self.parts.format.bytes_per_texel()) + plane
     }
 }
 
@@ -413,6 +484,18 @@ pub enum DescriptorError {
         /// The format.
         format: PixelFormat,
     },
+    /// [`AlphaSource::Plane`] on a format that already stores an alpha
+    /// channel.
+    AlphaPlaneWithChannel {
+        /// The format.
+        format: PixelFormat,
+    },
+    /// [`AlphaSource::StoredValueKey`] on a format other than
+    /// [`PixelFormat::Rgb565`].
+    StoredValueKeyFormat {
+        /// The format.
+        format: PixelFormat,
+    },
     /// [`AlphaSource::PaletteKey`] naming an entry the palette lacks.
     PaletteKeyOutOfRange {
         /// The key.
@@ -434,6 +517,8 @@ impl DescriptorError {
             Self::PaletteNotAllowed { .. } => "palette_not_allowed",
             Self::PaletteSize { .. } => "palette_size",
             Self::AlphaChannelMissing { .. } => "alpha_channel_missing",
+            Self::AlphaPlaneWithChannel { .. } => "alpha_plane_with_channel",
+            Self::StoredValueKeyFormat { .. } => "stored_value_key_format",
             Self::PaletteKeyOutOfRange { .. } => "palette_key_out_of_range",
         }
     }
@@ -484,6 +569,16 @@ impl fmt::Display for DescriptorError {
             Self::AlphaChannelMissing { format } => write!(
                 f,
                 "alpha source is the alpha channel, but format {} stores none",
+                format.as_str()
+            ),
+            Self::AlphaPlaneWithChannel { format } => write!(
+                f,
+                "alpha source is a separate plane, but format {} already stores a channel",
+                format.as_str()
+            ),
+            Self::StoredValueKeyFormat { format } => write!(
+                f,
+                "a stored-value alpha key needs format rgb565, not {}",
                 format.as_str()
             ),
             Self::PaletteKeyOutOfRange { index, entries } => write!(

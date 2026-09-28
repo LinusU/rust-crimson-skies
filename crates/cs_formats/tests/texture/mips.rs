@@ -13,8 +13,8 @@ use cs_formats::ParseErrorKind;
 use cs_formats::io::AllocationBudget;
 use cs_formats::texture::{
     AlphaSource, AlphaTest, ColorSpace, DecodedFormat, DecodedImage, DecodedLevels,
-    DescriptorParts, Extent, ImageDescriptor, PaletteEntry, PixelFormat, RowOrder, TextureError,
-    decode_base_level, decode_levels,
+    DescriptorParts, Extent, ImageDescriptor, Palette, PaletteEntry, PixelFormat, RowOrder,
+    TextureError, decode_base_level, decode_levels,
 };
 
 const CONTAINER: &str = "synthetic/f08_b_01_mip_chains";
@@ -41,7 +41,7 @@ fn parts(
         extent,
         format,
         row_order,
-        palette,
+        palette: palette.map(Palette::Rgb8),
         mips: mips.to_vec(),
         alpha_source: AlphaSource::Unknown,
         alpha_test: AlphaTest::Unknown,
