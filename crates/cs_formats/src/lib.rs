@@ -35,8 +35,9 @@
 //! `specs/F08-texture-archives-and-conventional-image-decoding.md` (stages
 //! F08-A and F08-B, [`texture`]).
 //!
-//! The BM multilayer livery layout: `specs/F09-bm-multilayer-liveries-and-
-//! paint-composition.md` (stage F09-A, [`bm`]).
+//! The BM multilayer livery layout and its observed layered composition:
+//! `specs/F09-bm-multilayer-liveries-and-paint-composition.md` (stage F09-A,
+//! [`bm`]), stage F09-B, [`bm::BmFile::compose`]).
 //!
 //! The lossless GameZ mesh IR and triangle-strip decoding:
 //! `specs/F10-gamez-mesh-topology-and-material-records.md` (stage F10-A,
@@ -60,8 +61,9 @@ pub mod texture;
 pub mod zbd;
 
 pub use bm::{
-    BM_BYTES_PER_PIXEL, BM_ENTRYPOINT, BM_HEADER_BYTES, BM_STORED_ROW_ORDER, BmError, BmFile,
-    BmPlane, BmRawHeader, BmUnsupportedTail, read_bm,
+    BM_BYTES_PER_PIXEL, BM_COMPOSED_BYTES_PER_PIXEL, BM_COMPOSITION_VERSION, BM_ENTRYPOINT,
+    BM_HEADER_BYTES, BM_STORED_ROW_ORDER, BmComposite, BmError, BmFile, BmPlane, BmRawHeader,
+    BmUnsupportedTail, PaintColor, read_bm,
 };
 pub use error::{ParseError, ParseErrorKind};
 pub use interp::{

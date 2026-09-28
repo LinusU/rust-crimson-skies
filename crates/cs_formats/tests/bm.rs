@@ -15,8 +15,9 @@
 
 use cs_formats::texture::RowOrder;
 use cs_formats::{
-    BM_BYTES_PER_PIXEL, BM_HEADER_BYTES, BM_STORED_ROW_ORDER, BmError, BmPlane, ParseContext,
-    ParseErrorKind, read_bm,
+    AllocationBudget, BM_BYTES_PER_PIXEL, BM_COMPOSED_BYTES_PER_PIXEL, BM_HEADER_BYTES,
+    BM_STORED_ROW_ORDER, BmComposite, BmError, BmPlane, PaintColor, ParseContext, ParseErrorKind,
+    read_bm,
 };
 
 const RECTANGULAR: &[u8] = include_bytes!("../../../fixtures/synthetic/rectangular.bm");
@@ -314,4 +315,175 @@ fn accept_f09_a_maximum_header_needs_every_covered_byte() {
     assert_eq!(parse_error.field, "bm.base");
     assert_eq!(parse_error.offset, 4);
     assert_eq!(context.allocation().used(), 0);
+}
+
+// ---------------------------------------------------------------------------
+// F09-B: deterministic layered composition (accept_f09_b_*)
+// ---------------------------------------------------------------------------
+
+/// A 2-wide, 2-high base, stored bottom row (`P0`, `P1`) then top row
+/// (`P2`, `P3`). Every channel differs per texel, so a wrong plane or a
+/// doubled/missing flip moves a known value.
+const COMPOSE_BASE: [[u8; 3]; 4] = [[10, 20, 30], [40, 50, 60], [70, 80, 90], [100, 110, 120]];
+
+const PAINT_X: PaintColor = PaintColor::new(200, 100, 50);
+const PAINT_RED: PaintColor = PaintColor::new(255, 0, 0);
+const PAINT_GREEN: PaintColor = PaintColor::new(0, 255, 0);
+const PAINT_BLUE: PaintColor = PaintColor::new(0, 0, 255);
+
+/// Parses and composes the 2x2 fixture with the given whole-plane masks
+/// (`[mask1, mask2, mask3]`), per-texel overlay (stored order) and colors.
+fn compose(masks: [[u8; 4]; 3], overlay: [[u8; 4]; 4], colors: [PaintColor; 3]) -> BmComposite {
+    let base: Vec<u8> = COMPOSE_BASE.concat();
+    let planes = [
+        masks[0].as_slice(),
+        masks[1].as_slice(),
+        masks[2].as_slice(),
+    ];
+    let overlay: Vec<u8> = overlay.concat();
+    let bytes = build_bm(2, 2, &base, planes, &overlay, &[]);
+    let mut context = ParseContext::with_defaults("synthetic/compose.bm");
+    let file = read_bm(&mut context, &bytes).expect("the synthetic image parses");
+    let mut budget = AllocationBudget::with_defaults("synthetic/compose.bm");
+    file.compose(colors, &mut budget)
+        .expect("the composition fits the default budget")
+}
+
+/// Canonical (top-down) order of `COMPOSE_BASE`.
+fn compose_base_canonical() -> Vec<u8> {
+    [
+        COMPOSE_BASE[2],
+        COMPOSE_BASE[3],
+        COMPOSE_BASE[0],
+        COMPOSE_BASE[1],
+    ]
+    .concat()
+}
+
+/// AC02, the `0` endpoint: an all-zero mask applies no color (the helper
+/// builds white there) and a transparent overlay leaves the base untouched.
+/// The overlay's nonzero RGB with alpha `0` must not leak through.
+#[test]
+fn accept_f09_b_all_zero_masks_compose_to_the_base() {
+    let composed = compose(
+        [[0; 4], [0; 4], [0; 4]],
+        [[9, 9, 9, 0], [8, 8, 8, 0], [7, 7, 7, 0], [6, 6, 6, 0]],
+        [PAINT_RED, PAINT_GREEN, PAINT_BLUE],
+    );
+    assert_eq!(BM_COMPOSED_BYTES_PER_PIXEL, 3);
+    assert_eq!((composed.width(), composed.height()), (2, 2));
+    assert_eq!(composed.rgb().len(), 12);
+    assert_eq!(composed.rgb(), compose_base_canonical().as_slice());
+    assert_eq!(composed.texel(0, 0), Some([70, 80, 90]));
+    assert_eq!(composed.texel(1, 0), Some([100, 110, 120]));
+    assert_eq!(composed.texel(0, 1), Some([10, 20, 30]));
+    assert_eq!(composed.texel(1, 1), Some([40, 50, 60]));
+    assert_eq!(composed.texel(2, 0), None);
+    assert_eq!(composed.texel(0, 2), None);
+}
+
+/// AC02, the `255` endpoint: an all-`255` mask applies its color, so the
+/// base is multiplied down by `floor(base * color / 255)`; a white plane is
+/// the identity wherever it sits in the three-plane order.
+#[test]
+fn accept_f09_b_all_one_masks_multiply_the_base_by_the_colors() {
+    let transparent = [[200, 0, 0, 0]; 4];
+    let expected = [[54, 31, 17], [78, 43, 23], [7, 7, 5], [31, 19, 11]].concat();
+    for colors in [
+        [PaintColor::WHITE, PaintColor::WHITE, PAINT_X],
+        [PAINT_X, PaintColor::WHITE, PaintColor::WHITE],
+        [PaintColor::WHITE, PAINT_X, PaintColor::WHITE],
+    ] {
+        let composed = compose([[255; 4], [255; 4], [255; 4]], transparent, colors);
+        assert_eq!(composed.rgb(), expected.as_slice(), "colors {colors:?}");
+    }
+}
+
+/// Mixed endpoints in one image: the zero planes contribute nothing and the
+/// full plane applies its color. This is the discriminator that a mask used
+/// the wrong way round (zero meaning full) fails.
+#[test]
+fn accept_f09_b_mixed_mask_endpoints_apply_only_the_full_plane() {
+    let composed = compose(
+        [[0; 4], [255; 4], [0; 4]],
+        [[255, 255, 255, 0]; 4],
+        [PAINT_RED, PAINT_X, PAINT_BLUE],
+    );
+    assert_eq!(
+        composed.rgb(),
+        [[54, 31, 17], [78, 43, 23], [7, 7, 5], [31, 19, 11]]
+            .concat()
+            .as_slice()
+    );
+}
+
+/// The overlay endpoint: an opaque overlay replaces the masked color, per
+/// texel and after the row flip once.
+#[test]
+fn accept_f09_b_opaque_overlay_replaces_the_masked_color() {
+    let composed = compose(
+        [[255; 4], [255; 4], [255; 4]],
+        [
+            [7, 8, 9, 255],
+            [10, 11, 12, 255],
+            [1, 2, 3, 255],
+            [4, 5, 6, 255],
+        ],
+        [PAINT_X, PAINT_X, PAINT_X],
+    );
+    assert_eq!(
+        composed.rgb(),
+        [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12]]
+            .concat()
+            .as_slice()
+    );
+}
+
+/// The composed image keeps the canonical orientation: a mask that is `255`
+/// only in the stored bottom row paints the canonical *bottom* row, and the
+/// top row stays at the base.
+#[test]
+fn accept_f09_b_composition_applies_the_row_flip_once() {
+    let composed = compose(
+        [[255, 255, 0, 0], [0; 4], [0; 4]],
+        [[0; 4]; 4],
+        [PAINT_X, PaintColor::WHITE, PaintColor::WHITE],
+    );
+    assert_eq!(composed.texel(0, 0), Some([70, 80, 90]), "top row is base");
+    assert_eq!(composed.texel(1, 0), Some([100, 110, 120]));
+    assert_eq!(
+        composed.texel(0, 1),
+        Some([7, 7, 5]),
+        "bottom row is painted"
+    );
+    assert_eq!(composed.texel(1, 1), Some([31, 19, 11]));
+}
+
+/// Composition is deterministic and bounded: the same input composes to the
+/// same bytes, an exactly-sized budget is charged exactly, and a too-small
+/// one is refused without allocating.
+#[test]
+fn accept_f09_b_composition_is_deterministic_and_bounded() {
+    let base: Vec<u8> = COMPOSE_BASE.concat();
+    let bytes = build_bm(2, 2, &base, [&[0; 4], &[0; 4], &[0; 4]], &[0u8; 16], &[]);
+    let mut context = ParseContext::with_defaults("synthetic/compose_budget.bm");
+    let file = read_bm(&mut context, &bytes).expect("the synthetic image parses");
+
+    let mut exact = AllocationBudget::new("synthetic/compose_budget.bm", 12);
+    let first = file
+        .compose([PAINT_RED, PAINT_GREEN, PAINT_BLUE], &mut exact)
+        .expect("12 bytes fit");
+    assert_eq!(exact.used(), 12);
+    let mut again = AllocationBudget::with_defaults("synthetic/compose_budget.bm");
+    let second = file
+        .compose([PAINT_RED, PAINT_GREEN, PAINT_BLUE], &mut again)
+        .expect("fits");
+    assert_eq!(first, second, "same inputs, same bytes");
+
+    let mut tiny = AllocationBudget::new("synthetic/compose_budget.bm", 5);
+    let error = file
+        .compose([PAINT_RED, PAINT_GREEN, PAINT_BLUE], &mut tiny)
+        .expect_err("12 bytes do not fit a 5-byte budget");
+    assert_eq!(error.code(), "allocation_budget_exceeded");
+    assert_eq!(tiny.used(), 0, "a refused reservation allocates nothing");
 }

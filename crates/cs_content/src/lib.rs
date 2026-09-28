@@ -19,9 +19,15 @@
 //! `### F08-C`): texture archives resolved through a content session, the
 //! image catalog they populate, and the handoff to the GPU upload boundary.
 //!
+//! [`livery`] is the F09-B paint composition
+//! (`specs/F09-bm-multilayer-liveries-and-paint-composition.md`,
+//! `### F09-B`): the three mask colors of a BM livery, the deterministic
+//! cache key of a composed variant and the composed RGB8 image.
+//!
 //! [`cs_types`]: cs_types
 //! [`cs_formats`]: cs_formats
 //! [`cs_assets`]: cs_assets
 
+pub mod livery;
 pub mod loading;
 pub mod textures;
