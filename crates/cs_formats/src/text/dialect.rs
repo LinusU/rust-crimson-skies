@@ -352,7 +352,6 @@ pub static TEXT_DIALECT_INVENTORY: [DialectRecord; 6] = [
             stage: "F13-A",
             reason: "it names script symbols; its consumer is the script inventory",
         },
-
         unknowns: &[
             "whether the shipped game reads it",
             "which scripts each symbol belongs to",

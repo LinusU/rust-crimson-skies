@@ -319,8 +319,9 @@ fn survey_shaped_image() -> Vec<u8> {
     rsrc.id(strings, 2, 3); // a third name, reached one level deeper
     rsrc.sub(root, 0, strings);
 
-    // Block 1 under two languages: en-US and the language id `1` that the
-    // surveyed `langui.dll` records.
+    // Block 1 under two languages: en-US, and a second id (`1`) that no
+    // surveyed image uses, so the fixture pins that the same block id under
+    // two languages is two strings, not one overwritten one.
     let block_1 = rsrc.dir(2);
     rsrc.id(block_1, 0, LANG_ENGLISH_US);
     rsrc.id(block_1, 1, LANG_ID_ONE);

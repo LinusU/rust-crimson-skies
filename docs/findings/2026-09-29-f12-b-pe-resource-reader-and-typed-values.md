@@ -214,6 +214,7 @@ byte above `0x7F`.
 | `…approved_ranges_bound_tuning_values` | the approved range, its inclusive edges, a one-sided bound, a negative lower bound, and that an unbounded float is still checked for finiteness |
 | `…tuning_converts_a_looked_up_entry` | the production path: `lookup` → `TuningSchema::tune`, the consumed accounting, an unsplittable value, a field index past the end |
 | `…every_declared_width_rejects_its_own_overflow` | all four whole-number widths signed and unsigned against one value and against a negative, and each width's declared span |
+| `…signed_widths_reject_values_above_their_signed_maximum` | a value between a signed width's maximum and the unsigned maximum of the same bit count (`200` against `i8`, `40 000` against `i16`, `3e9` against `i32`, `1e19` against `i64`) is an overflow for the signed field and reads in the unsigned one; each exactly-representable signed maximum still reads (review fix; see below) |
 
 The retail tests fail with "CS_GAME_DIR is not set" when run without it.
 
@@ -258,7 +259,48 @@ The retail tests fail with "CS_GAME_DIR is not set" when run without it.
 - `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` → 0
 - `cargo test --workspace --locked` → 0
 - `cargo test --workspace --locked -- accept_f12_b_ --include-ignored` → 0
-  (15 tests: 11 in `cs_formats` of which 2 retail, 4 in `cs_content`)
+  (16 tests: 11 in `cs_formats` of which 2 retail, 5 in `cs_content`)
+
+## Review corrections (2026-09-29, deepseek-1)
+
+Independent review found and fixed one acceptance bug and several places
+where prose contradicted the code or the corrected survey. No behaviour the
+acceptance tests pin was weakened.
+
+- **`TuningSchema::tune` bounded a non-negative value by the wrong
+  maximum.** The non-negative branch read `ValueWidth::unsigned_range()`
+  regardless of the field's signedness, so a value such as `200` in a signed
+  8-bit field was accepted and surfaced as `Tuning { signed: Some(200) }`
+  even though the declared span is `-128..=127`. That is exactly AC02's
+  "overflow cannot become a valid tuning constant". The branch now uses the
+  *declared* type's maximum (`signed_range().1` for a signed field,
+  `unsigned_range().1` for an unsigned one). The old
+  `every_declared_width_rejects_its_own_overflow` did not catch it because
+  its only overflowing probe (`300`) lies above both maxima; the new
+  `…signed_widths_reject_values_above_their_signed_maximum` does. The test
+  was mutation-checked against the old branch: it fails with
+  `Ok(Tuning { value: 200.0, signed: Some(200), … })` and passes with the
+  fix. Because the value reader accumulates digits into an `f64`,
+  `i64::MAX` is not exactly representable, so the 64-bit boundary is only
+  asserted on the strictly greater side; the refusal is the conservative
+  direction.
+- **`ResourceIdValue::is_decimal` documentation.** The doc claimed leading
+  zeros and trailing blank bytes made it `false`, but `text()` trims the
+  blank bytes and `007` names id `7`, which the test asserts. The prose now
+  says one to five decimal digits naming at most `MAX_RESOURCE_ID`, blank
+  padding trimmed, `007` accepted.
+- **`TuningSchema::number` documentation.** The comment said `5.` and `.5`
+  do not read; the code (one `.`, not both sides empty) accepts them. The
+  prose now matches, and `.` alone is named as the rejected spelling.
+- **`pe_resources` module doc and the `LANG_*` constants.** The module doc
+  still described the *discarded* F12-A reading (one type per tree; the
+  neutral id `1` in `langui.dll`), which the survey correction and the
+  retail test supersede (`strings.dll` carries types 6, 16 and 255; every
+  image's third-level id is `1033`). The doc now records the corrected
+  survey, `LANG_NEUTRAL`'s doc no longer claims `langui.dll` uses it,
+  `LANG_ENGLISH_US`'s says "every surveyed image", and `LANG_ID_ONE`'s says
+  the value is the fixture's (no surveyed image uses a third-level id of
+  `1`). The fixture comment was corrected to match.
 
 ## Sources
 

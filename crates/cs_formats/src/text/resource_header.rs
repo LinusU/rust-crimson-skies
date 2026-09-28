@@ -118,11 +118,15 @@ impl<'a> ResourceIdValue<'a> {
     /// [`MAX_RESOURCE_ID`], and so a resource id the PE resource reader could
     /// be asked for.
     ///
-    /// Exactly the shape the survey found in both members. A `0x`-prefixed
-    /// value, a sign, a blank-separated expression, trailing blank bytes,
-    /// leading zeros (which are a different spelling of the same number) and
-    /// anything above [`MAX_RESOURCE_ID`] are all `false`; each keeps its raw
-    /// bytes and is reported as unknown rather than converted.
+    /// Exactly the shape the survey found in both members: one to five
+    /// decimal digits naming a value of at most [`MAX_RESOURCE_ID`]. The blank
+    /// bytes around the number are the dialect's own padding and are not part
+    /// of it, so ` 42 ` is `true`; a leading zero is a different spelling of
+    /// the same number but still a decimal, so `007` is `true` too. A
+    /// `0x`-prefixed value, a sign, a blank-separated expression, a value
+    /// wider than five digits and anything above [`MAX_RESOURCE_ID`] are all
+    /// `false`; each keeps its raw bytes and is reported as unknown rather
+    /// than converted.
     pub fn is_decimal(&self) -> bool {
         let text = self.text();
         !text.is_empty()

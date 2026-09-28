@@ -17,13 +17,14 @@
 //! and sizes only, recorded in
 //! `docs/findings/2026-09-29-f12-b-pe-resource-reader-and-typed-values.md`):
 //! all three are PE32 (`magic 0x010b`, `machine 0x014c`) with a `.rsrc`
-//! section; each resource tree has exactly one type at the top level,
-//! `RT_STRING` (6); and the third level is a language id — `1033`
-//! (`0x0409`, en-US) in `strings.dll` and `language.dll`, and the neutral id
-//! `1` in `langui.dll` — with a recorded code page per data entry (`1252` in
-//! `strings.dll`, `0` in the other two, which is the resource compiler's "no
-//! code page" value and is not treated as a default). Every observed string
-//! block holds a whole number of counted UTF-16LE units.
+//! section. `strings.dll` carries three resource types at the top level —
+//! `RT_STRING` (6), `RT_VERSION` (16) and an unassigned type `255`; the other
+//! two carry `RT_STRING` alone. Every third-level id in all three images is
+//! the language id `1033` (`0x0409`, en-US), with a recorded code page per
+//! data entry (`1252` in `strings.dll`, `0` in the other two, which is the
+//! resource compiler's "no code page" value and is not treated as a default).
+//! Every observed string block holds a whole number of counted UTF-16LE
+//! units.
 //!
 //! # Rules this reader follows
 //!
@@ -101,16 +102,19 @@ pub const DATA_DIRECTORIES_OFFSET: [u64; 2] = [96, 112];
 /// `IMAGE_DIRECTORY_ENTRY_RESOURCE`'s index in the data-directory array.
 pub const RESOURCE_DIRECTORY_INDEX: u32 = 2;
 
-/// `LANG_NEUTRAL` (`0x0000`). The surveyed `langui.dll` records the language
-/// id `1`, which the format treats as neutral for a resource the compiler
-/// gave no language; neither value is interpreted here, both are retained.
+/// `LANG_NEUTRAL` (`0x0000`). Not observed in any surveyed image; the
+/// constant names the value the format uses for a resource the resource
+/// compiler gave no language. It is retained verbatim, never interpreted.
 pub const LANG_NEUTRAL: u32 = 0x0000;
 
-/// `LANG_ENGLISH_US` (`0x0409`, decimal 1033), the language id the surveyed
-/// `strings.dll` and `language.dll` record.
+/// `LANG_ENGLISH_US` (`0x0409`, decimal 1033), the language id every
+/// surveyed image records for every third-level entry.
 pub const LANG_ENGLISH_US: u32 = 0x0409;
 
-/// The language id the surveyed `langui.dll` records for every block.
+/// A second language the fixture's block 1 carries, so a test can pin that
+/// two leaves under one block id are two strings rather than one overwritten
+/// string. No surveyed image uses a third-level id of `1`, so the value is
+/// the fixture's, not a measured one.
 pub const LANG_ID_ONE: u32 = 1;
 
 /// `IMAGE_DATA_DIRECTORY` size.
