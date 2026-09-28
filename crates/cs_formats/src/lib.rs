@@ -1,8 +1,9 @@
 //! Byte-level parsers, raw records and parse diagnostics.
 //!
-//! This stage (F03-A, `specs/F03-bounded-binary-parsing-primitives.md`)
-//! provides the checked reader and the structured errors every later parser
-//! builds on. Allowed dependency: [`cs_types`]. This crate must never depend
+//! This stage provides the checked reader, the structured errors and the
+//! bounded-allocation / recursion utilities every later parser builds on
+//! (`specs/F03-bounded-binary-parsing-primitives.md`, stages F03-A and
+//! F03-B). Allowed dependency: [`cs_types`]. This crate must never depend
 //! on Bevy or Avian, and parsing must stay independent of renderer, window,
 //! network, game state and asset-directory enumeration.
 //!
@@ -13,4 +14,4 @@ pub mod error;
 pub mod io;
 
 pub use error::{ParseError, ParseErrorKind};
-pub use io::Reader;
+pub use io::{AllocationBudget, Reader, RecursionBudget, RecursionGuard};

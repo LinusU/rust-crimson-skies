@@ -24,6 +24,12 @@ pub enum ParseErrorKind {
     InvalidEncoding,
     /// A bounded string held no terminator inside its bound.
     MissingTerminator,
+    /// The request exceeded the parse's independent allocation budget
+    /// (`specs/F03-bounded-binary-parsing-primitives.md`, non-negotiable #2).
+    AllocationBudgetExceeded,
+    /// Nesting went deeper than the parse's independent recursion limit
+    /// (same non-negotiable; the guard against directory cycles).
+    RecursionDepthExceeded,
 }
 
 impl ParseErrorKind {
@@ -34,6 +40,8 @@ impl ParseErrorKind {
             Self::LengthOverflow => "length_overflow",
             Self::InvalidEncoding => "invalid_encoding",
             Self::MissingTerminator => "missing_terminator",
+            Self::AllocationBudgetExceeded => "allocation_budget_exceeded",
+            Self::RecursionDepthExceeded => "recursion_depth_exceeded",
         }
     }
 }
@@ -131,6 +139,41 @@ impl ParseError {
             kind: ParseErrorKind::MissingTerminator,
             expected: format!("a 0x00 terminator within {bound} bytes"),
             observed: format!("no 0x00 terminator in {bound} bytes"),
+        }
+    }
+
+    pub(crate) fn allocation_budget_exceeded(
+        container: String,
+        offset: u64,
+        field: &str,
+        available: u64,
+        requested: u64,
+        limit: u64,
+    ) -> Self {
+        Self {
+            container,
+            offset,
+            field: field.to_owned(),
+            kind: ParseErrorKind::AllocationBudgetExceeded,
+            expected: format!("{available} of {limit} allocation-budget bytes available"),
+            observed: format!("{requested} bytes requested"),
+        }
+    }
+
+    pub(crate) fn recursion_depth_exceeded(
+        container: String,
+        offset: u64,
+        field: &str,
+        max_depth: u32,
+        requested_level: u64,
+    ) -> Self {
+        Self {
+            container,
+            offset,
+            field: field.to_owned(),
+            kind: ParseErrorKind::RecursionDepthExceeded,
+            expected: format!("at most {max_depth} nested levels"),
+            observed: format!("level {requested_level} requested"),
         }
     }
 }

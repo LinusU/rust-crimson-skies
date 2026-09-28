@@ -10,6 +10,14 @@
 //!    a failure inside a nested range still reports its absolute offset.
 //! 4. Length arithmetic is checked before any slice is taken, so overflowing
 //!    `count * element_size` or `offset + length` fails without allocating.
+//! 5. [`AllocationBudget`] and [`RecursionBudget`] are separate limits (spec
+//!    non-negotiable #2: independent limits for recursion and allocations).
+//!    Both are counters plus checked arithmetic: refusing a hostile count or
+//!    an over-deep nest never allocates, and neither budget can be silently
+//!    widened — the defaults are designed safety budgets and every other
+//!    value is passed in explicitly by the parse that tested it.
+
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::error::ParseError;
 
@@ -253,5 +261,276 @@ impl<'a> Reader<'a> {
         let mut out = [0u8; N];
         out.copy_from_slice(chunk);
         Ok(out)
+    }
+}
+
+/// An independent allocation budget for one parse.
+///
+/// `specs/F03-bounded-binary-parsing-primitives.md` non-negotiable #2 demands
+/// *independent* limits per safety dimension; this one bounds the bytes a
+/// parse may hand out for decoded records (index tables, texture pixels, mesh
+/// buffers). Recursion has its own budget ([`RecursionBudget`]), so exhausting
+/// one never silently relaxes the other.
+///
+/// [`Self::reserve`] and [`Self::reserve_extent`] are arithmetic over two
+/// counters: `count * element_size` and `offset + length` are computed with
+/// checked math and compared against what is left of the budget. No buffer is
+/// created on either path, so a `u32::MAX` count read from hostile bytes costs
+/// nothing but the [`ParseError`] it returns. Charging happens only on
+/// success: a refused request leaves the budget exactly as it was.
+///
+/// A budget belongs to one parse. Constructing (or cloning) one starts fresh
+/// accounting, so no code path can widen another parse's limit.
+#[derive(Clone, Debug)]
+pub struct AllocationBudget {
+    /// Provenance label carried by this budget's errors.
+    container: String,
+    /// Designed ceiling on bytes reserved through this budget.
+    limit: u64,
+    /// Bytes reserved so far; never exceeds `limit`.
+    used: u64,
+}
+
+impl AllocationBudget {
+    /// The designed default budget: 64 MiB per parse.
+    ///
+    /// Large enough for the biggest decoded buffers the engine expects
+    /// (a 4096² RGBA8 texture is 64 MiB), small enough that a hostile count is
+    /// refused long before it becomes a real allocation. Any other limit must
+    /// be passed explicitly to [`Self::new`] by code that tests it.
+    pub const DEFAULT_LIMIT: u64 = 64 * 1024 * 1024;
+
+    /// A budget of `limit` bytes whose errors name `container`.
+    ///
+    /// `limit` is the tested configuration surface: `0` refuses everything,
+    /// an exactly fitting request is accepted, one byte more is refused.
+    pub fn new(container: impl Into<String>, limit: u64) -> Self {
+        Self {
+            container: container.into(),
+            limit,
+            used: 0,
+        }
+    }
+
+    /// A budget at [`Self::DEFAULT_LIMIT`].
+    pub fn with_defaults(container: impl Into<String>) -> Self {
+        Self::new(container, Self::DEFAULT_LIMIT)
+    }
+
+    /// The ceiling this budget enforces.
+    pub fn limit(&self) -> u64 {
+        self.limit
+    }
+
+    /// Bytes reserved so far.
+    pub fn used(&self) -> u64 {
+        self.used
+    }
+
+    /// Bytes still reservable.
+    pub fn remaining(&self) -> u64 {
+        self.limit - self.used
+    }
+
+    /// Checks and books `count * element_size` bytes against the budget.
+    ///
+    /// Returns the byte length so the caller can bound a later read. Overflow
+    /// of the product (or of `usize`) is a
+    /// [`crate::ParseErrorKind::LengthOverflow`]; a product beyond what is
+    /// left of the budget is a [`crate::ParseErrorKind::
+    /// AllocationBudgetExceeded`]. `offset` is the anchor reported in the
+    /// error (the caller's current reader position, or the start of the range
+    /// the count describes).
+    ///
+    /// Nothing is allocated and nothing is charged unless the call succeeds.
+    pub fn reserve(
+        &mut self,
+        field: &str,
+        offset: u64,
+        count: u64,
+        element_size: u64,
+    ) -> Result<usize, ParseError> {
+        let bytes = count
+            .checked_mul(element_size)
+            .and_then(|total| usize::try_from(total).ok())
+            .ok_or_else(|| {
+                ParseError::length_overflow(
+                    self.container.clone(),
+                    offset,
+                    field,
+                    "count * element_size to fit in usize".to_owned(),
+                    format!("count {count} times element_size {element_size}"),
+                )
+            })?;
+        self.charge(field, offset, bytes as u64)?;
+        Ok(bytes)
+    }
+
+    /// Checks and books the bytes of an absolute range, without touching it.
+    ///
+    /// Returns the exclusive end offset (`offset + len`), so a caller that
+    /// allocates a buffer for a member range gets both checks in one call:
+    /// overflow of the extent is a [`crate::ParseErrorKind::LengthOverflow`],
+    /// an extent beyond the remaining budget is a
+    /// [`crate::ParseErrorKind::AllocationBudgetExceeded`].
+    pub fn reserve_extent(
+        &mut self,
+        field: &str,
+        offset: u64,
+        len: u64,
+    ) -> Result<u64, ParseError> {
+        let end = offset.checked_add(len).ok_or_else(|| {
+            ParseError::length_overflow(
+                self.container.clone(),
+                offset,
+                field,
+                "offset + length to fit in u64".to_owned(),
+                format!("offset {offset} plus length {len}"),
+            )
+        })?;
+        self.charge(field, offset, len)?;
+        Ok(end)
+    }
+
+    fn charge(&mut self, field: &str, offset: u64, bytes: u64) -> Result<(), ParseError> {
+        let available = self.remaining();
+        if bytes > available {
+            return Err(ParseError::allocation_budget_exceeded(
+                self.container.clone(),
+                offset,
+                field,
+                available,
+                bytes,
+                self.limit,
+            ));
+        }
+        self.used += bytes;
+        Ok(())
+    }
+}
+
+/// An independent recursion limit for one parse.
+///
+/// Deeply nested directories, scene graphs or archives must not walk the
+/// stack until it overflows, and a cyclic member list must terminate
+/// (non-negotiable #2's recursion limit and non-negotiable #3's directory
+/// cycles). [`Self::enter`] costs one checked increment and returns a
+/// [`RecursionGuard`] that decrements the depth when it drops — on the
+/// success path and on the `?` error path alike.
+///
+/// [`Self::enter`] borrows only `&self`, so a recursive parser can hold a
+/// guard and still hand the same budget to its nested call:
+///
+/// ```
+/// use cs_formats::{ParseError, RecursionBudget, Reader};
+///
+/// fn depth_of(reader: &mut Reader<'_>, budget: &RecursionBudget) -> Result<u32, ParseError> {
+///     let _guard = budget.enter("node", reader.position())?;
+///     let children = reader.read_u8("node.children")?;
+///     let mut total = 1;
+///     for _ in 0..children {
+///         total += depth_of(reader, budget)?;
+///     }
+///     Ok(total)
+/// }
+/// ```
+#[derive(Debug)]
+pub struct RecursionBudget {
+    /// Provenance label carried by this budget's errors.
+    container: String,
+    /// Designed ceiling on simultaneous nesting levels.
+    max_depth: u32,
+    /// Levels currently entered. Atomic so a guard can release the level it
+    /// took without needing `&mut` on the budget a recursive caller holds.
+    depth: AtomicU32,
+}
+
+impl RecursionBudget {
+    /// The designed default limit: 32 nested levels.
+    ///
+    /// Deep enough for the deepest legitimate nesting observed in the
+    /// engine's own content model, shallow enough that a hostile or cyclic
+    /// structure fails fast instead of overflowing the stack. Any other limit
+    /// must be passed explicitly to [`Self::new`] by code that tests it.
+    pub const DEFAULT_MAX_DEPTH: u32 = 32;
+
+    /// A budget of `max_depth` levels whose errors name `container`.
+    ///
+    /// `max_depth` is the tested configuration surface: `0` refuses the first
+    /// `enter`, level `max_depth` is accepted and level `max_depth + 1` is
+    /// refused.
+    pub fn new(container: impl Into<String>, max_depth: u32) -> Self {
+        Self {
+            container: container.into(),
+            max_depth,
+            depth: AtomicU32::new(0),
+        }
+    }
+
+    /// A budget at [`Self::DEFAULT_MAX_DEPTH`].
+    pub fn with_defaults(container: impl Into<String>) -> Self {
+        Self::new(container, Self::DEFAULT_MAX_DEPTH)
+    }
+
+    /// The nesting ceiling this budget enforces.
+    pub fn max_depth(&self) -> u32 {
+        self.max_depth
+    }
+
+    /// Levels currently entered.
+    pub fn depth(&self) -> u32 {
+        self.depth.load(Ordering::Relaxed)
+    }
+
+    /// Enters one nesting level, or fails when the ceiling is reached.
+    ///
+    /// `offset` is the anchor reported in the error: the position of the
+    /// member being descended into. The returned guard releases the level when
+    /// it drops, so depth cannot leak across sibling entries or error paths.
+    pub fn enter(&self, field: &str, offset: u64) -> Result<RecursionGuard<'_>, ParseError> {
+        match self
+            .depth
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |depth| {
+                if depth < self.max_depth {
+                    Some(depth + 1)
+                } else {
+                    None
+                }
+            }) {
+            Ok(previous) => Ok(RecursionGuard {
+                budget: self,
+                level: previous + 1,
+            }),
+            Err(previous) => Err(ParseError::recursion_depth_exceeded(
+                self.container.clone(),
+                offset,
+                field,
+                self.max_depth,
+                u64::from(previous) + 1,
+            )),
+        }
+    }
+}
+
+/// The level taken by [`RecursionBudget::enter`], released on drop.
+///
+/// Holding the guard is what keeps the depth accounting correct: an early
+/// `return`, a `?` or a panic all release the level exactly once.
+#[derive(Debug)]
+pub struct RecursionGuard<'a> {
+    budget: &'a RecursionBudget,
+    level: u32,
+}
+
+impl RecursionGuard<'_> {
+    /// The 1-based nesting level this guard entered (1 is the outermost).
+    pub fn level(&self) -> u32 {
+        self.level
+    }
+}
+
+impl Drop for RecursionGuard<'_> {
+    fn drop(&mut self) {
+        self.budget.depth.fetch_sub(1, Ordering::Relaxed);
     }
 }
