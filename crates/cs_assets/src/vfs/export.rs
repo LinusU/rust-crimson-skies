@@ -25,7 +25,7 @@
 //! never writes into the original installation. Directories below the
 //! root are created one component at a time and an existing symbolic link
 //! is refused, never followed; the final file is written to a fresh
-//! temporary sibling and renamed into place, and an existing target is
+//! temporary sibling and hard-linked into place, so an existing target is
 //! refused rather than overwritten.
 //!
 //! The components are checked with `symlink_metadata` before the write;

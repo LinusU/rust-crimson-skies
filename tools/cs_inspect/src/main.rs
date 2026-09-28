@@ -8,9 +8,9 @@
 //! the full-content readiness check, and the `resolve` command (F04-C)
 //! resolves one asset key in a mounted content session and reports its
 //! trace. The remaining subcommands from `docs/contracts/CLI-EVIDENCE.md`
-//! (`catalog`, `closure`, `scripts`, `handling`) arrive with later tasks. Until then the binary
-//! refuses invalid input with a nonzero exit code and a diagnostic naming
-//! the missing command — a failure is never returned as success.
+//! (`catalog`, `closure`, `scripts`, `handling`) arrive with later tasks.
+//! Until then the binary refuses invalid input with a nonzero exit code and
+//! a diagnostic naming the missing command — a failure is never returned as success.
 
 use std::process::ExitCode;
 
