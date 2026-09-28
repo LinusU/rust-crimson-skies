@@ -17,7 +17,9 @@
 //! container and reports its lossless tokens, and with `--plan` reads the
 //! same container as a loading plan (F07-C), resolving the registered
 //! commands through a content session and reporting every failure with its
-//! source offset. The remaining subcommands from
+//! source offset, and the `texture-audit` command (F08-D) compares every
+//! ZBD texture's decode with a pinned reference extraction and can write a
+//! private contact sheet. The remaining subcommands from
 //! `docs/contracts/CLI-EVIDENCE.md` (`catalog`, `closure`,
 //! `scripts`, `handling`) arrive with later tasks.
 //! Until then the binary refuses invalid input with a nonzero exit code and
@@ -96,6 +98,15 @@ COMMANDS
         complete; 3 when it is refused, has findings or the plan is
         incomplete.
 
+    texture-audit [--cs-path <dir>] --reference <dir> [--sheet-dir <dir>]
+                  [--out <file>]
+        Decode every ZBD texture through the catalog's upload boundary and
+        compare dimensions, coverage, orientation and every texel with the
+        pinned reference extraction in --reference (<dir>/<archive>.zip,
+        written by `unzbd cs textures`, mech3ax v0.6.0). --sheet-dir writes
+        one private contact sheet (TGA) per archive. Exits 0 when no
+        unexplained difference remains, 3 otherwise.
+
     catalog  closure  scripts  handling
         Not implemented in this workspace stage; they are documented in
         docs/contracts/CLI-EVIDENCE.md.
@@ -124,7 +135,7 @@ fn main() -> ExitCode {
         None => {
             eprintln!(
                 "cs-inspect: missing command; expected one of inventory, audit, resolve, rof, \
-                 zbd-audit, interp, catalog, closure, scripts, handling (see \
+                 zbd-audit, interp, texture-audit, catalog, closure, scripts, handling (see \
                  docs/contracts/CLI-EVIDENCE.md)"
             );
             ExitCode::from(EXIT_INVALID_INPUT)
@@ -135,10 +146,12 @@ fn main() -> ExitCode {
         Some("rof") => cs_inspect::rof::rof_command(&args[1..]),
         Some("zbd-audit") => cs_inspect::zbd::zbd_audit_command(&args[1..]),
         Some("interp") => cs_inspect::interp::interp_command(&args[1..]),
+        Some("texture-audit") => cs_inspect::textures::texture_audit_command(&args[1..]),
         Some(command) => {
             eprintln!(
                 "cs-inspect: unsupported command {command:?}; this workspace stage implements \
-                 only `inventory`, `audit`, `resolve`, `rof`, `zbd-audit` and `interp`"
+                 only `inventory`, `audit`, `resolve`, `rof`, `zbd-audit`, `interp` and \
+                 `texture-audit`"
             );
             ExitCode::from(EXIT_INVALID_INPUT)
         }

@@ -21,10 +21,15 @@
 //! `--plan` the same container is classified against a command table, its
 //! registered commands are resolved through a content session, and every
 //! failure is reported with its source offset and the world it affects.
+//! [`textures`] is the F08-D `texture-audit` command: every ZBD texture
+//! decoded through the F08-C upload boundary and compared texel by texel
+//! with a pinned reference extraction, with an optional private contact
+//! sheet.
 
 pub mod evidence;
 pub mod install;
 pub mod interp;
 pub mod resolve;
 pub mod rof;
+pub mod textures;
 pub mod zbd;

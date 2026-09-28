@@ -2489,6 +2489,7 @@ dependencies = [
  "cs_content",
  "cs_formats",
  "cs_types",
+ "miniz_oxide 0.9.1",
 ]
 
 [[package]]

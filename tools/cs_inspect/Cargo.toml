@@ -12,6 +12,10 @@ cs_assets.workspace = true
 cs_content.workspace = true
 cs_formats.workspace = true
 cs_types.workspace = true
+# DEFLATE/zlib for reading the pinned reference extraction (ZIP of PNGs) in
+# the F08-D `texture-audit`; the same package `cs_formats` already uses, so
+# this adds no new package to the graph.
+miniz_oxide = "0.9"
 
 [[bin]]
 name = "cs-inspect"
