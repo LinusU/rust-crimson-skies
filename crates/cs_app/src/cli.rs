@@ -34,8 +34,10 @@ pub enum CliRequest {
     Help,
     /// `-V`/`--version`: print [`version_text`] on stdout and exit 0.
     Version,
-    /// `--synthetic --headless --ticks <n> [--trace <file>]`: run the
-    /// asset-free `SYNTHETIC` scene for exactly that many fixed ticks.
+    /// `--synthetic --headless --ticks <n> [--trace <file>] [--seed <u64>]`:
+    /// run the asset-free `SYNTHETIC` scene for exactly that many fixed
+    /// ticks, optionally recording a trace and optionally starting from a
+    /// root seed.
     Synthetic(SyntheticRequest),
     /// No arguments at all: invalid input, reported on stderr and exit 2.
     MissingInput,
@@ -52,10 +54,11 @@ pub enum CliRequest {
 ///
 /// `--help`/`--version` win in the order they appear, so they work whatever
 /// else was typed. Everything else must form a complete
-/// `--synthetic --headless --ticks <n> [--trace <file>]` request; a vector
-/// that is unknown or structurally incomplete becomes
+/// `--synthetic --headless --ticks <n> [--trace <file>] [--seed <u64>]`
+/// request; a vector that is unknown or structurally incomplete becomes
 /// [`CliRequest::Unsupported`], and one that is complete but unusable (a
-/// non-numeric tick count, `--synthetic` without `--headless`) becomes
+/// non-numeric tick count, a non-`u64` seed, `--synthetic` without
+/// `--headless`, `--seed` without `--synthetic`) becomes
 /// [`CliRequest::Invalid`] with a reason naming the offending flag.
 ///
 /// Parsing never touches the environment or the file system.
@@ -76,6 +79,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
     let mut headless = false;
     let mut ticks: Option<u64> = None;
     let mut trace: Option<PathBuf> = None;
+    let mut seed: Option<u64> = None;
     let mut unknown = false;
 
     let mut index = 0;
@@ -103,6 +107,24 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
                 }
                 values = 1;
             }
+            "--seed" => {
+                let Some(value) = args.get(index + 1).cloned() else {
+                    // Mirror `--ticks`: a flag whose value is missing names no
+                    // request at all, so the vector stays unsupported input.
+                    return CliRequest::Unsupported { args };
+                };
+                match value.parse::<u64>() {
+                    // A duplicate `--seed` keeps the later value, like every
+                    // other value-carrying flag here.
+                    Ok(parsed) => seed = Some(parsed),
+                    Err(_) => {
+                        return CliRequest::Invalid {
+                            reason: format!("--seed expects a u64 root seed, found {value:?}"),
+                        };
+                    }
+                }
+                values = 1;
+            }
             "--trace" => {
                 let Some(value) = args.get(index + 1).cloned() else {
                     return CliRequest::Unsupported { args };
@@ -117,6 +139,13 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
 
     if unknown {
         return CliRequest::Unsupported { args };
+    }
+    if seed.is_some() && !synthetic {
+        return CliRequest::Invalid {
+            reason: "--seed is the root seed of a --synthetic run; no other \
+ run mode consumes a seed yet"
+                .to_string(),
+        };
     }
     if ticks.is_some() && !synthetic {
         return CliRequest::Invalid {
@@ -158,7 +187,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
         };
     };
 
-    CliRequest::Synthetic(SyntheticRequest { ticks, trace })
+    CliRequest::Synthetic(SyntheticRequest { ticks, trace, seed })
 }
 
 /// Usage text printed on stdout for `--help`; always exit 0.
@@ -183,6 +212,12 @@ SYNTHETIC SMOKE
         Additionally record the run as JSON Lines: a header line, then one
         sample for each tick from 0 through <n>. The run fails if the file
         cannot be written
+    --seed <u64>
+        Root seed of the run. It varies only the synthetic body's lateral
+        position (within +/- 2 m) and lateral velocity (within +/- 4 m/s);
+        every other property of the fixture stays as documented. Omitting it
+        keeps the canonical fixture. The trace header records the seed, and
+        --seed without --synthetic is rejected
 
 `--help` and `--version` read no environment variable, open no installation
 and start no asset discovery: they succeed without a GPU and without a retail

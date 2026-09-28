@@ -51,11 +51,13 @@ fn accept_f00_c_fixed_tick_smoke_twice_ends_at_the_requested_tick_count() {
     let first = run::run_synthetic(&SyntheticRequest {
         ticks: 600,
         trace: None,
+        seed: None,
     })
     .expect("the first synthetic smoke run must succeed");
     let second = run::run_synthetic(&SyntheticRequest {
         ticks: 600,
         trace: None,
+        seed: None,
     })
     .expect("the second synthetic smoke run must succeed");
 

@@ -29,6 +29,12 @@ pub struct SyntheticRequest {
     /// JSON Lines trace to write; the run fails if it cannot be opened,
     /// written or flushed.
     pub trace: Option<PathBuf>,
+    /// Root seed of the run (`--seed`), per
+    /// `docs/contracts/CLI-EVIDENCE.md`. `None` runs the canonical
+    /// `SyntheticBodySpec::falling_box` fixture unchanged; `Some(root)` hands
+    /// the root seed to the fixture, which varies only its lateral position
+    /// and lateral velocity.
+    pub seed: Option<u64>,
 }
 
 /// Typed output of a completed run, read back from the world itself.
@@ -95,15 +101,20 @@ impl RunError {
 /// tick can be recorded. Errors are never swallowed: a trace that cannot be
 /// flushed turns a completed simulation into a failed run.
 pub fn run_synthetic(request: &SyntheticRequest) -> Result<SyntheticRunReport, RunError> {
-    let mut scene = SyntheticScene::new(SyntheticBodySpec::falling_box(BodyKind::Dynamic))
-        .map_err(RunError::Scene)?;
+    // `None` is the canonical fixture and must stay byte-identical to the
+    // unseeded run; `Some(root)` only ever moves the body sideways.
+    let spec = match request.seed {
+        Some(root_seed) => SyntheticBodySpec::falling_box(BodyKind::Dynamic).seeded(root_seed),
+        None => SyntheticBodySpec::falling_box(BodyKind::Dynamic),
+    };
+    let mut scene = SyntheticScene::new(spec).map_err(RunError::Scene)?;
 
     let mut trace = match &request.trace {
         Some(path) => Some(TraceWriter::open(path)?),
         None => None,
     };
     if let Some(writer) = trace.as_mut() {
-        writer.header(request.ticks)?;
+        writer.header(request.ticks, request.seed)?;
         // The initial state is part of the record: the trace then holds one
         // sample for every tick from 0 through the requested final tick.
         writer.record(&scene.sample())?;
@@ -164,14 +175,21 @@ impl TraceWriter {
             })
     }
 
-    /// Declares what the file records, including the `SYNTHETIC` provenance,
-    /// so a trace can never be mistaken for retail evidence.
-    fn header(&mut self, requested_ticks: u64) -> Result<(), RunError> {
+    /// Declares what the file records, including the `SYNTHETIC` provenance
+    /// and the root seed that produced it, so a trace can never be mistaken
+    /// for retail evidence and always states which seed — if any — it came
+    /// from.
+    fn header(&mut self, requested_ticks: u64, seed: Option<u64>) -> Result<(), RunError> {
+        let seed = match seed {
+            Some(root_seed) => root_seed.to_string(),
+            None => "null".to_string(),
+        };
         let line = format!(
-            "{{\"kind\":\"synthetic-headless\",\"provenance\":\"{}\",\"tick_hz\":{},\"requested_ticks\":{}}}",
+            "{{\"kind\":\"synthetic-headless\",\"provenance\":\"{}\",\"tick_hz\":{},\"requested_ticks\":{},\"seed\":{}}}",
             SceneProvenance::Synthetic.label(),
             TICK_HZ,
-            requested_ticks
+            requested_ticks,
+            seed
         );
         self.write_line(&line)
     }
