@@ -29,6 +29,10 @@ const YELLOW: [u8; 3] = [255, 255, 0];
 const CYAN: [u8; 3] = [0, 255, 255];
 const MAGENTA: [u8; 3] = [255, 0, 255];
 
+/// One canonical texel: `(x, y from the top)`, base RGB, the three masks,
+/// overlay RGBA.
+type CanonicalTexel = ((u32, u32), [u8; 3], [u8; 3], [u8; 4]);
+
 /// Builds a BM with the header fields in on-disk order and the planes given
 /// in stored order.
 fn build_bm(
@@ -141,9 +145,8 @@ fn accept_f09_a_rectangular_2x3_canonical_orientation_flips_rows_once() {
     let mut context = ParseContext::with_defaults("fixtures/synthetic/rectangular.bm");
     let file = read_bm(&mut context, RECTANGULAR).expect("the golden fixture is valid");
 
-    // (x, y from the top) -> base, mask1, mask2, mask3, overlay.
     #[rustfmt::skip]
-    let canonical: [((u32, u32), [u8; 3], [u8; 3], [u8; 4]); 6] = [
+    let canonical: [CanonicalTexel; 6] = [
         ((0, 0), CYAN,    [204, 51, 0],    [130, 140, 150, 204]),
         ((1, 0), MAGENTA, [255, 0, 255],   [160, 170, 180, 255]),
         ((0, 1), BLUE,    [102, 153, 0],   [70, 80, 90, 102]),
@@ -196,7 +199,7 @@ fn accept_f09_a_transposed_3x2_is_a_different_image() {
     assert_eq!((file.width(), file.height()), (3, 2));
     assert_eq!(file.covered_len(), 64);
     #[rustfmt::skip]
-    let canonical: [((u32, u32), [u8; 3], [u8; 3], [u8; 4]); 6] = [
+    let canonical: [CanonicalTexel; 6] = [
         ((0, 0), YELLOW,  [4, 14, 24], [12, 13, 14, 15]),
         ((1, 0), CYAN,    [5, 15, 25], [16, 17, 18, 19]),
         ((2, 0), MAGENTA, [6, 16, 26], [20, 21, 22, 23]),
