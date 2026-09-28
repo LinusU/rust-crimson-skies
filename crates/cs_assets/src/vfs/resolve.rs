@@ -29,6 +29,7 @@
 //! measures original lookup behavior, never presented as measured.
 
 use std::fmt;
+use std::sync::Arc;
 
 use cs_types::asset_id::{
     AssetKey, MountId, PRECEDENCE_ORDER_STATUS, PrecedenceClass, ResolveContext, SourceSpan,
@@ -316,12 +317,14 @@ fn origin_of(mount: &Mount, key: &AssetKey) -> ConflictOrigin {
 /// Resolution never opens a file; [`Vfs::read_range`] and
 /// [`Vfs::read_all`] read the bytes of a resolution from its mount's host
 /// source, read-only. Mount lifetimes belong to a content session
-/// (non-negotiable behavior 4), so the mounts of one session are
-/// registered, consulted and dropped together; that lifecycle is F04-C
-/// work.
+/// (non-negotiable behavior 4): [`crate::vfs::session::ContentSession`]
+/// owns one `Vfs`, and its mounts are registered, consulted and dropped
+/// together. Mounts are shared (`Arc`) so a read that is still in flight
+/// when the session closes keeps its own mount description alive instead
+/// of pointing into freed state.
 #[derive(Clone, Debug, Default)]
 pub struct Vfs {
-    mounts: Vec<Mount>,
+    mounts: Vec<Arc<Mount>>,
 }
 
 impl Vfs {
@@ -341,8 +344,13 @@ impl Vfs {
                 id: mount.id().clone(),
             });
         }
-        self.mounts.push(mount);
+        self.mounts.push(Arc::new(mount));
         Ok(())
+    }
+
+    /// The registered mounts, in registration order.
+    pub fn mounts(&self) -> impl Iterator<Item = &Mount> {
+        self.mounts.iter().map(Arc::as_ref)
     }
 
     /// How many mounts are registered.
@@ -368,7 +376,7 @@ impl Vfs {
         key: &AssetKey,
     ) -> Result<ResolvedAsset, ResolveError> {
         let mut considered: Vec<Considered<'_>> = Vec::new();
-        for (index, mount) in self.mounts.iter().enumerate() {
+        for (index, mount) in self.mounts().enumerate() {
             if mount.namespace() != key.namespace() {
                 // Other namespaces are other key spaces, not attempts of
                 // this lookup.
@@ -472,23 +480,22 @@ impl Vfs {
     /// against the one recorded when it was mounted.
     pub fn read_all(&self, resolved: &ResolvedAsset) -> Result<Vec<u8>, ReadError> {
         let (mount, member) = self.current_member(resolved)?;
-        let bytes = source::read_member_range(mount, member, 0, member.size_bytes())?;
-        if let Some(mounted) = member.sha256() {
-            let found = crate::install::sha256(&bytes);
-            if found != mounted {
-                let path = mount
-                    .host_root()
-                    .zip(member.host_relative())
-                    .map(|(root, relative)| root.join(relative))
-                    .unwrap_or_default();
-                return Err(ReadError::DigestMismatch {
-                    path,
-                    mounted,
-                    found,
-                });
-            }
-        }
-        Ok(bytes)
+        read_whole_member(mount, member)
+    }
+
+    /// The shared mount `resolved` names, if the resolution still
+    /// describes one of its members exactly. A pending read keeps this
+    /// handle so it can finish after the session that issued it closed.
+    pub(crate) fn current_mount(&self, resolved: &ResolvedAsset) -> Result<Arc<Mount>, ReadError> {
+        let mount = self
+            .mounts
+            .iter()
+            .find(|mount| *mount.id() == resolved.mount)
+            .ok_or_else(|| ReadError::UnknownMount {
+                mount: resolved.mount.to_string(),
+            })?;
+        member_matching(mount, resolved)?;
+        Ok(Arc::clone(mount))
     }
 
     /// The mount and member `resolved` names, if the resolution still
@@ -498,25 +505,60 @@ impl Vfs {
         resolved: &ResolvedAsset,
     ) -> Result<(&Mount, &MemberRecord), ReadError> {
         let mount = self
-            .mounts
-            .iter()
+            .mounts()
             .find(|mount| *mount.id() == resolved.mount)
             .ok_or_else(|| ReadError::UnknownMount {
                 mount: resolved.mount.to_string(),
             })?;
-        let stale = || ReadError::StaleResolution {
-            mount: resolved.mount.to_string(),
-        };
-        let member = mount.member(&resolved.key).ok_or_else(stale)?;
-        let span = &resolved.span;
-        let matches = span.container_path() == mount.container()
-            && span.member_key() == Some(member.spelling().as_str())
-            && span.offset() == member.offset()
-            && span.length() == member.size_bytes()
-            && span.member_sha256() == member.sha256();
-        if !matches {
-            return Err(stale());
-        }
-        Ok((mount, member))
+        Ok((mount, member_matching(mount, resolved)?))
     }
+}
+
+/// The member of `mount` that `resolved` names, if the resolution still
+/// describes it exactly: same key, container, spelling, range and digest.
+/// Anything else is a stale answer and is refused rather than read from
+/// whatever now sits there.
+pub(crate) fn member_matching<'m>(
+    mount: &'m Mount,
+    resolved: &ResolvedAsset,
+) -> Result<&'m MemberRecord, ReadError> {
+    let stale = || ReadError::StaleResolution {
+        mount: resolved.mount.to_string(),
+    };
+    if *mount.id() != resolved.mount {
+        return Err(stale());
+    }
+    let member = mount.member(&resolved.key).ok_or_else(stale)?;
+    let span = &resolved.span;
+    let matches = span.container_path() == mount.container()
+        && span.member_key() == Some(member.spelling().as_str())
+        && span.offset() == member.offset()
+        && span.length() == member.size_bytes()
+        && span.member_sha256() == member.sha256();
+    if !matches {
+        return Err(stale());
+    }
+    Ok(member)
+}
+
+/// Reads all of `member` and checks its digest against the one recorded
+/// when it was mounted.
+pub(crate) fn read_whole_member(mount: &Mount, member: &MemberRecord) -> Result<Vec<u8>, ReadError> {
+    let bytes = source::read_member_range(mount, member, 0, member.size_bytes())?;
+    if let Some(mounted) = member.sha256() {
+        let found = crate::install::sha256(&bytes);
+        if found != mounted {
+            let path = mount
+                .host_root()
+                .zip(member.host_relative())
+                .map(|(root, relative)| root.join(relative))
+                .unwrap_or_default();
+            return Err(ReadError::DigestMismatch {
+                path,
+                mounted,
+                found,
+            });
+        }
+    }
+    Ok(bytes)
 }
