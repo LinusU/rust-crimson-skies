@@ -24,10 +24,15 @@
 //! `### F09-B`): the three mask colors of a BM livery, the deterministic
 //! cache key of a composed variant and the composed RGB8 image.
 //!
+//! [`config`] holds lossless configuration documents with provenance and
+//! key accounting (`specs/F12-text-configuration-strings-and-pe-
+//! resources.md`, stage F12-A).
+//!
 //! [`cs_types`]: cs_types
 //! [`cs_formats`]: cs_formats
 //! [`cs_assets`]: cs_assets
 
+pub mod config;
 pub mod livery;
 pub mod loading;
 pub mod textures;
