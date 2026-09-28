@@ -1,12 +1,14 @@
 //! Acceptance scenario F03-B: the allocation budget is an *independent*
 //! limit (spec non-negotiable #2) with exact boundaries and a designed
-//! default — configurable only where these tests reach.
+//! default — configurable only where these tests reach — and a ledger
+//! separate from the recursion budget.
 //!
-//! Every case below calls production code (`AllocationBudget`); removing the
-//! charge in `AllocationBudget::charge` makes the boundary and exhaustion
-//! cases fail, and removing the counter makes the accounting cases fail.
+//! Every case below calls production code (`AllocationBudget` and
+//! `RecursionBudget`); removing the charge in `AllocationBudget::charge`
+//! makes the boundary and exhaustion cases fail, and removing the counter
+//! makes the accounting cases fail.
 
-use cs_formats::{AllocationBudget, ParseErrorKind};
+use cs_formats::{AllocationBudget, ParseErrorKind, RecursionBudget};
 
 /// Provenance label carried by every error these tests assert on.
 const CONTAINER: &str = "synthetic/f03_b_budget.bin";
@@ -144,4 +146,45 @@ fn accept_f03_b_default_budget_admits_one_buffer_and_refuses_the_next() {
         .expect("u32::MAX bytes fit a budget of u64::MAX bytes");
     assert_eq!(bytes, u32::MAX as usize);
     assert_eq!(large.used(), u32::MAX as u64);
+}
+
+/// Non-negotiable #2 is independence *across* dimensions: a drained
+/// allocation budget neither blocks nor relaxes the recursion limit, and
+/// entering — or being refused at — the recursion ceiling charges no
+/// allocation bytes. The two counters must be separate ledgers, not one
+/// shared allowance.
+#[test]
+fn accept_f03_b_allocation_and_recursion_limits_are_independent() {
+    let mut allocation = AllocationBudget::new(CONTAINER, 8);
+    allocation
+        .reserve("row.bytes", 0, 8, 1)
+        .expect("the whole allocation budget is available at first");
+    let err = allocation
+        .reserve("row.bytes", 8, 1, 1)
+        .expect_err("the byte after an exhausted allocation budget is refused");
+    assert_eq!(err.kind, ParseErrorKind::AllocationBudgetExceeded);
+    assert_eq!(allocation.remaining(), 0);
+
+    // An exhausted allocation budget leaves the recursion budget untouched.
+    let recursion = RecursionBudget::new(CONTAINER, 1);
+    let outer = recursion
+        .enter("node", 0)
+        .expect("the recursion ceiling is unaffected by the drained allocation budget");
+    let err = recursion
+        .enter("node", 1)
+        .expect_err("the recursion ceiling is still exactly one level");
+    assert_eq!(err.kind, ParseErrorKind::RecursionDepthExceeded);
+    assert_eq!(
+        allocation.used(),
+        8,
+        "entering (or being refused at) a level charges no allocation bytes"
+    );
+
+    drop(outer);
+    assert_eq!(recursion.depth(), 0, "the level is released as usual");
+    assert_eq!(
+        allocation.used(),
+        8,
+        "releasing a level changes no allocation accounting"
+    );
 }
