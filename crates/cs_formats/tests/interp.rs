@@ -1632,3 +1632,297 @@ fn accept_f07_c_plan_reads_the_container_without_resolving_or_executing() {
         .collect();
     assert_eq!(rebuilt, entry.line().data());
 }
+
+// ---------------------------------------------------------------------------
+// Stage F07-D: opcode classification and audit
+// ---------------------------------------------------------------------------
+
+use cs_formats::{
+    ClassifiedOpcode, OpcodeClass, OpcodeClassTable, audit_interp_opcodes,
+    plan_interp_loading_classified,
+};
+
+/// A classification a test supplies: `Inferred` over an authored container,
+/// never `VerifiedOriginal` (only a fingerprinted evidence record may award
+/// that) and never a claim about an original command.
+fn classification(spelling: &[u8], class: OpcodeClass) -> ClassifiedOpcode {
+    ClassifiedOpcode {
+        spelling: spelling.to_vec(),
+        class,
+        status: ClaimStatus::Inferred,
+        source: "synthetic test classification: exercises the audit".to_owned(),
+    }
+}
+
+fn loading_class(namespace: usize, path: usize) -> OpcodeClass {
+    OpcodeClass::Loading {
+        arguments: KeyArguments {
+            namespace,
+            path,
+            variant: None,
+        },
+        spelling_kind: KeySpelling::Literal,
+    }
+}
+
+/// A classification table holding `entries`, built through the checked path so
+/// the test exercises the same refusals production does.
+fn class_table(entries: impl IntoIterator<Item = ClassifiedOpcode>) -> OpcodeClassTable {
+    let mut table = OpcodeClassTable::new();
+    table
+        .extend(entries)
+        .expect("the test classifications register");
+    table
+}
+
+fn classified_plan<'a>(
+    bytes: &'a [u8],
+    table: &OpcodeClassTable,
+) -> cs_formats::InterpLoadPlan<'a> {
+    let decoded = decode(bytes).expect("the container validates");
+    plan_interp_loading_classified(&decoded, table)
+}
+
+/// The audit names **every** distinct head of the container — spelling, how
+/// often it occurs and whether anything classified it — and is complete only
+/// when no head is unknown. This is "classify every opcode" as a checked
+/// property: an audit that skipped an unknown head would report completeness it
+/// has not earned.
+#[test]
+fn accept_f07_d_audit_reports_every_distinct_head_and_its_completeness() {
+    let (a_count, a_data) = args([b"loadmesh".as_slice(), b"world", b"a.flt"]);
+    let (c_count, c_data) = args([b"quit".as_slice()]);
+    let (b_count, b_data) = args([b"loadmesh".as_slice(), b"world", b"b.flt"]);
+    let first_body = body(&[&line(a_count, &a_data), &line(c_count, &c_data)]);
+    let second_body = body(&[&line(b_count, &b_data)]);
+    let first = index_end(2);
+    let second = first + first_body.len() as u32;
+    let mut image = Image::new(&[(b"one", first), (b"two", second)]);
+    image.put(first, &first_body);
+    image.put(second, &second_body);
+    let bytes = image.finish();
+    let decoded = decode(&bytes).expect("the container validates");
+
+    let table = class_table([classification(b"loadmesh", loading_class(1, 2))]);
+    let audit = audit_interp_opcodes(&decoded, &table);
+    assert_eq!(audit.lines(), 3);
+    assert_eq!(audit.distinct_heads(), 2);
+    assert_eq!(audit.entries().len(), 2);
+
+    // One entry per distinct head, in spelling order, with its count.
+    let [loadmesh, quit] = audit.entries() else {
+        panic!("two distinct heads expected")
+    };
+    assert_eq!(loadmesh.spelling(), b"loadmesh");
+    assert_eq!(loadmesh.occurrences(), 2);
+    assert_eq!(quit.spelling(), b"quit");
+    assert_eq!(quit.occurrences(), 1);
+    assert!(loadmesh.is_classified());
+    assert!(!quit.is_classified());
+    assert_eq!(loadmesh.code(), "classified");
+    assert_eq!(quit.code(), "unknown");
+
+    // A classification is an index into the audit's own snapshot.
+    let index = loadmesh.classification().expect("loadmesh is classified");
+    assert_eq!(audit.opcode(index).map(|o| o.class.code()), Some("loading"));
+    assert_eq!(quit.classification(), None);
+    assert_eq!(audit.heads_of("loading"), 1);
+    assert_eq!(audit.unknown_heads(), 1);
+    assert!(!audit.is_complete(), "one head is still unknown");
+
+    // Classifying the remaining head makes the same container complete.
+    let table = class_table([
+        classification(b"loadmesh", loading_class(1, 2)),
+        classification(b"quit", OpcodeClass::Behavior),
+    ]);
+    let audit = audit_interp_opcodes(&decoded, &table);
+    assert_eq!(audit.unknown_heads(), 0);
+    assert_eq!(audit.heads_of("behavior"), 1);
+    assert!(audit.is_complete(), "every distinct head is now classified");
+}
+
+/// AC04 at the plan level: an unsupported loading command is reported with its
+/// absolute source offset and blocks its script, rather than being treated as a
+/// line that loaded nothing.
+#[test]
+fn accept_f07_d_unsupported_command_blocks_with_its_source_offset() {
+    let (count, data) = args([b"setdir".as_slice(), b"world", b"subdir"]);
+    let start = index_end(1);
+    let mut image = Image::new(&[(b"unsupported", start)]);
+    image.put(start, &body(&[&line(count, &data)]));
+    let bytes = image.finish();
+
+    let table = class_table([classification(b"setdir", OpcodeClass::Unsupported)]);
+    let plan = classified_plan(&bytes, &table);
+
+    let entry = plan.script(0).and_then(|s| s.line(0)).expect("one line");
+    let PlanLineKind::Unsupported { opcode } = *entry.kind() else {
+        panic!("expected an unsupported line, got {:?}", entry.kind())
+    };
+    assert_eq!(entry.kind().code(), "unsupported");
+    assert!(!entry.kind().is_loading());
+    assert!(entry.is_blocking());
+    assert_eq!(entry.head().bytes(), b"setdir");
+    // The line keeps its absolute offset: not an invented loaded state.
+    assert_eq!(entry.source_offset(), u64::from(start));
+    assert_eq!(
+        entry.head_offset(),
+        u64::from(start) + LINE_HEADER_BYTES as u64
+    );
+    assert_eq!(
+        plan.opcode(opcode).map(|opcode| opcode.class.code()),
+        Some("unsupported")
+    );
+    // A command with no supported key domain gets no invented registration.
+    assert!(plan.commands().is_empty());
+    assert_eq!(plan.stats().unsupported_commands, 1);
+    assert_eq!(plan.stats().loading_commands, 0);
+    assert_eq!(plan.stats().blocked_scripts, 1);
+    assert!(!plan.is_complete());
+}
+
+/// A command classified as not a resource load is carried: it contributes no
+/// dependency and does not block its world, and the plan does not interpret it.
+#[test]
+fn accept_f07_d_behavior_command_is_carried_without_blocking() {
+    let (count, data) = args([b"setcamera".as_slice(), b"follow", b"target"]);
+    let start = index_end(1);
+    let mut image = Image::new(&[(b"behavior", start)]);
+    image.put(start, &body(&[&line(count, &data)]));
+    let bytes = image.finish();
+
+    let table = class_table([classification(b"setcamera", OpcodeClass::Behavior)]);
+    let plan = classified_plan(&bytes, &table);
+
+    let entry = plan.script(0).and_then(|s| s.line(0)).expect("one line");
+    assert_eq!(entry.kind().code(), "behavior");
+    assert!(entry.kind().is_behavior());
+    assert!(!entry.kind().is_loading());
+    assert!(!entry.is_blocking());
+    assert_eq!(entry.head().bytes(), b"setcamera");
+    assert!(plan.commands().is_empty());
+    assert_eq!(plan.stats().behavior_commands, 1);
+    assert_eq!(plan.stats().loading_commands, 0);
+    assert_eq!(plan.stats().blocked_scripts, 0);
+    assert!(
+        plan.is_complete(),
+        "a behavior line does not block its world"
+    );
+}
+
+/// A head no classification names stays unclassified and blocking even when
+/// the table classifies other heads: absence is never a default class.
+#[test]
+fn accept_f07_d_unknown_head_stays_unclassified_and_blocks() {
+    let (count, data) = args([b"mystery".as_slice(), b"world", b"a.flt"]);
+    let start = index_end(1);
+    let mut image = Image::new(&[(b"unknown", start)]);
+    image.put(start, &body(&[&line(count, &data)]));
+    let bytes = image.finish();
+
+    let table = class_table([classification(b"setdir", OpcodeClass::Unsupported)]);
+    let plan = classified_plan(&bytes, &table);
+    let entry = plan.script(0).and_then(|s| s.line(0)).expect("one line");
+    assert_eq!(*entry.kind(), PlanLineKind::Unclassified);
+    assert!(entry.is_blocking());
+    assert_eq!(entry.source_offset(), u64::from(start));
+    assert_eq!(plan.stats().unclassified_commands, 1);
+    assert_eq!(plan.stats().blocked_scripts, 1);
+    assert!(!plan.is_complete());
+}
+
+/// The classification table refuses the entries that would make the audit
+/// ambiguous or untraceable, and refuses a whole set rather than half-applying
+/// it — exactly as the F07-C loading table does.
+#[test]
+fn accept_f07_d_classification_table_refuses_ambiguous_or_untraceable_entries() {
+    let mut table = OpcodeClassTable::new();
+    assert_eq!(
+        table.insert(classification(b"", OpcodeClass::Behavior)),
+        Err(TableError::EmptySpelling)
+    );
+    let mut no_source = classification(b"quiet", OpcodeClass::Behavior);
+    no_source.source = "  ".to_owned();
+    assert_eq!(table.insert(no_source), Err(TableError::EmptySource));
+    let mut awarded = classification(b"quiet", OpcodeClass::Behavior);
+    awarded.status = ClaimStatus::VerifiedOriginal;
+    assert_eq!(
+        table.insert(awarded),
+        Err(TableError::SelfAwardedVerifiedOriginal)
+    );
+    // A loading classification must name positions that could spell a key.
+    assert_eq!(
+        table.insert(classification(b"quiet", loading_class(0, 2))),
+        Err(TableError::HeadArgument {
+            part: KeyPart::Namespace
+        })
+    );
+    assert_eq!(
+        table.insert(classification(b"quiet", loading_class(2, 2))),
+        Err(TableError::RepeatedArgument {
+            part: KeyPart::Path,
+            position: 2
+        })
+    );
+    // Every refusal above left the table untouched.
+    assert!(table.is_empty());
+    table
+        .insert(classification(b"quiet", OpcodeClass::Behavior))
+        .expect("the first classification registers");
+    // A duplicate spelling is refused, naming both positions.
+    assert_eq!(
+        table.insert(classification(b"quiet", OpcodeClass::Behavior)),
+        Err(TableError::Duplicate {
+            first: 0,
+            second: 1
+        })
+    );
+
+    // `extend` registers all of a set or none of it.
+    let mut atomic = OpcodeClassTable::new();
+    let error = atomic
+        .extend([
+            classification(b"good", OpcodeClass::Behavior),
+            classification(b"", OpcodeClass::Behavior),
+        ])
+        .expect_err("the empty spelling is refused");
+    assert_eq!(error, TableError::EmptySpelling);
+    assert!(
+        atomic.is_empty(),
+        "the whole set was refused, not half applied"
+    );
+}
+
+/// The F07-C loading registry maps onto the classification as `Loading`
+/// entries, so the F07-C plan keeps its exact behaviour while the F07-D plan
+/// speaks the wider classification.
+#[test]
+fn accept_f07_d_loading_registry_maps_to_loading_classifications() {
+    let mut commands = LoadCommandTable::new();
+    commands
+        .insert(registration(b"loadmesh", 1, 2))
+        .expect("registered");
+    let classes = OpcodeClassTable::from_load_commands(commands.commands());
+    assert_eq!(classes.len(), 1);
+    let (index, opcode) = classes.get(b"loadmesh").expect("the command maps");
+    assert_eq!(index, 0);
+    assert_eq!(opcode.class.code(), "loading");
+    assert_eq!(opcode.status, ClaimStatus::Designed);
+    assert_eq!(
+        opcode.source,
+        "synthetic test table: exercises the plan, not an original command"
+    );
+
+    let (count, data) = args([b"loadmesh".as_slice(), b"world", b"a.flt"]);
+    let start = index_end(1);
+    let mut image = Image::new(&[(b"load", start)]);
+    image.put(start, &body(&[&line(count, &data)]));
+    let bytes = image.finish();
+    let plan = plan_of(&bytes, &commands);
+    assert!(plan.is_complete());
+    assert_eq!(plan.stats().loading_commands, 1);
+    assert_eq!(plan.stats().unsupported_commands, 0);
+    assert_eq!(plan.stats().behavior_commands, 0);
+    let entry = plan.script(0).and_then(|s| s.line(0)).expect("one line");
+    assert!(matches!(entry.kind(), PlanLineKind::Loading { .. }));
+}

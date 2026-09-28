@@ -27,13 +27,22 @@
 //!   assembled at run time and therefore has nothing to resolve here.
 //!   `docs/contracts/SCRIPT-MISSION.md` asks for exactly this tally —
 //!   resolved host calls and dynamic lookups counted separately;
-//! * every unclassified or malformed line becomes a [`LoadingFailure`] with
-//!   its source offset and the **affected world**, which is the world the
-//!   resolving session's context selected — never a name guessed from the
-//!   script's spelling and never a fake loaded state. With the shipped-empty
-//!   command table every line of every container fails this way, which is the
-//!   honest answer: nobody has measured which commands load resources
-//!   (non-negotiable #3, and F07-D is the stage that measures it);
+//! * every unclassified, malformed or **unsupported** line becomes a
+//!   [`LoadingFailure`] with its source offset and the **affected world**,
+//!   which is the world the resolving session's context selected — never a
+//!   name guessed from the script's spelling and never a fake loaded state.
+//!   An unsupported line is one whose command is recognized as a resource
+//!   load but has no key domain this stage can spell (a directory, a
+//!   `%VARIABLE%` spelling): it fails with `unsupported_command` instead of
+//!   being treated as loaded or as no load at all (spec F07-D, AC04). With
+//!   the shipped-empty command table every line of every container fails this
+//!   way, which is the honest answer: nobody has measured which commands load
+//!   resources (non-negotiable #3, and F07-D is the stage that measures it);
+//! * a line whose command is classified as **not** a resource load
+//!   (`PlanLineKind::Behavior`) becomes no dependency and no failure: the
+//!   world is not unloadable because a scene or camera command sits beside its
+//!   loading commands. This stage does not interpret it either, so it is
+//!   neither resolved nor reported;
 //! * the report is a **value**. It holds no file handle and no session, and
 //!   its dependencies are stamped with the session generation that resolved
 //!   them, so a report cannot be read through a session that replaced the one
@@ -607,12 +616,14 @@ impl LoadingPlanReport {
     pub fn describe(&self) -> String {
         let mut out = format!(
             "{} script(s), {} line(s): {} loading command(s), {} unclassified, {} malformed, \
-             {} resolved, {} dynamic",
+             {} unsupported, {} behavior, {} resolved, {} dynamic",
             self.scripts.len(),
             self.stats.lines,
             self.stats.loading_commands,
             self.stats.unclassified_commands,
             self.stats.malformed_commands,
+            self.stats.unsupported_commands,
+            self.stats.behavior_commands,
             self.resolved_count(),
             self.dynamic_lookups,
         );
@@ -785,6 +796,31 @@ pub fn resolve_loading_plan<'a>(
                                 .unwrap_or("unknown")
                         ),
                     });
+                }
+                PlanLineKind::Unsupported { opcode } => {
+                    blocking += 1;
+                    let classification = plan.opcode(opcode);
+                    failures.push(LoadingFailure {
+                        code: "unsupported_command",
+                        site,
+                        world: world.clone(),
+                        command: None,
+                        detail: format!(
+                            "the command is classified as resource-loading but has no supported \
+                             key domain here (classification {}, source {})",
+                            classification
+                                .map(|rule| rule.status.label())
+                                .unwrap_or("unknown"),
+                            classification
+                                .map(|rule| rule.source.as_str())
+                                .unwrap_or("unknown")
+                        ),
+                    });
+                }
+                PlanLineKind::Behavior { .. } => {
+                    // Classified as not a resource load: it contributes no
+                    // dependency and does not fail the script. Interpreting
+                    // what it does is the mission language's business (F13).
                 }
                 PlanLineKind::Unclassified => {
                     blocking += 1;
@@ -975,8 +1011,9 @@ mod tests {
     use cs_assets::install;
     use cs_assets::vfs::{ContentSession, SessionBuilder, SessionError};
     use cs_formats::{
-        INDEX_ENTRY_BYTES, KeyArguments, KeySpelling, LoadCommand, LoadCommandTable,
-        NAME_FIELD_BYTES, ParseContext, decode_interp, plan_interp_loading,
+        ClassifiedOpcode, INDEX_ENTRY_BYTES, KeyArguments, KeySpelling, LoadCommand,
+        LoadCommandTable, NAME_FIELD_BYTES, OpcodeClass, OpcodeClassTable, ParseContext,
+        decode_interp, plan_interp_loading, plan_interp_loading_classified,
     };
     use cs_types::asset_id::{ResolveContext, WorldGroup};
     use cs_types::evidence::ClaimStatus;
@@ -1616,5 +1653,97 @@ mod tests {
         let rendered = error.to_string();
         assert!(rendered.contains("past the"), "{rendered}");
         assert!(rendered.contains(&short.len().to_string()), "{rendered}");
+    }
+
+    /// The minimum F07-D scenario: a command recognized as resource-loading
+    /// but with no supported key domain must fail with its source offset and
+    /// its affected world, not be reported as a loaded script.
+    ///
+    /// The failure this catches is a validator that folds `Unsupported` into
+    /// "loaded nothing" or into "unclassified": either would hide a load the
+    /// world really needs and let a caller believe the world is ready.
+    #[test]
+    fn accept_f07_d_unsupported_command_yields_its_offset_and_world_not_a_loaded_state() {
+        let tree = Temp::new("unsupported");
+        tree.write("ZBD/c1/plane.flt", b"plane");
+        let bytes = container(b"unsupported", &[b"setdir\0world\0subdir\0"]);
+
+        let mut classes = OpcodeClassTable::new();
+        classes
+            .insert(ClassifiedOpcode {
+                spelling: b"setdir".to_vec(),
+                class: OpcodeClass::Unsupported,
+                status: ClaimStatus::Inferred,
+                source: "synthetic test classification: no supported key domain".to_owned(),
+            })
+            .expect("the classification registers");
+        let decoded = decode_interp(
+            &mut ParseContext::with_defaults("unsupported.interp"),
+            &bytes,
+        )
+        .expect("the container validates");
+        let plan = plan_interp_loading_classified(&decoded, &classes);
+
+        let session = session(&tree, "zbd/c1").expect("the session opens");
+        let report =
+            resolve_loading_plan(Some(&session), &decoded, &plan).expect("the plan builds");
+
+        // The command yields its source offset and the world it would block.
+        assert_eq!(report.stats().unsupported_commands, 1);
+        assert_eq!(report.failures().len(), 1);
+        let failure = &report.failures()[0];
+        assert_eq!(failure.code, "unsupported_command");
+        assert_eq!(failure.site.source_offset, 140);
+        assert_eq!(failure.site.script, 0);
+        assert_eq!(failure.site.line, 0);
+        assert_eq!(
+            failure
+                .world
+                .as_ref()
+                .map(WorldGroup::as_relative)
+                .map(|path| path.as_str()),
+            Some("zbd/c1")
+        );
+        // It is not a fake loaded state: no dependency was invented for it.
+        assert_eq!(report.dependencies().len(), 0);
+        assert!(report.dependencies_of(0).is_empty());
+        assert!(!report.is_complete());
+        assert_eq!(
+            report.script(0).expect("one script").state.code(),
+            "blocked"
+        );
+        assert_eq!(
+            report.script(0).expect("one script").state.blocking_lines(),
+            1
+        );
+        let rendered = failure.to_string();
+        assert!(rendered.contains("offset 140"), "{rendered}");
+        assert!(rendered.contains("zbd/c1"), "{rendered}");
+    }
+
+    /// A command classified as *not* a resource load is carried: it blocks
+    /// nothing and contributes no dependency, but it is not interpreted either.
+    #[test]
+    fn accept_f07_d_behavior_command_is_carried_without_a_dependency_or_a_failure() {
+        let bytes = container(b"behavior", &[b"setcamera\0follow\0target\0"]);
+        let mut classes = OpcodeClassTable::new();
+        classes
+            .insert(ClassifiedOpcode {
+                spelling: b"setcamera".to_vec(),
+                class: OpcodeClass::Behavior,
+                status: ClaimStatus::Inferred,
+                source: "synthetic test classification: not a resource load".to_owned(),
+            })
+            .expect("the classification registers");
+        let decoded = decode_interp(&mut ParseContext::with_defaults("behavior.interp"), &bytes)
+            .expect("the container validates");
+        let plan = plan_interp_loading_classified(&decoded, &classes);
+        let report = resolve_loading_plan(None, &decoded, &plan).expect("the plan builds");
+
+        assert_eq!(report.stats().behavior_commands, 1);
+        assert_eq!(report.dependencies().len(), 0);
+        assert!(report.failures().is_empty());
+        assert!(report.is_complete());
+        assert_eq!(report.script(0).expect("one script").state.code(), "ready");
     }
 }

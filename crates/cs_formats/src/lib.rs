@@ -65,12 +65,14 @@ pub use bm::{
 };
 pub use error::{ParseError, ParseErrorKind};
 pub use interp::{
-    DecodedInterp, INDEX_ENTRY_BYTES, INTERP_ENTRYPOINT, INTERP_HEADER_BYTES, InterpError,
-    InterpFile, InterpFinding, InterpLine, InterpLoadPlan, InterpRawHeader, InterpRawIndexEntry,
-    InterpRawLine, InterpRawScript, InterpScript, InterpToken, KeyArguments, KeyPart, KeySpelling,
-    KeyTokens, LINE_HEADER_BYTES, LoadCommand, LoadCommandTable, MalformedKey, NAME_FIELD_BYTES,
+    ClassifiedOpcode, DecodedInterp, INDEX_ENTRY_BYTES, INTERP_ENTRYPOINT, INTERP_HEADER_BYTES,
+    InterpError, InterpFile, InterpFinding, InterpLine, InterpLoadPlan, InterpRawHeader,
+    InterpRawIndexEntry, InterpRawLine, InterpRawScript, InterpScript, InterpToken, KeyArguments,
+    KeyPart, KeySpelling, KeyTokens, LINE_HEADER_BYTES, LoadCommand, LoadCommandTable,
+    MalformedKey, NAME_FIELD_BYTES, OpcodeAudit, OpcodeAuditEntry, OpcodeClass, OpcodeClassTable,
     PlanLine, PlanLineKind, PlanScript, PlanStats, RawArgument, RawArguments, ScriptOrigin,
-    TERMINATOR_BYTES, TableError, decode_interp, plan_interp_loading, read_interp,
+    TERMINATOR_BYTES, TableError, audit_interp_opcodes, decode_interp, plan_interp_loading,
+    plan_interp_loading_classified, read_interp,
 };
 pub use io::{AllocationBudget, ParseContext, Reader, RecursionBudget, RecursionGuard};
 pub use rof::{

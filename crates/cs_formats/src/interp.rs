@@ -92,6 +92,31 @@
 //! `docs/research/FORMAT-NOTES.md` asks for stays unknown and no [`String`] is
 //! built from a container's own bytes.
 //!
+//! **F07-D** adds the classification and the audit over it, still without
+//! deciding anything itself:
+//!
+//! * [`OpcodeClassTable`] holds one [`ClassifiedOpcode`] per head spelling:
+//!   [`OpcodeClass::Loading`] with the argument positions that spell an asset
+//!   key, [`OpcodeClass::Unsupported`] for a command recognized as loading but
+//!   with no supported key domain (a directory or a `%VARIABLE%` spelling), or
+//!   [`OpcodeClass::Behavior`] for a command that is not a resource load. Every
+//!   entry carries a [`ClaimStatus`] and a `source`, and the table refuses
+//!   duplicates and self-awarded statuses, exactly as [`LoadCommandTable`] does;
+//! * [`audit_interp_opcodes`] walks the same lines and reports **every distinct
+//!   head** with its occurrence count and class, or as unknown when nothing
+//!   classified it. [`OpcodeAudit::is_complete`] is the "classify every opcode"
+//!   property: it is true only when no head is unknown;
+//! * [`plan_interp_loading_classified`] turns the classification into a plan —
+//!   a `Behavior` line contributes no dependency and does not block its script,
+//!   an `Unsupported` line blocks with its source offset, and an unknown head is
+//!   still [`PlanLineKind::Unclassified`]. [`plan_interp_loading`] keeps the
+//!   F07-C entry point and delegates with every registration classified
+//!   `Loading`, so its behaviour is unchanged.
+//!
+//! The empty table remains the shipped state: a classification of an installed
+//! corpus is evidence somebody measured, and this crate still builds none. The
+//! retail audit that supplies one is `docs/findings/`.
+//!
 //! Every fixture exercised below is newly authored synthetic bytes; nothing
 //! here is derived from original game data.
 //!
@@ -179,7 +204,7 @@
 //! assert!(!plan.is_complete());
 //! ```
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::mem::size_of;
 
@@ -1767,35 +1792,7 @@ impl LoadCommandTable {
         if command.status == ClaimStatus::VerifiedOriginal {
             return Err(TableError::SelfAwardedVerifiedOriginal);
         }
-        if command.arguments.namespace == 0 {
-            return Err(TableError::HeadArgument {
-                part: KeyPart::Namespace,
-            });
-        }
-        if command.arguments.path == 0 {
-            return Err(TableError::HeadArgument {
-                part: KeyPart::Path,
-            });
-        }
-        if command.arguments.path == command.arguments.namespace {
-            return Err(TableError::RepeatedArgument {
-                part: KeyPart::Path,
-                position: command.arguments.path,
-            });
-        }
-        if let Some(variant) = command.arguments.variant {
-            if variant == 0 {
-                return Err(TableError::HeadArgument {
-                    part: KeyPart::Variant,
-                });
-            }
-            if variant == command.arguments.namespace || variant == command.arguments.path {
-                return Err(TableError::RepeatedArgument {
-                    part: KeyPart::Variant,
-                    position: variant,
-                });
-            }
-        }
+        check_key_arguments(command.arguments)?;
         if let Some(first) = self.find(&command.spelling) {
             return Err(TableError::Duplicate {
                 first,
@@ -1846,6 +1843,394 @@ impl LoadCommandTable {
         self.commands
             .iter()
             .position(|command| command.spelling == spelling)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Stage F07-D: opcode classification and audit
+// ---------------------------------------------------------------------------
+
+/// What the loading audit established about one opcode head.
+///
+/// This is the classification `specs/F07-interp-loading-script-container.md`
+/// non-negotiable #3 asks for — which commands load resources and which refer
+/// to game behaviour. It is deliberately **not** two-valued, because a command
+/// nobody has established anything about is not the same as one known not to
+/// load:
+///
+/// * [`OpcodeClass::Loading`] names the argument positions that spell an asset
+///   key, so the plan resolves the line's key from them;
+/// * [`OpcodeClass::Unsupported`] says the command is recognized as a
+///   resource-loading command but this stage has no supported key domain for
+///   it — its arguments are a directory, a `%VARIABLE%` spelling or a path that
+///   is not a mount-namespace key. The plan reports it, with its source offset
+///   and affected world, rather than pretending it loaded nothing;
+/// * [`OpcodeClass::Behavior`] says the command is not a resource load: game,
+///   scene, camera, world or language work that contributes no dependency. The
+///   plan carries it without blocking on it, and does not interpret it either.
+///
+/// A head that no entry names is **unclassified**: unknown, and the plan fails
+/// the world it belongs to. Absence is never a default class, and nothing here
+/// decides a class by itself — a caller supplies the evidence (the container
+/// cannot identify the language on its own).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OpcodeClass {
+    /// The command's key is spelled from these argument positions.
+    Loading {
+        /// Which stored argument positions spell the key.
+        arguments: KeyArguments,
+        /// Whether the key is literal where it stands or assembled later.
+        spelling_kind: KeySpelling,
+    },
+    /// Recognized as resource-loading, but with no supported key domain here.
+    Unsupported,
+    /// Not a resource load: contributes no dependency to the loading plan.
+    Behavior,
+}
+
+impl OpcodeClass {
+    /// Stable lowercase identifier for logs and structured diagnostics.
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::Loading { .. } => "loading",
+            Self::Unsupported => "unsupported",
+            Self::Behavior => "behavior",
+        }
+    }
+
+    /// Whether this class contributes an asset key the plan can resolve.
+    pub const fn is_loading(&self) -> bool {
+        matches!(self, Self::Loading { .. })
+    }
+}
+
+impl fmt::Display for OpcodeClass {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.code())
+    }
+}
+
+/// One opcode head, classified, with how much is known about it and where the
+/// claim came from.
+///
+/// A classification is a claim about the original language, so every entry
+/// carries a [`ClaimStatus`] and a `source` (a doc section, a finding or a
+/// probe run). Nothing in this crate registers anything by itself: the
+/// classification of an installed corpus is data a caller measured.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ClassifiedOpcode {
+    /// The head spelling, as stored bytes. Never decoded: no encoding is
+    /// established for a container's own bytes (non-negotiable #1).
+    pub spelling: Vec<u8>,
+    /// What the command was classified as.
+    pub class: OpcodeClass,
+    /// How much is known about this classification. [`ClaimStatus::VerifiedOriginal`]
+    /// may not be awarded by a table: that status belongs to a fingerprinted
+    /// evidence record.
+    pub status: ClaimStatus,
+    /// Where the classification came from. Empty is refused by
+    /// [`OpcodeClassTable::insert`].
+    pub source: String,
+}
+
+/// The opcode classifications somebody has established for a corpus.
+///
+/// **The table this crate builds is empty.** Which commands load resources is
+/// a measurement over the installed container, and the container does not
+/// identify the language by itself (non-negotiable #3), so this type refuses a
+/// table that would classify a head twice or self-award a status that only
+/// fingerprinted evidence may, and an unclassified head fails the plan rather
+/// than defaulting to either "loads" or "does not load".
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct OpcodeClassTable {
+    opcodes: Vec<ClassifiedOpcode>,
+}
+
+impl OpcodeClassTable {
+    /// A table with no classifications: every head is unclassified.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The classifications an F07-C [`LoadCommandTable`] implies: each
+    /// registered command is `Loading` with the key domain it registered.
+    ///
+    /// This is how the F07-C plan keeps its exact behaviour while the F07-D
+    /// plan speaks the wider classification: the loading registry is a table of
+    /// [`OpcodeClass::Loading`] entries and nothing else.
+    pub fn from_load_commands(commands: &[LoadCommand]) -> Self {
+        let mut table = Self::new();
+        for command in commands {
+            table
+                .insert(ClassifiedOpcode {
+                    spelling: command.spelling.clone(),
+                    class: OpcodeClass::Loading {
+                        arguments: command.arguments,
+                        spelling_kind: command.spelling_kind,
+                    },
+                    status: command.status,
+                    source: command.source.clone(),
+                })
+                .expect("a load command table is already validated");
+        }
+        table
+    }
+
+    /// Classifies one opcode, refusing the entries that would make the audit
+    /// ambiguous, untraceable or self-awarding.
+    ///
+    /// Matching is by exact bytes, so two spellings that differ only in case
+    /// are two opcodes — no evidence says the original loader folds case.
+    pub fn insert(&mut self, opcode: ClassifiedOpcode) -> Result<usize, TableError> {
+        if opcode.spelling.is_empty() {
+            return Err(TableError::EmptySpelling);
+        }
+        if opcode.source.trim().is_empty() {
+            return Err(TableError::EmptySource);
+        }
+        if opcode.status == ClaimStatus::VerifiedOriginal {
+            return Err(TableError::SelfAwardedVerifiedOriginal);
+        }
+        if let OpcodeClass::Loading { arguments, .. } = opcode.class {
+            check_key_arguments(arguments)?;
+        }
+        if let Some(first) = self.find(&opcode.spelling) {
+            return Err(TableError::Duplicate {
+                first,
+                second: self.opcodes.len(),
+            });
+        }
+        self.opcodes.push(opcode);
+        Ok(self.opcodes.len() - 1)
+    }
+
+    /// Classifies every opcode of `opcodes`, stopping at the first refusal and
+    /// leaving the table as it was: either the whole set applies or none of it.
+    pub fn extend(
+        &mut self,
+        opcodes: impl IntoIterator<Item = ClassifiedOpcode>,
+    ) -> Result<(), TableError> {
+        let mut staged = self.clone();
+        for opcode in opcodes {
+            staged.insert(opcode)?;
+        }
+        *self = staged;
+        Ok(())
+    }
+
+    /// The classification of `spelling`, by exact bytes.
+    pub fn get(&self, spelling: &[u8]) -> Option<(usize, &ClassifiedOpcode)> {
+        self.find(spelling)
+            .map(|index| (index, &self.opcodes[index]))
+    }
+
+    /// Every classification, in insertion order.
+    pub fn opcodes(&self) -> &[ClassifiedOpcode] {
+        &self.opcodes
+    }
+
+    /// The classification at `index`, or `None` when it is out of range.
+    pub fn opcode(&self, index: usize) -> Option<&ClassifiedOpcode> {
+        self.opcodes.get(index)
+    }
+
+    /// How many opcodes are classified.
+    pub fn len(&self) -> usize {
+        self.opcodes.len()
+    }
+
+    /// Whether no opcode is classified.
+    pub fn is_empty(&self) -> bool {
+        self.opcodes.is_empty()
+    }
+
+    fn find(&self, spelling: &[u8]) -> Option<usize> {
+        self.opcodes
+            .iter()
+            .position(|opcode| opcode.spelling == spelling)
+    }
+}
+
+/// Refuses a `Loading` entry whose argument domain could not spell a key.
+fn check_key_arguments(arguments: KeyArguments) -> Result<(), TableError> {
+    if arguments.namespace == 0 {
+        return Err(TableError::HeadArgument {
+            part: KeyPart::Namespace,
+        });
+    }
+    if arguments.path == 0 {
+        return Err(TableError::HeadArgument {
+            part: KeyPart::Path,
+        });
+    }
+    if arguments.path == arguments.namespace {
+        return Err(TableError::RepeatedArgument {
+            part: KeyPart::Path,
+            position: arguments.path,
+        });
+    }
+    if let Some(variant) = arguments.variant {
+        if variant == 0 {
+            return Err(TableError::HeadArgument {
+                part: KeyPart::Variant,
+            });
+        }
+        if variant == arguments.namespace || variant == arguments.path {
+            return Err(TableError::RepeatedArgument {
+                part: KeyPart::Variant,
+                position: variant,
+            });
+        }
+    }
+    Ok(())
+}
+
+/// One distinct head in a container and how the audit classified it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpcodeAuditEntry {
+    spelling: Vec<u8>,
+    occurrences: usize,
+    classification: Option<usize>,
+}
+
+impl OpcodeAuditEntry {
+    /// The head spelling, as stored bytes.
+    pub fn spelling(&self) -> &[u8] {
+        &self.spelling
+    }
+
+    /// How many lines in the container have this head.
+    pub fn occurrences(&self) -> usize {
+        self.occurrences
+    }
+
+    /// Position of the classification in the audit's own snapshot, or `None`
+    /// when the head is unclassified.
+    pub fn classification(&self) -> Option<usize> {
+        self.classification
+    }
+
+    /// Whether the head is classified at all.
+    pub fn is_classified(&self) -> bool {
+        self.classification.is_some()
+    }
+
+    /// Stable lowercase identifier for logs, `"unknown"` when unclassified.
+    pub fn code(&self) -> &'static str {
+        match self.classification {
+            Some(_) => "classified",
+            None => "unknown",
+        }
+    }
+}
+
+/// The result of auditing every distinct opcode head of a container.
+///
+/// The audit is the count `docs/contracts/SCRIPT-MISSION.md` asks a source
+/// adapter for — raw records and unknown instructions — made inspectable: one
+/// entry per distinct head, in spelling order, each naming its class and how
+/// many lines carry it. [`OpcodeAudit::is_complete`] is true only when **every**
+/// distinct head is classified, so "classify every opcode" is a property a
+/// caller can check rather than assert.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpcodeAudit {
+    opcodes: Vec<ClassifiedOpcode>,
+    entries: Vec<OpcodeAuditEntry>,
+    lines: usize,
+}
+
+impl OpcodeAudit {
+    /// Every distinct head, in spelling order.
+    pub fn entries(&self) -> &[OpcodeAuditEntry] {
+        &self.entries
+    }
+
+    /// The classification snapshot the audit was taken against.
+    pub fn opcodes(&self) -> &[ClassifiedOpcode] {
+        &self.opcodes
+    }
+
+    /// The classification at `index`, or `None` when it is out of range.
+    pub fn opcode(&self, index: usize) -> Option<&ClassifiedOpcode> {
+        self.opcodes.get(index)
+    }
+
+    /// Lines decoded across every script.
+    pub fn lines(&self) -> usize {
+        self.lines
+    }
+
+    /// How many distinct heads the container holds.
+    pub fn distinct_heads(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// How many distinct heads no entry classified.
+    pub fn unknown_heads(&self) -> usize {
+        self.entries
+            .iter()
+            .filter(|entry| entry.classification.is_none())
+            .count()
+    }
+
+    /// How many distinct heads are classified with `class.code()`.
+    pub fn heads_of(&self, code: &str) -> usize {
+        self.entries
+            .iter()
+            .filter(|entry| {
+                entry
+                    .classification
+                    .and_then(|index| self.opcodes.get(index))
+                    .is_some_and(|opcode| opcode.class.code() == code)
+            })
+            .count()
+    }
+
+    /// Whether every distinct head is classified. False as soon as one head is
+    /// unknown, so an incomplete classification is visible instead of assumed.
+    pub fn is_complete(&self) -> bool {
+        self.entries
+            .iter()
+            .all(|entry| entry.classification.is_some())
+    }
+}
+
+/// Audits every distinct opcode head of a decoded container against `table`.
+///
+/// The walk is the same one the plan makes, but grouped by head instead of by
+/// line: every distinct spelling becomes exactly one [`OpcodeAuditEntry`] with
+/// its occurrence count and the classification it matched, or `None` when
+/// nothing classified it. A head listed twice in a table cannot happen — the
+/// table refuses duplicates — so an entry's class is unambiguous.
+///
+/// # Panics
+///
+/// Never.
+pub fn audit_interp_opcodes(decoded: &DecodedInterp<'_>, table: &OpcodeClassTable) -> OpcodeAudit {
+    let mut counts: BTreeMap<Vec<u8>, usize> = BTreeMap::new();
+    let mut lines = 0usize;
+    for script in decoded.scripts() {
+        for line in script.lines() {
+            let head = line.head().expect("a line always has a head token");
+            *counts.entry(head.bytes().to_vec()).or_insert(0) += 1;
+            lines += 1;
+        }
+    }
+    let entries: Vec<OpcodeAuditEntry> = counts
+        .into_iter()
+        .map(|(spelling, occurrences)| {
+            let classification = table.get(&spelling).map(|(index, _)| index);
+            OpcodeAuditEntry {
+                spelling,
+                occurrences,
+                classification,
+            }
+        })
+        .collect();
+    OpcodeAudit {
+        opcodes: table.opcodes().to_vec(),
+        entries,
+        lines,
     }
 }
 
@@ -1985,11 +2370,30 @@ pub enum PlanLineKind<'a> {
         /// What the line is missing.
         reason: MalformedKey,
     },
-    /// The head token is not registered as a loading command.
+    /// A command classified as resource-loading for which this stage has no
+    /// supported key domain.
     ///
-    /// This is the state every line of a container is in while the table is
-    /// empty, and it is a failure, not a guess: the plan cannot say this line
-    /// loads nothing, only that nobody has established what it does.
+    /// The command is understood to load *something*, but not by a key the plan
+    /// can spell, so the line fails its world with its source offset rather
+    /// than being treated as loaded or as no load at all (spec F07-D, AC04).
+    Unsupported {
+        /// Position of the classification in the plan's own opcode snapshot.
+        opcode: usize,
+    },
+    /// A command classified as *not* a resource load.
+    ///
+    /// It contributes no dependency and does not block its script: a world is
+    /// not unloadable because a scene-graph or camera command sits beside its
+    /// loading commands. This stage does not interpret it either — what it does
+    /// is the mission language's business (F13).
+    Behavior {
+        /// Position of the classification in the plan's own opcode snapshot.
+        opcode: usize,
+    },
+    /// The head token matches no classification.
+    ///
+    /// This is a failure, not a guess: the plan cannot say this line loads
+    /// nothing, only that nobody has established what it does.
     Unclassified,
 }
 
@@ -1999,6 +2403,8 @@ impl PlanLineKind<'_> {
         match self {
             Self::Loading { .. } => "loading",
             Self::Malformed { .. } => "malformed",
+            Self::Unsupported { .. } => "unsupported",
+            Self::Behavior { .. } => "behavior",
             Self::Unclassified => "unclassified",
         }
     }
@@ -2008,9 +2414,21 @@ impl PlanLineKind<'_> {
         matches!(self, Self::Loading { .. })
     }
 
+    /// Whether this line is classified as not a resource load.
+    pub const fn is_behavior(&self) -> bool {
+        matches!(self, Self::Behavior { .. })
+    }
+
     /// Whether this line stops its script's plan from being usable.
+    ///
+    /// A classified [`Self::Behavior`] line does not: the plan knows it
+    /// contributes nothing, so it is not an unknown. Everything else that is
+    /// not a resolvable [`Self::Loading`] line does.
     pub const fn is_blocking(&self) -> bool {
-        !self.is_loading()
+        matches!(
+            self,
+            Self::Malformed { .. } | Self::Unsupported { .. } | Self::Unclassified
+        )
     }
 }
 
@@ -2137,9 +2555,14 @@ pub struct PlanStats {
     pub loading_commands: usize,
     /// Lines whose arguments did not match their registration.
     pub malformed_commands: usize,
-    /// Lines whose head token is not registered.
+    /// Lines whose command is recognized as loading but has no supported key
+    /// domain (`unsupported_command` in a report).
+    pub unsupported_commands: usize,
+    /// Lines whose command is classified as not a resource load.
+    pub behavior_commands: usize,
+    /// Lines whose head token no classification names.
     pub unclassified_commands: usize,
-    /// Distinct head spellings seen, whether or not they are registered.
+    /// Distinct head spellings seen, whether or not they are classified.
     pub distinct_heads: usize,
     /// Lines in scripts that are not usable, so a caller can tell a container
     /// with one bad command from one where every script is affected.
@@ -2148,27 +2571,40 @@ pub struct PlanStats {
 
 /// A validated container turned into a loading plan.
 ///
-/// The plan owns a **snapshot** of the command table it was built with
-/// ([`Self::commands`]) rather than borrowing it, so a plan stays readable
-/// after the table it was classified against has been dropped or extended, and
-/// a report cannot be read against a different table than the one that
+/// The plan owns **snapshots** of the tables it was built with — the loading
+/// registrations ([`Self::commands`]) and the full classification
+/// ([`Self::opcodes`]) — rather than borrowing them, so a plan stays readable
+/// after the tables it was classified against have been dropped or extended,
+/// and a report cannot be read against different tables than the ones that
 /// produced it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InterpLoadPlan<'a> {
     commands: Vec<LoadCommand>,
+    opcodes: Vec<ClassifiedOpcode>,
     scripts: Vec<PlanScript<'a>>,
     stats: PlanStats,
 }
 
 impl<'a> InterpLoadPlan<'a> {
-    /// The command snapshot this plan was built with, in registration order.
+    /// The loading-command snapshot this plan was built with, in registration
+    /// order. Only [`OpcodeClass::Loading`] classifications appear here.
     pub fn commands(&self) -> &[LoadCommand] {
         &self.commands
     }
 
-    /// The registration at `index`, or `None` when it is out of range.
+    /// The loading registration at `index`, or `None` when out of range.
     pub fn command(&self, index: usize) -> Option<&LoadCommand> {
         self.commands.get(index)
+    }
+
+    /// The full classification snapshot this plan was built with.
+    pub fn opcodes(&self) -> &[ClassifiedOpcode] {
+        &self.opcodes
+    }
+
+    /// The classification at `index`, or `None` when out of range.
+    pub fn opcode(&self, index: usize) -> Option<&ClassifiedOpcode> {
+        self.opcodes.get(index)
     }
 
     /// Every script, in index order.
@@ -2186,7 +2622,7 @@ impl<'a> InterpLoadPlan<'a> {
         self.stats
     }
 
-    /// Whether every line of every script is a usable loading command.
+    /// Whether every line of every script is classified and usable.
     pub fn is_complete(&self) -> bool {
         self.scripts.iter().all(PlanScript::is_usable)
     }
@@ -2197,19 +2633,15 @@ impl<'a> InterpLoadPlan<'a> {
     }
 }
 
-/// Turns a validated container into a loading plan.
+/// Turns a validated container into a loading plan against the F07-C loading
+/// registry (stage F07-C).
 ///
-/// Every line of every script becomes a [`PlanLine`], classified against
-/// `table` by exact head bytes. This function never decides what a command
-/// *means*: it only reports which registered command a line matched, which
-/// argument positions spell that command's key, and — for every line no
-/// registration matched — that the line is unclassified, with its offset.
-///
-/// The plan is a read of the container, not an execution of it: a line that
-/// names a key the caller has not registered as loading is not interpreted, a
-/// line whose arguments contradict a registration is not repaired, and nothing
-/// here resolves a path, a world or an asset. The consumer owns all of that
-/// (`cs_content::loading`).
+/// This is the F07-C entry point kept for compatibility: it builds a
+/// classification in which every registered command is
+/// [`OpcodeClass::Loading`] and nothing is classified as behaviour or
+/// unsupported, then delegates to [`plan_interp_loading_classified`]. Its
+/// behaviour is therefore exactly the F07-C plan's: an unregistered head is
+/// [`PlanLineKind::Unclassified`] and fails its script.
 ///
 /// # Panics
 ///
@@ -2218,6 +2650,65 @@ pub fn plan_interp_loading<'a>(
     decoded: &DecodedInterp<'a>,
     table: &LoadCommandTable,
 ) -> InterpLoadPlan<'a> {
+    let classes = OpcodeClassTable::from_load_commands(table.commands());
+    plan_interp_loading_classified(decoded, &classes)
+}
+
+/// Turns a validated container into a loading plan against a full opcode
+/// classification (stage F07-D).
+///
+/// Every line of every script becomes a [`PlanLine`], classified against
+/// `table` by exact head bytes. This function never decides what a command
+/// *means*: it reports which classification a line matched, which argument
+/// positions spell a loading command's key, and — for every head no
+/// classification names — that the line is unclassified, with its offset.
+///
+/// A [`OpcodeClass::Behavior`] line is classified, contributes no dependency
+/// and does not block its script. A [`OpcodeClass::Unsupported`] line blocks
+/// with its source offset: it is understood to load something, but by no key
+/// this stage can spell, so pretending it loaded nothing would be a fabricated
+/// loading state (spec F07-D, AC04).
+///
+/// The plan is a read of the container, not an execution of it: nothing here
+/// resolves a path, a world or an asset. The consumer owns all of that
+/// (`cs_content::loading`).
+///
+/// # Panics
+///
+/// Never. Every input is either classified or reported.
+pub fn plan_interp_loading_classified<'a>(
+    decoded: &DecodedInterp<'a>,
+    table: &OpcodeClassTable,
+) -> InterpLoadPlan<'a> {
+    let opcodes = table.opcodes().to_vec();
+    // The loading registrations the F07-C consumer reads, in classification
+    // order, and where each classification's registration lives.
+    let mut commands = Vec::new();
+    let mut command_of = Vec::with_capacity(opcodes.len());
+    for opcode in &opcodes {
+        match &opcode.class {
+            OpcodeClass::Loading {
+                arguments,
+                spelling_kind,
+            } => {
+                command_of.push(Some(commands.len()));
+                commands.push(LoadCommand {
+                    spelling: opcode.spelling.clone(),
+                    arguments: *arguments,
+                    spelling_kind: *spelling_kind,
+                    status: opcode.status,
+                    source: opcode.source.clone(),
+                });
+            }
+            OpcodeClass::Unsupported | OpcodeClass::Behavior => command_of.push(None),
+        }
+    }
+    let lookup: BTreeMap<&[u8], usize> = opcodes
+        .iter()
+        .enumerate()
+        .map(|(index, opcode)| (opcode.spelling.as_slice(), index))
+        .collect();
+
     let mut heads: BTreeSet<&[u8]> = BTreeSet::new();
     let mut stats = PlanStats {
         scripts: decoded.scripts().len(),
@@ -2232,13 +2723,11 @@ pub fn plan_interp_loading<'a>(
                 .iter()
                 .enumerate()
                 .map(|(position, line)| {
-                    let head_offset = line
-                        .head()
-                        .expect("a line always has a head token")
-                        .offset();
-                    heads.insert(line.head().expect("a line always has a head token").bytes());
+                    let head = line.head().expect("a line always has a head token");
+                    let head_offset = head.offset();
+                    heads.insert(head.bytes());
                     stats.lines += 1;
-                    let kind = classify_line(line, table, &mut stats);
+                    let kind = classify_line(line, &opcodes, &command_of, &lookup, &mut stats);
                     PlanLine {
                         position,
                         line: line.clone(),
@@ -2267,92 +2756,106 @@ pub fn plan_interp_loading<'a>(
         .collect();
     stats.distinct_heads = heads.len();
     InterpLoadPlan {
-        commands: table.commands().to_vec(),
+        commands,
+        opcodes,
         scripts,
         stats,
     }
 }
 
-/// Classifies one line against `table`, counting the outcome in `stats`.
+/// Classifies one line against the classification snapshot, counting the
+/// outcome in `stats`.
 fn classify_line<'a>(
     line: &InterpLine<'a>,
-    table: &LoadCommandTable,
+    opcodes: &[ClassifiedOpcode],
+    command_of: &[Option<usize>],
+    lookup: &BTreeMap<&[u8], usize>,
     stats: &mut PlanStats,
 ) -> PlanLineKind<'a> {
     let head = line.head().expect("a line always has a head token");
-    let Some((index, registration)) = table.get(head.bytes()) else {
+    let Some(&index) = lookup.get(head.bytes()) else {
         stats.unclassified_commands += 1;
         return PlanLineKind::Unclassified;
     };
-    let arguments = registration.arguments;
-    let token = |position: usize| line.tokens().get(position).copied();
-    let mut key = KeyTokens {
-        namespace: match token(arguments.namespace) {
-            Some(namespace) if !namespace.is_empty() => namespace,
-            Some(_) => {
-                stats.malformed_commands += 1;
-                return PlanLineKind::Malformed {
-                    command: index,
-                    reason: MalformedKey::EmptyArgument {
-                        position: arguments.namespace,
-                    },
-                };
-            }
-            None => {
-                stats.malformed_commands += 1;
-                return PlanLineKind::Malformed {
-                    command: index,
-                    reason: MalformedKey::MissingArgument {
-                        position: arguments.namespace,
-                    },
-                };
-            }
-        },
-        path: match token(arguments.path) {
-            Some(path) if !path.is_empty() => path,
-            Some(_) => {
-                stats.malformed_commands += 1;
-                return PlanLineKind::Malformed {
-                    command: index,
-                    reason: MalformedKey::EmptyArgument {
-                        position: arguments.path,
-                    },
-                };
-            }
-            None => {
-                stats.malformed_commands += 1;
-                return PlanLineKind::Malformed {
-                    command: index,
-                    reason: MalformedKey::MissingArgument {
-                        position: arguments.path,
-                    },
-                };
-            }
-        },
-        variant: None,
-    };
-    if let Some(position) = arguments.variant {
-        match token(position) {
-            Some(variant) if !variant.is_empty() => key.variant = Some(variant),
-            Some(_) => {
-                stats.malformed_commands += 1;
-                return PlanLineKind::Malformed {
-                    command: index,
-                    reason: MalformedKey::EmptyArgument { position },
-                };
-            }
-            None => {
-                stats.malformed_commands += 1;
-                return PlanLineKind::Malformed {
-                    command: index,
-                    reason: MalformedKey::MissingArgument { position },
-                };
-            }
+    match opcodes[index].class {
+        OpcodeClass::Behavior => {
+            stats.behavior_commands += 1;
+            PlanLineKind::Behavior { opcode: index }
         }
-    }
-    stats.loading_commands += 1;
-    PlanLineKind::Loading {
-        command: index,
-        key,
+        OpcodeClass::Unsupported => {
+            stats.unsupported_commands += 1;
+            PlanLineKind::Unsupported { opcode: index }
+        }
+        OpcodeClass::Loading { arguments, .. } => {
+            let command =
+                command_of[index].expect("a loading classification always has a registration");
+            let token = |position: usize| line.tokens().get(position).copied();
+            let mut key = KeyTokens {
+                namespace: match token(arguments.namespace) {
+                    Some(namespace) if !namespace.is_empty() => namespace,
+                    Some(_) => {
+                        stats.malformed_commands += 1;
+                        return PlanLineKind::Malformed {
+                            command,
+                            reason: MalformedKey::EmptyArgument {
+                                position: arguments.namespace,
+                            },
+                        };
+                    }
+                    None => {
+                        stats.malformed_commands += 1;
+                        return PlanLineKind::Malformed {
+                            command,
+                            reason: MalformedKey::MissingArgument {
+                                position: arguments.namespace,
+                            },
+                        };
+                    }
+                },
+                path: match token(arguments.path) {
+                    Some(path) if !path.is_empty() => path,
+                    Some(_) => {
+                        stats.malformed_commands += 1;
+                        return PlanLineKind::Malformed {
+                            command,
+                            reason: MalformedKey::EmptyArgument {
+                                position: arguments.path,
+                            },
+                        };
+                    }
+                    None => {
+                        stats.malformed_commands += 1;
+                        return PlanLineKind::Malformed {
+                            command,
+                            reason: MalformedKey::MissingArgument {
+                                position: arguments.path,
+                            },
+                        };
+                    }
+                },
+                variant: None,
+            };
+            if let Some(position) = arguments.variant {
+                match token(position) {
+                    Some(variant) if !variant.is_empty() => key.variant = Some(variant),
+                    Some(_) => {
+                        stats.malformed_commands += 1;
+                        return PlanLineKind::Malformed {
+                            command,
+                            reason: MalformedKey::EmptyArgument { position },
+                        };
+                    }
+                    None => {
+                        stats.malformed_commands += 1;
+                        return PlanLineKind::Malformed {
+                            command,
+                            reason: MalformedKey::MissingArgument { position },
+                        };
+                    }
+                }
+            }
+            stats.loading_commands += 1;
+            PlanLineKind::Loading { command, key }
+        }
     }
 }
