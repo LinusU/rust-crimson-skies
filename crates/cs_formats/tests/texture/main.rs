@@ -12,6 +12,7 @@
 //! image the wrong number of times fails on a named coordinate.
 
 mod mips;
+mod zbd_package;
 
 use cs_formats::ParseErrorKind;
 use cs_formats::io::AllocationBudget;
