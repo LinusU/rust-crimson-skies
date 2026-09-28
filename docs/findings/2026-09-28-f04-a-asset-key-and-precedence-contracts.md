@@ -7,8 +7,9 @@ Capabilities used: ordinary build/test only.
 
 ## Files and the one observable failure (listed before editing)
 
-- `crates/cs_types/src/asset_id.rs` (new): `MountNamespace`/`NamespaceError`,
-  `AssetVariant`/`VariantError`, `AssetKey` (`new`, `from_spelling`,
+- `crates/cs_types/src/asset_id.rs` (new): `MountNamespace`,
+  `AssetVariant` (each validated by the shared `LabelError`),
+  `AssetKey` (`new`, `from_spelling`,
   `logical_key`, logical `PartialEq`/`Eq`/`Hash`/`Ord`),
   `AssetKeyError`, `WorldGroup`, `MissionScope`, `ModId`,
   `ModStack`/`ContextError`, `PrecedenceClass` (+ `rank`, `label`),
@@ -133,4 +134,43 @@ implementation (results recorded below).
 
 ## Commands run
 
-(filled in when the slice is complete — see below)
+All commands from the repository root, on branch
+`rally/17-define-assetkey-and-precedence-contracts`, Rust 1.98.1.
+
+| Command | Exit |
+| --- | --- |
+| `cargo check -p cs_types -p cs_assets` | 0 |
+| `cargo fmt --all && cargo fmt --all -- --check` | 0 |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
+| `cargo test --workspace --locked` | 0 |
+| `cargo test --workspace --locked -- accept_f04_a_ --include-ignored` | 0 |
+| `cargo test -p cs_assets --test accept_f04_a_asset_key_and_context --test accept_f04_a_two_worlds_each_resolve_own_texture --locked` | 0 |
+
+Task tests discovered and executed by the prefixed run: **19**, all
+passing — `accept_f04_a_asset_key_and_context.rs` (7) and
+`accept_f04_a_two_worlds_each_resolve_own_texture.rs` (12). No test in
+this prefix is `#[ignore]`d: none needs `CS_GAME_DIR`, so CI runs them
+too. Whole-workspace run: no failures.
+
+### Mutation probes (implementation removed → tests must fail)
+
+Each probe is a one-line edit to production code, run, then reverted;
+`git diff` and `grep -rn "MUTATION PROBE"` confirm none survive.
+
+| Probe | Edit | Result |
+| --- | --- | --- |
+| 1. World scope ignored | `MountScope::admit` never returns `ScopeMismatch` for `world_group` | 3/12 failed: `two_worlds_each_resolve_own_texture`, `shared_source_serves_when_no_world_specializes`, `variant_is_part_of_the_key`. Exit 101. |
+| 2. Logical identity removed | `AssetKey::new` stores `path.as_str()` instead of `path.logical_key()` | 2/7 failed: `asset_key_lookup_is_logical_but_keeps_spelling`, `asset_key_is_namespace_path_variant`. Exit 101. |
+| 3. Precedence inverted | `PrecedenceClass::rank`: `Mod => 0`, `Shared => 3` | 4/12 failed (`two_worlds…`, `later_mod_in_the_stack_outranks_earlier`, `opted_in_mods_outrank_patch_and_shared`, `variant_is_part_of_the_key`) and 1/7 failed (`precedence_is_ranked_and_labeled_designed`). Exit 101. |
+
+After reverting all three probes the two test files report `7 passed`
+and `12 passed` again, and `grep -rn "MUTATION PROBE" crates/` prints
+nothing.
+
+## Wiring edits (outside owner paths, logic-free)
+
+- `crates/cs_types/src/lib.rs`: added `pub mod asset_id;`.
+- `crates/cs_assets/src/lib.rs`: added `pub mod vfs;`.
+
+No other non-owner file changed. `tools/cs_inspect/src/resolve.rs` was
+not created (see above); `tools/cs_inspect/src/main.rs` is untouched.
