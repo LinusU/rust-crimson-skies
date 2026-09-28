@@ -856,6 +856,7 @@ pub struct InterpScript<'a> {
     entry: InterpRawIndexEntry<'a>,
     name: &'a [u8],
     limit: u64,
+    terminator_offset: u64,
     lines: Vec<InterpLine<'a>>,
 }
 
@@ -879,6 +880,18 @@ impl<'a> InterpScript<'a> {
     /// neighbour's bytes as its own lines.
     pub fn limit(&self) -> u64 {
         self.limit
+    }
+
+    /// Absolute offset of the zero `size` word that ended the script.
+    pub fn terminator_offset(&self) -> u64 {
+        self.terminator_offset
+    }
+
+    /// Absolute offset just past the terminator: the bytes this script
+    /// occupies. The rest of [`Self::limit`] belongs to no script and is
+    /// reported by [`DecodedInterp::findings`].
+    pub fn end(&self) -> u64 {
+        self.terminator_offset + TERMINATOR_BYTES as u64
     }
 
     /// Lines in stored order, terminator excluded.
@@ -1134,6 +1147,7 @@ pub fn decode_interp<'bytes>(
                     entry: raw.entry,
                     name: raw.entry.name_bytes(),
                     limit: raw.limit,
+                    terminator_offset: raw.terminator_offset,
                     lines: raw
                         .lines
                         .into_iter()
@@ -1215,6 +1229,8 @@ struct WalkedLine<'a> {
 struct WalkedScript<'a> {
     entry: InterpRawIndexEntry<'a>,
     limit: u64,
+    /// Offset of the zero `size` word that ended the script.
+    terminator_offset: u64,
     lines: Vec<WalkedLine<'a>>,
 }
 
@@ -1286,20 +1302,26 @@ fn walk_scripts<'a>(
             });
         }
         let limit = limit_for(entry.script_offset);
-        let lines = walk_script(container, bytes, *entry, limit)?;
+        let (terminator_offset, lines) = walk_script(container, bytes, *entry, limit)?;
         scripts.push(WalkedScript {
             entry: *entry,
             limit,
+            terminator_offset,
             lines,
         });
     }
 
-    // The claimed extents, merged in offset order, give the unclaimed gaps.
+    // A script claims its own bytes only: from its start to just past the
+    // terminator that ended it. The rest of its extent, up to the next
+    // script, is padding no script claimed — which is exactly the "trailing
+    // or unreferenced region" the spec asks to be retained as a finding.
     let mut claimed: Vec<(u64, u64)> = scripts
         .iter()
         .map(|script| {
-            let start = u64::from(script.entry.script_offset);
-            (start, script.limit)
+            (
+                u64::from(script.entry.script_offset),
+                script.terminator_offset + TERMINATOR_BYTES as u64,
+            )
         })
         .collect();
     claimed.sort_unstable();
@@ -1357,12 +1379,15 @@ fn walk_scripts<'a>(
 
 /// Walks one script from `entry.script_offset` to `limit`, validating every
 /// line, and books nothing.
+///
+/// Returns the offset of the zero `size` word that ended the script and its
+/// lines, terminator excluded.
 fn walk_script<'a>(
     container: &str,
     bytes: &'a [u8],
     entry: InterpRawIndexEntry<'a>,
     limit: u64,
-) -> Result<Vec<WalkedLine<'a>>, InterpError> {
+) -> Result<(u64, Vec<WalkedLine<'a>>), InterpError> {
     let index = entry.index;
     let mut reader = Reader::new(container, bytes);
     reader.skip(
@@ -1390,7 +1415,7 @@ fn walk_script<'a>(
         }
         let size = reader.read_u32(&format!("scripts[{index}].lines[{line}].size"))?;
         if size == 0 {
-            return Ok(lines);
+            return Ok((offset, lines));
         }
         let line_end = offset + LINE_HEADER_BYTES as u64 + u64::from(size);
         if line_end > limit {
