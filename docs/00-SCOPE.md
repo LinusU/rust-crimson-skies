@@ -16,6 +16,8 @@ Use a fixed baseline inventory. A report that parses 20 missions, filters out fo
 
 **Vertical slice:** one real original mission with its actual world, aircraft, combat, audio, objectives, success/failure and restart. It is not a release and cannot hide unsupported assets behind developer placeholders.
 
+The vertical slice is the immediate product milestone. By owner ruling on 2026-09-28 it no longer waits for the complete-campaign harness: the first mission runs through its own path (M01-A, VS-M01-RUNTIME, M01-B, VS-M01-CONTROLLED-RUNS, then the owner's M01-C), recorded in [specs/README.md](../specs/README.md). That path still needs the mission's complete dependency closure and every M01 criterion. It is not a shortcut, and it does not replace the complete-campaign (F50) or release (F63) gates.
+
 **Complete single-player candidate:** the entire campaign, ending, IA, construction, records, media and save/navigation flows work. Multiplayer progress is reported separately. This milestone must not be advertised as the complete Ultimate Edition while required multiplayer work remains.
 
 **Complete-playable Ultimate release:** all required feature and content inventories pass, multiplayer works over the new protocol, supported platforms are tested, private-original dependencies are diagnosed, no proprietary assets are distributed, and the owner approves the candidate based on real play, visual and audible evidence.
