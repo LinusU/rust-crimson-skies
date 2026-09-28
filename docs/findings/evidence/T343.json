@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "T343",
+ "candidate_tree": "5a531d65afb99c6b5e6c1fa75c2eee6658541bc0",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-09-28T17:20:00Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_t343_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/agent-2", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 9, "executed": 9, "passed": 9, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_t343_families_without_a_trailer_are_refused", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_t343_a_member_reaching_into_the_index_fails_on_its_own_row", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_t343_sound_members_come_from_the_trailer", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_t343_the_index_is_charged_exactly_against_the_budget", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_t343_entry_anomalies_are_recorded_without_hiding_siblings", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_t343_other_trailer_versions_are_refused", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_t343_reader_archives_read_their_trailer_at_every_level", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_t343_truncated_and_oversized_indexes_fail_before_allocating", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_t343_retail_every_sound_and_reader_archive_lists_all_members", "status": "pass", "evidence": ["cargo-test.log"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "97e9b722d988a9bac67578274dc28711a9f308b8a243cf056f479a65842abeb3", "kind": "log"}, {"path": "zbd-member-index.json", "sha256": "c6be5e980d19e564c9fbbebd8ac3af2d8310c32a127f0f4f4e251bee7c36d13e", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "claude-1 (implementing agent, self-check; the Rally reviewer regenerates this report on the rebased commit)", "method": "acceptance suite run locally with the retail capability; this harness derives every field from the recorded log, production discovery of $CS_GAME_DIR, the production index reader and family readers over every retail sound and reader archive (zbd-member-index.json), rustc and Cargo.lock; validated with tools/validate_evidence.py --require-pass. The 76 unexplained bytes of each index entry are retained verbatim as unknown, as the task requires; their meaning is recorded as unknown in the task #343 findings"},
+ "claim": "implemented"
+}
