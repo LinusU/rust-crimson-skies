@@ -30,14 +30,17 @@ required by this task).
   and the mount, read, export, session-lifecycle and refusal tests.
 - `tools/cs_inspect/src/rof.rs` (new): the `rof` command
   (`rof_command`, `rof_command_result`, `RofRun`, `RofCommandError`,
-  `RofReport` rendering, `ROF_REPORT_VERSION`) plus 4 × `accept_f05_c_`
+  `rof_report_json` rendering, `ROF_REPORT_VERSION`) plus 4 × `accept_f05_c_`
   tests.
 - `tools/cs_inspect/src/{lib,main}.rs` (wiring only): `pub mod rof;`,
   the `rof` dispatch arm, the help entry and the command lists.
 - `tools/cs_inspect/Cargo.toml` + `Cargo.lock` (wiring only): the
   `cs_formats` dependency the command needs for `RofLimits`
   (`docs/01-ARCHITECTURE.md` allows `cs_inspect` → formats; F02-C set
-  the precedent of adding a dependency here as wiring).
+  the precedent of adding a dependency here as wiring). After the rebase
+  onto `main` this has **no diff**: main's `zbd-audit` commit already
+  declared `cs_formats` for this crate, so the dependency is used but
+  not changed.
 - `docs/findings/2026-09-28-f05-c-mount-rof-into-vfs-and-expose-inspection.md`
   (this file).
 
@@ -141,7 +144,7 @@ mutation after implementation (table below).
   in the `install` namespace as a retail source — one key space, one
   provenance line, no guessing about world or mod binding.
 
-## Test inventory (8 tests, prefix `accept_f05_c_`)
+## Test inventory (14 tests, prefix `accept_f05_c_`)
 
 | Test | What it pins down |
 | --- | --- |
@@ -153,6 +156,16 @@ mutation after implementation (table below).
 | `accept_f05_c_rof_command_refuses_a_cycle_container_without_writing` | exit 3 with `cycle` in the diagnostics, the refusal reported (`status: refused`, `mount: null`, `member_count: 0`, machine-readable error) and *written* to `--out` as the evidence, an empty export directory, and a second run without `--member` still exiting 3 |
 | `accept_f05_c_rof_command_refuses_an_expansion_bomb_before_writing` | the mount succeeds, `--max-decoded-bytes 32` refuses the 100-byte member as `expansion_bomb` at its offset, the export stays `skipped`, exit 3, export directory empty |
 | `accept_f05_c_rof_command_rejects_invalid_input` | exit 2 for a missing `--container`, an escaping spelling (`../outside.rof`), a container the installation does not hold, `--export-dir` without `--member`, an `--out` inside the installation (and no such file created), and a non-numeric `--max-decoded-bytes`; exit 4 without an installation; no report for input that never ran |
+| `accept_f05_c_unreadable_container_refuses_before_a_mount` *(review)* | an IO refusal (`unreadable_container`) before a mount exists: the container label, no offset, a diagnostic naming the host path, the builder untouched, and a retry refusing identically |
+| `accept_f05_c_session_refuses_a_repeated_mount` *(review)* | error propagation through `mount_rof_into`: the session refuses the repeated mount id (`session`, naming the id), the builder keeps exactly the first mount, that source still resolves and reads, teardown releases exactly one mount |
+| `accept_f05_c_export_refuses_foreign_sessions_and_mounts` *(review)* | an asset stamped by another session (`foreign_session`) and an asset resolved from another mount (`foreign_mount`) are refused with the export directory still empty, while the matching session + mount exports the payload |
+| `accept_f05_c_rof_command_refuses_an_unknown_member` *(review)* | `--member` naming a member the container does not hold: exit 3, the report still mounts and lists the members, `read` refused as `not_found`, `export` skipped, the directory empty |
+| `accept_f05_c_mount_exit_codes_follow_cli_evidence` *(review)* | `mount_exit_code` maps refused content to 3 and a runtime refusal (an unreadable container, a session that refused the mount) to 1, per `CLI-EVIDENCE.md` |
+| `accept_f05_c_rof_command_refuses_a_container_reached_through_a_link` *(review)* | a directory link planted inside the installation is never followed: `--container linked/pack.rof` exits 2 with no report and no read, so the report's fingerprint always describes the bytes it names |
+
+The positive path test also asserts the `unknown_member` refusal (an
+unknown spelling and another namespace) next to the reads, so a source
+never answers a key it does not hold.
 
 ## Commands and exit codes
 
@@ -161,8 +174,8 @@ mutation after implementation (table below).
 | `cargo fmt --all -- --check` | 0 |
 | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
 | `cargo test --workspace --locked` | 0 |
-| `cargo test --workspace --locked -- accept_f05_c_ --include-ignored` | 0 (8 tests: 4 in `cs_assets`, 4 in `cs_inspect`) |
-| `cargo run -p cs_xtask --locked -- test-select --prefix accept_f05_c_` | 0 (`8 test(s) selected ... 8 passed`; each re-ran alone with `--exact`) |
+| `cargo test --workspace --locked -- accept_f05_c_ --include-ignored` | 0 (14 tests: 7 in `cs_assets`, 7 in `cs_inspect`) |
+| `cargo run -p cs_xtask --locked -- test-select --prefix accept_f05_c_` | 0 (`14 test(s) selected ... 14 passed`; each re-ran alone with `--exact`) |
 | `cs-inspect rof --cs-path "$CS_GAME_DIR" --container GOSDATA/ASSETS/crimson.rof --out private/f05-c/crimson-rof.json` | 3 (read-only retail observation, see below) |
 | `cs-inspect rof --cs-path "$CS_GAME_DIR" --container GOSDATA/ASSETS/crimptch.rof --out private/f05-c/crimptch-rof.json` | 3 (read-only retail observation, see below) |
 
@@ -182,6 +195,26 @@ was green again after each restore):
 | P6: export writes the stored extent instead of `read.data` | 101 | `accept_f05_c_mounted_members_resolve_read_and_export` (the compressed member exports 62 stored bytes, not its 204-byte payload) |
 | P7: `mount_exit_code` reports content refusals as `0` (`cs_inspect`) | 101 | `accept_f05_c_rof_command_refuses_a_cycle_container_without_writing` (the report-only run keeps the exit code) |
 | P8: the export directory opened *before* the read (`cs_inspect`) | 0 | *none* — `ExportDirectory::open` creates no file, so this mutation writes nothing; the property the tests actually pin is "no bytes written unless the read succeeded", which P6 shows is load-bearing |
+
+The reviewer re-ran two of these and added three more after the fixes,
+one at a time, restoring the source afterwards (byte-identical, suite
+green again):
+
+| Mutation | Exit | Failing test(s) |
+| --- | --- | --- |
+| R1: the source's decode ceiling ignored in `RofSource::read` (`&RofLimits::new(u64::MAX)`, a re-run of P5) | 101 | `accept_f05_c_expansion_bomb_fails_before_any_write` |
+| R2: `mount_exit_code` maps refused content to `0` (a re-run of P7) | 101 | `accept_f05_c_rof_command_refuses_a_cycle_container_without_writing` **and** `accept_f05_c_mount_exit_codes_follow_cli_evidence` |
+| R3: the new canonical containment check lets every resolved path through | 101 | `accept_f05_c_rof_command_refuses_a_container_reached_through_a_link` |
+| R4: the session and mount identity checks deleted from `export_rof_member` | 101 | `accept_f05_c_export_refuses_foreign_sessions_and_mounts` |
+| R5: `mount_rof_into` swallows the session's refusal (`let _ = session.mount(..)`) | 101 | `accept_f05_c_session_refuses_a_repeated_mount` |
+
+The one reviewed change with **no** failing-test probe is exit-code fix
+2: the behaviour it removes (`max(3)` after a refused mount) could only
+be observed with an unreadable container or a session that refuses the
+mount, neither of which the CLI can be driven into deterministically
+without depending on the test user's permissions. What the mapping it
+defers to *is* pinned, by the cycle-plus-member run (3) and by
+`accept_f05_c_mount_exit_codes_follow_cli_evidence` (3 and 1).
 
 ## Retail observations (read-only, for F05-D)
 
@@ -260,12 +293,51 @@ ignored.
 - `$CS_GAME_DIR` (read-only) for the two retail observations; the
   reference extractor S05 as quoted by the F05-A/B findings.
 
+## Review additions
+
+The review of this branch found two problems and missing coverage of the
+error paths the sheet asks for ("teardown/retry and error propagation");
+both fixes are inside the owner paths:
+
+1. **A container reached through a directory link was read.** The command
+   checked that the *leaf* was a regular, non-symlink file, so a symbolic
+   directory planted inside the installation was followed out of it and
+   the report would have claimed this installation's `install_sha256` for
+   bytes that are not the installation's — the provenance lie
+   `SourceSpan` exists to prevent, and the rule F04-B's
+   `mount_directory` already applies ("symbolic links are reported and
+   never followed"). The command now resolves every link
+   (`fs::canonicalize` of the installation root and of the container) and
+   refuses anything that leaves the installation with exit 2 before a
+   single container byte is opened; `accept_f05_c_rof_command_refuses_a_container_reached_through_a_link`
+   pins it.
+2. **`--member` changed the exit code of a container that did not
+   mount.** `rof_command_result` raised any refused container to at least
+   3 when a member was requested, so an unreadable container (a runtime
+   failure, exit 1 per `CLI-EVIDENCE.md`) was reported as *failed
+   validation* only because `--member` was passed. The mount's own
+   refusal is the single source of truth for that code now (3 for refused
+   content, 1 for a runtime failure); the cycle-plus-member run still
+   exits 3, and `accept_f05_c_mount_exit_codes_follow_cli_evidence` pins
+   the mapping, including the variants the CLI cannot reach today.
+
+New tests cover what was untested: an unreadable container, the session
+refusing a repeated mount id, an export refused for a foreign session and
+for a foreign mount, an unknown `--member`, and the `unknown_member`
+refusal of `RofSource::read` (unknown spelling and foreign namespace).
+Every one of them calls production code and asserts that nothing was
+written.
+
 ## Status
 
-**Checked, not recreated** (AGENTS.md rule 8): the eight
-`accept_f05_c_*` tests, `cargo fmt`, `cargo clippy -D warnings` and
-`cargo test --workspace` pass on this commit, and the mutation probes
-above show which production lines they depend on. This stage reads no
+**Checked, not recreated** (AGENTS.md rule 8): the fourteen
+`accept_f05_c_*` tests (seven in `cs_assets`, seven in `cs_inspect`),
+`cargo fmt`, `cargo clippy -D warnings` and `cargo test --workspace`
+pass on this commit — after it was rebased onto the latest `main` and
+the conflicts with the new `interp` command resolved — and the mutation
+probes above (P1–P8 by the implementer, R1–R5 by the reviewer) show
+which production lines they depend on. The two problems the review found
+are fixed and recorded under *Review additions*. This stage reads no
 original data into Git and certifies nothing about retail: both retail
 containers are refused today, the evidence for that is recorded for
 F05-D, and no original-data claim is made here.

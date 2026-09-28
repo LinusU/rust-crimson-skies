@@ -274,7 +274,7 @@ pub fn rof_command_result(args: &[String], env_cs_path: Option<OsString>) -> Rof
     };
     // The spelling is relative with no `..`, so the join cannot leave the
     // installation lexically; it must still name a regular file rather
-    // than a directory or a symbolic link out of it.
+    // than a directory or a link out of it.
     let host_path = cs_path.join(&container);
     match fs::symlink_metadata(&host_path) {
         Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {}
@@ -300,6 +300,43 @@ pub fn rof_command_result(args: &[String], env_cs_path: Option<OsString>) -> Rof
                 1,
                 &RofCommandError::Unreadable {
                     path: host_path,
+                    source,
+                },
+            );
+        }
+    }
+    // The leaf is a regular file, but a *directory* link on the way to it
+    // would have been followed out of the installation, and the report
+    // would then claim a fingerprint for bytes that are not the
+    // installation's. Resolve every link and require the file to still
+    // live below this installation — the rule `mount_directory` applies
+    // to a tree (spec F04 non-negotiable behavior 1), here for the one
+    // container the command reads.
+    match (fs::canonicalize(&cs_path), fs::canonicalize(&host_path)) {
+        (Ok(root), Ok(resolved)) if resolved.starts_with(&root) => {}
+        (Ok(_), Ok(_)) => {
+            return RofRun::failed(
+                2,
+                &RofCommandError::Usage(format!(
+                    "cs-inspect rof: --container {container:?} resolves outside the installation \
+                     through a symbolic link; cs-inspect never reads through links"
+                )),
+            );
+        }
+        (_, Err(source)) => {
+            return RofRun::failed(
+                1,
+                &RofCommandError::Unreadable {
+                    path: host_path,
+                    source,
+                },
+            );
+        }
+        (Err(source), Ok(_)) => {
+            return RofRun::failed(
+                1,
+                &RofCommandError::Unreadable {
+                    path: cs_path,
                     source,
                 },
             );
@@ -353,8 +390,13 @@ pub fn rof_command_result(args: &[String], env_cs_path: Option<OsString>) -> Rof
                 read = ReadReport::refused("invalid_member", None, message);
                 exit_code = exit_code.max(code);
             }
-            // The container did not mount: nothing exists to read.
-            Ok(None) => exit_code = exit_code.max(3),
+            // The container did not mount: nothing exists to read, and the
+            // mount's own refusal already chose the exit code — 3 when the
+            // content was refused, 1 when the container could not be read
+            // at all (CLI-EVIDENCE: a runtime failure is never reported as
+            // a validation failure). Requesting a member must not change
+            // it, so this outcome keeps the code the mount produced.
+            Ok(None) => {}
             Ok(Some(outcome)) => {
                 read = outcome.read;
                 export = outcome.export;
@@ -1289,5 +1331,131 @@ mod tests {
             no_installation.diagnostics
         );
         assert!(no_installation.report.is_none());
+    }
+
+    /// A member the container does not hold is refused as content (exit
+    /// 3): the mounted container is still reported, the read says
+    /// `not_found`, the export stays skipped and the directory stays
+    /// empty.
+    #[test]
+    fn accept_f05_c_rof_command_refuses_an_unknown_member() {
+        let temp = Temp::new("member");
+        temp.container("pack.rof", SHARED_ROF);
+        let export = temp.export();
+        let out = temp.out();
+
+        let run = rof_command_result(
+            &args(&[
+                "--cs-path",
+                path_arg(&temp.install()),
+                "--container",
+                "pack.rof",
+                "--member",
+                "NOTHING.DAT",
+                "--export-dir",
+                path_arg(&export),
+                "--out",
+                path_arg(&out),
+            ]),
+            None,
+        );
+        assert_eq!(run.exit_code, 3, "{:?}", run.diagnostics);
+        assert!(
+            run.diagnostics
+                .iter()
+                .any(|line| line.contains("NOTHING.DAT")),
+            "the refusal names the member: {:?}",
+            run.diagnostics
+        );
+        let report = run.report.as_ref().expect("a refused read still reports");
+        assert_eq!(run.out.as_deref(), Some(out.as_path()));
+        for needle in [
+            "\"status\": \"mounted\"".to_owned(),
+            "\"member_count\": 2".to_owned(),
+            "\"read\": {\"status\": \"refused\", \"code\": \"not_found\"".to_owned(),
+            "\"export\": {\"status\": \"skipped\"}".to_owned(),
+        ] {
+            assert!(report.contains(&needle), "missing {needle} in {report}");
+        }
+        assert!(
+            temp.entries(&export).is_empty(),
+            "the refusal wrote {:?}",
+            temp.entries(&export)
+        );
+    }
+
+    /// The exit codes a mount refusal maps to, as `CLI-EVIDENCE.md`
+    /// defines them: refused content is *failed validation* (3), a
+    /// container that could not be read or a mount the session refused is
+    /// a *runtime failure* (1). The unreachable-through-the-CLI variants
+    /// are pinned here so no mapping can quietly change.
+    #[test]
+    fn accept_f05_c_mount_exit_codes_follow_cli_evidence() {
+        use cs_assets::vfs::MountError;
+
+        let temp = Temp::new("codes");
+        temp.container("cycle.rof", &cycle_container());
+        let refusal = mount_rof_with_limits(
+            mount_builder("cycle.rof"),
+            &temp.install().join("cycle.rof"),
+            RofLimits::default(),
+        )
+        .expect_err("the cycle is refused");
+        assert_eq!(mount_exit_code(&refusal), 3, "{refusal}");
+
+        let unreadable = RofMountError::UnreadableContainer {
+            container: "gone.rof".to_owned(),
+            path: temp.install().join("gone.rof"),
+            source: io::Error::from(io::ErrorKind::NotFound),
+        };
+        assert_eq!(mount_exit_code(&unreadable), 1, "{unreadable}");
+
+        let repeated = RofMountError::Session(SessionError::Mount(MountError::DuplicateMountId {
+            id: MountId::new("rof-cycle-rof").expect("a valid mount id"),
+        }));
+        assert_eq!(mount_exit_code(&repeated), 1, "{repeated}");
+    }
+
+    /// A container reached through a directory link planted inside the
+    /// installation is never read: the report claims this installation's
+    /// fingerprint, so bytes that only lexically sit below it would be a
+    /// provenance lie. Refused as invalid input (exit 2) before a single
+    /// container byte is opened, with no report.
+    #[cfg(unix)]
+    #[test]
+    fn accept_f05_c_rof_command_refuses_a_container_reached_through_a_link() {
+        use std::os::unix::fs::symlink;
+
+        let temp = Temp::new("link");
+        let outside = temp.root.join("outside");
+        fs::create_dir_all(&outside).expect("outside dir is created");
+        fs::write(outside.join("pack.rof"), SHARED_ROF).expect("fixture bytes are written");
+        symlink(&outside, temp.install().join("linked")).expect("directory link is created");
+        let out = temp.out();
+
+        let run = rof_command_result(
+            &args(&[
+                "--cs-path",
+                path_arg(&temp.install()),
+                "--container",
+                "linked/pack.rof",
+                "--out",
+                path_arg(&out),
+            ]),
+            None,
+        );
+        assert_eq!(run.exit_code, 2, "{:?}", run.diagnostics);
+        assert!(
+            run.diagnostics
+                .iter()
+                .any(|line| line.contains("symbolic link")),
+            "the refusal explains itself: {:?}",
+            run.diagnostics
+        );
+        assert!(
+            run.report.is_none(),
+            "a container outside the installation is never read or reported"
+        );
+        assert!(!out.exists(), "no report was written for it");
     }
 }

@@ -775,6 +775,8 @@ mod tests {
     const BOMB: &str = "bomb.rof";
     const UTF8: &str = "utf8.rof";
     const CASE: &str = "case.rof";
+    const ABSENT: &str = "absent.rof";
+    const OTHER: &str = "other.rof";
 
     /// The payload of the compressed fixtures: 204 bytes, four repetitions
     /// of one authored line.
@@ -988,6 +990,17 @@ mod tests {
         valid_block(&records, &names)
     }
 
+    /// One file member holding `payload`: a second container beside
+    /// [`good_container`] for a session that mounts two of them.
+    fn single_member_container(name: &str, payload: &[u8]) -> Vec<u8> {
+        let names = name_table(&[name]);
+        let block_len = DIRECTORY_HEADER_BYTES + RECORD_BYTES + names.len();
+        let records = [RawRecord::file(name, 4).at(block_len as u32, payload.len() as u32)];
+        let mut bytes = valid_block(&records, &names);
+        bytes.extend_from_slice(payload);
+        bytes
+    }
+
     /// `[root][MIS][INDEX][README][PACK]`: a directory, an uncompressed
     /// file, a compressed member whose two length words differ (62 stored,
     /// 32 "on disk"), and a duplicate basename under the directory.
@@ -1177,6 +1190,18 @@ mod tests {
             "unexpected {error:?}"
         );
 
+        // A key this source does not hold is refused with its stable code
+        // and the container label, while the keys it does hold keep
+        // reading.
+        let missing = source.read(&key("MISSING.DAT")).expect_err("not a member");
+        assert_eq!(missing.code(), "unknown_member", "{missing}");
+        assert!(missing.to_string().contains(GOOD), "{missing}");
+        let wrong_space = source
+            .read(&AssetKey::from_spelling("world", "INDEX.TXT", "default").expect("a key"))
+            .expect_err("another namespace is not answered");
+        assert_eq!(wrong_space.code(), "unknown_member", "{wrong_space}");
+        assert_eq!(source.read(&key("INDEX.TXT")).expect("reads").data, INDEX);
+
         // The explicit export writes the *decoded* bytes below the private
         // directory: a subdirectory for a nested spelling, and the
         // compressed member as its 204-byte payload — never the 62-byte
@@ -1359,5 +1384,133 @@ mod tests {
         assert_eq!(builder.len(), 0);
         assert!(mount_rof_into(&mut builder, mount_builder(UTF8), &path).is_err());
         assert_eq!(builder.len(), 0);
+    }
+
+    /// **Error propagation (IO):** a container that cannot be read at all
+    /// is refused before a mount exists — the builder is never touched,
+    /// the diagnostic names the label and the host path, and a retry
+    /// refuses identically (F04-C's mount-failure contract, teardown and
+    /// retry).
+    #[test]
+    fn accept_f05_c_unreadable_container_refuses_before_a_mount() {
+        let temp = Temp::new("unreadable");
+        let missing = temp.0.join(ABSENT);
+
+        let mut builder = SessionBuilder::new(context());
+        let error = mount_rof_into(&mut builder, mount_builder(ABSENT), &missing)
+            .expect_err("there is no container to read");
+        assert_eq!(error.code(), "unreadable_container");
+        assert_eq!(error.container(), ABSENT);
+        assert_eq!(
+            error.offset(),
+            None,
+            "an IO refusal has no container offset"
+        );
+        assert!(
+            error.to_string().contains(&missing.display().to_string()),
+            "{error}"
+        );
+        assert_eq!(builder.len(), 0, "the refusal left no partial mount behind");
+
+        let first = mount_rof(mount_builder(ABSENT), &missing).expect_err("still absent");
+        let second = mount_rof(mount_builder(ABSENT), &missing).expect_err("still absent");
+        assert_eq!(first.code(), second.code());
+        assert_eq!(first.to_string(), second.to_string());
+    }
+
+    /// **Error propagation (session):** the session refuses a repeated
+    /// mount id after the container itself was accepted. Nothing of the
+    /// duplicate survives — the builder keeps exactly the mount it held,
+    /// and that mount's source still resolves and reads.
+    #[test]
+    fn accept_f05_c_session_refuses_a_repeated_mount() {
+        let temp = Temp::new("repeat");
+        let path = temp.container(GOOD, &good_container());
+
+        let mut builder = SessionBuilder::new(context());
+        let first = mount_rof_into(&mut builder, mount_builder(GOOD), &path)
+            .expect("the authored container mounts");
+        assert_eq!(builder.len(), 1);
+
+        let error = mount_rof_into(&mut builder, mount_builder(GOOD), &path)
+            .expect_err("the second mount repeats the id");
+        assert_eq!(error.code(), "session");
+        assert_eq!(error.container(), "rof-good-rof", "the id it collided with");
+        assert_eq!(builder.len(), 1, "the refused mount left nothing behind");
+
+        let session = builder.open();
+        let asset = session.resolve(&key("INDEX.TXT")).expect("still resolves");
+        assert_eq!(asset.resolved().span.length(), INDEX.len() as u64);
+        assert_eq!(
+            first.read(&key("INDEX.TXT")).expect("reads").data,
+            INDEX,
+            "the surviving source is untouched"
+        );
+        let teardown = session.close();
+        assert_eq!(teardown.released.len(), 1);
+        assert_eq!(teardown.released[0].as_str(), "rof-good-rof");
+    }
+
+    /// **Error propagation (export):** an asset stamped by another
+    /// session, or resolved from another mount, is refused before a byte
+    /// is written — while the right pairing still exports, so the
+    /// refusals are about identity and not a broken export path.
+    #[test]
+    fn accept_f05_c_export_refuses_foreign_sessions_and_mounts() {
+        let temp = Temp::new("foreign");
+        let good = temp.container(GOOD, &good_container());
+        let payload = b"second container payload\n";
+        let other = temp.container(OTHER, &single_member_container("OTHER.DAT", payload));
+        let export = temp.export();
+
+        let mut builder_a = SessionBuilder::new(context());
+        let source_a = mount_rof_into(&mut builder_a, mount_builder(GOOD), &good)
+            .expect("the first container mounts");
+        let session_a = builder_a.open();
+        let foreign_asset = session_a.resolve(&key("INDEX.TXT")).expect("resolved");
+
+        let mut builder_b = SessionBuilder::new(context());
+        let source_b = mount_rof_into(&mut builder_b, mount_builder(OTHER), &other)
+            .expect("the second container mounts");
+        let session_b = builder_b.open();
+        let directory = ExportDirectory::open(&export, &session_b).expect("export dir opens");
+
+        let error = export_rof_member(&session_b, &foreign_asset, &source_a, &directory)
+            .expect_err("an asset stamped by another session is never exported");
+        assert!(
+            matches!(error, RofExportError::ForeignSession { .. }),
+            "unexpected {error:?}"
+        );
+        assert!(
+            temp.entries(&export).is_empty(),
+            "nothing was written, found {:?}",
+            temp.entries(&export)
+        );
+
+        let own_asset = session_b.resolve(&key("OTHER.DAT")).expect("resolved");
+        let error = export_rof_member(&session_b, &own_asset, &source_a, &directory)
+            .expect_err("these bytes belong to another mount");
+        assert!(
+            matches!(error, RofExportError::ForeignMount { .. }),
+            "unexpected {error:?}"
+        );
+        assert!(
+            temp.entries(&export).is_empty(),
+            "nothing was written, found {:?}",
+            temp.entries(&export)
+        );
+
+        let file = export_rof_member(&session_b, &own_asset, &source_b, &directory)
+            .expect("the matching session and mount export");
+        assert_eq!(file.size_bytes, payload.len() as u64);
+        assert_eq!(
+            fs::read(export.join("OTHER.DAT")).expect("the export is written"),
+            payload
+        );
+
+        let released_a = session_a.close();
+        assert_eq!(released_a.released.len(), 1);
+        let released_b = session_b.close();
+        assert_eq!(released_b.released.len(), 1);
     }
 }
