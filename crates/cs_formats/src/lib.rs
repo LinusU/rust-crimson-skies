@@ -28,7 +28,7 @@
 //! [`interp::read_interp`], and stage F07-B, [`interp::decode_interp`]).
 //!
 //! Texture image descriptors, level decoding, the ZBD texture package and
-//! conventional BMPs:
+//! conventional BMPs and TGAs:
 //! `specs/F08-texture-archives-and-conventional-image-decoding.md` (stages
 //! F08-A and F08-B, [`texture`]).
 //!
@@ -76,8 +76,8 @@ pub use rof::{
 };
 pub use texture::{
     BmpError, BmpImage, DecodedImage, DecodedLevels, DescriptorError, ImageDescriptor,
-    TextureError, ZbdTexture, ZbdTextureError, ZbdTexturePackage, decode_base_level, decode_levels,
-    read_bmp, read_zbd_textures,
+    TextureError, TgaError, TgaImage, ZbdTexture, ZbdTextureError, ZbdTexturePackage,
+    decode_base_level, decode_levels, read_bmp, read_tga, read_zbd_textures,
 };
 pub use zbd::{
     DispatchBasis, HeaderStatus, RoleStatus, ZbdDispatch, ZbdDispatchError, ZbdFamily, ZbdProbe,
