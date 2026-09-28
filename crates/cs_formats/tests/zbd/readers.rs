@@ -19,8 +19,8 @@ use cs_formats::zbd::{
     CONTAINER_ENTRYPOINT, ContainerError, ContainerStatus, DispatchBasis, FamilyOrigin,
     HeaderStatus, INTERP_SIGNATURE, INTERP_VERSION, MEMBER_ROW_BYTES, MemberError, MemberExtent,
     MemberRow, MemberStatus, MemberTable, ReaderError, SOURCE_SPAN_BYTES, SoundError,
-    UnsupportedRecord, ZbdDispatch, ZbdDispatchError, ZbdFamily, ZbdProbe, ZbdReaderId, dispatch,
-    read_reader_archive, read_sound_archive,
+    UnsupportedRecord, WaveError, ZbdDispatch, ZbdDispatchError, ZbdFamily, ZbdProbe, ZbdReaderId,
+    dispatch, read_reader_archive, read_sound_archive,
 };
 use cs_formats::{ParseContext, ParseErrorKind};
 use cs_types::evidence::{ClaimStatus, SourceSpan};
@@ -387,18 +387,22 @@ fn accept_f06_b_sound_entries_retain_spans_and_unknown_descriptor_fields() {
     assert_eq!(first.name(), b"gun_loop");
 
     // …while every declared descriptor field stays unknown instead of being
-    // invented. No member's WAVE header is read yet (task #344), so a rate, a
-    // channel count or a loop point would be a fabricated game value (spec F06
-    // research boundary; AGENTS.md "unknown means unknown").
+    // invented. The descriptor comes from the member's RIFF/WAVE header (task
+    // #344), and this member is authored text, not a WAVE file, so a rate, a
+    // channel count or a loop point would be a fabricated value (spec F06
+    // research boundary; AGENTS.md "unknown means unknown"). The WAVE header
+    // path itself is tested in `t344.rs`.
+    assert_eq!(first.wave(), Err(WaveError::NotRiff { found: *b"CHAP" }));
     let descriptor = first.descriptor();
-    let expected_reason = cs_formats::zbd::family_record(ZbdFamily::Sound)
-        .header_rule()
-        .undocumented_reason()
-        .expect("the sound family has no header rule");
+    let expected_reason = WaveError::NotRiff { found: *b"CHAP" }.reason();
     for field in [
         descriptor.format().reason(),
+        descriptor.format_tag().reason(),
         descriptor.channels().reason(),
         descriptor.rate_hz().reason(),
+        descriptor.bits_per_sample().reason(),
+        descriptor.block_align().reason(),
+        descriptor.cue_points().reason(),
         descriptor.loop_points().reason(),
     ] {
         assert_eq!(field, Some(expected_reason));

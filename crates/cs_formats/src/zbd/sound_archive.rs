@@ -2,25 +2,23 @@
 //! declared sample descriptor.
 //!
 //! Spec F06 non-negotiable #2: "Sound entries retain sample format, channels,
-//! rate, loop metadata if present, and source span." This stage implements the
-//! half of that which needs no field offsets: [`read_sound_archive`] gates the
-//! family, lists the container's declared members with bounds
-//! ([`crate::zbd::archive`]), and hands out each entry's verbatim bytes with its
-//! span and a descriptor whose fields report the recorded unknown.
+//! rate, loop metadata if present, and source span." [`read_sound_archive`]
+//! gates the family and lists the container's declared members with bounds
+//! ([`crate::zbd::archive`]). Each entry keeps its verbatim bytes and its span
+//! and carries a descriptor read from its own RIFF/WAVE header
+//! ([`crate::zbd::wave`], task #344).
 //!
-//! What it deliberately does not do: name a sample format, a channel count, a
-//! rate or a loop point. Task #340 tied the family to `ZBD/sounds*.zbd` and found
-//! that those archives have no leading header: the member table sits at the end
-//! of the file and the members are RIFF/WAVE files (task #340 findings). Task
-//! #343 reads that table ([`crate::zbd::trailer`]); reading each member's WAVE
-//! header (task #344) is still to come. Until then every descriptor field
-//! is [`SoundField::Unknown`] carrying the family's own recorded reason, so
-//! nothing downstream can read a fabricated `22050 Hz` as a measured value.
+//! Task #340 tied the family to `ZBD/sounds*.zbd` and found that its members
+//! are RIFF/WAVE files; task #343 reads the member table from the archive
+//! trailer ([`crate::zbd::trailer`]). A member whose header does not read keeps
+//! every descriptor field [`SoundField::Unknown`] with the [`WaveError`]'s
+//! reason, and [`SoundEntry::wave`] names the error. Loop points stay unknown
+//! for every member: see [`WaveHeader::loop_reason`].
 //!
 //! There is deliberately **no** `playable()`, `decoded()` or `samples()` accessor
-//! on [`SoundArchive`]: with the descriptor unknown, any such method would be a
-//! playability claim the bytes cannot support (spec F06 non-negotiable #4: a
-//! listing "may continue and show every error without advertising playability").
+//! on [`SoundArchive`]: reading a header decodes no sample, and decoding is
+//! stage F06-C's (spec F06 non-negotiable #4: a listing "may continue and show
+//! every error without advertising playability").
 
 use std::fmt;
 
@@ -28,19 +26,23 @@ use cs_types::evidence::SourceSpan;
 
 use super::archive::{
     ArchiveListing, ContainerError, ContainerStatus, FamilyMismatch, FamilyOrigin, MemberTable,
-    UnsupportedRecord, list_members, require_family, undocumented_reason,
+    UnsupportedRecord, list_members, require_family,
 };
 use super::dispatch::HeaderStatus;
 use super::family::ZbdFamily;
+use super::wave::{WaveError, WaveHeader, read_wave_header};
 use crate::io::ParseContext;
+
+/// Why an entry whose WAVE header reads is still an unsupported record.
+pub const SAMPLES_NOT_DECODED_REASON: &str = "the member's RIFF/WAVE header is read, its samples \
+     are not decoded (stage F06-C)";
 
 /// One field of a sound entry's declared descriptor.
 ///
 /// The two states the contract distinguishes
 /// (`docs/contracts/IDENTITY-CONTENT.md`: "Unknown original units are
 /// `Resolved::Unknown`, not assumed SI"): a value read from a documented
-/// layout, or the recorded reason no such value is known. This stage can only
-/// ever produce the second one.
+/// layout, or the recorded reason no such value is known.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SoundField<T> {
     /// A value read from a documented sound layout.
@@ -77,14 +79,17 @@ impl<T> SoundField<T> {
 
 /// The declared sample descriptor of one sound entry.
 ///
-/// Every field is reported, never invented: a sound entry whose header layout is
-/// documented later keeps its span and its raw bytes here and gains its format,
-/// channels, rate and loop metadata from that layout, not from a default.
+/// Every field is reported, never invented: a value comes from the member's
+/// RIFF/WAVE header ([`crate::zbd::wave`]) or is unknown with the reason.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SoundDescriptor {
     format: SoundField<&'static str>,
-    channels: SoundField<u8>,
+    format_tag: SoundField<u16>,
+    channels: SoundField<u16>,
     rate_hz: SoundField<u32>,
+    bits_per_sample: SoundField<u16>,
+    block_align: SoundField<u16>,
+    cue_points: SoundField<u32>,
     loop_points: SoundField<(u32, u32)>,
 }
 
@@ -93,25 +98,80 @@ impl SoundDescriptor {
     pub const fn undeclared(reason: &'static str) -> Self {
         Self {
             format: SoundField::Unknown { reason },
+            format_tag: SoundField::Unknown { reason },
             channels: SoundField::Unknown { reason },
             rate_hz: SoundField::Unknown { reason },
+            bits_per_sample: SoundField::Unknown { reason },
+            block_align: SoundField::Unknown { reason },
+            cue_points: SoundField::Unknown { reason },
             loop_points: SoundField::Unknown { reason },
         }
     }
 
-    /// The entry's sample format, when it is known.
+    /// The descriptor a member's WAVE header declares.
+    pub const fn from_wave(header: &WaveHeader) -> Self {
+        Self {
+            format: match header.format_name() {
+                Some(name) => SoundField::Known(name),
+                None => SoundField::Unknown {
+                    reason: super::wave::UNNAMED_FORMAT_REASON,
+                },
+            },
+            format_tag: SoundField::Known(header.format_tag()),
+            channels: SoundField::Known(header.channels()),
+            rate_hz: SoundField::Known(header.rate_hz()),
+            bits_per_sample: SoundField::Known(header.bits_per_sample()),
+            block_align: SoundField::Known(header.block_align()),
+            cue_points: SoundField::Known(header.cue_points()),
+            loop_points: SoundField::Unknown {
+                reason: header.loop_reason(),
+            },
+        }
+    }
+
+    /// The descriptor of a member read as `wave`.
+    pub const fn from_result(wave: &Result<WaveHeader, WaveError>) -> Self {
+        match wave {
+            Ok(header) => Self::from_wave(header),
+            Err(error) => Self::undeclared(error.reason()),
+        }
+    }
+
+    /// The entry's sample format name (`pcm`, `ms_adpcm`, `ima_adpcm`), when
+    /// it is known.
     pub const fn format(&self) -> SoundField<&'static str> {
         self.format
     }
 
+    /// The entry's WAVE format tag, when it is known.
+    pub const fn format_tag(&self) -> SoundField<u16> {
+        self.format_tag
+    }
+
     /// The entry's channel count, when it is known.
-    pub const fn channels(&self) -> SoundField<u8> {
+    pub const fn channels(&self) -> SoundField<u16> {
         self.channels
     }
 
     /// The entry's sample rate in hertz, when it is known.
     pub const fn rate_hz(&self) -> SoundField<u32> {
         self.rate_hz
+    }
+
+    /// The entry's declared bits per sample, when it is known.
+    pub const fn bits_per_sample(&self) -> SoundField<u16> {
+        self.bits_per_sample
+    }
+
+    /// The entry's block alignment in bytes, when it is known.
+    pub const fn block_align(&self) -> SoundField<u16> {
+        self.block_align
+    }
+
+    /// How many `cue ` points the entry declares (0 without a `cue ` chunk),
+    /// when it is known. A cue point is a position, not a loop.
+    pub const fn cue_points(&self) -> SoundField<u32> {
+        self.cue_points
     }
 
     /// The entry's loop points (start, end) in samples, when they are known.
@@ -132,7 +192,7 @@ pub struct SoundEntry<'a> {
     id: Option<u32>,
     span: SourceSpan,
     content: &'a [u8],
-    descriptor: SoundDescriptor,
+    wave: Result<WaveHeader, WaveError>,
 }
 
 impl<'a> SoundEntry<'a> {
@@ -161,17 +221,22 @@ impl<'a> SoundEntry<'a> {
         self.content
     }
 
+    /// The entry's RIFF/WAVE header, or why it does not read.
+    pub const fn wave(&self) -> Result<WaveHeader, WaveError> {
+        self.wave
+    }
+
     /// The entry's declared sample descriptor.
     pub const fn descriptor(&self) -> SoundDescriptor {
-        self.descriptor
+        SoundDescriptor::from_result(&self.wave)
     }
 }
 
 /// A sound container: the bounded listing plus this stage's sound entries.
 ///
-/// Every entry keeps its span and its bytes; none of them is decodable, so the
-/// archive is an inventory of the container's members and never a claim that
-/// anything can be played.
+/// Every entry keeps its span, its bytes and its WAVE header; no sample is
+/// decoded, so the archive is an inventory of the container's members and
+/// never a claim that anything can be played.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SoundArchive<'a> {
     listing: ArchiveListing<'a>,
@@ -227,7 +292,7 @@ impl<'a> SoundArchive<'a> {
             id: row.id(),
             span: row.span(),
             content,
-            descriptor: SoundDescriptor::undeclared(undocumented_reason(ZbdFamily::Sound)),
+            wave: read_wave_header(content),
         })
     }
 
@@ -251,21 +316,38 @@ impl<'a> SoundArchive<'a> {
         self.listing.failures()
     }
 
-    /// The strict status of the archive.
+    /// Every readable entry whose RIFF/WAVE header does not read, with the
+    /// error. These members are in bounds, so [`Self::status`] does not count
+    /// them; a strict audit must count both.
+    pub fn wave_failures(&self) -> impl Iterator<Item = (SoundEntry<'a>, WaveError)> + '_ {
+        self.entries()
+            .filter_map(|entry| entry.wave().err().map(|error| (entry, error)))
+    }
+
+    /// The bounds status of the archive: whether every declared member lies
+    /// inside the container. WAVE header failures are in
+    /// [`Self::wave_failures`].
     pub fn status(&self) -> ContainerStatus {
         self.listing.status()
     }
 
     /// Every entry this stage cannot decode, with its span.
     ///
-    /// Today that is every readable entry, because no sound header layout is
-    /// documented; the list shrinks as evidence lands.
+    /// Today that is every readable entry: no sample is decoded. The reason is
+    /// the entry's [`WaveError`] when its header does not read, and
+    /// [`SAMPLES_NOT_DECODED_REASON`] when it does.
     pub fn unsupported_records(&self) -> Vec<UnsupportedRecord<'a>> {
         self.listing
             .rows()
             .iter()
-            .filter(|row| row.is_readable())
-            .map(|row| UnsupportedRecord::new(row, undocumented_reason(ZbdFamily::Sound)))
+            .filter_map(|row| {
+                let content = self.listing.member_bytes(row.index())?;
+                let reason = match read_wave_header(content) {
+                    Ok(_) => SAMPLES_NOT_DECODED_REASON,
+                    Err(error) => error.reason(),
+                };
+                Some(UnsupportedRecord::new(row, reason))
+            })
             .collect()
     }
 }

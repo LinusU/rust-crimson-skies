@@ -82,7 +82,8 @@ pub use role::{
     role_for_path,
 };
 pub use sound_archive::{
-    SoundArchive, SoundDescriptor, SoundEntry, SoundError, SoundField, read_sound_archive,
+    SAMPLES_NOT_DECODED_REASON, SoundArchive, SoundDescriptor, SoundEntry, SoundError, SoundField,
+    read_sound_archive,
 };
 pub use trailer::{
     EntryAnomaly, INDEX_ENTRY_BYTES, INDEX_NAME_BYTES, INDEX_ROW_BYTES, INDEX_UNEXPLAINED_BYTES,
