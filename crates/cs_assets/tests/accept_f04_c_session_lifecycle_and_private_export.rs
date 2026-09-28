@@ -98,6 +98,10 @@ fn hostile_names() -> Vec<(&'static str, UnsafeName)> {
         ("hud/con", UnsafeName::DeviceName),
         ("Com1.tga", UnsafeName::DeviceName),
         ("lpt9", UnsafeName::DeviceName),
+        ("hud/COM\u{b9}.dds", UnsafeName::DeviceName),
+        ("lpt\u{b3}", UnsafeName::DeviceName),
+        ("CONIN$", UnsafeName::DeviceName),
+        ("conout$.txt", UnsafeName::DeviceName),
     ]
 }
 

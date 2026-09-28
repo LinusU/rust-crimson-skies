@@ -78,7 +78,7 @@ a resolution to the world it was made for: a `ResolvedAsset` from world
   alternate-stream spellings on Windows), no control characters, no
   trailing `.`/space (Windows strips them, so `.. ` would become `..`), no
   Windows device name (`CON`, `NUL`, `AUX`, `PRN`, `COM1`–`9`, `LPT1`–`9`,
-  any extension). The export root must be a real directory (not a link)
+  `COM¹`–`³`, `LPT¹`–`³`, `CONIN$`, `CONOUT$`, any extension). The export root must be a real directory (not a link)
   outside every mount's host root. Directories are created one component
   at a time; an existing link or non-directory is refused, the landing
   directory must canonicalize below the root, and the file is written to

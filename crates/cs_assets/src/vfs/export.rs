@@ -17,7 +17,8 @@
 //!   spelling on Windows), a control character, or end in `.` or a space
 //!   (Windows strips those, so `.. ` would become `..`);
 //! * no component may be a Windows device name (`CON`, `NUL`, `AUX`,
-//!   `PRN`, `COM1`–`COM9`, `LPT1`–`LPT9`, with or without an extension),
+//!   `PRN`, `COM1`–`COM9`, `LPT1`–`LPT9`, `COM¹`–`COM³`, `LPT¹`–`LPT³`,
+//!   `CONIN$`, `CONOUT$`, with or without an extension),
 //!   which would write to a device instead of a file.
 //!
 //! The export root must be an existing directory that is not a symbolic
@@ -50,10 +51,13 @@ use crate::vfs::source::ReadError;
 /// Serial for temporary file names, so two exports never share one.
 static NEXT_TEMP: AtomicU64 = AtomicU64::new(0);
 
-/// Windows device names that must never become an export file name.
-const DEVICE_NAMES: [&str; 22] = [
+/// Windows device names that must never become an export file name,
+/// including the superscript-digit ports and the console buffers Windows
+/// also reserves.
+const DEVICE_NAMES: [&str; 30] = [
     "con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8",
-    "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+    "com9", "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9", "com¹", "com²",
+    "com³", "lpt¹", "lpt²", "lpt³", "conin$", "conout$",
 ];
 
 /// Why a member name cannot become an export path.
