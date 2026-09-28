@@ -9,6 +9,8 @@
 // assertions themselves stay fully checked.
 #![allow(dead_code)]
 
+pub mod nested;
+
 use cs_formats::{ParseError, Reader};
 
 /// Provenance label carried by every error these tests assert on.
