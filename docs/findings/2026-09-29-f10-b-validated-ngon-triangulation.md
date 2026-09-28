@@ -36,7 +36,7 @@ follow-up task (see below) instead of being guessed here.
 - `crates/cs_formats/src/gamez/mod.rs`: module declaration, re-exports and
   module doc.
 - `crates/cs_formats/tests/gamez/ngon.rs` (new, `mod ngon;` in
-  `main.rs`): five `accept_f10_b_*` tests.
+  `main.rs`): five `accept_f10_b_*` tests (a sixth added in review).
 - `crates/cs_formats/tests/gamez/main.rs`: the F10-A fixture that expected
   a convex quad to be `UnsupportedNgon` now uses a symmetric bow tie,
   which is still unsupported (`ZeroArea`). The decoded/invalid/unsupported
@@ -61,10 +61,12 @@ clockwise and lies over the notch, outside the outline
   there. Ears are convex relative to the outline's own orientation, so the
   triangles keep the stored winding, clockwise or counter-clockwise, in any
   plane. Which winding is front-facing is still unknown (F10-A).
-- **No tolerance constants.** All predicates are exact comparisons on the
-  stored `f32` values widened to `f64`. No epsilon was invented; a
-  numerically hopeless outline surfaces as `NoEar`, not as a guessed
-  triangle.
+- **No tolerance constants.** All predicates compare against zero without
+  a tolerance, on the stored `f32` values widened to `f64`. Coordinate
+  differences and their products are exact in `f64` for ordinary ranges,
+  but the final subtraction can round, so the predicates are not exact in
+  general. No epsilon was invented; a numerically hopeless outline
+  surfaces as `NoEar`, not as a guessed triangle.
 - **Deterministic output.** The first ear in stored order is clipped, so
   the same outline always yields the same triangles. Each `MeshTriangle`
   keeps the source-corner map (`corners`) and its place in the
@@ -87,6 +89,7 @@ point-in-polygon, Newell normal), not by the code under test.
 | `outline_off_the_xy_plane_keeps_its_stored_winding` | arrow in the tilted plane z = y and in x = 0, both directions; winding checked against the stored outline's Newell normal |
 | `convex_quad_decodes_to_two_triangles` | the case F10-A rejected now decodes |
 | `untriangulable_outlines_are_reported_not_fanned` | asymmetric bow tie, edge folding back, collinear corners, coincident corners, a repeated position index; no triangles, counted as unsupported, the other polygon still decodes |
+| `random_simple_outlines_are_covered_exactly` | added in review: 500 deterministic pseudo-random simple outlines (4–12 corners, either winding, concave or convex), built from integer grid points untangled by 2-opt with integer predicates independent of the triangulator |
 
 ## Mutation probes
 
@@ -113,3 +116,20 @@ accept_f10_b_` run, file restored:
   F10-D.
 - **Non-planar outlines.** The projection accepts them when the projected
   outline is simple; whether retail n-gons are planar is unknown.
+
+## Review
+
+Reviewer: claude-1 (Claude Opus 5.5), a fresh session with no context from
+the implementation session but the same agent name and model as the
+implementer, so this is not an independent-model review. Checked the
+slice against the F10 sheet, AGENTS.md and the owner paths. A throwaway
+fuzz run (not committed) triangulated 200 000 star-shaped outlines with
+collinear corners and about 11 500 random simple outlines with no
+failure: every result covered the outline area exactly with triangles of
+the outline's winding. The review added
+`accept_f10_b_random_simple_outlines_are_covered_exactly`; it fails when
+the ear containment or ear convexity test is removed. It also corrected
+the wording on exactness above. The deferral of byte parsing to #363 is
+accepted: the research boundary forbids guessing the layout, and the
+stage's "Done when" names only AC02. F10-C (#43) needs #363's reader
+before it can wire a real producer.
