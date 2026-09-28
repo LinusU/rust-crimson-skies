@@ -74,6 +74,8 @@ The `submit_for_review` summary must list: what changed, files, commands run wit
 
 Reviews come first in Rally. As a reviewer you own getting the branch right: check it against the spec section and this file, fix problems yourself, rerun every check above (including the ignored task tests with `CS_GAME_DIR`), then follow the steps to `complete_review`. Look especially for tests that do not exercise production code, stubs that return success, guessed layouts or constants, touched protected paths and binary files without provenance.
 
+Independent review is requested for evidence machinery, format and mission semantics, and fidelity claims: prefer a reviewer that is a different agent instance or model with a fresh context. This is review policy; Rally does not currently enforce who reviews. Record the actual implementer and reviewer identities and whether the reviewer's context was fresh in the `complete_review` notes. A review by the same agent that implemented the work is not independent evidence, and no agent review replaces the owner's human approval.
+
 ## Hard failure conditions
 
 An original mission cannot be marked ready while it contains unknown reachable instructions, missing gameplay assets, placeholder victory logic or unverified critical native calls. A full release cannot be approved without actual original-data, visual, audible and ordinary-play evidence and the owner's approval.
