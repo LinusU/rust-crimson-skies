@@ -109,6 +109,15 @@ pub enum ZbdError {
     /// The named family is one a dispatch already routes, so a caller
     /// asserted something the two keys own (F06-B's `RoutableFamily`).
     Routable(RoutableFamily),
+    /// The member index or member table handed to a container was read from
+    /// another container's bytes, so its extents describe someone else's
+    /// members. Refused before any member is read.
+    ForeignIndex {
+        /// The provenance label of the container asked to read.
+        container: String,
+        /// The provenance label the index or table carries.
+        index_container: String,
+    },
 }
 
 impl ZbdError {
@@ -124,6 +133,7 @@ impl ZbdError {
             Self::Sound(error) => error.code(),
             Self::Sample(error) => error.code(),
             Self::Routable(error) => error.code(),
+            Self::ForeignIndex { .. } => "foreign_index",
         }
     }
 }
@@ -145,6 +155,14 @@ impl fmt::Display for ZbdError {
             Self::Sound(error) => write!(f, "{error}"),
             Self::Sample(error) => write!(f, "{error}"),
             Self::Routable(error) => write!(f, "{error}"),
+            Self::ForeignIndex {
+                container,
+                index_container,
+            } => write!(
+                f,
+                "{container}: the member index handed in was read from {index_container}, not \
+                 from this container's bytes"
+            ),
         }
     }
 }
@@ -161,6 +179,7 @@ impl std::error::Error for ZbdError {
             Self::Sound(error) => Some(error),
             Self::Sample(error) => Some(error),
             Self::Routable(error) => Some(error),
+            Self::ForeignIndex { .. } => None,
         }
     }
 }
@@ -480,16 +499,48 @@ impl ZbdContainer {
     ///
     /// # Errors
     ///
-    /// [`ZbdError::Sound`] when the family gate or the listing refuses the
-    /// container, and [`ZbdError::Dispatch`] when the caller passes an index
-    /// that read a different container's dispatch.
+    /// [`ZbdError::ForeignIndex`] when `index` was not read from this
+    /// container's own bytes or `table` carries another container's label,
+    /// and [`ZbdError::Sound`] when the family gate or the listing refuses the
+    /// container.
     pub fn sound_archive<'c>(
         &'c self,
         context: &mut ParseContext,
         index: &'c VersionOneIndex<'c>,
         table: &'c MemberTable<'c>,
     ) -> Result<SoundArchive<'c>, ZbdError> {
+        self.require_own_index(index, table)?;
         Ok(read_sound_archive(context, table, index.data())?)
+    }
+
+    /// Refuses an index or table that describes another container's members.
+    ///
+    /// The index must slice exactly this container's bytes (its data starts
+    /// at this container's first byte), and the table must carry this
+    /// container's label, so extents read from one archive are never applied
+    /// to another archive's bytes.
+    fn require_own_index(
+        &self,
+        index: &VersionOneIndex<'_>,
+        table: &MemberTable<'_>,
+    ) -> Result<(), ZbdError> {
+        let data = index.data();
+        let own_bytes = std::ptr::eq(data.as_ptr(), self.bytes.as_ptr())
+            && data.len() <= self.bytes.len()
+            && index.container() == self.label;
+        if !own_bytes {
+            return Err(ZbdError::ForeignIndex {
+                container: self.label.clone(),
+                index_container: index.container().to_owned(),
+            });
+        }
+        if table.container() != self.label {
+            return Err(ZbdError::ForeignIndex {
+                container: self.label.clone(),
+                index_container: table.container().to_owned(),
+            });
+        }
+        Ok(())
     }
 
     /// The sound assets of this container's sound archive.
@@ -504,8 +555,6 @@ impl ZbdContainer {
     /// [`SoundAssets::failures`] instead, so nothing is silently dropped
     /// (IDENTITY-CONTENT: "collections cannot exclude failed entries"; spec F06
     /// non-negotiable #4).
-    ///
-    /// # Errors
     ///
     /// `index` is the [`VersionOneIndex`] [`Self::index`] returned; see
     /// [`Self::sound_archive`].
@@ -1323,6 +1372,50 @@ mod tests {
             Ok(mounted) => mounted.mount,
             Err(error) => panic!("the fixture tree mounts: {error}"),
         }
+    }
+
+    #[test]
+    fn accept_f06_c_an_index_read_from_another_container_is_refused() {
+        // The caller holds the index and the table, so the container must
+        // refuse extents that were read from someone else's bytes rather
+        // than apply them to its own.
+        let tree = installation();
+        tree.write(
+            "ZBD/soundsh.zbd",
+            &archive(&[(b"other.wav".as_slice(), pcm16_member())]),
+        );
+        let session = session(tree.0.as_path());
+        let low =
+            ZbdContainer::open(&session, &key("install", "ZBD/soundsl.zbd")).expect("it opens");
+        let high =
+            ZbdContainer::open(&session, &key("install", "ZBD/soundsh.zbd")).expect("it opens");
+
+        let mut context = ParseContext::with_defaults(low.label());
+        let low_index = low.index(&mut context).expect("its trailer reads");
+        let low_table = low_index.member_table();
+        let high_index = high.index(&mut context).expect("its trailer reads");
+        let high_table = high_index.member_table();
+
+        // Another container's index, with its own table.
+        let error = high
+            .sound_assets(&mut context, &low_index, &low_table)
+            .expect_err("a foreign index is refused");
+        assert_eq!(error.code(), "foreign_index");
+        let text = error.to_string();
+        assert!(text.contains("soundsl.zbd"), "{text}");
+
+        // This container's index, with another container's table.
+        let error = high
+            .sound_archive(&mut context, &high_index, &low_table)
+            .expect_err("a foreign table is refused");
+        assert_eq!(error.code(), "foreign_index");
+
+        // Its own index and table read.
+        let assets = high
+            .sound_assets(&mut context, &high_index, &high_table)
+            .expect("its own index reads");
+        assert_eq!(assets.len(), 1);
+        assert_eq!(assets.entry(0).expect("row 0").name(), b"other.wav");
     }
 
     // --- the consumer: sound assets ----------------------------------------
