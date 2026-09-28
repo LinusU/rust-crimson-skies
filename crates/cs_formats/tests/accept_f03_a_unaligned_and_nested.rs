@@ -15,16 +15,22 @@ use cs_formats::{ParseErrorKind, Reader};
 /// reader would fault or decode garbage here.
 #[test]
 fn accept_f03_a_reads_deliberately_unaligned_slices() {
-    let mut backing = Vec::with_capacity(1 + record_len());
-    backing.push(0x5A); // odd prefix: every record byte shifts off alignment
+    let mut backing: Vec<u8> = Vec::with_capacity(1 + record_len());
+    // Decide the pad length from the allocation's own address: the first
+    // record byte must land on an odd address whatever the allocator
+    // returned, so the test cannot silently run aligned on a target whose
+    // `Vec<u8>` happens to start at an odd address.
+    let pad = 1 - (backing.as_ptr() as usize % 2);
+    backing.resize(pad, 0x5A);
     backing.extend_from_slice(&record_bytes());
 
-    let slice = &backing[1..];
+    let slice = &backing[pad..];
     assert_eq!(
         slice.as_ptr() as usize % 2,
         1,
         "the fixture must actually be unaligned for this test to mean anything"
     );
+    assert_eq!(slice.len(), record_len(), "the slice is exactly the record");
 
     let mut reader = Reader::new(CONTAINER, slice);
     let record = parse_record(&mut reader).expect("an unaligned record must parse");
