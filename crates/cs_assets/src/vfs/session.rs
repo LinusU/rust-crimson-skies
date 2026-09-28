@@ -38,6 +38,7 @@ use cs_types::asset_id::{
 };
 
 use crate::install::Diagnosis;
+use crate::vfs::collision::{self, CollisionReport};
 use crate::vfs::mount::{Mount, MountBuilder, MountError};
 use crate::vfs::resolve::{self, ResolveError, ResolvedAsset, Vfs};
 use crate::vfs::source::{self, ReadError, RejectedEntry, SourceError};
@@ -416,6 +417,13 @@ impl ContentSession {
     /// Entries the session's directory mounts observed and refused.
     pub fn rejected(&self) -> &[SessionRejection] {
         &self.rejected
+    }
+
+    /// Every file-name collision among this session's mounts, each member
+    /// looked up under each of `contexts` exactly as this session would
+    /// look it up ([`crate::vfs::collision::compare_collisions`]).
+    pub fn collision_report(&self, contexts: &[ResolveContext]) -> CollisionReport {
+        collision::compare_collisions(&self.vfs, contexts)
     }
 
     /// Resolves `key` against this session's context and mounts, stamping

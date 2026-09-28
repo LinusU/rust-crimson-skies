@@ -34,16 +34,28 @@
 //!   leave the export directory, and the directory cannot lie inside a
 //!   mounted source.
 //!
-//! Mounting archive members needs the archive readers of the format tasks;
-//! measuring original lookup behavior for every observed collision is
-//! F04-D. Nothing here writes to the original installation.
+//! * [`collision`] lists every file-name collision among the mounts and
+//!   looks each member up under each context ([`compare_collisions`]),
+//!   classifying it as distinct by path, shadowed by identical bytes or
+//!   conflicting (F04-D).
+//!
+//! Mounting archive members needs the archive readers of the format tasks.
+//! Original lookup behavior is unmeasured (F04-D findings), so the
+//! precedence order stays `designed` and content sessions refuse a retail
+//! answer that order alone decided. Nothing here writes to the original
+//! installation.
 
+pub mod collision;
 pub mod export;
 pub mod mount;
 pub mod resolve;
 pub mod session;
 pub mod source;
 
+pub use collision::{
+    Collision, CollisionComparison, CollisionMember, CollisionReport, CollisionVerdict,
+    LookupOutcome, MemberLookup, compare_collisions, observe_collisions,
+};
 pub use export::{
     ExportDirectory, ExportError, ExportedFile, UnsafeName, export_asset, export_components,
 };

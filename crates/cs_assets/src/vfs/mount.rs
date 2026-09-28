@@ -408,6 +408,13 @@ impl Mount {
         self.members.len()
     }
 
+    /// Every member with the variant it is indexed under, in key order.
+    pub fn members(&self) -> impl Iterator<Item = (&str, &MemberRecord)> {
+        self.members
+            .iter()
+            .map(|(key, member)| (key.variant.as_str(), member))
+    }
+
     /// The member serving `key`, or `None` when this mount does not hold
     /// it.
     ///
