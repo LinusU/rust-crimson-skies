@@ -13,6 +13,8 @@
 //! content that matches no documented signature and dispatch has to say so
 //! (`HeaderStatus::Unvalidated`) instead of pretending it checked them.
 
+mod readers;
+
 use cs_formats::zbd::{
     CONTENT_ROOT, DispatchBasis, HeaderStatus, INTERP_SIGNATURE, INTERP_VERSION,
     INTERP_VERSION_OFFSET, OUTSIDE_CONTENT_ROOT, RoleStatus, UNOBSERVED_NAME, ZBD_FAMILY_INVENTORY,
