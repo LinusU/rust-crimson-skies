@@ -72,7 +72,8 @@ pub use rof::{
     read_directory, read_member, read_tree,
 };
 pub use texture::{
-    DecodedImage, DescriptorError, ImageDescriptor, TextureError, decode_base_level,
+    DecodedImage, DecodedLevels, DescriptorError, ImageDescriptor, TextureError, decode_base_level,
+    decode_levels,
 };
 pub use zbd::{
     DispatchBasis, HeaderStatus, RoleStatus, ZbdDispatch, ZbdDispatchError, ZbdFamily, ZbdProbe,

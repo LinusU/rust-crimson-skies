@@ -1,11 +1,12 @@
-//! Decoding the base level of a described image into canonical texels.
+//! Decoding the levels of a described image into canonical texels.
 //!
 //! The canonical output orientation is fixed: texel `(x, y)` is column `x`
-//! counted from the left and row `y` counted from the top. [`decode_base_level`]
-//! is the only place a stored [`RowOrder`] is turned into that orientation,
-//! so a row/column swap or a missing vertical flip shows up as a wrong texel
-//! at a known coordinate, not as a plausible-looking picture (spec F08
-//! non-negotiable #5).
+//! counted from the left and row `y` counted from the top. One private
+//! function behind [`decode_base_level`] and [`decode_levels`] is the only
+//! place a stored [`RowOrder`] is turned into that orientation, for the base
+//! level and every mip level alike, so a row/column swap or a missing
+//! vertical flip shows up as a wrong texel at a known coordinate, not as a
+//! plausible-looking picture (spec F08 non-negotiable #5).
 //!
 //! Decoding is value-preserving: no color-space conversion, no alpha
 //! premultiplication, no palette-key baking and no resizing (non-negotiables
@@ -41,7 +42,7 @@ impl DecodedFormat {
     }
 }
 
-/// The decoded base level of one image, top row first, columns left to
+/// One decoded level of one image, top row first, columns left to
 /// right, channel values exactly as stored (or as the palette states them).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DecodedImage {
@@ -115,7 +116,36 @@ impl DecodedImage {
     }
 }
 
-/// Why stored base-level bytes did not decode against their descriptor.
+/// The decoded base level and every declared mip level of one image, in
+/// descriptor order: index 0 is the base level, index `n` is mip level `n`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DecodedLevels {
+    levels: Vec<DecodedImage>,
+}
+
+impl DecodedLevels {
+    /// The base level.
+    pub fn base(&self) -> &DecodedImage {
+        &self.levels[0]
+    }
+
+    /// The mip levels below the base level, largest first.
+    pub fn mips(&self) -> &[DecodedImage] {
+        &self.levels[1..]
+    }
+
+    /// Level `level`: 0 is the base level, `n` is mip level `n`.
+    pub fn level(&self, level: usize) -> Option<&DecodedImage> {
+        self.levels.get(level)
+    }
+
+    /// Every level, base level first.
+    pub fn levels(&self) -> &[DecodedImage] {
+        &self.levels
+    }
+}
+
+/// Why stored level bytes did not decode against their descriptor.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TextureError {
     /// A checked read or the allocation budget failed: too few stored bytes
@@ -147,6 +177,25 @@ pub enum TextureError {
         /// Palette entries.
         entries: usize,
     },
+    /// The number of supplied levels is not the declared mip count plus
+    /// the base level. A missing or extra level rejects the whole chain.
+    LevelCountMismatch {
+        /// Provenance label.
+        container: String,
+        /// Declared levels, base level included.
+        expected: usize,
+        /// Supplied levels.
+        observed: usize,
+    },
+    /// `error` happened in mip level `level` (1 is the first below the
+    /// base level). Offsets and texel coordinates inside `error` are
+    /// relative to that level's stored bytes and extent.
+    InMipLevel {
+        /// The mip level.
+        level: usize,
+        /// What went wrong in it.
+        error: Box<TextureError>,
+    },
 }
 
 impl TextureError {
@@ -156,6 +205,17 @@ impl TextureError {
             Self::Parse(error) => error.kind.as_str(),
             Self::TrailingBytes { .. } => "trailing_bytes",
             Self::PaletteIndexOutOfRange { .. } => "palette_index_out_of_range",
+            Self::LevelCountMismatch { .. } => "level_count_mismatch",
+            Self::InMipLevel { error, .. } => error.code(),
+        }
+    }
+
+    /// The mip level the error happened in, `None` for the base level or
+    /// the chain as a whole.
+    pub fn mip_level(&self) -> Option<usize> {
+        match self {
+            Self::InMipLevel { level, .. } => Some(*level),
+            _ => None,
         }
     }
 
@@ -164,7 +224,9 @@ impl TextureError {
         match self {
             Self::Parse(error) => &error.container,
             Self::TrailingBytes { container, .. }
-            | Self::PaletteIndexOutOfRange { container, .. } => container,
+            | Self::PaletteIndexOutOfRange { container, .. }
+            | Self::LevelCountMismatch { container, .. } => container,
+            Self::InMipLevel { error, .. } => error.container(),
         }
     }
 }
@@ -200,6 +262,16 @@ impl fmt::Display for TextureError {
                 "{container}: palette index {index} at offset {offset} (texel {x},{y}) is \
                  outside the {entries}-entry palette"
             ),
+            Self::LevelCountMismatch {
+                container,
+                expected,
+                observed,
+            } => write!(
+                f,
+                "{container}: the descriptor declares {expected} levels, {observed} were \
+                 supplied"
+            ),
+            Self::InMipLevel { level, error } => write!(f, "mip level {level}: {error}"),
         }
     }
 }
@@ -218,16 +290,90 @@ pub fn decode_base_level(
     stored: &[u8],
     budget: &mut AllocationBudget,
 ) -> Result<DecodedImage, TextureError> {
-    let extent = descriptor.extent();
+    decode_level(
+        container,
+        descriptor,
+        descriptor.extent(),
+        "texture.base_level",
+        stored,
+        budget,
+    )
+}
+
+/// Decodes the base level and every declared mip level of `descriptor`.
+///
+/// `levels[0]` holds the stored base level and `levels[n]` the stored bytes
+/// of mip level `n` ([`ImageDescriptor::mips`]`[n - 1]`), each exactly as
+/// [`decode_base_level`] expects its input: rows of `width *
+/// bytes_per_texel` bytes without padding, in the descriptor's
+/// [`RowOrder`], at the extent the descriptor declares for that level.
+///
+/// How a variant lays its mip levels out, and how each level's extent
+/// follows from the one above, are variant facts; the variant reader slices
+/// the levels and states their extents, this function assumes neither.
+///
+/// All or nothing: `levels.len()` must be the declared mip count plus one
+/// ([`TextureError::LevelCountMismatch`], checked before anything is
+/// decoded or charged), and a failure in any level rejects the whole chain.
+/// Each level is length-checked, palette-checked and flipped exactly like
+/// the base level, and `budget` is charged for each level's decoded buffers
+/// before they are allocated. An error in mip level `n` is wrapped in
+/// [`TextureError::InMipLevel`]; a base-level error is the same one
+/// [`decode_base_level`] returns.
+pub fn decode_levels(
+    container: &str,
+    descriptor: &ImageDescriptor,
+    levels: &[&[u8]],
+    budget: &mut AllocationBudget,
+) -> Result<DecodedLevels, TextureError> {
+    let mips = descriptor.mips();
+    if levels.len() != mips.len() + 1 {
+        return Err(TextureError::LevelCountMismatch {
+            container: container.to_owned(),
+            expected: mips.len() + 1,
+            observed: levels.len(),
+        });
+    }
+
+    let mut decoded = Vec::with_capacity(levels.len());
+    decoded.push(decode_base_level(container, descriptor, levels[0], budget)?);
+    for (index, (&extent, &stored)) in mips.iter().zip(&levels[1..]).enumerate() {
+        let level = index + 1;
+        let image = decode_level(
+            container,
+            descriptor,
+            extent,
+            "texture.mip_level",
+            stored,
+            budget,
+        )
+        .map_err(|error| TextureError::InMipLevel {
+            level,
+            error: Box::new(error),
+        })?;
+        decoded.push(image);
+    }
+    Ok(DecodedLevels { levels: decoded })
+}
+
+/// Decodes one level of `descriptor` at `extent` from exactly `stored`.
+fn decode_level(
+    container: &str,
+    descriptor: &ImageDescriptor,
+    extent: Extent,
+    field: &'static str,
+    stored: &[u8],
+    budget: &mut AllocationBudget,
+) -> Result<DecodedImage, TextureError> {
     let format = descriptor.format();
-    let expected = descriptor.base_level_bytes();
+    let expected = extent.texel_count() * u64::from(format.bytes_per_texel());
     let mut reader = Reader::new(container, stored);
     let stored_len = reader.checked_byte_len(
-        "texture.base_level",
+        field,
         extent.texel_count(),
         u64::from(format.bytes_per_texel()),
     )?;
-    let base = reader.read_bytes("texture.base_level", stored_len)?;
+    let bytes = reader.read_bytes(field, stored_len)?;
     if !reader.is_empty() {
         return Err(TextureError::TrailingBytes {
             container: container.to_owned(),
@@ -263,7 +409,7 @@ pub fn decode_base_level(
             RowOrder::BottomUp => height - 1 - y,
         };
         let row_start = stored_row * row_len;
-        let row = &base[row_start..row_start + row_len];
+        let row = &bytes[row_start..row_start + row_len];
         match (format, descriptor.palette()) {
             (PixelFormat::Indexed8, Some(palette)) => {
                 for (x, &index) in row.iter().enumerate() {
