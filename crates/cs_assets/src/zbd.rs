@@ -883,10 +883,13 @@ impl<'a> SoundAssets<'a> {
         &self.entries
     }
 
-    /// The asset at `index`, or `None` when the index is out of range or that
-    /// member failed its bounds check.
+    /// The asset at position `index` of the container's declared index, or
+    /// `None` when the index is out of range or that member failed its bounds
+    /// check. A failed member has no asset, so positions in
+    /// [`Self::entries`] shift past it; this looks the member up by its
+    /// declared position instead.
     pub fn entry(&self, index: usize) -> Option<&SoundAsset<'a>> {
-        self.entries.get(index)
+        self.entries.iter().find(|asset| asset.index() == index)
     }
 
     /// The strict status of the listing behind these assets: the bounds of
@@ -1245,9 +1248,7 @@ fn list_container(container: &ZbdContainer, row: &mut ContainerAudit) -> Result<
                     Some(failed) => failed,
                     None => {
                         let asset = assets
-                            .entries()
-                            .iter()
-                            .find(|asset| asset.index() == position)
+                            .entry(position)
                             .expect("a readable member is a sound asset");
                         sound_verdict(&mut context, asset)
                     }
@@ -2073,8 +2074,8 @@ mod tests {
         );
         assert_eq!(assets.failures(), 1);
         assert_eq!(assets.status(), ContainerStatus::Failed { failures: 1 });
-        assert_eq!(assets.entry(0).expect("row 0").name(), b"honest.wav");
-        assert!(assets.entry(1).is_none(), "the lying member has no bytes");
+        assert!(assets.entry(0).is_none(), "the lying member has no bytes");
+        assert_eq!(assets.entry(1).expect("row 1").name(), b"honest.wav");
         // Row 0 is the lying member and keeps the bounds failure with its own
         // code; row 1 is the honest one and is readable.
         let rows = assets.listing().rows();
