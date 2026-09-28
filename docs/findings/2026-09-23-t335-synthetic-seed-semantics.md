@@ -5,7 +5,36 @@ synthetic run before accepting it" (contract `docs/contracts/CLI-EVIDENCE.md`,
 spec `specs/F00-workspace-toolchain-and-first-executable.md`). Capabilities
 used: ordinary build/test only; no original data involved.
 
-## Status: blocked on the owner decision this task exists to collect
+## Status: ratified by the owner and implemented (2026-09-28)
+
+The owner ruled on 2026-09-25 (`docs/contracts/CLI-EVIDENCE.md`, section
+"`--seed`", main 9e7a2a8): the proposal below is **approved with
+amendments**, and the contract is now the specification the implementation
+follows. Where the two differ, the contract wins:
+
+1. `--seed` is the run's **root seed**; each consumer draws a
+   domain-separated SplitMix64 stream — the stream seed is the SplitMix64
+   output of `root_seed ^ DOMAIN`, with one documented `u64` domain constant
+   per consumer. The synthetic body is the first domain
+   (`cs_types::random::SYNTHETIC_BODY_DOMAIN`), so later consumers can be
+   added without shifting this stream.
+2. Unit floats use `(x >> 11) as f64 * 2^-53`
+   (`cs_types::random::unit_f64`), which is exact integer-to-float
+   arithmetic and therefore bit-stable on every platform. The proposal left
+   the float conversion unspecified.
+3. `--seed` without `--synthetic` is `Invalid` for now: only the synthetic
+   headless scene consumes a root seed until another stage specifies its
+   consumer.
+
+Everything else in the proposal stands: an optional flag, `None` = the
+unchanged canonical fixture, lateral bounds of ±2 m and ±4 m/s, `"seed"` in
+the trace header (including `"seed": null` for an unseeded run), the
+`--ticks`-style CLI errors and the test plan. The implementation and its
+`accept_t335_*` tests landed on this task's branch on 2026-09-28; the
+sections below are kept as the record of the gap and the design reasoning
+that produced the ruling.
+
+## Status at the time of writing: blocked on the owner decision this task exists to collect
 
 The task's own acceptance requires the semantics to be "written down in a
 spec/contract update by the owner", and `specs/` plus `docs/contracts/` are
