@@ -308,8 +308,16 @@ fn hash_file(path: &Path) -> Result<(u64, ContentHash), SourceError> {
         path: path.to_path_buf(),
         source,
     };
+    let walked = fs::symlink_metadata(path).map_err(unreadable)?;
     let mut file = fs::File::open(path).map_err(unreadable)?;
     let before = file.metadata().map_err(unreadable)?;
+    // The walk saw a regular file; a link swapped in before the open must
+    // not get its target hashed as a member.
+    if walked.file_type().is_symlink() || !before.is_file() || !same_file(&walked, &before) {
+        return Err(SourceError::FileChangedDuringMount {
+            path: path.to_path_buf(),
+        });
+    }
     let mut hasher = Sha256::new();
     let mut buffer = [0u8; 64 * 1024];
     let mut total: u64 = 0;
