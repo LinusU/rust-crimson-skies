@@ -108,3 +108,12 @@ file restored:
   Unknown; kept raw.
 - **Corner color representation.** The IR carries `[f32; 3]` as a designed
   canonical form; how stored colors map onto it is a variant fact.
+- **Mesh-to-node association.** The sheet's deliverable keeps node
+  associations, but `RawMesh` carries no node reference: which stored
+  field binds a mesh to its node is unknown, and the node records
+  themselves are F11-A. The association belongs on the node side or is
+  added to the IR by F10-B once the layout is established.
+
+These unknowns are not filed as new tasks: each one is already the
+subject of F10-B (layout, flags, materials, colors), F10-D (winding on
+the private corpus) or F11-A (node binding).
