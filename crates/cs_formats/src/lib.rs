@@ -12,8 +12,15 @@
 //! and asset-directory enumeration.
 //!
 //! On top of those primitives sits the ZBD family inventory and its
-//! two-key dispatch: `specs/F06-zbd-families-reader-archives-and-
-//! sound-containers.md` (stage F06-A, [`zbd`]).
+//! two-key dispatch (`specs/F06-zbd-families-reader-archives-and-
+//! sound-containers.md`, stage F06-A, [`zbd`]), plus the bounded reader- and
+//! sound-container subset those two keys route to (stage F06-B, [`zbd`]):
+//! checked member extents, consumed and uncovered ranges, a strict status,
+//! the records the stage cannot interpret, and the family gate that refuses
+//! one family's bytes to another family's reader. Neither stage reads a member
+//! index out of container bytes yet: no reader or sound header layout is
+//! documented, so the index is an input ([`zbd::MemberTable`]) and every entry
+//! reports the recorded unknown (task #340).
 //!
 //! The raw INTERP loading-script records follow:
 //! `specs/F07-interp-loading-script-container.md` (stage F07-A,

@@ -19,8 +19,10 @@
 //!   fallback to another parser.
 //! * [`archive`] is the bounded container layer the family readers share:
 //!   declared members, checked extents, consumed and uncovered ranges, the
-//!   strict status, and the [`archive::FamilyMismatch`] gate a reader puts
-//!   in front of bytes of another family (stage F06-B).
+//!   strict status, the [`archive::RoutableFamily`] refusal that keeps a
+//!   dispatched family from being named by a caller, and the
+//!   [`archive::FamilyMismatch`] gate a reader puts in front of bytes of
+//!   another family (stage F06-B).
 //! * [`reader_archive`] and [`sound_archive`] are the two readers this
 //!   stage implements (F06-B "reader and sound container subset with
 //!   bounds"). They hand out each member's verbatim bytes with its source
@@ -47,8 +49,8 @@ pub mod sound_archive;
 pub use archive::{
     ArchiveListing, CONTAINER_ENTRYPOINT, ContainerError, ContainerStatus, FamilyMismatch,
     FamilyOrigin, MEMBER_ROW_BYTES, MemberError, MemberExtent, MemberRow, MemberStatus,
-    MemberTable, SOURCE_SPAN_BYTES, UnsupportedRecord, list_members, require_family,
-    undocumented_reason,
+    MemberTable, RoutableFamily, SOURCE_SPAN_BYTES, UnsupportedRecord, list_members,
+    require_family, undocumented_reason,
 };
 pub use dispatch::{
     DispatchBasis, HeaderStatus, RoleStatus, ZbdDispatch, ZbdDispatchError, ZbdProbe, dispatch,

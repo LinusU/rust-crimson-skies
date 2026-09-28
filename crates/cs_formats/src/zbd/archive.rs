@@ -14,6 +14,10 @@
 //!   lives or how a name, id and extent are laid out inside it, because the
 //!   committed research pack documents that layout for neither family (spec F06
 //!   "Research boundary"; task #340 owns reading it from the pinned source).
+//!   The family beside that index is never the caller's word either: a family
+//!   an observed role names comes from the two-key dispatch
+//!   ([`MemberTable::from_dispatch`]), and a family no key names yet can only be
+//!   named directly ([`MemberTable::named`], which refuses the first kind).
 //! * [`require_family`] — the gate a family reader puts in front of its own
 //!   bytes. A container whose family data belongs to another family fails with
 //!   [`FamilyMismatch`] instead of being read by a parser that does not fit
@@ -78,6 +82,62 @@ const NO_DISPATCH_BASIS: &str =
 /// header layout *is* documented: naming a family is not validating it.
 const NAMED_NOT_VALIDATED: &str =
     "the caller named this family directly; no dispatch validated its header bytes";
+
+/// Why a family the two-key dispatch already routes may not be named by a
+/// caller instead.
+const ROUTED_FAMILY: &str = "an observed installation role already names this family, so its member index must be built \
+     from a dispatch: only that path checks the role and any documented header";
+
+/// A caller tried to name a family the two-key dispatch already routes.
+///
+/// The member index of such a family has to be built with
+/// [`MemberTable::from_dispatch`], so the family is decided by the two keys
+/// (observed role, and a documented header where one exists) instead of by
+/// assertion. Naming it instead would be the one way to get a reader to read
+/// bytes of a family it does not implement **without** the reader ever being
+/// able to see that they are of another family, which is exactly the silent
+/// fallback spec F06 AC02 rules out.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RoutableFamily {
+    container: String,
+    family: ZbdFamily,
+    source: &'static str,
+}
+
+impl RoutableFamily {
+    /// Stable lowercase identifier for logs and structured diagnostics.
+    pub const fn code(&self) -> &'static str {
+        "family_routable_by_dispatch"
+    }
+
+    /// The container label the refused call carried.
+    pub fn container(&self) -> &str {
+        &self.container
+    }
+
+    /// The family the caller tried to name.
+    pub const fn family(&self) -> ZbdFamily {
+        self.family
+    }
+
+    /// The inventory citation for why the family is decided by dispatch.
+    pub const fn source(&self) -> &'static str {
+        self.source
+    }
+}
+
+impl fmt::Display for RoutableFamily {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}: the `{}` family cannot be named by the caller: {ROUTED_FAMILY}",
+            self.container,
+            self.family.as_str(),
+        )
+    }
+}
+
+impl std::error::Error for RoutableFamily {}
 
 /// One member as the container's own index declares it.
 ///
@@ -180,31 +240,54 @@ impl<'a> MemberTable<'a> {
         }
     }
 
-    /// The member index of a container no dispatch key names yet.
+    /// The member index of a container **no** dispatch key names yet.
     ///
     /// This is the sound family's only route today: F06-A recorded that no
     /// `.zbd` archive name in committed evidence is tied to sound bytes, so
     /// `dispatch` cannot route to `ZbdFamily::Sound` (see task #340). The
     /// header status is [`HeaderStatus::Unvalidated`] with the family's own
     /// recorded reason, so the reader still cannot pretend it checked bytes.
+    ///
+    /// A family an observed installation role **does** name is refused with
+    /// [`RoutableFamily`]: it has to come from [`Self::from_dispatch`], which
+    /// is the only path that checks the role and any documented header. Letting
+    /// a caller name such a family would let it hand another family's bytes to
+    /// a reader that never looks at them — the silent fallback spec F06 AC02
+    /// forbids, and one no later evidence could detect.
+    ///
+    /// # Errors
+    ///
+    /// [`RoutableFamily`] when the family owns an observed role rule, i.e. when
+    /// dispatch can name it.
     pub fn named(
         container: impl Into<String>,
         family: ZbdFamily,
         members: &'a [MemberExtent<'a>],
-    ) -> Self {
-        let header_status = match family_record(family).header_rule() {
+    ) -> Result<Self, RoutableFamily> {
+        let record = family_record(family);
+        if !record.role_rules().is_empty() {
+            return Err(RoutableFamily {
+                container: container.into(),
+                family,
+                source: record.source(),
+            });
+        }
+        let header_status = match record.header_rule() {
             HeaderRule::Undocumented { reason } => HeaderStatus::Unvalidated { reason },
+            // A family can have a documented header and still own no role rule
+            // (none does today); naming it is allowed, and still validates
+            // nothing, because no dispatch looked at its bytes.
             HeaderRule::Signature(_) => HeaderStatus::Unvalidated {
                 reason: NAMED_NOT_VALIDATED,
             },
         };
-        Self {
+        Ok(Self {
             container: container.into(),
             family,
             origin: FamilyOrigin::NamedByCaller,
             header_status,
             members,
-        }
+        })
     }
 
     /// Provenance label of the container these members belong to.

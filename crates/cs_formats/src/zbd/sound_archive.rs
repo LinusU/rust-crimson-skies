@@ -332,9 +332,12 @@ impl std::error::Error for SoundError {
 ///
 /// `bytes` is the whole container; `table` is its member index (see
 /// [`MemberTable`] for why the index is an input in this stage). Today the only
-/// way to build a sound table is [`MemberTable::named`], because no dispatch key
-/// names the sound family yet (F06-A findings; task #340) — and a table built
-/// from a dispatch of another family is refused here with
+/// way to build a sound table is [`MemberTable::named`], and only because no
+/// dispatch key names the sound family yet (F06-A findings; task #340) — which
+/// is also why a family dispatch *does* name, such as a dispatched reader or
+/// interp container, is refused there with
+/// [`RoutableFamily`](super::archive::RoutableFamily) instead of being named
+/// sound, and a table built from such a dispatch is refused here with
 /// [`SoundError::Family`], exactly as the reader reader refuses it.
 ///
 /// # Errors

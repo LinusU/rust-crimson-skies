@@ -16,9 +16,10 @@
 
 use cs_formats::zbd::{
     CONTAINER_ENTRYPOINT, ContainerError, ContainerStatus, DispatchBasis, FamilyOrigin,
-    HeaderStatus, INTERP_SIGNATURE, INTERP_VERSION, MemberError, MemberExtent, MemberStatus,
-    MemberTable, ReaderError, SoundError, UnsupportedRecord, ZbdDispatch, ZbdDispatchError,
-    ZbdFamily, ZbdProbe, ZbdReaderId, dispatch, read_reader_archive, read_sound_archive,
+    HeaderStatus, INTERP_SIGNATURE, INTERP_VERSION, MEMBER_ROW_BYTES, MemberError, MemberExtent,
+    MemberRow, MemberStatus, MemberTable, ReaderError, SOURCE_SPAN_BYTES, SoundError,
+    UnsupportedRecord, ZbdDispatch, ZbdDispatchError, ZbdFamily, ZbdProbe, ZbdReaderId, dispatch,
+    read_reader_archive, read_sound_archive,
 };
 use cs_formats::{ParseContext, ParseErrorKind};
 use cs_types::evidence::{ClaimStatus, SourceSpan};
@@ -91,6 +92,13 @@ fn reader_members() -> [MemberExtent<'static>; 3] {
 
 fn span(offset: u64, length: u64) -> SourceSpan {
     SourceSpan { offset, length }
+}
+
+/// The caller-named sound table, the only route to the sound family while no
+/// dispatch key names it (F06-A's recorded unknown; task #340).
+fn named_sound_table<'a>(members: &'a [MemberExtent<'a>]) -> MemberTable<'a> {
+    MemberTable::named(CONTAINER, ZbdFamily::Sound, members)
+        .expect("the sound family owns no observed role rule, so no dispatch names it")
 }
 
 /// Reads the reader archive `table` declares inside `bytes`, asserting that the
@@ -166,6 +174,56 @@ fn accept_f06_b_valid_interp_header_is_not_reader_family_data() {
     assert!(message.contains("interp"), "message: {message}");
     assert!(message.contains("reader"), "message: {message}");
     assert!(message.contains(CONTAINER), "message: {message}");
+}
+
+#[test]
+fn accept_f06_b_a_dispatch_routed_family_cannot_be_named_by_the_caller() {
+    // AC02 has a second half: refusing another family's container is only
+    // explicit if it is also the *only* way to hand a reader foreign bytes.
+    // Naming the reader family by hand would skip the two keys, and the reader
+    // would then read those bytes with nothing able to notice they are not
+    // reader data — a silent fallback wearing a provenance label instead of a
+    // refusal. So `MemberTable::named` refuses every family an observed role
+    // already names.
+    let members: [MemberExtent<'static>; 0] = [];
+    let error = MemberTable::named(CONTAINER, ZbdFamily::Reader, &members)
+        .expect_err("`zrdr.zbd` already names the reader family, so only a dispatch may say it");
+    assert_eq!(error.code(), "family_routable_by_dispatch");
+    assert_eq!(error.family(), ZbdFamily::Reader);
+    assert_eq!(error.container(), CONTAINER);
+    assert!(
+        !error.source().is_empty(),
+        "the refusal cites the inventory row it came from"
+    );
+    let message = error.to_string();
+    assert!(message.contains("reader"), "message: {message}");
+    assert!(message.contains(CONTAINER), "message: {message}");
+
+    // The refusal tracks the inventory rather than a hard-coded list: a family
+    // can be named exactly while no observed role rule names it. Today that is
+    // the sound family alone (F06-A's recorded unknown, task #340).
+    let nameable: Vec<ZbdFamily> = ZbdFamily::ALL
+        .iter()
+        .copied()
+        .filter(|family| MemberTable::named(CONTAINER, *family, &members).is_ok())
+        .collect();
+    assert_eq!(nameable, vec![ZbdFamily::Sound]);
+
+    // The valid INTERP container of the scenario above cannot be laundered
+    // into the reader reader either: its bytes reach a reader only through the
+    // dispatch, and the dispatch says `interp`, which the reader reader refuses.
+    let interp_path = path("zbd/interp.zbd");
+    let interp_bytes = interp_header();
+    let dispatched =
+        dispatch_at(&interp_path, &interp_bytes).expect("the documented INTERP header dispatches");
+    assert_eq!(dispatched.family(), ZbdFamily::Interp);
+    MemberTable::named(CONTAINER, dispatched.family(), &members)
+        .expect_err("`interp.zbd` already names the interp family, so it cannot be asserted");
+    let table = MemberTable::from_dispatch(&dispatched, &members);
+    let mut context = ParseContext::with_defaults(CONTAINER);
+    let error = read(&mut context, &members, &interp_bytes, &table)
+        .expect_err("and the reader reader still refuses the dispatched interp container");
+    assert_eq!(error.code(), "family_mismatch");
 }
 
 #[test]
@@ -286,7 +344,7 @@ fn accept_f06_b_sound_entries_retain_spans_and_unknown_descriptor_fields() {
         MemberExtent::new(b"gun_loop", Some(11), span(FIRST, 16)),
         MemberExtent::new(b"engine_loop", Some(12), span(SECOND, 16)),
     ];
-    let table = MemberTable::named(CONTAINER, ZbdFamily::Sound, &members);
+    let table = named_sound_table(&members);
     assert_eq!(table.family(), ZbdFamily::Sound);
     assert_eq!(table.origin(), FamilyOrigin::NamedByCaller);
     assert!(matches!(
@@ -435,6 +493,19 @@ fn accept_f06_b_a_corrupt_member_fails_its_content_but_not_its_siblings() {
         archive.consumed_ranges(),
         &[span(FIRST, 16), span(THIRD, 11)]
     );
+
+    // A member that failed its bounds check is a *failure*, not an unsupported
+    // record: it has no content to interpret, and listing it as one would imply
+    // a reader had already read it.
+    let unsupported = archive.unsupported_records();
+    assert_eq!(
+        unsupported
+            .iter()
+            .map(|record| record.index())
+            .collect::<Vec<_>>(),
+        vec![0, 3],
+        "only the members whose bytes were handed out are unsupported records"
+    );
 }
 
 #[test]
@@ -527,7 +598,7 @@ fn accept_f06_b_unsupported_records_are_listed_with_their_spans() {
 
     // The sound reader reports the same shape over its own entries.
     let sound_members = [MemberExtent::new(b"gun_loop", Some(11), span(FIRST, 16))];
-    let sound_table = MemberTable::named(CONTAINER, ZbdFamily::Sound, &sound_members);
+    let sound_table = named_sound_table(&sound_members);
     let sound = read_sound_archive(&mut context, &sound_table, &bytes)
         .expect("the sound table is in bounds");
     let sound_unsupported = sound.unsupported_records();
@@ -566,11 +637,72 @@ fn accept_f06_b_the_listing_is_bounded_by_the_parse_allocation_budget() {
         other => panic!("expected a budget refusal, got {other:?}"),
     }
 
-    // The refused attempt left the ledger alone, so the same bytes parse
-    // honestly on a retry (spec F03-C teardown/retry).
+    // The refused attempt left the ledger exactly as it found it: nothing was
+    // booked, no nesting stayed behind and the allowance was not widened, so a
+    // retry of the same bytes is decided only by the budget it is given
+    // (spec F03-C teardown/retry).
+    assert_eq!(starved.allocation().used(), 0, "a refusal books nothing");
+    assert_eq!(starved.allocation().limit(), 0, "a refusal never widens");
+    assert_eq!(starved.recursion().depth(), 0, "an attempt leaves no depth");
+
+    // The same bytes read on a context that has the budget — the same table,
+    // the same container, the same production code.
     let mut healthy = ParseContext::with_defaults(CONTAINER);
     let archive = read(&mut healthy, &members, &bytes, &table).expect("the retry succeeds");
     assert_eq!(archive.len(), 3);
+}
+
+#[test]
+fn accept_f06_b_the_listing_charge_is_exact_and_never_widens_the_ledger() {
+    let zrdr_path = path("zbd/c1/zrdr.zbd");
+    let header = vec![0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88];
+    let dispatched = reader_family_dispatch(&zrdr_path, &header);
+
+    let members = reader_members();
+    let table = MemberTable::from_dispatch(&dispatched, &members);
+    let bytes = body();
+
+    // The charge describes the memory the listing really holds, so it is
+    // checked against the types rather than taken on trust.
+    assert_eq!(MEMBER_ROW_BYTES, size_of::<MemberRow<'static>>() as u64);
+    assert_eq!(SOURCE_SPAN_BYTES, size_of::<SourceSpan>() as u64);
+    let charge = 3 * MEMBER_ROW_BYTES + 3 * SOURCE_SPAN_BYTES;
+
+    // One byte short of the charge is refused, and the refusal books nothing.
+    let mut tight = ParseContext::new(CONTAINER, charge - 1, 32);
+    let error = read(&mut tight, &members, &bytes, &table)
+        .expect_err("one byte short of the table's own size is refused");
+    assert_eq!(error.code(), "parse");
+    assert_eq!(
+        tight.allocation().used(),
+        0,
+        "a refused listing books nothing"
+    );
+    assert_eq!(
+        tight.allocation().limit(),
+        charge - 1,
+        "a refusal never widens the budget"
+    );
+
+    // The exact charge fits, and the ledger then reports exactly it.
+    let mut fitting = ParseContext::new(CONTAINER, charge, 32);
+    let archive = read(&mut fitting, &members, &bytes, &table).expect("the exact charge fits");
+    assert_eq!(archive.len(), 3);
+    assert_eq!(fitting.allocation().used(), charge);
+    assert_eq!(fitting.allocation().remaining(), 0);
+
+    // A second listing of the same container on the same parse cannot spend
+    // what is left, and does not hand back what the first listing took: the
+    // allowance a parse was given is the allowance it keeps.
+    let error = read(&mut fitting, &members, &bytes, &table)
+        .expect_err("a parse's ledger accumulates, so a second listing does not fit");
+    assert_eq!(error.code(), "parse");
+    assert_eq!(
+        fitting.allocation().used(),
+        charge,
+        "the refused second listing books nothing"
+    );
+    assert_eq!(fitting.recursion().depth(), 0, "an attempt leaves no depth");
 }
 
 // --- Evidence honesty --------------------------------------------------------
