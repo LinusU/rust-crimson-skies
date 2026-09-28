@@ -1443,7 +1443,69 @@ fn accept_f05_b_outside_file_pointers_fail_before_any_read() {
     }
     assert_eq!(context.allocation().used(), 0);
 
-    // 4. `read_member` checks again, so a hand-built member cannot read
+    // 4. A directory record's length words are established as well,
+    //    although no source says what they mean for a directory: a word
+    //    that reaches past the end fails before the block is descended
+    //    into, reported at the extent's own start like a file entry's.
+    let root_names = name_table(&["SUB"]);
+    let root_len = DIRECTORY_HEADER_BYTES + RECORD_BYTES + root_names.len();
+    let records = [RawRecord {
+        raw_length: 1000,
+        ..RawRecord::directory("SUB", 1, root_len as u32)
+    }];
+    let mut bytes = valid_block(&records, &root_names);
+    bytes.extend_from_slice(&valid_block(&[], &[]));
+    let container_len = bytes.len() as u64;
+    let mut context = ParseContext::with_defaults(CONTAINER);
+    let error = read_tree(&mut context, &bytes)
+        .expect_err("a directory record length past the end must be refused");
+    assert_eq!(error.code(), "extent_out_of_bounds");
+    match &error {
+        RofError::ExtentOutOfBounds {
+            offset,
+            start,
+            length,
+            file_len,
+            ..
+        } => {
+            assert_eq!(*offset, root_len as u64, "the extent's own start");
+            assert_eq!(*start, root_len as u64);
+            assert_eq!(*length, 1000);
+            assert_eq!(*file_len, container_len);
+        }
+        other => panic!("expected an out-of-bounds extent, got {other:?}"),
+    }
+    assert_eq!(context.allocation().used(), 0);
+
+    // 5. The second word of a directory record likewise: the check is on
+    //    both words of every record, not only on `raw_length`.
+    let records = [RawRecord {
+        raw_length_on_disk: 4000,
+        ..RawRecord::directory("SUB", 1, root_len as u32)
+    }];
+    let mut bytes = valid_block(&records, &root_names);
+    bytes.extend_from_slice(&valid_block(&[], &[]));
+    let container_len = bytes.len() as u64;
+    let mut context = ParseContext::with_defaults(CONTAINER);
+    let error = read_tree(&mut context, &bytes)
+        .expect_err("a directory record on-disk length past the end must be refused");
+    assert_eq!(error.code(), "extent_out_of_bounds");
+    match &error {
+        RofError::ExtentOutOfBounds {
+            offset,
+            length,
+            file_len,
+            ..
+        } => {
+            assert_eq!(*offset, root_len as u64);
+            assert_eq!(*length, 4000);
+            assert_eq!(*file_len, container_len);
+        }
+        other => panic!("expected an out-of-bounds extent, got {other:?}"),
+    }
+    assert_eq!(context.allocation().used(), 0);
+
+    // 6. `read_member` checks again, so a hand-built member cannot read
     //    outside the container either.
     let bytes = single_member_file("OK.DAT", 0, 4, 4, 1, b"abcd");
     let context = ParseContext::with_defaults(CONTAINER);
@@ -1511,6 +1573,60 @@ fn accept_f05_b_invalid_name_table_fails_a_nested_block() {
             assert_eq!(*described, 3);
         }
         other => panic!("expected a name-table failure, got {other:?}"),
+    }
+    assert_eq!(context.allocation().used(), 0);
+}
+
+/// **The `TREE_ENTRYPOINT` scope contract:** a structural failure raised
+/// inside a nested block reports `rof.tree.directory.<field>` at that
+/// block's absolute offset, while the same failure in the root block keeps
+/// `rof.tree.<field>` — so the field alone says which block refused, at
+/// any offset.
+#[test]
+fn accept_f05_b_nested_structural_failures_carry_the_directory_scope() {
+    // The root block, then a nested block that declares one record and
+    // then ends: its record table does not exist.
+    let root_names = name_table(&["SUB"]);
+    let root_len = DIRECTORY_HEADER_BYTES + RECORD_BYTES + root_names.len();
+    let mut bytes = valid_block(
+        &[RawRecord::directory("SUB", 1, root_len as u32)],
+        &root_names,
+    );
+    bytes.extend_from_slice(&1u32.to_le_bytes()); // entry_count
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // names_length
+
+    let mut context = ParseContext::with_defaults(CONTAINER);
+    let error = read_tree(&mut context, &bytes)
+        .expect_err("a nested block without its record table must be refused");
+    assert_eq!(error.code(), "parse");
+    match &error {
+        RofError::Parse(error) => {
+            assert_eq!(error.kind, ParseErrorKind::UnexpectedEof);
+            assert_eq!(error.field, "rof.tree.directory.records");
+            assert_eq!(error.container, CONTAINER);
+            assert_eq!(
+                error.offset,
+                (root_len + DIRECTORY_HEADER_BYTES) as u64,
+                "the absolute offset of the missing table"
+            );
+        }
+        other => panic!("expected a structural failure, got {other:?}"),
+    }
+    assert_eq!(context.allocation().used(), 0);
+
+    // The root block's own structural failures keep the root scope, so
+    // the two are told apart by the field alone.
+    let mut context = ParseContext::with_defaults(CONTAINER);
+    let error = read_tree(&mut context, &bytes[..DIRECTORY_HEADER_BYTES])
+        .expect_err("a root header without its record table must be refused");
+    match &error {
+        RofError::Parse(error) => {
+            assert_eq!(error.kind, ParseErrorKind::UnexpectedEof);
+            assert_eq!(error.field, "rof.tree.records");
+            assert_eq!(error.container, CONTAINER);
+            assert_eq!(error.offset, DIRECTORY_HEADER_BYTES as u64);
+        }
+        other => panic!("expected a structural failure, got {other:?}"),
     }
     assert_eq!(context.allocation().used(), 0);
 }

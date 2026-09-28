@@ -39,8 +39,10 @@
 //!   up to more bytes than the container holds, so a shared or cyclic block
 //!   cannot make the traversal run away (spec non-negotiable #3);
 //! * every extent is established against the container length before
-//!   anything is read: a member or directory pointer that reaches past the
-//!   end is an [`RofError::ExtentOutOfBounds`], and no span is extracted
+//!   anything is read: both length words of *every* record — directory
+//!   records included — and the header a nested block must fit inside, so
+//!   a member or directory pointer that reaches past the end is an
+//!   [`RofError::ExtentOutOfBounds`], and no span is extracted
 //!   from an entry whose `flags` hold a bit or a combination with no
 //!   observed meaning, or from extents that overlap — spec non-negotiable
 //!   #5 says to surface [`RofError::UnsupportedLayout`] absent evidence of
@@ -491,8 +493,9 @@ pub enum RofError {
         /// Container label the bytes came from.
         container: String,
         /// Absolute offset that made the extent interesting: the extent's
-        /// own `start` for a file entry, the block offset for a directory
-        /// block that does not even fit its header.
+        /// own `start` for a record whose length word reaches past the end
+        /// (file record or directory record), the block offset for a
+        /// directory block that does not even fit its header.
         offset: u64,
         /// Absolute start of the extent.
         start: u64,
@@ -579,7 +582,7 @@ impl RofError {
     /// Offset of the problem. Relative to the range that was handed to
     /// [`read_directory`] (so a root failure offset *is* the file offset,
     /// a nested one is relative to its block); [`read_tree`] shifts nested
-    /// failures to absolute container offsets with [`Self::shifted`].
+    /// failures to absolute container offsets with [`Self::in_block`].
     pub fn offset(&self) -> u64 {
         match self {
             Self::Parse(error) => error.offset,
@@ -595,20 +598,26 @@ impl RofError {
         }
     }
 
-    /// Re-bases an error raised *inside* a nested directory block onto the
-    /// absolute container offset of that block.
+    /// Re-bases an error raised *inside* a directory block onto the
+    /// absolute container offset of that block and scopes it to that block.
     ///
     /// [`read_directory`] only ever sees the range it is handed, so its
     /// failures are relative to the start of that range; [`read_tree`] reads
-    /// a nested block from `file[start..]` and must report where the block
-    /// actually is. Only the variants [`borrow_block`] can raise are ever
-    /// passed through here — the traversal's own failures are constructed
-    /// with absolute offsets already.
-    fn shifted(self, delta: u64) -> Self {
+    /// a block from `file[offset..]` and must report where the block
+    /// actually is — and *which* block raised it, since a nested field such
+    /// as `header.entry_count` is otherwise indistinguishable from the same
+    /// field failing in the root block. `scope` is `"directory"` for a
+    /// nested block (so the field reads `rof.tree.directory.<field>` once
+    /// the entrypoint scope is applied) and empty for the root block, whose
+    /// failures the entrypoint scope already describes. Only the variants
+    /// [`borrow_block`] can raise are ever passed through here — the
+    /// traversal's own failures are constructed with absolute offsets and
+    /// no scope of their own.
+    fn in_block(self, delta: u64, scope: &str) -> Self {
         match self {
             Self::Parse(mut error) => {
                 error.offset += delta;
-                Self::Parse(error)
+                Self::Parse(error.in_scope(scope))
             }
             Self::NameTableLength {
                 container,
@@ -1230,7 +1239,7 @@ pub fn read_tree<'bytes>(
         let mut walker = Walker::new(reader.container(), file, recursion);
         let mut path = Vec::new();
         let plan = match walker
-            .visit(0, &mut path)
+            .visit(0, &mut path, true)
             .and_then(|()| walker.plan.check_overlaps(reader.container()))
         {
             Ok(()) => walker.plan,
@@ -1388,8 +1397,17 @@ impl<'ctx, 'bytes> Walker<'ctx, 'bytes> {
     ///
     /// `path` holds the directory names leading to this block; the
     /// ancestor chain is tracked separately because cycle detection is
-    /// about offsets, not names.
-    fn visit(&mut self, offset: u64, path: &mut Vec<&'bytes [u8]>) -> Result<(), RofError> {
+    /// about offsets, not names. `root` marks the block at offset zero:
+    /// its structural failures keep the entrypoint's own field
+    /// (`rof.tree.<field>`), a nested block's are scoped
+    /// `rof.tree.directory.<field>` so a consumer can tell them apart even
+    /// when both report the same field name.
+    fn visit(
+        &mut self,
+        offset: u64,
+        path: &mut Vec<&'bytes [u8]>,
+        root: bool,
+    ) -> Result<(), RofError> {
         // Bounded depth: one guard per open level. Reaching
         // `max_depth + 1` fails as a structural `RecursionDepthExceeded`
         // and unwinds every guard on the way out.
@@ -1410,11 +1428,13 @@ impl<'ctx, 'bytes> Walker<'ctx, 'bytes> {
         }
 
         // Read the block itself. `borrow_block` works on a range that
-        // starts at the block, so its failures are relative to it; shift
-        // them onto the absolute container offset the walk reports.
+        // starts at the block, so its failures are relative to it;
+        // `in_block` shifts them onto the absolute container offset the
+        // walk reports and scopes the structural ones to this block.
         let file = self.file;
         let mut reader = Reader::new(self.container, &file[offset as usize..]);
-        let view = borrow_block(&mut reader).map_err(|error| error.shifted(offset))?;
+        let view = borrow_block(&mut reader)
+            .map_err(|error| error.in_block(offset, if root { "" } else { "directory" }))?;
 
         // Bounded work: what the walk has visited may not add up to more
         // bytes than the container holds. Disjoint blocks cannot reach that
@@ -1497,24 +1517,30 @@ impl<'ctx, 'bytes> Walker<'ctx, 'bytes> {
             }
 
             let start = u64::from(record.start);
+            // A directory record's extent is the nested block, so that
+            // block must fit its header before its own length words mean
+            // anything; `visit` checks the same bound again for the root
+            // block and as the last word before it reads anything.
             if flags.is_directory() {
-                // Cycle detection: this block is already open above us.
-                if self.ancestors.contains(&start) {
-                    return Err(RofError::Cycle {
+                let block_end = start.saturating_add(DIRECTORY_HEADER_BYTES as u64);
+                if block_end > file_len {
+                    return Err(RofError::ExtentOutOfBounds {
                         container: container.to_owned(),
                         offset: start,
-                        depth: self.ancestors.len() as u32,
+                        start,
+                        length: DIRECTORY_HEADER_BYTES as u64,
+                        file_len,
                     });
                 }
-                path.push(name);
-                self.visit(start, path)?;
-                path.pop();
-                continue;
             }
-
-            // A file entry declares two extents; both must lie inside the
-            // container before either is offered to a reader. `u32 + u32`
-            // widened to `u64` cannot overflow.
+            // Every record declares two extents and both must lie inside
+            // the container before either is offered to a reader —
+            // directory records included: their length words have no
+            // observed meaning and the reference extractor ignores them
+            // ([S05]), so a word that reaches past the end is exactly the
+            // outside-file pointer AC03 refuses, surfaced here instead of
+            // being read later. `u32 + u32` widened to `u64` cannot
+            // overflow.
             let length_end = start + u64::from(record.raw_length);
             let length_on_disk_end = start + u64::from(record.raw_length_on_disk);
             if length_end > file_len {
@@ -1534,6 +1560,21 @@ impl<'ctx, 'bytes> Walker<'ctx, 'bytes> {
                     length: u64::from(record.raw_length_on_disk),
                     file_len,
                 });
+            }
+
+            if flags.is_directory() {
+                // Cycle detection: this block is already open above us.
+                if self.ancestors.contains(&start) {
+                    return Err(RofError::Cycle {
+                        container: container.to_owned(),
+                        offset: start,
+                        depth: self.ancestors.len() as u32,
+                    });
+                }
+                path.push(name);
+                self.visit(start, path, false)?;
+                path.pop();
+                continue;
             }
 
             let mut member_path = path.clone();

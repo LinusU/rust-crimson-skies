@@ -31,7 +31,9 @@ evidence report required).
   fixtures (`COMPRESSED_PAYLOAD`, `COMPRESSED_STREAM`, `BOMB_STREAM`), the
   builders (`single_member_file`, `root_directory_pointing_at`,
   `outside_file_member`, `unknown_flag_member`, `overlapping_members`,
-  `directory_chain`, `member_of`) and eleven `accept_f05_b_*` tests.
+  `directory_chain`, `member_of`) and twelve `accept_f05_b_*` tests
+  (eleven written with the implementation, one added in review — see
+  "Review additions" below).
 - `docs/findings/2026-09-28-f05-b-directory-traversal-and-bounded-member-reads.md`
   (this file).
 
@@ -160,7 +162,7 @@ mutation after implementation (table below).
   a nested failure reads `rof.tree.directory.<field>` at the real offset
   while `read_directory` keeps its block-relative behaviour untouched.
 
-## Test inventory (11 tests, prefix `accept_f05_b_`)
+## Test inventory (12 tests, prefix `accept_f05_b_`)
 
 | Test | What it pins down |
 | --- | --- |
@@ -171,8 +173,9 @@ mutation after implementation (table below).
 | `accept_f05_b_expansion_bomb_fails_at_the_configured_ceiling` | 149 stored bytes decode to 128 KiB under the default ceiling; at 4 KiB it fails `expansion_bomb` with `limit`, `observed` past the limit but never more than one chunk past it; a ceiling of 0 refuses; member reads book nothing |
 | `accept_f05_b_directory_cycles_and_shared_blocks_are_refused` | AC03 cycle: a self-loop (`depth` 1) and `root -> SUB -> root` (`depth` 2) both fail `cycle` at offset 0; one block under two parents fails `unsupported_layout` at the shared block; ledger untouched in all three |
 | `accept_f05_b_bounded_depth_refuses_to_descend_forever` | a 4-block chain reads under the default budget; a context with `max_depth = 2` refuses the third block with `RecursionDepthExceeded`, field `rof.tree.directory`, at offset 68 |
-| `accept_f05_b_outside_file_pointers_fail_before_any_read` | AC03 outside-file: a member `length` past the end, `raw_length_on_disk` past the end while `length` fits, a directory pointer at offset 5000 (a block needs its 8 header bytes), and a hand-built member handed straight to `read_member` — all `extent_out_of_bounds` with the offending length and `file_len` |
+| `accept_f05_b_outside_file_pointers_fail_before_any_read` | AC03 outside-file: a member `length` past the end, `raw_length_on_disk` past the end while `length` fits, a directory pointer at offset 5000 (a block needs its 8 header bytes), **both length words of a directory record past the end** (checked before the block is descended into), and a hand-built member handed straight to `read_member` — all `extent_out_of_bounds` with the offending length and `file_len` |
 | `accept_f05_b_invalid_name_table_fails_a_nested_block` | AC03 invalid name table *inside a nested block*: `name_table_length` at the absolute offset (root block + header + record), declared 4 vs described 3, ledger untouched |
+| `accept_f05_b_nested_structural_failures_carry_the_directory_scope` | the `TREE_ENTRYPOINT` scope contract: a truncated record table in a *nested* block is `rof.tree.directory.records` at the block's absolute offset, the same truncation in the root block is `rof.tree.records`, both with nothing charged |
 | `accept_f05_b_unexplained_flags_and_overlaps_surface_unsupported_layout` | non-negotiable #5: flag bit `0x8` (the refusal names `0x00000008`), the directory+compressed combination, and two members sharing 30 bytes refused at offset 220 with "overlap" in the message |
 | `accept_f05_b_bookings_and_refusals_leave_the_ledger_exact` | the exact booking recomputed from the returned tree; one byte less refuses as `AllocationBudgetExceeded` at `rof.tree.records` with nothing charged; exactly enough charges once; four different refusals leave a fresh ledger at 0 and a charged one unchanged; member reads (success and bomb) book nothing |
 
@@ -183,8 +186,8 @@ mutation after implementation (table below).
 | `cargo fmt --all -- --check` | 0 |
 | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
 | `cargo test --workspace --locked` | 0 |
-| `cargo test --workspace --locked -- accept_f05_b_ --include-ignored` | 0 (11 tests) |
-| `cargo run -p cs_xtask --locked -- test-select --prefix accept_f05_b_` | 0 (`11 test(s) selected ... 11 passed`, re-run alone with `--exact`) |
+| `cargo test --workspace --locked -- accept_f05_b_ --include-ignored` | 0 (12 tests after review; 11 when the implementation was written) |
+| `cargo run -p cs_xtask --locked -- test-select --prefix accept_f05_b_` | 0 (`12 test(s) selected ... 12 passed`, re-run alone with `--exact`; 11 at implementation time, 12 after review) |
 | `cargo test -p cs_formats` (F05-A + F06-A + doctests) | 0 (10 + 11 + 4 tests) |
 
 ## Mutation probes (implementation removed → tests fail)
@@ -204,6 +207,43 @@ suite was green again after every restore):
 | unknown-flag refusal disabled | 101 | `...unexplained_flags_and_overlaps_surface_unsupported_layout`, `...bookings_and_refusals_leave_the_ledger_exact` |
 | tree booking removed (`allocation.reserve` dropped) | 101 | `...bookings_and_refusals_leave_the_ledger_exact`, `...expansion_bomb_fails_at_the_configured_ceiling` |
 | bounded depth disabled (`enter(...).ok()` swallows the limit) | 101 | `...bounded_depth_refuses_to_descend_forever` |
+
+## Review additions (2026-09-28, reviewer)
+
+Two behaviours this file already promised were not implemented; both were
+fixed in review and are now covered by tests.
+
+1. **The `directory` scope on nested structural failures.**
+   `TREE_ENTRYPOINT` and the "Absolute offsets out of the walk" design
+   note above promise that a structural failure inside a nested block
+   reads `rof.tree.directory.<field>` while the root block's keeps
+   `rof.tree.<field>`. Only the offset was re-based (`RofError::shifted`),
+   never the field, so a truncated nested block was reported with the same
+   field as the same failure in the root block. `shifted` became
+   `RofError::in_block(delta, scope)` and `Walker::visit` takes a `root`
+   flag: the root passes an empty scope (the entrypoint already scopes it
+   `rof.tree`), every nested block passes `"directory"`. Covered by the
+   new `accept_f05_b_nested_structural_failures_carry_the_directory_scope`,
+   which asserts both fields and both absolute offsets.
+2. **Both length words of a *directory* record.** The design note and
+   unknown #2 below say every record's `raw_length` and
+   `raw_length_on_disk` must end inside the container, directories
+   included — but the walk `continue`d into a directory record before it
+   reached those checks, so a directory record carrying a past-the-end
+   length was never refused. The two extent checks now run for every
+   record, after the directory block's own header fit (so a pointer that
+   does not even fit its 8-byte header still reports exactly that, as
+   `accept_f05_b_outside_file_pointers_fail_before_any_read` case 3
+   requires). Two cases were added to that test.
+
+Mutation probes for the additions (each applied to
+`crates/cs_formats/src/rof.rs`, run as `cargo test -p cs_formats --test
+rof`, source restored afterwards and the suite green again):
+
+| Mutation | Failing tests |
+| --- | --- |
+| nested scope dropped (`if root { "" } else { "directory" }` → empty scope) | `...nested_structural_failures_carry_the_directory_scope` (`"rof.tree.records"` ≠ `"rof.tree.directory.records"`) |
+| directory records exempted from both extent checks (`&& !flags.is_directory()`) | `...outside_file_pointers_fail_before_any_read` (the `raw_length: 1000` directory record comes back as a walked tree instead of a refusal) |
 
 ## Recorded unknowns (not guessed here)
 
