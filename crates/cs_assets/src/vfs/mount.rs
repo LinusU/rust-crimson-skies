@@ -364,10 +364,18 @@ impl Mount {
     /// The member serving `key`, or `None` when this mount does not hold
     /// it.
     ///
+    /// A key in another [`MountNamespace`] is never served, even when this
+    /// is called directly instead of through `Vfs::resolve`: a mount
+    /// answers only its own key space, so two mounts in different
+    /// namespaces cannot collide by construction.
+    ///
     /// The comparison is the key's logical form, so a case- or
     /// separator-differing spelling of the same legacy path still finds
     /// the member, while the member keeps its own original spelling.
     pub fn member(&self, key: &AssetKey) -> Option<&MemberRecord> {
+        if self.namespace != *key.namespace() {
+            return None;
+        }
         self.members.get(&MemberKey {
             variant: key.variant().as_str().to_owned(),
             path_key: key.path_key().to_owned(),

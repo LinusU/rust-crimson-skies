@@ -174,3 +174,64 @@ nothing.
 
 No other non-owner file changed. `tools/cs_inspect/src/resolve.rs` was
 not created (see above); `tools/cs_inspect/src/main.rs` is untouched.
+
+## Review (2026-09-28, reviewer pass)
+
+Reviewed against `specs/F04-...md` § F04-A, `docs/contracts/IDENTITY-
+CONTENT.md` and `AGENTS.md`. The contract half is sound: key identity,
+context fields, the four-class order labeled `designed`, the checked
+`SourceSpan`, the no-first-wins tie rule and the per-attempt trace all
+match the sheet and the contract; no protected path, binary file or
+original datum is involved.
+
+Three problems were found and fixed in the same owner paths:
+
+1. **Namespace partitioning had no test.** Decision rule 1 of
+   `vfs/resolve.rs` ("mounts in other namespaces are not attempts of
+   this lookup") was production behavior with zero coverage: removing
+   the namespace filter from `Vfs::resolve` still passed every one of
+   the 19 tests of the implementing session, because the fixture
+   mounted a single namespace. Added
+   `accept_f04_a_namespaces_partition_the_key_space`, which mounts a
+   `sound`-namespace source holding the *same* logical path and asserts
+   it serves its own key, is absent from the `content` lookup's trace,
+   cannot make that lookup ambiguous, and that a key whose namespace
+   nobody mounts fails with an empty trace and the message
+   `no mount serves that namespace`.
+2. **`Mount::member` answered foreign-namespace keys.** `MountNamespace`'s
+   own doc promises "a mount only ever answers keys in its own
+   namespace", and `Vfs::resolve` enforced it — but the public
+   `Mount::member` did not, so any direct caller (F04-B will be one)
+   could pull a member out of the wrong key space. Added the namespace
+   guard to `Mount::member` and documented it; `Vfs::resolve` behavior
+   is unchanged.
+3. **A false performance claim.** `AssetKey::path_key`'s doc said a
+   resolution "allocates nothing per candidate mount"; `Mount::member`
+   builds an owned `MemberKey` per probe, so it does allocate. The doc
+   now claims only what is true (the fold is not recomputed).
+
+Also added `accept_f04_a_case_only_collision_across_mounts_fails_with_
+both_origins`: two *equal-priority mounts* (not one mount) holding one
+legacy path under different letter case, failing with both origins, each
+quoting its own member spelling, container and digest — the in-memory
+half of spec AC02, which the fixture's single-spelling overlap case did
+not reach.
+
+### Reviewer mutation probes (all reverted; `grep -rn "MUTATION PROBE" crates/` is empty)
+
+| Probe | Edit | Result |
+| --- | --- | --- |
+| 4. Namespace guard in `Mount::member` removed | `mount.rs` | exit 101, `accept_f04_a_namespaces_partition_the_key_space` FAILED |
+| 5. Namespace filter in `Vfs::resolve` removed | `resolve.rs` | exit 101, `accept_f04_a_namespaces_partition_the_key_space` FAILED |
+| 6. Ties flattened to first-wins (`.take(1)` on the winners) | `resolve.rs` | exit 101, `accept_f04_a_case_only_collision_across_mounts_fails_with_both_origins` **and** `accept_f04_a_equal_priority_overlap_fails_with_both_origins` FAILED |
+
+Task tests after the review pass: **21** (`asset_key_and_context` 7,
+`two_worlds_each_resolve_own_texture` 14), all passing; `cargo fmt
+--all -- --check`, `cargo clippy --workspace --all-targets
+--all-features --locked -- -D warnings` and `cargo test --workspace
+--locked` all exit 0.
+
+**Still open (unchanged, owned elsewhere):** symlink-escape rejection
+(F04-B), byte reads and session mount lifetime (F04-B/F04-C), the
+`cs-inspect resolve` command (F04-B/F04-C) and the measurement of the
+original precedence order (F04-D).

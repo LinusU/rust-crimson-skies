@@ -692,3 +692,148 @@ fn accept_f04_a_mount_construction_invariants_hold() {
         }
     );
 }
+
+/// The mount namespace is part of the key space: a mount in another
+/// namespace holds the same logical path on purpose, is never consulted
+/// for this lookup, never appears in the trace and cannot collide with an
+/// in-namespace source.
+#[test]
+fn accept_f04_a_namespaces_partition_the_key_space() {
+    let mut vfs = fixture();
+
+    let mut sound = MountBuilder::new(
+        MountId::new("sound.alerts").expect("fixture mount id is valid"),
+        MountNamespace::new("sound").expect("fixture namespace is valid"),
+        PrecedenceClass::Shared,
+        "fixture/sound.zbd",
+    );
+    sound
+        .add_member("textures/hud/alert.dds", 64, 0, Some(digest(0xee)))
+        .expect("the sound-namespace copy indexes");
+    let sound = sound.build().expect("the sound mount builds");
+    assert!(
+        sound.member(&key("textures/hud/alert.dds")).is_none(),
+        "a mount answers only its own namespace, even when called directly"
+    );
+    vfs.mount(sound).expect("the sound mount registers");
+
+    // The other namespace serves its own key: the same logical path under
+    // a different namespace is a different asset.
+    let sound_key = AssetKey::from_spelling("sound", "textures/hud/alert.dds", "default")
+        .expect("fixture key is valid");
+    let from_sound = vfs
+        .resolve(&context(), &sound_key)
+        .expect("the sound namespace holds its own copy");
+    assert_eq!(from_sound.span.container_path(), "fixture/sound.zbd");
+    assert_eq!(from_sound.span.member_sha256(), Some(digest(0xee)));
+    assert_eq!(from_sound.mount.to_string(), "sound.alerts");
+
+    // The content key never sees it: no cross-namespace tie, no
+    // cross-namespace attempt.
+    let content_key = key("textures/hud/alert.dds");
+    let plain = vfs
+        .resolve(&context(), &content_key)
+        .expect("a foreign namespace may not turn this key ambiguous");
+    assert_eq!(plain.span.container_path(), "fixture/base.zbd");
+    assert!(
+        plain.trace.attempts.iter().all(|attempt| {
+            attempt.mount.as_str() != "sound.alerts" && attempt.container != "fixture/sound.zbd"
+        }),
+        "a mount in another namespace is not an attempt of this lookup: {}",
+        plain.trace
+    );
+
+    // A key whose namespace nothing serves fails with that reason, not
+    // with a guess from a namespace it did not ask for.
+    let orphan =
+        AssetKey::from_spelling("model", "hud/body.dff", "default").expect("fixture key is valid");
+    let err = vfs
+        .resolve(&context(), &orphan)
+        .expect_err("no mount in this VFS serves the `model` namespace");
+    let ResolveError::NotFound { trace, .. } = &err else {
+        panic!("an unmounted namespace is a NotFound: {err}");
+    };
+    assert!(
+        trace.attempts.is_empty(),
+        "a namespace nobody mounts produces no attempts: {trace}"
+    );
+    assert!(
+        err.to_string().contains("no mount serves that namespace"),
+        "the failure names the unmounted namespace: {err}"
+    );
+}
+
+/// Spec F04 AC02 (its collision half, in memory): two equal-priority
+/// mounts hold one legacy path under different letter case, and the
+/// lookup fails with **both** origins, each quoting its own spelling,
+/// instead of flattening to a first-wins pick.
+#[test]
+fn accept_f04_a_case_only_collision_across_mounts_fails_with_both_origins() {
+    let mut vfs = Vfs::new();
+
+    let mut upper = mount("shared.upper", "fixture/upper.zbd", PrecedenceClass::Shared);
+    upper
+        .add_member("Textures/HUD/Alert.dds", 64, 0, Some(digest(0xd1)))
+        .expect("the upper-case spelling indexes");
+    vfs.mount(upper.build().expect("the upper mount builds"))
+        .expect("the upper mount registers");
+
+    let mut lower = mount("shared.lower", "fixture/lower.zbd", PrecedenceClass::Shared);
+    lower
+        .add_member("textures/hud/alert.dds", 64, 0, Some(digest(0xd2)))
+        .expect("the lower-case spelling indexes");
+    vfs.mount(lower.build().expect("the lower mount builds"))
+        .expect("the lower mount registers");
+
+    let asked = key("Textures\\HUD\\alert.DDS");
+    let err = vfs
+        .resolve(&context(), &asked)
+        .expect_err("a case-only collision at equal priority is never a guess");
+
+    let ResolveError::Ambiguous {
+        key: reported,
+        candidates,
+        trace,
+    } = &err
+    else {
+        panic!("an equal-priority case-only collision must be an ambiguity: {err}");
+    };
+    assert_eq!(
+        reported.logical_key(),
+        "content/default/textures/hud/alert.dds",
+        "the two spellings are one logical key, which is why they collide"
+    );
+    assert_eq!(candidates.len(), 2, "both origins are reported");
+
+    let spellings: Vec<&str> = candidates
+        .iter()
+        .map(|origin| origin.member_spelling.as_str())
+        .collect();
+    assert_eq!(
+        spellings,
+        ["Textures/HUD/Alert.dds", "textures/hud/alert.dds"],
+        "each origin quotes the spelling its own container contained"
+    );
+    let containers: Vec<&str> = candidates
+        .iter()
+        .map(|origin| origin.container.as_str())
+        .collect();
+    assert_eq!(containers, ["fixture/upper.zbd", "fixture/lower.zbd"]);
+    assert_eq!(candidates[0].sha256, Some(digest(0xd1)));
+    assert_eq!(candidates[1].sha256, Some(digest(0xd2)));
+
+    let rendered = err.to_string();
+    assert!(
+        rendered.contains("Textures/HUD/Alert.dds")
+            && rendered.contains("textures/hud/alert.dds")
+            && rendered.contains("fixture/upper.zbd")
+            && rendered.contains("fixture/lower.zbd"),
+        "the diagnostic names both spellings and both origins: {rendered}"
+    );
+    assert!(!trace.attempts.is_empty(), "the failure keeps its trace");
+    assert_eq!(
+        trace.precedence_status,
+        ClaimStatus::Designed,
+        "the ordering that decided the tie says it is designed, not measured"
+    );
+}

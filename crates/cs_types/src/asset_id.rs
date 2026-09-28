@@ -336,7 +336,7 @@ impl AssetKey {
     /// cached at construction.
     ///
     /// This is the string a mount's member index is keyed by, so resolving
-    /// a key allocates nothing per candidate mount.
+    /// a key never recomputes the fold once per candidate mount.
     pub fn path_key(&self) -> &str {
         &self.path_key
     }
