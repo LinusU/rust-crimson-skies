@@ -25,4 +25,6 @@ Work you discover that is not part of the current task (a new format variant, an
 
 `specs/`, `missions/M*.md`, `docs/contracts/`, `docs/research/`, `schemas/`, this file, `AGENTS.md` and `.github/` are protected: Rally refuses to merge a branch that changes them. If a specification is wrong or contradicts the original data, record the evidence in `docs/findings/` and call `block_task` explaining what needs to change. The owner updates the plan.
 
+The only exception is an owner-authorized task: Rally marks it `allowProtectedChanges` and its owner-authored description lists the exact protected paths it may change. Such a task may edit only those paths, only for the stated purpose, and never weakens acceptance criteria. Owner rulings that resequence the DAG are recorded in [specs/README.md](../specs/README.md), which names the Rally keys and ids involved.
+
 The initial complete-product acceptance requirements remain binding even as the task count grows. A final release must not depend only on whichever subset of tasks happened to be implemented.
