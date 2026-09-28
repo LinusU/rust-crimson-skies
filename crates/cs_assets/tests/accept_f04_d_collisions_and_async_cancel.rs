@@ -247,7 +247,7 @@ fn accept_f04_d_uncancelled_read_of_replaced_world_is_never_reused() {
 /// blocked with both origins. Identical bytes, non-retail overlays and
 /// opted-in mods are not blocked.
 #[test]
-fn accept_f04_d_retail_answer_decided_only_by_designed_order_is_blocked() {
+fn accept_f04_d_designed_order_alone_never_decides_between_retail_bytes() {
     let shared = TempTree::new("f04-d-shared");
     shared.write("hud/alert.dds", b"shared alert");
     shared.write("hud/same.dds", b"same bytes");
