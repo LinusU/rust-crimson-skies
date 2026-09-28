@@ -26,11 +26,13 @@
 //! * [`reader_archive`] and [`sound_archive`] are the two readers this
 //!   stage implements (F06-B "reader and sound container subset with
 //!   bounds"). They hand out each member's verbatim bytes with its source
-//!   span and its evidence, and they decode nothing: no entry encoding is
-//!   documented, so every entry reports the recorded unknown instead (stage
-//!   F06-B).
+//!   span and its evidence, and they decode nothing. Reader entries report
+//!   the recorded unknown (stage F06-B); sound entries report what their
+//!   RIFF/WAVE header declares (task #344).
 //! * [`trailer`] reads the version-one member index at the end of a sound or
 //!   reader archive into the member extents those readers list (task #343).
+//! * [`wave`] reads the RIFF/WAVE header of one sound member into the
+//!   descriptor [`sound_archive`] reports (task #344).
 //!
 //! The evidence behind every rule, the design decisions and the recorded
 //! unknowns are written down in
@@ -39,7 +41,9 @@
 //! the task #340 header signatures and archive names in
 //! `docs/findings/2026-09-28-t340-zbd-family-headers-and-archive-names.md`;
 //! the task #343 member index in
-//! `docs/findings/2026-09-28-t343-zbd-version-one-member-index.md`.
+//! `docs/findings/2026-09-28-t343-zbd-version-one-member-index.md`;
+//! the task #344 WAVE headers in
+//! `docs/findings/2026-09-28-t344-zbd-sound-member-wave-headers.md`.
 //! The fixtures exercised by `crates/cs_formats/tests/zbd/` are newly
 //! authored synthetic bytes; nothing here is derived from original game
 //! data.
@@ -52,6 +56,7 @@ pub mod reader_archive;
 pub mod role;
 pub mod sound_archive;
 pub mod trailer;
+pub mod wave;
 
 pub use archive::{
     ArchiveListing, CONTAINER_ENTRYPOINT, ContainerError, ContainerStatus, FamilyMismatch,
@@ -84,4 +89,9 @@ pub use trailer::{
     IndexEntry, IndexError, MEMBER_EXTENT_BYTES, TRAILER_BYTES, TRAILER_ENTRYPOINT,
     TRAILER_VERSION_ONE, UNEXPLAINED_REASON, UnexplainedBytes, VersionOneIndex, indexed_by_trailer,
     read_version_one_index,
+};
+pub use wave::{
+    CHUNK_HEADER_BYTES, CUE_COUNT_BYTES, CUE_POINT_BYTES, FMT_BYTES, NO_LOOP_CHUNK_REASON,
+    RIFF_HEADER_BYTES, SMPL_NOT_READ_REASON, UNNAMED_FORMAT_REASON, WAVE_FORMAT_IMA_ADPCM,
+    WAVE_FORMAT_MS_ADPCM, WAVE_FORMAT_PCM, WaveError, WaveHeader, format_name, read_wave_header,
 };
