@@ -4,13 +4,17 @@
 //! inventory path (discovered host files to validated manifest) for F02,
 //! including the F02-B path that walks a real installation and hashes bytes
 //! (`discover`, `discover_with_cache`, streaming `Sha256`, `fingerprint`,
-//! `content_fingerprint`, `AnalysisCache`). Allowed dependencies:
+//! `content_fingerprint`, `AnalysisCache`), and [`vfs`] is the
+//! context-aware virtual filesystem for F04: mount namespaces, precedence
+//! and `resolve(context, key)`. Allowed dependencies:
 //! [`cs_types`] and [`cs_formats`]. The original installation at
 //! `$CS_GAME_DIR` is read-only and nothing derived from it is committed to
 //! Git.
 //!
 //! [`install`]: install
+//! [`vfs`]: vfs
 //! [`cs_types`]: cs_types
 //! [`cs_formats`]: cs_formats
 
 pub mod install;
+pub mod vfs;
