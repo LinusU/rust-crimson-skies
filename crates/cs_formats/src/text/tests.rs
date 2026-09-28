@@ -374,8 +374,9 @@ fn rof_entries(rof: &[u8], offset: u32) -> Vec<(String, crate::RofRawRecord)> {
 }
 
 /// Walks `crimson.rof` one directory block at a time down `path` and reads
-/// the member through the production bounded reader. (`read_tree` refuses
-/// the retail archive for its overlapping extents, which F05-D owns.)
+/// the member through the production bounded reader. (The member is built by
+/// hand because this walk stops at the wanted name; `read_tree` walks the
+/// retail archive too now that F05-D resolved which length word is the extent.)
 fn retail_member(rof: &[u8], path: &str) -> Vec<u8> {
     let mut offset = 0u32;
     let segments: Vec<&str> = path.split('/').collect();
@@ -392,12 +393,15 @@ fn retail_member(rof: &[u8], path: &str) -> Vec<u8> {
             offset = record.start;
             continue;
         }
+        // `stored_end` is `start` plus the record's *stored* count
+        // (`raw_length_on_disk`), the bytes the member occupies in the
+        // container. `raw_length` is the decoded count, which is not a range of
+        // the container and so has no end.
         let member = crate::RofMember {
             path: Vec::new(),
             record,
             start: u64::from(record.start),
-            length_end: u64::from(record.start) + u64::from(record.raw_length),
-            length_on_disk_end: u64::from(record.start) + u64::from(record.raw_length_on_disk),
+            stored_end: u64::from(record.start) + u64::from(record.raw_length_on_disk),
         };
         let context = ParseContext::with_defaults(CRIMSON_ROF);
         return crate::read_member(&context, rof, &member, &crate::RofLimits::default())
