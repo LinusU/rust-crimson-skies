@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "F04-D",
+ "candidate_tree": "bb4e4d93368bb09d38cbbd77ee8aa57912bd231d",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-09-28T15:53:41Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_f04_d_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/agent-2", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 8, "executed": 8, "passed": 8, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_f04_d_collision_report_flags_retail_shadowing", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f04_d_designed_order_alone_never_decides_between_retail_bytes", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f04_d_collision_report_resolves_every_member_by_its_own_path", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f04_d_read_cancelled_before_it_starts_reads_nothing", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f04_d_uncancelled_read_of_replaced_world_is_never_reused", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f04_d_cancel_async_read_during_world_switch", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f04_d_retail_every_observed_collision_resolves_by_path", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f04_d_retail_cancel_async_read_during_world_switch", "status": "pass", "evidence": ["cargo-test.log"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "128a09dbfff2571feb505ae6f1e1d89a33b7c7af08cbca5df00abea5dc0034d9", "kind": "log"}, {"path": "collisions.json", "sha256": "0327b154954028157581ef09d52b09bc07b493dc196a39f885c079b7c6e42d6c", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "claude-1 (implementing agent, self-check; the Rally reviewer regenerates this report on the rebased commit)", "method": "acceptance suite run locally with the retail capability; this harness derives every field from the recorded log, production discovery of $CS_GAME_DIR, the production collision comparison over the mounted installation, rustc and Cargo.lock; original lookup order is unmeasured (docs/findings) and the claim is only implemented; validated with tools/validate_evidence.py --require-pass"},
+ "claim": "implemented"
+}
