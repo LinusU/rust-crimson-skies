@@ -881,6 +881,7 @@ mod tests {
     const CASE: &str = "case.rof";
     const ABSENT: &str = "absent.rof";
     const OTHER: &str = "other.rof";
+    const TILED: &str = "tiled.rof";
 
     /// The payload of the compressed fixtures: 204 bytes, four repetitions
     /// of one authored line.
@@ -1155,6 +1156,51 @@ mod tests {
     /// zero — itself.
     fn cycle_container() -> Vec<u8> {
         root_pointing_at(0)
+    }
+
+    /// `[root][PACK][INDEX]`: one compressed member and one uncompressed
+    /// one stored back to back, the shape both containers of the original
+    /// installation have. `swapped` authors the two length words the other
+    /// way round, so the decoded word becomes the extent and the compressed
+    /// member then reaches over its successor.
+    fn tiled_container(swapped: bool) -> Vec<u8> {
+        let names = name_table(&["PACK.DAT", "INDEX.TXT"]);
+        let block_len = DIRECTORY_HEADER_BYTES + 2 * RECORD_BYTES + names.len();
+        let pack_start = block_len as u32;
+        let index_start = pack_start + COMPRESSED_STREAM.len() as u32;
+        let (pack_stored, pack_decoded) = if swapped {
+            (
+                COMPRESSED_PAYLOAD.len() as u32,
+                COMPRESSED_STREAM.len() as u32,
+            )
+        } else {
+            (
+                COMPRESSED_STREAM.len() as u32,
+                COMPRESSED_PAYLOAD.len() as u32,
+            )
+        };
+        let records = [
+            RawRecord::file("PACK.DAT", 4)
+                .at(pack_start, pack_stored)
+                .stored(pack_stored)
+                .compressed()
+                .decodes_to(pack_decoded),
+            RawRecord::file("INDEX.TXT", 8).at(index_start, INDEX.len() as u32),
+        ];
+        let mut bytes = valid_block(&records, &names);
+        bytes.extend_from_slice(COMPRESSED_STREAM);
+        bytes.extend_from_slice(INDEX);
+        if swapped {
+            // The over-long extent has to stay *inside* the file for the
+            // refusal to be the overlap it is meant to be, rather than the
+            // outside-file pointer the bounds check raises first: pad the
+            // container past the decoded count so the reader gets as far as
+            // comparing spans. The padding is exactly the kind of byte a
+            // `coverage` audit would report as a gap, which is why the
+            // measured profile has none.
+            bytes.resize(bytes.len() + 2 * COMPRESSED_PAYLOAD.len(), 0);
+        }
+        bytes
     }
 
     /// A root block whose header declares fewer name bytes than its
@@ -1636,5 +1682,103 @@ mod tests {
         assert_eq!(released_a.released.len(), 1);
         let released_b = session_b.close();
         assert_eq!(released_b.released.len(), 1);
+    }
+
+    /// **The mount records the resolved extents, and the container they
+    /// describe adds up.**
+    ///
+    /// F05-D measured that a ROF record's *second* length word is the byte
+    /// count the member occupies in the container and its *first* word is
+    /// the count the member decodes to, so the mount indexes, digests and
+    /// spans the **stored** extent and keeps the decoded count beside it.
+    /// This asserts that on a container shaped like the original ones, that
+    /// the two members' extents and the root block tile the file exactly
+    /// ([`RofSource::coverage`]), and that the same bytes with the two words
+    /// exchanged are refused at the mount instead of being flattened into a
+    /// span that covers both members.
+    #[test]
+    fn accept_f05_d_the_mount_records_stored_extents_that_tile_the_container() {
+        let temp = Temp::new("tiled");
+        let path = temp.container(TILED, &tiled_container(false));
+        let bytes = fs::read(&path).expect("fixture bytes");
+
+        let mounted = mount_rof(mount_builder(TILED), &path).expect("the container mounts");
+        let source = &mounted.source;
+        assert_eq!(source.member_count(), 2);
+
+        let pack = source.member(&key("PACK.DAT")).expect("PACK.DAT").clone();
+        let index = source.member(&key("INDEX.TXT")).expect("INDEX.TXT").clone();
+        // The compressed member: 62 stored bytes, 204 decoded bytes, two
+        // different numbers the mount never collapses.
+        assert_eq!(pack.stored_len, COMPRESSED_STREAM.len() as u64);
+        assert_eq!(pack.declared_decoded_len, COMPRESSED_PAYLOAD.len() as u64);
+        assert!(pack.compressed);
+        // The uncompressed one: both words equal, exactly as every
+        // uncompressed member of the original containers has them.
+        assert_eq!(index.stored_len, INDEX.len() as u64);
+        assert_eq!(index.declared_decoded_len, INDEX.len() as u64);
+        assert!(!index.compressed);
+
+        // The members are stored back to back, and each digest covers
+        // exactly its own stored extent — never its decoded bytes and never
+        // its neighbour's.
+        assert_eq!(index.offset, pack.offset + pack.stored_len);
+        assert_eq!(
+            pack.sha256,
+            sha256(&bytes[pack.offset as usize..(pack.offset + pack.stored_len) as usize]),
+            "the digest is of the stored extent"
+        );
+        assert_ne!(
+            pack.sha256,
+            sha256(COMPRESSED_PAYLOAD),
+            "the digest is not of the decoded payload"
+        );
+
+        // The container tiles: the root block and the two stored extents
+        // cover it exactly, with no gap, no overlap and no tail byte.
+        let coverage = source.coverage();
+        assert!(coverage.is_exact(), "{coverage:?}");
+        assert_eq!(coverage.container_len, bytes.len() as u64);
+        assert_eq!(coverage.covered, bytes.len() as u64);
+        assert!(coverage.gaps.is_empty());
+        assert!(coverage.overlaps.is_empty());
+        assert_eq!(source.blocks().count(), 1, "one directory block");
+
+        // Reads go through the production reader and reproduce the decoded
+        // counts the records declare.
+        assert_eq!(
+            source.read(&key("PACK.DAT")).expect("reads").data,
+            COMPRESSED_PAYLOAD
+        );
+        assert_eq!(source.read(&key("INDEX.TXT")).expect("reads").data, INDEX);
+
+        // A session mounting it resolves both members to spans of their
+        // stored length, so the span a consumer receives describes bytes
+        // that exist in the container.
+        let mut builder = SessionBuilder::new(context());
+        builder.mount(mounted.mount).expect("joins the session");
+        let session = builder.open();
+        for (spelling, info) in [("PACK.DAT", &pack), ("INDEX.TXT", &index)] {
+            let asset = session.resolve(&key(spelling)).expect("resolved");
+            assert_eq!(asset.resolved().span.offset(), info.offset);
+            assert_eq!(asset.resolved().span.length(), info.stored_len);
+            assert_eq!(asset.resolved().span.member_sha256(), Some(info.sha256));
+        }
+        assert_eq!(session.close().released.len(), 1);
+
+        // The same bytes with the two length words exchanged are refused at
+        // the mount: the decoded word as an extent makes the compressed
+        // member reach over its successor, and no source documents such
+        // sharing (spec F05 non-negotiable #5). The refusal is
+        // deterministic and leaves a fresh builder empty.
+        let swapped_path = temp.container("swapped.rof", &tiled_container(true));
+        let mut other = SessionBuilder::new(context());
+        let error = mount_rof_into(&mut other, mount_builder(TILED), &swapped_path)
+            .expect_err("swapped length words must be refused");
+        assert_eq!(error.code(), "unsupported_layout", "{error}");
+        assert_eq!(error.container(), TILED);
+        assert!(error.offset().is_some());
+        assert!(other.is_empty(), "nothing was mounted");
+        assert_eq!(other.len(), 0);
     }
 }

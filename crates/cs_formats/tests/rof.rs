@@ -1008,7 +1008,7 @@ fn accept_f05_b_compressed_member_stored_and_decoded_lengths_differ() {
     assert_ne!(member.record.raw_length, member.record.raw_length_on_disk);
     assert_eq!(member.stored_len(), u64::from(stream_len));
     assert_eq!(member.declared_decoded_len(), u64::from(payload_len));
-    assert_eq!(member.is_compressed(), true);
+    assert!(member.is_compressed());
     assert_eq!(
         member.stored_end,
         bytes.len() as u64,

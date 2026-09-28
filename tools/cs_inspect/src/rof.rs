@@ -440,9 +440,11 @@ pub fn rof_command_result(args: &[String], env_cs_path: Option<OsString>) -> Rof
         &container,
         source.as_ref(),
         mount_failure.as_ref(),
-        &read,
-        &export,
-        &audit,
+        &RofOutcomes {
+            read: &read,
+            export: &export,
+            audit: &audit,
+        },
     );
     let generation = session.generation();
     let teardown = session.close();
@@ -757,7 +759,7 @@ fn audit_container(source: &RofSource, diagnostics: &mut Vec<String>) -> AuditRe
                     jstr(&code)
                 ));
                 diagnostics.push(format!(
-                    "cs-inspect rof: {} at offset {}: {detail}",
+                    "cs-inspect rof: {} at offset {} was not audited ({code}): {detail}",
                     info.spelling, info.offset
                 ));
                 continue;
@@ -826,7 +828,7 @@ fn audit_container(source: &RofSource, diagnostics: &mut Vec<String>) -> AuditRe
           \"compressed\": {}, \"uncompressed\": {}, \"stored_bytes\": {}, \"declared_bytes\": {}, \
           \"trailing_bytes\": {}, \"read_failures\": {}, \"widest_member\": {}, \
           \"coverage\": {{\"container_len\": {}, \"covered\": {}, \"exact\": {}, \"gaps\": {}, \
-          \"overlaps\": {}}}, \"blocks\": [{}], \"members\": [{}]}}",
+          \"overlaps\": {}}}, \"blocks\": [{}], \"failures\": [{}], \"members\": [{}]}}",
         jstr(AUDIT_PROFILE),
         source.member_count(),
         blocks.len(),
@@ -843,6 +845,7 @@ fn audit_container(source: &RofSource, diagnostics: &mut Vec<String>) -> AuditRe
         spans_json(&coverage.gaps),
         spans_json(&coverage.overlaps),
         blocks.join(", "),
+        failures.join(", "),
         listed.join(", "),
     );
     // A member that does not read is refused content, and a container that
@@ -893,17 +896,26 @@ impl MountFailure {
     }
 }
 
+/// The three things a run may have done to a mounted container's members,
+/// bundled so the report renderer takes one argument for all of them.
+struct RofOutcomes<'a> {
+    /// The one member `--member` asked for.
+    read: &'a ReadReport,
+    /// The explicit private export, if one was requested.
+    export: &'a ExportReport,
+    /// The whole-container audit, if `--audit` was asked for.
+    audit: &'a AuditReport,
+}
+
 /// Renders the rof report: what the container is, what the mount recorded
-/// about it, and what the read and the export produced.
+/// about it, and what the read, the export and the audit produced.
 fn rof_report_json(
     session: &ContentSession,
     host_root: &Path,
     container: &str,
     source: Option<&RofSource>,
     mount_failure: Option<&MountFailure>,
-    read: &ReadReport,
-    export: &ExportReport,
-    audit: &AuditReport,
+    outcomes: &RofOutcomes<'_>,
 ) -> String {
     let context = session.context();
     let (status, mount_json) = match session.mounts().next() {
@@ -975,9 +987,9 @@ fn rof_report_json(
         members,
         session.generation().get(),
         jstr(PRECEDENCE_ORDER_STATUS.label()),
-        read.json,
-        export.json,
-        audit.json,
+        outcomes.read.json,
+        outcomes.export.json,
+        outcomes.audit.json,
     )
 }
 
@@ -1259,6 +1271,62 @@ mod tests {
         bytes
     }
 
+    /// The authored zlib stream of the packed fixture below: 62 stored
+    /// bytes that decode to [`COMPRESSED_DECODED`] bytes. The same stream
+    /// the F05-A/B/C fixtures use, copied here because this module builds
+    /// its containers from scratch.
+    const COMPRESSED_STREAM: &[u8] = &[
+        0x78, 0x9c, 0x73, 0x2e, 0xca, 0xcc, 0x2d, 0xce, 0xcf, 0x53, 0x08, 0xce, 0xce, 0x4c, 0x2d,
+        0x56, 0x28, 0xae, 0xcc, 0x2b, 0xc9, 0x48, 0x2d, 0xc9, 0x4c, 0x56, 0x48, 0xce, 0xcf, 0x2d,
+        0x28, 0x4a, 0x2d, 0x2e, 0x4e, 0x4d, 0x51, 0xc8, 0x4d, 0xcd, 0x4d, 0x4a, 0x2d, 0x52, 0x28,
+        0x48, 0xac, 0xcc, 0xc9, 0x4f, 0x4c, 0xd1, 0xe3, 0x72, 0x1e, 0xac, 0x5a, 0x00, 0xd7, 0xca,
+        0x4c, 0x91,
+    ];
+
+    /// The byte count [`COMPRESSED_STREAM`] decodes to, stated so the audit
+    /// assertions have a number to compare with. If the stream above ever
+    /// decoded to anything else, these assertions would fail rather than
+    /// agree with a wrong constant.
+    const COMPRESSED_DECODED: usize = 204;
+
+    /// `[root][PACK][INDEX]`: a compressed member (62 stored bytes, 204
+    /// decoded) and an uncompressed one stored back to back, the shape both
+    /// containers of the original installation have. `lying` makes the
+    /// packed member's record declare a decoded count one byte short of
+    /// what its stream produces.
+    fn audited_container(lying: bool) -> Vec<u8> {
+        let (pack_name, index_name) = ("PACK.DAT", "INDEX.TXT");
+        let names = name_table(&[pack_name, index_name]);
+        let block_len = DIRECTORY_HEADER_BYTES + 2 * RECORD_BYTES + names.len();
+        let pack_start = block_len as u32;
+        let index_start = pack_start + COMPRESSED_STREAM.len() as u32;
+        // Each name's declared length counts the name and its NUL, so the
+        // two records do not share one number.
+        let (pack_name, index_name) = ("PACK.DAT", "INDEX.TXT");
+        let records = [
+            RawRecord {
+                start: pack_start,
+                raw_length: COMPRESSED_DECODED as u32 - u32::from(lying),
+                raw_length_on_disk: COMPRESSED_STREAM.len() as u32,
+                flags: 2,
+                name_length: (pack_name.len() + 1) as u32,
+                id: 4,
+            },
+            RawRecord {
+                start: index_start,
+                raw_length: SHARED_PAYLOAD.len() as u32,
+                raw_length_on_disk: SHARED_PAYLOAD.len() as u32,
+                flags: 0,
+                name_length: (index_name.len() + 1) as u32,
+                id: 8,
+            },
+        ];
+        let mut bytes = valid_block(&records, &names);
+        bytes.extend_from_slice(COMPRESSED_STREAM);
+        bytes.extend_from_slice(SHARED_PAYLOAD);
+        bytes
+    }
+
     /// **The positive path:** the command mounts the shared fixture,
     /// reports every member it holds, reads the requested one through the
     /// bounded decoder and exports its bytes — exit 0, report written.
@@ -1298,7 +1366,7 @@ mod tests {
             "\"retail\": true".to_owned(),
             "\"member_count\": 2".to_owned(),
             "{\"spelling\": \"HELLO.TXT\", \"id\": 101, \"offset\": 76, \"stored_len\": 34, \
-             \"compressed\": false"
+             \"declared_decoded_len\": 34, \"compressed\": false"
                 .to_owned(),
             "{\"spelling\": \"EMPTY.DAT\", \"id\": 102".to_owned(),
             "\"install_sha256\": \"".to_owned(),
@@ -1661,5 +1729,149 @@ mod tests {
             "a container outside the installation is never read or reported"
         );
         assert!(!out.exists(), "no report was written for it");
+    }
+
+    /// **The whole-container audit:** `cs-inspect rof --audit` reads every
+    /// member of a mounted container through the production reader and reports
+    /// the resolved length profile per member — both length words, the bytes the
+    /// read produced, the trailing bytes inside each stored extent and the
+    /// digest of the decoded content — plus how the container's bytes divide
+    /// between its directory blocks and its members' stored extents.
+    ///
+    /// This is the interface the F05-D evidence is produced through, so it has
+    /// to be honest about three things: it writes nothing but the report, a
+    /// member that cannot be read is a *failure* (exit 3, the member named) and
+    /// not a silent omission, and a container that does not tile exactly is
+    /// reported as such.
+    #[test]
+    fn accept_f05_d_rof_audit_reports_both_words_for_every_member() {
+        let temp = Temp::new("audit");
+        temp.container("audit.rof", &audited_container(false));
+        let out = temp.out();
+
+        let run = rof_command_result(
+            &args(&[
+                "--cs-path",
+                path_arg(&temp.install()),
+                "--container",
+                "audit.rof",
+                "--audit",
+                "--out",
+                path_arg(&out),
+            ]),
+            None,
+        );
+        assert_eq!(run.exit_code, 0, "{:?}", run.diagnostics);
+        assert_eq!(run.out.as_deref(), Some(out.as_path()));
+        let report = fs::read_to_string(&out).expect("the audit report is written");
+        assert_eq!(Some(&report), run.report.as_ref());
+
+        for needle in [
+            // The profile is named, so a reader never has to infer which word
+            // was used for what.
+            "\"profile\": \"stored = record word +8 (length_on_disk); decoded = record word +4 \
+         (length)\""
+                .to_owned(),
+            "\"member_count\": 2".to_owned(),
+            "\"block_count\": 1".to_owned(),
+            "\"compressed\": 1, \"uncompressed\": 1".to_owned(),
+            format!(
+                "\"stored_bytes\": {}, \"declared_bytes\": {}",
+                COMPRESSED_STREAM.len() + SHARED_PAYLOAD.len(),
+                COMPRESSED_DECODED + SHARED_PAYLOAD.len()
+            ),
+            "\"trailing_bytes\": 0".to_owned(),
+            "\"read_failures\": 0".to_owned(),
+            // Exact coverage: the root block and the two stored extents tile
+            // the file, with no gap, overlap or tail byte.
+            "\"exact\": true, \"gaps\": [], \"overlaps\": []".to_owned(),
+            // Per member: the compressed one shows both words, the decoded
+            // count, zero trailing bytes and two different digests.
+            format!(
+                "\"spelling\": \"PACK.DAT\", \"id\": 4, \"offset\": 75, \"compressed\": true, \
+             \"stored_len\": 62, \"declared_len\": {COMPRESSED_DECODED}, \"decoded_len\": \
+             {COMPRESSED_DECODED}, \"trailing_len\": 0"
+            ),
+            // The uncompressed member's two words agree.
+            format!(
+                "\"spelling\": \"INDEX.TXT\", \"id\": 8, \"offset\": 137, \"compressed\": false, \
+             \"stored_len\": {len}, \"declared_len\": {len}, \"decoded_len\": {len}, \
+             \"trailing_len\": 0",
+                len = SHARED_PAYLOAD.len()
+            ),
+        ] {
+            assert!(report.contains(&needle), "missing {needle} in {report}");
+        }
+        // The stored digest and the decoded digest of the packed member differ,
+        // which is the point of reporting both. Read them out of the audit
+        // section, which is the only one that carries them.
+        let audit_section = report
+            .split("\"audit\": {")
+            .nth(1)
+            .expect("the audit section is present");
+        // The audit names PACK.DAT twice — once as the widest member and once
+        // in the member list — so take the last mention, which is the entry.
+        let packed = audit_section
+            .rsplit("\"spelling\": \"PACK.DAT\"")
+            .next()
+            .expect("PACK.DAT is audited");
+        let digest_of = |key: &str| {
+            packed
+                .split(&format!("\"{key}\": \""))
+                .nth(1)
+                .and_then(|rest| rest.split('"').next())
+                .unwrap_or_else(|| panic!("{key} is reported for PACK.DAT"))
+        };
+        let stored_digest = digest_of("stored_sha256");
+        let decoded_digest = digest_of("decoded_sha256");
+        assert_eq!(stored_digest.len(), 64, "a sha-256 hex digest");
+        assert_ne!(stored_digest, decoded_digest);
+
+        // A member whose record declares the wrong decoded count is a failure,
+        // not a silent omission: the audit names it, reports the code and exits
+        // 3 (failed validation), while the mount itself still stands.
+        let temp = Temp::new("audit-lie");
+        temp.container("audit.rof", &audited_container(true));
+        let out = temp.out();
+        let run = rof_command_result(
+            &args(&[
+                "--cs-path",
+                path_arg(&temp.install()),
+                "--container",
+                "audit.rof",
+                "--audit",
+                "--out",
+                path_arg(&out),
+            ]),
+            None,
+        );
+        assert_eq!(run.exit_code, 3, "{:?}", run.diagnostics);
+        let report = fs::read_to_string(&out).expect("the refusal is reported too");
+        assert!(
+            report
+                .contains("\"container\": {\"spelling\": \"audit.rof\", \"status\": \"mounted\"}"),
+            "{report}"
+        );
+        assert!(report.contains("\"read_failures\": 1"), "{report}");
+        assert!(
+            report.contains("\"code\": \"decoded_length_mismatch\""),
+            "{report}"
+        );
+        assert!(
+            run.diagnostics
+                .iter()
+                .any(|line| line.contains("PACK.DAT") && line.contains("decoded_length_mismatch")),
+            "{:?}",
+            run.diagnostics
+        );
+        // The other member still audited: one bad member never hides its
+        // siblings, and never refuses the container.
+        assert!(
+            report.contains("\"spelling\": \"INDEX.TXT\", \"id\": 8"),
+            "{report}"
+        );
+        // Nothing but the report was written: the installation still holds only
+        // the container it was given.
+        assert_eq!(temp.entries(&temp.install()), vec!["audit.rof".to_owned()]);
     }
 }
