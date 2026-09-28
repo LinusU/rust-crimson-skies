@@ -10,8 +10,11 @@
 //! and the F02-D `audit` command (per-file classification and the
 //! full-content readiness check). [`resolve`] is the F04-C `resolve`
 //! command: one lookup in a mounted content session, reported with its
-//! resolution trace, plus the explicit private export.
+//! resolution trace, plus the explicit private export. [`zbd`] is the
+//! F06-D `zbd-audit` command: every ZBD container and member of an
+//! installation, family by family, with a strict status.
 
 pub mod evidence;
 pub mod install;
 pub mod resolve;
+pub mod zbd;

@@ -7,7 +7,8 @@
 //! the `audit` command (F02-D) classifies every inventoried file and runs
 //! the full-content readiness check, and the `resolve` command (F04-C)
 //! resolves one asset key in a mounted content session and reports its
-//! trace. The remaining subcommands from `docs/contracts/CLI-EVIDENCE.md`
+//! trace, and the `zbd-audit` command (F06-D) lists every ZBD container
+//! and member with a strict status. The remaining subcommands from `docs/contracts/CLI-EVIDENCE.md`
 //! (`catalog`, `closure`, `scripts`, `handling`) arrive with later tasks.
 //! Until then the binary refuses invalid input with a nonzero exit code and
 //! a diagnostic naming the missing command — a failure is never returned as success.
@@ -47,6 +48,13 @@ COMMANDS
         resolved member into a private directory outside the installation.
         Exits 0 when resolved, 3 when not found or ambiguous.
 
+    zbd-audit [--cs-path <dir>] [--strict] [--out <file>]
+        Audit every ZBD container of the installation family by family:
+        route it, read its own member index and give every member a row
+        (decoded, readable or failed). Exits 3 when a container or member
+        is corrupt, and with --strict also when any content is left
+        uninterpreted. Never claims playability.
+
     catalog  closure  scripts  handling
         Not implemented in this workspace stage; they are documented in
         docs/contracts/CLI-EVIDENCE.md.
@@ -75,17 +83,18 @@ fn main() -> ExitCode {
         None => {
             eprintln!(
                 "cs-inspect: missing command; expected one of inventory, audit, resolve, \
-                 catalog, closure, scripts, handling (see docs/contracts/CLI-EVIDENCE.md)"
+                 zbd-audit, catalog, closure, scripts, handling (see docs/contracts/CLI-EVIDENCE.md)"
             );
             ExitCode::from(EXIT_INVALID_INPUT)
         }
         Some("inventory") => cs_inspect::install::inventory_command(&args[1..]),
         Some("audit") => cs_inspect::install::audit_command(&args[1..]),
         Some("resolve") => cs_inspect::resolve::resolve_command(&args[1..]),
+        Some("zbd-audit") => cs_inspect::zbd::zbd_audit_command(&args[1..]),
         Some(command) => {
             eprintln!(
                 "cs-inspect: unsupported command {command:?}; this workspace stage implements \
-                 only `inventory`, `audit` and `resolve`"
+                 only `inventory`, `audit`, `resolve` and `zbd-audit`"
             );
             ExitCode::from(EXIT_INVALID_INPUT)
         }
