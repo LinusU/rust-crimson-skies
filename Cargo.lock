@@ -2475,6 +2475,7 @@ dependencies = [
 name = "cs_formats"
 version = "0.0.0"
 dependencies = [
+ "cs_assets",
  "cs_types",
 ]
 

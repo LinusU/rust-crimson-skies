@@ -15,13 +15,13 @@
 //! animation signatures, so the AC01 pair is now two documented headers.
 
 mod readers;
+mod t340;
 
 use cs_formats::zbd::{
     CONTENT_ROOT, DispatchBasis, GAMEZ_SIGNATURE, GAMEZ_VERSION, HeaderStatus, INTERP_SIGNATURE,
-    INTERP_VERSION,
-    INTERP_VERSION_OFFSET, OUTSIDE_CONTENT_ROOT, RoleStatus, UNOBSERVED_NAME, ZBD_FAMILY_INVENTORY,
-    ZbdDispatch, ZbdDispatchError, ZbdFamily, ZbdProbe, ZbdReaderId, ZbdRole, dispatch,
-    family_record, role_for_path,
+    INTERP_VERSION, INTERP_VERSION_OFFSET, OUTSIDE_CONTENT_ROOT, RoleStatus, UNOBSERVED_NAME,
+    ZBD_FAMILY_INVENTORY, ZbdDispatch, ZbdDispatchError, ZbdFamily, ZbdProbe, ZbdReaderId, ZbdRole,
+    dispatch, family_record, role_for_path,
 };
 use cs_types::evidence::ClaimStatus;
 use cs_types::install::RelativePath;
@@ -466,9 +466,17 @@ fn accept_f06_a_role_inventory_covers_every_observed_archive_name() {
             ZbdFamily::Texture,
             ClaimStatus::Documented,
         ),
-        ("zbd/rimage.zbd", ZbdFamily::Texture, ClaimStatus::Documented),
+        (
+            "zbd/rimage.zbd",
+            ZbdFamily::Texture,
+            ClaimStatus::Documented,
+        ),
         ("zbd/zrdr.zbd", ZbdFamily::Reader, ClaimStatus::Documented),
-        ("zbd/c1/zrdr.zbd", ZbdFamily::Reader, ClaimStatus::Documented),
+        (
+            "zbd/c1/zrdr.zbd",
+            ZbdFamily::Reader,
+            ClaimStatus::Documented,
+        ),
         (
             "zbd/c1/cam_anim.zbd",
             ZbdFamily::Animation,
