@@ -26,8 +26,8 @@ task-success/product-readiness split and #355 owns regenerating historical produ
 - `tools/tests/test_validate_evidence.py`: new production-path unittest regressions
   (`accept_audit_evidence_integrity_` prefix) that import the real `validate()` and drive the real CLI.
 - `docs/contracts/CLI-EVIDENCE.md`: documented the v1 structural rules above.
-- `.github/workflows/ci.yml`: added a "Evidence validator regression tests" step to the existing
-  `pack` job; every existing Rust, fixture-reproducibility and binary-content check is untouched.
+- `.github/workflows/ci.yml`: **not changed on this branch** — see "Blocked: CI workflow scope"
+  below. The ready-to-apply step is recorded here so the owner or a provisioned worker can add it.
 - `schemas/evidence.schema.json` was not modified; its v1 shapes already match the validator.
 
 ## Commands and results (all run locally on this checkout)
@@ -72,6 +72,43 @@ cargo clippy --workspace --all-targets --all-features --locked -- -D warnings ->
 cargo test --workspace --locked                                     -> 0
 ```
 
+## Blocked: CI workflow scope
+
+The acceptance criterion "Add Python tests to CI while preserving existing jobs/checks" is authored
+and locally validated but cannot be pushed from this environment. `git push` of the branch is rejected:
+
+```
+remote rejected ... (refusing to allow an OAuth App to create or update workflow
+`.github/workflows/ci.yml` without `workflow` scope)
+```
+
+`gh auth status` shows the only credential's scopes are `gist, read:org, repo` — no `workflow`. The
+GitHub Contents API refuses too (HTTP 404, GitHub's disguise for the same scope error). The existing
+CI workflow itself was added directly by the repository owner (commit `17b5be1`), not through an agent
+push, which confirms agents here cannot write workflow files. An SSH route is unavailable (no key in
+the agent).
+
+Ready-to-apply step for the owner or a provisioned worker — append to the existing `pack` job after the
+"No binary files" step, preserving every existing Rust, fixture-reproducibility and binary-content
+check:
+
+```yaml
+      - name: Evidence validator regression tests
+        run: |
+          python3 - <<'PY'
+          import unittest
+          suite = unittest.defaultTestLoader.discover('tools/tests', pattern='test_validate_evidence.py')
+          if suite.countTestCases() == 0:
+              raise SystemExit('No evidence validator regression tests discovered')
+          result = unittest.TextTestRunner(verbosity=2).run(suite)
+          raise SystemExit(0 if result.wasSuccessful() and not result.skipped else 1)
+          PY
+```
+
+The block above was executed locally against this checkout as `bash -c` with the same dedented body
+and returned `CI_STEP_EXIT=0` (16 tests, 0 skipped), so the step content is known-good; only the
+GitHub permission to write the workflow file is missing.
+
 ## Compatibility with committed evidence
 
 A scan of `docs/findings/evidence/*.json` found no noncanonical evidence references and no
@@ -85,8 +122,12 @@ so full hash verification still requires the producing harness; that regeneratio
   synthetic, Python-only structural task.
 - The symlink regression is skipped on Windows (`os.name == 'nt'`) because creating symlinks there
   needs privileges; it runs on Linux CI. Real Windows coverage is #361.
-- GitHub CI was not run by this session directly; it runs on the pushed commit and must be green
-  before merge. The local Rust gates above plus the Python suite stand in only as local checks.
+- GitHub CI was not run by this session directly. The branch as pushed carries the validator, tests,
+  contract and findings, but not the CI step, because this token lacks GitHub `workflow` scope; the
+  task is blocked on that access. The local Rust gates above plus the Python suite are local checks,
+  not CI, and no CI result is claimed.
+- The unrun/unstarted CI for the missing step is the one unmet acceptance criterion; everything else is
+  implemented and locally verified.
 - `unknowns` still rejects `--require-pass`; that v1 behavior is intentionally preserved. Separating a
   gated task success from product limitations is #354 (`AUDIT-EVIDENCE-MODEL`).
 - Historical reports whose producing harness is unavailable must be rerun rather than hand-edited;
