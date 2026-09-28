@@ -9,10 +9,14 @@
 //! computed here from the positions, independently of the strip decoder, so
 //! a decoder that forgets the odd-step swap or restarts parity after a
 //! degenerate step produces a triangle with the opposite sign.
+//!
+//! Stage F10-B's n-gon triangulation tests are in [`ngon`].
+
+mod ngon;
 
 use cs_formats::gamez::{
-    FaceIssue, FaceStatus, MIN_STRIP_INDICES, MeshTriangle, PrimitiveKind, RawCorner, RawMesh,
-    RawPolygon, StripError, decode_strip,
+    FaceIssue, FaceStatus, MIN_STRIP_INDICES, MeshTriangle, NgonIssue, PrimitiveKind, RawCorner,
+    RawMesh, RawPolygon, StripError, decode_strip,
 };
 
 /// ```text
@@ -219,10 +223,11 @@ fn accept_f10_a_every_broken_or_unsupported_face_is_counted() {
                 with(corner(2), |c| c.uv = Some([f32::NAN, 0.0])),
             ],
         ),
-        // 5: quad outline: well-formed, triangulation is F10-B
+        // 5: bow-tie outline: valid indices, but its two lobes cancel out
+        // and it cannot be triangulated (a convex quad would be, F10-B)
         polygon(
             PrimitiveKind::Polygon,
-            vec![corner(0), corner(1), corner(3), corner(2)],
+            vec![corner(0), corner(1), corner(2), corner(3)],
         ),
         // 6: two-corner polygon
         polygon(PrimitiveKind::Polygon, vec![corner(0), corner(1)]),
@@ -256,7 +261,13 @@ fn accept_f10_a_every_broken_or_unsupported_face_is_counted() {
             attribute: "uv"
         }
     );
-    assert_eq!(issue(5), FaceIssue::UnsupportedNgon { corners: 4 });
+    assert_eq!(
+        issue(5),
+        FaceIssue::UnsupportedNgon {
+            corners: 4,
+            reason: NgonIssue::ZeroArea
+        }
+    );
     assert!(issue(5).is_unsupported());
     assert_eq!(issue(5).code(), "unsupported_ngon");
     assert_eq!(issue(6).code(), "too_few_corners");

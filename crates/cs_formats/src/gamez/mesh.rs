@@ -7,12 +7,13 @@
 //! or unsupported face is counted and named instead of being dropped.
 //!
 //! The IR is a new-engine design (claim class *Designed*): no Crimson Skies
-//! mesh layout is parsed yet (stage F10-B), so nothing here states which
-//! stored field feeds which IR field.
+//! mesh layout is parsed yet, so nothing here states which stored field
+//! feeds which IR field.
 
 use std::fmt;
 
-use super::strip::{StripError, StripTriangle, decode_strip};
+use super::polygon::{NgonIssue, triangulate_polygon};
+use super::strip::{StripError, decode_strip};
 
 /// How a polygon's corners form triangles. Which stored flag selects which
 /// kind is a variant fact the reader has to establish.
@@ -20,8 +21,8 @@ use super::strip::{StripError, StripTriangle, decode_strip};
 pub enum PrimitiveKind {
     /// Corners in triangle-strip order ([`decode_strip`]).
     TriangleStrip,
-    /// One polygon outline. Three corners are one triangle; more need the
-    /// validated triangulation of stage F10-B.
+    /// One polygon outline. Three corners are one triangle; more are
+    /// triangulated by [`triangulate_polygon`], never fanned.
     Polygon,
 }
 
@@ -101,11 +102,13 @@ pub enum FaceIssue {
         /// `"position"`, `"normal"`, `"uv"` or `"color"`.
         attribute: &'static str,
     },
-    /// A polygon with more than three corners: its triangulation must be
-    /// validated (stage F10-B), not fanned.
+    /// A polygon with more than three corners whose outline cannot be
+    /// triangulated without guessing; it is reported, not fanned.
     UnsupportedNgon {
         /// Corners stored.
         corners: usize,
+        /// What the outline check found.
+        reason: NgonIssue,
     },
 }
 
@@ -121,8 +124,8 @@ impl FaceIssue {
         }
     }
 
-    /// The geometry is well-formed but this stage cannot triangulate it.
-    /// Every other issue means the stored face is invalid.
+    /// Every index and value is valid but the outline cannot be
+    /// triangulated. Every other issue means the stored face is invalid.
     pub fn is_unsupported(&self) -> bool {
         matches!(self, Self::UnsupportedNgon { .. })
     }
@@ -154,8 +157,8 @@ impl fmt::Display for FaceIssue {
             Self::NonFinite { corner, attribute } => {
                 write!(f, "{code}: corner {corner} has a non-finite {attribute}")
             }
-            Self::UnsupportedNgon { corners } => {
-                write!(f, "{code}: polygon with {corners} corners")
+            Self::UnsupportedNgon { corners, reason } => {
+                write!(f, "{code}: polygon with {corners} corners: {reason}")
             }
         }
     }
@@ -180,7 +183,8 @@ pub enum FaceStatus {
 pub struct MeshTriangle {
     /// Polygon in stored order.
     pub polygon: usize,
-    /// Strip step for strips, 0 for a three-corner polygon.
+    /// Strip step for strips; for polygons the triangle's place in the
+    /// polygon's triangulation (0 for a three-corner polygon).
     pub step: usize,
     /// Corners of that polygon, in drawing order.
     pub corners: [usize; 3],
@@ -259,11 +263,13 @@ impl RawMesh {
                     let before = topology.triangles.len();
                     topology
                         .triangles
-                        .extend(triangles.into_iter().map(|t| MeshTriangle {
-                            polygon,
-                            step: t.step,
-                            corners: t.corners,
-                            positions: t.indices,
+                        .extend(triangles.into_iter().enumerate().map(|(step, corners)| {
+                            MeshTriangle {
+                                polygon,
+                                step,
+                                corners,
+                                positions: corners.map(|c| face.corners[c].position),
+                            }
                         }));
                     let added = &topology.triangles[before..];
                     FaceStatus::Decoded {
@@ -278,7 +284,9 @@ impl RawMesh {
         topology
     }
 
-    fn face_triangles(&self, face: &RawPolygon) -> Result<Vec<StripTriangle>, FaceIssue> {
+    /// Corner triples of `face` in drawing order, one per strip step or
+    /// triangulation triangle.
+    fn face_triangles(&self, face: &RawPolygon) -> Result<Vec<[usize; 3]>, FaceIssue> {
         let corners = face.corners.len();
         let positions: Vec<u32> = face.corners.iter().map(|c| c.position).collect();
         // A three-corner polygon is a one-step strip: same corners, same
@@ -293,9 +301,16 @@ impl RawMesh {
             self.check_corner(corner, raw)?;
         }
         if face.kind == PrimitiveKind::Polygon && corners > 3 {
-            return Err(FaceIssue::UnsupportedNgon { corners });
+            // Indices were checked above.
+            let outline: Vec<[f32; 3]> = face
+                .corners
+                .iter()
+                .map(|c| self.positions[c.position as usize])
+                .collect();
+            return triangulate_polygon(&outline)
+                .map_err(|reason| FaceIssue::UnsupportedNgon { corners, reason });
         }
-        Ok(triangles)
+        Ok(triangles.into_iter().map(|t| t.corners).collect())
     }
 
     fn check_corner(&self, corner: usize, raw: &RawCorner) -> Result<(), FaceIssue> {
