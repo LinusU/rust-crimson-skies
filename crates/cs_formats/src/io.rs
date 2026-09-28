@@ -16,6 +16,11 @@
 //!    an over-deep nest never allocates, and neither budget can be silently
 //!    widened — the defaults are designed safety budgets and every other
 //!    value is passed in explicitly by the parse that tested it.
+//! 6. [`ParseContext::parse`] is the entrypoint every parser runs through: it
+//!    hands out one reader and both budgets under a single provenance label,
+//!    rolls an attempt's charges back when it fails (so the attempt can be
+//!    retried) and stamps the entrypoint's name onto the error as it
+//!    propagates out ([`ParseError::in_scope`], stage F03-C).
 
 use std::sync::atomic::{AtomicU32, Ordering};
 
@@ -283,6 +288,12 @@ impl<'a> Reader<'a> {
 /// is an independent ledger that carries the same `limit` and the same `used`
 /// bytes — never a shared counter and never a wider allowance — so no code
 /// path can quietly enlarge what one parse may allocate.
+///
+/// `used` has exactly three writers: [`Self::reserve`], [`Self::reserve_extent`]
+/// and the rollback [`ParseContext::parse`] performs when an attempt fails
+/// (the attempt's buffers are released as it returns, so its charges must not
+/// be booked against a retry). All three can only move `used` towards, and
+/// never past, `limit`.
 #[derive(Clone, Debug)]
 pub struct AllocationBudget {
     /// Provenance label carried by this budget's errors.
@@ -411,6 +422,22 @@ impl AllocationBudget {
         self.used += bytes;
         Ok(())
     }
+
+    /// Restores the ledger to a use mark taken earlier from [`Self::used`].
+    ///
+    /// The only caller is [`ParseContext::parse`]: when an attempt fails, the
+    /// buffers it reserved are locals of that attempt and are released as it
+    /// returns, so the bytes it charged must not stay booked against a later,
+    /// honest attempt (F03-C's teardown/retry). The mark always comes from
+    /// this same budget's earlier state, and the update only ever moves the
+    /// ledger *backwards*, so `used <= limit` still holds and no allowance is
+    /// widened — a refused reservation is still never charged, and a
+    /// successful attempt is still never rolled back.
+    fn rollback_to(&mut self, mark: u64) {
+        if mark < self.used {
+            self.used = mark;
+        }
+    }
 }
 
 /// An independent recursion limit for one parse.
@@ -538,5 +565,138 @@ impl RecursionGuard<'_> {
 impl Drop for RecursionGuard<'_> {
     fn drop(&mut self) {
         self.budget.depth.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// The shared context of one parse: provenance plus both independent budgets.
+///
+/// A parse has exactly one container label, so the reader and the budgets an
+/// attempt uses all report failures against the same archive name instead of
+/// three strings a caller had to keep in step. [`Self::new`] takes both limits
+/// explicitly (the tested configuration surface); [`Self::with_defaults`] uses
+/// the designed [`AllocationBudget::DEFAULT_LIMIT`] and
+/// [`RecursionBudget::DEFAULT_MAX_DEPTH`].
+///
+/// [`Self::parse`] is the entrypoint through which a parser runs:
+///
+/// * the reader, the allocation budget and the recursion budget are handed to
+///   one attempt as three *separate* references, so holding a
+///   [`RecursionGuard`] never blocks a reservation and vice versa — the
+///   nesting that non-negotiable #2 and #3 require of a real parser;
+/// * a failed attempt rolls its allocation charges back to what the ledger
+///   held before it and leaves the recursion depth at zero (its guards drop
+///   with it), so the same context can retry the bytes honestly;
+/// * an error crossing the entrypoint is scoped with its name
+///   ([`ParseError::in_scope`]), keeping container, absolute offset and the
+///   expected/observed conditions intact.
+///
+/// This is engineered plumbing (EvidenceClass `Designed`): no original file
+/// layout, limit or game rule is implied by it.
+///
+/// ```
+/// use cs_formats::{ParseContext, ParseError};
+///
+/// fn header_magic(context: &mut ParseContext, bytes: &[u8]) -> Result<u32, ParseError> {
+///     context.parse("record", bytes, |reader, _allocation, _recursion| {
+///         reader.read_u32("header.magic")
+///     })
+/// }
+/// ```
+#[derive(Debug)]
+pub struct ParseContext {
+    /// Provenance label shared by this parse's reader and budgets.
+    container: String,
+    allocation: AllocationBudget,
+    recursion: RecursionBudget,
+}
+
+impl ParseContext {
+    /// A context for one container with explicit limits: `allocation_limit`
+    /// bytes (see [`AllocationBudget::new`]) and `max_depth` nested levels
+    /// (see [`RecursionBudget::new`]). Both are passed by the parse that
+    /// tested them; neither has a silent fallback.
+    pub fn new(container: impl Into<String>, allocation_limit: u64, max_depth: u32) -> Self {
+        let container = container.into();
+        Self {
+            allocation: AllocationBudget::new(container.clone(), allocation_limit),
+            recursion: RecursionBudget::new(container.clone(), max_depth),
+            container,
+        }
+    }
+
+    /// A context at the two designed defaults.
+    pub fn with_defaults(container: impl Into<String>) -> Self {
+        let container = container.into();
+        Self {
+            allocation: AllocationBudget::with_defaults(container.clone()),
+            recursion: RecursionBudget::with_defaults(container.clone()),
+            container,
+        }
+    }
+
+    /// The archive/container every error of this parse reports.
+    pub fn container(&self) -> &str {
+        &self.container
+    }
+
+    /// This parse's allocation ledger, for inspection
+    /// ([`AllocationBudget::limit`], [`AllocationBudget::used`],
+    /// [`AllocationBudget::remaining`]).
+    pub fn allocation(&self) -> &AllocationBudget {
+        &self.allocation
+    }
+
+    /// This parse's recursion ledger, for inspection
+    /// ([`RecursionBudget::max_depth`], [`RecursionBudget::depth`]).
+    pub fn recursion(&self) -> &RecursionBudget {
+        &self.recursion
+    }
+
+    /// Runs one attempt of the parser entrypoint named `entrypoint` over
+    /// `bytes`.
+    ///
+    /// The closure is the parser: it gets a reader over `bytes` carrying this
+    /// context's container label, this parse's allocation budget and this
+    /// parse's recursion budget as three independent references, so it can
+    /// hold a [`RecursionGuard`] across a [`AllocationBudget::reserve`]
+    /// without the borrow checker forcing one limit to be dropped for the
+    /// other. Nothing is charged for entering: only the reservations the
+    /// attempt actually makes are booked.
+    ///
+    /// When the attempt returns `Err`, the context is left ready for a retry:
+    ///
+    /// * the attempt's guards and buffers are gone with it (Rust drops the
+    ///   closure's locals when it returns), so the recursion depth is whatever
+    ///   it was before the attempt;
+    /// * its reservation charges are rolled back to the ledger mark taken on
+    ///   entry, so a failed attempt cannot drain the budget of a later,
+    ///   honest one — the rollback assumes the attempt kept nothing it
+    ///   allocated, which is what its locals being dropped gives it;
+    /// * the error is scoped with `entrypoint` and then propagated unchanged
+    ///   otherwise: same container, same absolute offset, same kind and
+    ///   conditions.
+    ///
+    /// A successful attempt keeps its charges: the ledger of one parse only
+    /// accumulates, and a refused reservation was never charged in the first
+    /// place.
+    pub fn parse<T>(
+        &mut self,
+        entrypoint: &str,
+        bytes: &[u8],
+        f: impl FnOnce(
+            &mut Reader<'_>,
+            &mut AllocationBudget,
+            &RecursionBudget,
+        ) -> Result<T, ParseError>,
+    ) -> Result<T, ParseError> {
+        let mark = self.allocation.used();
+        let mut reader = Reader::new(self.container.clone(), bytes);
+        match f(&mut reader, &mut self.allocation, &self.recursion) {
+            Ok(value) => Ok(value),
+            Err(error) => {
+                self.allocation.rollback_to(mark);
+                Err(error.in_scope(entrypoint))
+            }
+        }
     }
 }

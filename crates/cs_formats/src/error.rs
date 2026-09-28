@@ -176,6 +176,27 @@ impl ParseError {
             observed: format!("level {requested_level} requested"),
         }
     }
+
+    /// Adds the scope of the parser entrypoint this failure propagated out
+    /// of to its logical field path (`specs/F03-bounded-binary-parsing-
+    /// primitives.md`, stage F03-C).
+    ///
+    /// Each entrypoint names itself as an error crosses it, so the field path
+    /// reads from the outside in: a failure raised as `header.count` inside
+    /// the `entries[3]` entrypoint, itself run by the `record` entrypoint, is
+    /// reported as `record.entries[3].header.count`. Container, absolute
+    /// offset, kind and the expected/observed conditions are untouched —
+    /// scoping only refines *where in the logical structure* the failure
+    /// happened, never where the bytes were.
+    ///
+    /// An empty scope adds nothing, so a caller that has no name to contribute
+    /// can pass `""` without producing a leading separator.
+    pub fn in_scope(mut self, scope: &str) -> Self {
+        if !scope.is_empty() {
+            self.field = format!("{scope}.{}", self.field);
+        }
+        self
+    }
 }
 
 impl fmt::Display for ParseError {
