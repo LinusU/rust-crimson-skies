@@ -180,6 +180,27 @@ All commands from the repository root on branch
 
 No protected path, original datum or binary file is involved.
 
+## Review follow-up (reviewer: deepseek-1, fresh context)
+
+The reviewer found one code/document contradiction and fixed it in the
+reviewer-owned change on this branch:
+
+- `ContentId` keys of only separators (`"."`, `".."`, `"---"`) were accepted,
+  even though this file's module doc and `normalize_key`'s doc both promise a
+  key "can never smuggle ... a `.` or `..` component" and the
+  `IDENTITY-CONTENT` contract requires "validate at construction; no
+  unchecked path join". `normalize_key` now also requires at least one ASCII
+  alphanumeric character (new `ContentIdError::NoAlphanumeric`), so a
+  dot-only key is refused while an interior dot (`m01.intro`) is still valid.
+  The existing `accept_f14_a_content_id_is_namespaced_normalized_and_path_safe`
+  test gained `"."`, `".."`, `"---"` and the positive `"m01.intro"` case; the
+  test count is unchanged (12).
+- The implementation, catalog, fixture and all other acceptance tests were
+  accepted as-is after independent re-run of fmt, clippy, the full workspace
+  suite and the `accept_f14_a_` selection, plus reviewer mutation probes
+  (`unsupported_count -> 0` and `is_original -> true` both fail the selected
+  tests; reverted).
+
 ## Sources
 
 `specs/F14-canonical-content-catalog-and-dependency-closure.md`,

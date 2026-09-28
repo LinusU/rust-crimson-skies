@@ -10,13 +10,13 @@
 //!
 //! [`ContentId`] derives from a semantic source key plus a namespace (the
 //! [`ContentKind`]) — never from enumeration order — and is normalized to
-//! lowercase `[a-z0-9._-]` at construction, so the same content yields the
-//! same id on every run and a key can never smuggle a path separator, a `.`
-//! or `..` component or an absolute/drive spelling into a lookup
-//! (non-negotiable behavior 4 and the `IDENTITY-CONTENT` contract's
-//! `ContentId` rule: "validate at construction; no unchecked path join").
-//! Original display names are carried outside the identity in
-//! [`CatalogElement::display_name`].
+//! lowercase `[a-z0-9._-]` with at least one alphanumeric at construction, so
+//! the same content yields the same id on every run and a key can never
+//! smuggle a path separator, a `.` or `..` component or an absolute/drive
+//! spelling into a lookup (non-negotiable behavior 4 and the
+//! `IDENTITY-CONTENT` contract's `ContentId` rule: "validate at
+//! construction; no unchecked path join"). Original display names are
+//! carried outside the identity in [`CatalogElement::display_name`].
 //!
 //! Every normalized value travels as a [`Known`] or a [`Resolved`], so a
 //! field is either a value with [`Provenance`] or an explicit
@@ -295,6 +295,9 @@ pub enum ContentIdError {
         /// The offending character.
         ch: char,
     },
+    /// The key had no ASCII alphanumeric character: it was only separators
+    /// (`.`/`-`/`_`) and could spell a `.` or `..` path component.
+    NoAlphanumeric,
 }
 
 impl fmt::Display for ContentIdError {
@@ -316,6 +319,10 @@ impl fmt::Display for ContentIdError {
             Self::BadKeyCharacter { ch } => {
                 write!(f, "content id key contains disallowed character {ch:?}")
             }
+            Self::NoAlphanumeric => write!(
+                f,
+                "content id key must contain at least one ASCII alphanumeric character"
+            ),
         }
     }
 }
@@ -323,13 +330,14 @@ impl fmt::Display for ContentIdError {
 impl std::error::Error for ContentIdError {}
 
 /// Validates and normalizes a [`ContentId`] key: lowercased ASCII
-/// alphanumerics plus `.`, `_` and `-`.
+/// alphanumerics plus `.`, `_` and `-`, at least one of them alphanumeric.
 ///
-/// The grammar deliberately excludes `/`, `\`, `:` and `.`-only components,
-/// so a key can never be joined to a filesystem path or escape a namespace
-/// (`IDENTITY-CONTENT`: "validate at construction; no unchecked path
-/// join"). Uppercase input is folded rather than rejected: a semantic source
-/// key such as `M01` and `m01` name the same content, and identity is
+/// The grammar deliberately excludes `/`, `\`, `:`, requires at least one
+/// alphanumeric character and so refuses the `.`/`..`/blank path components,
+/// meaning a key can never be joined to a filesystem path or escape a
+/// namespace (`IDENTITY-CONTENT`: "validate at construction; no unchecked
+/// path join"). Uppercase input is folded rather than rejected: a semantic
+/// source key such as `M01` and `m01` name the same content, and identity is
 /// normalized centrally while the original display name stays outside it.
 fn normalize_key(source_key: &str) -> Result<String, ContentIdError> {
     if source_key.is_empty() {
@@ -343,6 +351,9 @@ fn normalize_key(source_key: &str) -> Result<String, ContentIdError> {
         if !ch.is_ascii_lowercase() && !ch.is_ascii_digit() && !matches!(ch, '.' | '_' | '-') {
             return Err(ContentIdError::BadKeyCharacter { ch });
         }
+    }
+    if !key.bytes().any(|byte| byte.is_ascii_alphanumeric()) {
+        return Err(ContentIdError::NoAlphanumeric);
     }
     Ok(key)
 }
@@ -1109,6 +1120,9 @@ mod tests {
             ("c1\\planes", ContentIdError::BadKeyCharacter { ch: '\\' }),
             ("c:1", ContentIdError::BadKeyCharacter { ch: ':' }),
             ("c1 planes", ContentIdError::BadKeyCharacter { ch: ' ' }),
+            (".", ContentIdError::NoAlphanumeric),
+            ("..", ContentIdError::NoAlphanumeric),
+            ("---", ContentIdError::NoAlphanumeric),
         ] {
             assert_eq!(
                 ContentId::from_source(ContentKind::World, key),
@@ -1116,6 +1130,12 @@ mod tests {
                 "path-like key {key:?} is refused"
             );
         }
+
+        assert_eq!(
+            ContentId::from_source(ContentKind::Mission, "m01.intro").expect("dotted key"),
+            ContentId::parse("mission/m01.intro").expect("dotted key round-trips"),
+            "an interior dot is allowed; only a dot-only key is refused"
+        );
 
         assert_eq!(ContentId::parse(""), Err(ContentIdError::Empty));
         assert_eq!(
