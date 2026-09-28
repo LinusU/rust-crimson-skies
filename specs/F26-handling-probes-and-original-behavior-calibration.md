@@ -69,6 +69,8 @@ Work only on this stage. Collect actual integration/reference evidence; repair d
 
 Required task-test prefix: `accept_f26_d_`. Minimum scenario: Armor/mass extremes remain flyable and retain expected performance ordering.
 
+Owner ruling 2026-09-28 ([owner ruling](README.md#owner-ruling-2026-09-28-first-playable-sequencing-audit-plan-sync-356)): this stage also waits for REF-OWNER-FIRST-CAPTURE (#358). That first capture covers one airframe and loadout; approving the complete roster still requires reference evidence for every airframe.
+
 Before editing, list the specific functions/files and one observable failure. If the slice exceeds one format variant, one focused system behavior or one bounded UI path, follow TASK-SPLITTING.md rather than producing a giant change. Preserve all parent acceptance criteria.
 
 ## Evidence and completion

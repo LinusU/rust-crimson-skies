@@ -69,6 +69,8 @@ Work only on this stage. Collect actual integration/reference evidence; repair d
 
 Required task-test prefix: `accept_f13_d_`. Minimum scenario: Compare two original runs differing in one controlled event to distinguish timer from kill-count triggers.
 
+Owner ruling 2026-09-28 ([owner ruling](README.md#owner-ruling-2026-09-28-first-playable-sequencing-audit-plan-sync-356)): this stage also waits for REF-OWNER-FIRST-CAPTURE (#358). The first M01 capture is necessary, not sufficient: the complete mission-language plan still needs measured evidence for every campaign-reachable instruction and binding.
+
 Before editing, list the specific functions/files and one observable failure. If the slice exceeds one format variant, one focused system behavior or one bounded UI path, follow TASK-SPLITTING.md rather than producing a giant change. Preserve all parent acceptance criteria.
 
 ## Evidence and completion
