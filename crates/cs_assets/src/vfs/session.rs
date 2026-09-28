@@ -162,9 +162,8 @@ impl SessionBuilder {
         Ok(self)
     }
 
-    /// Mounts an installation with the **designed** baseline layout:
-    ///
-    /// Both kinds are [`MountBuilder::retail`] sources.
+    /// Mounts an installation with the **designed** baseline layout, both
+    /// kinds as [`MountBuilder::retail`] sources:
     ///
     /// * `install` — the whole tree at `host_root`, [`PrecedenceClass::Shared`],
     ///   namespace [`INSTALL_NAMESPACE`], container label `.`;

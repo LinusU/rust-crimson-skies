@@ -573,7 +573,7 @@ pub fn resolve_report_json(
     )
 }
 
-/// The ordered attempts of a trace as a JSON array.
+/// One origin of an ambiguous or blocked lookup as a JSON object.
 fn origin_json(origin: &ConflictOrigin) -> String {
     format!(
         "{{\"mount\": {}, \"container\": {}, \"member_spelling\": {}, \
@@ -588,6 +588,7 @@ fn origin_json(origin: &ConflictOrigin) -> String {
     )
 }
 
+/// The ordered attempts of a trace as a JSON array.
 fn trace_json(trace: &ResolutionTrace) -> String {
     let attempts: Vec<String> = trace
         .attempts
