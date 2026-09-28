@@ -26,12 +26,18 @@
 //! with a pinned reference extraction, with an optional private contact
 //! sheet. [`catalog`] is the F14-A synthetic content-catalog fixture: ready
 //! and unsupported stable-id rows through the canonical `cs_content`
-//! constructor, never a retail entry.
+//! constructor, never a retail entry. [`reference_capture`] is the
+//! REF-CAPTURE-PROTOCOL record model (#357): the operator worksheet shape
+//! for an original-game capture — fingerprints, timebase, units, artifacts,
+//! observer and capture method — with its three-valued admission rules
+//! (valid, invalid, unavailable) and the reserved-holdout gate that keeps
+//! fitting acceleration alone from standing in for handling fidelity.
 
 pub mod catalog;
 pub mod evidence;
 pub mod install;
 pub mod interp;
+pub mod reference_capture;
 pub mod resolve;
 pub mod rof;
 pub mod textures;
