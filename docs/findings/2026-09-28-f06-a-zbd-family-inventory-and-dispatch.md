@@ -89,6 +89,13 @@ case-insensitive and spelling-preserving, and it applies only under the
 observed content root `zbd/` (all 184 retail `.zbd` archives live there —
 `docs/findings/2026-09-24-f02-d-installation-audit.md`).
 
+Each rule is also scoped to the directory level its name was observed at
+(`RoleLevel`, from the F02-C findings): `interp.zbd` and `planes.zbd`
+directly under `zbd/`; `cam_anim.zbd`, `gamez.zbd`, `texture.zbd` and
+`rtexture*.zbd` in a world group; `mis_anim.zbd` in a mission directory;
+`zrdr.zbd` in both. The same basename at another level (for example
+`zbd/c1/planes.zbd`) matches no rule, because nothing observed it there.
+
 ## Design decisions
 
 - **Dispatch is two-key, and the two keys can disagree — visibly.** The
@@ -167,6 +174,7 @@ All in `crates/cs_formats/tests/zbd/main.rs`; every one calls
 | `dispatch_failures_carry_a_container_and_a_stable_code` | every error variant: stable `code()`, container label, no probe bytes in the message |
 | `role_inventory_covers_every_observed_archive_name` | every archive name in the F02-C/F02-D findings maps to its family; `texture.zbd` vs `rtexture*` disjoint |
 | `family_inventory_declares_one_reader_per_family` | six rows, unique reader slots, valid `FileFamily` labels, `Sound` still without a role rule |
+| `role_rules_apply_only_at_their_observed_level` | an observed name at an unobserved directory level (or deeper than a mission) is unrecognized and a misplaced `planes.zbd` without a signature dispatches nothing |
 
 ## Mutation probes
 
@@ -180,6 +188,7 @@ and the file restored with `git checkout`:
 | version check removed (`if false`) | `unsupported_header_version_…`, `dispatch_failures_carry_…` |
 | `HeaderMismatch` replaced by a fallback to header-only dispatch | `role_that_names_a_documented_family_…`, `header_and_role_disagree_…`, `dispatch_failures_carry_…` |
 | `role_for_path` ignores the GameZ rows | `two_distinct_headers_…`, `role_inventory_covers_…`, `header_and_role_disagree_…`, `dispatch_failures_carry_…` |
+| `RoleRule::matches` ignores the rule's levels (review) | `role_rules_apply_only_at_their_observed_level` |
 
 ## Recorded unknowns (filed as follow-up tasks)
 
@@ -187,6 +196,12 @@ and the file restored with `git checkout`:
   is tied to sound bytes, so `ZbdFamily::Sound` has no role rule and no
   probe can reach the sound reader yet. Needs the pinned source (S02/S06)
   and a retail check (F06-B/F06-D).
+- **Four unnamed `zbd`-level archives.** The F02-D audit counts 6
+  archives directly under `ZBD/`; committed evidence names only
+  `interp.zbd` and `planes.zbd`. The other four basenames (candidates for
+  the sound family, but that is not established) are not recorded in the
+  pack, so they fall through to `unknown_family` until task #340 or F06-D
+  records them.
 - **Header layouts for sound, reader, texture, GameZ and animation.** Only
   the INTERP signature/version is documented; the other five families
   dispatch on role alone with `HeaderStatus::Unvalidated`. Each needs its
