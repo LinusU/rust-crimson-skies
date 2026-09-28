@@ -454,9 +454,9 @@ impl std::error::Error for ReadError {
 /// Reads `length` bytes starting `start` bytes into `member` of `mount`.
 ///
 /// The range is checked against the member before anything is opened.
-/// Every component of the host path below the mount root is checked not to
-/// be a symbolic link, the file is opened read-only, and on Unix the opened
-/// file is checked to be the same inode the checked path names, so a link
+/// The mount root and every component of the host path below it are
+/// checked not to be symbolic links, the file is opened read-only, and on
+/// Unix the opened file is checked to be the same inode the checked path names, so a link
 /// swapped in between the check and the open is refused too. The file's
 /// length must still equal the mounted length.
 pub(crate) fn read_member_range(
@@ -490,6 +490,12 @@ pub(crate) fn read_member_range(
         path: path.clone(),
         source,
     };
+    // The root was refused as a link when it was mounted; one swapped in
+    // since is refused too, so no read reaches through it.
+    let root_metadata = fs::symlink_metadata(root).map_err(io_error)?;
+    if root_metadata.file_type().is_symlink() || !root_metadata.is_dir() {
+        return Err(ReadError::NotARegularFile { path: path.clone() });
+    }
     let mut checked = root.to_path_buf();
     let mut last = None;
     for component in host_relative.components() {

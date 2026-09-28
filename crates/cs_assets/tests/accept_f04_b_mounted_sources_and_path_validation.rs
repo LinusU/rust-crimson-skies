@@ -339,6 +339,42 @@ fn accept_f04_b_member_swapped_for_link_after_mount_is_not_read() {
     );
 }
 
+/// A mount root replaced by a link after mounting is refused at read time,
+/// even when the link target holds a same-named, same-length file.
+#[cfg(unix)]
+#[test]
+fn accept_f04_b_mount_root_swapped_for_link_after_mount_is_not_read() {
+    use std::os::unix::fs::symlink;
+
+    let outside = TempTree::new("f04-b-root-swap-outside");
+    outside.write("sky.dds", b"same-length!");
+    let tree = TempTree::new("f04-b-root-swap");
+    tree.write("root/sky.dds", b"inside bytes");
+    let root = tree.root().join("root");
+
+    let mounted = mount_directory(
+        builder("rootswap", "Data/RootSwap", PrecedenceClass::Shared),
+        &root,
+    )
+    .expect("the root mounts");
+    let mut vfs = Vfs::new();
+    vfs.mount(mounted.mount).expect("mount id is unique");
+    let resolved = vfs
+        .resolve(&context(), &key("sky.dds"))
+        .expect("the member resolves");
+    assert_eq!(vfs.read_all(&resolved).expect("reads"), b"inside bytes");
+
+    fs::remove_dir_all(&root).expect("root removed");
+    symlink(outside.root(), &root).expect("root link swapped in");
+    let error = vfs
+        .read_range(&resolved, 0, 4)
+        .expect_err("a swapped-in root link is not followed");
+    assert!(
+        matches!(error, ReadError::NotARegularFile { .. }),
+        "{error}"
+    );
+}
+
 /// AC01 over real bytes: two world directories hold the same-named texture
 /// with different contents; each world's context resolves and reads its
 /// own file, with random reads inside the member and refusal outside it.
