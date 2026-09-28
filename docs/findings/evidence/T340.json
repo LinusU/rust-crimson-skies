@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "T340",
+ "candidate_tree": "f30e2aa67642df7a7e81a04ace6f532fbc6bf0a6",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-09-28T17:00:56Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_t340_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/agent-2", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 8, "executed": 8, "passed": 8, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_t340_content_root_reader_and_image_archives", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_t340_animation_signature_validates_camera_and_mission_archives", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_t340_header_only_dispatch_reaches_the_new_families", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_t340_gamez_signature_validates_planes_and_world_gamez", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_t340_documented_signatures_conflict_with_other_roles", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_t340_sound_archives_route_to_the_sound_reader", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_t340_other_game_versions_are_refused", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_t340_retail_every_zbd_archive_dispatches_to_its_family", "status": "pass", "evidence": ["cargo-test.log"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "2a6c01f90e65111f20313acfd330b43a5733e3ea0bf47c369ba1fd9e3d8fb3a6", "kind": "log"}, {"path": "zbd-dispatch.json", "sha256": "cb33b759fe4ca0cf5969def5f86b9a13771c5e676ea22d36d11f0cbcdf0b19df", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "claude-1 (implementing agent, self-check; the Rally reviewer regenerates this report on the rebased commit)", "method": "acceptance suite run locally with the retail capability; this harness derives every field from the recorded log, production discovery of $CS_GAME_DIR, the production dispatch of every retail .zbd archive (zbd-dispatch.json), rustc and Cargo.lock; validated with tools/validate_evidence.py --require-pass"},
+ "claim": "implemented"
+}
