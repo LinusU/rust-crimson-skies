@@ -203,7 +203,7 @@ is charged against:
   exactly as they parse a real member. Nothing is hand-fed to the decoder
   that the decoder did not read out of a member's own bytes.
 
-## Test inventory (`accept_f06_c_*`, 19 tests: 9 in `cs_formats`, 10 in
+## Test inventory (`accept_f06_c_*`, 20 tests: 9 in `cs_formats`, 11 in
 `cs_assets`)
 
 `crates/cs_formats/tests/zbd/samples.rs` (9):
@@ -220,7 +220,7 @@ is charged against:
 | `an_empty_payload_is_zero_frames_not_an_error` | a member with an empty `data` chunk holds no samples, which is a whole number of zero frames |
 | `the_data_payload_can_be_decoded_on_its_own` | `decode_payload` is the same decode over a payload a caller already holds, and produces an identical result and charge |
 
-`crates/cs_assets/src/zbd.rs` (10, all through a mounted content session over
+`crates/cs_assets/src/zbd.rs` (11, all through a mounted content session over
 authored fixture trees):
 
 | Test | Covers |
@@ -235,6 +235,7 @@ authored fixture trees):
 | `a_member_reaching_into_the_index_fails_its_own_row_only` | the readers get the bytes *before* the index: a lying extent is `member_out_of_bounds` on its own row, counted, while its honest sibling is decoded |
 | `a_container_outlives_its_session_and_is_refused_by_another` | teardown and stale state: the container and its assets stay usable after `close()`, and a replacement session refuses the previous generation |
 | `a_listing_refused_by_a_starved_budget_can_be_retried` | retry: a zero-budget context refuses the index, leaves the ledger and depth alone, and a funded context reads the same container |
+| `an_index_read_from_another_container_is_refused` | added in review: `sound_archive`/`sound_assets` refuse an index sliced from another container's bytes, or a table carrying another container's label, with `foreign_index`, instead of applying foreign extents to this container |
 
 ## Mutation probes
 
