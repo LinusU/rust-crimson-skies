@@ -1093,11 +1093,10 @@ impl<'a> DecodedInterp<'a> {
 ///   argument is not stored anywhere else.
 ///
 /// What is retained rather than refused: unclaimed regions, two entries
-/// pointing at one script offset, a name field without a `0x00` and non-zero
-/// (`0x00` delimiters), a name field with no `0x00` and non-zero name
-/// padding. Those become [`InterpFinding`]s on the result, because nothing in
-/// the observed format says they are errors and F07-D measures the retail
-/// corpus.
+/// pointing at one script offset, a name field that holds no `0x00`, and
+/// non-zero bytes after a name's `0x00`. Those become [`InterpFinding`]s on
+/// the result, because nothing in the observed format says they are errors
+/// and F07-D measures the retail corpus.
 ///
 /// # Errors
 ///

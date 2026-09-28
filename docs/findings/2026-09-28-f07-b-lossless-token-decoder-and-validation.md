@@ -109,10 +109,10 @@ halves).
 
 ## Tests
 
-`cargo test --workspace --locked -- accept_f07_b_ --include-ignored` — 14
+`cargo test --workspace --locked -- accept_f07_b_ --include-ignored` — 15
 tests, all passing; each also passes alone with `--exact`.
 
-### `crates/cs_formats/tests/interp.rs` (11)
+### `crates/cs_formats/tests/interp.rs` (12)
 
 | Test | Covers |
 | --- | --- |
@@ -127,6 +127,7 @@ tests, all passing; each also passes alone with `--exact`.
 | `unclaimed_regions_are_retained_as_findings` | the gap after the index, the gap between two scripts and the tail after the last script, each located in offset order |
 | `name_field_anomalies_are_reported_not_guessed` | a 120-byte field with no `0x00` keeps the whole field as the name; non-zero padding is located |
 | `decoded_records_are_booked_once_and_refusals_charge_nothing` | the exact charge fits, one byte less is refused with nothing charged, the context retries, and a second decode needs a second charge |
+| `hostile_headers_and_out_of_range_offsets_are_refused` | added in review: a `script_count` the container cannot back (three of them, including `u32::MAX`), a complete index with no script bodies, an offset past the end of the container, and a container that indexes no scripts — with its tail reported rather than dropped |
 
 ### `tools/cs_inspect/src/interp.rs` (3)
 
@@ -166,15 +167,56 @@ tests, all passing; each also passes alone with `--exact`.
 | `cargo run -p cs_inspect --bin cs-inspect -- interp --file <authored container with a tail>` | exit 3 with the unclaimed-region report, as designed |
 | `cargo run -p cs_inspect --bin cs-inspect -- interp --file fixtures/synthetic/synthetic.interp --raw` | exit 0, report parses as JSON |
 
+## Review checks (bunny-1, 2026-09-28)
+
+Recorded so the next reader knows what was independently re-checked, not what
+is claimed to be verified. A Rally merge awards **checked** only.
+
+- **Mutation probes, run again independently** (each reverted; the file under
+  test is production code in every case): the extent bound replaced by the
+  container length → `missing_script_terminator_is_refused` and
+  `extents_come_from_the_offsets_not_the_index_order` fail; the final-`0x00`
+  rule disabled → `unterminated_last_argument_is_refused` fails; the
+  `script_offset`-inside-the-index rule disabled →
+  `script_extents_are_validated_independently` fails; the token build filtered
+  to drop empty arguments (what a join would do) →
+  `tokens_survive_spaces_empty_and_binary_arguments` fails.
+- **Every task test also passes alone with `--exact`** (15 discovered).
+- **Read-only retail probe.** `cs-inspect interp --file "$CS_GAME_DIR/ZBD/interp.zbd"`
+  (the container's own signature is at offset 0 of that archive, so the file is
+  read in place and nothing was exported) exits **0** with an empty
+  `findings` array on 98 scripts, 5083 lines and 11189 tokens, and the report
+  parses as JSON. An independent Python walk of the same bytes (a different
+  implementation of the same layout, not this code) agrees on every count: 98
+  unique script offsets, none inside the index, none shared, all name fields
+  `0x00`-terminated with zero padding, 0 scripts whose extent ran past the next
+  offset, 0 argument-count disagreements, 0 lines whose data does not end in
+  `0x00`, 0 unclaimed bytes, 0 empty tokens. File SHA-256
+  `f5251cb559db1992320247b9674d159a149572e077bc8579ae34d5fbd16254c7`.
+  This says only that these checks pass on one installation's
+  `interp.zbd`; it is **not** F07-D's evidence report and certifies nothing
+  about command semantics, which stay unknown.
+- **One documentation defect fixed:** the "what is retained rather than
+  refused" paragraph of `decode_interp` had been mangled into a sentence that
+  named a name field twice and never mentioned what it meant to.
+- **One test added** (`hostile_headers_and_out_of_range_offsets_are_refused`):
+  the shared header path had no decoder-side negative case, so a future
+  refactor of `read_header_and_index` could have dropped the decoder's own
+  refusals without a test noticing.
+
 ## Unknowns (not guessed)
 
 - **Whether retail `interp.zbd` matches this layout at all** is still
   unmeasured; the layout is from the pinned mech3ax source [S07] and the
-  authored fixture. F07-D measures it with the real file.
+  authored fixture. F07-D measures it with the real file. (A reviewer probe
+  above found this one installation's file does match, byte for byte, on every
+  check the decoder makes; that is a lead, not the measured claim F07-D owes.)
 - **Whether retail data ends every line with a `0x00`.** The decoder refuses
   data that does not, which is stricter than the observed NUL-count check. If
   the corpus shows trailing argument bytes without a delimiter, this rule has
-  to move to a finding; that is F07-D's call, on evidence.
+  to move to a finding; that is F07-D's call, on evidence. (The reviewer probe
+  above found zero such lines in that one file, so the rule is not currently
+  rejecting anything that ships.)
 - **Whether retail scripts share a `script_offset`, overlap, or leave
   unreferenced regions.** Reported as findings rather than refused, so no
   retail data is lost; F07-D decides whether any of them is an error.
