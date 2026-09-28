@@ -557,15 +557,17 @@ impl LoadingPlanReport {
             .count()
     }
 
-    /// Whether the plan is complete: no line is unclassified or malformed,
-    /// every dependency resolved and no dependency is a dynamic lookup.
+    /// Whether the plan is complete: no line failed and every dependency
+    /// resolved.
     ///
-    /// A dynamic lookup makes a plan incomplete on purpose. The original
-    /// engine resolves those names later, so a plan that reported itself
-    /// complete while they were outstanding would claim more than is known.
+    /// A dynamic lookup makes a plan incomplete on purpose, because
+    /// [`DependencyState::Composed`] is not
+    /// [`DependencyState::is_resolved`]: the original engine assembles that key
+    /// later, so a plan that reported itself complete while such a lookup was
+    /// outstanding would claim more than is known. The rule is stated once, on
+    /// the states, rather than restated as a separate count here.
     pub fn is_complete(&self) -> bool {
         self.failures.is_empty()
-            && self.dynamic_lookups == 0
             && self
                 .dependencies
                 .iter()
@@ -1294,7 +1296,15 @@ mod tests {
         assert_eq!(report.stats().loading_commands, 4);
         assert_eq!(report.stats().unclassified_commands, 0);
         assert_eq!(report.stats().malformed_commands, 0);
-        assert!(!report.is_complete());
+        assert!(
+            !report.is_complete(),
+            "a dynamic lookup keeps the plan incomplete"
+        );
+        // The rule is on the state, not on a separate count: a `Composed`
+        // dependency is simply not a resolved one, so removing the
+        // `dynamic_lookups` field from the completeness rule changes nothing.
+        assert!(!report.dependencies()[3].state().is_resolved());
+        assert!(!report.dependencies()[3].state().is_failure());
         let summary = report.describe();
         assert!(summary.contains("1 dynamic"), "{summary}");
         assert!(summary.contains("0 resolved"), "{summary}");
