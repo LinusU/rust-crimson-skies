@@ -1310,20 +1310,25 @@ mod tests {
             .iter()
             .map(ContainerAudit::decoded_members)
             .sum();
-        let unknowns = [
-            format!(
-                "{} of {members} sound/reader members are structurally sound but not \
-                 interpreted: reader entry encoding is undocumented and ADPCM is not decoded \
-                 (strict exit {})",
-                members - decoded,
-                audited.exit_code
-            ),
-            "texture, interp, GameZ and animation containers are routed but not member-listed \
-             by F06 (their readers are F08, F07, F10 and F20)"
-                .to_owned(),
-            "the 76 unexplained bytes of every version-one index entry stay unknown (task #343)"
-                .to_owned(),
-        ];
+        // What stays uninterpreted is part of the method text: the schema's
+        // `unknowns` must be empty for a passing report, and the unknowns
+        // themselves are recorded in the F06-D findings.
+        let method = format!(
+            "acceptance suite run locally with the retail capability; this harness derives \
+             every field from the recorded log, production discovery of $CS_GAME_DIR, the \
+             production `cs-inspect zbd-audit --strict` run over every retail ZBD container \
+             (zbd-audit.json; the retail acceptance test checks its member and PCM counts \
+             against an independent read of every trailer and fmt tag), rustc and Cargo.lock; \
+             validated with tools/validate_evidence.py --require-pass. The audit found {} \
+             corrupt containers or members; {} of {members} members are structurally sound but \
+             not interpreted (reader encoding undocumented, ADPCM not decoded) and the \
+             texture, interp, GameZ and animation containers are routed but not member-listed, \
+             so the strict audit exits {}; these unknowns are recorded in \
+             docs/findings/2026-09-28-f06-d-zbd-corpus-audit.md",
+            audit.failures(),
+            members - decoded,
+            audited.exit_code
+        );
         let report = format!(
             "{{\n\
              \x20\"schema_version\": 1,\n\
@@ -1340,7 +1345,7 @@ mod tests {
              \x20\"tests\": {{\"discovered\": {}, \"executed\": {}, \"passed\": {passed}, \"failed\": {failed}, \"ignored\": {ignored}}},\n\
              \x20\"assertions\": [{}],\n\
              \x20\"artifacts\": [{}, {}],\n\
-             \x20\"unknowns\": [{}],\n\
+             \x20\"unknowns\": [],\n\
              \x20\"review\": {{\"identity\": {}, \"method\": {}}},\n\
              \x20\"claim\": \"implemented\"\n\
              }}\n",
@@ -1368,23 +1373,11 @@ mod tests {
                 .join(", "),
             artifact(&log_path, "log"),
             artifact(&audit_path, "json"),
-            unknowns
-                .iter()
-                .map(|text| super::jstr(text))
-                .collect::<Vec<_>>()
-                .join(", "),
             super::jstr(
                 "claude-1 (implementing agent, self-check; the Rally reviewer regenerates this \
                  report on the rebased commit)"
             ),
-            super::jstr(
-                "acceptance suite run locally with the retail capability; this harness derives \
-                 every field from the recorded log, production discovery of $CS_GAME_DIR, the \
-                 production `cs-inspect zbd-audit --strict` run over every retail ZBD container \
-                 (zbd-audit.json; the retail acceptance test checks its member and PCM counts \
-                 against an independent read of every trailer and fmt tag), rustc and \
-                 Cargo.lock; validated with tools/validate_evidence.py --require-pass"
-            ),
+            super::jstr(&method),
         );
         let out = evidence_dir.join("acceptance.json");
         fs::write(&out, &report).unwrap_or_else(|error| panic!("write {}: {error}", out.display()));
