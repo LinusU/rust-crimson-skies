@@ -275,9 +275,9 @@ fn accept_f10_a_every_broken_or_unsupported_face_is_counted() {
 
 #[test]
 fn accept_f10_a_shared_position_keeps_per_corner_attributes() {
-    // Corners 0 and 3 share position 1 but carry different UVs, colors and
-    // raw flags/material stay as stored; the source-corner map leads back to
-    // each corner so the seam survives into later stages.
+    // Corners 0 and 3 share position 1 but carry different UVs and colors;
+    // raw flags and material stay as stored. The source-corner map leads
+    // back to each corner so the seam survives into later stages.
     let uv_corner = |position, uv: [f32; 2], color: [f32; 3]| RawCorner {
         position,
         normal: Some(0),
