@@ -543,7 +543,10 @@ pub(crate) fn member_matching<'m>(
 
 /// Reads all of `member` and checks its digest against the one recorded
 /// when it was mounted.
-pub(crate) fn read_whole_member(mount: &Mount, member: &MemberRecord) -> Result<Vec<u8>, ReadError> {
+pub(crate) fn read_whole_member(
+    mount: &Mount,
+    member: &MemberRecord,
+) -> Result<Vec<u8>, ReadError> {
     let bytes = source::read_member_range(mount, member, 0, member.size_bytes())?;
     if let Some(mounted) = member.sha256() {
         let found = crate::install::sha256(&bytes);

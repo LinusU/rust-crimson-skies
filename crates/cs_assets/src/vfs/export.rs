@@ -151,7 +151,11 @@ impl fmt::Display for ExportError {
                 path.display()
             ),
             Self::TargetExists { path } => {
-                write!(f, "{} already exists; exports never overwrite", path.display())
+                write!(
+                    f,
+                    "{} already exists; exports never overwrite",
+                    path.display()
+                )
             }
             Self::Read(error) => write!(f, "{error}"),
             Self::Io { path, source } => write!(f, "cannot write {}: {source}", path.display()),
@@ -305,7 +309,12 @@ impl ExportDirectory {
         match fs::symlink_metadata(&target) {
             Ok(_) => return Err(ExportError::TargetExists { path: target }),
             Err(error) if error.kind() == io::ErrorKind::NotFound => {}
-            Err(source) => return Err(ExportError::Io { path: target, source }),
+            Err(source) => {
+                return Err(ExportError::Io {
+                    path: target,
+                    source,
+                });
+            }
         }
 
         let temp = resolved.join(format!(
