@@ -328,7 +328,10 @@ fn lookup(
         Err(ResolveError::Ambiguous { candidates, .. }) => LookupOutcome::Ambiguous(candidates),
         Err(ResolveError::UnmeasuredOrder {
             selected, shadowed, ..
-        }) => LookupOutcome::Blocked { selected, shadowed },
+        }) => LookupOutcome::Blocked {
+            selected: *selected,
+            shadowed,
+        },
         Err(ResolveError::NotFound { .. }) => LookupOutcome::NotFound,
     }
 }

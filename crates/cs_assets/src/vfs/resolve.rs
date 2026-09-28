@@ -212,7 +212,7 @@ pub enum ResolveError {
         /// The key that was asked for.
         key: Box<AssetKey>,
         /// The origin the designed order would have served.
-        selected: ConflictOrigin,
+        selected: Box<ConflictOrigin>,
         /// Every lower-ranked origin with different or unknown bytes.
         shadowed: Vec<ConflictOrigin>,
         /// The attempts made.
@@ -539,7 +539,7 @@ impl Vfs {
         }
         Err(ResolveError::UnmeasuredOrder {
             key: Box::new(key.clone()),
-            selected: origin_of(mount, key),
+            selected: Box::new(origin_of(mount, key)),
             shadowed,
             trace: Box::new(resolved.trace),
         })
