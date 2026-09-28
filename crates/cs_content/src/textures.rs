@@ -319,6 +319,13 @@ pub enum TextureAttempt {
         /// Every entry that stores it, in table order.
         entries: Vec<usize>,
     },
+    /// The archive's table was indexed by position, not by name.
+    Entry {
+        /// The position asked for.
+        entry_index: usize,
+        /// How many entries the table holds.
+        entries: usize,
+    },
 }
 
 impl fmt::Display for TextureAttempt {
@@ -330,6 +337,10 @@ impl fmt::Display for TextureAttempt {
                 trace,
             } => write!(f, "archive {archive} from {mount} [{trace}]"),
             Self::Name { name, entries } => write!(f, "name {name:?} at entries {entries:?}"),
+            Self::Entry {
+                entry_index,
+                entries,
+            } => write!(f, "entry {entry_index} of {entries}"),
         }
     }
 }
@@ -354,7 +365,8 @@ impl ResolvedTexture {
         &self.archive_span
     }
 
-    /// The ordered attempts: the archive resolution, then the name lookup.
+    /// The ordered attempts: the archive resolution, then the name (or
+    /// entry) lookup.
     pub fn attempts(&self) -> &[TextureAttempt] {
         &self.attempts
     }
@@ -404,6 +416,13 @@ pub enum TextureResolveError {
         /// The attempts taken; the last names every entry.
         attempts: Vec<TextureAttempt>,
     },
+    /// The archive's table has no entry at the position asked for.
+    EntryNotFound {
+        /// The archive key asked for.
+        archive: Box<AssetKey>,
+        /// The attempts taken; the last names the table length.
+        attempts: Vec<TextureAttempt>,
+    },
     /// A resolved texture handed back to this catalog did not come from it.
     NotFromThisCatalog {
         /// The texture handed in.
@@ -420,6 +439,7 @@ impl TextureResolveError {
             Self::ArchiveFailed { .. } => "archive_failed",
             Self::NotFound { .. } => "texture_not_found",
             Self::Duplicate { .. } => "duplicate_texture_name",
+            Self::EntryNotFound { .. } => "texture_entry_not_found",
             Self::NotFromThisCatalog { .. } => "not_from_this_catalog",
         }
     }
@@ -459,6 +479,10 @@ impl fmt::Display for TextureResolveError {
                 "texture {reference} is stored more than once: {}",
                 attempts(tried)
             ),
+            Self::EntryNotFound {
+                archive,
+                attempts: tried,
+            } => write!(f, "no texture entry in {archive}: {}", attempts(tried)),
             Self::NotFromThisCatalog { id } => {
                 write!(f, "texture {id} was not resolved by this catalog")
             }
@@ -841,6 +865,48 @@ impl TextureCatalog {
             }),
             _ => Err(TextureResolveError::Duplicate {
                 reference: Box::new(reference.clone()),
+                attempts,
+            }),
+        }
+    }
+
+    /// Resolves the texture at table position `entry_index` of `archive`,
+    /// whatever its name. This is how a whole-archive consumer (the F08-D
+    /// decode audit) reaches every entry, including names the archive stores
+    /// more than once, which [`Self::resolve`] refuses by design.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::resolve`] for the session and the archive;
+    /// [`TextureResolveError::EntryNotFound`] when the table is shorter.
+    pub fn resolve_entry(
+        &self,
+        session: &ContentSession,
+        archive: &AssetKey,
+        entry_index: usize,
+    ) -> Result<ResolvedTexture, TextureResolveError> {
+        self.require_session(session)?;
+        let texture_archive = self.archive(archive)?;
+        let attempts = vec![
+            TextureAttempt::Archive {
+                archive: texture_archive.path().clone(),
+                mount: texture_archive.container.mount().clone(),
+                trace: texture_archive.trace.clone(),
+            },
+            TextureAttempt::Entry {
+                entry_index,
+                entries: texture_archive.entries.len(),
+            },
+        ];
+        match texture_archive.entry(entry_index) {
+            Some(entry) => Ok(ResolvedTexture {
+                generation: self.generation,
+                id: entry.id.clone(),
+                archive_span: texture_archive.span().clone(),
+                attempts,
+            }),
+            None => Err(TextureResolveError::EntryNotFound {
+                archive: Box::new(archive.clone()),
                 attempts,
             }),
         }
@@ -1597,6 +1663,61 @@ mod tests {
         eprintln!(
             "F08-C retail: {} names stored once in both C1 and C2 texture.zbd, {differing} with different bytes",
             shared.len()
+        );
+    }
+
+    /// F08-D: a whole-archive consumer reaches every entry by position,
+    /// including a name stored twice, and each entry keeps its own texels;
+    /// a position past the table and a foreign session are refused.
+    #[test]
+    fn accept_f08_d_resolve_entry_reaches_duplicate_names_by_position() {
+        let tree = Tree::two_worlds();
+        let session = world_session(&tree.0, "ZBD/c2");
+        let key = world_key("texture.zbd");
+        let catalog = TextureCatalog::open(&session, std::slice::from_ref(&key));
+
+        let mut twins = Vec::new();
+        for entry_index in [3, 4] {
+            let resolved = catalog
+                .resolve_entry(&session, &key, entry_index)
+                .expect("the entry exists");
+            assert_eq!(resolved.id().entry_index, entry_index);
+            assert_eq!(resolved.id().name, "twin");
+            assert!(matches!(
+                &resolved.attempts()[1],
+                TextureAttempt::Entry { entry_index: asked, entries: 5 } if *asked == entry_index
+            ));
+            let upload = catalog
+                .prepare_upload(&session, &resolved)
+                .expect("the entry decodes");
+            twins.push((resolved.id().clone(), words(&upload)));
+        }
+        assert_ne!(twins[0].0, twins[1].0, "two entries, two ids");
+        assert_eq!(twins[0].1, vec![RED]);
+        assert_eq!(twins[1].1, vec![BLUE]);
+
+        let by_position = catalog
+            .resolve_entry(&session, &key, 0)
+            .expect("entry 0 exists");
+        let by_name = catalog
+            .resolve(&session, &texture_ref("sky"))
+            .expect("sky is stored once");
+        assert_eq!(by_position.id(), by_name.id());
+
+        match catalog.resolve_entry(&session, &key, 5) {
+            Err(error @ TextureResolveError::EntryNotFound { .. }) => {
+                assert_eq!(error.code(), "texture_entry_not_found");
+                assert!(error.to_string().contains("entry 5 of 5"), "{error}");
+            }
+            other => panic!("expected a missing entry, got {other:?}"),
+        }
+        let other = world_session(&tree.0, "ZBD/c2");
+        assert_eq!(
+            catalog
+                .resolve_entry(&other, &key, 0)
+                .expect_err("foreign session")
+                .code(),
+            "foreign_session"
         );
     }
 }
