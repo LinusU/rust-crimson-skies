@@ -43,7 +43,7 @@ use std::fmt;
 
 use cs_types::evidence::SourceSpan;
 
-use super::sound_archive::SoundDescriptor;
+use super::sound_archive::{SoundDescriptor, SoundField};
 use super::wave::{WAVE_FORMAT_PCM, WaveError, WaveHeader};
 use crate::error::ParseError;
 use crate::io::ParseContext;
@@ -225,6 +225,14 @@ impl From<WaveError> for SampleFormatError {
     }
 }
 
+/// The reason a [`SoundField`] is unknown, carried by the refusals that quote
+/// it.
+fn unknown_reason<T: Copy>(field: &SoundField<T>) -> &'static str {
+    field
+        .reason()
+        .expect("an unknown field always carries its reason")
+}
+
 /// A decode plan built from what one member's WAVE header declares.
 ///
 /// Every value here is the member's own, read by
@@ -274,15 +282,12 @@ impl SampleFormat {
         descriptor: &SoundDescriptor,
         data: SourceSpan,
     ) -> Result<Self, SampleFormatError> {
-        // The tag is read first and by value: a member whose header did not
-        // read has no tag at all, and is reported as such rather than as an
-        // unsupported format.
+        // Each field is read by matching on its own `SoundField`, so an
+        // unknown field's reason is only ever produced for a field that is
+        // actually unknown.
         let Some(&tag) = descriptor.format_tag().known() else {
             return Err(SampleFormatError::UnreadableHeader {
-                reason: descriptor
-                    .format_tag()
-                    .reason()
-                    .expect("an unknown field always carries its reason"),
+                reason: unknown_reason(&descriptor.format_tag()),
             });
         };
         if tag != WAVE_FORMAT_PCM {
@@ -291,54 +296,36 @@ impl SampleFormat {
                 name: descriptor.format().known().copied(),
             });
         }
-        let bits_per_sample =
-            *descriptor
-                .bits_per_sample()
-                .known()
-                .ok_or(SampleFormatError::UndeclaredField {
-                    field: "wBitsPerSample",
-                    reason: descriptor
-                        .bits_per_sample()
-                        .reason()
-                        .expect("an unknown field always carries its reason"),
-                })?;
-        let layout = PcmLayout::from_bits_per_sample(bits_per_sample)
-            .ok_or(SampleFormatError::UnsupportedWidth { bits_per_sample })?;
-        let channels =
-            *descriptor
-                .channels()
-                .known()
-                .ok_or(SampleFormatError::UndeclaredField {
-                    field: "nChannels",
-                    reason: descriptor
-                        .channels()
-                        .reason()
-                        .expect("an unknown field always carries its reason"),
-                })?;
+        let Some(&bits_per_sample) = descriptor.bits_per_sample().known() else {
+            return Err(SampleFormatError::UndeclaredField {
+                field: "wBitsPerSample",
+                reason: unknown_reason(&descriptor.bits_per_sample()),
+            });
+        };
+        let Some(layout) = PcmLayout::from_bits_per_sample(bits_per_sample) else {
+            return Err(SampleFormatError::UnsupportedWidth { bits_per_sample });
+        };
+        let Some(&channels) = descriptor.channels().known() else {
+            return Err(SampleFormatError::UndeclaredField {
+                field: "nChannels",
+                reason: unknown_reason(&descriptor.channels()),
+            });
+        };
         if channels == 0 {
             return Err(SampleFormatError::ZeroChannels);
         }
-        let rate_hz = *descriptor
-            .rate_hz()
-            .known()
-            .ok_or(SampleFormatError::UndeclaredField {
+        let Some(&rate_hz) = descriptor.rate_hz().known() else {
+            return Err(SampleFormatError::UndeclaredField {
                 field: "nSamplesPerSec",
-                reason: descriptor
-                    .rate_hz()
-                    .reason()
-                    .expect("an unknown field always carries its reason"),
-            })?;
-        let block_align =
-            *descriptor
-                .block_align()
-                .known()
-                .ok_or(SampleFormatError::UndeclaredField {
-                    field: "nBlockAlign",
-                    reason: descriptor
-                        .block_align()
-                        .reason()
-                        .expect("an unknown field always carries its reason"),
-                })?;
+                reason: unknown_reason(&descriptor.rate_hz()),
+            });
+        };
+        let Some(&block_align) = descriptor.block_align().known() else {
+            return Err(SampleFormatError::UndeclaredField {
+                field: "nBlockAlign",
+                reason: unknown_reason(&descriptor.block_align()),
+            });
+        };
         let implied =
             u32::from(channels) * u32::try_from(layout.bytes_per_sample()).unwrap_or(u32::MAX);
         if u32::from(block_align) != implied {

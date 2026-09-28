@@ -15,6 +15,7 @@
 //! animation signatures, so the AC01 pair is now two documented headers.
 
 mod readers;
+mod samples;
 mod t340;
 mod t343;
 mod t344;

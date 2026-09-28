@@ -846,3 +846,727 @@ impl<'a> SoundAssets<'a> {
             .filter(|entry| entry.readiness.is_decoded())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Acceptance stage F06-C: the VFS producer and the sound assets it
+    //! yields (`specs/F06-zbd-families-reader-archives-and-sound-containers.md`,
+    //! section `### F06-C`).
+    //!
+    //! Every tree here is newly authored fixture data written under the system
+    //! temporary directory: it proves nothing about a retail installation, it
+    //! never touches `$CS_GAME_DIR`, and it is removed again when the test
+    //! finishes (including on panic). The tests call production code only:
+    //! `cs_assets::install::discover`, `crate::vfs::SessionBuilder`,
+    //! `ContentSession`, the ZBD family readers and this module's
+    //! `ZbdContainer` / `SoundAssets`.
+    //!
+    //! The inline shape is deliberate: `crates/cs_assets/tests/` is not an
+    //! owner path of this task, and the same inline-test shape F04-C used in
+    //! `tools/cs_inspect/src/resolve.rs` keeps the tests next to the code they
+    //! exercise.
+
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use super::{SoundReadiness, ZbdContainer, ZbdError};
+    use cs_formats::ParseContext;
+    use cs_formats::zbd::{
+        ContainerStatus, INDEX_ENTRY_BYTES, INDEX_NAME_BYTES, INDEX_UNEXPLAINED_BYTES,
+        TRAILER_VERSION_ONE, WAVE_FORMAT_IMA_ADPCM, WAVE_FORMAT_MS_ADPCM, WAVE_FORMAT_PCM,
+    };
+    use cs_types::asset_id::{AssetKey, WorldGroup};
+
+    /// A serial so parallel test binaries cannot collide on one name.
+    static NEXT_TREE: AtomicU64 = AtomicU64::new(0);
+
+    /// A disposable fixture directory, removed on drop.
+    struct Temp(PathBuf);
+
+    impl Temp {
+        fn new(label: &str) -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "cs-f06-c-{label}-{}-{}",
+                std::process::id(),
+                NEXT_TREE.fetch_add(1, Ordering::Relaxed)
+            ));
+            let _ = fs::remove_dir_all(&root);
+            fs::create_dir_all(&root).expect("the fixture root is created");
+            Self(root)
+        }
+
+        fn write(&self, spelling: &str, bytes: &[u8]) {
+            let path = self.0.join(spelling);
+            fs::create_dir_all(path.parent().expect("has a parent")).expect("dirs are created");
+            fs::write(path, bytes).expect("fixture bytes are written");
+        }
+
+        fn edit_byte(&self, spelling: &str, index: usize, xor_mask: u8) {
+            let path = self.0.join(spelling);
+            let mut bytes = fs::read(&path).expect("fixture bytes are readable");
+            bytes[index] ^= xor_mask;
+            fs::write(path, bytes).expect("fixture bytes are written back");
+        }
+    }
+
+    impl Drop for Temp {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn key(namespace: &str, path: &str) -> AssetKey {
+        AssetKey::from_spelling(namespace, path, "default").expect("fixture keys are valid")
+    }
+
+    /// Mounts `root` as one installation-wide content session.
+    fn session(root: &Path) -> crate::vfs::ContentSession {
+        let found = crate::install::discover(root).expect("the fixture tree is discoverable");
+        let context =
+            cs_types::asset_id::ResolveContext::new(crate::install::fingerprint(&found.manifest));
+        let mut builder = crate::vfs::SessionBuilder::new(context);
+        builder
+            .mount_installation(root, &found.diagnosis)
+            .expect("the fixture tree mounts");
+        builder.open()
+    }
+
+    /// A session bound to one world group, as `world:` keys need.
+    fn world_session(root: &Path, group: &str) -> crate::vfs::ContentSession {
+        let found = crate::install::discover(root).expect("the fixture tree is discoverable");
+        let context =
+            cs_types::asset_id::ResolveContext::new(crate::install::fingerprint(&found.manifest))
+                .with_world_group(WorldGroup::new(group).expect("a valid world group spelling"));
+        let mut builder = crate::vfs::SessionBuilder::new(context);
+        builder
+            .mount_installation(root, &found.diagnosis)
+            .expect("the fixture tree mounts");
+        builder.open()
+    }
+
+    // --- authored RIFF/WAVE members ----------------------------------------
+
+    /// One member's `fmt ` fields, as the Microsoft/IBM RIFF spec states them.
+    struct Fmt {
+        tag: u16,
+        channels: u16,
+        rate_hz: u32,
+        bits_per_sample: u16,
+    }
+
+    impl Fmt {
+        /// 16-bit mono PCM, the shape these tests decode in full.
+        const fn pcm16() -> Self {
+            Self {
+                tag: WAVE_FORMAT_PCM,
+                channels: 1,
+                rate_hz: 22_050,
+                bits_per_sample: 16,
+            }
+        }
+
+        /// The IMA ADPCM shape task #344 measured most often in retail.
+        const fn ima() -> Self {
+            Self {
+                tag: WAVE_FORMAT_IMA_ADPCM,
+                channels: 1,
+                rate_hz: 11_025,
+                bits_per_sample: 4,
+            }
+        }
+
+        /// The Microsoft ADPCM shape task #344 measured in retail.
+        const fn ms() -> Self {
+            Self {
+                tag: WAVE_FORMAT_MS_ADPCM,
+                channels: 1,
+                rate_hz: 22_050,
+                bits_per_sample: 4,
+            }
+        }
+
+        /// `nBlockAlign` the fields imply.
+        const fn block_align(&self) -> u16 {
+            self.channels * (self.bits_per_sample / 8)
+        }
+
+        /// A format-specific `fmt ` tail, as ADPCM carries its coefficients.
+        fn fmt_tail(&self) -> Vec<u8> {
+            if self.tag == WAVE_FORMAT_PCM {
+                Vec::new()
+            } else {
+                let mut tail = Vec::with_capacity(4);
+                tail.extend_from_slice(&2u16.to_le_bytes());
+                tail.extend_from_slice(&1u16.to_le_bytes());
+                tail
+            }
+        }
+    }
+
+    /// Assembles a complete RIFF/WAVE member around `fmt` and a `data` payload.
+    fn wave_member(fmt: &Fmt, data: &[u8]) -> Vec<u8> {
+        let mut fmt_payload = Vec::new();
+        fmt_payload.extend_from_slice(&fmt.tag.to_le_bytes());
+        fmt_payload.extend_from_slice(&fmt.channels.to_le_bytes());
+        fmt_payload.extend_from_slice(&fmt.rate_hz.to_le_bytes());
+        fmt_payload.extend_from_slice(&(fmt.rate_hz * u32::from(fmt.block_align())).to_le_bytes());
+        fmt_payload.extend_from_slice(&fmt.block_align().to_le_bytes());
+        fmt_payload.extend_from_slice(&fmt.bits_per_sample.to_le_bytes());
+        fmt_payload.extend_from_slice(&fmt.fmt_tail());
+
+        let mut chunks = Vec::new();
+        chunks.extend_from_slice(b"fmt ");
+        chunks.extend_from_slice(&(fmt_payload.len() as u32).to_le_bytes());
+        chunks.extend_from_slice(&fmt_payload);
+        if fmt_payload.len() % 2 == 1 {
+            chunks.push(0);
+        }
+        chunks.extend_from_slice(b"data");
+        chunks.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        chunks.extend_from_slice(data);
+        if data.len() % 2 == 1 {
+            chunks.push(0);
+        }
+
+        let mut member = Vec::with_capacity(12 + chunks.len());
+        member.extend_from_slice(b"RIFF");
+        member.extend_from_slice(&((chunks.len() + 4) as u32).to_le_bytes());
+        member.extend_from_slice(b"WAVE");
+        member.extend_from_slice(&chunks);
+        member
+    }
+
+    /// A 16-bit mono member holding `RAMP`.
+    const RAMP: [i16; 8] = [0, 1, 2, 3, -1, -2, -3, -4];
+
+    fn pcm16_member() -> Vec<u8> {
+        let mut data = Vec::with_capacity(RAMP.len() * 2);
+        for sample in RAMP {
+            data.extend_from_slice(&sample.to_le_bytes());
+        }
+        wave_member(&Fmt::pcm16(), &data)
+    }
+
+    // --- authored version-one archives -------------------------------------
+
+    /// One index entry: u32 start, u32 length, a 64-byte NUL-padded name and
+    /// 76 bytes the pinned source reads without explaining (task #343).
+    fn index_entry(start: u32, length: u32, name: &[u8]) -> Vec<u8> {
+        assert!(
+            name.len() < INDEX_NAME_BYTES,
+            "a fixture name fits its field"
+        );
+        let mut entry = Vec::with_capacity(INDEX_ENTRY_BYTES as usize);
+        entry.extend_from_slice(&start.to_le_bytes());
+        entry.extend_from_slice(&length.to_le_bytes());
+        let mut name_field = vec![0u8; INDEX_NAME_BYTES];
+        name_field[..name.len()].copy_from_slice(name);
+        entry.extend_from_slice(&name_field);
+        entry.extend_from_slice(&[0xA5; INDEX_UNEXPLAINED_BYTES]);
+        entry
+    }
+
+    /// Wraps member bodies in a version-one trailer index, exactly as task
+    /// #343's reader expects.
+    fn archive(members: &[(&[u8], Vec<u8>)]) -> Vec<u8> {
+        let mut data = Vec::new();
+        let mut entries = Vec::new();
+        for (name, body) in members {
+            let start = u32::try_from(data.len()).expect("a fixture body fits u32");
+            let length = u32::try_from(body.len()).expect("a fixture body fits u32");
+            entries.extend_from_slice(&index_entry(start, length, name));
+            data.extend_from_slice(body);
+        }
+        let mut bytes = data;
+        bytes.extend_from_slice(&entries);
+        bytes.extend_from_slice(&TRAILER_VERSION_ONE.to_le_bytes());
+        bytes.extend_from_slice(
+            &u32::try_from(members.len())
+                .expect("count fits")
+                .to_le_bytes(),
+        );
+        bytes
+    }
+
+    /// The sound archive the fixtures mount, and a reader archive beside it.
+    fn installation() -> Temp {
+        let tree = Temp::new("install");
+        // An observed sound archive name (task #340): three members, a
+        // decodable PCM one and two compressed ones this stage refuses.
+        tree.write(
+            "ZBD/soundsl.zbd",
+            &archive(&[
+                (b"ramp.wav".as_slice(), pcm16_member()),
+                (b"gun.wav".as_slice(), wave_member(&Fmt::ima(), &[0u8; 256])),
+                (b"loop.wav".as_slice(), wave_member(&Fmt::ms(), &[0u8; 512])),
+            ]),
+        );
+        // An observed reader archive name, whose body is not WAVE at all: it
+        // is never read as sound, and never decoded.
+        tree.write(
+            "ZBD/c1/zrdr.zbd",
+            &archive(&[(b"chapter_one".as_slice(), b"reader bytes here".to_vec())]),
+        );
+        // Not a ZBD archive at all.
+        tree.write("README.txt", b"not a zbd container");
+        tree
+    }
+
+    // --- the producer ------------------------------------------------------
+
+    #[test]
+    fn accept_f06_c_an_observed_sound_container_routes_to_the_sound_family_and_reads_its_own_index()
+    {
+        // The stage's observable failure, positive half: an observed sound
+        // archive name is routed to the **sound** family by the inventory's
+        // role rule, and its member index comes out of its **own** trailer.
+        let tree = installation();
+        let session = session(tree.0.as_path());
+        let sounds = key("install", "ZBD/soundsl.zbd");
+
+        let container =
+            ZbdContainer::open(&session, &sounds).expect("the sound container resolves and reads");
+
+        // The provenance is the session's, not a re-derived one.
+        assert_eq!(container.key(), &sounds);
+        assert_eq!(container.mount().as_str(), "install");
+        assert_eq!(container.span().container_path(), ".");
+        assert_eq!(container.span().member_key(), Some("ZBD/soundsl.zbd"));
+        assert_eq!(container.generation(), session.generation());
+        container
+            .require_session(&session)
+            .expect("the reading session is its own");
+
+        // The installation-relative path is rebuilt from the resolution: the
+        // shared install mount's container label is `.`, so the member spelling
+        // already is the installation-relative path, and the role rules match
+        // against *that* rather than the bare `soundsl.zbd`.
+        assert_eq!(container.path().as_str(), "ZBD/soundsl.zbd");
+
+        // Task #340's observed name routed it to the sound family.
+        assert_eq!(container.family(), cs_formats::zbd::ZbdFamily::Sound);
+        assert_eq!(container.reader(), cs_formats::zbd::ZbdReaderId::Sound);
+        let routing = *container.routing();
+        assert!(routing.is_routed());
+        assert_eq!(
+            routing,
+            super::ZbdRouting::Routed {
+                family: cs_formats::zbd::ZbdFamily::Sound,
+                reader: cs_formats::zbd::ZbdReaderId::Sound,
+                basis: cs_formats::zbd::DispatchBasis::RoleOnly,
+                header_status: match routing {
+                    super::ZbdRouting::Routed { header_status, .. } => header_status,
+                    _ => unreachable!("the routing is routed"),
+                },
+                role_status: match routing {
+                    super::ZbdRouting::Routed { role_status, .. } => role_status,
+                    _ => unreachable!("the routing is routed"),
+                },
+            }
+        );
+        // No sound header rule is documented, so the bytes stay unvalidated.
+        assert!(matches!(
+            routing,
+            super::ZbdRouting::Routed {
+                header_status: cs_formats::zbd::HeaderStatus::Unvalidated { .. },
+                ..
+            }
+        ));
+
+        // The member index is the archive's **own** trailer: three members,
+        // named as the index spells them, with the 76 unexplained bytes kept
+        // but unread.
+        let mut context = ParseContext::with_defaults(container.label());
+        let index = container.index(&mut context).expect("the trailer reads");
+        assert_eq!(index.family(), cs_formats::zbd::ZbdFamily::Sound);
+        assert_eq!(index.version(), TRAILER_VERSION_ONE);
+        assert_eq!(index.len(), 3);
+        assert_eq!(index.entry(0).expect("entry 0").name(), b"ramp.wav");
+        assert_eq!(index.entry(1).expect("entry 1").name(), b"gun.wav");
+        assert_eq!(index.entry(2).expect("entry 2").name(), b"loop.wav");
+        assert_eq!(index.extents().len(), 3);
+        for entry in index.entries() {
+            assert_eq!(
+                entry.unexplained().bytes().len(),
+                INDEX_UNEXPLAINED_BYTES,
+                "the unexplained bytes are retained, not dropped"
+            );
+            assert_eq!(
+                entry.unexplained().reason(),
+                cs_formats::zbd::UNEXPLAINED_REASON,
+                "the 76 bytes are labelled with the trailer reader's own reason"
+            );
+        }
+    }
+
+    #[test]
+    fn accept_f06_c_a_container_no_key_names_is_refused_rather_than_read() {
+        // "No key names a family" must mean "this is not a ZBD container this
+        // stage may read", never "read it as something else".
+        let tree = installation();
+        let session = session(tree.0.as_path());
+        let error = ZbdContainer::open(&session, &key("install", "README.txt"))
+            .expect_err("a file outside `zbd/` names no family");
+        assert_eq!(error.code(), "dispatch");
+        let ZbdError::Dispatch(dispatch) = &error else {
+            panic!("expected a dispatch refusal, got {error:?}")
+        };
+        assert_eq!(dispatch.code(), "unknown_family");
+        assert!(std::error::Error::source(&error).is_some());
+    }
+
+    #[test]
+    fn accept_f06_c_a_reader_archive_is_never_read_as_sound() {
+        // The mirror of the stage's observable failure: `zrdr.zbd` routes to
+        // the **reader** family, and its bytes are not WAVE, so reading it as
+        // sound would produce assets for a family the dispatch did not name.
+        let tree = installation();
+        let session = world_session(tree.0.as_path(), "zbd/c1");
+        let container =
+            ZbdContainer::open(&session, &key("world", "zrdr.zbd")).expect("the container opens");
+        assert_eq!(container.family(), cs_formats::zbd::ZbdFamily::Reader);
+        assert_eq!(container.reader(), cs_formats::zbd::ZbdReaderId::Reader);
+        // The world mount's container label keeps the installation's own
+        // spelling, so the composed path does too.
+        assert_eq!(container.path().as_str(), "ZBD/c1/zrdr.zbd");
+
+        let mut context = ParseContext::with_defaults(container.label());
+        let index = container
+            .index(&mut context)
+            .expect("its own trailer reads");
+        let table = index.member_table();
+        let error = container
+            .sound_archive(&mut context, &index, &table)
+            .expect_err("a reader archive is not a sound archive");
+        assert_eq!(error.code(), "family_mismatch");
+        let text = error.to_string();
+        assert!(text.contains("reader"), "{text}");
+        assert!(text.contains("sound"), "{text}");
+
+        // And the sound asset path refuses the same way.
+        let error = container
+            .sound_assets(&mut context, &index, &table)
+            .expect_err("and produces no sound assets");
+        assert_eq!(error.code(), "family_mismatch");
+    }
+
+    #[test]
+    fn accept_f06_c_an_unresolvable_key_and_a_changed_member_both_refuse_with_their_own_code() {
+        let tree = installation();
+        let session = session(tree.0.as_path());
+
+        // A key no mount holds: the resolve failure propagates.
+        let missing = key("install", "ZBD/absent.zbd");
+        let error = ZbdContainer::open(&session, &missing).expect_err("an absent key is refused");
+        assert_eq!(error.code(), "resolve");
+        assert!(matches!(error, ZbdError::Resolve(_)));
+        assert!(std::error::Error::source(&error).is_some());
+
+        // A member whose bytes changed after the mount hashed them: the
+        // digest check refuses, so an archive is never read from bytes the
+        // mount did not vouch for.
+        tree.edit_byte("ZBD/soundsl.zbd", 0, 0x20);
+        let error = ZbdContainer::open(&session, &key("install", "ZBD/soundsl.zbd"))
+            .expect_err("changed bytes are refused");
+        assert_eq!(error.code(), "read");
+        let text = error.to_string();
+        assert!(text.contains("hashed"), "{text}");
+    }
+
+    #[test]
+    fn accept_f06_c_a_resolution_whose_path_would_escape_is_refused_before_dispatch() {
+        // The installation-relative path is a *composition* of a mount's
+        // container label and a member spelling, so it is validated like any
+        // other untrusted spelling (IDENTITY-CONTENT: "no unchecked path
+        // join"). A mount labelled with `..` composes to an escaping path.
+        let tree = installation();
+        let found = crate::install::discover(tree.0.as_path()).expect("the tree is discoverable");
+        let context =
+            cs_types::asset_id::ResolveContext::new(crate::install::fingerprint(&found.manifest));
+        let mut builder = crate::vfs::SessionBuilder::new(context);
+        // The container label is provenance, not a path to read from, so the
+        // mount itself is accepted — which is exactly why the composition has
+        // to be re-checked on the way out.
+        builder
+            .mount(hostile_label_mount(tree.0.as_path()))
+            .expect("the mount itself is accepted");
+        let session = builder.open();
+
+        let error = ZbdContainer::open(&session, &key("hostile", "ZBD/soundsl.zbd"))
+            .expect_err("an escaping composed path is refused");
+        assert_eq!(error.code(), "container_path");
+        let ZbdError::ContainerPath { spelling, reason } = &error else {
+            panic!("expected a container-path refusal, got {error:?}")
+        };
+        assert_eq!(spelling, "../escape/ZBD/soundsl.zbd");
+        assert_eq!(
+            *reason,
+            cs_types::install::RelativePathError::ParentComponent
+        );
+        let text = error.to_string();
+        assert!(text.contains(".."), "{text}");
+    }
+
+    /// A directory mount whose container label is `../escape`, so a hostile
+    /// *label* reaches a real session.
+    fn hostile_label_mount(root: &Path) -> crate::vfs::Mount {
+        use crate::vfs::MountBuilder;
+        use cs_types::asset_id::{MountId, MountNamespace, PrecedenceClass};
+        let builder = MountBuilder::new(
+            MountId::new("hostile").expect("a valid mount id"),
+            MountNamespace::new("hostile").expect("a valid namespace"),
+            PrecedenceClass::Shared,
+            "../escape",
+        );
+        match crate::vfs::source::mount_directory(builder, root) {
+            Ok(mounted) => mounted.mount,
+            Err(error) => panic!("the fixture tree mounts: {error}"),
+        }
+    }
+
+    // --- the consumer: sound assets ----------------------------------------
+
+    #[test]
+    fn accept_f06_c_a_sound_container_becomes_audio_assets_with_the_samples_it_declares() {
+        // The stage's minimum scenario, end to end through a mounted content
+        // session: an observed sound archive is dispatched, indexed from its
+        // own trailer, read, and each member's samples are decoded under the
+        // format **its own** WAVE header declares.
+        let tree = installation();
+        let session = session(tree.0.as_path());
+        let container =
+            ZbdContainer::open(&session, &key("install", "ZBD/soundsl.zbd")).expect("it opens");
+
+        let mut context = ParseContext::with_defaults(container.label());
+        let index = container.index(&mut context).expect("its trailer reads");
+        let table = index.member_table();
+        let assets = container
+            .sound_assets(&mut context, &index, &table)
+            .expect("the sound archive is read");
+
+        assert_eq!(assets.len(), 3);
+        assert_eq!(assets.status(), ContainerStatus::Clean);
+        assert_eq!(assets.failures(), 0);
+        assert_eq!(
+            assets.wave_failures(),
+            0,
+            "every fixture member is a readable WAVE file"
+        );
+
+        // The decoded member: the byte and sample counts are the ones its own
+        // header implies, and the values are its stored samples.
+        let ramp = assets.entry(0).expect("row 0 is an asset");
+        assert_eq!(ramp.name(), b"ramp.wav");
+        assert_eq!(ramp.byte_len(), pcm16_member().len() as u64);
+        assert_eq!(
+            ramp.readiness(),
+            &SoundReadiness::Decoded {
+                frames: 8,
+                samples_per_frame: 1
+            }
+        );
+        let header = ramp.wave().expect("its header reads");
+        assert_eq!(header.format_tag(), WAVE_FORMAT_PCM);
+        let mut context = ParseContext::with_defaults(container.label());
+        let decoded = ramp.decode(&mut context).expect("its declared PCM decodes");
+        assert_eq!(decoded.frames(), 8);
+        assert_eq!(decoded.sample_count(), 8);
+        assert_eq!(decoded.byte_len(), header.data_span().length);
+        assert_eq!(
+            decoded.byte_len(),
+            decoded.sample_count() * 2,
+            "byte count = sample count * the header's bytes per sample"
+        );
+        for (index, expected) in RAMP.iter().enumerate() {
+            assert_eq!(
+                decoded.samples()[index],
+                i32::from(*expected),
+                "sample {index}"
+            );
+        }
+
+        // The two compressed members are refused with the tag **they**
+        // declare, so the rows are visible and honest rather than passed
+        // through as if they were PCM.
+        let ima = assets.entry(1).expect("row 1 is an asset");
+        assert_eq!(ima.name(), b"gun.wav");
+        assert_eq!(
+            ima.readiness(),
+            &SoundReadiness::UnsupportedFormat {
+                tag: WAVE_FORMAT_IMA_ADPCM,
+                name: Some("ima_adpcm")
+            }
+        );
+        let ms = assets.entry(2).expect("row 2 is an asset");
+        assert_eq!(ms.name(), b"loop.wav");
+        assert_eq!(
+            ms.readiness(),
+            &SoundReadiness::UnsupportedFormat {
+                tag: WAVE_FORMAT_MS_ADPCM,
+                name: Some("ms_adpcm")
+            }
+        );
+        // And decoding one directly refuses with the same typed error.
+        let error = ima
+            .decode(&mut context)
+            .expect_err("a compressed member is not decoded by this stage");
+        assert_eq!(error.code(), "unsupported_format");
+
+        assert_eq!(
+            assets.decoded().count(),
+            1,
+            "only the PCM member is decoded"
+        );
+    }
+
+    #[test]
+    fn accept_f06_c_a_member_whose_header_does_not_read_is_a_row_with_its_own_reason() {
+        // A member that is not RIFF at all: nothing about its samples is
+        // known, the row says so with the header reader's own reason, and its
+        // siblings stay decoded (spec F06 non-negotiable #4).
+        let tree = Temp::new("install");
+        tree.write(
+            "ZBD/soundsl.zbd",
+            &archive(&[
+                (b"ramp.wav".as_slice(), pcm16_member()),
+                (
+                    b"broken.dat".as_slice(),
+                    b"NOTRIFFxx not a wave file at all".to_vec(),
+                ),
+                (b"short.dat".as_slice(), b"RI".to_vec()),
+            ]),
+        );
+        let session = session(tree.0.as_path());
+        let container =
+            ZbdContainer::open(&session, &key("install", "ZBD/soundsl.zbd")).expect("it opens");
+
+        let mut context = ParseContext::with_defaults(container.label());
+        let index = container.index(&mut context).expect("its trailer reads");
+        let table = index.member_table();
+        let assets = container
+            .sound_assets(&mut context, &index, &table)
+            .expect("one unreadable header does not fail the listing");
+
+        assert_eq!(assets.len(), 3);
+        assert_eq!(assets.wave_failures(), 2, "both broken members are counted");
+        assert_eq!(
+            assets.decoded().count(),
+            1,
+            "the readable sibling still decodes"
+        );
+        // The reasons are the header reader's own, quoted per member.
+        let not_riff = cs_formats::zbd::read_wave_header(b"NOTRIFFxx not a wave file at all")
+            .expect_err("the body is not a RIFF file");
+        let too_short = cs_formats::zbd::read_wave_header(b"RI")
+            .expect_err("the body is shorter than a header");
+        assert_eq!(
+            assets.entry(1).expect("row 1").readiness(),
+            &SoundReadiness::UnreadableHeader {
+                reason: not_riff.reason()
+            }
+        );
+        assert_eq!(
+            assets.entry(2).expect("row 2").readiness(),
+            &SoundReadiness::UnreadableHeader {
+                reason: too_short.reason()
+            }
+        );
+    }
+
+    // --- teardown, retry and stale state -----------------------------------
+
+    #[test]
+    fn accept_f06_c_a_container_outlives_its_session_and_is_refused_by_another() {
+        // Teardown: the container owns its bytes, so closing the session that
+        // read it leaves it and its assets readable (spec F04 non-negotiable
+        // behavior 4, "owned backing storage, not dangling file handles").
+        let tree = installation();
+        let session = session(tree.0.as_path());
+        let generation = session.generation();
+        let container =
+            ZbdContainer::open(&session, &key("install", "ZBD/soundsl.zbd")).expect("it opens");
+
+        let mut context = ParseContext::with_defaults(container.label());
+        let index = container.index(&mut context).expect("its trailer reads");
+        let table = index.member_table();
+        let assets = container
+            .sound_assets(&mut context, &index, &table)
+            .expect("the sound archive is read");
+        assert_eq!(assets.decoded().count(), 1);
+
+        // The teardown.
+        let teardown = session.close();
+        assert_eq!(teardown.generation, generation);
+
+        // After it, the container and its assets are still usable: the bytes
+        // are the container's own, not a file handle into a closed session.
+        assert_eq!(container.generation(), generation);
+        assert_eq!(assets.len(), 3);
+        let mut context = ParseContext::with_defaults(container.label());
+        let decoded = assets
+            .entry(0)
+            .expect("the asset survives teardown")
+            .decode(&mut context)
+            .expect("and still decodes");
+        assert_eq!(decoded.sample_count(), 8);
+
+        // But a *replacement* session refuses it: the world switched, so an
+        // archive resolved for the old one is not a member of the new one.
+        let next = session_again(tree.0.as_path());
+        assert_ne!(next.generation(), generation);
+        let error = container
+            .require_session(&next)
+            .expect_err("a replaced session refuses the previous generation");
+        assert_eq!(error.code(), "read");
+        let text = error.to_string();
+        assert!(text.contains("session#"), "{text}");
+    }
+
+    /// Opens a second session over the same tree, so its generation differs.
+    fn session_again(root: &Path) -> crate::vfs::ContentSession {
+        session(root)
+    }
+
+    #[test]
+    fn accept_f06_c_a_listing_refused_by_a_starved_budget_can_be_retried() {
+        // Retry: a refused listing leaves the starved ledger untouched, so the
+        // same container and the same index read on a funded context (spec
+        // F03-C's rollback, through the F06-C wiring).
+        let tree = installation();
+        let session = session(tree.0.as_path());
+        let container =
+            ZbdContainer::open(&session, &key("install", "ZBD/soundsl.zbd")).expect("it opens");
+
+        // A context with no budget at all refuses the index.
+        let mut starved = ParseContext::new(container.label(), 0, 32);
+        let error = container
+            .index(&mut starved)
+            .expect_err("a starved budget refuses the index");
+        // The index reports the parse's own failure code; the budget kind it
+        // carries is the allocation budget.
+        assert_eq!(error.code(), "parse");
+        let ZbdError::Index(index) = &error else {
+            panic!("expected an index failure, got {error:?}")
+        };
+        assert!(matches!(
+            index,
+            cs_formats::zbd::IndexError::Parse(parse)
+                if parse.kind == cs_formats::ParseErrorKind::AllocationBudgetExceeded
+        ));
+        assert!(std::error::Error::source(&error).is_some());
+        assert_eq!(starved.allocation().used(), 0, "the refusal is rolled back");
+        assert_eq!(starved.recursion().depth(), 0);
+
+        // The same container, a funded context: it reads.
+        let mut funded = ParseContext::with_defaults(container.label());
+        let index = container
+            .index(&mut funded)
+            .expect("a funded context reads the trailer");
+        assert_eq!(index.len(), 3);
+        assert!(
+            funded.allocation().used() > 0,
+            "a successful index is charged"
+        );
+    }
+}
