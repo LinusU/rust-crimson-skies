@@ -1,13 +1,13 @@
 {
  "schema_version": 1,
  "task_id": "F05-D",
- "candidate_tree": "d1c5ad98cf1f47bd393dee1920c0c9c6b5176d5e",
+ "candidate_tree": "9530120edac822e3920830197a8d78eb889a06d6",
  "engine": {
   "rust": "rustc 1.98.1 (48a229cea 2026-09-01)",
   "bevy": "0.19.1",
   "avian": "0.7.0"
  },
- "created_at": "2026-09-28T22:23:04Z",
+ "created_at": "2026-09-28T22:29:55Z",
  "command": {
   "argv": [
    "cargo",
@@ -97,7 +97,7 @@
  "artifacts": [
   {
    "path": "cargo-test.log",
-   "sha256": "438b525b00949176937d09f74c1c7a70dfcfbe672516007d72258ba183da98a0",
+   "sha256": "2dc5e19717f3762ea0ffcd52205429e94f5539119b1b5a051851bed8d835c105",
    "kind": "log"
   },
   {
