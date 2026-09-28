@@ -645,7 +645,9 @@ fn read_trailer(
     }
 
     let area = &bytes[pixels_end as usize..footer_at as usize];
-    let mut reader = Reader::new(container, area);
+    // Read up to the footer only, so errors carry absolute offsets.
+    let mut reader = Reader::new(container, &bytes[..footer_at as usize]);
+    reader.skip("tga.extension", pixels_end as usize)?;
     let size = reader.read_u16("tga.extension.size")?;
     if size != TGA_EXTENSION_BYTES {
         return Err(TgaError::Unsupported {

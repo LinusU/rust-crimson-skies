@@ -564,6 +564,18 @@ fn accept_f08_b_04_footer_and_extension_fields_are_checked() {
         assert_eq!(error.code(), code, "{field}");
         assert_eq!(error.field(), Some(field));
     }
+
+    // A footer pointing at an extension area that has no bytes at all: the
+    // failed read names the absolute offset directly after the pixels.
+    let mut tga = asymmetric(10, RowOrder::BottomUp);
+    tga.trailer = footer(end, 0);
+    let error = read(&tga.bytes()).unwrap_err();
+    let TgaError::Parse(parse) = &error else {
+        panic!("expected a parse error, got {error:?}");
+    };
+    assert_eq!(parse.kind, ParseErrorKind::UnexpectedEof);
+    assert_eq!(parse.field, "tga.extension.size");
+    assert_eq!(parse.offset, u64::from(end));
 }
 
 #[test]
