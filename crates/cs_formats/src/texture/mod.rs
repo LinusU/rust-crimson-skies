@@ -2,10 +2,8 @@
 //! (`specs/F08-texture-archives-and-conventional-image-decoding.md`, stage
 //! `### F08-A`).
 //!
-//! This stage defines the typed input and output every texture reader
-//! shares and nothing else — no Crimson Skies texture archive variant is
-//! parsed yet (that is F08-B), and no installation bytes were read for this
-//! stage (ordinary build/test capability only):
+//! Stage F08-A defined the typed input and output every texture reader
+//! shares; stage F08-B adds the variant readers:
 //!
 //! * [`descriptor`] is the input: an [`ImageDescriptor`] states the size,
 //!   stored layout, row order, palette, mip levels, alpha interpretation and
@@ -16,16 +14,21 @@
 //!   [`decode_levels`] (stage F08-B.01) does the same for the base level
 //!   and every declared mip level, from per-level byte slices the variant
 //!   reader supplies.
+//! * [`zbd`] (stage F08-B.02) reads the Crimson Skies ZBD texture package
+//!   (`texture.zbd`, `rtexture*.zbd`, `rimage.zbd`) into one descriptor and
+//!   one borrowed stored level per texture.
 //!
 //! Design decisions and recorded unknowns are in
-//! `docs/findings/2026-09-28-f08-a-image-descriptors-and-asymmetric-fixture.md`
-//! and `docs/findings/2026-09-28-f08-b-01-mip-level-decoding.md`.
+//! `docs/findings/2026-09-28-f08-a-image-descriptors-and-asymmetric-fixture.md`,
+//! `docs/findings/2026-09-28-f08-b-01-mip-level-decoding.md` and
+//! `docs/findings/2026-09-28-f08-b-02-zbd-texture-package.md`.
 //! The fixtures exercised by `crates/cs_formats/tests/texture/` are newly
 //! authored synthetic bytes; nothing here is derived from original game
 //! data.
 
 pub mod decode;
 pub mod descriptor;
+pub mod zbd;
 
 pub use decode::{
     DecodedFormat, DecodedImage, DecodedLevels, TextureError, decode_base_level, decode_levels,
@@ -34,4 +37,8 @@ pub use descriptor::{
     AlphaSource, AlphaTest, ColorSpace, DescriptorError, DescriptorParts, Extent, ImageDescriptor,
     MAX_DIMENSION, MAX_MIP_LEVELS, MAX_PALETTE_ENTRIES, Palette, PaletteEntry, PixelFormat,
     RowOrder,
+};
+pub use zbd::{
+    ZbdAlpha, ZbdStretch, ZbdTexture, ZbdTextureEntryError, ZbdTextureError, ZbdTexturePackage,
+    read_zbd_textures,
 };

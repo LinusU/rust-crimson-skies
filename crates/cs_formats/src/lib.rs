@@ -27,9 +27,9 @@
 //! `specs/F07-interp-loading-script-container.md` (stage F07-A,
 //! [`interp::read_interp`], and stage F07-B, [`interp::decode_interp`]).
 //!
-//! Texture image descriptors and base-level decoding:
-//! `specs/F08-texture-archives-and-conventional-image-decoding.md` (stage
-//! F08-A, [`texture`]).
+//! Texture image descriptors, level decoding and the ZBD texture package:
+//! `specs/F08-texture-archives-and-conventional-image-decoding.md` (stages
+//! F08-A and F08-B, [`texture`]).
 //!
 //! The BM multilayer livery layout: `specs/F09-bm-multilayer-liveries-and-
 //! paint-composition.md` (stage F09-A, [`bm`]).
@@ -74,8 +74,8 @@ pub use rof::{
     read_directory, read_member, read_tree,
 };
 pub use texture::{
-    DecodedImage, DecodedLevels, DescriptorError, ImageDescriptor, TextureError, decode_base_level,
-    decode_levels,
+    DecodedImage, DecodedLevels, DescriptorError, ImageDescriptor, TextureError, ZbdTexture,
+    ZbdTextureError, ZbdTexturePackage, decode_base_level, decode_levels, read_zbd_textures,
 };
 pub use zbd::{
     DispatchBasis, HeaderStatus, RoleStatus, ZbdDispatch, ZbdDispatchError, ZbdFamily, ZbdProbe,
