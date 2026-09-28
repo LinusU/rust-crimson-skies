@@ -549,6 +549,14 @@ impl From<ParseError> for SampleError {
     }
 }
 
+impl SampleError {
+    /// A member whose WAVE header did not read: the decode never starts, and
+    /// the failure carries the header reader's own explanation.
+    pub fn from_wave_header(error: WaveError) -> Self {
+        Self::Format(SampleFormatError::from(error))
+    }
+}
+
 /// Decodes `member` under the plan its own WAVE header declares.
 ///
 /// `format` is the member's own [`SampleFormat`] — built by

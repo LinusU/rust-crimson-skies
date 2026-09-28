@@ -6,15 +6,20 @@
 //! (`discover`, `discover_with_cache`, streaming `Sha256`, `fingerprint`,
 //! `content_fingerprint`, `AnalysisCache`), and [`vfs`] is the
 //! context-aware virtual filesystem for F04: mount namespaces, precedence
-//! and `resolve(context, key)`. Allowed dependencies:
+//! and `resolve(context, key)`. [`zbd`] is the F06-C wiring: a ZBD container
+//! resolved through a content session is dispatched, its own trailer member
+//! index is read, and its sound members become sound assets with the samples
+//! their own WAVE headers declare. Allowed dependencies:
 //! [`cs_types`] and [`cs_formats`]. The original installation at
 //! `$CS_GAME_DIR` is read-only and nothing derived from it is committed to
 //! Git.
 //!
 //! [`install`]: install
 //! [`vfs`]: vfs
+//! [`zbd`]: zbd
 //! [`cs_types`]: cs_types
 //! [`cs_formats`]: cs_formats
 
 pub mod install;
 pub mod vfs;
+pub mod zbd;
