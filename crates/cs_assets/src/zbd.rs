@@ -1474,6 +1474,73 @@ mod tests {
         );
     }
 
+    #[test]
+    fn accept_f06_c_a_member_reaching_into_the_index_fails_its_own_row_only() {
+        // The readers are handed the bytes *before* the index, so a member
+        // whose extent reaches into the index fails its own bounds check and
+        // nothing else (task #343, through the F06-C wiring). The asset
+        // collection must count the failure rather than hide it, and its valid
+        // siblings stay decoded (spec F06 non-negotiable #4).
+        let tree = Temp::new("install");
+        let good = pcm16_member();
+        // The lying extent runs past the end of the member data (where the
+        // index begins) but not past the whole archive, so handing the
+        // readers the *whole* file instead of `VersionOneIndex::data()` would
+        // silently accept it.
+        let lying = index_entry(
+            0,
+            u32::try_from(good.len()).expect("a fixture member fits u32") + 100,
+            b"lying.wav",
+        );
+        let honest = index_entry(
+            0,
+            u32::try_from(good.len()).expect("a fixture member fits u32"),
+            b"honest.wav",
+        );
+        let mut bytes = good.clone();
+        bytes.extend_from_slice(&lying);
+        bytes.extend_from_slice(&honest);
+        bytes.extend_from_slice(&TRAILER_VERSION_ONE.to_le_bytes());
+        bytes.extend_from_slice(&2u32.to_le_bytes());
+        tree.write("ZBD/soundsl.zbd", &bytes);
+
+        let session = session(tree.0.as_path());
+        let container =
+            ZbdContainer::open(&session, &key("install", "ZBD/soundsl.zbd")).expect("it opens");
+        let mut context = ParseContext::with_defaults(container.label());
+        let index = container.index(&mut context).expect("its trailer reads");
+        let table = index.member_table();
+        let assets = container
+            .sound_assets(&mut context, &index, &table)
+            .expect("one member reaching into the index does not fail the listing");
+
+        // The lying member has no bytes, so it is not an asset, but it is
+        // counted.
+        assert_eq!(index.len(), 2, "the index declares both members");
+        assert_eq!(
+            assets.len(),
+            1,
+            "only the member with real bytes is an asset"
+        );
+        assert_eq!(assets.failures(), 1);
+        assert_eq!(assets.status(), ContainerStatus::Failed { failures: 1 });
+        assert_eq!(assets.entry(0).expect("row 0").name(), b"honest.wav");
+        assert!(assets.entry(1).is_none(), "the lying member has no bytes");
+        // Row 0 is the lying member and keeps the bounds failure with its own
+        // code; row 1 is the honest one and is readable.
+        let rows = assets.listing().rows();
+        assert_eq!(rows[0].name(), b"lying.wav");
+        assert_eq!(
+            rows[0].error().map(|error| error.code()),
+            Some("member_out_of_bounds"),
+            "its row keeps the bounds failure with its own code"
+        );
+        assert!(rows[1].is_readable());
+        assert_eq!(rows[1].name(), b"honest.wav");
+        // And the honest sibling is untouched.
+        assert_eq!(assets.decoded().count(), 1);
+    }
+
     // --- teardown, retry and stale state -----------------------------------
 
     #[test]
