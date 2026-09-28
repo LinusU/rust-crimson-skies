@@ -26,7 +26,11 @@
 //!
 //! [`config`] holds lossless configuration documents with provenance and
 //! key accounting (`specs/F12-text-configuration-strings-and-pe-
-//! resources.md`, stage F12-A).
+//! resources.md`, stage F12-A) and the typed, checked conversion of a
+//! declared field into a tuning constant (stage F12-B): a value becomes one
+//! only against a [`config::FieldSpec`] that declares its width, signedness
+//! and approved range, and a negative, overflowing or non-finite value never
+//! does.
 //!
 //! [`catalog`] holds the canonical content catalog and its declared
 //! launchable baseline (`specs/F14-canonical-content-catalog-and-dependency-
