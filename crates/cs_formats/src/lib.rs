@@ -15,15 +15,25 @@
 //! two-key dispatch: `specs/F06-zbd-families-reader-archives-and-
 //! sound-containers.md` (stage F06-A, [`zbd`]).
 //!
+//! The raw INTERP loading-script records follow:
+//! `specs/F07-interp-loading-script-container.md` (stage F07-A,
+//! [`interp`]).
+//!
 //! The fixtures exercised below are newly authored synthetic bytes; nothing
 //! here is derived from original game data.
 
 pub mod error;
+pub mod interp;
 pub mod io;
 pub mod rof;
 pub mod zbd;
 
 pub use error::{ParseError, ParseErrorKind};
+pub use interp::{
+    INDEX_ENTRY_BYTES, INTERP_ENTRYPOINT, INTERP_HEADER_BYTES, InterpError, InterpFile,
+    InterpRawHeader, InterpRawIndexEntry, InterpRawLine, InterpRawScript, LINE_HEADER_BYTES,
+    NAME_FIELD_BYTES, RawArgument, RawArguments, TERMINATOR_BYTES, read_interp,
+};
 pub use io::{AllocationBudget, ParseContext, Reader, RecursionBudget, RecursionGuard};
 pub use rof::{
     DIRECTORY_ENTRYPOINT, DIRECTORY_HEADER_BYTES, FLAG_COMPRESSED, FLAG_DIRECTORY, KNOWN_FLAG_MASK,
