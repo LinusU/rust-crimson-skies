@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "T345",
+ "candidate_tree": "adafc3b2c83af1d841d411995b9b3c0a6a2fa146",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-09-28T23:27:00Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_f04_d_rof_member_collisions_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/agent-2", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 5, "executed": 5, "passed": 5, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_f04_d_rof_member_collisions_identical_digest_resolves", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f04_d_rof_member_collisions_other_directories_are_distinct_by_path", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f04_d_rof_member_collisions_equal_content_stored_differently_stays_blocked", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f04_d_rof_member_collisions_different_bytes_are_blocked", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f04_d_rof_member_collisions_retail_patch_over_base_until_measured", "status": "pass", "evidence": ["cargo-test.log"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "a0adb34b776d23c14bae0d8c1c13ad8df99052de0fb79cae7e0beaa255d26ec1", "kind": "log"}, {"path": "rof-member-collisions.json", "sha256": "83e59f7776daad0bf393569891c2e221ec6c480063ea717b3df22ac241952ab7", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "claude-1 (implementing agent, self-check; the Rally reviewer regenerates this report on the rebased commit)", "method": "acceptance suite run locally with the retail capability; this harness derives every field from the recorded log, production discovery of $CS_GAME_DIR, the production collision comparison of both mounted ROF archives, production reads of every shared member, rustc and Cargo.lock; the original lookup order stays unmeasured (recorded in rof-member-collisions.json and docs/findings) and the claim is only implemented"},
+ "claim": "implemented"
+}
