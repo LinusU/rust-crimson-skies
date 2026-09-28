@@ -26,17 +26,20 @@
 //! * [`reader_archive`] and [`sound_archive`] are the two readers this
 //!   stage implements (F06-B "reader and sound container subset with
 //!   bounds"). They hand out each member's verbatim bytes with its source
-//!   span and its evidence, and they decode nothing: the member table at the
-//!   end of a reader or sound archive is not read yet (task #343) and no
-//!   entry encoding is documented, so every entry reports the recorded
-//!   unknown instead (stage F06-B).
+//!   span and its evidence, and they decode nothing: no entry encoding is
+//!   documented, so every entry reports the recorded unknown instead (stage
+//!   F06-B).
+//! * [`trailer`] reads the version-one member index at the end of a sound or
+//!   reader archive into the member extents those readers list (task #343).
 //!
 //! The evidence behind every rule, the design decisions and the recorded
 //! unknowns are written down in
 //! `docs/findings/2026-09-28-f06-a-zbd-family-inventory-and-dispatch.md` and
 //! `docs/findings/2026-09-28-f06-b-reader-and-sound-container-bounds.md`;
 //! the task #340 header signatures and archive names in
-//! `docs/findings/2026-09-28-t340-zbd-family-headers-and-archive-names.md`.
+//! `docs/findings/2026-09-28-t340-zbd-family-headers-and-archive-names.md`;
+//! the task #343 member index in
+//! `docs/findings/2026-09-28-t343-zbd-version-one-member-index.md`.
 //! The fixtures exercised by `crates/cs_formats/tests/zbd/` are newly
 //! authored synthetic bytes; nothing here is derived from original game
 //! data.
@@ -48,6 +51,7 @@ pub mod header;
 pub mod reader_archive;
 pub mod role;
 pub mod sound_archive;
+pub mod trailer;
 
 pub use archive::{
     ArchiveListing, CONTAINER_ENTRYPOINT, ContainerError, ContainerStatus, FamilyMismatch,
@@ -74,4 +78,10 @@ pub use role::{
 };
 pub use sound_archive::{
     SoundArchive, SoundDescriptor, SoundEntry, SoundError, SoundField, read_sound_archive,
+};
+pub use trailer::{
+    EntryAnomaly, INDEX_ENTRY_BYTES, INDEX_NAME_BYTES, INDEX_ROW_BYTES, INDEX_UNEXPLAINED_BYTES,
+    IndexEntry, IndexError, MEMBER_EXTENT_BYTES, TRAILER_BYTES, TRAILER_ENTRYPOINT,
+    TRAILER_VERSION_ONE, UNEXPLAINED_REASON, UnexplainedBytes, VersionOneIndex, indexed_by_trailer,
+    read_version_one_index,
 };
