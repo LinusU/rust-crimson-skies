@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "T344",
+ "candidate_tree": "8b484082935dc427ace4683f0fb1552fccf176b0",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-09-28T17:34:34Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_t344_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/agent-2", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 6, "executed": 6, "passed": 6, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_t344_cue_points_are_counted_and_never_read_as_loops", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_t344_a_pcm_member_fills_its_descriptor_from_the_fmt_chunk", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_t344_malformed_chunk_lists_are_refused_with_their_offsets", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_t344_adpcm_tags_are_named_and_unlisted_tags_stay_unknown", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_t344_non_wave_members_fail_clearly_beside_their_siblings", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_t344_retail_every_sound_member_has_a_wave_descriptor", "status": "pass", "evidence": ["cargo-test.log"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "ee63fbe8cf952154a4c470195a79274089753c4c04b7ad2792c2f6d5558180e2", "kind": "log"}, {"path": "zbd-sound-wave-headers.json", "sha256": "1b7a7c18289abeeff495d1a9cb3d7a6177682488aebfb765fc022d78bcde82fd", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "claude-1 (implementing agent, self-check; the Rally reviewer regenerates this report on the rebased commit)", "method": "acceptance suite run locally with the retail capability; this harness derives every field from the recorded log, production discovery of $CS_GAME_DIR, the production index reader, sound reader and WAVE header reader over every retail sound archive member (zbd-sound-wave-headers.json, with an independent read of each fmt chunk), rustc and Cargo.lock; validated with tools/validate_evidence.py --require-pass. Loop points stay unknown for every member (no retail member carries a `smpl` chunk) and `cue ` points are counted, not interpreted, as the task requires; both are recorded as unknown in the task #344 findings"},
+ "claim": "implemented"
+}
