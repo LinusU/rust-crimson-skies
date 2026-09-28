@@ -50,7 +50,7 @@ fn texture_leading_words() -> Vec<u8> {
 /// The first bytes of an authored sound archive: a RIFF member at offset 0.
 const SOUND_LEADING_BYTES: &[u8] = b"RIFF\x24\x00\x00\x00WAVE";
 
-fn path(spelling: &str) -> RelativePath {
+pub(super) fn path(spelling: &str) -> RelativePath {
     RelativePath::new(spelling).expect("fixture spellings are valid relative paths")
 }
 
@@ -391,7 +391,7 @@ struct RetailArchive {
 }
 
 /// Every `.zbd` file under `game_dir`, sorted by spelling.
-fn retail_zbd_files(game_dir: &Path) -> Vec<(String, PathBuf)> {
+pub(super) fn retail_zbd_files(game_dir: &Path) -> Vec<(String, PathBuf)> {
     let mut found = Vec::new();
     let mut pending = vec![game_dir.to_path_buf()];
     while let Some(directory) = pending.pop() {
@@ -422,14 +422,14 @@ fn retail_zbd_files(game_dir: &Path) -> Vec<(String, PathBuf)> {
     found
 }
 
-fn read_at(file: &mut File, offset: u64, length: usize) -> Vec<u8> {
+pub(super) fn read_at(file: &mut File, offset: u64, length: usize) -> Vec<u8> {
     file.seek(SeekFrom::Start(offset)).expect("seek");
     let mut bytes = vec![0; length];
     file.read_exact(&mut bytes).expect("read");
     bytes
 }
 
-fn le_u32(bytes: &[u8], offset: usize) -> u32 {
+pub(super) fn le_u32(bytes: &[u8], offset: usize) -> u32 {
     u32::from_le_bytes(bytes[offset..offset + 4].try_into().expect("four bytes"))
 }
 
@@ -512,7 +512,7 @@ fn retail_archives(game_dir: &Path) -> Vec<RetailArchive> {
     archives
 }
 
-fn game_dir() -> PathBuf {
+pub(super) fn game_dir() -> PathBuf {
     let dir = std::env::var_os("CS_GAME_DIR")
         .expect("CS_GAME_DIR is not set: this test needs the original installation");
     let dir = PathBuf::from(dir);
@@ -611,7 +611,7 @@ fn evidence_report_t340_writes_the_acceptance_report() {
     let log_path = evidence_dir.join("cargo-test.log");
     let log = fs::read_to_string(&log_path)
         .unwrap_or_else(|error| panic!("read {}: {error}", log_path.display()));
-    let suite = parse_suite(&log);
+    let suite = parse_suite(&log, "accept_t340_");
     assert!(
         suite.passed > 0 && !suite.assertions.is_empty(),
         "no `accept_t340_` tests were recorded in {}",
@@ -779,14 +779,14 @@ fn dispatch_json(
 
 // ------------------------------------------------------ harness helpers ---
 
-fn env_var(name: &str) -> String {
+pub(super) fn env_var(name: &str) -> String {
     std::env::var(name).unwrap_or_else(|_| {
-        panic!("{name} is not set: run the sequence in the harness doc comment (tests/zbd/t340.rs)")
+        panic!("{name} is not set: run the sequence in the evidence harness doc comment")
     })
 }
 
 /// Cargo runs tests from the package root; re-anchor a workspace-relative path.
-fn workspace_path(as_described: &str) -> PathBuf {
+pub(super) fn workspace_path(as_described: &str) -> PathBuf {
     let path = PathBuf::from(as_described);
     if path.is_absolute() {
         return path;
@@ -794,7 +794,7 @@ fn workspace_path(as_described: &str) -> PathBuf {
     Path::new(&git(&["rev-parse", "--show-toplevel"])).join(path)
 }
 
-fn command_output(program: &str, args: &[&str]) -> String {
+pub(super) fn command_output(program: &str, args: &[&str]) -> String {
     let output = Command::new(program)
         .args(args)
         .output()
@@ -803,12 +803,12 @@ fn command_output(program: &str, args: &[&str]) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
-fn git(args: &[&str]) -> String {
+pub(super) fn git(args: &[&str]) -> String {
     command_output("git", args)
 }
 
 /// The locked version of one `Cargo.lock` package.
-fn locked_version(package: &str) -> String {
+pub(super) fn locked_version(package: &str) -> String {
     let lock_path = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../Cargo.lock");
     let lock = fs::read_to_string(&lock_path)
         .unwrap_or_else(|error| panic!("read {}: {error}", lock_path.display()));
@@ -828,22 +828,22 @@ fn locked_version(package: &str) -> String {
 }
 
 /// A test name without its module path.
-fn short_name(name: &str) -> &str {
+pub(super) fn short_name(name: &str) -> &str {
     name.rsplit("::").next().unwrap_or(name)
 }
 
 #[derive(Debug, Default)]
-struct Suite {
-    passed: u64,
-    failed: u64,
-    ignored: u64,
+pub(super) struct Suite {
+    pub(super) passed: u64,
+    pub(super) failed: u64,
+    pub(super) ignored: u64,
     /// `(test name, "pass" | "fail")`, in log order, deduplicated.
-    assertions: Vec<(String, &'static str)>,
+    pub(super) assertions: Vec<(String, &'static str)>,
 }
 
-/// The libtest summaries plus the per-test results of the `accept_t340_`
-/// tests in a recorded `cargo test` output.
-fn parse_suite(log: &str) -> Suite {
+/// The libtest summaries plus the per-test results of the tests whose name
+/// starts with `prefix` in a recorded `cargo test` output.
+pub(super) fn parse_suite(log: &str, prefix: &str) -> Suite {
     let mut suite = Suite::default();
     let mut pending: VecDeque<String> = VecDeque::new();
     for line in log.lines() {
@@ -882,7 +882,7 @@ fn parse_suite(log: &str) -> Suite {
             let name = after[..separator].to_owned();
             let tail = &after[separator + 5..];
             cursor = tail;
-            if !short_name(&name).starts_with("accept_t340_") {
+            if !short_name(&name).starts_with(prefix) {
                 continue;
             }
             match tail.split_whitespace().next() {
@@ -902,7 +902,7 @@ fn record(suite: &mut Suite, name: String, status: &'static str) {
 }
 
 /// `(file name, sha256, kind)` of one artifact inside the evidence directory.
-fn artifact(path: &Path, kind: &str) -> (String, String, String) {
+pub(super) fn artifact(path: &Path, kind: &str) -> (String, String, String) {
     let bytes = fs::read(path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()));
     let name = path
         .file_name()
@@ -917,7 +917,7 @@ fn artifact(path: &Path, kind: &str) -> (String, String, String) {
 }
 
 /// A JSON string literal.
-fn jstr(value: &str) -> String {
+pub(super) fn jstr(value: &str) -> String {
     let mut out = String::with_capacity(value.len() + 2);
     out.push('"');
     for character in value.chars() {
@@ -938,7 +938,7 @@ fn jstr(value: &str) -> String {
 }
 
 /// RFC 3339 UTC with whole seconds.
-fn iso_utc_now() -> String {
+pub(super) fn iso_utc_now() -> String {
     let seconds = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("the clock is after 1970")
