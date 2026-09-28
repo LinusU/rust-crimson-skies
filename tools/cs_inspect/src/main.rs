@@ -12,8 +12,11 @@
 //! and exports one of them, the `zbd-audit` command (F06-D) lists every
 //! ZBD container and member with a strict status, and the `interp`
 //! command (F07-B) decodes and validates one INTERP loading-script
-//! container and reports its lossless tokens. The remaining subcommands
-//! from `docs/contracts/CLI-EVIDENCE.md` (`catalog`, `closure`,
+//! container and reports its lossless tokens, and with `--plan` reads the
+//! same container as a loading plan (F07-C), resolving the registered
+//! commands through a content session and reporting every failure with its
+//! source offset. The remaining subcommands from
+//! `docs/contracts/CLI-EVIDENCE.md` (`catalog`, `closure`,
 //! `scripts`, `handling`) arrive with later tasks.
 //! Until then the binary refuses invalid input with a nonzero exit code and
 //! a diagnostic naming the missing command — a failure is never returned as success.
@@ -69,14 +72,22 @@ COMMANDS
         is corrupt, and with --strict also when any content is left
         uninterpreted. Never claims playability.
 
-    interp --file <path> [--out <file>] [--raw]
-        Decode and validate one INTERP loading-script container (F07-B). The
-        JSON report holds the header, every script's origin and extent, and
-        each line's arguments as offsets and byte strings; names and
-        arguments have no established encoding, so they are reported as
-        length and hex, never as text. --raw adds the unvalidated raw
-        records next to the decoded tokens. Exits 0 when the container
-        decodes with no findings, 3 when it is refused or has findings.
+    interp --file <path> [--out <file>] [--raw] [--plan] [--commands <file>]
+           [--cs-path <dir>] [--world <group>]
+        Decode and validate one INTERP loading-script container (F07-B), and
+        with --plan read it as a loading plan (F07-C): classify every line
+        against a command table, resolve the registered commands through a
+        mounted content session, and report every failure with its source
+        offset and the world it affects. The JSON report holds the header,
+        every script's origin and extent, and each line's arguments as
+        offsets and byte strings; names and arguments have no established
+        encoding, so they are reported as length and hex, never as text.
+        --raw adds the unvalidated raw records next to the decoded tokens.
+        --commands supplies the command table the workspace does not ship:
+        which commands load resources is unmeasured (F07-D). Exits 0 when the
+        container decodes with no findings and, with --plan, when the plan is
+        complete; 3 when it is refused, has findings or the plan is
+        incomplete.
 
     catalog  closure  scripts  handling
         Not implemented in this workspace stage; they are documented in

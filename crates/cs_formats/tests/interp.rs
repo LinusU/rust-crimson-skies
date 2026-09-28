@@ -1331,7 +1331,11 @@ fn accept_f07_c_mismatched_arguments_are_malformed_not_repaired() {
     with_variant.arguments.variant = Some(3);
     table.insert(with_variant).expect("the rule registers");
 
-    let cases: [(&[u8], Vec<Vec<u8>>, MalformedKey); 4] = [
+    /// One case: the head spelling, the stored arguments and what the
+    /// registration should say about them.
+    type Case<'a> = (&'a [u8], Vec<Vec<u8>>, MalformedKey);
+
+    let cases: [Case<'_>; 4] = [
         (
             b"loadmesh",
             vec![b"loadmesh".to_vec()],
@@ -1569,7 +1573,7 @@ fn accept_f07_c_stats_tally_every_script_and_head() {
         stats.lines,
         stats.loading_commands + stats.unclassified_commands + stats.malformed_commands
     );
-    assert_eq!(plan.script(1).expect("two scripts").is_usable(), true);
+    assert!(plan.script(1).expect("two scripts").is_usable());
 
     // A container with no scripts plans to nothing and is complete: there is
     // nothing unclassified to fail on.

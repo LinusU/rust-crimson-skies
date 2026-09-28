@@ -252,8 +252,13 @@ impl fmt::Display for LoadingFailure {
 /// How one script of a loading plan ended.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ScriptState {
-    /// Every line is a registered loading command and every dependency
-    /// resolved.
+    /// Every line is a registered loading command and none of them failed:
+    /// every dependency either resolved or is a dynamic lookup the original
+    /// engine resolves later.
+    ///
+    /// A `Ready` script is not a *complete* one when it holds a dynamic
+    /// lookup; [`LoadingPlanReport::is_complete`] is the check that accounts
+    /// for those, and the report's `dynamic_lookups` names them.
     Ready,
     /// The script is blocked: at least one line was unclassified or
     /// malformed.
@@ -278,7 +283,8 @@ impl ScriptState {
         }
     }
 
-    /// Whether the script's plan is fully usable.
+    /// Whether no line of this script failed. Dynamic lookups do not make a
+    /// script unready; they keep the *plan* incomplete.
     pub const fn is_ready(self) -> bool {
         matches!(self, Self::Ready)
     }
@@ -915,4 +921,608 @@ fn sha256(bytes: &[u8]) -> ContentHash {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     hasher.finalize()
+}
+
+#[cfg(test)]
+mod tests {
+    //! F07-C unit tests for the adapter itself: the teardown, retry and error
+    //! propagation that a CLI report cannot show. Every tree and container here
+    //! is newly authored synthetic bytes below the system temporary directory;
+    //! no original game data, no `CS_GAME_DIR` access.
+
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use cs_assets::install;
+    use cs_assets::vfs::{ContentSession, SessionBuilder, SessionError};
+    use cs_formats::{
+        INDEX_ENTRY_BYTES, KeyArguments, KeySpelling, LoadCommand, LoadCommandTable,
+        NAME_FIELD_BYTES, ParseContext, decode_interp, plan_interp_loading,
+    };
+    use cs_types::asset_id::{ResolveContext, WorldGroup};
+    use cs_types::evidence::ClaimStatus;
+
+    use super::*;
+
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    /// A disposable directory, removed on drop.
+    struct Temp(PathBuf);
+
+    impl Temp {
+        fn new(label: &str) -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "cs-f07-c-loading-{label}-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            let _ = fs::remove_dir_all(&root);
+            fs::create_dir_all(&root).expect("temp dir is created");
+            Self(root)
+        }
+
+        fn write(&self, spelling: &str, bytes: &[u8]) {
+            let path = self.0.join(spelling);
+            fs::create_dir_all(path.parent().expect("has a parent")).expect("dirs");
+            fs::write(path, bytes).expect("bytes are written");
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for Temp {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// The first byte a one-entry container's script may occupy: past the
+    /// header and its single index entry.
+    fn script_start() -> u32 {
+        (cs_formats::INTERP_HEADER_BYTES + INDEX_ENTRY_BYTES) as u32
+    }
+
+    /// One authored container: one script whose lines are the given stored
+    /// argument blocks. The declared count is the number of `0x00` delimiters,
+    /// which is the rule the decoder enforces.
+    fn container(name: &[u8], lines: &[&[u8]]) -> Vec<u8> {
+        let mut body = Vec::new();
+        for data in lines {
+            body.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            let count = data.iter().filter(|byte| **byte == 0).count();
+            body.extend_from_slice(&(count as u32).to_le_bytes());
+            body.extend_from_slice(data);
+        }
+        body.extend_from_slice(&0u32.to_le_bytes());
+        let mut bytes = Vec::new();
+        for word in [0x0897_1119u32, 7, 1] {
+            bytes.extend_from_slice(&word.to_le_bytes());
+        }
+        let mut field = [0u8; NAME_FIELD_BYTES];
+        field[..name.len()].copy_from_slice(name);
+        bytes.extend_from_slice(&field);
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&script_start().to_le_bytes());
+        assert_eq!(bytes.len(), script_start() as usize);
+        bytes.extend_from_slice(&body);
+        bytes
+    }
+
+    /// One registration: a synthetic rule that exercises the adapter, never a
+    /// claim about an original command.
+    fn registration(spelling: &[u8], kind: KeySpelling) -> LoadCommand {
+        LoadCommand {
+            spelling: spelling.to_vec(),
+            arguments: KeyArguments {
+                namespace: 1,
+                path: 2,
+                variant: None,
+            },
+            spelling_kind: kind,
+            status: ClaimStatus::Designed,
+            source: "synthetic test table: exercises the adapter".to_owned(),
+        }
+    }
+
+    /// A one-world installation with one file, mounted in a real session.
+    fn session(tree: &Temp, world: &str) -> Result<ContentSession, SessionError> {
+        let found = install::discover(tree.path()).expect("the fixture installation discovers");
+        let context = ResolveContext::new(install::fingerprint(&found.manifest))
+            .with_world_group(WorldGroup::new(world).expect("the fixture world is valid"));
+        let mut builder = SessionBuilder::new(context);
+        builder.mount_installation(tree.path(), &found.diagnosis)?;
+        Ok(builder.open())
+    }
+
+    /// The teardown and retry contract: a report reads through the session
+    /// that resolved it, is refused by any other, and a second report built
+    /// after the first session closed resolves again from scratch.
+    ///
+    /// The failure this catches is a report that re-resolves lazily: a plan
+    /// whose dependencies were stamped with a session that no longer exists
+    /// would otherwise hand out bytes from a world that has been unloaded.
+    #[test]
+    fn accept_f07_c_report_reads_only_through_the_session_that_resolved_it() {
+        let tree = Temp::new("read");
+        tree.write("ZBD/c1/plane.flt", b"world one plane");
+        let bytes = container(b"load", &[b"loadmesh\0world\0plane.flt\0"]);
+
+        let mut table = LoadCommandTable::new();
+        table
+            .insert(registration(b"loadmesh", KeySpelling::Literal))
+            .expect("the rule registers");
+        let decoded = decode_interp(&mut ParseContext::with_defaults("load.interp"), &bytes)
+            .expect("the container validates");
+        let plan = plan_interp_loading(&decoded, &table);
+
+        let first = session(&tree, "zbd/c1").expect("the session opens");
+        let first_generation = first.generation();
+        let report = resolve_loading_plan(Some(&first), &decoded, &plan).expect("the plan builds");
+        assert!(report.is_complete(), "{}", report.describe());
+        assert_eq!(report.resolved_count(), 1);
+        assert_eq!(report.generation(), Some(first_generation));
+        assert_eq!(
+            report
+                .world()
+                .map(WorldGroup::as_relative)
+                .map(|p| p.as_str()),
+            Some("zbd/c1")
+        );
+
+        // The bytes come back through the same session, digest-checked.
+        let read = report
+            .read_dependency(&first, 0)
+            .expect("the same session reads");
+        assert_eq!(read, b"world one plane");
+        // An index that is not a dependency is refused, not read as one.
+        assert!(matches!(
+            report.read_dependency(&first, 1),
+            Err(LoadingError::NotReadable { index: 1, .. })
+        ));
+        assert_eq!(
+            report.read_dependency(&first, 1).unwrap_err().code(),
+            "not_readable"
+        );
+
+        // A report is refused by a session that is not the one that resolved
+        // it, even though the installation and the key are identical. Checked
+        // while both sessions exist, so the identity under test is exact.
+        let second = session(&tree, "zbd/c1").expect("a second session opens");
+        assert_ne!(second.generation(), first_generation);
+        let error = report
+            .read_dependency(&second, 0)
+            .expect_err("a foreign session");
+        assert_eq!(error.code(), "foreign_session");
+        assert!(
+            matches!(
+                error,
+                LoadingError::ForeignSession {
+                    report,
+                    session: _
+                } if report == first_generation
+            ),
+            "{error}"
+        );
+        assert!(error.to_string().contains("belong to a session"), "{error}");
+
+        // The teardown: closing a session releases its mounts and consumes it,
+        // so the report's own session is gone and cannot be read through.
+        let teardown = first.close();
+        assert_eq!(teardown.generation, first_generation);
+        assert_eq!(teardown.released.len(), 2, "install plus one world");
+
+        // A retry builds a second report from nothing and resolves again: the
+        // refusal above is about identity, not about the installation.
+        let retry = resolve_loading_plan(Some(&second), &decoded, &plan).expect("the retry builds");
+        assert_eq!(retry.generation(), Some(second.generation()));
+        assert!(
+            retry.dependencies()[0]
+                .span()
+                .map(|span| span.install_sha256())
+                .is_some(),
+            "the retry names the installation it resolved against"
+        );
+        assert_eq!(
+            retry.read_dependency(&second, 0).expect("the retry reads"),
+            b"world one plane"
+        );
+        // The first report is a plain value and outlives its session, but its
+        // bytes went with the session: reading it now still names the session
+        // it needs rather than re-resolving against the new one.
+        let error = report
+            .read_dependency(&second, 0)
+            .expect_err("still a foreign session");
+        assert_eq!(error.code(), "foreign_session");
+        second.close();
+    }
+
+    /// A key no mount holds is a failure with its VFS code, and the world's
+    /// own file answers the other line — never a default file for the missing
+    /// one.
+    #[test]
+    fn accept_f07_c_missing_key_is_a_failure_not_a_default_file() {
+        let tree = Temp::new("missing");
+        tree.write("ZBD/c1/plane.flt", b"world one plane");
+        let bytes = container(
+            b"load",
+            &[
+                b"loadmesh\0world\0plane.flt\0",
+                b"loadmesh\0world\0absent.flt\0",
+            ],
+        );
+        let mut table = LoadCommandTable::new();
+        table
+            .insert(registration(b"loadmesh", KeySpelling::Literal))
+            .expect("the rule registers");
+        let decoded = decode_interp(&mut ParseContext::with_defaults("load.interp"), &bytes)
+            .expect("the container validates");
+        let plan = plan_interp_loading(&decoded, &table);
+        let open = session(&tree, "zbd/c1").expect("the session opens");
+        let report = resolve_loading_plan(Some(&open), &decoded, &plan).expect("the plan builds");
+
+        assert!(!report.is_complete());
+        assert_eq!(report.resolved_count(), 1);
+        assert_eq!(
+            report.dependencies().len(),
+            2,
+            "both lines became dependencies"
+        );
+        assert_eq!(report.dependencies()[0].state().code(), "resolved");
+        assert_eq!(report.dependencies()[1].state().code(), "not_found");
+        assert!(report.dependencies()[1].span().is_none());
+        assert!(
+            report.dependencies()[1].key().is_some(),
+            "the key itself is valid"
+        );
+
+        // The failure names the offset, the world and the reason.
+        assert_eq!(report.failures().len(), 1);
+        let failure = &report.failures()[0];
+        assert_eq!(failure.code, "not_found");
+        assert_eq!(failure.site.line, 1);
+        // The second line sits just past the first one's stored data, and the
+        // head token just past the line header, so the offsets are derived
+        // from the bytes the test wrote rather than counted by hand.
+        let first = b"loadmesh\0world\0plane.flt\0";
+        let second_start = script_start() as usize + 8 + first.len();
+        assert_eq!(failure.site.source_offset, second_start as u64);
+        assert_eq!(failure.site.head_offset, (second_start + 8) as u64);
+        assert_eq!(
+            &bytes[second_start + 8..second_start + 8 + 8],
+            b"loadmesh",
+            "the offset points at that line's own head token"
+        );
+        assert_eq!(
+            failure.world.as_ref().map(|w| w.logical_key()),
+            Some("zbd/c1".to_owned())
+        );
+        assert!(failure.detail.contains("attempts"), "{}", failure.detail);
+        let rendered = failure.to_string();
+        assert!(rendered.contains("affects world zbd/c1"), "{rendered}");
+        assert!(
+            rendered.contains(&format!("not_found at offset {second_start}")),
+            "{rendered}"
+        );
+        assert_eq!(report.failures_of(0).len(), 1);
+        assert!(!report.script(0).expect("one script").state.is_ready());
+        assert_eq!(
+            report.script(0).expect("one script").state.code(),
+            "incomplete"
+        );
+        // A dependency that did not resolve cannot be read, and says why.
+        assert!(matches!(
+            report.read_dependency(&open, 1),
+            Err(LoadingError::NotReadable { index: 1, .. })
+        ));
+        open.close();
+    }
+
+    /// Arguments that are not a valid key are refused with the part that
+    /// failed, and a `composed` registration is a dynamic lookup rather than
+    /// either outcome. Neither is repaired.
+    #[test]
+    fn accept_f07_c_invalid_keys_and_composed_keys_are_not_repaired() {
+        let tree = Temp::new("invalid");
+        tree.write("ZBD/c1/plane.flt", b"world one plane");
+        let bytes = container(
+            b"load",
+            &[
+                // A `..` component: where the original engine resolved it from
+                // is unmeasured, so the key is refused, not normalised.
+                b"loadmesh\0world\0..\\data\\plane.flt\0",
+                // A namespace that is not a label.
+                b"loadmesh\0WORLD NS\0plane.flt\0",
+                // Bytes that are not text.
+                b"loadmesh\0world\0\xff\xfe.flt\0",
+                // A registration that says the key is assembled at run time.
+                b"compose\0world\0%ZBD_DIR%/plane.flt\0",
+            ],
+        );
+        let mut table = LoadCommandTable::new();
+        table
+            .insert(registration(b"loadmesh", KeySpelling::Literal))
+            .expect("the rule registers");
+        table
+            .insert(registration(b"compose", KeySpelling::Composed))
+            .expect("the rule registers");
+        let decoded = decode_interp(&mut ParseContext::with_defaults("load.interp"), &bytes)
+            .expect("the container validates");
+        let plan = plan_interp_loading(&decoded, &table);
+        let open = session(&tree, "zbd/c1").expect("the session opens");
+        let report = resolve_loading_plan(Some(&open), &decoded, &plan).expect("the plan builds");
+
+        assert_eq!(report.dependencies().len(), 4);
+        assert_eq!(report.dependencies()[0].state().code(), "invalid");
+        assert_eq!(report.resolved_count(), 0);
+        assert_eq!(report.dynamic_lookups(), 1);
+        assert_eq!(report.dependencies()[3].state().code(), "composed");
+        assert!(report.dependencies()[3].key().is_none());
+        assert!(report.dependencies()[3].span().is_none());
+        // Three invalid keys, each naming the part that was refused, and no
+        // dynamic lookup among them.
+        assert_eq!(report.failures().len(), 3);
+        let parts: Vec<&str> = report
+            .dependencies()
+            .iter()
+            .filter_map(|dependency| match dependency.state() {
+                DependencyState::Invalid { part, .. } => Some(*part),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(parts, ["path", "namespace", "path"]);
+        assert!(
+            report.failures()[0].detail.contains("`..`"),
+            "{}",
+            report.failures()[0].detail
+        );
+        assert!(
+            report.failures()[1].detail.contains("namespace"),
+            "{}",
+            report.failures()[1].detail
+        );
+        assert!(
+            report.failures()[2].detail.contains("not text"),
+            "{}",
+            report.failures()[2].detail
+        );
+        // All four lines were registered commands, so nothing was unclassified
+        // and nothing was malformed: the lines failed on their arguments, not
+        // on their classification.
+        assert_eq!(report.stats().loading_commands, 4);
+        assert_eq!(report.stats().unclassified_commands, 0);
+        assert_eq!(report.stats().malformed_commands, 0);
+        assert!(!report.is_complete());
+        let summary = report.describe();
+        assert!(summary.contains("1 dynamic"), "{summary}");
+        assert!(summary.contains("0 resolved"), "{summary}");
+        open.close();
+    }
+
+    /// With no session at all the plan is still built and every registered
+    /// command is reported unresolved for that reason, never as loaded.
+    #[test]
+    fn accept_f07_c_without_a_session_nothing_resolves_and_the_reason_is_recorded() {
+        let bytes = container(b"load", &[b"loadmesh\0world\0plane.flt\0"]);
+        let mut table = LoadCommandTable::new();
+        table
+            .insert(registration(b"loadmesh", KeySpelling::Literal))
+            .expect("the rule registers");
+        let decoded = decode_interp(&mut ParseContext::with_defaults("load.interp"), &bytes)
+            .expect("the container validates");
+        let plan = plan_interp_loading(&decoded, &table);
+        let report = resolve_loading_plan(None, &decoded, &plan).expect("the plan builds");
+
+        assert!(!report.is_complete());
+        assert_eq!(report.resolved_count(), 0);
+        assert_eq!(report.installation(), None);
+        assert_eq!(report.generation(), None);
+        assert!(report.world().is_none());
+        assert_eq!(report.dependencies().len(), 1);
+        assert_eq!(report.dependencies()[0].state().code(), "no_session");
+        // The key is still built and reported; only the lookup is missing.
+        assert!(report.dependencies()[0].key().is_some());
+        assert_eq!(report.failures().len(), 1);
+        assert_eq!(report.failures()[0].code, "no_session");
+        assert!(report.failures()[0].world.is_none());
+        assert!(report.describe().contains("no installation fingerprint"));
+        assert!(report.describe().contains("no world selected"));
+        // A report built without a session has no resolved span and no
+        // generation, so a consumer sees that there is nothing to read rather
+        // than an empty success.
+        assert!(report.dependencies()[0].span().is_none());
+    }
+
+    /// The report is tied to the exact bytes it was built from: the container
+    /// hash and each script's own hash change with the content, and the
+    /// `timestamp` word is never part of any of them.
+    #[test]
+    fn accept_f07_c_identity_is_a_content_hash_not_a_name_or_a_timestamp() {
+        let tree = Temp::new("identity");
+        tree.write("ZBD/c1/plane.flt", b"world one plane");
+        let first = container(b"twin", &[b"loadmesh\0world\0plane.flt\0"]);
+        // The same container with the timestamp word changed. The plan's
+        // identity must not move, because the timestamp is metadata.
+        let mut moved = first.clone();
+        let stamp = 12 + NAME_FIELD_BYTES;
+        moved[stamp..stamp + 4].copy_from_slice(&0xDEAD_BEEFu32.to_le_bytes());
+        assert_ne!(first, moved, "the two containers really differ");
+
+        let table = LoadCommandTable::new();
+        let mut registered = table.clone();
+        registered
+            .insert(registration(b"loadmesh", KeySpelling::Literal))
+            .expect("the rule registers");
+
+        let hash_of = |bytes: &[u8]| {
+            let decoded = decode_interp(&mut ParseContext::with_defaults("twin.interp"), bytes)
+                .expect("valid");
+            let plan = plan_interp_loading(&decoded, &registered);
+            let report = resolve_loading_plan(None, &decoded, &plan)
+                .expect("the plan builds without a session");
+            (
+                report.container_sha256(),
+                report.script(0).expect("one script").identity(),
+                report.script(0).expect("one script").raw_timestamp,
+            )
+        };
+        let (container_a, script_a, stamp_a) = hash_of(&first);
+        let (container_b, script_b, stamp_b) = hash_of(&moved);
+        assert_ne!(stamp_a, stamp_b, "the timestamps differ");
+        // The container hash covers the index table, so the timestamp word is
+        // inside it and it does move: these are two different files and the
+        // report says so.
+        assert_ne!(container_a, container_b, "the index entry changed");
+        // The script hash covers only the script's own bytes, and the
+        // timestamp is not among them, so a script's identity does not move
+        // when only its metadata does. This is the rule that matters: no
+        // consumer may key a cache on a timestamp (non-negotiable #5).
+        assert_eq!(script_a, script_b, "the script's own bytes are identical");
+        // Both are real content hashes of the stored bytes.
+        assert_eq!(container_a, install::sha256(&first));
+        assert_eq!(stamp_a, 0);
+        assert_eq!(stamp_b, 0xDEAD_BEEF);
+
+        // A different body under the same name is a different identity.
+        let other = container(b"twin", &[b"loadmesh\0world\0absent.flt\0"]);
+        let (container_c, script_c, _) = hash_of(&other);
+        assert_ne!(container_a, container_c);
+        assert_ne!(script_a, script_c);
+    }
+
+    /// Two scripts with equal names, equal timestamps and different bodies
+    /// keep distinct origins *and* distinct content hashes, so neither the
+    /// plan nor a consumer that keys on the hash can collapse them. This is
+    /// AC03 through the adapter.
+    #[test]
+    fn accept_f07_c_equal_names_keep_distinct_origins_and_hashes() {
+        let tree = Temp::new("twins");
+        tree.write("ZBD/c1/plane.flt", b"world one plane");
+
+        // Two scripts, same name, same timestamp, one body each.
+        let bodies: [&[u8]; 2] = [
+            b"loadmesh\0world\0plane.flt\0",
+            b"loadmesh\0world\0other.flt\0",
+        ];
+        let mut bodies_bytes: Vec<Vec<u8>> = Vec::new();
+        for data in bodies {
+            let mut body = Vec::new();
+            body.extend_from_slice(&(data.len() as u32).to_le_bytes());
+            body.extend_from_slice(&3u32.to_le_bytes());
+            body.extend_from_slice(data);
+            body.extend_from_slice(&0u32.to_le_bytes());
+            bodies_bytes.push(body);
+        }
+        let start = 12 + 2 * INDEX_ENTRY_BYTES;
+        let mut bytes = Vec::new();
+        for word in [0x0897_1119u32, 7, 2] {
+            bytes.extend_from_slice(&word.to_le_bytes());
+        }
+        for position in 0..bodies_bytes.len() {
+            let mut field = [0u8; NAME_FIELD_BYTES];
+            field[..4].copy_from_slice(b"twin");
+            bytes.extend_from_slice(&field);
+            bytes.extend_from_slice(&0x1234_5678u32.to_le_bytes());
+            let offset = start + bodies_bytes[..position].iter().map(Vec::len).sum::<usize>();
+            bytes.extend_from_slice(&(offset as u32).to_le_bytes());
+        }
+        assert_eq!(bytes.len(), start);
+        for body in &bodies_bytes {
+            bytes.extend_from_slice(body);
+        }
+
+        let mut table = LoadCommandTable::new();
+        table
+            .insert(registration(b"loadmesh", KeySpelling::Literal))
+            .expect("the rule registers");
+        let decoded = decode_interp(&mut ParseContext::with_defaults("twin.interp"), &bytes)
+            .expect("the container validates");
+        let plan = plan_interp_loading(&decoded, &table);
+        let open = session(&tree, "zbd/c1").expect("the session opens");
+        let report = resolve_loading_plan(Some(&open), &decoded, &plan).expect("the plan builds");
+
+        assert_eq!(report.scripts().len(), 2);
+        let [a, b] = report.scripts() else {
+            panic!("two scripts expected")
+        };
+        assert_eq!(a.name, b.name, "the names are equal");
+        assert_eq!(a.raw_timestamp, 0x1234_5678);
+        assert_eq!(b.raw_timestamp, 0x1234_5678);
+        assert_ne!(a.origin, b.origin, "the origins are distinct");
+        assert_eq!((a.origin.index(), b.origin.index()), (0, 1));
+        assert_eq!(
+            (a.origin.entry_offset(), b.origin.entry_offset()),
+            (12, 12 + INDEX_ENTRY_BYTES as u64)
+        );
+        assert_ne!(a.content_sha256, b.content_sha256, "the bodies differ");
+        assert_ne!(a.identity(), b.identity());
+        // The first script's key resolves; the second's does not exist, so the
+        // two are distinguishable in the report as well as in the hashes.
+        assert_eq!(report.dependencies_of(0).len(), 1);
+        assert_eq!(report.dependencies_of(1).len(), 1);
+        assert_eq!(report.dependencies_of(0)[0].state().code(), "resolved");
+        assert_eq!(report.dependencies_of(1)[0].state().code(), "not_found");
+        assert!(!report.is_complete());
+        open.close();
+    }
+
+    /// A report is refused with [`LoadingError::Extent`] when the plan's
+    /// recorded script extent falls outside the container its bytes come from,
+    /// rather than hashing over a range that does not exist.
+    ///
+    /// The decoder cannot produce such a plan — that is why this pairs a plan
+    /// with a *different*, shorter container — but the adapter checks anyway,
+    /// because a hash over a truncated range would be a plausible-looking wrong
+    /// identity rather than a loud failure.
+    #[test]
+    fn accept_f07_c_a_plan_against_foreign_bytes_is_refused() {
+        let long = container(b"load", &[b"loadmesh\0world\0plane.flt\0"]);
+        let short = container(b"load", &[b"a\0"]);
+        assert!(short.len() < long.len());
+        let mut table = LoadCommandTable::new();
+        table
+            .insert(registration(b"loadmesh", KeySpelling::Literal))
+            .expect("the rule registers");
+
+        // Each container's own plan builds, and the hashes cover exactly the
+        // stored bytes: the whole container, and one script's own extent.
+        let decoded_long = decode_interp(&mut ParseContext::with_defaults("load.interp"), &long)
+            .expect("the container validates");
+        let plan_long = plan_interp_loading(&decoded_long, &table);
+        let report_long = resolve_loading_plan(None, &decoded_long, &plan_long)
+            .expect("a plan of its own container builds");
+        assert_eq!(report_long.container_sha256(), install::sha256(&long));
+        let origin = report_long.scripts()[0].origin;
+        assert_eq!(
+            report_long.scripts()[0].content_sha256,
+            install::sha256(&long[origin.script_offset() as usize..origin.end() as usize])
+        );
+
+        let decoded_short = decode_interp(&mut ParseContext::with_defaults("other.interp"), &short)
+            .expect("the shorter container validates");
+        let plan_short = plan_interp_loading(&decoded_short, &table);
+        let report_short = resolve_loading_plan(None, &decoded_short, &plan_short)
+            .expect("each plan builds against its own bytes");
+        assert_eq!(report_short.container_sha256(), install::sha256(&short));
+        assert_ne!(origin, report_short.scripts()[0].origin);
+
+        // Pairing the long plan with the short container is refused, with the
+        // script and the length that did not fit.
+        let error =
+            resolve_loading_plan(None, &decoded_short, &plan_long).expect_err("foreign bytes");
+        assert_eq!(error.code(), "extent");
+        assert!(
+            matches!(
+                error,
+                LoadingError::Extent { origin: at, container_len }
+                    if at == origin && container_len == short.len() as u64
+            ),
+            "{error:?}"
+        );
+        let rendered = error.to_string();
+        assert!(rendered.contains("past the"), "{rendered}");
+        assert!(rendered.contains(&short.len().to_string()), "{rendered}");
+    }
 }

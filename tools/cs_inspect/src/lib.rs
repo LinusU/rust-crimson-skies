@@ -15,9 +15,12 @@
 //! installation, family by family, with a strict status. [`rof`] is the
 //! F05-C `rof` command: one ROF container mounted and reported, with an
 //! optional bounded member read and explicit export. [`interp`] is the
-//! F07-B consumer of the INTERP loading-script decoder: one container decoded
+//! F07-B consumer of the INTERP loading-script decoder — one container decoded
 //! and validated, reported with its lossless tokens and the findings the
-//! decoder retained.
+//! decoder retained — and the F07-C consumer of the loading plan: with
+//! `--plan` the same container is classified against a command table, its
+//! registered commands are resolved through a content session, and every
+//! failure is reported with its source offset and the world it affects.
 
 pub mod evidence;
 pub mod install;
