@@ -260,6 +260,13 @@ pub enum InstructionClaimError {
         /// The record's span.
         span: ByteSpan,
     },
+    /// The evidence points at a span of a different container.
+    OtherContainer {
+        /// The record's container label.
+        record: String,
+        /// The evidence's container label.
+        evidence: String,
+    },
     /// The evidence points at bytes outside the record.
     OutsideRecord {
         /// The record's span.
@@ -275,6 +282,7 @@ impl InstructionClaimError {
         match self {
             Self::InsufficientEvidence { .. } => "insufficient_evidence",
             Self::ContainerStructure { .. } => "container_structure",
+            Self::OtherContainer { .. } => "other_container",
             Self::OutsideRecord { .. } => "outside_record",
         }
     }
@@ -295,6 +303,10 @@ impl fmt::Display for InstructionClaimError {
                     "record {span} is container structure, not a program body"
                 )
             }
+            Self::OtherContainer { record, evidence } => write!(
+                f,
+                "evidence about container `{evidence}` cannot establish a record of `{record}`"
+            ),
             Self::OutsideRecord { record, evidence } => {
                 write!(f, "evidence span {evidence} lies outside record {record}")
             }
@@ -307,6 +319,7 @@ impl std::error::Error for InstructionClaimError {}
 /// One byte range of a candidate container.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ScriptRecord {
+    container: String,
     span: ByteSpan,
     kind: RecordKind,
     discriminator: FormatDiscriminator,
@@ -316,6 +329,11 @@ pub struct ScriptRecord {
 }
 
 impl ScriptRecord {
+    /// Provenance label of the container the record is in.
+    pub fn container(&self) -> &str {
+        &self.container
+    }
+
     /// The byte range.
     pub const fn span(&self) -> ByteSpan {
         self.span
@@ -356,8 +374,9 @@ impl ScriptRecord {
     /// [`InstructionClaimError::InsufficientEvidence`] for a scan or a
     /// confidence below [`Confidence::Documented`],
     /// [`InstructionClaimError::ContainerStructure`] for a header or index
-    /// record and [`InstructionClaimError::OutsideRecord`] for a container
-    /// span that does not lie inside the record.
+    /// record, [`InstructionClaimError::OtherContainer`] for a container
+    /// span of another container and [`InstructionClaimError::OutsideRecord`]
+    /// for a container span that does not lie inside the record.
     pub fn establish_instructions(
         &mut self,
         evidence: ScriptEvidence,
@@ -370,6 +389,14 @@ impl ScriptRecord {
         }
         if self.instructions == InstructionStatus::ContainerStructure {
             return Err(InstructionClaimError::ContainerStructure { span: self.span });
+        }
+        if let EvidenceLocator::ContainerSpan { container, .. } = evidence.locator()
+            && *container != self.container
+        {
+            return Err(InstructionClaimError::OtherContainer {
+                record: self.container.clone(),
+                evidence: container.clone(),
+            });
         }
         if let EvidenceLocator::ContainerSpan { span, .. } = evidence.locator()
             && (span.offset < self.span.offset || span.end() > self.span.end())
@@ -694,6 +721,7 @@ fn interp_records(
     let mut records = Vec::new();
     let header = ByteSpan::new(0, INTERP_HEADER_BYTES as u64);
     records.push(ScriptRecord {
+        container: source.container.to_owned(),
         span: header,
         kind: RecordKind::InterpHeader,
         discriminator,
@@ -705,6 +733,7 @@ fn interp_records(
         let entry = script.entry;
         let span = ByteSpan::new(entry.entry_offset, INDEX_ENTRY_BYTES as u64);
         records.push(ScriptRecord {
+            container: source.container.to_owned(),
             span,
             kind: RecordKind::InterpIndexEntry {
                 position: entry.index,
@@ -723,6 +752,7 @@ fn interp_records(
         let span = ByteSpan::from_range(u64::from(script.entry.script_offset), script.end())
             .expect("a read script ends after it starts");
         records.push(ScriptRecord {
+            container: source.container.to_owned(),
             span,
             kind: RecordKind::InterpScript {
                 position: script.entry.index,
@@ -781,6 +811,7 @@ fn opaque_record(
         });
     }
     ScriptRecord {
+        container: source.container.to_owned(),
         span,
         kind,
         discriminator,

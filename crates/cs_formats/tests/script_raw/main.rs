@@ -379,7 +379,7 @@ fn accept_f13_a_header_mismatch_is_an_unknown_candidate() {
 
 /// A scan is not a decoder: scan or inferred evidence cannot mark a record
 /// as instructions, structure cannot be claimed, and evidence must lie inside
-/// the record. Only then does the claim stand.
+/// the record of the same container. Only then does the claim stand.
 #[test]
 fn accept_f13_a_only_semantic_evidence_establishes_instructions() {
     let bytes = interp(&[(b"alpha", &[(1, b"go\0".as_slice())])], b"");
@@ -427,6 +427,17 @@ fn accept_f13_a_only_semantic_evidence_establishes_instructions() {
             ))
             .map_err(|e| e.code()),
         Err("outside_record")
+    );
+    assert_eq!(
+        records[body].establish_instructions(decode_evidence(
+            "another",
+            body_span,
+            Confidence::ObservedTool
+        )),
+        Err(InstructionClaimError::OtherContainer {
+            record: "synthetic".to_owned(),
+            evidence: "another".to_owned(),
+        })
     );
     assert!(matches!(
         records[body].instructions(),

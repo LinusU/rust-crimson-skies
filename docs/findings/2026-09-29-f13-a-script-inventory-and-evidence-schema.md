@@ -67,8 +67,9 @@ installation-relative path, bytes) one `ScriptContainerEntry`:
   states: `container_structure` (a decoded INTERP header or index entry),
   `unestablished` (every body, with the reason) and `established`. Only
   `ScriptRecord::establish_instructions` reaches the last one, and it refuses
-  a scan, any evidence below `documented`, a structure record and evidence
-  that points outside the record. The inventory never calls it (AC01).
+  a scan, any evidence below `documented`, a structure record, evidence
+  about another container and evidence that points outside the record.
+  (The container check was added in review.) The inventory never calls it (AC01).
 - **INTERP bodies stay unestablished.** F07 decoded them as loading commands.
   Whether they belong to the mission language is exactly what F13 has to find
   out, so "decoded by a reader" and "is an instruction stream" are kept
