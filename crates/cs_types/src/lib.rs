@@ -10,6 +10,7 @@ use std::fmt;
 use random::{SYNTHETIC_BODY_DOMAIN, SplitMix64, unit_f64};
 
 pub mod asset_id;
+pub mod content;
 pub mod evidence;
 pub mod install;
 pub mod random;
