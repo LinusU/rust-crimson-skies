@@ -11,13 +11,14 @@
 //! `textures\hud\alert.dds` stay two members of two mounts, and nothing
 //! here flattens them into a first-wins map (non-negotiable behavior 3).
 //!
-//! Nothing in this module opens files. Mounting a real archive, validating
-//! a host path and reading bytes are F04-B work; a member added here
-//! already carries its container offset and size so the immutable
-//! [`SourceSpan`] a resolution returns can be built without IO.
+//! Nothing in this module opens files. A member added here already carries
+//! its container offset and size so the immutable [`SourceSpan`] a
+//! resolution returns can be built without IO; mounting a host directory
+//! and reading its bytes is [`crate::vfs::source`] (F04-B).
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::path::{Path, PathBuf};
 
 use cs_types::asset_id::{
     AssetKey, AssetVariant, MissionScope, ModId, MountId, MountNamespace, PrecedenceClass,
@@ -262,6 +263,10 @@ pub struct MemberRecord {
     size_bytes: u64,
     offset: u64,
     sha256: Option<ContentHash>,
+    /// The member's host path relative to the mount's backing directory,
+    /// exactly as the walk observed it; `None` for a declared member that
+    /// has no host bytes.
+    host_relative: Option<PathBuf>,
 }
 
 impl MemberRecord {
@@ -284,6 +289,7 @@ impl MemberRecord {
             size_bytes,
             offset,
             sha256,
+            host_relative: None,
         })
     }
 
@@ -306,6 +312,12 @@ impl MemberRecord {
     pub fn sha256(&self) -> Option<ContentHash> {
         self.sha256
     }
+
+    /// The member's host path relative to its mount's backing directory,
+    /// or `None` for a declared member without host bytes.
+    pub(crate) fn host_relative(&self) -> Option<&Path> {
+        self.host_relative.as_deref()
+    }
 }
 
 /// The index key of a member inside one mount: variant plus logical path.
@@ -316,6 +328,18 @@ impl MemberRecord {
 struct MemberKey {
     variant: String,
     path_key: String,
+}
+
+/// Where a mount's bytes can be read from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum Backing {
+    /// Members were declared with their locations only; there are no host
+    /// bytes behind them (a fixture, or an archive index whose reader has
+    /// not landed yet).
+    Declared,
+    /// Members are regular files below this host directory, walked by
+    /// [`crate::vfs::source::mount_directory`].
+    Directory(PathBuf),
 }
 
 /// One immutable mounted source.
@@ -332,6 +356,7 @@ pub struct Mount {
     scope: MountScope,
     container: String,
     members: BTreeMap<MemberKey, MemberRecord>,
+    backing: Backing,
 }
 
 impl Mount {
@@ -359,6 +384,20 @@ impl Mount {
     /// mount produces.
     pub fn container(&self) -> &str {
         &self.container
+    }
+
+    /// The host directory this mount reads from, or `None` for a declared
+    /// mount without host bytes.
+    pub fn host_root(&self) -> Option<&Path> {
+        match &self.backing {
+            Backing::Declared => None,
+            Backing::Directory(root) => Some(root),
+        }
+    }
+
+    /// How many members the mount holds.
+    pub fn member_count(&self) -> usize {
+        self.members.len()
     }
 
     /// The member serving `key`, or `None` when this mount does not hold
@@ -408,6 +447,7 @@ pub struct MountBuilder {
     scope: MountScope,
     container: String,
     members: BTreeMap<MemberKey, MemberRecord>,
+    backing: Backing,
 }
 
 impl MountBuilder {
@@ -430,6 +470,7 @@ impl MountBuilder {
             scope: MountScope::default(),
             container: container.to_owned(),
             members: BTreeMap::new(),
+            backing: Backing::Declared,
         }
     }
 
@@ -489,16 +530,60 @@ impl MountBuilder {
             spelling: spelling.to_owned(),
             reason,
         })?;
-        let member = MemberRecord::new(path.clone(), size_bytes, offset, sha256)?;
+        let member = MemberRecord::new(path, size_bytes, offset, sha256)?;
+        self.insert(variant, member)
+    }
+
+    /// The container label every span of this mount will record.
+    pub(crate) fn container(&self) -> &str {
+        &self.container
+    }
+
+    /// Whether any member has been added yet.
+    pub(crate) fn has_members(&self) -> bool {
+        !self.members.is_empty()
+    }
+
+    /// Backs the mount by the host directory `root`.
+    pub(crate) fn set_directory_backing(&mut self, root: PathBuf) {
+        self.backing = Backing::Directory(root);
+    }
+
+    /// Adds a whole host file at the default variant: offset 0, its hashed
+    /// length and digest, and the host path it was found at, relative to
+    /// the backing directory.
+    pub(crate) fn add_host_file(
+        &mut self,
+        spelling: &str,
+        host_relative: PathBuf,
+        size_bytes: u64,
+        sha256: ContentHash,
+    ) -> Result<&mut Self, MountError> {
+        let path = RelativePath::new(spelling).map_err(|reason| MountError::InvalidMemberPath {
+            spelling: spelling.to_owned(),
+            reason,
+        })?;
+        let mut member = MemberRecord::new(path, size_bytes, 0, Some(sha256))?;
+        member.host_relative = Some(host_relative);
+        self.insert(AssetVariant::default(), member)
+    }
+
+    /// Indexes `member` at `variant`, refusing a second spelling of a key
+    /// the mount already holds.
+    fn insert(
+        &mut self,
+        variant: AssetVariant,
+        member: MemberRecord,
+    ) -> Result<&mut Self, MountError> {
         let key = MemberKey {
             variant: variant.as_str().to_owned(),
-            path_key: path.logical_key(),
+            path_key: member.spelling().logical_key(),
         };
         if let Some(existing) = self.members.get(&key) {
             return Err(MountError::DuplicateMember {
                 logical_key: format!("{}/{}", variant.as_str(), key.path_key),
                 first_spelling: existing.spelling().as_str().to_owned(),
-                second_spelling: spelling.to_owned(),
+                second_spelling: member.spelling().as_str().to_owned(),
             });
         }
         self.members.insert(key, member);
@@ -529,6 +614,7 @@ impl MountBuilder {
             scope: self.scope,
             container: self.container,
             members: self.members,
+            backing: self.backing,
         })
     }
 }

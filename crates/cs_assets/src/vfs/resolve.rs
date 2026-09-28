@@ -35,7 +35,8 @@ use cs_types::asset_id::{
 };
 use cs_types::evidence::{ClaimStatus, ContentHash};
 
-use crate::vfs::mount::{Mount, MountError, SkipReason};
+use crate::vfs::mount::{MemberRecord, Mount, MountError, SkipReason};
+use crate::vfs::source::{self, ReadError};
 
 /// How one mount ended up participating in a lookup.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -312,10 +313,12 @@ fn origin_of(mount: &Mount, key: &AssetKey) -> ConflictOrigin {
 
 /// The mounted sources a resolution consults.
 ///
-/// A VFS holds mounts only; it never opens a file here. Mount lifetimes
-/// belong to a content session (non-negotiable behavior 4), so the mounts
-/// of one session are registered, consulted and dropped together; that
-/// lifecycle is F04-C work.
+/// Resolution never opens a file; [`Vfs::read_range`] and
+/// [`Vfs::read_all`] read the bytes of a resolution from its mount's host
+/// source, read-only. Mount lifetimes belong to a content session
+/// (non-negotiable behavior 4), so the mounts of one session are
+/// registered, consulted and dropped together; that lifecycle is F04-C
+/// work.
 #[derive(Clone, Debug, Default)]
 pub struct Vfs {
     mounts: Vec<Mount>,
@@ -445,5 +448,75 @@ impl Vfs {
             span,
             trace,
         })
+    }
+
+    /// Reads `length` bytes starting `start` bytes into the member that
+    /// `resolved` names — the random read of spec F04 non-negotiable
+    /// behavior 5. Nothing is written or extracted.
+    ///
+    /// The resolution must still describe a member of a mount this VFS
+    /// holds, with the same container, spelling, range and digest;
+    /// otherwise it is refused as stale instead of reading whatever now
+    /// answers the key.
+    pub fn read_range(
+        &self,
+        resolved: &ResolvedAsset,
+        start: u64,
+        length: u64,
+    ) -> Result<Vec<u8>, ReadError> {
+        let (mount, member) = self.current_member(resolved)?;
+        source::read_member_range(mount, member, start, length)
+    }
+
+    /// Reads the whole member that `resolved` names and checks its digest
+    /// against the one recorded when it was mounted.
+    pub fn read_all(&self, resolved: &ResolvedAsset) -> Result<Vec<u8>, ReadError> {
+        let (mount, member) = self.current_member(resolved)?;
+        let bytes = source::read_member_range(mount, member, 0, member.size_bytes())?;
+        if let Some(mounted) = member.sha256() {
+            let found = crate::install::sha256(&bytes);
+            if found != mounted {
+                let path = mount
+                    .host_root()
+                    .zip(member.host_relative())
+                    .map(|(root, relative)| root.join(relative))
+                    .unwrap_or_default();
+                return Err(ReadError::DigestMismatch {
+                    path,
+                    mounted,
+                    found,
+                });
+            }
+        }
+        Ok(bytes)
+    }
+
+    /// The mount and member `resolved` names, if the resolution still
+    /// describes them exactly.
+    fn current_member(
+        &self,
+        resolved: &ResolvedAsset,
+    ) -> Result<(&Mount, &MemberRecord), ReadError> {
+        let mount = self
+            .mounts
+            .iter()
+            .find(|mount| *mount.id() == resolved.mount)
+            .ok_or_else(|| ReadError::UnknownMount {
+                mount: resolved.mount.to_string(),
+            })?;
+        let stale = || ReadError::StaleResolution {
+            mount: resolved.mount.to_string(),
+        };
+        let member = mount.member(&resolved.key).ok_or_else(stale)?;
+        let span = &resolved.span;
+        let matches = span.container_path() == mount.container()
+            && span.member_key() == Some(member.spelling().as_str())
+            && span.offset() == member.offset()
+            && span.length() == member.size_bytes()
+            && span.member_sha256() == member.sha256();
+        if !matches {
+            return Err(stale());
+        }
+        Ok((mount, member))
     }
 }
