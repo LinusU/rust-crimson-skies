@@ -971,3 +971,86 @@ fn accept_f07_b_decoded_records_are_booked_once_and_refusals_charge_nothing() {
     let error = decode_interp(&mut twice, &bytes).expect_err("the second does not");
     assert_eq!(error.code(), "parse");
 }
+
+/// The header the decoder shares with the raw reader stays hostile-input safe:
+/// a `script_count` it cannot back with an index table and an index table
+/// that stops mid-entry are both refusals rather than buffers, an offset past
+/// the end of the container never becomes a line, and a container that indexes
+/// no scripts decodes to nothing with its tail reported rather than dropped.
+#[test]
+fn accept_f07_b_hostile_headers_and_out_of_range_offsets_are_refused() {
+    // A script_count no file can back: the index table is refused before it
+    // is borrowed, and the refused attempt charges nothing.
+    for count in [u32::MAX, 2, 1 << 20] {
+        // One whole entry plus eight bytes of a second one, so the index runs
+        // out inside an entry for every count of two or more.
+        let mut bytes = Vec::new();
+        for word in [0x0897_1119u32, 7, count] {
+            bytes.extend_from_slice(&word.to_le_bytes());
+        }
+        let mut field = [0u8; NAME_FIELD_BYTES];
+        field[..1].copy_from_slice(b"a");
+        bytes.extend_from_slice(&field);
+        bytes.extend_from_slice(&0u32.to_le_bytes());
+        bytes.extend_from_slice(&140u32.to_le_bytes());
+        bytes.extend_from_slice(&[0xAB; 8]);
+        let mut context = ParseContext::with_defaults(CONTAINER);
+        let error = decode_interp(&mut context, &bytes).expect_err("a count with no index");
+        assert_eq!(error.code(), "parse", "count {count}");
+        let error = match error {
+            InterpError::Parse(error) => error,
+            other => panic!("count {count} gave {other:?}"),
+        };
+        assert_eq!(error.kind, ParseErrorKind::UnexpectedEof, "count {count}");
+        assert_eq!(error.field, "interp.index", "count {count}");
+        assert_eq!(context.allocation().used(), 0, "count {count}");
+    }
+
+    // A complete index whose scripts are not in the bytes at all: the entries
+    // parse, and the first missing line is where the refusal lands.
+    let bytes = Image::new(&[(b"a", index_end(2)), (b"b", index_end(2) + 16)]).finish();
+    let mut context = ParseContext::with_defaults(CONTAINER);
+    let error = decode_interp(&mut context, &bytes).expect_err("no script bodies");
+    assert_eq!(error.code(), "parse");
+    let error = match error {
+        InterpError::Parse(error) => error,
+        other => panic!("a container with no bodies gave {other:?}"),
+    };
+    assert_eq!(error.kind, ParseErrorKind::UnexpectedEof);
+    assert_eq!(error.field, "interp.scripts[0].lines[0].size");
+    assert_eq!(context.allocation().used(), 0);
+
+    // A script offset past the end of the container is refused where the
+    // reader is asked to seek, not read as a line.
+    let start = index_end(1);
+    let mut image = Image::new(&[(b"far", 10_000)]);
+    image.put(start, &body(&[&line(1, b"a\0")]));
+    let bytes = image.finish();
+    let mut context = ParseContext::with_defaults(CONTAINER);
+    let error = decode_interp(&mut context, &bytes).expect_err("the offset is past the end");
+    assert_eq!(error.code(), "parse");
+    let error = match error {
+        InterpError::Parse(error) => error,
+        other => panic!("an offset past the end gave {other:?}"),
+    };
+    assert_eq!(error.kind, ParseErrorKind::UnexpectedEof);
+    assert_eq!(error.field, "interp.scripts[0].offset");
+    assert_eq!(context.allocation().used(), 0);
+
+    // A container that indexes no scripts decodes to nothing, and the bytes
+    // after its index are reported rather than dropped.
+    let mut empty = Image::new(&[]).finish();
+    let decoded = decode(&empty).expect("a container with no scripts is valid");
+    assert_eq!(decoded.scripts().len(), 0);
+    assert_eq!(decoded.index_end(), INTERP_HEADER_BYTES as u64);
+    assert!(decoded.findings().is_empty());
+    empty.extend_from_slice(&[0xAB; 9]);
+    let decoded = decode(&empty).expect("a tail does not make it invalid");
+    assert_eq!(
+        decoded.findings(),
+        [cs_formats::InterpFinding::Unclaimed {
+            offset: INTERP_HEADER_BYTES as u64,
+            length: 9,
+        }]
+    );
+}
