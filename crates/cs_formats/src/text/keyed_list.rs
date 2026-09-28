@@ -28,7 +28,7 @@
 use std::ops::Range;
 
 use crate::error::ParseError;
-use crate::io::ParseContext;
+use crate::io::{AllocationBudget, ParseContext};
 use crate::text::lines::{LineTerminator, TextLine, scan_in};
 
 /// Entrypoint label [`read_keyed_list`] scopes its errors with.
@@ -230,8 +230,10 @@ impl KeyedListLine<'_> {
 ///
 /// Never fails on content: every line becomes a node, the ones no observed
 /// rule explains as [`LineKind::Unclassified`]. The only errors are the
-/// line and node tables not fitting this parse's allocation budget; a
-/// refused read leaves the ledger as it found it.
+/// line and node tables and the entry field vectors not fitting this
+/// parse's allocation budget — every buffer the reader allocates is
+/// booked against it, so a refused read leaves the ledger as it found
+/// it.
 pub fn read_keyed_list<'a>(
     context: &mut ParseContext,
     bytes: &'a [u8],
@@ -247,13 +249,17 @@ pub fn read_keyed_list<'a>(
         let lines = scanned
             .lines()
             .iter()
-            .map(|line| classify(line.clone(), scanned.content(line)))
-            .collect();
+            .map(|line| classify(allocation, line.clone(), scanned.content(line)))
+            .collect::<Result<Vec<_>, ParseError>>()?;
         Ok(KeyedList { bytes, lines })
     })
 }
 
-fn classify(line: TextLine, content: &[u8]) -> KeyedListLine<'_> {
+fn classify<'a>(
+    allocation: &mut AllocationBudget,
+    line: TextLine,
+    content: &'a [u8],
+) -> Result<KeyedListLine<'a>, ParseError> {
     let body_start = content
         .iter()
         .position(|byte| !BLANK.contains(byte))
@@ -264,14 +270,14 @@ fn classify(line: TextLine, content: &[u8]) -> KeyedListLine<'_> {
         None => LineKind::Blank,
         Some(b';') => LineKind::Comment { text: &body[1..] },
         Some(b'[') => section(body),
-        Some(_) => entry(content, body_start),
+        Some(_) => entry(allocation, line.offset, content, body_start)?,
     };
-    KeyedListLine {
+    Ok(KeyedListLine {
         line,
         content,
         indent,
         kind,
-    }
+    })
 }
 
 fn section(body: &[u8]) -> LineKind<'_> {
@@ -286,45 +292,61 @@ fn section(body: &[u8]) -> LineKind<'_> {
     }
 }
 
-fn entry(content: &[u8], body_start: usize) -> LineKind<'_> {
+fn entry<'a>(
+    allocation: &mut AllocationBudget,
+    line_offset: u64,
+    content: &'a [u8],
+    body_start: usize,
+) -> Result<LineKind<'a>, ParseError> {
     let Some(separator) = content.iter().position(|&byte| byte == b'=') else {
-        return LineKind::Unclassified {
+        return Ok(LineKind::Unclassified {
             reason: Unclassified::NoSeparator,
-        };
+        });
     };
     let key_end = body_start + trim_end(&content[body_start..separator]).len();
     if key_end == body_start {
-        return LineKind::Unclassified {
+        return Ok(LineKind::Unclassified {
             reason: Unclassified::EmptyKey,
-        };
+        });
     }
     let value = &content[separator + 1..];
-    LineKind::Entry(Entry {
+    let fields = split_fields(allocation, line_offset + separator as u64 + 1, value)?;
+    Ok(LineKind::Entry(Entry {
         key: &content[body_start..key_end],
         key_range: body_start..key_end,
         separator,
         value,
-        fields: split_fields(value),
-    })
+        fields,
+    }))
 }
 
-fn split_fields(value: &[u8]) -> Fields<'_> {
+/// Splits `value` at the commas its observed quoting rules allow, booking
+/// every field row of the resulting vector against `allocation` (its
+/// anchor is `value_offset`, the value's first byte in the container) so
+/// that a value with more fields than the budget allows is refused
+/// instead of allocating them. A value that quoting the survey never
+/// observed keeps its bytes unsplit and books nothing.
+fn split_fields<'a>(
+    allocation: &mut AllocationBudget,
+    value_offset: u64,
+    value: &'a [u8],
+) -> Result<Fields<'a>, ParseError> {
     let mut fields = Vec::new();
     let mut start = 0usize;
     loop {
         let (end, quoted) = if value.get(start) == Some(&b'"') {
             let Some(close) = value[start + 1..].iter().position(|&byte| byte == b'"') else {
-                return Fields::Unsplit {
+                return Ok(Fields::Unsplit {
                     issue: QuoteIssue::Unterminated,
                     at: start,
-                };
+                });
             };
             let end = start + 1 + close + 1;
             if end < value.len() && value[end] != b',' {
-                return Fields::Unsplit {
+                return Ok(Fields::Unsplit {
                     issue: QuoteIssue::TextAfterClosingQuote,
                     at: end - 1,
-                };
+                });
             }
             (end, true)
         } else {
@@ -333,13 +355,19 @@ fn split_fields(value: &[u8]) -> Fields<'_> {
                 .position(|&byte| byte == b',')
                 .map_or(value.len(), |relative| start + relative);
             if let Some(quote) = value[start..end].iter().position(|&byte| byte == b'"') {
-                return Fields::Unsplit {
+                return Ok(Fields::Unsplit {
                     issue: QuoteIssue::QuoteInsideField,
                     at: start + quote,
-                };
+                });
             }
             (end, false)
         };
+        allocation.reserve(
+            "fields",
+            value_offset + start as u64,
+            1,
+            std::mem::size_of::<Field>() as u64,
+        )?;
         let raw = &value[start..end];
         fields.push(Field {
             raw,
@@ -348,7 +376,7 @@ fn split_fields(value: &[u8]) -> Fields<'_> {
             text: if quoted { &raw[1..raw.len() - 1] } else { raw },
         });
         if end == value.len() {
-            return Fields::Split(fields);
+            return Ok(Fields::Split(fields));
         }
         start = end + 1;
     }

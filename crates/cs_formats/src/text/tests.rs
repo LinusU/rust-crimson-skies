@@ -244,13 +244,53 @@ fn accept_f12_a_unclassified_lines_are_kept_and_counted() {
     assert_eq!(list.reassemble(), odd);
 }
 
+/// The line and node tables of `FIXTURE` cost exactly this much: eleven
+/// lines and no entry, so no field vector is booked. Used as the budget
+/// that stops right where the tables end.
+const TABLES_ONLY: &[u8] = b";a\r\n\
+\r\n\
+[b]\r\n\
+\t;c\r\n\
+\r\n\
+[d]\r\n\
+;e\r\n\
+\r\n\
+[f]\r\n\
+\t;g\r\n\
+;h";
+
 /// The line and node tables are booked; a refused read books nothing.
+/// Every entry field vector is booked too, so a budget that stops at the
+/// tables refuses `FIXTURE` instead of allocating the fields unbounded.
 #[test]
 fn accept_f12_a_node_tables_are_bounded_by_the_allocation_budget() {
     let mut context = ParseContext::new("tiny.list", 64, 8);
     let error = read_keyed_list(&mut context, FIXTURE).expect_err("budget too small");
     assert_eq!(error.kind, ParseErrorKind::AllocationBudgetExceeded);
     assert_eq!(context.allocation().used(), 0);
+
+    let mut tables = ParseContext::with_defaults("tables.list");
+    let probe = read_keyed_list(&mut tables, TABLES_ONLY).expect("no entries reads");
+    assert_eq!(probe.lines().len(), 11);
+    assert!(probe.entries().next().is_none());
+    let table_bytes = tables.allocation().used();
+
+    let mut context = ParseContext::new("fields.list", table_bytes, 8);
+    read_keyed_list(&mut context, FIXTURE).expect_err("the field vectors do not fit");
+    assert_eq!(context.allocation().used(), 0);
+
+    let fields = read(FIXTURE)
+        .entries()
+        .map(|(_, _, entry)| match &entry.fields {
+            Fields::Split(fields) => fields.len(),
+            Fields::Unsplit { .. } => 0,
+        })
+        .sum::<usize>();
+    assert!(fields > 0);
+    let limit = table_bytes + fields as u64 * std::mem::size_of::<Field>() as u64;
+    let mut context = ParseContext::new("fields.list", limit, 8);
+    read_keyed_list(&mut context, FIXTURE).expect("tables and fields fit");
+    assert_eq!(context.allocation().used(), limit);
 
     let mut context = ParseContext::with_defaults("fixture.list");
     read_keyed_list(&mut context, FIXTURE).expect("reads");

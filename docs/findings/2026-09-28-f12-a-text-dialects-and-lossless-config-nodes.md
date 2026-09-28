@@ -147,9 +147,14 @@ It is neither CSV (no header row; `=` separates the key) nor a plain INI
   `Vec<u8>`: the survey found ASCII only and the code page of a localized
   installation is unknown, so a Windows-1252 or UTF-8 name is neither
   rejected nor transcoded.
-- **Budgets.** The line and node tables are booked against the
-  `ParseContext` allocation budget inside one parse, so a refused read
-  books nothing (F03-C retry contract).
+- **Budgets.** Every buffer the readers allocate is booked against the
+  `ParseContext` allocation budget: the line and node tables, each
+  entry's field vector in `read_keyed_list`, and in the content layer the
+  owned node rows, their copied line bytes, the key, section, field and
+  value copies and the consumed flags. A refused reservation is never
+  charged and a failed attempt rolls its own charges back (F03-C retry
+  contract); the keyed list parse that ran before a refused owned-node
+  parse had succeeded and keeps its charges.
 - **The content layer owns and accounts.** `ConfigDocument::read` takes a
   `SourceSpan` (IDENTITY-CONTENT) and the member bytes, routes through the
   inventory (`unknown_dialect` / `no_reader` otherwise), checks the length
@@ -173,13 +178,14 @@ It is neither CSV (no header row; `=` separates the key) nor a plain INI
 | `…non_ascii_names_survive_as_bytes` | AC01 Windows-1252 and UTF-8 keys, non-ASCII section names and values |
 | `…unobserved_quoting_is_unsplit_not_guessed` | unterminated, text after closing quote, `""`, quote inside a field |
 | `…unclassified_lines_are_kept_and_counted` | `:` line, empty key, malformed sections |
-| `…node_tables_are_bounded_by_the_allocation_budget` | refusal with `AllocationBudgetExceeded`, nothing booked |
+| `…node_tables_are_bounded_by_the_allocation_budget` | refusal with `AllocationBudgetExceeded`, nothing booked; the entry field vectors booked exactly (the tables' cost alone refuses `FIXTURE`, that cost plus the fields' bytes reads) |
 | `…dialect_inventory_routes_only_observed_members` | routing by rule not extension; one row per dialect; no `VerifiedOriginal` |
 | `…retail_keyed_lists_read_losslessly` (ignored, retail) | both retail members: recorded length, ASCII, CRLF only, byte-exact reassembly, only the `:` line unclassified, every value splits, quoted fields present |
 | `…retail_text_inventory_matches_the_survey` (ignored, retail) | `.H` and `DEBUGINFO.TXT` lengths and terminators; the `.SCRIPT` rule covers exactly 61 members |
 | `config::tests::…config_document_is_lossless` | AC01 through owned nodes; offsets, lines, terminators, non-ASCII lookup, provenance |
 | `…config_document_counts_unconsumed_keys` | non-negotiable #5 accounting; duplicate key `Ambiguous`; exact-byte section compare; unsplit value kept |
 | `…config_document_refuses_unrouted_members` | `unknown_dialect`, `no_reader` (F13-A), `length_mismatch`, `parse` |
+| `…config_document_books_every_copy_it_owns` | every buffer the owned nodes allocate is booked exactly, on top of the keyed list parse; the exact budget reads and one byte less is refused |
 
 The retail tests fail with "CS_GAME_DIR is not set" when run without it.
 
@@ -211,7 +217,7 @@ The retail tests fail with "CS_GAME_DIR is not set" when run without it.
 - `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` → 0
 - `cargo test --workspace --locked` → 0
 - `cargo test --workspace --locked -- accept_f12_a_ --include-ignored` → 0
-  (13 tests: 10 in `cs_formats`, 3 in `cs_content`)
+  (14 tests: 10 in `cs_formats`, 4 in `cs_content`)
 
 ## Sources
 

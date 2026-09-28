@@ -21,6 +21,7 @@
 
 use std::fmt;
 
+use cs_formats::AllocationBudget;
 use cs_formats::ParseContext;
 use cs_formats::error::ParseError;
 use cs_formats::text::{
@@ -28,6 +29,10 @@ use cs_formats::text::{
     Unclassified, dialect_for_member, read_keyed_list,
 };
 use cs_types::asset_id::SourceSpan;
+
+/// Entrypoint label [`ConfigDocument::read`] scopes the parse that books
+/// its owned nodes with.
+const CONFIG_ENTRYPOINT: &str = "content.config_document";
 
 /// One configuration member as lossless nodes.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -227,8 +232,9 @@ impl ConfigDocument {
     /// cover (an extension alone routes nothing),
     /// [`ConfigError::NoReader`] for a dialect without a configuration
     /// reader, [`ConfigError::LengthMismatch`] when `bytes` is not the
-    /// source's length and [`ConfigError::Parse`] when the node tables do
-    /// not fit `context`'s allocation budget.
+    /// source's length and [`ConfigError::Parse`] when the node tables or
+    /// the buffers the owned nodes copy do not fit `context`'s
+    /// allocation budget.
     pub fn read(
         context: &mut ParseContext,
         source: SourceSpan,
@@ -253,63 +259,108 @@ impl ConfigDocument {
             });
         }
         let list = read_keyed_list(context, bytes).map_err(ConfigError::Parse)?;
-        Ok(Self::from_keyed_list(source, dialect, &list))
+        context
+            .parse(CONFIG_ENTRYPOINT, bytes, |_reader, allocation, _| {
+                Self::from_keyed_list(allocation, source, dialect, &list)
+            })
+            .map_err(ConfigError::Parse)
     }
 
-    fn from_keyed_list(source: SourceSpan, dialect: TextDialect, list: &KeyedList<'_>) -> Self {
+    /// Builds the owned nodes, booking every buffer they allocate — the
+    /// node rows, the copied line bytes, the key, section, field and
+    /// value copies and the consumed flags — against `allocation`, on top
+    /// of what the keyed list reader booked for the borrowed parse. A
+    /// document whose copies do not fit the budget is refused as
+    /// [`ConfigError::Parse`] instead of allocating them.
+    fn from_keyed_list(
+        allocation: &mut AllocationBudget,
+        source: SourceSpan,
+        dialect: TextDialect,
+        list: &KeyedList<'_>,
+    ) -> Result<Self, ParseError> {
         let mut section: Option<Vec<u8>> = None;
-        let nodes: Vec<ConfigNode> = list
-            .lines()
-            .iter()
-            .map(|line| {
-                let kind = match &line.kind {
-                    LineKind::Blank => ConfigNodeKind::Blank,
-                    LineKind::Comment { .. } => ConfigNodeKind::Comment,
-                    LineKind::Section { name } => {
-                        section = Some(name.to_vec());
-                        ConfigNodeKind::Section {
-                            name: name.to_vec(),
+        allocation.reserve(
+            "nodes",
+            0,
+            list.lines().len() as u64,
+            std::mem::size_of::<ConfigNode>() as u64,
+        )?;
+        let mut nodes = Vec::with_capacity(list.lines().len());
+        for line in list.lines() {
+            let at = line.line.offset;
+            allocation.reserve("node_content", at, line.content.len() as u64, 1)?;
+            let kind = match &line.kind {
+                LineKind::Blank => ConfigNodeKind::Blank,
+                LineKind::Comment { .. } => ConfigNodeKind::Comment,
+                LineKind::Section { name } => {
+                    allocation.reserve("section_name", at, name.len() as u64, 1)?;
+                    let name = name.to_vec();
+                    allocation.reserve("section_current", at, name.len() as u64, 1)?;
+                    section = Some(name.clone());
+                    ConfigNodeKind::Section { name }
+                }
+                LineKind::Entry(entry) => {
+                    allocation.reserve("entry_key", at, entry.key.len() as u64, 1)?;
+                    let key = entry.key.to_vec();
+                    allocation.reserve(
+                        "entry_section",
+                        at,
+                        section.as_ref().map_or(0, |name| name.len() as u64),
+                        1,
+                    )?;
+                    let section = section.clone();
+                    let value = match &entry.fields {
+                        Fields::Split(fields) => {
+                            allocation.reserve(
+                                "entry_fields",
+                                at,
+                                fields.len() as u64,
+                                std::mem::size_of::<RawField>() as u64,
+                            )?;
+                            let mut owned = Vec::with_capacity(fields.len());
+                            for field in fields {
+                                allocation.reserve("entry_field", at, field.raw.len() as u64, 1)?;
+                                owned.push(RawField {
+                                    raw: field.raw.to_vec(),
+                                    quoted: field.quoted,
+                                });
+                            }
+                            RawValue::Fields(owned)
                         }
-                    }
-                    LineKind::Entry(entry) => ConfigNodeKind::Entry(ConfigEntry {
-                        section: section.clone(),
-                        key: entry.key.to_vec(),
-                        value: match &entry.fields {
-                            Fields::Split(fields) => RawValue::Fields(
-                                fields
-                                    .iter()
-                                    .map(|field| RawField {
-                                        raw: field.raw.to_vec(),
-                                        quoted: field.quoted,
-                                    })
-                                    .collect(),
-                            ),
-                            Fields::Unsplit { issue, .. } => RawValue::Unsplit {
+                        Fields::Unsplit { issue, .. } => {
+                            allocation.reserve("entry_value", at, entry.value.len() as u64, 1)?;
+                            RawValue::Unsplit {
                                 raw: entry.value.to_vec(),
                                 issue: *issue,
-                            },
-                        },
-                    }),
-                    LineKind::Unclassified { reason } => {
-                        ConfigNodeKind::Unclassified { reason: *reason }
-                    }
-                };
-                ConfigNode {
-                    line: line.line.number,
-                    offset: line.line.offset,
-                    content: line.content.to_vec(),
-                    terminator: line.terminator(),
-                    kind,
+                            }
+                        }
+                    };
+                    ConfigNodeKind::Entry(ConfigEntry {
+                        section,
+                        key,
+                        value,
+                    })
                 }
-            })
-            .collect();
+                LineKind::Unclassified { reason } => {
+                    ConfigNodeKind::Unclassified { reason: *reason }
+                }
+            };
+            nodes.push(ConfigNode {
+                line: line.line.number,
+                offset: line.line.offset,
+                content: line.content.to_vec(),
+                terminator: line.terminator(),
+                kind,
+            });
+        }
+        allocation.reserve("consumed", 0, nodes.len() as u64, 1)?;
         let consumed = vec![false; nodes.len()];
-        Self {
+        Ok(Self {
             source,
             dialect,
             nodes,
             consumed,
-        }
+        })
     }
 
     /// Where the member came from.
@@ -485,6 +536,68 @@ N\xe4me=x";
         };
         assert_eq!(texts(name), vec![&b"x"[..]]);
         assert_eq!(document.source().member_key(), Some(LAYOUT));
+    }
+
+    /// Every buffer the document owns is booked against the budget, on
+    /// top of what the keyed list reader booked for the borrowed parse:
+    /// the exact total reads and one byte less is refused.
+    #[test]
+    fn accept_f12_a_config_document_books_every_copy_it_owns() {
+        let mut context = ParseContext::with_defaults("fixture");
+        let document = ConfigDocument::read(&mut context, source(LAYOUT, MEMBER.len()), MEMBER)
+            .expect("an observed keyed list member reads");
+        assert_eq!(document.reassemble(), MEMBER);
+
+        let mut expected = 0u64;
+        let mut fields = 0usize;
+        for node in document.nodes() {
+            expected += std::mem::size_of::<ConfigNode>() as u64;
+            expected += node.content.len() as u64;
+            if let ConfigNodeKind::Section { name } = &node.kind {
+                expected += 2 * name.len() as u64;
+            }
+            let ConfigNodeKind::Entry(entry) = &node.kind else {
+                continue;
+            };
+            expected += entry.key.len() as u64;
+            expected += entry.section.as_deref().map_or(0, |name| name.len() as u64);
+            match &entry.value {
+                RawValue::Fields(owned) => {
+                    fields += owned.len();
+                    expected += owned.len() as u64 * std::mem::size_of::<RawField>() as u64;
+                    expected += owned
+                        .iter()
+                        .map(|field| field.raw.len() as u64)
+                        .sum::<u64>();
+                }
+                RawValue::Unsplit { raw, .. } => expected += raw.len() as u64,
+            }
+        }
+        expected += document.nodes().len() as u64; // the consumed flags
+        // The borrowed parse the content layer ran underneath: one line
+        // row, one node row and one field row for every field.
+        let borrowed = document.nodes().len() as u64
+            * (std::mem::size_of::<cs_formats::text::TextLine>() as u64
+                + std::mem::size_of::<cs_formats::text::KeyedListLine<'_>>() as u64)
+            + fields as u64 * std::mem::size_of::<cs_formats::text::Field>() as u64;
+        expected += borrowed;
+        assert_eq!(context.allocation().used(), expected);
+
+        let mut exact = ParseContext::new("exact", expected, 8);
+        ConfigDocument::read(&mut exact, source(LAYOUT, MEMBER.len()), MEMBER)
+            .expect("exactly the budget it books is enough");
+        assert_eq!(exact.allocation().used(), expected);
+
+        let mut short = ParseContext::new("short", expected - 1, 8);
+        let error = ConfigDocument::read(&mut short, source(LAYOUT, MEMBER.len()), MEMBER)
+            .expect_err("one byte short of the budget is refused");
+        assert_eq!(error.code(), "parse");
+        assert_eq!(
+            short.allocation().used(),
+            borrowed,
+            "the refused attempt rolled its own charges back; the keyed \
+             list parse before it had already succeeded and keeps them"
+        );
     }
 
     /// Non-negotiable #5: unknown keys are retained and counted, and a

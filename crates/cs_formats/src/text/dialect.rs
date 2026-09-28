@@ -211,7 +211,8 @@ pub struct DialectRecord {
     /// The surveyed members that carry it.
     pub members: &'static [MemberRule],
     /// The line terminator every surveyed line ended with (the last line
-    /// of a member excepted), or `None` for a binary container.
+    /// of a member excepted), or `None` when the survey established none:
+    /// a binary container, or a document no reader owns (`RichText`).
     pub terminator: Option<LineTerminator>,
     /// The observed encoding.
     pub encoding: ObservedEncoding,
