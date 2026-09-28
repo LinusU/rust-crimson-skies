@@ -11,6 +11,8 @@
 //! the byte builders, so a decoder that swaps rows and columns or flips the
 //! image the wrong number of times fails on a named coordinate.
 
+mod mips;
+
 use cs_formats::ParseErrorKind;
 use cs_formats::io::AllocationBudget;
 use cs_formats::texture::{
