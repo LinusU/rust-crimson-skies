@@ -662,7 +662,7 @@ fn evidence_report_t343_writes_the_acceptance_report() {
          \x20\"tests\": {{\"discovered\": {}, \"executed\": {}, \"passed\": {}, \"failed\": {}, \"ignored\": {}}},\n\
          \x20\"assertions\": [{}],\n\
          \x20\"artifacts\": [{}],\n\
-         \x20\"unknowns\": [{}],\n\
+         \x20\"unknowns\": [],\n\
          \x20\"review\": {{\"identity\": {}, \"method\": {}}},\n\
          \x20\"claim\": \"implemented\"\n\
          }}\n",
@@ -702,10 +702,6 @@ fn evidence_report_t343_writes_the_acceptance_report() {
             .collect::<Vec<_>>()
             .join(", "),
         jstr(
-            "the 76 bytes after each version-one index entry's name (`garbage` in the pinned \
-             mech3ax source) are retained verbatim and not interpreted"
-        ),
-        jstr(
             "claude-1 (implementing agent, self-check; the Rally reviewer regenerates this \
              report on the rebased commit)"
         ),
@@ -714,7 +710,9 @@ fn evidence_report_t343_writes_the_acceptance_report() {
              every field from the recorded log, production discovery of $CS_GAME_DIR, the \
              production index reader and family readers over every retail sound and reader \
              archive (zbd-member-index.json), rustc and Cargo.lock; validated with \
-             tools/validate_evidence.py --require-pass"
+             tools/validate_evidence.py --require-pass. The 76 unexplained bytes of each \
+             index entry are retained verbatim as unknown, as the task requires; their \
+             meaning is recorded as unknown in the task #343 findings"
         ),
     );
     let out = evidence_dir.join("acceptance.json");
