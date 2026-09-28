@@ -69,6 +69,8 @@ Work only on this stage. Collect actual integration/reference evidence; repair d
 
 Required task-test prefix: `accept_f12_d_`. Minimum scenario: A localized installation preserves stable ids while changing display text.
 
+Owner ruling 2026-09-28 ([owner ruling](README.md#owner-ruling-2026-09-28-first-playable-sequencing-audit-plan-sync-356)): configuration verification also waits for the original reading rules of the keyed field list dialect (#351).
+
 Before editing, list the specific functions/files and one observable failure. If the slice exceeds one format variant, one focused system behavior or one bounded UI path, follow TASK-SPLITTING.md rather than producing a giant change. Preserve all parent acceptance criteria.
 
 ## Evidence and completion

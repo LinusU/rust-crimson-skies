@@ -47,6 +47,8 @@ Work only on this stage. Implement the smallest production path that exercises t
 
 Required task-test prefix: `accept_f18_b_`. Minimum scenario: Unload and reload a sector containing a damaged objective; state persists correctly.
 
+Owner ruling 2026-09-28 ([owner ruling](README.md#owner-ruling-2026-09-28-first-playable-sequencing-audit-plan-sync-356)): static collision generation also waits for Avian collider-from-mesh on a real asset stack (#333).
+
 Before editing, list the specific functions/files and one observable failure. If the slice exceeds one format variant, one focused system behavior or one bounded UI path, follow TASK-SPLITTING.md rather than producing a giant change. Preserve all parent acceptance criteria.
 
 

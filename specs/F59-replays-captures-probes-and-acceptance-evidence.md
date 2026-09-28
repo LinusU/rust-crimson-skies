@@ -58,6 +58,8 @@ Work only on this stage. Wire the implemented path into its actual producer and 
 
 Required task-test prefix: `accept_f59_c_`. Minimum scenario: Capture at fixed tick from fixed camera on two runs with stable settings.
 
+Owner ruling 2026-09-28 ([owner ruling](README.md#owner-ruling-2026-09-28-first-playable-sequencing-audit-plan-sync-356)): the evidence commands also wait for AUDIT-EVIDENCE-MODEL (#354) and write its versioned reports, which keep task success separate from unresolved product limitations.
+
 Before editing, list the specific functions/files and one observable failure. If the slice exceeds one format variant, one focused system behavior or one bounded UI path, follow TASK-SPLITTING.md rather than producing a giant change. Preserve all parent acceptance criteria.
 
 

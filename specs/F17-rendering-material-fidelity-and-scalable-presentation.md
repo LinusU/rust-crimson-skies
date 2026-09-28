@@ -69,6 +69,8 @@ Work only on this stage. Collect actual integration/reference evidence; repair d
 
 Required task-test prefix: `accept_f17_d_`. Minimum scenario: Original comparison set includes cockpit, skyline, vegetation, night effects and close-up aircraft.
 
+Owner ruling 2026-09-28 ([owner ruling](README.md#owner-ruling-2026-09-28-first-playable-sequencing-audit-plan-sync-356)): faithful rendering review also waits for the original file lookup order (#341), archive-member collisions (#342) and texture-archive selection (#352), so the screenshot matrix shows the assets the original actually loads.
+
 Before editing, list the specific functions/files and one observable failure. If the slice exceeds one format variant, one focused system behavior or one bounded UI path, follow TASK-SPLITTING.md rather than producing a giant change. Preserve all parent acceptance criteria.
 
 ## Evidence and completion
