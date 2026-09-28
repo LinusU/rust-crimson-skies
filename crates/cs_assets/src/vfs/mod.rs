@@ -23,19 +23,38 @@
 //!   with their spellings) and reads a resolution's bytes read-only
 //!   ([`Vfs::read_range`], [`Vfs::read_all`]).
 //!
+//! * [`session`] owns the mounts for the lifetime of one content session
+//!   ([`SessionBuilder`], [`ContentSession`]): resolutions and reads are
+//!   stamped with a [`SessionGeneration`] and refused by any other session,
+//!   a [`PendingRead`] survives the session closing by holding its mount
+//!   description instead of a file handle, and [`ContentSession::close`]
+//!   is the teardown;
+//! * [`export`] is the explicit private research export
+//!   ([`ExportDirectory`], [`export_asset`]): hostile member names cannot
+//!   leave the export directory, and the directory cannot lie inside a
+//!   mounted source.
+//!
 //! Mounting archive members needs the archive readers of the format tasks;
-//! tracing exports and the session mount lifecycle are F04-C; measuring
-//! original lookup behavior for every observed collision is F04-D. Nothing
-//! here writes to the original installation.
+//! measuring original lookup behavior for every observed collision is
+//! F04-D. Nothing here writes to the original installation.
 
+pub mod export;
 pub mod mount;
 pub mod resolve;
+pub mod session;
 pub mod source;
 
+pub use export::{
+    ExportDirectory, ExportError, ExportedFile, UnsafeName, export_asset, export_components,
+};
 pub use mount::{MemberRecord, Mount, MountBuilder, MountError, MountScope, SkipReason};
 pub use resolve::{
     AttemptOutcome, ConflictOrigin, ResolutionAttempt, ResolutionTrace, ResolveError,
     ResolvedAsset, Vfs,
+};
+pub use session::{
+    CompletedRead, ContentSession, PendingRead, SessionAsset, SessionBuilder, SessionError,
+    SessionGeneration, SessionRejection, SessionTeardown,
 };
 pub use source::{
     MountedDirectory, ReadError, RejectReason, RejectedEntry, SourceError, mount_directory,
