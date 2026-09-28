@@ -359,8 +359,9 @@ pub fn interp_report_json(
                     if let Some(head) = decoded_line.head() {
                         row.push_str(&format!(", \"head_offset\": {}", head.offset()));
                     }
-                    row.push('}');
                     if raw.is_some() {
+                        // The unvalidated F07-A record of the same line, so
+                        // both views of one line sit side by side.
                         row.push_str(&format!(
                             ", \"raw\": {{\"offset\": {}, \"size\": {}, \"argument_count\": {}, \
                              \"data\": {}}}",
@@ -452,6 +453,43 @@ fn jbytes(bytes: &[u8]) -> String {
         hex.push_str(&format!("{byte:02x}"));
     }
     format!("{{\"length\": {}, \"hex\": {}}}", bytes.len(), jstr(&hex))
+}
+
+/// Whether `report` is a well-formed JSON document: balanced braces and
+/// brackets, every string literal terminated and escaped.
+///
+/// The report is assembled by hand, so the tests check its shape instead of
+/// trusting it. A report that does not parse is not a report, and a substring
+/// assertion on its own would not notice a stray brace.
+#[cfg(test)]
+fn is_well_formed_json(report: &str) -> bool {
+    let mut depth = 0i32;
+    let mut in_string = false;
+    let mut escaped = false;
+    for character in report.chars() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match character {
+            '"' => in_string = true,
+            '{' | '[' => depth += 1,
+            '}' | ']' => {
+                depth -= 1;
+                if depth < 0 {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    depth == 0 && !in_string && !escaped
 }
 
 /// A JSON string literal: quoted and escaped.
@@ -549,6 +587,10 @@ mod tests {
         assert_eq!(run.exit_code, 0, "diagnostics: {:?}", run.diagnostics);
         assert!(run.diagnostics.is_empty());
         let report = run.report.expect("the container decoded");
+        assert!(
+            is_well_formed_json(&report),
+            "the report is a JSON document:\n{report}"
+        );
 
         // The header and the container fingerprint.
         assert!(report.contains("\"report\": \"cs-inspect-interp/1\""));
@@ -581,6 +623,10 @@ mod tests {
         let run = interp_command_result(&args(&["--file", path, "--raw"]));
         let report = run.report.expect("the container decoded");
         assert_eq!(run.exit_code, 0);
+        assert!(
+            is_well_formed_json(&report),
+            "the --raw report is a JSON document too:\n{report}"
+        );
         assert!(report.contains("\"raw\": {\"offset\": 140, \"size\": 11, \"argument_count\": 2"));
     }
 
