@@ -33,11 +33,16 @@
 //! The BM multilayer livery layout: `specs/F09-bm-multilayer-liveries-and-
 //! paint-composition.md` (stage F09-A, [`bm`]).
 //!
+//! The lossless GameZ mesh IR and triangle-strip decoding:
+//! `specs/F10-gamez-mesh-topology-and-material-records.md` (stage F10-A,
+//! [`gamez`]).
+//!
 //! The fixtures exercised below are newly authored synthetic bytes; nothing
 //! here is derived from original game data.
 
 pub mod bm;
 pub mod error;
+pub mod gamez;
 pub mod interp;
 pub mod io;
 pub mod rof;
