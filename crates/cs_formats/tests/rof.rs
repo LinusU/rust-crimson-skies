@@ -1,23 +1,26 @@
-//! Acceptance stage F05-A: raw ROF directory structs and synthetic
-//! boundary fixtures (`specs/F05-rof-directory-trees-and-compressed-members.md`,
-//! section `### F05-A`).
+//! Acceptance stages F05-A and F05-B: raw ROF directory structs, synthetic
+//! boundary fixtures, the directory walk and bounded member reads
+//! (`specs/F05-rof-directory-trees-and-compressed-members.md`, sections
+//! `### F05-A` and `### F05-B`).
 //!
 //! Every byte in this file is authored here (except
 //! `fixtures/synthetic/flat-uncompressed.rof`, whose bytes are authored by
-//! `tools/make_synthetic_fixtures.py` and read only for cross-checking):
-//! newly authored synthetic content, no original game data, no
-//! `CS_GAME_DIR` access.
+//! `tools/make_synthetic_fixtures.py` and read only for cross-checking, and
+//! the zlib streams noted where they appear): newly authored synthetic
+//! content, no original game data, no `CS_GAME_DIR` access.
 //!
-//! The fixtures build a directory *tree* out of separately encoded blocks
-//! — a root block plus one block per directory record — so the acceptance
-//! scenario (two directories, duplicate basenames, stable ids) is observable
-//! while traversal itself (following a record's `start`, cycle detection,
-//! bounded depth) stays with F05-B: here the test passes each block's own
-//! bytes to the production entrypoint.
+//! The F05-A fixtures build a directory *tree* out of separately encoded
+//! blocks — a root block plus one block per directory record — so the
+//! acceptance scenario (two directories, duplicate basenames, stable ids)
+//! is observable while traversal itself (following a record's `start`, cycle
+//! detection, bounded depth) stays with F05-B: here the test passes each
+//! block's own bytes to the production entrypoint. F05-B walks that same
+//! tree through `read_tree` and reads its members through `read_member`.
 
 use cs_formats::{
-    DIRECTORY_HEADER_BYTES, FLAG_DIRECTORY, ParseContext, ParseErrorKind, RECORD_BYTES,
-    RofDirectory, RofError, RofFlags, RofRawHeader, read_directory,
+    AllocationBudget, DIRECTORY_HEADER_BYTES, FLAG_COMPRESSED, FLAG_DIRECTORY, ParseContext,
+    ParseErrorKind, RECORD_BYTES, RofDirectory, RofError, RofFlags, RofLimits, RofMember,
+    RofRawHeader, RofRawRecord, RofTree, RofTreeDirectory, read_directory, read_member, read_tree,
 };
 
 /// Provenance label carried by every error these tests assert on.
@@ -660,5 +663,1013 @@ fn accept_f05_a_hostile_entry_count_is_refused_by_bounds_checks() {
         context.allocation().used(),
         0,
         "the hostile count must not reach the allocation ledger"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// F05-B: directory traversal and bounded member reads
+// ---------------------------------------------------------------------------
+
+/// The payload of the compressed fixtures: 204 bytes, four repetitions of
+/// one authored line.
+const COMPRESSED_PAYLOAD: &[u8] = &[
+    0x43, 0x72, 0x69, 0x6d, 0x73, 0x6f, 0x6e, 0x20, 0x53, 0x6b, 0x69, 0x65, 0x73, 0x20, 0x73, 0x79,
+    0x6e, 0x74, 0x68, 0x65, 0x74, 0x69, 0x63, 0x20, 0x63, 0x6f, 0x6d, 0x70, 0x72, 0x65, 0x73, 0x73,
+    0x65, 0x64, 0x20, 0x6d, 0x65, 0x6d, 0x62, 0x65, 0x72, 0x20, 0x70, 0x61, 0x79, 0x6c, 0x6f, 0x61,
+    0x64, 0x2e, 0x0a, 0x43, 0x72, 0x69, 0x6d, 0x73, 0x6f, 0x6e, 0x20, 0x53, 0x6b, 0x69, 0x65, 0x73,
+    0x20, 0x73, 0x79, 0x6e, 0x74, 0x68, 0x65, 0x74, 0x69, 0x63, 0x20, 0x63, 0x6f, 0x6d, 0x70, 0x72,
+    0x65, 0x73, 0x73, 0x65, 0x64, 0x20, 0x6d, 0x65, 0x6d, 0x62, 0x65, 0x72, 0x20, 0x70, 0x61, 0x79,
+    0x6c, 0x6f, 0x61, 0x64, 0x2e, 0x0a, 0x43, 0x72, 0x69, 0x6d, 0x73, 0x6f, 0x6e, 0x20, 0x53, 0x6b,
+    0x69, 0x65, 0x73, 0x20, 0x73, 0x79, 0x6e, 0x74, 0x68, 0x65, 0x74, 0x69, 0x63, 0x20, 0x63, 0x6f,
+    0x6d, 0x70, 0x72, 0x65, 0x73, 0x73, 0x65, 0x64, 0x20, 0x6d, 0x65, 0x6d, 0x62, 0x65, 0x72, 0x20,
+    0x70, 0x61, 0x79, 0x6c, 0x6f, 0x61, 0x64, 0x2e, 0x0a, 0x43, 0x72, 0x69, 0x6d, 0x73, 0x6f, 0x6e,
+    0x20, 0x53, 0x6b, 0x69, 0x65, 0x73, 0x20, 0x73, 0x79, 0x6e, 0x74, 0x68, 0x65, 0x74, 0x69, 0x63,
+    0x20, 0x63, 0x6f, 0x6d, 0x70, 0x72, 0x65, 0x73, 0x73, 0x65, 0x64, 0x20, 0x6d, 0x65, 0x6d, 0x62,
+    0x65, 0x72, 0x20, 0x70, 0x61, 0x79, 0x6c, 0x6f, 0x61, 0x64, 0x2e, 0x0a,
+];
+
+/// [`COMPRESSED_PAYLOAD`] as a zlib stream (62 bytes), produced by
+/// `python3 -c "import zlib; ..."` (CPython 3.14, zlib 1.2.12) — an
+/// implementation that shares no code with the decoder under test, because
+/// "a fixture whose writer and reader share the same wrong assumption is
+/// not independent validation" (`docs/research/FORMAT-NOTES.md`).
+const COMPRESSED_STREAM: &[u8] = &[
+    0x78, 0x9c, 0x73, 0x2e, 0xca, 0xcc, 0x2d, 0xce, 0xcf, 0x53, 0x08, 0xce, 0xce, 0x4c, 0x2d, 0x56,
+    0x28, 0xae, 0xcc, 0x2b, 0xc9, 0x48, 0x2d, 0xc9, 0x4c, 0x56, 0x48, 0xce, 0xcf, 0x2d, 0x28, 0x4a,
+    0x2d, 0x2e, 0x4e, 0x4d, 0x51, 0xc8, 0x4d, 0xcd, 0x4d, 0x4a, 0x2d, 0x52, 0x28, 0x48, 0xac, 0xcc,
+    0xc9, 0x4f, 0x4c, 0xd1, 0xe3, 0x72, 0x1e, 0xac, 0x5a, 0x00, 0xd7, 0xca, 0x4c, 0x91,
+];
+
+/// 128 KiB of zero bytes as a zlib stream (149 bytes): a stored extent far
+/// smaller than what it decodes to, i.e. an expansion bomb. Same provenance
+/// as [`COMPRESSED_STREAM`].
+const BOMB_STREAM: &[u8] = &[
+    0x78, 0xda, 0xed, 0xc1, 0x31, 0x01, 0x00, 0x00, 0x00, 0xc2, 0xa0, 0xf5, 0x4f, 0xed, 0x61, 0x0d,
+    0xa0, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+    0x6e, 0x00, 0x1e, 0x00, 0x01,
+];
+
+/// A container with a root block listing one file entry, then `payload`
+/// right after the block. Both length words are parameters: the compressed
+/// fixtures are exactly the case where they differ.
+fn single_member_file(
+    name: &'static str,
+    flags: u32,
+    raw_length: u32,
+    raw_length_on_disk: u32,
+    id: u32,
+    payload: &[u8],
+) -> Vec<u8> {
+    let names = name_table(&[name]);
+    let block_len = DIRECTORY_HEADER_BYTES + RECORD_BYTES + names.len();
+    let records = [RawRecord {
+        start: block_len as u32,
+        raw_length,
+        raw_length_on_disk,
+        flags,
+        name_length: names.len() as u32,
+        id,
+    }];
+    let mut bytes = valid_block(&records, &names);
+    assert_eq!(bytes.len(), block_len, "the payload starts after the block");
+    bytes.extend_from_slice(payload);
+    bytes
+}
+
+/// A root block with a single directory entry pointing at `start`.
+fn root_directory_pointing_at(start: u32) -> Vec<u8> {
+    let names = name_table(&["SUB"]);
+    valid_block(&[RawRecord::directory("SUB", 1, start)], &names)
+}
+
+/// A root block whose single file entry claims 1000 bytes that the
+/// container does not hold.
+fn outside_file_member() -> Vec<u8> {
+    single_member_file("FAR.DAT", 0, 1000, 1000, 5, b"")
+}
+
+/// A root block whose single file entry declares an unknown flag bit.
+fn unknown_flag_member() -> Vec<u8> {
+    single_member_file("X.DAT", 0x8, 0, 0, 5, b"")
+}
+
+/// Two file entries claiming extents that share 30 bytes.
+fn overlapping_members() -> Vec<u8> {
+    let names = name_table(&["A.DAT", "B.DAT"]);
+    let records = [
+        RawRecord::file("A.DAT", 1).at(200, 50),
+        RawRecord::file("B.DAT", 2).at(220, 50),
+    ];
+    let mut bytes = valid_block(&records, &names);
+    bytes.resize(300, 0);
+    bytes
+}
+
+/// A chain of `levels` directory blocks, each pointing at the next one; the
+/// last block is empty. Blocks are 34 bytes (`8 + 24 + "D\0"`), so block
+/// `level` starts at `level * 34`.
+fn directory_chain(levels: u32) -> Vec<u8> {
+    let names = name_table(&["D"]);
+    let width = (DIRECTORY_HEADER_BYTES + RECORD_BYTES + names.len()) as u32;
+    let mut bytes = Vec::new();
+    for level in 0..levels {
+        let next = (level + 1) * width;
+        if level + 1 == levels {
+            bytes.extend_from_slice(&valid_block(&[], &[]));
+        } else {
+            bytes.extend_from_slice(&valid_block(&[RawRecord::directory("D", 1, next)], &names));
+        }
+    }
+    bytes
+}
+
+/// The member of `tree` whose root-relative path is `path`.
+fn member_of<'a, 'b>(tree: &'b RofTree<'a>, path: &[&[u8]]) -> &'b RofMember<'a> {
+    tree.members()
+        .iter()
+        .find(|member| member.path == path)
+        .expect("the fixture lists this member")
+}
+
+/// **AC01 through the production walk:** the synthetic uncompressed tree has
+/// two directories, duplicate basenames and stable ids — this time found by
+/// `read_tree` following the records, not by the test.
+#[test]
+fn accept_f05_b_traversal_finds_two_directories_duplicate_basenames_and_stable_ids() {
+    let fixture = tree();
+    let mut context = ParseContext::with_defaults(CONTAINER);
+    let walked = read_tree(&mut context, &fixture.bytes).expect("the authored tree must traverse");
+
+    // Every block: root first, then depth-first, each with its own path.
+    assert_eq!(walked.directories().len(), 3);
+    assert_eq!(walked.root().offset, 0);
+    assert_eq!(walked.root().path, Vec::<&[u8]>::new());
+    assert_eq!(walked.root().directory.block_len(), fixture.root.len);
+    assert_eq!(walked.root().directory.header().entry_count, 3);
+    let directory_paths: Vec<Vec<&[u8]>> = walked
+        .directories()
+        .iter()
+        .map(|directory| directory.path.clone())
+        .collect();
+    assert_eq!(
+        directory_paths,
+        vec![vec![], vec![b"MIS".as_slice()], vec![b"MAP".as_slice()]]
+    );
+    assert_eq!(walked.directories()[1].offset as usize, fixture.mis.offset);
+    assert_eq!(walked.directories()[2].offset as usize, fixture.map.offset);
+
+    // Every member, depth-first, with the id its record declares.
+    let listed: Vec<(Vec<&[u8]>, u32)> = walked
+        .members()
+        .iter()
+        .map(|member| (member.path.clone(), member.record.id))
+        .collect();
+    // Depth-first: MIS's entries, then MAP's, then the root's own file
+    // (the root lists MIS, MAP and index.txt in that order).
+    assert_eq!(
+        listed,
+        vec![
+            (vec![b"MIS".as_slice(), b"readme.txt".as_slice()], 11),
+            (vec![b"MIS".as_slice(), b"brief.dat".as_slice()], 12),
+            (vec![b"MAP".as_slice(), b"readme.txt".as_slice()], 21),
+            (vec![b"MAP".as_slice(), b"tiles.dat".as_slice()], 22),
+            (vec![b"index.txt".as_slice()], 3),
+        ]
+    );
+
+    // Duplicate basename under two directories, stable ids keeping them
+    // apart: the same name, two members, two ids.
+    let readmes: Vec<&RofMember<'_>> = walked
+        .members()
+        .iter()
+        .filter(|member| member.path.last().copied() == Some(b"readme.txt".as_slice()))
+        .collect();
+    assert_eq!(readmes.len(), 2);
+    assert_eq!((readmes[0].record.id, readmes[1].record.id), (11, 21));
+
+    // Both declared extents end inside the container and match the record.
+    let file_len = fixture.bytes.len() as u64;
+    for member in walked.members() {
+        assert!(member.length_end <= file_len, "{member:?}");
+        assert!(member.length_on_disk_end <= file_len, "{member:?}");
+        assert_eq!(
+            member.length_end - member.start,
+            u64::from(member.record.raw_length)
+        );
+        assert_eq!(
+            member.length_on_disk_end - member.start,
+            u64::from(member.record.raw_length_on_disk)
+        );
+    }
+
+    // Stable ids and paths: the same bytes walked again yield the same
+    // listing.
+    let copy = fixture.bytes.clone();
+    let mut second = ParseContext::with_defaults(CONTAINER);
+    let reread = read_tree(&mut second, &copy).expect("the copy must traverse");
+    let ids: Vec<u32> = reread
+        .members()
+        .iter()
+        .map(|member| member.record.id)
+        .collect();
+    assert_eq!(ids, vec![11, 12, 21, 22, 3]);
+    let listed_again: Vec<Vec<&[u8]>> = reread
+        .members()
+        .iter()
+        .map(|member| member.path.clone())
+        .collect();
+    assert_eq!(
+        listed_again,
+        listed.into_iter().map(|(path, _)| path).collect::<Vec<_>>()
+    );
+}
+
+/// Every payload of the authored tree, and the committed Python-authored
+/// fixture, read back byte for byte through `read_member` — with the stored
+/// and decoded lengths reported for each (AC04's byte-identity against a
+/// reference tool needs retail data and stays with F05-D; this pins the
+/// synthetic path).
+#[test]
+fn accept_f05_b_uncompressed_member_reads_are_byte_identical() {
+    let fixture = tree();
+    let mut context = ParseContext::with_defaults(CONTAINER);
+    let walked = read_tree(&mut context, &fixture.bytes).expect("the authored tree must traverse");
+
+    for (path, expected) in [
+        (vec![b"index.txt".as_slice()], ROOT_INDEX),
+        (
+            vec![b"MIS".as_slice(), b"readme.txt".as_slice()],
+            MIS_README,
+        ),
+        (vec![b"MIS".as_slice(), b"brief.dat".as_slice()], MIS_BRIEF),
+        (
+            vec![b"MAP".as_slice(), b"readme.txt".as_slice()],
+            MAP_README,
+        ),
+        (vec![b"MAP".as_slice(), b"tiles.dat".as_slice()], MAP_TILES),
+    ] {
+        let member = member_of(&walked, &path);
+        let read = read_member(&context, &fixture.bytes, member, &RofLimits::default())
+            .expect("the extent is inside the container");
+        assert_eq!(read.data.as_slice(), expected, "member {path:?}");
+        assert_eq!(read.stored_len, expected.len() as u64);
+        assert_eq!(read.decoded_len, expected.len() as u64);
+        assert_eq!(read.trailing_len, 0);
+    }
+
+    // The committed fixture through the same production path: its payload
+    // and its empty member read exactly as the generator wrote them.
+    const BYTES: &[u8] = include_bytes!("../../../fixtures/synthetic/flat-uncompressed.rof");
+    let mut context = ParseContext::with_defaults("fixtures/synthetic/flat-uncompressed.rof");
+    let walked = read_tree(&mut context, BYTES).expect("the shared fixture must traverse");
+    assert_eq!(walked.directories().len(), 1);
+    assert_eq!(walked.members().len(), 2);
+
+    let hello = read_member(
+        &context,
+        BYTES,
+        member_of(&walked, &[b"HELLO.TXT".as_slice()]),
+        &RofLimits::default(),
+    )
+    .expect("HELLO.TXT is inside the file");
+    assert_eq!(hello.data.as_slice(), &BYTES[76..110]);
+    assert_eq!(
+        (hello.stored_len, hello.decoded_len, hello.trailing_len),
+        (34, 34, 0)
+    );
+
+    // The zero-length member reads zero bytes instead of failing.
+    let empty = read_member(
+        &context,
+        BYTES,
+        member_of(&walked, &[b"EMPTY.DAT".as_slice()]),
+        &RofLimits::default(),
+    )
+    .expect("an empty member is a valid read");
+    assert!(empty.data.is_empty());
+    assert_eq!(
+        (empty.stored_len, empty.decoded_len, empty.trailing_len),
+        (0, 0, 0)
+    );
+}
+
+/// **AC02 / the minimum acceptance scenario:** compressed data where stored
+/// and decoded lengths differ, and the selected profile explains both —
+/// stored = the record's `raw_length` extent (the field the reference
+/// extractor hands to zlib [S05]), decoded = what the bounded decoder
+/// produces (no record field states it), `raw_length_on_disk` validated but
+/// never read (its meaning is the F05-D research blocker).
+#[test]
+fn accept_f05_b_compressed_member_stored_and_decoded_lengths_differ() {
+    let stream_len = COMPRESSED_STREAM.len() as u32; // 62 bytes stored
+    let payload_len = COMPRESSED_PAYLOAD.len() as u32; // 204 bytes decoded
+    assert_ne!(
+        stream_len, payload_len,
+        "the fixture is asymmetric by design"
+    );
+    // The second length word carries a different value: inside the
+    // container, but neither the stored nor the decoded length.
+    let other_length = stream_len / 2 + 1; // 32
+
+    let bytes = single_member_file(
+        "packed.bin",
+        FLAG_COMPRESSED,
+        stream_len,
+        other_length,
+        77,
+        COMPRESSED_STREAM,
+    );
+    let mut context = ParseContext::with_defaults(CONTAINER);
+    let walked = read_tree(&mut context, &bytes).expect("the compressed member must traverse");
+    assert_eq!(walked.members().len(), 1);
+    let member = &walked.members()[0];
+    assert_eq!(member.path, [b"packed.bin".as_slice()]);
+    assert_eq!(member.record.flags, RofFlags(FLAG_COMPRESSED));
+
+    // Profile part one: the stored extent is `raw_length`, and the other
+    // declared word is a different, in-bounds value.
+    assert_eq!(member.record.raw_length, stream_len);
+    assert_eq!(member.record.raw_length_on_disk, other_length);
+    assert_ne!(member.record.raw_length, member.record.raw_length_on_disk);
+    assert_eq!(
+        member.length_end,
+        bytes.len() as u64,
+        "the extent ends at the end of the file"
+    );
+    assert_eq!(
+        member.length_on_disk_end,
+        member.start + u64::from(other_length)
+    );
+    assert!(member.length_on_disk_end <= bytes.len() as u64);
+
+    // Profile part two: the two lengths the profile reports, and neither
+    // half comes from the wrong field.
+    let read = read_member(&context, &bytes, member, &RofLimits::default())
+        .expect("the stream must decode");
+    assert_eq!(
+        read.stored_len,
+        u64::from(stream_len),
+        "stored = raw_length"
+    );
+    assert_eq!(
+        read.decoded_len,
+        u64::from(payload_len),
+        "decoded = the decoder's output"
+    );
+    assert_ne!(
+        read.stored_len, read.decoded_len,
+        "AC02: stored and decoded differ"
+    );
+    assert!(read.decoded_len > read.stored_len);
+    assert_ne!(
+        read.decoded_len,
+        u64::from(member.record.raw_length_on_disk),
+        "no record field states the decoded length"
+    );
+    assert_eq!(read.data.as_slice(), COMPRESSED_PAYLOAD);
+    assert_eq!(read.trailing_len, 0);
+
+    // The profile is load-bearing: reading the *other* word as the extent
+    // hands the decoder 32 of the 62 stream bytes and fails instead of
+    // quietly returning something else.
+    let flipped = RofMember {
+        path: member.path.clone(),
+        record: RofRawRecord {
+            raw_length: other_length,
+            raw_length_on_disk: stream_len,
+            ..member.record
+        },
+        start: member.start,
+        length_end: member.start + u64::from(other_length),
+        length_on_disk_end: member.length_end,
+    };
+    let error = read_member(&context, &bytes, &flipped, &RofLimits::default())
+        .expect_err("the wrong length word must not decode");
+    assert_eq!(error.code(), "decode_failure");
+    assert_eq!(error.container(), CONTAINER);
+    assert_eq!(error.offset(), member.start);
+
+    // And the word the reader ignores changes nothing: three containers
+    // that differ only in `raw_length_on_disk` read byte-identically.
+    for other in [1u32, 17, stream_len] {
+        let bytes = single_member_file(
+            "packed.bin",
+            FLAG_COMPRESSED,
+            stream_len,
+            other,
+            77,
+            COMPRESSED_STREAM,
+        );
+        let mut context = ParseContext::with_defaults(CONTAINER);
+        let walked = read_tree(&mut context, &bytes).expect("the fixture must traverse");
+        let read = read_member(
+            &context,
+            &bytes,
+            &walked.members()[0],
+            &RofLimits::default(),
+        )
+        .expect("the stream must decode");
+        assert_eq!(
+            read.data.as_slice(),
+            COMPRESSED_PAYLOAD,
+            "raw_length_on_disk = {other}"
+        );
+        assert_eq!(read.stored_len, u64::from(stream_len));
+        assert_eq!(read.decoded_len, u64::from(payload_len));
+        assert_eq!(read.trailing_len, 0);
+    }
+}
+
+/// Exact boundaries of a compressed extent (spec F05, non-negotiable #4):
+/// bytes after the end of the stream are reported as trailing data, and a
+/// stream that is cut short or corrupted fails instead of decoding halfway.
+#[test]
+fn accept_f05_b_compressed_extent_records_trailing_data_and_refuses_bad_streams() {
+    const TRAILER: &[u8] = b"TAIL";
+    let stream_len = COMPRESSED_STREAM.len();
+
+    // The declared extent is longer than the stream: 4 trailing bytes.
+    let mut payload = COMPRESSED_STREAM.to_vec();
+    payload.extend_from_slice(TRAILER);
+    let bytes = single_member_file(
+        "packed.bin",
+        FLAG_COMPRESSED,
+        payload.len() as u32,
+        payload.len() as u32,
+        77,
+        &payload,
+    );
+    let mut context = ParseContext::with_defaults(CONTAINER);
+    let walked = read_tree(&mut context, &bytes).expect("the longer extent must traverse");
+    let read = read_member(
+        &context,
+        &bytes,
+        &walked.members()[0],
+        &RofLimits::default(),
+    )
+    .expect("the stream decodes");
+    assert_eq!(read.stored_len, (stream_len + TRAILER.len()) as u64);
+    assert_eq!(
+        read.trailing_len,
+        TRAILER.len() as u64,
+        "trailing data is reported"
+    );
+    assert_eq!(read.decoded_len, COMPRESSED_PAYLOAD.len() as u64);
+    assert_eq!(read.data.as_slice(), COMPRESSED_PAYLOAD);
+
+    // A stream cut short of its data: refused, with no partial output.
+    let short = &COMPRESSED_STREAM[..stream_len - 3];
+    let bytes = single_member_file(
+        "packed.bin",
+        FLAG_COMPRESSED,
+        short.len() as u32,
+        short.len() as u32,
+        77,
+        short,
+    );
+    let mut context = ParseContext::with_defaults(CONTAINER);
+    let walked = read_tree(&mut context, &bytes).expect("a short extent still traverses");
+    let error = read_member(
+        &context,
+        &bytes,
+        &walked.members()[0],
+        &RofLimits::default(),
+    )
+    .expect_err("a truncated stream must not decode");
+    assert_eq!(error.code(), "decode_failure");
+    assert_eq!(error.container(), CONTAINER);
+    assert_eq!(error.offset(), walked.members()[0].start);
+
+    // A corrupted byte: refused as well, by deflate or by adler32.
+    let mut corrupt = COMPRESSED_STREAM.to_vec();
+    let corrupted = corrupt.len() / 2;
+    corrupt[corrupted] ^= 0xff;
+    let bytes = single_member_file(
+        "packed.bin",
+        FLAG_COMPRESSED,
+        corrupt.len() as u32,
+        corrupt.len() as u32,
+        77,
+        &corrupt,
+    );
+    let mut context = ParseContext::with_defaults(CONTAINER);
+    let walked = read_tree(&mut context, &bytes).expect("the corrupt extent still traverses");
+    let error = read_member(
+        &context,
+        &bytes,
+        &walked.members()[0],
+        &RofLimits::default(),
+    )
+    .expect_err("a corrupt stream must not decode");
+    assert_eq!(error.code(), "decode_failure");
+
+    // An entry whose flags have no observed meaning is not read at all —
+    // even when its extent is perfectly valid (non-negotiable #5).
+    let member = RofMember {
+        path: vec![b"packed.bin".as_slice()],
+        record: RofRawRecord {
+            flags: RofFlags(0x10),
+            ..walked.members()[0].record
+        },
+        start: walked.members()[0].start,
+        length_end: walked.members()[0].length_end,
+        length_on_disk_end: walked.members()[0].length_on_disk_end,
+    };
+    let error = read_member(&context, &bytes, &member, &RofLimits::default())
+        .expect_err("unknown flags are refused before the span is read");
+    assert_eq!(error.code(), "unsupported_layout");
+}
+
+/// **AC03 (expansion bomb):** 149 stored bytes that decode to 128 KiB are
+/// refused at the configured ceiling — reported, not expanded — while the
+/// same member reads fine under the designed default.
+#[test]
+fn accept_f05_b_expansion_bomb_fails_at_the_configured_ceiling() {
+    let bytes = single_member_file(
+        "bomb.bin",
+        FLAG_COMPRESSED,
+        BOMB_STREAM.len() as u32,
+        BOMB_STREAM.len() as u32,
+        91,
+        BOMB_STREAM,
+    );
+    let mut context = ParseContext::with_defaults(CONTAINER);
+    let walked = read_tree(&mut context, &bytes).expect("a small stored extent traverses");
+    let member = &walked.members()[0];
+    // The only charge on this ledger is the tree's own booking above.
+    let booked = context.allocation().used();
+    assert!(booked > 0, "the traversal books the tree it returns");
+
+    // Under the designed default the member decodes: the bomb is only a
+    // bomb against a smaller ceiling, not an invalid stream.
+    let read = read_member(&context, &bytes, member, &RofLimits::default())
+        .expect("128 KiB is inside the 64 MiB default");
+    assert_eq!(read.stored_len, BOMB_STREAM.len() as u64);
+    assert_eq!(read.decoded_len, 128 * 1024);
+    assert!(
+        read.stored_len * 100 < read.decoded_len,
+        "stored {} bytes, decoded {} bytes",
+        read.stored_len,
+        read.decoded_len
+    );
+    assert!(read.data.iter().all(|byte| *byte == 0));
+
+    // Against a 4 KiB ceiling it stops at the ceiling and reports what it
+    // would have produced (never more than one decode chunk past it).
+    let limits = RofLimits::new(4096);
+    let error = read_member(&context, &bytes, member, &limits)
+        .expect_err("an expansion bomb must fail instead of expanding");
+    assert_eq!(error.code(), "expansion_bomb");
+    assert_eq!(error.container(), CONTAINER);
+    assert_eq!(error.offset(), member.start);
+    match &error {
+        RofError::ExpansionBomb {
+            limit, observed, ..
+        } => {
+            assert_eq!(*limit, 4096);
+            assert!(
+                *observed > *limit,
+                "observed {observed} must pass the limit"
+            );
+            assert!(
+                *observed <= *limit + 8 * 1024,
+                "never more than one chunk past the limit, observed {observed}"
+            );
+        }
+        other => panic!("expected an expansion bomb, got {other:?}"),
+    }
+
+    // A ceiling of zero refuses any read that would produce a byte.
+    let error = read_member(&context, &bytes, member, &RofLimits::new(0))
+        .expect_err("even the first chunk is refused");
+    assert_eq!(error.code(), "expansion_bomb");
+
+    // Neither the successful read nor either refusal touches the ledger:
+    // a member read books nothing, the traversal's booking is unchanged.
+    assert_eq!(
+        context.allocation().used(),
+        booked,
+        "member reads book nothing"
+    );
+}
+
+/// **AC03 (cycle):** a directory that points back at a block already open
+/// on the path from the root fails at the repeated block — and a block
+/// reached from two parents fails too, because no source documents sharing.
+#[test]
+fn accept_f05_b_directory_cycles_and_shared_blocks_are_refused() {
+    // A directory pointing at its own block.
+    let bytes = root_directory_pointing_at(0);
+    let mut context = ParseContext::with_defaults(CONTAINER);
+    let error =
+        read_tree(&mut context, &bytes).expect_err("a self-referential directory must be refused");
+    assert_eq!(error.code(), "cycle");
+    assert_eq!(error.container(), CONTAINER);
+    assert_eq!(error.offset(), 0, "the cycle closes at the repeated block");
+    match &error {
+        RofError::Cycle { depth, .. } => assert_eq!(*depth, 1),
+        other => panic!("expected a cycle, got {other:?}"),
+    }
+    assert_eq!(context.allocation().used(), 0);
+
+    // root -> SUB -> back to the root: found on the way down, with the
+    // whole path reported, not after the recursion limit was exhausted.
+    let root_names = name_table(&["SUB"]);
+    let root_len = DIRECTORY_HEADER_BYTES + RECORD_BYTES + root_names.len();
+    let sub_names = name_table(&["UP"]);
+    let mut bytes = valid_block(
+        &[RawRecord::directory("SUB", 1, root_len as u32)],
+        &root_names,
+    );
+    bytes.extend_from_slice(&valid_block(
+        &[RawRecord::directory("UP", 2, 0)],
+        &sub_names,
+    ));
+    let mut context = ParseContext::with_defaults(CONTAINER);
+    let error =
+        read_tree(&mut context, &bytes).expect_err("the loop back to the root must be refused");
+    assert_eq!(error.code(), "cycle");
+    assert_eq!(error.container(), CONTAINER);
+    assert_eq!(error.offset(), 0, "the cycle closes at the root block");
+    match &error {
+        RofError::Cycle { depth, .. } => assert_eq!(*depth, 2, "root and SUB were open"),
+        other => panic!("expected a cycle, got {other:?}"),
+    }
+    assert_eq!(context.allocation().used(), 0);
+
+    // One block under two parents: not a cycle, but sharing nobody
+    // documented, so it is refused as an unsupported layout instead of
+    // being traversed (and therefore listed) twice.
+    let names = name_table(&["SUB", "SUB2"]);
+    let root_len = DIRECTORY_HEADER_BYTES + 2 * RECORD_BYTES + names.len();
+    let records = [
+        RawRecord::directory("SUB", 1, root_len as u32),
+        RawRecord::directory("SUB2", 2, root_len as u32),
+    ];
+    let mut bytes = valid_block(&records, &names);
+    bytes.extend_from_slice(&valid_block(&[], &[]));
+    let mut context = ParseContext::with_defaults(CONTAINER);
+    let error =
+        read_tree(&mut context, &bytes).expect_err("a block under two parents must be refused");
+    assert_eq!(error.code(), "unsupported_layout");
+    assert_eq!(
+        error.offset(),
+        root_len as u64,
+        "the shared block is where the second parent reaches it"
+    );
+    assert!(
+        error.to_string().contains("reuses bytes"),
+        "the work bound names the block that reused another's bytes: {error}"
+    );
+    assert!(
+        error.to_string().contains("overlap"),
+        "the refusal names the shared span: {error}"
+    );
+    assert_eq!(context.allocation().used(), 0);
+}
+
+/// **AC03 (bounded depth):** nesting is charged against the parse's
+/// recursion budget, so a chain of directories cannot walk the reader off
+/// the stack, and the refusal names the absolute offset of the block that
+/// did not fit (spec F05, non-negotiable #3).
+#[test]
+fn accept_f05_b_bounded_depth_refuses_to_descend_forever() {
+    let bytes = directory_chain(4);
+
+    // The default budget (32 levels) takes the whole chain...
+    let mut context = ParseContext::with_defaults(CONTAINER);
+    let walked = read_tree(&mut context, &bytes)
+        .expect("four levels are inside the designed recursion budget");
+    assert_eq!(walked.directories().len(), 4);
+    assert_eq!(walked.directories()[3].offset, 102, "the empty leaf block");
+    assert_eq!(walked.members().len(), 0, "the chain holds no files");
+
+    // ...a budget of two refuses the third level, at its own offset.
+    let mut context = ParseContext::new(CONTAINER, AllocationBudget::DEFAULT_LIMIT, 2);
+    let error = read_tree(&mut context, &bytes).expect_err("the third level must be refused");
+    match &error {
+        RofError::Parse(error) => {
+            assert_eq!(error.kind, ParseErrorKind::RecursionDepthExceeded);
+            assert_eq!(error.field, "rof.tree.directory");
+            assert_eq!(error.container, CONTAINER);
+            assert_eq!(error.offset, 68, "block 0 -> 34 -> 68: the third block");
+        }
+        other => panic!("expected a structural depth failure, got {other:?}"),
+    }
+    assert_eq!(context.allocation().used(), 0);
+}
+
+/// **AC03 (outside-file pointer):** a declared extent that reaches past the
+/// end of the container fails before anything is read from it — a member
+/// length, the second length word, and a directory pointer.
+#[test]
+fn accept_f05_b_outside_file_pointers_fail_before_any_read() {
+    // 1. A member whose `raw_length` reaches past the end.
+    let bytes = outside_file_member();
+    let mut context = ParseContext::with_defaults(CONTAINER);
+    let error = read_tree(&mut context, &bytes)
+        .expect_err("a member past the end of the file must be refused");
+    assert_eq!(error.code(), "extent_out_of_bounds");
+    assert_eq!(error.container(), CONTAINER);
+    match &error {
+        RofError::ExtentOutOfBounds {
+            offset,
+            start,
+            length,
+            file_len,
+            ..
+        } => {
+            assert_eq!(*start, *offset, "the extent's own start is reported");
+            assert_eq!(*length, 1000);
+            assert_eq!(*file_len, bytes.len() as u64);
+        }
+        other => panic!("expected an out-of-bounds extent, got {other:?}"),
+    }
+    assert_eq!(context.allocation().used(), 0);
+
+    // 2. `raw_length` fits, `raw_length_on_disk` does not: the second word
+    //    is validated as an extent too, whatever it ends up meaning.
+    let names = name_table(&["HALF.DAT"]);
+    let block_len = DIRECTORY_HEADER_BYTES + RECORD_BYTES + names.len();
+    let records = [RawRecord {
+        start: block_len as u32,
+        raw_length: 4,
+        raw_length_on_disk: 1000,
+        flags: 0,
+        name_length: names.len() as u32,
+        id: 6,
+    }];
+    let mut bytes = valid_block(&records, &names);
+    bytes.extend_from_slice(b"abcd");
+    let mut context = ParseContext::with_defaults(CONTAINER);
+    let error = read_tree(&mut context, &bytes)
+        .expect_err("the on-disk length must be inside the file as well");
+    assert_eq!(error.code(), "extent_out_of_bounds");
+    match &error {
+        RofError::ExtentOutOfBounds { length, .. } => assert_eq!(*length, 1000),
+        other => panic!("expected an out-of-bounds extent, got {other:?}"),
+    }
+    assert_eq!(context.allocation().used(), 0);
+
+    // 3. A directory pointer past the end: the walk refuses the block
+    //    before reading a single byte of it.
+    let bytes = root_directory_pointing_at(5000);
+    let mut context = ParseContext::with_defaults(CONTAINER);
+    let error = read_tree(&mut context, &bytes)
+        .expect_err("a directory past the end of the file must be refused");
+    assert_eq!(error.code(), "extent_out_of_bounds");
+    match &error {
+        RofError::ExtentOutOfBounds {
+            offset,
+            length,
+            file_len,
+            ..
+        } => {
+            assert_eq!(*offset, 5000);
+            assert_eq!(
+                *length, DIRECTORY_HEADER_BYTES as u64,
+                "a block needs its header"
+            );
+            assert_eq!(*file_len, bytes.len() as u64);
+        }
+        other => panic!("expected an out-of-bounds extent, got {other:?}"),
+    }
+    assert_eq!(context.allocation().used(), 0);
+
+    // 4. `read_member` checks again, so a hand-built member cannot read
+    //    outside the container either.
+    let bytes = single_member_file("OK.DAT", 0, 4, 4, 1, b"abcd");
+    let context = ParseContext::with_defaults(CONTAINER);
+    let member = RofMember {
+        path: vec![b"OK.DAT".as_slice()],
+        record: RofRawRecord {
+            start: 1_000_000,
+            raw_length: 4,
+            raw_length_on_disk: 4,
+            flags: RofFlags(0),
+            name_length: 7,
+            id: 1,
+        },
+        start: 1_000_000,
+        length_end: 1_000_004,
+        length_on_disk_end: 1_000_004,
+    };
+    let error = read_member(&context, &bytes, &member, &RofLimits::default())
+        .expect_err("a hand-built member past the end must be refused");
+    assert_eq!(error.code(), "extent_out_of_bounds");
+    assert_eq!(error.offset(), 1_000_000);
+}
+
+/// **AC03 (invalid name table):** a nested block whose header disagrees
+/// with its records is refused at the *absolute* offset of the name table,
+/// with the walk's own error scope on top.
+#[test]
+fn accept_f05_b_invalid_name_table_fails_a_nested_block() {
+    let root_names = name_table(&["SUB"]);
+    let root_len = DIRECTORY_HEADER_BYTES + RECORD_BYTES + root_names.len(); // 36
+    let sub_records = [RawRecord::file("AB", 1)];
+    let mut over = name_table(&["AB"]); // records describe 3 bytes
+    over.push(0); // header declares 4
+    let sub_block = block(
+        sub_records.len() as u32,
+        over.len() as u32,
+        &sub_records,
+        &over,
+    );
+
+    let mut bytes = valid_block(
+        &[RawRecord::directory("SUB", 1, root_len as u32)],
+        &root_names,
+    );
+    bytes.extend_from_slice(&sub_block);
+
+    let mut context = ParseContext::with_defaults(CONTAINER);
+    let error = read_tree(&mut context, &bytes)
+        .expect_err("the nested name table disagrees with its records");
+    assert_eq!(error.code(), "name_table_length");
+    assert_eq!(error.container(), CONTAINER);
+    // The name table of the nested block starts at its offset plus the
+    // header and the single record: 36 + 8 + 24.
+    assert_eq!(
+        error.offset(),
+        (root_len + DIRECTORY_HEADER_BYTES + RECORD_BYTES) as u64
+    );
+    match &error {
+        RofError::NameTableLength {
+            declared,
+            described,
+            ..
+        } => {
+            assert_eq!(*declared, 4);
+            assert_eq!(*described, 3);
+        }
+        other => panic!("expected a name-table failure, got {other:?}"),
+    }
+    assert_eq!(context.allocation().used(), 0);
+}
+
+/// **Non-negotiable #5:** flags this reader cannot explain, an unobserved
+/// flag combination and overlapping extents all surface
+/// `UnsupportedLayout` instead of having a span extracted from them.
+#[test]
+fn accept_f05_b_unexplained_flags_and_overlaps_surface_unsupported_layout() {
+    // 1. A bit with no observed meaning.
+    let bytes = unknown_flag_member();
+    let mut context = ParseContext::with_defaults(CONTAINER);
+    let error =
+        read_tree(&mut context, &bytes).expect_err("an unexplained flag bit must be refused");
+    assert_eq!(error.code(), "unsupported_layout");
+    assert_eq!(error.container(), CONTAINER);
+    assert_eq!(
+        error.offset(),
+        DIRECTORY_HEADER_BYTES as u64,
+        "the record's own offset"
+    );
+    assert!(
+        error.to_string().contains("0x00000008"),
+        "the refusal names the flags word: {error}"
+    );
+    assert_eq!(context.allocation().used(), 0);
+
+    // 2. The directory+compressed combination: both bits observed, the
+    //    combination not.
+    let names = name_table(&["SUB"]);
+    let records = [RawRecord {
+        flags: FLAG_DIRECTORY | FLAG_COMPRESSED,
+        ..RawRecord::directory("SUB", 1, 36)
+    }];
+    let mut bytes = valid_block(&records, &names);
+    bytes.extend_from_slice(&[0u8; 8]);
+    let mut context = ParseContext::with_defaults(CONTAINER);
+    let error = read_tree(&mut context, &bytes)
+        .expect_err("a directory that is also compressed must be refused");
+    assert_eq!(error.code(), "unsupported_layout");
+    assert!(
+        error.to_string().contains("directory+compressed"),
+        "the refusal names the combination: {error}"
+    );
+    assert_eq!(context.allocation().used(), 0);
+
+    // 3. Two members sharing bytes: no source documents the sharing, so
+    //    neither span is extracted.
+    let bytes = overlapping_members();
+    let mut context = ParseContext::with_defaults(CONTAINER);
+    let error = read_tree(&mut context, &bytes).expect_err("overlapping extents must be refused");
+    assert_eq!(error.code(), "unsupported_layout");
+    assert_eq!(
+        error.offset(),
+        220,
+        "the second extent starts inside the first"
+    );
+    assert!(
+        error.to_string().contains("overlap"),
+        "the refusal names the overlap: {error}"
+    );
+    assert_eq!(context.allocation().used(), 0);
+}
+
+/// The allocation ledger: exactly what a successful walk books, nothing at
+/// all for any refusal, and one reservation instead of one per block.
+#[test]
+fn accept_f05_b_bookings_and_refusals_leave_the_ledger_exact() {
+    let fixture = tree();
+
+    // What a successful walk books — computed from the returned tree, so
+    // the expectation tracks the layout instead of a magic number: every
+    // record table, both node arrays, and the path slice headers.
+    let mut context = ParseContext::with_defaults(CONTAINER);
+    let walked = read_tree(&mut context, &fixture.bytes).expect("the tree must traverse");
+    let path_slices = walked
+        .directories()
+        .iter()
+        .map(|directory| directory.path.len() as u64)
+        .sum::<u64>()
+        + walked
+            .members()
+            .iter()
+            .map(|member| member.path.len() as u64)
+            .sum::<u64>();
+    let booked = (3 + 2 + 2) as u64 * RECORD_BYTES as u64
+        + walked.directories().len() as u64 * std::mem::size_of::<RofTreeDirectory>() as u64
+        + walked.members().len() as u64 * std::mem::size_of::<RofMember>() as u64
+        + path_slices * std::mem::size_of::<&[u8]>() as u64;
+    assert_eq!(
+        context.allocation().used(),
+        booked,
+        "one reservation for the whole tree"
+    );
+    assert!(
+        booked >= (3 + 2 + 2) as u64 * RECORD_BYTES as u64,
+        "the record tables are booked at least, as read_directory books them"
+    );
+
+    // One byte less than the tree needs: refused before a record table
+    // exists, and nothing is charged.
+    let mut refused = ParseContext::new(CONTAINER, booked - 1, 8);
+    let error = read_tree(&mut refused, &fixture.bytes)
+        .expect_err("a tree one byte over budget must be refused");
+    match &error {
+        RofError::Parse(error) => {
+            assert_eq!(error.kind, ParseErrorKind::AllocationBudgetExceeded);
+            assert_eq!(error.field, "rof.tree.records");
+            assert_eq!(error.container, CONTAINER);
+            assert!(
+                error.observed.contains(&booked.to_string()),
+                "observed: {}",
+                error.observed
+            );
+        }
+        other => panic!("expected a budget refusal, got {other:?}"),
+    }
+    assert_eq!(
+        refused.allocation().used(),
+        0,
+        "a refused reservation is never charged"
+    );
+
+    // Exactly the booked amount: accepted, charged once.
+    let mut accepted = ParseContext::new(CONTAINER, booked, 8);
+    read_tree(&mut accepted, &fixture.bytes).expect("the tree fits exactly");
+    assert_eq!(accepted.allocation().used(), booked);
+
+    // Every refusal leaves the ledger exactly as it found it — on a fresh
+    // context (nothing charged) and on one that has already booked a tree
+    // (the earlier charge untouched).
+    let refusals: [(Vec<u8>, &'static str); 4] = [
+        (root_directory_pointing_at(0), "cycle"),
+        (outside_file_member(), "extent_out_of_bounds"),
+        (unknown_flag_member(), "unsupported_layout"),
+        (overlapping_members(), "unsupported_layout"),
+    ];
+    for (bytes, code) in refusals {
+        let mut fresh = ParseContext::with_defaults(CONTAINER);
+        let error = read_tree(&mut fresh, &bytes).expect_err("the fixture must be refused");
+        assert_eq!(error.code(), code, "{error}");
+        assert_eq!(fresh.allocation().used(), 0, "{code}: nothing was booked");
+
+        let error = read_tree(&mut context, &bytes).expect_err("still refused");
+        assert_eq!(error.code(), code, "{error}");
+        assert_eq!(context.allocation().used(), booked, "{code}: unchanged");
+    }
+
+    // A member read books nothing: its decoded buffer is the caller's and
+    // is bounded per read instead of against the parse's budget.
+    let member = walked.members()[0].clone();
+    read_member(&context, &fixture.bytes, &member, &RofLimits::default())
+        .expect("the member reads");
+    let error = read_member(&context, &fixture.bytes, &member, &RofLimits::new(4))
+        .expect_err("a four-byte ceiling refuses a twelve-byte member");
+    assert_eq!(error.code(), "expansion_bomb");
+    assert_eq!(
+        context.allocation().used(),
+        booked,
+        "member reads book nothing"
     );
 }
