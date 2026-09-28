@@ -19,3 +19,10 @@ miniz_oxide = "0.9"
 
 [dev-dependencies]
 cs_assets.workspace = true
+# The retail acceptance test of F05-D re-reads every member of the original
+# containers the way the pinned reference extractor ([S05], which hands the
+# record's *first* length word to zlib and lets the stream end bound the
+# read) and compares those bytes with the production reader's. It needs a
+# zlib decoder of its own to do that; the crate already depends on this
+# exact version, so this adds no package to the graph and no lock entry.
+miniz_oxide = "0.9"

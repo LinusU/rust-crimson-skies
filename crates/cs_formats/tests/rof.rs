@@ -854,19 +854,25 @@ fn accept_f05_b_traversal_finds_two_directories_duplicate_basenames_and_stable_i
     assert_eq!(readmes.len(), 2);
     assert_eq!((readmes[0].record.id, readmes[1].record.id), (11, 21));
 
-    // Both declared extents end inside the container and match the record.
+    // Every member's stored extent ends inside the container and is the
+    // record's `raw_length_on_disk` word. Its `raw_length` word counts
+    // decoded bytes rather than naming a range of the file, so it has no
+    // end to check (F05-D).
     let file_len = fixture.bytes.len() as u64;
     for member in walked.members() {
-        assert!(member.length_end <= file_len, "{member:?}");
-        assert!(member.length_on_disk_end <= file_len, "{member:?}");
+        assert!(member.stored_end <= file_len, "{member:?}");
+        assert_eq!(member.stored_end - member.start, member.stored_len());
         assert_eq!(
-            member.length_end - member.start,
-            u64::from(member.record.raw_length)
-        );
-        assert_eq!(
-            member.length_on_disk_end - member.start,
+            member.stored_len(),
             u64::from(member.record.raw_length_on_disk)
         );
+        assert_eq!(
+            member.declared_decoded_len(),
+            u64::from(member.record.raw_length)
+        );
+        // Nothing to expand in an uncompressed member, so the two words
+        // agree: every member of this fixture is stored verbatim.
+        assert_eq!(member.stored_len(), member.declared_decoded_len());
     }
 
     // Stable ids and paths: the same bytes walked again yield the same
@@ -961,11 +967,15 @@ fn accept_f05_b_uncompressed_member_reads_are_byte_identical() {
 }
 
 /// **AC02 / the minimum acceptance scenario:** compressed data where stored
-/// and decoded lengths differ, and the selected profile explains both —
-/// stored = the record's `raw_length` extent (the field the reference
-/// extractor hands to zlib [S05]), decoded = what the bounded decoder
-/// produces (no record field states it), `raw_length_on_disk` validated but
-/// never read (its meaning is the F05-D research blocker).
+/// and decoded lengths differ, and the selected profile explains both.
+///
+/// The profile is the one F05-D measured on both containers of the original
+/// installation: the **stored** extent is the record's `raw_length_on_disk`
+/// word and the **decoded** byte count is its `raw_length` word, which the
+/// read must reproduce exactly. The reference extractor instead hands
+/// `raw_length` to zlib and lets the stream end bound the read ([S05]); the
+/// two profiles return the same bytes, which is why the difference only
+/// shows up in extents — and that is what this test pins.
 #[test]
 fn accept_f05_b_compressed_member_stored_and_decoded_lengths_differ() {
     let stream_len = COMPRESSED_STREAM.len() as u32; // 62 bytes stored
@@ -974,15 +984,12 @@ fn accept_f05_b_compressed_member_stored_and_decoded_lengths_differ() {
         stream_len, payload_len,
         "the fixture is asymmetric by design"
     );
-    // The second length word carries a different value: inside the
-    // container, but neither the stored nor the decoded length.
-    let other_length = stream_len / 2 + 1; // 32
 
     let bytes = single_member_file(
         "packed.bin",
         FLAG_COMPRESSED,
+        payload_len,
         stream_len,
-        other_length,
         77,
         COMPRESSED_STREAM,
     );
@@ -993,97 +1000,117 @@ fn accept_f05_b_compressed_member_stored_and_decoded_lengths_differ() {
     assert_eq!(member.path, [b"packed.bin".as_slice()]);
     assert_eq!(member.record.flags, RofFlags(FLAG_COMPRESSED));
 
-    // Profile part one: the stored extent is `raw_length`, and the other
-    // declared word is a different, in-bounds value.
-    assert_eq!(member.record.raw_length, stream_len);
-    assert_eq!(member.record.raw_length_on_disk, other_length);
+    // Profile part one: both words are kept verbatim, the stored extent is
+    // the smaller of the two, and it is the one that ends at the end of the
+    // file.
+    assert_eq!(member.record.raw_length, payload_len);
+    assert_eq!(member.record.raw_length_on_disk, stream_len);
     assert_ne!(member.record.raw_length, member.record.raw_length_on_disk);
+    assert_eq!(member.stored_len(), u64::from(stream_len));
+    assert_eq!(member.declared_decoded_len(), u64::from(payload_len));
+    assert_eq!(member.is_compressed(), true);
     assert_eq!(
-        member.length_end,
+        member.stored_end,
         bytes.len() as u64,
-        "the extent ends at the end of the file"
+        "the stored extent ends at the end of the file"
     );
-    assert_eq!(
-        member.length_on_disk_end,
-        member.start + u64::from(other_length)
+    // The decoded word is not a range of the file: this container is 62
+    // bytes of member, and its record claims 204 decoded bytes.
+    assert!(
+        member.start + u64::from(payload_len) > bytes.len() as u64,
+        "the decoded word reaches past the container and is not checked as one"
     );
-    assert!(member.length_on_disk_end <= bytes.len() as u64);
 
-    // Profile part two: the two lengths the profile reports, and neither
-    // half comes from the wrong field.
+    // Profile part two: the two lengths the read reports, each from its own
+    // word.
     let read = read_member(&context, &bytes, member, &RofLimits::default())
         .expect("the stream must decode");
     assert_eq!(
         read.stored_len,
         u64::from(stream_len),
-        "stored = raw_length"
+        "stored = raw_length_on_disk"
+    );
+    assert_eq!(
+        read.declared_len,
+        u64::from(payload_len),
+        "declared = raw_length"
     );
     assert_eq!(
         read.decoded_len,
         u64::from(payload_len),
-        "decoded = the decoder's output"
+        "decoded = the decoder's output, which the record declares"
     );
     assert_ne!(
         read.stored_len, read.decoded_len,
         "AC02: stored and decoded differ"
     );
     assert!(read.decoded_len > read.stored_len);
-    assert_ne!(
-        read.decoded_len,
-        u64::from(member.record.raw_length_on_disk),
-        "no record field states the decoded length"
-    );
     assert_eq!(read.data.as_slice(), COMPRESSED_PAYLOAD);
     assert_eq!(read.trailing_len, 0);
 
-    // The profile is load-bearing: reading the *other* word as the extent
-    // hands the decoder 32 of the 62 stream bytes and fails instead of
-    // quietly returning something else.
+    // The stored word is load-bearing: reading the *other* word as the
+    // extent asks for 204 bytes in a 62-byte member and is refused before
+    // the decoder sees anything.
     let flipped = RofMember {
         path: member.path.clone(),
         record: RofRawRecord {
-            raw_length: other_length,
-            raw_length_on_disk: stream_len,
+            raw_length: stream_len,
+            raw_length_on_disk: payload_len,
             ..member.record
         },
         start: member.start,
-        length_end: member.start + u64::from(other_length),
-        length_on_disk_end: member.length_end,
+        stored_end: member.start + u64::from(payload_len),
     };
     let error = read_member(&context, &bytes, &flipped, &RofLimits::default())
-        .expect_err("the wrong length word must not decode");
-    assert_eq!(error.code(), "decode_failure");
+        .expect_err("the decoded word must not be used as the extent");
+    assert_eq!(error.code(), "extent_out_of_bounds");
     assert_eq!(error.container(), CONTAINER);
     assert_eq!(error.offset(), member.start);
 
-    // And the word the reader ignores changes nothing: three containers
-    // that differ only in `raw_length_on_disk` read byte-identically.
-    for other in [1u32, 17, stream_len] {
+    // And the decoded word is load-bearing in the other direction: a
+    // container that states the wrong decoded count is refused rather than
+    // read, for every value the count can take.
+    for declared in [0u32, stream_len, payload_len - 1, payload_len + 1] {
         let bytes = single_member_file(
             "packed.bin",
             FLAG_COMPRESSED,
+            declared,
             stream_len,
-            other,
             77,
             COMPRESSED_STREAM,
         );
         let mut context = ParseContext::with_defaults(CONTAINER);
         let walked = read_tree(&mut context, &bytes).expect("the fixture must traverse");
-        let read = read_member(
-            &context,
-            &bytes,
-            &walked.members()[0],
-            &RofLimits::default(),
-        )
-        .expect("the stream must decode");
-        assert_eq!(
-            read.data.as_slice(),
-            COMPRESSED_PAYLOAD,
-            "raw_length_on_disk = {other}"
-        );
-        assert_eq!(read.stored_len, u64::from(stream_len));
-        assert_eq!(read.decoded_len, u64::from(payload_len));
-        assert_eq!(read.trailing_len, 0);
+        let member = &walked.members()[0];
+        if declared == payload_len {
+            let read = read_member(&context, &bytes, member, &RofLimits::default())
+                .expect("the correct declared count still reads");
+            assert_eq!(read.data.as_slice(), COMPRESSED_PAYLOAD);
+            assert_eq!(read.stored_len, u64::from(stream_len));
+            assert_eq!(read.decoded_len, u64::from(payload_len));
+            assert_eq!(read.trailing_len, 0);
+        } else {
+            let error = read_member(&context, &bytes, member, &RofLimits::default())
+                .expect_err("a wrong declared decoded count must not be read");
+            assert_eq!(
+                error.code(),
+                "decoded_length_mismatch",
+                "declared {declared}"
+            );
+            match error {
+                RofError::DecodedLengthMismatch {
+                    declared: seen,
+                    observed,
+                    offset,
+                    ..
+                } => {
+                    assert_eq!(seen, u64::from(declared));
+                    assert_eq!(observed, u64::from(payload_len));
+                    assert_eq!(offset, member.start);
+                }
+                other => panic!("expected a decoded length mismatch, got {other:?}"),
+            }
+        }
     }
 }
 
@@ -1101,7 +1128,7 @@ fn accept_f05_b_compressed_extent_records_trailing_data_and_refuses_bad_streams(
     let bytes = single_member_file(
         "packed.bin",
         FLAG_COMPRESSED,
-        payload.len() as u32,
+        COMPRESSED_PAYLOAD.len() as u32,
         payload.len() as u32,
         77,
         &payload,
@@ -1179,8 +1206,7 @@ fn accept_f05_b_compressed_extent_records_trailing_data_and_refuses_bad_streams(
             ..walked.members()[0].record
         },
         start: walked.members()[0].start,
-        length_end: walked.members()[0].length_end,
-        length_on_disk_end: walked.members()[0].length_on_disk_end,
+        stored_end: walked.members()[0].stored_end,
     };
     let error = read_member(&context, &bytes, &member, &RofLimits::default())
         .expect_err("unknown flags are refused before the span is read");
@@ -1195,7 +1221,7 @@ fn accept_f05_b_expansion_bomb_fails_at_the_configured_ceiling() {
     let bytes = single_member_file(
         "bomb.bin",
         FLAG_COMPRESSED,
-        BOMB_STREAM.len() as u32,
+        128 * 1024,
         BOMB_STREAM.len() as u32,
         91,
         BOMB_STREAM,
@@ -1371,7 +1397,7 @@ fn accept_f05_b_bounded_depth_refuses_to_descend_forever() {
 /// length, the second length word, and a directory pointer.
 #[test]
 fn accept_f05_b_outside_file_pointers_fail_before_any_read() {
-    // 1. A member whose `raw_length` reaches past the end.
+    // 1. A member whose stored extent reaches past the end.
     let bytes = outside_file_member();
     let mut context = ParseContext::with_defaults(CONTAINER);
     let error = read_tree(&mut context, &bytes)
@@ -1394,8 +1420,8 @@ fn accept_f05_b_outside_file_pointers_fail_before_any_read() {
     }
     assert_eq!(context.allocation().used(), 0);
 
-    // 2. `raw_length` fits, `raw_length_on_disk` does not: the second word
-    //    is validated as an extent too, whatever it ends up meaning.
+    // 2. The stored word reaches past the end while the decoded word fits:
+    //    the stored extent is the one that must be inside the file.
     let names = name_table(&["HALF.DAT"]);
     let block_len = DIRECTORY_HEADER_BYTES + RECORD_BYTES + names.len();
     let records = [RawRecord {
@@ -1520,8 +1546,7 @@ fn accept_f05_b_outside_file_pointers_fail_before_any_read() {
             id: 1,
         },
         start: 1_000_000,
-        length_end: 1_000_004,
-        length_on_disk_end: 1_000_004,
+        stored_end: 1_000_004,
     };
     let error = read_member(&context, &bytes, &member, &RofLimits::default())
         .expect_err("a hand-built member past the end must be refused");
@@ -1787,5 +1812,618 @@ fn accept_f05_b_bookings_and_refusals_leave_the_ledger_exact() {
         context.allocation().used(),
         booked,
         "member reads book nothing"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// F05-D: the resolved length semantics
+// ---------------------------------------------------------------------------
+
+/// The label the retail audit carries, and the one these fixtures use.
+const RETAIL_CONTAINER: &str = "synthetic/f05_d_lengths.rof";
+
+/// A container whose single member's stored extent is `extent`, with the
+/// record's decoded word stating `decoded`.
+///
+/// The two words are separate parameters because that is the whole point of
+/// this stage: which one is the extent and which one is the decoded byte
+/// count is what F05-D measured, and a fixture that authors them equal
+/// cannot tell the two profiles apart.
+fn one_member(name: &'static str, flags: u32, stored: u32, decoded: u32, extent: &[u8]) -> Vec<u8> {
+    single_member_file(name, flags, decoded, stored, 5, extent)
+}
+
+/// `[root][stream A][stream B]`: two compressed members stored back to back,
+/// the shape both containers of the original installation have. `swapped`
+/// authors the two length words the other way round, so the *decoded* word
+/// becomes the extent and each member then reaches over its successor.
+fn two_compressed_members(swapped: bool) -> Vec<u8> {
+    let names = name_table(&["A.DAT", "B.DAT"]);
+    let block_len = DIRECTORY_HEADER_BYTES + 2 * RECORD_BYTES + names.len();
+    let a_start = block_len as u32;
+    let b_start = a_start + COMPRESSED_STREAM.len() as u32;
+    let (a_stored, a_decoded) = if swapped {
+        (
+            COMPRESSED_PAYLOAD.len() as u32,
+            COMPRESSED_STREAM.len() as u32,
+        )
+    } else {
+        (
+            COMPRESSED_STREAM.len() as u32,
+            COMPRESSED_PAYLOAD.len() as u32,
+        )
+    };
+    let records = [
+        RawRecord {
+            start: a_start,
+            raw_length: a_decoded,
+            raw_length_on_disk: a_stored,
+            flags: FLAG_COMPRESSED,
+            name_length: names.len() as u32 / 2,
+            id: 11,
+        },
+        RawRecord {
+            start: b_start,
+            raw_length: 128 * 1024,
+            raw_length_on_disk: BOMB_STREAM.len() as u32,
+            flags: FLAG_COMPRESSED,
+            name_length: names.len() as u32 / 2,
+            id: 22,
+        },
+    ];
+    let mut bytes = valid_block(&records, &names);
+    bytes.extend_from_slice(COMPRESSED_STREAM);
+    bytes.extend_from_slice(BOMB_STREAM);
+    bytes
+}
+
+/// Merges `[start, end)` spans and reports whether they tile `[0, len)`
+/// exactly — the property F05-D measured on both original containers.
+fn tiles_exactly(spans: &[(u64, u64)], len: u64) -> bool {
+    let mut sorted = spans.to_vec();
+    sorted.sort_unstable();
+    let mut cursor = 0u64;
+    for (start, end) in sorted {
+        if start != cursor || end < start {
+            return false;
+        }
+        cursor = end;
+    }
+    cursor == len
+}
+
+/// **The regression F05-D repairs, part one:** a member's *decoded* word is
+/// a count of bytes the member produces, not a range of the container, so a
+/// decoded count that reaches past the end of the file is ordinary and must
+/// not be refused.
+///
+/// This is the shape of `GOSDATA/ASSETS/crimptch.rof`: a 797-byte container
+/// whose only member declares 670 stored bytes at offset 127 and 1641
+/// decoded bytes, so `start + 1641` is 971 bytes past the end of the file.
+/// Before this stage the reader treated the decoded word as an extent and
+/// refused that container as an outside-file pointer; it now reads it.
+#[test]
+fn accept_f05_d_the_decoded_word_is_not_a_range_of_the_container() {
+    let stream_len = COMPRESSED_STREAM.len() as u32;
+    let decoded = COMPRESSED_PAYLOAD.len() as u32;
+    // The container holds nothing but the stream, and the record says the
+    // member decodes to more bytes than the whole file has.
+    let bytes = one_member(
+        "AIRFRAME.SCRIPT",
+        FLAG_COMPRESSED,
+        stream_len,
+        decoded,
+        COMPRESSED_STREAM,
+    );
+    assert!(
+        DIRECTORY_HEADER_BYTES as u32
+            + RECORD_BYTES as u32
+            + b"AIRFRAME.SCRIPT\0".len() as u32
+            + decoded
+            > bytes.len() as u64 as u32,
+        "the decoded word reaches past the container"
+    );
+
+    let mut context = ParseContext::with_defaults(RETAIL_CONTAINER);
+    let walked = read_tree(&mut context, &bytes).expect("a decoded count past the end is ordinary");
+    let member = &walked.members()[0];
+    assert_eq!(member.stored_len(), u64::from(stream_len));
+    assert_eq!(member.declared_decoded_len(), u64::from(decoded));
+    assert_eq!(member.stored_end, bytes.len() as u64);
+
+    let read = read_member(&context, &bytes, member, &RofLimits::default())
+        .expect("the member reads to its declared length");
+    assert_eq!(read.data.as_slice(), COMPRESSED_PAYLOAD);
+    assert_eq!(read.stored_len, u64::from(stream_len));
+    assert_eq!(read.decoded_len, u64::from(decoded));
+    assert_eq!(read.trailing_len, 0);
+
+    // The stored word is still bounds-checked: the same record with a stored
+    // count past the end of the file is an outside-file pointer and never
+    // reaches the decoder.
+    let mut short = ParseContext::with_defaults(RETAIL_CONTAINER);
+    let truncated = single_member_file(
+        "AIRFRAME.SCRIPT",
+        FLAG_COMPRESSED,
+        decoded,
+        bytes.len() as u32 + 1,
+        5,
+        COMPRESSED_STREAM,
+    );
+    let error = read_tree(&mut short, &truncated)
+        .expect_err("a stored extent past the end must be refused");
+    assert_eq!(error.code(), "extent_out_of_bounds");
+    match error {
+        RofError::ExtentOutOfBounds {
+            offset,
+            length,
+            file_len,
+            ..
+        } => {
+            assert_eq!(length, bytes.len() as u64 + 1);
+            assert_eq!(file_len, truncated.len() as u64);
+            assert_eq!(offset, member.start);
+        }
+        other => panic!("expected an out-of-bounds extent, got {other:?}"),
+    }
+    assert_eq!(short.allocation().used(), 0);
+}
+
+/// **The regression F05-D repairs, part two:** the overlap check compares
+/// *stored* extents.
+///
+/// Under the decoded-word profile every compressed member of
+/// `GOSDATA/ASSETS/crimson.rof` appears to run over the next member — 418
+/// overlapping spans in a 60 MB container — and the container is refused as
+/// an unsupported layout. Under the stored-word profile the same bytes tile
+/// the container exactly. Both halves are asserted here, from the same
+/// fixture bytes, so a reader that picks the wrong word for either job fails
+/// one of them.
+#[test]
+fn accept_f05_d_overlaps_are_computed_from_the_stored_extent() {
+    let bytes = two_compressed_members(false);
+    let file_len = bytes.len() as u64;
+    let mut context = ParseContext::with_defaults(RETAIL_CONTAINER);
+    let walked = read_tree(&mut context, &bytes).expect("adjacent stored extents do not overlap");
+
+    let mut spans: Vec<(u64, u64)> = walked
+        .directories()
+        .iter()
+        .map(|directory| {
+            (
+                directory.offset,
+                directory.offset + directory.directory.block_len() as u64,
+            )
+        })
+        .collect();
+    spans.extend(
+        walked
+            .members()
+            .iter()
+            .map(|member| (member.start, member.stored_end)),
+    );
+    assert!(
+        tiles_exactly(&spans, file_len),
+        "blocks and members tile the container: {spans:?}"
+    );
+
+    // Every member reads to its declared decoded length, and the two
+    // members sit back to back with nothing between them.
+    let a = read_member(
+        &context,
+        &bytes,
+        &walked.members()[0],
+        &RofLimits::default(),
+    )
+    .expect("A.DAT decodes");
+    let b = read_member(
+        &context,
+        &bytes,
+        &walked.members()[1],
+        &RofLimits::default(),
+    )
+    .expect("B.DAT decodes");
+    assert_eq!(a.data.as_slice(), COMPRESSED_PAYLOAD);
+    assert_eq!(a.stored_len, COMPRESSED_STREAM.len() as u64);
+    assert_eq!(a.decoded_len, COMPRESSED_PAYLOAD.len() as u64);
+    assert_eq!(b.decoded_len, 128 * 1024);
+    assert_eq!(b.stored_len, BOMB_STREAM.len() as u64);
+    assert_eq!(walked.members()[1].start, walked.members()[0].stored_end);
+
+    // The same bytes with the two words the other way round are refused:
+    // the decoded word as an extent makes each member reach over the next,
+    // and no source documents such sharing (spec F05 non-negotiable #5).
+    let swapped = two_compressed_members(true);
+    let mut fresh = ParseContext::with_defaults(RETAIL_CONTAINER);
+    let error = read_tree(&mut fresh, &swapped)
+        .expect_err("a member that reaches over its successor must be refused");
+    assert_eq!(error.code(), "unsupported_layout");
+    match error {
+        RofError::UnsupportedLayout { detail, .. } => {
+            assert!(
+                detail.contains("overlaps"),
+                "the refusal names the overlap: {detail}"
+            );
+        }
+        other => panic!("expected an unsupported layout, got {other:?}"),
+    }
+    assert_eq!(fresh.allocation().used(), 0);
+}
+
+/// **The resolved profile's own check:** the read must reproduce the
+/// record's `raw_length` word exactly, for a compressed member and an
+/// uncompressed one alike, and a container that says otherwise is refused
+/// rather than truncated, padded or believed.
+#[test]
+fn accept_f05_d_a_declared_length_that_disagrees_with_the_bytes_is_refused() {
+    let stream_len = COMPRESSED_STREAM.len() as u32;
+    let decoded = COMPRESSED_PAYLOAD.len() as u32;
+    let plain = b"a plain member\n";
+
+    // 1. A compressed member whose declared count is one byte short of what
+    //    its stream decodes to.
+    let bytes = one_member(
+        "SHORT.DAT",
+        FLAG_COMPRESSED,
+        stream_len,
+        decoded - 1,
+        COMPRESSED_STREAM,
+    );
+    let mut context = ParseContext::with_defaults(RETAIL_CONTAINER);
+    let walked = read_tree(&mut context, &bytes).expect("the fixture traverses");
+    let error = read_member(
+        &context,
+        &bytes,
+        &walked.members()[0],
+        &RofLimits::default(),
+    )
+    .expect_err("a declared count that does not match the bytes must be refused");
+    assert_eq!(error.code(), "decoded_length_mismatch");
+    assert_eq!(error.container(), RETAIL_CONTAINER);
+    assert_eq!(error.offset(), walked.members()[0].start);
+    match error {
+        RofError::DecodedLengthMismatch {
+            declared, observed, ..
+        } => {
+            assert_eq!(declared, u64::from(decoded - 1));
+            assert_eq!(observed, u64::from(decoded));
+        }
+        other => panic!("expected a decoded length mismatch, got {other:?}"),
+    }
+    // The refusal is not an allocation: the ledger is exactly as the walk
+    // left it, and a retry refuses identically.
+    let booked = context.allocation().used();
+    let again = read_member(
+        &context,
+        &bytes,
+        &walked.members()[0],
+        &RofLimits::default(),
+    )
+    .expect_err("the same refusal, again");
+    assert_eq!(again.code(), "decoded_length_mismatch");
+    assert_eq!(context.allocation().used(), booked);
+
+    // 2. An *uncompressed* member whose two words disagree: there is
+    //    nothing to expand, so the stored extent and the declared count
+    //    must be the same number. A container that says otherwise is
+    //    refusing, not being believed.
+    let bytes = single_member_file(
+        "PLAIN.DAT",
+        0,
+        plain.len() as u32 + 1,
+        plain.len() as u32,
+        5,
+        plain,
+    );
+    let mut context = ParseContext::with_defaults(RETAIL_CONTAINER);
+    let walked = read_tree(&mut context, &bytes).expect("the fixture traverses");
+    let member = &walked.members()[0];
+    assert_eq!(member.stored_len(), plain.len() as u64);
+    assert_eq!(member.declared_decoded_len(), plain.len() as u64 + 1);
+    let error = read_member(&context, &bytes, member, &RofLimits::default())
+        .expect_err("an uncompressed member cannot decode to another size");
+    assert_eq!(error.code(), "decoded_length_mismatch");
+    match error {
+        RofError::DecodedLengthMismatch {
+            declared, observed, ..
+        } => {
+            assert_eq!(declared, plain.len() as u64 + 1);
+            assert_eq!(observed, plain.len() as u64);
+        }
+        other => panic!("expected a decoded length mismatch, got {other:?}"),
+    }
+
+    // 3. The agreeing case still reads, for both flag words, and reports
+    //    the declared and observed counts side by side.
+    let bytes = one_member(
+        "PLAIN.DAT",
+        0,
+        plain.len() as u32,
+        plain.len() as u32,
+        plain,
+    );
+    let mut context = ParseContext::with_defaults(RETAIL_CONTAINER);
+    let walked = read_tree(&mut context, &bytes).expect("the fixture traverses");
+    let read = read_member(
+        &context,
+        &bytes,
+        &walked.members()[0],
+        &RofLimits::default(),
+    )
+    .expect("agreeing words read");
+    assert_eq!(read.data.as_slice(), plain);
+    assert_eq!(read.stored_len, plain.len() as u64);
+    assert_eq!(read.declared_len, plain.len() as u64);
+    assert_eq!(read.decoded_len, read.declared_len);
+    assert_eq!(read.trailing_len, 0);
+
+    // 4. Trailing bytes inside a stored extent are *reported*, not refused:
+    //    the stream ends where it ends and the record still declares the
+    //    decoded length. Every compressed member of both original
+    //    containers has zero trailing bytes, which is what makes the stored
+    //    word the member's exact boundary.
+    let mut extent = COMPRESSED_STREAM.to_vec();
+    extent.extend_from_slice(b"TAIL");
+    let bytes = one_member(
+        "PAD.DAT",
+        FLAG_COMPRESSED,
+        extent.len() as u32,
+        decoded,
+        &extent,
+    );
+    let mut context = ParseContext::with_defaults(RETAIL_CONTAINER);
+    let walked = read_tree(&mut context, &bytes).expect("the fixture traverses");
+    let read = read_member(
+        &context,
+        &bytes,
+        &walked.members()[0],
+        &RofLimits::default(),
+    )
+    .expect("trailing bytes are reported, not refused");
+    assert_eq!(read.data.as_slice(), COMPRESSED_PAYLOAD);
+    assert_eq!(read.stored_len, (COMPRESSED_STREAM.len() + 4) as u64);
+    assert_eq!(read.decoded_len, u64::from(decoded));
+    assert_eq!(read.declared_len, u64::from(decoded));
+    assert_eq!(read.trailing_len, 4);
+    // The stored extent is the stream plus the trailer: three different
+    // lengths are reported for one member, and none of them is guessed.
+    assert_eq!(
+        read.stored_len - read.trailing_len,
+        COMPRESSED_STREAM.len() as u64
+    );
+    assert_ne!(read.stored_len, read.decoded_len);
+}
+
+/// The two containers of the original installation, as the task's private
+/// data names them. Nothing in this file is derived from them except the
+/// numbers the assertions below state, and both are read-only.
+const RETAIL_CONTAINERS: &[&str] = &["GOSDATA/ASSETS/crimson.rof", "GOSDATA/ASSETS/crimptch.rof"];
+
+/// The reference read profile of [S05], re-implemented over the *raw*
+/// record, branch for branch: an uncompressed entry is copied verbatim for
+/// the record's **first** length word, and a compressed one has that same
+/// word's bytes handed to zlib, whose stream end — not the word — bounds
+/// what is kept. The pinned script reads that word even when it runs past
+/// the end of the file, because a short read at EOF is what a file object
+/// returns.
+///
+/// This is the profile F05-D measured to be *tolerant but not right*: the
+/// produced bytes are the member's, the extent is not. The test compares the
+/// bytes it produces with the production reader's, so the resolved profile
+/// cannot change a single member's content.
+fn reference_profile_read(file: &[u8], start: u64, first_word: u32, compressed: bool) -> Vec<u8> {
+    let end = (start + u64::from(first_word)).min(file.len() as u64);
+    let input = &file[start as usize..end as usize];
+    if !compressed {
+        // The reference's uncompressed branch: `write(f.read(length))`.
+        return input.to_vec();
+    }
+    let mut state =
+        miniz_oxide::inflate::stream::InflateState::new_boxed(miniz_oxide::DataFormat::Zlib);
+    let mut out: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 8 * 1024];
+    let mut rest = input;
+    loop {
+        use miniz_oxide::inflate::stream::inflate;
+        use miniz_oxide::{MZFlush, MZStatus};
+        let result = inflate(&mut state, rest, &mut chunk, MZFlush::None);
+        out.extend_from_slice(&chunk[..result.bytes_written]);
+        match result.status {
+            Ok(MZStatus::StreamEnd) => return out,
+            // The output chunk filled before the stream did: keep going.
+            Ok(MZStatus::Ok) => {
+                if result.bytes_consumed == 0 && result.bytes_written == 0 {
+                    return Vec::new();
+                }
+            }
+            // A missing preset dictionary, a corrupt stream, a truncated
+            // one: the reference would raise, and this emulation reports no
+            // bytes so the comparison below fails loudly.
+            Ok(MZStatus::NeedDict) | Err(_) => return Vec::new(),
+        }
+        rest = &rest[result.bytes_consumed.min(rest.len())..];
+    }
+}
+
+/// **AC04 / the minimum acceptance scenario, on private data:** every member
+/// of both containers of the original installation reads byte-identically
+/// under the resolved profile and under the reference extractor's read
+/// profile, and the resolved profile is the one that makes the containers
+/// add up.
+///
+/// Four properties, all measured here through the production reader:
+///
+/// 1. **The container tiles exactly.** Every directory block and every
+///    member's stored extent together cover `[0, file_len)` with no gap, no
+///    overlap and no unused tail byte. Under the decoded-word profile the
+///    same containers show 418 overlapping spans and one extent 971 bytes
+///    past the end of a 797-byte file.
+/// 2. **Every compressed member is an exact stream.** Its stored extent
+///    reaches the end of the zlib stream (`trailing_len == 0`) and decodes to
+///    exactly the record's `raw_length` word.
+/// 3. **Every uncompressed member's two words agree**, which is what makes
+///    the compressed members' difference meaningful rather than noise.
+/// 4. **The bytes match the reference extractor.** For every member,
+///    `reference_profile_read` over the record's *first* length word
+///    produces the same bytes the production reader returns, so the resolved
+///    extent is a statement about where the member lives, never about what
+///    it contains.
+///
+/// `#[ignore]` because it needs `CS_GAME_DIR`; CI skips it and the
+/// implementing and reviewing agents run it with `--include-ignored`.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_f05_d_retail_members_tile_their_container_and_match_the_reference_profile() {
+    let root = std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR names the read-only installation");
+    let mut totals = (0usize, 0usize, 0usize, 0u64, 0u64, 0u64);
+    let mut containers = 0usize;
+
+    for relative in RETAIL_CONTAINERS {
+        let path = std::path::Path::new(&root).join(relative);
+        let file = std::fs::read(&path)
+            .unwrap_or_else(|error| panic!("{} must be readable: {error}", path.display()));
+        let file_len = file.len() as u64;
+        let container = *relative;
+        let mut context = ParseContext::with_defaults(container);
+
+        let walked = read_tree(&mut context, &file).unwrap_or_else(|error| {
+            panic!("{container} must walk under the resolved profile: {error}")
+        });
+        assert!(
+            !walked.members().is_empty(),
+            "{container} holds file members"
+        );
+
+        // 1. The container tiles exactly, and the walk's own overlap check
+        //    is what proved it: a container that did not tile could not
+        //    have produced this tree at all.
+        let mut spans: Vec<(u64, u64)> = walked
+            .directories()
+            .iter()
+            .map(|directory| {
+                (
+                    directory.offset,
+                    directory.offset + directory.directory.block_len() as u64,
+                )
+            })
+            .collect();
+        spans.extend(
+            walked
+                .members()
+                .iter()
+                .map(|member| (member.start, member.stored_end)),
+        );
+        assert!(
+            tiles_exactly(&spans, file_len),
+            "{container}: {}/{} bytes tiled by {} blocks and {} members",
+            spans.iter().map(|(_, end)| *end - spans[0].0).sum::<u64>(),
+            file_len,
+            walked.directories().len(),
+            walked.members().len()
+        );
+
+        let mut compressed = 0usize;
+        for member in walked.members() {
+            let stored = member.stored_len();
+            let declared = member.declared_decoded_len();
+            let read = read_member(&context, &file, member, &RofLimits::default()).unwrap_or_else(
+                |error| {
+                    panic!(
+                        "{container}: {} at offset {} must read: {error}",
+                        String::from_utf8_lossy(member.path.last().copied().unwrap_or(b"?")),
+                        member.start
+                    )
+                },
+            );
+            assert_eq!(
+                read.stored_len, stored,
+                "{container}: stored is the on-disk word"
+            );
+            assert_eq!(
+                read.declared_len, declared,
+                "{container}: declared is the first word"
+            );
+            assert_eq!(
+                read.decoded_len, declared,
+                "{container}: the read reproduces the declared decoded length"
+            );
+            assert_eq!(read.data.len() as u64, declared);
+            assert!(member.stored_end <= file_len);
+
+            if member.is_compressed() {
+                compressed += 1;
+                // 2. An exact stream: it ends inside its own stored extent.
+                assert_eq!(
+                    read.trailing_len,
+                    0,
+                    "{container}: {} has {} trailing bytes inside its stored extent",
+                    String::from_utf8_lossy(member.path.last().copied().unwrap_or(b"?")),
+                    read.trailing_len
+                );
+                assert!(
+                    declared > stored,
+                    "{container}: a compressed member expands"
+                );
+            } else {
+                // 3. Nothing to expand, so the two words agree.
+                assert_eq!(
+                    declared, stored,
+                    "{container}: an uncompressed member's two words agree"
+                );
+                assert!(!member.record.flags.has_unknown_bits());
+            }
+
+            // 4. The reference extractor's bytes are the same bytes.
+            let reference = reference_profile_read(
+                &file,
+                member.start,
+                member.record.raw_length,
+                member.is_compressed(),
+            );
+            assert_eq!(
+                reference.len() as u64,
+                declared,
+                "{container}: the reference profile decodes to the declared length"
+            );
+            assert_eq!(
+                reference,
+                read.data,
+                "{container}: the reference profile and the resolved profile agree on {}",
+                String::from_utf8_lossy(member.path.last().copied().unwrap_or(b"?"))
+            );
+
+            totals.0 += 1;
+            totals.4 += stored;
+            totals.5 += declared;
+            if member.is_compressed() {
+                totals.1 += 1;
+            } else {
+                totals.2 += 1;
+            }
+        }
+        assert!(
+            compressed > 0,
+            "{container}: the audit is only meaningful with compressed members"
+        );
+        totals.3 += file_len;
+        containers += 1;
+    }
+
+    // The corpus this stage resolved the semantics on, stated as a range
+    // rather than as exact counts: a future installation that adds members
+    // must not fail here, and one that *loses* members must.
+    assert_eq!(containers, RETAIL_CONTAINERS.len());
+    assert!(totals.0 >= 2, "at least one member per container");
+    assert!(totals.1 > 0, "compressed members were audited");
+    assert!(totals.2 > 0, "uncompressed members were audited");
+    assert!(
+        totals.5 > totals.4,
+        "decoded bytes exceed stored bytes across the corpus"
+    );
+    let (members, compressed, uncompressed, file_bytes, stored, decoded) = totals;
+    eprintln!(
+        "F05-D retail audit: {containers} containers, {file_bytes} container bytes, \
+         {members} members ({compressed} compressed, {uncompressed} uncompressed), \
+         {stored} stored bytes, {decoded} decoded bytes"
     );
 }

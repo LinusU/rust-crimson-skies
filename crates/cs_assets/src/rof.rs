@@ -1019,6 +1019,9 @@ mod tests {
             }
         }
 
+        /// Points the entry at `start` with `length` payload bytes on both
+        /// length words: an uncompressed entry authors them equal, exactly
+        /// as both containers of the original installation do.
         fn at(mut self, start: u32, length: u32) -> Self {
             self.start = start;
             self.raw_length = length;
@@ -1031,10 +1034,17 @@ mod tests {
             self
         }
 
-        /// Authors the two length words differently: the compressed
-        /// fixtures are exactly the case where they must not be collapsed
-        /// (spec F05 non-negotiable #4).
-        fn on_disk(mut self, length: u32) -> Self {
+        /// Authors the **decoded** word of a compressed entry: the byte
+        /// count the member reads to, which F05-D measured as the record's
+        /// `raw_length`. The stored count stays what [`Self::at`] authored.
+        fn decodes_to(mut self, decoded: u32) -> Self {
+            self.raw_length = decoded;
+            self
+        }
+
+        /// Authors the **stored** word of an entry whose extent is not the
+        /// count [`Self::at`] gave it.
+        fn stored(mut self, length: u32) -> Self {
             self.raw_length_on_disk = length;
             self
         }
@@ -1107,7 +1117,7 @@ mod tests {
 
     /// `[root][MIS][INDEX][README][PACK]`: a directory, an uncompressed
     /// file, a compressed member whose two length words differ (62 stored,
-    /// 32 "on disk"), and a duplicate basename under the directory.
+    /// 204 decoded), and a duplicate basename under the directory.
     fn good_container() -> Vec<u8> {
         let root_names = name_table(&["MIS", "INDEX.TXT", "PACK.DAT"]);
         let mis_names = name_table(&["readme.txt"]);
@@ -1124,7 +1134,7 @@ mod tests {
             RawRecord::file("PACK.DAT", 3)
                 .at(pack_start, pack_len)
                 .compressed()
-                .on_disk(32),
+                .decodes_to(COMPRESSED_PAYLOAD.len() as u32),
         ];
         let mis_records = [RawRecord::file("readme.txt", 11).at(readme_start, readme_len)];
 
@@ -1161,7 +1171,8 @@ mod tests {
         let block_len = DIRECTORY_HEADER_BYTES + RECORD_BYTES + names.len();
         let records = [RawRecord::file("BOMB.DAT", 7)
             .at(block_len as u32, BOMB_STREAM.len() as u32)
-            .compressed()];
+            .compressed()
+            .decodes_to(128 * 1024)];
         let mut bytes = valid_block(&records, &names);
         bytes.extend_from_slice(BOMB_STREAM);
         bytes
@@ -1246,8 +1257,17 @@ mod tests {
         assert!(members[2].compressed, "flag 2 is the compression bit");
         assert_eq!(
             members[2].stored_len, 62,
-            "the record's `raw_length` — the other word authors 32 for this member"
+            "the record's `raw_length_on_disk` — the stored extent"
         );
+        assert_eq!(
+            members[2].declared_decoded_len,
+            COMPRESSED_PAYLOAD.len() as u64,
+            "the record's `raw_length` — the decoded count, kept apart"
+        );
+        // The uncompressed members of this container author both words
+        // equal, as both containers of the original installation do.
+        assert_eq!(members[0].stored_len, members[0].declared_decoded_len);
+        assert_eq!(members[1].stored_len, members[1].declared_decoded_len);
 
         let session = builder.open();
         let index_asset = session.resolve(&key("INDEX.TXT")).expect("resolved");
