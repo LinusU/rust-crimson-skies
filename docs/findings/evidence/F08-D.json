@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "F08-D",
+ "candidate_tree": "e531db3896be27b24cf888277d6dbff144b96d70",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-09-28T22:59:18Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_f08_d_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/agent-4", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 8, "executed": 8, "passed": 8, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_f08_d_resolve_entry_reaches_duplicate_names_by_position", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f08_d_reference_reader_undoes_every_filter_and_refuses_the_rest", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f08_d_cli_refuses_bad_input_and_a_missing_installation", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f08_d_matching_reference_passes_with_every_texel_compared", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f08_d_alpha_edge_and_channel_mismatches_fail", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f08_d_flipped_or_transposed_reference_is_an_unexplained_difference", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f08_d_missing_extra_renamed_or_inconsistent_references_fail", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f08_d_retail_every_texture_matches_the_pinned_reference", "status": "pass", "evidence": ["cargo-test.log"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "5fb9876a016502a203ebca7df5e1b298686aff69ce0ab2b40bcc81eaa124d91a", "kind": "log"}, {"path": "texture-audit.json", "sha256": "8caccc5f1acc7846b89242a5eb8f019d1c5b1995a681be6aa628ec7b92f015a1", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "claude-1 (implementing agent; the reviewer regenerates it on the reviewed and rebased commit)", "method": "acceptance suite run locally with the retail capability; this harness derives every field from the recorded log, production discovery of $CS_GAME_DIR, the production `cs-inspect texture-audit` run (texture-audit.json) that decodes every texture of every ZBD texture archive through TextureCatalog::prepare_upload and compares dimensions, coverage, orientation and every texel with the pinned reference extraction (unzbd cs textures, mech3ax v0.6.0 commit d3521a9721be731d365504568ddcd78e3f9846bb, binary sha256 a9c426dde913703142e025b03125d2329658bff384395884bbd80e905485e0f0; each reference ZIP's sha256 is in the audit report), rustc and Cargo.lock; validated with tools/validate_evidence.py --require-pass. 49 archives, 37004 textures, 0 unexplained differences (exit 0); 22 textures differ only in the explained way (coverage source unknown, reference opaque); the reference expands all 31679 distinct 565 words by rounding. The contact sheets (sheets/, digests in the report) are private review renderings and were not reviewed by a human; the reference is a tool, not the original renderer, so no claim beyond implemented is made. Unknowns are recorded in docs/findings/2026-09-28-f08-d-texture-decode-audit.md"},
+ "claim": "implemented"
+}
