@@ -504,21 +504,22 @@ pub fn read_version_one_index<'a>(
     }
     let table_start = container_len - needed;
 
-    let (entries, extents) = context.parse(TRAILER_ENTRYPOINT, bytes, |reader, allocation, _| {
-        let members = u64::from(count);
-        allocation.reserve("entries", table_start, members, INDEX_ROW_BYTES)?;
-        allocation.reserve("extents", table_start, members, MEMBER_EXTENT_BYTES)?;
-        reader.skip("data", table_start as usize)?;
+    let (entries, extents) =
+        context.parse(TRAILER_ENTRYPOINT, bytes, |reader, allocation, _| {
+            let members = u64::from(count);
+            allocation.reserve("entries", table_start, members, INDEX_ROW_BYTES)?;
+            allocation.reserve("extents", table_start, members, MEMBER_EXTENT_BYTES)?;
+            reader.skip("data", table_start as usize)?;
 
-        let mut entries = Vec::with_capacity(count as usize);
-        let mut extents = Vec::with_capacity(count as usize);
-        for index in 0..count as usize {
-            let entry = read_entry(reader, index)?;
-            extents.push(MemberExtent::new(entry.name(), None, entry.span()));
-            entries.push(entry);
-        }
-        Ok((entries, extents))
-    })?;
+            let mut entries = Vec::with_capacity(count as usize);
+            let mut extents = Vec::with_capacity(count as usize);
+            for index in 0..count as usize {
+                let entry = read_entry(reader, index)?;
+                extents.push(MemberExtent::new(entry.name(), None, entry.span()));
+                entries.push(entry);
+            }
+            Ok((entries, extents))
+        })?;
 
     Ok(VersionOneIndex {
         dispatch,
