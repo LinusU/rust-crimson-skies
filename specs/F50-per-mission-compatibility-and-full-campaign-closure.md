@@ -30,7 +30,9 @@ These are minimum discriminating tests. Add regression cases for every discovere
 
 ### F50-A: Define complete mission binding/coverage records
 
-Dependencies: F18-A, F19-A, F20-A, F24-A, F25-A, F27-A, F28-A, F29-A, F32-A, F33-A, F34-A, F35-A, F36-A, F38-A, F39-A, F40-A, F41-A, F42-A, F43-A, F44-A, F45-A, F46-A, F47-A. Required capabilities: ordinary build/test.
+Dependencies: F14-A, F13-A, F16-A. Required capabilities: ordinary build/test.
+
+Owner ruling 2026-09-28 ([AUDIT-PLAN-SYNC](README.md#owner-ruling-2026-09-28-first-playable-sequencing-audit-plan-sync-356)): this is the early, engine-independent binding/coverage schema. Represent each required subsystem by a stable identity and an explicit unresolved dependency row instead of waiting for every subsystem's runtime schema. Preserve every required content category: mission identity, world variant and program; actors and forced/captured airframes; assets and media; objectives, branches and failure causes; interactions; rewards and progression; reference and evidence links. The denominator is fixed from the supported original inventory and cannot shrink; missing, unknown and unsupported rows are never unused and never ready. Synthetic fixtures prove the schema and validation only, not the campaign. F50-B/C/D still perform the complete campaign integration and verification with unchanged acceptance.
 
 Work only on this stage. Define typed inputs/outputs and a minimal synthetic fixture first; do not jump ahead to a whole runtime.
 
@@ -53,6 +55,8 @@ Before editing, list the specific functions/files and one observable failure. If
 ### F50-C: Build per-mission automated probes and human playtest routes
 
 Dependencies: F50-B. Required capabilities: retail.
+
+Owner ruling 2026-09-28: M01-B no longer waits for this stage (the first mission runs through VS-M01-RUNTIME and VS-M01-CONTROLLED-RUNS). F50-C still integrates the M01 route with every other mission route and still gates M02-B through M24-B.
 
 Work only on this stage. Wire the implemented path into its actual producer and consumer; include teardown/retry and error propagation.
 
