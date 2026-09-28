@@ -28,10 +28,17 @@
 //! key accounting (`specs/F12-text-configuration-strings-and-pe-
 //! resources.md`, stage F12-A).
 //!
+//! [`catalog`] holds the canonical content catalog and its declared
+//! launchable baseline (`specs/F14-canonical-content-catalog-and-dependency-
+//! closure.md`, stage F14-A): stable-id elements in canonical order,
+//! duplicate identities refused, and the unsupported-mission count that
+//! keeps an unavailable mission in the denominator.
+//!
 //! [`cs_types`]: cs_types
 //! [`cs_formats`]: cs_formats
 //! [`cs_assets`]: cs_assets
 
+pub mod catalog;
 pub mod config;
 pub mod livery;
 pub mod loading;
