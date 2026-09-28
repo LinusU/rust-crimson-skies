@@ -7,12 +7,14 @@
 //! the `audit` command (F02-D) classifies every inventoried file and runs
 //! the full-content readiness check, and the `resolve` command (F04-C)
 //! resolves one asset key in a mounted content session and reports its
-//! trace, the `zbd-audit` command (F06-D) lists every ZBD container and
-//! member with a strict status, and the `interp` command (F07-B) decodes
-//! and validates one INTERP loading-script container and reports its
-//! lossless tokens. The remaining subcommands from
-//! `docs/contracts/CLI-EVIDENCE.md` (`catalog`, `closure`, `scripts`,
-//! `handling`) arrive with later tasks.
+//! trace, and the `rof` command (F05-C) mounts one ROF container into a
+//! content session, reports every member it holds and optionally reads
+//! and exports one of them, the `zbd-audit` command (F06-D) lists every
+//! ZBD container and member with a strict status, and the `interp`
+//! command (F07-B) decodes and validates one INTERP loading-script
+//! container and reports its lossless tokens. The remaining subcommands
+//! from `docs/contracts/CLI-EVIDENCE.md` (`catalog`, `closure`,
+//! `scripts`, `handling`) arrive with later tasks.
 //! Until then the binary refuses invalid input with a nonzero exit code and
 //! a diagnostic naming the missing command — a failure is never returned as success.
 
@@ -50,6 +52,15 @@ COMMANDS
         ordered attempt and the precedence status. --export-dir writes the
         resolved member into a private directory outside the installation.
         Exits 0 when resolved, 3 when not found or ambiguous.
+
+    rof [--cs-path <dir>] --container <spelling> [--member <spelling>]
+        [--max-decoded-bytes <n>] [--out <file>] [--export-dir <dir>]
+        Mount one ROF container of the installation into a content
+        session and report every member it holds: spelling, id, stored
+        extent, compression bit and digest. --member reads one member
+        through the bounded decoder and --export-dir writes its decoded
+        bytes into a private directory outside the installation. Exits 0
+        when mounted, 3 when the container or the member is refused.
 
     zbd-audit [--cs-path <dir>] [--strict] [--out <file>]
         Audit every ZBD container of the installation family by family:
@@ -94,7 +105,7 @@ fn main() -> ExitCode {
     match args.first().map(String::as_str) {
         None => {
             eprintln!(
-                "cs-inspect: missing command; expected one of inventory, audit, resolve, \
+                "cs-inspect: missing command; expected one of inventory, audit, resolve, rof, \
                  zbd-audit, interp, catalog, closure, scripts, handling (see \
                  docs/contracts/CLI-EVIDENCE.md)"
             );
@@ -103,12 +114,13 @@ fn main() -> ExitCode {
         Some("inventory") => cs_inspect::install::inventory_command(&args[1..]),
         Some("audit") => cs_inspect::install::audit_command(&args[1..]),
         Some("resolve") => cs_inspect::resolve::resolve_command(&args[1..]),
+        Some("rof") => cs_inspect::rof::rof_command(&args[1..]),
         Some("zbd-audit") => cs_inspect::zbd::zbd_audit_command(&args[1..]),
         Some("interp") => cs_inspect::interp::interp_command(&args[1..]),
         Some(command) => {
             eprintln!(
                 "cs-inspect: unsupported command {command:?}; this workspace stage implements \
-                 only `inventory`, `audit`, `resolve`, `zbd-audit` and `interp`"
+                 only `inventory`, `audit`, `resolve`, `rof`, `zbd-audit` and `interp`"
             );
             ExitCode::from(EXIT_INVALID_INPUT)
         }

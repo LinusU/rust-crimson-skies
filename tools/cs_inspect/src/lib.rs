@@ -12,7 +12,9 @@
 //! command: one lookup in a mounted content session, reported with its
 //! resolution trace, plus the explicit private export. [`zbd`] is the
 //! F06-D `zbd-audit` command: every ZBD container and member of an
-//! installation, family by family, with a strict status. [`interp`] is the
+//! installation, family by family, with a strict status. [`rof`] is the
+//! F05-C `rof` command: one ROF container mounted and reported, with an
+//! optional bounded member read and explicit export. [`interp`] is the
 //! F07-B consumer of the INTERP loading-script decoder: one container decoded
 //! and validated, reported with its lossless tokens and the findings the
 //! decoder retained.
@@ -21,4 +23,5 @@ pub mod evidence;
 pub mod install;
 pub mod interp;
 pub mod resolve;
+pub mod rof;
 pub mod zbd;
