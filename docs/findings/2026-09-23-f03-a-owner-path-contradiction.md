@@ -69,6 +69,20 @@ Pick one, then unblock #13:
    files inside that crate (wiring only — no logic), **or**
 3. direct F03-A somewhere else entirely.
 
+## Resolution (2026-09-28)
+
+The owner picked option 2 on 2026-09-25: `AGENTS.md` rule 1 gained a
+"**Wiring is in scope.**" bullet (commit `0776fe3` on `main`), which allows a
+task that owns files in a crate to make wiring-only edits to that crate's
+`src/lib.rs` / `src/main.rs` (module declarations, re-exports, doc comments)
+and its `Cargo.toml` plus the root `Cargo.lock`, with no logic allowed there.
+The `crates/cs_formats/src/lib.rs` change on this branch (+17 lines: `pub mod
+io; pub mod error;`, two `pub use` re-exports, doc comment) is therefore in
+scope, and the "Only owner paths changed" criterion is satisfiable as
+amended. This document is kept as the evidence trail for the contradiction
+that existed at the time it was written; the branch was rebased onto `main`
+after the rule landed.
+
 ## Status of the branch (for whoever resumes the review)
 
 `rally/13-implement-checked-reader-and-structured` at
