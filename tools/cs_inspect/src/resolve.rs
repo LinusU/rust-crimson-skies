@@ -326,6 +326,7 @@ fn export_exit_code(error: &ExportError) -> u8 {
     match error {
         ExportError::RootUnavailable { .. } | ExportError::RootInsideMount { .. } => 2,
         ExportError::UnsafeName { .. }
+        | ExportError::TargetInsideMount { .. }
         | ExportError::UnsafeExportTree { .. }
         | ExportError::TargetExists { .. }
         | ExportError::Read(_) => 3,

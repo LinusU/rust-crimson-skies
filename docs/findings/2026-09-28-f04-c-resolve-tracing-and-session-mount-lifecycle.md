@@ -79,7 +79,10 @@ a resolution to the world it was made for: a `ResolvedAsset` from world
   trailing `.`/space (Windows strips them, so `.. ` would become `..`), no
   Windows device name (`CON`, `NUL`, `AUX`, `PRN`, `COM1`–`9`, `LPT1`–`9`,
   `COM¹`–`³`, `LPT¹`–`³`, `CONIN$`, `CONOUT$`, any extension). The export root must be a real directory (not a link)
-  outside every mount's host root. Directories are created one component
+  outside every mount's host root. A mount root *below* the export root is
+  allowed, but an export never descends into it: every existing directory
+  on the way is canonicalized and refused (`TargetInsideMount`) when it
+  lies inside a mount. Directories are created one component
   at a time; an existing link or non-directory is refused, the landing
   directory must canonicalize below the root, and the file is written to
   a `create_new` temporary sibling, then hard-linked into place so an
@@ -107,6 +110,7 @@ a resolution to the world it was made for: a `ResolvedAsset` from world
 | Session generation check always passes | `world_switch_never_reuses_previous_session_texture` |
 | Export tree link check and canonical check both removed | `link_planted_in_export_tree_is_not_followed` |
 | Whole-member digest check removed | `pending_read_after_close_refuses_changed_bytes` |
+| Descending into a mount below the export root allowed (review) | `export_never_descends_into_a_mount_below_the_root` |
 
 The export tree has two independent link defenses (per-component
 `symlink_metadata` and the canonical-prefix check of the landing

@@ -323,6 +323,55 @@ fn accept_f04_c_export_root_inside_a_mount_is_refused() {
     );
 }
 
+/// An export root that *contains* the installation is usable, but a name
+/// that would descend into the installation is refused, so extracting
+/// still never writes into original data.
+#[test]
+fn accept_f04_c_export_never_descends_into_a_mount_below_the_root() {
+    let sandbox = TempTree::new("f04-c-parent");
+    sandbox.write("install/ZBD/c1/texture.zbd", b"world one texture bytes");
+    sandbox.write("install/ZBD/c2/texture.zbd", b"world two texture bytes");
+    let install_root = sandbox.root().join("install");
+    let before = snapshot(&install_root);
+
+    let found = install::discover(&install_root).expect("fixture installation is discovered");
+    let mut builder =
+        SessionBuilder::new(ResolveContext::new(install::fingerprint(&found.manifest)));
+    builder
+        .mount_installation(&install_root, &found.diagnosis)
+        .expect("fixture installation mounts");
+    let session = builder.open();
+    let export =
+        ExportDirectory::open(sandbox.root(), &session).expect("a parent of a mount is usable");
+
+    for name in [
+        "install/escape.dds",
+        "install/ZBD/escape.dds",
+        "install/ZBD/c1/escape.dds",
+    ] {
+        match export.write(name, b"hostile payload") {
+            Err(ExportError::TargetInsideMount { mount, .. }) => assert_eq!(mount, "install"),
+            other => panic!("{name:?} must not descend into the mount, got {other:?}"),
+        }
+    }
+    assert_eq!(
+        snapshot(&install_root),
+        before,
+        "the installation is unchanged"
+    );
+
+    // A sibling of the installation below the same root is still exported.
+    let written = export
+        .write("notes/escape.dds", b"harmless bytes")
+        .expect("a name outside every mount is exported");
+    assert!(written.path.starts_with(export.root()));
+    assert!(
+        !written
+            .path
+            .starts_with(fs::canonicalize(&install_root).expect("canonical"))
+    );
+}
+
 /// The export consumer end to end: a resolved world texture is read
 /// through its session (digest-checked) and written under its own member
 /// spelling, with the bytes and digest of the selected world only.

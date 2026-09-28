@@ -22,8 +22,9 @@
 //!   which would write to a device instead of a file.
 //!
 //! The export root must be an existing directory that is not a symbolic
-//! link and does not lie inside any mount of the session, so an export
-//! never writes into the original installation. Directories below the
+//! link and does not lie inside any mount of the session, and a write never
+//! descends into a directory inside a mount (an installation below the
+//! export root), so an export never writes into the original installation. Directories below the
 //! root are created one component at a time and an existing symbolic link
 //! is refused, never followed; the final file is written to a fresh
 //! temporary sibling and hard-linked into place, so an existing target is
@@ -112,6 +113,15 @@ pub enum ExportError {
         /// The mount whose host root contains it.
         mount: String,
     },
+    /// A directory the export would descend into lies inside a mounted
+    /// source (a mount root at or below the export root); exporting there
+    /// would write into the installation.
+    TargetInsideMount {
+        /// The directory inside the mount.
+        path: PathBuf,
+        /// The mount whose host root contains it.
+        mount: String,
+    },
     /// A path inside the export tree is a symbolic link or not a
     /// directory where one is needed. It is not followed.
     UnsafeExportTree {
@@ -147,6 +157,11 @@ impl fmt::Display for ExportError {
                 f,
                 "export root {} lies inside mount {mount}; exports never write into a \
                  mounted source",
+                path.display()
+            ),
+            Self::TargetInsideMount { path, mount } => write!(
+                f,
+                "{} lies inside mount {mount}; exports never write into a mounted source",
                 path.display()
             ),
             Self::UnsafeExportTree { path } => write!(
@@ -216,6 +231,9 @@ pub fn export_components(name: &str) -> Result<Vec<&str>, ExportError> {
 pub struct ExportDirectory {
     /// The canonical root.
     root: PathBuf,
+    /// The canonical host root of every mount of the session, with the
+    /// mount id, so no export descends into one.
+    mount_roots: Vec<(String, PathBuf)>,
 }
 
 /// One exported member.
@@ -233,7 +251,9 @@ impl ExportDirectory {
     /// Opens `root` as the export directory of `session`.
     ///
     /// `root` must exist, be a directory and not a symbolic link, and must
-    /// not lie inside the host root of any of the session's mounts.
+    /// not lie inside the host root of any of the session's mounts. A
+    /// mount root *below* `root` is allowed, but [`ExportDirectory::write`]
+    /// refuses to descend into it.
     pub fn open(root: &Path, session: &ContentSession) -> Result<Self, ExportError> {
         let unavailable = |source| ExportError::RootUnavailable {
             path: root.to_path_buf(),
@@ -247,21 +267,33 @@ impl ExportDirectory {
             )));
         }
         let canonical = fs::canonicalize(root).map_err(unavailable)?;
-        for mount in session.mounts() {
-            let Some(host_root) = mount.host_root() else {
-                continue;
-            };
-            let Ok(mount_root) = fs::canonicalize(host_root) else {
-                continue;
-            };
-            if canonical.starts_with(&mount_root) {
-                return Err(ExportError::RootInsideMount {
-                    path: root.to_path_buf(),
-                    mount: mount.id().to_string(),
-                });
-            }
+        let mount_roots: Vec<(String, PathBuf)> = session
+            .mounts()
+            .filter_map(|mount| {
+                let host_root = fs::canonicalize(mount.host_root()?).ok()?;
+                Some((mount.id().to_string(), host_root))
+            })
+            .collect();
+        let directory = Self {
+            root: canonical,
+            mount_roots,
+        };
+        if let Some(mount) = directory.mount_containing(&directory.root) {
+            return Err(ExportError::RootInsideMount {
+                path: root.to_path_buf(),
+                mount: mount.to_owned(),
+            });
         }
-        Ok(Self { root: canonical })
+        Ok(directory)
+    }
+
+    /// The id of the mount whose host root contains the canonical path
+    /// `path`, if any.
+    fn mount_containing(&self, path: &Path) -> Option<&str> {
+        self.mount_roots
+            .iter()
+            .find(|(_, mount_root)| path.starts_with(mount_root))
+            .map(|(id, _)| id.as_str())
     }
 
     /// The canonical export root.
@@ -281,7 +313,22 @@ impl ExportDirectory {
         for component in directories {
             directory.push(component);
             match fs::symlink_metadata(&directory) {
-                Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+                Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {
+                    // An existing directory may be (or lie in) a mount root
+                    // below the export root; never descend into one. A
+                    // directory created here is new, so cannot be a mount.
+                    let canonical =
+                        fs::canonicalize(&directory).map_err(|source| ExportError::Io {
+                            path: directory.clone(),
+                            source,
+                        })?;
+                    if let Some(mount) = self.mount_containing(&canonical) {
+                        return Err(ExportError::TargetInsideMount {
+                            path: directory,
+                            mount: mount.to_owned(),
+                        });
+                    }
+                }
                 Ok(_) => {
                     return Err(ExportError::UnsafeExportTree { path: directory });
                 }
