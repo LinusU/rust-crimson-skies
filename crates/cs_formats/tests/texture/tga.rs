@@ -13,7 +13,9 @@
 
 use cs_formats::ParseErrorKind;
 use cs_formats::io::AllocationBudget;
-use cs_formats::texture::tga::{TGA_EXTENSION_BYTES, TGA_FOOTER_SIGNATURE, TGA_HEADER_BYTES};
+use cs_formats::texture::tga::{
+    TGA_EXTENSION_BYTES, TGA_FOOTER_BYTES, TGA_FOOTER_SIGNATURE, TGA_HEADER_BYTES,
+};
 use cs_formats::texture::{
     AlphaSource, AlphaTest, ColorSpace, DecodedFormat, DecodedImage, DescriptorError, Extent,
     MAX_DIMENSION, PixelFormat, RowOrder, TgaError, TgaExtension, TgaFooter, TgaImage, TgaRleStats,
@@ -684,5 +686,94 @@ fn accept_f08_b_04_image_id_and_texels_are_charged_to_the_budget() {
             matches!(&error, TgaError::Parse(p) if p.kind == ParseErrorKind::AllocationBudgetExceeded),
             "{error:?}"
         );
+    }
+}
+
+/// The extension area is the container window between the end of the pixels
+/// and the start of the footer: `Reader::window_bytes` states that bound
+/// instead of a slice re-deriving it with a cast. Both ends are pinned.
+///
+/// The area's own length is what the refusal for an area the footer cuts
+/// short reports, so that refusal is also the pin on the **upper** end: the
+/// area of a 100-byte file region is 100 bytes, and a window that ran to the
+/// end of the file — swallowing the 26-byte footer after it — would report
+/// 126. The **lower** end is `pixels_end`, which the footer's own
+/// `extension_offset` has to name, and a container cut inside the area takes
+/// the footer with it: those bytes are unaccounted trailing bytes at the same
+/// offset as before, not a short area.
+#[test]
+fn accept_f05_g_extension_area_is_a_window_of_the_container() {
+    for image_type in [2, 10] {
+        let base = asymmetric(image_type, RowOrder::BottomUp);
+        let end = base.pixels_end();
+        let footer_bytes = u64::from(TGA_FOOTER_BYTES);
+
+        // 1. A full area: the window is the 495 bytes before the footer.
+        let mut tga = asymmetric(image_type, RowOrder::BottomUp);
+        tga.trailer = [extension(7), footer(end as u32, 0)].concat();
+        let bytes = tga.bytes();
+        let image = read(&bytes).expect("a full extension area reads");
+        assert_eq!(
+            image.extension(),
+            Some(TgaExtension {
+                offset: end,
+                attributes_type: 7,
+            })
+        );
+        assert_eq!(
+            image.footer().unwrap().offset,
+            end + u64::from(TGA_EXTENSION_BYTES)
+        );
+        assert_eq!(
+            bytes.len() as u64,
+            end + u64::from(TGA_EXTENSION_BYTES) + footer_bytes
+        );
+
+        // 2. An area the footer cuts short: refused as a header field, and
+        //    the bound it reports is the window's own length. The area is
+        //    never cut inside its own two-byte size word, which is a
+        //    different refusal (the read of the size fails first).
+        for short in [2u64, 100, 494] {
+            tga.trailer = [
+                extension(0)[..short as usize].to_vec(),
+                footer(end as u32, 0),
+            ]
+            .concat();
+            let error =
+                read(&tga.bytes()).expect_err("an area shorter than it declares must be refused");
+            assert_eq!(error.code(), "header_field", "short {short}");
+            assert_eq!(error.field(), Some("tga.extension.size"), "short {short}");
+            assert_eq!(
+                error,
+                TgaError::HeaderField {
+                    container: CONTAINER.to_owned(),
+                    offset: end,
+                    field: "tga.extension.size",
+                    expected: format!("at most {short} (the footer follows)"),
+                    observed: i64::from(TGA_EXTENSION_BYTES),
+                },
+                "short {short}"
+            );
+        }
+
+        // 3. A container cut inside the area: the footer went with it, so the
+        //    bytes after the pixels are unaccounted, at the same offset.
+        for cut in [40u64, 200] {
+            tga.trailer = [extension(0)[..cut as usize].to_vec(), footer(end as u32, 0)].concat();
+            let mut truncated = tga.bytes();
+            truncated.truncate(end as usize + cut as usize);
+            assert_eq!(truncated.len() as u64, end + cut);
+            let error = read(&truncated).expect_err("a container cut inside the area");
+            assert_eq!(error.code(), "trailing_bytes", "cut {cut}");
+            assert_eq!(
+                error,
+                TgaError::TrailingBytes {
+                    container: CONTAINER.to_owned(),
+                    offset: end,
+                    len: cut,
+                },
+                "cut {cut}"
+            );
+        }
     }
 }

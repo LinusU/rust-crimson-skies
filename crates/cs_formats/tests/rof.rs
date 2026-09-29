@@ -2194,6 +2194,138 @@ fn accept_f05_d_a_declared_length_that_disagrees_with_the_bytes_is_refused() {
     assert_ne!(read.stored_len, read.decoded_len);
 }
 
+// ---------------------------------------------------------------------------
+// F05-G: the member extent as a window of the container
+// ---------------------------------------------------------------------------
+
+/// The member extent is asked for as an absolute window of the container
+/// (`Reader::window_bytes`), so the shared bounds check is what states the
+/// bound. Two things are pinned here, and they are the two ways that window
+/// can be got wrong:
+///
+/// 1. **A window clamped to the end of the container.** The window is
+///    `start .. start + raw_length_on_disk`, not `start .. file.len()`. The
+///    fixtures below all have a member that *ends before* the container does,
+///    so a window that ran to the end of the input would hand back the next
+///    payload as part of this member: for the uncompressed fixture as extra
+///    bytes, for the compressed one as `trailing_len` the stored word does
+///    not have.
+/// 2. **A window the container does not hold.** A container cut inside the
+///    extent is refused with the same domain error, at the same offset, with
+///    the same numbers, as the hand-written check this replaced: the
+///    container's label, the extent's own start, the declared length and the
+///    container length. Nothing is clamped and no short extent is read.
+#[test]
+fn accept_f05_g_member_extent_is_a_window_of_the_container() {
+    // 1. An uncompressed member followed by four more payloads: the window
+    //    ends at the member's own end, not at the end of the container.
+    let fixture = tree();
+    let mut context = ParseContext::with_defaults(CONTAINER);
+    let walked = read_tree(&mut context, &fixture.bytes).expect("the authored tree traverses");
+    let member = member_of(&walked, &[b"index.txt".as_slice()]);
+    assert!(
+        member.stored_end < fixture.bytes.len() as u64,
+        "the fixture must have bytes after this member, or a window clamped \
+         to the end of the input would look like the right one"
+    );
+    let read = read_member(&context, &fixture.bytes, member, &RofLimits::default())
+        .expect("the extent is inside the container");
+    assert_eq!(read.data.as_slice(), ROOT_INDEX);
+    assert_eq!(read.stored_len, member.stored_len());
+    assert_eq!(read.stored_len, ROOT_INDEX.len() as u64);
+    assert_eq!(read.decoded_len, ROOT_INDEX.len() as u64);
+    assert_eq!(read.trailing_len, 0);
+
+    // 2. A compressed member whose window ends where its successor begins: a
+    //    window running to the end of the container would report the whole
+    //    second stream as trailing bytes of this one.
+    let bytes = two_compressed_members(false);
+    let mut context = ParseContext::with_defaults(RETAIL_CONTAINER);
+    let walked = read_tree(&mut context, &bytes).expect("the authored pair traverses");
+    let first = &walked.members()[0];
+    assert_eq!(walked.members()[1].start, first.stored_end);
+    assert!(first.stored_end < bytes.len() as u64);
+    let read =
+        read_member(&context, &bytes, first, &RofLimits::default()).expect("the stream decodes");
+    assert_eq!(read.data.as_slice(), COMPRESSED_PAYLOAD);
+    assert_eq!(read.stored_len, COMPRESSED_STREAM.len() as u64);
+    assert_eq!(
+        read.trailing_len, 0,
+        "the window must end at the record's stored end"
+    );
+
+    // 3. A container that ends inside the extent: the same refusal, at the
+    //    same offset, with the same numbers as before the window existed.
+    for cut in [1usize, 4] {
+        let mut truncated = tree().bytes;
+        truncated.truncate(member.start as usize + ROOT_INDEX.len() - cut);
+        let error = read_member(
+            &ParseContext::with_defaults(CONTAINER),
+            &truncated,
+            member,
+            &RofLimits::default(),
+        )
+        .expect_err("a container that ends inside the extent must be refused");
+        assert_eq!(error.code(), "extent_out_of_bounds", "cut {cut}");
+        assert_eq!(error.container(), CONTAINER, "cut {cut}");
+        assert_eq!(error.offset(), member.start, "cut {cut}");
+        assert_eq!(
+            error,
+            RofError::ExtentOutOfBounds {
+                container: CONTAINER.to_owned(),
+                offset: member.start,
+                start: member.start,
+                length: ROOT_INDEX.len() as u64,
+                file_len: truncated.len() as u64,
+            },
+            "cut {cut}"
+        );
+    }
+
+    // 4. The same refusal for a compressed member whose stored extent
+    //    reaches one byte past the end: the domain error, not a decode
+    //    failure, and not a stream read from what is left.
+    let truncated = one_member(
+        "AIRFRAME.SCRIPT",
+        FLAG_COMPRESSED,
+        COMPRESSED_PAYLOAD.len() as u32,
+        COMPRESSED_STREAM.len() as u32 + 1,
+        COMPRESSED_STREAM,
+    );
+    let member = &RofMember {
+        path: vec![b"AIRFRAME.SCRIPT".as_slice()],
+        record: RofRawRecord {
+            start: (truncated.len() - COMPRESSED_STREAM.len()) as u32,
+            raw_length: COMPRESSED_PAYLOAD.len() as u32,
+            raw_length_on_disk: COMPRESSED_STREAM.len() as u32 + 1,
+            flags: RofFlags(FLAG_COMPRESSED),
+            name_length: 16,
+            id: 5,
+        },
+        start: (truncated.len() - COMPRESSED_STREAM.len()) as u64,
+        stored_end: truncated.len() as u64,
+    };
+    let error = read_member(
+        &ParseContext::with_defaults(RETAIL_CONTAINER),
+        &truncated,
+        member,
+        &RofLimits::default(),
+    )
+    .expect_err("a stored extent one byte past the end must be refused");
+    assert_eq!(error.code(), "extent_out_of_bounds");
+    assert_eq!(error.offset(), member.start);
+    assert_eq!(
+        error,
+        RofError::ExtentOutOfBounds {
+            container: RETAIL_CONTAINER.to_owned(),
+            offset: member.start,
+            start: member.start,
+            length: u64::from(COMPRESSED_STREAM.len() as u32 + 1),
+            file_len: truncated.len() as u64,
+        }
+    );
+}
+
 /// The two containers of the original installation, as the task's private
 /// data names them. Nothing in this file is derived from them except the
 /// numbers the assertions below state, and both are read-only.

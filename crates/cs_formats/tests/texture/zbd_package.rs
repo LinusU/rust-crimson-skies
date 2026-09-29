@@ -12,7 +12,8 @@ use cs_formats::ParseErrorKind;
 use cs_formats::io::AllocationBudget;
 use cs_formats::texture::zbd::{
     FLAG_BYTES_PER_PIXEL2, FLAG_FULL_ALPHA, FLAG_GLOBAL_PALETTE, FLAG_HAS_ALPHA, FLAG_NO_ALPHA,
-    ZBD_TEXTURE_HEADER_BYTES, ZBD_TEXTURE_ROW_ORDER,
+    ZBD_TEXTURE_ENTRY_BYTES, ZBD_TEXTURE_HEADER_BYTES, ZBD_TEXTURE_INFO_BYTES,
+    ZBD_TEXTURE_ROW_ORDER,
 };
 use cs_formats::texture::{
     AlphaSource, AlphaTest, ColorSpace, DecodedFormat, Extent, Palette, PixelFormat, RowOrder,
@@ -699,4 +700,120 @@ fn accept_f08_b_02_descriptor_rejects_misplaced_565_alpha_sources() {
     assert_eq!(descriptor.base_level_bytes(), 6 * 2 + 6);
     let descriptor = ImageDescriptor::new(parts(PixelFormat::Rgb565, key)).expect("keyed");
     assert_eq!(descriptor.base_level_bytes(), 6 * 2);
+}
+
+/// The level is the container window between the position the info block
+/// ends at and the position the level's own bytes end at:
+/// `Reader::window_bytes` states that bound instead of a slice re-deriving
+/// it with a cast.
+///
+/// The window's length is what a texture's stored level holds, so these are
+/// the two ends of it. A window that ran to the end of the container would be
+/// *longer* than the level: for the palette texture below it would swallow
+/// the palette, and for the first of the two direct-color textures it would
+/// swallow the second texture's info block. Both are refused by
+/// [`check_level`](cs_formats::texture) — a level that holds more than its
+/// descriptor says is not a level — so the stored bytes are asserted here as
+/// well as the parse, and a container cut inside the level is still refused
+/// by the checked read that reached for it, at the offset it ran out at.
+#[test]
+fn accept_f05_g_texture_level_is_a_window_of_the_container() {
+    // 1. A palette texture: the level is the index run, and the palette that
+    //    follows it is not part of the level.
+    let indices = [0u8, 1, 2, 3, 0, 1];
+    let palette = [RED, GREEN, BLUE, YELLOW, CYAN, MAGENTA];
+    let bytes = package(
+        &[Tex::indexed(
+            "idx",
+            OPAQUE | RUNTIME,
+            3,
+            2,
+            &indices,
+            &palette,
+        )],
+        0,
+    );
+    let parsed = read(&bytes).expect("an indexed texture reads");
+    let texture = &parsed.textures()[0];
+    assert_eq!(texture.stored(), &indices[..]);
+    assert_eq!(texture.stored().len(), indices.len());
+    assert_eq!(
+        texture.descriptor().base_level_bytes(),
+        u64::from(indices.len() as u32)
+    );
+
+    // 2. Two direct-color textures: the first level ends where the second
+    //    info block begins.
+    let first = Tex::direct(
+        "first",
+        OPAQUE,
+        3,
+        2,
+        &[RED, GREEN, BLUE, YELLOW, CYAN, MAGENTA],
+    );
+    let second = Tex::direct("second", OPAQUE, 2, 2, &[RED, GREEN, BLUE, YELLOW]);
+    let bytes = package(&[first, second], 0);
+    let first_start = ZBD_TEXTURE_HEADER_BYTES + 2 * ZBD_TEXTURE_ENTRY_BYTES;
+    let first_level = first_start + ZBD_TEXTURE_INFO_BYTES;
+    let second_start = first_level + 3 * 2 * 2;
+    let second_level = second_start + ZBD_TEXTURE_INFO_BYTES;
+    for (index, expected) in [(0usize, first_start), (1, second_start)] {
+        let declared =
+            u32::from_le_bytes(bytes[start_offset_field(index)..][..4].try_into().unwrap());
+        assert_eq!(
+            declared as usize, expected,
+            "entry {index} names where the texture starts"
+        );
+    }
+    let parsed = read(&bytes).expect("two direct-color textures read");
+    for (index, (at, expected)) in [(0usize, (first_level, 12)), (1, (second_level, 8))] {
+        let stored = parsed.textures()[index].stored();
+        assert_eq!(
+            stored.len(),
+            expected,
+            "texture {index} holds its own bytes"
+        );
+        assert_eq!(
+            stored.as_ptr(),
+            bytes[at..].as_ptr(),
+            "texture {index} is a borrow of the container at its level"
+        );
+    }
+
+    // 3. A container cut inside the level: the checked read that reached for
+    //    the texels refuses it, reported at the position it started from, with
+    //    the count it needed and the count it found.
+    let texture = Tex::direct(
+        "cut",
+        FULL,
+        3,
+        2,
+        &[RED, GREEN, BLUE, YELLOW, CYAN, MAGENTA],
+    )
+    .with_alpha(&[0, 1, 2, 3, 4, 255]);
+    let whole = package(&[texture], 0);
+    let level_start = ZBD_TEXTURE_HEADER_BYTES + ZBD_TEXTURE_ENTRY_BYTES + ZBD_TEXTURE_INFO_BYTES;
+    assert_eq!(level_start, 80, "header, entry and info block");
+    assert!(read(&whole).is_ok(), "the whole package reads");
+    for available in [0usize, 3, 11] {
+        let mut bytes = whole.clone();
+        bytes.truncate(level_start + available);
+        let error = read(&bytes).expect_err("the texel run is cut short");
+        assert_eq!(
+            error.code(),
+            "unexpected_eof",
+            "{available} bytes available"
+        );
+        assert_eq!(error.entry_index(), Some(0));
+        match entry_error(&error) {
+            ZbdTextureEntryError::Parse(parse) => {
+                assert_eq!(parse.kind, ParseErrorKind::UnexpectedEof);
+                assert_eq!(parse.field, "texture.texels");
+                assert_eq!(parse.offset, level_start as u64);
+                assert_eq!(parse.expected, "12 bytes available");
+                assert_eq!(parse.observed, format!("{available} bytes available"));
+            }
+            other => panic!("unexpected error {other:?}"),
+        }
+    }
 }
