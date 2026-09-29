@@ -157,7 +157,7 @@ shape of problem.
   (`NEXT_CATALOG_SERIAL`) and `ResolvedMesh` carries it back;
   `prepare_upload` refuses a mismatch as `not_from_this_catalog`. This is a real
   difference from `TextureCatalog`, which has the same latent gap and is not
-  changed here — filed as a follow-up (#367 below).
+  changed here — filed as **#381** (`F08-D.02`).
 * **Retry.** `retry_failed` reopens only the failed containers of the same
   session and keeps the ones that read. It takes the [`MeshDependencies`] again
   because the audit is rebuilt from the repaired bytes, and the caller — not the
@@ -312,11 +312,12 @@ milliseconds on top.
 * **Multi-material-group polygons lose their extra UV sets** in the render mesh.
   The count is on the row as `multi_material_group_polygons:<count>`; the IR shape
   that cannot hold them is F10-A's published contract, so fixing it is not this
-  task's to do. Filed as #367.
+  task's to do. Filed as **#382** (`F10-E`).
 * **A `TextureCatalog` of the same session can still answer for a sibling
   `TextureCatalog`'s `ResolvedTexture`**, because the session generation is the
-  only binding F08-C has. `MeshCatalog` does not inherit that gap (it has a
-  serial); `TextureCatalog` was not changed here. Filed as #367.
+  only binding F08-C has, so F08-C's own doc comment overstates the guarantee.
+  `MeshCatalog` does not inherit that gap (it has a serial);
+  `TextureCatalog` was not changed here. Filed as **#381** (`F08-D.02`).
 * **The dependency audit is rebuilt, not diffed.** A retry replaces a container
   wholesale, so a material that became resolved simply becomes resolved; there is
   no per-row transition history.
@@ -342,6 +343,25 @@ All in `crates/cs_content/src/mesh.rs`, all `accept_f10_c_03_`:
 | `..._a_payload_owns_its_data_and_survives_its_session` | Removes the payload's ownership (it would not compile/borrow correctly or would not answer), the catalog serial, or the stale-session refusal. |
 | `..._a_container_of_another_family_is_never_read_as_gamez` | Removes either family refusal. |
 | `..._retail_world_meshes_reach_the_upload_payload` (`#[ignore]`) | The whole path on the original installation. |
+
+### Sensitivity probes actually run
+
+The claims above were checked, not asserted. Each probe is a one-line mutation
+of the production code, run against `cargo test -p cs_content --lib -- accept_f10_c_03_`,
+then reverted:
+
+| Mutation | Tests that failed |
+| --- | --- |
+| `VertexKey` built from `position` only (a position-keyed splitter that welds the seam away) | the AC03 end-to-end test, the payload-owns-its-data test, the truncated-container test |
+| `if false` in place of the `family() != ZbdFamily::GameZ` check | the wrong-family test |
+| `reader_context` returning `(container, None, None)` (the reader's offset and member dropped) | the truncated-container test, the refused-mesh test |
+| `require_session` always `Ok`, and the serial comparison disabled (stale state served) | the payload-owns-its-data test, the truncated-container test |
+
+The refused-mesh path and the remount recovery are covered by assertions on
+values that only exist because of the production code — `failure.offset ==
+Some(nodes_offset)`, `failure.member == Some("gamez.meshes.polygon…")`, and the
+three rows that only appear after a remount — so removing the behaviour cannot
+leave the test vacuously green.
 
 ## Sources
 
