@@ -489,8 +489,11 @@ fn accept_f15_b_tampered_entry_is_refused_never_served() {
     assert_eq!(store.usage().entries, 0);
 }
 
-/// A record whose facets no longer hash to its own key is not decodable
-/// at all: the identity is checked, not trusted.
+/// A published entry that does not hold what its committed record
+/// declares is a rebuild, never a hit: the tail of a payload that was
+/// truncated after the commit, and then an entry with no payload at all.
+/// Startup recovery drops it rather than serving or repairing it, and the
+/// rebuild commits cleanly afterwards.
 #[test]
 fn accept_f15_b_partially_published_entry_is_refused_and_rebuilt() {
     let fixture = Fixture::new("f15-b-partial");
@@ -702,6 +705,56 @@ fn accept_f15_b_store_evicts_within_its_budget_and_refuses_the_impossible() {
     ));
 }
 
+/// The write order the store evicts by is the order entries were really
+/// written in, and it survives a restart: the published records carry it,
+/// so the entry written first is the entry evicted first even when the
+/// digests happen to sort the other way round.
+#[test]
+fn accept_f15_b_eviction_order_survives_a_restart() {
+    let fixture = Fixture::new("f15-b-eviction-order");
+    // Commit in the reverse of the digest order, so "lowest write
+    // sequence" and "lowest digest" disagree about which entry is oldest.
+    let mut keys = vec![key_a(), key_b(), key_ab()];
+    keys.sort_by_key(|key| key.digest().to_hex());
+    keys.reverse();
+    assert!(
+        keys[0].digest().to_hex() > keys[2].digest().to_hex(),
+        "the fixture must make the two orders disagree, or it proves nothing"
+    );
+
+    let mut store = fixture.store(8, 1 << 20);
+    for key in &keys {
+        store
+            .commit(sealed(&store, key, &payload(128)))
+            .expect("the write commits");
+    }
+
+    // The next startup recovers the write order from the records, and a
+    // budget one entry short of four evicts exactly the oldest.
+    let mut store = fixture.reopen(3, 1 << 20);
+    assert_eq!(store.recovery().usage.entries, 3);
+    let fourth = CacheKey::new(
+        install(),
+        &[span_a()],
+        converter(),
+        ConversionOptions::from_pairs(&[("faction", "dresden")]).expect("valid option"),
+    )
+    .expect("a key with an input");
+    let entry = store
+        .commit(sealed(&store, &fourth, &payload(128)))
+        .expect("the write commits");
+    assert_eq!(
+        entry.evicted,
+        vec![keys[0].digest()],
+        "the entry written first is the one evicted first after a restart"
+    );
+    assert!(matches!(
+        store.begin_read(&keys[2]).expect("the lookup runs"),
+        CacheLookup::Hit(_)
+    ));
+    assert_eq!(store.usage().entries, 3, "the budget held");
+}
+
 /// A write that declares more bytes than it holds is refused at the seal,
 /// so a committed header can never describe bytes that are not there.
 #[test]
@@ -727,6 +780,107 @@ fn accept_f15_b_seal_refuses_an_incomplete_write() {
         CacheLookup::Miss
     ));
     assert_eq!(store.usage().entries, 0);
+}
+
+/// A seal that cannot write its record is a *retryable* failure, not a
+/// half-done state: the write keeps its payload handle and its digest, so
+/// it can be appended to and sealed again, and a retried seal reports the
+/// same failure instead of taking the write's state with it.
+#[test]
+fn accept_f15_b_a_failed_seal_leaves_the_write_retryable() {
+    let fixture = Fixture::new("f15-b-seal-retry");
+    let key = key_a();
+    let store = fixture.store(8, 1 << 20);
+
+    // A directory where the staged record belongs: the seal cannot write
+    // it, whatever the write holds.
+    let mut write = store.begin_write(&key, 1024).expect("the write is staged");
+    let record = write.staging().join(HEADER_FILE);
+    let obstacle = || {
+        fs::remove_file(&record).expect("the staged record is removed");
+        fs::create_dir(&record).expect("the obstacle takes its place");
+    };
+    obstacle();
+    write.write_all(&payload(1024)).expect("the payload");
+    assert!(write.seal().is_err(), "the record cannot be written");
+    assert!(!write.is_sealed(), "a failed seal seals nothing");
+    assert!(write.seal().is_err(), "the retry fails the same way");
+    assert!(!write.is_sealed());
+    // Nothing was published, and the failed attempts left no entry.
+    drop(write);
+    assert!(matches!(
+        store.begin_read(&key).expect("the lookup runs"),
+        CacheLookup::Miss
+    ));
+    assert_eq!(store.usage().entries, 0);
+
+    // The same write, still short of its declared length, is finished
+    // after the failed seal and published: a seal that failed did not
+    // consume the payload, so a real writer recovers without restarting.
+    let half = payload(1024);
+    let mut expected = half.clone();
+    expected.extend_from_slice(&half);
+    let mut write = store.begin_write(&key, 2048).expect("the write is staged");
+    let record = write.staging().join(HEADER_FILE);
+    write.write_all(&half).expect("the first half is written");
+    fs::remove_file(&record).expect("the staged record is removed");
+    fs::create_dir(&record).expect("the obstacle takes its place");
+    assert!(write.seal().is_err(), "the record cannot be written");
+    write
+        .write_all(&half)
+        .expect("the second half is written after the failed seal");
+    fs::remove_dir(&record).expect("the obstacle is cleared");
+    write.seal().expect("the retried seal succeeds");
+    let mut store = store;
+    let entry = store.commit(write).expect("the recovered write commits");
+    assert_eq!(entry.payload_len, 2048);
+    let CacheLookup::Hit(read) = store.begin_read(&key).expect("the lookup runs") else {
+        panic!("a committed entry is a hit");
+    };
+    assert_eq!(
+        read.complete().expect("the entry verifies").payload(),
+        expected.as_slice(),
+        "the payload the writer finished after the failed seal is the payload served"
+    );
+}
+
+/// The commit boundary is the rename, so a staged payload that no longer
+/// holds what its sealed record declares is refused at the publish: the
+/// store never publishes a record it already knows is wrong.
+#[test]
+fn accept_f15_b_commit_refuses_a_staged_payload_that_changed() {
+    let fixture = Fixture::new("f15-b-commit-changed");
+    let key = key_a();
+    let mut store = fixture.store(8, 1 << 20);
+    let bytes = payload(4096);
+    let write = sealed(&store, &key, &bytes);
+    // The staged payload is truncated behind the write's back, which the
+    // write's own accounting cannot see.
+    fs::write(
+        write.staging().join(PAYLOAD_FILE),
+        &bytes[..bytes.len() / 2],
+    )
+    .expect("the staged payload is truncated");
+    assert!(matches!(
+        store.commit(write),
+        Err(StoreError::PayloadChanged {
+            declared: 4096,
+            found: 2048
+        })
+    ));
+    assert!(
+        !fixture.entries().join(key.digest().to_hex()).exists(),
+        "a refused publish leaves no entry"
+    );
+    assert!(matches!(
+        store.begin_read(&key).expect("the lookup runs"),
+        CacheLookup::Miss
+    ));
+    assert_eq!(
+        store.usage().entries,
+        0,
+        "a refused publish indexes nothing"
+    );
 }
 
 // --- Per-input invalidation (the store half of AC03) --------------------

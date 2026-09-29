@@ -35,7 +35,7 @@
 //! option <name> <value>   zero or more, already normalized
 //! length <u64>            committed only
 //! payload <64 hex>        committed only
-//! sequence <u64>          committed only
+//! sequence <u64>          committed only: the store's write order
 //! ```
 //!
 //! An unknown field, a repeated field, a missing field, a label the
@@ -80,12 +80,14 @@
 //! an entry it evicts committed entries with the lowest write sequence
 //! until the new one fits; if the entry alone exceeds the byte bound it is
 //! refused ([`StoreError::Budget`]) rather than evicting everything for a
-//! store that still could not hold it. A read never refreshes the order,
-//! so the policy is "least recently written first", which is
-//! deterministic across runs — no timestamps, no clock, no host
-//! dependence. Refusing to cache is never a load failure: the caller
-//! serves the bytes it just built (spec F15 behavior 1 — the cache is an
-//! optimization, never the authoritative data source).
+//! store that still could not hold it. The write sequence is part of the
+//! published record, so that order survives a restart instead of degrading
+//! into the digest tie-break. A read never refreshes the order, so the
+//! policy is "least recently written first", which is deterministic across
+//! runs — no timestamps, no clock, no host dependence. Refusing to cache
+//! is never a load failure: the caller serves the bytes it just built
+//! (spec F15 behavior 1 — the cache is an optimization, never the
+//! authoritative data source).
 //!
 //! One store at a time owns a cache directory: startup recovery sweeps
 //! scratch directories, so a second live store on the same root would
@@ -170,6 +172,16 @@ pub enum StoreError {
         /// How many bytes were offered in total.
         offered: u64,
     },
+    /// The staged payload no longer holds the bytes the sealed record
+    /// declares — it was truncated or replaced behind the write's back.
+    /// Nothing is published: the entry is rebuilt from its sources, and
+    /// the scratch directory goes when the write is dropped.
+    PayloadChanged {
+        /// The length the record declares.
+        declared: u64,
+        /// What the staged payload actually holds.
+        found: u64,
+    },
     /// The write was cancelled. Nothing was published; the scratch
     /// directory is removed when the write is dropped.
     WriteCancelled {
@@ -190,6 +202,7 @@ impl StoreError {
             Self::CorruptHeader { .. } => "corrupt_header",
             Self::Budget(_) => "budget",
             Self::EntryTooLong { .. } => "entry_too_long",
+            Self::PayloadChanged { .. } => "payload_changed",
             Self::WriteCancelled { .. } => "write_cancelled",
             Self::Sealed => "sealed",
         }
@@ -211,6 +224,11 @@ impl fmt::Display for StoreError {
             Self::EntryTooLong { declared, offered } => write!(
                 f,
                 "cache store: the entry declares {declared} bytes but {offered} were offered"
+            ),
+            Self::PayloadChanged { declared, found } => write!(
+                f,
+                "cache store: the staged payload holds {found} bytes where the record \
+                 declares {declared}; nothing was published"
             ),
             Self::WriteCancelled { written, total } => write!(
                 f,
@@ -278,12 +296,16 @@ impl CacheReadError {
         }
     }
 
-    /// Every cache-read failure means the same recovery: the entry is
-    /// rebuilt from its sources, never served and never repaired in place.
-    /// Which load-level recovery path that is remains the consumer's
-    /// decision, not the store's.
+    /// Whether this failure means the stored entry has to be rebuilt.
+    ///
+    /// Every failure but a cancellation does: the entry is rebuilt from
+    /// its sources, never served and never repaired in place (spec F15
+    /// behavior 3). A cancellation is not a verdict on the entry — nothing
+    /// was delivered, and the entry is left exactly as it was for the next
+    /// read. Which load-level recovery path either of those is remains the
+    /// consumer's decision, not the store's.
     pub const fn rebuilds(&self) -> bool {
-        true
+        !matches!(self, Self::Cancelled { .. })
     }
 }
 
@@ -550,9 +572,14 @@ impl PendingCacheRead {
 pub struct PendingStoreWrite {
     key: CacheKey,
     staging: PathBuf,
+    /// `None` only once the write is sealed: a sealed payload can no
+    /// longer change, and closing the handle is what lets the scratch
+    /// directory be removed on every platform. An unsealed write always
+    /// holds it.
     file: Option<fs::File>,
-    /// Taken by `seal`: the digest is declared once, at commit time.
-    hasher: Option<Sha256>,
+    /// Kept, never taken: a seal that fails must leave the write exactly
+    /// as it was, so the digest is computed from a copy of it.
+    hasher: Sha256,
     declared: u64,
     written: u64,
     sealed: bool,
@@ -628,19 +655,18 @@ impl PendingStoreWrite {
         let chunk = usize::try_from(CACHE_IO_CHUNK).expect("a 1 MiB chunk fits in memory");
         let step = bytes.len().min(chunk);
         let path = self.staging.join(PAYLOAD_FILE);
-        let file = self
-            .file
-            .as_mut()
-            .expect("an unsealed write holds its payload");
+        // Unreachable while the write is unsealed, and reported rather
+        // than panicked on if it ever were: an open handle is a state, not
+        // an invariant a caller may not survive.
+        let Some(file) = self.file.as_mut() else {
+            return Err(StoreError::Sealed);
+        };
         file.write_all(&bytes[..step])
             .map_err(|source| StoreError::Io {
                 path: path.clone(),
                 source,
             })?;
-        self.hasher
-            .as_mut()
-            .expect("an unsealed write holds its hasher")
-            .update(&bytes[..step]);
+        self.hasher.update(&bytes[..step]);
         self.written += step as u64;
         Ok(ReadProgress {
             read: self.written,
@@ -680,6 +706,11 @@ impl PendingStoreWrite {
     /// with one rename. A write sealed but never committed — because the
     /// process died, or the caller dropped it — is scratch, not an entry.
     ///
+    /// A seal that fails changes nothing: the payload handle and the
+    /// digest stay where they are, so the write can be appended to and
+    /// sealed again. A half-sealed write is not a state a caller has to
+    /// survive by dropping the write.
+    ///
     /// # Errors
     ///
     /// [`StoreError::EntryTooLong`] if fewer than the declared bytes were
@@ -696,22 +727,23 @@ impl PendingStoreWrite {
         }
         let payload_path = self.staging.join(PAYLOAD_FILE);
         let header_path = self.staging.join(HEADER_FILE);
-        if let Some(file) = self.file.take() {
-            file.sync_all().map_err(|source| StoreError::Io {
-                path: payload_path,
-                source,
-            })?;
-        }
+        // Sync through the open handle and digest a *copy* of the hasher:
+        // the hasher is what a retry needs, so it is never given up here.
+        let Some(file) = self.file.as_ref() else {
+            return Err(StoreError::Sealed);
+        };
+        file.sync_all().map_err(|source| StoreError::Io {
+            path: payload_path,
+            source,
+        })?;
         let record = StoredHeader {
             state: EntryState::Committed {
                 payload_len: self.declared,
-                payload_sha256: self
-                    .hasher
-                    .take()
-                    .expect("an unsealed write holds its hasher")
-                    .finalize(),
+                payload_sha256: self.hasher.clone().finalize(),
             },
             key: self.key.clone(),
+            // The store assigns the write order and records it in the
+            // published entry; see `CacheStore::commit`.
             sequence: 0,
         };
         write_header(&header_path, &record).map_err(|source| StoreError::Io {
@@ -722,6 +754,9 @@ impl PendingStoreWrite {
             path: self.staging.clone(),
             source,
         })?;
+        // Sealed and committed to disk: the payload can no longer change,
+        // so the handle is closed here and every later append is refused.
+        self.file = None;
         self.sealed = true;
         Ok(())
     }
@@ -988,7 +1023,7 @@ impl CacheStore {
             key: key.clone(),
             staging,
             file: Some(file),
-            hasher: Some(Sha256::new()),
+            hasher: Sha256::new(),
             declared: payload_len,
             written: 0,
             sealed: false,
@@ -997,8 +1032,9 @@ impl CacheStore {
         })
     }
 
-    /// Publishes a sealed write: evicts what the budget requires, then
-    /// renames the finished scratch directory into place.
+    /// Publishes a sealed write: records the write order, evicts what the
+    /// budget requires, then renames the finished scratch directory into
+    /// place.
     ///
     /// The rename is the commit boundary. Everything before it is scratch
     /// (removable, never served); everything after it is a complete entry
@@ -1006,12 +1042,20 @@ impl CacheStore {
     /// key removes the old directory first, so a crash in that window
     /// leaves the entry absent — rebuilt next time — never half of each.
     ///
+    /// The write order is written into the record *before* the rename, so
+    /// it is in the published entry and a later run evicts in the order
+    /// entries were really written, not in whatever order their digests
+    /// happen to sort. Rewriting a scratch record changes nothing a reader
+    /// can see: the commit is still the rename.
+    ///
     /// # Errors
     ///
     /// [`StoreError::EntryTooLong`] if the write is not sealed or does not
-    /// hold its declared length, [`StoreError::Budget`] if the entry does
-    /// not fit even an empty store, and [`StoreError::Io`] if the
-    /// eviction, rename or sync failed.
+    /// hold its declared length, [`StoreError::PayloadChanged`] if the
+    /// staged payload no longer holds what the sealed record declares,
+    /// [`StoreError::Budget`] if the entry does not fit even an empty
+    /// store, and [`StoreError::Io`] if the eviction, rename or sync
+    /// failed.
     pub fn commit(&mut self, write: PendingStoreWrite) -> Result<StoredEntry, StoreError> {
         let mut write = write;
         if !write.sealed || write.written != write.declared {
@@ -1031,13 +1075,57 @@ impl CacheStore {
                 offered: write.written,
             });
         };
-        let name = write.key.digest().to_hex();
-        let evicted = self.make_room(payload_len, &name)?;
+        // The write's own accounting is not the file: a payload that was
+        // truncated or replaced after the seal is refused here, so the
+        // store never publishes a record it already knows is wrong.
+        let staged = write.staging.join(PAYLOAD_FILE);
+        let found = fs::metadata(&staged)
+            .map_err(|source| StoreError::Io {
+                path: staged.clone(),
+                source,
+            })?
+            .len();
+        if found != payload_len {
+            return Err(StoreError::PayloadChanged {
+                declared: payload_len,
+                found,
+            });
+        }
 
+        let name = write.key.digest().to_hex();
+        // The write order goes into the record *before* anything is
+        // evicted, so a run that fails here costs the store no entries: the
+        // sequence may end up unused, which is cheaper than a needless
+        // eviction.
         let sequence = self.next_sequence;
         self.next_sequence += 1;
+        let header_path = write.staging.join(HEADER_FILE);
+        write_header(
+            &header_path,
+            &StoredHeader {
+                state: EntryState::Committed {
+                    payload_len,
+                    payload_sha256,
+                },
+                key: write.key.clone(),
+                sequence,
+            },
+        )
+        .map_err(|source| StoreError::Io {
+            path: header_path,
+            source,
+        })?;
+
+        let evicted = self.make_room(payload_len, &name)?;
         let target = self.entry_path(&write.key);
         remove_entry(&target)?;
+        // The replaced entry is gone from the disk, so it leaves the index
+        // now: a rename that fails must not leave the index claiming an
+        // entry that is not there, which would make `usage` over-report
+        // and could let the store grow past its budget.
+        if let Some(replaced) = self.entries.remove(&name) {
+            self.bytes = self.bytes.saturating_sub(replaced.payload_len);
+        }
         fs::rename(&write.staging, &target).map_err(|source| StoreError::Io {
             path: target.clone(),
             source,
@@ -1045,21 +1133,21 @@ impl CacheStore {
         // Published: the scratch directory is the entry now, so `Drop` must
         // not remove it.
         write.published = true;
-        sync_dir(&self.entries_root()).map_err(|source| StoreError::Io {
-            path: self.entries_root(),
-            source,
-        })?;
-
-        if let Some(replaced) = self.entries.insert(
+        // Indexed before the sync, so the index describes the disk even if
+        // the sync fails: `usage` is measured, never intended.
+        self.entries.insert(
             name,
             IndexedEntry {
                 payload_len,
                 sequence,
             },
-        ) {
-            self.bytes = self.bytes.saturating_sub(replaced.payload_len);
-        }
+        );
         self.bytes += payload_len;
+        sync_dir(&self.entries_root()).map_err(|source| StoreError::Io {
+            path: self.entries_root(),
+            source,
+        })?;
+
         Ok(StoredEntry {
             key: write.key.clone(),
             payload_len,
