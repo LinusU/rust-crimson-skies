@@ -1,0 +1,171 @@
+{
+  "schema_version": 1,
+  "task_id": "F12-G (Rally #368)",
+  "candidate_tree": "c54a8d8516d8e3986fe749db27b571669a8d30a2",
+  "engine": {
+    "rust": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "bevy": "Cargo.lock: 0.19.1",
+    "avian": "Cargo.lock: avian3d 0.7.0"
+  },
+  "created_at": "2026-09-29T12:10:36Z",
+  "command": {
+    "argv": [
+      "cargo",
+      "test",
+      "--workspace",
+      "--locked"
+    ],
+    "cwd": "/Users/linus/coding/rust-crimson-skies/bunny-2",
+    "exit_code": 0
+  },
+  "source": {
+    "install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978",
+    "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"
+  },
+  "seed": 0,
+  "ticks": {
+    "start": 0,
+    "end": 0
+  },
+  "overrides": [],
+  "capabilities": [
+    "retail",
+    "synthetic"
+  ],
+  "tests": {
+    "discovered": 796,
+    "executed": 734,
+    "passed": 734,
+    "failed": 0,
+    "ignored": 62
+  },
+  "assertions": [
+    {
+      "id": "workspace_suite_green",
+      "status": "pass",
+      "evidence": [
+        "cargo-test.log"
+      ]
+    },
+    {
+      "id": "f12_b_retail_readers_green",
+      "status": "pass",
+      "evidence": [
+        "accept-f12-b.log"
+      ]
+    },
+    {
+      "id": "f12_b_selection_counts",
+      "status": "pass",
+      "evidence": [
+        "accept-f12-b.log"
+      ]
+    },
+    {
+      "id": "f12_b_selection_ran_16_tests",
+      "status": "pass",
+      "evidence": [
+        "accept-f12-b.log"
+      ]
+    },
+    {
+      "id": "f12_g_selection_ran_at_least_one_test",
+      "status": "fail",
+      "evidence": [
+        "accept-f12-g.log"
+      ]
+    },
+    {
+      "id": "production_config_reads_strings_dll",
+      "status": "pass",
+      "evidence": [
+        "config-strings.json"
+      ]
+    },
+    {
+      "id": "production_rof_exports_both_headers",
+      "status": "pass",
+      "evidence": [
+        "rof-resource-h.json",
+        "rof-resrc1-h.json"
+      ]
+    },
+    {
+      "id": "type_16_is_a_complete_vs_versioninfo",
+      "status": "pass",
+      "evidence": [
+        "measure.json"
+      ]
+    },
+    {
+      "id": "type_255_four_bytes_meaning_unknown",
+      "status": "pass",
+      "evidence": [
+        "measure.json"
+      ]
+    },
+    {
+      "id": "header_ids_correlate_with_langui_blocks",
+      "status": "pass",
+      "evidence": [
+        "measure.json"
+      ]
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "cargo-test.log",
+      "sha256": "bb796850a1de4a7f6379925f29cf8add18f5d3e8189b6e92ac0ea48cf3035de7",
+      "kind": "test log"
+    },
+    {
+      "path": "accept-f12-b.log",
+      "sha256": "398a7d5f848ca78b964373fbfba93bdd0aca231db1d997cf199c7d87c4db17b3",
+      "kind": "test log"
+    },
+    {
+      "path": "accept-f12-g.log",
+      "sha256": "9f23f7a41412d40a0c2782417adb9d69e1dcbf5028fc2f1845912a5f50679030",
+      "kind": "test log"
+    },
+    {
+      "path": "inventory.json",
+      "sha256": "cfa55a3c3ea1b88952eebf647b09df5fd58a9fc1ac9501dc80f2220e85af493d",
+      "kind": "production inventory report"
+    },
+    {
+      "path": "config-strings.json",
+      "sha256": "9a1087ffae906e93c02c762773c3aad01e955176f4dda106408d01f3e65528a5",
+      "kind": "production config report"
+    },
+    {
+      "path": "rof-resource-h.json",
+      "sha256": "546a4a05c61f21a6906c8b78d2ecf4fe3a505aee324e08dd0ff98ae3cfdf5767",
+      "kind": "production rof report"
+    },
+    {
+      "path": "rof-resrc1-h.json",
+      "sha256": "a71aa3b5ff6ea2fb4ef7de508490798f98c0b5f4c8373d75a23a22bbb1ba044c",
+      "kind": "production rof report"
+    },
+    {
+      "path": "measure.json",
+      "sha256": "ece7c8d379ff1f6904cd6f46b78f29a6e10fce5b5c9b5f4c1edc1c117aa6c8ef",
+      "kind": "read-only measurement probe output"
+    }
+  ],
+  "unknowns": [
+    "The meaning of the four bytes of resource type 255 (strings.dll 0x1d674, payload 09040000): three carriers in the installation, all the same value, so no reading is distinguishable from any other.",
+    "Which resource API the original engine uses for the RT_STRING tree: crimson.icd's KERNEL32 and USER32 import descriptors name a zero-first-entry thunk array, so the file is silent about exactly the modules that would answer it.",
+    "Whether anything reads strings.dll's type-16 leaf: the structure is established, its consumption is not measured and needs an original run.",
+    "The Documented claim on cs_formats::string_id: this task measured the installation and favours (block-1)*16+index, but the numbering decision and the documentation check belong to #374.",
+    "Whether a localized installation preserves these ids and these two resources: only one English installation was surveyed.",
+    "Seven RESOURCE.H string ids (600, 620, 2002, 2050, 2054, 3510, 3540) name no langui.dll block; not guessed whether they are dead defines or belong to another image.",
+    "Eighteen of langui.dll's 101 blocks (288 units) are addressed by neither header; not classified."
+  ],
+  "review": {
+    "identity": "Implementer: bunny-2 (Space Bunny Free). Reviewer: bunny-2 again, in a fresh session, so this is the same agent instance and is NOT independent evidence.",
+    "method": "Implementer: full workspace suite plus the accept_f12_b_ selection with --include-ignored, production cs-inspect inventory/rof/config runs, and a read-only PE resource walk run twice with byte-identical output. Reviewer: re-derived the whole measurement with an independently written PE/COFF and string-table walk and compared it number by number (all measurements reproduced; the probe re-ran byte-identically), then corrected two claims in the finding (a permutation test that is invariant rather than significant, and an overclaim about re-deriving every number from the four production commands) and regenerated this report on the corrected tree. accept_f12_g_ still resolves to zero tests: the task's owner path is docs/findings/ alone, so the prefix rule cannot be satisfied inside its scope and that needs an owner decision. See the finding's Tests and Review sections."
+  },
+  "claim": "implemented"
+}
