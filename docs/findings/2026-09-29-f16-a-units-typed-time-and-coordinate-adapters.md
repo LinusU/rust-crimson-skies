@@ -148,8 +148,8 @@ conversions still round-trips. Mutation probes (below) confirm it.
 
 ## Test inventory (`accept_f16_a_`)
 
-19 tests, all selecting production code: 13 unit tests inside the four
-owner modules and 6 in the integration test file.
+20 tests, all selecting production code: 13 unit tests inside the four
+owner modules and 7 in the integration test file.
 
 | Test | Covers |
 | --- | --- |
@@ -170,6 +170,7 @@ owner modules and 6 in the integration test file.
 | `…accept_f16_a_round_trip_distance_angle_and_winding_through_every_adapter` | the rest of the deliverable's quantity list |
 | `…accept_f16_a_forward_mapping_matches_the_declared_convention` | absolute hand-computed mappings (positions, degrees→radians, cm→m, both rotation senses, orientation, reversal, winding labels), so a wrong-but-consistent pair cannot pass |
 | `…accept_f16_a_winding_labels_and_vertex_order_agree_with_the_geometry` | geometric cross-product check of `winding_to_canonical` + `reverses_vertex_order` for both windings of a real triangle per adapter, plus "front faces land on canonical front" |
+| `…accept_f16_a_winding_rule_holds_for_every_valid_convention` | **added in review**: the same three checks over every convention `SourceConvention::new` accepts (6 permutations × 8 sign patterns × 2 front-face rules = 96 declarations, 192 triangles), so the winding/orientation formulas are no longer pinned only by the three declarations the registry happens to hold |
 | `…accept_f16_a_nonfinite_and_nonunit_inputs_are_refused_at_the_adapter_boundary` | adapter-boundary failures with their exact field names and measured lengths |
 | `…accept_f16_a_declared_sources_are_registered_provenanced_and_never_claim_original` | registry completeness, unique labels, `Designed`/`SyntheticFixture` origins, **no `Origin::Installation` claim**, and declaration validation through the public constructors |
 
@@ -197,6 +198,45 @@ formula was corrected, not the test.
 After restoring, `grep -rn "MUTATION PROBE" crates/` prints nothing and
 `cargo fmt --all -- --check` is clean.
 
+## Reviewer correction (2026-09-29, F16-A review)
+
+The review added `accept_f16_a_winding_rule_holds_for_every_valid_convention`,
+which enumerates every convention `SourceConvention::new` accepts instead of
+only the three the registry happens to declare (6 permutations × 8 sign
+patterns × 2 front-face rules). It found that
+`SourceConvention::is_orientation_preserving` returned the wrong answer for
+**18 of the 48 axis maps**.
+
+- **Rule, as stated in `coordinates.rs`'s module documentation:** `det(M)` is
+  the permutation's parity times the *product* of its signs.
+- **Rule, as implemented:** `parity_even == (all three signs positive)`. Those
+  agree when 0, 1 or 3 rows are negated; with **exactly two** negated rows the
+  product is `+1` while "all positive" is `false`, so the answers disagree.
+  Checked mechanically over all 48 maps: 18 mismatches, all of them the
+  two-negated-row case.
+- **Effect on production behaviour:** for such a declaration
+  `SourceAdapter::orientation` took the wrong sign, so
+  `rotation_to_canonical` / `rotation_from_canonical` flipped the quaternion's
+  vector part, and `reverses_vertex_order` reversed (or failed to reverse)
+  copied geometry. `winding_to_canonical` is unaffected: it depends only on the
+  declared front-face label.
+- **Why the original 19 tests stayed green:** none of the three declared
+  sources has two negated rows (they negate 0, 1 and 1 rows), so the defect was
+  invisible until the declaration space was enumerated. `SourceConvention::new`
+  is public and accepts such maps, so a measured format at F16-D would have hit
+  it.
+- **Fix:** count the negated rows and use `negated_rows.is_multiple_of(2)` as
+  the sign product, which is what the module documentation already said.
+  Reverting only that change makes the new test fail (exit 101) while the other
+  19 stay green — the coverage was genuinely missing, not a sign that the
+  earlier assertions were wrong.
+
+Eight further reviewer mutation probes (rotation orientation sign, the
+`winding_to_canonical` flip, `reverses_vertex_order`, the pause policy in
+`advance`, the speed-up authority check, the epoch increment, the declared
+local round-trip tolerance, and unit-length rejection) each failed the
+`accept_f16_a_` selection as required; the working tree was byte-identical to
+the committed state after every probe.
 
 ## Recorded unknowns (recorded, not guessed)
 
@@ -243,6 +283,11 @@ No command needed `CS_GAME_DIR`; `CS_CAPABILITIES` (`retail,gpu,audio`) was
 not exercised by this stage. All four checks were re-run after the final
 rebase onto `origin/main` (`2213421`) with the same exit codes, and the
 19-test selection was re-counted then.
+
+The **review** re-ran all four commands on the reviewed tree after the
+correction above: `fmt` 0, `clippy -D warnings` 0, `cargo test --workspace
+--locked` 0, and the prefix selection 0 with **20 tests** (the original 19 plus
+`accept_f16_a_winding_rule_holds_for_every_valid_convention`).
 
 ## Wiring edits (outside owner paths, logic-free)
 
