@@ -126,20 +126,48 @@ concrete archive key (as it already is). That is the intended block.
 | same, without `CS_GAME_DIR` (retail test only) | 101 (panics: `CS_GAME_DIR must name…`) |
 | evidence harness + `python3 tools/validate_evidence.py private/evidence/T346/acceptance.json --artifact-root private/evidence/T346 --require-pass` | 0 |
 
-## Review
+## Review (deepseek-1, reviewing agent, fresh context)
 
-Implementer: `glm-1/deepseek-1`. Independent review is pending (see the
-`submit_for_review` handover). The retail test re-derives every number this
-file records from the production reader, so a reader or mount change that
-mounts less than the archives hold fails there instead of quietly
-invalidating the findings; each failure message names the installation
-fingerprint, so a different retail build reads as a different measurement.
+Reviewer: `deepseek-1`, a fresh session with no context from the
+implementation (implementer: `glm-1/deepseek-1`). Same agent identity, so
+this is a fresh-context review, not an independent model or an
+independent original-reference measurement. No production code was changed
+by the review.
 
-Mutation probe (applied, observed, reverted; `crates/cs_assets/src/` is
-byte-identical to the branch head afterwards): making
-`Vfs::resolve_blocking_unmeasured` never block (`if true || …`) fails
-`…shared_scope_overlap_is_blocked` and `…retail_each_world_keeps_its_textures`,
-so the tests really exercise the production block rather than the report.
+What the review checked:
+
+1. **Every project check re-ran green on the branch head** (`cargo fmt
+   --all -- --check`, `cargo clippy --workspace --all-targets --all-features
+   --locked -- -D warnings`, `cargo test --workspace --locked`, and the task
+   selection with `--include-ignored`): 4/4 task tests pass on retail.
+2. **The retail test fails loudly without original data.** Run alone with
+   `CS_GAME_DIR` unset it panics with `CS_GAME_DIR must name the original
+   installation for this retail test`, so CI skipping it is not a pass.
+3. **The tests depend on the production block, not the report.** The
+   mutation probe was reproduced independently: making
+   `Vfs::resolve_blocking_unmeasured` never block (`if true || …`) fails
+   `…shared_scope_overlap_is_blocked` and
+   `…retail_each_world_keeps_its_textures`; the probe was reverted and
+   `crates/cs_assets/src/` is identical to the branch head.
+4. **The evidence report was regenerated on the reviewed commit.** The
+   committed `docs/findings/evidence/T346.json` now carries the reviewer
+   identity, `candidate_tree` of the reviewed head, and re-derives every
+   number from the production reader and the recorded acceptance log;
+   `python3 tools/validate_evidence.py … --require-pass` is green.
+
+One review correction: the first regeneration attempt silently reused the
+test binary built for the mutation probe above (`sed -i.bak` had left the
+reverted source older than its mutated build output), and produced a report
+whose outcomes were the *unmutated-code* counterfactual. The review noticed
+the mismatch against this file, ran `cargo clean -p cs_assets`, regenerated,
+and the report then reproduced exactly the blocked/`not_eligible` counts
+above. The regenerated `texture-member-collisions.json` confirms 1676 shared
+names, 551 held by all 48 archives, and 36750 `blocked_unmeasured_order` /
+294000 `not_eligible` lookups.
+
+Still unmeasured after review: which archive a world really uses and in
+which order a shared name is served (owner-gated `human_play`, #352).
+Nothing here changes that, and the claim stays `implemented`.
 
 ## Sources
 
