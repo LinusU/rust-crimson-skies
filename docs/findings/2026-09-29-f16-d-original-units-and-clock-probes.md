@@ -273,3 +273,90 @@ probe's evidence records needed no new crate edge, no `Cargo.toml` change and no
 `Cargo.lock` change.
 
 No protected path, original datum or binary file is involved.
+
+## Review (bunny-alpha-1, 2026-09-29)
+
+**Independence, stated plainly:** the implementer and the reviewer of this
+stage are the same agent identity, `bunny-alpha-1/bunny-alpha-1`, because Rally
+handed #68's review back to it. The review therefore started from a fresh read
+of the sheet, the contract and the whole diff rather than from the implementer's
+context, and every claim below was re-derived from the tree — but it is **not**
+independent evidence, and it does not replace the owner's approval. The sheet
+asks for independent review of evidence machinery and fidelity claims; this
+stage's two central claims (that the pause measurement is real, and that no
+`verified_original` claim is reachable) should be re-read by a different agent
+instance before they are relied on for anything.
+
+### What the reviewer re-ran
+
+All eleven mutation probes above were re-applied independently, each with
+`--no-fail-fast`, each file restored and sha256-re-checked. Ten of the eleven
+reproduce the documented failure counts exactly (5, 3, 3, 2, 1, 4, 2, 1, 1, 1).
+
+**One discrepancy.** Probe 10 is documented as failing 2 tests; the reviewer's
+re-run fails **1**
+(`accept_f16_d_a_complete_calibration_claims_only_what_its_evidence_supports`).
+Replacing the evidence-driven ladder with "complete ⇒ `verified_original`" makes
+that one test fail, because the only other test that reads `claim_status` is the
+declared-source one and an *empty* calibration is not complete. The mutation is
+caught either way, so the sensitivity claim holds, but the documented count is
+one too high and the table above should be read as "1, not 2" for row 10.
+
+The methodological note about `--no-fail-fast` in the table above is correct and
+was confirmed: the first re-run of a probe with a plain `cargo test` reported
+fewer failures because the run stopped at the first failing test target.
+
+### Defects found and fixed (commit `96df71a`)
+
+1. **An untested boundary described as tested.**
+   `GameplayTimeline::advance_fixed_ticks` claimed to be "a named, *tested*
+   boundary", but no test called it, and its `# Errors` contract listed
+   [`TimeError::ClockPaused`] as reachable. It is not: the gameplay policy
+   grants no speed-up authority, so `SimClock::advance_fixed_ticks` returns
+   `NoSpeedUpAuthority` before it ever looks at the pause flag. The contract now
+   says what happens, and
+   `accept_f16_d_gameplay_timeline_grants_no_local_speed_up_authority` pins the
+   refusal, the error, and that a refused injection moves neither the tick nor
+   either gameplay quantity — paused or not.
+2. **A frame-count error that could report the wrong number.** `frame_spans`
+   refused on `whole` frames but reported `whole + 1`, so a step whose wall time
+   was an exact multiple of the frame length was reported one frame too high,
+   and `MAX_FRAMES_PER_STEP` whole frames *plus* a remainder frame exceeded the
+   documented limit by one. The count is now exact and the bound is applied to
+   it; both directions of the bound are pinned.
+3. **A tautological assertion standing in for a real one.** The frame-rate
+   agreement test asserted
+   `trace.render_fps() == reference.render_fps().max(trace.render_fps())`, which
+   holds for any ascending list of rates and therefore did not check the claim
+   in its own message. It now asserts that the reported rates are exactly the
+   requested ones.
+4. **The independence rule was bypassable.** `UnitCalibration::record` compared
+   whole `EvidenceRecord`s, which include the free-text `limitations` field, so
+   one inspection could be pasted three times with a different caveat on each
+   paste and read as three independent landmarks — precisely what non-negotiable
+   behavior 1 forbids. Independence now compares the observation itself (source,
+   fingerprint, locator, method), and the reworded-evidence case is pinned.
+
+A fifth item is filed rather than fixed: `CoordinateSource::calibration()` builds
+a **fresh** empty record on every call, so a `CoordinateSource` has nowhere to
+keep recorded landmarks. That makes F16-E's criterion "a new declared
+`CoordinateSource` … carrying its measured convention plus its calibration"
+unsatisfiable without a change to F16-A's public type shape, which is outside
+what this stage asked for. It is recorded as a note on **F16-E (#390)**, together
+with the question of how a landmark's free-text description becomes a
+`SourceConvention`.
+
+### Review probes (commit `96df71a`)
+
+| # | Edit | Result of the 16 tests |
+| --- | --- | --- |
+| R1 | revert the exact frame count and bound | fails, incl. the frame-count test |
+| R2 | give the gameplay clock the single-player policy (so it gains speed-up authority) | fails the new authority test |
+| R3 | label every trace 60 fps regardless of the delivery rate | fails the frame-rate agreement test |
+| R4 | revert the independence guard to whole-record equality | fails the independence test |
+| R5 | make firing stop re-arming the cooldown (absent from the table above) | fails, incl. the AC04 scenario |
+
+R3 and R5 are new coverage, not new defects: R3 shows the corrected
+frame-rate assertion is load-bearing, and R5 closes a gap in the original probe
+table, where `TickTimer::restart` was never mutated.
+
