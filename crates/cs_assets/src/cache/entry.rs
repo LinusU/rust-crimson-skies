@@ -20,9 +20,10 @@
 //!   exposes payload bytes, so no consumer can accidentally serve bytes
 //!   that were never verified.
 //!
-//! How the on-disk store makes the commit boundary atomic (temp file,
-//! rename, journal) is F15-B's decision; this module fixes the semantics a
-//! reader can rely on regardless.
+//! How the on-disk store makes the commit boundary atomic is F15-B's
+//! decision: [`super::store`] stages every byte in a scratch directory and
+//! publishes the finished pair with a single directory rename, so this
+//! module fixes only the semantics a reader can rely on regardless.
 
 use std::fmt;
 
@@ -90,6 +91,31 @@ impl EntryHeader {
             state: EntryState::Committed {
                 payload_len: payload.len() as u64,
                 payload_sha256: sha256(payload),
+            },
+        }
+    }
+
+    /// The header a *streaming* write commits with, from a length and a
+    /// digest the writer already computed.
+    ///
+    /// A bounded writer (F15-B's [`PendingStoreWrite`]) appends the payload
+    /// in chunks and never holds it whole, so it cannot call
+    /// [`EntryHeader::committed`]; it hashes the same bytes incrementally
+    /// instead and declares what it wrote. That makes the invariant the
+    /// caller's to keep — the digest is over exactly `payload_len` bytes —
+    /// and [`verify_entry`] re-establishes it at read time: a writer that
+    /// misreports its length or digest has its entry refused
+    /// (`LengthMismatch`, `DigestMismatch`) and rebuilt, never served.
+    pub fn committed_streaming(
+        key: CacheKey,
+        payload_len: u64,
+        payload_sha256: ContentHash,
+    ) -> Self {
+        Self {
+            key,
+            state: EntryState::Committed {
+                payload_len,
+                payload_sha256,
             },
         }
     }

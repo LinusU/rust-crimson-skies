@@ -1,10 +1,10 @@
-//! The private derived-asset cache contract (F15-A).
+//! The private derived-asset cache (F15-A contracts, F15-B store).
 //!
 //! Spec `specs/F15-asynchronous-asset-loading-and-private-cache.md`: a
 //! derived cache is a performance optimization, never the authoritative
-//! data source (see also `docs/01-ARCHITECTURE.md`, "Asset pipeline"). This
-//! module defines the typed contracts the F15-B store implements; it
-//! stores nothing itself.
+//! data source (see also `docs/01-ARCHITECTURE.md`, "Asset pipeline"). The
+//! first three modules are the typed contracts; [`store`] is the mechanism
+//! that implements them on disk.
 //!
 //! * [`key`] is the cache-key contract: a [`CacheKey`] identifies the
 //!   installation hash, every source span hash, the decoder/IR version and
@@ -21,18 +21,28 @@
 //!   cannot lie inside the source installation (non-negotiable behavior 1:
 //!   private, no writes to the source) and a [`CacheBudget`] bounds every
 //!   store by entries and bytes.
+//! * [`store`] is the production store over those three: a
+//!   [`CacheStore`] stages every write in scratch and publishes it with
+//!   one atomic directory rename, sweeps interrupted writes when it opens
+//!   (spec F15 AC02), reads entries in cancellable chunks and evicts within
+//!   its budget before it grows.
 //!
-//! The async read pipeline and the atomic store mechanics are F15-B; the
-//! load transaction that drives them is `cs_app::loading`. Nothing here is
-//! derived from original game data.
+//! The load transaction that drives the store is `cs_app::loading`. Nothing
+//! here is derived from original game data.
 
 pub mod bound;
 pub mod entry;
 pub mod key;
+pub mod store;
 
 pub use bound::{BudgetError, BudgetExceeded, CacheBudget, CacheDirectory, CacheLocationError};
 pub use entry::{EntryHeader, EntryState, IntegrityError, VerifiedEntry, verify_entry};
 pub use key::{
     CacheKey, CacheKeyError, CacheLabelError, ConversionOption, ConversionOptions,
     ConverterVersion, DecoderId, IrVersion, OptionsError, SourceSpanHash,
+};
+pub use store::{
+    CACHE_IO_CHUNK, CacheLookup, CacheReadError, CacheStore, HEADER_FILE, HEADER_FORMAT,
+    InvalidationReport, PAYLOAD_FILE, PendingCacheRead, PendingStoreWrite, RecoveryReport,
+    StoreError, StoreUsage, StoredEntry,
 };

@@ -339,6 +339,13 @@ impl SourceSpanHash {
         Self(hasher.finalize())
     }
 
+    /// Wraps an already-computed span hash — for example one decoded from
+    /// a stored cache record, which is how
+    /// [`CacheKey::from_hashed_inputs`] gets its inputs back.
+    pub const fn from_digest(digest: ContentHash) -> Self {
+        Self(digest)
+    }
+
     /// The digest bytes.
     pub const fn digest(&self) -> ContentHash {
         self.0
