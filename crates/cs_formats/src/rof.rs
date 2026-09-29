@@ -669,8 +669,9 @@ impl RofError {
 
     /// Offset of the problem. Relative to the range that was handed to
     /// [`read_directory`] (so a root failure offset *is* the file offset,
-    /// a nested one is relative to its block); [`read_tree`] shifts nested
-    /// failures to absolute container offsets with [`Self::in_block`].
+    /// a nested one is relative to its block); [`read_tree`] opens every
+    /// block as a window of the container, so its failures — including the
+    /// ones raised inside a nested block — are already absolute.
     pub fn offset(&self) -> u64 {
         match self {
             Self::Parse(error) => error.offset,
@@ -687,73 +688,35 @@ impl RofError {
         }
     }
 
-    /// Re-bases an error raised *inside* a directory block onto the
-    /// absolute container offset of that block and scopes it to that block.
+    /// Scopes a failure raised *inside* a directory block to that block.
     ///
-    /// [`read_directory`] only ever sees the range it is handed, so its
-    /// failures are relative to the start of that range; [`read_tree`] reads
-    /// a block from `file[offset..]` and must report where the block
-    /// actually is — and *which* block raised it, since a nested field such
-    /// as `header.entry_count` is otherwise indistinguishable from the same
-    /// field failing in the root block. `scope` is `"directory"` for a
-    /// nested block (so the field reads `rof.tree.directory.<field>` once
-    /// the entrypoint scope is applied) and empty for the root block, whose
-    /// failures the entrypoint scope already describes. Only the variants
-    /// [`borrow_block`] can raise are ever passed through here — the
-    /// traversal's own failures are constructed with absolute offsets and
-    /// no scope of their own.
-    fn in_block(self, delta: u64, scope: &str) -> Self {
+    /// The scoping is the one thing this does, and it is why it exists: a
+    /// nested field such as `header.entry_count` is otherwise
+    /// indistinguishable from the same field failing in the root block.
+    /// `scope` is `"directory"` for a nested block (so the field reads
+    /// `rof.tree.directory.<field>` once the entrypoint scope is applied)
+    /// and empty for the root block, whose failures the entrypoint scope
+    /// already describes.
+    ///
+    /// The **offset** needs nothing here. [`read_tree`] hands the block to
+    /// [`borrow_block`] as a [`Reader::window`] over the container at the
+    /// block's own offset, so every position the walk reads is already the
+    /// absolute container offset:
+    ///
+    /// * a structural failure is raised by that reader, at an absolute
+    ///   position, with the F03 field path;
+    /// * the name-table variants take theirs from
+    ///   [`borrow_block`]'s own `names_start`, which is a position of the
+    ///   same window;
+    /// * the traversal's own failures ([`Self::Cycle`],
+    ///   [`Self::ExtentOutOfBounds`], [`Self::UnsupportedLayout`], the
+    ///   member read's own variants) are constructed with absolute offsets
+    ///   and no scope of their own, and are not passed through here at all.
+    fn in_block(self, scope: &str) -> Self {
         match self {
-            Self::Parse(mut error) => {
-                error.offset += delta;
-                Self::Parse(error.in_scope(scope))
-            }
-            Self::NameTableLength {
-                container,
-                offset,
-                declared,
-                described,
-            } => Self::NameTableLength {
-                container,
-                offset: offset + delta,
-                declared,
-                described,
-            },
-            Self::EmptyName {
-                container,
-                offset,
-                index,
-            } => Self::EmptyName {
-                container,
-                offset: offset + delta,
-                index,
-            },
-            Self::UnterminatedName {
-                container,
-                offset,
-                index,
-            } => Self::UnterminatedName {
-                container,
-                offset: offset + delta,
-                index,
-            },
-            Self::InteriorNul {
-                container,
-                offset,
-                index,
-            } => Self::InteriorNul {
-                container,
-                offset: offset + delta,
-                index,
-            },
-            // The traversal's own failures carry absolute offsets and no
-            // scope, so they are never rebased.
-            Self::Cycle { .. }
-            | Self::ExtentOutOfBounds { .. }
-            | Self::ExpansionBomb { .. }
-            | Self::UnsupportedLayout { .. }
-            | Self::DecodeFailure { .. }
-            | Self::DecodedLengthMismatch { .. } => self,
+            Self::Parse(error) => Self::Parse(error.in_scope(scope)),
+            // Everything else already carries an absolute offset, as above.
+            other => other,
         }
     }
 }
@@ -1503,7 +1466,13 @@ impl<'bytes> Plan<'bytes> {
 struct Walker<'ctx, 'bytes> {
     /// Container label every failure of this walk reports.
     container: &'ctx str,
-    file: &'bytes [u8],
+    /// The whole container, once, as a checked reader over the bytes.
+    ///
+    /// The walk reaches into the middle of the container (every block but the
+    /// root is named by an absolute `start`), so this is the reader the block
+    /// windows are opened from: one label for the whole walk rather than one
+    /// per visited block, and one place the container's length is asked for.
+    reader: Reader<'bytes>,
     recursion: &'ctx RecursionBudget,
     plan: Plan<'bytes>,
     /// Offsets of the blocks open on the path from the root: a `start`
@@ -1521,7 +1490,7 @@ impl<'ctx, 'bytes> Walker<'ctx, 'bytes> {
     fn new(container: &'ctx str, file: &'bytes [u8], recursion: &'ctx RecursionBudget) -> Self {
         Self {
             container,
-            file,
+            reader: Reader::new(container, file),
             recursion,
             plan: Plan::default(),
             ancestors: Vec::new(),
@@ -1553,25 +1522,53 @@ impl<'ctx, 'bytes> Walker<'ctx, 'bytes> {
         // The block itself must fit at least its header inside the
         // container: an outside-file directory pointer fails before a
         // single byte of it is read.
-        let block_end = offset.saturating_add(DIRECTORY_HEADER_BYTES as u64);
-        if block_end > self.file.len() as u64 {
-            return Err(RofError::ExtentOutOfBounds {
-                container: self.container.to_owned(),
-                offset,
-                start: offset,
-                length: DIRECTORY_HEADER_BYTES as u64,
-                file_len: self.file.len() as u64,
-            });
-        }
+        let file_len = self.reader.range_end();
+        let header_bytes = DIRECTORY_HEADER_BYTES as u64;
+        let container = self.container;
 
-        // Read the block itself. `borrow_block` works on a range that
-        // starts at the block, so its failures are relative to it;
-        // `in_block` shifts them onto the absolute container offset the
-        // walk reports and scopes the structural ones to this block.
-        let file = self.file;
-        let mut reader = Reader::new(self.container, &file[offset as usize..]);
+        // Read the block itself as a *window* of the container at
+        // `offset`. The window is the shared F03 bound, so it states that
+        // bound instead of a hand-written comparison plus a narrowing cast
+        // re-deriving it, and its positions are already the absolute
+        // offsets the walk reports: `borrow_block` never sees a
+        // range-relative cursor, so nothing here has to shift a failure's
+        // offset afterwards.
+        //
+        // The window asks for at least a header. A block whose offset is
+        // outside the container, or inside it with fewer than
+        // `DIRECTORY_HEADER_BYTES` bytes left, is a window the container
+        // does not hold, and that is refused rather than clamped to
+        // whatever is there: a short block would read a truncated record
+        // as if it were whole. The refusal is the walk's own domain error
+        // with the numbers it has always reported — the block's offset,
+        // the header a block needs, the container length it was checked
+        // against. (`offset + len` cannot overflow here: `len` is the
+        // container's own length, and a nested block's offset comes from a
+        // `u32` record field, so the window's only possible refusal is the
+        // end-of-range one.)
+        let mut reader = self
+            .reader
+            .window(
+                offset,
+                file_len.saturating_sub(offset).max(header_bytes),
+                "directory.block",
+            )
+            .map_err(|refused| {
+                debug_assert_eq!(
+                    refused.kind,
+                    ParseErrorKind::UnexpectedEof,
+                    "a block window inside the container is refused for its end, not its length"
+                );
+                RofError::ExtentOutOfBounds {
+                    container: container.to_owned(),
+                    offset,
+                    start: offset,
+                    length: header_bytes,
+                    file_len,
+                }
+            })?;
         let view = borrow_block(&mut reader)
-            .map_err(|error| error.in_block(offset, if root { "" } else { "directory" }))?;
+            .map_err(|error| error.in_block(if root { "" } else { "directory" }))?;
 
         // Bounded work: what the walk has visited may not add up to more
         // bytes than the container holds. Disjoint blocks cannot reach that
@@ -1580,21 +1577,17 @@ impl<'ctx, 'bytes> Walker<'ctx, 'bytes> {
         // into each other's bytes) is refused here, after work linear in
         // the container and never before it.
         self.visited_bytes += view.block_len as u64;
-        if self.visited_bytes > file.len() as u64 {
+        if self.visited_bytes > file_len {
             return Err(RofError::UnsupportedLayout {
                 container: self.container.to_owned(),
                 offset,
                 detail: format!(
-                    "the visited directory blocks add up to more than the {}-byte \
+                    "the visited directory blocks add up to more than the {file_len}-byte \
                      container: they overlap (block at offset {offset} reuses bytes \
-                     another block already owns)",
-                    file.len()
+                     another block already owns)"
                 ),
             });
         }
-
-        let container = self.container;
-        let file_len = file.len() as u64;
 
         // This block owns `[offset, offset + block_len)`; it joins the
         // spans the overlap check compares, and its records join the

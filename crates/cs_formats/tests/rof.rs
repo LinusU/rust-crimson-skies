@@ -2365,6 +2365,233 @@ fn accept_f05_g_member_extent_is_a_window_of_the_container() {
     }
 }
 
+/// The directory block a record points at is opened as a **window of the
+/// container** (`Reader::window`) at that record's absolute offset, so the
+/// shared F03 bound states the block's extent and every position the walk
+/// reads is already the absolute container offset. Nothing below is a new
+/// refusal: each case is the error, the absolute offset and the field path
+/// the range-relative reader and its hand-written rebasing reported, and
+/// each exists because a window can go wrong in one of three ways.
+///
+/// 1. **A window clamped to the end of the container** (case 1). A block the
+///    container does not hold must be refused, not shortened: a clamped
+///    window hands back the bytes that *are* there and reads a truncated
+///    block as if it were whole, which turns the domain refusal below into
+///    a structural `UnexpectedEof` on a field path nobody documented. The
+///    case is the **root** block on purpose: a nested block's header is
+///    established by the record's own check first (case 2), so the root is
+///    the one block whose window is the last word before a byte is read.
+/// 2. **A block reader that lost its absolute base** (cases 6 to 8). The
+///    name-table failures of a *nested* block take their offsets from the
+///    window's own positions, with no rebasing step left to add the block's
+///    offset: a reader that reported them range-relative, or one that added
+///    that offset a second time, puts every one of them `root_len` bytes
+///    away from the truth.
+/// 3. **A scope that went missing or doubled** (cases 3 to 5): a nested
+///    block's structural failure reads `rof.tree.directory.<field>` and the
+///    root block's own reads `rof.tree.<field>`, so the field alone says
+///    which block refused, at any offset.
+#[test]
+fn accept_f05_h_the_block_is_a_window_of_the_container() {
+    let root_names = name_table(&["SUB"]);
+    // 8 header bytes + 24 record bytes + the 4 bytes of "SUB\0".
+    let root_len = DIRECTORY_HEADER_BYTES + RECORD_BYTES + root_names.len();
+
+    // 1. A root block whose bytes run past the container: three bytes of
+    //    header, and an empty container. The window asks for the header a
+    //    block needs, the shared bound refuses it, and the refusal is the
+    //    walk's own domain error with the numbers it always carried — at
+    //    the block's own absolute offset.
+    for bytes in [vec![0u8; 3], Vec::new()] {
+        let mut context = ParseContext::with_defaults(CONTAINER);
+        let error = read_tree(&mut context, &bytes)
+            .expect_err("a root block with less than a header must be refused");
+        assert_eq!(error.code(), "extent_out_of_bounds");
+        assert_eq!(error.container(), CONTAINER);
+        assert_eq!(error.offset(), 0);
+        assert_eq!(
+            error,
+            RofError::ExtentOutOfBounds {
+                container: CONTAINER.to_owned(),
+                offset: 0,
+                start: 0,
+                length: DIRECTORY_HEADER_BYTES as u64,
+                file_len: bytes.len() as u64,
+            },
+            "{}-byte container",
+            bytes.len()
+        );
+    }
+
+    // 2. A nested block past the end of the container is refused by the
+    //    record's own check, before the block is descended into, exactly as
+    //    before: the window is not the only bound, and moving one did not
+    //    move the other.
+    let bytes = root_directory_pointing_at(5000);
+    let mut context = ParseContext::with_defaults(CONTAINER);
+    let error = read_tree(&mut context, &bytes)
+        .expect_err("a directory past the end of the container must be refused");
+    assert_eq!(error.code(), "extent_out_of_bounds");
+    assert_eq!(error.container(), CONTAINER);
+    assert_eq!(error.offset(), 5000);
+    assert_eq!(
+        error,
+        RofError::ExtentOutOfBounds {
+            container: CONTAINER.to_owned(),
+            offset: 5000,
+            start: 5000,
+            length: DIRECTORY_HEADER_BYTES as u64,
+            file_len: bytes.len() as u64,
+        }
+    );
+
+    // 3. A nested block whose record table runs past the container: the
+    //    window holds every byte the container has left, the cursor refuses
+    //    the missing table inside it, and the F03 field path is the
+    //    scoped one at the absolute offset of the table.
+    let mut bytes = valid_block(
+        &[RawRecord::directory("SUB", 1, root_len as u32)],
+        &root_names,
+    );
+    bytes.extend_from_slice(&1u32.to_le_bytes()); // entry_count
+    bytes.extend_from_slice(&0u32.to_le_bytes()); // names_length
+    let mut context = ParseContext::with_defaults(CONTAINER);
+    let error = read_tree(&mut context, &bytes)
+        .expect_err("a nested block without its record table must be refused");
+    assert_eq!(error.code(), "parse");
+    match &error {
+        RofError::Parse(error) => {
+            assert_eq!(error.kind, ParseErrorKind::UnexpectedEof);
+            assert_eq!(error.field, "rof.tree.directory.records");
+            assert_eq!(error.container, CONTAINER);
+            assert_eq!(
+                error.offset,
+                (root_len + DIRECTORY_HEADER_BYTES) as u64,
+                "the absolute offset of the missing record table"
+            );
+        }
+        other => panic!("expected a structural failure, got {other:?}"),
+    }
+
+    // 4. The same for the name table: the record table is there, and only
+    //    three of the eight declared name bytes follow it. A window that
+    //    stopped at the block's own end would refuse earlier and a window
+    //    clamped to the container would read the table as three bytes.
+    let records = [RawRecord {
+        start: 0,
+        raw_length: 0,
+        raw_length_on_disk: 0,
+        flags: 0,
+        name_length: 8,
+        id: 2,
+    }];
+    let mut bytes = valid_block(
+        &[RawRecord::directory("SUB", 1, root_len as u32)],
+        &root_names,
+    );
+    bytes.extend_from_slice(&block(1, 8, &records, b"AB\0"));
+    let mut context = ParseContext::with_defaults(CONTAINER);
+    let error = read_tree(&mut context, &bytes)
+        .expect_err("a nested name table that runs past the container must be refused");
+    match &error {
+        RofError::Parse(error) => {
+            assert_eq!(error.kind, ParseErrorKind::UnexpectedEof);
+            assert_eq!(error.field, "rof.tree.directory.name_table");
+            assert_eq!(
+                error.offset,
+                (root_len + DIRECTORY_HEADER_BYTES + RECORD_BYTES) as u64,
+                "the absolute offset of the short name table"
+            );
+            assert!(error.expected.contains('8'), "expected: {}", error.expected);
+            assert!(error.observed.contains('3'), "observed: {}", error.observed);
+        }
+        other => panic!("expected a structural failure, got {other:?}"),
+    }
+
+    // 5. The root block keeps the root scope, so the two are told apart by
+    //    the field alone and neither scope was applied twice.
+    let mut context = ParseContext::with_defaults(CONTAINER);
+    let error = read_tree(&mut context, &bytes[..DIRECTORY_HEADER_BYTES])
+        .expect_err("a root header without its record table must be refused");
+    match &error {
+        RofError::Parse(error) => {
+            assert_eq!(error.kind, ParseErrorKind::UnexpectedEof);
+            assert_eq!(error.field, "rof.tree.records");
+            assert_eq!(error.offset, DIRECTORY_HEADER_BYTES as u64);
+        }
+        other => panic!("expected a structural failure, got {other:?}"),
+    }
+
+    // 6.-8. The name-table variants of a *nested* block. These are
+    //      `RofError`s, not `ParseError`s, so no reader can rebase them
+    //      and none does any more: their offsets are the window's own
+    //      positions, absolute, counted once.
+    let cases: &[(&str, &[u8], &str)] = &[
+        ("empty_name", &[], "empty_name"),
+        ("unterminated_name", b"AB", "unterminated_name"),
+        ("interior_nul", b"A\0B\0", "interior_nul"),
+    ];
+    for (name, names, code) in cases {
+        // One record whose declared name length is the name table's own
+        // length, so the two agree and only the name itself is at fault.
+        let name_length = names.len() as u32;
+        let records = [RawRecord {
+            start: 0,
+            raw_length: 0,
+            raw_length_on_disk: 0,
+            flags: 0,
+            name_length,
+            id: 2,
+        }];
+        let mut bytes = valid_block(
+            &[RawRecord::directory("SUB", 1, root_len as u32)],
+            &root_names,
+        );
+        bytes.extend_from_slice(&block(1, name_length, &records, names));
+        let mut context = ParseContext::with_defaults(CONTAINER);
+        let error = read_tree(&mut context, &bytes)
+            .expect_err("a nested name table that is not one name must be refused");
+        assert_eq!(error.code(), *code, "{name}");
+        assert_eq!(error.container(), CONTAINER, "{name}");
+        assert_eq!(
+            error.offset(),
+            (root_len + DIRECTORY_HEADER_BYTES + RECORD_BYTES) as u64,
+            "{name}: the nested block's own name table, counted once"
+        );
+        assert!(error.to_string().contains("record 0"), "{name}: {error}");
+    }
+
+    // 9. And the window is the *whole* rest of the container, not just the
+    //    header it asked for: the authored tree's nested blocks, their
+    //    records and their name tables are all still read through it, and
+    //    the walk books exactly what that tree holds.
+    let fixture = tree();
+    let mut context = ParseContext::with_defaults(CONTAINER);
+    let walked = read_tree(&mut context, &fixture.bytes).expect("the authored tree must traverse");
+    assert_eq!(walked.directories().len(), 3);
+    assert_eq!(walked.directories()[1].offset as usize, fixture.mis.offset);
+    assert_eq!(walked.directories()[2].offset as usize, fixture.map.offset);
+    assert_eq!(walked.members().len(), 5);
+    let path_slices = walked
+        .directories()
+        .iter()
+        .map(|directory| directory.path.len() as u64)
+        .sum::<u64>()
+        + walked
+            .members()
+            .iter()
+            .map(|member| member.path.len() as u64)
+            .sum::<u64>();
+    assert_eq!(
+        context.allocation().used(),
+        (3 + 2 + 2) as u64 * RECORD_BYTES as u64
+            + walked.directories().len() as u64 * std::mem::size_of::<RofTreeDirectory>() as u64
+            + walked.members().len() as u64 * std::mem::size_of::<RofMember>() as u64
+            + path_slices * std::mem::size_of::<&[u8]>() as u64,
+        "one reservation for the whole tree, unchanged by the window"
+    );
+}
+
 /// The two containers of the original installation, as the task's private
 /// data names them. Nothing in this file is derived from them except the
 /// numbers the assertions below state, and both are read-only.
