@@ -550,7 +550,7 @@ checks; the last two are the report validation):
 | `cargo test --workspace --locked -- accept_f12_g_ --include-ignored` | 0 (6 tests, 6 passed, 0 failed — the four retail pins and the two synthetic pins of [Tests](#tests)) |
 | `cargo test --workspace --locked -- accept_f12_b_ --include-ignored` | 0 (16 tests, 16 passed, 0 failed — the retail readers this finding cross-checks against) |
 | `env -u CS_GAME_DIR cargo test --workspace --locked -- accept_f12_g_ --include-ignored` | nonzero — the four retail tests fail loudly with `CS_GAME_DIR is not set` |
-| `python3 tools/validate_evidence.py private/evidence/F12-K/acceptance.json --artifact-root private/evidence/F12-K` | 0 (`structurally_valid: true`, 6 artifacts, all six assertions `pass`) |
+| `python3 tools/validate_evidence.py private/evidence/F12-K/acceptance.json --artifact-root private/evidence/F12-K` | 0 (`structurally_valid: true`, 5 artifacts, all six assertions `pass`) |
 | `python3 tools/validate_evidence.py … --require-pass` | **3** (`Unresolved issues`) — expected: the unknowns are the pinned properties themselves (the type-255 payload's meaning stays unknown; whether the original engine reads the type-16 leaf is unmeasured), not failed assertions |
 
 ## What is not claimed
