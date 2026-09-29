@@ -38,12 +38,15 @@
 //! an archive, folds case or falls back to another one.
 //!
 //! The lossless raw mesh IR ([`RawMesh`], [`RawPolygon`], [`RawCorner`]) is stage
-//! F10-A's published contract and this task does not change its shape. A stored
-//! polygon's material groups — the CS layout stores one UV set per group — are
-//! therefore carried beside the polygons on [`GameZMesh::material_groups`], one
-//! entry per stored polygon, reachable through [`GameZMesh::groups`] and
+//! F10-A's published contract and its shape is unchanged. A stored polygon's
+//! material groups — the CS layout stores one UV set per group — are therefore
+//! carried beside the polygons on [`GameZMesh::material_groups`], one entry per
+//! stored polygon, reachable through [`GameZMesh::groups`] and
 //! [`GameZMesh::corner_uv`]. The IR's single `material` and per-corner `uv`
-//! mirror the first group.
+//! mirror the **first** group, so they are exact for a single-group asset and a
+//! single-material *view* of a multi-group one; the groups themselves are the
+//! authority, and F10-E's `cs_content::mesh::RenderMesh::from_stored_groups`
+//! builds a render mesh out of all of them rather than out of that view.
 //!
 //! Design decisions and recorded unknowns are in
 //! `docs/findings/2026-09-28-f10-a-lossless-mesh-ir-and-strip-fixtures.md`,
@@ -78,7 +81,8 @@ pub use reader::{
     FLAG_UNK3, FLAG_UNK6, GAMEZ_HEADER_BYTES, GameZError, GameZHeader, GameZMesh, GameZMeshes,
     KNOWN_POLYGON_FLAGS, MAX_POLYGON_CORNERS, MAX_POLYGON_FLAGS, MESH_INDEX_BYTES, MESH_INFO_BYTES,
     MESH_INFO_TRAILER_BYTES, MESH_LIGHT_HEADER_BYTES, MESH_MATERIAL_INFO_BYTES, MESHES_ENTRYPOINT,
-    MeshIndex, POLYGON_INFO_BYTES, ParseFinding, RawMeshInfo, RawMeshLight, RawMeshLightHeader,
-    RawMeshMaterialInfo, RawPolygonInfo, UNK08_C4, UNK08_PLANES, VEC3_BYTES, read_gamez_meshes,
+    MeshIndex, POLYGON_INFO_BYTES, ParseFinding, RawMaterialGroup, RawMeshInfo, RawMeshLight,
+    RawMeshLightHeader, RawMeshMaterialInfo, RawPolygonInfo, UNK08_C4, UNK08_PLANES, VEC3_BYTES,
+    read_gamez_meshes,
 };
 pub use strip::{MIN_STRIP_INDICES, StripError, StripTriangle, decode_strip};

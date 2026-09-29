@@ -7,9 +7,11 @@
 //!
 //! [`RenderMesh`] is the Bevy-free handoff between a GameZ mesh reader
 //! (F10-B's [`RawMesh`] plus its [`MeshTopology`]) and the upload adapter.
-//! It is built with [`RenderMesh::build`], which computes the topology, or
-//! with [`RenderMesh::from_parts`], which takes a topology the caller
-//! already has. No Bevy or Avian type appears here.
+//! It is built with [`RenderMesh::from_stored_groups`], which takes the stored
+//! mesh and **every stored material group** of its polygons; with
+//! [`RenderMesh::build`], which computes the topology, or with
+//! [`RenderMesh::from_parts`], which takes a topology the caller already has.
+//! No Bevy or Avian type appears here.
 //!
 //! [`MeshDependencyAudit`] is the other half of that handoff: it resolves every
 //! stored material index a mesh carries to a material record, every material
@@ -51,6 +53,36 @@
 //! an authored UV seam stays visible. Two corners with *different* position
 //! indices are never welded, even when their coordinates are equal, because
 //! the index is part of the key.
+//!
+//! # Stored material groups
+//!
+//! The CS GameZ layout does not store one material and one UV set per polygon.
+//! It stores one **material group** per polygon, each with its own raw material
+//! index and its own per-corner UV set, and `mat_count` is 1, 2 or 3. F10-A's
+//! [`RawMesh`] mirrors only the first group onto its single-valued fields, so
+//! [`RenderMesh::build`] — the single-group reading — is exact for a mesh whose
+//! polygons each stored one group and is a first-group *view* of a multi-group
+//! one.
+//!
+//! [`RenderMesh::from_stored_groups`] is the reading that loses nothing: it
+//! takes [`cs_formats::gamez::GameZMesh::material_groups`] and draws **every**
+//! group, one set of triangles each, carrying that group's own raw material index
+//! and that group's own stored UVs. A corner two groups store differently is
+//! therefore two render vertices, so a seam authored in the second group of a
+//! polygon is visible rather than a value that never reaches the mesh.
+//! [`MeshContainer::open`] uses it, so a catalog row and an upload payload both
+//! see the whole table.
+//!
+//! What that does **not** settle is how the original renderer presented a
+//! multi-group polygon — one group or all of them, in what order, and whether a
+//! later group covered an earlier one. Drawing them all is a faithful reading,
+//! not a claim about the original, so
+//! [`MeshPresentationUnknown::MultiMaterialGroup`] is on every row and payload
+//! whose mesh really stored such a polygon, and
+//! [`MeshFaceCounts::multi_material_group_polygons`] is the count. Measured:
+//! 1 006 of the installation's 128 734 stored polygons, all of them in the eight
+//! world archives and none in `ZBD/planes.zbd`; the design is in
+//! `docs/findings/2026-09-29-f10-e-material-groups-into-the-render-mesh.md`.
 //!
 //! # Source maps
 //!
@@ -109,8 +141,8 @@
 //! carried the name and the positions was 242 bytes and **differed per row**:
 //! two rows refusing that one cause would not have compared equal, and a
 //! container storing the name more often produced a longer "code" for the same
-//! reason. The codes are the `pub const`s [`CONTAINER_DUPLICATE_NAME`] and
-//! [`MULTI_MATERIAL_GROUP_POLYGONS`] and the plain state codes beside them, so
+//! reason. The codes are the `pub const` [`CONTAINER_DUPLICATE_NAME`], the
+//! [`MeshPresentationUnknown::code`]s and the plain state codes beside them, so
 //! a consumer matches on a closed vocabulary.
 //!
 //! The design is in
@@ -152,12 +184,13 @@
 //! `docs/findings/2026-09-29-f10-c-03-mesh-container-catalog-and-upload.md`.
 //!
 //! The design decisions, the recorded unknowns (front-face winding, the UV
-//! convention and the corner-colour meaning are all still unknown) and the test
-//! inventory are in
+//! convention, the corner-colour meaning and the presentation of a multi-group
+//! polygon are all still unknown) and the test inventory are in
 //! `docs/findings/2026-09-29-f10-c-01-render-vertex-splitting.md`,
 //! `docs/findings/2026-09-29-f10-c-02-gamez-material-records.md`,
-//! `docs/findings/2026-09-29-f10-c-03-mesh-container-catalog-and-upload.md` and
-//! `docs/findings/2026-09-29-f10-c-integration-and-reason-codes.md`.
+//! `docs/findings/2026-09-29-f10-c-03-mesh-container-catalog-and-upload.md`,
+//! `docs/findings/2026-09-29-f10-c-integration-and-reason-codes.md` and
+//! `docs/findings/2026-09-29-f10-e-material-groups-into-the-render-mesh.md`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
@@ -168,8 +201,8 @@ use cs_assets::zbd::{ZbdContainer, ZbdError};
 use cs_formats::ParseContext;
 use cs_formats::gamez::materials::{GameZMaterialError, GameZMaterials, MaterialKind, RawMaterial};
 use cs_formats::gamez::{
-    FaceStatus, GameZError, GameZHeader, GameZMeshes, MeshTopology, RawMesh, read_gamez_materials,
-    read_gamez_meshes,
+    FaceStatus, GameZError, GameZHeader, GameZMeshes, MeshTopology, RawMaterialGroup, RawMesh,
+    RawPolygon, read_gamez_materials, read_gamez_meshes,
 };
 use cs_formats::zbd::ZbdFamily;
 use cs_types::asset_id::{AssetKey, AssetVariant, MountId, SourceSpan};
@@ -204,23 +237,33 @@ pub struct SourceTriangle {
 /// the tuple it was keyed on. `normal`, `uv` and `color` are the stored
 /// values, unresolved: no normalization, V flip, wrap, clamp or color-space
 /// change happens here.
+///
+/// `material` and `uv` are the ones of the stored material **group**
+/// [`Self::group`] of the source polygon, which is not necessarily its first.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct RenderVertex {
     /// Position resolved from [`Self::position_index`].
     pub position: [f32; 3],
     /// Normal resolved from [`Self::normal_index`], unchanged and unnormalized.
     pub normal: Option<[f32; 3]>,
-    /// Texture coordinate as stored.
+    /// Texture coordinate as stored, of material group [`Self::group`].
     pub uv: Option<[f32; 2]>,
-    /// Corner color as stored.
+    /// Corner color as stored. Per corner in the layout, so it is the same
+    /// value in every group of the polygon.
     pub color: Option<[f32; 3]>,
-    /// Raw material index of the polygon this vertex was split for.
+    /// Raw material index of the group this vertex was split for.
     pub material: u32,
+    /// Stored material group of the source polygon this vertex was split for.
+    /// `0` is the polygon's first stored group, and it is the only group of
+    /// every polygon in the measured corpus except 1 006 of them (all of those
+    /// in the world archives).
+    pub group: usize,
     /// Stored position index (part of the vertex key).
     pub position_index: u32,
     /// Stored normal index (part of the vertex key).
     pub normal_index: Option<u32>,
-    /// First source corner that produced this vertex.
+    /// First source corner that produced this vertex. The group its `uv` and
+    /// `material` came from is [`Self::group`], exactly as they are.
     pub source: SourceCorner,
 }
 
@@ -228,15 +271,27 @@ pub struct RenderVertex {
 ///
 /// Degenerate triangles are kept; [`Self::degenerate`] records the stored
 /// position-index degeneracy so a consumer can skip them.
+///
+/// A stored polygon that kept `n` material groups produces `n` of these per
+/// topology triangle, one per group. They share their positions and their
+/// corner colours and differ in the group's own material and UV set, and
+/// [`Self::group`] says which group a triangle is the drawing of.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RenderTriangle {
     /// Indices into [`RenderMesh::vertices`], in drawing order.
     pub vertices: [u32; 3],
-    /// Source triangle in the stored topology.
+    /// Source triangle in the stored topology. Several triangles share it when
+    /// the polygon kept more than one material group; [`Self::group`] separates
+    /// them.
     pub source: SourceTriangle,
-    /// Raw material index (the group this triangle belongs to).
+    /// Stored material group of the source polygon this triangle is the
+    /// drawing of. `0` is the polygon's first stored group.
+    pub group: usize,
+    /// Raw material index of [`Self::group`], unresolved.
     pub material: u32,
-    /// Two of the three stored position indices are equal.
+    /// Two of the three stored position indices are equal. The same in every
+    /// group of the polygon: it is a property of the stored indices, not of the
+    /// group.
     pub degenerate: bool,
 }
 
@@ -296,6 +351,35 @@ pub enum RenderMeshError {
         /// Vertices already built.
         vertices: usize,
     },
+    /// The material-group table does not have one entry per stored polygon, so
+    /// one polygon would have no group and another one it did not store.
+    GroupCount {
+        /// Polygons in the raw mesh.
+        polygons: usize,
+        /// Group-table entries supplied.
+        groups: usize,
+    },
+    /// A stored material group does not hold exactly one texture coordinate per
+    /// corner of its polygon.
+    GroupCornerCount {
+        /// Polygon in stored order.
+        polygon: usize,
+        /// Material group of that polygon, in stored order.
+        group: usize,
+        /// Corners the polygon stores.
+        corners: usize,
+        /// Coordinates that group stores.
+        uvs: usize,
+    },
+    /// A stored polygon kept no material group at all, so it has no material
+    /// index to draw. The reference asserts `mat_count > 0`; the reader keeps
+    /// the face and reports it as
+    /// [`cs_formats::gamez::ParseFinding::PolygonWithoutMaterial`] instead of
+    /// inventing a group, and this is where that decision costs the mesh.
+    PolygonWithoutMaterialGroup {
+        /// Polygon in stored order.
+        polygon: usize,
+    },
 }
 
 impl fmt::Display for RenderMeshError {
@@ -332,14 +416,33 @@ impl fmt::Display for RenderMeshError {
             Self::TooManyVertices { vertices } => {
                 write!(f, "{vertices} render vertices exceed the u32 index range")
             }
+            Self::GroupCount { polygons, groups } => {
+                write!(
+                    f,
+                    "{groups} material-group entries for {polygons} stored polygons"
+                )
+            }
+            Self::GroupCornerCount {
+                polygon,
+                group,
+                corners,
+                uvs,
+            } => write!(
+                f,
+                "polygon {polygon} material group {group} stores {uvs} coordinates for {corners} \
+                 corners"
+            ),
+            Self::PolygonWithoutMaterialGroup { polygon } => {
+                write!(f, "polygon {polygon} stored no material group")
+            }
         }
     }
 }
 
 impl std::error::Error for RenderMeshError {}
 
-/// A canonical, Bevy-free render mesh built from a [`RawMesh`] and its
-/// [`MeshTopology`].
+/// A canonical, Bevy-free render mesh built from a [`RawMesh`], its
+/// [`MeshTopology`] and the stored material groups of every polygon.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct RenderMesh {
     vertices: Vec<RenderVertex>,
@@ -347,10 +450,37 @@ pub struct RenderMesh {
     groups: Vec<RenderGroup>,
     source_faces: usize,
     degenerate_triangles: usize,
+    extra_group_triangles: usize,
+}
+
+/// Where a render mesh's per-corner material and texture coordinate come from.
+///
+/// The CS GameZ layout stores **one UV set and one material index per material
+/// group** of a stored polygon, and the measured installation stores a polygon
+/// with one, two or three of them. [`RawMesh`] mirrors only the first group onto
+/// its single-valued fields, so these two sources differ exactly in what a
+/// multi-group polygon would lose.
+enum GroupSource<'a> {
+    /// The IR's own single-valued fields: exactly one group per polygon, the one
+    /// `read_polygon` mirrored onto [`RawPolygon::material`] and
+    /// [`RawCorner::uv`]. This is the whole of the geometry for a mesh whose
+    /// polygons each stored one group, and a single-material *view* of the rest.
+    IrOnly,
+    /// Every stored group of every stored polygon, in stored order. This is the
+    /// authority, and it loses nothing.
+    Stored(&'a [Vec<RawMaterialGroup>]),
 }
 
 impl RenderMesh {
     /// Builds the render mesh from `mesh`, computing its topology first.
+    ///
+    /// This is the **single-group** reading: every polygon is drawn once, with
+    /// the material and the per-corner texture coordinate the IR carries, which
+    /// `read_polygon` mirrored from the polygon's **first** stored material
+    /// group. It is exact for a mesh whose polygons each stored one group. For a
+    /// mesh read out of a container, use [`Self::from_stored_groups`]: this
+    /// method cannot see a second group, so on a multi-group polygon it is the
+    /// first-group view and nothing more.
     ///
     /// # Errors
     ///
@@ -360,7 +490,9 @@ impl RenderMesh {
     }
 
     /// Builds the render mesh from `mesh` and a topology the caller already
-    /// has.
+    /// has, as [`Self::build`] does. The single-group reading: see
+    /// [`Self::from_stored_groups_with_topology`] for the one that keeps every
+    /// stored material group.
     ///
     /// `topology` must belong to `mesh`: one face status per polygon, all
     /// decoded. Stored attribute indices are re-checked while resolving, so a
@@ -375,6 +507,64 @@ impl RenderMesh {
     /// outside its array, and [`RenderMeshError::TooManyVertices`] when the
     /// vertex count passes the `u32` index range.
     pub fn from_parts(mesh: &RawMesh, topology: &MeshTopology) -> Result<Self, RenderMeshError> {
+        Self::resolve(mesh, topology, GroupSource::IrOnly)
+    }
+
+    /// Builds the render mesh from `mesh` and **every stored material group** of
+    /// its polygons, computing the topology first.
+    ///
+    /// `groups` is [`cs_formats::gamez::GameZMesh::material_groups`]: one entry
+    /// per stored polygon, in stored order, each entry holding the polygon's
+    /// stored `mat_count` groups with their own raw material index and their own
+    /// UV set. Nothing is merged and nothing is dropped:
+    ///
+    /// * a polygon that stored `n` groups produces `n` triangles per topology
+    ///   triangle, one per group, each naming its group in
+    ///   [`RenderTriangle::group`] and carrying that group's own raw material
+    ///   index;
+    /// * a corner's [`RenderVertex::uv`] is **that group's** stored coordinate,
+    ///   and the material is **that group's** raw index, so the vertex key
+    ///   splits on a group's own UV set as well as on the position, normal,
+    ///   colour and material;
+    /// * a corner two groups store differently therefore becomes two render
+    ///   vertices, so a seam authored in the second group of a polygon is a
+    ///   visible seam rather than a value that never reaches the mesh.
+    ///
+    /// # Errors
+    ///
+    /// Any [`RenderMeshError`] [`Self::from_stored_groups_with_topology`]
+    /// returns.
+    pub fn from_stored_groups(
+        mesh: &RawMesh,
+        groups: &[Vec<RawMaterialGroup>],
+    ) -> Result<Self, RenderMeshError> {
+        Self::from_stored_groups_with_topology(mesh, &mesh.topology(), groups)
+    }
+
+    /// [`Self::from_stored_groups`] with a topology the caller already has.
+    ///
+    /// # Errors
+    ///
+    /// [`RenderMeshError::GroupCount`] when `groups` does not have one entry per
+    /// stored polygon, [`RenderMeshError::PolygonWithoutMaterialGroup`] when a
+    /// stored polygon kept no group, [`RenderMeshError::GroupCornerCount`] when
+    /// a group does not hold one coordinate per corner, and every refusal
+    /// [`Self::from_parts`] can return.
+    pub fn from_stored_groups_with_topology(
+        mesh: &RawMesh,
+        topology: &MeshTopology,
+        groups: &[Vec<RawMaterialGroup>],
+    ) -> Result<Self, RenderMeshError> {
+        check_group_table(mesh, groups)?;
+        Self::resolve(mesh, topology, GroupSource::Stored(groups))
+    }
+
+    /// The one split, for both group sources.
+    fn resolve(
+        mesh: &RawMesh,
+        topology: &MeshTopology,
+        source: GroupSource<'_>,
+    ) -> Result<Self, RenderMeshError> {
         if topology.faces.len() != mesh.polygons.len() {
             return Err(RenderMeshError::TopologyFaceCount {
                 polygons: mesh.polygons.len(),
@@ -400,6 +590,7 @@ impl RenderMesh {
         let mut vertices: Vec<RenderVertex> = Vec::new();
         let mut lookup: HashMap<VertexKey, u32> = HashMap::new();
         let mut triangles: Vec<RenderTriangle> = Vec::new();
+        let mut extra_group_triangles = 0usize;
 
         for triangle in &topology.triangles {
             let Some(polygon) = mesh.polygons.get(triangle.polygon) else {
@@ -411,76 +602,90 @@ impl RenderMesh {
                     available: mesh.polygons.len(),
                 });
             };
-            let mut indices = [0u32; 3];
-            for (slot, &corner) in triangle.corners.iter().enumerate() {
-                let Some(raw) = polygon.corners.get(corner) else {
-                    return Err(RenderMeshError::OutOfRange {
-                        polygon: triangle.polygon,
-                        corner: Some(corner),
-                        field: "corner",
-                        index: corner as u64,
-                        available: polygon.corners.len(),
-                    });
-                };
-                let position = stored(
-                    &mesh.positions,
-                    raw.position,
-                    triangle.polygon,
-                    corner,
-                    "position",
-                )?;
-                let normal = match raw.normal {
-                    Some(index) => Some(stored(
-                        &mesh.normals,
-                        index,
+            // The stored groups of this polygon, already checked to be non-empty
+            // and to hold one coordinate per corner by `check_group_table`, or the
+            // single group the IR's own fields describe.
+            let stored_groups = source.groups(triangle.polygon, polygon);
+            for (group, attributes) in stored_groups.iter().enumerate() {
+                let mut indices = [0u32; 3];
+                for (slot, &corner) in triangle.corners.iter().enumerate() {
+                    let Some(raw) = polygon.corners.get(corner) else {
+                        return Err(RenderMeshError::OutOfRange {
+                            polygon: triangle.polygon,
+                            corner: Some(corner),
+                            field: "corner",
+                            index: corner as u64,
+                            available: polygon.corners.len(),
+                        });
+                    };
+                    let position = stored(
+                        &mesh.positions,
+                        raw.position,
                         triangle.polygon,
                         corner,
-                        "normal",
-                    )?),
-                    None => None,
-                };
-                let key = VertexKey {
-                    position: raw.position,
-                    normal: raw.normal,
-                    uv: raw.uv.map(|uv| uv.map(f32::to_bits)),
-                    color: raw.color.map(|color| color.map(f32::to_bits)),
-                    material: polygon.material,
-                };
-                indices[slot] = match lookup.get(&key) {
-                    Some(&index) => index,
-                    None => {
-                        let index = u32::try_from(vertices.len()).map_err(|_| {
-                            RenderMeshError::TooManyVertices {
-                                vertices: vertices.len(),
-                            }
-                        })?;
-                        vertices.push(RenderVertex {
-                            position: *position,
-                            normal: normal.copied(),
-                            uv: raw.uv,
-                            color: raw.color,
-                            material: polygon.material,
-                            position_index: raw.position,
-                            normal_index: raw.normal,
-                            source: SourceCorner {
-                                polygon: triangle.polygon,
-                                corner,
-                            },
-                        });
-                        lookup.insert(key, index);
-                        index
-                    }
-                };
+                        "position",
+                    )?;
+                    let normal = match raw.normal {
+                        Some(index) => Some(stored(
+                            &mesh.normals,
+                            index,
+                            triangle.polygon,
+                            corner,
+                            "normal",
+                        )?),
+                        None => None,
+                    };
+                    // This group's own coordinate, which is the only difference
+                    // between two corners of two groups of the same polygon.
+                    let uv = attributes.uv(corner, raw.uv);
+                    let key = VertexKey {
+                        position: raw.position,
+                        normal: raw.normal,
+                        uv: uv.map(|uv| uv.map(f32::to_bits)),
+                        color: raw.color.map(|color| color.map(f32::to_bits)),
+                        material: attributes.material,
+                    };
+                    indices[slot] = match lookup.get(&key) {
+                        Some(&index) => index,
+                        None => {
+                            let index = u32::try_from(vertices.len()).map_err(|_| {
+                                RenderMeshError::TooManyVertices {
+                                    vertices: vertices.len(),
+                                }
+                            })?;
+                            vertices.push(RenderVertex {
+                                position: *position,
+                                normal: normal.copied(),
+                                uv,
+                                color: raw.color,
+                                material: attributes.material,
+                                group,
+                                position_index: raw.position,
+                                normal_index: raw.normal,
+                                source: SourceCorner {
+                                    polygon: triangle.polygon,
+                                    corner,
+                                },
+                            });
+                            lookup.insert(key, index);
+                            index
+                        }
+                    };
+                }
+                if group > 0 {
+                    extra_group_triangles += 1;
+                }
+                triangles.push(RenderTriangle {
+                    vertices: indices,
+                    source: SourceTriangle {
+                        polygon: triangle.polygon,
+                        step: triangle.step,
+                    },
+                    group,
+                    material: attributes.material,
+                    degenerate: triangle.is_degenerate(),
+                });
             }
-            triangles.push(RenderTriangle {
-                vertices: indices,
-                source: SourceTriangle {
-                    polygon: triangle.polygon,
-                    step: triangle.step,
-                },
-                material: polygon.material,
-                degenerate: triangle.is_degenerate(),
-            });
         }
 
         let degenerate_triangles = triangles.iter().filter(|t| t.degenerate).count();
@@ -505,6 +710,7 @@ impl RenderMesh {
             groups,
             source_faces: mesh.polygons.len(),
             degenerate_triangles,
+            extra_group_triangles,
         })
     }
 
@@ -514,7 +720,8 @@ impl RenderMesh {
         &self.vertices
     }
 
-    /// Every render triangle, in topology order.
+    /// Every render triangle, in topology order, then in stored material-group
+    /// order within a topology triangle.
     #[must_use]
     pub fn triangles(&self) -> &[RenderTriangle] {
         &self.triangles
@@ -522,6 +729,10 @@ impl RenderMesh {
 
     /// Triangles grouped by raw material index, groups in ascending material
     /// order.
+    ///
+    /// A material index reached by two different stored groups of two different
+    /// polygons is one group here, holding the triangles of both: the raw index
+    /// is the only thing this grouping is by.
     #[must_use]
     pub fn groups(&self) -> &[RenderGroup] {
         &self.groups
@@ -535,9 +746,30 @@ impl RenderMesh {
     }
 
     /// Stored topology triangles that fed this mesh, degenerate ones included.
+    ///
+    /// A polygon that kept `n` material groups fed `n` render triangles per
+    /// topology triangle, so this is the number of **draws**, not the number of
+    /// stored triangles. The stored count is
+    /// [`Self::source_triangles`] minus [`Self::extra_group_triangles`] unless a
+    /// group carried no triangle of its own, which cannot happen: a group is
+    /// only missing when the whole mesh was refused.
     #[must_use]
     pub fn source_triangles(&self) -> usize {
         self.triangles.len()
+    }
+
+    /// Triangles drawn for a stored material group beyond the first, degenerate
+    /// ones included.
+    ///
+    /// Zero for a mesh whose polygons each stored one group, which is every
+    /// polygon of `ZBD/planes.zbd` and all but 1 006 of the installation's
+    /// 128 734 stored polygons. It is the exact cost of a render mesh that
+    /// keeps every group: those triangles carry the second and later authored
+    /// UV sets and the second and later raw material indices, which a
+    /// single-group reading has nowhere to put.
+    #[must_use]
+    pub fn extra_group_triangles(&self) -> usize {
+        self.extra_group_triangles
     }
 
     /// Triangles with two equal stored position indices. They are kept; a
@@ -548,7 +780,96 @@ impl RenderMesh {
     }
 }
 
+impl GroupSource<'_> {
+    /// The material groups one stored polygon is drawn with, in stored order.
+    ///
+    /// Never empty: [`Self::IrOnly`] always describes exactly one group, and
+    /// [`check_group_table`] has already refused a stored table with a polygon
+    /// that kept none.
+    fn groups<'a>(&'a self, polygon: usize, stored: &'a RawPolygon) -> Vec<GroupAttributes<'a>> {
+        match self {
+            Self::IrOnly => vec![GroupAttributes {
+                material: stored.material,
+                uvs: None,
+            }],
+            Self::Stored(table) => table[polygon]
+                .iter()
+                .map(|group| GroupAttributes {
+                    material: group.material,
+                    uvs: Some(group.uvs.as_slice()),
+                })
+                .collect(),
+        }
+    }
+}
+
+/// One stored material group, as the splitter sees it.
+struct GroupAttributes<'a> {
+    /// The group's own raw material index.
+    material: u32,
+    /// The group's own UV set, one coordinate per corner, or `None` for the
+    /// IR-only source, where the coordinate comes from the corner itself.
+    uvs: Option<&'a [[f32; 2]]>,
+}
+
+impl GroupAttributes<'_> {
+    /// The coordinate this group stores for `corner`, or the corner's own IR
+    /// value when the source has no group table. A stored group always holds one
+    /// coordinate per corner — [`check_group_table`] has said so — so a stored
+    /// group never falls back to the IR's value.
+    fn uv(&self, corner: usize, ir: Option<[f32; 2]>) -> Option<[f32; 2]> {
+        match self.uvs {
+            Some(uvs) => uvs.get(corner).copied(),
+            None => ir,
+        }
+    }
+}
+
+/// Refuses a material-group table that does not describe the mesh's polygons.
+///
+/// One place, so the invariant [`GroupSource::groups`] and the indexing in
+/// [`RenderMesh::resolve`] rely on is stated once: one entry per stored
+/// polygon, at least one group each, and exactly one stored coordinate per
+/// corner of that group. The reader satisfies all three by construction — the
+/// table is built beside the polygons from the same `corners` and `mat_count` —
+/// so a refusal here is a caller handing a hand-built table, and it is named
+/// rather than indexed.
+fn check_group_table(
+    mesh: &RawMesh,
+    table: &[Vec<RawMaterialGroup>],
+) -> Result<(), RenderMeshError> {
+    if table.len() != mesh.polygons.len() {
+        return Err(RenderMeshError::GroupCount {
+            polygons: mesh.polygons.len(),
+            groups: table.len(),
+        });
+    }
+    for (polygon, (stored, groups)) in mesh.polygons.iter().zip(table).enumerate() {
+        if groups.is_empty() {
+            return Err(RenderMeshError::PolygonWithoutMaterialGroup { polygon });
+        }
+        for (group, attributes) in groups.iter().enumerate() {
+            if attributes.uvs.len() != stored.corners.len() {
+                return Err(RenderMeshError::GroupCornerCount {
+                    polygon,
+                    group,
+                    corners: stored.corners.len(),
+                    uvs: attributes.uvs.len(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
 /// The bit-exact identity of one render vertex.
+///
+/// The group index is deliberately **not** part of the key: two groups that store
+/// the same material index and the same UV for a corner are the same vertex, and
+/// the triangles that reach it say which group they are the drawing of. What must
+/// be in the key is the *resolved* material and UV, which is what `uv` and
+/// `material` are — taken from the group being built, not from the polygon's
+/// first group.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct VertexKey {
     position: u32,
@@ -1232,15 +1553,6 @@ pub const RENDER_MESH_KIND: &str = "render_mesh";
 /// the boundary, exactly as F08-C stopped at the image upload boundary.
 pub const MESH_UPLOAD_CONSUMER: &str = "mesh_upload";
 
-/// The code for a stored polygon that keeps more than one material group.
-///
-/// The render mesh carries the **first** group, because F10-A's IR shape has one
-/// `material` and one per-corner `uv` per polygon and this stage does not change
-/// it, so a group beyond the first has no UV set here. How many polygons of
-/// this mesh are in that state is the count on
-/// [`MeshFaceCounts::multi_material_group_polygons`], not part of the code.
-pub const MULTI_MATERIAL_GROUP_POLYGONS: &str = "multi_material_group_polygons";
-
 /// Stable identity of one stored mesh inside one GameZ container.
 ///
 /// `index` is the array position a scene node's `mesh_index` refers to
@@ -1721,7 +2033,13 @@ impl MeshContainer {
                     topologies.push(None);
                 }
                 Some(mesh) => {
-                    render.push(Some(RenderMesh::build(&mesh.mesh)));
+                    // Every stored material group, not just the first: the CS
+                    // layout stores one UV set and one material index per group,
+                    // and `RawMesh` mirrors only the first onto its own fields.
+                    render.push(Some(RenderMesh::from_stored_groups(
+                        &mesh.mesh,
+                        &mesh.material_groups,
+                    )));
                     topologies.push(Some(mesh.topology()));
                 }
             }
@@ -1924,16 +2242,23 @@ pub struct MeshFaceCounts {
     pub degenerate: usize,
     /// Stored polygons that stored more than one material group.
     ///
-    /// [`RawMesh::polygons`] and the render mesh carry the **first** group of
-    /// such a polygon, so a group beyond the first has no UV set in the render
-    /// mesh. The count is reported, never silently dropped, and it is a reason
-    /// on the row rather than a second state.
+    /// The CS GameZ layout stores one UV set and one material index per group.
+    /// [`RawMesh::polygons`] mirrors only the first onto its single-valued
+    /// fields, but the render mesh is built from the whole table
+    /// ([`RenderMesh::from_stored_groups`]), so **no group is lost**: each one is
+    /// drawn as its own triangles with its own stored UVs and its own raw
+    /// material index. This count is therefore not a loss count any more — it is
+    /// the evidence for the one open question such a polygon raises,
+    /// [`MeshPresentationUnknown::MultiMaterialGroup`], and it is on a row and a
+    /// payload only when it is not zero.
     ///
-    /// Measured on the installation: the world archives store 1 006 such
-    /// polygons, 390 of them in `ZBD/C1/gamez.zbd`, and `ZBD/planes.zbd` stores
-    /// **none**, so this count is non-zero for world geometry and zero for every
-    /// airframe. See
-    /// `docs/findings/2026-09-29-f10-c-integration-and-reason-codes.md`.
+    /// Measured on the installation, per archive: `ZBD/C1` 390, `ZBD/C5` 352,
+    /// `ZBD/C2` 206, `ZBD/C3` 16, `ZBD/C4` 16, `ZBD/C1C` 10, `ZBD/C1B` 8,
+    /// `ZBD/C2B` 8 — 1 006 in the eight world archives, 999 of them storing two
+    /// groups and 7 storing three — and `ZBD/planes.zbd` **none**, so no airframe
+    /// is affected and this count is non-zero for world geometry only. 307 of the
+    /// 17 139 stored meshes hold one. See
+    /// `docs/findings/2026-09-29-f10-e-material-groups-into-the-render-mesh.md`.
     pub multi_material_group_polygons: usize,
 }
 
@@ -1947,7 +2272,8 @@ pub enum RenderMeshReadiness {
     Ready,
     /// Every stored face decoded, but something is open: a material's texture
     /// dependency reached no single origin, a polygon stores more than one
-    /// material group, or a presentation decision is unmeasured.
+    /// material group whose presentation is unmeasured, or another presentation
+    /// decision is unmeasured. See [`MeshPresentationUnknown`].
     Blocked,
     /// The mesh was not read, or not turned into a render mesh. The row carries
     /// the reader's own context in [`RenderMeshRecord::failure`].
@@ -1986,6 +2312,22 @@ pub enum MeshPresentationUnknown {
     /// range, whether they are intensities at all, and whether the original
     /// renderer read them, are unmeasured.
     VertexColor,
+    /// How the original renderer presented a stored polygon's second and further
+    /// material groups.
+    ///
+    /// Nothing is lost here, which is what changed: the CS GameZ layout stores
+    /// one UV set and one material index per group, and the render mesh draws
+    /// **every** group as its own triangles carrying that group's own stored
+    /// values. What is unmeasured is what the original renderer did with a
+    /// polygon that has two or three of them — whether it drew one group or all
+    /// of them, in which order, and whether a later group was meant to cover an
+    /// earlier one. Drawing them all is a faithful, lossless reading, not a
+    /// claim that the original drew them all.
+    ///
+    /// On a row or payload only when the mesh really stored such a polygon;
+    /// [`MeshFaceCounts::multi_material_group_polygons`] is the count and
+    /// [`RenderMesh::extra_group_triangles`] the extra draws.
+    MultiMaterialGroup,
 }
 
 impl MeshPresentationUnknown {
@@ -1995,6 +2337,7 @@ impl MeshPresentationUnknown {
             Self::FrontFaceWinding => "front_face_winding_unknown",
             Self::UvOrigin => "uv_origin_unknown",
             Self::VertexColor => "vertex_color_unknown",
+            Self::MultiMaterialGroup => "multi_material_group_presentation_unknown",
         }
     }
 }
@@ -2005,16 +2348,24 @@ impl fmt::Display for MeshPresentationUnknown {
     }
 }
 
-/// The presentation decisions open for every GameZ mesh this stage produces.
+/// The presentation decisions open for one GameZ mesh.
 ///
-/// They are a property of the pipeline, not of one container, so they are one
-/// fixed list rather than something recomputed per mesh and able to drift.
-fn mesh_presentation_unknowns() -> Vec<MeshPresentationUnknown> {
-    vec![
+/// The first three are a property of the pipeline, not of one container, so they
+/// are one fixed list rather than something recomputed per mesh and able to
+/// drift. [`MeshPresentationUnknown::MultiMaterialGroup`] is the exception and is
+/// appended only when the mesh's own stored bytes have a polygon with more than
+/// one material group — a mesh that stores one group per polygon has no such
+/// question, and saying so on its row would be a false claim about the corpus.
+fn mesh_presentation_unknowns(faces: Option<&MeshFaceCounts>) -> Vec<MeshPresentationUnknown> {
+    let mut unknowns = vec![
         MeshPresentationUnknown::FrontFaceWinding,
         MeshPresentationUnknown::UvOrigin,
         MeshPresentationUnknown::VertexColor,
-    ]
+    ];
+    if faces.is_some_and(|faces| faces.multi_material_group_polygons > 0) {
+        unknowns.push(MeshPresentationUnknown::MultiMaterialGroup);
+    }
+    unknowns
 }
 
 /// One row of the render-mesh catalog (IDENTITY-CONTENT "required catalog
@@ -2350,8 +2701,8 @@ impl MeshCatalog {
             container_key: container.key().clone(),
             render,
             materials,
+            unknowns: mesh_presentation_unknowns(Some(&faces)),
             faces,
-            unknowns: mesh_presentation_unknowns(),
         })
     }
 
@@ -2469,15 +2820,6 @@ fn mesh_record(
                     reasons.push(code);
                 }
             };
-            if let Some(faces) = row.faces
-                && faces.multi_material_group_polygons > 0
-            {
-                // A bare code, like every other entry here: the count is the
-                // evidence and it is already on the row in
-                // `faces.multi_material_group_polygons`, so embedding it in the
-                // reason would only make one cause read as several.
-                reason(MULTI_MATERIAL_GROUP_POLYGONS.to_owned());
-            }
             // The audit rows this mesh's own stored references reach, so the row
             // states its own material readiness rather than the container's.
             for material in container.audit_rows_for(index) {
@@ -2485,7 +2827,12 @@ fn mesh_record(
                     reason(code.clone());
                 }
             }
-            for unknown in mesh_presentation_unknowns() {
+            // The presentation decisions. The multi-group one is on this row only
+            // because the mesh's own stored polygons have one: nothing is lost
+            // any more (every stored group is drawn with its own UV set and its
+            // own material index), so what the row names is the one thing still
+            // undecided about them, and the count is the evidence.
+            for unknown in mesh_presentation_unknowns(row.faces.as_ref()) {
                 reason(unknown.code().to_owned());
             }
             row.readiness = if reasons.is_empty() {
@@ -2517,6 +2864,9 @@ fn render_mesh_code(error: &RenderMeshError) -> &'static str {
         RenderMeshError::IncompleteTopology { .. } => "incomplete_topology",
         RenderMeshError::OutOfRange { .. } => "attribute_index_out_of_range",
         RenderMeshError::TooManyVertices { .. } => "too_many_vertices",
+        RenderMeshError::GroupCount { .. } => "material_group_count",
+        RenderMeshError::GroupCornerCount { .. } => "material_group_corner_count",
+        RenderMeshError::PolygonWithoutMaterialGroup { .. } => "polygon_without_material_group",
     }
 }
 
@@ -3266,8 +3616,8 @@ mod tests {
     };
     use cs_formats::gamez::reader::{MeshIndex, RawMaterialGroup, RawMeshInfo};
     use cs_formats::gamez::{
-        CORNER_COUNT_MASK, FLAG_NORMALS, FLAG_SHIFT, GameZHeader, GameZMesh, GameZMeshes,
-        NG_MATERIAL_SLOTS, RawMeshMaterialInfo,
+        CORNER_COUNT_MASK, FLAG_NORMALS, FLAG_SHIFT, FLAG_TRIANGLE_STRIP, GameZHeader, GameZMesh,
+        GameZMeshes, NG_MATERIAL_SLOTS, RawMeshMaterialInfo,
     };
     use cs_formats::texture::zbd::{
         FLAG_BYTES_PER_PIXEL2, FLAG_NO_ALPHA, ZBD_TEXTURE_HEADER_BYTES,
@@ -4254,7 +4604,8 @@ mod tests {
     /// [`Self::new`] stores exactly one group; [`Self::with_groups`] stores the
     /// rest, because a polygon that keeps two or three groups is a real stored
     /// shape — the reader keeps them all on `GameZMesh::material_groups`, the
-    /// render mesh carries the first, and the row reports the rest as
+    /// render mesh draws every one of them, and the row reports how many
+    /// polygons had more than one as
     /// `multi_material_group_polygons`. Most fixtures store one group, and that
     /// count is a number of stored **polygons**, not of groups.
     struct StoredPolygon {
@@ -4264,9 +4615,22 @@ mod tests {
         /// Stored material groups beyond the first, each its own material index
         /// and its own UV set. The measured corpus stores one group for
         /// 127 728 polygons and two or three for 1 006, and a fixture that could
-        /// only ever store one group could not reach
-        /// `multi_material_group_polygons` at all.
+        /// only ever store one group could not reach a multi-group polygon at
+        /// all.
         extra_groups: Vec<(u32, Vec<[f32; 2]>)>,
+        /// The flag byte says `FLAG_TRIANGLE_STRIP` rather than one outline.
+        ///
+        /// A strip is the only corner topology that can repeat a position index
+        /// inside one polygon and still decode: `triangulate_polygon` refuses
+        /// coincident corners, and the corpus authors its repeated positions in
+        /// strips, which go through `decode_strip` instead.
+        strip: bool,
+        /// The polygon stores no material group at all (`mat_count == 0`), which
+        /// the reference asserts against and the measured corpus never does. The
+        /// reader keeps the face and reports
+        /// `ParseFinding::PolygonWithoutMaterial`; the render gate is where that
+        /// costs the mesh.
+        no_group: bool,
     }
 
     impl StoredPolygon {
@@ -4279,13 +4643,30 @@ mod tests {
                 material,
                 uvs: uvs.to_vec(),
                 extra_groups: Vec::new(),
+                strip: false,
+                no_group: false,
             }
+        }
+
+        /// The same polygon as a triangle **strip** of those corners. A strip
+        /// decodes through `decode_strip`, so it may repeat a position index —
+        /// which is how the corpus authors a seam inside one polygon.
+        fn as_strip(mut self) -> Self {
+            self.strip = true;
+            self
+        }
+
+        /// The same polygon storing `mat_count == 0`: no material index and no
+        /// UV set at all, which the layout can still walk.
+        fn without_group(mut self) -> Self {
+            self.no_group = true;
+            self
         }
 
         /// The same polygon plus `groups` further stored material groups. The
         /// first is the one the reader mirrors onto the IR's single-valued
-        /// fields, so a fixture can reproduce a polygon the render mesh carries
-        /// only partly.
+        /// fields, so a fixture can reproduce a polygon whose second and third
+        /// authored UV sets are only reachable through the stored group table.
         fn with_groups(mut self, groups: &[(u32, &[[f32; 2]])]) -> Self {
             self.extra_groups = groups
                 .iter()
@@ -4299,15 +4680,23 @@ mod tests {
 
         /// How many material groups this polygon stores.
         fn group_count(&self) -> u32 {
-            1 + self.extra_groups.len() as u32
+            if self.no_group {
+                0
+            } else {
+                1 + self.extra_groups.len() as u32
+            }
         }
 
         /// The packed `vertex_info` word: the corner count in the low nine bits,
-        /// the flag byte shifted up by eight. The flag byte is
-        /// [`FLAG_NORMALS`] alone, so the polygon stores one normal index per
-        /// corner and no bit outside the layout's own flag field is set.
+        /// the flag byte shifted up by eight. `FLAG_NORMALS` is always set, so
+        /// the polygon stores one normal index per corner and no bit outside the
+        /// layout's own flag field is set; [`Self::as_strip`] adds the strip bit.
         fn vertex_info(&self) -> u32 {
-            (self.corners.len() as u32 & CORNER_COUNT_MASK) | (FLAG_NORMALS << FLAG_SHIFT)
+            let mut flags = FLAG_NORMALS;
+            if self.strip {
+                flags |= FLAG_TRIANGLE_STRIP;
+            }
+            (self.corners.len() as u32 & CORNER_COUNT_MASK) | (flags << FLAG_SHIFT)
         }
 
         /// The ten words of the 40-byte polygon record. The five `*_ptr` values
@@ -4346,16 +4735,23 @@ mod tests {
             for (corner, _) in self.corners.iter().enumerate() {
                 out.extend_from_slice(&(corner as u32 % 2).to_le_bytes());
             }
-            out.extend_from_slice(&self.material.to_le_bytes());
+            // A polygon that stores no group writes neither a material index nor
+            // a UV set; the reader then leaves every corner's `uv` unset and
+            // mirrors a `0` the bytes never said onto `RawPolygon::material`.
+            if !self.no_group {
+                out.extend_from_slice(&self.material.to_le_bytes());
+            }
             for (material, _) in &self.extra_groups {
                 out.extend_from_slice(&material.to_le_bytes());
             }
             // The first group's UVs, then each further group's own set: the
             // reader reads `mat_count` UV sets back to back, so a writer that
             // interleaved them differently would desynchronise the next polygon.
-            for uv in &self.uvs {
-                out.extend_from_slice(&uv[0].to_le_bytes());
-                out.extend_from_slice(&uv[1].to_le_bytes());
+            if !self.no_group {
+                for uv in &self.uvs {
+                    out.extend_from_slice(&uv[0].to_le_bytes());
+                    out.extend_from_slice(&uv[1].to_le_bytes());
+                }
             }
             for (_, uvs) in &self.extra_groups {
                 for uv in uvs {
@@ -4793,9 +5189,9 @@ mod tests {
 
     /// The world's `gamez.zbd` when one mesh stores **two** material groups on
     /// each of its two polygons. The CS layout stores one UV set per group, so a
-    /// second group is a second UV set for the same corners; the render mesh
-    /// carries the first group only, which is what the row's
-    /// `multi_material_group_polygons` count reports.
+    /// second group is a second UV set and a second raw material index for the
+    /// same corners. Both are kept: the render mesh draws each group, so this
+    /// container is what `accept_f10_e_` reaches the group code through.
     fn multi_group_container() -> Vec<u8> {
         let group_uvs = [[0.75, 0.75], [0.5, 0.5], [0.25, 0.25]];
         let mesh = StoredMesh::new(
@@ -4809,6 +5205,240 @@ mod tests {
             ],
         );
         gamez_container_with(&["sky"], &[0], &[Ok(mesh)])
+    }
+
+    // ================================================ F10-E: the group fixtures ===
+
+    /// The seven corners of the F10-E strip, in stored order. Positions 1, 2 and
+    /// 3 each appear twice, which is how the corpus authors a seam inside one
+    /// polygon: a strip may repeat a position index and still decode, and an
+    /// outline may not.
+    const STRIP_CORNERS: [u32; 7] = [0, 1, 2, 3, 2, 1, 3];
+
+    /// The strip's first-group UV set: position 2 is `[0.0, 1.0]` at both of its
+    /// corners, position 1 is `[1.0, 0.0]` at both of its corners and position 3
+    /// is `[1.0, 1.0]` at both of its corners. **No seam**: every repeated
+    /// position carries the same coordinate in this group.
+    const STRIP_GROUP_ZERO: [[f32; 2]; 7] = [
+        [0.0, 0.0],
+        [1.0, 0.0],
+        [0.0, 1.0],
+        [1.0, 1.0],
+        [0.0, 1.0],
+        [1.0, 0.0],
+        [1.0, 1.0],
+    ];
+
+    /// The same strip's **second**-group UV set. Positions 1 and 3 still repeat
+    /// without a seam, but position 2 is `[0.0, 1.0]` at corner 2 and
+    /// `[0.2, 0.9]` at corner 4: a seam that exists **only** in this group, and
+    /// that the first group alone would have hidden.
+    const STRIP_GROUP_ONE: [[f32; 2]; 7] = [
+        [0.0, 0.1],
+        [1.0, 0.0],
+        [0.0, 1.0],
+        [1.0, 1.0],
+        [0.2, 0.9],
+        [1.0, 0.0],
+        [1.0, 1.0],
+    ];
+
+    /// The F10-E group mesh, mesh `0` of [`group_tree`]'s container.
+    ///
+    /// Three polygons over four positions, chosen so that the three ways a group
+    /// can differ from another are all present:
+    ///
+    /// * **polygon 0** is a seven-corner strip with **two** groups. Its second
+    ///   group authors a UV seam at position 2 that its first group does not, so
+    ///   AC03 has to be re-asserted for the second group here. Its last strip
+    ///   step is degenerate, so the per-group degeneracy has to stay exact.
+    /// * **polygon 1** is a triangle with **three** groups whose first two store
+    ///   the *same* UV set under different raw material indices: those two groups
+    ///   must still split, on the material alone.
+    /// * **polygon 2** is a triangle with **one** group, so a single-group polygon
+    ///   shares the mesh and a row for it can have no multi-group question.
+    fn group_mesh() -> StoredMesh {
+        StoredMesh::new(
+            block(0.0, 4),
+            block(1000.0, 4),
+            vec![
+                StoredPolygon::new(&STRIP_CORNERS, 0, &STRIP_GROUP_ZERO)
+                    .as_strip()
+                    .with_groups(&[(1, &STRIP_GROUP_ONE)]),
+                StoredPolygon::new(&[0, 1, 2], 0, &[[0.0, 0.0], [0.5, 0.0], [0.25, 0.25]])
+                    .with_groups(&[
+                        (1, &[[0.0, 0.0], [0.5, 0.0], [0.25, 0.25]]),
+                        (2, &[[0.0, 0.5], [0.5, 0.5], [0.25, 0.75]]),
+                    ]),
+                StoredPolygon::new(&[1, 3, 2], 3, &[[0.0, 0.0], [1.0, 0.0], [0.5, 0.5]]),
+            ],
+        )
+    }
+
+    /// The world's `gamez.zbd` holding two present meshes: the group mesh and the
+    /// single-group seam mesh, so one catalog carries a row that has a multi-group
+    /// question beside a row that has none.
+    ///
+    /// All four texture names are stored and every material resolves, so the only
+    /// open reason on either row is a presentation one.
+    fn group_container() -> Vec<u8> {
+        gamez_container_with(
+            &["sky", "ground", "tier", "stone"],
+            &[0, 1, 2, 3],
+            &[Ok(group_mesh()), Ok(seam_mesh())],
+        )
+    }
+
+    /// [`group_container`] over a world's own texture archive, with the archive
+    /// the audit must **not** search holding a decoy name.
+    fn group_tree() -> Tree {
+        let tree = Tree::world(&["sky", "ground", "tier", "stone"], &["decoy"]);
+        tree.write("ZBD/c1/gamez.zbd", &group_container());
+        tree
+    }
+
+    /// The world's `gamez.zbd` when one polygon stores `mat_count == 0`: the
+    /// reference asserts against it and the measured corpus never does, so this
+    /// is the only way to reach the render gate's
+    /// `PolygonWithoutMaterialGroup` through the production reader.
+    fn no_group_container() -> Vec<u8> {
+        let broken = StoredMesh::new(
+            block(0.0, 3),
+            block(1000.0, 3),
+            vec![
+                StoredPolygon::new(&[0, 1, 2], 0, &[[0.0, 0.0], [0.5, 0.0], [0.25, 0.25]])
+                    .without_group(),
+                StoredPolygon::new(&[2, 1, 0], 1, &[[0.0, 0.0], [0.5, 0.0], [0.25, 0.25]]),
+            ],
+        );
+        gamez_container_with(&["sky", "ground"], &[0, 1], &[Ok(broken)])
+    }
+
+    /// The render triangles one polygon and one stored group produced, in
+    /// drawing order. The `group` field is part of the lookup so a test cannot
+    /// accidentally read another group's triangles.
+    fn group_triangles<'a>(
+        render: &'a RenderMesh,
+        polygon: usize,
+        group: usize,
+    ) -> Vec<&'a RenderTriangle> {
+        render
+            .triangles()
+            .iter()
+            .filter(|t| t.source.polygon == polygon && t.group == group)
+            .collect()
+    }
+
+    /// The render vertices one polygon and one stored group produced, in
+    /// first-encounter order.
+    ///
+    /// A vertex two corners agree on bit-exactly is shared, whether they belong
+    /// to two groups of one polygon or to two polygons, so the set is not a
+    /// partition. [`group_vertex_slots`] is the reading that keeps the corner a
+    /// vertex was reached for.
+    fn group_vertices<'a>(
+        render: &'a RenderMesh,
+        polygon: usize,
+        group: usize,
+    ) -> Vec<&'a RenderVertex> {
+        let mut out: Vec<&RenderVertex> = Vec::new();
+        for triangle in group_triangles(render, polygon, group) {
+            for &index in &triangle.vertices {
+                let vertex = &render.vertices()[index as usize];
+                if !out.iter().any(|kept| std::ptr::eq(*kept, vertex)) {
+                    out.push(vertex);
+                }
+            }
+        }
+        out
+    }
+
+    /// Every `(stored corner, render vertex)` one polygon and one stored group
+    /// produced, paired from the stored topology's own source map.
+    ///
+    /// A vertex may be shared with another corner, another group or another
+    /// polygon when they agree bit-exactly, so the corner is the *address* the
+    /// vertex was reached for and the only thing a test can compare a stored
+    /// coordinate against. The render triangles of one `(polygon, group)` are
+    /// the stored topology triangles of that polygon in order, which is what
+    /// makes the pairing a statement rather than a coincidence.
+    fn group_vertex_slots<'a>(
+        render: &'a RenderMesh,
+        topology: &MeshTopology,
+        polygon: usize,
+        group: usize,
+    ) -> Vec<(usize, &'a RenderVertex)> {
+        let sources: Vec<MeshTriangle> = topology
+            .triangles
+            .iter()
+            .filter(|t| t.polygon == polygon)
+            .copied()
+            .collect();
+        let drawn = group_triangles(render, polygon, group);
+        assert_eq!(
+            drawn.len(),
+            sources.len(),
+            "polygon {polygon} group {group}: one render triangle per stored topology triangle"
+        );
+        let mut out = Vec::new();
+        for (triangle, source) in drawn.iter().zip(&sources) {
+            assert_eq!(triangle.source.step, source.step);
+            for (slot, &index) in triangle.vertices.iter().enumerate() {
+                out.push((source.corners[slot], &render.vertices()[index as usize]));
+            }
+        }
+        out
+    }
+
+    /// Fails unless every corner one polygon and one stored group draws with
+    /// samples **that** group's own coordinate, and the vertex it lands on
+    /// carries that group's own raw material index.
+    fn assert_group_samples_its_own_uvs(
+        render: &RenderMesh,
+        stored: &GameZMesh,
+        topology: &MeshTopology,
+        polygon: usize,
+        group: usize,
+    ) {
+        let attributes = &stored.groups(polygon).expect("groups")[group];
+        for (corner, vertex) in group_vertex_slots(render, topology, polygon, group) {
+            let uv = vertex
+                .uv
+                .expect("a stored group always stores a coordinate");
+            assert_eq!(
+                uv, attributes.uvs[corner],
+                "polygon {polygon} group {group}: corner {corner} samples this group's own \
+                 coordinate"
+            );
+            assert_eq!(
+                vertex.material, attributes.material,
+                "polygon {polygon} group {group}: the vertex carries this group's material"
+            );
+        }
+    }
+
+    /// The distinct stored texture coordinates one polygon and one group
+    /// produced at one position index, bit-exact and sorted.
+    fn uvs_at(
+        render: &RenderMesh,
+        topology: &MeshTopology,
+        polygon: usize,
+        group: usize,
+        position: u32,
+    ) -> Vec<[u32; 2]> {
+        let mut bits: Vec<[u32; 2]> = group_vertex_slots(render, topology, polygon, group)
+            .into_iter()
+            .filter(|(_, vertex)| vertex.position_index == position)
+            .map(|(_, vertex)| {
+                let uv = vertex
+                    .uv
+                    .expect("a stored group always stores a coordinate");
+                [uv[0].to_bits(), uv[1].to_bits()]
+            })
+            .collect();
+        bits.sort_unstable();
+        bits.dedup();
+        bits
     }
 
     fn gamez_key() -> AssetKey {
@@ -5774,10 +6404,10 @@ mod tests {
             "unknown_field",
             "duplicate_texture_name",
             "archive_unavailable",
-            MULTI_MATERIAL_GROUP_POLYGONS,
-            "front_face_winding_unknown",
-            "uv_origin_unknown",
-            "vertex_color_unknown",
+            MeshPresentationUnknown::FrontFaceWinding.code(),
+            MeshPresentationUnknown::UvOrigin.code(),
+            MeshPresentationUnknown::VertexColor.code(),
+            MeshPresentationUnknown::MultiMaterialGroup.code(),
         ];
         for reason in &row.unsupported_reasons {
             assert!(
@@ -5800,7 +6430,10 @@ mod tests {
         // code as well, with the count kept as a number on the row. This is
         // checked on a container that really stores two groups per polygon, so
         // the reason is reached through the production reader rather than
-        // constructed.
+        // constructed. What the code now says is that the *presentation* of
+        // those groups is unmeasured — nothing is lost any more, F10-E draws
+        // every group — so the loss code of F10-C is gone and this one names the
+        // question that is left.
         let multi_tree = Tree::world(&["sky"], &["tier"]);
         multi_tree.write("ZBD/c1/gamez.zbd", &multi_group_container());
         let multi_session = world_session(&multi_tree.0, "ZBD/c1");
@@ -5823,17 +6456,15 @@ mod tests {
             counts.multi_material_group_polygons, 2,
             "both stored polygons keep two material groups"
         );
+        let presentation = MeshPresentationUnknown::MultiMaterialGroup.code();
         assert!(
-            multi
-                .unsupported_reasons
-                .iter()
-                .any(|r| r == MULTI_MATERIAL_GROUP_POLYGONS),
+            multi.unsupported_reasons.iter().any(|r| r == presentation),
             "{:?}",
             multi.unsupported_reasons
         );
         for reason in &multi.unsupported_reasons {
             assert!(
-                !reason.starts_with(&format!("{MULTI_MATERIAL_GROUP_POLYGONS}:")),
+                !reason.starts_with(&format!("{presentation}:")),
                 "the count is not part of the code: {reason:?}"
             );
         }
@@ -5973,6 +6604,656 @@ mod tests {
         assert!(
             uv_seams > 0,
             "the airframe corpus authors UV seams, which is the case AC03 names"
+        );
+    }
+
+    // ================================================ F10-E: every stored group ===
+
+    /// **The whole point of F10-E, end to end.** A GameZ polygon stores one
+    /// material group per `mat_count`, each with its own raw material index and
+    /// its own UV set. F10-A's IR mirrors only the first onto its single-valued
+    /// fields, and a render mesh built from that alone leaves every later group
+    /// with nowhere to go. This walks the production path — a synthetic
+    /// container through the real reader, the real [`MeshContainer`], the real
+    /// catalog and the real upload boundary — and states that **every** stored
+    /// group of **every** stored polygon is there, carrying its own values.
+    ///
+    /// The discriminating step is per group, not per mesh: a splitter that drew
+    /// only the first group would produce a mesh with the right triangle count
+    /// for the single-group polygon and half the right one everywhere else, and
+    /// a splitter that drew a group's geometry with the *first* group's material
+    /// would still have the right triangle count and the wrong payload.
+    #[test]
+    fn accept_f10_e_every_stored_material_group_reaches_the_upload_payload() {
+        let tree = group_tree();
+        let session = world_session(&tree.0, "ZBD/c1");
+        let archive = texture_key();
+        let textures = TextureCatalog::open(&session, std::slice::from_ref(&archive));
+        assert_eq!(textures.failures().count(), 0, "the archive opens");
+        let catalog = MeshCatalog::open(
+            &session,
+            &[gamez_key()],
+            &seam_dependencies(&textures, &archive),
+        );
+        assert_eq!(catalog.failures().count(), 0, "the fixture container opens");
+
+        let container = catalog.containers().next().expect("one container");
+        let stored = container
+            .meshes()
+            .get(0)
+            .expect("mesh 0 is present")
+            .groups_are_complete();
+        assert!(stored, "every stored polygon has its own group list");
+
+        let resolved = catalog
+            .resolve(&session, &gamez_key(), 0)
+            .expect("the group mesh resolves");
+        let upload = catalog
+            .prepare_upload(&session, &resolved)
+            .expect("the group mesh uploads");
+        let render = upload.render();
+
+        // The face accounting still describes the **stored** mesh, and the count
+        // of polygons that kept more than one group is the evidence for the one
+        // question such a polygon raises.
+        let faces = upload.faces();
+        assert_eq!(faces.faces, 3, "three stored polygons");
+        assert_eq!(faces.triangles, 7, "5 strip steps, 2 triangle outlines");
+        assert_eq!(faces.rejected, 0, "no polygon was rejected");
+        assert_eq!(faces.degenerate, 1, "one degenerate strip step");
+        assert_eq!(
+            faces.multi_material_group_polygons, 2,
+            "the strip and the three-group triangle keep more than one group"
+        );
+
+        // Per polygon and per group: the triangles are the product of the
+        // topology triangles and the stored groups, and each carries **that
+        // group's** raw material index. A build that read the groups but paired
+        // them with the IR's first-group material fails here.
+        let stored_mesh = container.meshes().get(0).expect("mesh 0");
+        let topology = container.topology(0).expect("the stored topology");
+        let mut expected_triangles = 0usize;
+        let mut expected_extra = 0usize;
+        let mut expected_degenerate = 0usize;
+        for (polygon, face) in stored_mesh.mesh.polygons.iter().enumerate() {
+            let groups = stored_mesh
+                .groups(polygon)
+                .expect("a stored polygon has its groups");
+            let steps = if face.kind == PrimitiveKind::TriangleStrip {
+                face.corners.len().saturating_sub(2)
+            } else {
+                1
+            };
+            let drawn: Vec<usize> = (0..groups.len())
+                .map(|group| group_triangles(render, polygon, group).len())
+                .collect();
+            assert_eq!(
+                drawn,
+                vec![steps; groups.len()],
+                "polygon {polygon}: every stored group is drawn once per topology triangle"
+            );
+            // Degeneracy is the stored position indices' own, so the same steps
+            // are marked in every group of a polygon and no others.
+            let degenerate: Vec<usize> = topology
+                .triangles
+                .iter()
+                .filter(|t| t.polygon == polygon && t.is_degenerate())
+                .map(|t| t.step)
+                .collect();
+            for (group, attributes) in groups.iter().enumerate() {
+                let triangles = group_triangles(render, polygon, group);
+                for triangle in &triangles {
+                    assert_eq!(
+                        triangle.material, attributes.material,
+                        "polygon {polygon} group {group} is drawn with its own material"
+                    );
+                }
+                // And the vertices of that group sample that group's own UV set,
+                // corner for corner, through the production source map.
+                assert_group_samples_its_own_uvs(render, stored_mesh, topology, polygon, group);
+                let marked: Vec<usize> = triangles
+                    .iter()
+                    .filter(|t| t.degenerate)
+                    .map(|t| t.source.step)
+                    .collect();
+                assert_eq!(
+                    marked, degenerate,
+                    "polygon {polygon} group {group}: degeneracy is the stored indices' own"
+                );
+                expected_degenerate += marked.len();
+                expected_triangles += triangles.len();
+                if group > 0 {
+                    expected_extra += triangles.len();
+                }
+            }
+        }
+        assert_eq!(render.source_triangles(), expected_triangles);
+        assert_eq!(render.extra_group_triangles(), expected_extra);
+        assert_eq!(render.degenerate_triangles(), expected_degenerate);
+        assert_eq!(render.source_triangles(), 14, "10 + 3 + 1");
+        assert_eq!(render.extra_group_triangles(), 7, "5 + 2 + 0");
+        assert_eq!(
+            render.degenerate_triangles(),
+            2,
+            "the one strip step, twice"
+        );
+
+        // Every raw material index the stored groups name is a material of the
+        // payload's own audit rows, so nothing was dropped on the way there
+        // either.
+        let audited: Vec<u32> = upload.materials().iter().map(|row| row.material).collect();
+        for group_material in 0..4u32 {
+            assert!(
+                audited.contains(&group_material),
+                "material {group_material} is audited on the payload: {audited:?}"
+            );
+        }
+    }
+
+    /// **AC03, re-asserted for the second group of a multi-group polygon.**
+    ///
+    /// The strip of [`group_mesh`] repeats position index 2 at two of its seven
+    /// corners. Its first group stores `[0.0, 1.0]` for both, so the first group
+    /// has no seam there; its second group stores `[0.0, 1.0]` and `[0.2, 0.9]`,
+    /// so the second group authors one. The seam therefore exists **only** in a
+    /// group the first-group mirroring cannot reach, and it has to be visible in
+    /// the upload payload.
+    ///
+    /// A splitter keyed on the position index alone, or one that welded the two
+    /// groups' corners together, would find one coordinate at position 2 in the
+    /// second group and fail.
+    #[test]
+    fn accept_f10_e_second_group_uv_seam_stays_a_visible_seam() {
+        let tree = group_tree();
+        let session = world_session(&tree.0, "ZBD/c1");
+        let archive = texture_key();
+        let textures = TextureCatalog::open(&session, std::slice::from_ref(&archive));
+        let catalog = MeshCatalog::open(
+            &session,
+            &[gamez_key()],
+            &seam_dependencies(&textures, &archive),
+        );
+        let container = catalog.containers().next().expect("one container");
+        let topology = container.topology(0).expect("the stored topology");
+        let resolved = catalog
+            .resolve(&session, &gamez_key(), 0)
+            .expect("the group mesh resolves");
+        let upload = catalog
+            .prepare_upload(&session, &resolved)
+            .expect("the group mesh uploads");
+        let render = upload.render();
+
+        // The first group really has no seam at position 2, so the second
+        // group's seam cannot be an accident of the fixture.
+        assert_eq!(
+            uvs_at(render, &topology, 0, 0, 2),
+            vec![[0.0f32.to_bits(), 1.0f32.to_bits()]],
+            "the first group stores one coordinate for both corners at position 2"
+        );
+        let mut expected = vec![
+            [0.0f32.to_bits(), 1.0f32.to_bits()],
+            [0.2f32.to_bits(), 0.9f32.to_bits()],
+        ];
+        expected.sort_unstable();
+        assert_eq!(
+            uvs_at(render, &topology, 0, 1, 2),
+            expected,
+            "the second group authors two coordinates at one position, and the seam survives"
+        );
+
+        // The other two repeated positions are authored identically in both
+        // groups, so they stay a single coordinate each: the seam above is the
+        // authored one, not a general un-welding of a strip.
+        for position in [1u32, 3] {
+            let only = [1.0f32.to_bits(), 0.0f32.to_bits()];
+            let same = [1.0f32.to_bits(), 1.0f32.to_bits()];
+            let want = if position == 1 { only } else { same };
+            assert_eq!(
+                uvs_at(render, &topology, 0, 0, position),
+                vec![want],
+                "position {position} in the first group"
+            );
+            assert_eq!(
+                uvs_at(render, &topology, 0, 1, position),
+                vec![want],
+                "position {position} in the second group"
+            );
+        }
+
+        // The two groups never share a vertex. Their stored UVs are equal at two
+        // of the three repeated positions, so a splitter that keyed on position
+        // and UV alone would weld them there; the group's own raw material index
+        // is in the key, so the two groups stay two sets of seven. This is the
+        // split the task asks for where a group's UV *differs*, and the one that
+        // keeps two authored materials apart where it does not.
+        let first = group_vertices(render, 0, 0);
+        let second = group_vertices(render, 0, 1);
+        assert_eq!(first.len(), 7, "seven distinct corners in the first group");
+        assert_eq!(
+            second.len(),
+            7,
+            "seven distinct corners in the second group"
+        );
+        assert!(
+            first.iter().all(|vertex| vertex.material == 0),
+            "the first group's corners are all material 0"
+        );
+        assert!(
+            second.iter().all(|vertex| vertex.material == 1),
+            "the second group's corners are all material 1: {:?}",
+            second.iter().map(|v| v.material).collect::<Vec<_>>()
+        );
+
+        // And a group whose UV set is *identical* to another's still has to be a
+        // separate draw, because its material index differs: polygon 1 stores
+        // groups 0 and 1 with the same three coordinates under materials 0 and 1.
+        let shared_uvs = |group: usize| {
+            let mut bits: Vec<[u32; 2]> = group_vertices(render, 1, group)
+                .iter()
+                .map(|vertex| {
+                    let uv = vertex.uv.expect("a stored coordinate");
+                    [uv[0].to_bits(), uv[1].to_bits()]
+                })
+                .collect();
+            bits.sort_unstable();
+            bits.dedup();
+            bits
+        };
+        assert_eq!(
+            shared_uvs(0),
+            shared_uvs(1),
+            "the two groups really do store the same coordinates"
+        );
+        let materials: Vec<u32> = group_vertices(render, 1, 1)
+            .iter()
+            .map(|vertex| vertex.material)
+            .collect();
+        assert_eq!(materials, [1, 1, 1], "the second group is material 1");
+        assert_ne!(
+            group_vertices(render, 1, 0)[0].material,
+            group_vertices(render, 1, 1)[0].material,
+            "identical coordinates under different materials are two vertices"
+        );
+        // Group 2 differs in its coordinates, so it is a third draw.
+        assert_ne!(shared_uvs(2), shared_uvs(0));
+        assert_eq!(group_triangles(render, 1, 2).len(), 1);
+    }
+
+    /// **The reason contract.** F10-C put `multi_material_group_polygons` on
+    /// every row whose mesh stored a multi-group polygon, because that code named
+    /// a **loss**: the extra groups had no UV set in the render mesh. Nothing is
+    /// lost now, so that code is emitted nowhere; what is left to say is that
+    /// the original renderer's *presentation* of those groups is unmeasured, and
+    /// that is [`MeshPresentationUnknown::MultiMaterialGroup`].
+    ///
+    /// The row for a mesh that stores one group per polygon must carry neither,
+    /// or the corpus claim would be false: `ZBD/planes.zbd` stores no multi-group
+    /// polygon at all.
+    #[test]
+    fn accept_f10_e_a_multi_group_row_names_the_open_question_and_a_single_group_row_does_not() {
+        let tree = group_tree();
+        let session = world_session(&tree.0, "ZBD/c1");
+        let archive = texture_key();
+        let textures = TextureCatalog::open(&session, std::slice::from_ref(&archive));
+        let catalog = MeshCatalog::open(
+            &session,
+            &[gamez_key()],
+            &seam_dependencies(&textures, &archive),
+        );
+        let records = catalog.records();
+        assert_eq!(records.len(), 2, "one row per present stored mesh");
+
+        let presentation = MeshPresentationUnknown::MultiMaterialGroup.code();
+        for row in &records {
+            let index = row.mesh_index.expect("a mesh row");
+            let faces = row.faces.expect("face counts");
+            let resolved = catalog
+                .resolve(&session, &gamez_key(), index)
+                .expect("both stored meshes resolve");
+            let upload = catalog
+                .prepare_upload(&session, &resolved)
+                .expect("both stored meshes upload");
+            let has_question = faces.multi_material_group_polygons > 0;
+
+            assert_eq!(
+                row.unsupported_reasons.contains(&presentation.to_owned()),
+                has_question,
+                "mesh {index}: the presentation question is on the row only when the mesh stored \
+                 a multi-group polygon; got {:?}",
+                row.unsupported_reasons
+            );
+            assert_eq!(
+                upload
+                    .unknowns()
+                    .contains(&MeshPresentationUnknown::MultiMaterialGroup),
+                has_question,
+                "mesh {index}: the payload carries the same question"
+            );
+            // The loss code of F10-C is gone everywhere. It named a state that
+            // no longer exists, and a consumer matching on it would be matching
+            // on a defect.
+            for reason in row
+                .unsupported_reasons
+                .iter()
+                .map(String::as_str)
+                .chain(upload.unknowns().iter().map(|unknown| unknown.code()))
+            {
+                assert_ne!(
+                    reason, "multi_material_group_polygons",
+                    "mesh {index}: the retired loss code is emitted nowhere"
+                );
+            }
+            // Every reason is still a bare code, and a multi-group row still
+            // carries the count as a number rather than inside the code.
+            for reason in &row.unsupported_reasons {
+                assert!(
+                    !reason.contains([' ', ':', '[']),
+                    "mesh {index}: a reason carries no stored data: {reason:?}"
+                );
+            }
+            assert_eq!(row.readiness, RenderMeshReadiness::Blocked);
+            assert!(!upload.is_release_ready());
+        }
+
+        // The count is on the row and the extra draws are in the payload: the
+        // two pieces of evidence the code no longer has to carry.
+        let group_row = records
+            .iter()
+            .find(|row| row.mesh_index == Some(0))
+            .expect("the group mesh row");
+        assert_eq!(
+            group_row
+                .faces
+                .expect("counts")
+                .multi_material_group_polygons,
+            2
+        );
+        let resolved = catalog
+            .resolve(&session, &gamez_key(), 0)
+            .expect("resolves");
+        assert_eq!(
+            catalog
+                .prepare_upload(&session, &resolved)
+                .expect("uploads")
+                .render()
+                .extra_group_triangles(),
+            7
+        );
+        // The three pipeline-wide presentation questions are on every payload,
+        // in their fixed order, with the conditional one appended.
+        let upload = catalog
+            .prepare_upload(&session, &resolved)
+            .expect("uploads");
+        assert_eq!(
+            upload.unknowns(),
+            [
+                MeshPresentationUnknown::FrontFaceWinding,
+                MeshPresentationUnknown::UvOrigin,
+                MeshPresentationUnknown::VertexColor,
+                MeshPresentationUnknown::MultiMaterialGroup,
+            ]
+        );
+        let single = catalog
+            .resolve(&session, &gamez_key(), 1)
+            .expect("the single-group mesh resolves");
+        let single = catalog
+            .prepare_upload(&session, &single)
+            .expect("the single-group mesh uploads");
+        assert_eq!(
+            single.unknowns(),
+            [
+                MeshPresentationUnknown::FrontFaceWinding,
+                MeshPresentationUnknown::UvOrigin,
+                MeshPresentationUnknown::VertexColor,
+            ],
+            "a mesh with one group per polygon has no multi-group question"
+        );
+        assert_eq!(single.render().extra_group_triangles(), 0);
+    }
+
+    /// **F10-C.01's source maps and its degenerate accounting survive every
+    /// group.** A second UV set is a new attribute to key on; it must not become a
+    /// new way to lose a map. Every triangle still names the stored topology
+    /// triangle it came from and the group it is the drawing of, every vertex
+    /// still names its first `(polygon, corner)`, degeneracy is still a property
+    /// of the stored indices, and the material grouping still covers every
+    /// triangle exactly once.
+    #[test]
+    fn accept_f10_e_source_maps_and_degenerates_survive_every_group() {
+        let tree = group_tree();
+        let session = world_session(&tree.0, "ZBD/c1");
+        let archive = texture_key();
+        let textures = TextureCatalog::open(&session, std::slice::from_ref(&archive));
+        let catalog = MeshCatalog::open(
+            &session,
+            &[gamez_key()],
+            &seam_dependencies(&textures, &archive),
+        );
+        let container = catalog.containers().next().expect("one container");
+        let stored = container.meshes().get(0).expect("mesh 0");
+        let resolved = catalog
+            .resolve(&session, &gamez_key(), 0)
+            .expect("resolves");
+        let upload = catalog
+            .prepare_upload(&session, &resolved)
+            .expect("uploads");
+        let render = upload.render();
+        let topology = container
+            .topology(0)
+            .expect("the stored topology is kept for the row");
+
+        // Every `(polygon, step)` of the stored topology, times every stored group
+        // of that polygon, and nothing else. This is F10-C.01's triangle map
+        // multiplied out by the groups.
+        let mut want: Vec<(usize, usize, usize)> = Vec::new();
+        for triangle in &topology.triangles {
+            let groups = stored.groups(triangle.polygon).expect("groups");
+            for group in 0..groups.len() {
+                want.push((triangle.polygon, triangle.step, group));
+            }
+        }
+        let got: Vec<(usize, usize, usize)> = render
+            .triangles()
+            .iter()
+            .map(|t| (t.source.polygon, t.source.step, t.group))
+            .collect();
+        assert_eq!(got, want, "the triangle source map covers every group once");
+
+        // Every vertex names a real corner of the polygon that produced it, and
+        // its own group.
+        for (index, vertex) in render.vertices().iter().enumerate() {
+            let polygon = stored
+                .mesh
+                .polygons
+                .get(vertex.source.polygon)
+                .expect("a stored polygon");
+            assert!(
+                vertex.source.corner < polygon.corners.len(),
+                "vertex {index} names a corner the polygon does not have"
+            );
+            assert!(
+                vertex.group < stored.groups(vertex.source.polygon).expect("groups").len(),
+                "vertex {index} names a group the polygon does not have"
+            );
+        }
+
+        // Degeneracy is the stored position indices' own: the same steps in every
+        // group of a polygon, and no others.
+        for polygon in 0..stored.mesh.polygons.len() {
+            let degenerate: Vec<usize> = topology
+                .triangles
+                .iter()
+                .filter(|t| t.polygon == polygon && t.is_degenerate())
+                .map(|t| t.step)
+                .collect();
+            let groups = stored.groups(polygon).expect("groups");
+            for group in 0..groups.len() {
+                let marked: Vec<usize> = group_triangles(render, polygon, group)
+                    .iter()
+                    .filter(|t| t.degenerate)
+                    .map(|t| t.source.step)
+                    .collect();
+                assert_eq!(marked, degenerate, "polygon {polygon} group {group}");
+            }
+        }
+
+        // The material grouping is still a partition: every triangle in exactly
+        // one group, ascending, and the groups are the stored material indices in
+        // ascending order.
+        let mut covered = vec![false; render.triangles().len()];
+        for group in render.groups() {
+            assert!(
+                group.triangles.windows(2).all(|pair| pair[0] < pair[1]),
+                "material {} holds its triangles in ascending order",
+                group.material
+            );
+            for &index in &group.triangles {
+                assert!(
+                    !covered[index],
+                    "triangle {index} is in two material groups"
+                );
+                covered[index] = true;
+                assert_eq!(render.triangles()[index].material, group.material);
+            }
+        }
+        assert!(
+            covered.iter().all(|seen| *seen),
+            "every triangle is grouped"
+        );
+        let materials: Vec<u32> = render.groups().iter().map(|g| g.material).collect();
+        let mut sorted = materials.clone();
+        sorted.sort_unstable();
+        assert_eq!(materials, sorted, "material groups in ascending order");
+        // A group's material reaches a material group of its own.
+        for attributes in stored.material_groups.iter().flatten() {
+            assert!(
+                materials.contains(&attributes.material),
+                "stored material {} is a render material group: {materials:?}",
+                attributes.material
+            );
+        }
+    }
+
+    /// **A polygon with no stored group is refused by name, not invented.** The
+    /// reference asserts `mat_count > 0` and the measured corpus never stores
+    /// `0`, so this is the only way to reach the refusal through the production
+    /// reader. Two ways of quietly getting on with it are both worse than a
+    /// refusal: drawing the face with a material the bytes never named, and
+    /// dropping the face.
+    ///
+    /// The refusal is a **row** with its code, its diagnostic and its exact face
+    /// counts, nothing is uploaded for the mesh, and the sibling face's own
+    /// polygon is named in the diagnostic so the cause is locatable.
+    #[test]
+    fn accept_f10_e_a_polygon_without_a_stored_group_is_refused_by_name() {
+        let tree = Tree::world(&["sky", "ground"], &["decoy"]);
+        tree.write("ZBD/c1/gamez.zbd", &no_group_container());
+        let session = world_session(&tree.0, "ZBD/c1");
+        let archive = texture_key();
+        let textures = TextureCatalog::open(&session, std::slice::from_ref(&archive));
+        let catalog = MeshCatalog::open(
+            &session,
+            &[gamez_key()],
+            &seam_dependencies(&textures, &archive),
+        );
+        assert_eq!(
+            catalog.failures().count(),
+            0,
+            "the container reads: the layout can walk a polygon with no group"
+        );
+
+        let records = catalog.records();
+        assert_eq!(records.len(), 1, "the one present stored mesh is a row");
+        let row = &records[0];
+        assert_eq!(row.readiness, RenderMeshReadiness::Failed);
+        assert_eq!(
+            row.unsupported_reasons,
+            ["render_mesh_refused", "polygon_without_material_group"],
+            "the refusal is named on the row"
+        );
+        let failure = row.failure.as_ref().expect("the reader's context");
+        assert_eq!(failure.stage, MeshFailureStage::Render);
+        assert_eq!(failure.mesh, Some(0));
+        assert_eq!(
+            failure.offset, None,
+            "a check over bytes that were read whole invents no offset"
+        );
+        assert!(
+            failure
+                .diagnostic
+                .contains("polygon 0 stored no material group"),
+            "{}",
+            failure.diagnostic
+        );
+        // The face accounting is exact even for a mesh nothing draws: two stored
+        // polygons, both decoded, so the refusal is not a face count in disguise.
+        let faces = row.faces.expect("face counts");
+        assert_eq!((faces.faces, faces.triangles, faces.rejected), (2, 2, 0));
+        assert_eq!(faces.multi_material_group_polygons, 0);
+
+        // And the lookup refuses with the same stable code rather than handing
+        // over a render mesh that invents a material.
+        let error = catalog
+            .resolve(&session, &gamez_key(), 0)
+            .expect_err("the mesh is not uploadable");
+        assert_eq!(error.code(), "polygon_without_material_group");
+        assert!(error.to_string().contains("not uploadable"), "{error}");
+
+        // The two remaining refusals are guard clauses on a **public** entry
+        // point: the reader builds the table beside the polygons from the same
+        // two stored counts, so a table that does not describe them can only come
+        // from a caller. They are named, not indexed, and measured on the corpus
+        // as never firing.
+        let one = RawPolygon {
+            kind: PrimitiveKind::Polygon,
+            raw_flags: 0,
+            material: 0,
+            corners: vec![corner(0), corner(1), corner(2)],
+        };
+        let mesh = RawMesh {
+            positions: POSITIONS.to_vec(),
+            normals: NORMALS.to_vec(),
+            polygons: vec![one.clone()],
+        };
+        let group = |material: u32, uvs: &[[f32; 2]]| {
+            vec![RawMaterialGroup {
+                material,
+                uvs: uvs.to_vec(),
+            }]
+        };
+        assert_eq!(
+            RenderMesh::from_stored_groups(&mesh, &[]),
+            Err(RenderMeshError::GroupCount {
+                polygons: 1,
+                groups: 0
+            })
+        );
+        assert_eq!(
+            RenderMesh::from_stored_groups(&mesh, &[Vec::new()]),
+            Err(RenderMeshError::PolygonWithoutMaterialGroup { polygon: 0 })
+        );
+        assert_eq!(
+            RenderMesh::from_stored_groups(&mesh, &[group(3, &[[0.0, 0.0]])]),
+            Err(RenderMeshError::GroupCornerCount {
+                polygon: 0,
+                group: 0,
+                corners: 3,
+                uvs: 1
+            })
+        );
+        // The same three polygons with a table that does describe them build, so
+        // the refusals above are about the table and not about the mesh.
+        assert!(
+            RenderMesh::from_stored_groups(
+                &mesh,
+                &[group(3, &[[0.0, 0.0], [0.5, 0.0], [1.0, 1.0]])]
+            )
+            .is_ok()
+        );
+        assert_eq!(
+            one.corners.len(),
+            3,
+            "the IR fixture the refusals above ran against is the one the reader would build"
         );
     }
 }

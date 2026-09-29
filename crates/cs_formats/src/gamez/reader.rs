@@ -72,7 +72,9 @@
 //! stage F10-A's published contract and F10-C.01 has merged a consumer of it, so
 //! this task does not add a field to it. [`RawPolygon::material`] and each
 //! corner's [`RawCorner::uv`] mirror the **first** group, which is exact for a
-//! single-group asset and is the documented single-material view for the rest.
+//! single-group asset and is a single-material *view* of the rest, not the whole
+//! of it: the group list is what a consumer that needs every authored
+//! coordinate and every authored material index reads.
 
 use std::fmt;
 use std::mem::size_of;
@@ -498,6 +500,9 @@ const STUB_MESH_INFO: RawMeshInfo = RawMeshInfo {
 /// does not add a field to it; [`GameZMesh::groups`] pairs an IR polygon with its
 /// stored groups, and [`GameZMesh::groups_are_complete`] states the invariant the
 /// parallel array depends on.
+///
+/// The reader never merges, orders or dedupes groups: `mat_count` is the stored
+/// count and the list is exactly that long, in stored order.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawMaterialGroup {
     /// Stored material index, unchanged. The material record layout is not
@@ -705,6 +710,13 @@ pub struct GameZMesh {
     /// [`GameZMesh::groups`] relies on. A polygon's groups live here rather than
     /// on [`RawPolygon`] because the IR is a contract other crates already build
     /// against and this task does not add a field to it.
+    ///
+    /// **This list, not [`RawPolygon::material`], is the authority on how many
+    /// groups a stored polygon has.** The IR field mirrors group `0` only.
+    /// Measured on the installation: 127 728 stored polygons keep one group,
+    /// 999 keep two and 7 keep three, and all of the multi-group ones are in the
+    /// world archives — `ZBD/planes.zbd` stores none. See
+    /// `docs/findings/2026-09-29-f10-e-material-groups-into-the-render-mesh.md`.
     pub material_groups: Vec<Vec<RawMaterialGroup>>,
     /// Where this mesh's data started, in bytes from the container start.
     pub data_offset: u64,
@@ -733,9 +745,10 @@ impl GameZMesh {
     /// One corner's texture coordinate for one stored material group, or `None`
     /// when any of the three indices is out of range.
     ///
-    /// This is the lookup a consumer of a multi-group polygon needs:
-    /// [`RawCorner::uv`] on the IR carries the **first** group, which is exact for
-    /// a single-group asset but not for a polygon that stores two or three.
+    /// [`RawCorner::uv`] on the IR carries material group `0` only, so this is
+    /// the lookup a consumer of a **multi-group** polygon needs: a stored
+    /// `mat_count` of two or three means two or three authored coordinates per
+    /// corner, and only the first one is on the IR.
     pub fn corner_uv(&self, polygon: usize, group: usize, corner: usize) -> Option<[f32; 2]> {
         self.groups(polygon)?.get(group)?.uvs.get(corner).copied()
     }

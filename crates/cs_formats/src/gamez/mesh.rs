@@ -29,13 +29,21 @@ pub enum PrimitiveKind {
 /// One polygon corner as stored. Attributes are per corner, not per
 /// position: two corners sharing a position index may differ in every
 /// other attribute, and the IR keeps both.
+///
+/// `normal` and `color` are per corner in the stored layout, so these two are
+/// the whole of the corner. `uv` is **not**: the CS GameZ layout stores one UV
+/// set per *material group* of a polygon, so a corner has one coordinate per
+/// group and the IR keeps only the group's `0`. The full sets are on
+/// [`super::reader::GameZMesh::material_groups`], indexed by polygon and
+/// group; a consumer that needs every authored coordinate reads them there.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RawCorner {
     /// Index into [`RawMesh::positions`], unchanged.
     pub position: u32,
     /// Index into [`RawMesh::normals`], unchanged, if the polygon has one.
     pub normal: Option<u32>,
-    /// Texture coordinate as stored (no V flip, no wrap).
+    /// Texture coordinate of material group `0` of this polygon, as stored
+    /// (no V flip, no wrap), or `None` when the polygon stored no group at all.
     pub uv: Option<[f32; 2]>,
     /// Corner color as stored (no clamp, no color-space change).
     pub color: Option<[f32; 3]>,
@@ -49,8 +57,19 @@ pub struct RawPolygon {
     /// Stored flag bits, unchanged. Their meaning is unknown until a variant
     /// establishes it; no bit is interpreted here.
     pub raw_flags: u32,
-    /// Stored material index, unchanged. The material record layout is
-    /// unknown; this is a reference, not a resolved material.
+    /// Material index of material group `0` of this polygon, unchanged. The
+    /// material record layout is unknown; this is a reference, not a resolved
+    /// material.
+    ///
+    /// A stored polygon may keep **more than one** group (the layout stores
+    /// `mat_count` of them, measured at one, two or three). This field is the
+    /// first group's index, which is the whole group list only when the polygon
+    /// stored exactly one; the rest are on
+    /// [`super::reader::GameZMesh::material_groups`], one entry per stored
+    /// polygon, and they are the authority. This field is `0` — a value the
+    /// stored bytes never said — when the polygon stored no group at all, which
+    /// the reader reports as
+    /// [`super::reader::ParseFinding::PolygonWithoutMaterial`].
     pub material: u32,
     /// Corners in stored order.
     pub corners: Vec<RawCorner>,
