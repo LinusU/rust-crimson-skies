@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
   "task_id": "F12-G (Rally #368)",
-  "candidate_tree": "140c0063e8552c108a4e0da208d370fe39d83429",
+  "candidate_tree": "8c10cd0b9d85a339f9eda0c474ec42c40a13084b",
   "engine": {
     "rust": "rustc 1.98.1 (48a229cea 2026-09-01)",
     "bevy": "Cargo.lock: 0.19.1",
     "avian": "Cargo.lock: avian3d 0.7.0"
   },
-  "created_at": "2026-09-29T11:54:05Z",
+  "created_at": "2026-09-29T11:57:47Z",
   "command": {
     "argv": [
       "cargo",
@@ -115,17 +115,17 @@
   "artifacts": [
     {
       "path": "cargo-test.log",
-      "sha256": "21c538f05de748edfc0263151414eda61a3ee8b6cef455e4630e772bcdc3259f",
+      "sha256": "1b324c6c0e5b47847f0772e5093762ae7112b1b7b5e30a80293a297b5a12bc20",
       "kind": "test log"
     },
     {
       "path": "accept-f12-b.log",
-      "sha256": "cce844c1cfd91cc10bc4f055e8cccc9abae56c9f05fc5b9aca6a018b22167f96",
+      "sha256": "9dfbbb4e17314bbb87909db79f756d025081c53644e4db575309ce5c6c357bb1",
       "kind": "test log"
     },
     {
       "path": "accept-f12-g.log",
-      "sha256": "c59934b074544ba1e416a26bd794bc0e0b86be48ddb90a8c7f00c9c8187a6b12",
+      "sha256": "f5b804a22f68f3b8fed31fe142e73176f41e3a10b5d9f4bed60862109090d706",
       "kind": "test log"
     },
     {
