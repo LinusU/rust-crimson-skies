@@ -36,6 +36,10 @@
 //! resource image routed by its observed rule, read through the
 //! `cs_content::config` consumers, with declared tuning fields resolved to
 //! checked constants and localized string ids resolved through the catalog.
+//! [`script_discovery`] is the F13-B `scripts` command: every ZBD container
+//! of an installation is routed and its loading, mission and animation
+//! programs located and classified, with an optional coverage check that
+//! fails closed on a container that hides its programs.
 
 pub mod catalog;
 pub mod config;
@@ -45,5 +49,6 @@ pub mod interp;
 pub mod reference_capture;
 pub mod resolve;
 pub mod rof;
+pub mod script_discovery;
 pub mod textures;
 pub mod zbd;

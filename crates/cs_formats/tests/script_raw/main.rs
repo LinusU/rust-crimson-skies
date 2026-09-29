@@ -8,15 +8,22 @@
 //! `CS_GAME_DIR` access.
 
 use cs_formats::script_raw::{
-    ByteSpan, Candidacy, Confidence, DispatchOutcome, EXCLUDED_FAMILY_REASON, EvidenceError,
-    EvidenceLocator, FormatDiscriminator, INTERP_BODY_UNESTABLISHED, InstructionClaimError,
-    InstructionStatus, InventoryFinding, LocatorKind, MAX_LEADS_PER_RECORD, MAX_NOTE_BYTES,
+    ByteSpan, Candidacy, Confidence, DiscoveryFinding, DispatchOutcome, EXCLUDED_FAMILY_REASON,
+    EvidenceError, EvidenceLocator, FormatDiscriminator, INTERP_BODY_UNESTABLISHED,
+    InstructionClaimError, InstructionStatus, InventoryFinding, LocatorKind, MAX_LEADS_PER_RECORD,
+    MAX_NOTE_BYTES, OpcodeEntry, OpcodeLedger, ProgramError, ProgramKind, ProgramLocator,
     RecordKind, ReferenceKind, ResearchMethod, ScriptContainerEntry, ScriptEvidence,
-    ScriptInventory, ScriptRole, ScriptSource, UNDECODED_UNESTABLISHED, inventory_scripts,
+    ScriptInventory, ScriptRole, ScriptSource, UNDECODED_UNESTABLISHED, discover_container,
+    inventory_scripts, mission_scope, walk_program,
 };
-use cs_formats::zbd::{ANIMATION_SIGNATURE, ANIMATION_VERSION, INTERP_SIGNATURE, INTERP_VERSION};
+use cs_formats::zbd::{
+    ANIMATION_SIGNATURE, ANIMATION_VERSION, INTERP_SIGNATURE, INTERP_VERSION, ZbdFamily,
+};
 use cs_formats::{INDEX_ENTRY_BYTES, INTERP_HEADER_BYTES, NAME_FIELD_BYTES};
 use cs_types::install::RelativePath;
+
+use std::fs;
+use std::path::PathBuf;
 
 /// One authored script: its name and its lines of `(argument_count, data)`.
 type AuthoredScript<'a> = (&'a [u8], &'a [(u32, &'a [u8])]);
@@ -610,4 +617,462 @@ fn accept_f13_a_inventory_order_is_stable() {
     assert_eq!(forward, reversed);
     let order: Vec<&str> = forward.entries().iter().map(|e| e.container()).collect();
     assert_eq!(order, ["c", "b", "a"]);
+}
+
+// ---------------------------------------------------------------------------
+// Stage F13-B: locate and classify loading, mission and animation programs
+// ---------------------------------------------------------------------------
+
+/// Builds a reader-family archive (F06/indexed by a version-one trailer) whose
+/// members are `(name, body)` in declaration order: member data, then one
+/// 148-byte index entry per member, then the version-one trailer.
+fn reader_archive(members: &[(&[u8], &[u8])]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let mut extents = Vec::new();
+    for (name, body) in members {
+        extents.push((bytes.len() as u32, body.len() as u32, *name));
+        bytes.extend_from_slice(body);
+    }
+    for (start, length, name) in extents {
+        bytes.extend_from_slice(&start.to_le_bytes());
+        bytes.extend_from_slice(&length.to_le_bytes());
+        let mut field = [0u8; 64];
+        field[..name.len()].copy_from_slice(name);
+        bytes.extend_from_slice(&field);
+        bytes.extend_from_slice(&[0u8; 76]);
+    }
+    bytes.extend_from_slice(&1u32.to_le_bytes());
+    bytes.extend_from_slice(&(members.len() as u32).to_le_bytes());
+    bytes
+}
+
+/// The absolute path of the read-only installation, or a loud failure when
+/// the `retail` capability is missing.
+fn game_dir() -> PathBuf {
+    PathBuf::from(
+        std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR must be set to run retail tests"),
+    )
+}
+
+/// The F13-B minimum scenario: an opcode the ledger does not name, reached at a
+/// program counter of a located mission program, fails with the mission and the
+/// program's source location.
+#[test]
+fn accept_f13_b_unknown_opcode_at_reached_pc_fails_with_mission_and_location() {
+    let member = b"\x0a\x00\x00\x00\x0b\x00\x00\x00";
+    let bytes = reader_archive(&[(b"objectives.zrd", member)]);
+    let container = path("zbd/c1/m02/zrdr.zbd");
+    let discovery = discover_container("synthetic", &container, &bytes);
+    assert_eq!(discovery.family(), Some(ZbdFamily::Reader));
+    assert_eq!(discovery.len(), 1, "one member is one program");
+    let program = &discovery.programs()[0];
+    assert_eq!(program.kind(), ProgramKind::Mission);
+    assert_eq!(program.confidence(), Confidence::Inferred);
+    assert_eq!(program.mission(), Some("zbd/c1/m02"));
+    assert_eq!(program.mission_label(), "zbd/c1/m02");
+    assert_eq!(program.container(), "synthetic");
+    assert_eq!(program.locator().member(), Some("objectives.zrd"));
+    assert_eq!(
+        program.locator().span(),
+        ByteSpan::new(0, member.len() as u64)
+    );
+    assert_eq!(program.bytes(), member);
+
+    let error = program
+        .walk(&OpcodeLedger::new(), 4, 4096)
+        .expect_err("the empty ledger refuses the first reached opcode");
+    assert_eq!(error.code(), "unknown_opcode");
+    assert_eq!(error.mission(), Some("zbd/c1/m02"));
+    assert_eq!(error.locator(), Some(program.locator()));
+    let text = error.to_string();
+    assert!(text.contains("mission `zbd/c1/m02`"), "{text}");
+    assert!(text.contains("objectives.zrd"), "{text}");
+    match error {
+        ProgramError::UnknownOpcode {
+            mission,
+            locator,
+            pc,
+            opcode,
+        } => {
+            assert_eq!(mission, "zbd/c1/m02");
+            assert_eq!(&locator, program.locator());
+            assert_eq!(pc, ByteSpan::new(0, 4));
+            assert_eq!(opcode, 0x0000_000a);
+        }
+        other => panic!("expected unknown_opcode, got {other:?}"),
+    }
+}
+
+/// The ledger is consulted at every reached program counter and fails closed:
+/// removing a naming entry makes the walk stop at the next counter, and an
+/// entry that says nothing or repeats a value is refused.
+#[test]
+fn accept_f13_b_ledger_names_reached_opcodes_and_fails_closed() {
+    let locator = ProgramLocator::new("synthetic", Some("x.zrd".to_owned()), ByteSpan::new(0, 8));
+    let one = [1u8, 0, 0, 0];
+    let two = [1u8, 0, 0, 0, 2, 0, 0, 0];
+    let mut ledger = OpcodeLedger::new();
+    assert!(ledger.is_empty());
+    ledger
+        .insert(
+            OpcodeEntry::new(
+                1,
+                "first",
+                ProgramKind::Loading,
+                Confidence::Inferred,
+                "synthetic probe",
+            )
+            .expect("a complete entry is accepted"),
+        )
+        .expect("the first entry of an opcode is accepted");
+
+    let reached =
+        walk_program("m", &locator, &one, 4, &ledger, 16).expect("the known opcode is walked");
+    assert_eq!(reached.len(), 1, "only the named opcode is reached");
+    assert_eq!(reached[0].opcode, 1);
+    assert_eq!(reached[0].pc, ByteSpan::new(0, 4));
+    let error = walk_program("m", &locator, &two, 4, &ledger, 16)
+        .expect_err("the second opcode is not named");
+    assert_eq!(error.code(), "unknown_opcode");
+    match error {
+        ProgramError::UnknownOpcode { pc, opcode, .. } => {
+            assert_eq!(pc, ByteSpan::new(4, 4));
+            assert_eq!(opcode, 2);
+        }
+        other => panic!("expected unknown_opcode, got {other:?}"),
+    }
+
+    // An entry that names nothing is not a claim.
+    assert_eq!(
+        OpcodeEntry::new(7, "  ", ProgramKind::Mission, Confidence::Inferred, "probe")
+            .map_err(|error| error.code()),
+        Err("empty_spelling")
+    );
+    assert_eq!(
+        OpcodeEntry::new(7, "x", ProgramKind::Mission, Confidence::Inferred, "")
+            .map_err(|error| error.code()),
+        Err("empty_source")
+    );
+    assert_eq!(
+        OpcodeEntry::new(7, "x", ProgramKind::Mission, Confidence::Unknown, "probe")
+            .map_err(|error| error.code()),
+        Err("unknown_confidence")
+    );
+    // One opcode value with two meanings is ambiguous, not overwritten.
+    assert_eq!(
+        ledger
+            .insert(
+                OpcodeEntry::new(
+                    1,
+                    "other",
+                    ProgramKind::Mission,
+                    Confidence::Inferred,
+                    "probe"
+                )
+                .expect("the entry itself is complete")
+            )
+            .map_err(|error| error.code()),
+        Err("duplicate_opcode")
+    );
+    assert_eq!(ledger.lookup(1).map(OpcodeEntry::spelling), Some("first"));
+    assert_eq!(ledger.entries().count(), 1);
+}
+
+/// The walk refuses empty bytes, a word width outside the measured range, a
+/// trailing partial word and an unbounded program.
+#[test]
+fn accept_f13_b_walk_refuses_empty_truncated_and_unbounded_programs() {
+    let locator = ProgramLocator::new("synthetic", None, ByteSpan::new(0, 0));
+    let empty = walk_program("m", &locator, &[], 4, &OpcodeLedger::new(), 8);
+    assert_eq!(empty.map_err(|error| error.code()), Err("empty_program"));
+    assert_eq!(
+        walk_program("m", &locator, &[1, 0, 0, 0], 0, &OpcodeLedger::new(), 8)
+            .map_err(|error| error.code()),
+        Err("invalid_word_width")
+    );
+    assert_eq!(
+        walk_program("m", &locator, &[1, 0, 0, 0], 8, &OpcodeLedger::new(), 8)
+            .map_err(|error| error.code()),
+        Err("invalid_word_width")
+    );
+    assert_eq!(
+        walk_program("m", &locator, &[1, 2], 4, &OpcodeLedger::new(), 8)
+            .map_err(|error| error.code()),
+        Err("truncated_opcode")
+    );
+
+    // A ledger that names every value still stops at its instruction budget.
+    let mut ledger = OpcodeLedger::new();
+    ledger
+        .insert(
+            OpcodeEntry::new(
+                1,
+                "loop",
+                ProgramKind::Loading,
+                Confidence::Inferred,
+                "probe",
+            )
+            .expect("complete"),
+        )
+        .expect("first");
+    let error = walk_program("m", &locator, &[1, 0, 0, 0, 1, 0, 0, 0], 4, &ledger, 1)
+        .expect_err("the budget bounds the walk");
+    assert_eq!(error.code(), "budget_exceeded");
+}
+
+/// A mission directory scopes a program; a group or content-root archive does
+/// not, and the key is case-insensitive.
+#[test]
+fn accept_f13_b_mission_scope_is_the_mission_directory() {
+    assert_eq!(
+        mission_scope(&path("zbd/c1/m02/zrdr.zbd")).as_deref(),
+        Some("zbd/c1/m02")
+    );
+    assert_eq!(
+        mission_scope(&path("ZBD/C1/M02/ZRDR.ZBD")).as_deref(),
+        Some("zbd/c1/m02")
+    );
+    assert_eq!(mission_scope(&path("zbd/c1/zrdr.zbd")), None);
+    assert_eq!(mission_scope(&path("zbd/interp.zbd")), None);
+    assert_eq!(mission_scope(&path("zbd/c1/m02/deeper/zrdr.zbd")), None);
+}
+
+/// INTERP script bodies are documented loading programs; animation containers
+/// are inferred from their names and located after the validated header.
+#[test]
+fn accept_f13_b_classifies_loading_and_animation_programs() {
+    let loading = interp(&[(b"boot", &[(1, b"go\0".as_slice())])], b"");
+    let loading_path = path("zbd/interp.zbd");
+    let discovery = discover_container("loading", &loading_path, &loading);
+    assert_eq!(discovery.family(), Some(ZbdFamily::Interp));
+    assert_eq!(discovery.len(), 1);
+    let program = &discovery.programs()[0];
+    assert_eq!(program.kind(), ProgramKind::Loading);
+    assert_eq!(program.confidence(), Confidence::Documented);
+    assert_eq!(program.mission(), None);
+    assert_eq!(program.mission_label(), "loading");
+    let body_start = (INTERP_HEADER_BYTES + INDEX_ENTRY_BYTES) as u64;
+    assert_eq!(program.locator().span(), ByteSpan::new(body_start, 15));
+    assert_eq!(program.bytes(), &loading[body_start as usize..]);
+    // A loading program takes the same fail-closed walk as any other.
+    assert_eq!(
+        program
+            .walk(&OpcodeLedger::new(), 4, 64)
+            .map_err(|e| e.code()),
+        Err("unknown_opcode")
+    );
+
+    let camera = animation(b"\x11\x22\x33\x44");
+    let camera_path = path("zbd/c1/cam_anim.zbd");
+    let discovery = discover_container("camera", &camera_path, &camera);
+    assert_eq!(discovery.family(), Some(ZbdFamily::Animation));
+    assert_eq!(discovery.len(), 1);
+    let program = &discovery.programs()[0];
+    assert_eq!(program.kind(), ProgramKind::CameraAnimation);
+    assert_eq!(program.confidence(), Confidence::Inferred);
+    assert_eq!(program.mission(), None);
+    assert_eq!(program.locator().span(), ByteSpan::new(8, 4));
+    assert_eq!(program.bytes(), b"\x11\x22\x33\x44");
+
+    let mission = animation(b"\x55\x66\x77\x88");
+    let mission_path = path("zbd/c1/m02/mis_anim.zbd");
+    let discovery = discover_container("mission-anim", &mission_path, &mission);
+    let program = &discovery.programs()[0];
+    assert_eq!(program.kind(), ProgramKind::MissionAnimation);
+    assert_eq!(program.confidence(), Confidence::Inferred);
+    assert_eq!(program.mission(), Some("zbd/c1/m02"));
+    assert_eq!(program.bytes(), b"\x55\x66\x77\x88");
+    let error = program
+        .walk(&OpcodeLedger::new(), 4, 64)
+        .expect_err("empty ledger");
+    assert_eq!(error.code(), "unknown_opcode");
+    assert_eq!(error.mission(), Some("zbd/c1/m02"));
+}
+
+/// Reader members are classified by their observed names and, when no name
+/// names a role, by the mission the path scopes them to.
+#[test]
+fn accept_f13_b_reader_members_are_classified_by_name_and_mission_scope() {
+    let members: &[(&[u8], &[u8])] = &[
+        (b"aiv.zrd", b"\x01\x00\x00\x00"),
+        (b"mis_anim.zrd", b"\x02\x00\x00\x00"),
+        (b"cam_anim.zrd", b"\x03\x00\x00\x00"),
+        (b"scene.zrd", b"\x04\x00\x00\x00"),
+    ];
+    let bytes = reader_archive(members);
+    let container = path("ZBD/C1/M02/zrdr.zbd");
+    let discovery = discover_container("mission", &container, &bytes);
+    let kinds: Vec<(Option<&str>, ProgramKind, Confidence)> = discovery
+        .programs()
+        .iter()
+        .map(|program| {
+            (
+                program.locator().member(),
+                program.kind(),
+                program.confidence(),
+            )
+        })
+        .collect();
+    assert_eq!(
+        kinds,
+        [
+            (Some("aiv.zrd"), ProgramKind::Mission, Confidence::Inferred),
+            (
+                Some("mis_anim.zrd"),
+                ProgramKind::MissionAnimation,
+                Confidence::Inferred
+            ),
+            (
+                Some("cam_anim.zrd"),
+                ProgramKind::CameraAnimation,
+                Confidence::Inferred
+            ),
+            (
+                Some("scene.zrd"),
+                ProgramKind::Mission,
+                Confidence::Inferred
+            ),
+        ]
+    );
+    assert!(discovery.findings().is_empty());
+    // Every member is located at its own byte range; no bytes are copied.
+    assert_eq!(
+        discovery.programs()[0].locator().span(),
+        ByteSpan::new(0, 4)
+    );
+    assert_eq!(
+        discovery.programs()[3].locator().span(),
+        ByteSpan::new(12, 4)
+    );
+
+    // A group archive has no mission: its unnamed members stay reader entries.
+    let group = reader_archive(&[(b"templates.zrd", b"\x09\x00\x00\x00")]);
+    let group_path = path("zbd/c1/zrdr.zbd");
+    let discovery = discover_container("group", &group_path, &group);
+    assert_eq!(discovery.programs()[0].mission(), None);
+    assert_eq!(discovery.programs()[0].kind(), ProgramKind::ReaderEntry);
+    assert_eq!(discovery.programs()[0].confidence(), Confidence::Inferred);
+}
+
+/// A refused dispatch, an excluded family and a refused member index are kept
+/// as findings with no guessed program.
+#[test]
+fn accept_f13_b_refusals_stay_visible_without_guessing_programs() {
+    let texture = vec![0u8; 16];
+    let texture_path = path("zbd/c1/texture.zbd");
+    let discovery = discover_container("texture", &texture_path, &texture);
+    assert_eq!(discovery.family(), Some(ZbdFamily::Texture));
+    assert!(discovery.is_empty());
+    assert!(matches!(
+        discovery.findings(),
+        [DiscoveryFinding::Excluded {
+            family: ZbdFamily::Texture,
+            ..
+        }]
+    ));
+
+    let unknown = b"????unknown-bytes".to_vec();
+    let unknown_path = path("zbd/c1/strange.zbd");
+    let discovery = discover_container("unknown", &unknown_path, &unknown);
+    assert_eq!(discovery.family(), None);
+    assert_eq!(
+        discovery.findings(),
+        [DiscoveryFinding::DispatchRefused {
+            code: "unknown_family"
+        }]
+    );
+    assert!(discovery.is_empty());
+
+    // A reader archive whose trailer is not a version-one index is refused,
+    // and the refusal is a finding rather than a guessed program.
+    let broken = b"\x00\x00\x00\x00BADTRAILER".to_vec();
+    let broken_path = path("zbd/c1/zrdr.zbd");
+    let discovery = discover_container("broken", &broken_path, &broken);
+    assert_eq!(discovery.family(), Some(ZbdFamily::Reader));
+    assert!(
+        discovery
+            .findings()
+            .iter()
+            .any(|finding| finding.code() == "index_refused")
+    );
+    assert!(discovery.is_empty());
+}
+
+/// AC02 over the original installation: every campaign program is located, the
+/// mission program's empty-ledger walk fails with its mission and source
+/// location, and no role is claimed beyond the name/path rules.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_f13_b_retail_locates_mission_programs() {
+    let root = game_dir();
+
+    // The loading container: documented loading programs.
+    let interp_bytes = fs::read(root.join("ZBD/interp.zbd")).expect("the retail interp container");
+    let interp_path = path("zbd/interp.zbd");
+    let loading = discover_container("retail-interp", &interp_path, &interp_bytes);
+    assert_eq!(loading.family(), Some(ZbdFamily::Interp));
+    assert!(!loading.is_empty());
+    assert!(loading.programs().iter().all(|program| {
+        program.kind() == ProgramKind::Loading && program.confidence() == Confidence::Documented
+    }));
+    assert!(
+        loading
+            .programs()
+            .iter()
+            .all(|program| program.mission().is_none())
+    );
+
+    // A mission reader archive: the mission is the path, the role is inferred.
+    let zrdr_path = root.join("ZBD/C1/M02/zrdr.zbd");
+    let zrdr_bytes = fs::read(&zrdr_path).expect("the retail mission reader archive");
+    let container = path("zbd/c1/m02/zrdr.zbd");
+    let discovery = discover_container("retail-zrdr", &container, &zrdr_bytes);
+    assert_eq!(discovery.family(), Some(ZbdFamily::Reader));
+    assert!(
+        discovery.findings().is_empty(),
+        "{:?}",
+        discovery.findings()
+    );
+    let objectives = discovery
+        .programs()
+        .iter()
+        .find(|program| program.locator().member() == Some("objectives.zrd"))
+        .expect("objectives.zrd is a located program");
+    assert_eq!(objectives.kind(), ProgramKind::Mission);
+    assert_eq!(objectives.mission(), Some("zbd/c1/m02"));
+    assert!(!objectives.bytes().is_empty());
+
+    // The F13-B minimum scenario on original bytes.
+    let error = objectives
+        .walk(&OpcodeLedger::new(), 4, 4096)
+        .expect_err("the empty ledger refuses the first reached opcode");
+    assert_eq!(error.code(), "unknown_opcode");
+    assert_eq!(error.mission(), Some("zbd/c1/m02"));
+    assert_eq!(error.locator(), Some(objectives.locator()));
+    match &error {
+        ProgramError::UnknownOpcode { locator, pc, .. } => {
+            assert_eq!(locator, objectives.locator());
+            assert_eq!(*pc, ByteSpan::new(0, 4));
+        }
+        other => panic!("expected unknown_opcode, got {other:?}"),
+    }
+
+    // The mission and camera animation containers are located by name too.
+    let mis_bytes = fs::read(root.join("ZBD/C1/M02/mis_anim.zbd")).expect("mis_anim.zbd");
+    let mis_path = path("zbd/c1/m02/mis_anim.zbd");
+    let discovery = discover_container("retail-mis-anim", &mis_path, &mis_bytes);
+    assert_eq!(discovery.len(), 1);
+    assert_eq!(
+        discovery.programs()[0].kind(),
+        ProgramKind::MissionAnimation
+    );
+    assert_eq!(discovery.programs()[0].confidence(), Confidence::Inferred);
+    assert_eq!(discovery.programs()[0].mission(), Some("zbd/c1/m02"));
+
+    let cam_bytes = fs::read(root.join("ZBD/C1/cam_anim.zbd")).expect("cam_anim.zbd");
+    let cam_path = path("zbd/c1/cam_anim.zbd");
+    let discovery = discover_container("retail-cam-anim", &cam_path, &cam_bytes);
+    assert_eq!(discovery.len(), 1);
+    assert_eq!(discovery.programs()[0].kind(), ProgramKind::CameraAnimation);
+    assert_eq!(discovery.programs()[0].mission(), None);
 }

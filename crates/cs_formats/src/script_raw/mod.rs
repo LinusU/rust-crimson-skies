@@ -13,17 +13,31 @@
 //! * [`inventory`] lists every candidate container, splits the ones a
 //!   reader decodes into byte-ranged records, keeps every other byte as an
 //!   opaque or unclaimed record and marks no record as instructions.
+//! * [`discovery`] locates and classifies the programs of one container: the
+//!   INTERP loading scripts, the reader-archive members (by name and mission
+//!   scope) and the animation containers, each with its byte range and the
+//!   confidence of its role.
+//! * [`ledger`] is the checked table of reachable opcodes and the fail-closed
+//!   program walk: an opcode the ledger does not name stops the walk with the
+//!   mission and the program's source location.
 //!
-//! The opcode ledger, reachability and the classification of the retail
-//! corpus are later stages (F13-B, F13-C). The design decisions and the
-//! recorded unknowns are in
-//! `docs/findings/2026-09-29-f13-a-script-inventory-and-evidence-schema.md`.
+//! The classification of the retail corpus is F13-B's `retail` work; F13-C
+//! resolves signatures. The design decisions and the recorded unknowns are in
+//! `docs/findings/2026-09-29-f13-a-script-inventory-and-evidence-schema.md`
+//! and `docs/findings/2026-09-29-f13-b-locate-and-classify-programs.md`.
 //! Fixtures exercised by `crates/cs_formats/tests/script_raw/` are newly
 //! authored synthetic bytes; nothing here is derived from original game data.
 
+pub mod discovery;
 pub mod evidence;
 pub mod inventory;
+pub mod ledger;
 
+pub use discovery::{
+    ANIMATION_HEADER_BYTES, CAM_ANIM_MEMBER, ContainerDiscovery, DiscoveryFinding, LocatedProgram,
+    MIS_ANIM_MEMBER, MISSION_CONTROL_MEMBERS, MISSION_MEMBER_REASON, ProgramKind,
+    READER_MEMBER_REASON, discover_container, mission_scope,
+};
 pub use evidence::{
     ByteSpan, Confidence, EvidenceError, EvidenceLocator, LocatorKind, MAX_NOTE_BYTES,
     ResearchMethod, ScriptEvidence,
@@ -34,4 +48,8 @@ pub use inventory::{
     InventoryStats, MAX_LEADS_PER_RECORD, MIN_LEAD_BYTES, RecordKind, RecordReference,
     ReferenceKind, ScriptContainerEntry, ScriptInventory, ScriptRecord, ScriptRole, ScriptSource,
     UNDECODED_UNESTABLISHED, inventory_scripts,
+};
+pub use ledger::{
+    LedgerError, MAX_OPCODE_BYTES, OpcodeEntry, OpcodeLedger, ProgramError, ProgramLocator,
+    ReachedOpcode, walk_program,
 };

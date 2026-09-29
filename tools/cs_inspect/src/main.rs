@@ -22,9 +22,11 @@
 //! private contact sheet, and the `config` command (F12-C) routes one
 //! configuration member or PE resource image by its observed rule and
 //! resolves declared tuning fields and localized string ids through the
-//! `cs_content::config` consumers. The remaining subcommands from
+//! `cs_content::config` consumers, and the `scripts` command (F13-B) routes
+//! every ZBD container and locates and classifies its loading, mission and
+//! animation programs. The remaining subcommands from
 //! `docs/contracts/CLI-EVIDENCE.md` (`catalog`, `closure`,
-//! `scripts`, `handling`) arrive with later tasks.
+//! `handling`) arrive with later tasks.
 //! Until then the binary refuses invalid input with a nonzero exit code and
 //! a diagnostic naming the missing command — a failure is never returned as success.
 
@@ -126,7 +128,19 @@ COMMANDS
         unrouted or refused, or a requested lookup or field does not resolve,
         and 1 on a runtime failure.
 
-    catalog  closure  scripts  handling
+    scripts [--cs-path <dir>] [--coverage] [--out <file>]
+        Route every ZBD container of the installation (F13-B) and locate and
+        classify its loading, mission and animation programs: one documented
+        loading program per INTERP script body, one program per reader-archive
+        member (named by member name and mission path) and one program per
+        animation container, each reported as a container/member byte range
+        and the role its name or path supports. Program bytes are never
+        copied into the report. --coverage requires every container to route
+        and every script container to locate a program without a finding;
+        exits 3 when it does not. Exits 0 when the command runs and the
+        requested coverage holds, 4 when no installation is selected.
+
+    catalog  closure  handling
         Not implemented in this workspace stage; they are documented in
         docs/contracts/CLI-EVIDENCE.md.
 
@@ -154,7 +168,7 @@ fn main() -> ExitCode {
         None => {
             eprintln!(
                 "cs-inspect: missing command; expected one of inventory, audit, resolve, rof, \
-                 zbd-audit, interp, texture-audit, config, catalog, closure, scripts, handling \
+                 zbd-audit, interp, texture-audit, config, scripts, catalog, closure, handling \
                  (see docs/contracts/CLI-EVIDENCE.md)"
             );
             ExitCode::from(EXIT_INVALID_INPUT)
@@ -167,11 +181,12 @@ fn main() -> ExitCode {
         Some("interp") => cs_inspect::interp::interp_command(&args[1..]),
         Some("texture-audit") => cs_inspect::textures::texture_audit_command(&args[1..]),
         Some("config") => cs_inspect::config::config_command(&args[1..]),
+        Some("scripts") => cs_inspect::script_discovery::scripts_command(&args[1..]),
         Some(command) => {
             eprintln!(
                 "cs-inspect: unsupported command {command:?}; this workspace stage implements \
                  only `inventory`, `audit`, `resolve`, `rof`, `zbd-audit`, `interp`, \
-                 `texture-audit` and `config`"
+                 `texture-audit`, `config` and `scripts`"
             );
             ExitCode::from(EXIT_INVALID_INPUT)
         }
