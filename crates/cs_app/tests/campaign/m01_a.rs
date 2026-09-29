@@ -16,7 +16,7 @@
 //! against facts the test re-reads from the installation or from committed
 //! records — never against a constant that repeats the implementation.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -25,6 +25,7 @@ use cs_content::campaign_bindings::{
     BindingCategory, CampaignBindings, CategoryState, CellState, CriticalDependency,
     DependencyState, SourceBinding, SourceContext,
 };
+use cs_content::config::StringRow;
 use cs_types::content::{ContentId, ContentKind, Provenance};
 use cs_types::evidence::ClaimId;
 
@@ -361,6 +362,226 @@ fn accept_m01_a_the_campaign_keeps_everything_else_unresolved_and_unready() {
     assert_eq!(closure.unresolved_subsystems, 23);
     assert_eq!(closure.unknown_progression, 1);
     assert!(!closure.is_complete());
+}
+
+// -------------------------------------------------------------- the join ---
+
+/// The retail string rows of the localized UI table, indexed by id.
+fn rows_by_id() -> BTreeMap<u32, &'static StringRow> {
+    context()
+        .string_rows()
+        .iter()
+        .map(|row| (row.id, row))
+        .collect()
+}
+
+/// The first string id of the contiguous localized-title block M01's title
+/// sits in, derived from the record itself (title id minus the resolved
+/// campaign position), so this file repeats no retail string id.
+fn campaign_block_start() -> u32 {
+    let binding = binding();
+    let title_id = binding
+        .localized_title_id
+        .expect("M01's title string resolved");
+    let position = u32::try_from(
+        binding
+            .campaign_position
+            .expect("M01 has a campaign position"),
+    )
+    .expect("a campaign position fits in u32");
+    title_id
+        .checked_sub(position)
+        .expect("the retail title block starts at a positive string id")
+}
+
+/// The comparable text of one retail row: a leading display tag such as
+/// `[AB14I]` is a presentation instruction, not part of the title.
+fn display_text(text: &str) -> &str {
+    let Some(rest) = text.strip_prefix('[') else {
+        return text;
+    };
+    let Some(end) = rest.find(']') else {
+        return text;
+    };
+    &text[end + 2..]
+}
+
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_m01_a_the_retail_title_block_binds_every_campaign_position() {
+    // The join from a work order to a retail mission directory is the
+    // inference this stage rests on, and M01 alone cannot pin it: M01's
+    // title is the first row of the retail title block *and* M01 is the
+    // campaign's first mission, so a binding that answered `position 0` and
+    // `mission/ch1-m01` for every title would still satisfy every other test
+    // in this file. Binding each row of that block through the production
+    // path pins the join at all 24 positions.
+    //
+    // The label only names the claim ids: every retail title is bound here,
+    // and the assertions are about which campaign position and identities
+    // each one selects — never about which work order owns it.
+    let context = context();
+    let campaign = context.campaign();
+    let start = campaign_block_start();
+    let rows = rows_by_id();
+
+    for (position, entry) in campaign.iter().enumerate() {
+        let id = start + u32::try_from(position).expect("a campaign position fits in u32");
+        let row = rows
+            .get(&id)
+            .unwrap_or_else(|| panic!("the retail title block has no string row at {id}"));
+        let title = display_text(
+            row.text
+                .as_deref()
+                .unwrap_or_else(|| panic!("the retail title at string id {id} does not decode")),
+        );
+        assert!(
+            !title.is_empty(),
+            "the retail title at string id {id} is empty"
+        );
+
+        let bound = context
+            .bind(label(WORK_ORDER), title)
+            .expect("a retail title binds without I/O failure");
+        bound
+            .validate()
+            .expect("the derived record is internally consistent");
+        assert_eq!(
+            bound.campaign_position,
+            Some(position),
+            "the retail title at string id {id} did not bind campaign position {position}"
+        );
+        assert_eq!(
+            bound.unresolved_critical(),
+            Vec::new(),
+            "the retail title at string id {id} left a critical dependency unresolved: {:?}",
+            bound.unresolved_critical()
+        );
+
+        // The identities the position selects are the ones the directory
+        // layout declares for that position — never a constant, and never
+        // the identity the record already carries for M01.
+        assert_eq!(
+            bound
+                .catalog_id
+                .as_ref()
+                .expect("a mission id resolved")
+                .as_str(),
+            format!("mission/ch{}-m{:02}", entry.chapter, entry.mission_number),
+            "campaign position {position} did not select its own mission id"
+        );
+        assert_eq!(
+            bound
+                .world_id
+                .as_ref()
+                .expect("a world id resolved")
+                .as_str(),
+            format!("world/{}", entry.world_group),
+            "campaign position {position} did not select its own world group"
+        );
+        assert_eq!(
+            bound
+                .program_id
+                .as_ref()
+                .expect("a program id resolved")
+                .as_str(),
+            format!(
+                "script/{}-m{:02}-zrdr",
+                entry.world_group, entry.mission_number
+            ),
+            "campaign position {position} did not select its own program"
+        );
+
+        // Every selected mission really exists on disk, with the reader
+        // archive its program id names.
+        assert!(
+            game_dir().join(&entry.program_asset).is_file(),
+            "campaign position {position} selects {}, which does not exist",
+            entry.program_asset
+        );
+        assert!(
+            bound
+                .source_spans
+                .iter()
+                .any(|span| span.asset_id == entry.program_asset),
+            "campaign position {position} cites no span of {}",
+            entry.program_asset
+        );
+    }
+}
+
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_m01_a_a_title_outside_the_retail_title_block_resolves_no_position() {
+    // A title the local strings *do* carry is still not a campaign position:
+    // only a title inside a contiguous run of non-empty rows as long as the
+    // campaign selects a mission. The retail table holds plenty of rows that
+    // are in no such run, so this test takes the first one it can bind to a
+    // single row and pins what must then stay unresolved. Without the
+    // block-length rule every one of those rows would resolve an identity
+    // that points at a mission it was never related to — while reading
+    // perfectly well, because the title itself was observed.
+    let context = context();
+    let rows = rows_by_id();
+
+    let (id, title, outside) = rows
+        .iter()
+        .rev()
+        .find_map(|(id, row)| {
+            let title = display_text(row.text.as_deref()?);
+            if title.is_empty() {
+                return None;
+            }
+            let bound = context.bind(label(WORK_ORDER), title).ok()?;
+            (bound.localized_title_id == Some(*id) && bound.campaign_position.is_none())
+                .then_some((*id, title, bound))
+        })
+        .expect("the retail table holds a title that sits in no campaign-length run");
+    outside
+        .validate()
+        .expect("the partial record is internally consistent");
+
+    assert_eq!(
+        outside.localized_title_id,
+        Some(id),
+        "the local strings were expected to carry {title:?}"
+    );
+    assert_eq!(
+        outside.campaign_position, None,
+        "a title outside the retail title block selected campaign position {:?}",
+        outside.campaign_position
+    );
+    let unresolved = outside.unresolved_critical();
+    assert!(
+        !unresolved.contains(&CriticalDependency::TitleString),
+        "the title the strings carry is unresolved: {unresolved:?}"
+    );
+    assert!(
+        !unresolved.contains(&CriticalDependency::InstallHash),
+        "the installation hash does not depend on the title: {unresolved:?}"
+    );
+    for id in [
+        CriticalDependency::MissionId,
+        CriticalDependency::WorldGroupVariant,
+        CriticalDependency::ProgramSourceMap,
+    ] {
+        assert!(
+            unresolved.contains(&id),
+            "{id} was resolved from a title that selects no campaign position: {unresolved:?}"
+        );
+    }
+    assert!(!outside.is_verified());
+
+    // The campaign record built from it does not read as bound either.
+    let mission_binding = outside
+        .to_mission_binding()
+        .expect("an incomplete record still builds a valid mission record");
+    assert!(
+        mission_binding.cells().any(|(category, state)| category
+            == BindingCategory::MissionIdentity
+            && state == CellState::Unknown),
+        "an identity that selects no campaign position must not read as bound"
+    );
 }
 
 // -------------------------------------------------------------- synthetic ---

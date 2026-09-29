@@ -56,6 +56,8 @@ const RETAIL_TESTS: &[&str] = &[
     "accept_m01_a_the_committed_record_is_what_the_installation_derives",
     "accept_m01_a_a_title_the_local_strings_do_not_carry_is_unresolved",
     "accept_m01_a_the_campaign_keeps_everything_else_unresolved_and_unready",
+    "accept_m01_a_the_retail_title_block_binds_every_campaign_position",
+    "accept_m01_a_a_title_outside_the_retail_title_block_resolves_no_position",
 ];
 
 #[test]
@@ -190,16 +192,21 @@ fn evidence_report_m01_a_writes_the_acceptance_report() {
         assertion_array(&suite.assertions),
         artifact_array(&artifacts),
         jstr(
-            "opencode-1 (implementing agent, self-check; the Rally reviewer regenerates this \
-             report on the rebased commit)"
+            "implementer: opencode-1 (Rally #258, session of 2026-09-29T05:06Z); reviewer: \
+             opencode-1 — a separate session with fresh context that did not take part in the \
+             implementation — regenerating this report on the rebased commit. Same agent name, \
+             different context: this review is not independent original-reference evidence and \
+             no agent review replaces the owner's human approval"
         ),
         jstr(
-            "acceptance suite run locally with the retail capability; this harness derives every \
-             field from the recorded log, production discovery of $CS_GAME_DIR and the binding \
-             `SourceContext::read` + `SourceContext::bind` derive from it (all five critical \
-             dependencies resolved, checklist entries still unknown recorded in \
-             missions/bindings/M01.json); claim is implemented only; validated with \
-             tools/validate_evidence.py --require-pass"
+            "acceptance suite re-run locally with the retail capability by the reviewer; this \
+             harness derives every field from the recorded log, production discovery of \
+             $CS_GAME_DIR and the binding `SourceContext::read` + `SourceContext::bind` derive \
+             from it (all five critical dependencies resolved, checklist entries still unknown \
+             recorded in missions/bindings/M01.json); claim is implemented only; validated with \
+             tools/validate_evidence.py --require-pass. `candidate_tree` is the tree of the \
+             commit the suite ran on: the only later delta is this report's own copy under \
+             docs/findings/evidence/, whose bytes are this file"
         ),
     );
 
