@@ -91,6 +91,15 @@
 //! survives the close of the session that read it. The consumer boundary is
 //! where this stops: the canonical-mesh-to-Bevy adapter is F17-B's.
 //!
+//! [`scene`] is the F11-A scene contract
+//! (`specs/F11-scene-hierarchy-aircraft-parts-sockets-and-lod.md`,
+//! `### F11-A`): the typed [`scene::ParsedNode`] input a node-array reader
+//! produces, the [`scene::SceneGraph`] conversion into stable
+//! [`scene::SceneNodeId`] records (rejecting cycles, dangling parents and
+//! ambiguous roots), canonical [`scene::CanonicalTransform`] composition that
+//! preserves nested transforms and negative scale, and the evidence-backed
+//! [`scene::BindingMap`] semantic-binding records.
+//!
 //! [`cs_types`]: cs_types
 //! [`cs_formats`]: cs_formats
 //! [`cs_assets`]: cs_assets
@@ -102,4 +111,5 @@ pub mod coordinates;
 pub mod livery;
 pub mod loading;
 pub mod mesh;
+pub mod scene;
 pub mod textures;
