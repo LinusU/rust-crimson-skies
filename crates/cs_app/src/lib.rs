@@ -44,11 +44,23 @@
 //! request queue and the tick/integration ledger, plus a minimal synthetic
 //! fixture. It is the only place the pinned Avian force accumulator is driven;
 //! body creation, sweeps and kinematic transitions are F23-B.
+//!
+//! [`loading`] is the F15-A load-transaction contract
+//! (`specs/F15-asynchronous-asset-loading-and-private-cache.md`, stage
+//! `### F15-A`): the cancellable `Requested → Loading → Validating →
+//! Ready|Failed` transaction, session/serial-stamped IO tickets whose late
+//! completions are discarded, and the versioned [`loading::ReadyBundle`]
+//! handoff that spawns its entities only under the world's expected load
+//! identity. [`assets`] is the same stage's conversion boundary: the typed
+//! `CanonicalAsset` input and `ConvertedAsset` output records that keep
+//! canonical-to-Bevy conversion inside this crate.
 
 pub mod airframe_visual;
+pub mod assets;
 pub mod cli;
 pub mod input;
 pub mod livery;
+pub mod loading;
 pub mod origin;
 pub mod physics;
 pub mod run;
