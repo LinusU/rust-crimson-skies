@@ -284,7 +284,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn accept_f14_e_chapter_counts_keep_every_mission() {
+    fn chapter_counts_keep_every_mission() {
         let layout = vec![
             entry(1, 1, "c1", true),
             entry(1, 2, "c1b", true),
