@@ -640,6 +640,16 @@ impl MaterialState {
     pub fn is_resolved(&self) -> bool {
         matches!(self, Self::Resolved { .. })
     }
+
+    /// Whether the row is **complete**: the dependency reached one origin, or
+    /// there was no texture to reach.
+    ///
+    /// An untextured material is a flat colour and names no texture, so its
+    /// dependency audit is finished and its row is ready. That is different from
+    /// a missing texture, which is an unmet dependency.
+    pub fn is_complete(&self) -> bool {
+        matches!(self, Self::Resolved { .. } | Self::Untextured)
+    }
 }
 
 impl fmt::Display for MaterialState {
@@ -1005,10 +1015,10 @@ fn finish(
     mut reasons: Vec<String>,
 ) -> MaterialRow {
     reasons.dedup();
-    if !state.is_resolved() && reasons.is_empty() {
+    if !state.is_complete() && reasons.is_empty() {
         reasons.push(state.code().to_owned());
     }
-    let ready = state.is_resolved() && reasons.is_empty();
+    let ready = state.is_complete() && reasons.is_empty();
     let diagnostic = reasons.first().cloned().unwrap_or_else(|| state.to_string());
     row.parse_state = if has_record {
         ParseState::Parsed
@@ -1560,5 +1570,914 @@ mod tests {
                 step: 1
             }
         );
+    }
+
+    // ------------------------------------------------ the audit's fixtures ---
+
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    use cs_assets::install;
+    use cs_assets::vfs::{ContentSession, SessionBuilder, WORLD_NAMESPACE};
+    use cs_formats::gamez::materials::{
+        GameZMaterials, GameZTextureName, MATERIAL_FLAG_ALWAYS, MATERIAL_FLAG_TEXTURED,
+        MaterialInfo, RawMaterial, RawMaterialRecord, TextureNameEncoding,
+    };
+    use cs_formats::gamez::reader::{MeshIndex, RawMaterialGroup, RawMeshInfo};
+    use cs_formats::gamez::{GameZHeader, GameZMesh, GameZMeshes, RawMeshMaterialInfo};
+    use cs_formats::texture::zbd::{FLAG_BYTES_PER_PIXEL2, FLAG_NO_ALPHA, ZBD_TEXTURE_HEADER_BYTES};
+    use cs_types::asset_id::{AssetKey, ResolveContext, WorldGroup};
+    use cs_types::install::ParseState;
+
+    use crate::textures::TextureCatalog;
+
+    /// The texture-archive layout's own numbers, spelled here so the fixture
+    /// writer does not borrow the reader's constants: a 24-byte header, then one
+    /// 40-byte table entry per texture, whose first 32 bytes are the name.
+    const FIXTURE_HEADER: usize = ZBD_TEXTURE_HEADER_BYTES;
+    const FIXTURE_ENTRY: usize = 40;
+    const FIXTURE_NAME: usize = 32;
+    const FIXTURE_OPAQUE: u32 = FLAG_BYTES_PER_PIXEL2 | FLAG_NO_ALPHA;
+
+    /// A synthetic texture package: `names`, each a 1x1 direct-colour texture
+    /// whose single word is its position in the table plus one, so a decoded
+    /// upload can be traced back to the entry it came from.
+    ///
+    /// The per-texture info block is sixteen bytes in the layout's own order —
+    /// `u32` flags, `u16` width, `u16` height, `u32` zero, `u16` palette count,
+    /// `u16` stretch — and a zero palette count means one RGB565 word per texel.
+    fn package(names: &[&str]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for word in [0u32, 1, 0, names.len() as u32, 0, 0] {
+            out.extend_from_slice(&word.to_le_bytes());
+        }
+        let mut offset = FIXTURE_HEADER + names.len() * FIXTURE_ENTRY;
+        let mut bodies = Vec::new();
+        for (position, name) in names.iter().enumerate() {
+            let mut table = vec![0u8; FIXTURE_NAME];
+            table[..name.len()].copy_from_slice(name.as_bytes());
+            out.extend_from_slice(&table);
+            out.extend_from_slice(&(offset as u32).to_le_bytes());
+            out.extend_from_slice(&(-1i32).to_le_bytes());
+
+            let mut body = Vec::new();
+            body.extend_from_slice(&FIXTURE_OPAQUE.to_le_bytes());
+            body.extend_from_slice(&1u16.to_le_bytes());
+            body.extend_from_slice(&1u16.to_le_bytes());
+            body.extend_from_slice(&0u32.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&0u16.to_le_bytes());
+            body.extend_from_slice(&((position as u16) + 1).to_le_bytes());
+            offset += body.len();
+            bodies.push(body);
+        }
+        for body in bodies {
+            out.extend_from_slice(&body);
+        }
+        out
+    }
+
+    static NEXT_TREE: AtomicU64 = AtomicU64::new(0);
+
+    /// A disposable fixture installation under the temporary directory, dropped
+    /// with the test. No original game data is ever written here.
+    struct Tree(PathBuf);
+
+    impl Tree {
+        fn new() -> Self {
+            let root = std::env::temp_dir().join(format!(
+                "cs-f10-c-02-{}-{}",
+                std::process::id(),
+                NEXT_TREE.fetch_add(1, Ordering::Relaxed)
+            ));
+            let _ = fs::remove_dir_all(&root);
+            fs::create_dir_all(&root).expect("fixture root is created");
+            Self(root)
+        }
+
+        fn write(&self, spelling: &str, bytes: &[u8]) {
+            let path = self.0.join(spelling);
+            fs::create_dir_all(path.parent().expect("a parent")).expect("fixture dirs");
+            fs::write(path, bytes).expect("fixture bytes are written");
+        }
+
+        /// One world whose `texture.zbd` stores exactly `names`, and a second
+        /// archive of the same world holding `extra`, so a fallback search has
+        /// somewhere to go and must still not happen.
+        fn world(names: &[&str], extra: &[&str]) -> Self {
+            let tree = Self::new();
+            tree.write("ZBD/c1/texture.zbd", &package(names));
+            tree.write("ZBD/c1/rtexture2.zbd", &package(extra));
+            tree
+        }
+    }
+
+    impl Drop for Tree {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// A session of the installation at `root` with the production mount layout,
+    /// selecting the world group spelled `world`.
+    fn world_session(root: &Path, world: &str) -> ContentSession {
+        let found = install::discover(root).expect("installation is discovered");
+        let group = found
+            .diagnosis
+            .world_groups
+            .iter()
+            .find(|group| group.as_str().eq_ignore_ascii_case(world))
+            .unwrap_or_else(|| panic!("world group {world} is discovered"))
+            .clone();
+        let context = ResolveContext::new(install::fingerprint(&found.manifest))
+            .with_world_group(WorldGroup::from_relative(group));
+        let mut builder = SessionBuilder::new(context);
+        builder
+            .mount_installation(root, &found.diagnosis)
+            .expect("installation mounts");
+        builder.open()
+    }
+
+    fn world_key(path: &str) -> AssetKey {
+        AssetKey::from_spelling(WORLD_NAMESPACE, path, "default").expect("valid key")
+    }
+
+    /// The world's `texture.zbd` key, spelled once so a test never guesses at a
+    /// namespace.
+    fn texture_key() -> AssetKey {
+        world_key("texture.zbd")
+    }
+
+    // ---- the mesh and material tables, built from literals ----
+
+    /// A container header with only the words the audit reads.
+    fn header() -> GameZHeader {
+        GameZHeader {
+            signature: cs_formats::zbd::GAMEZ_SIGNATURE,
+            version: cs_formats::zbd::GAMEZ_VERSION,
+            unk08: 0,
+            texture_count: 0,
+            textures_offset: 40,
+            materials_offset: 0,
+            meshes_offset: 0,
+            node_array_size: 0,
+            light_index: 0,
+            nodes_offset: 0,
+        }
+    }
+
+    /// A material record with only the words the audit reads; the rest is the
+    /// reference's asserted profile, so no `MaterialFinding` is raised for it.
+    fn record(texture_index: u32, textured: bool) -> RawMaterialRecord {
+        RawMaterialRecord {
+            alpha: 0xFF,
+            flags: MATERIAL_FLAG_ALWAYS | if textured { MATERIAL_FLAG_TEXTURED } else { 0 },
+            rgb: if textured { 0x7FFF } else { 0 },
+            color: if textured {
+                [255.0, 255.0, 255.0]
+            } else {
+                [0.0, 0.0, 0.0]
+            },
+            texture_index,
+            field20: 0.0,
+            field24: 0.5,
+            field28: 0.5,
+            // The word the reference calls `specular` and newer classification
+            // calls soil. The audit never looks at it; the fixture gives each
+            // material a distinct value so a reader that did look would differ.
+            field32: 0.25,
+            cycle_ptr: 0,
+        }
+    }
+
+    /// A material at `index`, with the link words the layout's own rule gives it.
+    fn material(index: u32, texture_index: u32, textured: bool) -> RawMaterial {
+        let count = 3u32;
+        RawMaterial {
+            index,
+            record: record(texture_index, textured),
+            link1: if index + 1 >= count { -1 } else { (index + 1) as i16 },
+            link2: if index == 0 { -1 } else { (index - 1) as i16 },
+            cycle: None,
+        }
+    }
+
+    fn texture(index: u32, name: &str) -> GameZTextureName {
+        let (stem, suffix) = match name.split_once('.') {
+            Some((stem, suffix)) => (stem.to_owned(), Some(suffix.to_owned())),
+            None => (name.to_owned(), None),
+        };
+        GameZTextureName {
+            index,
+            name: name.to_owned(),
+            stem,
+            suffix,
+            encoding: if name.contains('.') {
+                TextureNameEncoding::WithSuffix
+            } else {
+                TextureNameEncoding::StemOnly
+            },
+            field00: 0,
+            field32: 2,
+            field36: 0,
+            field40: -1,
+        }
+    }
+
+    /// The container's two tables, exactly as `read_gamez_materials` hands them
+    /// over for those bytes.
+    fn tables(names: &[&str], materials: Vec<RawMaterial>) -> GameZMaterials {
+        let count = materials.len() as i32;
+        GameZMaterials {
+            header: header(),
+            textures: names
+                .iter()
+                .enumerate()
+                .map(|(index, name)| texture(index as u32, name))
+                .collect(),
+            info: MaterialInfo {
+                array_size: count,
+                count,
+                index_max: count,
+                index_last: count - 1,
+            },
+            materials,
+            free_slots: 1000 - count as u32,
+            findings: Vec::new(),
+            textures_offset: 40,
+            materials_offset: 40 + names.len() as u64 * 44,
+            data_end: 0,
+        }
+    }
+
+    /// A mesh record's 25 raw words, of which only `parent_count` (which marks
+    /// the slot present) and the material count are ever read here.
+    fn mesh_info(material_count: u32) -> RawMeshInfo {
+        RawMeshInfo {
+            file_ptr: 0,
+            unk04: 0,
+            unk08: 0,
+            parent_count: 1,
+            polygon_count: 0,
+            vertex_count: 0,
+            normal_count: 0,
+            morph_count: 0,
+            light_count: 0,
+            unk36: 0,
+            unk40: 0.0,
+            unk44: 0.0,
+            unk48: 0,
+            polygons_ptr: 0,
+            vertices_ptr: 0,
+            normals_ptr: 0,
+            lights_ptr: 0,
+            morphs_ptr: 0,
+            unk72: 0.0,
+            unk76: 0.0,
+            unk80: 0.0,
+            unk84: 0.0,
+            unk88: 0,
+            material_count,
+            materials_ptr: 0,
+        }
+    }
+
+    /// One mesh whose stored material references are `mesh_level` and whose stored
+    /// polygons carry `polygons`' groups each, in polygon order. Both levels are
+    /// real: the audit counts them separately and a reader that dropped either
+    /// would report fewer references.
+    fn container_mesh(index: u32, mesh_level: &[u32], polygons: &[Vec<u32>]) -> GameZMesh {
+        let stored: Vec<RawMeshMaterialInfo> = mesh_level
+            .iter()
+            .map(|&material| RawMeshMaterialInfo {
+                material_index: material,
+                polygon_usage_count: 1,
+                unk_ptr: 0,
+            })
+            .collect();
+        let material_groups: Vec<Vec<RawMaterialGroup>> = polygons
+            .iter()
+            .map(|groups| {
+                groups
+                    .iter()
+                    .map(|&material| RawMaterialGroup {
+                        material,
+                        uvs: vec![[0.0, 0.0]; 3],
+                    })
+                    .collect()
+            })
+            .collect();
+        let raw = RawMesh {
+            positions: vec![[0.0, 0.0, 0.0]],
+            normals: Vec::new(),
+            polygons: polygons
+                .iter()
+                .map(|groups| RawPolygon {
+                    kind: PrimitiveKind::Polygon,
+                    raw_flags: 0,
+                    material: groups.first().copied().unwrap_or(0),
+                    corners: vec![corner(0), corner(0), corner(0)],
+                })
+                .collect(),
+        };
+        assert_eq!(
+            material_groups.len(),
+            raw.polygons.len(),
+            "one group list per stored polygon"
+        );
+        GameZMesh {
+            index,
+            info: mesh_info(mesh_level.len() as u32),
+            mesh: raw,
+            polygon_records: Vec::new(),
+            lights: Vec::new(),
+            morphs: Vec::new(),
+            materials: stored,
+            material_groups,
+            data_offset: 0,
+            data_end: 0,
+        }
+    }
+
+    /// The parsed mesh section, as `read_gamez_meshes` hands it over.
+    fn container(meshes: Vec<GameZMesh>) -> GameZMeshes {
+        let references: usize = meshes
+            .iter()
+            .map(|mesh| mesh.materials.len() + mesh.material_groups.iter().flatten().count())
+            .sum();
+        GameZMeshes {
+            header: header(),
+            index: MeshIndex {
+                array_size: meshes.len() as i32,
+                count: meshes.len() as i32,
+                last_index: -1,
+            },
+            fixup: cs_formats::gamez::reader::Fixup::None,
+            meshes: meshes.into_iter().map(Some).collect(),
+            findings: Vec::new(),
+            unchecked_material_references: references,
+            data_offset: 0,
+            data_end: 0,
+        }
+    }
+
+    /// The catalog a fixture world is read through, and the session that opened
+    /// it. Both are real: the package bytes are read by the production reader.
+    fn catalog(tree: &Tree) -> (ContentSession, TextureCatalog, AssetKey) {
+        let session = world_session(&tree.0, "ZBD/c1");
+        let key = texture_key();
+        let catalog = TextureCatalog::open(&session, &[key.clone()]);
+        assert_eq!(catalog.failures().count(), 0, "the fixture archive opens");
+        (session, catalog, key)
+    }
+
+    fn context<'a>(
+        session: &'a ContentSession,
+        catalog: &'a TextureCatalog,
+        key: &'a AssetKey,
+    ) -> DependencyContext<'a> {
+        DependencyContext {
+            archive: key,
+            session,
+            catalog,
+            origin: None,
+            container: "fixture",
+        }
+    }
+
+    // ------------------------------------------------ the audit's tests ---
+
+    /// A material that names a texture the world's archive stores exactly once
+    /// resolves to that one stored texture, and its row is a complete catalog
+    /// element. The resolved `TextureId` names the archive, the entry and the
+    /// stored name, so the origin is exact rather than "some sky".
+    #[test]
+    fn accept_f10_c_02_audit_resolves_a_material_to_exactly_one_stored_texture() {
+        let tree = Tree::world(&["sky", "ground"], &["tier"]);
+        let (session, catalog, key) = catalog(&tree);
+        let meshes = container(vec![container_mesh(0, &[0], &[vec![0]])]);
+        let materials = tables(&["sky"], vec![material(0, 0, true)]);
+        let audit = MeshDependencyAudit::build(&meshes, &materials, &context(&session, &catalog, &key));
+
+        assert_eq!(audit.references, 2, "one mesh-level and one polygon reference");
+        assert_eq!(audit.rows.len(), 1);
+        assert_eq!(audit.resolved, 1);
+        assert!(audit.blocked.is_empty(), "{:?}", audit.blocked);
+        let row = &audit.rows[0];
+        assert_eq!(row.material, 0);
+        assert_eq!(row.id, "gamez.materials[0]");
+        assert_eq!(row.kind, "material");
+        assert_eq!(row.dependencies, vec![key.clone()], "one archive, the caller's");
+        assert_eq!(row.parse_state, ParseState::Parsed);
+        assert_eq!(row.normalize_state, ParseState::Parsed);
+        assert_eq!(row.readiness, DependencyReadiness::Ready);
+        assert!(row.unsupported_reasons.is_empty(), "{:?}", row.unsupported_reasons);
+        assert_eq!(row.runtime_consumers, vec![MATERIAL_CONSUMER]);
+        assert!(row.fingerprint.is_some(), "a read record has bytes to hash");
+        assert_eq!(row.state.code(), "resolved");
+        match &row.state {
+            MaterialState::Resolved { texture } => {
+                assert_eq!(texture.name, "sky");
+                assert_eq!(texture.entry_index, 0);
+                assert!(texture.archive.as_str().ends_with("texture.zbd"), "{texture}");
+            }
+            other => panic!("expected a resolved texture, got {other}"),
+        }
+        // Both stored references are named, so a caller can see what depends on
+        // this material.
+        assert_eq!(
+            row.used_by,
+            vec![
+                MaterialUse {
+                    mesh: 0,
+                    reference: MaterialReference::MeshRecord { position: 0 }
+                },
+                MaterialUse {
+                    mesh: 0,
+                    reference: MaterialReference::PolygonGroup {
+                        polygon: 0,
+                        group: 0
+                    }
+                },
+            ]
+        );
+        assert_eq!(
+            audit.references,
+            meshes.unchecked_material_references,
+            "the audit sees exactly the references the mesh reader counted"
+        );
+    }
+
+    /// **The discriminating case.** A polygon whose material names a texture that
+    /// is absent from its world's archive appears in the audit as
+    /// `missing_texture`, with the exact stored name and the exact archive. It
+    /// does **not** resolve to another archive of the same world, to a
+    /// case-folded spelling, to an extension-stripped one, and not to a default.
+    #[test]
+    fn accept_f10_c_02_audit_reports_a_missing_texture_with_its_exact_name_and_archive() {
+        // The world's `texture.zbd` stores `sky` and `smoke`. A **second archive
+        // of the same world** stores `Sky1.tif`, `sky1` and `c2only`, so a
+        // fallback search would have somewhere to go. It must not be taken, and
+        // the catalog is opened over both archives to prove the audit used only
+        // the one it was given.
+        let tree = Tree::world(&["sky", "smoke"], &["Sky1.tif", "sky1", "c2only"]);
+        let session = world_session(&tree.0, "ZBD/c1");
+        let key = texture_key();
+        let other = world_key("rtexture2.zbd");
+        let catalog = TextureCatalog::open(&session, &[key.clone(), other.clone()]);
+        assert_eq!(catalog.failures().count(), 0, "both fixture archives open");
+        assert_eq!(catalog.archives().count(), 2, "and both are readable");
+
+        let meshes = container(vec![container_mesh(0, &[0], &[vec![0]])]);
+        let materials = tables(&["Sky1.tif"], vec![material(0, 0, true)]);
+        let audit = MeshDependencyAudit::build(&meshes, &materials, &context(&session, &catalog, &key));
+
+        assert_eq!(audit.resolved, 0, "the name is not in the archive it was given");
+        assert_eq!(audit.rows.len(), 1, "a failed entry stays in the audit");
+        let row = &audit.rows[0];
+        assert_eq!(
+            row.state,
+            MaterialState::MissingTexture {
+                name: "Sky1.tif".to_owned(),
+                archive: key.clone(),
+            },
+            "the exact stored name and the exact archive, nothing substituted"
+        );
+        assert_eq!(row.state.code(), "missing_texture");
+        assert_eq!(row.dependencies, vec![key.clone()], "one archive only");
+        assert_eq!(row.readiness, DependencyReadiness::Blocked);
+        assert_eq!(row.parse_state, ParseState::Parsed, "the record itself was read");
+        assert!(
+            matches!(row.normalize_state, ParseState::Failed { .. }),
+            "the dependency did not reach an origin: {:?}",
+            row.normalize_state
+        );
+        assert_eq!(row.unsupported_reasons, vec!["texture_not_found".to_owned()]);
+        let text = row.state.to_string();
+        assert!(text.contains("Sky1.tif"), "{text}");
+        assert!(text.contains("texture.zbd"), "{text}");
+
+        // The other archive really does hold both spellings, so the row is a
+        // choice of archive and a choice of spelling, not a missing file.
+        for spelling in ["Sky1.tif", "sky1"] {
+            assert!(
+                catalog.resolve(&session, &TextureRef::new(other.clone(), spelling)).is_ok(),
+                "the second archive stores `{spelling}`"
+            );
+        }
+        assert!(catalog.resolve(&session, &TextureRef::new(key.clone(), "sky1")).is_err());
+    }
+
+    /// The exact-name rule is not relaxed to make a number smaller: a name that
+    /// differs only in case, and one that differs only by its extension, are both
+    /// missing. Neither is folded, stripped or aliased.
+    #[test]
+    fn accept_f10_c_02_audit_neither_folds_case_nor_strips_an_extension() {
+        let tree = Tree::world(&["sky1", "ground"], &["tier"]);
+        let (session, catalog, key) = catalog(&tree);
+        let meshes = container(vec![container_mesh(0, &[0, 1, 2], &[])]);
+        let materials = tables(
+            &["Sky1.tif", "sky1", "ground"],
+            vec![
+                material(0, 0, true),
+                material(1, 1, true),
+                material(2, 2, true),
+            ],
+        );
+        let audit = MeshDependencyAudit::build(&meshes, &materials, &context(&session, &catalog, &key));
+
+        let states: Vec<&str> = audit.rows.iter().map(|row| row.state.code()).collect();
+        assert_eq!(
+            states,
+            ["missing_texture", "resolved", "resolved"],
+            "`Sky1.tif` is neither folded to `sky1` nor stripped to `Sky1`"
+        );
+        assert_eq!(audit.resolved, 2);
+        assert!(matches!(
+            &audit.rows[0].state,
+            MaterialState::MissingTexture { name, .. } if name == "Sky1.tif"
+        ));
+        assert!(matches!(
+            &audit.rows[1].state,
+            MaterialState::Resolved { texture } if texture.name == "sky1"
+        ));
+        assert!(matches!(
+            &audit.rows[2].state,
+            MaterialState::Resolved { texture } if texture.name == "ground"
+        ));
+    }
+
+    /// A material index past the material table is **reported**, never clamped to
+    /// the last record and never wrapped.
+    #[test]
+    fn accept_f10_c_02_audit_reports_a_material_index_past_the_table_and_never_clamps() {
+        let tree = Tree::world(&["sky"], &["tier"]);
+        let (session, catalog, key) = catalog(&tree);
+        // Three records; the meshes store 0, 2 and 7.
+        let meshes = container(vec![container_mesh(0, &[0, 2, 7], &[vec![7], vec![0, 7]])]);
+        let materials = tables(
+            &["sky"],
+            vec![
+                material(0, 0, true),
+                material(1, 0, true),
+                material(2, 0, true),
+            ],
+        );
+        let audit = MeshDependencyAudit::build(&meshes, &materials, &context(&session, &catalog, &key));
+
+        assert_eq!(audit.rows.len(), 3, "one row per distinct stored index");
+        assert_eq!(
+            audit.out_of_range().collect::<Vec<_>>(),
+            vec![(7, 3)],
+            "index 7 of three present records; 0 and 2 are inside"
+        );
+        let out_of_range = &audit.rows[2];
+        assert_eq!(out_of_range.material, 7);
+        assert_eq!(
+            out_of_range.state,
+            MaterialState::MaterialIndexOutOfRange {
+                material: 7,
+                count: 3
+            }
+        );
+        assert!(
+            matches!(out_of_range.parse_state, ParseState::Failed { .. }),
+            "there is no record to parse"
+        );
+        assert_eq!(out_of_range.fingerprint, None, "no stored bytes to hash");
+        assert!(out_of_range.record.is_none());
+        // The last real record is material 2, and it is **not** what index 7
+        // resolved to: that row has no texture at all.
+        assert!(matches!(
+            &audit.rows[1].state,
+            MaterialState::Resolved { texture } if texture.name == "sky"
+        ));
+        assert!(out_of_range.state.texture().is_none());
+        // The references that reached the bad index are still named.
+        assert_eq!(
+            out_of_range.used_by,
+            vec![
+                MaterialUse {
+                    mesh: 0,
+                    reference: MaterialReference::MeshRecord { position: 2 }
+                },
+                MaterialUse {
+                    mesh: 0,
+                    reference: MaterialReference::PolygonGroup {
+                        polygon: 0,
+                        group: 0
+                    }
+                },
+                MaterialUse {
+                    mesh: 0,
+                    reference: MaterialReference::PolygonGroup {
+                        polygon: 1,
+                        group: 1
+                    }
+                },
+            ]
+        );
+        assert!(
+            audit.blocked.iter().any(|entry| entry
+                == "material 7: material_index_out_of_range: material 7 of 3"),
+            "{:?}",
+            audit.blocked
+        );
+    }
+
+    /// A material with no texture and a material whose record has an unmapped flag
+    /// bit: two more states, two more rows, neither dropped. An untextured
+    /// material is **complete**, not blocked — it has no texture to find.
+    #[test]
+    fn accept_f10_c_02_audit_keeps_untextured_and_unknown_field_rows() {
+        let tree = Tree::world(&["sky"], &["tier"]);
+        let (session, catalog, key) = catalog(&tree);
+        let meshes = container(vec![container_mesh(0, &[0, 1, 2], &[])]);
+        let mut untextured = material(1, 0, false);
+        untextured.record.color = [0.25, 0.5, 0.75];
+        untextured.record.alpha = 0x10;
+        let mut unknown = material(2, 0, true);
+        unknown.record.flags |= 0x40; // a bit the reference's MaterialFlags does not name
+        let materials = tables(
+            &["sky"],
+            vec![material(0, 0, true), untextured, unknown],
+        );
+        let audit = MeshDependencyAudit::build(&meshes, &materials, &context(&session, &catalog, &key));
+
+        assert_eq!(audit.rows.len(), 3, "every distinct stored index has a row");
+        assert_eq!(audit.rows[0].state.code(), "resolved");
+        assert_eq!(audit.rows[1].state, MaterialState::Untextured);
+        assert_eq!(
+            audit.rows[1].readiness,
+            DependencyReadiness::Ready,
+            "an untextured material is complete: it has no texture to find"
+        );
+        assert_eq!(audit.rows[1].normalize_state, ParseState::Parsed);
+        assert_eq!(audit.rows[1].unsupported_reasons, Vec::<String>::new());
+        assert_eq!(
+            audit.rows[1].record.as_ref().expect("raw record").record.color,
+            [0.25, 0.5, 0.75],
+            "the flat colour is on the row, uninterpreted"
+        );
+        assert_eq!(audit.rows[2].state, MaterialState::UnknownField { bits: 0x40 });
+        assert_eq!(
+            audit.rows[2].readiness,
+            DependencyReadiness::Blocked,
+            "even whether the record is textured is not established"
+        );
+        assert_eq!(audit.resolved, 1);
+        assert_eq!(
+            audit
+                .rows
+                .iter()
+                .filter(|row| row.readiness == DependencyReadiness::Ready)
+                .count(),
+            2
+        );
+    }
+
+    /// A texture index outside the container's own table, a name the archive
+    /// stores twice, and an archive the catalog does not hold: three states, each
+    /// reported, none resolved to a substitute.
+    #[test]
+    fn accept_f10_c_02_audit_reports_dangling_archive_and_duplicate_dependencies() {
+        // The archive stores `twin` twice, so it has no single origin for it.
+        let tree = Tree::world(&["sky", "twin", "twin"], &["tier"]);
+        let (session, catalog, key) = catalog(&tree);
+        // Material 0 names a texture the container's own two-entry table does not
+        // have; material 1 names the duplicated name.
+        let meshes = container(vec![container_mesh(0, &[0, 1], &[])]);
+        let materials = tables(&["sky", "twin"], vec![material(0, 5, true), material(1, 1, true)]);
+        let audit = MeshDependencyAudit::build(&meshes, &materials, &context(&session, &catalog, &key));
+        assert_eq!(
+            audit.rows[0].state,
+            MaterialState::TextureIndexOutOfRange {
+                index: 5,
+                available: 2
+            },
+            "the container does not store that texture at all"
+        );
+        assert_eq!(
+            audit.rows[1].state,
+            MaterialState::DuplicateTexture {
+                name: "twin".to_owned(),
+                archive: key.clone(),
+                entries: vec![1, 2],
+            },
+            "both entries are reported, not one of them picked"
+        );
+        assert_eq!(audit.resolved, 0);
+
+        // An archive the catalog does not hold: no lookup is attempted, and the
+        // container-side defect above is still reported as itself.
+        let unheld = world_key("rtexture8.zbd");
+        let audit =
+            MeshDependencyAudit::build(&meshes, &materials, &context(&session, &catalog, &unheld));
+        assert_eq!(
+            audit.rows[0].state,
+            MaterialState::TextureIndexOutOfRange {
+                index: 5,
+                available: 2
+            },
+            "a container-side defect is reported before any archive question"
+        );
+        assert_eq!(
+            audit.rows[1].state,
+            MaterialState::ArchiveUnavailable {
+                archive: unheld.clone(),
+                code: "archive_not_catalogued".to_owned()
+            }
+        );
+        assert_eq!(audit.rows.len(), 2, "the rows are kept, not dropped");
+        assert_eq!(audit.rows[1].dependencies, vec![unheld.clone()]);
+    }
+
+    /// The container stores one name several times, and a material naming it is
+    /// still resolved through that one name — the duplicate is a reason on the
+    /// row, not a second state and not a rewritten name.
+    #[test]
+    fn accept_f10_c_02_audit_reports_a_container_duplicate_as_a_reason() {
+        // The measured corpus stores `bldhwk_cowling..tif` 36 times in
+        // `planes.zbd`; the archive stores it without the extension.
+        let tree = Tree::world(&["bldhwk_cowling"], &["tier"]);
+        let (session, catalog, key) = catalog(&tree);
+        let meshes = container(vec![container_mesh(0, &[0], &[])]);
+        let materials = tables(
+            &["bldhwk_cowling..tif", "bldhwk_cowling..tif"],
+            vec![material(0, 1, true)],
+        );
+        assert_eq!(
+            materials.duplicate_names(),
+            vec![("bldhwk_cowling..tif".to_owned(), vec![0, 1])],
+            "the container's own duplicate, reported by the reader"
+        );
+        let audit = MeshDependencyAudit::build(&meshes, &materials, &context(&session, &catalog, &key));
+
+        assert_eq!(audit.rows.len(), 1);
+        let row = &audit.rows[0];
+        // The archive does not store that exact name, so the row is missing…
+        assert!(
+            matches!(&row.state, MaterialState::MissingTexture { name, .. } if name == "bldhwk_cowling..tif"),
+            "{:?}",
+            row.state
+        );
+        // …and the container-level duplicate is named as its own reason, so a
+        // caller can see that no single container entry owns this name.
+        assert!(
+            row.unsupported_reasons
+                .iter()
+                .any(|reason| reason.starts_with("container_texture_name_duplicated:")),
+            "{:?}",
+            row.unsupported_reasons
+        );
+    }
+
+    /// The raw material record reaches the audit, and the fingerprint is taken
+    /// over exactly the 44 stored bytes, so two materials that differ in one word
+    /// have different fingerprints. The audit is a function of the bytes: the
+    /// same input twice gives the same rows.
+    #[test]
+    fn accept_f10_c_02_audit_keeps_the_raw_record_and_hashes_exactly_its_stored_bytes() {
+        let tree = Tree::world(&["sky", "ground"], &["tier"]);
+        let (session, catalog, key) = catalog(&tree);
+        let meshes = container(vec![container_mesh(0, &[0, 1], &[])]);
+        let first = material(0, 0, true);
+        let mut second = material(1, 1, true);
+        second.record.field32 = 0.75; // one word different
+        let materials = tables(&["sky", "ground"], vec![first.clone(), second]);
+        let audit = MeshDependencyAudit::build(&meshes, &materials, &context(&session, &catalog, &key));
+
+        assert_eq!(audit.rows[0].record.as_ref().expect("raw record"), &first);
+        let a = audit.rows[0].fingerprint.expect("hashed");
+        let b = audit.rows[1].fingerprint.expect("hashed");
+        assert_ne!(a, b, "one word different, one fingerprint different");
+        assert_eq!(a.to_hex().len(), 64, "a canonical lowercase hex digest");
+
+        let again = MeshDependencyAudit::build(&meshes, &materials, &context(&session, &catalog, &key));
+        assert_eq!(audit.rows, again.rows, "the audit is a function of the bytes");
+        assert_eq!(audit.references, again.references);
+    }
+
+    /// The retail half: the world's own GameZ archive and the world's own texture
+    /// archive, read by the production readers and audited together. The
+    /// discriminating facts are checked on real data.
+    #[test]
+    #[ignore = "requires CS_GAME_DIR"]
+    fn accept_f10_c_02_audit_retail_world_resolves_no_name_by_substitution() {
+        use cs_formats::ParseContext;
+
+        let game_dir = PathBuf::from(std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR"));
+        let found = install::discover(&game_dir).expect("the installation is discovered");
+        let group = found
+            .diagnosis
+            .world_groups
+            .iter()
+            .find(|group| group.as_str().eq_ignore_ascii_case("ZBD/c1"))
+            .expect("world C1 is discovered")
+            .clone();
+        let context = ResolveContext::new(install::fingerprint(&found.manifest))
+            .with_world_group(WorldGroup::from_relative(group));
+        let mut builder = SessionBuilder::new(context);
+        builder
+            .mount_installation(&game_dir, &found.diagnosis)
+            .expect("the installation mounts");
+        let session = builder.open();
+
+        let key = texture_key();
+        let catalog = TextureCatalog::open(&session, &[key.clone()]);
+        assert_eq!(catalog.failures().count(), 0, "the world's texture archive opens");
+
+        let relative = "ZBD/C1/gamez.zbd";
+        let bytes = fs::read(game_dir.join(relative)).expect("the world's GameZ archive is readable");
+        let mut parse = ParseContext::with_defaults(relative);
+        let meshes = cs_formats::gamez::read_gamez_meshes(&mut parse, relative, &bytes)
+            .expect("the mesh section reads");
+        let materials = cs_formats::gamez::read_gamez_materials(&mut parse, relative, &bytes)
+            .expect("the material section reads");
+        // Both readers proved their own section boundary from the same bytes.
+        assert_eq!(meshes.data_end, u64::from(meshes.header.nodes_offset));
+        assert_eq!(materials.data_end, u64::from(materials.header.meshes_offset));
+        assert!(meshes.findings.is_empty() && materials.findings.is_empty());
+
+        let audit = MeshDependencyAudit::build(
+            &meshes,
+            &materials,
+            &DependencyContext {
+                archive: &key,
+                session: &session,
+                catalog: &catalog,
+                origin: None,
+                container: relative,
+            },
+        );
+
+        // F10-B's deferred item 1, for this archive: no stored material index is
+        // outside the material table, at either level.
+        assert_eq!(
+            audit.out_of_range().count(),
+            0,
+            "every one of the {} stored references is inside the material table",
+            audit.references
+        );
+        assert_eq!(audit.references, meshes.unchecked_material_references);
+        assert!(!audit.rows.is_empty(), "the world stores material references");
+
+        // No row resolved to anything but an exact stored name, and every
+        // resolved row names the world's own archive.
+        for row in audit.resolved_rows() {
+            let MaterialState::Resolved { texture } = &row.state else {
+                panic!("a resolved row whose state is {:?}", row.state);
+            };
+            assert!(
+                texture.archive.as_str().ends_with("C1/texture.zbd"),
+                "a resolution came from {texture}, not the world's own archive"
+            );
+            let stored = materials
+                .texture_of(
+                    materials
+                        .material(row.material)
+                        .expect("a resolved row has a record"),
+                )
+                .expect("a resolved row names a stored texture");
+            assert_eq!(&texture.name, &stored.name, "the name was altered");
+        }
+        // The exact-name rule is visible on real data: this world spells a texture
+        // `Sky1.tif` in its GameZ container and stores `sky1`.
+        let differing = audit
+            .rows
+            .iter()
+            .filter(|row| {
+                matches!(&row.state, MaterialState::MissingTexture { .. })
+            })
+            .count();
+        assert!(differing > 0, "the world's names are not all stored verbatim");
+        let sky = audit
+            .rows
+            .iter()
+            .find(|row| {
+                matches!(&row.state, MaterialState::MissingTexture { name, .. } if name == "Sky1.tif")
+            })
+            .expect("the container's Sky1.tif does not resolve to the archive's sky1");
+        assert_eq!(sky.dependencies, vec![key.clone()]);
+        assert!(sky.fingerprint.is_some());
+        // And the archive really does store the lower-case spelling, so the row
+        // is a naming difference and not a missing archive.
+        assert!(
+            catalog.resolve(&session, &TextureRef::new(key.clone(), "sky1")).is_ok(),
+            "the world's own archive stores `sky1`"
+        );
+        // Nothing resolved by a name the archive does not store.
+        for row in audit.resolved_rows() {
+            let MaterialState::Resolved { texture } = &row.state else {
+                unreachable!()
+            };
+            assert!(
+                catalog
+                    .resolve(&session, &TextureRef::new(key.clone(), &texture.name))
+                    .is_ok(),
+                "a row resolved to a name its archive does not store"
+            );
+        }
     }
 }
