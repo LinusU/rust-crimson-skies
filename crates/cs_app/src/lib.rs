@@ -54,6 +54,14 @@
 //! identity. [`assets`] is the same stage's conversion boundary: the typed
 //! `CanonicalAsset` input and `ConvertedAsset` output records that keep
 //! canonical-to-Bevy conversion inside this crate.
+//!
+//! [`render`] is the F17-A rendering contract
+//! (`specs/F17-rendering-material-fidelity-and-scalable-presentation.md`,
+//! stage `### F17-A`): the declared-not-derived material classification
+//! ([`render::material`]), the phase-ordered, depth-sorted
+//! [`render::plan::DrawPlan`], and the [`render::golden`] synthetic test
+//! scene — overlapping glass, an alpha-cut fence, an additive sprite and
+//! per-corner colors. The Bevy adapters and profiles are F17-B/C.
 
 pub mod airframe_visual;
 pub mod assets;
@@ -63,6 +71,7 @@ pub mod livery;
 pub mod loading;
 pub mod origin;
 pub mod physics;
+pub mod render;
 pub mod run;
 pub mod scene;
 pub mod synthetic;
