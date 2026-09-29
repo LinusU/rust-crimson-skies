@@ -130,6 +130,22 @@ euler triple.
   and uninterpreted.
 - **LOD `level` semantics** — the stored boolean is kept uninterpreted;
   which value means "fade band" vs "variant" is unmeasured.
+- **Unmeasured stored fields are not carried by the typed input.** The
+  `NodeCsC` record's `unk040`/`unk044`, `environment_data`,
+  `action_priority`/`action_callback`, `area_partition`, the
+  `unk116`/`unk140`/`unk164` bounding boxes, `unk196` and the data /
+  parent / children pointers, and the `LodCsC` `unk64`/`unk68` and
+  `unk72`/`unk76` pairs (each the square of the other), `one80`,
+  `unk84`/`unk88` have no measured meaning; the F11-B reader
+  must keep them at record level or re-derive them if a later stage needs
+  them. `ParsedNode` drops them deliberately.
+- **LOD range strictness** — `SceneError::LodRange` refuses a reversed
+  range (`range_min > range_max`); the reference asserts only
+  `range_near_sq <= 3000²` and `range_far > 0` and never compares the
+  two, so this is stricter than measured. If an original LOD ever relies
+  on a reversed range, the rejection must be revisited.
+- **`mesh_index` sentinel** — the record stores `mesh_index` signed with
+  `-1` = no mesh; `MeshBinding` exists only for non-negative values.
 - **`rotation · scale` composition order** — every measured CS scale is
   `1.0`, so the order is unobservable in the corpus; `rotation · scale`
   is a designed choice consistent with the reference's matrix field
@@ -153,17 +169,26 @@ euler triple.
   section, deliverable, non-negotiable behaviors, AC01–AC04).
 - `docs/contracts/IDENTITY-CONTENT.md` (stable ids, provenance,
   explicit unknowns, ownership-cycle rule, exact lookup).
-- `docs/research/2026-09-23-s12-gamez-progressive-mesh-format.md`
-  (GameZ layout: `nodes_offset`, node array ownership, `mesh_index`
-  association).
-- `docs/research/2026-09-28-s17-aircraft-airframe-catalog.md`
-  (`PLANES.ZBD` = the aircraft ZBD; `PLANES.SP` = performance table).
-- Pinned reference mech3ax v0.6.0 via `docs/research/reference/`:
-  `NodeCsC`/`NodeType`/`NodeBitFlagsCs` (208-byte record, `mesh_index`
-  at 60), `Object3dCsC` (144 bytes: euler rotation, scale, stored
-  matrix, translation; ~0.74 % matrix disagreement; identity when
-  `flags == 40`), `LodCsC` (92 bytes: level, ranges, squared-range
-  check), `euler_to_matrix` and `ZONE_DEFAULT` — all ObservedTool.
+- `docs/findings/2026-09-29-f10-b-gamez-mesh-layout.md` (GameZ
+  layout: `nodes_offset` bounds the node array, the node array owns
+  the mesh association, `NodeCsC.mesh_index` at offset 60).
+- `docs/findings/2026-09-28-f06-a-zbd-family-inventory-and-dispatch.md`
+  and `docs/research/FINDINGS.md` (`ZBD/PLANES.ZBD` = the shared
+  aircraft-geometry container, routed to the GameZ role).
+- Pinned reference mech3ax v0.6.0 (`docs/research/SOURCES.md` S17,
+  commit `d3521a9721be731d365504568ddcd78e3f9846bb`):
+  `crates/mech3ax-nodes/src/cs/node.rs` `NodeCsC` (208-byte record,
+  `mesh_index` at 60, `-1` = no mesh) and `types.rs`
+  (`NodeType` tags, `ZONE_DEFAULT = 255`),
+  `cs/object3d/data.rs` `Object3dCsC` (144 bytes: euler rotation
+  asserted `[-π, π]`, scale asserted `1.0`, stored matrix,
+  translation; ~0.74 % matrix disagreement; identity when
+  `flags == 40`), `cs/lod/data.rs` `LodCsC` (92 bytes: `level`,
+  `range_near_sq` — the near bound stored squared — `range_far`
+  with `range_far_sq` as its stored-square check, plus the
+  `unk64`/`unk68` and `unk72`/`unk76` squared pairs),
+  `flags.rs` `NodeBitFlagsCs` (every bit `UNK*`) and
+  `math.rs` `euler_to_matrix` — all ObservedTool.
 - `crates/cs_content/src/coordinates.rs` (the F16-A adapter this
   conversion routes through) and `crates/cs_types/src/{content,space}.rs`
   (the shared identity/provenance and spatial types).

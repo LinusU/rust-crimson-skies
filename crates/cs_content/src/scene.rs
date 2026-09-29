@@ -58,7 +58,8 @@
 //! (`NodeCsC`, `Object3dCsC`, `LodCsC`; sources S02/S17) as *observed-tool*
 //! evidence: the 208-byte record's `mesh_index`, parent/children slots, the
 //! 144-byte object record's euler `rotation` + `scale` + stored `matrix` +
-//! `translation`, and the 92-byte LOD record's `level` and `range`. The
+//! `translation`, and the 92-byte LOD record's `level` plus its range
+//! fields (the near bound stored squared, the far bound stored twice). The
 //! euler-to-matrix convention (`Rz·Ry·Rx` with negated angles) and the
 //! stored-matrix precedence are the reference's rules; they are not verified
 //! against the original executable. The canonical record layout, the
@@ -408,14 +409,19 @@ pub enum ParsedNodeKind {
     /// An object node carrying the authored transform and (usually) a mesh.
     Object3d,
     /// One LOD variant selector: `level` is the stored boolean and
-    /// `range_min`/`range_max` the stored near/far distances in source
-    /// units.
+    /// `range_min`/`range_max` the near/far distances in source units.
+    ///
+    /// The stored LOD data record (`LodCsC`, 92 bytes) holds the near bound
+    /// *squared* (`range_near_sq`) and the far bound twice (`range_far`
+    /// plus `range_far_sq`, asserted equal to its square); the reader
+    /// resolves the square root and the consistency check before producing
+    /// this record, so the fields here are the resolved distances.
     Lod {
         /// The stored level flag.
         level: bool,
-        /// Stored near distance, source units.
+        /// Near distance, source units (the record stores it squared).
         range_min: f32,
-        /// Stored far distance, source units.
+        /// Far distance, source units.
         range_max: f32,
     },
 }
@@ -423,12 +429,16 @@ pub enum ParsedNodeKind {
 /// A node's association with one mesh-array entry.
 ///
 /// `index` is the stored `mesh_index` — the only address a mesh has, since
-/// meshes carry no names. `mesh` resolves that index to the mesh element's
-/// catalog id (kind [`ContentKind::Mesh`]) or records it unresolved; the
-/// importer supplies the resolution, so this record never invents an id.
+/// meshes carry no names. The record stores it signed with `-1` meaning
+/// "no mesh"; a `MeshBinding` exists only for a non-negative value, so the
+/// reader maps `-1` to [`ParsedNode::mesh`] `= None`. `mesh` resolves that
+/// index to the mesh element's catalog id (kind [`ContentKind::Mesh`]) or
+/// records it unresolved; the importer supplies the resolution, so this
+/// record never invents an id.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MeshBinding {
-    /// The stored mesh-array index.
+    /// The stored mesh-array index (the record's `mesh_index` was `-1` for
+    /// "no mesh"; only non-negative values become a binding).
     pub index: u32,
     /// The mesh element the index resolves to.
     pub mesh: Resolved<ContentId>,
@@ -1257,8 +1267,13 @@ fn convert_kind(node: &ParsedNode, adapter: &SourceAdapter) -> Result<NodeKind, 
             range_min,
             range_max,
         } => {
-            // The stored value is a squared distance's root; a negative or
-            // non-finite bound, or a reversed range, is corrupt input.
+            // `range_min` arrives resolved (the record stores it squared).
+            // A negative or non-finite bound is corrupt input, and a
+            // reversed range is refused — stricter than the reference,
+            // which bounds the near value but never compares it to the far.
+            // Refusing is safe here only because no measured data has been
+            // seen to rely on a reversed range; that stays a recorded
+            // unknown, not a verified fact.
             if !(range_min.is_finite() && range_max.is_finite())
                 || range_min < 0.0
                 || range_min > range_max
