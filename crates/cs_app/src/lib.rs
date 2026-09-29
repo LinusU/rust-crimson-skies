@@ -21,9 +21,19 @@
 //! `### F09-C`): per-model-instance faction and custom paints resolved
 //! through a session-scoped composed-variant store, plus the construction
 //! preview, teardown and retry the rendering stages (F17) drive.
+//!
+//! [`scene`] and [`airframe_visual`] are the F11-A ECS binding records
+//! (`specs/F11-scene-hierarchy-aircraft-parts-sockets-and-lod.md`,
+//! `### F11-A`): a generation-stamped [`scene::SceneNodeBinding`] tying an
+//! entity to its canonical scene node, the [`scene::NodeVisualTransform`]
+//! conversion of the one composed transform into a full-affine
+//! `GlobalTransform`, and [`airframe_visual::AirframeVisual`] — the
+//! airframe → scene-root reference by content id, never by array position.
 
+pub mod airframe_visual;
 pub mod cli;
 pub mod livery;
 pub mod origin;
 pub mod run;
+pub mod scene;
 pub mod synthetic;

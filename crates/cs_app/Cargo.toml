@@ -19,8 +19,9 @@ cs_types.workspace = true
 # binding/coverage records and the M01-A source-derived binding; they are
 # integration tests. `cs_assets` (installation discovery and SHA-256,
 # re-measured independently of the code under test) is a dev-dependency of
-# this crate only; `cs_content` and `cs_formats` are now production
-# dependencies of `src/livery.rs` (F09-C).
+# this crate only; `cs_formats` is a production dependency of
+# `src/livery.rs` (F09-C) and `cs_content` of `src/livery.rs` (F09-C) and
+# `src/scene.rs` (F11-A, the scene binding records).
 [dev-dependencies]
 cs_assets.workspace = true
 
