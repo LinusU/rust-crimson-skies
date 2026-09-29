@@ -53,11 +53,12 @@ output, real exit codes — but against throwaway fixture workspaces under
   and `Cargo.lock` plus stub `src/lib.rs`/`src/main.rs` targets. Cargo
   still resolves exactly the ten required members, so the "cargo agrees
   with the gate" cross-check is unchanged.
-- New `accept_f00_c_gate_tests_stay_off_this_workspace`: scans
-  `tools/cs_xtask/tests/*.rs` and fails if any cargo-spawning call
-  (`select_tests`, `verify_exact`, `run_gate`, a `test-select` CLI with
-  `--prefix`, or a direct `Command::new(&cargo)`) is driven against this
-  workspace's root — the tripwire for this exact regression.
+- New `accept_f00_c_gate_tests_stay_off_this_workspace`: scans every
+  `crates/*/tests/` and `tools/*/tests/` `.rs` file and fails if any
+  cargo-spawning call (`select_tests`, `verify_exact`, `run_gate`, a
+  `test-select` CLI with `--prefix`, or a direct `Command::new(&cargo)`)
+  is driven against this workspace's root — the tripwire for this exact
+  regression.
 
 Nothing in production code changed; `cs_xtask test-select` still runs
 `cargo test --workspace` on the real workspace when an agent invokes the

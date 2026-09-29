@@ -405,19 +405,46 @@ fn accept_f00_c_test_select_command_runs_the_gate() {
     );
 }
 
-/// Regression tripwire: no test in this directory may drive the
-/// cargo-spawning gate (`select_tests`, `verify_exact`, `run_gate`, the
+/// Regression tripwire: no test in any member's `tests/` directory may drive
+/// the cargo-spawning gate (`select_tests`, `verify_exact`, `run_gate`, the
 /// `test-select` command or a direct cargo subprocess) against this
 /// workspace's root. A nested `cargo test` on this tree is what stalled the
 /// suite — pass a fixture workspace instead.
 #[test]
 fn accept_f00_c_gate_tests_stay_off_this_workspace() {
-    let tests_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
-    for entry in fs::read_dir(&tests_dir).expect("the tests directory must be readable") {
-        let path = entry.expect("a readable directory entry").path();
-        if path.extension() != Some("rs".as_ref()) {
-            continue;
+    // Every `.rs` file under `crates/*/tests/` and `tools/*/tests/`,
+    // recursively — the guard is worthless if it only watches the directory
+    // that happened to regress first.
+    let root = workspace_root();
+    let mut sources = Vec::new();
+    let mut pending = Vec::new();
+    for group in ["crates", "tools"] {
+        for member in fs::read_dir(root.join(group)).expect("a member group must be readable") {
+            let tests_dir = member
+                .expect("a readable member entry")
+                .path()
+                .join("tests");
+            if tests_dir.is_dir() {
+                pending.push(tests_dir);
+            }
         }
+    }
+    while let Some(dir) = pending.pop() {
+        for entry in fs::read_dir(&dir).expect("a tests directory must be readable") {
+            let path = entry.expect("a readable directory entry").path();
+            if path.is_dir() {
+                pending.push(path);
+            } else if path.extension() == Some("rs".as_ref()) {
+                sources.push(path);
+            }
+        }
+    }
+    assert!(
+        !sources.is_empty(),
+        "the tripwire must scan real test sources"
+    );
+
+    for path in sources {
         let source = fs::read_to_string(&path).expect("a test source must be readable");
         // Compare without whitespace so wrapping the code differently does
         // not hide a call from the scan.
