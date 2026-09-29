@@ -2142,6 +2142,7 @@ impl MeshCatalog {
         let resolved = ResolvedMesh {
             serial: self.serial,
             generation: self.generation,
+            container_key: key.clone(),
             id: container.id(index),
             container_span: container.span().clone(),
             trace: container.trace().clone(),
@@ -2167,8 +2168,11 @@ impl MeshCatalog {
     ///
     /// # Errors
     ///
-    /// [`MeshError::ForeignSession`] for another session and
-    /// [`MeshError::NotFromThisCatalog`] for a mesh another catalog resolved.
+    /// [`MeshError::ForeignSession`] for another session,
+    /// [`MeshError::NotFromThisCatalog`] for a mesh another catalog resolved, or
+    /// for one whose container no longer holds it, and
+    /// [`MeshError::MeshFailed`] when the stored mesh is present but its faces
+    /// did not survive the render gate.
     pub fn prepare_upload(
         &self,
         session: &ContentSession,
@@ -2181,17 +2185,18 @@ impl MeshCatalog {
         if resolved.generation != self.generation || resolved.serial != self.serial {
             return Err(not_ours());
         }
-        let container = self
-            .containers()
-            .filter(|container| container.span() == &resolved.container_span)
-            .find(|container| {
-                container.id(resolved.id.index) == resolved.id
-                    && container.render(resolved.id.index).is_some()
-            })
-            .ok_or_else(not_ours)?;
-        let built = container
-            .render(resolved.id.index)
-            .expect("the container slot was found above");
+        // The container is looked up by the **key** the mesh was resolved with,
+        // so the payload always names the container this catalog read for that
+        // key, never a sibling slot whose bytes happen to hash the same. The
+        // slot must still hold the mesh: a resolution cannot outlive a retry
+        // that replaced its container.
+        let container = self.container(&resolved.container_key)?;
+        if container.span() != &resolved.container_span
+            || container.id(resolved.id.index) != resolved.id
+        {
+            return Err(not_ours());
+        }
+        let built = container.render(resolved.id.index).ok_or_else(not_ours)?;
         let render = match built {
             Ok(render) => render.clone(),
             Err(error) => {
@@ -2217,9 +2222,7 @@ impl MeshCatalog {
             })
             .cloned()
             .collect();
-        let faces = container
-            .faces(resolved.id.index)
-            .expect("the container slot was found above");
+        let faces = container.faces(resolved.id.index).ok_or_else(not_ours)?;
         Ok(MeshUpload {
             id: resolved.id.clone(),
             generation: self.generation,
@@ -2336,11 +2339,20 @@ fn mesh_record(
             row.failure = Some(failure);
         }
         Ok(_) => {
+            // The reasons are a **set**: the same code reached through two
+            // different audit rows is one reason, and `Vec::dedup` would keep a
+            // second copy of it whenever the two are not adjacent. Insertion
+            // order is kept, so the codes still read in a stable order.
             let mut reasons: Vec<String> = Vec::new();
+            let mut reason = |code: String| {
+                if !reasons.contains(&code) {
+                    reasons.push(code);
+                }
+            };
             if let Some(faces) = row.faces
                 && faces.multi_material_group_polygons > 0
             {
-                reasons.push(format!(
+                reason(format!(
                     "multi_material_group_polygons:{}",
                     faces.multi_material_group_polygons
                 ));
@@ -2348,26 +2360,25 @@ fn mesh_record(
             // The audit rows this mesh's own stored references reach, so the row
             // states its own material readiness rather than the container's.
             for material in container.audit_rows_for(index) {
-                reasons.extend(material.unsupported_reasons.iter().cloned());
+                for code in &material.unsupported_reasons {
+                    reason(code.clone());
+                }
             }
-            reasons.extend(
-                mesh_presentation_unknowns()
-                    .iter()
-                    .map(|unknown| unknown.code().to_owned()),
-            );
-            reasons.dedup();
+            for unknown in mesh_presentation_unknowns() {
+                reason(unknown.code().to_owned());
+            }
             row.readiness = if reasons.is_empty() {
                 RenderMeshReadiness::Ready
             } else {
                 RenderMeshReadiness::Blocked
             };
-            row.normalize_state = if reasons.is_empty() {
-                ParseState::Parsed
-            } else {
-                ParseState::Failed {
-                    diagnostic: reasons[0].clone(),
-                }
-            };
+            // The mesh **did** become a render mesh, and `prepare_upload` hands
+            // it over. Open presentation decisions and an unresolved texture
+            // make the row `Blocked`, not its normalization `Failed`: the same
+            // split F08-C makes for a decoded image with open unknowns. Only the
+            // `Err` arm above, where no render mesh exists at all, is a
+            // normalization failure.
+            row.normalize_state = ParseState::Parsed;
             row.unsupported_reasons = reasons;
         }
     }
@@ -2394,6 +2405,11 @@ fn render_mesh_code(error: &RenderMeshError) -> &'static str {
 pub struct ResolvedMesh {
     serial: u64,
     generation: SessionGeneration,
+    /// The container key the mesh was resolved with. Carried so
+    /// [`MeshCatalog::prepare_upload`] serves the **same** container
+    /// [`MeshCatalog::resolve`] read, and never a sibling slot whose bytes
+    /// happen to hash the same.
+    container_key: AssetKey,
     id: MeshId,
     container_span: SourceSpan,
     trace: ResolutionTrace,
@@ -2408,6 +2424,11 @@ impl ResolvedMesh {
     /// The serial of the catalog that resolved it.
     pub const fn serial(&self) -> u64 {
         self.serial
+    }
+
+    /// The container key the mesh was resolved with.
+    pub const fn container_key(&self) -> &AssetKey {
+        &self.container_key
     }
 
     /// The origin of the container that stores it.
@@ -4373,6 +4394,20 @@ mod tests {
         materials: u32,
         meshes: &[Result<StoredMesh, ()>],
     ) -> Vec<u8> {
+        let texture_of: Vec<u32> = (0..materials).collect();
+        gamez_container_with(textures, &texture_of, meshes)
+    }
+
+    /// [`gamez_container`] with the container's material table spelled out:
+    /// `texture_of[i]` is the texture index the present material record `i`
+    /// stores, so a fixture can point two materials at the same name, or at an
+    /// index the container's texture table does not have.
+    fn gamez_container_with(
+        textures: &[&str],
+        texture_of: &[u32],
+        meshes: &[Result<StoredMesh, ()>],
+    ) -> Vec<u8> {
+        let materials = texture_of.len() as u32;
         let header_bytes = 40usize;
         assert_eq!(textures_offset(), header_bytes as u32);
         let textures_offset = header_bytes;
@@ -4439,8 +4474,8 @@ mod tests {
         ] {
             out.extend_from_slice(&word.to_le_bytes());
         }
-        for index in 0..materials {
-            out.extend_from_slice(&material_slot(index, materials, index));
+        for (index, texture_index) in texture_of.iter().enumerate() {
+            out.extend_from_slice(&material_slot(index as u32, materials, *texture_index));
         }
         for index in materials..NG_MATERIAL_SLOTS {
             out.extend_from_slice(&zero_material_slot(index, materials));
@@ -4556,6 +4591,33 @@ mod tests {
         )
     }
 
+    /// The world's `gamez.zbd` when one mesh reaches **three** materials whose
+    /// blocking reasons are the same code, the same other code, the same code
+    /// again: material 0 and material 2 both name a texture the world's archive
+    /// does not store, and material 1 stores a texture index the container's own
+    /// texture table does not have.
+    fn repeated_reason_container() -> Vec<u8> {
+        let polygons = |material: u32| {
+            StoredPolygon::new(
+                &[0, 1, 2],
+                material,
+                &[[0.0, 0.0], [0.5, 0.0], [0.25, 0.25]],
+            )
+        };
+        let mesh = StoredMesh::new(
+            block(0.0, 3),
+            block(1000.0, 3),
+            vec![polygons(0), polygons(1), polygons(2)],
+        );
+        gamez_container_with(
+            &["Sky1.tif", "sky", "Sky2.tif"],
+            // Material 1's index is past the three stored names on purpose: it
+            // is the different reason that separates the two missing textures.
+            &[0, 9, 2],
+            &[Ok(mesh)],
+        )
+    }
+
     fn gamez_key() -> AssetKey {
         world_key("gamez.zbd")
     }
@@ -4667,20 +4729,38 @@ mod tests {
                 "vertex_color_unknown".to_owned(),
             ]
         );
-        assert!(matches!(seam.normalize_state, ParseState::Failed { .. }));
+        // The mesh was built, so its normalization did not fail: what is open is
+        // presentation, which is `readiness`, not a parse or a normalize
+        // failure. The same split F08-C makes for a decoded image with open
+        // unknowns.
+        assert_eq!(
+            seam.normalize_state,
+            ParseState::Parsed,
+            "a render mesh that uploads is not a normalization failure"
+        );
         assert!(seam.failure.is_none(), "a complete mesh has no failure");
 
         // The second mesh's material names `Sky1.tif`, which the archive does
         // not store, so its row names that and its own upload carries the
-        // refused row rather than a substituted texture.
+        // refused row rather than a substituted texture. An unresolved
+        // dependency is a readiness reason, not a normalization failure.
         let missing = &records[1];
         assert_eq!(missing.mesh_index, Some(1));
-        assert!(
-            missing
-                .unsupported_reasons
-                .contains(&"texture_not_found".to_owned())
+        assert_eq!(
+            missing.unsupported_reasons,
+            vec![
+                "texture_not_found".to_owned(),
+                "front_face_winding_unknown".to_owned(),
+                "uv_origin_unknown".to_owned(),
+                "vertex_color_unknown".to_owned(),
+            ]
         );
         assert_eq!(missing.readiness, RenderMeshReadiness::Blocked);
+        assert_eq!(
+            missing.normalize_state,
+            ParseState::Parsed,
+            "an unresolved texture blocks the row; it does not fail it"
+        );
         assert_eq!(
             records[2].mesh_index,
             Some(3),
@@ -4694,6 +4774,7 @@ mod tests {
             .resolve(&session, &gamez_key(), 0)
             .expect("mesh 0 resolves");
         assert_eq!(resolved.id(), id);
+        assert_eq!(resolved.container_key(), &gamez_key());
         assert_eq!(resolved.generation(), catalog.generation());
         assert!(
             !resolved.trace().attempts.is_empty(),
@@ -4770,6 +4851,8 @@ mod tests {
                 archive: archive.clone(),
             }
         );
+        // The payload names the container its own resolution was made with.
+        assert_eq!(second.container_key(), &gamez_key());
         assert!(
             second
                 .material(1)
@@ -5206,6 +5289,65 @@ mod tests {
             "the dispatch refused it, so no reader ever saw the bytes"
         );
         assert_eq!(catalog.containers().count(), 0, "nothing was read as GameZ");
+    }
+
+    /// A row's `unsupported_reasons` is a **set** of codes, not a tally: two of
+    /// this mesh's three materials are refused for the same reason, and the row
+    /// names that reason once. The two copies are not adjacent — a different
+    /// reason sits between them — so this fails for a de-duplication that only
+    /// collapses neighbouring entries.
+    #[test]
+    fn accept_f10_c_03_a_row_names_each_blocking_reason_once() {
+        let tree = Tree::world(&["sky", "ground"], &["tier"]);
+        tree.write("ZBD/c1/gamez.zbd", &repeated_reason_container());
+        let session = world_session(&tree.0, "ZBD/c1");
+        let textures = TextureCatalog::open(&session, std::slice::from_ref(&texture_key()));
+        let archive = texture_key();
+        let dependencies = seam_dependencies(&textures, &archive);
+        let catalog = MeshCatalog::open(&session, &[gamez_key()], &dependencies);
+        assert_eq!(catalog.failures().count(), 0, "the fixture container opens");
+
+        let row = &catalog.records()[0];
+        assert_eq!(row.mesh_index, Some(0));
+        assert_eq!(row.readiness, RenderMeshReadiness::Blocked);
+        // Two materials name a texture the archive does not store and one
+        // stores a texture index past the container's own table, so the row
+        // carries both codes.
+        assert_eq!(
+            row.unsupported_reasons
+                .iter()
+                .filter(|reason| reason.as_str() == "texture_not_found")
+                .count(),
+            1,
+            "the same reason reached through two materials is one reason: {:?}",
+            row.unsupported_reasons
+        );
+        assert!(
+            row.unsupported_reasons
+                .iter()
+                .any(|reason| reason.starts_with("texture_index_out_of_range")),
+            "{:?}",
+            row.unsupported_reasons
+        );
+        // Nothing is listed twice at all, whatever the codes are.
+        let mut sorted = row.unsupported_reasons.clone();
+        sorted.sort();
+        let before = sorted.len();
+        sorted.dedup();
+        assert_eq!(sorted.len(), before, "{:?}", row.unsupported_reasons);
+        // The two materials really are two rows of the audit, so the two
+        // refusals exist and the row is not hiding one of them.
+        let container = catalog.containers().next().expect("one container");
+        assert_eq!(container.audit().rows.len(), 3);
+        assert_eq!(
+            container
+                .audit()
+                .rows
+                .iter()
+                .filter(|material| !material.state.is_complete())
+                .count(),
+            3
+        );
     }
 
     /// The retail half: the world's own `gamez.zbd`, read by the production VFS,

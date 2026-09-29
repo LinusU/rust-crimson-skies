@@ -97,6 +97,17 @@ with `MeshError::MeshNotFound`, and it is never filled from a sibling.
 * `parse_state` is `Parsed` for a stored mesh whose bytes were read, *including*
   one the render gate refused; the refusal is in `normalize_state` and in
   `failure`, because the failure is not a parse failure.
+* `normalize_state` is `Failed` **only** when no render mesh exists: the stored
+  faces did not survive the validation gate. A mesh that *was* built is
+  `Parsed` even when it is `Blocked`, because it is still handed to
+  `prepare_upload` and uploaded. Open presentation decisions and an unresolved
+  texture are `readiness` and `unsupported_reasons`, not a normalization
+  failure — the same split F08-C's `ImageRecord` makes for a decoded image with
+  open unknowns. (Review fix; see "Review 2026-09-29" below.)
+* `unsupported_reasons` is a **set** of stable codes, in insertion order, with
+  no code twice: two materials refused for the same reason contribute that
+  reason once, even when another reason sits between them. (Review fix;
+  `Vec::dedup` only collapsed neighbouring entries.)
 * `runtime_consumers` is `["mesh_upload"]`.
 * A container that produced no mesh at all has `fingerprint: None` and no face
   counts, exactly as `ImageRecord` gives a failed archive.
@@ -341,6 +352,7 @@ All in `crates/cs_content/src/mesh.rs`, all `accept_f10_c_03_`:
 | `..._truncated_container_is_a_failed_row_and_recovers_after_remount` | Removes the failed-container row, the reader's offset, the stale-session refusals, the retry, or the remount recovery, and it fails. |
 | `..._a_refused_mesh_is_a_row_and_nothing_is_uploaded_for_it` | Removes the per-mesh refusal (the mesh would be dropped or uploaded), or either reader-context path. |
 | `..._a_payload_owns_its_data_and_survives_its_session` | Removes the payload's ownership (it would not compile/borrow correctly or would not answer), the catalog serial, or the stale-session refusal. |
+| `..._a_row_names_each_blocking_reason_once` | A de-duplication that only collapses neighbouring codes (`Vec::dedup`) names `texture_not_found` twice, because a different reason sits between the two. Measured: that mutation fails this test and passes the other five. |
 | `..._a_container_of_another_family_is_never_read_as_gamez` | Removes either family refusal. |
 | `..._retail_world_meshes_reach_the_upload_payload` (`#[ignore]`) | The whole path on the original installation. |
 
@@ -362,6 +374,45 @@ values that only exist because of the production code — `failure.offset ==
 Some(nodes_offset)`, `failure.member == Some("gamez.meshes.polygon…")`, and the
 three rows that only appear after a remount — so removing the behaviour cannot
 leave the test vacuously green.
+
+## Review 2026-09-29
+
+Reviewed by `bunny-2` (the same agent instance that implemented the slice, so
+this is **not** independent evidence; see `complete_review` notes). Three
+defects were found and fixed on the task branch, all in the F10-C.03 half; the
+F10-C.01 and F10-C.02 production code and their twenty acceptance tests are
+byte-identical to `main` apart from the module header.
+
+1. **`normalize_state` claimed a normalization failure for a render mesh that
+   was built and uploaded.** Every reachable row carried
+   `ParseState::Failed`, because the three presentation unknowns are always on
+   the reason list. That contradicted the same row's `readiness: Blocked`, the
+   field's own doc ("whether the read mesh became a usable render mesh") and the
+   `Ok(MeshUpload)` the same catalog hands over for it. It also diverged from
+   the model the task named, F08-C's `ImageRecord`, where a decoded image with
+   open unknowns is `normalize_state: Parsed` and `DecodedWithUnknowns`.
+   `normalize_state` is now `Failed` only for the `Err` arm — the mesh the
+   validation gate refused — and the synthetic and retail assertions were
+   updated to say so.
+2. **`unsupported_reasons` was de-duplicated with `Vec::dedup`**, which only
+   collapses *adjacent* entries. A mesh reaching two materials that are both
+   refused for the same reason, with a different reason between them, listed that
+   code twice. Replaced with an order-preserving set insertion, and covered by
+   the new `accept_f10_c_03_a_row_names_each_blocking_reason_once`.
+3. **`prepare_upload` located its container by span and mesh id** rather than by
+   the key `resolve` was asked for, and reached `faces` and the built mesh
+   through two `expect()` calls. `ResolvedMesh` now carries the container key, so
+   the payload always names the container `resolve` read, and both panics are
+   gone. No alias mechanism exists today that could route two keys to one file,
+   so this is robustness and provenance, not a fix for an observed failure.
+
+**Environment note for other agents.** `CARGO_TARGET_DIR` is one shared
+directory for every worktree under `/Users/linus/coding/rust-crimson-skies`, so
+two agents building at the same time overwrite each other's binaries: a test run
+can silently execute *another* worktree's code. This review hit it directly — an
+edit to `mesh.rs` produced no output from a freshly compiled binary until the
+target directory was made private. Every command above was re-run with a
+per-agent `CARGO_TARGET_DIR`. Filed as a follow-up.
 
 ## Sources
 
