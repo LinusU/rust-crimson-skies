@@ -24,9 +24,13 @@
 //! [`textures`] is the F08-D `texture-audit` command: every ZBD texture
 //! decoded through the F08-C upload boundary and compared texel by texel
 //! with a pinned reference extraction, with an optional private contact
-//! sheet. [`catalog`] is the F14-A synthetic content-catalog fixture: ready
-//! and unsupported stable-id rows through the canonical `cs_content`
-//! constructor, never a retail entry. [`reference_capture`] is the
+//! sheet. [`catalog`] is the F14-A synthetic content-catalog fixture —
+//! ready and unsupported stable-id rows through the canonical `cs_content`
+//! constructor, never a retail entry — and the F14-C `catalog` and `closure`
+//! commands: the catalog report of every row's parse, normalize and
+//! readiness state, and the transitive dependency closure of one launchable
+//! mission with its predecessor chains and orphaned references.
+//! [`reference_capture`] is the
 //! REF-CAPTURE-PROTOCOL record model (#357): the operator worksheet shape
 //! for an original-game capture — fingerprints, timebase, units, artifacts,
 //! observer and capture method — with its three-valued admission rules

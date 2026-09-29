@@ -24,9 +24,10 @@
 //! resolves declared tuning fields and localized string ids through the
 //! `cs_content::config` consumers, and the `scripts` command (F13-B) routes
 //! every ZBD container and locates and classifies its loading, mission and
-//! animation programs. The remaining subcommands from
-//! `docs/contracts/CLI-EVIDENCE.md` (`catalog`, `closure`,
-//! `handling`) arrive with later tasks.
+//! animation programs, and the `catalog` and `closure` commands (F14-C)
+//! inspect the canonical content catalog and the transitive dependency
+//! closure of a launchable mission. The remaining subcommand from
+//! `docs/contracts/CLI-EVIDENCE.md` (`handling`) arrives with later tasks.
 //! Until then the binary refuses invalid input with a nonzero exit code and
 //! a diagnostic naming the missing command — a failure is never returned as success.
 
@@ -140,8 +141,27 @@ COMMANDS
         exits 3 when it does not. Exits 0 when the command runs and the
         requested coverage holds, 4 when no installation is selected.
 
-    catalog  closure  handling
-        Not implemented in this workspace stage; they are documented in
+    catalog [--out <file>]
+        Inspect the canonical content catalog (F14-C): report every row with
+        its parse, normalize and readiness state and the declared launchable
+        baseline, and write the deterministic JSON catalog report. The rows
+        are the validated synthetic catalog fixture, so the report names its
+        source and is never retail-ready; the retail baseline inventory is
+        F14-D. Exits 0 when the report is written.
+
+    closure --mission <catalog-id> [--strict] [--out <file>]
+        Inspect the transitive dependency closure (F14-C) of one declared
+        launchable mission/scenario over the same catalog: report every
+        reached node with its predecessor chain from the mission, its
+        readiness and the orphaned references, and write the deterministic
+        JSON closure report. --strict exits 3 when the closure is not
+        complete (a node is unavailable or a reference is orphaned). Exits 0
+        when the closure computes and, with --strict, is complete; 2 on
+        invalid input or an unknown/non-launchable mission; 3 on failed
+        validation.
+
+    handling
+        Not implemented in this workspace stage; it is documented in
         docs/contracts/CLI-EVIDENCE.md.
 
 `--help` and `--version` read no environment variable and open no
@@ -182,11 +202,13 @@ fn main() -> ExitCode {
         Some("texture-audit") => cs_inspect::textures::texture_audit_command(&args[1..]),
         Some("config") => cs_inspect::config::config_command(&args[1..]),
         Some("scripts") => cs_inspect::script_discovery::scripts_command(&args[1..]),
+        Some("catalog") => cs_inspect::catalog::catalog_command(&args[1..]),
+        Some("closure") => cs_inspect::catalog::closure_command(&args[1..]),
         Some(command) => {
             eprintln!(
                 "cs-inspect: unsupported command {command:?}; this workspace stage implements \
                  only `inventory`, `audit`, `resolve`, `rof`, `zbd-audit`, `interp`, \
-                 `texture-audit`, `config` and `scripts`"
+                 `texture-audit`, `config`, `scripts`, `catalog` and `closure`"
             );
             ExitCode::from(EXIT_INVALID_INPUT)
         }
