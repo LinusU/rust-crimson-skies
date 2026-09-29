@@ -311,11 +311,21 @@ link pointed at a type that does not exist (`LoadDriverError::Integrity`);
 and one test's doc comment described the previous test's scenario.
 
 Each of the four new tests was mutation-checked: the pre-fix code was
-restored for one defect at a time and the named test failed (three store
-tests by a panic or a wrong eviction, one driver test by the
-`Uncached`/`Rebuilt` verdict), then the fix was restored. Mutations 1–3
-are in the table above; the fourth is the driver's verdict and the fifth
-(reordering) is not mutation-testable from userspace.
+restored for one defect at a time, the two `accept_f15_b_` binaries were
+run, and the fix was put back.
+
+| Review mutation | Test that failed |
+| --- | --- |
+| `PendingStoreWrite` takes the handle and the hasher in `seal`, as before | `accept_f15_b_a_failed_seal_leaves_the_write_retryable` (panicked in `append`) |
+| `commit` publishes the record the seal wrote, with its placeholder sequence | `accept_f15_b_eviction_order_survives_a_restart` (evicted the digest-lowest entry) |
+| `commit` does not look at the staged payload | `accept_f15_b_commit_refuses_a_staged_payload_that_changed` |
+| the driver reports a published rebuild as `Uncached` | `accept_f15_b_rebuild_replaces_an_entry_the_store_could_not_read` |
+
+Defect 4 (the index/disk reordering) is not mutation-testable from
+userspace: no deterministic sequence of calls reaches "the old directory
+is gone and the rename fails", because `commit` removes the old directory
+first and a rename within one directory does not fail for any other
+reason. It is recorded above as a hardening, not as covered behaviour.
 
 Commands on the review head (Rust 1.98.1, macOS), all exit 0:
 
