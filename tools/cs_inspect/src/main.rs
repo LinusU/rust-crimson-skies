@@ -24,10 +24,13 @@
 //! resolves declared tuning fields and localized string ids through the
 //! `cs_content::config` consumers, and the `scripts` command (F13-B) routes
 //! every ZBD container and locates and classifies its loading, mission and
-//! animation programs, and the `catalog` and `closure` commands (F14-C)
-//! inspect the canonical content catalog and the transitive dependency
-//! closure of a launchable mission. The remaining subcommand from
-//! `docs/contracts/CLI-EVIDENCE.md` (`handling`) arrives with later tasks.
+//! animation programs, and — F13-C — probes each located program in isolated
+//! runs for its instruction/native signature while reporting, with structural
+//! evidence, which inventory record every located program reaches. The
+//! `catalog` and `closure` commands (F14-C) inspect the canonical content
+//! catalog and the transitive dependency closure of a launchable mission.
+//! The remaining subcommand from `docs/contracts/CLI-EVIDENCE.md`
+//! (`handling`) arrives with later tasks.
 //! Until then the binary refuses invalid input with a nonzero exit code and
 //! a diagnostic naming the missing command — a failure is never returned as success.
 
@@ -129,7 +132,8 @@ COMMANDS
         unrouted or refused, or a requested lookup or field does not resolve,
         and 1 on a runtime failure.
 
-    scripts [--cs-path <dir>] [--coverage] [--out <file>]
+    scripts [--cs-path <dir>] [--coverage] [--signatures <file>]
+            [--word-bytes <n>] [--budget <n>] [--out <file>]
         Route every ZBD container of the installation (F13-B) and locate and
         classify its loading, mission and animation programs: one documented
         loading program per INTERP script body, one program per reader-archive
@@ -138,8 +142,21 @@ COMMANDS
         and the role its name or path supports. Program bytes are never
         copied into the report. --coverage requires every container to route
         and every script container to locate a program without a finding;
-        exits 3 when it does not. Exits 0 when the command runs and the
-        requested coverage holds, 4 when no installation is selected.
+        exits 3 when it does not. F13-C adds an isolated signature probe:
+        every inventory record reports whether a located program reaches it,
+        with the structural evidence for that verdict, and every located
+        program is walked in isolation against the signature table.
+        --signatures supplies caller-measured claims, one per line as
+        `<opcode> <spelling> <program> <arity> <signature> <effects> <timing>
+        <errors> <citation> [note]`; the workspace ships no such file because
+        the mission opcode table is unmeasured, so without it nothing is
+        resolved and probe.complete is false. With --signatures, coverage
+        also requires every program to be resolved. --word-bytes and --budget
+        state the assumed instruction unit and the per-program budget; their
+        defaults are reported as probe.assumed. Exits 0 when the command runs
+        and the requested coverage holds, 3 when it does not, 2 for invalid
+        input (including a malformed signature file), 4 when no installation
+        is selected.
 
     catalog [--out <file>]
         Inspect the canonical content catalog (F14-C): report every row with
