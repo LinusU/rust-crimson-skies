@@ -29,9 +29,11 @@
 //!
 //! The catalog collection that consumes these records (insertion, duplicate
 //! identity refusal, the declared launchable baseline and readiness
-//! accounting) lives in `cs_content::catalog`; the transitive dependency
-//! closure is F14-B. Nothing in this module is derived from original game
-//! data.
+//! accounting) lives in `cs_content::catalog`. F14-B adds the canonical
+//! scalar [`Unit`] and [`PermittedRange`] vocabulary used by that crate's
+//! normalizer, and the `cs_content::catalog::closure` walk implements the
+//! transitive dependency closure over these records. Nothing in this module
+//! is derived from original game data.
 
 use std::fmt;
 
@@ -654,6 +656,166 @@ impl<T> Resolved<T> {
     }
 }
 
+/// A canonical unit a normalized quantity is expressed in.
+///
+/// [`Unit::ALL`] is the closed vocabulary the `IDENTITY-CONTENT` numeric
+/// contract names: "Normalization creates meters, seconds, radians,
+/// kilograms or explicitly documented game-weight units." Original UI units
+/// (miles per hour, feet, degrees) are conversion *inputs*, never these
+/// simulation units: [`Unit::from_label`] answers `None` for any spelling it
+/// does not know, and F14-B's normalizer turns that into an explicit unknown
+/// rather than assuming SI.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum Unit {
+    /// Metres.
+    Meters,
+    /// Seconds.
+    Seconds,
+    /// Radians.
+    Radians,
+    /// Kilograms.
+    Kilograms,
+    /// A documented game-weight unit with no SI counterpart. Its conversion
+    /// is declared per source, never assumed to be kilograms.
+    GameWeight,
+}
+
+impl Unit {
+    /// Every unit, in a stable order. [`Unit::from_label`] scans this table,
+    /// so `label` and `from_label` cannot disagree about one unit.
+    pub const ALL: &'static [Unit] = &[
+        Self::Meters,
+        Self::Seconds,
+        Self::Radians,
+        Self::Kilograms,
+        Self::GameWeight,
+    ];
+
+    /// The stable label used in reports.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Meters => "meters",
+            Self::Seconds => "seconds",
+            Self::Radians => "radians",
+            Self::Kilograms => "kilograms",
+            Self::GameWeight => "game_weight",
+        }
+    }
+
+    /// The unit's symbol, when it has an unambiguous one.
+    pub const fn symbol(self) -> &'static str {
+        match self {
+            Self::Meters => "m",
+            Self::Seconds => "s",
+            Self::Radians => "rad",
+            Self::Kilograms => "kg",
+            // A game-weight unit is project vocabulary; inventing an SI
+            // symbol for it would imply a conversion nobody measured.
+            Self::GameWeight => "game_weight",
+        }
+    }
+
+    /// Looks a unit up by its label; `None` for an unknown unit.
+    pub fn from_label(label: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|unit| unit.label() == label)
+    }
+}
+
+impl fmt::Display for Unit {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+/// Why a [`PermittedRange`] was rejected.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RangeError {
+    /// A bound was NaN or infinite.
+    NonFinite {
+        /// Which bound: `"min"` or `"max"`.
+        which: &'static str,
+    },
+    /// The lower bound was greater than the upper bound.
+    Reversed {
+        /// The lower bound.
+        min: f64,
+        /// The upper bound.
+        max: f64,
+    },
+}
+
+impl fmt::Display for RangeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NonFinite { which } => {
+                write!(f, "the {which} bound of a permitted range must be finite")
+            }
+            Self::Reversed { min, max } => {
+                write!(
+                    f,
+                    "the permitted range {min}..={max} has its bounds reversed"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for RangeError {}
+
+/// The approved inclusive range of one normalized quantity.
+///
+/// The numeric contract requires a tuning value to be "finite and within
+/// measured/approved ranges"; a range is declared by the consumer, validated
+/// once (`PermittedRange::new`) and then bounds every value F14-B's
+/// normalizer accepts.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PermittedRange {
+    min: f64,
+    max: f64,
+}
+
+impl PermittedRange {
+    /// A range from an inclusive `min` to an inclusive `max`.
+    ///
+    /// # Errors
+    ///
+    /// [`RangeError::NonFinite`] when a bound is NaN or infinite, and
+    /// [`RangeError::Reversed`] when `min > max`.
+    pub fn new(min: f64, max: f64) -> Result<Self, RangeError> {
+        if !min.is_finite() {
+            return Err(RangeError::NonFinite { which: "min" });
+        }
+        if !max.is_finite() {
+            return Err(RangeError::NonFinite { which: "max" });
+        }
+        if min > max {
+            return Err(RangeError::Reversed { min, max });
+        }
+        Ok(Self { min, max })
+    }
+
+    /// The inclusive lower bound.
+    pub const fn min(self) -> f64 {
+        self.min
+    }
+
+    /// The inclusive upper bound.
+    pub const fn max(self) -> f64 {
+        self.max
+    }
+
+    /// Whether `value` is finite and inside the inclusive range.
+    pub fn contains(self, value: f64) -> bool {
+        value.is_finite() && self.min <= value && value <= self.max
+    }
+}
+
+impl fmt::Display for PermittedRange {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "[{}, {}]", self.min, self.max)
+    }
+}
+
 /// What consumes a catalog element at runtime.
 ///
 /// The dependency closure verifies "resources, parsers, instructions,
@@ -718,8 +880,16 @@ pub enum DependencyKind {
     Static,
     /// A candidate discovered conservatively by the script adapter; a
     /// dynamic lookup that cannot be bounded is an unresolved dependency,
-    /// never proof of no dependency (`IDENTITY-CONTENT`).
+    /// never proof of no dependency (`IDENTITY-CONTENT`). Following this
+    /// edge is what keeps an unbounded lookup from looking like "no
+    /// dependencies".
     DynamicCandidate,
+    /// A parent/child hierarchy edge: the target is owned by the source.
+    ///
+    /// Unlike a reference edge, an ownership **cycle** is invalid
+    /// (`IDENTITY-CONTENT`: "cycles in ownership/parent hierarchies are
+    /// invalid"); a reference cycle is a legitimate graph and is allowed.
+    Ownership,
 }
 
 impl DependencyKind {
@@ -728,7 +898,16 @@ impl DependencyKind {
         match self {
             Self::Static => "static",
             Self::DynamicCandidate => "dynamic_candidate",
+            Self::Ownership => "ownership",
         }
+    }
+
+    /// Whether this edge expresses ownership rather than a reference.
+    ///
+    /// Ownership edges take part in the closure like any other edge, but
+    /// only they are subject to the acyclic rule (F14-B).
+    pub const fn is_ownership(self) -> bool {
+        matches!(self, Self::Ownership)
     }
 }
 
@@ -813,11 +992,17 @@ impl fmt::Display for Readiness {
 pub enum UnsupportedReason {
     /// No parser covers the element's source family.
     MissingParser,
+    /// The element has not been parsed yet, so nothing about it is validated.
+    NotParsed,
     /// The element's bytes failed to parse.
     ParseFailed {
         /// The parser's diagnostic.
         diagnostic: String,
     },
+    /// The element has not been normalized yet: parsing, normalization and
+    /// readiness are separate states, and an unnormalized element is not
+    /// validated (F14-B).
+    NotNormalized,
     /// Normalization refused a field.
     NormalizeFailed {
         /// Why normalization failed.
@@ -850,7 +1035,9 @@ impl UnsupportedReason {
     pub fn code(&self) -> &'static str {
         match self {
             Self::MissingParser => "missing_parser",
+            Self::NotParsed => "not_parsed",
             Self::ParseFailed { .. } => "parse_failed",
+            Self::NotNormalized => "not_normalized",
             Self::NormalizeFailed { .. } => "normalize_failed",
             Self::MissingRuntimeConsumer => "missing_runtime_consumer",
             Self::UnsupportedDependency { .. } => "unsupported_dependency",
@@ -868,6 +1055,8 @@ impl UnsupportedReason {
             Self::UnboundedDynamicDependency { detail } => Some(detail),
             Self::Unknown { reason, .. } => Some(reason),
             Self::MissingParser
+            | Self::NotParsed
+            | Self::NotNormalized
             | Self::MissingRuntimeConsumer
             | Self::UnsupportedDependency { .. } => None,
         }

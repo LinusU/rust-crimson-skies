@@ -37,9 +37,14 @@
 //!
 //! [`catalog`] holds the canonical content catalog and its declared
 //! launchable baseline (`specs/F14-canonical-content-catalog-and-dependency-
-//! closure.md`, stage F14-A): stable-id elements in canonical order,
+//! closure.md`, stages F14-A/F14-B): stable-id elements in canonical order,
 //! duplicate identities refused, and the unsupported-mission count that
-//! keeps an unavailable mission in the denominator.
+//! keeps an unavailable mission in the denominator. F14-B adds the
+//! [`catalog::normalize`] quantity normalizer (canonical units, approved
+//! ranges and explicit refusals) and the [`catalog::closure`] transitive
+//! dependency walk (per-edge provenance, propagated unsupported
+//! dependencies, orphaned references, ownership cycles and a deterministic
+//! hash and JSON report).
 //!
 //! [`campaign_bindings`] holds the engine-independent mission binding and
 //! campaign coverage records (`specs/F50-per-mission-compatibility-and-

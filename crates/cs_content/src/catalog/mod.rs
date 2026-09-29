@@ -15,15 +15,21 @@
 //! out to make the ratio look better (non-negotiable behavior 4, AC01).
 //!
 //! The catalog consumes the typed schema in `cs_types::content`; it does
-//! not parse bytes, normalize fields or traverse the dependency closure.
-//! That closure, and the per-edge validation that turns an unsupported
-//! dependency into an unavailable parent, arrive with F14-B. Nothing in
-//! this module is derived from original game data.
+//! not parse bytes. F14-B adds the two production paths over its rows:
+//! [`normalize`] turns raw declared quantities into canonical, range-checked
+//! values, and [`closure`] walks the transitive dependency graph from the
+//! declared launchable roots, propagating an unsupported dependency into an
+//! unavailable parent, reporting orphaned references and ownership cycles and
+//! emitting a deterministic closure hash and JSON report. Nothing in this
+//! module is derived from original game data.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use cs_types::content::{CatalogElement, ContentId, ContentKind, ElementError};
+
+pub mod closure;
+pub mod normalize;
 
 /// The canonical content catalog: every row by identity plus the declared
 /// launchable baseline readiness is measured against.
