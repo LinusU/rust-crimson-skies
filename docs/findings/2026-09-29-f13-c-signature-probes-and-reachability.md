@@ -163,14 +163,17 @@ incomplete table exits 3, never 0.
   kind evidence, so a re-probe replaces the verdict instead of leaving two
   notes that disagree.
 - **Assumptions are visible.** `--word-bytes` and `--budget` default to 4 and
-  4096 and the report states `assumed: true` when they were not given; both
-  are reported in `probe` so no width hides in code (the F13-B finding that
-  the instruction unit is unmeasured still stands).
+  4096 and the report states `assumed: true` while any of those defaults is
+  still in force — a caller who gives only `--budget` still gets
+  `assumed: true`, because the unmeasured instruction unit may not hide behind
+  a budget the caller did give; both values are reported in `probe` so no
+  width hides in code (the F13-B finding that the instruction unit is
+  unmeasured still stands).
 
 ## Test inventory (`accept_f13_c_*`)
 
 `crates/cs_formats/tests/script_raw/main.rs` (3 unignored + 1 retail) and
-`tools/cs_inspect/src/script_discovery.rs` (2 unignored + 1 retail + the
+`tools/cs_inspect/src/script_discovery.rs` (3 unignored + 1 retail + the
 evidence harness):
 
 | Test | Covers |
@@ -181,10 +184,11 @@ evidence harness):
 | `retail_reachability_covers_the_campaign_programs` | `$CS_GAME_DIR`: 200 records across four containers all carry a verdict and evidence, 0 unused unknown, 0 of >98 programs resolved |
 | `cli_resolves_signatures_and_keeps_an_unused_unknown_record` | the command end to end: 6 claims resolve both programs, exit 0, and the unused unknown record appears in `scripts.json` with its evidence |
 | `cli_fails_an_incomplete_table_and_refuses_a_malformed_file` | exit 3 for an incomplete table (and exit 0 without `--signatures`), exit 2 for five malformed files, a missing file and bad `--word-bytes` / `--budget` values |
+| `cli_reports_a_defaulted_probe_configuration_as_assumed` | a default still in force is reported as assumed: `--budget` alone keeps `assumed: true` with `word_bytes: 4`, `--word-bytes` alone keeps it with `budget: 4096`, and stating both reports `assumed: false` |
 | `retail_cli_probes_every_program_and_reaches_every_record` | `$CS_GAME_DIR`: 1452 probed, 0 resolved, 320 records with evidence and none `null`, and exit 3 for a supplied one-claim table |
 
 `cargo test --workspace --locked -- accept_f13_c_ --include-ignored` discovers
-and executes 7 tests (0 ignored at that point), all passing; each also passes
+and executes 8 tests (0 ignored at that point), all passing; each also passes
 when run alone with `--exact`.
 
 ## Mutation probes
@@ -201,6 +205,36 @@ Each mutation was applied, the task selection run, and the file restored:
   `accept_f13_c_retail_reachability_covers_the_campaign_programs` fail;
 - `passes` ignoring the signature check →
   `accept_f13_c_cli_fails_an_incomplete_table_and_refuses_a_malformed_file` fails.
+
+## Review fixes (2026-09-29 review of this branch)
+
+The reviewer checked the branch against the F13-C stage, the SCRIPT-MISSION
+contract and this file, and fixed three things inside the same owner paths:
+
+1. `probe.assumed` was true only when **both** `--word-bytes` and `--budget`
+   were omitted, so `cs-inspect scripts --budget 64` reported
+   `assumed: false` while still walking with the default 4-byte instruction
+   unit — exactly the assumption this stage must never hide. It is now true
+   while **either** default is in force, and
+   `accept_f13_c_cli_reports_a_defaulted_probe_configuration_as_assumed`
+   pins all three cases (budget alone, width alone, neither given).
+2. The per-container `records` array rendered reachability evidence as its
+   note alone. It now carries `method` (`structural_decode`) and `confidence`
+   (`observed_tool`) beside the note, so a reader of `scripts.json` can tell
+   the structural observation from a lead (spec F13 non-negotiable #1:
+   evidence confidence). The synthetic expectation moved with it; no verdict
+   changed.
+3. The evidence harness records the implementing and the reviewing identity
+   explicitly, including that both are the same agent identity
+   (`opencode-1`) — the report no longer implies an independent review that
+   did not happen (AGENTS.md "Reviewing").
+
+Reviewer mutation probes (applied, run, restored):
+`assumed` reverted to `&&` →
+`accept_f13_c_cli_reports_a_defaulted_probe_configuration_as_assumed` fails;
+`probe_records` no longer calling `set_reachability` →
+`accept_f13_c_unused_unknown_record_stays_visible_with_reachability_evidence`
+fails.
 
 ## Recorded unknowns (not guessed)
 
