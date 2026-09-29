@@ -259,8 +259,9 @@ not being kill-testable from userspace, one store per cache root, the
 Windows `sync_dir` no-op, the injected conversion) are real, correctly
 stated, and are not fixed by guessing.
 
-Five defects were found and fixed, each with a test that fails without the
-fix:
+Five defects were found and fixed. Four have a test that fails without the
+fix; the fifth is an error-path reordering that no test can reach, and it
+says so.
 
 1. **A failed `seal` left the write unusable, and the next call panicked.**
    `seal` took the payload handle and the hasher out of the write *before*
