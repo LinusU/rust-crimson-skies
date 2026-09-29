@@ -15,8 +15,15 @@
 //! drives them from the `cs_sim` frame clock through `FixedTickDriver`, so a
 //! render frame's wall time only ever adds whole fixed ticks and equal input
 //! at 30, 60 or 144 FPS yields the same state.
+//!
+//! [`livery`] is the F09-C consumer
+//! (`specs/F09-bm-multilayer-liveries-and-paint-composition.md`, stage
+//! `### F09-C`): per-model-instance faction and custom paints resolved
+//! through a session-scoped composed-variant store, plus the construction
+//! preview, teardown and retry the rendering stages (F17) drive.
 
 pub mod cli;
+pub mod livery;
 pub mod origin;
 pub mod run;
 pub mod synthetic;

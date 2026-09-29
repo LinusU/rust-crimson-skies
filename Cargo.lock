@@ -2454,6 +2454,7 @@ dependencies = [
  "bevy",
  "cs_assets",
  "cs_content",
+ "cs_formats",
  "cs_sim",
  "cs_types",
 ]
