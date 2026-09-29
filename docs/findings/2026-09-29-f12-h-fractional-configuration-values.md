@@ -63,13 +63,17 @@ For each member, through production code only:
    `.CSV` extension).
 3. Every field of every entry is taken as `RawField::value()` — the form the
    original reader hands a consumer (**R4**, blank bytes dropped) — and put to
-   `TuningSchema::tune` twice: once with a `Float64` spec, which accepts any
-   finite value the rule can read, and once with a signed `Bits64` spec.
+   `TuningSchema::tune` with a `Float64` spec, which accepts any finite value
+   the rule can read. The decoded member's own bytes are counted separately,
+   so "no `.` in the member" and "no `.` in a value of it" are two different
+   claims and both are measured.
 
-The first reading answers "could a consumer convert this field at all". The
-second answers "would a consumer ever have to round it". A value that reads
-under the first and comes back with a non-zero `fract()` under the second is a
-fraction in the only sense this task cares about.
+A value that reads as a number and comes back with a non-zero `fract()` is a
+fraction in the only sense this task cares about. The question is deliberately
+**not** asked of a whole-number schema as well: `tune` refuses a fractional
+value as an `Overflow` of the declared type rather than rounding it, so such a
+reading could never report one and would only restate the first. (The retail
+test was reviewed on exactly this point — see "Review notes" below.)
 
 ## Measurement
 
@@ -176,7 +180,7 @@ different and stronger statement, and it is recorded as such:
 | Test | Covers |
 | --- | --- |
 | `…the_fractional_spelling_is_a_designed_rule` | the three accepted shapes (`5.5`, `5.`, `.5`) against a float width; the first and third refused as `Overflow` for a whole-number width and the second accepted as `5`; a sign in front of a fraction; `5.5.5`, `.`, `1.5e3` and `0x1.8` refused as `NotANumber` with their lengths; a plain decimal and a hexadecimal value unaffected; every refusal leaving the member byte-identical |
-| `…retail_configuration_values_are_never_fractional` (ignored, retail) | both members read through the ROF tree walk, the bounded member decoder, the keyed-list grammar and `ConfigDocument`; the per-member field-value, numeric, dotted and exponent-shaped counts; `SCRAPBOOK.CSV` dotted empty; `LAYOUT.CSV` exactly 229 dotted with no dotted value readable as a number; no numeric value a whole-number field must round; one `.` per dotted value, alphabetic extension, non-numeric stem; the exact extension histogram; every exponent-shaped value a hexadecimal colour, a resource-id name or a `<NAME>` placeholder, and the three `oxff1E283C` misspellings named exactly |
+| `…retail_configuration_values_are_never_fractional` (ignored, retail) | both members read through the ROF tree walk, the bounded member decoder, the keyed-list grammar and `ConfigDocument`; the per-member field-value, numeric, dotted and exponent-shaped counts; the member-wide `.` byte counts (232 and 0) beside them; `SCRAPBOOK.CSV` dotted empty; `LAYOUT.CSV` exactly 229 dotted with no dotted value readable as a number; no value either member converts to a non-whole number; one `.` per dotted value, alphabetic extension, non-numeric stem; the exact extension histogram; every exponent-shaped value a hexadecimal colour, a resource-id name or a `<NAME>` placeholder, and the three `oxff1E283C` misspellings named exactly |
 
 The retail test fails with "CS_GAME_DIR is not set" when run without it.
 
@@ -188,11 +192,47 @@ The retail test fails with "CS_GAME_DIR is not set" when run without it.
 | `number` accepts a `.` inside a hexadecimal value (a second `.` admitted) | `…the_fractional_spelling_is_a_designed_rule` (`0x1.8` becomes a number) |
 | `tune` truncates a fraction for a whole-number width instead of refusing it | `…the_fractional_spelling_is_a_designed_rule` (`5.5` would become `Tuning { value: 5.0, … }`) |
 | `number` refuses the `0x` prefix (the hexadecimal rule removed) | `…retail_configuration_values_are_never_fractional` (`LAYOUT.CSV` numeric count 3 664 → 3 220) |
+| the member-wide byte count looks for `;` instead of `.` (review probe) | `…retail_configuration_values_are_never_fractional` (`SCRAPBOOK.CSV` `.` bytes 0 → 25) |
+| the exponent-shape classification demands upper case again, with the misspelling matched in full (review probe) | `…retail_configuration_values_are_never_fractional` (`MS_P_19_01_SwanWelcomeHome1` is unaccounted for) |
 
 A fifth probe, dropping the **R4** blank-trimming of `RawField::value`, changed
 nothing: the seven padded fields of `SCRAPBOOK.CSV` are resource-id *names*,
 which were never numeric. Recorded because it bounds what this task's tests
 claim — they pin the value shapes, not the padding rules.
+
+The probes also bound the negative claims above: the four
+`SCRAPBOOK.CSV` exponent-shaped values and the 21 `LAYOUT.CSV` ones that are
+neither hexadecimal literals nor placeholders are resource-id names, and the
+classification is now what proves it rather than a permissive predicate. What
+these tests cannot detect is a value that is a fraction without being spelled
+with a `.` — the rule admits no such spelling, and that is a property of the
+rule, not of this survey.
+
+## Review notes
+
+Recorded because the reviewer of this branch is the same agent identity that
+implemented it (`bunny-2/bunny-2`, Rally claim on #369), so per AGENTS.md this
+is **not** independent evidence, and a merged task is `checked`, never
+`verified_original`. The review re-derived every number in the table above from
+the exported members with a parser written separately from the production
+readers (byte and field counts, the dotted census with its extension histogram
+and stem classification, the hexadecimal/decimal split of 444 + 3 220 = 3 664,
+the exponent census of 115 + 4, and the three `oxff1E283C` lines) and found
+them all correct. It fixed three things the implementer left:
+
+1. the retail test's `rounded` list was unreachable — `tune` refuses a
+   fractional value for a whole-number width as an `Overflow`, so no value
+   could ever land in it. It is now a `fractional` list measured on the float
+   conversion, which can in principle be non-empty, and the dead `Bits64` spec
+   is gone with it.
+2. the exponent-shape assertion excused **any** value containing a letter `o`,
+   which is how four real `SCRAPBOOK.CSV` resource-id names were passing
+   unclassified. The misspelling is now matched as the exact spelling
+   `oxff1E283C` and the name predicate admits the lowercase those names use, so
+   "nothing else" is a claim the test makes.
+3. the `232` `.` bytes the production doc comment states were not asserted.
+   Both members' byte counts are now pinned (232 and 0), which is also what
+   keeps the difference between a `.` byte and a fractional *value* honest.
 
 ## Commands
 

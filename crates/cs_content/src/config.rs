@@ -2924,8 +2924,9 @@ J=0x1.8\r\n";
         );
         // A second `.`, a bare `.` and an exponent are not spellings: an
         // installed value using one would be text this reader cannot
-        // interpret, and the survey found none. The last two are the same
-        // rule on the hexadecimal branch, which `LAYOUT.CSV` does use.
+        // interpret, and the survey found none. `J` is the hexadecimal branch
+        // asked the same question, because that is a spelling `LAYOUT.CSV`
+        // does use (444 values of it).
         for (key, len) in [
             (&b"D"[..], 5usize),
             (&b"E"[..], 1),
@@ -2962,8 +2963,16 @@ J=0x1.8\r\n";
     }
 
     /// One member of the retail container, decoded by
-    /// [`cs_formats::read_member`].
-    fn retail_keyed_list(rof: &[u8], member: &str) -> ConfigDocument {
+    /// [`cs_formats::read_member`] and then parsed, so a survey can count a
+    /// byte of the member as well as a value of its document.
+    struct RetailMember {
+        /// The decoded member, byte for byte as the container stores it.
+        bytes: Vec<u8>,
+        /// The same bytes read as a keyed field list.
+        document: ConfigDocument,
+    }
+
+    fn retail_keyed_list(rof: &[u8], member: &str) -> RetailMember {
         let mut context = ParseContext::with_defaults(CRIMSON_ROF);
         let tree = cs_formats::read_tree(&mut context, rof).expect("the retail container walks");
         let record = tree
@@ -2992,14 +3001,21 @@ J=0x1.8\r\n";
             None,
         )
         .expect("a valid span");
-        ConfigDocument::read(&mut context, span, &read.data)
-            .unwrap_or_else(|error| panic!("{member}: {error}"))
+        let document = ConfigDocument::read(&mut context, span, &read.data)
+            .unwrap_or_else(|error| panic!("{member}: {error}"));
+        RetailMember {
+            bytes: read.data,
+            document,
+        }
     }
 
     /// What one member's survey found.
     struct MemberSurvey {
         /// The member the numbers are from.
         member: String,
+        /// `.` bytes in the whole decoded member, values and the rest
+        /// together: the population the "no `.` byte at all" claim is about.
+        dots: usize,
         /// Field values over every entry, the population the count is a share
         /// of.
         values: usize,
@@ -3015,10 +3031,18 @@ J=0x1.8\r\n";
         /// `(line, index)` per field value that both contains a `.` and reads
         /// as a number — the values that would be a fraction.
         dotted_numeric: Vec<(u64, usize)>,
-        /// `(line, index)` per numeric value a whole-number field cannot take
-        /// without rounding: the same question asked through a second schema.
-        rounded: Vec<(u64, usize)>,
+        /// `(line, index)` per field value the float width converts to
+        /// something other than a whole number: a fraction in the only sense
+        /// this task has, measured where it can actually be observed.
+        fractional: Vec<(u64, usize)>,
     }
+
+    /// The colour `LAYOUT.CSV` lines 1156-1158 misspell, matched in full and
+    /// never widened: a letter `o` where the `0` of `0xff1E283C` belongs. A
+    /// predicate as loose as "contains an `o`" would also swallow every
+    /// resource-id name with a lowercase letter in it
+    /// (`SB_24_01_crawnote2`), which is a name and not a misspelling.
+    const MISSPELT_COLOUR: &str = "oxff1E283C";
 
     /// Task #369, the measured half: **is a configuration value ever
     /// fractional in the installed data?**
@@ -3040,19 +3064,19 @@ J=0x1.8\r\n";
     fn accept_f12_h_retail_configuration_values_are_never_fractional() {
         let rof = retail_crimson_rof();
         let float = FieldSpec::float(ValueWidth::Float64);
-        let whole = FieldSpec::integer(ValueWidth::Bits64, true);
         let mut surveys = Vec::new();
 
         for member in ["ASSETS/LAYOUT.CSV", "ASSETS/SCRAPBOOK.CSV"] {
-            let document = retail_keyed_list(&rof, member);
+            let RetailMember { bytes, document } = retail_keyed_list(&rof, member);
             let mut survey = MemberSurvey {
                 member: member.to_owned(),
+                dots: bytes.iter().filter(|byte| **byte == b'.').count(),
                 values: 0,
                 numeric: 0,
                 dotted: Vec::new(),
                 exponent_shaped: Vec::new(),
                 dotted_numeric: Vec::new(),
-                rounded: Vec::new(),
+                fractional: Vec::new(),
             };
             for entry in document.entries() {
                 let RawValue::Fields(fields) = &entry.value else {
@@ -3092,14 +3116,17 @@ J=0x1.8\r\n";
                     }) {
                         survey.exponent_shaped.push(row);
                     }
-                    // The same value through a whole-number field: a value
-                    // that reads as a number but has no whole-number
-                    // representation would be a fraction a consumer had to
-                    // round, and none of the members carries one.
-                    if let Ok(tuning) = TuningSchema::new(whole, entry).tune(index)
+                    // A conversion that is not a whole number is a fraction in
+                    // the only sense this task has, so it is measured through
+                    // the float width. It is deliberately *not* asked of a
+                    // whole-number schema as well: `tune` refuses a fractional
+                    // value as an overflow of the declared type rather than
+                    // rounding it, so that reading could never report one and
+                    // the second schema would only restate the first.
+                    if let Ok(tuning) = TuningSchema::new(float, entry).tune(index)
                         && tuning.value.fract() != 0.0
                     {
-                        survey.rounded.push((entry.line, index));
+                        survey.fractional.push((entry.line, index));
                     }
                 }
             }
@@ -3122,15 +3149,23 @@ J=0x1.8\r\n";
         // Per-member counts, as the finding records them.
         assert_eq!((scrapbook.values, scrapbook.numeric), (7376, 5098));
         assert_eq!((layout.values, layout.numeric), (7272, 3664));
-        // `SCRAPBOOK.CSV` holds no `.` byte at all, so no value of it is
-        // fractional in any sense.
+        // `SCRAPBOOK.CSV` holds no `.` byte at all — the whole member, not
+        // only its field values — so no value of it is fractional in any
+        // sense.
+        assert_eq!(scrapbook.dots, 0);
         assert!(scrapbook.dotted.is_empty());
         assert!(scrapbook.dotted_numeric.is_empty());
-        assert!(scrapbook.rounded.is_empty());
+        assert!(
+            scrapbook.fractional.is_empty(),
+            "a value SCRAPBOOK.CSV converts to a fraction: {:?}",
+            scrapbook.fractional
+        );
         // `LAYOUT.CSV` does hold `.` bytes — 229 values, 232 bytes — and none
         // of them is a number. This is the difference between "no fractional
         // *value*" and "no `.` *byte*", and the F12-B survey only said the
-        // first.
+        // first. The 3 bytes the 229 values do not account for are the
+        // ellipsis of the one line the dialect does not classify.
+        assert_eq!(layout.dots, 232);
         assert_eq!(layout.dotted.len(), 229);
         assert!(
             layout.dotted_numeric.is_empty(),
@@ -3138,9 +3173,9 @@ J=0x1.8\r\n";
             layout.dotted_numeric
         );
         assert!(
-            layout.rounded.is_empty(),
-            "a numeric value a whole-number field must round: {:?}",
-            layout.rounded
+            layout.fractional.is_empty(),
+            "a value LAYOUT.CSV converts to a fraction: {:?}",
+            layout.fractional
         );
         // The shape of every one of them: exactly one `.`, an alphabetic
         // extension after it, and a stem that is not a number. A stem of
@@ -3186,18 +3221,24 @@ J=0x1.8\r\n";
         for survey in &surveys {
             for (line, key, index, text) in &survey.exponent_shaped {
                 let hexadecimal = text.starts_with("0x") || text.starts_with("0X");
-                let name = text
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || byte.is_ascii_uppercase() || byte == b'_');
                 let placeholder = text.starts_with('<') && text.ends_with('>');
-                // The misspellings named below are excused here and pinned on
-                // their own, so this assertion still says "nothing else".
-                let misspelt = text.contains('o') || text.contains('O');
+                // A resource-id name, case and digits and underscores
+                // included: `SB_24_01_crawnote2` is one, and a predicate
+                // demanding upper case would hand it to the misspelling
+                // branch below instead, which is how a real name and a real
+                // data slip stop being told apart.
+                let name = !text.is_empty()
+                    && text
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_');
+                // The misspelling is excused by its exact spelling and by
+                // nothing else, so this assertion still says "nothing here is
+                // unaccounted for".
                 assert!(
-                    hexadecimal || name || placeholder || misspelt,
+                    hexadecimal || placeholder || name || text == MISSPELT_COLOUR,
                     "line {line} {key}[{index}] = {text:?} is none of a hexadecimal \
-                     value, a resource-id name, a `<NAME>` placeholder or the \
-                     misspelling named below"
+                     value, a `<NAME>` placeholder, a resource-id name or the \
+                     {MISSPELT_COLOUR:?} misspelling named below"
                 );
             }
         }
@@ -3213,11 +3254,13 @@ J=0x1.8\r\n";
         // colours), but nothing in the workspace says how: it is recorded, not
         // guessed at and not "fixed" here, because the bytes are the
         // original's and a consumer that needs the colour declares what it
-        // accepts.
+        // accepts. Only `LAYOUT.CSV` carries one: the four
+        // exponent-shaped values of `SCRAPBOOK.CSV` are resource-id names,
+        // and the pin below is what proves it.
         let misspellings: Vec<&(u64, String, usize, String)> = layout
             .exponent_shaped
             .iter()
-            .filter(|(_, _, _, text)| text.contains('o') || text.contains('O'))
+            .filter(|(_, _, _, text)| *text == MISSPELT_COLOUR)
             .collect();
         assert_eq!(
             misspellings
@@ -3225,10 +3268,18 @@ J=0x1.8\r\n";
                 .map(|(line, key, index, text)| (*line, key.as_str(), *index, text.as_str()))
                 .collect::<Vec<_>>(),
             vec![
-                (1156, "SBZ_T_TITLEJ", 7, "oxff1E283C"),
-                (1157, "SBZ_T_CAPTIONJ", 7, "oxff1E283C"),
-                (1158, "SBZ_T_TEXTJ", 7, "oxff1E283C"),
+                (1156, "SBZ_T_TITLEJ", 7, MISSPELT_COLOUR),
+                (1157, "SBZ_T_CAPTIONJ", 7, MISSPELT_COLOUR),
+                (1158, "SBZ_T_TEXTJ", 7, MISSPELT_COLOUR),
             ]
+        );
+        assert!(
+            scrapbook
+                .exponent_shaped
+                .iter()
+                .all(|(_, _, _, text)| *text != MISSPELT_COLOUR),
+            "SCRAPBOOK.CSV carries the misspelling too: {:?}",
+            scrapbook.exponent_shaped
         );
     }
 }
