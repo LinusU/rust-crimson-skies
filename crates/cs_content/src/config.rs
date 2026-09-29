@@ -1,6 +1,6 @@
 //! Lossless configuration documents with provenance and key accounting
-//! (`specs/F12-text-configuration-strings-and-pe-resources.md`, stage
-//! `### F12-A`).
+//! (`specs/F12-text-configuration-strings-and-pe-resources.md`, stages
+//! `### F12-A`, `### F12-B` and `### F12-C`).
 //!
 //! A [`ConfigDocument`] is one configuration member turned into owned
 //! nodes, one per line, that keep every byte ([`ConfigDocument::reassemble`]
@@ -9,6 +9,15 @@
 //! for a member the dialect inventory routes to a dialect with a reader
 //! ([`cs_formats::text::dialect_for_member`]); anything else is a
 //! [`ConfigError`], never a best-effort parse.
+//!
+//! Stage F12-C wires the F12-B readers into their consumers. [`resolve_tunings`]
+//! turns a list of declared [`FieldBinding`]s into checked tuning constants
+//! against a document, booking each lookup so the document's accounting
+//! reflects what the consumers used; [`StringCatalog`] reads the localizable
+//! strings of a PE image through [`cs_formats::read_pe_resources`] and answers
+//! `(id, language)` lookups with provenance, retaining the leaves no string
+//! reader owns. Neither path loads an image or interprets a language it has not
+//! measured.
 //!
 //! Consumers look keys up through the document, which counts what they
 //! used: every entry nobody consumed is retained and reported by
@@ -30,6 +39,7 @@ use cs_formats::text::{
     DialectReader, Fields, KeyedList, LineKind, LineTerminator, QuoteIssue, TextDialect,
     Unclassified, dialect_for_member, read_keyed_list,
 };
+use cs_formats::{PeError, PeResources, RT_STRING, ResourceKey, ResourceLeaf, read_pe_resources};
 use cs_types::asset_id::SourceSpan;
 
 /// Entrypoint label [`ConfigDocument::read`] scopes the parse that books
@@ -463,6 +473,274 @@ impl ConfigDocument {
         out
     }
 }
+
+// ---------------------------------------------------------------------------
+// The string catalog (stage F12-C)
+// ---------------------------------------------------------------------------
+
+/// One localizable string of a PE image: its stable id, the language the
+/// image stored it under, the block's code page, the exact code units, the
+/// text when those units decode, and where the block's bytes are.
+///
+/// The id is the identity a localized installation keeps while the display
+/// text changes (spec F12 acceptance test AC04): a translation ships the same
+/// id with different code units, so a consumer looks the id up rather than
+/// the text.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StringRow {
+    /// The stable string id: `(block - 1) * 16 + index`
+    /// ([`cs_formats::string_id`]).
+    pub id: u32,
+    /// The third-level language id, verbatim.
+    pub language: u32,
+    /// The data entry's code page, verbatim. `0` is the resource compiler's
+    /// "no code page" value and is **not** treated as a default.
+    pub code_page: u32,
+    /// The exact UTF-16 code units, kept even when they do not decode.
+    pub code_units: Vec<u16>,
+    /// The text, or `None` when the units hold an unpaired surrogate. A
+    /// missing text is a recorded condition, never a replaced one.
+    pub text: Option<String>,
+    /// Where the block's bytes are inside the image the catalog was read
+    /// from.
+    pub span: SourceSpan,
+}
+
+/// The answer to one [`StringCatalog::resolve`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StringLookup<'a> {
+    /// No string has this id in the requested language.
+    Missing,
+    /// Exactly one string.
+    Found(&'a StringRow),
+    /// This many strings share the id and language; none is returned, because
+    /// choosing between them would hide a contradiction.
+    Ambiguous(usize),
+}
+
+/// What one PE image's resource tree yielded for localization.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StringAccounting {
+    /// Localizable strings (the `RT_STRING` units).
+    pub strings: usize,
+    /// Units whose code units do not decode (an unpaired surrogate).
+    pub undecodable: usize,
+    /// Leaves that are not three-level `RT_STRING` blocks: retained beside
+    /// the strings and never read as strings (spec F12, non-negotiable #5
+    /// applied to the resource tree).
+    pub other_leaves: usize,
+    /// `(id, language)` pairs more than one string answers. A translation
+    /// that ships two strings for one id is reported, not silently merged.
+    pub duplicate_ids: usize,
+}
+
+/// Every localizable string of one PE image, with the resources it was read
+/// from and the leaves no string reader owns.
+///
+/// It is built only from the bounded, cycle-checked [`read_pe_resources`]:
+/// the image is parsed as inert data and never loaded, so a malformed
+/// resource offset is a [`StringCatalogError`] rather than a platform load
+/// (spec F12 acceptance test AC03).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StringCatalog {
+    source: SourceSpan,
+    resources: PeResources,
+    strings: Vec<StringRow>,
+}
+
+impl StringCatalog {
+    /// Reads `bytes` as the PE image `source` describes and keeps every
+    /// localizable string, retaining the non-string leaves beside them.
+    ///
+    /// # Errors
+    ///
+    /// [`StringCatalogError::LengthMismatch`] when `bytes` is not the
+    /// source's length, and [`StringCatalogError::Pe`] when the resource
+    /// reader refuses the image (a malformed, hostile or over-budget one).
+    pub fn read(
+        context: &mut ParseContext,
+        source: SourceSpan,
+        bytes: &[u8],
+    ) -> Result<Self, StringCatalogError> {
+        if bytes.len() as u64 != source.length() {
+            return Err(StringCatalogError::LengthMismatch {
+                source: Box::new(source),
+                actual: bytes.len() as u64,
+            });
+        }
+        let resources = read_pe_resources(context, bytes).map_err(StringCatalogError::Pe)?;
+        Ok(Self::from_resources(source, resources))
+    }
+
+    /// Builds the catalog from an already-read image, so a caller with a
+    /// [`PeResources`] does not parse the bytes twice.
+    pub fn from_resources(source: SourceSpan, resources: PeResources) -> Self {
+        let mut strings = Vec::new();
+        for block in resources.strings() {
+            // The reader checked this extent against the section's raw bytes
+            // before it decoded the block, so the span is a checked range.
+            let span = SourceSpan::new(
+                source.install_sha256(),
+                source.container_path(),
+                source.member_key(),
+                block.data.file_offset,
+                u64::from(block.data.size),
+                source.member_sha256(),
+            )
+            .expect("the resource reader checked this extent against the image");
+            for unit in &block.units {
+                strings.push(StringRow {
+                    id: unit.id,
+                    language: block.language,
+                    code_page: block.code_page,
+                    code_units: unit.code_units.clone(),
+                    text: unit.text.clone(),
+                    span: span.clone(),
+                });
+            }
+        }
+        Self {
+            source,
+            resources,
+            strings,
+        }
+    }
+
+    /// The image the strings were read from.
+    pub fn source(&self) -> &SourceSpan {
+        &self.source
+    }
+
+    /// Everything the resource reader read out of the image, for a caller
+    /// that needs the header layout or the whole leaf list.
+    pub fn resources(&self) -> &PeResources {
+        &self.resources
+    }
+
+    /// Every string, in block-then-unit order, with duplicates included.
+    pub fn rows(&self) -> &[StringRow] {
+        &self.strings
+    }
+
+    /// The leaves that are not three-level `RT_STRING` blocks: resource types
+    /// and payloads no string reader owns. Retained, never interpreted.
+    pub fn other_leaves(&self) -> impl Iterator<Item = &ResourceLeaf> {
+        self.resources
+            .leaves()
+            .iter()
+            .filter(|leaf| !is_string_leaf(leaf))
+    }
+
+    /// Every language id the image's blocks carry, deduplicated and sorted.
+    pub fn languages(&self) -> Vec<u32> {
+        let mut languages: Vec<u32> = self
+            .resources
+            .strings()
+            .iter()
+            .map(|block| block.language)
+            .collect();
+        languages.sort_unstable();
+        languages.dedup();
+        languages
+    }
+
+    /// The one string with id `id` in `language` (any language when `None`).
+    ///
+    /// Two strings answering one `(id, language)` are
+    /// [`StringLookup::Ambiguous`], never a silent choice, matching
+    /// [`ConfigDocument::lookup`].
+    pub fn resolve(&self, id: u32, language: Option<u32>) -> StringLookup<'_> {
+        let mut count = 0usize;
+        let mut found: Option<&StringRow> = None;
+        for row in &self.strings {
+            if row.id == id && language.is_none_or(|wanted| row.language == wanted) {
+                count += 1;
+                if found.is_none() {
+                    found = Some(row);
+                }
+            }
+        }
+        match (found, count) {
+            (None, _) => StringLookup::Missing,
+            (Some(row), 1) => StringLookup::Found(row),
+            (_, many) => StringLookup::Ambiguous(many),
+        }
+    }
+
+    /// What the image yielded: string, undecodable, non-string-leaf and
+    /// duplicate-id counts.
+    pub fn accounting(&self) -> StringAccounting {
+        let mut pairs: Vec<(u32, u32)> = self
+            .strings
+            .iter()
+            .map(|row| (row.language, row.id))
+            .collect();
+        pairs.sort_unstable();
+        let mut duplicate_ids = 0usize;
+        let mut index = 0usize;
+        while index < pairs.len() {
+            let mut end = index + 1;
+            while end < pairs.len() && pairs[end] == pairs[index] {
+                end += 1;
+            }
+            if end - index > 1 {
+                duplicate_ids += 1;
+            }
+            index = end;
+        }
+        StringAccounting {
+            strings: self.strings.len(),
+            undecodable: self.strings.iter().filter(|row| row.text.is_none()).count(),
+            other_leaves: self.other_leaves().count(),
+            duplicate_ids,
+        }
+    }
+}
+
+/// Whether a leaf is a three-level `RT_STRING` block: the only shape the
+/// resource reader decodes as strings.
+fn is_string_leaf(leaf: &ResourceLeaf) -> bool {
+    leaf.path.len() == 3 && leaf.key(0).and_then(ResourceKey::id) == Some(RT_STRING)
+}
+
+/// Why a PE image did not become a [`StringCatalog`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum StringCatalogError {
+    /// The bytes handed in are not as long as the source says.
+    LengthMismatch {
+        /// The image's source.
+        source: Box<SourceSpan>,
+        /// The byte count handed in.
+        actual: u64,
+    },
+    /// The bounded resource reader refused the image.
+    Pe(PeError),
+}
+
+impl StringCatalogError {
+    /// Stable, machine-matchable label.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::LengthMismatch { .. } => "length_mismatch",
+            Self::Pe(error) => error.code(),
+        }
+    }
+}
+
+impl fmt::Display for StringCatalogError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::LengthMismatch { source, actual } => write!(
+                f,
+                "{source}: {actual} bytes handed in for a source of {} bytes",
+                source.length()
+            ),
+            Self::Pe(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for StringCatalogError {}
 
 /// How wide a configuration value is, and whether it is signed.
 ///
@@ -941,6 +1219,113 @@ fn trim(bytes: &[u8]) -> &[u8] {
         .rposition(|byte| !BLANK.contains(byte))
         .map_or(start, |last| start + last + 1);
     &bytes[start..end]
+}
+
+// ---------------------------------------------------------------------------
+// Declared tuning fields (stage F12-C)
+// ---------------------------------------------------------------------------
+
+/// One declared value a consumer wants out of a [`ConfigDocument`]: which
+/// entry to look up, which field of it, and the [`FieldSpec`] the consumer
+/// declares.
+///
+/// A document keeps values raw until a consumer declares what it wants, so a
+/// `FieldBinding` is the schema half of the conversion: the width, signedness
+/// and approved range belong to the consumer, never to the bytes (spec F12,
+/// non-negotiable #2). `consumer` is a label for the report, so a missing or
+/// refused value names who needed it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FieldBinding<'a> {
+    /// The consumer that wants the value, e.g. `gun.rate`.
+    pub consumer: &'a str,
+    /// The section the entry belongs to, `None` before the first header.
+    pub section: Option<&'a [u8]>,
+    /// The entry key.
+    pub key: &'a [u8],
+    /// Which field of the entry's value the spec addresses.
+    pub index: usize,
+    /// The declared width, signedness and approved range.
+    pub spec: FieldSpec,
+}
+
+/// What one [`FieldBinding`] resolved to.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum TuningOutcome {
+    /// The value passed every check and is a tuning constant.
+    Known(Tuning),
+    /// No entry has the section and key.
+    Missing,
+    /// This many entries share the section and key; the lookup refused to
+    /// choose, so nothing was converted.
+    Ambiguous(usize),
+    /// The entry was found and the value could not become a tuning constant.
+    Refused(TuneError),
+}
+
+/// One declared field and what it resolved to.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ResolvedTuning<'a> {
+    /// The declaration that was resolved.
+    pub binding: &'a FieldBinding<'a>,
+    /// The outcome.
+    pub outcome: TuningOutcome,
+}
+
+/// The result of resolving a whole declared list against one document.
+///
+/// A value is [`TuningOutcome::Known`] only for a value the declared spec
+/// accepted; every other outcome is explicit, and the bytes stay in the
+/// document. The entries no binding consumed are still visible through
+/// [`ConfigDocument::accounting`], so the caller can gate parity on them
+/// (spec F12, non-negotiable #5).
+#[derive(Clone, Debug, PartialEq)]
+pub struct TuningReport<'a> {
+    resolved: Vec<ResolvedTuning<'a>>,
+}
+
+impl<'a> TuningReport<'a> {
+    /// Every declared field, in declaration order.
+    pub fn resolved(&self) -> &[ResolvedTuning<'a>] {
+        &self.resolved
+    }
+
+    /// Whether every declared field became a tuning constant.
+    pub fn all_known(&self) -> bool {
+        self.resolved
+            .iter()
+            .all(|entry| matches!(entry.outcome, TuningOutcome::Known(_)))
+    }
+
+    /// The declarations that did not become a tuning constant, with why.
+    pub fn failures(&self) -> impl Iterator<Item = &ResolvedTuning<'a>> {
+        self.resolved
+            .iter()
+            .filter(|entry| !matches!(entry.outcome, TuningOutcome::Known(_)))
+    }
+}
+
+/// Resolves every declared field against `document`, counting each found
+/// entry as consumed through [`ConfigDocument::lookup`] so the document's own
+/// accounting reflects what the consumers used.
+pub fn resolve_tunings<'a>(
+    document: &mut ConfigDocument,
+    bindings: &'a [FieldBinding<'a>],
+) -> TuningReport<'a> {
+    let mut resolved = Vec::with_capacity(bindings.len());
+    for binding in bindings {
+        let outcome = match document.lookup(binding.section, binding.key) {
+            Lookup::Missing => TuningOutcome::Missing,
+            Lookup::Ambiguous(count) => TuningOutcome::Ambiguous(count),
+            Lookup::Found(entry) => {
+                match TuningSchema::new(binding.spec, entry).tune(binding.index) {
+                    Ok(tuning) => TuningOutcome::Known(tuning),
+                    Err(error) => TuningOutcome::Refused(error),
+                }
+            }
+        };
+        resolved.push(ResolvedTuning { binding, outcome });
+    }
+    TuningReport { resolved }
 }
 
 #[cfg(test)]
@@ -1620,5 +2005,467 @@ HUGEFLOAT=1.7976931348623159e999\r\n";
         let error =
             ConfigDocument::read(&mut tiny, source(LAYOUT, MEMBER.len()), MEMBER).unwrap_err();
         assert_eq!(error.code(), "parse");
+    }
+
+    // ------------------------------------------------------ F12-C PE fixtures
+
+    // These PE images are **newly authored**: the public PE/COFF layout and
+    // the resource-tree shape, with ids, languages, code pages and string
+    // texts invented for the test. No original byte, string or resource name
+    // is reproduced.
+
+    /// The RVA every fixture image's `.rsrc` section sits at.
+    const RSRC_RVA: u32 = 0x2000;
+
+    /// The file offset the fixture's `.rsrc` raw bytes start at: the headers
+    /// rounded up to the section alignment. Provenance offsets are file
+    /// offsets, not RVAs.
+    const RSRC_FILE_OFFSET: u64 = 0x200;
+
+    /// One authored `RT_STRING` block.
+    struct Block {
+        block_id: u32,
+        language: u32,
+        code_page: u32,
+        entries: &'static [&'static str],
+    }
+
+    /// Where the fixture image's whole bytes came from. A loose PE file is
+    /// its own container, so the member key is `None`.
+    fn image_source(length: usize) -> SourceSpan {
+        SourceSpan::new(
+            ContentHash::from_bytes([9; 32]),
+            "strings.dll",
+            None,
+            0,
+            length as u64,
+            None,
+        )
+        .expect("valid span")
+    }
+
+    /// Assembles a minimal single-section PE32 image whose `.rsrc` section is
+    /// `rsrc`.
+    fn fixture_image(rsrc: &[u8]) -> Vec<u8> {
+        let header_end = 0x80 + 4 + 20 + 224 + 40;
+        let raw = (header_end + 0x1ff) & !0x1ff;
+        let mut out = vec![0u8; header_end];
+        out[0..2].copy_from_slice(b"MZ");
+        out[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+        out[0x80..0x84].copy_from_slice(b"PE\0\0");
+        let coff = 0x84;
+        out[coff..coff + 2].copy_from_slice(&0x014cu16.to_le_bytes());
+        out[coff + 2..coff + 4].copy_from_slice(&1u16.to_le_bytes());
+        out[coff + 16..coff + 18].copy_from_slice(&224u16.to_le_bytes());
+        let optional = coff + 20;
+        out[optional..optional + 2].copy_from_slice(&0x010bu16.to_le_bytes());
+        out[optional + 92..optional + 96].copy_from_slice(&16u32.to_le_bytes());
+        out[optional + 60..optional + 64].copy_from_slice(&(header_end as u32).to_le_bytes());
+        out[optional + 112..optional + 116].copy_from_slice(&RSRC_RVA.to_le_bytes());
+        out[optional + 116..optional + 120].copy_from_slice(&(rsrc.len() as u32).to_le_bytes());
+        let section = optional + 224;
+        out[section..section + 5].copy_from_slice(b".rsrc");
+        out[section + 8..section + 12].copy_from_slice(&(rsrc.len() as u32).to_le_bytes());
+        out[section + 12..section + 16].copy_from_slice(&RSRC_RVA.to_le_bytes());
+        out[section + 16..section + 20].copy_from_slice(&(rsrc.len() as u32).to_le_bytes());
+        out[section + 20..section + 24].copy_from_slice(&(raw as u32).to_le_bytes());
+        out.resize(raw + rsrc.len(), 0);
+        out[raw..raw + rsrc.len()].copy_from_slice(rsrc);
+        out
+    }
+
+    fn rsrc_dir(bytes: &mut Vec<u8>, ids: usize) -> usize {
+        let at = bytes.len();
+        bytes.extend_from_slice(&[0u8; 16]);
+        bytes.extend_from_slice(&vec![0u8; ids * 8]);
+        bytes[at + 14..at + 16].copy_from_slice(&(ids as u16).to_le_bytes());
+        at
+    }
+
+    fn rsrc_row(dir: usize, index: usize) -> usize {
+        dir + 16 + index * 8
+    }
+
+    fn rsrc_id(bytes: &mut [u8], dir: usize, index: usize, id: u32) {
+        let row = rsrc_row(dir, index);
+        bytes[row..row + 4].copy_from_slice(&id.to_le_bytes());
+    }
+
+    fn rsrc_sub(bytes: &mut [u8], dir: usize, index: usize, child: usize) {
+        let row = rsrc_row(dir, index);
+        bytes[row + 4..row + 8].copy_from_slice(&(0x8000_0000u32 | child as u32).to_le_bytes());
+    }
+
+    fn rsrc_data(bytes: &mut [u8], dir: usize, index: usize, entry: usize) {
+        let row = rsrc_row(dir, index);
+        bytes[row + 4..row + 8].copy_from_slice(&(entry as u32).to_le_bytes());
+    }
+
+    /// Sixteen counted UTF-16LE units, the first `entries.len()` non-empty.
+    fn string_payload(entries: &[&str]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for index in 0..16 {
+            let text = entries.get(index).copied().unwrap_or("");
+            let units: Vec<u16> = text.encode_utf16().collect();
+            out.extend_from_slice(&(units.len() as u16).to_le_bytes());
+            for unit in units {
+                out.extend_from_slice(&unit.to_le_bytes());
+            }
+        }
+        out
+    }
+
+    /// Builds a resource section holding `blocks`, and with `extra_type` a
+    /// second resource type (`4001`) whose payload is six opaque bytes, not a
+    /// string block.
+    fn rsrc_section(blocks: &[Block], extra_type: bool) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        let root = rsrc_dir(&mut bytes, if extra_type { 2 } else { 1 });
+        rsrc_id(&mut bytes, root, 0, RT_STRING);
+        let strings = rsrc_dir(&mut bytes, blocks.len());
+        rsrc_sub(&mut bytes, root, 0, strings);
+        for (index, block) in blocks.iter().enumerate() {
+            rsrc_id(&mut bytes, strings, index, block.block_id);
+            let languages = rsrc_dir(&mut bytes, 1);
+            rsrc_id(&mut bytes, languages, 0, block.language);
+            rsrc_sub(&mut bytes, strings, index, languages);
+            let payload = string_payload(block.entries);
+            let rva = RSRC_RVA + bytes.len() as u32;
+            bytes.extend_from_slice(&payload);
+            let entry = bytes.len();
+            bytes.extend_from_slice(&rva.to_le_bytes());
+            bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(&block.code_page.to_le_bytes());
+            bytes.extend_from_slice(&0u32.to_le_bytes());
+            rsrc_data(&mut bytes, languages, 0, entry);
+        }
+        if extra_type {
+            rsrc_id(&mut bytes, root, 1, 4001);
+            let names = rsrc_dir(&mut bytes, 1);
+            rsrc_id(&mut bytes, names, 0, 0);
+            rsrc_sub(&mut bytes, root, 1, names);
+            let payload = b"opaque";
+            let rva = RSRC_RVA + bytes.len() as u32;
+            bytes.extend_from_slice(payload);
+            let entry = bytes.len();
+            bytes.extend_from_slice(&rva.to_le_bytes());
+            bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(&1200u32.to_le_bytes());
+            bytes.extend_from_slice(&0u32.to_le_bytes());
+            rsrc_data(&mut bytes, names, 0, entry);
+        }
+        bytes
+    }
+
+    fn one_block() -> Vec<u8> {
+        fixture_image(&rsrc_section(
+            &[Block {
+                block_id: 1,
+                language: 1033,
+                code_page: 1252,
+                entries: &["alpha", "", "gamma"],
+            }],
+            false,
+        ))
+    }
+
+    // ------------------------------------------------- F12-C catalog tests
+
+    /// The string catalog resolves a stable id (with its language and code
+    /// page) to its display text and its provenance. An empty unit is present
+    /// and empty, never a missing string.
+    #[test]
+    fn accept_f12_c_string_catalog_resolves_ids_languages_and_provenance() {
+        let image = one_block();
+        let mut context = ParseContext::with_defaults("strings.dll");
+        let catalog = StringCatalog::read(&mut context, image_source(image.len()), &image)
+            .expect("an authored PE image reads");
+        assert_eq!(catalog.rows().len(), 16);
+        assert_eq!(catalog.languages(), vec![1033]);
+        assert_eq!(catalog.source().container_path(), "strings.dll");
+        assert_eq!(catalog.source().member_key(), None);
+
+        let StringLookup::Found(alpha) = catalog.resolve(0, Some(1033)) else {
+            panic!("string 0 under en-US")
+        };
+        assert_eq!(alpha.id, 0);
+        assert_eq!(alpha.language, 1033);
+        assert_eq!(alpha.code_page, 1252);
+        assert_eq!(
+            alpha.code_units,
+            "alpha".encode_utf16().collect::<Vec<u16>>()
+        );
+        assert_eq!(alpha.text.as_deref(), Some("alpha"));
+        // Provenance points inside the resource section, at the block's
+        // extent, and names the installation the image belongs to.
+        assert_eq!(
+            alpha.span.install_sha256(),
+            ContentHash::from_bytes([9; 32])
+        );
+        assert_eq!(alpha.span.container_path(), "strings.dll");
+        assert_eq!(alpha.span.member_key(), None);
+        assert!(alpha.span.offset() >= RSRC_FILE_OFFSET);
+        assert!(alpha.span.length() >= 32);
+
+        let StringLookup::Found(empty) = catalog.resolve(1, Some(1033)) else {
+            panic!("an empty unit is present")
+        };
+        assert!(empty.code_units.is_empty());
+        assert_eq!(empty.text.as_deref(), Some(""));
+
+        // The language is part of the identity: the same id under another
+        // language is not this string.
+        assert_eq!(catalog.resolve(0, Some(1)), StringLookup::Missing);
+        assert_eq!(catalog.resolve(9000, None), StringLookup::Missing);
+        assert_eq!(
+            catalog.accounting(),
+            StringAccounting {
+                strings: 16,
+                undecodable: 0,
+                other_leaves: 0,
+                duplicate_ids: 0,
+            }
+        );
+    }
+
+    /// Resource types no string reader owns are retained beside the strings
+    /// (spec F12, non-negotiable #5 applied to the tree), and two strings for
+    /// one `(id, language)` are reported as ambiguous, never merged.
+    #[test]
+    fn accept_f12_c_string_catalog_retains_other_types_and_reports_duplicates() {
+        let image = fixture_image(&rsrc_section(
+            &[
+                Block {
+                    block_id: 1,
+                    language: 1033,
+                    code_page: 1252,
+                    entries: &["one"],
+                },
+                Block {
+                    block_id: 1,
+                    language: 1033,
+                    code_page: 1252,
+                    entries: &["two"],
+                },
+            ],
+            true,
+        ));
+        let mut context = ParseContext::with_defaults("strings.dll");
+        let catalog = StringCatalog::read(&mut context, image_source(image.len()), &image)
+            .expect("an authored PE image reads");
+
+        let accounting = catalog.accounting();
+        assert_eq!(accounting.strings, 32);
+        assert_eq!(accounting.other_leaves, 1);
+        assert_eq!(accounting.undecodable, 0);
+        // A repeated block id repeats every one of its sixteen ids.
+        assert_eq!(accounting.duplicate_ids, 16);
+
+        // Two strings answer `(1033, 0)`: ambiguous, not a silent choice.
+        assert_eq!(catalog.resolve(0, Some(1033)), StringLookup::Ambiguous(2));
+
+        // The non-string leaf is retained with its type and code page, and
+        // was never read as a string.
+        let other: Vec<&ResourceLeaf> = catalog.other_leaves().collect();
+        assert_eq!(other.len(), 1);
+        assert_eq!(other[0].key(0).and_then(ResourceKey::id), Some(4001));
+        assert_eq!(other[0].data.code_page, 1200);
+        assert_eq!(
+            catalog.resources().leaves().len(),
+            other.len() + catalog.resources().strings().len()
+        );
+    }
+
+    /// AC03: a malformed PE resource offset is refused structurally, as inert
+    /// data, and never becomes a catalog. The same image shape reads when the
+    /// offset is sound, so the refusal is the corruption's and not the
+    /// fixture's.
+    #[test]
+    fn accept_f12_c_malformed_pe_resource_offsets_are_refused_not_loaded() {
+        let good = rsrc_section(
+            &[Block {
+                block_id: 1,
+                language: 1033,
+                code_page: 1252,
+                entries: &["alpha"],
+            }],
+            false,
+        );
+        let good_image = fixture_image(&good);
+        let mut context = ParseContext::with_defaults("strings.dll");
+        assert!(
+            StringCatalog::read(&mut context, image_source(good_image.len()), &good_image).is_ok(),
+            "the uncorrupted fixture reads"
+        );
+
+        // A data entry whose RVA no section covers. The data entry is the
+        // section's last 16 bytes, and its first word is the RVA.
+        let mut bad = good.clone();
+        let end = bad.len();
+        bad[end - 16..end - 12].copy_from_slice(&0x9000u32.to_le_bytes());
+        let bad_image = fixture_image(&bad);
+        let mut context = ParseContext::with_defaults("strings.dll");
+        let error = StringCatalog::read(&mut context, image_source(bad_image.len()), &bad_image)
+            .expect_err("an unmapped data RVA is refused, never loaded");
+        assert_eq!(error.code(), "outside_table");
+        assert!(error.to_string().contains("strings.dll"));
+        match error {
+            StringCatalogError::Pe(pe) => {
+                assert_eq!(pe.code(), "outside_table");
+                assert!(pe.offset() >= RSRC_FILE_OFFSET);
+            }
+            other => panic!("{other}"),
+        }
+
+        // A subdirectory whose offset leaves the resource section. The root
+        // directory's first entry's offset word is at byte 20 of the section.
+        let mut bad = good.clone();
+        bad[20..24].copy_from_slice(&(0x8000_0000u32 | 0x7fff).to_le_bytes());
+        let bad_image = fixture_image(&bad);
+        let mut context = ParseContext::with_defaults("strings.dll");
+        let error = StringCatalog::read(&mut context, image_source(bad_image.len()), &bad_image)
+            .expect_err("an out-of-table subdirectory is refused, never followed");
+        assert_eq!(error.code(), "outside_table");
+
+        // A resource directory that points at itself is a cycle, refused
+        // rather than followed forever.
+        let mut rsrc = Vec::new();
+        let root = rsrc_dir(&mut rsrc, 1);
+        rsrc_sub(&mut rsrc, root, 0, root);
+        let cycle_image = fixture_image(&rsrc);
+        let mut context = ParseContext::with_defaults("strings.dll");
+        let error =
+            StringCatalog::read(&mut context, image_source(cycle_image.len()), &cycle_image)
+                .expect_err("a self-referential directory is refused");
+        assert_eq!(error.code(), "directory_cycle");
+    }
+
+    /// A file that is not the image's declared length is refused before it is
+    /// parsed, so a truncated read never becomes a catalog.
+    #[test]
+    fn accept_f12_c_string_catalog_refuses_a_length_mismatch() {
+        let image = one_block();
+        let mut context = ParseContext::with_defaults("strings.dll");
+        let error = StringCatalog::read(
+            &mut context,
+            image_source(image.len() + 1),
+            &image[..image.len() - 1],
+        )
+        .expect_err("a truncated image is refused before parsing");
+        assert_eq!(error.code(), "length_mismatch");
+    }
+
+    /// AC03's second half: the string path is a parser, not a platform
+    /// loader. The production sources are scanned for the identifiers a
+    /// dynamic-loader call or binding would need; adding one there makes this
+    /// fail. The behavioural test above pins the other half — a malformed
+    /// offset is a structured refusal.
+    #[test]
+    fn accept_f12_c_no_platform_loader_in_the_string_path() {
+        let sources = [
+            include_str!("config.rs"),
+            include_str!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../cs_formats/src/pe_resources.rs"
+            )),
+        ];
+        // Split so the guard's own source does not contain the words it
+        // searches for.
+        let loaders = [
+            concat!("Load", "Library"),
+            concat!("Get", "ProcAddress"),
+            concat!("Free", "Library"),
+            concat!("lib", "loading"),
+            concat!("dl", "open"),
+            concat!("dl", "sym"),
+            concat!("Load", "StringW"),
+            concat!("Load", "StringA"),
+            concat!("win", "api"),
+        ];
+        for source in sources {
+            for loader in loaders {
+                assert!(
+                    !source.contains(loader),
+                    "the string path must not reference {loader}"
+                );
+            }
+        }
+        // The scan read real sources, not empty strings.
+        assert!(sources[0].contains("StringCatalog"));
+        assert!(sources[1].contains("read_pe_resources"));
+    }
+
+    /// Typed tuning through the catalog: a declared list of fields is looked
+    /// up in the document and converted against each declaration, counting
+    /// what it consumed. Missing, ambiguous and refused fields are explicit,
+    /// and the bytes stay in the document.
+    #[test]
+    fn accept_f12_c_declared_tuning_fields_resolve_through_the_document() {
+        let mut doc = tuned();
+        let bindings = [
+            FieldBinding {
+                consumer: "gun.rate",
+                section: Some(b"GUN"),
+                key: b"RATE",
+                index: 0,
+                spec: FieldSpec::integer(ValueWidth::Bits16, true),
+            },
+            FieldBinding {
+                consumer: "gun.ammo",
+                section: Some(b"GUN"),
+                key: b"AMMO",
+                index: 0,
+                spec: FieldSpec::integer(ValueWidth::Bits16, false),
+            },
+            FieldBinding {
+                consumer: "gun.big",
+                section: Some(b"GUN"),
+                key: b"BIG",
+                index: 0,
+                spec: FieldSpec::integer(ValueWidth::Bits8, false),
+            },
+            FieldBinding {
+                consumer: "gun.absent",
+                section: Some(b"GUN"),
+                key: b"ABSENT",
+                index: 0,
+                spec: FieldSpec::integer(ValueWidth::Bits8, false),
+            },
+        ];
+        let report = resolve_tunings(&mut doc, &bindings);
+        assert_eq!(report.resolved().len(), 4);
+        assert!(
+            matches!(report.resolved()[0].outcome, TuningOutcome::Known(t) if t.as_signed() == Some(120))
+        );
+        assert!(matches!(
+            report.resolved()[1].outcome,
+            TuningOutcome::Refused(TuneError::Negative { .. })
+        ));
+        assert!(matches!(
+            report.resolved()[2].outcome,
+            TuningOutcome::Refused(TuneError::Overflow { .. })
+        ));
+        assert_eq!(report.resolved()[3].outcome, TuningOutcome::Missing);
+        assert!(!report.all_known());
+        assert_eq!(report.failures().count(), 3);
+        // The three found entries were counted consumed; the rest stay for
+        // the parity accounting.
+        let accounting = doc.accounting();
+        assert_eq!(accounting.consumed, 3);
+        assert_eq!(accounting.unconsumed, accounting.entries - 3);
+
+        // A key two entries share is ambiguous: the lookup refused to choose,
+        // so nothing was converted and nothing was consumed.
+        let mut member = document();
+        let duplicated = [FieldBinding {
+            consumer: "panel.dup",
+            section: Some(b"PANEL"),
+            key: b"DUP",
+            index: 0,
+            spec: FieldSpec::integer(ValueWidth::Bits8, false),
+        }];
+        let report = resolve_tunings(&mut member, &duplicated);
+        assert_eq!(report.resolved()[0].outcome, TuningOutcome::Ambiguous(2));
+        assert_eq!(member.accounting().consumed, 0);
     }
 }
