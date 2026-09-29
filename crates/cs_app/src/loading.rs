@@ -1554,8 +1554,7 @@ impl LoadDriver {
         // never read. An entry that is refused is dropped and rebuilt —
         // spec F15 behavior 3, never served. A store that cannot be read
         // is a performance problem, not a load failure, so it is recorded
-        // and the rebuild continues.
-        let mut store_fault = None;
+        // as the cause and the rebuild continues.
         let cause = match item.derived.as_ref() {
             None => Some(RebuildCause::NotCacheable),
             Some(key) => match self.store.begin_read(key) {
@@ -1601,16 +1600,10 @@ impl LoadDriver {
                         }
                     }
                 }
-                Err(error) => {
-                    store_fault = Some(UncachedReason::Store {
-                        code: error.code(),
-                        detail: error.to_string(),
-                    });
-                    Some(RebuildCause::StoreUnavailable {
-                        code: error.code(),
-                        detail: error.to_string(),
-                    })
-                }
+                Err(error) => Some(RebuildCause::StoreUnavailable {
+                    code: error.code(),
+                    detail: error.to_string(),
+                }),
             },
         };
 
@@ -1647,21 +1640,19 @@ impl LoadDriver {
                 self.commit_derived(key, &derived, &mut report_io)
             }
         };
-        let outcome = match (published, store_fault) {
-            (Ok(()), None) => ItemRead::Rebuilt {
+        // Whether the derived form reached the store decides the verdict,
+        // and nothing else: `cause` already names why the cache could not
+        // serve the item, so an item that was rebuilt *and* published is a
+        // `Rebuilt` even when the read side had reported a fault.
+        let outcome = match published {
+            Ok(()) => ItemRead::Rebuilt {
                 payload_sha256,
                 cause,
             },
-            (published, fault) => ItemRead::Uncached {
+            Err(reason) => ItemRead::Uncached {
                 payload_sha256,
                 cause,
-                reason: fault.unwrap_or_else(|| match published {
-                    Ok(()) => UncachedReason::Store {
-                        code: "cache_write",
-                        detail: "the derived form was not published".to_owned(),
-                    },
-                    Err(reason) => reason,
-                }),
+                reason,
             },
         };
         Ok(self.settle_read(ticket, index, payload_sha256, false, outcome))
@@ -1674,7 +1665,7 @@ impl LoadDriver {
     /// stage: a cache entry that no longer hashes to what the load
     /// delivered — because the store was tampered with, truncated, or
     /// replaced between the read and validation — is a
-    /// [`LoadDriverError::Integrity`], the transaction is failed with a
+    /// [`DriverError::Integrity`], the transaction is failed with a
     /// `RebuildDerived` recovery path, and the world does not go
     /// interactive. Cache corruption cannot change campaign state, and it
     /// cannot make a world interactive either.

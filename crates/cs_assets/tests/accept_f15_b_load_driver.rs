@@ -26,7 +26,8 @@ use cs_app::loading::{
 use cs_assets::cache::store::ENTRIES_DIR;
 use cs_assets::cache::{
     BudgetExceeded, CacheBudget, CacheDirectory, CacheKey, CacheLookup, CacheStore,
-    ConversionOptions, ConverterVersion, DecoderId, IrVersion, PAYLOAD_FILE, StoreError,
+    ConversionOptions, ConverterVersion, DecoderId, HEADER_FILE, IrVersion, PAYLOAD_FILE,
+    StoreError,
 };
 use cs_assets::vfs::{ReadError, SessionBuilder};
 use cs_types::asset_id::WorldGroup;
@@ -570,6 +571,64 @@ fn accept_f15_b_unreadable_cache_still_loads_from_the_source() {
     // write.
     assert_eq!(world.store(8, 8 << 20).recovery().kept_unknown, 1);
     assert!(fs::metadata(&entry).is_ok(), "the obstacle is still there");
+}
+
+/// A store whose read side reports a fault is still written to: the item
+/// is rebuilt from its sources, the derived form is published, and the
+/// report says what really happened — rebuilt, with the read fault named
+/// as the cause, not "not cached" for an entry the store now holds.
+#[test]
+fn accept_f15_b_rebuild_replaces_an_entry_the_store_could_not_read() {
+    let world = World::new("f15-b-unreadable-rebuilt");
+    let key = key_a();
+    let store = world.warm(&key, &derived_of_source(), 8 << 20);
+    // The record is not decodable, which the store reports as a fault of
+    // its own bookkeeping rather than as a refusal of these bytes.
+    fs::write(
+        world.entry_of(&key).join(HEADER_FILE),
+        b"not a cache record\n",
+    )
+    .expect("the record is destroyed");
+
+    let mut driver = LoadDriver::new(world.request("hull-a", &key), store);
+    driver.transaction_mut().begin().expect("the load begins");
+    let mut progress = no_progress();
+    let reads = Cell::new(0u32);
+    let read = driver
+        .load_item(0, &mut progress, from_source(&reads), convert_default)
+        .expect("the item is settled");
+    let ItemRead::Rebuilt {
+        payload_sha256,
+        cause,
+    } = &read
+    else {
+        panic!("the rebuild was published, so it is not `Uncached`: {read:?}");
+    };
+    assert_eq!(reads.get(), 1, "the item came from its sources");
+    assert!(
+        matches!(
+            cause,
+            RebuildCause::StoreUnavailable {
+                code: "corrupt_header",
+                ..
+            }
+        ),
+        "the read fault is named: {cause:?}"
+    );
+    assert_eq!(
+        *payload_sha256,
+        cs_assets::install::sha256(&derived_of_source())
+    );
+    // The rebuilt entry is the one the store serves from now on.
+    assert!(
+        matches!(driver.store().begin_read(&key), Ok(CacheLookup::Hit(_))),
+        "the publish replaced the record the store could not read"
+    );
+    driver
+        .load_item(1, &mut progress, from_source(&reads), convert_default)
+        .expect("the deferred item is settled");
+    driver.validate_delivered().expect("the load validates");
+    assert!(driver.transaction().is_world_interactive());
 }
 
 /// A gameplay-critical failure ends the load and names the missing
