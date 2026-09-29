@@ -10,6 +10,7 @@ autobins = false
 [dependencies]
 avian3d.workspace = true
 bevy.workspace = true
+cs_sim.workspace = true
 cs_types.workspace = true
 
 # The campaign acceptance tests in `tests/campaign/` exercise the F50-A

@@ -2453,6 +2453,7 @@ dependencies = [
  "avian3d",
  "bevy",
  "cs_content",
+ "cs_sim",
  "cs_types",
 ]
 

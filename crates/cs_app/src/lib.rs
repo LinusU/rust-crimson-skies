@@ -11,7 +11,10 @@
 //! local frame, the typed distinction between a rebase (world identity and
 //! swept continuity survive) and a teleport, and (F16-B) the atomic
 //! `OriginShift` transaction that converts a whole set of `SpatialAnchor`s
-//! into a new frame. Wiring it into every spatial subsystem is F16-C.
+//! into a new frame. F16-C binds those anchors into a `SpatialWorld` and
+//! drives them from the `cs_sim` frame clock through `FixedTickDriver`, so a
+//! render frame's wall time only ever adds whole fixed ticks and equal input
+//! at 30, 60 or 144 FPS yields the same state.
 
 pub mod cli;
 pub mod origin;
