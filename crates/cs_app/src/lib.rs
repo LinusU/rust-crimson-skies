@@ -37,12 +37,20 @@
 //! ([`input::InputCollector`]) that resolves physical sources into the
 //! ticked `cs_types::input::InputFrame` the simulation buffers. The device
 //! adapters and axis calibration are F22-B.
+//!
+//! [`physics`] is the F23-A Avian boundary
+//! (`specs/F23-avian-integration-collision-and-fixed-step-authority.md`,
+//! `### F23-A`): the fixed-rate schedule adapter, the one-tick force/torque
+//! request queue and the tick/integration ledger, plus a minimal synthetic
+//! fixture. It is the only place the pinned Avian force accumulator is driven;
+//! body creation, sweeps and kinematic transitions are F23-B.
 
 pub mod airframe_visual;
 pub mod cli;
 pub mod input;
 pub mod livery;
 pub mod origin;
+pub mod physics;
 pub mod run;
 pub mod scene;
 pub mod synthetic;
