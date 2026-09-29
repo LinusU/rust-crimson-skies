@@ -2324,6 +2324,45 @@ fn accept_f05_g_member_extent_is_a_window_of_the_container() {
             file_len: truncated.len() as u64,
         }
     );
+
+    // 5. An extent whose *arithmetic* overflows is a different refusal from a
+    //    window the container does not hold, and it stays a structural one:
+    //    `RofError::Parse` carrying `LengthOverflow`, at the member's own
+    //    start, naming the same field. Only a hand-built member can reach it
+    //    (`raw_length_on_disk` is a `u32`, so `start + stored_len` overflows
+    //    only a `start` no container holds), which is exactly the case
+    //    `read_member`'s doc comment promises to accept.
+    let start = u64::MAX - 1;
+    let member = RofMember {
+        path: vec![b"AIRFRAME.SCRIPT".as_slice()],
+        record: RofRawRecord {
+            start: u32::MAX,
+            raw_length: 0,
+            raw_length_on_disk: 4,
+            flags: RofFlags(0),
+            name_length: 16,
+            id: 5,
+        },
+        start,
+        stored_end: u64::MAX,
+    };
+    let error = read_member(
+        &ParseContext::with_defaults(RETAIL_CONTAINER),
+        &truncated,
+        &member,
+        &RofLimits::default(),
+    )
+    .expect_err("start + stored length that overflows must be refused");
+    assert_eq!(error.code(), "parse");
+    assert_eq!(error.container(), RETAIL_CONTAINER);
+    match &error {
+        RofError::Parse(parse) => {
+            assert_eq!(parse.kind, ParseErrorKind::LengthOverflow);
+            assert_eq!(parse.field, "member.extent");
+            assert_eq!(parse.offset, start, "reported at the extent's start");
+        }
+        other => panic!("expected a structural overflow, got {other:?}"),
+    }
 }
 
 /// The two containers of the original installation, as the task's private

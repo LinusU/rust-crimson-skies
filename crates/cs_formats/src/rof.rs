@@ -1830,11 +1830,11 @@ pub fn read_member(
     let extent = window
         .window_bytes(start, stored_len, "member.extent")
         .map_err(|error| match error.kind {
-            // A window the container does not hold is this reader's own
+            // A window the container does not hold is this function's own
             // domain error rather than a structural one, reported with the
-            // same numbers the check above used to state by hand: the
+            // same numbers the hand-written check it replaces stated: the
             // extent's start, its declared length and the container length
-            // it was checked against.
+            // the window was checked against.
             ParseErrorKind::UnexpectedEof => RofError::ExtentOutOfBounds {
                 container: container.to_owned(),
                 offset: start,
@@ -1842,9 +1842,11 @@ pub fn read_member(
                 length: stored_len,
                 file_len,
             },
-            // `start + stored_len` overflowing `u64` is structural, and
-            // `window_bytes` reports it at `start` with the field named
-            // `member.extent`, exactly as the checked addition did.
+            // `start + stored_len` overflowing `u64` is structural.
+            // `window_bytes` refuses it at `start` naming the field
+            // `member.extent`, with the same kind, offset and field as the
+            // checked addition did and the shared overflow message instead
+            // of this module's own wording for it.
             _ => RofError::Parse(error),
         })?;
 
