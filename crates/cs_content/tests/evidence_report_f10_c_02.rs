@@ -343,17 +343,17 @@ fn evidence_report_f10_c_02_writes_the_acceptance_report() {
                         break;
                     }
                 }
-                let mut out = exact_case;
-                out.extend(exact_extension);
-                out
+                assert!(
+                    exact_case.len() == 2 && exact_extension.len() == 2,
+                    "an audited world must yield both an extension-only pair and a pair that \
+                     differs in case as well: {:?} {:?}",
+                    exact_case,
+                    exact_extension
+                );
+                exact_case.extend(exact_extension);
+                exact_case
             }
         };
-        assert!(
-            examples
-                .iter()
-                .any(|pair| pair.contains("Sky1.tif") || pair.contains("sky1")),
-            "the examples must include a case difference: {examples:?}"
-        );
 
         corpus.push(CorpusRow {
             relative: relative.to_owned(),
