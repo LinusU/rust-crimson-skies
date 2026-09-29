@@ -5,8 +5,10 @@
 F10-C.01 (#364), F10-C.02 (#365) and F10-C.03 (#366).
 **Shared contract:** `docs/contracts/IDENTITY-CONTENT.md`.
 **Test prefix:** `accept_f10_c_`.
-**Capabilities used:** ordinary build/test, and `retail` for the two
-`#[ignore = "requires CS_GAME_DIR"]` tests. Implementer: bunny-2.
+**Capabilities used:** ordinary build/test, and `retail` for the three
+`#[ignore = "requires CS_GAME_DIR"]` tests in `crates/cs_content/src/mesh.rs`
+(one added by this stage). Implementer: bunny-2. Reviewer: bunny-2, a fresh
+session with no implementation context; see **Review** at the end.
 
 ## What this stage is
 
@@ -90,12 +92,13 @@ now does, and on the real installation it measures:
 | stored meshes (rows) | 2 237 | 1 766 |
 | resolves and uploads | all | all |
 | stored faces | 18 277 | 16 200 |
-| triangles | 18 277 | 71 645 |
-| degenerate | 0 | 10 497 |
-| multi-material-group polygons | 1 006 (across the corpus) | **0** |
-| split positions | > 0 | 20 836 |
-| **UV seams (AC03)** | > 0 | **4 747** |
+| triangles | 56 073 | 71 645 |
+| degenerate | 8 019 (14.3 %) | 10 497 (14.7 %) |
+| multi-material-group polygons | 390 (1 006 across the nine measured archives) | **0** |
+| split positions | 22 993 | 20 836 |
+| **UV seams (AC03)** | 2 395 | **4 747** |
 | material rows / refs / resolved | 561 / 22 678 / 0 | 935 / 19 810 / 0 |
+| container-duplicated texture names | 0 | 1 (`bldhwk_cowling..tif`, 36 positions) |
 
 Three of these are worth naming because they are facts the corpus did not
 predict and no fixture asserted:
@@ -109,11 +112,11 @@ predict and no fixture asserted:
   different authored texture coordinates — so the case the sheet names in its
   minimum scenario is authored in the largest container in the installation,
   not only in a 4-corner fixture.
-* **Degenerate triangles are 14.7 % of the airframe corpus** (10 497 of 71 645
-  triangles) against 0 in the world container F10-C.03 measured. F10-C.01 keeps
-  them and marks them; this shows the mark is load-bearing rather than
-  theoretical. Whether the original renderer skipped them is still unknown (see
-  below).
+* **Degenerate triangles are common on both halves of the corpus, at much the
+  same rate**: 8 019 of 56 073 in the world container (14.3 %) and 10 497 of
+  71 645 in the airframes (14.7 %). F10-C.01 keeps them and marks them; this
+  shows the mark is load-bearing rather than theoretical. Whether the original
+  renderer skipped them is still unknown (see below).
 
 The test asserts the *invariants* on real data (every row resolves, every
 upload agrees with its row's face counts, seams survive) rather than these
@@ -147,7 +150,7 @@ now applies, plus these three.
 | --- | --- |
 | `..._blocking_reasons_are_stable_codes_and_keep_their_evidence` | A code carries no stored name and no position list; the detail line names both. Uses the measured `bldhwk_cowling..tif` duplicate. |
 | `..._a_render_mesh_row_names_each_reason_once_as_a_bare_code` | Every reason on a render-mesh row is drawn from a **closed vocabulary**; the same cause through two materials is one entry; the multi-group reason is bare and its count is the row's number, reached through a container that really stores two groups per polygon. |
-| `..._retail_airframe_meshes_reach_the_upload_payload` (`#[ignore]`) | The airframe producer, through the install mount, to the upload payload, with AC03 seams on real airframe data. |
+| `..._retail_airframe_meshes_reach_the_upload_payload` (`#[ignore]`) | The airframe producer, through the install mount, to the upload payload, with AC03 seams on real airframe data **and** every reason on every one of its rows and material rows bare on the real corpus. |
 
 ### Sensitivity probes actually run
 
@@ -194,19 +197,19 @@ presentation unknowns, which are still on every row and still gate
 
 Newly measured, still unknown:
 
-* **Whether the original renderer skipped the airframes' 10 497 degenerate
-  triangles.** They are kept and marked, as F10-C.01 decided; this run shows
-  they are common enough that the decision is not academic. F17-B's adapter has
-  to read [`MeshUpload`]'s counts and decide; nothing here settles it.
+* **Whether the original renderer skipped the degenerate triangles.** They are
+  kept and marked, as F10-C.01 decided; this run shows they are common on both
+  halves of the corpus, so the decision is not academic. F17-B's adapter has to
+  read [`MeshUpload`]'s counts and decide; nothing here settles it.
 * **Whether the airframe texture names resolve at all.** 0 of 935 airframe
   material rows resolved against the world's `texture.zbd`, and 0 against
   `rimage.zbd` and against two other archives tried by hand. Which archive the
   airframes actually use is **not established** — this is F08-C's open question
   about archive binding, and the audit refuses to answer it by searching, by
   design. Recorded, not guessed.
-* **`planes.zbd` has 6 multi-material-group polygons' worth of 0.** That is, it
-  has none. Whether the original renderer would have needed the second group is
-  unmeasured for the airframes, because they never store one.
+* **Whether the original renderer needed a polygon's second material group.**
+  `planes.zbd` stores no multi-group polygon, so the airframes never exercise
+  that path and nothing about it is measured on them.
 
 ## Follow-ups filed, not fixed here
 
@@ -227,7 +230,63 @@ tests fail loudly rather than passing.
 
 **Environment note.** `CARGO_TARGET_DIR` was made per-agent for every command
 above, for the reason F10-C.03 recorded: the shared target directory let one
-worktree's test run execute another worktree's binary.
+worktree's test run execute another worktree's binary. The reviewer hit the
+t383 gate doing this: a directory outside the checkout satisfies it only if one
+of its own path components is named after the worktree, so
+`…/opencode/target-bunny-2-r43` is **rejected** while
+`…/opencode/bunny-2/target` is accepted. The gate is
+`accept_t383_this_worktrees_effective_target_dir_is_per_worktree` and it fails
+`cargo test --workspace` for the whole workspace, not only the gate.
+
+## Review
+
+**Reviewer:** bunny-2, a separate session that did not implement this stage and
+that read the branch with no memory of writing it. That is a fresh context, but
+it is the **same agent identity** as the implementer, so by the review policy in
+`AGENTS.md` this review is **not** independent evidence about the original game.
+The retail figures below are measurements of bytes through production code, not
+observations of original behaviour.
+
+What the review checked: the spec sheet, the IDENTITY-CONTENT contract, the
+F08-C `unsupported_reasons` precedent, the whole two-file diff, and the
+production code the diff sits in (`audit_material`, `finish`,
+`MeshDependencyAudit::build`, `mesh_record`, `prepare_upload`, the reader's
+`read_polygon`). The reason/detail split is sound and the F10-C.02 test that
+moved really was asserting the defect. Four things were wrong and were fixed on
+the branch:
+
+1. **Two measured figures in this document were false**, and one of them had
+   been copied into a code comment. The world container's triangle count had
+   been copied from its face count (18 277; measured 56 073), and its
+   degenerate count was reported as 0 and attributed to F10-C.03, which never
+   measured it — `ZBD/C1/gamez.zbd` stores **8 019** degenerate triangles
+   (14.3 %). The `MeshFaceCounts::degenerate` comment asserted "stores none",
+   which is false about the original data and is now corrected to the measured
+   figures for both containers. Re-measured with a throwaway test over the same
+   production path, on this installation, and the scratch test was not
+   committed.
+2. **The airframe test only covered the upload half** of this stage's
+   deliverable, although the task is "upload mesh IR **and audit
+   material/texture dependencies**". It now checks that every blocking reason on
+   every airframe render-mesh row and on every material row those payloads carry
+   is a code, on the real corpus where the 36-times-duplicated name lives. It
+   also replaced a tautological assertion (`source_faces == faces - rejected`
+   when `rejected` is 0 for anything that uploaded) with the documented
+   invariant itself (`rejected == 0`).
+3. **A vertex with no stored UV was counted as `(0.0, 0.0)`** in the airframe
+   seam count, so an authored zero and an absent UV were indistinguishable. The
+   world test in F10-C.03 already used `filter_map`; the airframe test now
+   does too, and the seam count is the same 4 747.
+4. **Two doc comments were stale or wrong** about the new field and the new
+   fixture capability: `reason_details` claimed "a line exists for every
+   reason", which is false for a blocked state that contributed only
+   `state.code()`, and `StoredPolygon` still said "One group only" after the
+   writer gained `with_groups`.
+
+One inaccuracy is left standing because it is in an immutable commit message:
+`ce0469d` says "parse/normalize diagnostic now prefers a detail line", while
+only `normalize_state` does — `parse_state`'s diagnostic is still the state
+text.
 
 ## Sources
 

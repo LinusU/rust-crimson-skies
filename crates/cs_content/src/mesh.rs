@@ -100,7 +100,7 @@
 //! `unsupported_reasons` is a field a consumer **groups rows by**, so every
 //! entry in it is a code: the same cause is the same string whatever bytes
 //! caused it. What the bytes were is [`MaterialRow::reason_details`], which
-//! keeps one line per reason and de-duplicates nothing, and — for the polygons
+//! keeps one line per finding and de-duplicates nothing, and — for the polygons
 //! that store more than one material group — the count on
 //! [`MeshFaceCounts::multi_material_group_polygons`].
 //!
@@ -793,12 +793,15 @@ pub struct MaterialRow {
     /// index list would differ per row, would not compare equal across rows
     /// that share a cause, and would grow without bound.
     pub unsupported_reasons: Vec<String>,
-    /// One line per blocking reason, in the same discovery order as
+    /// One line per blocking **finding**, in the same discovery order as
     /// [`Self::unsupported_reasons`] but **not** de-duplicated: two findings of
     /// the same code with different stored values are two lines, because the
-    /// values are the evidence. A line exists for every reason, so
-    /// `unsupported_reasons` is always a prefix-length summary of this list's
-    /// distinct codes.
+    /// values are the evidence.
+    ///
+    /// The two lists are deliberately not parallel and must not be zipped: every
+    /// line here has a code in `unsupported_reasons`, one code can have many
+    /// lines, and a code can have none, because a blocked state that raised no
+    /// separate reason contributes [`MaterialState::code`] on its own.
     pub reason_details: Vec<String>,
     /// SHA-256 of the record's 40 stored bytes plus its two link words, in
     /// stored order. `None` when the material index is outside the table, where
@@ -1913,10 +1916,11 @@ pub struct MeshFaceCounts {
     /// Triangles with two equal stored position indices. They are kept; a
     /// consumer that draws may skip them.
     ///
-    /// Measured on the installation: `ZBD/C1/gamez.zbd` stores none and
-    /// `ZBD/planes.zbd` stores 10 497 of 71 645 (14.7 %), so the mark is
-    /// load-bearing on the airframes and not only on a fixture. Whether the
-    /// original renderer skipped them is unmeasured; F17-B's adapter decides.
+    /// Measured on the installation: `ZBD/C1/gamez.zbd` stores 8 019 of 56 073
+    /// (14.3 %) and `ZBD/planes.zbd` stores 10 497 of 71 645 (14.7 %), so the
+    /// mark is load-bearing on world geometry and on airframes alike, and not
+    /// only on a fixture. Whether the original renderer skipped them is
+    /// unmeasured; F17-B's adapter decides.
     pub degenerate: usize,
     /// Stored polygons that stored more than one material group.
     ///
@@ -1926,8 +1930,9 @@ pub struct MeshFaceCounts {
     /// on the row rather than a second state.
     ///
     /// Measured on the installation: the world archives store 1 006 such
-    /// polygons and `ZBD/planes.zbd` stores **none**, so this count is non-zero
-    /// for world geometry and zero for every airframe. See
+    /// polygons, 390 of them in `ZBD/C1/gamez.zbd`, and `ZBD/planes.zbd` stores
+    /// **none**, so this count is non-zero for world geometry and zero for every
+    /// airframe. See
     /// `docs/findings/2026-09-29-f10-c-integration-and-reason-codes.md`.
     pub multi_material_group_polygons: usize,
 }
@@ -4242,13 +4247,16 @@ mod tests {
 
     // ============================================ F10-C.03: the wiring tests ===
 
-    /// One stored polygon to author: the position index of every corner, the one
-    /// material group the polygon stores, and the UV of every corner of it.
+    /// One stored polygon to author: the position index of every corner, the
+    /// material group the polygon stores, and the UV of every corner of that
+    /// group.
     ///
-    /// One group only. A polygon with two or three is a real stored shape — the
-    /// reader keeps them all on `GameZMesh::material_groups` and the render mesh
-    /// carries the first — and it is reported as a row reason rather than
-    /// written into every fixture here.
+    /// [`Self::new`] stores exactly one group; [`Self::with_groups`] stores the
+    /// rest, because a polygon that keeps two or three groups is a real stored
+    /// shape — the reader keeps them all on `GameZMesh::material_groups`, the
+    /// render mesh carries the first, and the row reports the rest as
+    /// `multi_material_group_polygons`. Most fixtures store one group, and that
+    /// count is a number of stored **polygons**, not of groups.
     struct StoredPolygon {
         corners: Vec<u32>,
         material: u32,
@@ -5836,6 +5844,12 @@ mod tests {
     /// boundary through the same production path. It is a **different mount** —
     /// `install`, not a world group — so the integration has to work across
     /// namespaces, not only inside the one the world fixture happens to use.
+    ///
+    /// Both halves of this stage's deliverable are checked here, because this is
+    /// the only test that reaches them on retail data: the mesh IR arrives with
+    /// its face accounting intact and AC03's seam still split, and the material
+    /// audit arrives with **codes** as reasons — which is what the airframe
+    /// corpus, with its 36-times-duplicated texture name, is here to prove.
     #[test]
     #[ignore = "requires CS_GAME_DIR"]
     fn accept_f10_c_retail_airframe_meshes_reach_the_upload_payload() {
@@ -5887,6 +5901,7 @@ mod tests {
         let mut uploaded = 0usize;
         let mut faces = 0usize;
         let mut uv_seams = 0usize;
+        let mut coded_reasons = 0usize;
         for row in &records {
             let index = row.mesh_index.expect("every row is about a mesh");
             let resolved = catalog
@@ -5899,22 +5914,41 @@ mod tests {
             assert_eq!(upload.render().source_faces(), counts.faces);
             assert_eq!(upload.render().source_triangles(), counts.triangles);
             assert_eq!(upload.render().degenerate_triangles(), counts.degenerate);
-            assert_eq!(
-                upload.render().source_faces(),
-                counts.faces - counts.rejected
-            );
+            // A mesh that became a render mesh had no polygon rejected, so the
+            // faces the render mesh saw are all of the stored ones.
+            assert_eq!(counts.rejected, 0, "a mesh that uploaded rejected none");
+
+            // The material half of the audit reaches the same payload, and its
+            // reasons are codes here too: the airframe corpus stores one texture
+            // name at 36 table positions, which is exactly the reason that used
+            // to carry the name and every position. A code is lowercase
+            // snake_case, so it holds none of a space, a `:` or a `[`.
+            for reason in row.unsupported_reasons.iter().chain(
+                upload
+                    .materials()
+                    .iter()
+                    .flat_map(|m| &m.unsupported_reasons),
+            ) {
+                assert!(
+                    !reason.contains([' ', ':', '[']),
+                    "a blocking reason carries no stored data: {reason:?}"
+                );
+                coded_reasons += 1;
+            }
+
             faces += counts.faces;
 
             // AC03 on the airframes too: a shared position with different
-            // per-corner UVs is still two vertices here.
+            // per-corner UVs is still two vertices here. A vertex with no stored
+            // UV is left out rather than counted as `(0.0, 0.0)`, so an authored
+            // zero is never mistaken for an absent one.
             let mut at: BTreeMap<u32, Vec<[u32; 2]>> = BTreeMap::new();
             for vertex in upload.render().vertices() {
-                at.entry(vertex.position_index).or_default().push(
-                    vertex
-                        .uv
-                        .map(|uv| [uv[0].to_bits(), uv[1].to_bits()])
-                        .unwrap_or([0, 0]),
-                );
+                if let Some(uv) = vertex.uv {
+                    at.entry(vertex.position_index)
+                        .or_default()
+                        .push([uv[0].to_bits(), uv[1].to_bits()]);
+                }
             }
             for uvs in at.values() {
                 if uvs.len() < 2 {
@@ -5932,6 +5966,10 @@ mod tests {
         }
         assert_eq!(uploaded, records.len(), "every airframe row uploaded");
         assert!(faces > 0, "the airframes store faces");
+        assert!(
+            coded_reasons > 0,
+            "the airframe corpus blocks its meshes, so the reasons are there"
+        );
         assert!(
             uv_seams > 0,
             "the airframe corpus authors UV seams, which is the case AC03 names"
