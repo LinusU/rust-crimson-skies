@@ -184,6 +184,19 @@ COMMANDS
         invalid input or an unknown/non-launchable mission; 3 on failed
         validation.
 
+    campaign [--cs-path <dir>] [--out <file>]
+        Read the installation's retail campaign directory layout (F14-E) and
+        write the deterministic JSON report: every
+        ZBD/<chapter><variant>/<mission> directory with its chapter, mission
+        number, world group, program archive path and presence, and the
+        SHA-256 of each present archive (paths and hashes only, no original
+        bytes). --cs-path wins over CS_GAME_DIR. Exits 0 when the report is
+        produced, 2 on invalid input, 3 when the installation declares no
+        campaign mission directory, 4 when no installation is selected and 1
+        on a runtime failure. The walk is the same production derivation the
+        per-mission binding stages and F14-D use; the report makes no
+        readiness or playability claim.
+
     handling
         Not implemented in this workspace stage; it is documented in
         docs/contracts/CLI-EVIDENCE.md.
@@ -212,8 +225,8 @@ fn main() -> ExitCode {
         None => {
             eprintln!(
                 "cs-inspect: missing command; expected one of inventory, audit, resolve, rof, \
-                 zbd-audit, interp, texture-audit, config, scripts, catalog, closure, handling \
-                 (see docs/contracts/CLI-EVIDENCE.md)"
+                 zbd-audit, interp, texture-audit, config, scripts, catalog, closure, campaign, \
+                 handling (see docs/contracts/CLI-EVIDENCE.md)"
             );
             ExitCode::from(EXIT_INVALID_INPUT)
         }
@@ -228,11 +241,12 @@ fn main() -> ExitCode {
         Some("scripts") => cs_inspect::script_discovery::scripts_command(&args[1..]),
         Some("catalog") => cs_inspect::catalog::catalog_command(&args[1..]),
         Some("closure") => cs_inspect::catalog::closure_command(&args[1..]),
+        Some("campaign") => cs_inspect::campaign::campaign_command(&args[1..]),
         Some(command) => {
             eprintln!(
                 "cs-inspect: unsupported command {command:?}; this workspace stage implements \
                  only `inventory`, `audit`, `resolve`, `rof`, `zbd-audit`, `interp`, \
-                 `texture-audit`, `config`, `scripts`, `catalog` and `closure`"
+                 `texture-audit`, `config`, `scripts`, `catalog`, `closure` and `campaign`"
             );
             ExitCode::from(EXIT_INVALID_INPUT)
         }

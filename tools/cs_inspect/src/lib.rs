@@ -30,6 +30,12 @@
 //! commands: the catalog report of every row's parse, normalize and
 //! readiness state, and the transitive dependency closure of one launchable
 //! mission with its predecessor chains and orphaned references.
+//! [`campaign`] is the F14-E `campaign` command: the read-only retail
+//! campaign directory layout report — every `ZBD/<chapter><variant>/<mission>`
+//! directory with its chapter, mission number, world group, program archive
+//! path and presence and the digest of each present archive — over the same
+//! production walk (`cs_content::campaign_bindings::campaign_layout`) the
+//! per-mission binding stages and F14-D use.
 //! [`reference_capture`] is the
 //! REF-CAPTURE-PROTOCOL record model (#357): the operator worksheet shape
 //! for an original-game capture — fingerprints, timebase, units, artifacts,
@@ -45,6 +51,7 @@
 //! programs located and classified, with an optional coverage check that
 //! fails closed on a container that hides its programs.
 
+pub mod campaign;
 pub mod catalog;
 pub mod config;
 pub mod evidence;

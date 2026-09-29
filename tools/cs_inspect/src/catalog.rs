@@ -752,7 +752,15 @@ pub fn closure_command_result(args: &[String]) -> ClosureRun {
 
 /// Prints diagnostics to stderr and the report to stdout when it was not
 /// written to `--out`.
-fn report_run(command: &str, diagnostics: &[String], report: Option<&str>, out: Option<&Path>) {
+///
+/// Shared with the sibling `campaign` command, so every `cs-inspect`
+/// consumer reports `--out` and stderr/stdout the same way.
+pub(crate) fn report_run(
+    command: &str,
+    diagnostics: &[String],
+    report: Option<&str>,
+    out: Option<&Path>,
+) {
     for line in diagnostics {
         eprintln!("cs-inspect: {line}");
     }
@@ -766,7 +774,10 @@ fn report_run(command: &str, diagnostics: &[String], report: Option<&str>, out: 
 }
 
 /// Writes `report` to `out` atomically via a sibling temporary file.
-fn write_atomic(out: &Path, report: &str) -> io::Result<()> {
+///
+/// Shared with the sibling `campaign` command so its `--out` write has the
+/// same all-or-nothing behavior.
+pub(crate) fn write_atomic(out: &Path, report: &str) -> io::Result<()> {
     let mut temp_name = out.as_os_str().to_owned();
     temp_name.push(format!(".tmp-{}", std::process::id()));
     let temp = PathBuf::from(temp_name);
@@ -778,7 +789,10 @@ fn write_atomic(out: &Path, report: &str) -> io::Result<()> {
 }
 
 /// A JSON string literal.
-fn json_string(value: &str) -> String {
+///
+/// Shared with the sibling `campaign` command so both reports escape the
+/// same way.
+pub(crate) fn json_string(value: &str) -> String {
     let mut out = String::with_capacity(value.len() + 2);
     out.push('"');
     for character in value.chars() {

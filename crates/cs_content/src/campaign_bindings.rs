@@ -1967,6 +1967,65 @@ pub struct CampaignMission {
     pub program_present: bool,
 }
 
+/// One campaign mission directory with the digest of its program archive
+/// (F14-E).
+///
+/// The layout is the same derivation [`SourceContext::read`] and the
+/// per-mission binding stages already use ([`scan_campaign`]): one walk of
+/// `ZBD/<chapter><variant>/<mission>` giving each mission's chapter, number,
+/// world group and program archive. This record adds the one fact a
+/// read-only inspection report needs on top of it — the SHA-256 of every
+/// *present* program archive — and retains no original bytes.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CampaignLayoutEntry {
+    /// The mission as the directory layout declares it.
+    pub mission: CampaignMission,
+    /// The digest of the whole program archive named by
+    /// [`CampaignMission::program_asset`], or [`None`] when no archive is
+    /// present there. A present archive that cannot be read is an error, not
+    /// a `None`.
+    pub program_sha256: Option<String>,
+}
+
+/// Reads the installation's campaign directory layout with the digest of
+/// every present mission program archive (F14-E).
+///
+/// The walk is exactly [`scan_campaign`], the derivation
+/// [`SourceContext::read`] uses for its campaign, so the inspection report
+/// and the per-mission bindings cannot disagree about chapter, mission
+/// number, world group, program path or presence. The only addition is
+/// hashing each present program archive: no original bytes are returned.
+///
+/// # Errors
+///
+/// [`SourceBindingError::NoCampaign`] when the installation declares no
+/// `ZBD/<chapter>/<mission>` directory, and [`SourceBindingError::Io`] when
+/// the layout cannot be walked or a present program archive cannot be read.
+/// A mission directory whose `zrdr.zbd` is absent is reported with
+/// [`CampaignLayoutEntry::program_sha256`] `None`, never omitted.
+pub fn campaign_layout(
+    install_root: &Path,
+) -> Result<Vec<CampaignLayoutEntry>, SourceBindingError> {
+    let campaign = scan_campaign(install_root)?;
+    if campaign.is_empty() {
+        return Err(SourceBindingError::NoCampaign);
+    }
+    let mut layout = Vec::with_capacity(campaign.len());
+    for mission in campaign {
+        let program_sha256 = if mission.program_present {
+            let bytes = read_file(&install_root.join(&mission.program_asset))?;
+            Some(cs_assets::install::sha256(&bytes).to_hex())
+        } else {
+            None
+        };
+        layout.push(CampaignLayoutEntry {
+            mission,
+            program_sha256,
+        });
+    }
+    Ok(layout)
+}
+
 /// The checklist entries a source binding deliberately does **not**
 /// resolve, with why. Every one of them keeps `verified` false.
 const SOURCE_BINDING_UNKNOWNS: &[&str] = &[
