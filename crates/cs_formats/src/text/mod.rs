@@ -16,6 +16,9 @@
 //! * [`resource_header`] reads the `#define NAME value` resource-id headers
 //!   ([`dialect::TextDialect::ResourceHeader`]) that name the same ids
 //!   [`crate::pe_resources`] walks in a PE resource directory (stage F12-B).
+//! * [`records`] transcribes the record kinds and the field lists the keyed
+//!   list members document in their own comments — names and structure only,
+//!   no types (task #371, keyed F12-I).
 //!
 //! The survey, the design decisions and the recorded unknowns are written
 //! down in
@@ -33,6 +36,7 @@ pub mod dialect;
 pub mod keyed_list;
 pub mod lines;
 pub mod placeholder;
+pub mod records;
 pub mod resource_header;
 
 #[cfg(test)]
@@ -41,6 +45,8 @@ mod tests;
 mod tests_f12_b;
 #[cfg(test)]
 mod tests_f12_e;
+#[cfg(test)]
+mod tests_f12_i;
 #[cfg(test)]
 mod tests_t351;
 
@@ -59,6 +65,10 @@ pub use placeholder::{
     PLACEHOLDER_ENTRYPOINT, PlaceholderAccounting, PlaceholderDefinition, PlaceholderReference,
     PlaceholderScope, PlaceholderTable, ResolvedPlaceholder, definition_scope, placeholder_name,
     read_placeholders, scan_placeholders,
+};
+pub use records::{
+    BOOL_MARKER_NOTE, BUTTON_COLOR_NOTE, DocumentedField, RecordKind, documented_fields,
+    documented_scrapbook_fields, optional_field_count,
 };
 pub use resource_header::{
     Define, HeaderLookup, MAX_RESOURCE_ID, RESOURCE_HEADER_ENTRYPOINT, ResourceHeader,
