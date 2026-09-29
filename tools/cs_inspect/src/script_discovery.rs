@@ -1110,7 +1110,10 @@ mod tests {
                 .join(", "),
             artifact(&log_path, "log"),
             artifact(&scripts_path, "json"),
-            super::jstr("deepseek-1 (implementing agent)"),
+            super::jstr(
+                "glm-1/deepseek-1 (implementing agent); deepseek-1 (Rally reviewer, fresh \
+                 session; the report was regenerated on the reviewed and rebased commit)",
+            ),
             super::jstr(&method),
         );
         let out = evidence_dir.join("acceptance.json");
