@@ -73,8 +73,11 @@ groups (`ZBD/C1`, `C1B`, `C1C`, `C2`, `C2B`, `C3`, `C4`, `C5`), 9 contexts.
   lookup — the primary's included, since the tiers shadow it — is
   `blocked_unmeasured_order` with that world's `texture.zbd` selected and its
   five tiers shadowed. Every other-world lookup is `not_eligible`, and **no
-  lookup is `own`**: the designed order never serves a texture. A name this
-  world does not hold is `NotFound` — another world's bytes are never returned.
+  lookup is `own`**: the designed order never serves a texture. Of the 330750
+  lookups (36750 member-holdings × 9 contexts) exactly 36750 are blocked and
+  294000 are not eligible — none is `own`, `other_*`, `ambiguous` or
+  `not_found`. A name this world does not hold is `NotFound` through the
+  session's own `resolve` — another world's bytes are never returned.
 - **Cross-world isolation.** Each world's six archives are visible only under
   that world's context, so a texture name held by several worlds is a
   different member in each and never crosses a world boundary. That is the
@@ -131,6 +134,12 @@ file records from the production reader, so a reader or mount change that
 mounts less than the archives hold fails there instead of quietly
 invalidating the findings; each failure message names the installation
 fingerprint, so a different retail build reads as a different measurement.
+
+Mutation probe (applied, observed, reverted; `crates/cs_assets/src/` is
+byte-identical to the branch head afterwards): making
+`Vfs::resolve_blocking_unmeasured` never block (`if true || …`) fails
+`…shared_scope_overlap_is_blocked` and `…retail_each_world_keeps_its_textures`,
+so the tests really exercise the production block rather than the report.
 
 ## Sources
 
