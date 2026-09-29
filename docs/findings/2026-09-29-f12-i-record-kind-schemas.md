@@ -7,15 +7,21 @@ LAYOUT.CSV and SCRAPBOOK.CSV from their documented field lists" (key
 Required capability: ordinary build/test. This machine also has `retail`, and
 it was used **read-only**: the two members are decoded out of
 `GOSDATA/ASSETS/crimson.rof` into `private/` (git-ignored) or read straight
-from the archive by an `#[ignore = "requires CS_GAME_DIR"]` test. Nothing
-from the installation is committed except paths, lengths, counts, hashes and
-the field-name identifiers that are this task's deliverable. No line, prose
-or value of the members' own comments is reproduced.
+from the archive by an `#[ignore = "requires CS_GAME_DIR"]` test.
 
 This stage builds on task #351's reading rules
 ([`2026-09-29-t351-keyed-list-reading-rules.md`](2026-09-29-t351-keyed-list-reading-rules.md))
 and on the F12-E placeholder pass; it re-derives the record shapes from the
 same two retail members so the `accept_f12_i_*` retail test can pin them.
+
+## What is and is not committed
+
+Nothing from the installation is committed except paths, lengths, counts,
+hashes, the field-name identifiers and bracket structure the members'
+comments document, and a short paraphrase of each comment's own
+parenthetical note (the comments' value enums are kept as written). No
+comment line, no record line and no value of the two members is reproduced,
+and every fixture the tests read is authored from structure, never copied.
 
 ## Files
 
@@ -110,7 +116,7 @@ records.
 | Listbox `L` | 12 | 10×6 | 10 | 0 |
 | Slider `Z` | 13 | 13×4 | 13 | 0 |
 | Sound Object `W` | 6 | absent | 6 | (never observed) |
-| `Mission_Spread_Item` | 16 | 16×461 | 16 | 0 |
+| `Mission_Spread_Item` | 16 | 16×461 | 16 | 1383 (3 per item) |
 
 Only `T`, `Z` and the scrapbook match their documented list position for
 position. Where they do not, the divergence is the omission, insertion or
@@ -127,27 +133,44 @@ emptiness the shipped data forces:
 - **`D`, `L`**: `ScriptPointer` and the trailing `TabOrder` are not spelled.
 - **`W`**: the kind never appears in the member, so no field but the record
   letter has a measured kind; the documented names are still recorded.
-- **`B`** is genuinely underdetermined: positions 9–12 and 19 are empty in
-  every record; position 5 spells `0` in the records without colours and a
-  name in those with them, so neither its name nor its kind is established;
-  positions 6–8 and 13 measure numeric or name, 14 is the `Checked?` bool
-  and 15–18 are the four optional colours. Five positions per record remain
-  unknown (six in the 20-field record) and are retained and counted, never
-  guessed.
+- **`Mission_Spread_Item`**: sixteen documented positions, thirteen of them
+  with a kind the data measures. `ImageType` holds three two-letter codes
+  (`P0` ×245, `PP` ×167, `PJ` ×43, empty ×6), the quoted
+  `Left,Top,Right,Bottom` field holds four comma-separated numbers
+  (`0,0,0,0` in 436 of the 461 items) and `Zoom` holds single-letter codes
+  and `0`. No `FieldKind` describes a rectangle or a two-letter code, and
+  calling them names would claim a resource or UI name the bytes do not
+  spell, so those three keep their documented names and are counted unknown
+  — 461 × 3 = 1383 unknown fields.
+- **`B`** is genuinely underdetermined: position 19 occurs only in the one
+  20-field record and is spelled empty there, and positions 9–12 are empty
+  in 113 of the 119 records — the six `PX_B_*` records spell `0`, `<V5>`,
+  `0`, `0` in them, an identity and a kind no other record corroborates, so
+  the four stay unknown and are counted. Position 5 spells `0` in the
+  records without colours and a `!` or an `IDS_…` name in those with them,
+  so neither its name nor its kind is established; positions 6–8 and 13
+  measure numeric or name, 14 is the `Checked?` bool (only `0` and `1`, and
+  only in the 13 records whose position 13 takes only `0`, `1`, `2` — the
+  documented button-type enum), and 15–18 are the four optional colours.
+  Five positions per record remain unknown (six in the 20-field record) and
+  are retained and counted, never guessed.
 
 ## How evidence is marked
 
 Each `RecordFieldSpec` carries a `ClaimStatus`:
 
 - `Documented` — the documented list and the data agree position for
-  position (`T`, `Z`, the scrapbook, and every record's `ID`).
+  position (`T`, `Z`, thirteen of the scrapbook's sixteen positions, and
+  every record's `ID`).
 - `Inferred` — the documented list minus the omission the data forces, so
   the name and position follow but the position is shifted (`P`, `A`, `E`,
   `M`, `S`, `D`, `L`, `B`'s named positions).
 - `ObservedTool` — the kind is measured but the documented list does not
   name the field (`M` position 1, `B` positions 6–8 and 13).
-- `Unknown` — neither a name nor a kind is established (`B` positions 5,
-  9–12, 19; `S` position 11; every `W` field but the letter).
+- `Unknown` — the kind is not established, so no value of the position is
+  ever converted; the documented name may still stand (`B` positions 5,
+  9–12, 19; `S` position 11; every `W` field but the letter; the
+  scrapbook's `ImageType`, `Left,Top,Right,Bottom` and `Zoom`).
 
 A `FieldSpelling` (`Empty`, `Placeholder`, `Integer`, `Hex`, `Color`, `Text`)
 records what the bytes themselves show. It is a spelling, not a kind: a
@@ -156,14 +179,49 @@ for a value of any kind. Accounting counts a field as typed when its kind is
 established, whatever its spelling, and as unknown otherwise; nothing is
 converted.
 
+A declared kind must also be a kind the member's own bytes can spell. The
+retail test re-checks every field against that rule and pins the one
+exception the original contains: four `T` records write their colour without
+a valid `0x` prefix (`xff000000` once, `oxff1E283C` where a zero is meant
+three times), so those four values can never become colour constants while
+the position keeps the colour kind the other 293 records measure.
+
 ## Checks
 
 - `cargo fmt --all -- --check`
 - `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
 - `cargo test --workspace --locked`
 - `cargo test --workspace --locked -- accept_f12_i_ --include-ignored`
-  (5 tests: 2 in `cs_formats`, 3 in `cs_content`, one of them the retail
+  (6 tests: 2 in `cs_formats`, 4 in `cs_content`, one of them the retail
   read)
 - Mutation checks: setting `B` position 5's kind to an integer fails the
   traceability, accounting and retail tests; making the definition-key rule
-  match only `V` fails the classification test.
+  match only `V` fails the classification test; giving the scrapbook's
+  quoted rectangle a `Name` kind fails the traceability test's list of the
+  three positions no kind covers; declaring `T`'s colour an integer fails
+  the retail spelling check.
+
+## Reviewer corrections (2026-09-29, `mimo-1`)
+
+Four claims in the first draft did not survive the retail re-read, and were
+corrected here and in the code:
+
+1. "`Positions 9–12 and 19 are empty in every record`" was false: the six
+   `PX_B_*` records spell `0`, `<V5>`, `0`, `0` at 9–12. The four positions
+   stay unknown (an identity and kind no other record corroborates), but
+   the stated reason now matches the data.
+2. The scrapbook's `ImageType`, quoted rectangle and `Zoom` were declared
+   `Name`, which claims a resource or UI name the bytes do not spell (they
+   are `P0`/`PP`/`PJ`, `a,b,c,d` and single-letter codes). They are now
+   `FieldKind::Unknown` with their documented names kept: 13 typed and 3
+   unknown per item instead of 16 typed and 0 unknown.
+3. "No … prose … of the members' own comments is reproduced" was false:
+   the `note` fields paraphrase the comments' parentheticals. The boundary
+   is now stated exactly in "What is and is not committed".
+4. The test list said 5 tests; there are 6.
+
+Nothing else moved: the 822/186/636 split, the per-kind counts, the button's
+four shapes, the 596 button and 8 scrolling-text unknowns, every signed
+position (`P` X/Y in 2 records, `Z` Top/Bottom in all 4, scrapbook
+`Objective` in 4) and the member hashes all re-verified against the two
+decoded members.

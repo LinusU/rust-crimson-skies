@@ -22,9 +22,12 @@
 //! and is recorded as unknown in
 //! `docs/findings/2026-09-29-f12-i-record-kind-schemas.md`.
 //!
-//! Only field-name identifiers and structural notes are reproduced here;
-//! no line, prose or value of the original comments is committed (task #371
-//! finding, "What is and is not committed").
+//! What is transcribed is the field-name identifiers, the comments' bracket
+//! structure and their parenthetical notes in short paraphrase (and, where a
+//! comment gives a value enum, that enum): the field list *is* this task's
+//! deliverable. No comment line, no record line and no value of the original
+//! members is committed — `docs/findings/2026-09-29-f12-i-record-kind-schemas.md`,
+//! "What is and is not committed", states the boundary.
 
 /// One record kind of `ASSETS/LAYOUT.CSV`, identified by its record letter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

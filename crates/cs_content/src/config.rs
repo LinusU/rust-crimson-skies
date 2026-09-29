@@ -1504,8 +1504,10 @@ impl FieldKind {
 /// position for position, [`ClaimStatus::Inferred`] when the documented
 /// list leaves the field after the omissions the shipped data forces,
 /// [`ClaimStatus::ObservedTool`] when only the kind is measured (the name
-/// is not), and [`ClaimStatus::Unknown`] when neither a name nor a kind is
-/// established.
+/// is not), and [`ClaimStatus::Unknown`] when the kind is not established:
+/// the name may still stand, as it does for the sound object's documented
+/// fields and the scrapbook's three positions no kind covers, but no value
+/// of that position is ever converted.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RecordFieldSpec {
     /// The observed position, `0` being the record letter / first field.
@@ -1626,9 +1628,13 @@ const fn field(
 
 /// `B`: the shipped records have 15, 16, 19 or 20 fields and move the
 /// documented coordinates, so only the positions the data pins are named.
-/// Positions 9-12 and 19 are empty in every record; position 5 holds `0`
-/// in the records without colours and a `!` or an `IDS_…` name in those
-/// with them, so neither its name nor its kind is established.
+/// Position 19 occurs in the one twenty-field record and is spelled empty
+/// there; positions 9-12 are empty in 113 of the 119 records, and the six
+/// `PX_B_*` records spell an integer, a `<NAME>` placeholder and two
+/// integers in them. With no name and no kind that holds across the member,
+/// those four stay unknown and are counted. Position 5 holds `0` in the
+/// records without colours and a `!` or an `IDS_…` name in those with them,
+/// so neither its name nor its kind is established either.
 static BUTTON_SCHEMA: [RecordFieldSpec; 20] = [
     field(0, Some("ID"), NAME, DOCUMENTED),
     field(1, Some("ArtPath"), PATH, INFERRED),
@@ -1812,20 +1818,32 @@ static SOUND_OBJECT_SCHEMA: [RecordFieldSpec; 6] = [
 ];
 
 /// The `Mission_Spread_Item` schema: sixteen fields, exactly the documented
-/// list, all 461 items consistent, kinds measured.
+/// list, all 461 items consistent. Thirteen positions carry a kind the
+/// shipped data measures. Three do not: `ImageType` holds three two-letter
+/// codes (`P0`, `PJ`, `PP`), the quoted `Left,Top,Right,Bottom` field holds
+/// four comma-separated numbers and `Zoom` holds single-letter codes and
+/// `0`. No [`FieldKind`] describes any of those — `Name` would claim a
+/// resource or UI name the bytes do not spell — so the three stay
+/// [`FieldKind::Unknown`], keep their documented names and are counted by
+/// [`RecordView::accounting`].
 static SCRAPBOOK_SCHEMA: [RecordFieldSpec; 16] = [
     field(0, Some("Objective"), SIGNED_INTEGER, DOCUMENTED),
     field(1, Some("ResourceID"), NAME, DOCUMENTED),
     field(2, Some("ImageName"), PATH, DOCUMENTED),
-    field(3, Some("ImageType"), NAME, DOCUMENTED),
+    field(3, Some("ImageType"), UNRESOLVED, UNRESOLVED_EVIDENCE),
     field(4, Some("X"), INTEGER, DOCUMENTED),
     field(5, Some("Y"), INTEGER, DOCUMENTED),
     field(6, Some("Alpha"), INTEGER, DOCUMENTED),
     field(7, Some("Width"), INTEGER, DOCUMENTED),
     field(8, Some("Height"), INTEGER, DOCUMENTED),
     field(9, Some("DrawOrder"), INTEGER, DOCUMENTED),
-    field(10, Some("Left,Top,Right,Bottom"), NAME, DOCUMENTED),
-    field(11, Some("Zoom"), NAME, DOCUMENTED),
+    field(
+        10,
+        Some("Left,Top,Right,Bottom"),
+        UNRESOLVED,
+        UNRESOLVED_EVIDENCE,
+    ),
+    field(11, Some("Zoom"), UNRESOLVED, UNRESOLVED_EVIDENCE),
     field(12, Some("ZoomX"), INTEGER, DOCUMENTED),
     field(13, Some("ZoomY"), INTEGER, DOCUMENTED),
     field(14, Some("TitleResID"), NAME, DOCUMENTED),
@@ -3907,7 +3925,6 @@ J=0x1.8\r\n";
         );
     }
 
-
     /// Authored from the observed *shapes*: a twenty-field `B` button record
     /// — the widest the retail member has — carrying a number at the one
     /// position whose kind the documented list and the data do not establish,
@@ -3991,8 +4008,12 @@ J=0x1.8\r\n";
             );
         }
 
-        // The scrapbook schema is the documented Mission_Spread_Item list,
-        // sixteen contiguous positions, every one documented and known.
+        // The scrapbook schema is the documented Mission_Spread_Item list:
+        // sixteen contiguous positions, every one carrying the name the
+        // member's own comment documents. Thirteen positions also carry a
+        // kind the shipped data measures; the three whose values no
+        // `FieldKind` covers keep their documented names and record the
+        // missing kind as the weakest evidence.
         let scrapbook = scrapbook_schema();
         assert_eq!(scrapbook.len(), 16);
         assert_eq!(RecordSchema::Scrapbook.fields(), scrapbook);
@@ -4003,9 +4024,24 @@ J=0x1.8\r\n";
         for (index, spec) in scrapbook.iter().enumerate() {
             assert_eq!(spec.position, index);
             assert_eq!(spec.name, Some(documented_scrapbook_fields()[index].name));
-            assert_eq!(spec.evidence, ClaimStatus::Documented);
-            assert!(spec.kind.is_known());
+            if spec.kind.is_known() {
+                assert_eq!(spec.evidence, ClaimStatus::Documented);
+            } else {
+                assert_eq!(spec.evidence, ClaimStatus::Unknown);
+            }
         }
+        // ImageType's three two-letter codes, the quoted four-number
+        // rectangle and Zoom's single-letter codes: documented names, no
+        // established kind — three recorded unknowns out of sixteen.
+        assert_eq!(
+            scrapbook
+                .iter()
+                .filter(|spec| spec.kind == FieldKind::Unknown)
+                .map(|spec| spec.position)
+                .collect::<Vec<_>>(),
+            vec![3, 10, 11],
+            "the positions no `FieldKind` covers"
+        );
 
         // The two kinds whose documented list and data agree position for
         // position are transcribed whole: name and kind, in order.
@@ -4221,12 +4257,34 @@ SBROW=1,IDS_IMG,thumb.png,PNG,10,20,255,64,64,0,\"0,0,64,64\",1,1,1,TITLE,TEXT\r
             .expect("an observed keyed list member reads")
     }
 
+    /// Whether the bytes of one field can carry the kind its schema
+    /// declares. A `<NAME>` placeholder and an empty field fit every kind —
+    /// the F12-E pass resolves the one and the shipped data leaves the other
+    /// empty — and a `0x…` literal is an integer notation wherever an
+    /// integer is declared. Everything else must look like the kind it is
+    /// declared to be, so a declared kind the bytes never spell is caught.
+    fn spells_kind(kind: FieldKind, spelling: FieldSpelling) -> bool {
+        use FieldSpelling::*;
+        match kind {
+            FieldKind::Unknown => true,
+            FieldKind::Integer { .. } => matches!(spelling, Integer | Hex | Placeholder | Empty),
+            FieldKind::Bool => matches!(spelling, Integer | Placeholder | Empty),
+            FieldKind::Color => matches!(spelling, Color | Placeholder | Empty),
+            FieldKind::Name | FieldKind::Path => {
+                matches!(spelling, Text | Integer | Placeholder | Empty)
+            }
+        }
+    }
+
     /// Retail: the shipped `ASSETS/LAYOUT.CSV` has exactly the 636 object
     /// records the survey measured — one per record letter but the absent
     /// sound object — every observed field position covered by its schema,
     /// and the fully-documented kinds type every field while the button's
     /// underdetermined positions are retained and counted. The shipped
-    /// `ASSETS/SCRAPBOOK.CSV` has 461 sixteen-field items, all fully typed.
+    /// `ASSETS/SCRAPBOOK.CSV` has 461 sixteen-field items, of whose
+    /// positions thirteen are typed and three are recorded unknowns. Every
+    /// declared kind is also what the member's own bytes spell, bar the
+    /// four colour fields the original misspells.
     #[test]
     #[ignore = "requires CS_GAME_DIR"]
     fn accept_f12_i_retail_record_kinds_are_typed_and_unknowns_are_counted() {
@@ -4240,6 +4298,7 @@ SBROW=1,IDS_IMG,thumb.png,PNG,10,20,255,64,64,0,\"0,0,64,64\",1,1,1,TITLE,TEXT\r
         let mut per_kind: HashMap<RecordKind, usize> = HashMap::new();
         let mut button_shapes: HashMap<usize, usize> = HashMap::new();
         let mut unknown_total: HashMap<RecordKind, usize> = HashMap::new();
+        let mut unspellable: HashMap<(&str, usize), usize> = HashMap::new();
         let mut classified = 0usize;
         for entry in layout.entries() {
             let Some(view) = RecordView::for_entry(entry) else {
@@ -4261,6 +4320,13 @@ SBROW=1,IDS_IMG,thumb.png,PNG,10,20,255,64,64,0,\"0,0,64,64\",1,1,1,TITLE,TEXT\r
                 kind.documented_name()
             );
             *unknown_total.entry(kind).or_default() += accounting.unknown;
+            for field in view.fields() {
+                if !spells_kind(field.kind(), field.spelling) {
+                    *unspellable
+                        .entry((view.schema().label(), field.position))
+                        .or_default() += 1;
+                }
+            }
         }
         assert_eq!(classified, 636, "the shipped member's object records");
         assert_eq!(per_kind.len(), 10, "the sound object is absent");
@@ -4305,10 +4371,32 @@ SBROW=1,IDS_IMG,thumb.png,PNG,10,20,255,64,64,0,\"0,0,64,64\",1,1,1,TITLE,TEXT\r
             assert_eq!(view.schema(), RecordSchema::Scrapbook);
             assert_eq!(view.fields().len(), 16);
             let accounting = view.accounting();
-            assert_eq!(accounting.typed, 16, "the list is fully documented");
-            assert_eq!(accounting.unknown, 0, "the list is fully documented");
+            assert_eq!(accounting.fields, 16);
+            // Thirteen positions type; `ImageType`, the quoted rectangle and
+            // `Zoom` keep their documented names and stay recorded unknowns.
+            assert_eq!(accounting.typed, 13, "the kind the data measures");
+            assert_eq!(accounting.unknown, 3, "the kind nothing establishes");
+            for field in view.fields() {
+                if !spells_kind(field.kind(), field.spelling) {
+                    *unspellable
+                        .entry((view.schema().label(), field.position))
+                        .or_default() += 1;
+                }
+            }
             items += 1;
         }
         assert_eq!(items, 461);
+
+        // Every declared kind is a kind the member's own bytes spell, with
+        // one exception the original really contains: four `T` records write
+        // a colour without a valid `0x` prefix (`xff000000`, and
+        // `oxff1E283C` where a zero is meant), so those four values can
+        // never become colour constants while the position keeps the colour
+        // kind the other 293 records measure.
+        assert_eq!(
+            unspellable,
+            HashMap::from([(("Text", 7usize), 4usize)]),
+            "a declared kind the shipped bytes do not spell"
+        );
     }
 }
