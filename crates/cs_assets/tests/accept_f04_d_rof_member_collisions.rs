@@ -553,7 +553,12 @@ fn shared_keys(pair: &Pair) -> BTreeSet<String> {
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_f04_d_rof_member_collisions_retail_patch_over_base_until_measured() {
-    let Retail { pair, report, .. } = retail();
+    let Retail {
+        install_sha256,
+        pair,
+        report,
+        ..
+    } = retail();
     assert_eq!(report.precedence_status, ClaimStatus::Designed);
     assert!(report.contexts.len() >= 3);
     let base_id = pair.base.mount_id().clone();
@@ -566,7 +571,30 @@ fn accept_f04_d_rof_member_collisions_retail_patch_over_base_until_measured() {
         "crimptch.rof overlays at least one crimson.rof member"
     );
 
+    // The shape this task measured and recorded in
+    // `docs/findings/2026-09-29-t345-crimptch-rof-member-collisions.md`.
+    // It is pinned so a reader change that mounts less than the container
+    // holds fails here instead of quietly invalidating those findings; a
+    // different installation is a different measurement, and the message
+    // names the fingerprint it was taken from.
+    assert_eq!(
+        pair.base.member_count(),
+        846,
+        "installation {install_sha256}"
+    );
+    assert_eq!(
+        pair.patch.member_count(),
+        1,
+        "installation {install_sha256}"
+    );
+    assert_eq!(
+        shared.iter().map(String::as_str).collect::<Vec<_>>(),
+        ["assets/scripts/airframe.script"],
+        "installation {install_sha256}"
+    );
+
     let mut seen = BTreeSet::new();
+    let mut resolved_by_path = 0usize;
     for comparison in &report.comparisons {
         let members = &comparison.collision.members;
         for (index, member) in members.iter().enumerate() {
@@ -633,9 +661,14 @@ fn accept_f04_d_rof_member_collisions_retail_patch_over_base_until_measured() {
                 "{}",
                 comparison.collision.file_name
             );
+            resolved_by_path += 1;
         }
     }
     assert_eq!(seen, shared, "the report covers every shared key");
+    assert_eq!(
+        resolved_by_path, 63,
+        "the file-name collisions that only the path decides, installation {install_sha256}"
+    );
 
     // Decoded bytes are measured next to the stored digest for the
     // findings; a stored-identical pair must decode identically.
@@ -647,6 +680,11 @@ fn accept_f04_d_rof_member_collisions_retail_patch_over_base_until_measured() {
             == pair.patch.member(&spelling).map(|m| m.sha256)
         {
             assert_eq!(base.data, patch.data);
+        } else {
+            // The findings record this one as a real content change, not a
+            // recompression. If the patch ever decoded to the base's bytes
+            // the recorded reading would be wrong, so it is pinned here.
+            assert_ne!(base.data, patch.data, "{logical} decodes differently");
         }
     }
 }
@@ -655,8 +693,10 @@ fn accept_f04_d_rof_member_collisions_retail_patch_over_base_until_measured() {
 
 /// Evidence-report harness for task #345 (`docs/contracts/CLI-EVIDENCE.md`,
 /// schema `schemas/evidence.schema.json`). Not an acceptance test: it fails
-/// loudly when its inputs are missing. Run from the workspace root, after
-/// the acceptance suite, exactly as:
+/// loudly when its inputs are missing. `CS_EVIDENCE_REVIEWER` names the agent
+/// that ran it and is recorded in the report; it is not baked in, because the
+/// reviewer regenerates the report on the rebased commit. Run from the
+/// workspace root, after the acceptance suite, exactly as:
 ///
 /// 1. ```sh
 ///    mkdir -p private/evidence/T345
@@ -669,6 +709,7 @@ fn accept_f04_d_rof_member_collisions_retail_patch_over_base_until_measured() {
 ///    CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') \
 ///    CS_EVIDENCE_ARGV="cargo test --workspace --locked -- accept_f04_d_rof_member_collisions_ --include-ignored" \
 ///    CS_EVIDENCE_EXIT_CODE=<status from step 1> \
+///    CS_EVIDENCE_REVIEWER="<agent running this harness>" \
 ///      cargo test --locked -p cs_assets --test accept_f04_d_rof_member_collisions -- evidence_report_t345 --ignored
 ///    ```
 /// 3. ```sh
@@ -683,7 +724,7 @@ fn accept_f04_d_rof_member_collisions_retail_patch_over_base_until_measured() {
 /// (`rof-member-collisions.json`: names, lengths and hashes only),
 /// `rustc --version` and `Cargo.lock`.
 #[test]
-#[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_GAME_DIR"]
+#[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_EVIDENCE_REVIEWER, CS_GAME_DIR"]
 fn evidence_report_t345_writes_the_acceptance_report() {
     let evidence_dir = workspace_path(&env_var("CS_EVIDENCE_DIR"));
     let candidate_tree = env_var("CS_CANDIDATE_TREE");
@@ -695,6 +736,9 @@ fn evidence_report_t345_writes_the_acceptance_report() {
     let exit_code: i32 = env_var("CS_EVIDENCE_EXIT_CODE")
         .parse()
         .expect("CS_EVIDENCE_EXIT_CODE must be the exit status of the acceptance run");
+    // Who ran the harness. The report is regenerated by the reviewer on the
+    // rebased commit, so the name cannot be baked into this file.
+    let reviewer = env_var("CS_EVIDENCE_REVIEWER");
     assert_eq!(
         candidate_tree,
         git(&["rev-parse", "HEAD^{tree}"]),
@@ -795,10 +839,7 @@ fn evidence_report_t345_writes_the_acceptance_report() {
             ))
             .collect::<Vec<_>>()
             .join(", "),
-        jstr(
-            "claude-1 (implementing agent, self-check; the Rally reviewer regenerates this \
-             report on the rebased commit)"
-        ),
+        jstr(&reviewer),
         jstr(
             "acceptance suite run locally with the retail capability; this harness derives \
              every field from the recorded log, production discovery of $CS_GAME_DIR, the \

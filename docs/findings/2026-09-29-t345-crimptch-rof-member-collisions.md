@@ -103,16 +103,17 @@ the two archives itself.
 | `accept_f04_d_rof_member_collisions_identical_digest_resolves` | same key, identical bytes → resolves; verdict `shadowed_by_identical_bytes` |
 | `accept_f04_d_rof_member_collisions_equal_content_stored_differently_stays_blocked` | plain vs hand-authored zlib stored-block stream: equal decoded bytes, different stored digests → blocked |
 | `accept_f04_d_rof_member_collisions_other_directories_are_distinct_by_path` | same name, other directory → `distinct_by_path` |
-| `accept_f04_d_rof_member_collisions_retail_patch_over_base_until_measured` | the retail measurement above; shared keys computed independently from both sources' member lists |
+| `accept_f04_d_rof_member_collisions_retail_patch_over_base_until_measured` | the retail measurement above; shared keys computed independently from both sources' member lists, and every count this file records (846 / 1 members, the one shared key, 63 path-only collisions, decoded bytes differing) is asserted so a reader that mounts less cannot silently invalidate them |
 
 Each probe changed one production line, was run, and was then restored.
 Afterwards `grep -rn "MUTATION PROBE" crates/` returns nothing:
 
 | Probe | Failing tests |
 | --- | --- |
-| `resolve_blocking_unmeasured` never blocks (`if true \|\| shadowed.is_empty()`) | `different_bytes_are_blocked`, `equal_content_stored_differently_stays_blocked`, `retail_patch_over_base_until_measured` |
+| `resolve_blocking_unmeasured` never blocks (`if true \|\| …`) | `different_bytes_are_blocked`, `equal_content_stored_differently_stays_blocked`, `retail_patch_over_base_until_measured` |
 | only `patch`-class mounts can be shadowed | `different_bytes_are_blocked`, `equal_content_stored_differently_stays_blocked` |
 | collision report never sees same bytes (`same_bytes: false`) | `identical_digest_resolves` |
+| `mount_rof_into` drops a member of each archive | `retail_patch_over_base_until_measured` (on the shared key, or on the pinned member counts for a member that is not the shared key) |
 
 ## Commands
 
@@ -124,6 +125,48 @@ Afterwards `grep -rn "MUTATION PROBE" crates/` returns nothing:
 | `cargo test --workspace --locked -- accept_f04_d_rof_member_collisions_ --include-ignored` | 0 (5 passed) |
 | same, without `CS_GAME_DIR` (retail test only) | 101 (panics: `CS_GAME_DIR must name…`) |
 | evidence harness + `python3 tools/validate_evidence.py private/evidence/T345/acceptance.json --artifact-root private/evidence/T345 --require-pass` | 0 |
+
+## Review (bunny-1, reviewing agent, fresh context)
+
+Reviewer: `bunny-1`, a fresh session with no context from the implementation
+(implementer: `claude-1`). No production code was changed by either of us.
+
+What the review changed, and why:
+
+1. **The retail test now asserts the numbers this file records.** It
+   checked only `member_count() > 0` and `report.contexts.len() >= 3`, so a
+   reader change that mounted, say, 77 of the 846 members would still have
+   passed and this file would have kept claiming 846. The test now pins
+   `846` / `1` members, the exact shared key set, the count of collisions
+   only the path decides (63), and that the shared member's two copies
+   decode to different bytes. Each failure message names the installation
+   fingerprint, so a different retail build reads as a different
+   measurement rather than a defect.
+2. **The evidence harness names who ran it.** `review.identity` was a
+   literal naming the implementing agent, which would have been wrong in the
+   copy the reviewer regenerates on the rebased commit. It now comes from
+   `CS_EVIDENCE_REVIEWER`, which the harness requires, and the procedure in
+   its doc comment says so.
+
+Reviewer probes, each applied, observed and reverted (`git status` clean
+afterwards, and `crates/cs_assets/src/` byte-identical to the branch head):
+
+| Probe | Result |
+| --- | --- |
+| `resolve_blocking_unmeasured` never blocks | 3 tests fail (independently reproduced) |
+| only `patch`-class mounts can be shadowed | 3 tests fail (independently reproduced) |
+| `same_bytes: false` in the collision report | `identical_digest_resolves` fails |
+| `mount_rof_into` skips the shared member | `retail_patch_over_base_until_measured` fails |
+| `mount_rof_into` skips an unrelated member | caught by the new pinned member count (846 → 77) |
+
+Verified that the recorded measurements reproduce: the regenerated
+`rof-member-collisions.json` reports the same 846 / 1 members, the one
+shared key `assets/scripts/airframe.script` with 18 blocked lookups, and 63
+`distinct_by_path` collisions as written above.
+
+Still unmeasured after review: which archive the original engine reads first
+(owner-gated `human_play`, F04-D follow-up 1). Nothing here changes that, and
+the claim stays `implemented`.
 
 ## Sources
 
