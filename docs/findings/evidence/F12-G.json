@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
   "task_id": "F12-G (Rally #368)",
-  "candidate_tree": "8c10cd0b9d85a339f9eda0c474ec42c40a13084b",
+  "candidate_tree": "c54a8d8516d8e3986fe749db27b571669a8d30a2",
   "engine": {
     "rust": "rustc 1.98.1 (48a229cea 2026-09-01)",
     "bevy": "Cargo.lock: 0.19.1",
     "avian": "Cargo.lock: avian3d 0.7.0"
   },
-  "created_at": "2026-09-29T11:57:47Z",
+  "created_at": "2026-09-29T12:10:36Z",
   "command": {
     "argv": [
       "cargo",
@@ -69,8 +69,8 @@
       ]
     },
     {
-      "id": "f12_g_has_no_task_test",
-      "status": "pass",
+      "id": "f12_g_selection_ran_at_least_one_test",
+      "status": "fail",
       "evidence": [
         "accept-f12-g.log"
       ]
@@ -115,17 +115,17 @@
   "artifacts": [
     {
       "path": "cargo-test.log",
-      "sha256": "1b324c6c0e5b47847f0772e5093762ae7112b1b7b5e30a80293a297b5a12bc20",
+      "sha256": "bb796850a1de4a7f6379925f29cf8add18f5d3e8189b6e92ac0ea48cf3035de7",
       "kind": "test log"
     },
     {
       "path": "accept-f12-b.log",
-      "sha256": "9dfbbb4e17314bbb87909db79f756d025081c53644e4db575309ce5c6c357bb1",
+      "sha256": "398a7d5f848ca78b964373fbfba93bdd0aca231db1d997cf199c7d87c4db17b3",
       "kind": "test log"
     },
     {
       "path": "accept-f12-g.log",
-      "sha256": "f5b804a22f68f3b8fed31fe142e73176f41e3a10b5d9f4bed60862109090d706",
+      "sha256": "9f23f7a41412d40a0c2782417adb9d69e1dcbf5028fc2f1845912a5f50679030",
       "kind": "test log"
     },
     {
@@ -164,8 +164,8 @@
     "Eighteen of langui.dll's 101 blocks (288 units) are addressed by neither header; not classified."
   ],
   "review": {
-    "identity": "bunny-2 (implementer); not yet reviewed",
-    "method": "Full workspace suite plus the accept_f12_b_ selection with --include-ignored, production cs-inspect inventory/rof/config runs, and a read-only PE resource walk run twice with byte-identical output. No accept_f12_g_ test exists: the task's owner paths are docs/findings/ alone and it forbids a reader change, so a regression test would have to be filed in a crate. See the finding's Tests section."
+    "identity": "Implementer: bunny-2 (Space Bunny Free). Reviewer: bunny-2 again, in a fresh session, so this is the same agent instance and is NOT independent evidence.",
+    "method": "Implementer: full workspace suite plus the accept_f12_b_ selection with --include-ignored, production cs-inspect inventory/rof/config runs, and a read-only PE resource walk run twice with byte-identical output. Reviewer: re-derived the whole measurement with an independently written PE/COFF and string-table walk and compared it number by number (all measurements reproduced; the probe re-ran byte-identically), then corrected two claims in the finding (a permutation test that is invariant rather than significant, and an overclaim about re-deriving every number from the four production commands) and regenerated this report on the corrected tree. accept_f12_g_ still resolves to zero tests: the task's owner path is docs/findings/ alone, so the prefix rule cannot be satisfied inside its scope and that needs an owner decision. See the finding's Tests and Review sections."
   },
   "claim": "implemented"
 }
