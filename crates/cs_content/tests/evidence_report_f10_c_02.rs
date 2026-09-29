@@ -291,34 +291,69 @@ fn evidence_report_f10_c_02_writes_the_acceptance_report() {
         // The naming difference, on real data, with a handful of examples: the
         // claim is *about* names, so the artifact carries a few identifiers. No
         // pixels, no coordinates, no file bytes.
+        //
+        // The archive side of every pair is the archive's **own stored spelling**,
+        // read out of the catalog's entry list, never a spelling this harness
+        // derived. That is what makes the examples worth carrying: a pair such
+        // as `{"container": "Sky1.tif", "archive": "sky1"}` shows both
+        // differences the finding names — the extension and the case — in one
+        // line, which a pair built from the container's own stem could not.
+        // Extension-only and case-and-extension pairs are both kept, so the
+        // artifact cannot be read as "dropping the extension would be enough".
         let examples: Vec<String> = match &audit {
             None => Vec::new(),
-            Some((audit, session, catalog, key)) => {
-                let mut out = Vec::new();
+            Some((audit, _session, catalog, key)) => {
+                let stored: Vec<String> = catalog
+                    .archives()
+                    .filter(|archive| archive.key() == key)
+                    .flat_map(|archive| archive.ids().map(|id| id.name.clone()))
+                    .collect();
+                let mut exact_extension: Vec<String> = Vec::new();
+                let mut exact_case: Vec<String> = Vec::new();
                 for row in &audit.rows {
                     let MaterialState::MissingTexture { name, .. } = &row.state else {
                         continue;
                     };
                     let stem = name.rsplit_once('.').map(|(stem, _)| stem).unwrap_or(name);
-                    let exact = cs_content::textures::TextureRef::new(key.clone(), name);
-                    if catalog.resolve(session, &exact).is_ok() {
+                    let folded = stem.to_ascii_lowercase();
+                    // The archive's own spelling, matched case-insensitively by
+                    // the harness **only to find it**: nothing downstream ever
+                    // resolves a name this way.
+                    let Some(spelling) = stored
+                        .iter()
+                        .find(|candidate| candidate.to_ascii_lowercase() == folded)
+                    else {
                         continue;
+                    };
+                    let pair = format!(
+                        "{{\"container\": {}, \"archive\": {}}}",
+                        jstr(name),
+                        jstr(spelling)
+                    );
+                    if spelling == stem {
+                        if exact_extension.len() < 2 {
+                            exact_extension.push(pair);
+                        }
+                    } else if *spelling == folded && exact_case.len() < 2 {
+                        // The case differs too, which is the difference that
+                        // rules out "just drop the extension".
+                        exact_case.push(pair);
                     }
-                    let loose = cs_content::textures::TextureRef::new(key.clone(), stem);
-                    if catalog.resolve(session, &loose).is_ok() {
-                        out.push(format!(
-                            "{{\"container\": {}, \"archive\": {}}}",
-                            jstr(name),
-                            jstr(stem)
-                        ));
-                    }
-                    if out.len() == 4 {
+                    if exact_extension.len() == 2 && exact_case.len() == 2 {
                         break;
                     }
                 }
+                let mut out = exact_case;
+                out.extend(exact_extension);
                 out
             }
         };
+        assert!(
+            examples
+                .iter()
+                .any(|pair| pair.contains("Sky1.tif") || pair.contains("sky1")),
+            "the examples must include a case difference: {examples:?}"
+        );
 
         corpus.push(CorpusRow {
             relative: relative.to_owned(),
@@ -468,12 +503,19 @@ fn evidence_report_f10_c_02_writes_the_acceptance_report() {
             .collect::<Vec<_>>()
             .join(", "),
         jstr(
-            "bunny-2 implemented this task; its own review is not independent evidence. No \
-             separate reviewer has looked at the material-record layout or at the evidence \
-             machinery, so the format and evidence claims here have had no independent check. \
-             Per the owner directive, a different agent instance with a fresh context should \
-             review the format semantics and the evidence machinery, and no agent review \
-             replaces the owner's approval.",
+            "Implemented by bunny-2; reviewed by bunny-2 in a later session whose context was \
+             fresh — it had not seen the implementation and re-derived the layout claims from \
+             the installation with a probe sharing no code with the Rust reader. The same agent \
+             identity on both sides, so this is **not** independent evidence in the owner \
+             directive's sense, and no agent review replaces the owner's approval. The review \
+             reproduced the finding's per-archive naming table, the material section boundary and \
+             the zero-finding result over all nine archives, and corrected three numbers it could \
+             not reproduce: a self-contradictory \"2510 of 2271\" pair in the finding's deferred \
+             item 1, a \"5 of 2271\" pair in this report's method, and a \"41 full name fields in \
+             planes.zbd\" code comment that measures 5. The format semantics — the name \
+             encoding, the 1000-slot array, the two link-word rules — and this evidence \
+             machinery have still had no check by a different agent, which the owner directive \
+             says they should get.",
         ),
         jstr(
             "acceptance suite run locally with the `retail` capability. This harness derives every \
@@ -488,10 +530,17 @@ fn evidence_report_f10_c_02_writes_the_acceptance_report() {
              its resolving task and what it gates\" — the durable, versioned record; nothing was \
              hidden to pass the validator. The largest open item is the name-matching rule \
              between a GameZ container and a texture archive, where the task's exact-name rule \
-             resolves 5 of 2271 distinct world-archive material names; material-corpus.json \
-             carries a handful of stored names as `naming_examples` because the claim is about \
-             names, and nothing else derived from the installation (no pixels, no coordinates, no \
-             file bytes). Validated with tools/validate_evidence.py --require-pass. The suite is \
+             resolves 10 of the 3543 audited material rows — 10 of the 3521 distinct names \
+             counted once per world, or 5 of the 1328 distinct names over the union of the eight \
+             worlds' name sets, because C2's five and C3's five are the same five names; an \
+             extension- and case-insensitive match would resolve 3500 of those 3521. Every one \
+             of those figures was re-measured by the reviewing agent from the installation with \
+             an independent probe, and material-corpus.json carries a handful of stored names as \
+             `naming_examples` because the claim is about names — each pair giving the \
+             container's spelling beside the archive's **own stored** spelling, with at least one \
+             pair differing in case as well as in extension, and nothing else derived from the \
+             installation (no pixels, no coordinates, no file bytes). Validated with \
+             tools/validate_evidence.py --require-pass. The suite is \
              19 task tests: 17 synthetic and 2 retail, and the two retail tests fail loudly rather \
              than skipping when CS_GAME_DIR is absent.",
         ),

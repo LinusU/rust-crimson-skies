@@ -186,8 +186,9 @@ pub struct GameZTextureName {
     pub suffix: Option<String>,
     /// How the field was encoded.
     pub encoding: TextureNameEncoding,
-    /// `unk00`: the reference's `Ptr`. Null when [`Self::field32`] is
-    /// [`TEXTURE_STATE_USED`], non-null otherwise, and never followed.
+    /// `unk00`: the reference's `Ptr`. Null when [`Self::field32`] is `2`, the
+    /// value the reference names "in use", non-null otherwise, and never
+    /// followed.
     pub field00: u32,
     /// `used`: `2` when the texture is in use, `1` when it is being processed.
     /// Not interpreted here beyond the reference's own two-value assertion.
@@ -388,10 +389,14 @@ pub enum MaterialFinding {
     MaterialField {
         /// Index in the material table.
         material: u32,
-        /// The field, named as [`RawMaterialRecord`] names it, or `"always"` /
-        /// `"free"` for the two flag bits the reference asserts on their own.
+        /// The field, named as [`RawMaterialRecord`] names it, or `"always"`,
+        /// `"free"`, `"unknown"` or `"cycled"` for the flag bits the reference
+        /// asserts on their own.
         field: &'static str,
-        /// The value stored, as it is stored: an `f32` field is its bit pattern.
+        /// The value stored, as it is stored: an `f32` field is its bit pattern,
+        /// and a flag-bit field is the record's **whole** stored flags byte, so
+        /// the finding names the bits that are actually set rather than a
+        /// fabricated zero.
         found: u64,
     },
     /// A material slot's two link words are not the pair the reference expects
@@ -1380,14 +1385,14 @@ fn check_material_fields(
         index,
         "always",
         record.flags & MATERIAL_FLAG_ALWAYS == 0,
-        0,
+        u64::from(record.flags),
     );
     material_field(
         findings,
         index,
         "free",
         record.flags & MATERIAL_FLAG_FREE != 0,
-        0,
+        u64::from(record.flags),
     );
     material_field(
         findings,
@@ -1453,13 +1458,19 @@ fn check_material_fields(
             record.texture_index != 0,
             u64::from(record.texture_index),
         );
-        material_field(findings, index, "cycled", record.is_cycled(), 0);
+        material_field(
+            findings,
+            index,
+            "cycled",
+            record.is_cycled(),
+            u64::from(record.flags),
+        );
         material_field(
             findings,
             index,
             "unknown",
             record.flags & MATERIAL_FLAG_UNKNOWN != 0,
-            0,
+            u64::from(record.flags),
         );
     }
 }

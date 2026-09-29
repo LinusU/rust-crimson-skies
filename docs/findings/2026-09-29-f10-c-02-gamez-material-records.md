@@ -155,11 +155,13 @@ corpus forces and that a reader must not "fix":
   extractor convention and this reader does **not** reproduce it, so the
   duplicate stays visible (`GameZMaterials::duplicate_names`).
 
-The extension's case is stored, not folded: the corpus contains `tif`, `TIF`,
-`jpg` and a truncated `TI`, plus 95 names whose field is full. `from_ascii`
-refuses only a byte with the high bit set; no stored name in the corpus has one,
-and control bytes below 0x80 are accepted by the reference, so this reader
-accepts them too and stores the name as `str_from_c_sized` would return it.
+The extension's case is stored, not folded: over the 1 476 distinct names the
+nine containers hold, the stored extension is `tif` 1 410 times, `TIF` 42, a
+truncated `t` 8, `ti` 5, an empty run 3, no extension at all 6, `jpg` once and
+`TI` once (`sacredtrust_logo1.TI`). `from_ascii` refuses only a byte with the
+high bit set; no stored name in the corpus has one, and control bytes below 0x80
+are accepted by the reference, so this reader accepts them too and stores the
+name as `str_from_c_sized` would return it.
 
 ### Material section header — 16 bytes, `materials/mod.rs:48-54`
 
@@ -417,8 +419,8 @@ installation it produces a large number of `missing_texture` rows. The reason is
 measurable and is **not** a defect in the audit:
 
 - a GameZ container spells a texture with an extension and in mixed case —
-  `Sky1.tif`, `Space.tif`, `A.tif`…`Z.tif`, `Pass_Sparks.tif`,
-  `sacredtruss_logo1.TI`;
+  `Sky1.tif`, `SPACE.tif`, `A.tif`…`Z.tif`, `pass_Sparks.tif`,
+  `sacredtrust_logo1.TI`;
 - the world's own ZBD texture archive stores the same texture **without an
   extension and in lower case** — `sky1`, `space`, `a`…`z`, `pass_sparks`,
   `ilsafas`. The ZBD package's name field is a plain NUL-padded 32-byte ASCII
@@ -437,6 +439,16 @@ material of a world archive uses:
 | `ZBD/C3` | 443 | 5 | 399 | 434 | 4 |
 | `ZBD/C4` | 635 | 0 | 598 | 632 | 3 |
 | `ZBD/C5` | 563 | 0 | 526 | 560 | 3 |
+| **sum** | **3 521** | **10** | **3 208** | **3 426** | **21** |
+
+The two middle columns count names that do **not** match exactly and match only
+under that relaxation, so each excludes the exact column. The three counting
+columns are therefore a partition of the 3 521 per-world distinct names once the
+exact column is added back: **10** match exactly, **3 208** match after the
+extension is dropped, a further **282** match only after the case is folded as
+well (3 208 + 282 + 10 = 3 500), and **21** match nothing. Over the union of the
+eight worlds' name sets the same corpus has **1 328** distinct names, of which
+**1 316** match under the relaxed rule and **5** match exactly.
 
 The five exact matches in `C2` and `C3` are the handful of names the container
 stores with no extension at all (`lflare1`, `lightmap`, …), which are already
@@ -449,7 +461,9 @@ So: **a case-insensitive, extension-insensitive match would resolve 549 of 551
 of `C1`'s names, and the exact rule the task specifies resolves none of
 `C1`'s.** Over the eight world archives the audit produces **3 543** rows and
 **10** of them resolve — the ten are `C2`'s and `C3`'s five extension-less
-lower-case names each. The other **3 481** are `missing_texture`.
+lower-case names each. The other **3 481** are `missing_texture`. Both the
+per-world and the union figures are given above so that neither can be quoted
+without the other.
 
 The task's rule is not relaxed here to make that number smaller, and no alias
 record is invented. The retail acceptance test asserts the rule on real data:
@@ -633,7 +647,7 @@ is established from the pinned reference and the material section ends exactly o
 
 | # | Deferred item | Affected content | Resolving task | Gates |
 | --- | --- | --- | --- | --- |
-| 1 | **The name-matching rule between a GameZ container and a texture archive.** No case folding, no extension stripping, no alias, no second archive, as the task specifies. On the installation that resolves **10 of the 3 543** audited material rows; an extension- and case-insensitive match would resolve 2 510 of the 2 271 distinct world-archive names, i.e. every one but the handful that are absent under any spelling | every textured material of all eight world archives, and the 221 `planes.zbd` names | **F10-C.03** (#366) for the upload path's binding; the **owner** for the rule itself, which is a claim about what the original engine did | any claim that a rendered surface shows the *right* texture; the F10-C upload path may not substitute |
+| 1 | **The name-matching rule between a GameZ container and a texture archive.** No case folding, no extension stripping, no alias, no second archive, as the task specifies. On the installation that resolves **10 of the 3 543** audited material rows — 10 of the 3 521 distinct names counted once per world, or 5 of the 1 328 distinct names over the union of the eight worlds' name sets, because `C2`'s five and `C3`'s five are the same five names. An extension- and case-insensitive match would resolve **3 500 of the 3 521**, i.e. every one but the 21 that are absent under any spelling | every textured material of all eight world archives, and the 221 `planes.zbd` names | **F10-C.03** (#366) for the upload path's binding; the **owner** for the rule itself, which is a claim about what the original engine did | any claim that a rendered surface shows the *right* texture; the F10-C upload path may not substitute |
 | 2 | **Names truncated by the 20-byte field** (`blo_fusalagebottom.ti`, `tracer_armorpierce.t`, `buildingspotlighted.`) and the seven names absent from every world archive | 3 truncated names in every world, plus `pir_spinner.tif`, `snow16x16.tif`, `c1c.jpg`, `cloud1.tif`, `cloud2.tif`, `canopycorner.tif`, `barngrill.tif` | **F10-D** (#46, retail) for the private corpus; the **owner** for whether the original engine matched by prefix | any claim that the audited texture set is complete |
 | 3 | **Which archive a container resolves against.** `planes.zbd` is a shared airframe library with no world; its names are absent from `rimage.zbd` (the UI set) and mostly present in a world's own `texture.zbd` | all 954 materials of `planes.zbd`, i.e. every airframe | **F10-C.03** (#366) and the consumer that knows the world | any claim about airframe materials; the audit's `archive` is the caller's for exactly this reason |
 | 4 | **Which of `texture.zbd`, `rtexture2/4/6/8/11/12/14/15.zbd` and `rimage.zbd` a mission uses, and when the resolution tier is chosen.** All the tiers of one world store the same 881 names, so the choice is invisible to a name lookup | every world, every tier | not scheduled; F08-C records the same open question | any claim that a mission's texture set is the right one |
@@ -641,8 +655,50 @@ is established from the pinned reference and the material section ends exactly o
 | 6 | **The link words, the `unk` fields, the never-followed pointers and the cycle frames' meaning** | every material and cycle record of all nine archives | not scheduled | nothing currently — they are stored raw and no claim rests on them |
 | 7 | **Original-run behaviour of any kind** | the whole material and texture dependency chain | the owner (`human_play` / `human_review`) | every `verified_original` and `release_approved` claim; this report's layout class is `ObservedTool` |
 
-## What F10-C.03 and F10-D need from this
+## Review note (bunny-2, review of #365)
 
+The reviewer re-measured the naming table of § "The exact-name rule" from the
+installation with a throwaway Python probe written against the worksheet, sharing
+no code with the Rust reader, and reproduced **all eight rows and all five
+columns** of it. Two numbers that the probe could not reproduce were corrected:
+
+- the first draft of deferred item 1 claimed a relaxed match "would resolve
+  2 510 of the 2 271 distinct world-archive names", which is impossible as
+  written (more resolved than total). Measured: **3 500 of 3 521** distinct
+  names summed per world, or **1 316 of 1 328** over the union of the eight
+  worlds' name sets;
+- the committed evidence report's `review.method` said the exact rule "resolves
+  5 of 2271 distinct world-archive material names". The `5` is right only over
+  the union of the eight worlds' name sets; per world it is 10, and the
+  denominator is 3 521, not 2 271. Both readings are now stated side by side so
+  neither can be quoted alone.
+
+The per-world exact-match total of 10 and the `1 328`/`5` union total are both
+real and measure different things, which is why the two figures survived the
+original writing. A separate code comment in
+`crates/cs_formats/tests/gamez/materials.rs` claimed 41 completely full name
+fields in `planes.zbd`; the probe counts **5** there and 95 over the nine
+archives, which is the figure the finding and the reader's own doc already gave.
+That comment is now correct.
+
+Three names in § "The exact-name rule" were also near-misses of real stored
+names rather than measurements, and are corrected: the container stores
+`SPACE.tif`, not `Space.tif`; `pass_Sparks.tif`, not `Pass_Sparks.tif`; and
+`sacredtrust_logo1.TI`, not `sacredtruss_logo1.TI` (the archive side is
+`sacredtrust_logo1`, with one `s` in *sacredtrust*). The point each name was
+making still holds — the corpus does store an extension in mixed case, and it
+does contain exactly one `TI` — but a reader checking the list would have found
+three of six entries absent from all nine containers. That paragraph now also
+carries the measured extension histogram over the nine containers' 1 476
+distinct names in place of the vaguer "the corpus contains `tif`, `TIF`, `jpg`
+and a truncated `TI`". The archive-side name `ilsafas` in the same list is
+correct and was left alone; the container spells it `IlsaFas.tif`.
+
+No layout claim changed: the material walk still lands on `meshes_offset` in all
+nine archives, `materials_offset == textures_offset + 44 × texture_count` in all
+nine, and the production reader still reports zero findings over all nine.
+
+## What F10-C.03 and F10-D need from this
 - **F10-C.03** (the upload path) has a real producer for both halves of the
   binding: `read_gamez_meshes` gives the mesh material references at both levels,
   `read_gamez_materials` gives the material records and the texture names, and

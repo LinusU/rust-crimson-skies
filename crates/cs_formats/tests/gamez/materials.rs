@@ -68,8 +68,8 @@ impl NameField {
     }
 
     /// A completely full field: one NUL, where the `.` of the extension was, and
-    /// no second terminator. The measured corpus has 41 of these in
-    /// `planes.zbd` alone.
+    /// no second terminator. The measured corpus has 95 of these across its nine
+    /// GameZ archives, 5 of them in `planes.zbd` alone.
     fn full(bytes: &[u8]) -> Self {
         assert_eq!(bytes.len(), 20, "a full field is exactly 20 bytes");
         let mut out = [0u8; 20];
