@@ -10,9 +10,11 @@
 //! a decoder that forgets the odd-step swap or restarts parity after a
 //! degenerate step produces a triangle with the opposite sign.
 //!
-//! Stage F10-B's n-gon triangulation tests are in [`ngon`].
+//! Stage F10-B's n-gon triangulation tests are in [`ngon`], and the established
+//! CS GameZ layout and its reader are in [`reader`].
 
 mod ngon;
+mod reader;
 
 use cs_formats::gamez::{
     FaceIssue, FaceStatus, MIN_STRIP_INDICES, MeshTriangle, NgonIssue, PrimitiveKind, RawCorner,
