@@ -30,9 +30,20 @@
 //! a solid contact in code. It creates no Avian body; the schedule adapter is
 //! `cs_app::physics` (F23-B/C create and drive the actual bodies).
 //!
+//! [`flight`] is the F24-A fixed-wing contract and equations
+//! (`specs/F24-fixed-wing-flight-engine-stall-and-arcade-assists.md`, stage
+//! `### F24-A`): the normalized [`flight::AirframeTuning`] schema, the
+//! loadout-mass and damage records, the pure [`flight::FlightModel`] force
+//! equations (air-relative velocity, lift/drag, thrust, world-space gravity
+//! and a bounded rate-command torque) and the synthetic fixture/probe. At zero
+//! airspeed every computed value is finite and gravity still acts. The
+//! provenance-carrying tuning schema is `cs_content::flight_tuning`; the
+//! Avian wiring, instruments and profile selection are F24-B/F24-C.
+//!
 //! [`cs_types`]: cs_types
 //! [`cs_script`]: cs_script
 
 pub mod collision;
 pub mod control;
+pub mod flight;
 pub mod time;
