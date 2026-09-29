@@ -303,13 +303,18 @@ names:
 | `language.dll` | 3 | 0 | 0 | 2 | 0 |
 
 B beats A on every row, and the margin is enormous on `langui.dll` and
-negligible-to-none on the other two images. A 20 000-draw permutation test
-(shuffling the headers' own value multiset and re-scoring) never reaches the
-observed count for either numbering: `p = 0/20 000` for `langui.dll` in both
-numberings. That test is reported because it was run, **not** because it is the
-decisive one — shuffling a value multiset cannot break a correlation that comes
-from the values' *consecutive runs*, so it is a weak instrument here. The
-decisive evidence is the boundary test below.
+negligible-to-none on the other two images.
+
+**No permutation test backs this, and none is reported.** The score is a sum of
+a per-value predicate over the headers' value multiset, so it is *invariant*
+under any permutation of that multiset: every draw of a shuffle of the 820
+values returns the observed count (705 for A, 813 for B on `langui.dll`).
+A test that can only return the number it is testing carries no information,
+which is why there is no `p` value here. (A resampling null, drawing 820 fresh
+values from the observed id range instead of shuffling the real ones, does
+separate the two — 20 000 draws never exceed 59 — but that is not what decides
+this either, because the deciding measurement below is deterministic and has
+no sampling step at all.) The decisive evidence is the boundary test.
 
 ### The boundary test: `RESRC1.H`'s contiguous run, exactly
 
@@ -458,7 +463,7 @@ forbids changing. Adding a Rust test outside the owner path, or a test that
 merely re-reads this document, would be exactly the shortcut the project rules
 forbid, so neither was done.
 
-What *is* pinned, and how a reviewer re-derives every number here:
+What *is* pinned, and how a reviewer re-derives the numbers here:
 
 - the full workspace test suite is green on this commit (see
   [Commands](#commands)), and the two production readers whose output this
@@ -468,11 +473,21 @@ What *is* pinned, and how a reviewer re-derives every number here:
 - the measurement itself is a script, not prose: it was run twice in a row and
   the two runs produced byte-identical JSON
   (`sha256 ece7c8d379ff1f6904cd6f46b78f29a6e10fce5b5c9b5f4c1edc1c117aa6c8ef`),
-  and the four cross-checks in the table above are the production commands a
-  reviewer can re-run against the same installation;
+  and that digest is the `measure.json` artifact of the committed evidence
+  report, so the probe's entire output is pinned there;
 - every number in this document is either a hash, a byte span, a size, a count,
-  an id, a key name or a structure field. The reviewer can recompute each one
-  from the commands and the same installation without the private artifacts.
+  an id, a key name or a structure field — never original text and never a
+  `#define` name.
+
+**What is not claimed:** the four production commands in
+[Cross-checks](#cross-checks-against-the-production-code-path) cover the
+installation fingerprint, the two header digests and lengths, `strings.dll`'s
+`RT_STRING` unit count and its `other_leaves: 2`. They do **not** produce the
+per-image scoring table, the block id lists, the boundary test, the
+empty-unit agreement, the unaddressed-block list or the import-table
+measurements. Those come from the probe, which is an artifact in the private
+evidence directory and is not committed, so re-deriving them needs that script
+(or an equivalent walk) and not the four commands alone.
 
 A follow-up should promote this measurement to a `#[ignore = "requires
 CS_GAME_DIR"]` regression test once a crate owner path is granted for it; until
@@ -521,10 +536,47 @@ the contract forbids. The report's `claim` is `implemented`: a merge awards
 - This finding does not change `string_id`, the `Documented` claim, the dialect
   inventory or the catalog. #374 owns the numbering; F12-D owns the accounting.
 
-**Identities.** Implementer: `bunny-2` (Space Bunny Free). This task has not
-been reviewed yet; whoever reviews it should regenerate the evidence report on
-the rebased commit and compare, per the CLI-EVIDENCE contract, and should treat
-a review by this same agent as **not** independent evidence.
+**Identities.** Implementer: `bunny-2` (Space Bunny Free). Reviewer: `bunny-2`
+again, in a fresh session — the same agent instance, so **this review is not
+independent evidence** and nothing here may be read as an original-reference
+confirmation. See [Review](#review) for what it did and did not establish.
+
+## Review
+
+Reviewer: `bunny-2` in a fresh session (same agent instance as the
+implementation, so not independent). The review re-derived the measurement
+with a PE/COFF resource walk and a string-table walk written from the
+Microsoft layouts, independently of the probe, and compared the result with
+this document number by number. Every image digest, byte size, offset, member
+span, id range, unit count, non-empty count, per-image score, boundary-test
+fact, empty-unit agreement, unaddressed-block list and import-table count in
+this file reproduced exactly; the implementer's probe was also re-run and
+produced byte-identical output (same `measure.json` digest).
+
+Two claims were wrong as written and were corrected here:
+
+- the 20 000-draw permutation test reported in
+  [the correlation section](#the-correlation-and-which-of-two-numberings-it-selects)
+  cannot produce the `p = 0/20 000` it claimed: the score is invariant under a
+  permutation of the headers' value multiset, so every draw returns the
+  observed count. That paragraph now states the invariance instead of a
+  significance value, and the measurement itself is untouched.
+- the claim that every number here can be recomputed "from the commands …
+  without the private artifacts" overstated what the four production commands
+  emit; [Tests](#tests) now says which measurements they cover and which come
+  from the probe.
+
+No production code was touched, and no measured value was changed.
+
+**Still outstanding, and the only reason this branch is not merged:**
+`accept_f12_g_` resolves to zero tests. `AGENTS.md` rule 6 and
+`docs/contracts/CLI-EVIDENCE.md` both require the task prefix to resolve to at
+least one real test, and this task's owner path is `docs/findings/` alone, so
+no agent can add one inside its scope — the natural home,
+`crates/cs_formats/src/pe_resources.rs`, is #374's. F12-K / #377 already spells
+out the test to write, with the exact assertions. Resolving that needs the
+owner: grant a test owner path, or rule that a `docs/findings/`-only
+measurement task is exempt from the prefix rule.
 
 ## Sources
 
