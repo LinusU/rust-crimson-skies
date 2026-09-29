@@ -1,22 +1,25 @@
 //! Acceptance scenario F11-A (AC01): nested transforms and negative scale
 //! preserve visual/collision alignment after canonical conversion — plus the
-//! hierarchy-validation failure cases and the semantic binding records.
+//! hierarchy-validation failure cases and the semantic binding records; and
+//! the F11-B (AC02) LOD selection rule over converted bands.
 //!
 //! These tests exercise production code only: `cs_content::scene` over the
 //! declared `cs_content::coordinates` adapters and the `cs_types` identity
 //! records. Removing or neutering the axis-map conjugation, the composition
-//! order, the mirror tracking or the link validation makes them fail.
+//! order, the mirror tracking, the link validation or the LOD band rule
+//! makes them fail.
 //!
 //! All fixture values are newly authored; nothing reads original data.
 
 use cs_content::coordinates::SourceAdapter;
 use cs_content::scene::{
-    AnimationBinding, AuthoredTransform, BindingMap, CollisionRole, MeshBinding, NodeKind,
-    ParsedNode, ParsedNodeKind, PartRole, SceneError, SceneGraph, SceneNodeId, SceneRootRef,
-    SemanticBinding,
+    AnimationBinding, AuthoredTransform, BindingMap, CollisionRole, LodChoice, LodCoverage,
+    LodInfo, LodSelectError, MeshBinding, NodeKind, ParsedNode, ParsedNodeKind, PartRole,
+    SceneError, SceneGraph, SceneNodeId, SceneRootRef, SemanticBinding, select_lod_variant,
 };
 use cs_types::content::{ContentId, ContentKind, Known, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
+use cs_types::space::Meters;
 
 const EPSILON: f64 = 1e-9;
 
@@ -587,4 +590,191 @@ fn accept_f11_a_rejects_bad_transforms_and_wrong_binding_kinds() {
             root: "gamez.main".to_owned()
         })
     );
+}
+
+// ------------------------------------------------------------ F11-B (LOD) ---
+
+/// The `Lod` sibling group of one container, converted by the production
+/// build so the rule is exercised over ranges that really went through the
+/// axis map: `0..500 m`, `500..2000 m` and `3000..4000 m` (source centimetres).
+fn lod_bands() -> Vec<cs_content::scene::LodInfo> {
+    let container = cid(ContentKind::InstallFile, "fix_planes");
+
+    let mut main = ParsedNode::new(0, "main", ParsedNodeKind::World);
+    main.children = vec![1, 2, 3];
+    let mut near = ParsedNode::new(
+        1,
+        "band_near",
+        ParsedNodeKind::Lod {
+            level: false,
+            range_min: 0.0,
+            range_max: 50_000.0,
+        },
+    );
+    near.parent = Some(0);
+    let mut wide = ParsedNode::new(
+        2,
+        "band_wide",
+        ParsedNodeKind::Lod {
+            level: true,
+            range_min: 50_000.0,
+            range_max: 200_000.0,
+        },
+    );
+    wide.parent = Some(0);
+    let mut far = ParsedNode::new(
+        3,
+        "band_far",
+        ParsedNodeKind::Lod {
+            level: true,
+            range_min: 300_000.0,
+            range_max: 400_000.0,
+        },
+    );
+    far.parent = Some(0);
+
+    let scene = SceneGraph::build(
+        &container,
+        &[main, near, wide, far],
+        &fixture_adapter(),
+        &BindingMap::default(),
+    )
+    .expect("the LOD group converts");
+    scene
+        .nodes()
+        .iter()
+        .filter_map(|node| node.lod().copied())
+        .collect()
+}
+
+/// AC02's selection rule: the distance falls in exactly one band, on a shared
+/// band edge, or in an authored gap — and every answer says which it was, in
+/// stored order, over ranges the real conversion produced.
+#[test]
+fn accept_f11_b_lod_selection_rule_reports_coverage_gaps_and_overlaps() {
+    let bands = lod_bands();
+    assert_eq!(bands.len(), 3);
+    assert_eq!(
+        bands
+            .iter()
+            .map(|band| (band.range_min.0, band.range_max.0))
+            .collect::<Vec<_>>(),
+        vec![(0.0, 500.0), (500.0, 2000.0), (3000.0, 4000.0)],
+        "the authored centimetre ranges arrive as metres"
+    );
+
+    // Inside a band: exactly one variant covers the distance.
+    assert_eq!(
+        select_lod_variant(&bands, Meters(250.0)),
+        Ok(LodChoice {
+            index: 0,
+            coverage: LodCoverage::Covered
+        })
+    );
+    assert_eq!(
+        select_lod_variant(&bands, Meters(750.0)),
+        Ok(LodChoice {
+            index: 1,
+            coverage: LodCoverage::Covered
+        })
+    );
+
+    // Adjacent bands share their edge: the tightest band wins, and the tie
+    // is reported instead of being passed off as a plain coverage.
+    assert_eq!(
+        select_lod_variant(&bands, Meters(500.0)),
+        Ok(LodChoice {
+            index: 0,
+            coverage: LodCoverage::Overlap
+        })
+    );
+
+    // A gap is reported and the nearest band keeps the part on screen: above
+    // the second band, and between the second and the third where two bands
+    // are equally near (ties go to the lower near bound, then stored order).
+    assert_eq!(
+        select_lod_variant(&bands, Meters(2500.0)),
+        Ok(LodChoice {
+            index: 1,
+            coverage: LodCoverage::GapFallback
+        })
+    );
+    assert_eq!(
+        select_lod_variant(&bands, Meters(2100.0)),
+        Ok(LodChoice {
+            index: 1,
+            coverage: LodCoverage::GapFallback
+        })
+    );
+    assert_eq!(
+        select_lod_variant(&bands, Meters(4500.0)),
+        Ok(LodChoice {
+            index: 2,
+            coverage: LodCoverage::GapFallback
+        })
+    );
+
+    // A distance below every band still lands on a band, deterministically.
+    assert_eq!(
+        select_lod_variant(&[bands[1]], Meters(10.0)),
+        Ok(LodChoice {
+            index: 0,
+            coverage: LodCoverage::GapFallback
+        })
+    );
+}
+
+/// The rule refuses input it cannot reason about instead of deciding
+/// presentation from it: an empty group, an unusable distance and a
+/// non-finite, negative or reversed band.
+#[test]
+fn accept_f11_b_lod_selection_rule_refuses_unusable_input() {
+    let bands = lod_bands();
+
+    assert_eq!(
+        select_lod_variant(&[], Meters(10.0)).map(|_| ()),
+        Err(LodSelectError::NoVariants)
+    );
+    for distance in [f64::NAN, f64::INFINITY, -1.0] {
+        assert_eq!(
+            select_lod_variant(&bands, Meters(distance)).map(|_| ()),
+            Err(LodSelectError::Distance),
+            "distance {distance} must not select anything"
+        );
+    }
+
+    let usable = LodInfo {
+        level: false,
+        range_min: Meters(0.0),
+        range_max: Meters(100.0),
+    };
+    let reversed = LodInfo {
+        range_min: Meters(200.0),
+        range_max: Meters(100.0),
+        ..usable
+    };
+    assert_eq!(
+        select_lod_variant(&[usable, reversed], Meters(10.0)).map(|_| ()),
+        Err(LodSelectError::Range { index: 1 }),
+        "the offending band is named by its stored position"
+    );
+    for bad in [
+        LodInfo {
+            range_min: Meters(f64::NAN),
+            ..usable
+        },
+        LodInfo {
+            range_max: Meters(f64::NAN),
+            ..usable
+        },
+        LodInfo {
+            range_min: Meters(-1.0),
+            ..usable
+        },
+    ] {
+        assert_eq!(
+            select_lod_variant(&[bad], Meters(10.0)).map(|_| ()),
+            Err(LodSelectError::Range { index: 0 })
+        );
+    }
 }

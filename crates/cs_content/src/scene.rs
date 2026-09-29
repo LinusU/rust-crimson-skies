@@ -52,6 +52,17 @@
 //! unbound, not silently bound; a rule that matches no node is reported in
 //! [`SceneGraph::unmatched_bindings`] rather than dropped.
 //!
+//! # LOD selection (F11-B)
+//!
+//! [`select_lod_variant`] is the presentation rule: among the `Lod` siblings
+//! that share a parent — one variant group standing for one physical part — it
+//! picks the single band that is presented at a viewer distance, reporting how
+//! it got there ([`LodCoverage`]: covered, overlapping bands or an authored
+//! gap). It returns an index and a coverage, nothing else: no transform, no
+//! identity, no damage state, so a distance change can only ever change which
+//! variant is drawn (F11 non-negotiable behavior 4). The rule is designed
+//! engine contract; the original's selection behaviour is unmeasured.
+//!
 //! # What is measured and what is designed
 //!
 //! The input record mirrors the pinned mech3ax v0.6.0 node layout
@@ -1333,6 +1344,194 @@ fn attach_binding(
     }
     matched[rule_index] = true;
     Ok(Some(rule.clone()))
+}
+
+// --------------------------------------------------------- LOD selection ---
+
+/// How [`select_lod_variant`] arrived at its choice.
+///
+/// The coverage rides along with every result so a fallback is observable:
+/// a caller can tell "the authored bands say so" from "the rule papered over
+/// a gap" instead of silently drawing whatever came back.
+///
+/// The vocabulary is designed engine contract
+/// (`specs/F11-scene-hierarchy-aircraft-parts-sockets-and-lod.md`, F11-B): the
+/// original's band-selection behaviour and the meaning of [`LodInfo::level`]
+/// are unmeasured, so nothing here claims to reproduce them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LodCoverage {
+    /// Exactly one variant's range contains the distance.
+    Covered,
+    /// More than one variant's range contains the distance. Adjacent bands
+    /// share their boundary (`0..500` and `500..2000` both contain 500), so a
+    /// distance on a shared edge covers both; the tightest band wins.
+    Overlap,
+    /// No variant's range contains the distance — the gap sits below, between
+    /// or above the authored bands — and the nearest band was chosen, so a gap
+    /// never blanks the part out of existence.
+    GapFallback,
+}
+
+/// One LOD selection result: which member of a variant group is presented.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LodChoice {
+    /// The chosen variant's index into the slice the rule was given, in
+    /// stored child order.
+    pub index: usize,
+    /// How the choice was reached.
+    pub coverage: LodCoverage,
+}
+
+/// Why a group of LOD variants could not be resolved to one choice.
+///
+/// The rule refuses unusable input rather than picking something from it: a
+/// NaN distance or a reversed band would otherwise decide presentation from
+/// numbers that mean nothing.
+#[derive(Clone, Debug, PartialEq)]
+pub enum LodSelectError {
+    /// The group held no variants at all.
+    NoVariants,
+    /// The distance was not a finite, non-negative number of metres.
+    Distance,
+    /// Variant `index` declares a range that is non-finite, negative or
+    /// reversed (`range_min > range_max`).
+    Range {
+        /// The offending variant's index in the slice.
+        index: usize,
+    },
+}
+
+impl fmt::Display for LodSelectError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoVariants => write!(f, "the LOD group has no variants to select from"),
+            Self::Distance => write!(
+                f,
+                "the LOD selection distance must be finite and non-negative"
+            ),
+            Self::Range { index } => write!(
+                f,
+                "LOD variant {index} declares a non-finite, negative or reversed range"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for LodSelectError {}
+
+/// Picks the one variant of a group that is presented at `distance`.
+///
+/// The group is the `Lod` siblings that share a parent: each stands for the
+/// same physical part at a different distance, and exactly one of them may be
+/// presented (F11 non-negotiable behavior 4 — LOD is presentation only).
+///
+/// The rule, in order:
+///
+/// 1. a band *covers* the distance when `range_min <= distance <=
+///    range_max`;
+/// 2. exactly one covering band → [`LodCoverage::Covered`];
+/// 3. several covering bands → [`LodCoverage::Overlap`], the tightest band
+///    wins (smallest `range_max`, then largest `range_min`, then stored
+///    order);
+/// 4. no covering band → [`LodCoverage::GapFallback`], the band nearest the
+///    distance wins (ties → lower `range_min` → stored order).
+///
+/// This is designed engine contract, not measured original behaviour: the
+/// original's selection rule, its edge convention and `LodInfo::level` remain
+/// unmeasured (recorded in
+/// `docs/findings/2026-09-29-f11-b-hierarchy-import-and-lod-selection.md`).
+///
+/// # Errors
+///
+/// [`LodSelectError::NoVariants`] when `variants` is empty,
+/// [`LodSelectError::Distance`] when `distance` is not finite and
+/// non-negative, and [`LodSelectError::Range`] naming the first variant whose
+/// range is unusable.
+pub fn select_lod_variant(
+    variants: &[LodInfo],
+    distance: Meters,
+) -> Result<LodChoice, LodSelectError> {
+    if !distance.0.is_finite() || distance.0 < 0.0 {
+        return Err(LodSelectError::Distance);
+    }
+    if variants.is_empty() {
+        return Err(LodSelectError::NoVariants);
+    }
+    for (index, variant) in variants.iter().enumerate() {
+        let (min, max) = (variant.range_min.0, variant.range_max.0);
+        if !min.is_finite() || !max.is_finite() || min < 0.0 || min > max {
+            return Err(LodSelectError::Range { index });
+        }
+    }
+
+    let target = distance.0;
+    let covering: Vec<usize> = variants
+        .iter()
+        .enumerate()
+        .filter(|(_, variant)| variant.range_min.0 <= target && target <= variant.range_max.0)
+        .map(|(index, _)| index)
+        .collect();
+
+    match covering.as_slice() {
+        [index] => Ok(LodChoice {
+            index: *index,
+            coverage: LodCoverage::Covered,
+        }),
+        [] => {
+            // No band contains the distance: take the band whose range is
+            // nearest it, so an authored gap cannot blank the part. Ties go
+            // to the lower near bound and then to stored order, which makes
+            // the fallback reproducible.
+            let mut best = (
+                gap_distance(variants[0], target),
+                variants[0].range_min.0,
+                0usize,
+            );
+            for (index, variant) in variants.iter().enumerate().skip(1) {
+                let candidate = (gap_distance(*variant, target), variant.range_min.0, index);
+                if candidate < best {
+                    best = candidate;
+                }
+            }
+            Ok(LodChoice {
+                index: best.2,
+                coverage: LodCoverage::GapFallback,
+            })
+        }
+        several => {
+            // Several bands contain the distance: the tightest far bound wins,
+            // then the highest near bound, then stored order.
+            let mut best = (
+                variants[several[0]].range_max.0,
+                -variants[several[0]].range_min.0,
+            );
+            let mut chosen = several[0];
+            for &index in several.iter().skip(1) {
+                let variant = variants[index];
+                let candidate = (variant.range_max.0, -variant.range_min.0);
+                if candidate < best {
+                    best = candidate;
+                    chosen = index;
+                }
+            }
+            Ok(LodChoice {
+                index: chosen,
+                coverage: LodCoverage::Overlap,
+            })
+        }
+    }
+}
+
+/// How far `target` lies outside `variant`'s band — zero inside it, since a
+/// band that already contains the distance is never scored here.
+fn gap_distance(variant: LodInfo, target: f64) -> f64 {
+    if target < variant.range_min.0 {
+        variant.range_min.0 - target
+    } else if target > variant.range_max.0 {
+        target - variant.range_max.0
+    } else {
+        0.0
+    }
 }
 
 // ---------------------------------------------------------------- errors ---
