@@ -21,9 +21,28 @@
 //! declarations**, not measurements: an identity self-map plus two synthetic
 //! fixtures that exercise every branch of the machinery. No original
 //! handedness, axis order, scale or angle unit has been measured here, and
-//! this module claims none — measuring them with three independent landmarks
-//! (`F16` non-negotiable behavior 1) is F16-D. A test asserts that no
-//! declared source claims `Origin::Installation`.
+//! this module claims none. A test asserts that no declared source claims
+//! `Origin::Installation`, and [`CoordinateSource::calibration`] hands every
+//! one of them an empty [`UnitCalibration`] whose
+//! [`claim_status`](UnitCalibration::claim_status) is
+//! [`ClaimStatus::Unknown`].
+//!
+//! # F16-D: the calibration rule, checkable instead of remembered
+//!
+//! Non-negotiable behavior 1 — "Measure original scale, handedness, axis
+//! order and angle units using at least three independent landmarks/behaviors.
+//! A Blender transform is insufficient proof." — is a rule about *evidence*,
+//! so it is represented as evidence. [`UnitCalibration`] keeps one
+//! [`Landmark`] list per [`CalibratedQuantity`], refuses a repeated
+//! description or a reused observation, requires at least
+//! [`UnitCalibration::MIN_LANDMARKS`] independent landmarks **and one
+//! observed [`LandmarkKind::Behavior`]** per quantity, and reports both the
+//! remaining [`gaps`](UnitCalibration::gaps) and the strongest
+//! [`claim_status`](UnitCalibration::claim_status) the recorded evidence
+//! supports. Nothing in this module can manufacture a measurement: only an
+//! [`EvidenceRecord`] that itself
+//! [`verifies_original`](EvidenceRecord::verifies_original) can raise the
+//! claim, and no such record exists in this tree.
 //!
 //! # Derivations
 //!
@@ -58,7 +77,7 @@
 use std::f64::consts::PI;
 
 use cs_types::content::{Origin, Provenance};
-use cs_types::evidence::ClaimId;
+use cs_types::evidence::{ClaimId, ClaimStatus, EvidenceRecord, EvidenceSource};
 use cs_types::space::{Meters, Quaternion, Radians, SpaceError, UnitVec3, Winding, WorldPosition};
 
 /// Declared round-trip tolerance for positions, in meters.
@@ -504,6 +523,20 @@ impl CoordinateSource {
         &self.provenance
     }
 
+    /// This source's calibration record under `F16` non-negotiable behavior 1.
+    ///
+    /// Every declared source starts with an **empty** calibration: no original
+    /// handedness, axis order, scale or angle unit has been measured yet, and
+    /// a caller that asks gets [`ClaimStatus::Unknown`] until someone records
+    /// landmarks together with the evidence for them. Returning the record
+    /// rather than a "is calibrated" boolean is the point: the gaps are
+    /// reportable, so an uncalibrated source cannot be mistaken for a
+    /// calibrated one.
+    #[must_use]
+    pub fn calibration(&self) -> UnitCalibration {
+        UnitCalibration::empty(self.label.clone())
+    }
+
     /// Every source declared at F16-A.
     ///
     /// These are designed declarations: an identity self-map plus two
@@ -871,6 +904,443 @@ fn check_finite<const N: usize>(
         }
     }
     Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// F16-D: the three-landmark rule, made checkable instead of remembered
+// ---------------------------------------------------------------------------
+
+/// One property F16 non-negotiable behavior 1 requires to be **measured**
+/// about an original source, rather than assumed.
+///
+/// "Measure original scale, handedness, axis order and angle units using at
+/// least three independent landmarks/behaviors" names four quantities and one
+/// evidence rule. [`UnitCalibration`] holds the four apart, so a source can be
+/// measured on three of them and still be honestly unknown on the fourth.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CalibratedQuantity {
+    /// `meters_per_unit`: what one source unit is worth in meters.
+    Scale,
+    /// Whether the source basis is right- or left-handed.
+    Handedness,
+    /// Which source component feeds which canonical axis, with which sign.
+    AxisOrder,
+    /// Whether source angles are radians or degrees.
+    AngleUnit,
+}
+
+impl CalibratedQuantity {
+    /// Every quantity the rule names, so a calibration can report all four.
+    pub const ALL: [Self; 4] = [
+        Self::Scale,
+        Self::Handedness,
+        Self::AxisOrder,
+        Self::AngleUnit,
+    ];
+
+    /// Stable label for diagnostics and evidence records.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Scale => "scale",
+            Self::Handedness => "handedness",
+            Self::AxisOrder => "axis-order",
+            Self::AngleUnit => "angle-unit",
+        }
+    }
+}
+
+/// What kind of observation a landmark is.
+///
+/// The split is the sheet's own: "A Blender transform is insufficient proof."
+/// A static artifact tells you what a file *says*; only a behaviour tells you
+/// what the thing *does*, and a complete calibration needs at least one of
+/// those per quantity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum LandmarkKind {
+    /// A static inspection: a header field, a value table, a transform stored
+    /// in a modelling tool.
+    Artifact,
+    /// An observed behaviour: a measured distance, a turn, a loading pose, a
+    /// travel measured against something already known.
+    Behavior,
+}
+
+impl LandmarkKind {
+    /// Stable label for diagnostics and evidence records.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Artifact => "artifact",
+            Self::Behavior => "behavior",
+        }
+    }
+}
+
+/// Why a calibration or a landmark was refused.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CalibrationError {
+    /// A calibration must name the source it is about.
+    EmptySource,
+    /// A landmark must say what it observed. An undescribed landmark is not
+    /// evidence, and repeating "looked at the model" three times would
+    /// otherwise satisfy the three-landmark rule.
+    EmptyDescription,
+    /// The same description cannot be recorded twice for one quantity: two
+    /// copies of one observation are not two landmarks.
+    RepeatedDescription {
+        /// The quantity the repeat was for.
+        quantity: CalibratedQuantity,
+        /// The description that appears twice.
+        description: String,
+    },
+    /// One observation cannot be two independent landmarks of one quantity,
+    /// however it is described.
+    RepeatedObservation {
+        /// The quantity the repeat was for.
+        quantity: CalibratedQuantity,
+        /// The description recorded first.
+        first: String,
+        /// The description that reuses its evidence.
+        second: String,
+    },
+}
+
+impl std::fmt::Display for CalibrationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::EmptySource => write!(f, "a calibration must name its source"),
+            Self::EmptyDescription => {
+                write!(f, "a landmark must describe what it observed")
+            }
+            Self::RepeatedDescription {
+                quantity,
+                description,
+            } => write!(
+                f,
+                "landmark {description:?} is already recorded for {}",
+                quantity.label()
+            ),
+            Self::RepeatedObservation {
+                quantity,
+                first,
+                second,
+            } => write!(
+                f,
+                "landmark {second:?} reuses the observation behind {first:?}, so it is not \
+                 an independent {} landmark",
+                quantity.label()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CalibrationError {}
+
+/// One landmark: an observation that pins one [`CalibratedQuantity`], with
+/// the evidence that backs it.
+///
+/// A landmark is attributed twice over — by its [`kind`](Self::kind) and by
+/// its [`evidence`](Self::evidence) — and both are part of what the
+/// three-landmark rule counts.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Landmark {
+    quantity: CalibratedQuantity,
+    kind: LandmarkKind,
+    description: String,
+    evidence: EvidenceRecord,
+}
+
+impl Landmark {
+    /// Builds a landmark.
+    ///
+    /// # Errors
+    ///
+    /// [`CalibrationError::EmptyDescription`] for an empty description.
+    pub fn new(
+        quantity: CalibratedQuantity,
+        kind: LandmarkKind,
+        description: impl Into<String>,
+        evidence: EvidenceRecord,
+    ) -> Result<Self, CalibrationError> {
+        let description = description.into();
+        if description.trim().is_empty() {
+            return Err(CalibrationError::EmptyDescription);
+        }
+        Ok(Self {
+            quantity,
+            kind,
+            description,
+            evidence,
+        })
+    }
+
+    /// Which property this landmark pins.
+    #[must_use]
+    pub const fn quantity(&self) -> CalibratedQuantity {
+        self.quantity
+    }
+
+    /// Whether this is a static artifact or an observed behavior.
+    #[must_use]
+    pub const fn kind(&self) -> LandmarkKind {
+        self.kind
+    }
+
+    /// What was observed, in the recorder's words.
+    #[must_use]
+    pub fn description(&self) -> &str {
+        &self.description
+    }
+
+    /// The evidence backing this landmark.
+    #[must_use]
+    pub const fn evidence(&self) -> &EvidenceRecord {
+        &self.evidence
+    }
+}
+
+/// What a calibration still lacks for one quantity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CalibrationGap {
+    /// The quantity with a gap.
+    pub quantity: CalibratedQuantity,
+    /// How many landmarks are recorded for it.
+    pub landmarks_recorded: usize,
+    /// How many the rule requires.
+    pub landmarks_required: usize,
+    /// How many of the recorded ones are observed behaviors.
+    pub behavior_landmarks: usize,
+}
+
+impl std::fmt::Display for CalibrationGap {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}: {}/{} landmarks, {}/1 behaviors",
+            self.quantity.label(),
+            self.landmarks_recorded,
+            self.landmarks_required,
+            self.behavior_landmarks
+        )
+    }
+}
+
+/// One source's calibration record under F16 non-negotiable behavior 1.
+///
+/// This is F16-D's "calibrate original units" made checkable. It does not
+/// measure anything by itself: it records landmarks, refuses the ones that
+/// are not independent, and reports — per quantity and as a whole — whether
+/// the three-landmark rule is met and what claim that can support.
+///
+/// Two different questions are kept apart on purpose:
+///
+/// * [`is_complete`](Self::is_complete) is a **shape** question: are there
+///   three independent landmarks, at least one of them a behavior, for every
+///   quantity? A calibration built from synthetic fixtures can be complete.
+/// * [`claim_status`](Self::claim_status) is a **strength** question, and only
+///   the [`EvidenceRecord`]s decide it. A complete calibration whose evidence
+///   is newly authored content claims [`ClaimStatus::Unknown`], not
+///   `verified_original`.
+///
+/// So an `accept_f16_d_`-green build of this module can never be read as "the
+/// original convention is known": the declared sources start empty (see
+/// [`CoordinateSource::calibration`]) and stay
+/// [`ClaimStatus::Unknown`] until someone records original observations.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UnitCalibration {
+    source: String,
+    landmarks: Vec<Landmark>,
+}
+
+impl UnitCalibration {
+    /// How many independent landmarks each quantity needs.
+    pub const MIN_LANDMARKS: usize = 3;
+
+    /// An empty calibration for `source`.
+    ///
+    /// # Errors
+    ///
+    /// [`CalibrationError::EmptySource`] for an empty source label.
+    pub fn new(source: impl Into<String>) -> Result<Self, CalibrationError> {
+        let source = source.into();
+        if source.trim().is_empty() {
+            return Err(CalibrationError::EmptySource);
+        }
+        Ok(Self::empty(source))
+    }
+
+    /// The validated constructor's inner half; a validated
+    /// [`CoordinateSource`] label is never empty.
+    fn empty(source: String) -> Self {
+        Self {
+            source,
+            landmarks: Vec::new(),
+        }
+    }
+
+    /// The source this calibration is about.
+    #[must_use]
+    pub fn source(&self) -> &str {
+        &self.source
+    }
+
+    /// Every recorded landmark, in the order they were recorded.
+    #[must_use]
+    pub fn landmarks(&self) -> &[Landmark] {
+        &self.landmarks
+    }
+
+    /// Records one landmark.
+    ///
+    /// Independence is enforced here rather than trusted: a description
+    /// already recorded for the same quantity, and any landmark reusing the
+    /// same evidence for the same quantity, are both refused. That is what
+    /// stops one inspection from being counted three times.
+    ///
+    /// # Errors
+    ///
+    /// [`CalibrationError::RepeatedDescription`] or
+    /// [`CalibrationError::RepeatedObservation`].
+    pub fn record(&mut self, landmark: Landmark) -> Result<(), CalibrationError> {
+        let quantity = landmark.quantity();
+        for existing in &self.landmarks {
+            if existing.quantity() != quantity {
+                continue;
+            }
+            if existing.description() == landmark.description() {
+                return Err(CalibrationError::RepeatedDescription {
+                    quantity,
+                    description: landmark.description().to_string(),
+                });
+            }
+            if existing.evidence() == landmark.evidence() {
+                return Err(CalibrationError::RepeatedObservation {
+                    quantity,
+                    first: existing.description().to_string(),
+                    second: landmark.description().to_string(),
+                });
+            }
+        }
+        self.landmarks.push(landmark);
+        Ok(())
+    }
+
+    /// How many landmarks are recorded for one quantity.
+    #[must_use]
+    pub fn landmark_count(&self, quantity: CalibratedQuantity) -> usize {
+        self.landmarks
+            .iter()
+            .filter(|landmark| landmark.quantity() == quantity)
+            .count()
+    }
+
+    /// How many of a quantity's landmarks are observed behaviors.
+    #[must_use]
+    pub fn behavior_landmark_count(&self, quantity: CalibratedQuantity) -> usize {
+        self.landmarks
+            .iter()
+            .filter(|landmark| {
+                landmark.quantity() == quantity && landmark.kind() == LandmarkKind::Behavior
+            })
+            .count()
+    }
+
+    /// Every quantity that still falls short of the rule, in the rule's order.
+    #[must_use]
+    pub fn gaps(&self) -> Vec<CalibrationGap> {
+        CalibratedQuantity::ALL
+            .into_iter()
+            .filter_map(|quantity| {
+                let landmarks_recorded = self.landmark_count(quantity);
+                let behavior_landmarks = self.behavior_landmark_count(quantity);
+                if landmarks_recorded >= Self::MIN_LANDMARKS && behavior_landmarks >= 1 {
+                    return None;
+                }
+                Some(CalibrationGap {
+                    quantity,
+                    landmarks_recorded,
+                    landmarks_required: Self::MIN_LANDMARKS,
+                    behavior_landmarks,
+                })
+            })
+            .collect()
+    }
+
+    /// Whether every quantity has three independent landmarks and at least
+    /// one behavior among them.
+    ///
+    /// This is a statement about the *shape* of the evidence, never about its
+    /// originality: see [`claim_status`](Self::claim_status).
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.gaps().is_empty()
+    }
+
+    /// The strongest claim this calibration can support.
+    ///
+    /// `VerifiedOriginal` requires a complete calibration **and** every
+    /// landmark's own [`EvidenceRecord::verifies_original`]. A complete
+    /// calibration whose landmarks are newly authored content claims
+    /// [`ClaimStatus::Unknown`]; a document-only one claims
+    /// [`ClaimStatus::Documented`]; a tool run over produced artifacts claims
+    /// [`ClaimStatus::ObservedTool`].
+    #[must_use]
+    pub fn claim_status(&self) -> ClaimStatus {
+        if !self.is_complete() {
+            return ClaimStatus::Unknown;
+        }
+        if self
+            .landmarks
+            .iter()
+            .all(|landmark| landmark.evidence().verifies_original())
+        {
+            return ClaimStatus::VerifiedOriginal;
+        }
+        if self
+            .landmarks
+            .iter()
+            .any(|landmark| matches!(landmark.evidence().source, EvidenceSource::SyntheticFixture))
+        {
+            return ClaimStatus::Unknown;
+        }
+        if self
+            .landmarks
+            .iter()
+            .all(|landmark| matches!(landmark.evidence().source, EvidenceSource::Document(_)))
+        {
+            return ClaimStatus::Documented;
+        }
+        if self
+            .landmarks
+            .iter()
+            .any(|landmark| matches!(landmark.evidence().source, EvidenceSource::ToolRun { .. }))
+        {
+            return ClaimStatus::ObservedTool;
+        }
+        ClaimStatus::Unknown
+    }
+
+    /// A one-line summary for a findings note or an evidence record.
+    #[must_use]
+    pub fn describe(&self) -> String {
+        let gaps = self.gaps();
+        let detail = if gaps.is_empty() {
+            "complete".to_string()
+        } else {
+            gaps.iter()
+                .map(|gap| gap.to_string())
+                .collect::<Vec<_>>()
+                .join("; ")
+        };
+        format!(
+            "{}: {} ({} landmarks, claim {})",
+            self.source,
+            detail,
+            self.landmarks.len(),
+            self.claim_status().label()
+        )
+    }
 }
 
 #[cfg(test)]
