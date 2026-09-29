@@ -75,8 +75,8 @@ check.
 | `ZBD/C4/gamez.zbd` | 8 102 080 | `91cdf00c…c62d458` | 654 | 685 | 662 | 23 | 2 | 38 | 315 | 0 |
 | `ZBD/C5/gamez.zbd` | 9 385 808 | `4e7a6690…0469823d` | 582 | 607 | 583 | 24 | 2 | 22 | 393 | 0 |
 
-Totals: **3 985** texture-name entries, **4 669** present material records, 4 447
-textured and 148 untextured, 627 cycled. Every one of the 3 985 stored texture
+Totals: **3 985** texture-name entries, **4 669** present material records, 4 522
+textured and 147 untextured, 627 cycled, 215 with the `UNKNOWN` flag set. Every one of the 3 985 stored texture
 indices is inside its container's own table, and the production reader reports
 **zero** findings over all nine archives.
 
@@ -115,7 +115,7 @@ itself.
 
 | Offset | Size | Field | Meaning | Source | Retail check (9/9) |
 | --- | --- | --- | --- | --- | --- |
-| 0 | 4 | `unk00` | the reference's `Ptr`: null when `used == 2`, non-null when `used == 1`. **Never followed.** | `ng.rs:50-59` | 3 911 null, 74 non-null |
+| 0 | 4 | `unk00` | the reference's `Ptr`: null when `used == 2`, non-null when `used == 1`. **Never followed.** | `ng.rs:50-59` | 175 null, 3 810 non-null |
 | 4 | 4 | `zero04` | asserted zero | `ng.rs:42` | 0 everywhere |
 | 8 | 4 | `zero08` | asserted zero | `ng.rs:43` | 0 everywhere |
 | 12 | 20 | `texture` | `Ascii<20>`, the stored name (§ "The name encoding") | `ng.rs:44-46` | every entry decodes |
@@ -137,9 +137,11 @@ field. Three shapes occur in the measured corpus and all three are ordinary:
 | `…\x00tif\x00…` | name, NUL, extension, NUL, padding | `horizonindicator.tif` | 5 |
 | `lightmap\x00\x00…` | name, NUL, NUL, padding — **no extension** | `lightmap` | — (C2 has 5) |
 | `bldhwk_cowling\x00.tif\x00` | name, NUL, extension that itself starts with `.` | `bldhwk_cowling..tif` | 36 |
-| `cpit_bullethole1\x00tif` | **completely full**: one NUL, no second terminator | `cpit_bullethole1.tif` | 3 |
+| `cpit_bullethole1\x00tif` | **completely full**: one NUL, no second terminator | `cpit_bullethole1.tif` | 5 of the 95 in the corpus |
 
-Two consequences that the corpus forces and that a reader must not "fix":
+Over the whole corpus the three shapes are **3 872** with an extension, **95**
+completely full and **18** with no extension at all. Two consequences that the
+corpus forces and that a reader must not "fix":
 
 - A name that fills the field is **truncated by the layout, not by the reader**.
   `blo_fusalagebottom\x00ti` decodes to `blo_fusalagebottom.ti` — twenty bytes
@@ -154,7 +156,7 @@ Two consequences that the corpus forces and that a reader must not "fix":
   duplicate stays visible (`GameZMaterials::duplicate_names`).
 
 The extension's case is stored, not folded: the corpus contains `tif`, `TIF`,
-`jpg` and a truncated `TI`, plus 41 names whose field is full. `from_ascii`
+`jpg` and a truncated `TI`, plus 95 names whose field is full. `from_ascii`
 refuses only a byte with the high bit set; no stored name in the corpus has one,
 and control bytes below 0x80 are accepted by the reference, so this reader
 accepts them too and stores the name as `str_from_c_sized` would return it.

@@ -150,8 +150,9 @@ pub enum TextureNameEncoding {
     WithSuffix,
     /// The field was completely full: one NUL and no second one, so the name ran
     /// into the last byte. The reference restores the `.` and takes all 20 bytes.
-    /// The measured corpus stores 41 such names in `planes.zbd` alone
-    /// (`horizonindicator.tif`), so this is an ordinary case, not a defect.
+    /// The measured corpus stores 95 such names across its nine archives, five of
+    /// them in `planes.zbd` (`horizonindicator.tif`), so this is an ordinary case
+    /// and not a defect.
     Unterminated,
 }
 
