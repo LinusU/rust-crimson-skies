@@ -22,8 +22,17 @@
 //! `cs_types::input::InputContext`. The device adapters and calibration are
 //! F22-B; focus, replay and full ownership wiring are F22-C.
 //!
+//! [`collision`] is the F23-A collision vocabulary
+//! (`specs/F23-avian-integration-collision-and-fixed-step-authority.md`,
+//! stage `### F23-A`): the six declared [`collision::CollisionLayer`]s, the
+//! designed interaction matrix, the [`collision::CollisionLayers`] bitmask and
+//! [`collision::classify_contact`], which makes a sensor overlap distinct from
+//! a solid contact in code. It creates no Avian body; the schedule adapter is
+//! `cs_app::physics` (F23-B/C create and drive the actual bodies).
+//!
 //! [`cs_types`]: cs_types
 //! [`cs_script`]: cs_script
 
+pub mod collision;
 pub mod control;
 pub mod time;
