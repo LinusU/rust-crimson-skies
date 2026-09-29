@@ -26,7 +26,7 @@
 //!   page of a localized installation is unknown, so a non-ASCII key is
 //!   neither rejected nor transcoded.
 //!
-//! # What the original reader does with a name (stage F12-B, task #351)
+//! # What the original reader does with a name (task #351)
 //!
 //! The F12-A survey could not settle how the original resolves a name. It
 //! can now, from the retail data itself, and three rules are *established*
@@ -109,14 +109,16 @@ pub enum LineKind<'a> {
 /// Why a line is [`LineKind::Unclassified`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unclassified {
-    /// No `=`, no comment marker and no section brackets. (One surveyed
-    /// `LAYOUT.CSV` line starts with `:` and is English prose. **R5**: a
-    /// line with no `=` yields no entry, because every entry in both
-    /// surveyed members has one — that is established, and this reader does
-    /// exactly that. What the original does with such a line *besides*
-    /// producing nothing — skip it silently, warn, count it — is not
-    /// established, and whether `:` is itself a comment marker is not
-    /// either.)
+    /// No `=`, no comment marker and no section brackets, so there is
+    /// nothing to call a key. The one such line of the surveyed members is
+    /// line 101 of `LAYOUT.CSV`, whose first non-blank byte is `:`; this
+    /// reader yields no entry for it, and that much is settled: every entry
+    /// of both members *has* an `=`, so a line without one cannot be one of
+    /// the record kinds either member documents. What the original does with
+    /// such a line *besides* producing nothing — skip it silently, warn,
+    /// count it — is **not** established, and neither is whether `:` is
+    /// itself a comment marker. Both are recorded in
+    /// `docs/findings/2026-09-29-t351-keyed-list-reading-rules.md`.
     NoSeparator,
     /// The `=` is the first non-blank byte, so the key is empty.
     EmptyKey,

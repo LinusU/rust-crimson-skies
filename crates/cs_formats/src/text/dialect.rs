@@ -287,6 +287,7 @@ pub static TEXT_DIALECT_INVENTORY: [DialectRecord; 6] = [
             "escaped or embedded quotes (never observed)",
             "whether a blank byte inside quotes is part of the value",
             "whether the original reports the one line with no '=' or skips it silently",
+            "whether the '@' around a section name is part of the name (34 of 35 are wrapped)",
             "field types, units and the meaning of <NAME> placeholders",
             "the code page of bytes above 0x7F in localized installations",
         ],

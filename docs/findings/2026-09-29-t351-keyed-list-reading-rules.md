@@ -10,6 +10,12 @@ every member quoted below was decoded through `cs-inspect rof` into
 Nothing from the installation is committed except paths, lengths, counts,
 hashes and the two identifier pairs named as evidence.
 
+This stage is not a lettered F12 slice of the feature sheet: the spec's
+`### F12-B` and `### F12-C` are already merged stages with a different
+scope, and the owner resequenced the rest after this task was created. The
+rules below are therefore cited by task number (#351) and by the follow-ups
+#370 (F12-E) and #371 (F12-I).
+
 F12-A surveyed the two members and listed what the survey could not settle.
 This stage settles four of those points from the retail data itself and
 records the rest as unknowns. **Nothing here was guessed**: every rule in
@@ -30,7 +36,9 @@ unknown.
   `RawField::value` instead of trimming `text` itself; the module doc and
   `ConfigEntry::key` no longer call the fold unknown.
 - `crates/cs_formats/src/text/dialect.rs`: the `KeyedList` row's `unknowns`
-  list — the three entries that are now established are gone, the rest stay.
+  list — the three entries that are now established are gone, the `@` around
+  a section name (unknown 7, which the row never carried) is added, and the
+  rest stay.
 - `crates/cs_formats/src/text/tests_t351.rs` (new) and the two new tests in
   `config.rs`: the `accept_t351_*` tests.
 - Wiring only: `crates/cs_formats/src/text/mod.rs` (`mod tests_t351;` and a
@@ -59,8 +67,9 @@ reader and the production member reader:
 | Measurement | Value |
 | --- | --- |
 | `[@…@]` sections in `LAYOUT.CSV` | 34 (plus one unwrapped `[GLOBALVARS]`) |
-| Sections named by a `.SCRIPT` base name | 34 |
+| Section names a `.SCRIPT` base name matches, compared without regard to ASCII case | 34 (exactly one section per script, never two) |
 | …of those, spelled **exactly** like the script's base name | **0** |
+| Section headers the layout indents (10 tabs, 2 four-space) | 12 |
 | Object names a script writes by hand (`.YC = "…"`) | 438 |
 | …that resolve to an entry key of the section | 402 |
 | …that resolve **case-insensitively** | **402** |
@@ -70,6 +79,18 @@ reader and the production member reader:
 | Names a script builds at run time (a prefix plus a counter, or a variable joined with a suffix) | 40 (35 prefixed, 5 joined) |
 | …of those, matching a key case-insensitively | 40 (0 exactly) |
 | Bound names no entry carries | 1 (one text object of the main menu) |
+| Case-insensitive duplicate keys **within** one section | 0 (in both members) |
+
+The last row is what makes the fold safe for this data: a name that answers
+one lookup twice is refused as ambiguous, and the retail layout never has
+one. Across sections the keys do repeat — `V1`…`V8` are section-local
+variable definitions reused by most sections — but that is a different name
+in a different section, which the lookup already scopes apart.
+
+The exact-name row is measured on the section name *as the member writes it*
+(`@MainMenu@`), against the script's base name (`MAINMENU`). The `@`
+wrapper is dropped for the case-insensitive match only; whether the
+original's own key carries the `@` is unknown 7 below.
 
 Consequences, and only these:
 
@@ -80,14 +101,14 @@ Consequences, and only these:
   ASCII, and what the original does with a byte above `0x7F` is **not**
   established (recorded below), so the implementation folds ASCII only.
 - **R2 — the blank bytes before a marker are not part of the name.** Twelve
-  of the 34 section headers are indented and 145 of the 402 resolved object
-  names sit on an indented entry line; those sections are the ones whose
-  scripts bind objects, so their names are read without the indent. A tab
-  and four spaces are used interchangeably for the same nesting (ten tabs,
-  two four-space indents, mixed *within* one section), so neither the width
-  nor the character of the indent means anything. What the nesting *means*
-  (a page inside a parent) is a data-model question, not a lexical one, and
-  stays open.
+  of the 35 section headers are indented and 145 of the 402 resolved object
+  names sit on an indented entry line; the sections that are indented are
+  among the ones whose scripts bind objects, so their names are read without
+  the indent. A tab and four spaces are used interchangeably for the same
+  nesting (ten tabs, two four-space indents, mixed *within* one section), so
+  neither the width nor the character of the indent means anything. What the
+  nesting *means* (a page inside a parent) is a data-model question, not a
+  lexical one, and stays open (unknown 8).
 - **R3 — the blank bytes between a key and its `=` are not part of it.** 271
   of the 402 resolved names sit on such a line, padded by one to sixteen
   blanks. The reader already trimmed the key; what is new is that the trim
@@ -97,8 +118,8 @@ R1-R3 change no byte in the reader: the nodes, their ranges and
 `reassemble()` are untouched. R1 changed one consumer,
 `ConfigDocument::lookup`, which used to compare exact bytes and now folds
 ASCII case (and still answers `Lookup::Ambiguous` when the fold makes two
-entries collide — no case-insensitive duplicate key exists in either
-surveyed member, so the retail data is unaffected).
+entries collide — no section of either surveyed member spells one key twice
+under a fold, so the retail data is unaffected).
 
 ## R4: the blank bytes around a field are dropped before it is used
 
@@ -187,6 +208,9 @@ guessed anywhere in the code:
    inside an unquoted field, is unmeasured.
 3. **A line with no `=`.** Exactly one such line exists (line 101 of
    `LAYOUT.CSV`): a `:` followed by English prose, with no `=` and no `;`.
+   `accept_t351_retail_object_names_resolve_only_case_insensitively` pins
+   that the member has exactly one unclassified line, that the reader
+   classifies it as `NoSeparator`, and that its first non-blank byte is `:`.
    What is *established* is only the negative. Every entry of
    `LAYOUT.CSV` is one of 186 `V`/`G` variable definitions or 636 object
    records whose first field is one of the ten record letters the file's own
@@ -250,12 +274,33 @@ of the running game.
 | Test | Covers |
 | --- | --- |
 | `cs_formats::text::tests_t351::…field_value_drops_surrounding_blanks` | **R4** on an authored member: padded fields of both kinds, a field of blanks only, a blank inside quotes kept, `raw`/`text` still verbatim, byte-exact reassembly, and the two quoting shapes a quoted field can never have (`TextAfterClosingQuote`, `QuoteInsideField`) staying whole |
-| `…retail_object_names_resolve_only_case_insensitively` (ignored, retail) | **R1-R3** on the retail pair: 34 sections, 0 exact section names, 402 hand-written object names with 0 exact matches, 271 padded keys, 145 indented lines, 40 run-time names, the 1 dangling name, read through `read_keyed_list` and `read_member` |
+| `…retail_object_names_resolve_only_case_insensitively` (ignored, retail) | **R1-R3** on the retail pair: 34 sections and exactly one per script, 0 exact section names, 402 hand-written object names with 0 exact matches, 271 padded keys, 145 indented lines, 40 run-time names, the 1 dangling name, no case-insensitive duplicate key within a section, and the member's single `NoSeparator` line — all read through `read_keyed_list` and `read_member` |
 | `…retail_padded_fields_name_defined_resource_ids` (ignored, retail) | **R4** on the retail member: 461 quoted fields, exactly 7 padded unquoted fields, every one a `IDS_` name a `.H` member defines, read through `read_keyed_list` and `read_resource_header` |
 | `cs_content::config::tests::…lookup_resolves_names_without_regard_to_case` | **R1** through the document: a folded section and key resolve, the entry keeps the bytes, two keys differing only in case answer `Ambiguous(2)` and consume nothing, a name differing in more than case is `Missing`, a byte above `0x7F` is not folded, and the consumed/unconsumed accounting follows |
 | `…field_value_drops_surrounding_blanks` | **R4** through owned nodes: `RawField::value` against `text`/`raw`, a blank inside quotes kept, and a padded numeric field converting through `TuningSchema::tune` to the same constant an unpadded one would |
 
 The retail tests fail with "CS_GAME_DIR is not set" when run without it.
+
+### Reviewer corrections (bunny-1, review of #351)
+
+The first submission's `exact_section_names` assertion compared the section
+name — which the reader reports *between* the brackets, e.g. `@MainMenu@` —
+against `[@MAINMENU@]`, brackets included. Those can never be equal, so
+`assert_eq!(exact_section_names, 0, …)` was vacuous: it passed whatever the
+retail data said. The comparison is now `@MAINMENU@` against `@MainMenu@`,
+the test also refuses a base name the layout spells more than once, and a
+mutation probe (always counting a match) makes the assertion report 34
+instead of 0, so it now discriminates. The measurement itself is unchanged:
+0 of 34.
+
+The reviewer also re-derived every number in the two retail tables from the
+decoded members and found them correct, pinned two claims that were prose
+only (no case-insensitive duplicate key within a section; the single
+unclassified line), removed an invented rule label `R5` that existed in a
+doc comment but nowhere in the rules or this document, corrected the module
+heading that called this stage `F12-B` (an already-merged stage with a
+different scope), and added the `@`-wrapper unknown to the `KeyedList`
+inventory row.
 
 ## Mutation probes
 
@@ -265,6 +310,7 @@ The retail tests fail with "CS_GAME_DIR is not set" when run without it.
 | `names_match` compares the section name byte for byte | the same |
 | `RawField::value` returns `text()` | both `cs_content::…` tests |
 | `Field::value` returns `text` | `cs_formats::…field_value_drops_surrounding_blanks`, `…retail_padded_fields_name_defined_resource_ids` |
+| the retail test's section-name match is always true | `…retail_object_names_resolve_only_case_insensitively` (34 against 0) |
 
 ## Commands
 
