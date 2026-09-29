@@ -4,12 +4,17 @@
 //! resolves to tests: the selection must run at least one test, none may
 //! fail, and every discovered test must pass again when re-run alone with
 //! `--exact`. These tests drive the production gate
-//! (`cs_xtask::test_select`) against the real workspace for the positive
-//! cases, and against real harness output for the failure cases a green
-//! workspace cannot produce on its own (a failing test, an empty selection, a
-//! build that failed). Removing the gate — or making it return success
-//! unconditionally — fails them.
+//! (`cs_xtask::test_select`) end to end — real `cargo test` runs, real
+//! harness output, real exit codes — but against throwaway fixture
+//! workspaces under `target/`, never against this one: a nested
+//! `cargo test --workspace` on this tree serialized on the same target
+//! lock the outer run needs and sat at 0% CPU for 30-60 s per run, several
+//! at once, stalling the whole suite. The failure cases a green fixture
+//! cannot produce on its own (a failing test, an empty selection, a build
+//! that failed) are classified from captured harness output. Removing the
+//! gate — or making it return success unconditionally — fails them.
 
+use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -21,20 +26,58 @@ fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
 }
 
-/// A prefix that exists in this workspace and passes: the gate must really
-/// run it and count what ran.
+/// Root every fixture workspace is created under (inside the gitignored
+/// `target/`, so nothing lands in Git and `cargo clean` reaps it).
+fn fixtures_root() -> PathBuf {
+    workspace_root().join("target/f00-c-test-select-fixtures")
+}
+
+/// Two tests the gate can discover, run and re-run alone.
+const PASSING_TESTS: &str = "\
+#[test]
+fn accept_fixture_alpha() {}
+
+#[test]
+fn accept_fixture_beta() {}
+";
+
+/// A self-contained workspace whose tests `test_select` can really run:
+/// its own `[workspace]` table keeps cargo off this checkout's workspace
+/// and target lock, the hand-written lockfile satisfies the gate's
+/// `--locked`, and `test_source` becomes its `tests/accept_fixture.rs`.
+fn fixture(name: &str, test_source: &str) -> PathBuf {
+    let root = fixtures_root().join(name);
+    let _ = fs::remove_dir_all(&root);
+    fs::create_dir_all(root.join("tests")).expect("the fixture test directory must be creatable");
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname = \"gate-fixture\"\nversion = \"0.0.0\"\nedition = \"2024\"\n\n[workspace]\n",
+    )
+    .expect("the fixture manifest must be writable");
+    fs::write(
+        root.join("Cargo.lock"),
+        "version = 4\n\n[[package]]\nname = \"gate-fixture\"\nversion = \"0.0.0\"\n",
+    )
+    .expect("the fixture lockfile must be writable");
+    fs::write(root.join("tests/accept_fixture.rs"), test_source)
+        .expect("the fixture test file must be writable");
+    root
+}
+
+/// A prefix that exists in the fixture workspace and passes: the gate must
+/// really run it and count what ran.
 ///
 /// Observable failure if the gate is stubbed: a stub that reports success
-/// without running cargo never discovers
-/// `accept_f00_b_workspace_pins_the_intended_baseline`, so the name
-/// assertions fail; a stub that reports zero passes fails the count.
+/// without running cargo never discovers `accept_fixture_alpha`, so the
+/// name assertions fail; a stub that reports zero passes fails the count.
 #[test]
 fn accept_f00_c_prefix_selection_runs_and_counts_real_tests() {
-    let selection = test_select::select_tests(&workspace_root(), "accept_f00_b_")
-        .expect("the F00-B prefix must select and pass real tests");
+    let fixture_root = fixture("prefix-selection", PASSING_TESTS);
+    let selection = test_select::select_tests(&fixture_root, "accept_fixture_")
+        .expect("the fixture prefix must select and pass real tests");
 
     assert_eq!(
-        selection.prefix, "accept_f00_b_",
+        selection.prefix, "accept_fixture_",
         "the prefix must be echoed"
     );
     assert_eq!(selection.failed, 0, "a passing selection has no failures");
@@ -53,15 +96,15 @@ fn accept_f00_c_prefix_selection_runs_and_counts_real_tests() {
         selection
             .tests
             .iter()
-            .any(|name| name == "accept_f00_b_workspace_pins_the_intended_baseline"),
-        "the selection must discover the known F00-B test, got {:?}",
+            .any(|name| name == "accept_fixture_alpha"),
+        "the selection must discover the known fixture test, got {:?}",
         selection.tests
     );
     assert!(
         selection
             .tests
             .iter()
-            .all(|name| name.contains("accept_f00_b_")),
+            .all(|name| name.contains("accept_fixture_")),
         "only tests of the prefix may be reported, got {:?}",
         selection.tests
     );
@@ -75,26 +118,28 @@ fn accept_f00_c_prefix_selection_runs_and_counts_real_tests() {
 /// nothing must be an error, never a green run with zero tests.
 #[test]
 fn accept_f00_c_a_prefix_that_selects_nothing_is_an_error() {
-    let error = test_select::select_tests(&workspace_root(), "accept_f00_c_zz_no_such_test")
+    let fixture_root = fixture("empty-selection", PASSING_TESTS);
+    let error = test_select::select_tests(&fixture_root, "accept_fixture_zz_no_such_test")
         .expect_err("a prefix that selects no test must not be reported as success");
 
     assert!(
         matches!(
             &error,
-            SelectError::Empty { prefix } if prefix == "accept_f00_c_zz_no_such_test"
+            SelectError::Empty { prefix } if prefix == "accept_fixture_zz_no_such_test"
         ),
         "the rejection must name the empty prefix, got {error:?}"
     );
     assert!(
-        error.to_string().contains("accept_f00_c_zz_no_such_test"),
+        error.to_string().contains("accept_fixture_zz_no_such_test"),
         "the message must name the prefix, got {error}"
     );
 }
 
-/// An empty prefix is rejected before cargo is even started.
+/// An empty prefix is rejected before the workspace is even looked at —
+/// a path that does not exist would do as well.
 #[test]
 fn accept_f00_c_an_empty_prefix_is_rejected_before_running_cargo() {
-    let error = test_select::select_tests(&workspace_root(), "")
+    let error = test_select::select_tests(Path::new("no-such-workspace"), "")
         .expect_err("an empty prefix must be rejected instead of selecting everything");
     assert!(matches!(error, SelectError::EmptyPrefix), "got {error:?}");
 }
@@ -204,12 +249,13 @@ test result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; fini
 /// prefix cannot be rescued by an unrelated test that merely embeds it.
 #[test]
 fn accept_f00_c_exact_re_run_selects_each_discovered_test_alone() {
-    let known = "accept_f00_b_workspace_pins_the_intended_baseline".to_string();
-    test_select::verify_exact(&workspace_root(), std::slice::from_ref(&known))
+    let fixture_root = fixture("exact-re-run", PASSING_TESTS);
+    let known = "accept_fixture_alpha".to_string();
+    test_select::verify_exact(&fixture_root, std::slice::from_ref(&known))
         .expect("a discovered test must pass when re-run alone with --exact");
 
-    let unknown = "accept_f00_c_zz_no_such_test_exact".to_string();
-    let error = test_select::verify_exact(&workspace_root(), std::slice::from_ref(&unknown))
+    let unknown = "accept_fixture_zz_no_such_test_exact".to_string();
+    let error = test_select::verify_exact(&fixture_root, std::slice::from_ref(&unknown))
         .expect_err("an --exact run that selects nothing must fail");
     assert!(
         matches!(&error, SelectError::ExactEmpty { name } if name == &unknown),
@@ -254,19 +300,22 @@ test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; 
 /// execute the gate (select, then re-run each name with `--exact`) and report
 /// what it did, while a bad invocation is a usage error (exit 2) and an
 /// unusable workspace is a gate failure (exit 1) — never a silent success.
+/// The gate itself runs against a fixture workspace so this test never
+/// spawns cargo on the workspace it is part of.
 #[test]
 fn accept_f00_c_test_select_command_runs_the_gate() {
     let root = workspace_root();
+    let fixture_root = fixture("test-select-command", PASSING_TESTS);
     let bin = env!("CARGO_BIN_EXE_cs_xtask");
 
     let output = Command::new(bin)
         .args([
             "test-select",
             "--prefix",
-            "accept_f00_c_ci_workflow_runs_fmt",
+            "accept_fixture_",
             "--workspace-root",
         ])
-        .arg(&root)
+        .arg(&fixture_root)
         .output()
         .expect("the cs_xtask binary must run");
     assert_eq!(
@@ -277,7 +326,7 @@ fn accept_f00_c_test_select_command_runs_the_gate() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("selected accept_f00_c_ci_workflow_runs_fmt_clippy_and_workspace_tests"),
+        stdout.contains("selected accept_fixture_alpha"),
         "the command must print what it discovered, got: {stdout:?}"
     );
     assert!(
@@ -354,4 +403,59 @@ fn accept_f00_c_test_select_command_runs_the_gate() {
         String::from_utf8_lossy(&help.stdout).contains("test-select"),
         "--help must describe the gate"
     );
+}
+
+/// Regression tripwire: no test in this directory may drive the
+/// cargo-spawning gate (`select_tests`, `verify_exact`, `run_gate`, the
+/// `test-select` command or a direct cargo subprocess) against this
+/// workspace's root. A nested `cargo test` on this tree is what stalled the
+/// suite — pass a fixture workspace instead.
+#[test]
+fn accept_f00_c_gate_tests_stay_off_this_workspace() {
+    let tests_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    for entry in fs::read_dir(&tests_dir).expect("the tests directory must be readable") {
+        let path = entry.expect("a readable directory entry").path();
+        if path.extension() != Some("rs".as_ref()) {
+            continue;
+        }
+        let source = fs::read_to_string(&path).expect("a test source must be readable");
+        // Compare without whitespace so wrapping the code differently does
+        // not hide a call from the scan.
+        let flat: String = source
+            .chars()
+            .filter(|character| !character.is_whitespace())
+            .collect();
+
+        for spawn in [
+            "select_tests(",
+            "verify_exact(",
+            "run_gate(",
+            "\"test-select\"",
+            "Command::new(&cargo)",
+        ] {
+            let mut rest = flat.as_str();
+            while let Some(start) = rest.find(spawn) {
+                let window = &rest[start
+                    ..rest[start..]
+                        .find(';')
+                        .map_or(rest.len(), |end| start + end)];
+                assert!(
+                    !window.contains("workspace_root") && !window.contains("&root"),
+                    "{} calls {spawn} with this workspace's root — drive the gate \
+                     against a fixture workspace instead (nested cargo on this \
+                     tree stalled the suite)",
+                    path.display()
+                );
+                if spawn == "\"test-select\"" && window.contains("\"--prefix\"") {
+                    assert!(
+                        window.contains("\"--workspace-root\""),
+                        "{} runs test-select without --workspace-root, so the gate \
+                         would run cargo on the default workspace",
+                        path.display()
+                    );
+                }
+                rest = &rest[start + spawn.len()..];
+            }
+        }
+    }
 }

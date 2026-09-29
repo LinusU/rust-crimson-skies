@@ -116,6 +116,34 @@ fn fixture(name: &str) -> PathBuf {
     root
 }
 
+/// A manifest-only copy of the real workspace: the verbatim root manifest
+/// and `Cargo.lock` plus every member's verbatim manifest with stub
+/// `src/lib.rs`/`src/main.rs` targets. `cargo metadata --no-deps` resolves
+/// the same member set on it without ever spawning cargo on the real
+/// workspace (whose target lock is what the nested runs stalled on).
+fn manifest_copy(name: &str) -> PathBuf {
+    let copy = fixtures_root().join(name);
+    let _ = fs::remove_dir_all(&copy);
+    fs::create_dir_all(&copy).expect("the copy root must be creatable");
+    let root = workspace_root();
+    for file in ["Cargo.toml", "Cargo.lock"] {
+        fs::copy(root.join(file), copy.join(file)).expect("the workspace files must be copyable");
+    }
+    for member in REQUIRED_MEMBERS {
+        let member_dir = copy.join(member);
+        fs::create_dir_all(member_dir.join("src")).expect("the stub src dir must be creatable");
+        fs::copy(
+            root.join(member).join("Cargo.toml"),
+            member_dir.join("Cargo.toml"),
+        )
+        .expect("the member manifest must be copyable");
+        fs::write(member_dir.join("src/lib.rs"), "").expect("the stub lib must be writable");
+        fs::write(member_dir.join("src/main.rs"), "fn main() {}\n")
+            .expect("the stub main must be writable");
+    }
+    copy
+}
+
 /// Rewrites a fixture's `Cargo.toml` with exactly `members` listed.
 fn write_members(root: &Path, members: Vec<String>) {
     fs::write(root.join("Cargo.toml"), workspace_manifest(&members))
@@ -382,10 +410,16 @@ fn accept_f00_d_verify_bootstrap_command_reports_and_fails_loudly() {
 /// manifest path the gate checks. This is what makes a `MissingMember`
 /// failure meaningful — cargo agrees about who is in the workspace.
 ///
+/// Cargo runs on a manifest-only *copy* under `target/` — the root manifest,
+/// the member manifests and `Cargo.lock` verbatim, plus stub target files —
+/// so this test never starts another cargo process on the real workspace
+/// while still proving cargo resolves the committed members.
+///
 /// Observable failure if the member list drifts from reality: cargo reports
 /// a different set of `manifest_path`s than `REQUIRED_MEMBERS`.
 #[test]
 fn accept_f00_d_cargo_metadata_sees_every_required_member() {
+    let copy = manifest_copy("cargo-metadata");
     let cargo = std::env::var("CARGO").unwrap_or_else(|_| "cargo".to_string());
     let output = Command::new(&cargo)
         .args([
@@ -396,7 +430,7 @@ fn accept_f00_d_cargo_metadata_sees_every_required_member() {
             "1",
             "--manifest-path",
         ])
-        .arg(workspace_root().join("Cargo.toml"))
+        .arg(copy.join("Cargo.toml"))
         .output()
         .expect("cargo metadata must run");
     assert!(
@@ -411,9 +445,8 @@ fn accept_f00_d_cargo_metadata_sees_every_required_member() {
         REQUIRED_MEMBERS.len(),
         "cargo must resolve exactly the required workspace members"
     );
-    // cargo reports canonical paths; the manifest dir reaches the root via
-    // `tools/cs_xtask/../..`, so compare like with like.
-    let root = fs::canonicalize(workspace_root()).expect("the workspace root must be canonical");
+    // cargo reports canonical paths; compare like with like.
+    let root = fs::canonicalize(&copy).expect("the copy root must be canonical");
     for member in REQUIRED_MEMBERS {
         let manifest = root.join(member).join("Cargo.toml");
         assert!(
