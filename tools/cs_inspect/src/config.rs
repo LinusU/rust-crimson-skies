@@ -40,7 +40,14 @@
 //! guess. A root that does not contain the file contributes no candidate: it
 //! is a routing hint, not a precondition for reading the file, and a stale
 //! `CS_GAME_DIR` can therefore never turn a working run into a failure.
-//! Nothing is mounted and no other file of the installation is read.
+//! Nothing is mounted and no other file of the installation is read, and the
+//! root is never looked up on disk. Its letter case does not decide the
+//! member either: root components are compared ASCII case-insensitively, the
+//! way installation paths are keyed, and the remainder keeps its own case. A
+//! root with no components (`""`, or `.` against a relative `--file`) is the
+//! empty prefix, so a relative `--file` is already its own
+//! installation-relative spelling and routing degrades to the file name in
+//! every other case.
 //!
 //! The JSON report is one of two shapes, named by `"kind"`:
 //!
@@ -388,9 +395,12 @@ impl ConfigRun {
 /// the member and no inference may contradict it. Otherwise the file's
 /// installation-relative spelling comes first, because that is how the
 /// inventory writes every loose rule ([`MemberRule::Loose`]), and the file
-/// name last, because that is what a loose export carries. Two spellings that
-/// route to the same dialect are not two candidates: the more specific one
-/// is already tried.
+/// name last, because that is what a loose export carries. A file name that
+/// already *is* the installation-relative spelling (`<root>/strings.dll`) is
+/// listed once. A name that differs from it only in letter case stays a
+/// second candidate: [`dialect_for_member`] matches ASCII case-insensitively,
+/// so the more specific candidate already routes and the case-differing one
+/// is never reached.
 fn routing_candidates(
     container: Option<&str>,
     file: &Path,
@@ -419,6 +429,13 @@ fn routing_candidates(
 /// letter case disagrees with the `--file` path still routes the same member.
 /// A relative spelling that is absolute, empty, or carries a `.`/`..`
 /// component is no spelling at all, so it routes nothing.
+///
+/// A root with no components — `""`, or `.` on a relative `--file` — is the
+/// empty prefix, so a relative `--file` is its own installation-relative
+/// spelling and an absolute one begins with a root component whose `as_os_str`
+/// is `/`, which makes the joined spelling absolute and therefore invalid.
+/// Either way the empty root contributes nothing an absolute path can use, so
+/// routing degrades to the file name exactly as if no root were selected.
 fn installation_relative_spelling(root: &Path, file: &Path) -> Option<String> {
     fn parts(path: &Path) -> Vec<&OsStr> {
         path.components()
@@ -1533,7 +1550,93 @@ mod tests {
         assert_eq!(run.exit_code, 0, "{:?}", run.diagnostics);
         let report = run.report.expect("a report");
         assert!(report.contains("\"container\":\"strings.dll\""), "{report}");
+        // The override read the same bytes through the other member, and the
+        // two-block accounting says so: the file is not the one-block image
+        // the routing test reads at the same path.
+        assert!(report.contains("\"strings\":32"), "{report}");
         assert!(report.contains("\"text\":\"beta\""), "{report}");
+    }
+
+    /// The root's letter case does not decide the member. Root components
+    /// are matched ASCII case-insensitively — the way installation paths are
+    /// keyed — so a root spelled `/VAR/FOLDERS/…` routes a file spelled
+    /// `/var/folders/…`, and the routing never looks the root up on disk.
+    #[test]
+    fn accept_f12_d_config_routes_a_file_whose_root_disagrees_in_case() {
+        let temp = Temp::new("case");
+        let root = temp.0.clone();
+        let path = temp.write(LANGUI, &one_block_image());
+        let shouted: PathBuf = root
+            .components()
+            .map(|component| component.as_os_str().to_string_lossy().to_uppercase())
+            .collect();
+        assert_ne!(
+            shouted, root,
+            "the fixture root carries letters worth changing"
+        );
+        let run = config_run(&args(&[
+            "--file",
+            path.to_str().expect("utf-8 path"),
+            "--cs-path",
+            shouted.to_str().expect("utf-8 root"),
+            "--string",
+            "0:1033",
+        ]));
+        assert_eq!(run.exit_code, 0, "{:?}", run.diagnostics);
+        let report = run.report.expect("a report");
+        // The remainder keeps its own case, so the routed spelling is still
+        // the inventory's, not the shouted one.
+        assert!(
+            report.contains(&format!("\"container\":\"{LANGUI}\"")),
+            "{report}"
+        );
+    }
+
+    /// A root with no components is the empty prefix, which routes nothing
+    /// new: a relative `--file` is its own installation-relative spelling,
+    /// and an absolute one is refused by `RelativePath` for being absolute,
+    /// so the file name is the only candidate left. An exported but empty
+    /// `CS_GAME_DIR=` reaches the same place.
+    #[test]
+    fn accept_f12_d_config_an_empty_root_leaves_the_file_name_routing() {
+        let temp = Temp::new("empty-root");
+        let path = temp.write(LANGUI, &one_block_image());
+        let file = path.to_str().expect("utf-8 path");
+        for (source, run) in [
+            (
+                "--cs-path",
+                config_run(&args(&["--file", file, "--cs-path", ""])),
+            ),
+            (
+                "CS_GAME_DIR=",
+                config_command_result(&args(&["--file", file]), Some(OsString::new())),
+            ),
+        ] {
+            assert_eq!(
+                run.exit_code, EXIT_REFUSED,
+                "{source}: {:?}",
+                run.diagnostics
+            );
+            assert!(
+                run.diagnostics
+                    .iter()
+                    .any(|line| line.contains("no observed dialect covers \"langui.dll\"")),
+                "{source}: the empty root contributed no other candidate: {:?}",
+                run.diagnostics
+            );
+        }
+        // The relative half of the rule is a pure path computation, so it is
+        // pinned here rather than by changing the process's directory.
+        assert_eq!(
+            installation_relative_spelling(Path::new(""), Path::new(LANGUI)).as_deref(),
+            Some(LANGUI),
+            "an empty root leaves a relative spelling as it is"
+        );
+        assert_eq!(
+            installation_relative_spelling(Path::new(""), &path),
+            None,
+            "an absolute spelling is not a relative one"
+        );
     }
 
     /// The real installation: each of the three surveyed PE images routes by
