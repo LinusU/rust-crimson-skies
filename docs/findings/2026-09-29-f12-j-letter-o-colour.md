@@ -34,18 +34,20 @@ skip the stray byte, parse what it can, refuse the field, or clamp?
 (the section name is the script's base name, matching under the R1
 case-insensitive rule). The script binds the objects by name — it writes
 `"sbz_t_title"`, `"sbz_t_caption"` and `"sbz_t_text"` each concatenated
-with a slot letter handed in by `@scrapbook@`'s callback — assigns their
-text resource and geometry, and calls `initialize`. The layout has one
-`SBZ_T_*` triple per slot letter, A through Z (26 title records, pinned by
-the retail test), so the J rows are reachable content, not dead data.
+with a slot letter handed in by `@scrapbook@`'s callback into each
+object's `szid` — assigns each object's `nresid` text resource, and calls
+`initialize`. It writes no position and no colour on the text objects:
+the layout record supplies both. The layout has one `SBZ_T_*` triple per
+slot letter, A through Z (26 title records, pinned by the retail test),
+so the J rows are reachable content, not dead data.
 
 The script never writes the objects' colour property: the symbol map
 member `ASSETS/SCRIPTS/DEBUGINFO.TXT` shows a script-visible `goscolor`
 member exists, and other scripts do assign colours at run time
 (`setpencolor`, `packcolor`), but `SCRAPBOOKZOOM.SCRIPT` touches these
-objects' name, text resource and position only. So whatever colour the
-layout reader produced from `oxff1E283C` is the colour the original
-renders on every visit to the J zoom page.
+objects' `szid` (property `YC`) and `nresid` (property `DI`) only. So
+whatever colour the layout reader produced from `oxff1E283C` is the
+colour the original renders on every visit to the J zoom page.
 
 ## What static inspection can and cannot reach
 
