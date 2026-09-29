@@ -107,7 +107,7 @@ fn evidence_report_f14_d_writes_the_acceptance_report() {
     let retail_line = suite
         .assertions
         .iter()
-        .find(|(name, _)| name.starts_with("accept_f14_d_retail_"))
+        .find(|(name, _)| name.contains("accept_f14_d_retail_"))
         .unwrap_or_else(|| {
             panic!(
                 "the retail acceptance test did not run: F14-D requires capability `retail`, \
@@ -123,8 +123,8 @@ fn evidence_report_f14_d_writes_the_acceptance_report() {
         suite
             .assertions
             .iter()
-            .any(|(name, _)| name.starts_with("accept_f14_d_")
-                && !name.starts_with("accept_f14_d_retail_")),
+            .any(|(name, _)| name.contains("accept_f14_d_")
+                && !name.contains("accept_f14_d_retail_")),
         "synthetic task tests must be present alongside the retail one"
     );
 
@@ -436,7 +436,10 @@ fn parse_suite(log: &str) -> Suite {
             let name = after[..separator].to_owned();
             let tail = &after[separator + 5..];
             cursor = tail;
-            if !name.starts_with("accept_f14_d_") {
+            // `cargo test -- <prefix>` matches the prefix anywhere in the
+            // test name, so a unit test inside a module (and its historical
+            // `tests::` path) counts exactly as the selection counts it.
+            if !name.contains("accept_f14_d_") {
                 continue;
             }
             match tail.split_whitespace().next() {
