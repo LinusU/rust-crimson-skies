@@ -16,6 +16,7 @@
 use crate::ParseContext;
 
 use super::LineKind;
+use super::Unclassified;
 use super::dialect::{CRIMSON_ROF, MemberRule, TextDialect, dialect_for_member};
 use super::keyed_list::{Entry, Fields, KeyedList, read_keyed_list};
 use super::resource_header::{HeaderLookup, ResourceHeader, read_resource_header};
@@ -134,7 +135,9 @@ fn accept_t351_field_value_drops_surrounding_blanks() {
 /// none exactly, and none of the 402 object names the 34 UI scripts write by
 /// hand matches an entry key exactly — every one of them matches only when
 /// ASCII case is folded, 271 of them sit on a key padded before its `=` and
-/// 145 on an indented line.
+/// 145 on an indented line. It also pins what makes the fold safe here (no
+/// section spells one key twice under it) and the member's single line that
+/// no observed rule explains, which is recorded unknown rather than resolved.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_t351_retail_object_names_resolve_only_case_insensitively() {
@@ -168,6 +171,42 @@ fn accept_t351_retail_object_names_resolve_only_case_insensitively() {
         .filter(|(name, _)| name.starts_with(b"@") && name.ends_with(b"@"))
         .count();
     assert_eq!(wrapped, 34, "34 `[@…@]` sections and one GLOBALVARS");
+
+    // **R1** is a *fold* for the retail data only because no section spells
+    // one key twice under a fold. Where it does, `ConfigDocument::lookup`
+    // answers `Ambiguous`; this is the measurement behind that statement.
+    for (name, entries) in &sections {
+        let mut seen: Vec<Vec<u8>> = Vec::new();
+        for (key, _, _) in entries {
+            let folded = key.to_ascii_lowercase();
+            assert!(
+                !seen.contains(&folded),
+                "{name:?}: {key:?} is a case-insensitive duplicate"
+            );
+            seen.push(folded);
+        }
+    }
+
+    // The member's one line that is not an entry, a section, a comment or a
+    // blank line. The rule that no such line yields an entry is settled; what
+    // the original *does* with it is recorded unknown 3 of the findings, and
+    // pinning the line is what makes that unknown evidence-backed.
+    let unclassified: Vec<_> = layout.unclassified().collect();
+    assert_eq!(unclassified.len(), 1, "the one line with no `=`");
+    assert_eq!(
+        unclassified[0].kind,
+        LineKind::Unclassified {
+            reason: Unclassified::NoSeparator
+        }
+    );
+    assert_eq!(
+        unclassified[0]
+            .content
+            .iter()
+            .find(|byte| !byte.is_ascii_whitespace()),
+        Some(&b':'),
+        "its first non-blank byte is a colon, which no observed rule claims"
+    );
 
     let MemberRule::Directory {
         directory, count, ..
@@ -205,16 +244,23 @@ fn accept_t351_retail_object_names_resolve_only_case_insensitively() {
         let base = script.trim_end_matches(".SCRIPT");
         let member = format!("{directory}{script}");
         let bytes = retail_member(&rof, &member);
-        let mut section: Option<&Vec<Row>> = None;
-        for (name, entries) in &sections {
-            let inner = name
-                .strip_prefix(b"@")
-                .and_then(|rest| rest.strip_suffix(b"@"))
-                .unwrap_or(name);
-            if inner.eq_ignore_ascii_case(base.as_bytes()) {
-                section = Some(entries);
-            }
-        }
+        // The sections whose bare name is this script's base name, compared
+        // without regard to ASCII case (**R1**). At most one, or the
+        // measurement below is not about the name at all.
+        let matching: Vec<&Vec<u8>> = sections
+            .iter()
+            .map(|(name, _)| name)
+            .filter(|name| bare(name).eq_ignore_ascii_case(base.as_bytes()))
+            .collect();
+        assert!(
+            matching.len() <= 1,
+            "{base}: the layout spells this name {} times",
+            matching.len()
+        );
+        let section = sections
+            .iter()
+            .find(|(name, _)| bare(name).eq_ignore_ascii_case(base.as_bytes()))
+            .map(|(_, entries)| entries);
         let references = object_names(&bytes);
         let Some(entries) = section else {
             assert!(
@@ -224,10 +270,11 @@ fn accept_t351_retail_object_names_resolve_only_case_insensitively() {
             continue;
         };
         sections_named_by_a_script += 1;
-        if sections
-            .iter()
-            .any(|(name, _)| name == format!("[@{base}@]").as_bytes())
-        {
+        // **R1**: the section name is spelled in a different case from the
+        // script's base name. `bare` drops only the `@` wrapper, so this
+        // compares `@MainMenu@` with `MAINMENU`; whether the `@` is part of
+        // the original's own key is recorded as an unknown.
+        if matching[0] == format!("@{base}@").as_bytes() {
             exact_section_names += 1;
         }
         for reference in references {
@@ -361,6 +408,16 @@ fn accept_t351_retail_padded_fields_name_defined_resource_ids() {
 /// the key as written, whether the key was padded with blank bytes before its
 /// `=` (**R3**) and whether the line was indented (**R2**).
 type Row = (Vec<u8>, bool, bool);
+
+/// A section name without the `@` the layout wraps 34 of its 35 section
+/// names in. Whether the original's own key carries the `@` is a recorded
+/// unknown, so nothing here strips it: the measurement compares the name
+/// inside the wrapper, and the reader still reports it as written.
+fn bare(name: &[u8]) -> &[u8] {
+    name.strip_prefix(b"@")
+        .and_then(|rest| rest.strip_suffix(b"@"))
+        .unwrap_or(name)
+}
 
 /// One object name a script binds, in the two spellings the surveyed scripts
 /// use: a whole literal, or a variable followed by a literal suffix that the
