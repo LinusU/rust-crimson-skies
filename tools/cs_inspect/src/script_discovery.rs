@@ -276,7 +276,10 @@ pub fn scripts_command_result(args: &[String], env_cs_path: Option<OsString>) ->
 
     let word_bytes = parsed.word_bytes.unwrap_or(DEFAULT_WORD_BYTES);
     let budget = parsed.budget.unwrap_or(DEFAULT_BUDGET);
-    let assumed = parsed.word_bytes.is_none() && parsed.budget.is_none();
+    // A default that is still in force is an assumption, so *either* flag
+    // being absent keeps `probe.assumed` true: the unmeasured instruction
+    // unit must not hide behind an explicitly given budget.
+    let assumed = parsed.word_bytes.is_none() || parsed.budget.is_none();
     let config = match ProbeConfig::new(word_bytes, budget) {
         Ok(config) => config,
         Err(error) => return ScriptsRun::failed(2, error.to_string()),
@@ -424,22 +427,30 @@ pub fn scripts_command_result(args: &[String], env_cs_path: Option<OsString>) ->
 
 /// Renders one inventory record with its reachability verdict and evidence.
 ///
+/// The evidence carries its method and confidence, not only its note, so a
+/// reader of the report can tell a structural observation from a lead.
+///
 /// An unknown record nobody's probe reaches is rendered like every other one:
 /// dropping it would hide exactly the bytes F13 still has to explain (AC03).
 fn record_json(record: &ScriptRecord) -> String {
-    let reachability_evidence = record.reachability_evidence();
-    let reachability = match (record.reachability(), &reachability_evidence) {
-        (Some(verdict), evidence) => format!(
-            "{{\"status\": {}, \"programs\": {}, \"reason\": {}, \"evidence\": {}}}",
+    let reachability = match (record.reachability(), record.reachability_evidence()) {
+        (Some(verdict), Some(evidence)) => format!(
+            "{{\"status\": {}, \"programs\": {}, \"reason\": {}, \"method\": {}, \"confidence\": {}, \
+             \"evidence\": {}}}",
             jstr(verdict.label()),
             verdict.programs(),
             opt_str(match verdict {
                 RecordReachability::Unused { reason } => Some(reason),
                 RecordReachability::Used { .. } => None,
             }),
-            opt_str(evidence.as_ref().map(ScriptEvidence::note)),
+            jstr(evidence.method().label()),
+            jstr(evidence.confidence().label()),
+            jstr(evidence.note()),
         ),
-        (None, _) => "null".to_owned(),
+        // The verdict and its evidence are derived together, so one without the
+        // other cannot happen. Half of the evidence is never rendered: a
+        // verdict without the method and confidence behind it is not evidence.
+        _ => "null".to_owned(),
     };
     format!(
         "{{\"offset\": {}, \"length\": {}, \"kind\": {}, \"discriminator\": {}, \
@@ -1165,7 +1176,8 @@ mod tests {
             "{{\"offset\": {tail_start}, \"length\": 4, \"kind\": \"unclaimed\", \
              \"discriminator\": \"unknown\", \"instructions\": \"unestablished\", \
              \"reachability\": {{\"status\": \"unused\", \"programs\": 0, \"reason\": \"no located \
-             program overlaps these bytes, so no probe reaches this record\", \"evidence\": \
+             program overlaps these bytes, so no probe reaches this record\", \"method\": \
+             \"structural_decode\", \"confidence\": \"observed_tool\", \"evidence\": \
              \"no located program overlaps these bytes, so no probe reaches this record\"}}"
         );
         assert!(
@@ -1290,6 +1302,42 @@ mod tests {
         assert_eq!(result.exit_code, 2, "{:?}", result.diagnostics);
         let result = run(&tree.0, &["--word-bytes"]);
         assert_eq!(result.exit_code, 2, "{:?}", result.diagnostics);
+    }
+
+    /// Every default still in force is reported as an assumption: the
+    /// unmeasured instruction unit may not hide behind a budget the caller did
+    /// give, and a run that states both values states no assumption.
+    #[test]
+    fn accept_f13_c_cli_reports_a_defaulted_probe_configuration_as_assumed() {
+        let tree = Temp::new("f13c-assumed");
+        tree.write("ZBD/interp.zbd", &loading_with_unclaimed_tail());
+
+        // Only the budget is given: the instruction unit still defaults to 4.
+        let result = run(&tree.0, &["--budget", "64"]);
+        assert_eq!(result.exit_code, 0, "{:?}", result.diagnostics);
+        let report = result.report.expect("a report");
+        assert!(
+            report.contains("\"assumed\": true") && report.contains("\"word_bytes\": 4"),
+            "a defaulted instruction unit is reported as assumed:\n{report}"
+        );
+
+        // Only the instruction unit is given: the budget still defaults.
+        let result = run(&tree.0, &["--word-bytes", "4"]);
+        assert_eq!(result.exit_code, 0, "{:?}", result.diagnostics);
+        let report = result.report.expect("a report");
+        assert!(
+            report.contains("\"assumed\": true") && report.contains("\"budget\": 4096"),
+            "a defaulted budget is reported as assumed:\n{report}"
+        );
+
+        // Both values are stated: nothing about the run is assumed.
+        let result = run(&tree.0, &["--word-bytes", "4", "--budget", "64"]);
+        assert_eq!(result.exit_code, 0, "{:?}", result.diagnostics);
+        let report = result.report.expect("a report");
+        assert!(
+            report.contains("\"assumed\": false") && report.contains("\"budget\": 64"),
+            "a fully stated configuration reports no assumption:\n{report}"
+        );
     }
 
     // --- retail ---------------------------------------------------------------
@@ -1899,7 +1947,8 @@ mod tests {
              unmeasured by design: F13-C ships the probe machinery and the honest report, never \
              invented signatures, and the recorded unknowns are listed in \
              docs/findings/2026-09-29-f13-c-signature-probes-and-reachability.md. Validated with \
-             tools/validate_evidence.py --require-pass",
+             tools/validate_evidence.py --require-pass. Regenerated by the reviewing agent on the \
+             reviewed commit, as docs/contracts/CLI-EVIDENCE.md requires.",
             summary.zbd_containers,
             summary.programs,
             summary.script_containers,
@@ -1955,8 +2004,10 @@ mod tests {
             artifact(&log_path, "log"),
             artifact(&scripts_path, "json"),
             super::jstr(
-                "opencode-1 (implementing agent, fresh session); reviewer recorded by Rally at \
-                 complete_review",
+                "implementer: opencode-1 (fresh session); regenerated and validated by the \
+                 reviewing agent opencode-1 (fresh session, separate context) — the same agent \
+                 identity, so this review is not independent evidence under AGENTS.md; Rally \
+                 assigned the review",
             ),
             super::jstr(&method),
         );
