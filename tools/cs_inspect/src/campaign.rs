@@ -216,6 +216,11 @@ pub fn campaign_report(install_root: &Path, layout: &[CampaignLayoutEntry]) -> S
             summary.world_groups.push(entry.mission.world_group.clone());
         }
     }
+    // Canonical order inside a chapter, so the report does not depend on
+    // which mission in the chapter happens to be walked first.
+    for summary in &mut chapters {
+        summary.world_groups.sort();
+    }
 
     let mut chapters_json = String::new();
     for (index, summary) in chapters.iter().enumerate() {
