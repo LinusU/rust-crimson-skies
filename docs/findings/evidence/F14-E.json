@@ -1,9 +1,9 @@
 {
  "schema_version": 1,
  "task_id": "F14-E",
- "candidate_tree": "7cc4e30744516b561568b9ccd173a0052e379c8f",
+ "candidate_tree": "7bc15fe4f019a917d6038fa9f8d2041de3c067b3",
  "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
- "created_at": "2026-09-29T09:05:43Z",
+ "created_at": "2026-09-29T09:09:24Z",
  "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_f14_e_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/deepseek-1", "exit_code": 0},
  "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
  "seed": 0,
@@ -11,8 +11,8 @@
  "overrides": [],
  "capabilities": ["retail", "synthetic"],
  "tests": {"discovered": 6, "executed": 6, "passed": 6, "failed": 0, "ignored": 0},
- "assertions": [{"id": "accept_f14_e_layout_entry_exposes_the_mission_and_digest", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f14_e_campaign_report_lists_every_mission_directory", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f14_e_cs_path_wins_over_cs_game_dir_and_stdout_carries_json", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f14_e_the_digest_follows_the_archive_bytes", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f14_e_campaign_failures_propagate_named_exit_codes", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f14_e_retail_campaign_layout_declares_the_24_mission_baseline", "status": "pass", "evidence": ["cargo-test.log"]}],
- "artifacts": [{"path": "cargo-test.log", "sha256": "9348d82422541fd11f5050113d089066584573dd45f730ba729a8ca6b055b3fb", "kind": "log"}, {"path": "campaign-report.json", "sha256": "6b277754cafb0d18c2e30f7ec2d7b19d48edc44e209772c34a6e22d80e8554df", "kind": "json"}],
+ "assertions": [{"id": "accept_f14_e_command_result_renders_the_layout_in_memory", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f14_e_campaign_report_lists_every_mission_directory", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f14_e_cs_path_wins_over_cs_game_dir_and_stdout_carries_json", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f14_e_the_digest_follows_the_archive_bytes", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f14_e_campaign_failures_propagate_named_exit_codes", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f14_e_retail_campaign_layout_declares_the_24_mission_baseline", "status": "pass", "evidence": ["cargo-test.log"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "8aa6122c9f3af26c2931ca8d628fa7058dfa2f447a227ccffaece05d07b40393", "kind": "log"}, {"path": "campaign-report.json", "sha256": "6b277754cafb0d18c2e30f7ec2d7b19d48edc44e209772c34a6e22d80e8554df", "kind": "json"}],
  "unknowns": [],
  "review": {"identity": "deepseek-1 (implementing agent, self-check; the Rally reviewer regenerates this report on the rebased commit)", "method": "acceptance suite run locally with the retail capability; this harness derives every field from the recorded log, production discovery of $CS_GAME_DIR, the cs-inspect campaign output, rustc and Cargo.lock; validated with tools/validate_evidence.py --require-pass"},
  "claim": "implemented"
