@@ -30,7 +30,6 @@
 //! exit 1  a runtime failure walking the layout or writing --out
 //! ```
 
-use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -190,7 +189,6 @@ struct ChapterSummary {
     mission_count: usize,
     world_groups: Vec<String>,
 }
-
 /// Renders the deterministic JSON campaign-layout report.
 ///
 /// The mission list is already in `(chapter, mission number)` order from the
@@ -273,31 +271,39 @@ pub fn campaign_report(install_root: &Path, layout: &[CampaignLayoutEntry]) -> S
     )
 }
 
-/// Groups the layout by chapter: `(chapter, mission_count)`, in canonical
-/// order. A helper for tests and callers that want the totals without
-/// re-walking the JSON.
-pub fn chapter_counts(layout: &[CampaignLayoutEntry]) -> BTreeMap<u32, usize> {
-    let mut counts = BTreeMap::new();
-    for entry in layout {
-        *counts.entry(entry.mission.chapter).or_insert(0) += 1;
-    }
-    counts
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     #[test]
-    fn chapter_counts_keep_every_mission() {
+    fn report_groups_missions_by_chapter_and_sorts_the_world_groups() {
         let layout = vec![
-            entry(1, 1, "c1", true),
-            entry(1, 2, "c1b", true),
+            entry(1, 1, "c1c", true),
+            entry(1, 2, "c1", true),
             entry(2, 1, "c2", false),
         ];
-        let counts = chapter_counts(&layout);
-        assert_eq!(counts.get(&1), Some(&2));
-        assert_eq!(counts.get(&2), Some(&1));
+        let report = campaign_report(Path::new("/install"), &layout);
+        assert!(
+            report.contains("\"mission_count\":3"),
+            "every mission is counted, got: {report}"
+        );
+        assert!(
+            report.contains("\"chapter\":1,\"mission_count\":2,\"world_groups\":[\"c1\",\"c1c\"]"),
+            "chapter 1 keeps both world groups in canonical order, got: {report}"
+        );
+        assert!(
+            report.contains("\"chapter\":2,\"mission_count\":1,\"world_groups\":[\"c2\"]"),
+            "chapter 2 stays separate, got: {report}"
+        );
+        // A present archive carries its digest; an absent one is explicit.
+        assert!(
+            report.contains(&format!("\"program_sha256\":\"{}\"", "a".repeat(64))),
+            "a present archive carries a digest, got: {report}"
+        );
+        assert!(
+            report.contains("\"program_sha256\":null"),
+            "an absent archive is explicit, got: {report}"
+        );
     }
 
     /// A mission entry for the report tests: the digest is authored, since

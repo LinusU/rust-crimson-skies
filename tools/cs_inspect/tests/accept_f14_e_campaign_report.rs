@@ -18,7 +18,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use cs_assets::install::sha256;
-use cs_content::campaign_bindings::{CampaignLayoutEntry, campaign_layout};
+use cs_content::campaign_bindings::campaign_layout;
 
 use common::TempTree;
 
@@ -469,22 +469,26 @@ fn accept_f14_e_retail_campaign_layout_declares_the_24_mission_baseline() {
     );
 }
 
-/// `CampaignLayoutEntry` is the shared production record the command renders:
-/// a small guard that its public fields stay reachable to the consumers.
+/// The command body is public production code: without `--out` it renders
+/// the report in memory and reports the mission count, with the environment
+/// left untouched when `--cs-path` is given.
 #[test]
-fn accept_f14_e_layout_entry_exposes_the_mission_and_digest() {
-    let entry: CampaignLayoutEntry = CampaignLayoutEntry {
-        mission: cs_content::campaign_bindings::CampaignMission {
-            chapter: 4,
-            mission_number: 2,
-            world_group: "c4b".to_owned(),
-            program_asset: "ZBD/C4B/M02/zrdr.zbd".to_owned(),
-            program_present: true,
-        },
-        program_sha256: Some("f".repeat(64)),
-    };
-    assert_eq!(entry.mission.chapter, 4);
-    assert_eq!(entry.mission.mission_number, 2);
-    assert_eq!(entry.mission.world_group, "c4b");
-    assert!(entry.program_sha256.is_some());
+fn accept_f14_e_command_result_renders_the_layout_in_memory() {
+    let tree = campaign_tree("in-memory");
+    let run = cs_inspect::campaign::campaign_command_result(
+        &["--cs-path".to_owned(), tree.root().display().to_string()],
+        Some(std::ffi::OsString::from("/nonexistent-cs-game-dir")),
+    );
+    assert_eq!(run.exit_code, 0, "diagnostics: {:?}", run.diagnostics);
+    assert_eq!(run.mission_count, Some(3));
+    assert!(run.out.is_none(), "without --out no file is written");
+    let report = run.report.expect("the report was rendered");
+    assert!(
+        report.contains("\"mission_count\":3"),
+        "the in-memory report lists every mission, got: {report}"
+    );
+    assert!(
+        report.contains("\"program_asset\":\"ZBD/C1/M01/zrdr.zbd\""),
+        "the report names the on-disk spelling, got: {report}"
+    );
 }
