@@ -20,6 +20,11 @@
 //! * [`ledger`] is the checked table of reachable opcodes and the fail-closed
 //!   program walk: an opcode the ledger does not name stops the walk with the
 //!   mission and the program's source location.
+//! * [`probe`] is the isolated signature probe (F13-C): a caller-supplied set
+//!   of measured instruction/native signatures, one walk per located program
+//!   whose stop is recorded as data, a retry for exactly the stops more
+//!   evidence fixes, and the reachability verdict every inventory record
+//!   keeps — an unused unknown record stays visible with its evidence.
 //!
 //! The classification of the retail corpus is F13-B's `retail` work; F13-C
 //! resolves signatures. The design decisions and the recorded unknowns are in
@@ -32,6 +37,7 @@ pub mod discovery;
 pub mod evidence;
 pub mod inventory;
 pub mod ledger;
+pub mod probe;
 
 pub use discovery::{
     ANIMATION_HEADER_BYTES, CAM_ANIM_MEMBER, ContainerDiscovery, DiscoveryFinding, LocatedProgram,
@@ -45,11 +51,16 @@ pub use evidence::{
 pub use inventory::{
     Candidacy, DispatchOutcome, EXCLUDED_FAMILY_REASON, FormatDiscriminator,
     INTERP_BODY_UNESTABLISHED, InstructionClaimError, InstructionStatus, InventoryFinding,
-    InventoryStats, MAX_LEADS_PER_RECORD, MIN_LEAD_BYTES, RecordKind, RecordReference,
-    ReferenceKind, ScriptContainerEntry, ScriptInventory, ScriptRecord, ScriptRole, ScriptSource,
-    UNDECODED_UNESTABLISHED, inventory_scripts,
+    InventoryStats, MAX_LEADS_PER_RECORD, MIN_LEAD_BYTES, RecordKind, RecordReachability,
+    RecordReference, ReferenceKind, STRUCTURE_UNUSED_REASON, ScriptContainerEntry, ScriptInventory,
+    ScriptRecord, ScriptRole, ScriptSource, UNDECODED_UNESTABLISHED, UNREACHED_UNUSED_REASON,
+    inventory_scripts,
 };
 pub use ledger::{
     LedgerError, MAX_OPCODE_BYTES, OpcodeEntry, OpcodeLedger, ProgramError, ProgramLocator,
     ReachedOpcode, walk_program,
+};
+pub use probe::{
+    ClaimError, ProbeConfig, ProbeError, ProbeReport, ProbeSession, ProgramProbe, RecordProbeError,
+    RecordProbeStats, SignatureClaim, SignatureShape, SignatureTable, probe_records,
 };

@@ -11,10 +11,12 @@ use cs_formats::script_raw::{
     ByteSpan, Candidacy, Confidence, DiscoveryFinding, DispatchOutcome, EXCLUDED_FAMILY_REASON,
     EvidenceError, EvidenceLocator, FormatDiscriminator, INTERP_BODY_UNESTABLISHED,
     InstructionClaimError, InstructionStatus, InventoryFinding, LocatorKind, MAX_LEADS_PER_RECORD,
-    MAX_NOTE_BYTES, OpcodeEntry, OpcodeLedger, ProgramError, ProgramKind, ProgramLocator,
-    RecordKind, ReferenceKind, ResearchMethod, ScriptContainerEntry, ScriptEvidence,
-    ScriptInventory, ScriptRole, ScriptSource, UNDECODED_UNESTABLISHED, discover_container,
-    inventory_scripts, mission_scope, walk_program,
+    MAX_NOTE_BYTES, OpcodeEntry, OpcodeLedger, ProbeConfig, ProbeSession, ProgramError,
+    ProgramKind, ProgramLocator, RecordKind, RecordReachability, ReferenceKind, ResearchMethod,
+    STRUCTURE_UNUSED_REASON, ScriptContainerEntry, ScriptEvidence, ScriptInventory, ScriptRole,
+    ScriptSource, SignatureClaim, SignatureShape, SignatureTable, UNDECODED_UNESTABLISHED,
+    UNREACHED_UNUSED_REASON, discover_container, inventory_scripts, mission_scope, probe_records,
+    walk_program,
 };
 use cs_formats::zbd::{
     ANIMATION_SIGNATURE, ANIMATION_VERSION, INTERP_SIGNATURE, INTERP_VERSION, ZbdFamily,
@@ -1080,4 +1082,505 @@ fn accept_f13_b_retail_locates_mission_programs() {
     assert_eq!(discovery.len(), 1);
     assert_eq!(discovery.programs()[0].kind(), ProgramKind::CameraAnimation);
     assert_eq!(discovery.programs()[0].mission(), None);
+}
+
+// --- F13-C: isolated signature probes and record reachability ----------------
+//
+// Acceptance stage F13-C (`specs/F13-mission-language-discovery-and-
+// compatibility-closure.md`, section `### F13-C`, AC03: "An unused unknown
+// record remains visible in the report, with reachability evidence").
+// The bytes are still authored here; nothing in this section reads
+// `CS_GAME_DIR` except the single `#[ignore]`d retail test.
+
+/// Document-backed evidence for a signature claim: a cited findings note is
+/// the only thing a `--signatures` file can honestly carry.
+fn cited_evidence(citation: &str) -> ScriptEvidence {
+    ScriptEvidence::new(
+        ResearchMethod::DocumentReview,
+        Confidence::Documented,
+        EvidenceLocator::Document {
+            citation: citation.to_owned(),
+        },
+        "an isolated probe measured this signature and recorded it in a cited note",
+    )
+    .expect("document evidence is valid")
+}
+
+/// A complete, measured signature claim over the authored fixtures.
+fn measured_claim(opcode: u32, spelling: &str, program: ProgramKind) -> SignatureClaim {
+    SignatureClaim::new(
+        opcode,
+        spelling,
+        program,
+        0,
+        SignatureShape::new(
+            "u32 -> unit",
+            "records the fixture value",
+            "immediate",
+            "never",
+        ),
+        cited_evidence("docs/findings/2026-09-29-f13-c-signature-probes-and-reachability.md"),
+    )
+    .expect("a complete claim is accepted")
+}
+
+/// AC03: the unclaimed tail of a container no program covers stays in the
+/// inventory and in the report, carrying the reachability evidence that says
+/// nothing reaches it.
+#[test]
+fn accept_f13_c_unused_unknown_record_stays_visible_with_reachability_evidence() {
+    let loading = interp(
+        &[(b"boot", &[(1, b"go\0".as_slice())])],
+        b"\x01\x02JUNKDATA\x03",
+    );
+    let container = path("zbd/interp.zbd");
+    let discovery = discover_container("synthetic", &container, &loading);
+    assert_eq!(discovery.family(), Some(ZbdFamily::Interp));
+    assert_eq!(discovery.len(), 1, "one loading program is located");
+
+    let sources = [ScriptSource::new("synthetic", &container, &loading)];
+    let mut inventory = inventory_scripts(&sources);
+    let entry = inventory
+        .entries_mut()
+        .first_mut()
+        .expect("one source yields one entry");
+
+    // "Unused" is a measured verdict, never a default for an unprobed record.
+    assert!(
+        entry
+            .records()
+            .iter()
+            .all(|record| record.reachability().is_none())
+    );
+    assert!(
+        entry
+            .records()
+            .iter()
+            .all(|record| !record.is_unused_unknown())
+    );
+
+    let stats = probe_records(entry, &discovery).expect("the same container");
+    // header, one index entry, one script body, one unclaimed tail.
+    assert_eq!(stats.records, 4);
+    assert_eq!(stats.used, 1, "only the script body overlaps a program");
+    assert_eq!(stats.unused, 3);
+    assert_eq!(stats.unused_unknown, 1, "the AC03 case");
+    assert_eq!(
+        entry.records().len(),
+        4,
+        "the resolution pass drops no record"
+    );
+
+    let tail = entry
+        .records()
+        .iter()
+        .find(|record| record.kind() == RecordKind::Unclaimed)
+        .expect("the unclaimed tail is still listed");
+    assert!(tail.is_unused_unknown());
+    assert_eq!(
+        tail.reachability(),
+        Some(RecordReachability::Unused {
+            reason: UNREACHED_UNUSED_REASON
+        })
+    );
+    let evidence = tail
+        .reachability_evidence()
+        .expect("reachability evidence accompanies the verdict");
+    assert_eq!(evidence.method(), ResearchMethod::StructuralDecode);
+    assert_eq!(evidence.confidence(), Confidence::ObservedTool);
+    assert_eq!(
+        evidence.locator(),
+        &EvidenceLocator::ContainerSpan {
+            container: "synthetic".to_owned(),
+            span: tail.span(),
+        }
+    );
+    assert_eq!(evidence.note(), UNREACHED_UNUSED_REASON);
+    assert!(
+        evidence.establishes_semantics(),
+        "reachability is measured, not scanned"
+    );
+    // The string lead F13-A recorded is still there: nothing was erased.
+    assert!(!tail.references().is_empty());
+
+    let body = entry
+        .records()
+        .iter()
+        .find(|record| record.kind() == RecordKind::InterpScript { position: 0 })
+        .expect("the script body is listed");
+    assert_eq!(
+        body.reachability(),
+        Some(RecordReachability::Used { programs: 1 })
+    );
+    assert_eq!(
+        body.reachability_evidence().expect("evidence").note(),
+        "1 located program(s) overlap this record"
+    );
+    assert!(!body.is_unused_unknown());
+
+    for record in entry.records() {
+        let structural = record.kind() == RecordKind::InterpHeader
+            || matches!(record.kind(), RecordKind::InterpIndexEntry { .. });
+        if !structural {
+            continue;
+        }
+        assert_eq!(
+            record.reachability(),
+            Some(RecordReachability::Unused {
+                reason: STRUCTURE_UNUSED_REASON
+            })
+        );
+        assert!(!record.is_unused_unknown());
+    }
+
+    // A discovery of another container is refused instead of joined wrongly,
+    // and the refusal leaves the measured verdicts alone.
+    let other_path = path("zbd/c1/m02/zrdr.zbd");
+    let other_bytes = reader_archive(&[(b"aiv.zrd", b"\x01\x00\x00\x00")]);
+    let other = discover_container("other", &other_path, &other_bytes);
+    let error = probe_records(entry, &other).expect_err("a mismatched join is refused");
+    assert_eq!(error.code(), "path_mismatch");
+    assert!(error.to_string().contains("zbd/interp.zbd"));
+    assert_eq!(
+        entry
+            .records()
+            .iter()
+            .filter(|r| r.reachability().is_some())
+            .count(),
+        4,
+        "the refused probe changed nothing"
+    );
+}
+
+/// One program at a time: a measured signature moves the stop forward, a
+/// second one resolves the program, and the stop is recorded as data.
+#[test]
+fn accept_f13_c_signature_claims_resolve_a_program_in_isolation() {
+    let member = b"\x0a\x00\x00\x00\x0b\x00\x00\x00";
+    let bytes = reader_archive(&[(b"objectives.zrd", member)]);
+    let container = path("zbd/c1/m02/zrdr.zbd");
+    let discovery = discover_container("synthetic", &container, &bytes);
+    let program = &discovery.programs()[0];
+
+    let config = ProbeConfig::new(4, 64).expect("a valid instruction unit");
+    assert_eq!(config.word_bytes(), 4);
+    assert_eq!(config.budget(), 64);
+    let mut session = ProbeSession::new(SignatureTable::new(), config);
+
+    let index = session.probe(program).expect("the session runs probes");
+    let probe = &session.probes()[index];
+    assert_eq!(probe.mission(), "zbd/c1/m02");
+    assert_eq!(probe.kind(), ProgramKind::Mission);
+    assert_eq!(probe.confidence(), Confidence::Inferred);
+    assert_eq!(probe.attempts(), 1);
+    assert!(!probe.resolved());
+    assert!(probe.retryable());
+    assert_eq!(probe.code(), "unknown_opcode");
+    assert_eq!(
+        probe.first_unknown(),
+        Some((ByteSpan::new(0, 4), 0x0000_000a))
+    );
+    assert!(
+        probe.reached().is_empty(),
+        "a stopped walk reports no partial progress"
+    );
+    assert_eq!(
+        probe.stop().and_then(ProgramError::mission),
+        Some("zbd/c1/m02")
+    );
+
+    // One measured signature moves the stop exactly one instruction forward.
+    session
+        .extend(measured_claim(0x0a, "first", ProgramKind::Mission))
+        .expect("the claim is measured");
+    session
+        .retry(index, program)
+        .expect("an unknown opcode is the retryable stop");
+    let probe = &session.probes()[index];
+    assert_eq!(probe.attempts(), 2);
+    assert_eq!(
+        probe.first_unknown(),
+        Some((ByteSpan::new(4, 4), 0x0000_000b))
+    );
+
+    // The second signature resolves the whole program.
+    session
+        .extend(measured_claim(0x0b, "second", ProgramKind::Mission))
+        .expect("the claim is measured");
+    session
+        .retry(index, program)
+        .expect("the last unknown opcode is retryable");
+    let probe = &session.probes()[index];
+    assert!(probe.resolved());
+    assert_eq!(probe.code(), "resolved");
+    assert_eq!(probe.attempts(), 3);
+    assert_eq!(probe.reached().len(), 2);
+    assert_eq!(
+        probe
+            .reached()
+            .iter()
+            .map(|reached| reached.opcode)
+            .collect::<Vec<_>>(),
+        [0x0a, 0x0b]
+    );
+    assert_eq!(probe.reached()[1].pc, ByteSpan::new(4, 4));
+
+    // A resolved program has nothing left to fix, so it is not re-run.
+    assert_eq!(
+        session.retry(index, program).map_err(|error| error.code()),
+        Err("not_retryable")
+    );
+
+    let report = session.teardown();
+    assert!(session.is_closed());
+    assert_eq!(report.len(), 1);
+    assert_eq!(report.resolved(), 1);
+    assert_eq!(report.unresolved(), 0);
+    assert_eq!(report.retryable(), 0);
+    assert!(report.complete());
+    assert_eq!(report.table().len(), 2);
+    assert_eq!(report.config(), config);
+    let ledger = report.table().ledger();
+    assert_eq!(
+        ledger.lookup(0x0a).map(OpcodeEntry::spelling),
+        Some("first")
+    );
+    assert_eq!(
+        ledger.lookup(0x0b).map(OpcodeEntry::spelling),
+        Some("second")
+    );
+
+    // Teardown is a real boundary: the closed session refuses more work
+    // instead of continuing against a state nobody will read.
+    assert_eq!(
+        session.probe(program).map_err(|error| error.code()),
+        Err("session_closed")
+    );
+    assert_eq!(
+        session
+            .extend(measured_claim(0x0c, "third", ProgramKind::Mission))
+            .map_err(|error| error.code()),
+        Err("session_closed")
+    );
+    assert_eq!(
+        session.retry(index, program).map_err(|error| error.code()),
+        Err("session_closed")
+    );
+    assert!(session.is_closed());
+}
+
+/// Every refusal the probe layer has to propagate: a claim that says nothing
+/// or cites a scan, an ambiguous opcode, a structural stop and a program that
+/// is not the one that was probed. Two programs are probed even though the
+/// first one stops, so one failure never aborts the run.
+#[test]
+fn accept_f13_c_probe_session_refuses_weak_claims_and_structural_stops() {
+    assert_eq!(
+        ProbeConfig::new(0, 8).map_err(|error| error.code()),
+        Err("invalid_word_width")
+    );
+    assert_eq!(
+        ProbeConfig::new(5, 8).map_err(|error| error.code()),
+        Err("invalid_word_width")
+    );
+    // A zero budget is allowed: the walk refuses the program at once.
+    assert!(ProbeConfig::new(4, 0).is_ok());
+
+    let shape = || SignatureShape::new("u32 -> unit", "effect", "immediate", "never");
+    assert_eq!(
+        SignatureClaim::new(
+            1,
+            "  ",
+            ProgramKind::Mission,
+            0,
+            shape(),
+            cited_evidence("docs/findings/2026-09-29-f13-c-signature-probes-and-reachability.md"),
+        )
+        .map_err(|error| error.code()),
+        Err("empty_field")
+    );
+    assert_eq!(
+        SignatureClaim::new(
+            1,
+            "spelling",
+            ProgramKind::Mission,
+            0,
+            SignatureShape::new("", "effect", "immediate", "never"),
+            cited_evidence("docs/findings/2026-09-29-f13-c-signature-probes-and-reachability.md"),
+        )
+        .map_err(|error| error.code()),
+        Err("empty_field")
+    );
+    // A scan lead never resolves a signature: it cannot establish meaning.
+    assert_eq!(
+        SignatureClaim::new(
+            1,
+            "spelling",
+            ProgramKind::Mission,
+            0,
+            shape(),
+            scan_evidence("synthetic", ByteSpan::new(0, 4)),
+        )
+        .map_err(|error| error.code()),
+        Err("weak_evidence")
+    );
+
+    let mut table = SignatureTable::new();
+    assert!(table.is_empty());
+    table
+        .insert(measured_claim(1, "first", ProgramKind::Mission))
+        .expect("the first claim is accepted");
+    assert_eq!(
+        table
+            .insert(measured_claim(1, "other", ProgramKind::Mission))
+            .map_err(|error| error.code()),
+        Err("duplicate_opcode"),
+        "one opcode value with two signatures is ambiguous"
+    );
+    assert_eq!(table.len(), 1);
+    assert!(table.get(1).is_some());
+    assert!(table.get(2).is_none());
+
+    // A program whose bytes are not a whole instruction stops structurally:
+    // it is reported, and more evidence cannot make it retryable.
+    let truncated_bytes = reader_archive(&[(b"a.zrd", b"\x01\x02\x03")]);
+    let truncated_path = path("zbd/c1/m02/zrdr.zbd");
+    let truncated = discover_container("truncated", &truncated_path, &truncated_bytes);
+    // A second, independent container: probing it must not disturb the first.
+    let other_bytes = reader_archive(&[(b"b.zrd", b"\x02\x00\x00\x00")]);
+    let other_path = path("zbd/c1/m03/zrdr.zbd");
+    let other = discover_container("other", &other_path, &other_bytes);
+
+    let config = ProbeConfig::new(4, 64).expect("a valid instruction unit");
+    let mut session = ProbeSession::new(table, config);
+    let truncated_index = session
+        .probe(&truncated.programs()[0])
+        .expect("the first program is probed");
+    let other_index = session
+        .probe(&other.programs()[0])
+        .expect("one stopped probe does not abort the run");
+    assert_eq!(session.probes().len(), 2, "the probes are isolated");
+    assert_eq!(session.probes()[truncated_index].code(), "truncated_opcode");
+    assert!(!session.probes()[truncated_index].retryable());
+    // The second program stops where its own bytes say, not where the first
+    // one did.
+    assert_eq!(
+        session.probes()[other_index].first_unknown(),
+        Some((ByteSpan::new(0, 4), 0x0000_0002))
+    );
+
+    assert_eq!(
+        session
+            .retry(truncated_index, &truncated.programs()[0])
+            .map_err(|error| error.code()),
+        Err("not_retryable")
+    );
+    assert_eq!(
+        session
+            .retry(7, &truncated.programs()[0])
+            .map_err(|error| error.code()),
+        Err("no_such_probe")
+    );
+    assert_eq!(
+        session
+            .retry(other_index, &truncated.programs()[0])
+            .map_err(|error| error.code()),
+        Err("mismatched_program")
+    );
+    let refusal = session
+        .retry(other_index, &truncated.programs()[0])
+        .map(|()| String::new())
+        .unwrap_or_else(|error| error.to_string());
+    assert!(
+        refusal.contains("container `other`") && refusal.contains("container `truncated`"),
+        "the refusal names both programs: {refusal}"
+    );
+
+    let report = session.teardown();
+    assert_eq!(report.len(), 2);
+    assert_eq!(report.resolved(), 0);
+    assert_eq!(report.unresolved(), 2);
+    assert!(!report.complete());
+    // Exactly one stop is the retryable unknown opcode.
+    assert_eq!(report.retryable(), 1);
+}
+
+/// AC03 over the original installation: every sampled container's records
+/// carry a reachability verdict and its evidence, no retail byte range is
+/// both unknown and unused, and the empty table resolves nothing — the honest
+/// state of a corpus whose mission opcode table is unmeasured.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_f13_c_retail_reachability_covers_the_campaign_programs() {
+    let root = game_dir();
+    let samples = [
+        ("ZBD/interp.zbd", "zbd/interp.zbd"),
+        ("ZBD/C1/M02/zrdr.zbd", "zbd/c1/m02/zrdr.zbd"),
+        ("ZBD/C1/M02/mis_anim.zbd", "zbd/c1/m02/mis_anim.zbd"),
+        ("ZBD/C1/cam_anim.zbd", "zbd/c1/cam_anim.zbd"),
+    ];
+    let config = ProbeConfig::new(4, 4096).expect("a valid instruction unit");
+    let mut session = ProbeSession::new(SignatureTable::new(), config);
+    let mut records = 0usize;
+    let mut probed = 0usize;
+    let mut unused_unknown = 0usize;
+    for (host, logical) in samples {
+        let bytes =
+            fs::read(root.join(host)).unwrap_or_else(|error| panic!("read {host}: {error}"));
+        let relative = path(logical);
+        let discovery = discover_container(logical, &relative, &bytes);
+        assert!(
+            discovery.findings().is_empty(),
+            "{logical}: {:?}",
+            discovery.findings()
+        );
+        assert!(!discovery.is_empty(), "{logical} locates a program");
+        let sources = [ScriptSource::new(logical, &relative, &bytes)];
+        let mut inventory = inventory_scripts(&sources);
+        let entry = inventory
+            .entries_mut()
+            .first_mut()
+            .expect("one source yields one entry");
+        let stats = probe_records(entry, &discovery).expect("the same container");
+        records += stats.records;
+        unused_unknown += stats.unused_unknown;
+        for record in entry.records() {
+            assert!(
+                record.reachability().is_some(),
+                "{logical} {} was never probed",
+                record.span()
+            );
+            assert!(
+                record.reachability_evidence().is_some(),
+                "{logical} {} has no reachability evidence",
+                record.span()
+            );
+        }
+        for program in discovery.programs() {
+            let index = session.probe(program).expect("the session runs probes");
+            let probe = &session.probes()[index];
+            assert!(
+                !probe.resolved(),
+                "{logical} {} resolved without a claim",
+                program.locator().span()
+            );
+            probed += 1;
+        }
+    }
+    // One header, 98 index entries and 98 script bodies from interp.zbd,
+    // plus one opaque record from each of the three archives.
+    assert_eq!(records, 200);
+    assert_eq!(unused_unknown, 0, "every retail unknown range is covered");
+    assert!(probed > 98, "every sampled program was probed");
+
+    let report = session.teardown();
+    assert_eq!(report.len(), probed);
+    assert_eq!(
+        report.resolved(),
+        0,
+        "the fleet has measured no mission opcode"
+    );
+    assert_eq!(report.retryable(), report.unresolved());
+    assert!(!report.complete());
+    assert!(report.table().is_empty());
 }

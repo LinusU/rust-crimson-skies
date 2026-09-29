@@ -55,6 +55,17 @@ pub const UNDECODED_UNESTABLISHED: &str =
 pub const EXCLUDED_FAMILY_REASON: &str = "no committed evidence ties this family to script, \
      animation-event or binding records";
 
+/// Why a record no located program overlaps is unused when the record is
+/// decoded container structure (an INTERP header or index entry): it is read
+/// by the reader, not reached as a program.
+pub const STRUCTURE_UNUSED_REASON: &str =
+    "decoded container structure; no located program overlaps it";
+
+/// Why a record no located program overlaps is unused when the record is a
+/// body: no probe reaches these bytes.
+pub const UNREACHED_UNUSED_REASON: &str =
+    "no located program overlaps these bytes, so no probe reaches this record";
+
 /// One container handed to the inventory.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScriptSource<'a> {
@@ -161,6 +172,17 @@ pub enum FormatDiscriminator {
     Unknown,
 }
 
+impl FormatDiscriminator {
+    /// Stable lowercase label for reports.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Signature { .. } => "signature",
+            Self::Unvalidated { .. } => "unvalidated",
+            Self::Unknown => "unknown",
+        }
+    }
+}
+
 /// What a record is, structurally.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RecordKind {
@@ -241,6 +263,69 @@ impl InstructionStatus {
             Self::Unestablished { .. } => "unestablished",
             Self::Established { .. } => "established",
         }
+    }
+}
+
+/// Whether any located program reaches a record, attached by
+/// `crate::script_raw::probe::probe_records` (spec F13 AC03).
+///
+/// A record nobody's probe uses stays in the inventory with this verdict and
+/// its evidence: dropping it would hide exactly the bytes F13 still has to
+/// explain.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordReachability {
+    /// At least one located program's byte range overlaps the record.
+    Used {
+        /// How many located programs overlap it.
+        programs: usize,
+    },
+    /// No located program overlaps the record; `reason` says why that is
+    /// expected (structure) or that nothing reaches it.
+    Unused {
+        /// Why nothing overlaps it.
+        reason: &'static str,
+    },
+}
+
+impl RecordReachability {
+    /// Stable lowercase label for reports.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Used { .. } => "used",
+            Self::Unused { .. } => "unused",
+        }
+    }
+
+    /// How many located programs overlap the record (0 when unused).
+    pub const fn programs(self) -> usize {
+        match self {
+            Self::Used { programs } => programs,
+            Self::Unused { .. } => 0,
+        }
+    }
+
+    /// Whether no located program overlaps the record.
+    pub const fn is_unused(self) -> bool {
+        matches!(self, Self::Unused { .. })
+    }
+
+    /// The reachability evidence for `span` in `container`: a structural
+    /// tool observation, never a claim that the bytes are instructions.
+    pub fn evidence(self, container: &str, span: ByteSpan) -> ScriptEvidence {
+        let note = match self {
+            Self::Used { programs } => format!("{programs} located program(s) overlap this record"),
+            Self::Unused { reason } => (*reason).to_owned(),
+        };
+        ScriptEvidence::new(
+            ResearchMethod::StructuralDecode,
+            Confidence::ObservedTool,
+            EvidenceLocator::ContainerSpan {
+                container: container.to_owned(),
+                span,
+            },
+            note,
+        )
+        .expect("reachability evidence is a short structural note")
     }
 }
 
@@ -325,6 +410,7 @@ pub struct ScriptRecord {
     discriminator: FormatDiscriminator,
     references: Vec<RecordReference>,
     instructions: InstructionStatus,
+    reachability: Option<RecordReachability>,
     evidence: Vec<ScriptEvidence>,
 }
 
@@ -362,6 +448,41 @@ impl ScriptRecord {
     /// The evidence behind its kind.
     pub fn evidence(&self) -> &[ScriptEvidence] {
         &self.evidence
+    }
+
+    /// Whether a reachability probe has run over this record yet.
+    pub const fn reachability(&self) -> Option<RecordReachability> {
+        self.reachability
+    }
+
+    /// Records where a located program reaches this record. Called by the
+    /// reachability probe; probing again replaces the previous verdict
+    /// instead of appending a second, contradictory one.
+    pub fn set_reachability(&mut self, reachability: RecordReachability) {
+        self.reachability = Some(reachability);
+    }
+
+    /// The reachability evidence of this record, when it has been probed.
+    ///
+    /// It is derived from the verdict rather than stored beside the kind
+    /// evidence, so a re-probe can never leave two notes disagreeing about
+    /// whether anything reaches these bytes.
+    pub fn reachability_evidence(&self) -> Option<ScriptEvidence> {
+        self.reachability
+            .map(|reachability| reachability.evidence(&self.container, self.span))
+    }
+
+    /// Whether this is an **unused unknown record**: a byte range no reader
+    /// decodes, whose format nothing identifies, that no located program
+    /// overlaps and so no probe reaches (spec F13 AC03).
+    ///
+    /// `false` until [`Self::set_reachability`] has run: "unused" is a
+    /// measured verdict, never a default for a record nobody looked at.
+    pub fn is_unused_unknown(&self) -> bool {
+        matches!(self.kind, RecordKind::Opaque | RecordKind::Unclaimed)
+            && self.discriminator == FormatDiscriminator::Unknown
+            && matches!(self.instructions, InstructionStatus::Unestablished { .. })
+            && matches!(self.reachability, Some(RecordReachability::Unused { .. }))
     }
 
     /// Records that this record is an instruction stream.
@@ -727,6 +848,7 @@ fn interp_records(
         discriminator,
         references: Vec::new(),
         instructions: InstructionStatus::ContainerStructure,
+        reachability: None,
         evidence: vec![decoded(header, "header")],
     });
     for script in file.scripts() {
@@ -745,6 +867,7 @@ fn interp_records(
                 confidence: Confidence::ObservedTool,
             }],
             instructions: InstructionStatus::ContainerStructure,
+            reachability: None,
             evidence: vec![decoded(span, "index entry")],
         });
     }
@@ -762,6 +885,7 @@ fn interp_records(
             instructions: InstructionStatus::Unestablished {
                 reason: INTERP_BODY_UNESTABLISHED,
             },
+            reachability: None,
             evidence: vec![decoded(span, "script body")],
         });
     }
@@ -819,6 +943,7 @@ fn opaque_record(
         instructions: InstructionStatus::Unestablished {
             reason: UNDECODED_UNESTABLISHED,
         },
+        reachability: None,
         evidence: Vec::new(),
     }
 }

@@ -126,6 +126,15 @@ impl ProgramKind {
         }
     }
 
+    /// The kind a [`Self::label`] names, when the label is one of theirs.
+    ///
+    /// The inverse of [`Self::label`]: an unrecognised label is `None`, never
+    /// silently [`ProgramKind::Unknown`], so a typo in caller-supplied claim
+    /// data is refused rather than filed under "we do not know".
+    pub fn from_label(label: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|kind| kind.label() == label)
+    }
+
     /// Whether the kind is one of the two animation families, which the spec
     /// keeps distinct from each other and from mission programs.
     pub const fn is_animation(self) -> bool {
