@@ -21,10 +21,13 @@
 //!
 //! Consumers look keys up through the document, which counts what they
 //! used: every entry nobody consumed is retained and reported by
-//! [`ConfigDocument::accounting`] (spec F12, non-negotiable #5). Keys and
-//! section names compare as exact bytes, because whether the original
-//! reader folds case is unknown; two entries answering one lookup fail
-//! visibly as [`Lookup::Ambiguous`].
+//! [`ConfigDocument::accounting`] (spec F12, non-negotiable #5). Names —
+//! the entry key and the section name — are compared **without regard to
+//! ASCII case** ([`ConfigDocument::lookup`]), which task #351 established
+//! from the retail data: every UI script binds its objects by names written
+//! in a different case than the layout's keys. The bytes are never changed,
+//! so a lookup still reports the entry as written; two entries answering one
+//! lookup fail visibly as [`Lookup::Ambiguous`].
 //!
 //! Values stay raw here: [`TuningSchema`] turns a declared field into a
 //! checked, typed [`Tuning`], and a field nothing is known about is never
@@ -132,12 +135,31 @@ pub struct RawField {
 }
 
 impl RawField {
-    /// The field without its enclosing quotes.
+    /// The field without its enclosing quotes, blank bytes included.
     pub fn text(&self) -> &[u8] {
         if self.quoted {
             &self.raw[1..self.raw.len() - 1]
         } else {
             &self.raw
+        }
+    }
+
+    /// The field as the original reader hands it to a consumer: the blank
+    /// bytes around it dropped, then the enclosing quotes removed (**R4**).
+    ///
+    /// This is the form a name is compared in, so it is what
+    /// [`TuningSchema::tune`] reads. `raw` keeps the bytes as written, so
+    /// [`ConfigDocument::reassemble`] is unaffected. A blank byte *inside* a
+    /// quoted field is kept, because a quoted field always begins and ends
+    /// with its quotes: a blank outside them is quoting the survey never
+    /// observed and the value stays
+    /// [`RawValue::Unsplit`]/[`QuoteIssue::TextAfterClosingQuote`].
+    pub fn value(&self) -> &[u8] {
+        let trimmed = trim(&self.raw);
+        if self.quoted {
+            &trimmed[1..trimmed.len() - 1]
+        } else {
+            trimmed
         }
     }
 }
@@ -404,6 +426,21 @@ impl ConfigDocument {
 
     /// Looks up the entry `key` in `section` (`None`: before the first
     /// header) and counts it as consumed when exactly one entry answers.
+    ///
+    /// Both names compare **without regard to ASCII case** (**R1**,
+    /// established by task #351 from the retail data: the 34 UI scripts of
+    /// `crimson.rof` bind their objects through names that differ in case
+    /// from the layout's keys, and none of the 402 hand-written names match
+    /// a key exactly). Nothing is folded in the stored bytes: the returned
+    /// entry carries the key and section as the member wrote them, and the
+    /// fold is ASCII-only because what the original does with bytes above
+    /// `0x7F` is not established (a Windows-1252 name is neither matched
+    /// nor rejected differently from any other byte).
+    ///
+    /// Folding can make two keys collide that were distinct bytes; both
+    /// then answer the lookup and it is [`Lookup::Ambiguous`], never a
+    /// choice between them. No case-insensitive duplicate key exists in
+    /// either surveyed member.
     pub fn lookup(&mut self, section: Option<&[u8]>, key: &[u8]) -> Lookup<'_> {
         let matching: Vec<usize> = self
             .nodes
@@ -411,7 +448,8 @@ impl ConfigDocument {
             .enumerate()
             .filter(|(_, node)| {
                 matches!(&node.kind, ConfigNodeKind::Entry(entry)
-                    if entry.section.as_deref() == section && entry.key == key)
+                    if names_match(entry.section.as_deref(), section)
+                        && entry.key.eq_ignore_ascii_case(key))
             })
             .map(|(index, _)| index)
             .collect();
@@ -752,6 +790,18 @@ impl fmt::Display for StringCatalogError {
 
 impl std::error::Error for StringCatalogError {}
 
+/// Compares two section names as the original reader does (**R1**): the
+/// same absence on both sides, otherwise ASCII case does not matter. A
+/// `None` name (an entry before the first header) is never equal to a named
+/// one, whatever its case.
+fn names_match(entry_section: Option<&[u8]>, wanted: Option<&[u8]>) -> bool {
+    match (entry_section, wanted) {
+        (None, None) => true,
+        (Some(entry), Some(wanted)) => entry.eq_ignore_ascii_case(wanted),
+        _ => false,
+    }
+}
+
 /// How wide a configuration value is, and whether it is signed.
 ///
 /// Width and signedness belong to the *schema*, not to the value: a value is
@@ -1032,7 +1082,10 @@ impl<'a> TuningSchema<'a> {
         let Some(field) = fields.get(index) else {
             return Err(TuneError::FieldCount { got: fields.len() });
         };
-        let text = trim(field.text());
+        // **R4**: the field as the original reader hands it over, so a value
+        // written with blank padding around it is the same number as one
+        // written without. `RawField::text` would keep those blanks.
+        let text = field.value();
         let line = self.fields.line;
         let value = self.number(text)?;
 
@@ -1504,6 +1557,8 @@ N\xe4me=x";
             document.lookup(Some(b"PANEL"), b"DUP"),
             Lookup::Ambiguous(2)
         );
+        // A named section never matches an entry before the first header,
+        // whatever its case (`KNOWN` is in no section at all).
         assert_eq!(document.lookup(Some(b"panel"), b"KNOWN"), Lookup::Missing);
 
         let accounting = document.accounting();
@@ -2551,5 +2606,113 @@ HUGEFLOAT=1.7976931348623159e999\r\n";
         let report = resolve_tunings(&mut member, &duplicated);
         assert_eq!(report.resolved()[0].outcome, TuningOutcome::Ambiguous(2));
         assert_eq!(member.accounting().consumed, 0);
+    }
+
+    /// Authored for **R1**: two keys in one section that differ only in case
+    /// (so folding makes them collide), a section name, and a key padded
+    /// before its `=` on an indented line.
+    const CASED: &[u8] = b"[@Panel@]\r\n\
+TITLE=T,first\r\n\
+title=T,second\r\n\
+\x20 PADDED  =P,art.png\r\n\
+Caf\xc3\xa9=x\r\n";
+
+    fn cased() -> ConfigDocument {
+        let mut context = ParseContext::with_defaults("fixture");
+        ConfigDocument::read(&mut context, source(LAYOUT, CASED.len()), CASED)
+            .expect("an observed keyed list member reads")
+    }
+
+    /// **R1**: a lookup resolves a name written in a different case, keeps
+    /// the bytes as the member wrote them, and refuses to choose between two
+    /// entries the fold made collide. The fold is ASCII-only: a byte above
+    /// `0x7F` is compared as itself, because what the original does with it
+    /// is not established.
+    #[test]
+    fn accept_t351_lookup_resolves_names_without_regard_to_case() {
+        let mut document = cased();
+
+        let Lookup::Found(entry) = document.lookup(Some(b"@PANEL@"), b"padded") else {
+            panic!("a padded key, an indented line and a folded section")
+        };
+        assert_eq!(entry.key, b"PADDED", "the bytes stay as written");
+        assert_eq!(entry.section.as_deref(), Some(&b"@Panel@"[..]));
+        assert_eq!(texts(entry), vec![&b"P"[..], b"art.png"]);
+        assert_eq!(entry.line, 4);
+
+        // The two keys that differ only in case both answer, and neither is
+        // consumed: a fold that picked one would hide the collision.
+        assert_eq!(
+            document.lookup(Some(b"@panel@"), b"Title"),
+            Lookup::Ambiguous(2)
+        );
+        assert_eq!(document.accounting().consumed, 1);
+
+        // A name that differs in more than case is still missing.
+        assert_eq!(
+            document.lookup(Some(b"[@Panel@]"), b"padde"),
+            Lookup::Missing
+        );
+        assert_eq!(document.lookup(None, b"TITLE"), Lookup::Missing);
+
+        // The fold is ASCII: the UTF-8 name is found by its own bytes and
+        // not by folding them against any other spelling.
+        let Lookup::Found(entry) = document.lookup(Some(b"@Panel@"), b"Caf\xc3\xa9") else {
+            panic!("the exact bytes of the name")
+        };
+        assert_eq!(entry.key, "Café".as_bytes());
+        assert_eq!(
+            document.lookup(Some(b"@Panel@"), b"CAF\xc3\x89"),
+            Lookup::Missing,
+            "a byte above 0x7F is not folded"
+        );
+        assert_eq!(document.accounting().unconsumed, 2, "the colliding pair");
+    }
+
+    /// **R4** through owned nodes: a field's `value` is what a consumer
+    /// compares, `text` and `raw` keep the bytes, and a padded field still
+    /// converts to the same typed constant as an unpadded one.
+    #[test]
+    fn accept_t351_field_value_drops_surrounding_blanks() {
+        /// Authored: a field padded at both ends, one padded at the end and a
+        /// numeric field padded around its digits — the three shapes the
+        /// retail member actually has — next to a quoted field whose blanks
+        /// are *inside* its quotes.
+        const PADDED: &[u8] = b"[BOOK]\r\n\
+ITEM=  P  ,IDS_TITLE  ,  42  ,\" 0, 0,0 \"\r\n";
+        let mut context = ParseContext::with_defaults("fixture");
+        let mut document = ConfigDocument::read(&mut context, source(LAYOUT, PADDED.len()), PADDED)
+            .expect("an observed keyed list member reads");
+        assert_eq!(document.reassemble(), PADDED, "every byte survives");
+        let Lookup::Found(entry) = document.lookup(Some(b"BOOK"), b"ITEM") else {
+            panic!("the fixture has this entry")
+        };
+        let RawValue::Fields(fields) = &entry.value else {
+            panic!("splits")
+        };
+        let values: Vec<_> = fields.iter().map(RawField::value).collect();
+        assert_eq!(
+            values,
+            vec![&b"P"[..], b"IDS_TITLE", b"42", b" 0, 0,0 "],
+            "the blanks around every field are dropped; a blank inside the \
+             quotes is the value's own"
+        );
+        assert_eq!(fields[1].raw, b"IDS_TITLE  ", "the bytes stay as written");
+        assert_eq!(fields[1].text(), b"IDS_TITLE  ");
+        assert!(fields[3].quoted);
+        assert_eq!(fields[3].raw, b"\" 0, 0,0 \"");
+        assert_eq!(fields[3].value(), b" 0, 0,0 ");
+        assert_eq!(fields[3].text(), b" 0, 0,0 ");
+
+        // The production path: the padded digits are the same constant as the
+        // unpadded ones, because `tune` reads `value`.
+        let schema = TuningSchema::new(
+            FieldSpec::integer(ValueWidth::Bits32, true).with_range(0.0, 100.0, "px"),
+            entry,
+        );
+        let tuning = schema.tune(2).expect("a padded field reads");
+        assert_eq!(tuning.as_signed(), Some(42));
+        assert_eq!(tuning.unit, "px");
+        assert_eq!(tuning.line, 2);
     }
 }

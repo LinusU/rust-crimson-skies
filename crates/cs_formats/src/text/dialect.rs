@@ -279,12 +279,14 @@ pub static TEXT_DIALECT_INVENTORY: [DialectRecord; 6] = [
         ],
         grammar: ClaimStatus::ObservedTool,
         reader: DialectReader::KeyedList,
+        // The four name rules R1-R4 are established (task #351); what is
+        // left is listed here, in
+        // docs/findings/2026-09-29-t351-keyed-list-reading-rules.md.
         unknowns: &[
             "whether a ';' after a value starts a comment (never observed)",
-            "whether values or fields are trimmed of blank bytes",
             "escaped or embedded quotes (never observed)",
-            "whether indentation of sections and entries is significant",
-            "how a line starting with ':' (one in LAYOUT.CSV) is read",
+            "whether a blank byte inside quotes is part of the value",
+            "whether the original reports the one line with no '=' or skips it silently",
             "field types, units and the meaning of <NAME> placeholders",
             "the code page of bytes above 0x7F in localized installations",
         ],

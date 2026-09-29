@@ -360,7 +360,7 @@ fn accept_f12_a_dialect_inventory_routes_only_observed_members() {
 
 /// Reads one directory block of `rof` and returns its entries as
 /// `(name, record)`, NUL terminators removed.
-fn rof_entries(rof: &[u8], offset: u32) -> Vec<(String, crate::RofRawRecord)> {
+pub(crate) fn rof_entries(rof: &[u8], offset: u32) -> Vec<(String, crate::RofRawRecord)> {
     let mut context = ParseContext::with_defaults(CRIMSON_ROF);
     let block = crate::read_directory(&mut context, &rof[offset as usize..])
         .expect("a retail directory block reads");

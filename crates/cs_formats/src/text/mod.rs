@@ -17,6 +17,12 @@
 //! The survey, the design decisions and the recorded unknowns are written
 //! down in
 //! `docs/findings/2026-09-28-f12-a-text-dialects-and-lossless-config-nodes.md`.
+//! What the original reader does with a *name* — case, indentation, key
+//! padding and field padding — was settled afterwards from the retail data
+//! itself and is in
+//! `docs/findings/2026-09-29-t351-keyed-list-reading-rules.md`; the
+//! `keyed_list` module doc and [`keyed_list::Field::value`] carry the rules
+//! (R1-R4) and name the ones that stayed unknown.
 //! The fixtures exercised by the tests are newly authored; nothing here is
 //! derived from original game text.
 
@@ -29,6 +35,8 @@ pub mod resource_header;
 mod tests;
 #[cfg(test)]
 mod tests_f12_b;
+#[cfg(test)]
+mod tests_t351;
 
 pub use dialect::{
     DialectReader, DialectRecord, LexicalFeature, MemberRule, ObservedEncoding,

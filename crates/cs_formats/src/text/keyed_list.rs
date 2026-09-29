@@ -10,9 +10,10 @@
 //! `.CSV` extension is only a name.
 //!
 //! This module turns every line into a node and keeps the bytes: nothing is
-//! trimmed away, decoded or interpreted. Only the lexical features the
-//! survey observed are recognized; everything else is kept as an
-//! [`LineKind::Unclassified`] node with the reason, never guessed:
+//! decoded or interpreted away, and the bytes a rule drops are still in
+//! [`Field::raw`]. Only the lexical features the survey observed are
+//! recognized; everything else is kept as a [`LineKind::Unclassified`] node
+//! with the reason, never guessed:
 //!
 //! * a `;` is a comment only as the first non-blank byte of a line;
 //!   whether the original reader strips a `;` *after* a value is unknown
@@ -24,6 +25,38 @@
 //! * names and values are bytes. The survey found ASCII only, and the code
 //!   page of a localized installation is unknown, so a non-ASCII key is
 //!   neither rejected nor transcoded.
+//!
+//! # What the original reader does with a name (stage F12-B, task #351)
+//!
+//! The F12-A survey could not settle how the original resolves a name. It
+//! can now, from the retail data itself, and three rules are *established*
+//! (`docs/findings/2026-09-29-t351-keyed-list-reading-rules.md`):
+//!
+//! * **R1 — a name is compared without regard to ASCII case.** Every one of
+//!   the 34 `[@…@]` sections is named by a `.SCRIPT` member in a different
+//!   case, and all 402 object names the 34 UI scripts bind by hand match an
+//!   entry key only case-insensitively (0 match exactly). The reader keeps
+//!   the bytes; the fold belongs to the consumer that resolves a name (in
+//!   this workspace, `cs_content::config::ConfigDocument::lookup`), because
+//!   a node is a node however it is looked up.
+//! * **R2 — the blank bytes before a marker are not part of the name.**
+//!   Twelve of the 34 section headers are indented (ten with a tab, two with
+//!   four spaces) and 145 of the 402 bound object names sit on an indented
+//!   entry line; a tab and four spaces are used interchangeably for the same
+//!   nesting, so the *width* of the indent means nothing either.
+//! * **R3 — the blank bytes around a key are not part of it**: 271 of the
+//!   402 bound names sit on a line whose key is padded before the `=`, up
+//!   to sixteen blanks wide.
+//!
+//! [`Field::value`] is the fourth established rule, **R4**: the blank bytes
+//! around a *field* are dropped before the field is used. Seven fields of
+//! `SCRAPBOOK.CSV` are padded, and each of the seven is a resource-id name
+//! that a `.H` header defines byte for byte without the padding.
+//!
+//! The rules this stage could **not** establish stay recorded unknowns: a
+//! `;` after a value, escaped or embedded quotes, whether a blank *inside*
+//! quotes is part of the value, and what the original does with the one
+//! line that starts with `:` (see [`Unclassified::NoSeparator`]).
 
 use std::ops::Range;
 
@@ -44,9 +77,11 @@ pub struct KeyedListLine<'a> {
     pub line: TextLine,
     /// The line's content, terminator excluded.
     pub content: &'a [u8],
-    /// The leading blank bytes (spaces and tabs). The survey observed
-    /// indented sections, comments and entries; whether the indentation
-    /// means anything to the original reader is unknown, so it is kept.
+    /// The leading blank bytes (spaces and tabs). They are not part of any
+    /// name (**R2**): the survey found indented sections, comments and
+    /// entries whose names the original resolves all the same, with a tab
+    /// and four spaces used interchangeably. They are kept because the
+    /// nesting they show is data, not noise.
     pub indent: &'a [u8],
     /// What the line is.
     pub kind: LineKind<'a>,
@@ -60,8 +95,9 @@ pub enum LineKind<'a> {
     /// A whole-line comment: the first non-blank byte is `;`. `text` is
     /// everything after that `;`.
     Comment { text: &'a [u8] },
-    /// `[name]`, optionally surrounded by blank bytes. `name` is the bytes
-    /// between the brackets, verbatim.
+    /// `[name]`, optionally preceded by blank bytes and followed by them.
+    /// `name` is the bytes between the brackets, verbatim: the indentation
+    /// before the `[` is not part of it (**R2**).
     Section { name: &'a [u8] },
     /// `key=value`.
     Entry(Entry<'a>),
@@ -74,8 +110,13 @@ pub enum LineKind<'a> {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Unclassified {
     /// No `=`, no comment marker and no section brackets. (One surveyed
-    /// `LAYOUT.CSV` line starts with `:`; whether the original reader
-    /// skips it as a comment is unknown.)
+    /// `LAYOUT.CSV` line starts with `:` and is English prose. **R5**: a
+    /// line with no `=` yields no entry, because every entry in both
+    /// surveyed members has one — that is established, and this reader does
+    /// exactly that. What the original does with such a line *besides*
+    /// producing nothing — skip it silently, warn, count it — is not
+    /// established, and whether `:` is itself a comment marker is not
+    /// either.)
     NoSeparator,
     /// The `=` is the first non-blank byte, so the key is empty.
     EmptyKey,
@@ -98,15 +139,16 @@ impl Unclassified {
 /// A `key=value` line.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry<'a> {
-    /// The bytes before the first `=`, blank bytes around them removed.
-    /// Never empty.
+    /// The bytes before the first `=`, blank bytes around them removed
+    /// (**R3**). Never empty.
     pub key: &'a [u8],
     /// Range of [`Self::key`] inside the line's content.
     pub key_range: Range<usize>,
     /// Range of the `=` inside the line's content.
     pub separator: usize,
-    /// Everything after the first `=`, verbatim (blank bytes included:
-    /// whether the original reader trims values is unknown).
+    /// Everything after the first `=`, verbatim (blank bytes included).
+    /// [`Field::value`] is the form a consumer compares (**R4**); this is
+    /// the bytes as written.
     pub value: &'a [u8],
     /// The value split into fields, or why it could not be split.
     pub fields: Fields<'a>,
@@ -154,14 +196,42 @@ impl QuoteIssue {
 /// One field of a [`Fields::Split`] value.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Field<'a> {
-    /// The field as written, quotes included.
+    /// The field as written, quotes included, blank bytes included.
     pub raw: &'a [u8],
     /// Range of [`Self::raw`] inside [`Entry::value`].
     pub range: Range<usize>,
     /// Whether the field was enclosed in quotes.
     pub quoted: bool,
-    /// The field's text: [`Self::raw`] without its enclosing quotes.
+    /// The field's text: [`Self::raw`] without its enclosing quotes. The
+    /// blank bytes around the field are still in it; [`Self::value`] is the
+    /// form the original reader hands to a consumer.
     pub text: &'a [u8],
+}
+
+impl Field<'_> {
+    /// The field as the original reader hands it to a consumer: the blank
+    /// bytes around it dropped, then the enclosing quotes removed (**R4**).
+    ///
+    /// Established from the retail data: seven fields of `SCRAPBOOK.CSV`
+    /// carry trailing blanks, and each of the seven is a resource-id name
+    /// that a `.H` header defines byte for byte without them, so a consumer
+    /// that compares the field against the header needs the padding gone.
+    /// [`Self::raw`] and [`Self::text`] keep the bytes either way, so
+    /// [`KeyedList::reassemble`] is unaffected.
+    ///
+    /// A blank byte *inside* a quoted field is kept, because it is part of
+    /// the value: a quoted field always starts and ends with its quotes (a
+    /// blank outside them makes the value
+    /// [`Fields::Unsplit`]/[`QuoteIssue::TextAfterClosingQuote`]), so the
+    /// blanks this drops are always the field's own padding.
+    pub fn value(&self) -> &[u8] {
+        let trimmed = trim(self.raw);
+        if self.quoted {
+            &trimmed[1..trimmed.len() - 1]
+        } else {
+            trimmed
+        }
+    }
 }
 
 /// A keyed field list: one node per line, borrowing the input.
@@ -388,4 +458,13 @@ fn trim_end(bytes: &[u8]) -> &[u8] {
         .rposition(|byte| !BLANK.contains(byte))
         .map_or(0, |last| last + 1);
     &bytes[..end]
+}
+
+/// The bytes of `bytes` without the blank bytes at either end (**R4**).
+fn trim(bytes: &[u8]) -> &[u8] {
+    let start = bytes
+        .iter()
+        .position(|byte| !BLANK.contains(byte))
+        .unwrap_or(bytes.len());
+    trim_end(&bytes[start..])
 }
