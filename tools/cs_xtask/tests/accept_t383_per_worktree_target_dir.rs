@@ -180,6 +180,41 @@ fn accept_t383_a_dir_no_other_worktree_could_own_is_rejected() {
     );
 }
 
+/// Regression for checkouts shaped `…/<name>/<name>` (GitHub Actions
+/// checks out into `<repo>/<repo>`, and a worktree may sit under a parent
+/// that shares its basename): a directory whose matching component is the
+/// worktree's *parent* — not the worktree itself — is still shared by
+/// every checkout under that parent. Only components below the point where
+/// the path diverges from the workspace may count.
+#[test]
+fn accept_t383_a_dir_named_like_the_worktrees_parent_is_rejected() {
+    let base = fixtures_root().join("same-name");
+    let root = base.join("checkout").join("checkout");
+    fs::create_dir_all(&root).expect("the fixture root must be creatable");
+    let parent = root.parent().expect("the fixture root has a parent");
+
+    assert!(
+        !target_dir::is_per_worktree(&root, &parent.join("target")),
+        "{} names the worktree only through its parent; every checkout \
+under {} shares it",
+        parent.join("target").display(),
+        parent.display()
+    );
+    assert!(
+        !target_dir::is_per_worktree(&root, &parent.join("another-checkout").join("target")),
+        "a sibling checkout's target dir is shared, not this one's"
+    );
+    // Below the divergence the basename still counts.
+    assert!(target_dir::is_per_worktree(
+        &root,
+        &parent.join("target").join("checkout")
+    ));
+    assert!(target_dir::is_per_worktree(
+        &root,
+        &parent.join("targets").join("checkout")
+    ));
+}
+
 /// The rejection names the variable, the worktree and the fix, so an agent
 /// that never noticed the clobbering is told what to do.
 #[test]

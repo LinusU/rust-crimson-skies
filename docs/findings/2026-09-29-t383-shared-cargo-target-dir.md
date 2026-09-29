@@ -62,8 +62,13 @@ contract on any machine with a shared `CARGO_TARGET_DIR`.
   `.cargo/config.toml` and the worktree-local default, so the gate never
   re-implements precedence), then requires it to be private to the
   worktree: inside the workspace root, or containing a path component equal
-  to the workspace directory's own name (the `<root>/<worktree>` /
+  to the workspace directory's own name *below the point where the path
+  diverges from the workspace root* (the `<root>/<worktree>` /
   `<root>/target/<worktree>` layouts a per-worktree value is derived with).
+  The divergence bound keeps a directory shared through the worktree's
+  parent — e.g. `…/rust-crimson-skies/target` next to a checkout also
+  named `rust-crimson-skies`, the `actions/checkout` `<repo>/<repo>`
+  layout — from passing on a coincidental component match.
 * `cs_xtask verify-target-dir [--workspace-root <dir>]` — prints the
   effective directory and exits 1 when it is shared, with the fix spelled
   out in the error.

@@ -14,10 +14,14 @@
 //! module never re-implements precedence rules. [`is_per_worktree`] then
 //! applies the contract: an effective target directory is private to a
 //! worktree when it sits inside the workspace root, or when one of its path
-//! components *is* the workspace directory's own name — the
-//! `<shared-root>/<worktree>` layout the recommended per-agent environment
-//! derives. Anything else is a directory every worktree can compute
-//! identically, which is exactly the reported defect.
+//! components *below the point where it diverges from the workspace's own
+//! path* is the workspace directory's name — the `<shared-root>/<worktree>`
+//! layout the recommended per-agent environment derives. A component that
+//! only names the worktree's parent does not count: on a `…/<name>/<name>`
+//! checkout (GitHub Actions' `<repo>/<repo>`) the sibling-level
+//! `…/<name>/target` would match through the parent and still be shared by
+//! every checkout under it. Anything else is a directory every worktree can
+//! compute identically, which is exactly the reported defect.
 //!
 //! [`verify_workspace`] is the gate: the `accept_t383_` tests run it
 //! against this very checkout as part of `cargo test --workspace`, so an
@@ -127,11 +131,16 @@ pub fn effective_target_dir_with_env(
 ///
 /// True when the directory is inside the workspace root (the default
 /// `target/`, or any explicit path below it), or when one of its
-/// components equals the workspace directory's file name — the
-/// `…/<name>` or `…/target/<name>` layout a per-worktree
-/// `CARGO_TARGET_DIR` is derived with. A path that is neither inside the
-/// worktree nor names it (`…/rust-crimson-skies/target` on the owner's
-/// fleet) is shared by construction.
+/// components *below the point where it diverges from the workspace root*
+/// equals the workspace directory's file name — the `…/<name>` or
+/// `…/target/<name>` layout a per-worktree `CARGO_TARGET_DIR` is derived
+/// with. The divergence bound matters: a component that is part of the
+/// workspace's own ancestry names the fleet, not this checkout — on a
+/// `…/<name>/<name>` checkout (GitHub Actions' `<repo>/<repo>`) the
+/// sibling-level `…/<name>/target` must still read as shared. A path that
+/// is neither inside the worktree nor names it
+/// (`…/rust-crimson-skies/target` on the owner's fleet) is shared by
+/// construction.
 pub fn is_per_worktree(workspace_root: &Path, target_dir: &Path) -> bool {
     let root = canonicalize_lenient(workspace_root);
     let candidate = if target_dir.is_absolute() {
@@ -144,12 +153,19 @@ pub fn is_per_worktree(workspace_root: &Path, target_dir: &Path) -> bool {
     if candidate.starts_with(&root) {
         return true;
     }
-    match root.file_name() {
-        Some(name) => candidate
-            .components()
-            .any(|component| component.as_os_str() == name),
-        None => false,
-    }
+    let Some(name) = root.file_name() else {
+        return false;
+    };
+    let root_components: Vec<_> = root.components().collect();
+    let candidate_components: Vec<_> = candidate.components().collect();
+    let shared_ancestry = candidate_components
+        .iter()
+        .zip(&root_components)
+        .take_while(|(candidate, root)| candidate == root)
+        .count();
+    candidate_components[shared_ancestry..]
+        .iter()
+        .any(|component| component.as_os_str() == name)
 }
 
 /// The whole gate: resolve the effective directory through Cargo, then
