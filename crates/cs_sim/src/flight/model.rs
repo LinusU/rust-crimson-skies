@@ -41,6 +41,17 @@ pub const BODY_UP: [f64; 3] = [0.0, 1.0, 0.0];
 /// Body right axis in canonical space: +X.
 pub const BODY_RIGHT: [f64; 3] = [1.0, 0.0, 0.0];
 
+/// Maps each control axis, in tuning order `(roll, pitch, yaw)`, to the body
+/// vector component it turns and the sign of a positive command.
+///
+/// Body axes are forward `-Z`, right `+X`, up `+Y` (`FLIGHT-PHYSICS`,
+/// "Coordinate convention"), so roll is about the longitudinal body `Z` axis
+/// (component 2, sign `-1` because forward is `-Z`), pitch about the lateral
+/// body `X` axis (component 0, `+1`) and yaw about the vertical body `Y` axis
+/// (component 1, `+1`). A positive command is the positive right-hand
+/// rotation about the named axis.
+const CONTROL_AXIS: [(usize, f64); 3] = [(2, -1.0), (0, 1.0), (1, 1.0)];
+
 /// Why a flight input was rejected.
 #[derive(Clone, Debug, PartialEq)]
 pub enum FlightInputError {
@@ -87,12 +98,14 @@ impl std::error::Error for FlightInputError {}
 /// non-finite value is always refused, because it cannot be a device sample.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FlightInput {
-    /// Pitch command, `[-1, 1]`; positive is nose-down stick? No: positive is
-    /// the command's own declared sign, applied to the pitch rate.
+    /// Pitch command, `[-1, 1]`; a positive value commands nose-up pitch
+    /// (positive rotation about the body right axis).
     pub pitch: f64,
-    /// Roll command, `[-1, 1]`.
+    /// Roll command, `[-1, 1]`; a positive value commands right-wing-down
+    /// roll (positive rotation about the body forward axis).
     pub roll: f64,
-    /// Yaw command, `[-1, 1]`.
+    /// Yaw command, `[-1, 1]`; a positive value commands nose-left yaw
+    /// (positive rotation about the body up axis).
     pub yaw: f64,
     /// Throttle command, `[0, 1]`.
     pub throttle: f64,
@@ -685,37 +698,49 @@ impl FlightModel {
         )
     }
 
+    /// The rate-command torque in body space.
+    ///
+    /// Each control axis in tuning order `(roll, pitch, yaw)` is the positive
+    /// right-hand rotation about its named body axis. The returned vector is a
+    /// physical body-frame torque (`FLIGHT-PHYSICS`, "Coordinate convention"),
+    /// so [`CONTROL_AXIS`] maps each control axis to the body component it
+    /// turns and the sign of a positive command.
     fn body_torque(&self, state: &FlightState, input: &FlightInput, authority: f64) -> [f64; 3] {
         let commands = [input.roll, input.pitch, input.yaw];
         let mut torque = [0.0; 3];
-        for axis in 0..3 {
+        for (axis, &(component, sign)) in CONTROL_AXIS.iter().enumerate() {
+            let rate = sign * state.angular_velocity_radps[component];
             let desired_rate = commands[axis].clamp(-1.0, 1.0)
                 * self.tuning.angular.max_rate_radps[axis]
                 * authority;
-            let rate_error = desired_rate - state.angular_velocity_radps[axis];
+            let rate_error = desired_rate - rate;
             let inertia = self.tuning.mass.inertia_kg_m2[axis];
             let raw = inertia
                 * (self.tuning.angular.rate_gain_per_s * rate_error
-                    - self.tuning.angular.rate_damping_per_s * state.angular_velocity_radps[axis]);
-            torque[axis] = raw.clamp(
-                -self.tuning.angular.max_torque_nm[axis],
-                self.tuning.angular.max_torque_nm[axis],
-            );
+                    - self.tuning.angular.rate_damping_per_s * rate);
+            torque[component] = sign
+                * raw.clamp(
+                    -self.tuning.angular.max_torque_nm[axis],
+                    self.tuning.angular.max_torque_nm[axis],
+                );
         }
         torque
     }
 
     /// The bank/level assist torque in world space, or zero when disabled.
     ///
-    /// The assist acts only about the aircraft's roll axis and only when the
-    /// pilot is not commanding roll, so it neither cancels gravity nor
-    /// recovers a stall on its own.
+    /// The assist acts only about the aircraft's longitudinal (roll) axis and
+    /// only when the pilot is not commanding roll, so it neither cancels
+    /// gravity nor recovers a stall on its own. It is a positive right-hand
+    /// roll torque that opposes the measured bank angle, so it levels the
+    /// wings without pitching the aircraft.
     fn bank_level_assist(&self, state: &FlightState, input: &FlightInput) -> [f64; 3] {
         let assist = &self.tuning.assists;
         if !assist.enabled || assist.bank_level_gain_nm_per_rad <= 0.0 || input.roll.abs() > 1e-9 {
             return [0.0, 0.0, 0.0];
         }
-        let (right_world, up_world) = (
+        let (forward_world, right_world, up_world) = (
+            rotate_vector(BODY_FORWARD, state.orientation),
             rotate_vector(BODY_RIGHT, state.orientation),
             rotate_vector(BODY_UP, state.orientation),
         );
@@ -724,7 +749,7 @@ impl FlightModel {
             -assist.bank_level_max_torque_nm,
             assist.bank_level_max_torque_nm,
         );
-        scale(rotate_vector(BODY_RIGHT, state.orientation), -magnitude)
+        scale(forward_world, magnitude)
     }
 }
 
@@ -799,6 +824,7 @@ fn libm_atan2(y: f64, x: f64) -> f64 {
 mod tests {
     use super::*;
     use crate::flight::synthetic::synthetic_fixed_wing;
+    use crate::flight::tuning::AssistProfile;
 
     fn model() -> FlightModel {
         FlightModel::new(synthetic_fixed_wing())
@@ -875,16 +901,72 @@ mod tests {
             )
             .expect("valid");
 
-        assert!(output.world_torque_nm[1].is_finite());
+        // A positive pitch command turns about the body lateral (+X) axis, so
+        // nose-up is a positive world-X torque at identity orientation.
         assert!(
-            output.world_torque_nm[1].abs() <= model.tuning().angular.max_torque_nm[1],
+            output.world_torque_nm[0] > 0.0,
+            "positive pitch is nose-up: {:?}",
+            output.world_torque_nm
+        );
+        assert!(
+            output.world_torque_nm[0].abs() <= model.tuning().angular.max_torque_nm[1],
             "torque must stay bounded"
         );
+        assert_eq!(output.world_torque_nm[1], 0.0);
+        assert_eq!(output.world_torque_nm[2], 0.0);
         assert!(output.diagnostics.thrust_n > 0.0);
         assert!(output.diagnostics.lift_n > 0.0);
         assert!(
             output.instrument_state.angle_of_attack_rad.abs() < 0.2,
             "level flight is close to zero angle of attack"
+        );
+    }
+
+    /// Every control command turns the aircraft about its own physical body
+    /// axis: roll about the longitudinal axis, pitch about the lateral axis
+    /// and yaw about the vertical axis. Driving a command into the wrong axis
+    /// (for example pitch into the yaw axis) fails this test.
+    #[test]
+    fn accept_f24_a_control_axes_map_to_their_body_axes() {
+        let model = model();
+        let state = FlightState {
+            linear_velocity_mps: [0.0, 0.0, -60.0],
+            engine: EngineState::direct(1.0),
+            ..FlightState::at_rest(Quaternion::IDENTITY)
+        };
+        let env = FlightEnvironment::SEA_LEVEL;
+        let torque = |pitch: f64, roll: f64, yaw: f64| {
+            let input = FlightInput::try_new(pitch, roll, yaw, 1.0, false).expect("valid");
+            model
+                .compute(
+                    &env,
+                    &LoadoutMass::EMPTY,
+                    &DamageState::PRISTINE,
+                    &state,
+                    &input,
+                    1.0 / 120.0,
+                )
+                .expect("valid")
+                .world_torque_nm
+        };
+
+        // At identity orientation body and world components coincide.
+        let pitch = torque(0.5, 0.0, 0.0);
+        assert!(
+            pitch[0] > 0.0 && pitch[1] == 0.0 && pitch[2] == 0.0,
+            "pitch must be about the lateral +X axis: {pitch:?}"
+        );
+
+        let yaw = torque(0.0, 0.0, 0.5);
+        assert!(
+            yaw[1] > 0.0 && yaw[0] == 0.0 && yaw[2] == 0.0,
+            "yaw must be about the vertical +Y axis: {yaw:?}"
+        );
+
+        let roll = torque(0.0, 0.5, 0.0);
+        assert!(
+            roll[2] < 0.0 && roll[0] == 0.0 && roll[1] == 0.0,
+            "positive roll (right-wing-down) must be about the longitudinal -Z axis: {roll:?}"
         );
     }
 
@@ -959,6 +1041,59 @@ mod tests {
             output.diagnostics.assist_torque_nm,
             [0.0, 0.0, 0.0],
             "the calibrated profile must disable assists"
+        );
+        assert_eq!(output.diagnostics.assist_force_n, [0.0, 0.0, 0.0]);
+        assert!(
+            output.diagnostics.gravity_force_n[1] < 0.0,
+            "an assist must not make gravity disappear"
+        );
+    }
+
+    /// An enabled bank/level assist contributes a leveling torque about the
+    /// longitudinal axis only: no pitch, no yaw, no linear force and no change
+    /// to gravity.
+    #[test]
+    fn accept_f24_a_enabled_bank_level_assist_levels_about_the_longitudinal_axis() {
+        let mut tuning = synthetic_fixed_wing();
+        tuning.assists = AssistProfile {
+            enabled: true,
+            bank_level_gain_nm_per_rad: 20_000.0,
+            bank_level_max_torque_nm: 5_000.0,
+        };
+        let model = FlightModel::new(tuning);
+        // Rolled right by 0.4 rad about the forward (longitudinal) axis.
+        let state = FlightState {
+            linear_velocity_mps: [0.0, 0.0, -50.0],
+            orientation: Quaternion::from_axis_angle(
+                cs_types::space::UnitVec3::try_new([0.0, 0.0, -1.0]).expect("unit"),
+                cs_types::space::Radians(0.4),
+            )
+            .expect("unit quaternion"),
+            ..FlightState::at_rest(Quaternion::IDENTITY)
+        };
+        let output = model
+            .compute(
+                &FlightEnvironment::SEA_LEVEL,
+                &LoadoutMass::EMPTY,
+                &DamageState::PRISTINE,
+                &state,
+                &FlightInput::NEUTRAL,
+                1.0 / 120.0,
+            )
+            .expect("valid");
+
+        let assist = output.diagnostics.assist_torque_nm;
+        assert!(
+            assist[0].abs() < 1e-9 && assist[1].abs() < 1e-9,
+            "the assist must not pitch or yaw: {assist:?}"
+        );
+        assert!(
+            assist[2] > 0.0,
+            "a right-banked wing must get a left (positive +Z) leveling torque: {assist:?}"
+        );
+        assert!(
+            assist[2] <= 5_000.0,
+            "the assist torque must stay within its declared maximum"
         );
         assert_eq!(output.diagnostics.assist_force_n, [0.0, 0.0, 0.0]);
         assert!(

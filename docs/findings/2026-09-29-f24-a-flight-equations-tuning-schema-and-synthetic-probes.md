@@ -173,3 +173,41 @@ ordinary-play claim; this stage can award at most **checked**.
 - `crates/cs_content/src/coordinates.rs` and `crates/cs_content/src/config.rs`
   (declared-schema and provenance patterns), `docs/findings/2026-09-29-f23-a-avian-schedule-adapter-and-collision-layers.md`
   (findings template).
+
+## Review pass (2026-09-29, deepseek-1)
+
+Reviewer: `deepseek-1/deepseek-1`, a fresh session but the **same agent
+identity** as the implementer, so this is **not** independent evidence and it
+does not replace the owner's approval. F24-A is synthetic contracts only, so it
+can award at most **checked** regardless.
+
+One real defect was found and fixed in this branch: the rate-command torque
+mapped every control command to the wrong body axis. `body_torque` applied
+control axis `i` to body vector component `i`, but body space is forward `-Z`
+(component 2), right `+X` (component 0) and up `+Y` (component 1)
+(`FLIGHT-PHYSICS`, "Coordinate convention"), so a pitch command produced a
+torque about `+Y` (yaw), a roll command about `+X` (pitch) and a yaw command
+about `+Z` (roll); the bank/level assist likewise pushed about the lateral axis.
+The fix is the named `CONTROL_AXIS` map plus its sign, a corrected
+`bank_level_assist` along the longitudinal axis, and a clear control-sign
+convention. New discriminating tests:
+
+- `accept_f24_a_control_axes_map_to_their_body_axes` asserts each pure command
+  turns about its own physical axis. Reverting `CONTROL_AXIS` to the old
+  identity mapping makes it fail with `pitch must be about the lateral +X axis:
+  [0.0, 6300.0, 0.0]` (measured), then passes again when restored.
+- `accept_f24_a_enabled_bank_level_assist_levels_about_the_longitudinal_axis`
+  enables the assist, asserts the contribution has no pitch/yaw component,
+  levels a right bank with a bounded positive `+Z` torque, adds no linear force
+  and leaves gravity acting.
+
+The remaining stage boundaries and unknowns recorded above were re-checked and
+still hold; no other code change was needed. The reviewer re-ran:
+
+```
+cargo fmt --all -- --check                                             -> 0
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings -> 0
+cargo test --workspace --locked                                        -> 0 (no failures)
+cargo test --workspace --locked -- accept_f24_a_ --include-ignored     -> 0 (26 tests: 12 cs_sim unit + 5 integration, 6 cs_content unit + 3 integration)
+```
+
