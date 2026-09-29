@@ -67,9 +67,20 @@ fn world(components: [f64; 3]) -> WorldPosition {
 struct Run {
     projectile: Vec<WorldPosition>,
     docking: Vec<WorldPosition>,
-    /// The origin frame in force after the rebase, and the projectile's swept
-    /// segment on its first post-rebase tick.
-    rebased: Option<(WorldOrigin, SweptSegment)>,
+    /// The rebase evidence when a rebase happened.
+    rebased: Option<RebaseEvidence>,
+}
+
+/// What the rebased run recorded at its rebase tick.
+struct RebaseEvidence {
+    /// The origin frame the run entered.
+    origin: WorldOrigin,
+    /// The projectile's swept segment as it stood *before* the tick advanced:
+    /// the segment the rebase had to convert, not one a later step recreated.
+    /// `None` means the rebase discarded it.
+    preserved_sweep: Option<SweptSegment>,
+    /// The segment produced by the advance on the rebase tick itself.
+    first_step_sweep: SweptSegment,
 }
 
 /// Runs the scenario once; `rebased_at` moves the origin at the start of that
@@ -81,9 +92,10 @@ fn simulate(rebased_at: Option<u64>) -> Run {
 
     let mut projectile_track = Vec::with_capacity(TICKS as usize);
     let mut docking_track = Vec::with_capacity(TICKS as usize);
-    let mut rebased = None;
+    let mut rebased: Option<RebaseEvidence> = None;
 
     for step in 0..TICKS {
+        let mut preserved_sweep = None;
         if rebased_at == Some(step) {
             // The origin jumps near the projectile and every anchor is
             // converted to the new frame before anything simulates in it.
@@ -98,6 +110,9 @@ fn simulate(rebased_at: Option<u64>) -> Run {
             shift.apply(&mut anchors).expect("both anchors convert");
             origin = shift.to();
             [projectile, docking] = anchors;
+            // The segment that existed before the rebase must still be there;
+            // capture it before this tick's advance replaces it.
+            preserved_sweep = projectile.sweep();
         }
 
         projectile
@@ -110,12 +125,13 @@ fn simulate(rebased_at: Option<u64>) -> Run {
         docking_track.push(docking.world());
 
         if rebased_at == Some(step) {
-            rebased = Some((
+            rebased = Some(RebaseEvidence {
                 origin,
-                projectile
+                preserved_sweep,
+                first_step_sweep: projectile
                     .sweep()
                     .expect("the post-rebase step is continuous"),
-            ));
+            });
         }
     }
 
@@ -222,38 +238,60 @@ fn accept_f16_b_rebase_during_projectile_flight_and_docking_approach_matches_unr
     }
 }
 
-/// The rebase is a rebase, not a teleport: the projectile's swept segment
-/// survives, still describes the last real tick of movement, and its local
-/// endpoint is addressed in the new frame.
+/// The rebase is a rebase, not a teleport: the swept segment that already
+/// existed when the origin moved survives, still describes the last real tick
+/// of movement, and its local endpoint is addressed in the new frame.
 #[test]
 fn accept_f16_b_rebase_preserves_swept_continuity_during_flight() {
     let straight = simulate(None);
     let rebased = simulate(Some(REBASE_TICK));
-    let (origin_after, segment) = rebased
+    let evidence = rebased
         .rebased
         .as_ref()
-        .expect("the rebased run records its segment");
-    assert_eq!(origin_after.epoch(), OriginEpoch(1));
+        .expect("the rebased run records its evidence");
+    assert_eq!(evidence.origin.epoch(), OriginEpoch(1));
 
     let step = REBASE_TICK as usize;
+
+    // The segment that predates the rebase still exists and still starts at
+    // the same world position (the tick before the previous one). A rebase
+    // implemented as a teleport would have discarded it.
+    let preserved = evidence
+        .preserved_sweep
+        .expect("a rebase must keep the swept segment that already existed");
     assert_close(
-        segment.from_world(),
-        straight.projectile[step - 1],
-        "the swept segment still starts at the previous tick's world position",
+        preserved.from_world(),
+        straight.projectile[step - 2],
+        "the preserved segment still starts at the same world position",
     );
     assert_close(
-        segment.from_world(),
-        rebased.projectile[step - 1],
-        "the swept segment matches the rebased run's own previous tick",
+        preserved.from_world(),
+        rebased.projectile[step - 2],
+        "the preserved segment matches the rebased run's own earlier tick",
     );
 
-    // Both endpoints are addressed in the new frame, so a swept query can use
-    // the local endpoints and still describe the same path.
-    let from_local = segment.from_local();
-    assert_ne!(from_local, LocalPosition::ZERO);
+    // Both endpoints of the preserved segment are addressed in the new frame,
+    // so a swept query can use the local endpoints and still describe the
+    // same path.
+    let from_local = preserved.from_local();
+    assert_ne!(
+        from_local,
+        LocalPosition::ZERO,
+        "the scenario's origin offset keeps the converted local endpoint non-trivial"
+    );
     assert_close(
-        origin_after.world_of(from_local).expect("finite local sum"),
-        segment.from_world(),
-        "the swept segment's local endpoint converts back to its world endpoint",
+        evidence
+            .origin
+            .world_of(from_local)
+            .expect("finite local sum"),
+        preserved.from_world(),
+        "the preserved segment's local endpoint converts back to its world endpoint",
+    );
+
+    // The first post-rebase step then continues from the previous tick.
+    assert_close(
+        evidence.first_step_sweep.from_world(),
+        rebased.projectile[step - 1],
+        "the post-rebase step starts where the body was before the rebase",
     );
 }
