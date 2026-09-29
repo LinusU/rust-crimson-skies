@@ -12,6 +12,12 @@ avian3d.workspace = true
 bevy.workspace = true
 cs_types.workspace = true
 
+# The campaign acceptance tests in `tests/campaign/` exercise the F50-A
+# binding/coverage records; they are integration tests, so `cs_content` is a
+# dev-dependency of this crate only.
+[dev-dependencies]
+cs_content.workspace = true
+
 [[bin]]
 name = "cs"
 path = "src/main.rs"

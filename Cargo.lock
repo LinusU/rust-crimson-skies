@@ -2452,6 +2452,7 @@ version = "0.0.0"
 dependencies = [
  "avian3d",
  "bevy",
+ "cs_content",
  "cs_types",
 ]
 

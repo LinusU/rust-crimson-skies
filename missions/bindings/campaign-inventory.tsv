@@ -1,0 +1,41 @@
+# Campaign binding denominator (F50-A).
+#
+# One mission work order per line: a discovery label, one tab, the discovery
+# title from missions/README.md. Blank lines and lines starting with '#'
+# carry no mission.
+#
+# This list is the frozen denominator of `cs_content::campaign_bindings`:
+# coverage counts every declared mission exactly once, and no code path
+# removes one. A line that is not exactly `label<TAB>title`, a blank title, a
+# malformed label or a repeated label fails the whole file, so a broken edit
+# cannot drop a mission silently. Discovered missions beyond this list are
+# recorded as well and stay visible as `discovered_extra` in the report.
+#
+# The labels are discovery labels from the public guide, not verified retail
+# identities (`missions/README.md`, spec F50 non-negotiable behavior 1).
+# Binding a mission to its original catalog id is M01-A … M24-A / F50-B work;
+# `docs/findings/missions/` records what this file does and does not prove.
+M01	The Lost Treasure
+M02	The Bomber Heist
+M03	The Secret Invasion
+M04	The Sinister Sub
+M05	The Union Jack's Revenge
+M06	The Red Menace
+M07	The Pilfered Prototype
+M08	The Petrol Plot
+M09	Perils for Blake
+M10	Mercy's Errand
+M11	The Stolen Scarlet
+M12	The Great Plane Robbery
+M13	The Nefarious Trap
+M14	Clash of the Dreadnaughts
+M15	The Fight for the Figaro
+M16	Raid on the Rocky Express
+M17	The Pirate's Duel
+M18	Deceit at Devil's Horn
+M19	Rescue the Black Swan
+M20	Unholy Alliance
+M21	Death on the Docks
+M22	Runaway Witness
+M23	Criminal Exodus
+M24	Battle over Broadway
