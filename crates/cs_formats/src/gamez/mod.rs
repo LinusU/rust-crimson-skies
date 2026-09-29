@@ -61,13 +61,12 @@ pub mod reader;
 pub mod strip;
 
 pub use materials::{
-    CYCLE_FRAME_BYTES, CYCLE_HEADER_BYTES, GameZMaterialError, GameZMaterials,
-    GameZTextureName, KNOWN_MATERIAL_FLAGS, MATERIAL_FLAG_ALWAYS, MATERIAL_FLAG_CYCLED,
-    MATERIAL_FLAG_FREE, MATERIAL_FLAG_TEXTURED, MATERIAL_FLAG_UNKNOWN, MATERIALS_ENTRYPOINT,
-    MATERIAL_HEADER_BYTES, MATERIAL_LINK_BYTES, MATERIAL_RECORD_BYTES, MATERIAL_SLOT_BYTES,
-    MaterialFinding, MaterialInfo, MaterialKind, NG_MATERIAL_SLOTS, RawCycle, RawMaterial,
-    RawMaterialRecord, TEXTURE_INFO_BYTES, TEXTURE_NAME_BYTES, TextureNameEncoding,
-    read_gamez_materials,
+    CYCLE_FRAME_BYTES, CYCLE_HEADER_BYTES, GameZMaterialError, GameZMaterials, GameZTextureName,
+    KNOWN_MATERIAL_FLAGS, MATERIAL_FLAG_ALWAYS, MATERIAL_FLAG_CYCLED, MATERIAL_FLAG_FREE,
+    MATERIAL_FLAG_TEXTURED, MATERIAL_FLAG_UNKNOWN, MATERIAL_HEADER_BYTES, MATERIAL_LINK_BYTES,
+    MATERIAL_RECORD_BYTES, MATERIAL_SLOT_BYTES, MATERIALS_ENTRYPOINT, MaterialFinding,
+    MaterialInfo, MaterialKind, NG_MATERIAL_SLOTS, RawCycle, RawMaterial, RawMaterialRecord,
+    TEXTURE_INFO_BYTES, TEXTURE_NAME_BYTES, TextureNameEncoding, read_gamez_materials,
 };
 pub use mesh::{
     FaceIssue, FaceStatus, MeshTopology, MeshTriangle, PrimitiveKind, RawCorner, RawMesh,

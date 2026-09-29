@@ -664,10 +664,7 @@ impl fmt::Display for MaterialState {
                 name,
                 archive,
                 entries,
-            } => write!(
-                f,
-                "{code}: {archive} stores `{name}` at {entries:?}"
-            ),
+            } => write!(f, "{code}: {archive} stores `{name}` at {entries:?}"),
             Self::TextureIndexOutOfRange { index, available } => {
                 write!(f, "{code}: texture {index} of {available}")
             }
@@ -764,10 +761,12 @@ impl MeshDependencyAudit {
         for mesh in meshes.present() {
             for (position, info) in mesh.materials.iter().enumerate() {
                 references += 1;
-                uses.entry(info.material_index).or_default().push(MaterialUse {
-                    mesh: mesh.index,
-                    reference: MaterialReference::MeshRecord { position },
-                });
+                uses.entry(info.material_index)
+                    .or_default()
+                    .push(MaterialUse {
+                        mesh: mesh.index,
+                        reference: MaterialReference::MeshRecord { position },
+                    });
             }
             for (polygon, groups) in mesh.material_groups.iter().enumerate() {
                 for (group, entry) in groups.iter().enumerate() {
@@ -810,14 +809,12 @@ impl MeshDependencyAudit {
             }
             rows.push(row);
         }
-        let blocked = blocked
-            .into_iter()
-            .fold(Vec::new(), |mut kept, entry| {
-                if !kept.contains(&entry) {
-                    kept.push(entry);
-                }
-                kept
-            });
+        let blocked = blocked.into_iter().fold(Vec::new(), |mut kept, entry| {
+            if !kept.contains(&entry) {
+                kept.push(entry);
+            }
+            kept
+        });
 
         Self {
             container: context.container.to_owned(),
@@ -931,14 +928,19 @@ fn audit_material(
         runtime_consumers: vec![MATERIAL_CONSUMER],
         readiness: DependencyReadiness::Blocked,
         unsupported_reasons: Vec::new(),
-        fingerprint: record.as_ref().map(|material| sha256(&material_bytes(material))),
+        fingerprint: record
+            .as_ref()
+            .map(|material| sha256(&material_bytes(material))),
         state: MaterialState::Untextured,
         used_by: used_by.to_vec(),
         record,
     };
 
     let Some(material) = materials.material(index) else {
-        let state = MaterialState::MaterialIndexOutOfRange { material: index, count };
+        let state = MaterialState::MaterialIndexOutOfRange {
+            material: index,
+            count,
+        };
         return finish(row, false, state, reasons);
     };
     let bits = material.record.unknown_flag_bits();
@@ -1019,7 +1021,10 @@ fn finish(
         reasons.push(state.code().to_owned());
     }
     let ready = state.is_complete() && reasons.is_empty();
-    let diagnostic = reasons.first().cloned().unwrap_or_else(|| state.to_string());
+    let diagnostic = reasons
+        .first()
+        .cloned()
+        .unwrap_or_else(|| state.to_string());
     row.parse_state = if has_record {
         ParseState::Parsed
     } else {
@@ -1062,7 +1067,11 @@ fn material_bytes(material: &RawMaterial) -> Vec<u8> {
     out.extend_from_slice(&record.cycle_ptr.to_le_bytes());
     out.extend_from_slice(&material.link1.to_le_bytes());
     out.extend_from_slice(&material.link2.to_le_bytes());
-    debug_assert_eq!(out.len(), 44, "a material slot is forty bytes and two words");
+    debug_assert_eq!(
+        out.len(),
+        44,
+        "a material slot is forty bytes and two words"
+    );
     out
 }
 
@@ -1586,7 +1595,9 @@ mod tests {
     };
     use cs_formats::gamez::reader::{MeshIndex, RawMaterialGroup, RawMeshInfo};
     use cs_formats::gamez::{GameZHeader, GameZMesh, GameZMeshes, RawMeshMaterialInfo};
-    use cs_formats::texture::zbd::{FLAG_BYTES_PER_PIXEL2, FLAG_NO_ALPHA, ZBD_TEXTURE_HEADER_BYTES};
+    use cs_formats::texture::zbd::{
+        FLAG_BYTES_PER_PIXEL2, FLAG_NO_ALPHA, ZBD_TEXTURE_HEADER_BYTES,
+    };
     use cs_types::asset_id::{AssetKey, ResolveContext, WorldGroup};
     use cs_types::install::ParseState;
 
@@ -1757,7 +1768,11 @@ mod tests {
         RawMaterial {
             index,
             record: record(texture_index, textured),
-            link1: if index + 1 >= count { -1 } else { (index + 1) as i16 },
+            link1: if index + 1 >= count {
+                -1
+            } else {
+                (index + 1) as i16
+            },
             link2: if index == 0 { -1 } else { (index - 1) as i16 },
             cycle: None,
         }
@@ -1927,7 +1942,7 @@ mod tests {
     fn catalog(tree: &Tree) -> (ContentSession, TextureCatalog, AssetKey) {
         let session = world_session(&tree.0, "ZBD/c1");
         let key = texture_key();
-        let catalog = TextureCatalog::open(&session, &[key.clone()]);
+        let catalog = TextureCatalog::open(&session, std::slice::from_ref(&key));
         assert_eq!(catalog.failures().count(), 0, "the fixture archive opens");
         (session, catalog, key)
     }
@@ -1958,9 +1973,13 @@ mod tests {
         let (session, catalog, key) = catalog(&tree);
         let meshes = container(vec![container_mesh(0, &[0], &[vec![0]])]);
         let materials = tables(&["sky"], vec![material(0, 0, true)]);
-        let audit = MeshDependencyAudit::build(&meshes, &materials, &context(&session, &catalog, &key));
+        let audit =
+            MeshDependencyAudit::build(&meshes, &materials, &context(&session, &catalog, &key));
 
-        assert_eq!(audit.references, 2, "one mesh-level and one polygon reference");
+        assert_eq!(
+            audit.references, 2,
+            "one mesh-level and one polygon reference"
+        );
         assert_eq!(audit.rows.len(), 1);
         assert_eq!(audit.resolved, 1);
         assert!(audit.blocked.is_empty(), "{:?}", audit.blocked);
@@ -1968,11 +1987,19 @@ mod tests {
         assert_eq!(row.material, 0);
         assert_eq!(row.id, "gamez.materials[0]");
         assert_eq!(row.kind, "material");
-        assert_eq!(row.dependencies, vec![key.clone()], "one archive, the caller's");
+        assert_eq!(
+            row.dependencies,
+            vec![key.clone()],
+            "one archive, the caller's"
+        );
         assert_eq!(row.parse_state, ParseState::Parsed);
         assert_eq!(row.normalize_state, ParseState::Parsed);
         assert_eq!(row.readiness, DependencyReadiness::Ready);
-        assert!(row.unsupported_reasons.is_empty(), "{:?}", row.unsupported_reasons);
+        assert!(
+            row.unsupported_reasons.is_empty(),
+            "{:?}",
+            row.unsupported_reasons
+        );
         assert_eq!(row.runtime_consumers, vec![MATERIAL_CONSUMER]);
         assert!(row.fingerprint.is_some(), "a read record has bytes to hash");
         assert_eq!(row.state.code(), "resolved");
@@ -1980,7 +2007,10 @@ mod tests {
             MaterialState::Resolved { texture } => {
                 assert_eq!(texture.name, "sky");
                 assert_eq!(texture.entry_index, 0);
-                assert!(texture.archive.as_str().ends_with("texture.zbd"), "{texture}");
+                assert!(
+                    texture.archive.as_str().ends_with("texture.zbd"),
+                    "{texture}"
+                );
             }
             other => panic!("expected a resolved texture, got {other}"),
         }
@@ -2003,8 +2033,7 @@ mod tests {
             ]
         );
         assert_eq!(
-            audit.references,
-            meshes.unchecked_material_references,
+            audit.references, meshes.unchecked_material_references,
             "the audit sees exactly the references the mesh reader counted"
         );
     }
@@ -2031,9 +2060,13 @@ mod tests {
 
         let meshes = container(vec![container_mesh(0, &[0], &[vec![0]])]);
         let materials = tables(&["Sky1.tif"], vec![material(0, 0, true)]);
-        let audit = MeshDependencyAudit::build(&meshes, &materials, &context(&session, &catalog, &key));
+        let audit =
+            MeshDependencyAudit::build(&meshes, &materials, &context(&session, &catalog, &key));
 
-        assert_eq!(audit.resolved, 0, "the name is not in the archive it was given");
+        assert_eq!(
+            audit.resolved, 0,
+            "the name is not in the archive it was given"
+        );
         assert_eq!(audit.rows.len(), 1, "a failed entry stays in the audit");
         let row = &audit.rows[0];
         assert_eq!(
@@ -2047,13 +2080,20 @@ mod tests {
         assert_eq!(row.state.code(), "missing_texture");
         assert_eq!(row.dependencies, vec![key.clone()], "one archive only");
         assert_eq!(row.readiness, DependencyReadiness::Blocked);
-        assert_eq!(row.parse_state, ParseState::Parsed, "the record itself was read");
+        assert_eq!(
+            row.parse_state,
+            ParseState::Parsed,
+            "the record itself was read"
+        );
         assert!(
             matches!(row.normalize_state, ParseState::Failed { .. }),
             "the dependency did not reach an origin: {:?}",
             row.normalize_state
         );
-        assert_eq!(row.unsupported_reasons, vec!["texture_not_found".to_owned()]);
+        assert_eq!(
+            row.unsupported_reasons,
+            vec!["texture_not_found".to_owned()]
+        );
         let text = row.state.to_string();
         assert!(text.contains("Sky1.tif"), "{text}");
         assert!(text.contains("texture.zbd"), "{text}");
@@ -2062,11 +2102,17 @@ mod tests {
         // choice of archive and a choice of spelling, not a missing file.
         for spelling in ["Sky1.tif", "sky1"] {
             assert!(
-                catalog.resolve(&session, &TextureRef::new(other.clone(), spelling)).is_ok(),
+                catalog
+                    .resolve(&session, &TextureRef::new(other.clone(), spelling))
+                    .is_ok(),
                 "the second archive stores `{spelling}`"
             );
         }
-        assert!(catalog.resolve(&session, &TextureRef::new(key.clone(), "sky1")).is_err());
+        assert!(
+            catalog
+                .resolve(&session, &TextureRef::new(key.clone(), "sky1"))
+                .is_err()
+        );
     }
 
     /// The exact-name rule is not relaxed to make a number smaller: a name that
@@ -2085,7 +2131,8 @@ mod tests {
                 material(2, 2, true),
             ],
         );
-        let audit = MeshDependencyAudit::build(&meshes, &materials, &context(&session, &catalog, &key));
+        let audit =
+            MeshDependencyAudit::build(&meshes, &materials, &context(&session, &catalog, &key));
 
         let states: Vec<&str> = audit.rows.iter().map(|row| row.state.code()).collect();
         assert_eq!(
@@ -2124,7 +2171,8 @@ mod tests {
                 material(2, 0, true),
             ],
         );
-        let audit = MeshDependencyAudit::build(&meshes, &materials, &context(&session, &catalog, &key));
+        let audit =
+            MeshDependencyAudit::build(&meshes, &materials, &context(&session, &catalog, &key));
 
         assert_eq!(audit.rows.len(), 3, "one row per distinct stored index");
         assert_eq!(
@@ -2179,8 +2227,10 @@ mod tests {
             ]
         );
         assert!(
-            audit.blocked.iter().any(|entry| entry
-                == "material 7: material_index_out_of_range: material 7 of 3"),
+            audit
+                .blocked
+                .iter()
+                .any(|entry| entry == "material 7: material_index_out_of_range: material 7 of 3"),
             "{:?}",
             audit.blocked
         );
@@ -2199,11 +2249,9 @@ mod tests {
         untextured.record.alpha = 0x10;
         let mut unknown = material(2, 0, true);
         unknown.record.flags |= 0x40; // a bit the reference's MaterialFlags does not name
-        let materials = tables(
-            &["sky"],
-            vec![material(0, 0, true), untextured, unknown],
-        );
-        let audit = MeshDependencyAudit::build(&meshes, &materials, &context(&session, &catalog, &key));
+        let materials = tables(&["sky"], vec![material(0, 0, true), untextured, unknown]);
+        let audit =
+            MeshDependencyAudit::build(&meshes, &materials, &context(&session, &catalog, &key));
 
         assert_eq!(audit.rows.len(), 3, "every distinct stored index has a row");
         assert_eq!(audit.rows[0].state.code(), "resolved");
@@ -2216,11 +2264,19 @@ mod tests {
         assert_eq!(audit.rows[1].normalize_state, ParseState::Parsed);
         assert_eq!(audit.rows[1].unsupported_reasons, Vec::<String>::new());
         assert_eq!(
-            audit.rows[1].record.as_ref().expect("raw record").record.color,
+            audit.rows[1]
+                .record
+                .as_ref()
+                .expect("raw record")
+                .record
+                .color,
             [0.25, 0.5, 0.75],
             "the flat colour is on the row, uninterpreted"
         );
-        assert_eq!(audit.rows[2].state, MaterialState::UnknownField { bits: 0x40 });
+        assert_eq!(
+            audit.rows[2].state,
+            MaterialState::UnknownField { bits: 0x40 }
+        );
         assert_eq!(
             audit.rows[2].readiness,
             DependencyReadiness::Blocked,
@@ -2248,8 +2304,12 @@ mod tests {
         // Material 0 names a texture the container's own two-entry table does not
         // have; material 1 names the duplicated name.
         let meshes = container(vec![container_mesh(0, &[0, 1], &[])]);
-        let materials = tables(&["sky", "twin"], vec![material(0, 5, true), material(1, 1, true)]);
-        let audit = MeshDependencyAudit::build(&meshes, &materials, &context(&session, &catalog, &key));
+        let materials = tables(
+            &["sky", "twin"],
+            vec![material(0, 5, true), material(1, 1, true)],
+        );
+        let audit =
+            MeshDependencyAudit::build(&meshes, &materials, &context(&session, &catalog, &key));
         assert_eq!(
             audit.rows[0].state,
             MaterialState::TextureIndexOutOfRange {
@@ -2312,7 +2372,8 @@ mod tests {
             vec![("bldhwk_cowling..tif".to_owned(), vec![0, 1])],
             "the container's own duplicate, reported by the reader"
         );
-        let audit = MeshDependencyAudit::build(&meshes, &materials, &context(&session, &catalog, &key));
+        let audit =
+            MeshDependencyAudit::build(&meshes, &materials, &context(&session, &catalog, &key));
 
         assert_eq!(audit.rows.len(), 1);
         let row = &audit.rows[0];
@@ -2346,7 +2407,8 @@ mod tests {
         let mut second = material(1, 1, true);
         second.record.field32 = 0.75; // one word different
         let materials = tables(&["sky", "ground"], vec![first.clone(), second]);
-        let audit = MeshDependencyAudit::build(&meshes, &materials, &context(&session, &catalog, &key));
+        let audit =
+            MeshDependencyAudit::build(&meshes, &materials, &context(&session, &catalog, &key));
 
         assert_eq!(audit.rows[0].record.as_ref().expect("raw record"), &first);
         let a = audit.rows[0].fingerprint.expect("hashed");
@@ -2354,8 +2416,12 @@ mod tests {
         assert_ne!(a, b, "one word different, one fingerprint different");
         assert_eq!(a.to_hex().len(), 64, "a canonical lowercase hex digest");
 
-        let again = MeshDependencyAudit::build(&meshes, &materials, &context(&session, &catalog, &key));
-        assert_eq!(audit.rows, again.rows, "the audit is a function of the bytes");
+        let again =
+            MeshDependencyAudit::build(&meshes, &materials, &context(&session, &catalog, &key));
+        assert_eq!(
+            audit.rows, again.rows,
+            "the audit is a function of the bytes"
+        );
         assert_eq!(audit.references, again.references);
     }
 
@@ -2385,11 +2451,16 @@ mod tests {
         let session = builder.open();
 
         let key = texture_key();
-        let catalog = TextureCatalog::open(&session, &[key.clone()]);
-        assert_eq!(catalog.failures().count(), 0, "the world's texture archive opens");
+        let catalog = TextureCatalog::open(&session, std::slice::from_ref(&key));
+        assert_eq!(
+            catalog.failures().count(),
+            0,
+            "the world's texture archive opens"
+        );
 
         let relative = "ZBD/C1/gamez.zbd";
-        let bytes = fs::read(game_dir.join(relative)).expect("the world's GameZ archive is readable");
+        let bytes =
+            fs::read(game_dir.join(relative)).expect("the world's GameZ archive is readable");
         let mut parse = ParseContext::with_defaults(relative);
         let meshes = cs_formats::gamez::read_gamez_meshes(&mut parse, relative, &bytes)
             .expect("the mesh section reads");
@@ -2397,7 +2468,10 @@ mod tests {
             .expect("the material section reads");
         // Both readers proved their own section boundary from the same bytes.
         assert_eq!(meshes.data_end, u64::from(meshes.header.nodes_offset));
-        assert_eq!(materials.data_end, u64::from(materials.header.meshes_offset));
+        assert_eq!(
+            materials.data_end,
+            u64::from(materials.header.meshes_offset)
+        );
         assert!(meshes.findings.is_empty() && materials.findings.is_empty());
 
         let audit = MeshDependencyAudit::build(
@@ -2421,7 +2495,10 @@ mod tests {
             audit.references
         );
         assert_eq!(audit.references, meshes.unchecked_material_references);
-        assert!(!audit.rows.is_empty(), "the world stores material references");
+        assert!(
+            !audit.rows.is_empty(),
+            "the world stores material references"
+        );
 
         // No row resolved to anything but an exact stored name, and every
         // resolved row names the world's own archive.
@@ -2447,11 +2524,12 @@ mod tests {
         let differing = audit
             .rows
             .iter()
-            .filter(|row| {
-                matches!(&row.state, MaterialState::MissingTexture { .. })
-            })
+            .filter(|row| matches!(&row.state, MaterialState::MissingTexture { .. }))
             .count();
-        assert!(differing > 0, "the world's names are not all stored verbatim");
+        assert!(
+            differing > 0,
+            "the world's names are not all stored verbatim"
+        );
         let sky = audit
             .rows
             .iter()
@@ -2464,7 +2542,9 @@ mod tests {
         // And the archive really does store the lower-case spelling, so the row
         // is a naming difference and not a missing archive.
         assert!(
-            catalog.resolve(&session, &TextureRef::new(key.clone(), "sky1")).is_ok(),
+            catalog
+                .resolve(&session, &TextureRef::new(key.clone(), "sky1"))
+                .is_ok(),
             "the world's own archive stores `sky1`"
         );
         // Nothing resolved by a name the archive does not store.

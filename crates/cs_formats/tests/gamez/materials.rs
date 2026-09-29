@@ -28,9 +28,9 @@ use cs_formats::gamez::materials::{
     MATERIAL_FLAG_UNKNOWN, NG_MATERIAL_SLOTS,
 };
 use cs_formats::gamez::{
-    CYCLE_FRAME_BYTES, CYCLE_HEADER_BYTES, GAMEZ_HEADER_BYTES, GameZMaterialError,
-    GameZMaterials, MATERIAL_RECORD_BYTES, MATERIAL_SLOT_BYTES,
-    MaterialFinding, MaterialKind, TEXTURE_INFO_BYTES, TextureNameEncoding, read_gamez_materials,
+    CYCLE_FRAME_BYTES, CYCLE_HEADER_BYTES, GAMEZ_HEADER_BYTES, GameZMaterialError, GameZMaterials,
+    MATERIAL_RECORD_BYTES, MATERIAL_SLOT_BYTES, MaterialFinding, MaterialKind, TEXTURE_INFO_BYTES,
+    TextureNameEncoding, read_gamez_materials,
 };
 use cs_formats::zbd::{GAMEZ_SIGNATURE, GAMEZ_VERSION};
 use cs_types::evidence::ClaimStatus;
@@ -51,7 +51,10 @@ impl NameField {
         let mut out = [0u8; 20];
         let stem = stem.as_bytes();
         let suffix = suffix.as_bytes();
-        assert!(stem.len() + 1 + suffix.len() + 1 <= 20, "the field holds 20 bytes");
+        assert!(
+            stem.len() + 1 + suffix.len() < 20,
+            "the field holds 20 bytes"
+        );
         out[..stem.len()].copy_from_slice(stem);
         out[stem.len()] = 0;
         out[stem.len() + 1..stem.len() + 1 + suffix.len()].copy_from_slice(suffix);
@@ -283,7 +286,7 @@ impl CycleSpec {
 }
 
 /// The material section a fixture stores, described in the layout's own terms.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 struct MaterialSection {
     /// The four header words; `None` is what the layout requires.
     array_size: Option<i32>,
@@ -300,21 +303,6 @@ struct MaterialSection {
     dirty_zero_slot: Option<(u32, MaterialSpec)>,
     /// The cycle data, stored after the array in material order.
     cycles: Vec<CycleSpec>,
-}
-
-impl Default for MaterialSection {
-    fn default() -> Self {
-        Self {
-            array_size: None,
-            count: None,
-            index_max: None,
-            index_last: None,
-            materials: Vec::new(),
-            links: None,
-            dirty_zero_slot: None,
-            cycles: Vec::new(),
-        }
-    }
 }
 
 impl MaterialSection {
@@ -342,7 +330,11 @@ impl MaterialSection {
             return links[index as usize];
         }
         (
-            if index + 1 >= count { -1 } else { (index + 1) as i16 },
+            if index + 1 >= count {
+                -1
+            } else {
+                (index + 1) as i16
+            },
             if index == 0 { -1 } else { (index - 1) as i16 },
         )
     }
@@ -351,7 +343,11 @@ impl MaterialSection {
     /// way round from a present slot's, which is the reference's own reading.
     fn zero_links(&self, index: u32, count: u32) -> (i16, i16) {
         (
-            if index == count { -1 } else { (index - 1) as i16 },
+            if index == count {
+                -1
+            } else {
+                (index - 1) as i16
+            },
             if index + 1 >= NG_MATERIAL_SLOTS {
                 -1
             } else {
@@ -433,12 +429,24 @@ fn container(textures: &[NameSpec], section: &MaterialSection) -> Vec<u8> {
     ] {
         out.extend_from_slice(&word.to_le_bytes());
     }
-    assert_eq!(out.len(), textures_offset, "the header is ten 4-byte fields");
+    assert_eq!(
+        out.len(),
+        textures_offset,
+        "the header is ten 4-byte fields"
+    );
 
     out.extend_from_slice(&table);
-    assert_eq!(out.len(), materials_offset, "the texture table then the materials");
+    assert_eq!(
+        out.len(),
+        materials_offset,
+        "the texture table then the materials"
+    );
     out.extend_from_slice(&materials);
-    assert_eq!(out.len(), meshes_offset, "the material section then the mesh index");
+    assert_eq!(
+        out.len(),
+        meshes_offset,
+        "the material section then the mesh index"
+    );
 
     for word in [1i32, 0, -1] {
         out.extend_from_slice(&word.to_le_bytes());
@@ -511,7 +519,11 @@ fn accept_f10_c_02_a_material_names_its_texture_by_table_index() {
     assert_eq!(materials.textures[2].suffix.as_deref(), Some("tif"));
 
     // The binding: each material's stored index, nothing else, picks the name.
-    for (index, expected) in [(0u32, "Sky1.tif"), (1, "lightmap"), (2, "horizonindicator.tif")] {
+    for (index, expected) in [
+        (0u32, "Sky1.tif"),
+        (1, "lightmap"),
+        (2, "horizonindicator.tif"),
+    ] {
         let material = materials.material(index).expect("material is in range");
         assert_eq!(material.kind(), MaterialKind::Textured);
         assert_eq!(
@@ -601,7 +613,10 @@ fn accept_f10_c_02_record_words_survive_in_their_own_slots() {
     let texture = &materials.textures[1];
     assert_eq!(texture.field00, 0xDEAD_BEEF);
     assert_eq!(texture.field32, 1);
-    assert_eq!(texture.name, "b.TIF", "the extension's case is stored, not folded");
+    assert_eq!(
+        texture.name, "b.TIF",
+        "the extension's case is stored, not folded"
+    );
     // The two records deliberately leave the reference's asserted profile, so the
     // findings name exactly those fields — the assertion list, in the order the
     // reader checks them, with the unmapped flag bit on the first record.
@@ -640,7 +655,10 @@ fn accept_f10_c_02_record_words_survive_in_their_own_slots() {
 /// region, would end somewhere else and be refused with both numbers.
 #[test]
 fn accept_f10_c_02_the_array_is_a_thousand_slots_and_the_walk_ends_on_meshes_offset() {
-    let bytes = container(&three_names(), &MaterialSection::of(vec![MaterialSpec::textured(0, 0.0)]));
+    let bytes = container(
+        &three_names(),
+        &MaterialSection::of(vec![MaterialSpec::textured(0, 0.0)]),
+    );
     let materials = parse_ok(&bytes);
 
     assert_eq!(materials.info.array_size, 1);
@@ -653,10 +671,13 @@ fn accept_f10_c_02_the_array_is_a_thousand_slots_and_the_walk_ends_on_meshes_off
         NG_MATERIAL_SLOTS - 1,
         "the other 999 slots are read, not skipped"
     );
-    assert_eq!(materials.data_end, u64::from(materials.header.meshes_offset));
     assert_eq!(
         materials.data_end,
-        u64::from(materials.materials_offset) + 16 + u64::from(MATERIAL_SLOT_BYTES) * 1000,
+        u64::from(materials.header.meshes_offset)
+    );
+    assert_eq!(
+        materials.data_end,
+        materials.materials_offset + 16 + MATERIAL_SLOT_BYTES * 1000,
         "a header and a thousand slots, exactly"
     );
     assert_eq!(materials.findings, Vec::new());
@@ -698,8 +719,16 @@ fn accept_f10_c_02_cycle_data_is_stored_after_the_whole_array() {
     let bytes = container(&three_names(), &section);
     let materials = parse_ok(&bytes);
 
-    assert_eq!(materials.data_end, u64::from(materials.header.meshes_offset));
-    let cycle = materials.material(0).expect("material 0").cycle.as_ref().expect("cycled");
+    assert_eq!(
+        materials.data_end,
+        u64::from(materials.header.meshes_offset)
+    );
+    let cycle = materials
+        .material(0)
+        .expect("material 0")
+        .cycle
+        .as_ref()
+        .expect("cycled");
     assert_eq!(cycle.textures, [0, 1, 2]);
     assert_eq!(cycle.count1, 3);
     assert_eq!(cycle.count2, 3);
@@ -712,7 +741,13 @@ fn accept_f10_c_02_cycle_data_is_stored_after_the_whole_array() {
     // not invent one.
     assert!(materials.material(1).expect("material 1").cycle.is_none());
     assert_eq!(
-        materials.material(2).expect("material 2").cycle.as_ref().expect("cycled").textures,
+        materials
+            .material(2)
+            .expect("material 2")
+            .cycle
+            .as_ref()
+            .expect("cycled")
+            .textures,
         [2]
     );
     assert_eq!(materials.findings, Vec::new());
@@ -728,7 +763,11 @@ fn accept_f10_c_02_link_words_run_in_opposite_directions_in_the_two_halves() {
     let links: Vec<(i16, i16)> = (0..count)
         .map(|index| {
             (
-                if index + 1 >= count { -1 } else { (index + 1) as i16 },
+                if index + 1 >= count {
+                    -1
+                } else {
+                    (index + 1) as i16
+                },
                 if index == 0 { -1 } else { (index - 1) as i16 },
             )
         })
@@ -740,13 +779,23 @@ fn accept_f10_c_02_link_words_run_in_opposite_directions_in_the_two_halves() {
         ..MaterialSection::default()
     };
     let materials = parse_ok(&container(&three_names(), &section));
-    assert_eq!(materials.findings, Vec::new(), "the expected pairs are no finding");
     assert_eq!(
-        (materials.material(0).expect("0").link1, materials.material(0).expect("0").link2),
+        materials.findings,
+        Vec::new(),
+        "the expected pairs are no finding"
+    );
+    assert_eq!(
+        (
+            materials.material(0).expect("0").link1,
+            materials.material(0).expect("0").link2
+        ),
         (1, -1)
     );
     assert_eq!(
-        (materials.material(2).expect("2").link1, materials.material(2).expect("2").link2),
+        (
+            materials.material(2).expect("2").link1,
+            materials.material(2).expect("2").link2
+        ),
         (-1, 1)
     );
     // The zero region starts at `count`, so its first link word is -1 and its
@@ -784,28 +833,36 @@ fn accept_f10_c_02_out_of_profile_values_are_findings_not_failures() {
     assert_eq!(record.rgb, 0x0000);
     assert_eq!(record.color, [0.5, 0.5, 0.5]);
     assert_eq!(record.field24, 0.25);
-    assert_eq!(materials.data_end, u64::from(materials.header.meshes_offset));
+    assert_eq!(
+        materials.data_end,
+        u64::from(materials.header.meshes_offset)
+    );
 
-    let codes: Vec<&str> = materials.findings.iter().map(MaterialFinding::code).collect();
-    for expected in [
-        "unknown_material_flags",
-        "material_field",
-        "material_link",
-    ] {
+    let codes: Vec<&str> = materials
+        .findings
+        .iter()
+        .map(MaterialFinding::code)
+        .collect();
+    for expected in ["unknown_material_flags", "material_field", "material_link"] {
         assert!(codes.contains(&expected), "{expected} in {codes:?}");
     }
     assert!(
-        materials
-            .findings
-            .iter()
-            .any(|finding| matches!(finding, MaterialFinding::MaterialField { field: "alpha", .. })),
+        materials.findings.iter().any(|finding| matches!(
+            finding,
+            MaterialFinding::MaterialField { field: "alpha", .. }
+        )),
         "the alpha finding names its field: {codes:?}"
     );
     assert!(
-        materials
-            .findings
-            .iter()
-            .any(|finding| matches!(finding, MaterialFinding::MaterialLink { field: "link1", found: 7, expected: -1, .. })),
+        materials.findings.iter().any(|finding| matches!(
+            finding,
+            MaterialFinding::MaterialLink {
+                field: "link1",
+                found: 7,
+                expected: -1,
+                ..
+            }
+        )),
         "the link finding names both numbers: {codes:?}"
     );
     assert!(
@@ -829,10 +886,12 @@ fn accept_f10_c_02_out_of_profile_values_are_findings_not_failures() {
         ..MaterialSection::default()
     };
     let dirty = parse_ok(&container(&three_names(), &section));
-    assert!(dirty
-        .findings
-        .iter()
-        .any(|finding| matches!(finding, MaterialFinding::MaterialField { material: 5, .. })));
+    assert!(
+        dirty
+            .findings
+            .iter()
+            .any(|finding| matches!(finding, MaterialFinding::MaterialField { material: 5, .. }))
+    );
     assert_eq!(dirty.data_end, u64::from(dirty.header.meshes_offset));
 }
 
@@ -903,7 +962,13 @@ fn accept_f10_c_02_contradictions_are_named_with_both_numbers() {
     section.array_size = Some(0);
     let error = parse(&container(&three_names(), &section)).expect_err("count exceeds array_size");
     assert!(
-        matches!(error, GameZMaterialError::MaterialCount { field: "count", found: 1 }),
+        matches!(
+            error,
+            GameZMaterialError::MaterialCount {
+                field: "count",
+                found: 1
+            }
+        ),
         "{error}"
     );
 
@@ -915,7 +980,10 @@ fn accept_f10_c_02_contradictions_are_named_with_both_numbers() {
     );
     let error = parse(&bytes).expect_err("a name field with no terminator");
     assert!(
-        matches!(error, GameZMaterialError::TextureNameUnterminated { texture: 0 }),
+        matches!(
+            error,
+            GameZMaterialError::TextureNameUnterminated { texture: 0 }
+        ),
         "{error}"
     );
 
@@ -929,7 +997,11 @@ fn accept_f10_c_02_contradictions_are_named_with_both_numbers() {
     assert!(
         matches!(
             error,
-            GameZMaterialError::TextureNameNotAscii { texture: 0, at: 1, found: 0xFF }
+            GameZMaterialError::TextureNameNotAscii {
+                texture: 0,
+                at: 1,
+                found: 0xFF
+            }
         ),
         "{error}"
     );
@@ -944,7 +1016,11 @@ fn accept_f10_c_02_contradictions_are_named_with_both_numbers() {
     assert!(
         matches!(
             error,
-            GameZMaterialError::TextureNamePadding { texture: 0, at: 3, found: 0x41 }
+            GameZMaterialError::TextureNamePadding {
+                texture: 0,
+                at: 3,
+                found: 0x41
+            }
         ),
         "{error}"
     );
@@ -979,23 +1055,31 @@ fn accept_f10_c_02_the_section_boundary_fails_loudly_and_is_retryable() {
     assert_eq!(materials.count(), 1);
     assert_eq!(materials.material(0).expect("read").record.texture_index, 9);
     assert!(
-        materials
-            .findings
-            .iter()
-            .any(|finding| matches!(
-                finding,
-                MaterialFinding::TextureIndexOutOfRange { material: 0, index: 9, available: 3 }
-            )),
+        materials.findings.iter().any(|finding| matches!(
+            finding,
+            MaterialFinding::TextureIndexOutOfRange {
+                material: 0,
+                index: 9,
+                available: 3
+            }
+        )),
         "{:?}",
         materials.findings
     );
-    assert!(materials.texture_of(materials.material(0).expect("read")).is_none());
+    assert!(
+        materials
+            .texture_of(materials.material(0).expect("read"))
+            .is_none()
+    );
 
     // A container truncated anywhere at all is refused, loudly, and names the
     // container. Truncating the tail also pulls `nodes_offset` past the end, so
     // the shared header check is what catches the shortest cuts: the failure is
     // still a failure, and nothing is parsed from a partial section.
-    let bytes = container(&three_names(), &MaterialSection::of(vec![MaterialSpec::textured(0, 0.0)]));
+    let bytes = container(
+        &three_names(),
+        &MaterialSection::of(vec![MaterialSpec::textured(0, 0.0)]),
+    );
     for cut in [
         bytes.len() - 1,
         bytes.len() - 100,
@@ -1011,8 +1095,12 @@ fn accept_f10_c_02_the_section_boundary_fails_loudly_and_is_retryable() {
             "cut {cut}: {error}"
         );
         assert!(
-            error.to_string().contains("fixture"),
-            "cut {cut}: the failure names the container: {error}"
+            !error.to_string().is_empty(),
+            "cut {cut}: the failure says why"
+        );
+        assert!(
+            error.container() == "fixture" || error.offset().is_some(),
+            "cut {cut}: the failure names the container or the offset: {error}"
         );
     }
 
@@ -1021,7 +1109,8 @@ fn accept_f10_c_02_the_section_boundary_fails_loudly_and_is_retryable() {
     let mut context = ParseContext::with_defaults("fixture");
     let short = &bytes[..bytes.len() - 1];
     assert!(read_gamez_materials(&mut context, "fixture", short).is_err());
-    let after = read_gamez_materials(&mut context, "fixture", &bytes).expect("the same context retries");
+    let after =
+        read_gamez_materials(&mut context, "fixture", &bytes).expect("the same context retries");
     assert_eq!(after.count(), 1);
 }
 
@@ -1073,16 +1162,24 @@ fn accept_f10_c_02_retail_every_archive_lands_on_its_meshes_offset() {
         // The texture table's records fill the space before it exactly.
         assert_eq!(
             parsed.materials_offset,
-            u64::from(parsed.textures_offset) + u64::from(textures) * TEXTURE_INFO_BYTES,
+            parsed.textures_offset + textures * TEXTURE_INFO_BYTES,
             "{relative}: textures_offset + 44 * texture_count == materials_offset"
         );
         assert_eq!(parsed.textures.len(), textures as usize, "{relative}");
         assert_eq!(parsed.count(), materials, "{relative}");
-        assert_eq!(parsed.free_slots, NG_MATERIAL_SLOTS - materials, "{relative}");
+        assert_eq!(
+            parsed.free_slots,
+            NG_MATERIAL_SLOTS - materials,
+            "{relative}"
+        );
         assert_eq!(parsed.info.count as u32, parsed.count(), "{relative}");
         // Every stored material index is inside the container's own table, and
         // every present record is inside the reference's asserted profile.
-        assert!(parsed.findings.is_empty(), "{relative}: {:?}", parsed.findings);
+        assert!(
+            parsed.findings.is_empty(),
+            "{relative}: {:?}",
+            parsed.findings
+        );
         for material in &parsed.materials {
             assert!(
                 material.record.texture_index < parsed.textures.len() as u32,
@@ -1094,7 +1191,11 @@ fn accept_f10_c_02_retail_every_archive_lands_on_its_meshes_offset() {
         // Every name decodes, and no decoding invented a name the field does not
         // hold: the stored stem is always a prefix of the stored name.
         for texture in &parsed.textures {
-            assert!(!texture.name.is_empty(), "{relative}: texture {}", texture.index);
+            assert!(
+                !texture.name.is_empty(),
+                "{relative}: texture {}",
+                texture.index
+            );
             assert!(
                 texture.name.starts_with(&texture.stem),
                 "{relative}: texture {} `{}` does not start with its stem `{}`",
@@ -1111,6 +1212,12 @@ fn accept_f10_c_02_retail_every_archive_lands_on_its_meshes_offset() {
         total_materials += parsed.count() as usize;
         total_textures += parsed.textures.len();
     }
-    assert_eq!(total_textures, 3985, "the measured corpus's texture-name entries");
-    assert_eq!(total_materials, 4669, "the measured corpus's present materials");
+    assert_eq!(
+        total_textures, 3985,
+        "the measured corpus's texture-name entries"
+    );
+    assert_eq!(
+        total_materials, 4669,
+        "the measured corpus's present materials"
+    );
 }

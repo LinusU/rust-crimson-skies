@@ -515,7 +515,10 @@ impl fmt::Display for MaterialFinding {
                 f,
                 "{code}: material {material} {field} is {found}, expected {expected}"
             ),
-            Self::CyclePointerMismatch { material, cycle_ptr } => write!(
+            Self::CyclePointerMismatch {
+                material,
+                cycle_ptr,
+            } => write!(
                 f,
                 "{code}: material {material} cycle pointer {cycle_ptr} disagrees with its cycled flag"
             ),
@@ -661,14 +664,12 @@ pub enum GameZMaterialError {
     /// The container header is not a CS GameZ container, or its sections do not
     /// form the chain the layout requires. This is [`super::GameZError`], shared
     /// with the mesh reader so both entrypoints reject the same bytes for the
-    /// same reason, and the container label travels with it so the failure names
-    /// the file it came from.
-    Header {
-        /// The container label the parse carries.
-        container: String,
-        /// The header's own failure.
-        error: super::GameZError,
-    },
+    /// same reason.
+    ///
+    /// It carries no container label, for the same reason the mesh reader's own
+    /// validation variants do not: a header is refused on its own words, and the
+    /// label travels with the [`Self::Parse`] failures a truncated read raises.
+    Header(super::GameZError),
     /// `texture_count` is not below the reference's bound of 4096, so the
     /// texture table's byte extent is not established.
     TextureCount {
@@ -743,7 +744,7 @@ impl GameZMaterialError {
     pub const fn code(&self) -> &'static str {
         match self {
             Self::Parse(_) => "parse",
-            Self::Header { .. } => "header",
+            Self::Header(_) => "header",
             Self::TextureCount { .. } => "texture_count",
             Self::TextureSectionEnd { .. } => "texture_section_end",
             Self::TextureNameUnterminated { .. } => "texture_name_unterminated",
@@ -761,7 +762,7 @@ impl GameZMaterialError {
     pub fn container(&self) -> &str {
         match self {
             Self::Parse(error) => &error.container,
-            Self::Header { container, .. } => container,
+            Self::Header(error) => error.container(),
             _ => "",
         }
     }
@@ -771,7 +772,7 @@ impl GameZMaterialError {
     pub fn offset(&self) -> Option<u64> {
         match self {
             Self::Parse(error) => Some(error.offset),
-            Self::Header { error, .. } => error.offset(),
+            Self::Header(error) => error.offset(),
             Self::TextureSectionEnd { found, .. } | Self::MaterialSectionEnd { found, .. } => {
                 Some(*found)
             }
@@ -790,7 +791,7 @@ impl fmt::Display for GameZMaterialError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Parse(error) => write!(f, "{error}"),
-            Self::Header { container, error } => write!(f, "{container}: {error}"),
+            Self::Header(error) => write!(f, "{error}"),
             Self::TextureCount { found } => {
                 write!(f, "at offset 12: texture count {found} is not below 4096")
             }
@@ -898,12 +899,8 @@ fn read_sections(
     allocation: &mut AllocationBudget,
     container_len: u64,
 ) -> Result<GameZMaterials, GameZMaterialError> {
-    let header = super::reader::read_container_header(reader, container_len).map_err(|error| {
-        GameZMaterialError::Header {
-            container: reader.container().to_owned(),
-            error,
-        }
-    })?;
+    let header = super::reader::read_container_header(reader, container_len)
+        .map_err(GameZMaterialError::Header)?;
     if header.texture_count >= MAX_TEXTURE_COUNT {
         return Err(GameZMaterialError::TextureCount {
             found: header.texture_count,
@@ -972,7 +969,12 @@ fn read_texture_table(
     // three are charged, so the ledger describes every buffer this parse hands
     // out and not only the one that could be large.
     allocation
-        .reserve("textures", reader.position(), u64::try_from(count).expect("usize is u64 on 64-bit") * TEXTURE_NAME_BYTES, 1)
+        .reserve(
+            "textures",
+            reader.position(),
+            u64::try_from(count).expect("usize is u64 on 64-bit") * TEXTURE_NAME_BYTES,
+            1,
+        )
         .map_err(GameZMaterialError::Parse)?;
     allocation
         .reserve(
@@ -1069,11 +1071,7 @@ fn decode_name(
         .find(|(_, byte)| *byte & 0x80 != 0)
         .map(|(at, byte)| (at as u8, *byte))
     {
-        return Err(GameZMaterialError::TextureNameNotAscii {
-            texture,
-            at,
-            found,
-        });
+        return Err(GameZMaterialError::TextureNameNotAscii { texture, at, found });
     }
     let Some(first) = field.iter().position(|byte| *byte == 0) else {
         return Err(GameZMaterialError::TextureNameUnterminated { texture });
@@ -1089,12 +1087,7 @@ fn decode_name(
             owned[first] = b'.';
             let name = ascii(&owned);
             let suffix = name[first + 1..].to_owned();
-            Ok((
-                name,
-                stem,
-                Some(suffix),
-                TextureNameEncoding::Unterminated,
-            ))
+            Ok((name, stem, Some(suffix), TextureNameEncoding::Unterminated))
         }
         Some(offset) => {
             let second = first + 1 + offset;
@@ -1112,12 +1105,7 @@ fn decode_name(
             }
             let suffix = ascii(&field[first + 1..second]);
             let name = format!("{stem}.{suffix}");
-            Ok((
-                name,
-                stem,
-                Some(suffix),
-                TextureNameEncoding::WithSuffix,
-            ))
+            Ok((name, stem, Some(suffix), TextureNameEncoding::WithSuffix))
         }
     }
 }
@@ -1145,10 +1133,16 @@ fn read_material_table(
     header: &GameZHeader,
     findings: &mut Vec<MaterialFinding>,
 ) -> Result<(MaterialInfo, Vec<RawMaterial>, u32), GameZMaterialError> {
-    let array_size = reader.read_i32("material.array_size").map_err(material_parse)?;
+    let array_size = reader
+        .read_i32("material.array_size")
+        .map_err(material_parse)?;
     let count = reader.read_i32("material.count").map_err(material_parse)?;
-    let index_max = reader.read_i32("material.index_max").map_err(material_parse)?;
-    let index_last = reader.read_i32("material.index_last").map_err(material_parse)?;
+    let index_max = reader
+        .read_i32("material.index_max")
+        .map_err(material_parse)?;
+    let index_last = reader
+        .read_i32("material.index_last")
+        .map_err(material_parse)?;
     if array_size < 0 || array_size > NG_MATERIAL_SLOTS as i32 {
         return Err(GameZMaterialError::MaterialCount {
             field: "array_size",
@@ -1209,7 +1203,11 @@ fn read_material_table(
         // A present slot's first link word points at the *next* material and its
         // second at the previous one. The zero slots below store the pair the
         // other way round, and that is the reference's own reading of both.
-        let expected1 = if index + 1 >= valid { -1 } else { (index + 1) as i16 };
+        let expected1 = if index + 1 >= valid {
+            -1
+        } else {
+            (index + 1) as i16
+        };
         let expected2 = if index == 0 { -1 } else { (index - 1) as i16 };
         check_links(index, link1, link2, expected1, expected2, findings);
         materials.push(RawMaterial {
@@ -1229,7 +1227,11 @@ fn read_material_table(
         check_zero_slot(record, index, findings);
         let link1 = reader.read_i16("material.link1").map_err(material_parse)?;
         let link2 = reader.read_i16("material.link2").map_err(material_parse)?;
-        let expected1 = if index == valid { -1 } else { (index - 1) as i16 };
+        let expected1 = if index == valid {
+            -1
+        } else {
+            (index - 1) as i16
+        };
         let expected2 = if index + 1 >= NG_MATERIAL_SLOTS {
             -1
         } else {
@@ -1292,10 +1294,7 @@ fn check_links(
     expected2: i16,
     findings: &mut Vec<MaterialFinding>,
 ) {
-    for (field, found, expected) in [
-        ("link1", link1, expected1),
-        ("link2", link2, expected2),
-    ] {
+    for (field, found, expected) in [("link1", link1, expected1), ("link2", link2, expected2)] {
         if found != expected {
             findings.push(MaterialFinding::MaterialLink {
                 material,
@@ -1313,16 +1312,32 @@ fn read_material_record(reader: &mut Reader<'_>) -> Result<RawMaterialRecord, Ga
         flags: reader.read_u8("material.flags").map_err(material_parse)?,
         rgb: reader.read_u16("material.rgb").map_err(material_parse)?,
         color: [
-            reader.read_f32("material.color.r").map_err(material_parse)?,
-            reader.read_f32("material.color.g").map_err(material_parse)?,
-            reader.read_f32("material.color.b").map_err(material_parse)?,
+            reader
+                .read_f32("material.color.r")
+                .map_err(material_parse)?,
+            reader
+                .read_f32("material.color.g")
+                .map_err(material_parse)?,
+            reader
+                .read_f32("material.color.b")
+                .map_err(material_parse)?,
         ],
         texture_index: reader.read_u32("material.index").map_err(material_parse)?,
-        field20: reader.read_f32("material.field20").map_err(material_parse)?,
-        field24: reader.read_f32("material.field24").map_err(material_parse)?,
-        field28: reader.read_f32("material.field28").map_err(material_parse)?,
-        field32: reader.read_f32("material.field32").map_err(material_parse)?,
-        cycle_ptr: reader.read_u32("material.cycle_ptr").map_err(material_parse)?,
+        field20: reader
+            .read_f32("material.field20")
+            .map_err(material_parse)?,
+        field24: reader
+            .read_f32("material.field24")
+            .map_err(material_parse)?,
+        field28: reader
+            .read_f32("material.field28")
+            .map_err(material_parse)?,
+        field32: reader
+            .read_f32("material.field32")
+            .map_err(material_parse)?,
+        cycle_ptr: reader
+            .read_u32("material.cycle_ptr")
+            .map_err(material_parse)?,
     })
 }
 
@@ -1381,8 +1396,20 @@ fn check_material_fields(
         u64::from(record.field20.to_bits()),
     );
     if record.kind() == MaterialKind::Textured {
-        material_field(findings, index, "alpha", record.alpha != 0xFF, u64::from(record.alpha));
-        material_field(findings, index, "rgb", record.rgb != 0x7FFF, u64::from(record.rgb));
+        material_field(
+            findings,
+            index,
+            "alpha",
+            record.alpha != 0xFF,
+            u64::from(record.alpha),
+        );
+        material_field(
+            findings,
+            index,
+            "rgb",
+            record.rgb != 0x7FFF,
+            u64::from(record.rgb),
+        );
         for (field, value) in [
             ("color.r", record.color[0]),
             ("color.g", record.color[1]),
@@ -1411,7 +1438,13 @@ fn check_material_fields(
         // word is zero, the texture index is zero and the cycle pointer is zero.
         // It asserts **nothing** about `alpha` or the colour, and the measured
         // corpus stores `0xFF` there, so asserting it would be inventing a rule.
-        material_field(findings, index, "rgb", record.rgb != 0, u64::from(record.rgb));
+        material_field(
+            findings,
+            index,
+            "rgb",
+            record.rgb != 0,
+            u64::from(record.rgb),
+        );
         material_field(
             findings,
             index,
@@ -1419,13 +1452,7 @@ fn check_material_fields(
             record.texture_index != 0,
             u64::from(record.texture_index),
         );
-        material_field(
-            findings,
-            index,
-            "cycled",
-            record.is_cycled(),
-            0,
-        );
+        material_field(findings, index, "cycled", record.is_cycled(), 0);
         material_field(
             findings,
             index,
@@ -1443,11 +1470,7 @@ fn check_material_fields(
 /// bit set. Breaking that is reported and changes no length, so the walk
 /// continues and the section boundary still decides whether the container was
 /// really read.
-fn check_zero_slot(
-    record: RawMaterialRecord,
-    index: u32,
-    findings: &mut Vec<MaterialFinding>,
-) {
+fn check_zero_slot(record: RawMaterialRecord, index: u32, findings: &mut Vec<MaterialFinding>) {
     material_field(
         findings,
         index,
@@ -1455,8 +1478,20 @@ fn check_zero_slot(
         record.flags != MATERIAL_FLAG_FREE,
         u64::from(record.flags),
     );
-    material_field(findings, index, "alpha", record.alpha != 0, u64::from(record.alpha));
-    material_field(findings, index, "rgb", record.rgb != 0, u64::from(record.rgb));
+    material_field(
+        findings,
+        index,
+        "alpha",
+        record.alpha != 0,
+        u64::from(record.alpha),
+    );
+    material_field(
+        findings,
+        index,
+        "rgb",
+        record.rgb != 0,
+        u64::from(record.rgb),
+    );
     for (field, value) in [
         ("color.r", record.color[0]),
         ("color.g", record.color[1]),
@@ -1514,9 +1549,27 @@ fn read_cycle(
     let count2 = reader.read_u32("cycle.count2").map_err(material_parse)?;
     let data_ptr = reader.read_u32("cycle.data_ptr").map_err(material_parse)?;
 
-    material_field(findings, material, "field00", field00 == 0, u64::from(field00));
-    material_field(findings, material, "field08", field08 != 0, u64::from(field08));
-    material_field(findings, material, "data_ptr", data_ptr == 0, u64::from(data_ptr));
+    material_field(
+        findings,
+        material,
+        "field00",
+        field00 == 0,
+        u64::from(field00),
+    );
+    material_field(
+        findings,
+        material,
+        "field08",
+        field08 != 0,
+        u64::from(field08),
+    );
+    material_field(
+        findings,
+        material,
+        "data_ptr",
+        data_ptr == 0,
+        u64::from(data_ptr),
+    );
     if !(0.0..=16.0).contains(&field12) {
         findings.push(MaterialFinding::CycleField {
             material,
