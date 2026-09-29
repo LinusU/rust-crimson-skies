@@ -383,3 +383,29 @@ fn accept_f17_a_invalid_inputs_are_refused() {
     assert!(DrawItemKey::new("White Space").is_err());
     assert!(DrawItemKey::new(&"k".repeat(65)).is_err());
 }
+
+/// A finite forward keeps a real direction at every scale: a naive
+/// `sqrt(f·f)` norm overflows to `inf` for huge components (which would
+/// silently yield a zero forward) and underflows to `0` for subnormal
+/// ones (which would wrongly reject a direction that exists). The plan's
+/// depth sort and its equal-depth report depend on the forward being
+/// genuine.
+#[test]
+fn accept_f17_a_view_normalization_survives_extreme_scales() {
+    let huge =
+        SceneView::new([0.0, 0.0, 0.0], [f32::MAX; 3]).expect("a huge forward still directs");
+    let len = huge.forward().iter().map(|v| v * v).sum::<f32>().sqrt();
+    assert!((len - 1.0).abs() < 1e-6, "normalized, got {len}");
+    assert!(huge.depth([1.0, 0.0, 0.0]) > 0.0);
+
+    let tiny = SceneView::new([0.0, 0.0, 0.0], [f32::MIN_POSITIVE, 0.0, 0.0])
+        .expect("a subnormal-scale forward still directs");
+    assert_eq!(tiny.forward(), [1.0, 0.0, 0.0]);
+
+    // Finite-but-far coordinates saturate to a finite, decidable depth
+    // rather than leaking inf/NaN into the sort.
+    let depth = SceneView::new([-f32::MAX, 0.0, 0.0], [1.0, 0.0, 0.0])
+        .expect("valid view")
+        .depth([f32::MAX, 0.0, 0.0]);
+    assert!(depth.is_finite() && depth > 0.0);
+}

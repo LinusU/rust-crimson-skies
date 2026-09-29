@@ -150,14 +150,18 @@ impl SceneView {
         {
             return Err(ViewError::NonFinite);
         }
-        let len =
-            (forward[0] * forward[0] + forward[1] * forward[1] + forward[2] * forward[2]).sqrt();
-        if len == 0.0 {
+        // Scale first so the norm cannot overflow or underflow: a naive
+        // `sqrt(f·f)` turns `f32::MAX` components into `inf` (a zero
+        // forward would slip through) and subnormal ones into `0`.
+        let max = forward[0].abs().max(forward[1].abs()).max(forward[2].abs());
+        if max == 0.0 {
             return Err(ViewError::ZeroForward);
         }
+        let scaled = [forward[0] / max, forward[1] / max, forward[2] / max];
+        let len = (scaled[0] * scaled[0] + scaled[1] * scaled[1] + scaled[2] * scaled[2]).sqrt();
         Ok(Self {
             position_m,
-            forward: [forward[0] / len, forward[1] / len, forward[2] / len],
+            forward: [scaled[0] / len, scaled[1] / len, scaled[2] / len],
         })
     }
 
@@ -172,13 +176,21 @@ impl SceneView {
     }
 
     /// Signed view depth of `point_m`: positive is in front of the view.
+    ///
+    /// Always finite: the dot is accumulated in `f64` and clamped to the
+    /// `f32` range, so two finite-but-huge coordinates saturate instead of
+    /// leaking `inf`/`NaN` into the depth-sorted phases — the sort must
+    /// always get a decidable order and a reportable tie.
     pub fn depth(&self, point_m: [f32; 3]) -> f32 {
         let d = [
-            point_m[0] - self.position_m[0],
-            point_m[1] - self.position_m[1],
-            point_m[2] - self.position_m[2],
+            f64::from(point_m[0]) - f64::from(self.position_m[0]),
+            f64::from(point_m[1]) - f64::from(self.position_m[1]),
+            f64::from(point_m[2]) - f64::from(self.position_m[2]),
         ];
-        d[0] * self.forward[0] + d[1] * self.forward[1] + d[2] * self.forward[2]
+        (d[0] * f64::from(self.forward[0])
+            + d[1] * f64::from(self.forward[1])
+            + d[2] * f64::from(self.forward[2]))
+        .clamp(f64::from(-f32::MAX), f64::from(f32::MAX)) as f32
     }
 }
 
@@ -298,7 +310,8 @@ pub enum SortingLimitation {
     EqualViewDepth {
         /// The phase the pair belongs to.
         phase: RenderPhase,
-        /// The item that drew first (the farther or earlier one).
+        /// The item that drew first (earlier in submission order — at
+        /// equal depth neither is farther).
         first: DrawItemKey,
         /// The item that drew second.
         second: DrawItemKey,
@@ -380,9 +393,9 @@ impl DrawPlan {
     /// A canonical fingerprint of this plan: phase, key and view depth of
     /// every entry in draw order, plus the limitations.
     ///
-    /// The fingerprint identifies a *plan*, an [`FingerprintKind::Artifact`]
-    /// product — it pins ordering behavior for goldens and evidence, never
-    /// original data.
+    /// The fingerprint identifies a *plan*, a
+    /// [`cs_types::evidence::FingerprintKind::Artifact`] product — it pins
+    /// ordering behavior for goldens and evidence, never original data.
     pub fn fingerprint(&self) -> ContentHash {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(b"cs/render/plan/v1\0");

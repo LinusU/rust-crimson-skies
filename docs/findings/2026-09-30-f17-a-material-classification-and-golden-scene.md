@@ -25,7 +25,7 @@ fixture declaration carries that `ClaimStatus`.
 - `crates/cs_app/src/render/golden.rs` (new): `golden_scene` +
   `GoldenScene` (`items`, `view`, `item`, `draw_plan`, `fingerprint`).
 - Tests (`crates/cs_app/tests/render/`, selected by `accept_f17_a_`):
-  `main.rs` harness, `classification.rs` (7 tests), `golden_scene.rs`
+  `main.rs` harness, `classification.rs` (8 tests), `golden_scene.rs`
   (8 tests).
 
 **One observable failure:** two overlapping glass panes submitted
@@ -111,6 +111,22 @@ and turn glass and fence into solid walls.
   already tracked upstream (`MeshPresentationUnknown`,
   `PresentationUnknown`), so `create_tasks` was not used.
 
+## Review follow-up (devin-1, fresh context)
+
+- `SceneView::new` normalized `forward` with a naive `sqrt(f·f)` in
+  `f32`: components near `f32::MAX` overflowed the norm to `inf`, which
+  would silently store a zero forward (a direction the constructor
+  promises to reject), and subnormal components underflowed to `0` and
+  were refused despite having a direction. Normalization is now
+  scale-first (`f/max` before the norm), which cannot overflow or
+  underflow for finite inputs.
+- `SceneView::depth` now accumulates in `f64` and clamps to the `f32`
+  range, so two finite-but-huge coordinates saturate to a finite depth
+  instead of leaking `inf`/`NaN` into the depth-sorted phases (`NaN`
+  would evade both `total_cmp` ties and the `==` equal-depth report).
+- New test `accept_f17_a_view_normalization_survives_extreme_scales`
+  pins both behaviors.
+
 ## Mutation verification (run, then reverted)
 
 - `phase_entries.sort_by` removed from `DrawPlan::build` →
@@ -133,7 +149,7 @@ All from the repository root on branch
 | `cargo fmt --all -- --check` | 0 |
 | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
 | `cargo test --workspace --locked` | 0 |
-| `cargo test --workspace --locked -- accept_f17_a_ --include-ignored` | 0 (15 tests: 7 classification, 8 golden scene/plan) |
+| `cargo test --workspace --locked -- accept_f17_a_ --include-ignored` | 0 (16 tests: 8 classification, 8 golden scene/plan) |
 
 ## Wiring edits (outside owner paths, logic-free)
 
