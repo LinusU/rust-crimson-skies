@@ -105,11 +105,13 @@ overflow while computing a table's position, and the `PeError` domain refusals
 (`Malformed`, `OutsideTable`, `DirectoryCycle`, `StringBlock`), which are not
 `ParseError`s at all.
 
-Behaviour is unchanged: the 9 non-retail `accept_f12_b_*` tests pass **unmodified**
-(the file was not touched), including the truncation case
+**Behaviour is unchanged:** the 16 `accept_f12_b_*` tests pass **unmodified**
+(the test file was not touched), including the truncation case
 (`accept_f12_b_pe_layout_and_directory_presence_are_checked`, which cuts the
-fixture image by 0x200 bytes), the cycle case, the bounds cases and the
-allocation-budget case.
+fixture image by 0x200 bytes), the cycle case, the bounds cases, the
+allocation-budget case, and — with `CS_GAME_DIR` set on this machine — the
+retail survey of `strings.dll`, `language.dll` and `langui.dll` through the
+ported walk.
 
 ## The audit the task asked for: `rof.rs`, `zbd/`, `interp.rs`, `texture/`
 
@@ -141,9 +143,9 @@ tree was restored from a copy of the file afterwards.
    `accept_f12_f_window_past_the_container_is_refused_exactly_as_a_skip`,
    `accept_f12_f_window_refuses_every_truncated_prefix_of_the_f03_corpus` and
    `accept_f12_f_pe_resource_reads_go_through_the_shared_window` **fail**; the
-   other two still pass. The 9 non-retail `accept_f12_b_*` tests and the F03
-   suites still pass, because they never open a window — they always went
-   through the cursor. That is the honest limit of the probe: the window's own
+   other two still pass. The `accept_f12_b_*` tests and the F03 suites still
+   pass, because they never open a window — they always went through the
+   cursor. That is the honest limit of this probe: the window's own
    sensitivity is proven by the new tests, not by the older ones.
 2. **The shared cursor check clamps** (`Reader::take`, which every `skip`,
    `read_bytes` and `read_u16`/`read_u32` goes through).
@@ -163,12 +165,19 @@ rather than a silent divergence.
 
 - `cargo fmt --all -- --check` → 0
 - `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` → 0
-- `cargo test --workspace --locked` → 0 (102 test binaries, 0 failed)
-- `cargo test --workspace --locked -- accept_f12_f_ --include-ignored` → 0 (5
-  tests, 0 ignored, all synthetic)
-- `cargo test --workspace --locked -- accept_f12_b_ --include-ignored` → 0 (11
-  in `cs_formats` + `cs_content`, 2 of them retail and skipped without
-  `CS_GAME_DIR`; the 9 synthetic ones pass unmodified)
+- `cargo test --workspace --locked` → 0 (every binary reports `ok`; 0 failed)
+- `cargo test --workspace --locked -- accept_f12_f_ --include-ignored` → 0
+  (5 tests, all synthetic, none ignored)
+- `cargo test --workspace --locked -- accept_f12_b_ --include-ignored` → 0
+  (16 tests, **all 16 run**: the 9 synthetic ones plus the 2 retail ones in
+  `cs_formats` and the 5 in `cs_content`, because `CS_GAME_DIR` was set on this
+  machine. The two retail resource surveys — `strings.dll`,
+  `GOSDATA/ASSETS/BINARIES/language.dll` and `langui.dll` read through the
+  ported walk — pass with the counts, ids, languages and code pages F12-B
+  recorded.)
+- `cargo test --workspace --locked -- accept_f03_ --include-ignored` → 0
+  (34 tests, including the truncation corpus and the budget suites)
+
 
 ## Still unknown (unchanged by this task)
 
