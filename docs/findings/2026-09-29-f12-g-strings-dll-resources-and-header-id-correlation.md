@@ -9,7 +9,11 @@ matter, not a curiosity). Required capability: `retail`, used **read-only**.
 **Owner paths used:** `docs/findings/` (this file) and
 `docs/findings/evidence/F12-G.json` (the acceptance report; see
 [Evidence](#evidence)). No production code changed — the task states "no reader
-change, and no guessed parse", and the reader did not need one.
+change, and no guessed parse", and the reader did not need one. F12-K (#377)
+later edited this file's [Tests](#tests), [Evidence](#evidence) and
+[Commands](#commands) sections and the end of [Review](#review) from its own
+owner path, to record the `accept_f12_g_` regression pins it added in
+`crates/cs_formats/src/pe_resources_tests.rs`.
 
 Installation fingerprint, from the production `cs-inspect inventory` run whose
 report is the evidence artifact:
@@ -455,44 +459,51 @@ directive on follow-up limitations.
 
 ## Tests
 
-**There is no `accept_f12_g_` test, and this is stated rather than worked
-around.** The task's owner paths are `docs/findings/` alone and it says
-explicitly "This is a measurement task: no reader change"; a test that pinned
-this measurement would have to live in a crate and would call a reader the task
-forbids changing. Adding a Rust test outside the owner path, or a test that
-merely re-reads this document, would be exactly the shortcut the project rules
-forbid, so neither was done.
+F12-K (#377) added the regression pins this measurement anticipated: six
+`accept_f12_g_` tests in `crates/cs_formats/src/pe_resources_tests.rs`. Every
+assertion is produced by production code — `read_pe_resources` for the PE
+trees, `read_tree` plus `read_member` for the two `.H` members inside
+`crimson.rof`, `read_resource_header` for their define tables and
+`cs_assets::install::sha256` for the digests — and each test fails if the
+behaviour it pins is removed or changed. Four are retail tests
+(`#[ignore = "requires CS_GAME_DIR"]`; each fails loudly when the variable is
+absent); two run on an ordinary build and test pass.
 
-What *is* pinned, and how a reviewer re-derives the numbers here:
+| Test | What it pins |
+| --- | --- |
+| `accept_f12_g_retail_strings_dll_tree_and_its_two_other_leaves` | `strings.dll`'s size and digest, the resource directory's recorded RVA and size, 118 directories / 114 leaves / 112 `RT_STRING` blocks, the three-type leaf histogram with per-type payload totals (40 086 / 944 / 4 bytes), and that the leaves failing the string-block shape are exactly `[16, 1, 1033]` and `[255, 1, 1033]` — the `other_leaves: 2` the catalog reports, named |
+| `accept_f12_g_retail_type_16_leaf_is_a_complete_vs_versioninfo` | the type-16 leaf's data entry (directory offset `0x1598`, RVA/file offset `0x1d2c4`, size 944, code page 1252, reserved 0), the payload digest, and the recorded `VS_VERSIONINFO` structure — 17 nodes in at most three levels tiling all 944 bytes, root key `VS_VERSION_INFO`, `wValueLength` 52, `wType` 0, signature `0xFEEF04BD`, zero trailing bytes |
+| `accept_f12_g_retail_type_255_leaf_is_four_uninterpreted_bytes` | the type-255 leaf's data entry (directory offset `0x15a8`, RVA/file offset `0x1d674`, size 4, code page 1252, reserved 0), its payload byte-for-byte (`09 04 00 00`) and its digest — as bytes only, no semantic name — and that the reader exposes it as a leaf and nothing else |
+| `accept_f12_g_retail_header_ids_correlate_with_langui_blocks` | both members' decoded lengths and digests, per-header define and distinct counts (635/185 defines, 612/173 distinct, 782 combined), the eleven-image scoring table (langui.dll 775, SETUPENU.DLL 169, strings.dll 123, and every lower score), the four-cell numbering × scope table for langui.dll (813 / 705 / 525 / 463), the seven misses, the eighteen unaddressed blocks, the boundary argument (RESRC1.H's contiguous run 40 000–40 170 needs blocks 2501–2511 under `(block - 1) * 16 + index`; all eleven exist and hold sixteen units each, while the zero-based numbering needs absent block 2500), and the tail agreement (the five omitted ids 40 171–40 175 are exactly block 2511's five empty units; the six other empty units — 40 001, 40 014, 40 036, 40 040, 40 054, 40 080 — are all named by the header) |
+| `accept_f12_g_non_string_leaves_are_retained_uninterpreted` | synthetic: an authored image's type-16 and type-255 leaves stay retained, uninterpreted leaves — no `StringBlock`, no decoded view |
+| `accept_f12_g_no_engine_path_reads_the_type_255_payload` | synthetic: no production source under `crates/` or `tools/` spells the leaf's recorded span or payload or selects on resource type 255, and `pe_resources.rs` mentions the type exactly once (the module doc). A stage that starts guessing a meaning fails this test instead of inheriting one silently |
 
-- the full workspace test suite is green on this commit (see
-  [Commands](#commands)), and the two production readers whose output this
-  finding cross-checks against (`accept_f12_b_retail_pe_resource_structure_matches_the_survey`
-  and `accept_f12_b_retail_resource_headers_read_within_the_id_space`) are part
-  of it and run with `--include-ignored`;
-- the measurement itself is a script, not prose: it was run twice in a row and
-  the two runs produced byte-identical JSON
-  (`sha256 ece7c8d379ff1f6904cd6f46b78f29a6e10fce5b5c9b5f4c1edc1c117aa6c8ef`),
-  and that digest is the `measure.json` artifact of the committed evidence
-  report, so the probe's entire output is pinned there;
-- every number in this document is either a hash, a byte span, a size, a count,
-  an id, a key name or a structure field — never original text and never a
-  `#define` name.
+Mutation checks, applied to the production code and reverted, with the tests
+that caught each:
 
-**What is not claimed:** the four production commands in
-[Cross-checks](#cross-checks-against-the-production-code-path) cover the
-installation fingerprint, the two header digests and lengths, `strings.dll`'s
-`RT_STRING` unit count and its `other_leaves: 2`. They do **not** produce the
-per-image scoring table, the block id lists, the boundary test, the
-empty-unit agreement, the unaddressed-block list or the import-table
-measurements. Those come from the probe, which is an artifact in the private
-evidence directory and is not committed, so re-deriving them needs that script
-(or an equivalent walk) and not the four commands alone.
+- retaining only `RT_STRING` leaves in `build_leaf` → fails the synthetic
+  retention test and all three retail resource tests;
+- letting `string_leaf` match type 255 → the strict block check refuses the
+  four-byte payload: every retail test fails, the synthetic test fails, and
+  the scan test fails on the second `255` in `pe_resources.rs`;
+- `Some(255)` in a consumer of the leaf API (`cs_content/src/config.rs`) →
+  the scan test fails;
+- a hand-altered member digest constant → the retail header test fails on the
+  decoded member's SHA-256.
 
-A follow-up should promote this measurement to a `#[ignore = "requires
-CS_GAME_DIR"]` regression test once a crate owner path is granted for it; until
-then the finding is documentation-grade, and the level a merge can award is
-`checked`.
+**What the pins do not cover:** they re-derive the recorded numbers from the
+production readers over the original files; they do not re-run the
+measurement probe, and the probe's `measure.json` remains the record of the
+tables it printed (its digest is an artifact of the evidence report). The
+four production commands in
+[Cross-checks](#cross-checks-against-the-production-code-path) still cover
+only the installation fingerprint, the two header digests and lengths,
+`strings.dll`'s `RT_STRING` unit count and its `other_leaves: 2` — the
+correlation tables, boundary test and empty-unit agreement are now covered by
+the retail test rather than the four commands.
+
+Every retail number is a hash, a byte span, a size, a count, an id or a
+structure field — never original text and never a `#define` name.
 
 ## Evidence
 
@@ -517,23 +528,30 @@ The report was regenerated by the reviewer on the corrected tree, and it says
 so: its `review.identity` names the implementer and the reviewer, flags that
 they are the same agent instance, and its assertion
 `f12_g_selection_ran_at_least_one_test` is recorded as **`fail`**, not as a
-pass, because `accept_f12_g_` runs zero tests. An earlier version of the
-report asserted the absence of the test as a passing property; the contract's
-own acceptance criterion is that the prefix resolves to at least one real
-test, so the honest status for it is `fail` and that is what the report now
-carries.
+pass, because `accept_f12_g_` ran zero tests on that tree. An earlier version
+of the report asserted the absence of the test as a passing property; the
+contract's own acceptance criterion is that the prefix resolves to at least
+one real test, so the honest status for it was `fail` and that is what the
+report carries. **That assertion records F12-G's delivery state:** on the tree
+this file now ships in, `accept_f12_g_` resolves to the six tests listed in
+[Tests](#tests), and the report that proves it on the pinned commit is
+`docs/findings/evidence/F12-K.json` (F12-K's own acceptance report).
 
 ## Commands
+
+Run on F12-K's candidate tree (the first four are this repo's required
+checks; the last two are the report validation):
 
 | Command | Exit |
 | --- | --- |
 | `cargo fmt --all -- --check` | 0 |
 | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
-| `cargo test --workspace --locked` | 0 (734 passed, 0 failed, 62 ignored over 101 test binaries) |
-| `cargo test --workspace --locked -- accept_f12_b_ --include-ignored` | 0 (16 tests, 16 passed, 0 failed — includes the two retail readers this finding cross-checks against) |
-| `cargo test --workspace --locked -- accept_f12_g_ --include-ignored` | **0 tests** — see [Tests](#tests) |
-| `python3 tools/validate_evidence.py private/evidence/F12-G/acceptance.json --artifact-root private/evidence/F12-G` | 0 (`structurally_valid: true`, 8 artifacts; one assertion `fail`, seven `pass`) |
-| `python3 tools/validate_evidence.py … --require-pass` | **3** (`Assertions incomplete`) — expected, and it names the missing task test first; see [Evidence](#evidence) |
+| `cargo test --workspace --locked` | 0 (745 passed, 0 failed, 67 ignored over 102 test binaries) |
+| `cargo test --workspace --locked -- accept_f12_g_ --include-ignored` | 0 (6 tests, 6 passed, 0 failed — the four retail pins and the two synthetic pins of [Tests](#tests)) |
+| `cargo test --workspace --locked -- accept_f12_b_ --include-ignored` | 0 (16 tests, 16 passed, 0 failed — the retail readers this finding cross-checks against) |
+| `env -u CS_GAME_DIR cargo test --workspace --locked -- accept_f12_g_ --include-ignored` | nonzero — the four retail tests fail loudly with `CS_GAME_DIR is not set` |
+| `python3 tools/validate_evidence.py private/evidence/F12-K/acceptance.json --artifact-root private/evidence/F12-K` | 0 (`structurally_valid: true`, 6 artifacts, all six assertions `pass`) |
+| `python3 tools/validate_evidence.py … --require-pass` | **3** (`Unresolved issues`) — expected: the unknowns are the pinned properties themselves (the type-255 payload's meaning stays unknown; whether the original engine reads the type-16 leaf is unmeasured), not failed assertions |
 
 ## What is not claimed
 
@@ -579,15 +597,12 @@ Two claims were wrong as written and were corrected here:
 
 No production code was touched, and no measured value was changed.
 
-**Still outstanding, and the only reason this branch is not merged:**
-`accept_f12_g_` resolves to zero tests. `AGENTS.md` rule 6 and
-`docs/contracts/CLI-EVIDENCE.md` both require the task prefix to resolve to at
-least one real test, and this task's owner path is `docs/findings/` alone, so
-no agent can add one inside its scope — the natural home,
-`crates/cs_formats/src/pe_resources.rs`, is #374's. F12-K / #377 already spells
-out the test to write, with the exact assertions. Resolving that needs the
-owner: grant a test owner path, or rule that a `docs/findings/`-only
-measurement task is exempt from the prefix rule.
+**Still outstanding — resolved on this branch by F12-K / #377:** the review
+recorded that `accept_f12_g_` resolved to zero tests because the task's owner
+path was `docs/findings/` alone. F12-K held the test owner path
+(`crates/cs_formats/src/pe_resources_tests.rs`) and added the six tests the
+[Tests](#tests) section now lists; the production readers are unchanged, so the
+measurement they pin is the one reviewed above.
 
 ## Sources
 

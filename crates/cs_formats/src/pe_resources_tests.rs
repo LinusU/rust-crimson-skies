@@ -1,16 +1,26 @@
 //! `accept_f12_b_*`: the bounded, cycle-checked PE resource reader
-//! (`crate::pe_resources`).
+//! (`crate::pe_resources`), and `accept_f12_g_*`: the regression pins for the
+//! F12-G measurement (`docs/findings/2026-09-29-f12-g-strings-dll-resources
+//! -and-header-id-correlation.md`) — `strings.dll`'s two non-`RT_STRING`
+//! leaves, their exact recorded bytes and the `RESOURCE.H`/`RESRC1.H` id
+//! space's correlation with `langui.dll`'s string-table blocks.
 //!
 //! The fixtures are **newly authored** PE images: they follow the public
 //! PE/COFF layout, and their ids, languages, code pages and string texts are
 //! invented for this test. No original byte, string or resource name of the
-//! installation is reproduced. The one test marked
-//! `#[ignore = "requires CS_GAME_DIR"]` checks the recorded *structural*
+//! installation is reproduced. The tests marked
+//! `#[ignore = "requires CS_GAME_DIR"]` check the recorded *structural*
 //! facts of the real images (counts, ids, code pages, sizes) instead.
 
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+
 use crate::pe_resources::*;
-use crate::text::dialect::{MemberRule, TEXT_DIALECT_INVENTORY, TextDialect, dialect_for_member};
-use crate::{ParseContext, ParseErrorKind};
+use crate::text::dialect::{
+    CRIMSON_ROF, MemberRule, TEXT_DIALECT_INVENTORY, TextDialect, dialect_for_member,
+};
+use crate::text::{ResourceHeader, read_resource_header};
+use crate::{ParseContext, ParseErrorKind, RofLimits, read_member, read_tree};
 
 /// The RVA the fixtures give their `.rsrc` section, so a payload's RVA is
 /// this plus the offset it lands at inside the section.
@@ -1164,4 +1174,817 @@ fn accept_f12_b_retail_pe_resource_structure_matches_the_survey() {
             }
         }
     }
+}
+
+// ----------------------------------------------------------- accept_f12_g_*
+//
+// Regression pins for the F12-G measurement (Rally #368), written by F12-K
+// (#377). The recorded facts —
+// `docs/findings/2026-09-29-f12-g-strings-dll-resources-and-header-id-correlation.md` —
+// were measured on the installation whose `install_sha256` is
+// `b4e780ab…`: `strings.dll` carries three resource types, two of them not
+// `RT_STRING` (a 944-byte type-16 `VS_VERSIONINFO` and a 4-byte type-255 leaf
+// whose meaning stays unknown), and 775 of the 782 distinct resource ids the
+// two `.H` members declare name a block `langui.dll` actually has under the
+// `(block - 1) * 16 + index` numbering. The retail tests below re-derive every
+// pinned number from the production readers (`read_pe_resources`,
+// `read_tree`/`read_member`, `read_resource_header`); the two unignored tests
+// pin the reader's handling of non-`RT_STRING` leaves and the invariant that
+// no production path interprets the type-255 payload.
+
+/// `strings.dll`, whole image: 131 072 bytes.
+const F12_G_STRINGS_DLL_SHA256: &str =
+    "7582fecaca42d21dd44eb95f896dcb415af790c7057ad81c8e1600ac0b445c21";
+
+/// The type-16 leaf's 944-byte `VS_VERSIONINFO` payload.
+const F12_G_TYPE_16_SHA256: &str =
+    "2d9ed5039fedf0cacaa7a9b84732921863ad7e6b7dfec339c8236c4ac5f705cd";
+
+/// The type-255 leaf's 4-byte payload.
+const F12_G_TYPE_255_SHA256: &str =
+    "641c2b20cfae89ad63861b5b6a0142bd371f17d9a4002e2983baa7aca9f062a6";
+
+/// `ASSETS/SCRIPTS/RESOURCE.H`, decoded: 29 579 bytes.
+const F12_G_RESOURCE_H_SHA256: &str =
+    "61ec23270fdf1dc484085db93c936af4e4bb5bb177e3d8a3dd513a6bc4eefb78";
+
+/// `ASSETS/SCRIPTS/RESRC1.H`, decoded: 8 922 bytes.
+const F12_G_RESRC1_H_SHA256: &str =
+    "5d9c896d7532a022a40c1e733eb5d21b7ca85219be4633e23ae69d88cb649c52";
+
+/// The measured `VS_VERSIONINFO` node table of `strings.dll`'s type-16 leaf:
+/// `(depth, offset inside the payload, wLength, wValueLength, wType, key)`,
+/// preorder. The keys are the documented version-resource names — structural
+/// field names, not original content — and the table tiles the payload with
+/// no trailing bytes.
+const F12_G_VERSION_INFO_NODES: &[(usize, usize, u16, u16, u16, &str)] = &[
+    (0, 0x000, 944, 52, 0, "VS_VERSION_INFO"),
+    (1, 0x05c, 784, 0, 1, "StringFileInfo"),
+    (2, 0x080, 748, 0, 1, "040904b0"),
+    (3, 0x098, 26, 1, 1, "Comments"),
+    (3, 0x0b4, 76, 22, 1, "CompanyName"),
+    (3, 0x100, 94, 27, 1, "FileDescription"),
+    (3, 0x160, 40, 4, 1, "FileVersion"),
+    (3, 0x188, 48, 8, 1, "InternalName"),
+    (3, 0x1b8, 114, 39, 1, "LegalCopyright"),
+    (3, 0x22c, 42, 1, 1, "LegalTrademarks"),
+    (3, 0x258, 64, 12, 1, "OriginalFilename"),
+    (3, 0x298, 34, 1, 1, "PrivateBuild"),
+    (3, 0x2bc, 80, 24, 1, "ProductName"),
+    (3, 0x30c, 58, 11, 1, "ProductVersion"),
+    (3, 0x348, 34, 1, 1, "SpecialBuild"),
+    (1, 0x36c, 68, 0, 1, "VarFileInfo"),
+    (2, 0x38c, 36, 4, 0, "Translation"),
+];
+
+/// The PE images the F12-G survey scored the two headers' 782 distinct values
+/// against: `(install-relative spelling, RT_STRING block count, values naming
+/// a block under the `(block - 1) * 16 + index` numbering)`.
+const F12_G_IMAGE_SCORES: &[(&str, usize, usize)] = &[
+    ("GOSDATA/ASSETS/BINARIES/langui.dll", 101, 775),
+    ("SETUPENU.DLL", 37, 169),
+    ("strings.dll", 112, 123),
+    ("ebueula.dll", 8, 28),
+    ("crimson.icd", 2, 15),
+    ("clokspl.exe", 19, 14),
+    ("UNINSTAL.EXE", 17, 12),
+    ("dsetup32.dll", 7, 10),
+    ("GOSDATA/ASSETS/BINARIES/language.dll", 3, 2),
+    ("mcp.dll", 5, 0),
+    ("mfc42.dll", 43, 0),
+];
+
+/// The seven header values that name no `langui.dll` block under either
+/// numbering (recorded as unexplained, not guessed at).
+const F12_G_HEADER_MISSES: [u32; 7] = [600, 620, 2002, 2050, 2054, 3510, 3540];
+
+/// The eighteen `langui.dll` blocks no header value addresses.
+const F12_G_UNADDRESSED_BLOCKS: [u16; 18] = [
+    2, 3, 4, 5, 190, 195, 196, 197, 198, 200, 201, 202, 204, 205, 206, 217, 219, 227,
+];
+
+/// The empty units of blocks 2501–2511 that `RESRC1.H` *does* name — the six
+/// ids proving the tail agreement is the five omitted ids alone.
+const F12_G_NAMED_EMPTY_UNITS: [u32; 6] = [40001, 40014, 40036, 40040, 40054, 40080];
+
+/// The root of the read-only original installation, or a loud failure: a
+/// retail test must fail, not pass, when `CS_GAME_DIR` is absent.
+fn f12_g_game_dir() -> PathBuf {
+    let dir = std::env::var_os("CS_GAME_DIR").expect(
+        "CS_GAME_DIR is not set: this test needs the original installation \
+         (capability `retail`)",
+    );
+    let dir = PathBuf::from(dir);
+    assert!(
+        dir.is_dir(),
+        "CS_GAME_DIR {} is not a directory",
+        dir.display()
+    );
+    dir
+}
+
+/// The bytes of the installation file `spelling` names (a `/`-separated path
+/// relative to the installation root).
+fn f12_g_file(dir: &Path, spelling: &str) -> Vec<u8> {
+    let mut path = dir.to_path_buf();
+    for segment in spelling.split('/') {
+        path.push(segment);
+    }
+    std::fs::read(&path)
+        .unwrap_or_else(|error| panic!("{spelling}: the installation must hold it: {error}"))
+}
+
+/// `image`'s resource tree, read through the production PE resource reader.
+fn f12_g_resources(image: &[u8], name: &str) -> PeResources {
+    let mut context = ParseContext::with_defaults(name);
+    read_pe_resources(&mut context, image)
+        .unwrap_or_else(|error| panic!("{name}: the production reader must read it: {error}"))
+}
+
+/// The decoded bytes of `member` (a `/`-separated spelling) inside `rof`,
+/// reached through the production `read_tree` walk and `read_member` decode —
+/// never by scanning the container's bytes by hand.
+fn f12_g_rof_member(rof: &[u8], member: &str) -> Vec<u8> {
+    let mut context = ParseContext::with_defaults(CRIMSON_ROF);
+    let tree = read_tree(&mut context, rof).expect("the container's tree must walk");
+    let wanted: Vec<&str> = member.split('/').collect();
+    let found = tree
+        .members()
+        .iter()
+        .find(|entry| {
+            entry.path.len() == wanted.len()
+                && entry
+                    .path
+                    .iter()
+                    .zip(&wanted)
+                    .all(|(segment, name)| segment.eq_ignore_ascii_case(name.as_bytes()))
+        })
+        .unwrap_or_else(|| panic!("{member}: no such member in {CRIMSON_ROF}"));
+    let read = read_member(&context, rof, found, &RofLimits::default())
+        .unwrap_or_else(|error| panic!("{member}: the member must read: {error}"));
+    assert_eq!(
+        read.trailing_len, 0,
+        "{member}: no bytes sit unread inside the stored extent"
+    );
+    read.data
+}
+
+/// The leaf at the numeric path `ids` (`[type, name, language]`), or a loud
+/// failure naming what was asked for.
+fn f12_g_leaf(resources: &PeResources, ids: [u32; 3]) -> &ResourceLeaf {
+    resources
+        .leaves()
+        .iter()
+        .find(|leaf| {
+            leaf.path.len() == 3
+                && leaf
+                    .path
+                    .iter()
+                    .zip(ids)
+                    .all(|(key, id)| key.id() == Some(id))
+        })
+        .unwrap_or_else(|| panic!("no leaf at {ids:?}"))
+}
+
+/// Whether `leaf` is a three-level `RT_STRING` leaf — the shape the reader's
+/// `string_leaf` decodes into a `StringBlock`. The retail tests pin that the
+/// leaves failing this shape are exactly the two measured non-string leaves,
+/// which is what keeps this predicate honest rather than a private copy.
+fn f12_g_string_leaf(leaf: &ResourceLeaf) -> bool {
+    leaf.path.len() == 3
+        && leaf.key(0) == Some(&ResourceKey::Id(RT_STRING))
+        && leaf.key(1).is_some_and(|key| key.id().is_some())
+        && leaf.key(2).is_some_and(|key| key.id().is_some())
+}
+
+/// The set of block ids `strings()` reports — the `RT_STRING` blocks the
+/// image has, which is what a header id can name.
+fn f12_g_block_ids(resources: &PeResources) -> BTreeSet<u16> {
+    resources
+        .strings()
+        .iter()
+        .map(|block| block.block_id)
+        .collect()
+}
+
+/// Whether `name` is one of the observed string-table prefixes
+/// (`IDS_` / `SB_` / `STR_`) — the names the finding counts a define under.
+fn f12_g_string_name(name: &[u8]) -> bool {
+    name.starts_with(b"IDS_") || name.starts_with(b"SB_") || name.starts_with(b"STR_")
+}
+
+/// The distinct resource ids `header`'s defines name.
+fn f12_g_define_ids(header: &ResourceHeader<'_>, string_names_only: bool) -> BTreeSet<u32> {
+    header
+        .defines()
+        .filter(|define| !string_names_only || f12_g_string_name(define.name))
+        .filter_map(|define| define.resource_id())
+        .collect()
+}
+
+/// One node of the recorded `VS_VERSIONINFO` walk: where it sits inside the
+/// payload and the four fields of its header. The node names are the
+/// documented version-resource keys — structure, not content.
+#[derive(Debug, PartialEq, Eq)]
+struct F12GVersionNode {
+    depth: usize,
+    offset: usize,
+    length: u16,
+    value_length: u16,
+    kind: u16,
+    key: String,
+}
+
+/// Walks `payload` as the recorded `VS_VERSIONINFO` tree: each node is
+/// `wLength`, `wValueLength`, `wType`, a NUL-terminated UTF-16 key, a
+/// 4-aligned value (`wValueLength` units for `wType` 1, bytes for 0) and
+/// children tiling the rest of its extent. Returns the nodes in preorder and
+/// the number of bytes the root consumed, so the caller can assert the tree
+/// explains the payload *exactly* — no trailing bytes.
+///
+/// This is the measurement check, not a reader: production has no version-info
+/// parser and these tests exist precisely so none is needed to keep the
+/// recorded structure pinned.
+fn f12_g_version_nodes(payload: &[u8]) -> (Vec<F12GVersionNode>, usize) {
+    fn u16_at(payload: &[u8], at: usize) -> u16 {
+        u16::from_le_bytes([payload[at], payload[at + 1]])
+    }
+    fn walk(payload: &[u8], at: usize, depth: usize, nodes: &mut Vec<F12GVersionNode>) -> usize {
+        let length = u16_at(payload, at);
+        let value_length = u16_at(payload, at + 2);
+        let kind = u16_at(payload, at + 4);
+        let mut cursor = at + 6;
+        let mut key = Vec::new();
+        loop {
+            let unit = u16_at(payload, cursor);
+            cursor += 2;
+            if unit == 0 {
+                break;
+            }
+            key.push(unit);
+        }
+        nodes.push(F12GVersionNode {
+            depth,
+            offset: at,
+            length,
+            value_length,
+            kind,
+            key: String::from_utf16(&key).expect("the recorded keys are UTF-16"),
+        });
+        let value_bytes = if kind == 1 {
+            usize::from(value_length) * 2
+        } else {
+            usize::from(value_length)
+        };
+        let end = at + usize::from(length);
+        let mut child = ((cursor + 3) & !3) + value_bytes;
+        child = (child + 3) & !3;
+        while child < end {
+            child = walk(payload, child, depth + 1, nodes);
+        }
+        (end + 3) & !3
+    }
+    let mut nodes = Vec::new();
+    let consumed = walk(payload, 0, 0, &mut nodes);
+    (nodes, consumed)
+}
+
+/// `strings.dll`'s resource tree carries exactly the three measured types —
+/// `RT_STRING` plus the two non-string leaves — and the reader's
+/// "other leaves" count (the string catalog's `other_leaves`) is exactly
+/// those two, named here by their paths.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_f12_g_retail_strings_dll_tree_and_its_two_other_leaves() {
+    let dir = f12_g_game_dir();
+    let image = f12_g_file(&dir, "strings.dll");
+    assert_eq!(image.len(), 131_072, "strings.dll is the recorded image");
+    assert_eq!(
+        cs_assets::install::sha256(&image).to_hex(),
+        F12_G_STRINGS_DLL_SHA256
+    );
+
+    let resources = f12_g_resources(&image, "strings.dll");
+    let directory = resources
+        .layout()
+        .resource_directory()
+        .expect("the image declares a resource directory");
+    assert_eq!(directory.virtual_address, 0x1_2000);
+    assert_eq!(directory.size, 46_712);
+    assert_eq!(resources.directories(), 118);
+    assert_eq!(resources.leaves().len(), 114);
+    assert_eq!(resources.strings().len(), 112);
+
+    // Exactly three resource types, with the recorded leaf counts and payload
+    // byte totals.
+    let mut types: std::collections::BTreeMap<u32, (usize, u64)> =
+        std::collections::BTreeMap::new();
+    for leaf in resources.leaves() {
+        let type_id = leaf
+            .key(0)
+            .and_then(ResourceKey::id)
+            .expect("every surveyed leaf has a numeric type");
+        let entry = types.entry(type_id).or_default();
+        entry.0 += 1;
+        entry.1 += u64::from(leaf.data.size);
+    }
+    assert_eq!(
+        types.into_iter().collect::<Vec<_>>(),
+        vec![(RT_STRING, (112, 40_086)), (16, (1, 944)), (255, (1, 4))],
+    );
+
+    // The two "other leaves" are exactly the type-16 and type-255 leaves at
+    // name id 1, language en-US — and the reader's accounting holds nothing
+    // else: 114 leaves = 112 string blocks + these two.
+    let other: Vec<Vec<u32>> = resources
+        .leaves()
+        .iter()
+        .filter(|leaf| !f12_g_string_leaf(leaf))
+        .map(|leaf| {
+            leaf.path
+                .iter()
+                .map(|key| key.id().expect("a numeric leaf path"))
+                .collect()
+        })
+        .collect();
+    assert_eq!(other, vec![vec![16, 1, 1033], vec![255, 1, 1033]]);
+    assert_eq!(
+        resources.leaves().len() - resources.strings().len(),
+        other.len(),
+        "every non-string leaf is a retained leaf, and vice versa"
+    );
+}
+
+/// The type-16 leaf is the recorded `VS_VERSIONINFO`: its data entry sits at
+/// the measured offsets, its payload digests to the measured hash and the
+/// whole 944 bytes walk as the 17 recorded nodes.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_f12_g_retail_type_16_leaf_is_a_complete_vs_versioninfo() {
+    let dir = f12_g_game_dir();
+    let image = f12_g_file(&dir, "strings.dll");
+    let resources = f12_g_resources(&image, "strings.dll");
+
+    let leaf = f12_g_leaf(&resources, [16, 1, 1033]);
+    assert_eq!(leaf.key(0), Some(&ResourceKey::Id(16)));
+    assert_eq!(leaf.key(1), Some(&ResourceKey::Id(1)));
+    assert_eq!(leaf.key(2), Some(&ResourceKey::Id(LANG_ENGLISH_US)));
+    // The data entry is the 39th (0-indexed) one in the directory walk, at
+    // 0x12000 + 0x1598 in the file; the reader keeps that offset.
+    assert_eq!(leaf.data.directory_offset, 0x1598);
+    assert_eq!(leaf.data.rva, 0x1_d2c4);
+    assert_eq!(leaf.data.file_offset, 0x1_d2c4);
+    assert_eq!(leaf.data.size, 944);
+    assert_eq!(leaf.data.code_page, 1252);
+    assert_eq!(leaf.data.reserved, 0);
+
+    let payload = &image
+        [leaf.data.file_offset as usize..leaf.data.file_offset as usize + leaf.data.size as usize];
+    assert_eq!(
+        cs_assets::install::sha256(payload).to_hex(),
+        F12_G_TYPE_16_SHA256
+    );
+
+    // The recorded walk: the root carries a VS_FIXEDFILEINFO (52 bytes,
+    // signature 0xFEEF04BD at payload offset 40) and the whole tree tiles the
+    // payload — 17 nodes, at most three levels deep, nothing trailing.
+    let (nodes, consumed) = f12_g_version_nodes(payload);
+    assert_eq!(nodes.len(), F12_G_VERSION_INFO_NODES.len());
+    assert_eq!(consumed, payload.len(), "no trailing bytes after the root");
+    let root = &nodes[0];
+    assert_eq!(root.key, "VS_VERSION_INFO");
+    assert_eq!(usize::from(root.length), payload.len());
+    assert_eq!(root.value_length, 52);
+    assert_eq!(root.kind, 0);
+    assert_eq!(
+        u32::from_le_bytes([payload[40], payload[41], payload[42], payload[43]]),
+        0xFEEF_04BD,
+        "the VS_FIXEDFILEINFO signature sits at the recorded offset"
+    );
+    for (node, (depth, offset, length, value_length, kind, key)) in
+        nodes.iter().zip(F12_G_VERSION_INFO_NODES)
+    {
+        assert_eq!(node.depth, *depth, "node at {offset:#x}");
+        assert_eq!(node.offset, *offset);
+        assert_eq!(node.length, *length, "node {key}");
+        assert_eq!(node.value_length, *value_length, "node {key}");
+        assert_eq!(node.kind, *kind, "node {key}");
+        assert_eq!(node.key, *key);
+    }
+    assert!(
+        nodes.iter().all(|node| node.depth <= 3),
+        "the walk never goes deeper than the recorded three levels"
+    );
+}
+
+/// The type-255 leaf is four bytes at the measured offset with the measured
+/// payload. Its meaning is **not established** — the test pins the bytes
+/// (`09 04 00 00`) as bytes and asserts the reader exposes the leaf only as
+/// an uninterpreted leaf: no string, no block, no semantic name.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_f12_g_retail_type_255_leaf_is_four_uninterpreted_bytes() {
+    let dir = f12_g_game_dir();
+    let image = f12_g_file(&dir, "strings.dll");
+    let resources = f12_g_resources(&image, "strings.dll");
+
+    let leaf = f12_g_leaf(&resources, [255, 1, 1033]);
+    assert_eq!(leaf.data.directory_offset, 0x15a8);
+    assert_eq!(leaf.data.rva, 0x1_d674);
+    assert_eq!(leaf.data.file_offset, 0x1_d674);
+    assert_eq!(leaf.data.size, 4);
+    assert_eq!(leaf.data.code_page, 1252);
+    assert_eq!(leaf.data.reserved, 0);
+
+    let payload = &image
+        [leaf.data.file_offset as usize..leaf.data.file_offset as usize + leaf.data.size as usize];
+    assert_eq!(payload, [0x09, 0x04, 0x00, 0x00].as_slice());
+    assert_eq!(
+        cs_assets::install::sha256(payload).to_hex(),
+        F12_G_TYPE_255_SHA256
+    );
+
+    // The reader exposes it as a leaf and nothing else: it is not a string
+    // block (its payload contributes no `StringUnit`), it is not reached by
+    // `string_block`, and no `PeResources` surface decodes it. The workspace
+    // scan in `accept_f12_g_no_engine_path_reads_the_type_255_payload` pins
+    // the other half: no production source names or interprets the payload.
+    assert!(
+        resources
+            .strings()
+            .iter()
+            .all(|block| block.data.file_offset != leaf.data.file_offset),
+        "the type-255 payload must never be decoded as a string block"
+    );
+    assert!(!f12_g_string_leaf(leaf));
+    assert_eq!(
+        resources.leaves().len() - resources.strings().len(),
+        2,
+        "the type-16 and type-255 leaves are the whole non-string remainder"
+    );
+}
+
+/// The `.H` resource ids correlate with `langui.dll`'s string-table blocks —
+/// every number of the finding's correlation tables, re-derived through
+/// `read_resource_header` (which reads the members out of `crimson.rof`
+/// through `read_tree`/`read_member`) and `read_pe_resources`.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_f12_g_retail_header_ids_correlate_with_langui_blocks() {
+    let dir = f12_g_game_dir();
+    let rof = f12_g_file(&dir, CRIMSON_ROF);
+
+    let resource_h = f12_g_rof_member(&rof, "ASSETS/SCRIPTS/RESOURCE.H");
+    let resrc1_h = f12_g_rof_member(&rof, "ASSETS/SCRIPTS/RESRC1.H");
+    assert_eq!(resource_h.len(), 29_579);
+    assert_eq!(
+        cs_assets::install::sha256(&resource_h).to_hex(),
+        F12_G_RESOURCE_H_SHA256
+    );
+    assert_eq!(resrc1_h.len(), 8_922);
+    assert_eq!(
+        cs_assets::install::sha256(&resrc1_h).to_hex(),
+        F12_G_RESRC1_H_SHA256
+    );
+
+    let mut context = ParseContext::with_defaults("RESOURCE.H");
+    let resource_h = read_resource_header(&mut context, &resource_h)
+        .expect("RESOURCE.H reads as a resource header");
+    let mut context = ParseContext::with_defaults("RESRC1.H");
+    let resrc1_h =
+        read_resource_header(&mut context, &resrc1_h).expect("RESRC1.H reads as a resource header");
+
+    // The recorded per-header counts.
+    assert_eq!(resource_h.defines().count(), 635);
+    assert_eq!(resrc1_h.defines().count(), 185);
+    let resource_ids = f12_g_define_ids(&resource_h, false);
+    let resrc1_ids = f12_g_define_ids(&resrc1_h, false);
+    assert_eq!(resource_ids.len(), 612);
+    assert_eq!(resrc1_ids.len(), 173);
+    assert_eq!(resource_ids.iter().copied().min(), Some(9));
+    assert_eq!(resource_ids.iter().copied().max(), Some(40_001));
+    assert_eq!(resrc1_ids.iter().copied().min(), Some(101));
+    assert_eq!(resrc1_ids.iter().copied().max(), Some(40_170));
+    let all_ids: BTreeSet<u32> = resource_ids.union(&resrc1_ids).copied().collect();
+    assert_eq!(all_ids.len(), 782, "the two headers' distinct id space");
+
+    let resource_string_ids = f12_g_define_ids(&resource_h, true);
+    let resrc1_string_ids = f12_g_define_ids(&resrc1_h, true);
+    assert_eq!(resource_string_ids.len(), 346);
+    assert_eq!(resrc1_string_ids.len(), 171);
+    // RESRC1.H's string ids are the recorded contiguous run.
+    assert_eq!(
+        resrc1_string_ids,
+        (40_000u32..=40_170).collect::<BTreeSet<_>>(),
+        "the 171 string ids are exactly 40 000..=40 170"
+    );
+
+    // The measured per-image scores: every surveyed image, its block count,
+    // and how many distinct header values name one of its blocks under the
+    // `(block - 1) * 16 + index` numbering. `langui.dll` wins outright;
+    // `strings.dll` scores 123 and the next-best image (SETUPENU.DLL) 169.
+    let mut langui_blocks = BTreeSet::new();
+    let mut langui = None;
+    for (spelling, blocks, score) in F12_G_IMAGE_SCORES {
+        let image = f12_g_file(&dir, spelling);
+        let resources = f12_g_resources(&image, spelling);
+        let block_ids = f12_g_block_ids(&resources);
+        assert_eq!(block_ids.len(), *blocks, "{spelling}");
+        let hits = all_ids
+            .iter()
+            .filter(|id| block_ids.contains(&((*id / 16 + 1) as u16)))
+            .count();
+        assert_eq!(hits, *score, "{spelling}");
+        if *spelling == "GOSDATA/ASSETS/BINARIES/langui.dll" {
+            langui = Some(resources);
+            langui_blocks = block_ids;
+        }
+    }
+    let langui = langui.expect("the table lists langui.dll");
+
+    // The four-cell A/B × scope table for langui.dll: scoring all 820
+    // defines (duplicates included) and only the 532 string-named ones.
+    let score = |defines: &mut dyn Iterator<Item = u32>, offset: u32| {
+        defines
+            .filter(|id| langui_blocks.contains(&(((*id + 16 * offset) / 16) as u16)))
+            .count()
+    };
+    let all_defines = || {
+        resource_h
+            .defines()
+            .chain(resrc1_h.defines())
+            .filter_map(|define| define.resource_id())
+    };
+    let string_defines = || {
+        resource_h
+            .defines()
+            .chain(resrc1_h.defines())
+            .filter(|define| f12_g_string_name(define.name))
+            .filter_map(|define| define.resource_id())
+    };
+    assert_eq!(all_defines().count(), 820);
+    assert_eq!(string_defines().count(), 532);
+    // `(v + 16) / 16` is `v / 16 + 1` for the ids in range; `(v) / 16` is the
+    // 0-based alternative the measurement rejects.
+    assert_eq!(
+        score(&mut all_defines(), 1),
+        813,
+        "B numbering, all defines"
+    );
+    assert_eq!(
+        score(&mut all_defines(), 0),
+        705,
+        "A numbering, all defines"
+    );
+    assert_eq!(score(&mut string_defines(), 1), 525, "B, string names");
+    assert_eq!(score(&mut string_defines(), 0), 463, "A, string names");
+
+    // The seven values no block answers, and the eighteen blocks no value
+    // names.
+    let misses: Vec<u32> = all_ids
+        .iter()
+        .copied()
+        .filter(|id| !langui_blocks.contains(&((*id / 16 + 1) as u16)))
+        .collect();
+    assert_eq!(misses, F12_G_HEADER_MISSES);
+    let named: BTreeSet<u16> = all_ids.iter().map(|id| (*id / 16 + 1) as u16).collect();
+    let unaddressed: Vec<u16> = langui_blocks.difference(&named).copied().collect();
+    assert_eq!(unaddressed, F12_G_UNADDRESSED_BLOCKS);
+
+    // The boundary argument: RESRC1.H's run 40 000..=40 170 needs blocks
+    // 2501..=2511 under the `+ 1` numbering — all present, each a full
+    // sixteen-unit block — while the 0-based numbering would need block 2500,
+    // which does not exist.
+    for block_id in 2501u16..=2511 {
+        let block = langui
+            .string_block(block_id)
+            .unwrap_or_else(|| panic!("block {block_id} must exist"));
+        assert_eq!(block.units.len(), 16, "block {block_id} is full");
+    }
+    assert!(
+        langui.string_block(2500).is_none(),
+        "the 0-based numbering would need block 2500; it does not exist"
+    );
+    assert_eq!(
+        langui_blocks.iter().copied().max(),
+        Some(2511),
+        "block 2511 is the last block the image carries"
+    );
+
+    // The tail agreement: blocks 2501..=2511 hold eleven empty units. Five are
+    // the ids RESRC1.H omits (40 171..=40 175, all in block 2511); the other
+    // six are all ids the header does name.
+    let mut empty: Vec<u32> = Vec::new();
+    for block_id in 2501u16..=2511 {
+        let block = langui.string_block(block_id).expect("present");
+        for unit in &block.units {
+            if unit.code_units.is_empty() {
+                empty.push(unit.id);
+            }
+        }
+    }
+    empty.sort_unstable();
+    let omitted: Vec<u32> = (40_171..=40_175).collect();
+    let named_empty: Vec<u32> = F12_G_NAMED_EMPTY_UNITS.to_vec();
+    assert_eq!(
+        empty,
+        [named_empty.clone(), omitted.clone()].concat(),
+        "eleven empty units: the six the header names, then the five it omits"
+    );
+    for id in &named_empty {
+        assert!(
+            resrc1_string_ids.contains(id),
+            "empty unit {id} is an id the header names"
+        );
+    }
+    for id in &omitted {
+        assert!(
+            !resrc1_string_ids.contains(id),
+            "empty unit {id} is an id the header omits"
+        );
+    }
+}
+
+/// An authored image with a type-16 leaf and a type-255 leaf next to a string
+/// block: the reader must keep both as leaves and decode neither — the same
+/// retention the retail tests count on, exercised on synthetic bytes so CI
+/// sees it.
+#[test]
+fn accept_f12_g_non_string_leaves_are_retained_uninterpreted() {
+    let mut rsrc = Rsrc::default();
+    // One three-level path per type, all hung off one root: `[type, 1, 1033]`.
+    let root = rsrc.dir(3);
+    let mut language_dirs = Vec::new();
+    for (index, type_id) in [RT_STRING, 16, 255].into_iter().enumerate() {
+        rsrc.id(root, index, type_id);
+        let names = rsrc.dir(1);
+        rsrc.id(names, 0, 1);
+        let languages = rsrc.dir(1);
+        rsrc.id(languages, 0, LANG_ENGLISH_US);
+        rsrc.sub(names, 0, languages);
+        rsrc.sub(root, index, names);
+        language_dirs.push(languages);
+    }
+    let entry = rsrc.leaf_here(&Rsrc::string_payload(&["alpha"]), 1252);
+    rsrc.data_entry(language_dirs[0], 0, entry);
+    // The two non-string leaves: four-byte authored payloads (not the
+    // original bytes — the fixture pins *handling*, not the recorded value).
+    let entry = rsrc.leaf_here(b"\xde\xad\xbe\xef", 1252);
+    rsrc.data_entry(language_dirs[1], 0, entry);
+    let entry = rsrc.leaf_here(&[0xaa, 0xbb, 0xcc, 0xdd], 1252);
+    rsrc.data_entry(language_dirs[2], 0, entry);
+
+    let bytes = PeBuilder::new().with_rsrc(0x2000, rsrc.finish()).build();
+    let resources = resources(&bytes);
+
+    assert_eq!(resources.strings().len(), 1);
+    assert_eq!(resources.leaves().len(), 3);
+    let other: Vec<Vec<u32>> = resources
+        .leaves()
+        .iter()
+        .filter(|leaf| !f12_g_string_leaf(leaf))
+        .map(|leaf| leaf.path.iter().filter_map(ResourceKey::id).collect())
+        .collect();
+    assert_eq!(other, vec![vec![16, 1, 1033], vec![255, 1, 1033]]);
+    for leaf in resources.leaves() {
+        if f12_g_string_leaf(leaf) {
+            continue;
+        }
+        assert_eq!(leaf.data.code_page, 1252);
+        assert_eq!(leaf.data.size, 4);
+        // The leaf exposes its data entry only: there is no decoded view of
+        // the payload, and no `StringUnit` was produced from it.
+        assert!(
+            resources
+                .strings()
+                .iter()
+                .all(|block| block.data.file_offset != leaf.data.file_offset)
+        );
+    }
+}
+
+/// **No engine path reads the type-255 payload.** The leaf's only identity is
+/// its path `[255, 1, 1033]` and its data-entry span; a later stage that
+/// starts guessing a meaning must touch production source to do it, and the
+/// plausible ways to do so — selecting on resource type `255`, hard-coding
+/// the recorded span or spelling the payload — are exactly what this scan
+/// refuses. If a legitimate change trips a needle, the needle's name is the
+/// documented leaf: explain the new consumer or pick a spelling that cannot
+/// be mistaken for one, do not weaken the scan.
+#[test]
+fn accept_f12_g_no_engine_path_reads_the_type_255_payload() {
+    // Spellings of the leaf's recorded identity: its file offset and its four
+    // payload bytes. These must appear nowhere outside this test file —
+    // anywhere else is a consumer of the measurement, not a reader of data.
+    const SPAN_OR_PAYLOAD: &[&str] = &[
+        "0x1d674",
+        "0x1D674",
+        "09040000",
+        "0x09040000",
+        "09 04 00 00",
+        "09, 04, 00, 00",
+    ];
+    // Ways to single out the leaf's type in a source file that already
+    // touches the PE resource tree.
+    const TYPE_255_SELECTORS: &[&str] = &[
+        "Id(255)",
+        "Some(255)",
+        "== 255",
+        "RT_255",
+        "type_255",
+        "type-255",
+    ];
+    // A file that never names the resource-leaf surface cannot be reading the
+    // leaf's payload through it.
+    const LEAF_API: &[&str] = &[
+        "ResourceKey",
+        "ResourceLeaf",
+        "read_pe_resources",
+        "pe_resources",
+        "string_leaf",
+        "other_leaves",
+        "leaf.data",
+    ];
+
+    let crates_dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("the crate lives under crates/")
+        .to_path_buf();
+    let workspace = crates_dir.parent().expect("a workspace root").to_path_buf();
+
+    // The resource reader itself names the type once, in its module
+    // documentation ("an unassigned type `255`"). Any code touching the leaf
+    // — a selector, a constant, a match arm — adds a second `255` and fails
+    // here. If the reader legitimately gains another `255`, explain it in
+    // this count, never silently.
+    let reader = crates_dir.join("cs_formats/src/pe_resources.rs");
+    let text = std::fs::read_to_string(&reader)
+        .unwrap_or_else(|error| panic!("reading {}: {error}", reader.display()));
+    assert_eq!(
+        text.matches("255").count(),
+        1,
+        "pe_resources.rs must mention type 255 only in the module doc that \
+         records it as unassigned; a second occurrence is the reader touching \
+         the leaf"
+    );
+    let mut sources = Vec::new();
+    for group in [&crates_dir, &workspace.join("tools")] {
+        let mut pending = vec![group.to_path_buf()];
+        while let Some(dir) = pending.pop() {
+            for entry in std::fs::read_dir(&dir)
+                .unwrap_or_else(|error| panic!("reading {}: {error}", dir.display()))
+            {
+                let path = entry.expect("a directory entry").path();
+                if path.is_dir() {
+                    pending.push(path);
+                } else if path.extension() == Some(std::ffi::OsStr::new("rs")) {
+                    sources.push(path);
+                }
+            }
+        }
+    }
+    assert!(!sources.is_empty(), "the workspace sources must be found");
+
+    let mut checked = 0usize;
+    for source in &sources {
+        // Test code may name the leaf — pinning it is the tests' job. The
+        // scan covers production files only: anything under a `tests/`
+        // directory or in a file whose name carries `test`.
+        let is_test = source.components().any(|part| part.as_os_str() == "tests")
+            || source
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.contains("test"));
+        if is_test {
+            continue;
+        }
+        checked += 1;
+        let text = std::fs::read_to_string(source)
+            .unwrap_or_else(|error| panic!("reading {}: {error}", source.display()));
+        for needle in SPAN_OR_PAYLOAD {
+            assert!(
+                !text.contains(needle),
+                "{} spells the type-255 leaf's span or payload ({needle}): \
+                 that is a consumer of the measurement, and the payload's \
+                 meaning is unestablished — see the F12-G finding",
+                source.display()
+            );
+        }
+        if LEAF_API.iter().any(|marker| text.contains(marker)) {
+            for needle in TYPE_255_SELECTORS {
+                assert!(
+                    !text.contains(needle),
+                    "{} selects resource type 255 ({needle}) while touching the \
+                     leaf API: the leaf must stay an uninterpreted leaf — see \
+                     the F12-G finding",
+                    source.display()
+                );
+            }
+        }
+    }
+    assert!(
+        checked > 0,
+        "the scan found no production sources — the walk is broken, not clean"
+    );
+    println!("f12-g tripwire: {checked} production sources scanned clean");
 }
