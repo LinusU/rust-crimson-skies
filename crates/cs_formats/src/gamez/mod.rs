@@ -57,11 +57,14 @@
 //! values; only the `#[ignore]`d retail tests read original game data, and
 //! nothing derived from it is committed.
 
+pub mod census;
 pub mod materials;
 pub mod mesh;
 pub mod polygon;
 pub mod reader;
 pub mod strip;
+
+pub use census::{FaceCensus, MissingFace, MissingFaceReason};
 
 pub use materials::{
     CYCLE_FRAME_BYTES, CYCLE_HEADER_BYTES, GameZMaterialError, GameZMaterials, GameZTextureName,

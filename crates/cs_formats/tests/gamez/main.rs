@@ -15,6 +15,7 @@
 //! texture-name table, material records and material-to-texture binding are in
 //! [`materials`].
 
+mod d;
 mod materials;
 mod ngon;
 mod reader;

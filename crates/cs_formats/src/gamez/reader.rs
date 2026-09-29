@@ -931,6 +931,13 @@ impl GameZMeshes {
             .map(|mesh| (mesh.index, mesh.mesh.topology()))
     }
 
+    /// The exact face census of this container: what the records declare, what
+    /// was stored, and every face that reaches no drawable triangle, in mesh
+    /// then polygon order. This is F10-D's AC04 report over one container.
+    pub fn face_census(&self) -> super::census::FaceCensus {
+        super::census::FaceCensus::of(self)
+    }
+
     /// Evidence class of the layout this reader implements: documented in the
     /// pinned reference *and* measured against the original installation, which
     /// is `ObservedTool`. Never `VerifiedOriginal` here — that needs an
