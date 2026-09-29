@@ -283,10 +283,11 @@ the branch:
    `state.code()`, and `StoredPolygon` still said "One group only" after the
    writer gained `with_groups`.
 
-One inaccuracy is left standing because it is in an immutable commit message:
-`ce0469d` says "parse/normalize diagnostic now prefers a detail line", while
-only `normalize_state` does — `parse_state`'s diagnostic is still the state
-text.
+One inaccuracy is left standing because it is in an immutable commit message: the
+commit "Keep a catalog blocking reason a stable code, not data" says "parse/
+normalize diagnostic now prefers a detail line", while only `normalize_state`
+does — `parse_state`'s diagnostic is still the state text. (Commits are named
+by subject rather than by SHA throughout, because the branch is rebased.)
 
 ## Sources
 
