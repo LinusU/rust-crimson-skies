@@ -14,9 +14,12 @@ cs_sim.workspace = true
 cs_types.workspace = true
 
 # The campaign acceptance tests in `tests/campaign/` exercise the F50-A
-# binding/coverage records; they are integration tests, so `cs_content` is a
-# dev-dependency of this crate only.
+# binding/coverage records and the M01-A source-derived binding; they are
+# integration tests, so `cs_content` and `cs_assets` (installation discovery
+# and SHA-256, re-measured independently of the code under test) are
+# dev-dependencies of this crate only.
 [dev-dependencies]
+cs_assets.workspace = true
 cs_content.workspace = true
 
 [[bin]]

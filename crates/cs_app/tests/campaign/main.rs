@@ -17,9 +17,19 @@
 //! schema and its validation only, never the campaign (F50 owner ruling,
 //! 2026-09-28). Binding real identities and running the real campaign stay
 //! with F50-B/C/D.
+//!
+//! `m01_a.rs` is the exception that proves the rule: the `accept_m01_a_*`
+//! tests read `$CS_GAME_DIR` through production code and are marked
+//! `#[ignore = "requires CS_GAME_DIR"]`, so CI skips them and the
+//! implementing and reviewing agents run them with `--include-ignored`.
+//! `evidence.rs` writes this task's evidence report; it is deliberately not
+//! named with the acceptance prefix, so the task selection never picks it up
+//! as an acceptance test.
 
 mod closure;
 mod common;
 mod coverage;
+mod evidence;
 mod identity;
 mod inventory;
+mod m01_a;
