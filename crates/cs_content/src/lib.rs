@@ -100,6 +100,14 @@
 //! preserves nested transforms and negative scale, and the evidence-backed
 //! [`scene::BindingMap`] semantic-binding records.
 //!
+//! [`flight_tuning`] is the F24-A provenance-carrying tuning schema
+//! (`specs/F24-fixed-wing-flight-engine-stall-and-arcade-assists.md`, stage
+//! `### F24-A`): every numeric field the `cs_sim::flight` equations consume,
+//! with its unit and approved range, and a declared synthetic airframe whose
+//! values are each known with provenance or an explicit unknown — never a
+//! silent zero. It carries no original coefficient; F24-C maps the record
+//! into the model and F24-D calibrates it against reference traces.
+//!
 //! [`cs_types`]: cs_types
 //! [`cs_formats`]: cs_formats
 //! [`cs_assets`]: cs_assets
@@ -108,6 +116,7 @@ pub mod campaign_bindings;
 pub mod catalog;
 pub mod config;
 pub mod coordinates;
+pub mod flight_tuning;
 pub mod livery;
 pub mod loading;
 pub mod mesh;
