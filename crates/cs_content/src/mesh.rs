@@ -1,7 +1,8 @@
-//! Canonical render mesh: GameZ vertices split per corner attribute, and the
-//! dependency audit a GameZ mesh's material records imply
-//! (`specs/F10-gamez-mesh-topology-and-material-records.md`, stages
-//! `### F10-C`, slices F10-C.01 and F10-C.02; shared contract
+//! Canonical render mesh: GameZ vertices split per corner attribute, the
+//! dependency audit a GameZ mesh's material records imply, and the wiring from
+//! a container on a content session to the mesh upload boundary
+//! (`specs/F10-gamez-mesh-topology-and-material-records.md`, stage
+//! `### F10-C`, slices F10-C.01, F10-C.02 and F10-C.03; shared contract
 //! `docs/contracts/IDENTITY-CONTENT.md`).
 //!
 //! [`RenderMesh`] is the Bevy-free handoff between a GameZ mesh reader
@@ -14,6 +15,31 @@
 //! stored material index a mesh carries to a material record, every material
 //! record to the texture name it stores, and that name to exactly one stored
 //! texture in one named archive — or records why it could not.
+//!
+//! [`MeshContainer`] and [`MeshCatalog`] are the path those two live on, added
+//! in F10-C.03:
+//!
+//! * **the producer.** [`MeshContainer::open`] resolves a container key in a
+//!   [`ContentSession`], opens it with [`ZbdContainer::open`], **checks the ZBD
+//!   dispatch routed it to [`ZbdFamily::GameZ`]**, reads the mesh section with
+//!   [`read_gamez_meshes`] and the material section with
+//!   [`read_gamez_materials`] from the container's own bytes, and cross-checks
+//!   that the two readers read the same 40-byte header. It builds a
+//!   [`RenderMesh`] for every present stored mesh and the audit for the
+//!   container. The container owns its bytes, so everything it produced outlives
+//!   the session.
+//! * **the catalog.** [`MeshCatalog`] is that container type over a list of
+//!   keys, with the F08-C session and retry semantics: a failed container is a
+//!   row, [`MeshCatalog::retry_failed`] reopens only the failed containers of
+//!   the same session, and a foreign session is refused. A catalog also carries
+//!   a process-local serial, which is what binds a [`ResolvedMesh`] to the
+//!   catalog that produced it.
+//! * **the consumer boundary.** [`MeshCatalog::prepare_upload`] hands a
+//!   [`MeshUpload`]: the split render mesh **owned**, the audit rows that
+//!   mesh's own stored references reach, the container's origin, the session
+//!   generation, and the presentation decisions still open
+//!   ([`MeshPresentationUnknown`]). The payload borrows nothing, so a catalog
+//!   and its session can be dropped while it is in flight.
 //!
 //! # Splitting
 //!
@@ -84,21 +110,49 @@
 //! degenerate counts exact without extra bookkeeping. A consumer that draws
 //! may skip them; the render mesh does not hide them.
 //!
-//! The design decisions, the recorded unknowns (front-face winding is still
-//! unknown) and the test inventory are in
-//! `docs/findings/2026-09-29-f10-c-01-render-vertex-splitting.md` and
-//! `docs/findings/2026-09-29-f10-c-02-gamez-material-records.md`.
+//! # Error propagation
+//!
+//! A reader failure reaches the catalog row with its own context, not flattened
+//! into a message: [`MeshFailure`] keeps the container the reader's parse
+//! context named, the logical field inside it (a `ParseError::field`, already
+//! scoped, e.g. `gamez.meshes.polygon.color.b`) and the absolute container
+//! offset the read anchored at. A check that happens *after* the bytes were read
+//! — a header chain, a family, the render mesh's validation gate — reports the
+//! offset as `None`, because no read failed and none is invented.
+//!
+//! # What this stage does not do
+//!
+//! There is **no** `crates/cs_app/src/mesh.rs` here. The canonical-mesh-to-Bevy
+//! adapter is F17-B's (`specs/F17-…`, stage `### F17-B`, owner path
+//! `crates/cs_app/src/render/`), and adding one now would pre-empt it. This
+//! stage stops at the content-side upload boundary, exactly as F08-C stopped at
+//! the image upload boundary, and the boundary is the whole deliverable: the
+//! design is in
+//! `docs/findings/2026-09-29-f10-c-03-mesh-container-catalog-and-upload.md`.
+//!
+//! The design decisions, the recorded unknowns (front-face winding, the UV
+//! convention and the corner-colour meaning are all still unknown) and the test
+//! inventory are in
+//! `docs/findings/2026-09-29-f10-c-01-render-vertex-splitting.md`,
+//! `docs/findings/2026-09-29-f10-c-02-gamez-material-records.md` and
+//! `docs/findings/2026-09-29-f10-c-03-mesh-container-catalog-and-upload.md`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 
 use cs_assets::install::sha256;
-use cs_assets::vfs::ContentSession;
-use cs_formats::gamez::materials::{GameZMaterials, MaterialKind, RawMaterial};
-use cs_formats::gamez::{FaceStatus, GameZMeshes, MeshTopology, RawMesh};
-use cs_types::asset_id::{AssetKey, SourceSpan};
+use cs_assets::vfs::{ContentSession, ResolutionTrace, SessionGeneration};
+use cs_assets::zbd::{ZbdContainer, ZbdError};
+use cs_formats::ParseContext;
+use cs_formats::gamez::materials::{GameZMaterialError, GameZMaterials, MaterialKind, RawMaterial};
+use cs_formats::gamez::{
+    FaceStatus, GameZError, GameZHeader, GameZMeshes, MeshTopology, RawMesh, read_gamez_materials,
+    read_gamez_meshes,
+};
+use cs_formats::zbd::ZbdFamily;
+use cs_types::asset_id::{AssetKey, AssetVariant, MountId, SourceSpan};
 use cs_types::evidence::ContentHash;
-use cs_types::install::ParseState;
+use cs_types::install::{ParseState, RelativePath};
 
 use crate::textures::{TextureAttempt, TextureCatalog, TextureId, TextureRef, TextureResolveError};
 
@@ -1075,6 +1129,1481 @@ fn material_bytes(material: &RawMaterial) -> Vec<u8> {
     out
 }
 
+// ============================================ the container, catalog, upload ===
+
+/// Always `"render_mesh"`: the IDENTITY-CONTENT catalog `kind` for a GameZ
+/// render mesh ("render meshes/materials/images").
+pub const RENDER_MESH_KIND: &str = "render_mesh";
+
+/// The consumer every render-mesh row feeds: the upload payload a renderer
+/// adapter turns into a GPU mesh. F17-B owns that adapter; this slice stops at
+/// the boundary, exactly as F08-C stopped at the image upload boundary.
+pub const MESH_UPLOAD_CONSUMER: &str = "mesh_upload";
+
+/// Stable identity of one stored mesh inside one GameZ container.
+///
+/// `index` is the array position a scene node's `mesh_index` refers to
+/// (`NodeCsC.mesh_index`, offset 60 of the 208-byte node record), so this id is
+/// the join key between the node array and the render mesh. Two archives that
+/// both store mesh 7 give two ids that never compare equal.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct MeshId {
+    /// Installation-relative path of the container that stores it.
+    pub container: RelativePath,
+    /// The mount that served the container.
+    pub mount: MountId,
+    /// The variant of the key the container was resolved with.
+    pub variant: AssetVariant,
+    /// Position in the container's mesh array.
+    pub index: u32,
+}
+
+impl fmt::Display for MeshId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{}#{} ({}, variant {})",
+            self.container, self.index, self.mount, self.variant
+        )
+    }
+}
+
+/// Which stage refused a container or a mesh, and so where a failure's
+/// container, member and offset came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MeshFailureStage {
+    /// The VFS resolution, the read or the ZBD dispatch failed, so no reader
+    /// ever saw the bytes.
+    Container,
+    /// The container opened, but was routed to another ZBD family.
+    Family,
+    /// The 40-byte container header the two section readers read disagreed.
+    Header,
+    /// The mesh section ([`read_gamez_meshes`]) refused the container.
+    Meshes,
+    /// The material section ([`read_gamez_materials`]) refused the container.
+    Materials,
+    /// One mesh's stored polygons did not survive the render mesh's validation
+    /// gate, so the mesh produced no render mesh at all.
+    Render,
+}
+
+impl MeshFailureStage {
+    /// Stable lowercase identifier, used as a catalog unsupported reason.
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Container => "container_failed",
+            Self::Family => "wrong_family",
+            Self::Header => "header_disagreement",
+            Self::Meshes => "mesh_section_failed",
+            Self::Materials => "material_section_failed",
+            Self::Render => "render_mesh_refused",
+        }
+    }
+}
+
+impl fmt::Display for MeshFailureStage {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.code())
+    }
+}
+
+/// One refused read, with the reader's own context kept rather than flattened
+/// into a message.
+///
+/// The three context fields are what F10-C.03 has to carry to the catalog row:
+/// `container` is the label the reader's own parse context carries,
+/// `member` is the logical field inside that container the read was reaching
+/// (a `cs_formats::ParseError::field`, e.g. `mesh.0.polygons.1.uvs`), and
+/// `offset` is the absolute container offset the read anchored at. A failure
+/// with no offset says so with `None`; no offset is invented for a check that
+/// happens after the bytes were read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MeshFailure {
+    /// Which stage refused.
+    pub stage: MeshFailureStage,
+    /// The reader's stable code, e.g. `unexpected_eof` or `parse`.
+    pub code: String,
+    /// The container the reader was reading, as its own parse context names it.
+    pub container: String,
+    /// The reader's logical field scope inside the container, when it named
+    /// one. `None` for a check that is not anchored at a field.
+    pub member: Option<String>,
+    /// The absolute container offset the failure is anchored at, when the
+    /// reader named one.
+    pub offset: Option<u64>,
+    /// The mesh array index, when the failure is about one stored mesh.
+    pub mesh: Option<u32>,
+    /// The reader's own message, offsets and scope included.
+    pub diagnostic: String,
+}
+
+impl fmt::Display for MeshFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: {}", self.stage.code(), self.code)?;
+        if let Some(mesh) = self.mesh {
+            write!(f, " (mesh {mesh})")?;
+        }
+        write!(f, " at {}", self.container)?;
+        if let Some(member) = &self.member {
+            write!(f, " field {member}")?;
+        }
+        if let Some(offset) = self.offset {
+            write!(f, " offset {offset}")?;
+        }
+        Ok(())
+    }
+}
+
+/// The reader-specific reason a GameZ container produced no render meshes.
+#[derive(Debug)]
+pub enum MeshContainerErrorKind {
+    /// Resolving, reading or dispatching the container failed, so no reader
+    /// saw its bytes.
+    Container(ZbdError),
+    /// The container is routed to another ZBD family and is not read as GameZ.
+    WrongFamily {
+        /// The key that was opened.
+        key: AssetKey,
+        /// The family the dispatch named.
+        family: ZbdFamily,
+    },
+    /// The mesh section refused the container.
+    Meshes(GameZError),
+    /// The material section refused the container.
+    Materials(GameZMaterialError),
+    /// The two section readers read the same 40 header bytes and did not agree.
+    HeaderDisagreement {
+        /// Which header word differs.
+        field: &'static str,
+        /// The value the mesh reader read.
+        meshes: u32,
+        /// The value the material reader read.
+        materials: u32,
+    },
+}
+
+impl fmt::Display for MeshContainerErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Container(error) => write!(f, "{error}"),
+            Self::WrongFamily { key, family } => write!(
+                f,
+                "{key} is routed to the {} family, not to GameZ containers",
+                family.as_str()
+            ),
+            Self::Meshes(error) => write!(f, "{error}"),
+            Self::Materials(error) => write!(f, "{error}"),
+            Self::HeaderDisagreement {
+                field,
+                meshes,
+                materials,
+            } => write!(
+                f,
+                "the two readers disagree on header {field}: {meshes} and {materials}"
+            ),
+        }
+    }
+}
+
+impl MeshContainerErrorKind {
+    fn stage(&self) -> MeshFailureStage {
+        match self {
+            Self::Container(_) => MeshFailureStage::Container,
+            Self::WrongFamily { .. } => MeshFailureStage::Family,
+            Self::HeaderDisagreement { .. } => MeshFailureStage::Header,
+            Self::Meshes(_) => MeshFailureStage::Meshes,
+            Self::Materials(_) => MeshFailureStage::Materials,
+        }
+    }
+
+    fn code(&self) -> String {
+        match self {
+            Self::Container(error) => error.code().to_owned(),
+            Self::WrongFamily { .. } => MeshFailureStage::Family.code().to_owned(),
+            Self::Meshes(error) => error.code().to_owned(),
+            Self::Materials(error) => error.code().to_owned(),
+            Self::HeaderDisagreement { .. } => MeshFailureStage::Header.code().to_owned(),
+        }
+    }
+}
+
+/// Why a GameZ container did not become a set of render meshes, with the
+/// reader's own container, member field and byte offset kept.
+///
+/// This is one type rather than an error enum plus a separate context struct so
+/// a catalog row cannot be built without the context: the context and the reason
+/// are constructed together in [`MeshContainer::open`] and are inseparable
+/// afterwards.
+///
+/// The three payloads are boxed so a `Result` carrying this error stays small
+/// enough to return from [`MeshContainer::open`] by value.
+#[derive(Debug)]
+pub struct MeshContainerError {
+    kind: Box<MeshContainerErrorKind>,
+    origin: Option<Box<SourceSpan>>,
+    failure: Box<MeshFailure>,
+}
+
+impl MeshContainerError {
+    /// The reader-specific reason.
+    pub fn kind(&self) -> &MeshContainerErrorKind {
+        self.kind.as_ref()
+    }
+
+    /// The origin of the container's bytes, when the container was read. `None`
+    /// only for a resolution, read or dispatch failure, where no bytes exist to
+    /// point at.
+    pub fn origin(&self) -> Option<&SourceSpan> {
+        self.origin.as_deref()
+    }
+
+    /// The failure, with its container, member field and offset.
+    pub fn failure(&self) -> &MeshFailure {
+        self.failure.as_ref()
+    }
+
+    /// Stable lowercase identifier: the reader's own code, or this stage's for
+    /// a family or header failure the readers never raised.
+    pub fn code(&self) -> &str {
+        &self.failure.code
+    }
+}
+
+impl fmt::Display for MeshContainerError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.failure.fmt(f)
+    }
+}
+
+impl std::error::Error for MeshContainerError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self.kind.as_ref() {
+            MeshContainerErrorKind::Container(error) => Some(error),
+            MeshContainerErrorKind::Meshes(error) => Some(error),
+            MeshContainerErrorKind::Materials(error) => Some(error),
+            MeshContainerErrorKind::WrongFamily { .. }
+            | MeshContainerErrorKind::HeaderDisagreement { .. } => None,
+        }
+    }
+}
+
+/// The label a failure's container field carries.
+///
+/// A reader's validation variants name no container of their own — a header is
+/// refused on its own words — so the VFS label of the container they were handed
+/// is the fallback. `<unnamed>` would hide which container failed, and the row
+/// has to name it.
+fn labelled<'a>(reader: &'a str, fallback: &'a str) -> &'a str {
+    if reader.is_empty() { fallback } else { reader }
+}
+
+/// The reader's own context, extracted once so both section errors report it the
+/// same way.
+fn reader_context(
+    container: &str,
+    offset: Option<u64>,
+    field: Option<String>,
+) -> (String, Option<u64>, Option<String>) {
+    let labelled = if container.is_empty() {
+        "<unnamed>".to_owned()
+    } else {
+        container.to_owned()
+    };
+    (labelled, offset, field)
+}
+
+/// Builds the container failure: the reason, the origin when the bytes exist,
+/// and the reader's container, member field and offset.
+fn container_error(
+    kind: MeshContainerErrorKind,
+    origin: Option<SourceSpan>,
+    context: Option<(String, Option<u64>, Option<String>)>,
+) -> MeshContainerError {
+    let (container, offset, member) =
+        context.unwrap_or_else(|| ("<unresolved>".to_owned(), None, None));
+    let diagnostic = kind.to_string();
+    let failure = MeshFailure {
+        stage: kind.stage(),
+        code: kind.code(),
+        container,
+        member,
+        offset,
+        mesh: None,
+        diagnostic,
+    };
+    MeshContainerError {
+        kind: Box::new(kind),
+        origin: origin.map(Box::new),
+        failure: Box::new(failure),
+    }
+}
+
+/// The first header word the two section readers did not agree on.
+///
+/// Both readers read the same 40 bytes from the same container, so a
+/// disagreement is not a format variant: it means one reader was handed
+/// something the other was not, and the container is refused instead of having
+/// one reader's view of it win.
+fn header_disagreement(
+    meshes: &GameZHeader,
+    materials: &GameZHeader,
+) -> Option<(&'static str, u32, u32)> {
+    let pairs: [(&'static str, u32, u32); 10] = [
+        ("signature", meshes.signature, materials.signature),
+        ("version", meshes.version, materials.version),
+        ("unk08", meshes.unk08, materials.unk08),
+        (
+            "texture_count",
+            meshes.texture_count,
+            materials.texture_count,
+        ),
+        (
+            "textures_offset",
+            meshes.textures_offset,
+            materials.textures_offset,
+        ),
+        (
+            "materials_offset",
+            meshes.materials_offset,
+            materials.materials_offset,
+        ),
+        (
+            "meshes_offset",
+            meshes.meshes_offset,
+            materials.meshes_offset,
+        ),
+        (
+            "node_array_size",
+            meshes.node_array_size,
+            materials.node_array_size,
+        ),
+        ("light_index", meshes.light_index, materials.light_index),
+        ("nodes_offset", meshes.nodes_offset, materials.nodes_offset),
+    ];
+    pairs.into_iter().find(|(_, first, second)| first != second)
+}
+
+/// Which texture archive a mesh container's material audit searches, and the
+/// catalog that answers lookups in it.
+///
+/// The archive is the caller's decision, for the reason
+/// [`MeshDependencyAudit`] documents: which archive a world or a plane uses is
+/// not established, and the audit must not answer it by searching. A catalog
+/// opened with an archive the [`TextureCatalog`] does not hold is not a special
+/// case — every material row becomes `archive_not_catalogued`, which is the
+/// honest state.
+#[derive(Clone, Copy, Debug)]
+pub struct MeshDependencies<'a> {
+    /// The archive every material's texture name is looked for in.
+    pub archive: &'a AssetKey,
+    /// The catalog that answers the name lookups.
+    pub textures: &'a TextureCatalog,
+}
+
+/// One GameZ container read through a content session: the container's owned
+/// bytes, the two sections the F10-B/F10-C.02 readers produced from them, and
+/// the render mesh of every present stored mesh.
+#[derive(Clone, Debug)]
+pub struct MeshContainer {
+    container: ZbdContainer,
+    trace: ResolutionTrace,
+    meshes: GameZMeshes,
+    materials: GameZMaterials,
+    render: Vec<Option<Result<RenderMesh, RenderMeshError>>>,
+    topologies: Vec<Option<MeshTopology>>,
+    audit: MeshDependencyAudit,
+    /// Which audit rows each array slot's own stored references reach, as
+    /// indices into [`Self::audit`]. Built once so a caller that wants one
+    /// mesh's rows does not scan the container's whole audit for every row.
+    audit_rows_by_mesh: Vec<Vec<usize>>,
+}
+
+impl MeshContainer {
+    /// Resolves `key` in `session`, opens the container it names, checks the
+    /// ZBD dispatch routed it to [`ZbdFamily::GameZ`], reads the mesh and
+    /// material sections with the production readers and builds a render mesh
+    /// for every present stored mesh.
+    ///
+    /// The container **owns** its bytes, so everything it produced stays usable
+    /// after `session` is closed; it is stamped with the session generation that
+    /// read it so a later session can refuse it.
+    ///
+    /// A mesh whose stored polygons do not survive [`RenderMesh`]'s validation
+    /// gate does not fail the container: it is kept as
+    /// `Some(Err(..))` in its own array slot and becomes a failed catalog row,
+    /// because a sibling mesh of the same container may be complete.
+    ///
+    /// # Errors
+    ///
+    /// [`MeshContainerErrorKind::Container`] when the key does not resolve to
+    /// exactly one origin, cannot be read or is not routed at all;
+    /// [`MeshContainerErrorKind::WrongFamily`] when it is routed elsewhere;
+    /// [`MeshContainerErrorKind::Meshes`] or
+    /// [`MeshContainerErrorKind::Materials`] when a section reader refuses it;
+    /// and [`MeshContainerErrorKind::HeaderDisagreement`] when the two readers
+    /// read the same 40 header bytes and disagree.
+    pub fn open(
+        session: &ContentSession,
+        key: &AssetKey,
+        dependencies: &MeshDependencies<'_>,
+    ) -> Result<Self, MeshContainerError> {
+        let resolved = session.resolve(key).map_err(|error| {
+            container_error(
+                MeshContainerErrorKind::Container(ZbdError::from(error)),
+                None,
+                None,
+            )
+        })?;
+        let trace = resolved.resolved().trace.clone();
+        let container = ZbdContainer::open(session, key).map_err(|error| {
+            container_error(MeshContainerErrorKind::Container(error), None, None)
+        })?;
+        if container.family() != ZbdFamily::GameZ {
+            let key = key.clone();
+            let family = container.family();
+            let span = container.span().clone();
+            let label = container.label().to_owned();
+            return Err(container_error(
+                MeshContainerErrorKind::WrongFamily { key, family },
+                Some(span),
+                Some(reader_context(&label, None, None)),
+            ));
+        }
+
+        let label = container.label().to_owned();
+        let span = container.span().clone();
+        let bytes = container.bytes();
+        // One parse context for both sections, as the two readers are meant to be
+        // used: the label is the parse's own, and a failed attempt leaves the
+        // allocation ledger untouched so the next reader starts clean.
+        let mut parse = ParseContext::with_defaults(label.clone());
+        let meshes = read_gamez_meshes(&mut parse, &label, bytes).map_err(|error| {
+            let context = reader_context(
+                labelled(error.container(), &label),
+                error.offset(),
+                parse_field(&error),
+            );
+            container_error(
+                MeshContainerErrorKind::Meshes(error),
+                Some(span.clone()),
+                Some(context),
+            )
+        })?;
+        let materials = read_gamez_materials(&mut parse, &label, bytes).map_err(|error| {
+            let context = materials_context(&error, &label);
+            container_error(
+                MeshContainerErrorKind::Materials(error),
+                Some(span.clone()),
+                Some(context),
+            )
+        })?;
+        if let Some((field, first, second)) = header_disagreement(&meshes.header, &materials.header)
+        {
+            return Err(container_error(
+                MeshContainerErrorKind::HeaderDisagreement {
+                    field,
+                    meshes: first,
+                    materials: second,
+                },
+                Some(span.clone()),
+                Some(reader_context(&label, None, None)),
+            ));
+        }
+
+        let mut render = Vec::with_capacity(meshes.meshes.len());
+        let mut topologies = Vec::with_capacity(meshes.meshes.len());
+        for slot in &meshes.meshes {
+            match slot {
+                None => {
+                    render.push(None);
+                    topologies.push(None);
+                }
+                Some(mesh) => {
+                    render.push(Some(RenderMesh::build(&mesh.mesh)));
+                    topologies.push(Some(mesh.topology()));
+                }
+            }
+        }
+
+        let audit = MeshDependencyAudit::build(
+            &meshes,
+            &materials,
+            &DependencyContext {
+                archive: dependencies.archive,
+                session,
+                catalog: dependencies.textures,
+                origin: Some(span),
+                container: container.path().as_str(),
+            },
+        );
+
+        let mut audit_rows_by_mesh: Vec<Vec<usize>> = vec![Vec::new(); meshes.meshes.len()];
+        for (position, row) in audit.rows.iter().enumerate() {
+            for use_ in &row.used_by {
+                if let Some(rows) = audit_rows_by_mesh.get_mut(use_.mesh as usize) {
+                    rows.push(position);
+                }
+            }
+        }
+        for rows in &mut audit_rows_by_mesh {
+            rows.dedup();
+        }
+
+        Ok(Self {
+            container,
+            trace,
+            meshes,
+            materials,
+            render,
+            topologies,
+            audit,
+            audit_rows_by_mesh,
+        })
+    }
+
+    /// The audit rows one stored mesh's own material references reach, in
+    /// ascending material index order.
+    pub fn audit_rows_for(&self, index: u32) -> impl Iterator<Item = &MaterialRow> {
+        self.audit_rows_by_mesh
+            .get(index as usize)
+            .into_iter()
+            .flatten()
+            .map(|&at| &self.audit.rows[at])
+    }
+
+    /// The key the container was resolved with.
+    pub const fn key(&self) -> &AssetKey {
+        self.container.key()
+    }
+
+    /// The installation-relative path of the container.
+    pub const fn path(&self) -> &RelativePath {
+        self.container.path()
+    }
+
+    /// The immutable origin of the container's bytes.
+    pub const fn span(&self) -> &SourceSpan {
+        self.container.span()
+    }
+
+    /// The session generation that read the container.
+    pub const fn generation(&self) -> SessionGeneration {
+        self.container.generation()
+    }
+
+    /// The provenance label the VFS and the readers both carry.
+    pub fn label(&self) -> &str {
+        self.container.label()
+    }
+
+    /// The container's own bytes, as the mount read them. A mesh's stored span
+    /// is a range of these, so a caller can see exactly what was hashed.
+    pub fn container_bytes(&self) -> &[u8] {
+        self.container.bytes()
+    }
+
+    /// The VFS attempts that chose this container.
+    pub const fn trace(&self) -> &ResolutionTrace {
+        &self.trace
+    }
+
+    /// The parsed mesh section.
+    pub const fn meshes(&self) -> &GameZMeshes {
+        &self.meshes
+    }
+
+    /// The parsed material section.
+    pub const fn materials(&self) -> &GameZMaterials {
+        &self.materials
+    }
+
+    /// The dependency audit of this container's stored material references.
+    pub const fn audit(&self) -> &MeshDependencyAudit {
+        &self.audit
+    }
+
+    /// The identity of the mesh at array position `index`, whether or not that
+    /// slot is present. The identity is a property of the container and the
+    /// position, not of the render mesh, so a failed slot still has one.
+    pub fn id(&self, index: u32) -> MeshId {
+        MeshId {
+            container: self.path().clone(),
+            mount: self.container.mount().clone(),
+            variant: self.key().variant().clone(),
+            index,
+        }
+    }
+
+    /// Every present stored mesh's identity, in array order.
+    pub fn ids(&self) -> impl Iterator<Item = MeshId> + '_ {
+        self.meshes.present().map(|mesh| self.id(mesh.index))
+    }
+
+    /// The render mesh of one array slot: `None` for an absent slot, `Some` of
+    /// the build result for a present one.
+    pub fn render(&self, index: u32) -> Option<Result<&RenderMesh, &RenderMeshError>> {
+        let built = self.render.get(index as usize)?.as_ref()?;
+        Some(built.as_ref())
+    }
+
+    /// The topology report of one array slot, so a refused mesh can still state
+    /// its exact face, triangle and rejected-face counts.
+    pub fn topology(&self, index: u32) -> Option<&MeshTopology> {
+        self.topologies.get(index as usize)?.as_ref()
+    }
+
+    /// The exact face accounting of one array slot.
+    pub fn faces(&self, index: u32) -> Option<MeshFaceCounts> {
+        let mesh = self.meshes.get(index)?;
+        let topology = self.topology(index)?;
+        let multi = mesh
+            .material_groups
+            .iter()
+            .filter(|groups| groups.len() > 1)
+            .count();
+        Some(MeshFaceCounts {
+            faces: mesh.mesh.polygons.len(),
+            triangles: topology.triangles.len(),
+            rejected: topology
+                .faces
+                .iter()
+                .filter(|face| matches!(face, FaceStatus::Rejected(_)))
+                .count(),
+            degenerate: topology
+                .triangles
+                .iter()
+                .filter(|triangle| triangle.is_degenerate())
+                .count(),
+            multi_material_group_polygons: multi,
+        })
+    }
+}
+
+/// The `field` a mesh-section failure carried, when it is a parse failure.
+fn parse_field(error: &GameZError) -> Option<String> {
+    match error {
+        GameZError::Parse(error) => Some(error.field.clone()),
+        _ => None,
+    }
+}
+
+fn materials_context(
+    error: &GameZMaterialError,
+    fallback: &str,
+) -> (String, Option<u64>, Option<String>) {
+    let field = match error {
+        GameZMaterialError::Parse(error) => Some(error.field.clone()),
+        _ => None,
+    };
+    reader_context(labelled(error.container(), fallback), error.offset(), field)
+}
+
+/// The exact face accounting of one stored mesh, for a row that has one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MeshFaceCounts {
+    /// Stored polygons the mesh holds. Every one of them decoded when the
+    /// render mesh was built, so this is also the exact valid face count.
+    pub faces: usize,
+    /// Topology triangles the stored polygons produced, degenerate ones
+    /// included.
+    pub triangles: usize,
+    /// Stored polygons the validation gate rejected, named by their
+    /// `FaceIssue` code in [`RenderMeshError::IncompleteTopology`]. Zero for a
+    /// mesh that produced a render mesh.
+    pub rejected: usize,
+    /// Triangles with two equal stored position indices. They are kept; a
+    /// consumer that draws may skip them.
+    pub degenerate: usize,
+    /// Stored polygons that stored more than one material group.
+    ///
+    /// [`RawMesh::polygons`] and the render mesh carry the **first** group of
+    /// such a polygon, so a group beyond the first has no UV set in the render
+    /// mesh. The count is reported, never silently dropped, and it is a reason
+    /// on the row rather than a second state.
+    pub multi_material_group_polygons: usize,
+}
+
+/// How far a render-mesh row got.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RenderMeshReadiness {
+    /// Every stored face decoded, every material a flat colour or bound to
+    /// exactly one stored texture, and nothing left undecided about
+    /// presenting it. The evidence for the last part is not in yet, so no row
+    /// reaches this today; see [`MeshPresentationUnknown`].
+    Ready,
+    /// Every stored face decoded, but something is open: a material's texture
+    /// dependency reached no single origin, a polygon stores more than one
+    /// material group, or a presentation decision is unmeasured.
+    Blocked,
+    /// The mesh was not read, or not turned into a render mesh. The row carries
+    /// the reader's own context in [`RenderMeshRecord::failure`].
+    Failed,
+}
+
+impl RenderMeshReadiness {
+    /// Stable lowercase identifier, used as a catalog unsupported reason.
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Ready => "ready",
+            Self::Blocked => "blocked",
+            Self::Failed => "failed",
+        }
+    }
+}
+
+/// A presentation decision the evidence has not settled for one GameZ mesh.
+///
+/// Each one is a fact about a value [`MeshContainer::open`] hands on untouched:
+/// the render mesh resolves stored indices and splits vertices, and does
+/// nothing else. The renderer adapter (F17-B) must read
+/// [`MeshUpload::unknowns`] before it chooses anything, exactly as F17-B must
+/// read [`crate::textures::TextureUpload::unknowns`] for an image.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum MeshPresentationUnknown {
+    /// Which winding faces the viewer, and therefore which winding is culled.
+    /// A render triangle keeps the stored winding; the mesh does not decide
+    /// handedness. Carried from F10-A/F10-B and still open in F10-C.01.
+    FrontFaceWinding,
+    /// The UV convention: no V flip, wrap, clamp or scale is applied to a
+    /// stored texture coordinate, and the original renderer's convention is
+    /// unmeasured.
+    UvOrigin,
+    /// What a stored corner colour means. Three raw floats are handed on; their
+    /// range, whether they are intensities at all, and whether the original
+    /// renderer read them, are unmeasured.
+    VertexColor,
+}
+
+impl MeshPresentationUnknown {
+    /// Stable lowercase identifier, used as a catalog unsupported reason.
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::FrontFaceWinding => "front_face_winding_unknown",
+            Self::UvOrigin => "uv_origin_unknown",
+            Self::VertexColor => "vertex_color_unknown",
+        }
+    }
+}
+
+impl fmt::Display for MeshPresentationUnknown {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.code())
+    }
+}
+
+/// The presentation decisions open for every GameZ mesh this stage produces.
+///
+/// They are a property of the pipeline, not of one container, so they are one
+/// fixed list rather than something recomputed per mesh and able to drift.
+fn mesh_presentation_unknowns() -> Vec<MeshPresentationUnknown> {
+    vec![
+        MeshPresentationUnknown::FrontFaceWinding,
+        MeshPresentationUnknown::UvOrigin,
+        MeshPresentationUnknown::VertexColor,
+    ]
+}
+
+/// One row of the render-mesh catalog (IDENTITY-CONTENT "required catalog
+/// collections": render meshes).
+///
+/// A row is about one stored mesh, or — when `mesh_index` is `None` and `id` is
+/// `None` — about a container that produced no mesh at all. Failed rows are
+/// rows: a container that could not be read and a mesh whose faces did not
+/// validate both appear here with their reader's context, and neither is
+/// dropped.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RenderMeshRecord {
+    /// The mesh, or `None` for a container that produced none.
+    pub id: Option<MeshId>,
+    /// Always [`RENDER_MESH_KIND`].
+    pub kind: &'static str,
+    /// The container key the row came from.
+    pub container_key: AssetKey,
+    /// The origin of the container's bytes, when the container was read.
+    pub origin: Option<SourceSpan>,
+    /// The container itself, plus the one texture archive the audit searched.
+    /// Two, always: a render mesh's material index is a stored number whose only
+    /// origin is a texture in a named archive.
+    pub dependencies: Vec<AssetKey>,
+    /// Whether the container and the stored mesh were read. A mesh whose faces
+    /// did not validate *was* read, so it is `Parsed` here and the failure is in
+    /// [`Self::normalize_state`].
+    pub parse_state: ParseState,
+    /// Whether the read mesh became a usable render mesh.
+    pub normalize_state: ParseState,
+    /// The consumers this row feeds.
+    pub runtime_consumers: Vec<&'static str>,
+    /// How far the row got.
+    pub readiness: RenderMeshReadiness,
+    /// Stable codes of everything that keeps the row from being ready.
+    pub unsupported_reasons: Vec<String>,
+    /// SHA-256 of the mesh's stored data span inside the container, or of
+    /// nothing for a container that was never read. The span is exactly the
+    /// range the reader walked for that mesh, so two meshes that differ in one
+    /// stored word differ here.
+    pub fingerprint: Option<ContentHash>,
+    /// The mesh array index, or `None` on a row that is about the container.
+    pub mesh_index: Option<u32>,
+    /// The exact face accounting, when the row is about one stored mesh.
+    pub faces: Option<MeshFaceCounts>,
+    /// The refusal that produced this row, with the reader's container, member
+    /// field and byte offset.
+    pub failure: Option<MeshFailure>,
+}
+
+/// The process-local serial of the next catalog. A catalog's serial is what
+/// binds a [`ResolvedMesh`] to the catalog that produced it, so a resolution
+/// handed back to a **sibling** catalog of the same session over the same bytes
+/// is refused instead of being served a second time.
+static NEXT_CATALOG_SERIAL: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+fn next_catalog_serial() -> u64 {
+    NEXT_CATALOG_SERIAL.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+}
+
+/// One container slot of a [`MeshCatalog`]: the key, and either the container
+/// it read or the failure that replaced it.
+#[derive(Debug)]
+struct MeshSlot {
+    key: AssetKey,
+    state: Result<MeshContainer, MeshContainerError>,
+}
+
+/// The GameZ containers one session makes available, and the render meshes they
+/// hold.
+///
+/// Modelled on [`crate::textures::TextureCatalog`], because the two have the
+/// same shape of problem: a session-scoped set of archives whose failures must
+/// stay visible, whose contents must not survive into another session, and
+/// whose contents must survive the closing of their own.
+///
+/// * It owns every container's bytes, so closing the session does not
+///   invalidate what was already resolved or uploaded.
+/// * It is stamped with the [`SessionGeneration`] that read it:
+///   [`Self::resolve`], [`Self::prepare_upload`] and [`Self::retry_failed`]
+///   refuse any other session, and a [`ResolvedMesh`] from another catalog of
+///   the same session is refused too.
+/// * [`Self::retry_failed`] reopens only the failed containers of the same
+///   session and keeps the ones that read. Repairing a file does not change what
+///   that session mounted, so the retry fails on the mount-time digest; a
+///   **remount** of a repaired tree, and a new catalog over it, is what loads
+///   the fix.
+#[derive(Debug)]
+pub struct MeshCatalog {
+    serial: u64,
+    generation: SessionGeneration,
+    archive: AssetKey,
+    slots: Vec<MeshSlot>,
+}
+
+impl MeshCatalog {
+    /// Opens every container key in `session`. A key that fails stays in the
+    /// catalog as a failed row; it is never dropped. A repeated key is opened
+    /// once. A container whose mesh section reads but whose material section
+    /// does not is a failed container: the mesh rows depend on the audit, and
+    /// there is no audit to hand them.
+    pub fn open(
+        session: &ContentSession,
+        containers: &[AssetKey],
+        dependencies: &MeshDependencies<'_>,
+    ) -> Self {
+        let mut slots: Vec<MeshSlot> = Vec::new();
+        for key in containers {
+            if slots.iter().any(|slot| &slot.key == key) {
+                continue;
+            }
+            slots.push(MeshSlot {
+                key: key.clone(),
+                state: MeshContainer::open(session, key, dependencies),
+            });
+        }
+        Self {
+            serial: next_catalog_serial(),
+            generation: session.generation(),
+            archive: dependencies.archive.clone(),
+            slots,
+        }
+    }
+
+    /// This catalog's process-local serial, which a [`ResolvedMesh`] carries so a
+    /// sibling catalog of the same session cannot answer for it.
+    pub const fn serial(&self) -> u64 {
+        self.serial
+    }
+
+    /// The session generation that read the catalog.
+    pub const fn generation(&self) -> SessionGeneration {
+        self.generation
+    }
+
+    /// The one texture archive every audited material was looked for in.
+    pub const fn archive(&self) -> &AssetKey {
+        &self.archive
+    }
+
+    /// Every container that read.
+    pub fn containers(&self) -> impl Iterator<Item = &MeshContainer> {
+        self.slots
+            .iter()
+            .filter_map(|slot| slot.state.as_ref().ok())
+    }
+
+    /// Every container that failed, with its error.
+    pub fn failures(&self) -> impl Iterator<Item = (&AssetKey, &MeshContainerError)> {
+        self.slots
+            .iter()
+            .filter_map(|slot| slot.state.as_ref().err().map(|error| (&slot.key, error)))
+    }
+
+    /// Refuses a session that did not read this catalog.
+    ///
+    /// # Errors
+    ///
+    /// [`MeshError::ForeignSession`] when the generations differ.
+    pub fn require_session(&self, session: &ContentSession) -> Result<(), MeshError> {
+        if session.generation() == self.generation {
+            Ok(())
+        } else {
+            Err(MeshError::ForeignSession {
+                session: session.generation(),
+                catalog: self.generation,
+            })
+        }
+    }
+
+    /// Reopens every failed container in `session`, keeping those that read.
+    /// Returns how many are still failing.
+    ///
+    /// The dependencies are restated because the audit is rebuilt from the
+    /// repaired bytes, and the caller — not the catalog — owns which texture
+    /// archive it is rebuilt against.
+    ///
+    /// # Errors
+    ///
+    /// [`MeshError::ForeignSession`] when `session` is not the one that read the
+    /// catalog; a new session needs a new catalog.
+    pub fn retry_failed(
+        &mut self,
+        session: &ContentSession,
+        dependencies: &MeshDependencies<'_>,
+    ) -> Result<usize, MeshError> {
+        self.require_session(session)?;
+        for slot in &mut self.slots {
+            if slot.state.is_err() {
+                slot.state = MeshContainer::open(session, &slot.key, dependencies);
+            }
+        }
+        Ok(self.failures().count())
+    }
+
+    fn container(&self, key: &AssetKey) -> Result<&MeshContainer, MeshError> {
+        let slot = self
+            .slots
+            .iter()
+            .find(|slot| &slot.key == key)
+            .ok_or_else(|| MeshError::ContainerNotCatalogued {
+                container: Box::new(key.clone()),
+            })?;
+        slot.state
+            .as_ref()
+            .map_err(|error| MeshError::ContainerFailed {
+                container: Box::new(key.clone()),
+                code: error.failure.code.clone(),
+                diagnostic: error.failure.diagnostic.clone(),
+            })
+    }
+
+    /// Resolves the stored mesh at array position `index` of `key` to its exact
+    /// origin, with the VFS trace that chose the container.
+    ///
+    /// # Errors
+    ///
+    /// [`MeshError::ForeignSession`] for another session,
+    /// [`MeshError::ContainerNotCatalogued`] or
+    /// [`MeshError::ContainerFailed`] when the container is not available,
+    /// [`MeshError::MeshNotFound`] when the array slot is absent, and
+    /// [`MeshError::MeshFailed`] when the slot is present but its stored faces
+    /// did not survive the render mesh's validation gate.
+    pub fn resolve(
+        &self,
+        session: &ContentSession,
+        key: &AssetKey,
+        index: u32,
+    ) -> Result<ResolvedMesh, MeshError> {
+        self.require_session(session)?;
+        let container = self.container(key)?;
+        let slot = container
+            .render(index)
+            .ok_or_else(|| MeshError::MeshNotFound {
+                container: Box::new(key.clone()),
+                index,
+            })?;
+        let resolved = ResolvedMesh {
+            serial: self.serial,
+            generation: self.generation,
+            id: container.id(index),
+            container_span: container.span().clone(),
+            trace: container.trace().clone(),
+        };
+        match slot {
+            Ok(_) => Ok(resolved),
+            Err(error) => Err(MeshError::MeshFailed {
+                container: Box::new(key.clone()),
+                index,
+                code: render_mesh_code(error).to_owned(),
+                diagnostic: error.to_string(),
+            }),
+        }
+    }
+
+    /// Hands a resolved mesh to the upload boundary.
+    ///
+    /// The payload **owns** everything it carries: the split render mesh, the
+    /// audit rows its stored material references reach, the container's origin
+    /// and the session generation that read them. It stays usable after the
+    /// catalog and the session are dropped, which is what a renderer adapter
+    /// needs while the world it belongs to is being torn down or replaced.
+    ///
+    /// # Errors
+    ///
+    /// [`MeshError::ForeignSession`] for another session and
+    /// [`MeshError::NotFromThisCatalog`] for a mesh another catalog resolved.
+    pub fn prepare_upload(
+        &self,
+        session: &ContentSession,
+        resolved: &ResolvedMesh,
+    ) -> Result<MeshUpload, MeshError> {
+        self.require_session(session)?;
+        let not_ours = || MeshError::NotFromThisCatalog {
+            id: Box::new(resolved.id.clone()),
+        };
+        if resolved.generation != self.generation || resolved.serial != self.serial {
+            return Err(not_ours());
+        }
+        let container = self
+            .containers()
+            .filter(|container| container.span() == &resolved.container_span)
+            .find(|container| {
+                container.id(resolved.id.index) == resolved.id
+                    && container.render(resolved.id.index).is_some()
+            })
+            .ok_or_else(not_ours)?;
+        let built = container
+            .render(resolved.id.index)
+            .expect("the container slot was found above");
+        let render = match built {
+            Ok(render) => render.clone(),
+            Err(error) => {
+                return Err(MeshError::MeshFailed {
+                    container: Box::new(container.key().clone()),
+                    index: resolved.id.index,
+                    code: render_mesh_code(error).to_owned(),
+                    diagnostic: error.to_string(),
+                });
+            }
+        };
+        // Only the audit rows this mesh's own stored references reach: a
+        // container's audit covers every mesh in it, and a payload for one mesh
+        // must not imply the others' materials.
+        let materials: Vec<MaterialRow> = container
+            .audit()
+            .rows
+            .iter()
+            .filter(|row| {
+                row.used_by
+                    .iter()
+                    .any(|use_| use_.mesh == resolved.id.index)
+            })
+            .cloned()
+            .collect();
+        let faces = container
+            .faces(resolved.id.index)
+            .expect("the container slot was found above");
+        Ok(MeshUpload {
+            id: resolved.id.clone(),
+            generation: self.generation,
+            container_span: resolved.container_span.clone(),
+            container_key: container.key().clone(),
+            render,
+            materials,
+            faces,
+            unknowns: mesh_presentation_unknowns(),
+        })
+    }
+
+    /// One row per stored mesh of every container that read, and one row per
+    /// container that failed, in catalog order and then array order.
+    ///
+    /// The fingerprint of a mesh row is taken over exactly the stored span the
+    /// reader walked for that mesh
+    /// ([`cs_formats::gamez::GameZMesh::data_offset`]..
+    /// [`cs_formats::gamez::GameZMesh::data_end`]), not over the whole
+    /// container, so two meshes of one archive differ if and only if their own
+    /// stored bytes differ.
+    pub fn records(&self) -> Vec<RenderMeshRecord> {
+        let mut records = Vec::new();
+        for slot in &self.slots {
+            let container = match &slot.state {
+                Ok(container) => container,
+                Err(error) => {
+                    records.push(RenderMeshRecord {
+                        id: None,
+                        kind: RENDER_MESH_KIND,
+                        container_key: slot.key.clone(),
+                        origin: error.origin().cloned(),
+                        dependencies: vec![slot.key.clone(), self.archive.clone()],
+                        parse_state: ParseState::Failed {
+                            diagnostic: error.failure.diagnostic.clone(),
+                        },
+                        normalize_state: ParseState::Unparsed,
+                        runtime_consumers: vec![MESH_UPLOAD_CONSUMER],
+                        readiness: RenderMeshReadiness::Failed,
+                        unsupported_reasons: vec![
+                            error.failure.stage.code().to_owned(),
+                            error.failure.code.clone(),
+                        ],
+                        fingerprint: None,
+                        mesh_index: None,
+                        faces: None,
+                        failure: Some(error.failure().clone()),
+                    });
+                    continue;
+                }
+            };
+            for (index, built) in container.render.iter().enumerate() {
+                // An absent array slot stores no mesh, so it is not a row: the
+                // collection holds what the container stored, and this one
+                // stored nothing there.
+                let Some(built) = built else { continue };
+                records.push(mesh_record(container, index as u32, built, &self.archive));
+            }
+        }
+        records
+    }
+}
+
+/// Builds the row of one stored mesh, complete or refused.
+fn mesh_record(
+    container: &MeshContainer,
+    index: u32,
+    built: &Result<RenderMesh, RenderMeshError>,
+    archive: &AssetKey,
+) -> RenderMeshRecord {
+    let id = container.id(index);
+    let mut row = RenderMeshRecord {
+        id: Some(id.clone()),
+        kind: RENDER_MESH_KIND,
+        container_key: container.key().clone(),
+        origin: Some(container.span().clone()),
+        dependencies: vec![container.key().clone(), archive.clone()],
+        parse_state: ParseState::Parsed,
+        normalize_state: ParseState::Unparsed,
+        runtime_consumers: vec![MESH_UPLOAD_CONSUMER],
+        readiness: RenderMeshReadiness::Failed,
+        unsupported_reasons: Vec::new(),
+        fingerprint: None,
+        mesh_index: Some(index),
+        faces: container.faces(index),
+        failure: None,
+    };
+    // The fingerprint is over the stored span, not the re-derived render mesh,
+    // so it is available for a refused mesh too and does not depend on this
+    // stage's splitting.
+    if let Some(mesh) = container.meshes().get(index) {
+        let bytes = &container.container_bytes()[mesh.data_offset as usize..mesh.data_end as usize];
+        row.fingerprint = Some(sha256(bytes));
+    }
+
+    match built {
+        Err(error) => {
+            let failure = MeshFailure {
+                stage: MeshFailureStage::Render,
+                code: render_mesh_code(error).to_owned(),
+                container: container.label().to_owned(),
+                member: None,
+                // A render-mesh refusal is a check over bytes that were read
+                // whole, so there is no failing read offset to report and none
+                // is invented.
+                offset: None,
+                mesh: Some(index),
+                diagnostic: error.to_string(),
+            };
+            row.normalize_state = ParseState::Failed {
+                diagnostic: failure.diagnostic.clone(),
+            };
+            row.unsupported_reasons = vec![failure.stage.code().to_owned(), failure.code.clone()];
+            row.failure = Some(failure);
+        }
+        Ok(_) => {
+            let mut reasons: Vec<String> = Vec::new();
+            if let Some(faces) = row.faces
+                && faces.multi_material_group_polygons > 0
+            {
+                reasons.push(format!(
+                    "multi_material_group_polygons:{}",
+                    faces.multi_material_group_polygons
+                ));
+            }
+            // The audit rows this mesh's own stored references reach, so the row
+            // states its own material readiness rather than the container's.
+            for material in container.audit_rows_for(index) {
+                reasons.extend(material.unsupported_reasons.iter().cloned());
+            }
+            reasons.extend(
+                mesh_presentation_unknowns()
+                    .iter()
+                    .map(|unknown| unknown.code().to_owned()),
+            );
+            reasons.dedup();
+            row.readiness = if reasons.is_empty() {
+                RenderMeshReadiness::Ready
+            } else {
+                RenderMeshReadiness::Blocked
+            };
+            row.normalize_state = if reasons.is_empty() {
+                ParseState::Parsed
+            } else {
+                ParseState::Failed {
+                    diagnostic: reasons[0].clone(),
+                }
+            };
+            row.unsupported_reasons = reasons;
+        }
+    }
+    row
+}
+
+/// Stable lowercase code of a [`RenderMeshError`], for a catalog row's
+/// `unsupported_reasons` and for [`MeshError`]'s `code`.
+///
+/// The code is derived here rather than added to the type so F10-C.01's
+/// published error shape does not change.
+fn render_mesh_code(error: &RenderMeshError) -> &'static str {
+    match error {
+        RenderMeshError::TopologyFaceCount { .. } => "topology_face_count",
+        RenderMeshError::IncompleteTopology { .. } => "incomplete_topology",
+        RenderMeshError::OutOfRange { .. } => "attribute_index_out_of_range",
+        RenderMeshError::TooManyVertices { .. } => "too_many_vertices",
+    }
+}
+
+/// One mesh resolved against a catalog: its exact origin, and the catalog and
+/// session generation that produced it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResolvedMesh {
+    serial: u64,
+    generation: SessionGeneration,
+    id: MeshId,
+    container_span: SourceSpan,
+    trace: ResolutionTrace,
+}
+
+impl ResolvedMesh {
+    /// The mesh's identity.
+    pub const fn id(&self) -> &MeshId {
+        &self.id
+    }
+
+    /// The serial of the catalog that resolved it.
+    pub const fn serial(&self) -> u64 {
+        self.serial
+    }
+
+    /// The origin of the container that stores it.
+    pub const fn container_span(&self) -> &SourceSpan {
+        &self.container_span
+    }
+
+    /// The VFS attempts that chose the container.
+    pub const fn trace(&self) -> &ResolutionTrace {
+        &self.trace
+    }
+
+    /// The session generation that resolved it.
+    pub const fn generation(&self) -> SessionGeneration {
+        self.generation
+    }
+}
+
+/// Why a mesh lookup or a hand-off to the upload boundary did not happen.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MeshError {
+    /// The catalog was read by another session.
+    ForeignSession {
+        /// The session asking.
+        session: SessionGeneration,
+        /// The session that read the catalog.
+        catalog: SessionGeneration,
+    },
+    /// The catalog was not opened with this container key.
+    ContainerNotCatalogued {
+        /// The container key asked for.
+        container: Box<AssetKey>,
+    },
+    /// The container is in the catalog but failed to read.
+    ContainerFailed {
+        /// The container key asked for.
+        container: Box<AssetKey>,
+        /// The failure's stable code.
+        code: String,
+        /// The failure's text, with its container, member field and offset.
+        diagnostic: String,
+    },
+    /// The container's mesh array has no present record at that position.
+    MeshNotFound {
+        /// The container that was asked.
+        container: Box<AssetKey>,
+        /// The array position asked for.
+        index: u32,
+    },
+    /// The mesh is present but its stored faces did not survive the render
+    /// mesh's validation gate. Nothing is uploaded and nothing is dropped.
+    MeshFailed {
+        /// The container that holds it.
+        container: Box<AssetKey>,
+        /// The array position.
+        index: u32,
+        /// The refusal's stable code.
+        code: String,
+        /// The refusal's text, naming every rejected face.
+        diagnostic: String,
+    },
+    /// A resolved mesh handed back to this catalog did not come from it.
+    NotFromThisCatalog {
+        /// The mesh handed in.
+        id: Box<MeshId>,
+    },
+}
+
+impl MeshError {
+    /// Stable lowercase identifier.
+    pub fn code(&self) -> &str {
+        match self {
+            Self::ForeignSession { .. } => "foreign_session",
+            Self::ContainerNotCatalogued { .. } => "container_not_catalogued",
+            Self::ContainerFailed { code, .. } => code,
+            Self::MeshNotFound { .. } => "mesh_not_found",
+            Self::MeshFailed { code, .. } => code,
+            Self::NotFromThisCatalog { .. } => "not_from_this_catalog",
+        }
+    }
+}
+
+impl fmt::Display for MeshError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ForeignSession { session, catalog } => write!(
+                f,
+                "the mesh catalog was read by {catalog} and cannot serve {session}"
+            ),
+            Self::ContainerNotCatalogued { container } => {
+                write!(f, "GameZ container {container} is not in this catalog")
+            }
+            Self::ContainerFailed {
+                container,
+                code,
+                diagnostic,
+            } => write!(
+                f,
+                "GameZ container {container} failed ({code}): {diagnostic}"
+            ),
+            Self::MeshNotFound { container, index } => {
+                write!(f, "{container} stores no present mesh at index {index}")
+            }
+            Self::MeshFailed {
+                container,
+                index,
+                code,
+                diagnostic,
+            } => write!(
+                f,
+                "{container} mesh {index} is not uploadable ({code}): {diagnostic}"
+            ),
+            Self::NotFromThisCatalog { id } => {
+                write!(f, "mesh {id} was not resolved by this catalog")
+            }
+        }
+    }
+}
+
+impl std::error::Error for MeshError {}
+
+/// What a renderer adapter receives for one mesh: the split render mesh,
+/// **owned**, the audit rows its own stored material references reached, and
+/// everything still undecided about presenting it.
+///
+/// The payload borrows nothing. A catalog and the session that read it can both
+/// be dropped, and a world switch can build its own catalog, without
+/// invalidating a payload that is already on its way to the GPU.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MeshUpload {
+    id: MeshId,
+    generation: SessionGeneration,
+    container_span: SourceSpan,
+    container_key: AssetKey,
+    render: RenderMesh,
+    materials: Vec<MaterialRow>,
+    faces: MeshFaceCounts,
+    unknowns: Vec<MeshPresentationUnknown>,
+}
+
+impl MeshUpload {
+    /// The mesh this payload is for.
+    pub const fn id(&self) -> &MeshId {
+        &self.id
+    }
+
+    /// The session generation that produced it.
+    pub const fn generation(&self) -> SessionGeneration {
+        self.generation
+    }
+
+    /// The origin of the container that stores the mesh.
+    pub const fn container_span(&self) -> &SourceSpan {
+        &self.container_span
+    }
+
+    /// The key the container was resolved with.
+    pub const fn container_key(&self) -> &AssetKey {
+        &self.container_key
+    }
+
+    /// The split render mesh: one vertex per distinct
+    /// `(position index, normal index, uv, color, material)` tuple, so an
+    /// authored per-corner UV seam is still there.
+    pub const fn render(&self) -> &RenderMesh {
+        &self.render
+    }
+
+    /// The exact face accounting of the stored mesh.
+    pub const fn faces(&self) -> MeshFaceCounts {
+        self.faces
+    }
+
+    /// The audit rows this mesh's own stored material references reach, in
+    /// ascending material index order. A material index the container's table
+    /// does not hold is a row here, not a missing one.
+    pub fn materials(&self) -> &[MaterialRow] {
+        &self.materials
+    }
+
+    /// The audit row of one stored material index, when this mesh references it.
+    pub fn material(&self, material: u32) -> Option<&MaterialRow> {
+        self.materials.iter().find(|row| row.material == material)
+    }
+
+    /// The presentation decisions still open, in a fixed order.
+    pub fn unknowns(&self) -> &[MeshPresentationUnknown] {
+        &self.unknowns
+    }
+
+    /// Whether nothing is left open for release presentation.
+    pub fn is_release_ready(&self) -> bool {
+        self.unknowns.is_empty()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1594,10 +3123,14 @@ mod tests {
         MaterialInfo, RawMaterial, RawMaterialRecord, TextureNameEncoding,
     };
     use cs_formats::gamez::reader::{MeshIndex, RawMaterialGroup, RawMeshInfo};
-    use cs_formats::gamez::{GameZHeader, GameZMesh, GameZMeshes, RawMeshMaterialInfo};
+    use cs_formats::gamez::{
+        CORNER_COUNT_MASK, FLAG_NORMALS, FLAG_SHIFT, GameZHeader, GameZMesh, GameZMeshes,
+        NG_MATERIAL_SLOTS, RawMeshMaterialInfo,
+    };
     use cs_formats::texture::zbd::{
         FLAG_BYTES_PER_PIXEL2, FLAG_NO_ALPHA, ZBD_TEXTURE_HEADER_BYTES,
     };
+    use cs_formats::zbd::{GAMEZ_SIGNATURE, GAMEZ_VERSION};
     use cs_types::asset_id::{AssetKey, ResolveContext, WorldGroup};
     use cs_types::install::ParseState;
 
@@ -2559,5 +4092,1263 @@ mod tests {
                 "a row resolved to a name its archive does not store"
             );
         }
+    }
+
+    // ============================================ F10-C.03: the wiring tests ===
+
+    /// One stored polygon to author: the position index of every corner, the one
+    /// material group the polygon stores, and the UV of every corner of it.
+    ///
+    /// One group only. A polygon with two or three is a real stored shape — the
+    /// reader keeps them all on `GameZMesh::material_groups` and the render mesh
+    /// carries the first — and it is reported as a row reason rather than
+    /// written into every fixture here.
+    struct StoredPolygon {
+        corners: Vec<u32>,
+        material: u32,
+        uvs: Vec<[f32; 2]>,
+    }
+
+    impl StoredPolygon {
+        /// A polygon whose corners are `corners` and whose UVs are `uvs`, one per
+        /// corner, in the same order.
+        fn new(corners: &[u32], material: u32, uvs: &[[f32; 2]]) -> Self {
+            assert_eq!(corners.len(), uvs.len(), "one uv per corner");
+            Self {
+                corners: corners.to_vec(),
+                material,
+                uvs: uvs.to_vec(),
+            }
+        }
+
+        /// The packed `vertex_info` word: the corner count in the low nine bits,
+        /// the flag byte shifted up by eight. The flag byte is
+        /// [`FLAG_NORMALS`] alone, so the polygon stores one normal index per
+        /// corner and no bit outside the layout's own flag field is set.
+        fn vertex_info(&self) -> u32 {
+            (self.corners.len() as u32 & CORNER_COUNT_MASK) | (FLAG_NORMALS << FLAG_SHIFT)
+        }
+
+        /// The ten words of the 40-byte polygon record. The five `*_ptr` values
+        /// and the three `unk` words carry a distinct sentinel per field and per
+        /// polygon, so a reader that reordered or shifted them is caught instead
+        /// of quietly agreeing.
+        fn record_bytes(&self, polygon: u32) -> Vec<u8> {
+            let mut out = Vec::new();
+            for word in [
+                self.vertex_info(),
+                0,
+                0xAAAA_0000 | polygon,
+                0xAAAA_1000 | polygon,
+                1,
+                0xAAAA_2000 | polygon,
+                0xAAAA_3000 | polygon,
+                0xAAAA_4000 | polygon,
+                0xAAAA_5000 | polygon,
+                0xAAAA_6000 | polygon,
+            ] {
+                out.extend_from_slice(&word.to_le_bytes());
+            }
+            assert_eq!(out.len(), 40, "a polygon record is ten 4-byte fields");
+            out
+        }
+
+        /// The five corner arrays the layout stores after the records: the
+        /// position indices, the normal indices (the flag byte says so), the one
+        /// material index, that group's UVs, then one colour per corner.
+        fn corner_bytes(&self) -> Vec<u8> {
+            let mut out = Vec::new();
+            for index in &self.corners {
+                out.extend_from_slice(&index.to_le_bytes());
+            }
+            for (corner, _) in self.corners.iter().enumerate() {
+                out.extend_from_slice(&(corner as u32 % 2).to_le_bytes());
+            }
+            out.extend_from_slice(&self.material.to_le_bytes());
+            for uv in &self.uvs {
+                out.extend_from_slice(&uv[0].to_le_bytes());
+                out.extend_from_slice(&uv[1].to_le_bytes());
+            }
+            // One distinct colour per corner, so a reader that took the colours
+            // from a neighbouring corner is visible on the render vertices.
+            for corner in 0..self.corners.len() {
+                let value = 16.0 * (corner + 1) as f32;
+                for channel in [value, value * 2.0, value * 3.0] {
+                    out.extend_from_slice(&channel.to_le_bytes());
+                }
+            }
+            out
+        }
+    }
+
+    /// One stored mesh to author: its positions, its normals, its polygons, the
+    /// 12-byte material references that follow them, and the polygon count its
+    /// 100-byte record **declares**.
+    ///
+    /// The declared count is separate from the data on purpose: a fixture that
+    /// declares more polygons than it stores is a mesh whose stored array is
+    /// truncated, which is one of the two ways the reader is made to fail with
+    /// a byte offset.
+    struct StoredMesh {
+        positions: Vec<[f32; 3]>,
+        normals: Vec<[f32; 3]>,
+        polygons: Vec<StoredPolygon>,
+        material_refs: Vec<u32>,
+        declared_polygons: u32,
+    }
+
+    impl StoredMesh {
+        /// A present mesh record with the raw scalars one carries, and nothing
+        /// declared past its own data.
+        fn new(
+            positions: Vec<[f32; 3]>,
+            normals: Vec<[f32; 3]>,
+            polygons: Vec<StoredPolygon>,
+        ) -> Self {
+            let material_refs = polygons.iter().map(|polygon| polygon.material).collect();
+            Self {
+                declared_polygons: polygons.len() as u32,
+                positions,
+                normals,
+                polygons,
+                material_refs,
+            }
+        }
+
+        /// The 25 stored words of the 100-byte record, in the layout's order.
+        /// Every count but `polygon_count` is derived from the data it composes,
+        /// so a fixture cannot contradict itself by accident.
+        fn record_words(&self) -> [u32; 25] {
+            [
+                1, // file_ptr: the reference asserts 0 or 1
+                0, // unk04
+                0, // unk08
+                1, // parent_count: non-zero marks a present record
+                self.declared_polygons,
+                self.positions.len() as u32,
+                self.normals.len() as u32,
+                0, // morph_count
+                0, // light_count
+                0, // unk36
+                0.0f32.to_bits(),
+                0.0f32.to_bits(),
+                0, // unk48
+                0, // polygons_ptr
+                0, // vertices_ptr
+                0, // normals_ptr
+                0, // lights_ptr
+                0, // morphs_ptr
+                0.0f32.to_bits(),
+                0.0f32.to_bits(),
+                0.0f32.to_bits(),
+                0.0f32.to_bits(),
+                0, // unk88
+                self.material_refs.len() as u32,
+                0, // materials_ptr
+            ]
+        }
+
+        /// The mesh's data, composed from its parts in the layout's order:
+        /// positions, normals, morphs, every light header, every light's trailing
+        /// vectors, every polygon record, then per polygon its corner arrays, then
+        /// the mesh material references. The two two-pass structures are the
+        /// layout's and are where an interleaving writer would desynchronise.
+        fn data(&self) -> Vec<u8> {
+            let mut out = Vec::new();
+            for vector in self.positions.iter().chain(&self.normals) {
+                for channel in vector {
+                    out.extend_from_slice(&channel.to_le_bytes());
+                }
+            }
+            for (polygon, _) in self.polygons.iter().enumerate() {
+                out.extend_from_slice(&self.polygons[polygon].record_bytes(polygon as u32));
+            }
+            for polygon in &self.polygons {
+                out.extend_from_slice(&polygon.corner_bytes());
+            }
+            for material in &self.material_refs {
+                for word in [*material, 1, 0] {
+                    out.extend_from_slice(&word.to_le_bytes());
+                }
+            }
+            out
+        }
+    }
+
+    /// One stored texture-name record: three `u32` words, the 20-byte name and
+    /// three more words, exactly as `read_gamez_materials` reads them.
+    fn texture_name(name: &str) -> Vec<u8> {
+        assert!(name.len() < 20, "a fixture name fits the 20-byte field");
+        let mut out = Vec::new();
+        for word in [0u32, 0, 0] {
+            out.extend_from_slice(&word.to_le_bytes());
+        }
+        let mut field = [0u8; 20];
+        field[..name.len()].copy_from_slice(name.as_bytes());
+        // The layout's one established encoding rule: the stored NUL stands where
+        // the `.` of an extension was, and a name with no suffix stores a NUL
+        // there and another after it.
+        field[name.len()] = 0;
+        out.extend_from_slice(&field);
+        for word in [2u32, 0, -1i32 as u32] {
+            out.extend_from_slice(&word.to_le_bytes());
+        }
+        assert_eq!(out.len(), 44, "a texture-name record is 44 bytes");
+        out
+    }
+
+    /// One present material record plus its two link words: the 40 stored bytes
+    /// and the 4 that follow them.
+    ///
+    /// The values are the reference's asserted profile, so the reader raises no
+    /// `MaterialFinding` for them, and `field32` — the word the reference calls
+    /// `specular` and newer classification calls soil — is left at a distinct
+    /// value per material.
+    fn material_slot(index: u32, count: u32, texture_index: u32) -> Vec<u8> {
+        let mut out = Vec::new();
+        out.push(0xFF); // alpha
+        out.push(MATERIAL_FLAG_ALWAYS | MATERIAL_FLAG_TEXTURED); // flags
+        out.extend_from_slice(&0x7FFFu16.to_le_bytes()); // rgb
+        for _ in 0..3 {
+            out.extend_from_slice(&255.0f32.to_le_bytes()); // color
+        }
+        out.extend_from_slice(&texture_index.to_le_bytes());
+        for value in [0.0f32, 0.5, 0.5, 0.25 + index as f32] {
+            out.extend_from_slice(&value.to_le_bytes());
+        }
+        out.extend_from_slice(&0u32.to_le_bytes()); // cycle_ptr: not cycled
+        assert_eq!(out.len(), 40, "a material record is forty bytes");
+        let link1: i16 = if index + 1 >= count {
+            -1
+        } else {
+            (index + 1) as i16
+        };
+        let link2: i16 = if index == 0 { -1 } else { (index - 1) as i16 };
+        out.extend_from_slice(&link1.to_le_bytes());
+        out.extend_from_slice(&link2.to_le_bytes());
+        assert_eq!(
+            out.len(),
+            44,
+            "a material slot is forty bytes and two words"
+        );
+        out
+    }
+
+    /// One zero material slot, of which a container stores
+    /// `1000 - count` of them. Their link words are the reference's own rule,
+    /// which is the other way round from a present slot's.
+    fn zero_material_slot(index: u32, count: u32) -> Vec<u8> {
+        let mut out = vec![0u8; 40];
+        let link1: i16 = if index == count {
+            -1
+        } else {
+            (index - 1) as i16
+        };
+        let link2: i16 = if index + 1 >= NG_MATERIAL_SLOTS {
+            -1
+        } else {
+            (index + 1) as i16
+        };
+        out.extend_from_slice(&link1.to_le_bytes());
+        out.extend_from_slice(&link2.to_le_bytes());
+        out
+    }
+
+    /// A whole CS GameZ container, authored here from the layout recorded in
+    /// `docs/findings/2026-09-29-f10-b-gamez-mesh-layout.md` and
+    /// `docs/findings/2026-09-29-f10-c-02-gamez-material-records.md`.
+    ///
+    /// `textures` are the container's stored texture names, `materials` how many
+    /// present material records there are (material `i` names texture `i`), and
+    /// `meshes` the stored mesh records in array order — an `Err(())` is an
+    /// absent stub slot, which stores the expected index of the next present
+    /// mesh instead of a data offset.
+    ///
+    /// The writer lays the sections out in the order the layout requires and
+    /// fills in every offset, so no fixture depends on a hand-computed byte
+    /// count, and the file ends exactly at `nodes_offset` with an empty node
+    /// array. The writer shares no code with either reader.
+    fn gamez_container(
+        textures: &[&str],
+        materials: u32,
+        meshes: &[Result<StoredMesh, ()>],
+    ) -> Vec<u8> {
+        let header_bytes = 40usize;
+        assert_eq!(textures_offset(), header_bytes as u32);
+        let textures_offset = header_bytes;
+        let materials_offset = textures_offset + textures.len() * 44;
+        let material_section = 16 + NG_MATERIAL_SLOTS as usize * 44;
+        let meshes_offset = materials_offset + material_section;
+        let record_bytes = 100 + 4;
+        let index_bytes = 12 + meshes.len() * record_bytes;
+        let data: Vec<Vec<u8>> = meshes
+            .iter()
+            .map(|slot| match slot {
+                Ok(mesh) => mesh.data(),
+                Err(()) => Vec::new(),
+            })
+            .collect();
+        let data_len: usize = data.iter().map(Vec::len).sum();
+        let nodes_offset = meshes_offset + index_bytes + data_len;
+        assert!(
+            nodes_offset <= u32::MAX as usize,
+            "a fixture this large is not a fixture"
+        );
+
+        let present: Vec<u32> = meshes
+            .iter()
+            .enumerate()
+            .filter_map(|(slot, mesh)| mesh.as_ref().ok().map(|_| slot as u32))
+            .collect();
+        let array_size = meshes.len() as i32;
+        let count = present.len() as i32;
+        let last_index = present.last().copied().map_or(-1, |slot| {
+            let next = slot + 1;
+            if next as i32 == array_size {
+                -1
+            } else {
+                next as i32
+            }
+        });
+
+        let mut out = Vec::new();
+        for word in [
+            GAMEZ_SIGNATURE,
+            GAMEZ_VERSION,
+            1_234_567_890, // unk08: neither measured fixup table, so `Fixup::None`
+            textures.len() as u32,
+            textures_offset as u32,
+            materials_offset as u32,
+            meshes_offset as u32,
+            0, // node_array_size
+            0, // light_index
+            nodes_offset as u32,
+        ] {
+            out.extend_from_slice(&word.to_le_bytes());
+        }
+        assert_eq!(out.len(), header_bytes, "the header is ten 4-byte fields");
+
+        for name in textures {
+            out.extend_from_slice(&texture_name(name));
+        }
+        for word in [
+            materials as i32,
+            materials as i32,
+            materials as i32,
+            materials as i32 - 1,
+        ] {
+            out.extend_from_slice(&word.to_le_bytes());
+        }
+        for index in 0..materials {
+            out.extend_from_slice(&material_slot(index, materials, index));
+        }
+        for index in materials..NG_MATERIAL_SLOTS {
+            out.extend_from_slice(&zero_material_slot(index, materials));
+        }
+        assert_eq!(
+            out.len(),
+            meshes_offset,
+            "the material section ends where the mesh index starts"
+        );
+
+        for word in [array_size, count, last_index] {
+            out.extend_from_slice(&word.to_le_bytes());
+        }
+        // The record array, each present record's data offset filled in from the
+        // composed data that follows the whole array. An absent slot's trailing
+        // word is the expected index of the next present mesh, not an offset.
+        let mut offset = (out.len() + meshes.len() * record_bytes) as u32;
+        for (slot, mesh) in meshes.iter().enumerate() {
+            match mesh {
+                Ok(mesh) => {
+                    for word in mesh.record_words() {
+                        out.extend_from_slice(&word.to_le_bytes());
+                    }
+                    out.extend_from_slice(&offset.to_le_bytes());
+                    offset += data[slot].len() as u32;
+                }
+                Err(()) => {
+                    out.extend_from_slice(&[0u8; 100]);
+                    let next = slot as i32 + 1;
+                    let expected = if next == array_size { -1 } else { next };
+                    out.extend_from_slice(&expected.to_le_bytes());
+                }
+            }
+        }
+        for body in &data {
+            out.extend_from_slice(body);
+        }
+        assert_eq!(
+            out.len(),
+            nodes_offset,
+            "the mesh data ends at nodes_offset"
+        );
+        out
+    }
+
+    fn textures_offset() -> u32 {
+        cs_formats::gamez::GAMEZ_HEADER_BYTES as u32
+    }
+
+    /// `count` distinct `Vec3`s from one **named block**, so the positions and
+    /// the normals of the same mesh never hold the same numbers. The two arrays
+    /// are adjacent and equally sized, so a reader that swapped them would
+    /// consume exactly the right bytes, walk to `nodes_offset` and satisfy every
+    /// count — it would only be wrong.
+    fn block(base: f32, count: usize) -> Vec<[f32; 3]> {
+        (0..count)
+            .map(|index| {
+                let value = (index + 1) as f32;
+                [base + value, base + value * 2.0, base + value * 3.0]
+            })
+            .collect()
+    }
+
+    /// The quad of the seam fixture, in stored order: two triangles that share
+    /// positions 1 and 2, where position 2 is authored with a different UV on
+    /// each polygon.
+    ///
+    /// ```text
+    /// 2 (0,1) ---- 3 (1,1)
+    ///   |        / |
+    ///   |      /   |
+    /// 0 (0,0) ---- 1 (1,0)
+    /// ```
+    fn seam_mesh() -> StoredMesh {
+        StoredMesh::new(
+            block(0.0, 4),
+            block(1000.0, 4),
+            vec![
+                StoredPolygon::new(&[0, 1, 2], 0, &[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]),
+                StoredPolygon::new(&[2, 1, 3], 0, &[[0.5, 0.5], [1.0, 0.0], [1.0, 1.0]]),
+            ],
+        )
+    }
+
+    /// A one-triangle mesh whose single material names the second texture name,
+    /// which the world's archive does not store.
+    fn missing_material_mesh() -> StoredMesh {
+        StoredMesh::new(
+            block(2000.0, 3),
+            block(3000.0, 3),
+            vec![StoredPolygon::new(
+                &[0, 1, 2],
+                1,
+                &[[0.0, 0.0], [0.5, 0.0], [0.25, 0.25]],
+            )],
+        )
+    }
+
+    /// The world's `gamez.zbd`: two present meshes and one absent stub slot.
+    ///
+    /// Material 0 names texture 0 (`sky`, which the world's texture archive
+    /// stores); material 1 names texture 1 (`Sky1.tif`, which it does not).
+    fn seam_container() -> Vec<u8> {
+        gamez_container(
+            &["sky", "Sky1.tif"],
+            2,
+            &[
+                Ok(seam_mesh()),
+                Ok(missing_material_mesh()),
+                Err(()),
+                Ok(StoredMesh::new(block(0.0, 1), Vec::new(), vec![])),
+            ],
+        )
+    }
+
+    fn gamez_key() -> AssetKey {
+        world_key("gamez.zbd")
+    }
+
+    /// The world's `gamez.zbd` plus the world's own `texture.zbd`, so the audit
+    /// has a real archive to look `sky` up in and a real `rtexture2.zbd` it must
+    /// not look in.
+    fn seam_tree() -> Tree {
+        let tree = Tree::world(&["sky", "ground"], &["Sky1.tif", "tier"]);
+        tree.write("ZBD/c1/gamez.zbd", &seam_container());
+        tree
+    }
+
+    fn seam_dependencies<'a>(
+        textures: &'a TextureCatalog,
+        archive: &'a AssetKey,
+    ) -> MeshDependencies<'a> {
+        MeshDependencies { archive, textures }
+    }
+
+    /// The UVs a render triangle samples, by its source polygon, in drawing
+    /// order, taken from an **upload payload** rather than from the render mesh.
+    fn uploaded_uvs(upload: &MeshUpload, polygon: usize) -> [[f32; 2]; 3] {
+        let render = upload.render();
+        let triangle = render
+            .triangles()
+            .iter()
+            .find(|triangle| triangle.source.polygon == polygon)
+            .expect("a triangle for that polygon");
+        triangle
+            .vertices
+            .map(|index| render.vertices()[index as usize].uv.expect("authored uv"))
+    }
+
+    /// The render vertices sitting at one stored position index, in first-
+    /// encounter order.
+    fn vertices_at(upload: &MeshUpload, position: u32) -> Vec<&RenderVertex> {
+        upload
+            .render()
+            .vertices()
+            .iter()
+            .filter(|vertex| vertex.position_index == position)
+            .collect()
+    }
+
+    /// **AC03 end to end.** A quad read by the production reader out of a
+    /// container the production VFS, the production ZBD dispatch and the
+    /// production GameZ reader each opened reaches the upload payload with its
+    /// authored per-corner UV seam intact: position 2 keeps both UVs, each
+    /// triangle samples its own polygon's, and nothing welded them on the way.
+    ///
+    /// A parallel test-only path would pass this if the splitter were correct
+    /// and the wiring were absent, so every step here is the production one:
+    /// `AssetKey` → `ContentSession` → `ZbdContainer` → [`read_gamez_meshes`] →
+    /// [`RenderMesh`] → [`MeshCatalog::prepare_upload`].
+    #[test]
+    fn accept_f10_c_03_uv_seam_survives_the_container_to_upload_boundary() {
+        let tree = seam_tree();
+        let session = world_session(&tree.0, "ZBD/c1");
+        let textures = TextureCatalog::open(&session, std::slice::from_ref(&texture_key()));
+        assert_eq!(textures.failures().count(), 0, "the fixture archive opens");
+        let archive = texture_key();
+        let dependencies = seam_dependencies(&textures, &archive);
+        let catalog = MeshCatalog::open(&session, &[gamez_key()], &dependencies);
+        assert_eq!(catalog.failures().count(), 0, "the fixture container opens");
+        let container = catalog.containers().next().expect("one container");
+        assert_eq!(
+            container.meshes().present_count(),
+            3,
+            "three present meshes"
+        );
+
+        // -- the catalog rows, with the contract's fields ---------------------
+        let records = catalog.records();
+        assert_eq!(records.len(), 3, "one row per stored mesh, not per slot");
+        let seam = &records[0];
+        assert_eq!(seam.kind, "render_mesh");
+        assert_eq!(seam.mesh_index, Some(0));
+        let id = seam.id.as_ref().expect("a stored mesh has an id");
+        assert_eq!(id.index, 0);
+        assert_eq!(id.container.as_str(), "ZBD/c1/gamez.zbd");
+        assert!(seam.origin.is_some(), "the origin is the container's span");
+        assert_eq!(
+            seam.dependencies,
+            vec![gamez_key(), archive.clone()],
+            "the container and the one archive the audit searched"
+        );
+        assert_eq!(seam.runtime_consumers, vec![MESH_UPLOAD_CONSUMER]);
+        assert_eq!(seam.parse_state, ParseState::Parsed);
+        assert_eq!(seam.faces.expect("face counts").faces, 2);
+        assert_eq!(seam.faces.expect("face counts").triangles, 2);
+        assert_eq!(seam.faces.expect("face counts").rejected, 0);
+        assert_eq!(seam.faces.expect("face counts").degenerate, 0);
+        // The fingerprint is over the stored span the reader walked for this
+        // mesh, so it is a function of the bytes and not of this stage's
+        // splitting: a second catalog over the same bytes agrees.
+        let stored = container.meshes().get(0).expect("mesh 0");
+        let span =
+            &container.container_bytes()[stored.data_offset as usize..stored.data_end as usize];
+        assert_eq!(seam.fingerprint, Some(sha256(span)));
+        // `sky` resolved and every presentation decision is still open, so the
+        // row is Blocked with exactly the three codes and no material code.
+        assert_eq!(seam.readiness, RenderMeshReadiness::Blocked);
+        assert_eq!(
+            seam.unsupported_reasons,
+            vec![
+                "front_face_winding_unknown".to_owned(),
+                "uv_origin_unknown".to_owned(),
+                "vertex_color_unknown".to_owned(),
+            ]
+        );
+        assert!(matches!(seam.normalize_state, ParseState::Failed { .. }));
+        assert!(seam.failure.is_none(), "a complete mesh has no failure");
+
+        // The second mesh's material names `Sky1.tif`, which the archive does
+        // not store, so its row names that and its own upload carries the
+        // refused row rather than a substituted texture.
+        let missing = &records[1];
+        assert_eq!(missing.mesh_index, Some(1));
+        assert!(
+            missing
+                .unsupported_reasons
+                .contains(&"texture_not_found".to_owned())
+        );
+        assert_eq!(missing.readiness, RenderMeshReadiness::Blocked);
+        assert_eq!(
+            records[2].mesh_index,
+            Some(3),
+            "the absent slot at 2 is not a row, and slot 3 is"
+        );
+        assert_eq!(catalog.generation(), session.generation());
+        assert_eq!(catalog.archive(), &archive);
+
+        // -- the seam, at the upload boundary -------------------------------
+        let resolved = catalog
+            .resolve(&session, &gamez_key(), 0)
+            .expect("mesh 0 resolves");
+        assert_eq!(resolved.id(), id);
+        assert_eq!(resolved.generation(), catalog.generation());
+        assert!(
+            !resolved.trace().attempts.is_empty(),
+            "the VFS trace travels with it"
+        );
+        let upload = catalog
+            .prepare_upload(&session, &resolved)
+            .expect("mesh 0 uploads");
+
+        assert_eq!(
+            upload.render().vertices().len(),
+            5,
+            "position 2 carries two UVs"
+        );
+        assert_eq!(upload.render().source_faces(), 2);
+        assert_eq!(upload.render().source_triangles(), 2);
+        assert_eq!(upload.render().degenerate_triangles(), 0);
+        let at_one: Vec<&RenderVertex> = vertices_at(&upload, 1);
+        assert_eq!(at_one.len(), 1, "the shared position 1 merges");
+        assert_eq!(at_one[0].uv, Some([1.0, 0.0]));
+        let at_two: Vec<[f32; 2]> = vertices_at(&upload, 2)
+            .into_iter()
+            .map(|vertex| vertex.uv.expect("authored uv"))
+            .collect();
+        assert_eq!(at_two.len(), 2, "the seam survived the whole path");
+        assert!(at_two.contains(&[0.0, 1.0]));
+        assert!(at_two.contains(&[0.5, 0.5]));
+        assert_eq!(
+            uploaded_uvs(&upload, 0),
+            [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]
+        );
+        assert_eq!(
+            uploaded_uvs(&upload, 1),
+            [[0.5, 0.5], [1.0, 0.0], [1.0, 1.0]]
+        );
+
+        // The payload carries the mesh's own audit row and nothing else, so a
+        // payload for mesh 0 cannot imply mesh 1's missing texture.
+        assert_eq!(upload.materials().len(), 1);
+        let material = upload.material(0).expect("material 0 is audited");
+        assert_eq!(material.material, 0);
+        assert_eq!(material.id, "gamez.materials[0]");
+        assert_eq!(material.state.code(), "resolved");
+        assert!(material.fingerprint.is_some());
+        assert!(material.used_by.iter().all(|use_| use_.mesh == 0));
+        assert_eq!(upload.material(1), None);
+        assert_eq!(upload.faces().faces, 2);
+        assert_eq!(upload.container_key(), &gamez_key());
+        assert!(
+            upload.container_span().length() > 0,
+            "the origin has a length"
+        );
+        assert_eq!(
+            upload.unknowns(),
+            &[
+                MeshPresentationUnknown::FrontFaceWinding,
+                MeshPresentationUnknown::UvOrigin,
+                MeshPresentationUnknown::VertexColor,
+            ]
+        );
+        assert!(!upload.is_release_ready(), "the open decisions are named");
+
+        // Mesh 1's payload carries the refused row, with the exact name and the
+        // exact archive, and resolves to no texture at all.
+        let second = catalog.resolve(&session, &gamez_key(), 1).expect("mesh 1");
+        let second = catalog
+            .prepare_upload(&session, &second)
+            .expect("mesh 1 uploads its own row");
+        assert_eq!(second.materials().len(), 1);
+        assert_eq!(
+            second.material(1).expect("material 1 is audited").state,
+            MaterialState::MissingTexture {
+                name: "Sky1.tif".to_owned(),
+                archive: archive.clone(),
+            }
+        );
+        assert!(
+            second
+                .material(1)
+                .expect("audited")
+                .state
+                .texture()
+                .is_none()
+        );
+    }
+
+    /// A container whose file is truncated becomes a failed catalog row that
+    /// keeps the reader's own offset and container, is retried in place, is
+    /// **not** recovered by repairing the file under a session that already
+    /// mounted it, and loads on a remount. The same container is refused through
+    /// a stale session, and an absent mesh slot is refused rather than guessed.
+    #[test]
+    fn accept_f10_c_03_truncated_container_is_a_failed_row_and_recovers_after_remount() {
+        let tree = seam_tree();
+        let full = seam_container();
+        // Cut the file inside the mesh data. The header's section chain still
+        // describes the whole container, so the reader names the offset where the
+        // mesh data claims to end as the offset it ran out at.
+        let mut truncated = full.clone();
+        truncated.truncate(full.len() - 8);
+        tree.write("ZBD/c1/gamez.zbd", &truncated);
+        let nodes_offset =
+            u32::from_le_bytes(full[36..40].try_into().expect("four bytes")) as usize;
+        assert!(
+            nodes_offset > truncated.len(),
+            "the cut is inside the section"
+        );
+
+        let session = world_session(&tree.0, "ZBD/c1");
+        let textures = TextureCatalog::open(&session, std::slice::from_ref(&texture_key()));
+        let archive = texture_key();
+        let dependencies = seam_dependencies(&textures, &archive);
+        let mut catalog = MeshCatalog::open(&session, &[gamez_key()], &dependencies);
+        assert_eq!(catalog.containers().count(), 0, "nothing read");
+
+        let records = catalog.records();
+        assert_eq!(records.len(), 1, "the failed container is a row");
+        let row = &records[0];
+        assert_eq!(row.kind, "render_mesh");
+        assert_eq!(row.id, None, "a container that read no mesh has no id");
+        assert_eq!(row.mesh_index, None);
+        assert_eq!(row.container_key, gamez_key());
+        assert!(row.origin.is_some(), "the container's bytes did exist");
+        assert_eq!(row.fingerprint, None, "no stored span was walked");
+        assert_eq!(row.readiness, RenderMeshReadiness::Failed);
+        assert_eq!(row.runtime_consumers, vec![MESH_UPLOAD_CONSUMER]);
+        assert_eq!(row.normalize_state, ParseState::Unparsed);
+        let failure = row.failure.as_ref().expect("the reader's own context");
+        assert_eq!(failure.stage, MeshFailureStage::Meshes);
+        assert_eq!(failure.code, "section_out_of_bounds");
+        assert_eq!(
+            failure.offset,
+            Some(nodes_offset as u64),
+            "the reader's offset"
+        );
+        assert_eq!(failure.mesh, None, "the container refused, not one mesh");
+        assert!(
+            failure.container.contains("gamez.zbd"),
+            "the container is named: {}",
+            failure.container
+        );
+        assert!(
+            row.unsupported_reasons
+                .contains(&"mesh_section_failed".to_owned())
+        );
+        assert!(
+            row.unsupported_reasons
+                .contains(&"section_out_of_bounds".to_owned())
+        );
+        // The reader's own message, offsets included, is the row's diagnostic
+        // and the failure's, not a reworded summary.
+        let ParseState::Failed { diagnostic } = &row.parse_state else {
+            panic!("a refused container is a failed parse");
+        };
+        assert_eq!(diagnostic, &failure.diagnostic);
+        assert!(
+            diagnostic.contains(&nodes_offset.to_string()),
+            "{diagnostic}"
+        );
+        assert!(
+            failure.to_string().contains(&nodes_offset.to_string()),
+            "the failure's own text carries the offset: {failure}"
+        );
+
+        // A stale session cannot retry this catalog, resolve through it, or be
+        // served by it. A second session over the same tree is a new generation,
+        // which is exactly what makes the first catalog stale to it.
+        let other = world_session(&tree.0, "ZBD/c1");
+        assert_ne!(other.generation(), session.generation());
+        assert_eq!(
+            catalog
+                .retry_failed(&other, &dependencies)
+                .expect_err("foreign")
+                .code(),
+            "foreign_session"
+        );
+        assert_eq!(
+            catalog
+                .resolve(&other, &gamez_key(), 0)
+                .expect_err("foreign")
+                .code(),
+            "foreign_session"
+        );
+        // A failed container's code is the **reader's** code, not a generic
+        // "failed", so a caller can tell a truncated file from a missing one.
+        assert_eq!(
+            catalog
+                .resolve(&session, &gamez_key(), 0)
+                .expect_err("the container failed")
+                .code(),
+            "section_out_of_bounds"
+        );
+        assert_eq!(
+            catalog
+                .resolve(&session, &world_key("planes.zbd"), 0)
+                .expect_err("not catalogued")
+                .code(),
+            "container_not_catalogued"
+        );
+
+        // Retrying the same session still fails, and repairing the file does not
+        // change what that session mounted: the retry fails on the mount's record
+        // of the bytes, not on the new ones.
+        assert_eq!(catalog.retry_failed(&session, &dependencies), Ok(1));
+        tree.write("ZBD/c1/gamez.zbd", &full);
+        assert_eq!(catalog.retry_failed(&session, &dependencies), Ok(1));
+        assert_eq!(catalog.records().len(), 1, "still one failed row");
+
+        // A remount of the repaired tree, and a new catalog over it, loads the
+        // fix. The old catalog keeps its refusal: it belongs to the old session.
+        let session = world_session(&tree.0, "ZBD/c1");
+        let textures = TextureCatalog::open(&session, std::slice::from_ref(&texture_key()));
+        let dependencies = seam_dependencies(&textures, &archive);
+        let catalog = MeshCatalog::open(&session, &[gamez_key()], &dependencies);
+        assert_eq!(catalog.failures().count(), 0);
+        assert_eq!(catalog.records().len(), 3);
+        let resolved = catalog
+            .resolve(&session, &gamez_key(), 0)
+            .expect("recovered");
+        let upload = catalog
+            .prepare_upload(&session, &resolved)
+            .expect("the repaired mesh uploads");
+        assert_eq!(upload.render().vertices().len(), 5, "the seam is back");
+
+        // An absent array slot is refused by name, never filled from a sibling.
+        assert_eq!(
+            catalog
+                .resolve(&session, &gamez_key(), 2)
+                .expect_err("an absent slot")
+                .code(),
+            "mesh_not_found"
+        );
+        assert_eq!(
+            catalog
+                .resolve(&session, &gamez_key(), 99)
+                .expect_err("past the array")
+                .code(),
+            "mesh_not_found"
+        );
+    }
+
+    /// A mesh whose stored faces do not survive the validation gate is a failed
+    /// **row**, its container's other meshes are untouched, and nothing is
+    /// uploaded for it. A mesh whose record declares one more polygon than the
+    /// section stores is a different refusal: the reader's own parse error, with
+    /// its logical field and its byte offset, reaches the row.
+    #[test]
+    fn accept_f10_c_03_a_refused_mesh_is_a_row_and_nothing_is_uploaded_for_it() {
+        // Mesh 0: a four-corner outline over the quad's four positions whose
+        // stored order crosses itself, so validated triangulation refuses it. A
+        // three-corner polygon would not do: a triangle needs no triangulation,
+        // so it would have been accepted and the row would have been `Blocked`.
+        let refused = StoredMesh::new(
+            block(0.0, 4),
+            block(1000.0, 4),
+            vec![StoredPolygon::new(
+                &[0, 1, 2, 3],
+                0,
+                &[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]],
+            )],
+        );
+        let bytes = gamez_container(&["sky"], 1, &[Ok(refused), Ok(seam_mesh())]);
+        let tree = Tree::world(&["sky", "ground"], &["tier"]);
+        tree.write("ZBD/c1/gamez.zbd", &bytes);
+
+        let session = world_session(&tree.0, "ZBD/c1");
+        let textures = TextureCatalog::open(&session, std::slice::from_ref(&texture_key()));
+        let archive = texture_key();
+        let dependencies = seam_dependencies(&textures, &archive);
+        let catalog = MeshCatalog::open(&session, &[gamez_key()], &dependencies);
+        assert_eq!(catalog.failures().count(), 0, "the container itself reads");
+
+        let records = catalog.records();
+        assert_eq!(records.len(), 2);
+        let refused = &records[0];
+        assert_eq!(refused.mesh_index, Some(0));
+        assert!(refused.id.is_some(), "the mesh is stored, so it has an id");
+        assert_eq!(
+            refused.parse_state,
+            ParseState::Parsed,
+            "the stored mesh was read whole"
+        );
+        assert!(matches!(refused.normalize_state, ParseState::Failed { .. }));
+        assert_eq!(refused.readiness, RenderMeshReadiness::Failed);
+        assert!(refused.fingerprint.is_some(), "its stored span is known");
+        let faces = refused.faces.expect("face counts are exact either way");
+        assert_eq!(faces.faces, 1);
+        assert_eq!(faces.rejected, 1, "the face is counted, not dropped");
+        let failure = refused.failure.as_ref().expect("the gate's own refusal");
+        assert_eq!(failure.stage, MeshFailureStage::Render);
+        assert_eq!(failure.code, "incomplete_topology");
+        assert_eq!(failure.mesh, Some(0));
+        assert_eq!(
+            failure.offset, None,
+            "no read failed, so no offset is invented"
+        );
+        assert!(
+            refused
+                .unsupported_reasons
+                .contains(&"render_mesh_refused".to_owned())
+        );
+        assert!(
+            refused
+                .unsupported_reasons
+                .contains(&"incomplete_topology".to_owned())
+        );
+        assert!(
+            failure.diagnostic.contains("rejected face")
+                && failure.diagnostic.contains("unsupported_ngon"),
+            "{failure}"
+        );
+
+        // Nothing is uploaded for it, and the reason names the gate.
+        assert_eq!(
+            catalog
+                .resolve(&session, &gamez_key(), 0)
+                .expect_err("not uploadable")
+                .code(),
+            "incomplete_topology"
+        );
+        // Its sibling is complete and unaffected.
+        let sibling = catalog.resolve(&session, &gamez_key(), 1).expect("mesh 1");
+        assert_eq!(sibling.id().index, 1);
+        assert!(catalog.prepare_upload(&session, &sibling).is_ok());
+
+        // -- the reader's own parse error, with its field and offset ---------
+        let mut short = seam_mesh();
+        // One polygon record more than the section stores: the stored polygon
+        // array of the last mesh is truncated. The header's chain still describes
+        // the file, so the reader walks into the mesh data and reports the exact
+        // byte offset where it ran out, naming the field it was reading.
+        short.declared_polygons += 1;
+        let bytes = gamez_container(&["sky"], 1, &[Ok(short)]);
+        let nodes_offset = u32::from_le_bytes(bytes[36..40].try_into().expect("four bytes"));
+        let tree = Tree::world(&["sky", "ground"], &["tier"]);
+        tree.write("ZBD/c1/gamez.zbd", &bytes);
+        let session = world_session(&tree.0, "ZBD/c1");
+        let textures = TextureCatalog::open(&session, std::slice::from_ref(&texture_key()));
+        let dependencies = seam_dependencies(&textures, &archive);
+        let catalog = MeshCatalog::open(&session, &[gamez_key()], &dependencies);
+        let row = &catalog.records()[0];
+        assert_eq!(row.readiness, RenderMeshReadiness::Failed);
+        assert_eq!(row.id, None, "the container read no mesh at all");
+        let failure = row.failure.as_ref().expect("the reader's own context");
+        assert_eq!(failure.stage, MeshFailureStage::Meshes);
+        assert_eq!(failure.code, "parse");
+        assert_eq!(failure.offset, Some(u64::from(nodes_offset)));
+        // The reader's own scope and field, not a reworded summary of them: the
+        // walk consumed the stored polygons' arrays and ran out reading the one
+        // polygon its record declared but the section did not store.
+        let member = failure.member.as_deref().expect("the reader named a field");
+        assert!(
+            member.starts_with("gamez.meshes.polygon."),
+            "the reader's own scope: {member}"
+        );
+        assert!(
+            failure.container.contains("gamez.zbd"),
+            "the container is named: {}",
+            failure.container
+        );
+        assert!(failure.diagnostic.contains(member), "{failure}");
+    }
+
+    /// Stale state: a catalog serves its own session only, refuses a mesh another
+    /// catalog resolved, and a payload that has already been prepared still
+    /// answers after its catalog and its session are gone.
+    #[test]
+    fn accept_f10_c_03_a_payload_owns_its_data_and_survives_its_session() {
+        let tree = seam_tree();
+        let session = world_session(&tree.0, "ZBD/c1");
+        let textures = TextureCatalog::open(&session, std::slice::from_ref(&texture_key()));
+        let archive = texture_key();
+        let dependencies = seam_dependencies(&textures, &archive);
+        let first = MeshCatalog::open(&session, &[gamez_key()], &dependencies);
+        let resolved = first.resolve(&session, &gamez_key(), 0).expect("mesh 0");
+        let upload = first
+            .prepare_upload(&session, &resolved)
+            .expect("mesh 0 uploads");
+        let expected = upload.clone();
+
+        // A second catalog of the **same** session, over the same bytes, does not
+        // accept the first one's resolution: the payload is bound to the catalog
+        // that produced it, even when both would answer identically.
+        let second = MeshCatalog::open(&session, &[gamez_key()], &dependencies);
+        assert_eq!(
+            second
+                .prepare_upload(&session, &resolved)
+                .expect_err("not this catalog's")
+                .code(),
+            "not_from_this_catalog"
+        );
+        // Its own resolution of the same mesh is accepted, and the payloads are
+        // equal because the path is a function of the bytes.
+        let own = second.resolve(&session, &gamez_key(), 0).expect("mesh 0");
+        let own = second
+            .prepare_upload(&session, &own)
+            .expect("its own resolution uploads");
+        assert_eq!(own, upload, "the payload is a function of the bytes");
+
+        // A catalog of another session refuses a resolution of this one, and
+        // refuses to be asked by it.
+        drop(first);
+        let other = world_session(&tree.0, "ZBD/c1");
+        let other_textures = TextureCatalog::open(&other, std::slice::from_ref(&archive));
+        let other_dependencies = seam_dependencies(&other_textures, &archive);
+        let other_catalog = MeshCatalog::open(&other, &[gamez_key()], &other_dependencies);
+        // A resolution made by another session's catalog is refused here as
+        // `not_from_this_catalog`, not as `foreign_session`: the session asking
+        // is this catalog's own, and the actionable fault is that the mesh did
+        // not come from this catalog. Either way nothing is uploaded.
+        assert_eq!(
+            other_catalog
+                .prepare_upload(&other, &resolved)
+                .expect_err("another session's resolution")
+                .code(),
+            "not_from_this_catalog"
+        );
+        assert_eq!(
+            second
+                .require_session(&other)
+                .expect_err("another session")
+                .code(),
+            "foreign_session"
+        );
+
+        // The payload owns everything: dropping the catalog and closing the
+        // sessions leaves it intact, seam included.
+        drop(second);
+        let _first_teardown = session.close();
+        let _other_teardown = other.close();
+        assert_eq!(upload, expected);
+        assert_eq!(upload.render().vertices().len(), 5);
+        assert_eq!(
+            uploaded_uvs(&upload, 0),
+            [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]
+        );
+        assert_eq!(
+            uploaded_uvs(&upload, 1),
+            [[0.5, 0.5], [1.0, 0.0], [1.0, 1.0]]
+        );
+        assert_eq!(upload.generation(), expected.generation());
+        assert!(upload.material(0).is_some());
+    }
+
+    /// The family check is real. A container whose key routes to another ZBD
+    /// family is never handed to a GameZ reader, in either of the two ways that
+    /// can happen: the dispatch routes it elsewhere and this stage refuses it as
+    /// `wrong_family`, or the dispatch itself refuses the two keys' disagreement
+    /// before any reader runs.
+    #[test]
+    fn accept_f10_c_03_a_container_of_another_family_is_never_read_as_gamez() {
+        let tree = seam_tree();
+        // The texture family documents no header signature, so a valid texture
+        // package under a texture key routes there and this stage refuses it.
+        tree.write("ZBD/c1/rtexture2.zbd", &package(&["Sky1.tif", "tier"]));
+        // The same role with GameZ bytes in it: the dispatch sees another
+        // family's documented signature and refuses the two keys' disagreement
+        // before a reader is chosen at all.
+        tree.write("ZBD/c1/rtexture3.zbd", &seam_container());
+        let session = world_session(&tree.0, "ZBD/c1");
+        let textures = TextureCatalog::open(&session, std::slice::from_ref(&texture_key()));
+        let archive = texture_key();
+        let dependencies = seam_dependencies(&textures, &archive);
+        let routed = world_key("rtexture2.zbd");
+        let conflicting = world_key("rtexture3.zbd");
+        let catalog = MeshCatalog::open(
+            &session,
+            &[routed.clone(), conflicting.clone()],
+            &dependencies,
+        );
+
+        let failures: Vec<(String, &str)> = catalog
+            .failures()
+            .map(|(key, error)| (key.to_string(), error.code()))
+            .collect();
+        assert_eq!(failures.len(), 2, "{failures:?}");
+        assert_eq!(failures[0].1, "wrong_family");
+        assert_eq!(failures[1].1, "dispatch");
+
+        let (_, refused) = catalog.failures().next().expect("refused");
+        let MeshContainerErrorKind::WrongFamily { family, .. } = refused.kind() else {
+            panic!("expected a family refusal, got {}", refused.kind());
+        };
+        assert_eq!(*family, ZbdFamily::Texture);
+        assert_eq!(refused.failure().stage, MeshFailureStage::Family);
+        assert!(refused.origin().is_some(), "the bytes did exist");
+        assert!(
+            refused.failure().container.contains("rtexture2.zbd"),
+            "the container is named: {}",
+            refused.failure().container
+        );
+
+        let records = catalog.records();
+        assert_eq!(records.len(), 2, "both refusals are rows");
+        for (row, key) in records.iter().zip([&routed, &conflicting]) {
+            assert_eq!(row.readiness, RenderMeshReadiness::Failed);
+            assert_eq!(row.id, None);
+            assert_eq!(row.mesh_index, None);
+            assert_eq!(row.container_key, *key);
+            assert_eq!(row.fingerprint, None, "no stored span was walked");
+            assert!(row.failure.is_some());
+        }
+        assert_eq!(
+            records[0].failure.as_ref().expect("context").code,
+            "wrong_family"
+        );
+        assert_eq!(
+            records[1].failure.as_ref().expect("context").stage,
+            MeshFailureStage::Container,
+            "the dispatch refused it, so no reader ever saw the bytes"
+        );
+        assert_eq!(catalog.containers().count(), 0, "nothing was read as GameZ");
+    }
+
+    /// The retail half: the world's own `gamez.zbd`, read by the production VFS,
+    /// dispatch and both production readers, reaches the upload payload. The
+    /// discriminating facts are checked on real data: every stored face decodes,
+    /// the seam survives wherever the original authored one, and no stored mesh
+    /// disappears between the container and the rows.
+    #[test]
+    #[ignore = "requires CS_GAME_DIR"]
+    fn accept_f10_c_03_retail_world_meshes_reach_the_upload_payload() {
+        let game_dir = PathBuf::from(std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR"));
+        let found = install::discover(&game_dir).expect("the installation is discovered");
+        let group = found
+            .diagnosis
+            .world_groups
+            .iter()
+            .find(|group| group.as_str().eq_ignore_ascii_case("ZBD/c1"))
+            .expect("world C1 is discovered")
+            .clone();
+        let context = ResolveContext::new(install::fingerprint(&found.manifest))
+            .with_world_group(WorldGroup::from_relative(group));
+        let mut builder = SessionBuilder::new(context);
+        builder
+            .mount_installation(&game_dir, &found.diagnosis)
+            .expect("the installation mounts");
+        let session = builder.open();
+
+        let archive = texture_key();
+        let textures = TextureCatalog::open(&session, std::slice::from_ref(&archive));
+        assert_eq!(
+            textures.failures().count(),
+            0,
+            "the world's texture archive opens"
+        );
+        let dependencies = seam_dependencies(&textures, &archive);
+        let key = gamez_key();
+        let catalog = MeshCatalog::open(&session, std::slice::from_ref(&key), &dependencies);
+        assert_eq!(
+            catalog.failures().count(),
+            0,
+            "the world's own GameZ container opens and both readers accept it"
+        );
+
+        let container = catalog.containers().next().expect("one container");
+        // The two readers proved their own section boundary from the same bytes,
+        // and this stage additionally checked that they read the same header.
+        assert_eq!(
+            container.meshes().data_end,
+            u64::from(container.meshes().header.nodes_offset)
+        );
+        assert_eq!(
+            container.materials().data_end,
+            u64::from(container.materials().header.meshes_offset)
+        );
+
+        // One row per present stored mesh, and a row is never lost.
+        let records = catalog.records();
+        assert_eq!(records.len(), container.meshes().present_count());
+        assert!(!records.is_empty());
+        for row in &records {
+            assert_eq!(row.kind, RENDER_MESH_KIND);
+            assert!(row.id.is_some());
+            assert!(row.origin.is_some());
+            assert_eq!(row.dependencies, vec![key.clone(), archive.clone()]);
+            assert!(row.fingerprint.is_some(), "every stored mesh has bytes");
+            assert_eq!(row.parse_state, ParseState::Parsed);
+            assert_eq!(row.runtime_consumers, vec![MESH_UPLOAD_CONSUMER]);
+            assert!(row.faces.is_some());
+        }
+
+        // Every row is uploaded, the payload agrees with the row it came from,
+        // and the split is exactly the authored one: no two render vertices of an
+        // upload share a key, and every extra vertex at one position index
+        // differs in one of the four attributes the key holds — including the
+        // material, which is per polygon and splits a shared position on its
+        // own. That is what keeps an authored seam visible.
+        let mut uploaded = 0usize;
+        let mut split_positions = 0usize;
+        let mut uv_seams = 0usize;
+        for row in &records {
+            let index = row.mesh_index.expect("every row is about a mesh");
+            let resolved = catalog
+                .resolve(&session, &key, index)
+                .expect("a decoded row resolves");
+            let upload = catalog
+                .prepare_upload(&session, &resolved)
+                .expect("a decoded mesh uploads");
+            let counts = row.faces.expect("face counts");
+            assert_eq!(upload.render().source_faces(), counts.faces);
+            assert_eq!(upload.render().source_triangles(), counts.triangles);
+            assert_eq!(upload.render().degenerate_triangles(), counts.degenerate);
+            assert_eq!(upload.id(), row.id.as_ref().expect("an id"));
+            assert_eq!(upload.render().vertices().len() >= 3, counts.triangles > 0);
+
+            let render = upload.render();
+            let mut at_index: BTreeMap<u32, Vec<&RenderVertex>> = BTreeMap::new();
+            for vertex in render.vertices() {
+                at_index
+                    .entry(vertex.position_index)
+                    .or_default()
+                    .push(vertex);
+            }
+            for vertices in at_index.values() {
+                if vertices.len() < 2 {
+                    continue;
+                }
+                split_positions += 1;
+                for (a, b) in vertices.iter().zip(vertices.iter().skip(1)) {
+                    assert!(
+                        a.normal_index != b.normal_index
+                            || a.uv != b.uv
+                            || a.color != b.color
+                            || a.material != b.material,
+                        "a split at position {} must differ in a keyed attribute",
+                        a.position_index
+                    );
+                }
+                // A split is a **UV seam** when two vertices at one position
+                // index carry two different authored texture coordinates. That
+                // is the case AC03 names, and it is the one a position-keyed
+                // splitter would lose.
+                let mut uvs: Vec<[u32; 2]> = vertices
+                    .iter()
+                    .filter_map(|vertex| vertex.uv)
+                    .map(|uv| [uv[0].to_bits(), uv[1].to_bits()])
+                    .collect();
+                let before = uvs.len();
+                uvs.sort_unstable();
+                uvs.dedup();
+                if uvs.len() < before {
+                    uv_seams += 1;
+                }
+            }
+            uploaded += 1;
+        }
+        assert_eq!(uploaded, records.len(), "every row uploaded");
+        assert!(
+            split_positions > 0,
+            "the private corpus authors per-corner attribute splits"
+        );
+        assert!(
+            uv_seams > 0,
+            "at least one split is a UV seam, which is the case AC03 names"
+        );
     }
 }

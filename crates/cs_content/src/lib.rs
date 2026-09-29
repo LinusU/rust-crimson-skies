@@ -72,7 +72,7 @@
 //! with `Origin`/`Provenance`; which convention an original file uses is
 //! unmeasured (F16-D) and is never asserted here.
 //!
-//! [`mesh`] is the F10-C.01 render mesh
+//! [`mesh`] is the F10-C render mesh
 //! (`specs/F10-gamez-mesh-topology-and-material-records.md`,
 //! `### F10-C`): the Bevy-free canonical render mesh built from F10-B's raw
 //! GameZ mesh IR and its topology. One render vertex per distinct
@@ -81,7 +81,15 @@
 //! authored seam; every render vertex and triangle keeps its source corner
 //! or step; an incomplete topology is refused naming each rejected face's
 //! `FaceIssue` code; and triangles are grouped by their raw material index,
-//! never interpreting polygon flags.
+//! never interpreting polygon flags. Its F10-C.03 half is the wiring: a
+//! GameZ container opened through a [`cs_assets::vfs::ContentSession`] and
+//! [`cs_assets::zbd::ZbdContainer`], read by both production section readers
+//! and cross-checked against each other's header, producing a
+//! [`mesh::RenderMeshRecord`] catalog row per stored mesh — failed meshes and
+//! failed containers included, each keeping the reader's own container, field
+//! and byte offset — and a [`mesh::MeshUpload`] payload that owns its data and
+//! survives the close of the session that read it. The consumer boundary is
+//! where this stops: the canonical-mesh-to-Bevy adapter is F17-B's.
 //!
 //! [`cs_types`]: cs_types
 //! [`cs_formats`]: cs_formats
