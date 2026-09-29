@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "F13-C",
+ "candidate_tree": "497c513511eedc12f5078904ece74fd40291eed1",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-09-29T03:43:33Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_f13_c_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/agent-1", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 7, "executed": 7, "passed": 7, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_f13_c_signature_claims_resolve_a_program_in_isolation", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f13_c_unused_unknown_record_stays_visible_with_reachability_evidence", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f13_c_probe_session_refuses_weak_claims_and_structural_stops", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f13_c_retail_reachability_covers_the_campaign_programs", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f13_c_cli_resolves_signatures_and_keeps_an_unused_unknown_record", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f13_c_cli_fails_an_incomplete_table_and_refuses_a_malformed_file", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f13_c_retail_cli_probes_every_program_and_reaches_every_record", "status": "pass", "evidence": ["cargo-test.log"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "c9f1e30099b3940c10b05c2332e3c8a7fb70e5597d95d2e8371e77b46cd4b5d1", "kind": "log"}, {"path": "scripts.json", "sha256": "7b961ce315775f67f7c342c50e7686e1ab660c345458546edfc06c32101e2644", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "opencode-1 (implementing agent, fresh session); reviewer recorded by Rally at complete_review", "method": "acceptance suite run locally with the retail capability; this harness derives every field from the recorded log, production discovery of $CS_GAME_DIR, and the production `cs-inspect scripts --coverage` run over every retail ZBD container (scripts.json). The command routes all 184 ZBD containers, locates 1452 programs in 124 script containers, probes each one in isolation against the empty signature table (0 resolved, 1452 stopping at their first reached counter, probe.complete=false) and attaches a reachability verdict with structural evidence to all 320 inventory records (221 used, 99 unused, 0 undecoded-and-unknown-and-unused). The mission opcode table is unmeasured by design: F13-C ships the probe machinery and the honest report, never invented signatures, and the recorded unknowns are listed in docs/findings/2026-09-29-f13-c-signature-probes-and-reachability.md. Validated with tools/validate_evidence.py --require-pass"},
+ "claim": "implemented"
+}
