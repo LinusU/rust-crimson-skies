@@ -13,7 +13,11 @@
 //! container and member a row. [`rof`] is the F05-C bridge: a ROF container
 //! walked by the `cs_formats` reader becomes one mount of file members,
 //! whose bytes are read and explicitly exported through the bounded
-//! decoder. Allowed dependencies:
+//! decoder. [`cache`] is the F15-A contract layer of the private
+//! derived-asset cache: the [`cache::CacheKey`] identity (installation,
+//! source spans, decoder/IR version, conversion options), the stored-entry
+//! integrity gate and the private-location/budget bounds. Allowed
+//! dependencies:
 //! [`cs_types`] and [`cs_formats`]. The original installation at
 //! `$CS_GAME_DIR` is read-only and nothing derived from it is committed to
 //! Git.
@@ -25,6 +29,7 @@
 //! [`cs_types`]: cs_types
 //! [`cs_formats`]: cs_formats
 
+pub mod cache;
 pub mod install;
 pub mod rof;
 pub mod vfs;
