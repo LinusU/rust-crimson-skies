@@ -249,6 +249,52 @@ with `CS_GAME_DIR` set, and check that the tests exercise production code and
 fail when it is removed (the three mutation probes above are the starting
 point). No agent review awards more than `checked`.
 
+### Review record (2026-09-29, reviewer session)
+
+- **Identities, recorded honestly (AGENTS.md review policy):** implemented by
+  agent identity `mimo-1` in the session of 19:04–20:36 UTC; reviewed by the
+  same agent *name* in a separate session that started with a fresh context
+  and no memory of the implementation. The reviewer was **not** a different
+  agent instance or model, so this is not independent-model evidence, and it
+  awards at most **checked** — the owner's human approval remains required.
+- **Rebased** the 9 commits onto `origin/main` `2a9f356` (clean, no
+  conflicts), then on that head: `cargo fmt --all -- --check` → 0,
+  `cargo clippy --workspace --all-targets --all-features --locked -- -D
+  warnings` → 0, `cargo test --workspace --locked` → 0 (109 `test result:
+  ok.` lines, 0 failures), and
+  `cargo test --workspace --locked -- accept_f14_d_ --include-ignored` with
+  `CS_GAME_DIR` set → 0 with **10/10** tests passing (9 unignored + the
+  retail test).
+- **Reviewer mutation probes** (each restored byte-identically afterwards,
+  `git diff` clean): (1) skip the `declare_launchable` loop in
+  `retail_baseline` → 3 acceptance tests fail (inventory, AC04 synthetic,
+  retail); (2) make `Catalog::original_launchable_count` return
+  `launchable_count` → both AC04 tests fail (synthetic and retail). The
+  selection therefore fails when the denominator declaration or the origin
+  split is removed.
+- **Independent data probe** (outside the production code): a Python script
+  re-hashed three inventory rows (`strings.dll`, `GOSDATA/…/langui.dll`,
+  `ZBD/C1C/M01/zrdr.zbd`) and all 38 `unrecognized_program_dirs` archives
+  against `$CS_GAME_DIR` — every digest matches the report, the report's
+  `install_sha256` equals the fingerprint `missions/bindings/M01.json`
+  cites, `reachable + unreachable == rows`, `ready + unavailable ==
+  reachable`, all 276 rows are `installation` origin, and the 24 mission rows
+  equal the 24 work orders of the frozen `campaign-inventory.tsv`.
+- **Evidence defect found and fixed:** the copy committed by the implementer
+  recorded `candidate_tree bd796729…`, which is the tree of **no commit** on
+  this branch (a discarded working state), so it could not be traced to the
+  code it claims. `private/evidence/F14-D/` was regenerated on the reviewed
+  rebased head with `CS_EVIDENCE_REVIEW` naming this reviewer and method,
+  revalidated with `tools/validate_evidence.py --require-pass`, and its copy
+  replaced `docs/findings/evidence/F14-D.json`.
+- **Checked and found sound:** owner/protected path boundaries (only owner
+  paths plus the two wiring-only doc/help edits), the `json_string`
+  visibility widening (no logic change), the `mission_key`/`program_key`
+  duplication cross-checked against `missions/bindings/M01.json` by a test,
+  the refusal paths (missing/uninventoried program, no campaign layout) and
+  the honest `ready: 0` / `is_retail_ready: false` reporting. No unknown was
+  guessed; #388 and #389 carry the recorded product-coverage limits.
+
 ## Sources
 
 - `specs/F14-canonical-content-catalog-and-dependency-closure.md` (F14-D,
