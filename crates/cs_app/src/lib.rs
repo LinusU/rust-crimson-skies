@@ -29,6 +29,13 @@
 //! conversion of the one composed transform into a full-affine
 //! `GlobalTransform`, and [`airframe_visual::AirframeVisual`] — the
 //! airframe → scene-root reference by content id, never by array position.
+//! Stage `### F11-B` (the same module) adds the hierarchy import —
+//! [`scene::import_scene`] and [`scene::import_airframe`] spawn that
+//! hierarchy from a converted scene graph — and the presentation-only rule
+//! [`scene::select_lod_presentation`], which recomputes only
+//! [`scene::NodePresentation`] from the supplied [`scene::LodDistance`] and
+//! the [`scene::NodeDisabled`] markers, so a destroyed node and everything
+//! under it stay disabled across an LOD transition (AC02).
 //!
 //! [`input`] is the F22-A application boundary
 //! (`specs/F22-input-bindings-devices-and-control-ownership.md`,
