@@ -10,6 +10,9 @@
 //! * [`keyed_list`] turns the one configuration dialect with a reader
 //!   ([`dialect::TextDialect::KeyedList`]) into one node per line: blank,
 //!   comment, section, entry with quote-aware fields, or unclassified.
+//! * [`placeholder`] resolves the `<NAME>` references of a parsed list
+//!   through the section-local and global `V`/`G` definitions, reporting an
+//!   unresolved name instead of guessing one (task #370).
 //! * [`resource_header`] reads the `#define NAME value` resource-id headers
 //!   ([`dialect::TextDialect::ResourceHeader`]) that name the same ids
 //!   [`crate::pe_resources`] walks in a PE resource directory (stage F12-B).
@@ -29,12 +32,15 @@
 pub mod dialect;
 pub mod keyed_list;
 pub mod lines;
+pub mod placeholder;
 pub mod resource_header;
 
 #[cfg(test)]
 mod tests;
 #[cfg(test)]
 mod tests_f12_b;
+#[cfg(test)]
+mod tests_f12_e;
 #[cfg(test)]
 mod tests_t351;
 
@@ -48,6 +54,11 @@ pub use keyed_list::{
 };
 pub use lines::{
     LINES_ENTRYPOINT, LineTerminator, TerminatorCounts, TextLine, TextLines, scan_lines,
+};
+pub use placeholder::{
+    PLACEHOLDER_ENTRYPOINT, PlaceholderAccounting, PlaceholderDefinition, PlaceholderReference,
+    PlaceholderScope, PlaceholderTable, ResolvedPlaceholder, definition_scope, placeholder_name,
+    read_placeholders, scan_placeholders,
 };
 pub use resource_header::{
     Define, HeaderLookup, MAX_RESOURCE_ID, RESOURCE_HEADER_ENTRYPOINT, ResourceHeader,

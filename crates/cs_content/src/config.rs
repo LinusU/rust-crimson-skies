@@ -19,6 +19,14 @@
 //! reader owns. Neither path loads an image or interprets a language it has not
 //! measured.
 //!
+//! Task #370 adds the `<NAME>` placeholder pass: [`ConfigDocument::read`]
+//! resolves every reference of the member against its section-local and
+//! global `V`/`G` definitions — the rule task #351 measured — and keeps the
+//! result in [`ConfigDocument::placeholders`]. It is a read-only second pass:
+//! the raw entries stay as written, an unresolved name is reported and never
+//! replaced, and a resolved value is still bytes until a consumer declares a
+//! [`FieldSpec`] for it.
+//!
 //! Consumers look keys up through the document, which counts what they
 //! used: every entry nobody consumed is retained and reported by
 //! [`ConfigDocument::accounting`] (spec F12, non-negotiable #5). Names —
@@ -39,8 +47,8 @@ use cs_formats::AllocationBudget;
 use cs_formats::ParseContext;
 use cs_formats::error::ParseError;
 use cs_formats::text::{
-    DialectReader, Fields, KeyedList, LineKind, LineTerminator, QuoteIssue, TextDialect,
-    Unclassified, dialect_for_member, read_keyed_list,
+    DialectReader, Fields, KeyedList, LineKind, LineTerminator, PlaceholderTable, QuoteIssue,
+    TextDialect, Unclassified, dialect_for_member, read_keyed_list, read_placeholders,
 };
 use cs_formats::{PeError, PeResources, RT_STRING, ResourceKey, ResourceLeaf, read_pe_resources};
 use cs_types::asset_id::SourceSpan;
@@ -56,6 +64,7 @@ pub struct ConfigDocument {
     dialect: TextDialect,
     nodes: Vec<ConfigNode>,
     consumed: Vec<bool>,
+    placeholders: PlaceholderTable,
 }
 
 /// One line of a [`ConfigDocument`].
@@ -296,9 +305,10 @@ impl ConfigDocument {
             });
         }
         let list = read_keyed_list(context, bytes).map_err(ConfigError::Parse)?;
+        let placeholders = read_placeholders(context, &list).map_err(ConfigError::Parse)?;
         context
             .parse(CONFIG_ENTRYPOINT, bytes, |_reader, allocation, _| {
-                Self::from_keyed_list(allocation, source, dialect, &list)
+                Self::from_keyed_list(allocation, source, dialect, &list, placeholders)
             })
             .map_err(ConfigError::Parse)
     }
@@ -314,6 +324,7 @@ impl ConfigDocument {
         source: SourceSpan,
         dialect: TextDialect,
         list: &KeyedList<'_>,
+        placeholders: PlaceholderTable,
     ) -> Result<Self, ParseError> {
         let mut section: Option<Vec<u8>> = None;
         allocation.reserve(
@@ -398,6 +409,7 @@ impl ConfigDocument {
             dialect,
             nodes,
             consumed,
+            placeholders,
         })
     }
 
@@ -409,6 +421,20 @@ impl ConfigDocument {
     /// The dialect it was read as.
     pub fn dialect(&self) -> TextDialect {
         self.dialect
+    }
+
+    /// The `<NAME>` references of the member and the scoped name table they
+    /// were resolved against (task #370, keyed `F12-E`).
+    ///
+    /// The pass is built during [`Self::read`] from the same keyed list the
+    /// owned nodes come from, so the two never disagree about a line. It does
+    /// not change a byte: the raw entry values are still in the nodes, an
+    /// unresolved name is reported by
+    /// [`PlaceholderTable::unresolved`](cs_formats::text::PlaceholderTable::unresolved)
+    /// rather than replaced, and turning a resolved value into a number is
+    /// still [`TuningSchema`]'s job against a declared [`FieldSpec`].
+    pub fn placeholders(&self) -> &PlaceholderTable {
+        &self.placeholders
     }
 
     /// Every line, in member order.
@@ -2714,5 +2740,82 @@ ITEM=  P  ,IDS_TITLE  ,  42  ,\" 0, 0,0 \"\r\n";
         assert_eq!(tuning.as_signed(), Some(42));
         assert_eq!(tuning.unit, "px");
         assert_eq!(tuning.line, 2);
+    }
+
+    // ------------------------------------------------- F12-E placeholders
+
+    /// Authored: a global definition, a section-local one and three
+    /// references into `[@Panel@]` — one answered globally, one locally and
+    /// one that no definition carries.
+    const PLACEHOLDERS: &[u8] = b"[GLOBALVARS]\r\n\
+G1=WIDTH,640\r\n\
+[@Panel@]\r\n\
+V1=LEFT,10\r\n\
+W=<WIDTH>\r\n\
+L=<LEFT>\r\n\
+N=<NOPE>\r\n";
+
+    fn placeholders() -> ConfigDocument {
+        let mut context = ParseContext::with_defaults("fixture");
+        ConfigDocument::read(
+            &mut context,
+            source(LAYOUT, PLACEHOLDERS.len()),
+            PLACEHOLDERS,
+        )
+        .expect("an observed keyed list member reads")
+    }
+
+    /// Task #370: the document resolves the member's `<NAME>` references
+    /// against its section-local and global definitions, reports an
+    /// unresolved one rather than guessing, and leaves every byte of the
+    /// member as written.
+    #[test]
+    fn accept_f12_e_document_resolves_placeholders_and_keeps_the_raw_bytes() {
+        let document = placeholders();
+        assert_eq!(document.reassemble(), PLACEHOLDERS, "every byte survives");
+        assert_eq!(
+            document.placeholders().accounting(),
+            cs_formats::text::PlaceholderAccounting {
+                definitions: 2,
+                local_definitions: 1,
+                global_definitions: 1,
+                references: 3,
+                resolved_local: 1,
+                resolved_global: 1,
+                unresolved: 1,
+            }
+        );
+        let unresolved: Vec<&[u8]> = document
+            .placeholders()
+            .unresolved()
+            .map(|reference| reference.name.as_slice())
+            .collect();
+        assert_eq!(unresolved, vec![&b"NOPE"[..]], "reported, not guessed");
+
+        // The pass is not a conversion: the raw entry still spells the
+        // placeholder, a spec refuses it as text, and the resolved value is
+        // bytes a consumer may parse itself once it declares a schema
+        // (non-negotiable #2).
+        let entry = entry_of(&document, b"W");
+        assert_eq!(texts(entry), vec![&b"<WIDTH>"[..]]);
+        assert_eq!(
+            TuningSchema::new(FieldSpec::integer(ValueWidth::Bits16, false), entry).tune(0),
+            Err(TuneError::NotANumber { len: 7 }),
+            "the document did not convert the placeholder"
+        );
+        let reference = &document.placeholders().references()[0];
+        assert_eq!(reference.key, b"W");
+        assert_eq!(reference.field, 0);
+        let resolved = document
+            .placeholders()
+            .resolved(reference)
+            .expect("the global definition answers");
+        assert_eq!(resolved.scope, cs_formats::text::PlaceholderScope::Global);
+        assert_eq!(resolved.value, b"640");
+
+        // Non-negotiable #5: every entry is still retained and counted.
+        assert_eq!(document.accounting().entries, 5);
+        assert_eq!(document.accounting().consumed, 0);
+        assert_eq!(document.accounting().unconsumed, 5);
     }
 }
