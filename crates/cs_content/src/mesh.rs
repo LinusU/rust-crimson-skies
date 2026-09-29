@@ -257,6 +257,14 @@ pub struct RenderVertex {
     /// `0` is the polygon's first stored group, and it is the only group of
     /// every polygon in the measured corpus except 1 006 of them (all of those
     /// in the world archives).
+    ///
+    /// This is the group of [`Self::source`], i.e. of the **first** group that
+    /// reached the vertex. The group *index* is not part of the vertex key, so
+    /// two groups that store the same material and the same coordinate for a
+    /// corner are one vertex, and this field then names only the first of them;
+    /// [`RenderTriangle::group`] is the field that says which group a triangle
+    /// is the drawing of. Nothing is lost by the sharing, because a shared
+    /// vertex's `uv` and `material` are the two groups' identical values.
     pub group: usize,
     /// Stored position index (part of the vertex key).
     pub position_index: u32,
@@ -607,8 +615,8 @@ impl RenderMesh {
             // The stored groups of this polygon, already checked to be non-empty
             // and to hold one coordinate per corner by `check_group_table`, or the
             // single group the IR's own fields describe.
-            let stored_groups = source.groups(triangle.polygon, polygon);
-            for (group, attributes) in stored_groups.iter().enumerate() {
+            let mut group = 0usize;
+            while let Some(attributes) = source.group(triangle.polygon, polygon, group) {
                 let mut indices = [0u32; 3];
                 for (slot, &corner) in triangle.corners.iter().enumerate() {
                     let Some(raw) = polygon.corners.get(corner) else {
@@ -690,6 +698,7 @@ impl RenderMesh {
                     material: attributes.material,
                     degenerate: triangle.is_degenerate(),
                 });
+                group += 1;
             }
         }
 
@@ -803,24 +812,29 @@ impl RenderMesh {
 }
 
 impl GroupSource<'_> {
-    /// The material groups one stored polygon is drawn with, in stored order.
+    /// One of a stored polygon's material groups, as the splitter sees it, or
+    /// `None` when that polygon has no further group.
     ///
-    /// Never empty: [`Self::IrOnly`] always describes exactly one group, and
-    /// [`check_group_table`] has already refused a stored table with a polygon
-    /// that kept none.
-    fn groups<'a>(&'a self, polygon: usize, stored: &'a RawPolygon) -> Vec<GroupAttributes<'a>> {
+    /// Group `0` is always `Some`: [`Self::IrOnly`] describes exactly one group,
+    /// and [`check_group_table`] has already refused a stored table with a
+    /// polygon that kept none. Iterated by index rather than collected into a
+    /// `Vec`, because the mesh build walks this once per stored topology
+    /// triangle and the table itself is the authority on how many there are.
+    fn group<'a>(
+        &'a self,
+        polygon: usize,
+        stored: &'a RawPolygon,
+        group: usize,
+    ) -> Option<GroupAttributes<'a>> {
         match self {
-            Self::IrOnly => vec![GroupAttributes {
+            Self::IrOnly => (group == 0).then_some(GroupAttributes {
                 material: stored.material,
                 uvs: None,
-            }],
-            Self::Stored(table) => table[polygon]
-                .iter()
-                .map(|group| GroupAttributes {
-                    material: group.material,
-                    uvs: Some(group.uvs.as_slice()),
-                })
-                .collect(),
+            }),
+            Self::Stored(table) => table[polygon].get(group).map(|attributes| GroupAttributes {
+                material: attributes.material,
+                uvs: Some(attributes.uvs.as_slice()),
+            }),
         }
     }
 }
@@ -7313,6 +7327,89 @@ mod tests {
             3,
             "the IR fixture the refusals above ran against is the one the reader would build"
         );
+    }
+
+    /// **The documented decision that the group index is not in the vertex key.**
+    ///
+    /// F10-C.01's key is the *bit-exact identity* of a render vertex — position,
+    /// normal, UV, colour and material — and it stays that shape here. Two
+    /// material groups of one polygon that store the **same** material index and
+    /// the **same** coordinate for a corner are therefore one vertex, not two,
+    /// and [`RenderVertex::group`] names the first group that reached it. This is
+    /// stated on both fields' documentation, so it is pinned here rather than
+    /// left to a later reader to infer: putting the group index back into the
+    /// key would duplicate every vertex of such a polygon and this fails.
+    ///
+    /// Both groups are still **drawn** — one triangle per topology triangle
+    /// each — because a draw belongs to a polygon and a group, not to a vertex,
+    /// and that is what [`RenderTriangle::group`] is for.
+    #[test]
+    fn accept_f10_e_groups_that_agree_bit_exactly_share_one_vertex() {
+        let uvs = [[0.0, 0.0], [0.5, 0.0], [0.25, 0.25]];
+        let polygon = RawPolygon {
+            kind: PrimitiveKind::Polygon,
+            raw_flags: 0,
+            // The IR mirrors group 0, which is what the reader would have written.
+            material: 7,
+            corners: vec![corner(0), corner(1), corner(2)],
+        };
+        let mesh = RawMesh {
+            positions: POSITIONS.to_vec(),
+            normals: NORMALS.to_vec(),
+            polygons: vec![polygon],
+        };
+        // Two groups, the same raw material index and the same three coordinates.
+        let table = vec![vec![
+            RawMaterialGroup {
+                material: 7,
+                uvs: uvs.to_vec(),
+            },
+            RawMaterialGroup {
+                material: 7,
+                uvs: uvs.to_vec(),
+            },
+        ]];
+        let render = RenderMesh::from_stored_groups(&mesh, &table).expect("the table describes it");
+
+        assert_eq!(
+            render.source_triangles(),
+            2,
+            "one triangle per stored group"
+        );
+        assert_eq!(
+            render.extra_group_triangles(),
+            1,
+            "the second group is one draw beyond the first"
+        );
+        assert_eq!(
+            render.vertices().len(),
+            3,
+            "the two groups store identical keys, so the corners are one vertex each"
+        );
+        assert!(
+            render.vertices().iter().all(|vertex| vertex.group == 0),
+            "the shared vertices name the first group that reached them"
+        );
+        // Both draws still name their own group and carry its material, so the
+        // sharing costs no group anything.
+        for (group, triangle) in render.triangles().iter().enumerate() {
+            assert_eq!(triangle.group, group, "one draw per stored group");
+            assert_eq!(triangle.material, 7, "both groups store material 7");
+            assert_eq!(triangle.source.polygon, 0);
+            for &index in &triangle.vertices {
+                assert_eq!(
+                    render.vertices()[index as usize].uv,
+                    Some(uvs[render.vertices()[index as usize].source.corner]),
+                    "every draw samples the coordinate of the corner it was reached for"
+                );
+            }
+        }
+        // The single-group reading of the same mesh is one draw of the same three
+        // vertices, which is the difference the group path exists to make.
+        let single = RenderMesh::build(&mesh).expect("complete topology");
+        assert_eq!(single.source_triangles(), 1);
+        assert_eq!(single.vertices().len(), 3);
+        assert_eq!(single.extra_group_triangles(), 0);
     }
 
     /// **The corpus, through the whole production path.** Every GameZ polygon of

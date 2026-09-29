@@ -5,7 +5,9 @@ and deliberately did not fix because the fix was not its slice.
 **Shared contract:** `docs/contracts/IDENTITY-CONTENT.md`.
 **Test prefix:** `accept_f10_e_`.
 **Capabilities used:** ordinary build/test, and `retail` for the one
-`#[ignore = "requires CS_GAME_DIR"]` test. Implementer: bunny-2.
+`#[ignore = "requires CS_GAME_DIR"]` test. Implementer: bunny-2. Reviewer:
+bunny-2 — same identity, fresh context, which is **not** independent review; see
+§9.
 
 ## The gap, in one sentence
 
@@ -115,7 +117,14 @@ No behaviour in `cs_formats` changed, and no `cs_formats` test needed to change.
   that store the same material and the same coordinate for a corner are the same
   vertex, and the triangles reaching it say which group they are. What is in the
   key is the resolved `(position, normal, uv, color, material)`, so a group whose
-  UV differs splits. This is the split the task asks for.
+  UV differs splits. This is the split the task asks for. That decision was
+  documented but untested until review, which added the seventh test for it; see
+  §7.
+* **The groups are walked by index, not collected.** The split iterates a
+  polygon's groups through [`GroupSource`], which hands out one
+  [`GroupAttributes`] at a time instead of building a `Vec` of them, so the mesh
+  build allocates nothing per topology triangle. A change made in review; the
+  behaviour and the counts are unchanged.
 * **`RenderMesh::build` / `from_parts` stay** and are now documented as the
   *single-group* reading: exact for a mesh whose polygons each stored one group,
   and a first-group view of a multi-group one. They share one implementation
@@ -242,6 +251,7 @@ All in the `#[cfg(test)]` module of `crates/cs_content/src/mesh.rs`, all
 | `..._a_multi_group_row_names_the_open_question_and_a_single_group_row_does_not` | The reason contract. The retired code on any row or payload, the presentation question on a mesh that stored no multi-group polygon, the question missing from one that did, or a count folded back into a code all fail. |
 | `..._source_maps_and_degenerates_survive_every_group` | F10-C.01's maps after a new keyed attribute: a triangle map that is not the stored topology times the stored groups, a vertex naming a corner or a group that does not exist, per-group degeneracy that differs between groups, or a material grouping that is not a partition. |
 | `..._a_polygon_without_a_stored_group_is_refused_by_name` | The refusals. Inventing a group for a `mat_count == 0` polygon, dropping the face silently, or indexing a table that does not describe the mesh all fail; so does a row that loses the refusal's code, its diagnostic or its exact face counts. |
+| `..._groups_that_agree_bit_exactly_share_one_vertex` | **The decision the group index is not in the vertex key.** Added in review: the other five tests still pass with the group index put back into the key, because every multi-group polygon in their fixtures differs in UV or in material somewhere. Putting the index back duplicates every vertex of a polygon whose two groups store the same material and the same coordinates, and this fails. |
 | `..._retail_world_multi_group_polygons_keep_every_stored_group` (`#[ignore]`) | The whole path on the original installation, and the AC03-for-the-second-group case on real data. |
 
 ### Sensitivity probes actually run
@@ -249,7 +259,7 @@ All in the `#[cfg(test)]` module of `crates/cs_content/src/mesh.rs`, all
 Each is a one-line mutation of the production code, run against
 `cargo test -p cs_content --lib -- accept_f10_e_` (the retail test excluded: a
 probe that only changes an assertion would also "pass" without the fix), then
-reverted:
+reverted. The reviewer re-ran the first four and added the last two:
 
 | Mutation | Tests that failed |
 | --- | --- |
@@ -258,13 +268,27 @@ reverted:
 | The later groups' **draws** dropped while their vertices are still built | the group-payload, second-group-seam, source-map and reason tests |
 | `MultiMaterialGroup` pushed on **every** payload, group or not | the reason test **and** `accept_f10_c_03_uv_seam_survives_the_container_to_upload_boundary` |
 | `check_group_table` quietly accepts a polygon with no group | the refusal test |
+| `VertexKey` drops `uv` and `material` (a position-and-colour-only splitter) | the group-payload and second-group-seam tests |
+| The group index put back into `VertexKey` | **only** the sharing test — see the note below |
 
-The last two are the two halves of this task's contract: the reason must be on
-the rows where the question is real *and* on none of the others, so a probe that
-breaks either direction has to fail. The fourth probe's second failure —
+The last two are the reviewer's. The first is the AC03 probe stated as a
+mutation: a splitter that keys on the position alone loses every group's own
+coordinate, and the second-group-seam test is what catches it. The **last** row is
+the reason the sharing test was added: with the group index back in the key
+every other test still passes, because every multi-group polygon in their
+fixtures differs in UV or in material somewhere, so nothing there distinguishes
+"the index is deliberately not in the key" from "the index was put in by
+accident". That claim was documented on `RenderVertex::group` and untested until
+review.
+
+The fourth row's second failure —
 `accept_f10_c_03_uv_seam_survives_the_container_to_upload_boundary`, a
 pre-existing F10-C test that never mentioned groups — is an independent witness
-that the row contract is checked by more than the test written for it.
+that the row contract is checked by more than the test written for it, and the
+fourth and fifth rows together are the two halves of this task's contract: the
+reason must be on the rows where the question is real *and* on none of the
+others, so a probe that breaks either direction has to fail.
+
 ## 8. Recorded unknowns and open limitations
 
 * **How the original renderer presented a multi-group polygon is unmeasured** —
@@ -304,7 +328,47 @@ that the row contract is checked by more than the test written for it.
   real test of the presentation unknown on an airframe, and this stage says so
   rather than claiming the path is covered there.
 
-## 9. Sources
+## 9. Review
+
+Implementer bunny-2; reviewer bunny-2, with a **fresh context** for the review
+session but the **same agent identity**. Under the policy in `AGENTS.md` that is
+*not* independent review, so nothing here is independent evidence about the
+original game; every retail figure above is a measurement of bytes through
+production code and the state is `checked`, not `verified_original`.
+
+What the review changed:
+
+* **A documented invariant that no test covered.** "The group index is
+  deliberately not in the vertex key" was true and load-bearing, and a probe
+  putting it back passed every other test, because every multi-group polygon in
+  their fixtures differs in UV or in material somewhere. The seventh test pins
+  it, and `RenderVertex::group`'s documentation now says plainly that it names
+  the *first* group that reached a shared vertex.
+* **A per-triangle allocation in the mesh build.** The split collected a
+  polygon's groups into a `Vec` for every stored topology triangle of every mesh
+  of every archive. It now walks them by index (§3). No behaviour change.
+
+What the review verified independently, with the results of its own runs:
+`cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets
+--all-features --locked -- -D warnings` and `cargo test --workspace --locked` all
+clean; `accept_f10_e_ --include-ignored` with `CS_GAME_DIR` set green, including
+the retail test, whose printed figures match §6 exactly (2 237 rows, 61 meshes,
+390 polygons, 5 of three groups, 1 042 extra draws, 1 second-group-only seam, 8
+polygons whose groups agree on every coordinate). The §1 per-archive table was
+re-derived from F10-B's own corpus test rather than taken on trust, and its
+polygon counts, group histogram and per-archive multi-group counts all agree;
+the totals in the table also add up to the row and column sums stated. Four of
+the implementer's five probes were re-run and reproduced, and two more were
+added (§7).
+
+What the review could **not** settle, and says so: the two judgement calls the
+task left open — taking the IR decision with the owner (§2) and reading the
+retired reason code as *replaced* rather than *kept* on the rows that stored a
+multi-group polygon (§4) — are the owner's to ratify or overrule. Both are
+recorded with their reasoning; neither is a fact about the original game, and
+this stage changes no fidelity claim's state either way.
+
+## 10. Sources
 
 * [S02], [S03], [S08] in `docs/research/SOURCES.md` — the pinned reference the
   layout came from, via F10-B and F10-C.02.
