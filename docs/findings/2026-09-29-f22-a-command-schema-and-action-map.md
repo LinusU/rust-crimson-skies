@@ -73,6 +73,16 @@ Task-test prefix `accept_f22_a_`:
 - `cs_app::input` unit test: one press → one frame edge, text-entry gating,
   continuous targets are not emitted as edges.
 
+Review (2026-09-29, reviewer `deepseek-1`, fresh context) found and fixed one
+ordering bug in `ActionMap::resolve`: it returned the first binding for a
+source even when that binding belonged to a different context, so a source
+legitimately bound in two contexts (the map's documented "fire in flight,
+confirm in a menu" case) resolved to nothing whenever the wrong-context
+binding was inserted first. `resolve` now selects the binding the active
+context accepts, in either insertion order. The regression test
+`accept_f22_a_multi_context_binding_resolves_in_both_orders` covers both
+orders and fails against the old behavior.
+
 ## Checks
 
 Run locally before hand-over (all exit 0):

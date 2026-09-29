@@ -1305,15 +1305,15 @@ impl ActionMap {
     /// Resolves `source` in `context`, applying the context gate.
     ///
     /// Returns `None` when the source is unbound or when the active context
-    /// does not accept the bound action (text entry and cinematics accept
-    /// none).
+    /// does not accept any action bound to it (text entry and cinematics
+    /// accept none). When one source is bound in two different contexts, the
+    /// target of the **active** context is returned, regardless of the order
+    /// the bindings were inserted in.
     pub fn resolve(&self, context: InputContext, source: BindingSource) -> Option<Action> {
-        let binding = self
-            .bindings
+        self.bindings
             .iter()
-            .find(|binding| binding.source == source)?;
-        let action = binding.target.action();
-        context.accepts(action).then_some(action)
+            .find(|binding| binding.source == source && context.accepts(binding.target.action()))
+            .map(|binding| binding.target.action())
     }
 
     /// A designed keyboard/mouse/gamepad default map.
@@ -1674,6 +1674,65 @@ mod tests {
             Err(ActionMapError::NonFiniteScale {
                 source: BindingSource::Key(Key::W)
             })
+        );
+    }
+
+    /// A source legitimately bound in two contexts resolves to the target of
+    /// whichever context is active, regardless of the bindings' insertion
+    /// order. A `resolve` that returned only the first binding for a source
+    /// would silently drop the other context's action when that binding is
+    /// not the active one.
+    #[test]
+    fn accept_f22_a_multi_context_binding_resolves_in_both_orders() {
+        // The UI binding is inserted first, the flight binding second.
+        let ui_first = ActionMap::try_new(vec![
+            Binding {
+                source: BindingSource::Key(Key::Space),
+                target: BindingTarget::Ui(UiAction::Confirm),
+            },
+            Binding {
+                source: BindingSource::Key(Key::Space),
+                target: BindingTarget::Command(FlightCommand::FirePrimary),
+            },
+        ])
+        .expect("one source may serve two contexts");
+        assert_eq!(
+            ui_first.resolve(InputContext::UiNavigation, BindingSource::Key(Key::Space)),
+            Some(Action::Ui(UiAction::Confirm)),
+            "the UI binding wins in UI context when it is first"
+        );
+        assert_eq!(
+            ui_first.resolve(InputContext::Flight, BindingSource::Key(Key::Space)),
+            Some(Action::Flight(FlightCommand::FirePrimary)),
+            "the flight binding still wins in flight context when a UI binding precedes it"
+        );
+        assert_eq!(
+            ui_first.resolve(InputContext::TextEntry, BindingSource::Key(Key::Space)),
+            None,
+            "text entry accepts neither bound action"
+        );
+
+        // The symmetric order: flight first, UI second.
+        let flight_first = ActionMap::try_new(vec![
+            Binding {
+                source: BindingSource::Key(Key::Space),
+                target: BindingTarget::Command(FlightCommand::FirePrimary),
+            },
+            Binding {
+                source: BindingSource::Key(Key::Space),
+                target: BindingTarget::Ui(UiAction::Confirm),
+            },
+        ])
+        .expect("one source may serve two contexts");
+        assert_eq!(
+            flight_first.resolve(InputContext::UiNavigation, BindingSource::Key(Key::Space)),
+            Some(Action::Ui(UiAction::Confirm)),
+            "the UI binding wins in UI context when the flight binding is first"
+        );
+        assert_eq!(
+            flight_first.resolve(InputContext::Flight, BindingSource::Key(Key::Space)),
+            Some(Action::Flight(FlightCommand::FirePrimary)),
+            "the flight binding wins in flight context when it is first"
         );
     }
 
