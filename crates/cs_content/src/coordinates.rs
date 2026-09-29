@@ -414,10 +414,16 @@ impl SourceConvention {
             }
         }
         let parity_even = inversions.is_multiple_of(2);
-        let signs_positive = !self.axes[0].sign.is_negative()
-            && !self.axes[1].sign.is_negative()
-            && !self.axes[2].sign.is_negative();
-        parity_even == signs_positive
+        // The sign *product* is +1 exactly when an even number of rows is
+        // negated: mirroring two axes leaves the map proper, while mirroring
+        // one or three mirrors it.
+        let negated_rows = self
+            .axes
+            .iter()
+            .filter(|row| row.sign.is_negative())
+            .count();
+        let sign_product_positive = negated_rows.is_multiple_of(2);
+        parity_even == sign_product_positive
     }
 
     /// Whether a consumer must reverse triangle vertex order when copying

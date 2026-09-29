@@ -13,8 +13,8 @@
 use cs_content::coordinates::{
     ANGLE_ROUND_TRIP_TOLERANCE_RAD, AngleUnit, Axis, CoordinateSource,
     DIRECTION_ROUND_TRIP_TOLERANCE, DISTANCE_ROUND_TRIP_TOLERANCE_M,
-    POSITION_ROUND_TRIP_TOLERANCE_M, ROTATION_ROUND_TRIP_TOLERANCE, RotationSense, SourceAdapter,
-    SourceAxis, SourceConvention, SourceError,
+    POSITION_ROUND_TRIP_TOLERANCE_M, ROTATION_ROUND_TRIP_TOLERANCE, RotationSense, Sign,
+    SourceAdapter, SourceAxis, SourceConvention, SourceError,
 };
 use cs_types::content::{Origin, Provenance};
 use cs_types::evidence::{ClaimId, ClaimStatus};
@@ -378,6 +378,176 @@ fn accept_f16_a_winding_labels_and_vertex_order_agree_with_the_geometry() {
             adapter.source().label()
         );
     }
+}
+
+/// The winding rule over **every** convention `SourceConvention::new`
+/// accepts, not only the three the registry happens to declare: the
+/// declaration API is public, so F16-D's measured format can arrive with any
+/// signed permutation and either front-face label.
+///
+/// All 6 permutations × 8 sign patterns × 2 front-face rules are checked
+/// three ways, none of them by re-running the implementation's algebra:
+/// a real triangle's cross product against
+/// [`SourceAdapter::reverses_vertex_order`] +
+/// [`SourceAdapter::winding_to_canonical`], the front-face survival rule,
+/// and `is_orientation_preserving` against the signed volume of a mapped
+/// right-handed tetrahedron (a positive scale never changes a sign).
+#[test]
+fn accept_f16_a_winding_rule_holds_for_every_valid_convention() {
+    const PERMUTATIONS: [[Axis; 3]; 6] = [
+        [Axis::X, Axis::Y, Axis::Z],
+        [Axis::X, Axis::Z, Axis::Y],
+        [Axis::Y, Axis::X, Axis::Z],
+        [Axis::Y, Axis::Z, Axis::X],
+        [Axis::Z, Axis::X, Axis::Y],
+        [Axis::Z, Axis::Y, Axis::X],
+    ];
+
+    let mut conventions = 0usize;
+    let mut triangles = 0usize;
+    for (permutation_index, permutation) in PERMUTATIONS.iter().enumerate() {
+        for pattern in 0u8..8 {
+            let signs = [
+                if pattern & 1 == 0 {
+                    Sign::Positive
+                } else {
+                    Sign::Negative
+                },
+                if pattern & 2 == 0 {
+                    Sign::Positive
+                } else {
+                    Sign::Negative
+                },
+                if pattern & 4 == 0 {
+                    Sign::Positive
+                } else {
+                    Sign::Negative
+                },
+            ];
+            let axes = [
+                SourceAxis {
+                    axis: permutation[0],
+                    sign: signs[0],
+                },
+                SourceAxis {
+                    axis: permutation[1],
+                    sign: signs[1],
+                },
+                SourceAxis {
+                    axis: permutation[2],
+                    sign: signs[2],
+                },
+            ];
+            for front in [Winding::CounterClockwise, Winding::Clockwise] {
+                let convention = SourceConvention::new(
+                    axes,
+                    axes[2].axis,
+                    1.0,
+                    AngleUnit::Radians,
+                    RotationSense::RightHandRule,
+                    front,
+                )
+                .expect("a signed permutation with its matching winding reference is valid");
+                let adapter = SourceAdapter::new(
+                    CoordinateSource::new(
+                        format!("enumerate.{permutation_index}.{pattern}.{}", front.label()),
+                        convention,
+                        Origin::SyntheticFixture,
+                        Provenance::designed(claim("f16a.test.enumerated")),
+                    )
+                    .expect("valid source"),
+                );
+                let label = adapter.source().label().to_owned();
+                conventions += 1;
+
+                // Orientation: the signed volume of the image of a
+                // right-handed tetrahedron has the sign of det(M).
+                let anchor = adapter
+                    .position_to_canonical([0.0, 0.0, 0.0])
+                    .expect("finite")
+                    .to_array();
+                let edge = |from: [f64; 3]| {
+                    let mapped = adapter
+                        .position_to_canonical(from)
+                        .expect("finite")
+                        .to_array();
+                    [
+                        mapped[0] - anchor[0],
+                        mapped[1] - anchor[1],
+                        mapped[2] - anchor[2],
+                    ]
+                };
+                let ab = edge([1.0, 0.0, 0.0]);
+                let ac = edge([0.0, 1.0, 0.0]);
+                let ad = edge([0.0, 0.0, 1.0]);
+                let cross = [
+                    ab[1] * ac[2] - ab[2] * ac[1],
+                    ab[2] * ac[0] - ab[0] * ac[2],
+                    ab[0] * ac[1] - ab[1] * ac[0],
+                ];
+                let signed_volume = cross[0] * ad[0] + cross[1] * ad[1] + cross[2] * ad[2];
+                assert!(
+                    signed_volume.abs() > 1e-12,
+                    "{label}: a signed permutation with a positive scale must stay non-degenerate"
+                );
+                assert_eq!(
+                    adapter.source().convention().is_orientation_preserving(),
+                    signed_volume > 0.0,
+                    "{label}: is_orientation_preserving must match the sign of the mapped \
+                     signed volume ({signed_volume})"
+                );
+
+                // Winding: a real triangle, its declared vertex-order
+                // reversal, and the label conversion must agree with the
+                // mapped geometry for both source windings.
+                let view = adapter.source().convention().winding_reference().index();
+                let others: Vec<usize> = (0..3).filter(|axis| *axis != view).collect();
+                for swap in [false, true] {
+                    let mut vertex_a = [0.25, 0.25, 0.25];
+                    let mut vertex_b = [0.25, 0.25, 0.25];
+                    vertex_a[others[0]] += 1.0;
+                    vertex_b[others[1]] += 1.0;
+                    let mut source_vertices = [vertex_a, vertex_b, [0.25, 0.25, 0.25]];
+                    if swap {
+                        source_vertices.swap(1, 2);
+                    }
+
+                    let source_winding = winding_sign(source_vertices, view);
+                    let mut canonical: Vec<[f64; 3]> = source_vertices
+                        .iter()
+                        .map(|vertex| {
+                            adapter
+                                .position_to_canonical(*vertex)
+                                .expect("finite vertex")
+                                .to_array()
+                        })
+                        .collect();
+                    if adapter.reverses_vertex_order() {
+                        canonical.reverse();
+                    }
+                    let canonical_winding =
+                        winding_sign(canonical.try_into().expect("three vertices"), 2);
+                    assert_eq!(
+                        canonical_winding,
+                        adapter.winding_to_canonical(source_winding),
+                        "{label}: mapped geometry must match the converted label \
+                         (source {source_winding:?}, reversal {})",
+                        adapter.reverses_vertex_order()
+                    );
+                    triangles += 1;
+                }
+
+                assert_eq!(
+                    adapter.winding_to_canonical(front),
+                    Winding::CANONICAL_FRONT,
+                    "{label}: the declared front faces must land on canonical front faces"
+                );
+            }
+        }
+    }
+
+    assert_eq!(conventions, 96, "every combination must be checked");
+    assert_eq!(triangles, 192, "both windings of every convention");
 }
 
 /// Winding sign of a triangle along the chosen axis: CCW when the cross
