@@ -1999,9 +1999,12 @@ pub struct CampaignLayoutEntry {
 /// # Errors
 ///
 /// [`SourceBindingError::NoCampaign`] when the installation declares no
-/// `ZBD/<chapter>/<mission>` directory, and [`SourceBindingError::Io`] when
-/// the layout cannot be walked or a present program archive cannot be read.
-/// A mission directory whose `zrdr.zbd` is absent is reported with
+/// `ZBD/<chapter>/<mission>` directory, [`SourceBindingError::Io`] when
+/// the layout cannot be walked or a present program archive cannot be read,
+/// and [`SourceBindingError::Inconsistent`] when the layout itself is
+/// ambiguous — a chapter that stores one mission number in two world groups
+/// is refused rather than resolved to one of them. A mission directory whose
+/// `zrdr.zbd` is absent is reported with
 /// [`CampaignLayoutEntry::program_sha256`] `None`, never omitted.
 pub fn campaign_layout(
     install_root: &Path,

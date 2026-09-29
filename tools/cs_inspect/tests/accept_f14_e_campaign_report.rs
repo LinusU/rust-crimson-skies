@@ -383,6 +383,35 @@ fn accept_f14_e_campaign_failures_propagate_named_exit_codes() {
         String::from_utf8_lossy(&output.stderr)
     );
 
+    // A chapter that stores one mission number in two world groups has an
+    // ambiguous mission world. The whole layout is refused rather than one
+    // of the two copies being picked, and the failure says which mission.
+    let ambiguous = TempTree::new("ambiguous");
+    ambiguous.write("ZBD/C1/M01/zrdr.zbd", MISSION_A);
+    ambiguous.write("ZBD/C1B/M01/zrdr.zbd", MISSION_B);
+    let output = cs_inspect()
+        .arg("campaign")
+        .arg("--cs-path")
+        .arg(ambiguous.root())
+        .env_remove("CS_GAME_DIR")
+        .output()
+        .expect("cs-inspect runs");
+    assert_ne!(
+        output.status.code(),
+        Some(0),
+        "an ambiguous layout is never reported as a successful campaign"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("more than one world group"),
+        "the failure names the ambiguity, got: {stderr:?}"
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "an ambiguous layout prints no campaign report, got: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+
     // A tree with no ZBD directory at all is a runtime failure that names
     // the path.
     let no_zbd = TempTree::new("no-zbd");
