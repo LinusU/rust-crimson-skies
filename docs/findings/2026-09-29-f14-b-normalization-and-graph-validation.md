@@ -130,8 +130,8 @@ pins.
 
 ## Test inventory (`accept_f14_b_`)
 
-15 tests, all ordinary build/test, none ignored; 15 select production code
-(6 unit tests in the two owner modules and 9 integration tests).
+16 tests, all ordinary build/test, none ignored; 16 select production code
+(6 unit tests in the two owner modules and 10 integration tests).
 
 | Test | Covers |
 | --- | --- |
@@ -145,6 +145,7 @@ pins.
 | `…accept_f14_b_deeply_deleted_texture_keeps_its_mission_chain_and_blocks_readiness` | AC03 mechanism: mission → airframe → material → deleted texture |
 | `…accept_f14_b_reference_cycles_are_allowed_and_ownership_cycles_are_invalid` | the cycle policy both ways |
 | `…accept_f14_b_unnormalized_and_unsupported_nodes_block_their_dependents` | `not_normalized` is a separate state and propagates |
+| `…accept_f14_b_reports_every_unsupported_dependency_of_a_node` | every unready dependency of one node is named once, in canonical target order (reviewer regression) |
 | `…accept_f14_b_compatibility_options_change_the_closure_hash_and_dynamic_edges` | options are hashed; dynamic candidates followed/suppressed |
 | `…accept_f14_b_roots_must_be_present_and_launchable` | unknown and non-launchable root refusals |
 | `cs_content::tests::accept_f14_b_normalization_converts_declared_units_with_provenance` | integration: unit conversion and provenance |
@@ -232,6 +233,27 @@ No `Cargo.toml` change was needed (`cs_content` already depends on
 original datum or binary file is involved. `tools/cs_inspect/src/catalog.rs`
 is an owner path but was left untouched: the `catalog`/`closure` commands are
 F14-C's, and F14-A already records that `main.rs` keeps refusing them.
+
+## Review follow-up (reviewer: deepseek-1, fresh context)
+
+The reviewer found one behaviour/doc contradiction and fixed it on this
+branch:
+
+- `dedup_reasons` keyed duplicate reasons on `(code, detail)`. An
+  `UnsupportedReason::UnsupportedDependency` carries its target inside the
+  variant and has no `detail`, so a node with **two** unsupported
+  dependencies reported only the first — contradicting this file's own design
+  decision ("gets `UnsupportedReason::UnsupportedDependency { target }` for
+  each such dependency in canonical order"). `dedup_reasons` now deduplicates
+  by full value, so different targets are all kept while exact duplicates
+  still collapse. New integration test
+  `accept_f14_b_reports_every_unsupported_dependency_of_a_node` pins it; the
+  reviewer mutation probe (restoring the old `(code, detail)` key) makes that
+  test fail and passes once reverted. The test count is now 16.
+
+The rest of the implementation, the normalizer and all other acceptance
+tests were accepted as-is after an independent re-run of fmt, clippy, the
+full workspace suite and the `accept_f14_b_` selection.
 
 ## Sources
 

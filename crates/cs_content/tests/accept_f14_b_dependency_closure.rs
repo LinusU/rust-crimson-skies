@@ -367,6 +367,62 @@ fn accept_f14_b_unnormalized_and_unsupported_nodes_block_their_dependents() {
     );
 }
 
+/// Every unready dependency of a node is named, not just the first. Two
+/// unsupported leaves of one mission both appear in its reasons, in canonical
+/// target order, exactly once each.
+#[test]
+fn accept_f14_b_reports_every_unsupported_dependency_of_a_node() {
+    let texture_alpha = id(ContentKind::Image, "alpha_tex");
+    let texture_bravo = id(ContentKind::Image, "bravo_tex");
+    let mission_id = id(ContentKind::Mission, "m01");
+
+    let unsupported = |element_id: &ContentId| {
+        let mut element = ready(element_id, &[]);
+        element.readiness = Readiness::Unavailable;
+        element.unsupported_reasons = vec![UnsupportedReason::MissingParser];
+        element
+    };
+
+    let mut catalog = Catalog::new();
+    catalog
+        .insert(unsupported(&texture_alpha))
+        .expect("alpha texture inserts");
+    catalog
+        .insert(unsupported(&texture_bravo))
+        .expect("bravo texture inserts");
+    catalog
+        .insert(mission(
+            "m01",
+            &[
+                (texture_bravo.clone(), DependencyKind::Static),
+                (texture_alpha.clone(), DependencyKind::Static),
+            ],
+        ))
+        .expect("mission inserts");
+
+    let closure = Closure::compute(
+        &catalog,
+        std::slice::from_ref(&mission_id),
+        CompatibilityOptions::default(),
+    )
+    .expect("closure computes");
+
+    assert!(!closure.is_ready(&mission_id));
+    let reported: Vec<&ContentId> = closure
+        .reasons(&mission_id)
+        .iter()
+        .filter_map(|reason| match reason {
+            UnsupportedReason::UnsupportedDependency { target } => Some(target),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        reported,
+        vec![&texture_alpha, &texture_bravo],
+        "each unsupported dependency is named once, in canonical target order"
+    );
+}
+
 /// The declared compatibility options are part of the closure identity, and
 /// dynamic candidate edges are only followed when asked.
 #[test]

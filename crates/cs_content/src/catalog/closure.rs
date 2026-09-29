@@ -595,10 +595,21 @@ fn dependencies_ready(
     true
 }
 
-/// Deduplicates unsupported reasons while preserving their order.
+/// Deduplicates identical unsupported reasons while preserving their order.
+///
+/// The comparison is by full value, not by `(code, detail)`: an
+/// [`UnsupportedReason::UnsupportedDependency`] names its target in the
+/// variant payload and carries no `detail`, so a key that ignored the payload
+/// would collapse two different unsupported dependencies of one node into a
+/// single reason and hide one of them.
 fn dedup_reasons(reasons: &mut Vec<UnsupportedReason>) {
-    let mut seen: BTreeSet<(&'static str, Option<String>)> = BTreeSet::new();
-    reasons.retain(|reason| seen.insert((reason.code(), reason.detail().map(str::to_owned))));
+    let mut unique: Vec<UnsupportedReason> = Vec::with_capacity(reasons.len());
+    for reason in reasons.drain(..) {
+        if !unique.contains(&reason) {
+            unique.push(reason);
+        }
+    }
+    *reasons = unique;
 }
 
 /// Detects a cycle among ownership edges, deterministically and iteratively.
