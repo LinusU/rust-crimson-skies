@@ -2463,6 +2463,8 @@ dependencies = [
 name = "cs_assets"
 version = "0.0.0"
 dependencies = [
+ "bevy",
+ "cs_app",
  "cs_formats",
  "cs_types",
 ]

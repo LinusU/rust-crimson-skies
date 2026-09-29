@@ -10,20 +10,19 @@ autobins = false
 [dependencies]
 avian3d.workspace = true
 bevy.workspace = true
+# `cs_assets` is a production dependency of `src/loading.rs` and
+# `src/assets.rs` (F15-A): the load transaction is stamped with content
+# session generations and its items name their derived cache keys, and the
+# campaign acceptance tests in `tests/campaign/` also use its installation
+# discovery and SHA-256, re-measured independently of the code under test.
+# `cs_formats` is a production dependency of `src/livery.rs` (F09-C) and
+# `cs_content` of `src/livery.rs` (F09-C) and `src/scene.rs` (F11-A, the
+# scene binding records).
+cs_assets.workspace = true
 cs_content.workspace = true
 cs_formats.workspace = true
 cs_sim.workspace = true
 cs_types.workspace = true
-
-# The campaign acceptance tests in `tests/campaign/` exercise the F50-A
-# binding/coverage records and the M01-A source-derived binding; they are
-# integration tests. `cs_assets` (installation discovery and SHA-256,
-# re-measured independently of the code under test) is a dev-dependency of
-# this crate only; `cs_formats` is a production dependency of
-# `src/livery.rs` (F09-C) and `cs_content` of `src/livery.rs` (F09-C) and
-# `src/scene.rs` (F11-A, the scene binding records).
-[dev-dependencies]
-cs_assets.workspace = true
 
 [[bin]]
 name = "cs"
