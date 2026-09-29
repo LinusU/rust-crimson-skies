@@ -117,11 +117,12 @@ most three deep**, and the 52-byte fixed record's `dwSignature` is
 | 1 | 876 | `0x1d630` | 68 | 0 | 1 | `VarFileInfo` |
 | 2 | 908 | `0x1d650` | 36 | 4 | 0 | `Translation` |
 
-Key names and lengths are recorded; the string *values* of the 14 text members
+Key names and lengths are recorded; the string *values* of the 12 text members
 are not, because the acceptance criterion for this task commits structure
-descriptions and not content. Their lengths (22, 27, 4, 8, 39, 1, 12, 1, 24,
-11 characters, four of them empty) are recorded because the sizes are part of
-the structure.
+descriptions and not content. Their lengths in characters — 22, 27, 4, 8, 39,
+12, 24 and 11 for the eight non-empty ones, and four more with a length of 1,
+which is an empty string — are recorded because the sizes are part of the
+structure.
 
 The 52 fixed bytes, which are numbers and therefore recorded in full:
 
@@ -143,17 +144,19 @@ magic. The *specific values* are `ObservedTool` (a read of the installed
 bytes). No claim here is `verified_original`: the original program was not run.
 
 **Cross-check inside the installation.** Every type-16 leaf of every PE image
-in the installation was walked the same way: **30 leaves across 13 images**
+in the installation was walked the same way: **30 leaves across 14 images**
 (including `crimson.exe`, `crimson.icd`, `mfc42.dll`, `msvcrt.dll` and
 `SETUPENU.DLL`). All 30 root to `VS_VERSION_INFO`, all 30 carry
-`dwSignature = 0xFEEF04BD`, and all 30 parse. Eighteen consume their leaf
-exactly; the other twelve leave 4, 8 or 12 **zero** bytes of trailing padding,
-and every one of those twelve is a non-English `dsetup32.dll` leaf. So
+`dwSignature = 0xFEEF04BD`, and all 30 parse. Sixteen consume their leaf
+exactly; the other fourteen leave 4 (four leaves), 8 (seven) or 12 (three)
+**zero** bytes of trailing padding, and all fourteen are leaves of
+`dsetup32.dll` carrying a non-English language id — that image is the only
+one with 17 languages, and its English leaf consumes its resource exactly. So
 "a version resource whose declared size may exceed its `wLength` by a small
 zero tail" is an observed property of the corpus, and `strings.dll`'s leaf is
 in the exactly-consumed group.
 
-**What remains unknown for type 16.** The 14 text values and the *meaning* of
+**What remains unknown for type 16.** The 12 text values and the *meaning* of
 the type for this project: nothing in the workspace consumes a version
 resource, and a version resource is a Microsoft build-toolchain artifact, so
 whether the original game reads it is not established by the file. One
@@ -236,8 +239,28 @@ The name categories are structural and are recorded as counts only: 351 of
 name (`IDS_` / `SB_` / `STR_`); the rest are font ids, multiplayer-panel
 control ids, resource-compiler bookkeeping (`_APS_*`) and a handful of other
 prefixes. The two members' header comments name the `.rc` each was generated
-for — `LangUI.rc` and `ScrapBook.Rc` — and `langui.dll` is the only PE image in
-the installation that carries either family of ids.
+for — `LangUI.rc` and `ScrapBook.Rc`.
+
+Every PE image in the installation that has an `RT_STRING` block was scored
+against the headers' 782 distinct values (both members, numbering B, "does
+this value name a block this image has"):
+
+| Image | `RT_STRING` blocks | header values naming one of them |
+| --- | --- | --- |
+| `GOSDATA/ASSETS/BINARIES/langui.dll` | 101 | **775 / 782** |
+| `SETUPENU.DLL` | 37 | 169 |
+| `strings.dll` | 112 | 123 |
+| `ebueula.dll` | 8 | 28 |
+| `crimson.icd` | 2 | 15 |
+| `clokspl.exe` | 19 | 14 |
+| `UNINSTAL.EXE` | 17 | 12 |
+| `dsetup32.dll` | 7 | 10 |
+| `GOSDATA/ASSETS/BINARIES/language.dll` | 3 | 2 |
+| `mcp.dll`, `mfc42.dll` | 5, 43 | 0 |
+
+`langui.dll` is the image the two headers describe; the next highest is 169,
+and the gap to 775 is what makes that a measurement rather than an inference
+from the file names.
 
 ### What the string-table ids cover
 
@@ -269,8 +292,9 @@ numbering. Two numberings are in play in this repository:
   exactly what `cs_formats::string_id` implements and what the F12-B finding
   labels `Documented`.
 
-For each numbering, the number of string-table names that land on a block the
-image actually has:
+For each numbering, how many of a header's values name a block the image
+actually has, in two scopes — every define, and only the 532 string-table
+names:
 
 | Image | blocks | A, all 820 defines | A, 532 string names | B, all 820 defines | B, 532 string names |
 | --- | --- | --- | --- | --- | --- |
@@ -384,8 +408,8 @@ the reader counted the two resources, and this finding is what they are.
 Each names the affected content and what would resolve it, per the owner
 directive on follow-up limitations.
 
-1. **The meaning of the four bytes of type 255.** Affected content: two
-   resources per image in three images, one of which (`strings.dll`) is
+1. **The meaning of the four bytes of type 255.** Affected content: one
+   resource in each of three images, one of which (`strings.dll`) is
    gameplay-relevant. Resolved by: nothing in the workspace can resolve it; a
    second, differently-valued sample would, and no localized or
    differently-built image is available. Until then the span stays recorded and
@@ -480,9 +504,10 @@ the contract forbids. The report's `claim` is `implemented`: a merge awards
 | --- | --- |
 | `cargo fmt --all -- --check` | 0 |
 | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
-| `cargo test --workspace --locked` | 0 |
-| `cargo test --workspace --locked -- accept_f12_b_ --include-ignored` | 0 (the two retail readers this finding cross-checks against) |
+| `cargo test --workspace --locked` | 0 (734 passed, 0 failed, 62 ignored over 101 test binaries) |
+| `cargo test --workspace --locked -- accept_f12_b_ --include-ignored` | 0 (16 tests, 16 passed, 0 failed — includes the two retail readers this finding cross-checks against) |
 | `cargo test --workspace --locked -- accept_f12_g_ --include-ignored` | **0 tests** — see [Tests](#tests) |
+| `python3 tools/validate_evidence.py private/evidence/F12-G/acceptance.json --artifact-root private/evidence/F12-G` | 0 (`structurally_valid: true`, 8 artifacts) |
 
 ## What is not claimed
 
@@ -514,6 +539,6 @@ row); `docs/contracts/CLI-EVIDENCE.md`; the F12-A, F12-B and F12-D.langui
 findings; `crates/cs_formats/src/pe_resources.rs` (`string_id`, `RT_STRING`,
 the `other_leaves` accounting) and `crates/cs_formats/src/text/resource_header.rs`;
 the Microsoft PE/COFF resource-directory layout and the Win32 version-resource
-layout (`Documented`); and the installer's own Win32 API reference page for
+layout (`Documented`); and Microsoft's Win32 API reference page for
 `LoadStringA`, which this task read and which does **not** itself state the
 block-index formula — that part of the `Documented` claim is left to #374.
