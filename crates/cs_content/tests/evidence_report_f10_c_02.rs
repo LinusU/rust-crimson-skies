@@ -263,12 +263,20 @@ fn evidence_report_f10_c_02_writes_the_acceptance_report() {
         };
         // A resolved row must name the world's own archive and the container's
         // own stored name: nothing was substituted.
-        if let Some((audit, _, _, key)) = &audit {
+        if let Some((audit, _, catalog, key)) = &audit {
+            // The **resolved** archive path, which is what a `TextureId` names —
+            // not the key's own path within its namespace.
+            let archive_path = catalog
+                .archives()
+                .find(|archive| archive.key() == key)
+                .expect("the catalog holds the caller's archive")
+                .path()
+                .clone();
             for row in audit.resolved_rows() {
                 let MaterialState::Resolved { texture } = &row.state else {
                     panic!("a resolved row whose state is {:?}", row.state);
                 };
-                assert_eq!(texture.archive.as_str(), key.path().as_str());
+                assert_eq!(texture.archive, archive_path);
                 let stored = materials
                     .texture_of(
                         materials
