@@ -279,16 +279,19 @@ pub static TEXT_DIALECT_INVENTORY: [DialectRecord; 6] = [
         ],
         grammar: ClaimStatus::ObservedTool,
         reader: DialectReader::KeyedList,
-        // The four name rules R1-R4 are established (task #351); what is
-        // left is listed here, in
-        // docs/findings/2026-09-29-t351-keyed-list-reading-rules.md.
+        // The four name rules R1-R4 are established (task #351) and the
+        // record kinds' field kinds where the shipped data measures them
+        // (task #371/F12-I); what is left is listed here, in
+        // docs/findings/2026-09-29-t351-keyed-list-reading-rules.md and
+        // docs/findings/2026-09-29-f12-i-record-kind-schemas.md.
         unknowns: &[
             "whether a ';' after a value starts a comment (never observed)",
             "escaped or embedded quotes (never observed)",
             "whether a blank byte inside quotes is part of the value",
             "whether the original reports the one line with no '=' or skips it silently",
             "whether the '@' around a section name is part of the name (34 of 35 are wrapped)",
-            "field types and units (the <NAME> rule is task #370; expansion semantics below)",
+            "whether a record is identified by its key or by its first field (a V/G definition's value may spell a record letter)",
+            "field units, and the kind of the record positions the shipped data leaves empty or unnamed (F12-I)",
             "whether a <NAME> placeholder name folds ASCII case (all observed names are uppercase)",
             "whether the local or the global name table is consulted first (no shadowing observed)",
             "whether <NAME> expansion substitutes text into the field or means something else",
