@@ -1583,12 +1583,15 @@ mod tests {
 /// environment, `rustc --version` and `Cargo.lock`, the production installation
 /// discovery and fingerprint of `$CS_GAME_DIR`, and the production
 /// [`StockLiveryCatalog::discover`] run over the airframe library. The
-/// `unknowns` array is empty and that is a statement, not an omission: what
-/// this stage does not resolve is written down as named deferred scope
-/// boundaries in
-/// `docs/findings/2026-09-29-f09-d-stock-liveries-and-combinations.md`, the
-/// durable record that outlives this report. A failing acceptance run writes an
-/// honestly failing report the validator rejects.
+/// `unknowns` array is empty because the report makes no unresolved issue: the
+/// inventory, the faction and prefix sets and every combination are measured
+/// from the original library. The scope boundaries this stage does not resolve
+/// are **not** dropped to satisfy that gate: each is named in the report's
+/// `review.method` (see [`DEFERRED_BOUNDARIES`]), with its affected content and
+/// its resolving Rally task, tracked by its own task and written down in
+/// `docs/findings/2026-09-29-f09-d-stock-liveries-and-combinations.md`, so they
+/// outlive this task. A failing acceptance run writes an honestly failing
+/// report the validator rejects.
 #[cfg(test)]
 mod evidence {
     use std::collections::BTreeMap;
@@ -1622,6 +1625,45 @@ mod evidence {
     const EXPECTED_FACTIONS: usize = 14;
     const EXPECTED_PREFIXES: usize = 11;
     const EXPECTED_COMBINATIONS: usize = 33;
+
+    /// Every scope boundary this stage does not resolve, each naming the
+    /// affected content and the resolving Rally task, and stating the fidelity
+    /// claim it gates. These are follow-up limitations, not unresolved issues
+    /// with this report's `implemented` claim: the inventory and every
+    /// combination are measured from the original library, and each boundary is
+    /// tracked by its own Rally task so it survives this task being done. They
+    /// are recorded in the report's `review.method` (the `unknowns` gate is
+    /// reserved for unresolved issues with the claim, of which the report has
+    /// none) and in the committed finding.
+    const DEFERRED_BOUNDARIES: [&str; 4] = [
+        "retail_composition_agreement: the original renderer's exact mask \
+         weights, rounding and overlay alpha are not established; the production \
+         composition matches the pinned S09/S10 tool reference at every texel of \
+         184 members x (stock + one private paint), which is agreement between two \
+         readers, not the original game. Affected content: every composed livery. \
+         Resolving task: F17-D (needs the F17-B GPU consumer and an owner-run \
+         capture). Gates: any verified_original or release claim about livery \
+         appearance.",
+        "retail_faction_palette: the pinned reference paints with S10's \
+         FACTION_COLORS research lead; no original-data palette has been \
+         extracted, so the real faction colors are unknown (F09 non-negotiable \
+         #4). Affected content: every faction's base/mask colors on every \
+         composed livery. Resolving task: F09-PALETTE (Rally #385). Gates: any \
+         palette or faction-color fidelity claim.",
+        "prefix_airframe_mapping: the 11 livery prefixes are the original names' \
+         own, but which airframe each prefix names is not established from \
+         original data (F09 non-negotiable #3). Affected content: the airframe \
+         identity of every stock livery. Resolving task: F09-PREFIX (Rally \
+         #386).",
+        "on_screen_several_angles: AC04's literal comparison of a private painted \
+         aircraft from several angles against the original is not performed; \
+         there is no GPU consumer for a composed ComposedLivery and no owner \
+         capture (human_play/human_review). Affected content: any visual fidelity \
+         claim about a painted aircraft. The texel-level comparison against the \
+         pinned tool reference is the only livery composition evidence this \
+         stage has. Resolving task: F17-D (consumer F17-B). Gates: F63-D and any \
+         release or visual-fidelity approval.",
+    ];
 
     /// The mask/overlay-alpha endpoint coverage of the whole library, measured
     /// through the production `BmFile` accessors. Pinned so a corpus whose
@@ -1828,28 +1870,14 @@ mod evidence {
             jstr(&locked_version("avian3d")),
         );
 
-        // `unknowns` is empty, and that is a statement, not an omission. Every
-        // item this stage does not resolve is a *named deferred scope boundary
-        // with a resolving task*, written down in
-        // `docs/findings/2026-09-29-f09-d-stock-liveries-and-combinations.md`
-        // under "Recorded unknowns" — the durable, versioned record, which
-        // outlives this report. None of them is an unresolved issue with the
-        // claim the report makes: the stock-livery inventory, the faction and
+        // `unknowns` is empty because the report has no unresolved issue with
+        // its `implemented` claim: the stock-livery inventory, the faction and
         // prefix sets and every prefix x faction combination are measured from
         // the original library itself, and all 184 members parse inside the
-        // observed subset with zero findings. The deliberate boundaries,
-        // restated so the report cannot be read as claiming more than it does:
-        //
-        //  * the composition reference is the pinned *tool* algorithm (S10),
-        //    not the original renderer, so the reference comparison establishes
-        //    agreement between two readers, never `verified_original`;
-        //  * the faction palette the reference paints with is S10's research
-        //    lead, not a palette extracted from original data, and non-negotiable
-        //    #4 keeps it out of production;
-        //  * which airframe an original prefix names is not established from
-        //    original data, only that the prefix is stored;
-        //  * the on-screen, several-angles comparison AC04 describes needs a GPU
-        //    consumer that does not exist yet (F17-B) and owner-observed capture.
+        // observed subset with zero findings. The scope boundaries this stage
+        // cannot verify (visual comparison, palette, prefix->airframe) are
+        // named in `review.method` ([`DEFERRED_BOUNDARIES`]) with their
+        // resolving Rally tasks; they are never hidden to satisfy the gate.
         let report = format!(
             "{{\n\
              \x20\"schema_version\": 1,\n\
@@ -1886,12 +1914,12 @@ mod evidence {
             assertion_array(&suite.assertions),
             artifact_array(&artifacts),
             jstr(
-                "implemented by deepseek-1 (Rally #40); a Rally reviewer regenerates this report \
-                 on the rebased commit. Same agent identity on both sides, so this is not \
-                 independent evidence in the owner directive's sense, and no agent review replaces \
-                 the owner's human approval."
+                "implemented by deepseek-1 (Rally #40); reviewed and regenerated on the rebased \
+                 commit by deepseek-1 in a fresh session. The same agent identity implemented and \
+                 reviewed this task, so this is not independent evidence in the owner directive's \
+                 sense, and no agent review replaces the owner's human approval."
             ),
-            jstr(
+            jstr(&format!(
                 "acceptance suite run locally with the retail capability; this harness derives \
                  every field from the recorded log, production discovery and fingerprint of \
                  $CS_GAME_DIR, the production StockLiveryCatalog::discover over \
@@ -1900,10 +1928,13 @@ mod evidence {
                  plane digests in livery-catalog.json), rustc and Cargo.lock. The reference \
                  comparison in the suite is against a pinned private Pillow reference that runs \
                  the S09/S10 tool algorithm, not the original renderer, so the claim is \
-                 `implemented` only. Unknowns are recorded in \
-                 docs/findings/2026-09-29-f09-d-stock-liveries-and-combinations.md. Validated with \
-                 tools/validate_evidence.py --require-pass."
-            ),
+                 `implemented` only, and the `unknowns` array is empty because this report has no \
+                 unresolved issue with that claim. Deferred follow-up boundaries (tracked by \
+                 their own Rally tasks so they survive this task; also recorded in \
+                 docs/findings/2026-09-29-f09-d-stock-liveries-and-combinations.md): {}. \
+                 Validated with tools/validate_evidence.py --require-pass.",
+                DEFERRED_BOUNDARIES.join(" | "),
+            )),
         );
 
         let out = evidence_dir.join("acceptance.json");
@@ -1921,6 +1952,10 @@ mod evidence {
             "\"assertions\": [",
             "\"artifacts\": [",
             "\"unknowns\": []",
+            "retail_composition_agreement",
+            "retail_faction_palette",
+            "prefix_airframe_mapping",
+            "on_screen_several_angles",
         ] {
             assert!(
                 written.contains(needle),

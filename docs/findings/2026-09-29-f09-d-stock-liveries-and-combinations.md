@@ -172,24 +172,38 @@ synthetic tests fail independently of the retail data.
 
 ## Recorded unknowns
 
-These are scope boundaries with resolving work, not issues with the claim this
-stage makes (the stock-livery inventory, the faction/prefix sets and every
-prefix x faction combination are measured from the original library itself):
+These are scope boundaries with resolving work, not issues with the
+`implemented` claim this stage makes (the stock-livery inventory, the
+faction/prefix sets and every prefix x faction combination are measured from the
+original library itself). The report's `unknowns` array is therefore empty: the
+validator reserves it for unresolved issues with the claim. The boundaries are
+never dropped to satisfy that gate — each is named in the report's
+`review.method` (the harness emits [`DEFERRED_BOUNDARIES`] verbatim), names the
+affected content and the resolving Rally task, and is filed as its own Rally task
+so it survives this task being marked done and gates the fidelity claims it
+affects.
 
 - **Retail composition agreement.** The reference is the pinned S09/S10
   *tool* algorithm run under Pillow, not the original renderer. The production
   composition matches it at every texel of the whole library, but whether the
   original game applies the same mask weights, rounding and overlay alpha is
-  **not established**. Resolving work: a later renderer-observation task with a
-  GPU consumer and an owner-run capture; the affected content is every composed
-  livery.
+  **not established**. Affected content: every composed livery. Resolving task:
+  **F17-D** (needs the **F17-B** GPU consumer and an owner-run capture). It gates
+  any `verified_original`/release claim about livery appearance.
 - **Retail faction palette.** The reference paints with S10's `FACTION_COLORS`,
   a research lead, because no original-data palette has been extracted. Which
-  colours a faction really uses is **unknown**. Resolving work: F09-D follow-up
-  or F44-B; non-negotiable #4 forbids baking the lead into production.
+  colours a faction really uses is **unknown** (non-negotiable #4). Affected
+  content: every faction's base/mask colors on every composed livery. Resolving
+  task: **F09-PALETTE (Rally #385)**. It gates any palette or faction-color
+  fidelity claim.
 - **Prefix -> airframe.** The 11 prefixes are the original names' own, but which
-  airframe each names comes from original data that was not read here.
+  airframe each names comes from original data that was not read here
+  (non-negotiable #3). Affected content: the airframe identity of every stock
+  livery. Resolving task: **F09-PREFIX (Rally #386)**.
 - **On-screen / several-angles comparison.** AC04's literal "from several angles
   with the original" needs a GPU consumer (F17-B) and `human_play`/owner capture,
-  neither of which this stage has. The affected content is any visual fidelity
-  claim about a painted aircraft.
+  neither of which this stage has. Affected content: any visual fidelity claim
+  about a painted aircraft; the texel-level comparison against the pinned tool
+  reference is the only livery composition evidence this stage has. Resolving
+  task: **F17-D** (consumer **F17-B**). It gates **F63-D** and any release or
+  visual-fidelity approval.
