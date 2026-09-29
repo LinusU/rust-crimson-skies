@@ -7468,6 +7468,220 @@ mod tests {
         );
     }
 
+    // ============================================================ F10-D ===
+
+    /// One archive's face accounting through the **render** gate: the format
+    /// layer's census says which faces draw nothing, the catalog's rows say
+    /// which meshes became render meshes, and this asserts the two name
+    /// exactly the same meshes.
+    ///
+    /// The two sides are produced by different crates over different
+    /// structures — `cs_formats::gamez::FaceCensus` over parsed containers and
+    /// `MeshCatalog::records()` over the render gate's own verdict — so a
+    /// refused face that quietly did not cost its mesh, or a mesh the gate
+    /// dropped for some other reason, fails here rather than in a renderer.
+    /// A row that is `Blocked` still built a render mesh and loses nothing;
+    /// only a `Failed` row's faces are missing from the render.
+    fn f10_d_render_report(
+        session: &ContentSession,
+        key: &AssetKey,
+        dependencies: &MeshDependencies<'_>,
+        label: &str,
+        kind: &str,
+    ) {
+        let catalog = MeshCatalog::open(session, std::slice::from_ref(key), dependencies);
+        assert_eq!(
+            catalog.failures().count(),
+            0,
+            "{label}: both production readers accept the container"
+        );
+        let container = catalog.containers().next().expect("one container");
+        let census = container.meshes().face_census();
+        let refused_meshes = census.rejected_meshes();
+        let records = catalog.records();
+
+        assert_eq!(
+            records.len(),
+            census.present_meshes,
+            "{label}: one row per present stored mesh, absent stubs included as nothing"
+        );
+        let mut rows_ready = 0usize;
+        let mut rows_blocked = 0usize;
+        let mut rows_failed = 0usize;
+        let mut faces_in_rows = 0u64;
+        let mut faces_in_failed_rows = 0u64;
+        let mut rejected_in_rows = 0u64;
+        let mut failed_meshes: Vec<u32> = Vec::new();
+        for row in &records {
+            let counts = row
+                .faces
+                .unwrap_or_else(|| panic!("{label}: every stored mesh has face counts"));
+            let index = row.mesh_index.expect("every row is about a mesh");
+            faces_in_rows += counts.faces as u64;
+            rejected_in_rows += counts.rejected as u64;
+            match row.readiness {
+                RenderMeshReadiness::Ready => rows_ready += 1,
+                RenderMeshReadiness::Blocked => rows_blocked += 1,
+                RenderMeshReadiness::Failed => {
+                    rows_failed += 1;
+                    faces_in_failed_rows += counts.faces as u64;
+                    failed_meshes.push(index);
+                }
+            }
+        }
+        failed_meshes.sort_unstable();
+
+        // The rows carry every stored face of the container: nothing is
+        // counted twice and nothing is dropped between the reader and the gate.
+        assert_eq!(
+            faces_in_rows, census.stored_faces,
+            "{label}: the rows account for every stored face"
+        );
+        // The rejected faces the gate saw are the ones the format layer
+        // refused — the same count, from a different structure.
+        assert_eq!(
+            rejected_in_rows,
+            census.invalid_faces + census.unsupported_faces,
+            "{label}: rows and census agree on the refused faces"
+        );
+        // Exactly the meshes that lost a rejected face failed the gate, so a
+        // mesh with a refused face loses its whole mesh and no other mesh
+        // loses anything.
+        assert_eq!(
+            failed_meshes, refused_meshes,
+            "{label}: the render gate drops exactly the meshes whose faces were refused"
+        );
+        let faces_of_dropped_meshes: u64 = container
+            .meshes()
+            .present()
+            .filter(|mesh| refused_meshes.contains(&mesh.index))
+            .map(|mesh| mesh.mesh.polygons.len() as u64)
+            .sum();
+        assert_eq!(
+            faces_in_failed_rows, faces_of_dropped_meshes,
+            "{label}: the faces missing from the render are those meshes' stored faces"
+        );
+        assert_eq!(
+            rows_ready + rows_blocked + rows_failed,
+            records.len(),
+            "{label}: every row has one readiness"
+        );
+
+        println!(
+            "F10-D render {label} ({kind}): rows {} ready {rows_ready} blocked {rows_blocked} \
+             failed {rows_failed}; stored faces {} missing {} invalid {} unsupported {}; \
+             faces in failed rows {faces_in_failed_rows}",
+            records.len(),
+            census.stored_faces,
+            census.missing_faces(),
+            census.invalid_faces,
+            census.unsupported_faces,
+        );
+    }
+
+    /// **AC04 through the render gate, over every private world and the
+    /// airframes.** The format layer's census (reported by
+    /// `accept_f10_d_retail_every_world_and_airframe_reports_exact_missing_and_invalid_face_counts`
+    /// in `cs_formats`) says exactly which stored faces draw nothing: eleven of
+    /// the 128 734 faces the nine containers store. This test mounts each of
+    /// those containers through the production VFS, dispatch, readers and
+    /// catalog, and states the other half of "render-critical":
+    ///
+    /// * every stored face reaches a row (`rows' faces == the census's stored
+    ///   faces), so the report cannot be short by a mesh the gate never saw;
+    /// * the refused faces the gate reports are the census's refused faces,
+    ///   count for count;
+    /// * the rows that failed to build are exactly the meshes that lost a
+    ///   face — one refused face costs its whole mesh, and no mesh that built
+    ///   lost anything;
+    /// * a row that is merely `Blocked` (an open presentation decision) still
+    ///   has its render mesh, so it is reported but never counted as missing.
+    ///
+    /// The archive list comes from production discovery, so a world the
+    /// installation adds is reported instead of being left out of the corpus.
+    #[test]
+    #[ignore = "requires CS_GAME_DIR"]
+    fn accept_f10_d_retail_render_gate_drops_exactly_the_refused_faces_of_every_archive() {
+        let game_dir = PathBuf::from(std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR"));
+        let found = install::discover(&game_dir).expect("the installation is discovered");
+        assert!(
+            !found.diagnosis.world_groups.is_empty(),
+            "the installation has at least one world group"
+        );
+        let planes_zbd = found
+            .diagnosis
+            .planes_zbd
+            .clone()
+            .expect("discovery observes the airframe container");
+
+        let mut worlds = 0usize;
+        let mut last_group = None;
+        for group in &found.diagnosis.world_groups {
+            let context = ResolveContext::new(install::fingerprint(&found.manifest))
+                .with_world_group(WorldGroup::from_relative(group.clone()));
+            let mut builder = SessionBuilder::new(context);
+            builder
+                .mount_installation(&game_dir, &found.diagnosis)
+                .expect("the installation mounts");
+            let session = builder.open();
+
+            let archive = texture_key();
+            let textures = TextureCatalog::open(&session, std::slice::from_ref(&archive));
+            assert_eq!(
+                textures.failures().count(),
+                0,
+                "{}: the world's texture archive opens",
+                group.as_str()
+            );
+            let dependencies = seam_dependencies(&textures, &archive);
+            f10_d_render_report(
+                &session,
+                &gamez_key(),
+                &dependencies,
+                group.as_str(),
+                "world",
+            );
+            worlds += 1;
+            last_group = Some(group.clone());
+        }
+
+        // The airframe container mounts at the install root rather than in a
+        // world group, so it resolves through a world-group session's install
+        // namespace — the mount `accept_f10_c_retail_airframe_meshes_reach_the_upload_payload`
+        // established. One session is built here again because a session's
+        // lifetime ends with its loop iteration above.
+        let group = last_group.expect("a world group was visited");
+        let context = ResolveContext::new(install::fingerprint(&found.manifest))
+            .with_world_group(WorldGroup::from_relative(group));
+        let mut builder = SessionBuilder::new(context);
+        builder
+            .mount_installation(&game_dir, &found.diagnosis)
+            .expect("the installation mounts");
+        let session = builder.open();
+        let key = AssetKey::from_spelling(INSTALL_NAMESPACE, planes_zbd.as_str(), "default")
+            .expect("a valid key");
+        let archive = texture_key();
+        let textures = TextureCatalog::open(&session, std::slice::from_ref(&archive));
+        assert_eq!(
+            textures.failures().count(),
+            0,
+            "the world texture archive the airframe audit reads opens"
+        );
+        let dependencies = seam_dependencies(&textures, &archive);
+        f10_d_render_report(
+            &session,
+            &key,
+            &dependencies,
+            planes_zbd.as_str(),
+            "airframe",
+        );
+
+        assert!(
+            worlds == found.diagnosis.world_groups.len(),
+            "every discovered world group was reported"
+        );
+    }
+
     // ================================================ F10-E: every stored group ===
 
     /// **The whole point of F10-E, end to end.** A GameZ polygon stores one
