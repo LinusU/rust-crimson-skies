@@ -726,7 +726,11 @@ fn closure_hash(
 }
 
 /// Renders `value` as a JSON string with the mandatory escapes.
-fn json_string(value: &str) -> String {
+///
+/// `pub(super)` so the sibling F14-D baseline report renders strings exactly
+/// the way this closure report does: one escaping rule for the catalog's
+/// reports, not one per consumer.
+pub(super) fn json_string(value: &str) -> String {
     let mut out = String::with_capacity(value.len() + 2);
     out.push('"');
     for ch in value.chars() {

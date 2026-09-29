@@ -20,14 +20,23 @@
 //! values, and [`closure`] walks the transitive dependency graph from the
 //! declared launchable roots, propagating an unsupported dependency into an
 //! unavailable parent, reporting orphaned references and ownership cycles and
-//! emitting a deterministic closure hash and JSON report. Nothing in this
-//! module is derived from original game data.
+//! emitting a deterministic closure hash and JSON report. Those two paths
+//! derive nothing from original game data; the catalog's own fixture rows
+//! are authored content.
+//!
+//! [`baseline`] is the F14-D stage: it reads the original installation and
+//! builds the complete private baseline inventory — every inventoried file,
+//! every campaign mission program and one declared launchable row per
+//! campaign mission — plus the reachable/unreachable coverage accounting, so
+//! the denominator is fixed by the installation and never by a filtered list
+//! of supported rows.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use cs_types::content::{CatalogElement, ContentId, ContentKind, ElementError};
 
+pub mod baseline;
 pub mod closure;
 pub mod normalize;
 

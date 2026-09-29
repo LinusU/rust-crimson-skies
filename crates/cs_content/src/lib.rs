@@ -46,7 +46,12 @@
 //! ranges and explicit refusals) and the [`catalog::closure`] transitive
 //! dependency walk (per-edge provenance, propagated unsupported
 //! dependencies, orphaned references, ownership cycles and a deterministic
-//! hash and JSON report).
+//! hash and JSON report). Its F14-D stage adds
+//! [`catalog::baseline`]: the complete private baseline inventory read from
+//! the original installation — one row per inventoried file, one row per
+//! campaign mission program and one declared launchable row per campaign
+//! mission directory, so the coverage denominator comes from the
+//! installation instead of a filtered list of supported rows.
 //!
 //! [`campaign_bindings`] holds the engine-independent mission binding and
 //! campaign coverage records (`specs/F50-per-mission-compatibility-and-
