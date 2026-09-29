@@ -818,6 +818,11 @@ fn accept_f13_b_walk_refuses_empty_truncated_and_unbounded_programs() {
     let error = walk_program("m", &locator, &[1, 0, 0, 0, 1, 0, 0, 0], 4, &ledger, 1)
         .expect_err("the budget bounds the walk");
     assert_eq!(error.code(), "budget_exceeded");
+    // The budget caps decoded instructions, so zero decodes none of a
+    // non-empty program instead of accepting its first word.
+    let none = walk_program("m", &locator, &[1, 0, 0, 0], 4, &ledger, 0)
+        .expect_err("a zero budget bounds the walk before the first word");
+    assert_eq!(none.code(), "budget_exceeded");
 }
 
 /// A mission directory scopes a program; a group or content-root archive does

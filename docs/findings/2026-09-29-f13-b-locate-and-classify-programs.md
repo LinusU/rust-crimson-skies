@@ -183,3 +183,16 @@ cargo test --workspace --locked -- accept_f13_b_ --include-ignored
 F06-A/F06-D findings (families and corpus counts), the F07-A/F07-D findings
 (INTERP layout and loading classification), and the read-only `$CS_GAME_DIR`
 listing.
+
+## Reviewer note (2026-09-29)
+
+The F13-B review found one defect in the fail-closed walk: the instruction
+budget was checked *after* a word was decoded, so a budget of zero still
+accepted the first word of a non-empty program. `walk_program` now checks the
+budget before each instruction, so the documented cap holds exactly and a zero
+budget decodes nothing; the regression is asserted in
+`accept_f13_b_walk_refuses_empty_truncated_and_unbounded_programs`. No other
+code change was needed. The reviewer regenerated
+`docs/findings/evidence/F13-B.json` on the reviewed tree and recorded the
+implementer (`glm-1/deepseek-1`) and reviewer (`deepseek-1`, fresh session)
+identities in it.

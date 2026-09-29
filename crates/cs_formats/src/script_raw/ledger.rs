@@ -461,6 +461,16 @@ pub fn walk_program(
         if remaining == 0 {
             return Ok(reached);
         }
+        // The budget caps how many instructions the walk *decodes*, so it is
+        // checked before the next one: a budget of zero decodes nothing at all
+        // (rather than the first word) and can never decode past the cap.
+        if reached.len() as u32 >= budget {
+            return Err(ProgramError::BudgetExceeded {
+                mission: mission.to_owned(),
+                locator: locator.clone(),
+                budget,
+            });
+        }
         if remaining < width {
             return Err(ProgramError::TruncatedOpcode {
                 mission: mission.to_owned(),
@@ -483,15 +493,5 @@ pub fn walk_program(
             opcode,
         });
         offset += width;
-        if reached.len() as u32 >= budget {
-            if offset < bytes.len() {
-                return Err(ProgramError::BudgetExceeded {
-                    mission: mission.to_owned(),
-                    locator: locator.clone(),
-                    budget,
-                });
-            }
-            return Ok(reached);
-        }
     }
 }
