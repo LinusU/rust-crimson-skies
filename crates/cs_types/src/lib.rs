@@ -4,6 +4,15 @@
 //! may appear here (`docs/01-ARCHITECTURE.md`). Everything below is newly
 //! authored project type design; nothing in this file is derived from
 //! original game data.
+//!
+//! [`input`] is the F22-A command schema and action map
+//! (`specs/F22-input-bindings-devices-and-control-ownership.md`): the typed
+//! [`input::FlightCommand`] and [`input::UiAction`] vocabulary, physical
+//! [`input::BindingSource`]s, the [`input::ActionMap`] that resolves them per
+//! [`input::InputContext`], and the quantized [`input::InputFrame`] whose
+//! continuous axes and one-shot edges the simulation buffers separately
+//! (`cs_sim::control`). Its labels and designed default map are engine
+//! design, not measurements of the original game.
 
 use std::fmt;
 
@@ -12,6 +21,7 @@ use random::{SYNTHETIC_BODY_DOMAIN, SplitMix64, unit_f64};
 pub mod asset_id;
 pub mod content;
 pub mod evidence;
+pub mod input;
 pub mod install;
 pub mod random;
 pub mod space;

@@ -29,9 +29,18 @@
 //! conversion of the one composed transform into a full-affine
 //! `GlobalTransform`, and [`airframe_visual::AirframeVisual`] — the
 //! airframe → scene-root reference by content id, never by array position.
+//!
+//! [`input`] is the F22-A application boundary
+//! (`specs/F22-input-bindings-devices-and-control-ownership.md`,
+//! `### F22-A`): the active action map and input context
+//! ([`input::InputBindings`]) and the per-render-frame collector
+//! ([`input::InputCollector`]) that resolves physical sources into the
+//! ticked `cs_types::input::InputFrame` the simulation buffers. The device
+//! adapters and axis calibration are F22-B.
 
 pub mod airframe_visual;
 pub mod cli;
+pub mod input;
 pub mod livery;
 pub mod origin;
 pub mod run;
