@@ -699,8 +699,18 @@ impl StringCatalog {
 
 /// Whether a leaf is a three-level `RT_STRING` block: the only shape the
 /// resource reader decodes as strings.
+///
+/// This must be exactly the reader's own rule (`cs_formats`'s
+/// `string_leaf`): **all three** levels are ids and the outermost is
+/// `RT_STRING`. A three-level leaf under `RT_STRING` whose second or third
+/// level is a *name* is not a block — the reader retains it as a plain leaf —
+/// so counting it as a string leaf here would drop it from the accounting
+/// instead of retaining it (spec F12, non-negotiable #5).
 fn is_string_leaf(leaf: &ResourceLeaf) -> bool {
-    leaf.path.len() == 3 && leaf.key(0).and_then(ResourceKey::id) == Some(RT_STRING)
+    leaf.path.len() == 3
+        && leaf.key(0).and_then(ResourceKey::id) == Some(RT_STRING)
+        && leaf.key(1).and_then(ResourceKey::id).is_some()
+        && leaf.key(2).and_then(ResourceKey::id).is_some()
 }
 
 /// Why a PE image did not become a [`StringCatalog`].
@@ -2101,6 +2111,31 @@ HUGEFLOAT=1.7976931348623159e999\r\n";
         bytes[row + 4..row + 8].copy_from_slice(&(entry as u32).to_le_bytes());
     }
 
+    /// Reserves a directory with `named` name entries and `ids` id entries, in
+    /// the format's order (names first).
+    fn rsrc_named_dir(bytes: &mut Vec<u8>, named: usize, ids: usize) -> usize {
+        let at = bytes.len();
+        bytes.extend_from_slice(&[0u8; 16]);
+        bytes.extend_from_slice(&vec![0u8; (named + ids) * 8]);
+        bytes[at + 12..at + 14].copy_from_slice(&(named as u16).to_le_bytes());
+        bytes[at + 14..at + 16].copy_from_slice(&(ids as u16).to_le_bytes());
+        at
+    }
+
+    /// Writes `text` as a *name* key: the UTF-16 name struct is appended to
+    /// the section and the row's name word is pointed at it. The directory
+    /// must have a named-entry slot ([`rsrc_named_dir`]).
+    fn rsrc_name(bytes: &mut Vec<u8>, dir: usize, index: usize, text: &str) {
+        let row = rsrc_row(dir, index);
+        let at = bytes.len() as u32;
+        let units: Vec<u16> = text.encode_utf16().collect();
+        bytes.extend_from_slice(&(units.len() as u16).to_le_bytes());
+        for unit in units {
+            bytes.extend_from_slice(&unit.to_le_bytes());
+        }
+        bytes[row..row + 4].copy_from_slice(&(0x8000_0000u32 | at).to_le_bytes());
+    }
+
     /// Sixteen counted UTF-16LE units, the first `entries.len()` non-empty.
     fn string_payload(entries: &[&str]) -> Vec<u8> {
         let mut out = Vec::new();
@@ -2273,6 +2308,55 @@ HUGEFLOAT=1.7976931348623159e999\r\n";
         assert_eq!(
             catalog.resources().leaves().len(),
             other.len() + catalog.resources().strings().len()
+        );
+    }
+
+    /// A three-level leaf under `RT_STRING` whose second level is a *name* is
+    /// not a string block: the resource reader keeps it as a plain leaf, so
+    /// the catalog must count it among the other leaves rather than let it
+    /// vanish from the accounting (spec F12, non-negotiable #5). The reader
+    /// supports names at any level even though no surveyed image uses one.
+    #[test]
+    fn accept_f12_c_string_catalog_counts_a_name_keyed_leaf_as_another_leaf() {
+        let mut rsrc = Vec::new();
+        let root = rsrc_dir(&mut rsrc, 1);
+        rsrc_id(&mut rsrc, root, 0, RT_STRING);
+        // The second level is a name, not a block id: `RT_STRING/<name>/1033`.
+        let strings = rsrc_named_dir(&mut rsrc, 1, 0);
+        rsrc_sub(&mut rsrc, root, 0, strings);
+        rsrc_name(&mut rsrc, strings, 0, "blocks");
+        let languages = rsrc_dir(&mut rsrc, 1);
+        rsrc_sub(&mut rsrc, strings, 0, languages);
+        rsrc_id(&mut rsrc, languages, 0, 1033);
+        let payload = string_payload(&["not decoded as a block"]);
+        let rva = RSRC_RVA + rsrc.len() as u32;
+        rsrc.extend_from_slice(&payload);
+        let entry = rsrc.len();
+        rsrc.extend_from_slice(&rva.to_le_bytes());
+        rsrc.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+        rsrc.extend_from_slice(&1252u32.to_le_bytes());
+        rsrc.extend_from_slice(&0u32.to_le_bytes());
+        rsrc_data(&mut rsrc, languages, 0, entry);
+        let image = fixture_image(&rsrc);
+
+        let mut context = ParseContext::with_defaults("strings.dll");
+        let catalog = StringCatalog::read(&mut context, image_source(image.len()), &image)
+            .expect("an authored PE image reads");
+
+        // No block was decoded from it, and the leaf is retained and counted,
+        // not silently dropped because its type number is `RT_STRING`.
+        assert!(catalog.rows().is_empty(), "{:?}", catalog.rows());
+        assert_eq!(catalog.resources().strings().len(), 0);
+        assert_eq!(catalog.resources().leaves().len(), 1);
+        assert_eq!(catalog.accounting().strings, 0);
+        assert_eq!(catalog.accounting().other_leaves, 1);
+        assert_eq!(catalog.resources().leaves().len(), 1);
+        let other: Vec<&ResourceLeaf> = catalog.other_leaves().collect();
+        assert_eq!(other.len(), 1);
+        assert_eq!(other[0].key(0).and_then(ResourceKey::id), Some(RT_STRING));
+        assert_eq!(
+            other[0].key(1).and_then(ResourceKey::text).as_deref(),
+            Some("blocks")
         );
     }
 

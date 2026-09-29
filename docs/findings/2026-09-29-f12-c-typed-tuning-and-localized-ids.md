@@ -123,6 +123,8 @@ Eleven tests, all ordinary build/test, none ignored; all call production code.
 | `cs_inspect::config::…_config_resolves_declared_tuning_fields` | a loose keyed list routed via `--container`/`--member`; known/negative/overflow/missing and the consumed/unconsumed counts |
 | `cs_inspect::config::…_config_refuses_an_unrouted_member` | a member no observed rule covers is refused (an extension alone routes nothing) |
 | `cs_inspect::config::…_config_reports_an_unresolved_lookup` | a request that does not resolve is reported with exit 3, not swallowed |
+| `cs_content::config::…_string_catalog_counts_a_name_keyed_leaf_as_another_leaf` | a three-level `RT_STRING` leaf whose second level is a *name* is not a block; the reader keeps it plain, so the catalog counts it as another leaf rather than dropping it from the accounting (review fix) |
+| `cs_inspect::config::…_config_refuses_a_request_of_the_wrong_shape` | a `--string` against a keyed list or a `--field` against a PE image is invalid input (2), never a silently ignored request that exits 0 (review fix) |
 
 ## Mutation probes
 
@@ -135,6 +137,36 @@ Eleven tests, all ordinary build/test, none ignored; all call production code.
   non-empty before scanning, so the guard cannot pass by scanning nothing.
 - Removing `StringCatalog`/`resolve_tunings` breaks the consumers that call
   them, so the tests cannot pass against a stub.
+
+## Review corrections (2026-09-29, deepseek-1)
+
+Independent review found and fixed two acceptance defects; no behaviour the
+existing tests pin was weakened.
+
+- **`is_string_leaf` did not match the reader's own string rule.** It checked
+  only `path.len() == 3` and the outermost `RT_STRING`, but the F12-B reader's
+  `string_leaf` requires **all three** levels to be ids. A three-level leaf
+  under `RT_STRING` whose second or third level is a *name* is therefore not a
+  block: the reader keeps it as a plain leaf, while the catalog classified it
+  as a string leaf and excluded it from `other_leaves`. The leaf vanished from
+  the accounting (`strings` and `other_leaves` both counted nothing for it),
+  contradicting spec F12 non-negotiable #5 ("unknown keys are retained and
+  counted"). The predicate now requires all three levels to be ids.
+  `accept_f12_c_string_catalog_counts_a_name_keyed_leaf_as_another_leaf` pins
+  it and fails under the old predicate (`other_leaves` 0 vs 1).
+- **A request shape the member cannot answer was silently dropped.** `--string`
+  addresses a PE image's catalog and `--field` a keyed list's document, but the
+  command ignored the other shape's requests and still exited 0 with an empty
+  `lookups`/`tunings` array — a lookup that never happened reported as success.
+  The dispatch now refuses a `--string` against a keyed list, or a `--field`
+  against a PE image, as invalid input (exit 2). The mirror test
+  `accept_f12_c_config_refuses_a_request_of_the_wrong_shape` fails (exit 0 vs 2)
+  when the guard is removed. The command's module doc records the rule.
+
+Reviewer identity: `deepseek-1` (same model family as the F12-B reviewer);
+context was fresh for this task (the F12-C implementation was read from the
+branch, not carried over). This is an agent review and awards at most
+`checked`, not `verified_original`.
 
 ## Recorded unknowns
 
@@ -165,8 +197,9 @@ No new tasks were filed: every unknown above is already filed (#367, #368,
 - `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
   — 0.
 - `cargo test --workspace --locked` — 0.
-- `cargo test --workspace --locked -- accept_f12_c_ --include-ignored` — 11
-  tests discovered, all passing.
+- `cargo test --workspace --locked -- accept_f12_c_ --include-ignored` — 13
+  tests discovered, all passing (11 from the implementation plus the 2 review
+  regressions below).
 - Mutation probe above: the duplicate test fails under the mutation and passes
   after the revert.
 

@@ -35,7 +35,10 @@
 //! Exit codes follow `docs/contracts/CLI-EVIDENCE.md`: `0` the file was read
 //! and every requested lookup and declaration resolved; `2` invalid input (no
 //! `--file`, an unreadable path, a path that is not a file, a malformed
-//! declaration, a bad `--install-sha256`); `3` the bytes were refused — an
+//! declaration, a request the member's shape cannot answer — a `--string`
+//! against a keyed list or a `--field` against a PE image, which is refused
+//! rather than silently dropped — a bad `--install-sha256`); `3` the bytes
+//! were refused — an
 //! unrouted member, a dialect no F12-C consumer reads, a malformed or hostile
 //! PE image (a resource offset outside its table is a structured refusal,
 //! never a platform load), a document the reader refused — or the file read
@@ -439,6 +442,27 @@ pub fn config_command_result(args: &[String]) -> ConfigRun {
             );
         }
     };
+
+    // Each request shape addresses exactly one consumer: `--string` a PE
+    // image's string catalog, `--field` a keyed list's document. A request the
+    // member's shape cannot answer is a malformed request, so it is refused
+    // rather than silently dropped: a run that ignored it and exited 0 would
+    // report success for a lookup that never happened.
+    let mismatched = match dialect {
+        TextDialect::PeResources if !parsed.fields.is_empty() => {
+            Some("--field declares a keyed-list field; a PE resource image has none")
+        }
+        TextDialect::KeyedList if !parsed.strings.is_empty() => {
+            Some("--string looks up a PE resource id; a keyed list has none")
+        }
+        _ => None,
+    };
+    if let Some(message) = mismatched {
+        return ConfigRun::failed(
+            EXIT_INVALID_INPUT,
+            &ConfigCommandError::Usage(format!("cs-inspect config: {message}")),
+        );
+    }
 
     match dialect {
         TextDialect::PeResources => run_pe_resources(&parsed, source, &bytes, &label),
@@ -1157,6 +1181,43 @@ mod tests {
         assert!(report.contains("\"outcome\":\"missing\""), "{report}");
         assert!(
             run.diagnostics.iter().any(|line| line.contains("id 9000")),
+            "{:?}",
+            run.diagnostics
+        );
+    }
+
+    /// A request shape the member cannot answer is refused as invalid input,
+    /// never silently dropped: `--field` addresses a keyed list and `--string`
+    /// a PE resource image, so asking the other is a malformed request rather
+    /// than a lookup that resolved.
+    #[test]
+    fn accept_f12_c_config_refuses_a_request_of_the_wrong_shape() {
+        let temp = Temp::new("pe-field");
+        let path = temp.write("strings.dll", &one_block_image());
+        let run = config_command_result(&args(&[
+            "--file",
+            path.to_str().expect("utf-8 path"),
+            "--field",
+            "gun.rate=GUN:RATE:0:16:signed",
+        ]));
+        assert_eq!(run.exit_code, EXIT_INVALID_INPUT);
+        assert!(run.report.is_none());
+        assert!(
+            run.diagnostics
+                .iter()
+                .any(|line| line.contains("a PE resource image has none")),
+            "{:?}",
+            run.diagnostics
+        );
+
+        // The mirror case: a `--string` against a keyed list.
+        let run = keyed_run(&["--string", "0:1033"]);
+        assert_eq!(run.exit_code, EXIT_INVALID_INPUT);
+        assert!(run.report.is_none());
+        assert!(
+            run.diagnostics
+                .iter()
+                .any(|line| line.contains("a keyed list has none")),
             "{:?}",
             run.diagnostics
         );
