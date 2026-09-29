@@ -296,6 +296,7 @@ pub static TEXT_DIALECT_INVENTORY: [DialectRecord; 6] = [
             "whether the local or the global name table is consulted first (no shadowing observed)",
             "whether <NAME> expansion substitutes text into the field or means something else",
             "the code page of bytes above 0x7F in localized installations",
+            "what the original reader does with a colour field spelled without a `0x` prefix (`oxff1E283C` on three live `SBZ_T_*J` records, `xff000000` on one): the reader is code inside the SafeDisc-packed engine image, so the rule is unmeasured (F12-J)",
         ],
     },
     DialectRecord {

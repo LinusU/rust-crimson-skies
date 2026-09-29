@@ -4399,4 +4399,169 @@ SBROW=1,IDS_IMG,thumb.png,PNG,10,20,255,64,64,0,\"0,0,64,64\",1,1,1,TITLE,TEXT\r
             "a declared kind the shipped bytes do not spell"
         );
     }
+
+    // ------------------------------------------------- F12-J (task #376)
+
+    /// A colour spelled with a letter `o` where the `0` of `0x…` belongs.
+    ///
+    /// `ASSETS/LAYOUT.CSV` lines 1156-1158 write `oxff1E283C` at field 7
+    /// of the three `SBZ_T_*J` text records of `[@ScrapbookZoom@]` (and
+    /// `SBZ_T_CAPTIONA` drops the `0` outright on line 1121). What the
+    /// original's own reader does with such bytes is **not measurable from
+    /// the data** — the layout reader is code inside the SafeDisc-encrypted
+    /// engine image, and the finding
+    /// `docs/findings/2026-09-29-f12-j-letter-o-colour.md` records why the
+    /// question stays `Unknown`. So this reader keeps the designed rule:
+    /// the field is refused as a number, classified `Text` rather than
+    /// `Color`, and retained byte for byte. No consumer silently
+    /// substitutes a colour for it.
+    #[test]
+    fn accept_f12_j_a_misspelt_colour_is_retained_unconverted() {
+        // Authored; the record shape is the observed `T` one and the value
+        // is the misspelling the retail test below pins on the real member.
+        let member = format!(
+            "TXT_J=T,!,1,2,0,3,4,{MISSPELT_COLOUR},0\r\n\
+             TXT_A=T,!,1,2,0,3,4,xff000000,0\r\n\
+             TXT_OK=T,!,1,2,0,3,4,0xff1E283C,0\r\n"
+        );
+        let document = records(member.as_bytes());
+
+        for key in [b"TXT_J".as_slice(), b"TXT_A".as_slice()] {
+            let entry = entry_of(&document, key);
+            let view = RecordView::for_entry(entry).expect("a T record has a schema");
+            assert_eq!(view.schema(), RecordSchema::Layout(RecordKind::Text));
+            // Position 7 keeps the documented colour kind; the bytes
+            // themselves are not a colour spelling, so no conversion can
+            // ever take them.
+            let colour = &view.fields()[7];
+            assert_eq!(colour.name(), Some("Color"));
+            assert_eq!(colour.kind(), FieldKind::Color);
+            assert_eq!(colour.spelling, FieldSpelling::Text);
+            let len = colour.field.value().len();
+            for spec in [
+                FieldSpec::integer(ValueWidth::Bits32, false),
+                FieldSpec::float(ValueWidth::Float64),
+            ] {
+                assert_eq!(
+                    TuningSchema::new(spec, entry).tune(7),
+                    Err(TuneError::NotANumber { len })
+                );
+            }
+            // The record is still whole: the position's kind is measured,
+            // so the field counts as typed — typed does not mean read.
+            assert_eq!(view.accounting().typed, 9);
+            assert_eq!(view.accounting().unknown, 0);
+        }
+        assert_eq!(document.reassemble(), member.as_bytes());
+
+        // The control proves the refusal is about the bytes, not the
+        // field: the same position written `0x…` spells a colour and
+        // converts.
+        let entry = entry_of(&document, b"TXT_OK");
+        let view = RecordView::for_entry(entry).expect("a T record");
+        assert_eq!(view.fields()[7].spelling, FieldSpelling::Color);
+        let tuning = TuningSchema::new(FieldSpec::integer(ValueWidth::Bits32, false), entry)
+            .tune(7)
+            .expect("a well-formed colour reads");
+        assert_eq!(tuning.unsigned, Some(0xff1e_283c));
+    }
+
+    /// The retail member carries the misspelling on live content: the three
+    /// records are bound by `ASSETS/SCRIPTS/SCRAPBOOKZOOM.SCRIPT` as
+    /// `sbz_t_title`/`sbz_t_caption`/`sbz_t_text` plus the slot letter, and
+    /// no script writes the objects' `goscolor` — so the field is what
+    /// renders, whatever the original reader made of it. This test pins the
+    /// records, the bytes, the refusals and the container, and records the
+    /// original's own tolerance as what the finding leaves `Unknown`.
+    #[test]
+    #[ignore = "requires CS_GAME_DIR"]
+    fn accept_f12_j_retail_misspelt_colour_fields_stay_raw() {
+        let rof = retail_crimson_rof();
+        let RetailMember {
+            bytes,
+            mut document,
+        } = retail_keyed_list(&rof, LAYOUT);
+
+        // The three records of `[@ScrapbookZoom@]`, found through the same
+        // case-insensitive lookup the binding script relies on (R1).
+        for (key, line) in [
+            ("sbz_t_titlej", 1156u64),
+            ("sbz_t_captionj", 1157),
+            ("sbz_t_textj", 1158),
+        ] {
+            let Lookup::Found(entry) = document.lookup(Some(b"@ScrapbookZoom@"), key.as_bytes())
+            else {
+                panic!("{key}: the zoom slot's record is missing")
+            };
+            assert_eq!(entry.line, line);
+            let view = RecordView::for_entry(entry).expect("a T record");
+            assert_eq!(view.schema(), RecordSchema::Layout(RecordKind::Text));
+            let colour = &view.fields()[7];
+            assert_eq!(colour.name(), Some("Color"));
+            assert_eq!(colour.kind(), FieldKind::Color);
+            assert_eq!(colour.spelling, FieldSpelling::Text);
+            assert_eq!(colour.field.value(), MISSPELT_COLOUR.as_bytes());
+            assert_eq!(
+                TuningSchema::new(FieldSpec::integer(ValueWidth::Bits32, false), entry).tune(7),
+                Err(TuneError::NotANumber { len: 10 })
+            );
+        }
+
+        // The sibling slip on the same record kind: `SBZ_T_CAPTIONA`
+        // writes `xff000000`, dropping the `0` of the prefix. The original
+        // reader's handling of it is the same recorded unknown.
+        let Lookup::Found(caption) = document.lookup(Some(b"@ScrapbookZoom@"), b"sbz_t_captiona")
+        else {
+            panic!("sbz_t_captiona: the record is missing")
+        };
+        assert_eq!(caption.line, 1121);
+        let view = RecordView::for_entry(caption).expect("a T record");
+        assert_eq!(view.fields()[7].spelling, FieldSpelling::Text);
+        assert_eq!(view.fields()[7].field.value(), b"xff000000");
+        assert_eq!(
+            TuningSchema::new(FieldSpec::integer(ValueWidth::Bits32, false), caption).tune(7),
+            Err(TuneError::NotANumber { len: 9 })
+        );
+
+        // A well-formed neighbour converts: the refusal is the bytes', not
+        // the field's.
+        let Lookup::Found(neighbour) = document.lookup(Some(b"@ScrapbookZoom@"), b"sbz_t_titlei")
+        else {
+            panic!("sbz_t_titlei: the record is missing")
+        };
+        let view = RecordView::for_entry(neighbour).expect("a T record");
+        assert_eq!(view.fields()[7].spelling, FieldSpelling::Color);
+        TuningSchema::new(FieldSpec::integer(ValueWidth::Bits32, false), neighbour)
+            .tune(7)
+            .expect("a well-formed colour reads");
+
+        // Every slot letter A-Z is present, so the J rows are reachable
+        // content, not dead data.
+        let titles = document
+            .entries()
+            .filter(|entry| {
+                entry.section.as_deref() == Some(b"@ScrapbookZoom@".as_slice())
+                    && entry.key.starts_with(b"SBZ_T_TITLE")
+            })
+            .count();
+        assert_eq!(titles, 26, "one title record per zoom slot");
+
+        // Nothing was repaired or normalised: the document is the member.
+        assert_eq!(document.reassemble(), bytes.as_slice());
+
+        // The script that binds the three objects is a member of the same
+        // container, which is what makes the colour live UI data.
+        let mut context = ParseContext::with_defaults(CRIMSON_ROF);
+        let tree = cs_formats::read_tree(&mut context, &rof).expect("the retail container walks");
+        let bound = tree.members().iter().any(|record| {
+            record
+                .path
+                .iter()
+                .map(|segment| String::from_utf8_lossy(segment).into_owned())
+                .collect::<Vec<_>>()
+                .join("/")
+                .eq_ignore_ascii_case("ASSETS/SCRIPTS/SCRAPBOOKZOOM.SCRIPT")
+        });
+        assert!(bound, "SCRAPBOOKZOOM.SCRIPT is in the retail container");
+    }
 }
