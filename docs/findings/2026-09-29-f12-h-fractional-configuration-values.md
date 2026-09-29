@@ -1,0 +1,214 @@
+# F12-H: is a configuration value ever fractional?
+
+Date: 2026-09-29. Task: #369 / F12-H "Establish whether configuration values
+are ever fractional", a follow-up to F12-B. Shared contract:
+`docs/contracts/IDENTITY-CONTENT.md` (its "Numeric contract" section is the
+rule the reading rules implement). Required capability: `retail`, used
+**read-only**: both members were decoded through the production readers
+(`cs_formats::read_tree` → `cs_formats::read_member` → `read_keyed_list` →
+`ConfigDocument`), and cross-checked against a `cs-inspect rof --export-dir`
+copy written into `private/` (git-ignored). Nothing from the installation is
+committed except paths, lengths, counts, digests and value shapes.
+
+This is not a lettered slice of the feature sheet: the spec's F12-A to F12-D
+are already merged stages, and F12-H exists to settle one recorded unknown so
+that F12-D's configuration verification is not gated on a guess.
+
+## The question, and why it needed a measurement
+
+F12-B shipped [`TuningSchema::number`](../crates/cs_content/src/config.rs) with
+three accepted spellings. Two were `ObservedTool` — a signed decimal run
+(`LAYOUT.CSV` and `SCRAPBOOK.CSV` both carry them) and a `0x` hexadecimal value
+(`LAYOUT.CSV` carries `0x1000`, `0x1020`). The third, a single `.` with digits
+on at least one side, was marked **`Inferred`**: a designed reading rule, kept
+because a tuning float has to be spellable at all, with the F12-B survey's
+negative result ("found no fractional value in either member") recorded as an
+unknown.
+
+A negative survey result is not a measurement of the thing the rule is about.
+A `.` in a configuration member is common — it is how every texture and movie
+file name is written — and F12-B's survey had counted *value shapes*, not
+decided what a "value" is for this purpose. So the sentence that stood was
+weaker than it looked, and nobody could tell from the workspace whether the
+installed data needed the rule or merely tolerated it.
+
+## Files and the one observable failure (listed before editing)
+
+- `crates/cs_content/src/config.rs`: the `TuningSchema::number` doc comment
+  (the evidence paragraph for the `.` rule) and two new tests,
+  `accept_f12_h_the_fractional_spelling_is_a_designed_rule` (authored) and
+  `accept_f12_h_retail_configuration_values_are_never_fractional` (retail).
+- `docs/findings/2026-09-29-f12-h-fractional-configuration-values.md` (this
+  file) and one forward pointer added to the F12-B finding.
+- Wiring only: none. No module, re-export or dependency changed.
+
+**The parser is unchanged.** The measurement did not find a shape to extend it
+with, so branch (b) of the task applies and the code keeps the rule it has.
+
+**One observable failure:** a reader that presented "no `.` byte in the member"
+as "no fractional value" would pass a grep and fail the question, because
+`LAYOUT.CSV`'s 232 `.` bytes are all real and none of them is a number. The
+count that answers the question is the count of *field values that read as a
+number*, and both numbers are asserted.
+
+## Method
+
+For each member, through production code only:
+
+1. `cs_formats::read_tree` walks `GOSDATA/ASSETS/crimson.rof`; the member is
+   located by its path segments and decoded by `cs_formats::read_member` under
+   the default `RofLimits`.
+2. `ConfigDocument::read` turns those bytes into owned nodes under the dialect
+   the inventory routes the member to (`TextDialect::KeyedList`, never the
+   `.CSV` extension).
+3. Every field of every entry is taken as `RawField::value()` — the form the
+   original reader hands a consumer (**R4**, blank bytes dropped) — and put to
+   `TuningSchema::tune` twice: once with a `Float64` spec, which accepts any
+   finite value the rule can read, and once with a signed `Bits64` spec.
+
+The first reading answers "could a consumer convert this field at all". The
+second answers "would a consumer ever have to round it". A value that reads
+under the first and comes back with a non-zero `fract()` under the second is a
+fraction in the only sense this task cares about.
+
+## Measurement
+
+| Member | Bytes | Lines | Field values | Numeric (`Float64`) | Field values with a `.` | `.` bytes | Fractional values |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `ASSETS/LAYOUT.CSV` | 56 148 | 1 222 | 7 272 | 3 664 | **229** | 232 | **0** |
+| `ASSETS/SCRAPBOOK.CSV` | 35 154 | 500 | 7 376 | 5 098 | **0** | 0 | **0** |
+
+`ASSETS/SCRAPBOOK.CSV` contains no `.` byte at all.
+
+`ASSETS/LAYOUT.CSV` contains 232 `.` bytes. 229 of them sit in field values
+(one per value; no value carries a second `.`) and the remaining 3 are the
+ellipsis of line 101, `:For about box, these two are dummy objects, actual
+x,y, not important...`, which the keyed-list grammar does not classify (its
+first non-blank byte is `:`, so it is `Unclassified::NoSeparator` and yields
+no entry at all).
+
+### The shape of every dotted value
+
+Every one of the 229 is a **file name**, at field index 1 of its entry
+(221 values) or at index 7 and 8 of the eight volume-slider entries
+(`PF_B_SliderSlot.png`, `PF_B_Slider.png`): a stem, exactly one `.`, and an
+alphabetic extension. 125 distinct names. The extension set, case included:
+
+| Extension | Values | Case-folded |
+| --- | --- | --- |
+| `png` | 186 | `png` (208) |
+| `Png` | 22 | — |
+| `jpg` | 13 | `jpg` |
+| `MPG` | 6 | `mpg` |
+| `tga` | 2 | `tga` |
+
+So the answers to the task's own questions, one by one:
+
+- **trailing digits?** No. No dotted value has a digit after its `.`; every
+  extension is alphabetic.
+- **sign?** No dotted value carries a sign. (A sign in front of a *decimal* is
+  a separate rule with its own evidence and is not part of this question.)
+- **exponent?** No value is spelled as one. The count of field values with a
+  letter `e`/`E` immediately next to a digit is 115 in `LAYOUT.CSV` and 4 in
+  `SCRAPBOOK.CSV`, and every one of them is a `0x` hexadecimal colour, a
+  resource-id name or a `<NAME>` placeholder — see the misspelling below. Not
+  one is a number, so an exponent is absent from the data rather than merely
+  unobserved. The rule refuses an exponent as text in any case.
+- **more than one `.`?** No, not inside a field value. The only three-dot run in
+  either member is the `...` of the unclassified line 101.
+
+Every dotted value is a file name, and a file name is not a number: the stem
+before the `.` is not a run of digits, so `TuningSchema::number` refuses all
+229 as `NotANumber` for a reason that has nothing to do with fractions. The
+assertion in the retail test is exactly that — `!stem.bytes().all(is_ascii_digit)`
+— so it would fail if any dotted value ever *were* a number, whatever came
+after its point.
+
+### A finding this survey did not go looking for
+
+Lines 1156-1158 of `ASSETS/LAYOUT.CSV` spell a text colour **`oxff1E283C`** —
+a letter `o` where the `0` of `0xff1E283C` belongs. The three entries are
+`SBZ_T_TITLEJ`, `SBZ_T_CAPTIONJ` and `SBZ_T_TEXTJ`, all carrying the same value
+at field index 7, and every neighbouring colour on lines 1154 and 1160 is a
+well-formed `0x…`. So it is a repeated slip in the original data rather than a
+spelling the data uses, and `TuningSchema::number` refuses it as
+`NotANumber { len: 10 }` for the same reason it refuses a file name.
+
+This is recorded, not repaired and not modelled. The original's own reader
+evidently tolerates it (these are live UI text colours, so the value is read on
+every scrapbook visit), but nothing in the workspace measures how: whether it
+skips the `o`, parses case-insensitively as `sscanf`, or clamps is unknown, and
+guessing would be exactly the "unrecorded compatibility assumption" spec F12
+forbids. A consumer that needs this colour declares what it accepts, and the
+F12-D stage is where the original's own tolerance gets measured. It is a
+follow-up, not a parity blocker for this task: the affected content is one
+colour on three scrapbook panes.
+
+## Resulting evidence class: `Inferred`, and now a measured negative
+
+The rule stays **`Inferred`**, for a sharper reason than before. It is not
+merely "unobserved"; it is *measured absent from the installed data*, which is a
+different and stronger statement, and it is recorded as such:
+
+- The spelling is not promoted to `ObservedTool`. Nothing in the data uses it,
+  so there is no observation to promote it from, and a designed rule that no
+  original value needs cannot be evidence about the original.
+- The spelling is not removed either. A `FieldSpec` of `ValueWidth::Float32` or
+  `Float64` exists, so a fractional value must be *readable* or the typed
+  conversion would be incomplete by construction; refusing the spelling would
+  convert "no data uses it" into "it is invalid", which is a parity claim the
+  data does not support.
+- `crates/cs_formats`'s `LexicalFeature` is unchanged, and deliberately so: it
+  lists features a survey *observed*, and no fractional feature was observed.
+  Adding one would be the promotion this task declines to make. That file is
+  outside this task's owner paths in any case.
+- **The limitation that survives this task:** the rule is not parity evidence.
+  Whether the original reader accepts a fractional spelling at all is a
+  property of the original program, not of its data, and no reading of
+  `crimson.rof` can settle it. F12-D is where that is measured; until then
+  nothing may rest on `5.5` reading the way this reader reads it. This
+  limitation names the affected content (every float-typed configuration field)
+  and the resolving task (F12-D) and must not be dropped when this task is
+  marked done.
+
+## Test inventory (`accept_f12_h_*`)
+
+| Test | Covers |
+| --- | --- |
+| `…the_fractional_spelling_is_a_designed_rule` | the three accepted shapes (`5.5`, `5.`, `.5`) against a float width; the first and third refused as `Overflow` for a whole-number width and the second accepted as `5`; a sign in front of a fraction; `5.5.5`, `.`, `1.5e3` and `0x1.8` refused as `NotANumber` with their lengths; a plain decimal and a hexadecimal value unaffected; every refusal leaving the member byte-identical |
+| `…retail_configuration_values_are_never_fractional` (ignored, retail) | both members read through the ROF tree walk, the bounded member decoder, the keyed-list grammar and `ConfigDocument`; the per-member field-value, numeric, dotted and exponent-shaped counts; `SCRAPBOOK.CSV` dotted empty; `LAYOUT.CSV` exactly 229 dotted with no dotted value readable as a number; no numeric value a whole-number field must round; one `.` per dotted value, alphabetic extension, non-numeric stem; the exact extension histogram; every exponent-shaped value a hexadecimal colour, a resource-id name or a `<NAME>` placeholder, and the three `oxff1E283C` misspellings named exactly |
+
+The retail test fails with "CS_GAME_DIR is not set" when run without it.
+
+## Mutation probes
+
+| Mutation | Failing test |
+| --- | --- |
+| `number` refuses any `.` (the reading rule deleted) | `…the_fractional_spelling_is_a_designed_rule` (`5.5` becomes `NotANumber`) |
+| `number` accepts a `.` inside a hexadecimal value (a second `.` admitted) | `…the_fractional_spelling_is_a_designed_rule` (`0x1.8` becomes a number) |
+| `tune` truncates a fraction for a whole-number width instead of refusing it | `…the_fractional_spelling_is_a_designed_rule` (`5.5` would become `Tuning { value: 5.0, … }`) |
+| `number` refuses the `0x` prefix (the hexadecimal rule removed) | `…retail_configuration_values_are_never_fractional` (`LAYOUT.CSV` numeric count 3 664 → 3 220) |
+
+A fifth probe, dropping the **R4** blank-trimming of `RawField::value`, changed
+nothing: the seven padded fields of `SCRAPBOOK.CSV` are resource-id *names*,
+which were never numeric. Recorded because it bounds what this task's tests
+claim — they pin the value shapes, not the padding rules.
+
+## Commands
+
+- `cargo fmt --all -- --check` → 0
+- `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` → 0
+- `cargo test --workspace --locked` → 0
+- `cargo test --workspace --locked -- accept_f12_h_ --include-ignored` → 0
+  (2 tests, 1 of them retail, in `cs_content`)
+
+## Sources
+
+`specs/F12-text-configuration-strings-and-pe-resources.md` (non-negotiable #1,
+"extract grammar from real samples before implementing a parser", and #2,
+"numeric conversion is typed and checked"),
+`docs/contracts/IDENTITY-CONTENT.md` (the "Numeric contract" section and the
+`ClaimStatus` vocabulary used above), the F12-A, F12-B, T351 and F12-E findings
+for the member inventory, the keyed-list grammar and the reading rules R1-R4,
+`cs_types::evidence::ClaimStatus`, and `$CS_GAME_DIR` (read-only) for the
+measurement above.

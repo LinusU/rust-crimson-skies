@@ -190,6 +190,8 @@ byte above `0x7F`.
 - **A fractional spelling is `Inferred`, not observed.** The survey found no
   fractional value in either member, so `5.5` reads because of a *designed*
   rule. This is recorded below as a follow-up, not presented as a measurement.
+  Task #369 measured it on 2026-09-29 — the rule is *absent* from the installed
+  data, not merely unobserved — and the evidence class does not change.
 - **A tuning float's unit is a label, not a conversion.** `FieldSpec::unit` is
   carried into `Tuning` for a consumer's own conversion; this module performs
   no unit conversion at all, because the contract requires original units to be
@@ -242,7 +244,14 @@ The retail tests fail with "CS_GAME_DIR is not set" when run without it.
   its own `strings.dll` is not established).
 - **Fractional configuration values.** The reader accepts one decimal point
   (`Inferred`, a designed rule) because a tuning float needs one, but the
-  survey found none. Filed as a follow-up with the F12-D measurement.
+  survey found none. **Measured by task #369 (F12-H), 2026-09-29:** of 7 272
+  `LAYOUT.CSV` and 7 376 `SCRAPBOOK.CSV` field values, none is a fraction —
+  `SCRAPBOOK.CSV` holds no `.` at all and every `.` of `LAYOUT.CSV` is a file
+  name's extension. The rule stays `Inferred` and the finding is
+  `docs/findings/2026-09-29-f12-h-fractional-configuration-values.md`; what
+  remains open is the original's own tolerance for a fraction, which is F12-D's
+  measurement. That survey also turned up an unrelated original-data slip
+  (`oxff1E283C` on lines 1156-1158 of `LAYOUT.CSV`), recorded there.
 - **The original reading rules of the keyed field list dialect** (owner ruling
   2026-09-28, #351) still gate the configuration verification: a `;` after a
   value, trimming of values and fields, escaped quotes, case folding and the
