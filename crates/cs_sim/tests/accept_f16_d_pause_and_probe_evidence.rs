@@ -245,12 +245,21 @@ fn accept_f16_d_probe_traces_agree_across_render_frame_rates() {
         .collect();
 
     let reference = &traces[0];
+    // Each trace must report the rate it was actually delivered at, or the
+    // comparison below would be vacuous: agreement between traces that all
+    // reported the same rate would prove nothing about frame-rate
+    // independence.
+    let reported: Vec<u32> = traces.iter().map(|trace| trace.render_fps()).collect();
+    assert_eq!(
+        reported,
+        RENDER_FPS.to_vec(),
+        "each trace must report the render rate it was delivered at"
+    );
+    assert!(
+        RENDER_FPS.windows(2).all(|pair| pair[0] != pair[1]),
+        "the frame rates must be distinct for the agreement to mean anything"
+    );
     for trace in &traces[1..] {
-        assert_eq!(
-            trace.render_fps(),
-            reference.render_fps().max(trace.render_fps()),
-            "each trace reports its own delivery rate"
-        );
         assert_eq!(
             trace.committed_ticks(),
             reference.committed_ticks(),
@@ -266,10 +275,6 @@ fn accept_f16_d_probe_traces_agree_across_render_frame_rates() {
             reference.render_fps()
         );
     }
-    assert!(
-        RENDER_FPS.windows(2).all(|pair| pair[0] != pair[1]),
-        "the frame rates must be distinct for the agreement to mean anything"
-    );
 }
 
 /// The comparison half of the stage: a measured trace is compared against an

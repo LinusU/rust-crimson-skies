@@ -1214,7 +1214,7 @@ impl UnitCalibration {
                     description: landmark.description().to_string(),
                 });
             }
-            if existing.evidence() == landmark.evidence() {
+            if same_observation(existing.evidence(), landmark.evidence()) {
                 return Err(CalibrationError::RepeatedObservation {
                     quantity,
                     first: existing.description().to_string(),
@@ -1341,6 +1341,22 @@ impl UnitCalibration {
             self.claim_status().label()
         )
     }
+}
+
+/// Whether two evidence records describe the **same observation**.
+///
+/// `EvidenceRecord`'s own `PartialEq` also covers `limitations`, which is the
+/// recorder's self-assessment of the observation rather than part of it. The
+/// independence rule is about *what was observed, where and how*, so a second
+/// landmark may not be bought by re-wording a limitations string: the first
+/// version of this check compared whole records, and pasting one inspection
+/// three times with a different caveat on each paste read as three
+/// independent landmarks — exactly what non-negotiable behavior 1 forbids.
+fn same_observation(first: &EvidenceRecord, second: &EvidenceRecord) -> bool {
+    first.source == second.source
+        && first.fingerprint == second.fingerprint
+        && first.locator == second.locator
+        && first.method == second.method
 }
 
 #[cfg(test)]

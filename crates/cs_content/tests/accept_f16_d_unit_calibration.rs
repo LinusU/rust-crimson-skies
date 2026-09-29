@@ -291,6 +291,30 @@ fn accept_f16_d_landmarks_must_be_independent() {
         })
     );
 
+    // Re-wording the *limitations* does not make it a second observation
+    // either: the caveat is the recorder's self-assessment, not what was
+    // observed, so one inspection cannot be pasted three times by editing a
+    // free-text field between pastes.
+    let mut reworded = first.evidence().clone();
+    reworded
+        .limitations
+        .push("re-read on a second day".to_string());
+    let cosmetically_different = described(
+        CalibratedQuantity::Scale,
+        LandmarkKind::Behavior,
+        "the same span, described differently again",
+        reworded,
+    );
+    assert_eq!(
+        record.record(cosmetically_different),
+        Err(CalibrationError::RepeatedObservation {
+            quantity: CalibratedQuantity::Scale,
+            first: "Scale landmark 0".to_string(),
+            second: "the same span, described differently again".to_string(),
+        }),
+        "a changed limitations string is not a new observation"
+    );
+
     assert_eq!(
         record.landmarks().len(),
         1,

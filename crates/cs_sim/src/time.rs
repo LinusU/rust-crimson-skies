@@ -618,14 +618,16 @@ impl GameplayTimeline {
     /// defined to be.
     ///
     /// The authoritative gameplay policy grants no local speed-up authority
-    /// (`F16` non-negotiable behavior 4), so this always refuses; it exists so
-    /// that the refusal is a named, tested boundary rather than a missing
-    /// method.
+    /// (`F16` non-negotiable behavior 4), so this always refuses: the
+    /// authority check precedes the pause check, so a paused clock reports
+    /// [`TimeError::NoSpeedUpAuthority`] and never
+    /// [`TimeError::ClockPaused`]. It exists so that the refusal is a named,
+    /// tested boundary rather than a missing method — extra fixed ticks reach
+    /// these timers only as ticks a frame's clock committed.
     ///
     /// # Errors
     ///
-    /// [`TimeError::NoSpeedUpAuthority`], and [`TimeError::ClockPaused`] if
-    /// the clock is paused.
+    /// [`TimeError::NoSpeedUpAuthority`], always. Nothing is mutated.
     pub fn advance_fixed_ticks(&mut self, ticks: u64) -> Result<u64, TimeError> {
         self.clock.advance_fixed_ticks(ticks)?;
         self.cooldown.commit(ticks);
@@ -1027,15 +1029,18 @@ fn frame_spans(nanos: u64, frame: u64) -> Result<Vec<Duration>, ProbeError> {
         return Ok(vec![Duration::from_nanos(nanos)]);
     }
     let whole = nanos / frame;
-    if whole > MAX_FRAMES_PER_STEP {
-        return Err(ProbeError::FrameCountTooLarge {
-            nanos,
-            frames: whole + 1,
-        });
-    }
-    let mut spans = Vec::with_capacity(whole as usize + 1);
-    spans.resize(whole as usize, Duration::from_nanos(frame));
     let rest = nanos - whole * frame;
+    // The frame count is exact, and the bound is applied to it rather than to
+    // `whole`: `MAX_FRAMES_PER_STEP` whole frames *plus* a remainder frame is
+    // one frame over the limit, and the refusal names the real number even
+    // when the wall time is an exact multiple of the frame length and no
+    // remainder frame is emitted at all.
+    let frames = whole + u64::from(rest > 0);
+    if frames > MAX_FRAMES_PER_STEP {
+        return Err(ProbeError::FrameCountTooLarge { nanos, frames });
+    }
+    let mut spans = Vec::with_capacity(frames as usize);
+    spans.resize(whole as usize, Duration::from_nanos(frame));
     if rest > 0 {
         spans.push(Duration::from_nanos(rest));
     }
@@ -1629,6 +1634,53 @@ mod tests {
         );
     }
 
+    /// Non-negotiable behavior 4 reaches the gameplay quantities too: the
+    /// authoritative gameplay clock grants no local speed-up authority, so
+    /// nobody can inject ticks straight into a weapon cooldown or an objective
+    /// timer, and a refused injection moves neither the tick nor a gameplay
+    /// quantity. The refusal is `NoSpeedUpAuthority` whether or not the clock
+    /// is paused — the authority check comes first, so `ClockPaused` is not
+    /// reachable through this entry point.
+    #[test]
+    fn accept_f16_d_gameplay_timeline_grants_no_local_speed_up_authority() {
+        let rate = TickRate::new(64).expect("64 Hz is valid");
+        let mut timeline = GameplayTimeline::new(rate, 120, 600).expect("periods are positive");
+        timeline
+            .advance_frame(Duration::from_millis(500))
+            .expect("runs");
+        let before = (
+            timeline.tick(),
+            timeline.cooldown().remaining_ticks(),
+            timeline.cooldown().elapsed_ticks(),
+            timeline.objective_timer().remaining_ticks(),
+            timeline.objective_timer().elapsed_ticks(),
+        );
+
+        assert_eq!(
+            timeline.advance_fixed_ticks(5),
+            Err(TimeError::NoSpeedUpAuthority),
+            "the gameplay clock must expose no local speed-up authority"
+        );
+        timeline.set_paused(true);
+        assert_eq!(
+            timeline.advance_fixed_ticks(5),
+            Err(TimeError::NoSpeedUpAuthority),
+            "a paused clock reports the missing authority, not a pause: the \
+             authority check comes first"
+        );
+        assert_eq!(
+            (
+                timeline.tick(),
+                timeline.cooldown().remaining_ticks(),
+                timeline.cooldown().elapsed_ticks(),
+                timeline.objective_timer().remaining_ticks(),
+                timeline.objective_timer().elapsed_ticks(),
+            ),
+            before,
+            "a refused speed-up moves neither the tick nor a gameplay quantity"
+        );
+    }
+
     /// A comparison that agrees can claim only what its reference's evidence
     /// supports. A synthetic-fixture reference is `observed_tool` and never
     /// `verified_original`; a diverging trace is `contradicted` whatever the
@@ -1761,6 +1813,56 @@ mod tests {
                 frames: u64::MAX / (NANOS_PER_SECOND as u64 / 60) + 1
             }),
             "a step of unbounded frame count must be refused, not attempted"
+        );
+
+        // The bound is `MAX_FRAMES_PER_STEP` frames exactly, and the refusal
+        // names the exact count. At 60 fps a frame is 16 666 666 ns, so
+        // `MAX_FRAMES_PER_STEP` whole frames plus one nanosecond needs one
+        // frame more than the limit allows, and the same whole frames with no
+        // remainder need exactly the limit.
+        let frame = NANOS_PER_SECOND as u64 / 60;
+        let over_by_remainder = frame * MAX_FRAMES_PER_STEP + 1;
+        static OVER_BY_REMAINDER: &[ProbeStep] = &[
+            ProbeStep::Advance {
+                nanos: (1_000_000_000 / 60) * MAX_FRAMES_PER_STEP + 1,
+            },
+            ProbeStep::Observe("never"),
+        ];
+        let probe = BehavioralProbe::new("over", 60, OVER_BY_REMAINDER).expect("valid probe");
+        assert_eq!(
+            probe.run(|| GameplayTimeline::new(TickRate::new(64).expect("valid"), 1, 1)),
+            Err(ProbeError::FrameCountTooLarge {
+                nanos: over_by_remainder,
+                frames: MAX_FRAMES_PER_STEP + 1,
+            }),
+            "a limit's worth of whole frames plus a remainder frame is one over"
+        );
+        static EXACTLY_THE_LIMIT: &[ProbeStep] = &[
+            ProbeStep::Advance {
+                nanos: (1_000_000_000 / 60) * MAX_FRAMES_PER_STEP,
+            },
+            ProbeStep::Observe("never"),
+        ];
+        let probe = BehavioralProbe::new("limit", 60, EXACTLY_THE_LIMIT).expect("valid probe");
+        assert_eq!(
+            probe.run(|| GameplayTimeline::new(TickRate::new(64).expect("valid"), 1, 1)),
+            Ok(ProbeTrace {
+                name: "limit",
+                render_fps: 60,
+                committed_ticks: 1_066_666,
+                samples: vec![ProbeSample {
+                    label: "never",
+                    tick: Tick(1_066_666),
+                    paused: false,
+                    cooldown_remaining_ticks: 0,
+                    cooldown_period_ticks: 1,
+                    cooldown_expirations: 1,
+                    objective_remaining_ticks: 0,
+                    objective_period_ticks: 1,
+                }],
+            }),
+            "exactly the limit is accepted, and no remainder frame is invented \
+             when the wall time is a whole number of frames"
         );
     }
 
