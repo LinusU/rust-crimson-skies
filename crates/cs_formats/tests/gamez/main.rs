@@ -10,9 +10,12 @@
 //! a decoder that forgets the odd-step swap or restarts parity after a
 //! degenerate step produces a triangle with the opposite sign.
 //!
-//! Stage F10-B's n-gon triangulation tests are in [`ngon`], and the established
-//! CS GameZ layout and its reader are in [`reader`].
+//! Stage F10-B's n-gon triangulation tests are in [`ngon`], the established
+//! CS GameZ layout and its reader are in [`reader`], and task F10-C.02's
+//! texture-name table, material records and material-to-texture binding are in
+//! [`materials`].
 
+mod materials;
 mod ngon;
 mod reader;
 

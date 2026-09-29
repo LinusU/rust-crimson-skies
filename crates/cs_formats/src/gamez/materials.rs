@@ -467,6 +467,21 @@ impl MaterialFinding {
         }
     }
 
+    /// The field the finding is about, named as the layout names it, or `""` for
+    /// a finding that is about the record as a whole.
+    #[must_use]
+    pub const fn code_field(&self) -> &'static str {
+        match self {
+            Self::TextureRecordField { field, .. }
+            | Self::MaterialField { field, .. }
+            | Self::MaterialLink { field, .. }
+            | Self::CycleField { field, .. } => field,
+            Self::UnknownMaterialFlags { .. }
+            | Self::CyclePointerMismatch { .. }
+            | Self::TextureIndexOutOfRange { .. } => "",
+        }
+    }
+
     /// Evidence class of a finding: `ObservedTool` at best, never better, since
     /// a finding is by definition outside the documented profile.
     pub const fn evidence(&self) -> ClaimStatus {
@@ -646,8 +661,14 @@ pub enum GameZMaterialError {
     /// The container header is not a CS GameZ container, or its sections do not
     /// form the chain the layout requires. This is [`super::GameZError`], shared
     /// with the mesh reader so both entrypoints reject the same bytes for the
-    /// same reason.
-    Header(super::GameZError),
+    /// same reason, and the container label travels with it so the failure names
+    /// the file it came from.
+    Header {
+        /// The container label the parse carries.
+        container: String,
+        /// The header's own failure.
+        error: super::GameZError,
+    },
     /// `texture_count` is not below the reference's bound of 4096, so the
     /// texture table's byte extent is not established.
     TextureCount {
@@ -722,7 +743,7 @@ impl GameZMaterialError {
     pub const fn code(&self) -> &'static str {
         match self {
             Self::Parse(_) => "parse",
-            Self::Header(_) => "header",
+            Self::Header { .. } => "header",
             Self::TextureCount { .. } => "texture_count",
             Self::TextureSectionEnd { .. } => "texture_section_end",
             Self::TextureNameUnterminated { .. } => "texture_name_unterminated",
@@ -740,7 +761,7 @@ impl GameZMaterialError {
     pub fn container(&self) -> &str {
         match self {
             Self::Parse(error) => &error.container,
-            Self::Header(error) => error.container(),
+            Self::Header { container, .. } => container,
             _ => "",
         }
     }
@@ -750,7 +771,7 @@ impl GameZMaterialError {
     pub fn offset(&self) -> Option<u64> {
         match self {
             Self::Parse(error) => Some(error.offset),
-            Self::Header(error) => error.offset(),
+            Self::Header { error, .. } => error.offset(),
             Self::TextureSectionEnd { found, .. } | Self::MaterialSectionEnd { found, .. } => {
                 Some(*found)
             }
@@ -769,7 +790,7 @@ impl fmt::Display for GameZMaterialError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Parse(error) => write!(f, "{error}"),
-            Self::Header(error) => write!(f, "{error}"),
+            Self::Header { container, error } => write!(f, "{container}: {error}"),
             Self::TextureCount { found } => {
                 write!(f, "at offset 12: texture count {found} is not below 4096")
             }
@@ -877,8 +898,12 @@ fn read_sections(
     allocation: &mut AllocationBudget,
     container_len: u64,
 ) -> Result<GameZMaterials, GameZMaterialError> {
-    let header =
-        super::reader::read_container_header(reader, container_len).map_err(GameZMaterialError::Header)?;
+    let header = super::reader::read_container_header(reader, container_len).map_err(|error| {
+        GameZMaterialError::Header {
+            container: reader.container().to_owned(),
+            error,
+        }
+    })?;
     if header.texture_count >= MAX_TEXTURE_COUNT {
         return Err(GameZMaterialError::TextureCount {
             found: header.texture_count,
@@ -963,11 +988,9 @@ fn read_texture_table(
         let field00 = reader.read_u32("texture.field00").map_err(material_parse)?;
         let field04 = reader.read_u32("texture.field04").map_err(material_parse)?;
         let field08 = reader.read_u32("texture.field08").map_err(material_parse)?;
-        let field32 = reader.read_u32("texture.used").map_err(material_parse)?;
-        let field36 = reader.read_u32("texture.index").map_err(material_parse)?;
-        let field40 = reader.read_i32("texture.unk40").map_err(material_parse)?;
-        // The name is the only variable-shaped record here and its length is
-        // fixed by the layout, so it is read as one unit.
+        // The name is the record's **third** field, at offset 12, and `used`,
+        // `index` and `unk40` follow it. Its length is fixed by the layout, so it
+        // is read as one unit rather than field by field.
         let name_bytes = reader
             .read_bytes("texture.name", TEXTURE_NAME_BYTES as usize)
             .map_err(material_parse)?;
@@ -975,6 +998,9 @@ fn read_texture_table(
             .try_into()
             .map_err(|_| GameZMaterialError::TextureNameUnterminated { texture: index })?;
         let (name, stem, suffix, encoding) = decode_name(field, index)?;
+        let field32 = reader.read_u32("texture.used").map_err(material_parse)?;
+        let field36 = reader.read_u32("texture.index").map_err(material_parse)?;
+        let field40 = reader.read_i32("texture.unk40").map_err(material_parse)?;
 
         for (field, found) in [("field04", field04), ("field08", field08)] {
             if found != 0 {
@@ -1380,7 +1406,11 @@ fn check_material_fields(
             );
         }
     } else {
-        material_field(findings, index, "alpha", record.alpha != 0, u64::from(record.alpha));
+        // The reference asserts four things about an untextured record and no
+        // more: the unknown and cycled flags are clear (checked below), the `rgb`
+        // word is zero, the texture index is zero and the cycle pointer is zero.
+        // It asserts **nothing** about `alpha` or the colour, and the measured
+        // corpus stores `0xFF` there, so asserting it would be inventing a rule.
         material_field(findings, index, "rgb", record.rgb != 0, u64::from(record.rgb));
         material_field(
             findings,
@@ -1388,6 +1418,20 @@ fn check_material_fields(
             "texture_index",
             record.texture_index != 0,
             u64::from(record.texture_index),
+        );
+        material_field(
+            findings,
+            index,
+            "cycled",
+            record.is_cycled(),
+            0,
+        );
+        material_field(
+            findings,
+            index,
+            "unknown",
+            record.flags & MATERIAL_FLAG_UNKNOWN != 0,
+            0,
         );
     }
 }
