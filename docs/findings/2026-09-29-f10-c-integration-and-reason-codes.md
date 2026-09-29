@@ -31,6 +31,10 @@ embedded data in the code.
 | A reader finding | `<code>: <finding text>` | varies |
 | A multi-material-group polygon | `multi_material_group_polygons:<count>` | short but still per-mesh |
 
+(F10-E has since replaced that code with
+`multi_material_group_presentation_unknown`, on the same rows; the row's `faces`
+count is unchanged and the extra draws are on the payload.)
+
 Measured consequences, all on the real installation:
 
 * **One cause, many strings.** `bldhwk_cowling..tif` is stored at 36 table
@@ -217,8 +221,13 @@ Newly measured, still unknown:
   an airframe material is bound, and is the same open question for world
   geometry that F10-C.02 recorded.
 * Multi-material-group polygons still lose their second UV set in the render
-  mesh (#382, F10-E), unchanged; F10-C only made the count reportable as a
-  number rather than as a reason suffix.
+  mesh (#382, F10-E); unchanged in this stage, which only made the count
+  reportable as a number rather than as a reason suffix. **Since done** by
+  `#382`: the render mesh draws every group, and
+  `multi_material_group_polygons` is replaced on those rows by
+  `multi_material_group_presentation_unknown` — the remaining question is how the
+  original renderer presented the groups, not that any of them is missing. See
+  `docs/findings/2026-09-29-f10-e-material-groups-into-the-render-mesh.md`.
 
 ## Checks
 

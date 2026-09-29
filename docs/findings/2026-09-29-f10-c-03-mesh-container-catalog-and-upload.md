@@ -121,10 +121,15 @@ while any of these is open, and every one of them is on the row:
    out-of-range material indices, unknown flag bits, an archive the catalog does
    not hold, …);
 2. `multi_material_group_polygons:<count>` — a stored polygon that keeps two or
-   three material groups. The render mesh carries the **first** group only (the
+   three material groups. The render mesh carried the **first** group only (the
    IR has one `material` and one per-corner `uv`, and F10-A's shape is a
-   published contract this task does not change), so a group beyond the first has
-   no UV set in the render mesh. This is reported, never dropped;
+   published contract this task does not change), so a group beyond the first had
+   no UV set in the render mesh. This is reported, never dropped. **Superseded by
+   F10-E** (`#382`): the render mesh now draws every group with its own material
+   and its own stored UV set, so nothing is lost, the code is gone, and the
+   remaining question — how the original renderer presented those groups — is
+   `multi_material_group_presentation_unknown`; see
+   `docs/findings/2026-09-29-f10-e-material-groups-into-the-render-mesh.md`;
 3. the three [`MeshPresentationUnknown`] codes.
 
 This mirrors F08-C exactly, where a decoded image with open presentation
@@ -322,8 +327,11 @@ milliseconds on top.
   render-mesh fidelity claim.
 * **Multi-material-group polygons lose their extra UV sets** in the render mesh.
   The count is on the row as `multi_material_group_polygons:<count>`; the IR shape
-  that cannot hold them is F10-A's published contract, so fixing it is not this
-  task's to do. Filed as **#382** (`F10-E`).
+  that could not hold them is F10-A's published contract, so fixing it is not this
+  task's to do. Filed as **#382** (`F10-E`) and since done: the render mesh draws
+  every group, the reason is replaced by the remaining presentation question, and
+  the corpus is measured per archive in
+  `docs/findings/2026-09-29-f10-e-material-groups-into-the-render-mesh.md`.
 * **A `TextureCatalog` of the same session can still answer for a sibling
   `TextureCatalog`'s `ResolvedTexture`**, because the session generation is the
   only binding F08-C has, so F08-C's own doc comment overstates the guarantee.
