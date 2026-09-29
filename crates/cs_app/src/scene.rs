@@ -3,8 +3,9 @@
 //! `### F11-A`; shared contract `docs/contracts/IDENTITY-CONTENT.md`).
 //!
 //! These are the typed *outputs* a scene consumer binds into the ECS — the
-//! records later stages attach to spawned entities. No system runs here yet;
-//! F11-B/C own import, LOD selection and spawn wiring.
+//! records later stages attach to spawned entities. Stage `### F11-B` below
+//! adds the import path and the LOD selection system; wiring them into the
+//! running app (spawn, teardown, viewer distance) is F11-C's.
 //!
 //! [`SceneNodeBinding`] ties an entity to its canonical
 //! [`cs_content::scene::SceneNode`] by [`ContentId`], stamped with the
@@ -36,7 +37,9 @@
 //! component — [`NodePresentation`] (`Drawn`, `LodCulled` or `Disabled`) —
 //! from the [`LodDistance`] the viewer stage supplies and the
 //! [`NodeDisabled`] markers damage owns. A destroyed node and everything
-//! under it stays `Disabled` whichever band becomes active, and the system
+//! under it stays `Disabled` whichever band becomes active, and a mesh under
+//! a band the distance did not choose is `LodCulled` with it, so two LOD
+//! levels of one part are never reported drawn at the same time. The system
 //! never writes an identity, a transform, a binding or a disable marker, so
 //! collision, weapon origins and damage identity cannot move with distance
 //! (F11 non-negotiable behavior 4; AC02).
@@ -423,7 +426,10 @@ pub struct NodeDisabled;
 pub enum PresentationState {
     /// The node's geometry is presented.
     Drawn,
-    /// Another variant of the node's LOD group is presented at this distance.
+    /// The node is an LOD variant its group did not choose, or it hangs under
+    /// such a band: another variant of that group is presented at this
+    /// distance, so a descendant of a culled band is culled with it and two
+    /// LOD levels of one part are never reported drawn together.
     LodCulled,
     /// The node or an ancestor is [`NodeDisabled`]; LOD can never bring it
     /// back.
@@ -494,8 +500,10 @@ impl LodDistance {
 /// For each group of `Lod` siblings the system picks one band with
 /// [`select_lod_variant`] at the [`LodDistance`], then writes
 /// [`NodePresentation`] for every node: `Disabled` when the node or any
-/// ancestor carries [`NodeDisabled`], otherwise `LodCulled` when another
-/// band of its group was chosen, otherwise `Drawn`.
+/// ancestor carries [`NodeDisabled`], otherwise `LodCulled` when the node or
+/// any ancestor is a band the group did not choose, otherwise `Drawn`.
+/// `Disabled` wins over `LodCulled` at any depth, so a destroyed wing stays
+/// destroyed whichever band its parent group selects.
 ///
 /// It writes nothing else — not the binding, not the transform, not the
 /// marker, not the entity set — so a distance change can only ever change
@@ -510,10 +518,11 @@ pub fn select_lod_presentation(
 ) {
     let target = distance.meters();
 
-    // One pass: the parent links, the variant groups (siblings of one parent)
-    // and the node list the second pass walks.
+    // One pass: the parent links, the variant groups (siblings of one parent),
+    // each variant's group key and the node list the second pass walks.
     let mut parent_of: HashMap<Entity, Entity> = HashMap::new();
     let mut groups: HashMap<Option<Entity>, Vec<(Entity, LodInfo)>> = HashMap::new();
+    let mut variant_parent: HashMap<Entity, Option<Entity>> = HashMap::new();
     let mut imported: Vec<(Entity, Option<LodInfo>)> = Vec::new();
     for (entity, variant) in nodes.iter() {
         let parent = parents.get(entity).ok().map(|parent| parent.0);
@@ -525,6 +534,7 @@ pub fn select_lod_presentation(
                 .entry(parent)
                 .or_default()
                 .push((entity, variant.info()));
+            variant_parent.insert(entity, parent);
         }
         imported.push((entity, variant.map(|variant| variant.info())));
     }
@@ -540,15 +550,27 @@ pub fn select_lod_presentation(
     }
 
     // A node is disabled when it or any ancestor is: destroying a part
-    // disables the gun mounted under it without naming the gun twice.
-    let mut affected: HashSet<Entity> = HashSet::new();
+    // disables the gun mounted under it without naming the gun twice. It is
+    // culled when it — or an ancestor band — is a variant its group did not
+    // choose, so a mesh under a culled band is culled with it; otherwise every
+    // mesh of every band of one part would report `Drawn` at the same time.
+    // `Disabled` wins, and the walk stops there.
+    let mut disabled_nodes: HashSet<Entity> = HashSet::new();
+    let mut culled_nodes: HashSet<Entity> = HashSet::new();
     for (entity, _) in &imported {
         let mut cursor = Some(*entity);
         let mut steps = 0usize;
+        let mut culled = false;
         while let Some(current) = cursor {
             if disabled.contains(current) {
-                affected.insert(*entity);
+                disabled_nodes.insert(*entity);
                 break;
+            }
+            if variant_parent
+                .get(&current)
+                .is_some_and(|group| selected.get(group) != Some(&current))
+            {
+                culled = true;
             }
             steps += 1;
             if steps > parent_of.len() {
@@ -556,22 +578,20 @@ pub fn select_lod_presentation(
             }
             cursor = parent_of.get(&current).copied();
         }
+        if culled {
+            culled_nodes.insert(*entity);
+        }
     }
 
     // The only write in the system.
-    for (entity, variant) in imported {
+    for (entity, _) in imported {
         let Ok(mut node) = presentation.get_mut(entity) else {
             continue;
         };
-        node.0 = if affected.contains(&entity) {
+        node.0 = if disabled_nodes.contains(&entity) {
             PresentationState::Disabled
-        } else if variant.is_some() {
-            let parent = parent_of.get(&entity).copied();
-            if selected.get(&parent) == Some(&entity) {
-                PresentationState::Drawn
-            } else {
-                PresentationState::LodCulled
-            }
+        } else if culled_nodes.contains(&entity) {
+            PresentationState::LodCulled
         } else {
             PresentationState::Drawn
         };
@@ -1002,6 +1022,19 @@ mod tests {
         );
         assert_eq!(presentation(&world, body), PresentationState::Drawn);
 
+        // The band's own verdict reaches the mesh that hangs under it: the
+        // near mesh under the chosen band is drawn, the far mesh under the
+        // culled band is culled with it, so two LOD levels of one wing are
+        // never reported drawn at the same time.
+        assert_eq!(
+            presentation(&world, wing_mesh_near),
+            PresentationState::Drawn
+        );
+        assert_eq!(
+            presentation(&world, wing_mesh_far),
+            PresentationState::LodCulled
+        );
+
         let before = snapshot(&world, &graph, &import);
 
         // Destroy the wing and its gun.
@@ -1089,7 +1122,61 @@ mod tests {
             PresentationState::LodCulled
         );
         assert_eq!(presentation(&world, gun), PresentationState::Drawn);
+        // Repaired wing, far band now chosen: the meshes swap verdicts with
+        // their bands and neither is reported drawn twice.
+        assert_eq!(
+            presentation(&world, wing_mesh_near),
+            PresentationState::LodCulled
+        );
+        assert_eq!(
+            presentation(&world, wing_mesh_far),
+            PresentationState::Drawn
+        );
         assert_eq!(snapshot(&world, &graph, &import), before);
+    }
+
+    /// A mesh is presented exactly when the band it hangs under is the one
+    /// its group chose: otherwise every band's mesh of the same part reports
+    /// `Drawn` together and two LOD levels of one wing are drawn at once.
+    #[test]
+    fn accept_f11_b_a_mesh_under_a_culled_band_is_culled_with_it() {
+        let graph = build_fixture_graph();
+        let mut world = World::new();
+        let generation = SceneGeneration::default().next();
+        let import = import_scene(&mut world, &graph, generation).expect("the fixture imports");
+        let mut schedule = Schedule::default();
+        schedule.add_systems(select_lod_presentation);
+
+        let near = import
+            .entity(&node_id("fix_planes.main.wing.wing_lod0.wing_mesh_near"))
+            .expect("near mesh entity");
+        let far = import
+            .entity(&node_id("fix_planes.main.wing.wing_lod1.wing_mesh_far"))
+            .expect("far mesh entity");
+
+        for (distance, expected_near, expected_far) in [
+            (50.0, PresentationState::Drawn, PresentationState::LodCulled),
+            (
+                150.0,
+                PresentationState::LodCulled,
+                PresentationState::Drawn,
+            ),
+        ] {
+            world.insert_resource(
+                LodDistance::new(Meters(distance)).expect("a finite non-negative distance"),
+            );
+            schedule.run(&mut world);
+            assert_eq!(
+                presentation(&world, near),
+                expected_near,
+                "at {distance} m the near band is {expected_near:?}"
+            );
+            assert_eq!(
+                presentation(&world, far),
+                expected_far,
+                "at {distance} m the far band is {expected_far:?}"
+            );
+        }
     }
 
     /// The validated inputs the system trusts: a distance that is not a

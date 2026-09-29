@@ -95,7 +95,11 @@ are destroyed.
   decision at the supplied `LodDistance`, and whether the node or any ancestor
   carries `NodeDisabled`. `Disabled` wins over `LodCulled` — a destroyed node
   stays disabled whichever band becomes active, and every descendant of a
-  destroyed node (its gun) is disabled with it. The system never writes
+  destroyed node (its gun) is disabled with it. The verdict is **subtree-wide
+  on both axes**: a node hangs under a band the group did not choose, it is
+  `LodCulled` with that band, so a mesh under the far band is not reported
+  `Drawn` while the near band is presented — otherwise every band's mesh of
+  one part would be reported drawn at the same time. The system never writes
   `SceneNodeBinding`, `NodeVisualTransform`, `NodeLodVariant` or
   `NodeDisabled`, and it never spawns or despawns: identity, transforms,
   collision and weapon origins cannot move with distance (F11 non-negotiable
@@ -126,7 +130,8 @@ are destroyed.
 | `import_scene_refuses_a_transform_that_cannot_be_rendered` (cs_app/src/scene.rs) | pre-flight conversion: a composed transform that overflows f32 fails the import and leaves the world untouched (all-or-nothing) | conversion errors are swallowed, or a partial hierarchy is spawned before the failure |
 | `import_airframe_starts_from_the_root_reference` (cs_app/src/scene.rs) | subtree-only import from an `AirframeVisual`; `ForeignContainer` and `UnknownNode` refusals | the root reference is ignored (whole container imported) or the checks are dropped |
 | `lod_inputs_are_validated_at_construction` (cs_app/src/scene.rs) | `LodDistance::new` refuses non-finite and negative metres; `NodeLodVariant::new` refuses an unusable band with the rule's own error | the private-field invariants are opened up, letting unusable values reach selection |
-| `destroyed_wing_and_gun_remain_disabled_across_lod_transition` (cs_app/src/scene.rs) | **AC02**: baseline selection at 50 m, destroy the wing and its gun, then cross the 100 m band edge to 150 m; the healthy `tail` group demonstrably switches bands while the destroyed wing group (both variants and the gun) stays `Disabled`; bindings, generations, entities and transforms are byte-identical before and after; re-enabling restores `Drawn`/`LodCulled` | LOD selection resurrects a disabled node, disables only the currently active variant, mutates identity/transform, or does not run at all |
+| `destroyed_wing_and_gun_remain_disabled_across_lod_transition` (cs_app/src/scene.rs) | **AC02**: baseline selection at 50 m, destroy the wing and its gun, then cross the 100 m band edge to 150 m; the healthy `tail` group demonstrably switches bands while the destroyed wing group (both variants and the gun) stays `Disabled`; bindings, generations, entities and transforms are byte-identical before and after; re-enabling restores `Drawn`/`LodCulled`; the band meshes swap verdicts with their bands | LOD selection resurrects a disabled node, disables only the currently active variant, reports a mesh under a culled band as `Drawn`, mutates identity/transform, or does not run at all |
+| `a_mesh_under_a_culled_band_is_culled_with_it` (cs_app/src/scene.rs) | the subtree half of presentation: at 50 m the near band's mesh is `Drawn` and the far band's mesh is `LodCulled`, at 150 m they swap, so only one LOD level of one wing is ever presented | `LodCulled` is written only for the non-selected band node and not for its descendants |
 
 **Sensitivity check (run while implementing, reverted afterwards).** With the
 `NodeDisabled` consultation removed from `select_lod_presentation` the AC02
@@ -134,6 +139,29 @@ test fails with `left: Drawn, right: Disabled`; with the system body skipped
 it fails with `left: Drawn, right: LodCulled`; with the gap fallback replaced
 by "always the first band" `accept_f11_b_lod_selection_rule_reports_coverage_gaps_and_overlaps`
 fails on its `GapFallback` index. The tests are not vacuous.
+
+## Review correction (2026-09-30, reviewer of #57)
+
+The submitted implementation wrote `LodCulled` only for the non-selected
+`Lod` node itself and left its **descendants** `Drawn`. The fixture's own
+shape (`wing_mesh_near` under `wing_lod0`, `wing_mesh_far` under
+`wing_lod1`) then reports both LOD levels of one wing drawn at the same
+time at every distance — a renderer that reads `NodePresentation` per node
+(F17) would draw the near and the far mesh together, and the record
+contradicts its own parent band. Fixed in review:
+
+- `select_lod_presentation` now walks the ancestor chain for both facts in
+  one pass: `Disabled` (node or ancestor `NodeDisabled`, checked first so
+  damage still wins at any depth) and `LodCulled` (node or ancestor is a
+  band its group did not choose). The system still writes only
+  `NodePresentation`.
+- `PresentationState::LodCulled` and the system/module docs now state the
+  subtree rule.
+- New test `accept_f11_b_a_mesh_under_a_culled_band_is_culled_with_it`, plus
+  baseline and post-repair mesh assertions inside the AC02 test. With the
+  propagation removed both fail with `left: Drawn, right: LodCulled`
+  (mutation applied and reverted during review), so the gap cannot silently
+  return.
 
 ## Unknowns and limitations (all recorded, none guessed)
 
