@@ -382,12 +382,33 @@ that differ in one word have different fingerprints.
 
 **F10-B's deferred item 1 is closed.** Every stored material index of every mesh
 in all nine archives is inside its container's own material table: the
-production mesh reader's 19 810 (planes) / 32 904 (all nine) *unchecked*
-references are now checked references, and the retail test asserts
+production mesh reader's *unchecked* references — 19 810 in `planes.zbd`,
+142 841 across the eight world archives, 162 651 in all nine — are now checked
+references, and both retail tests assert
 `audit.out_of_range().count() == 0` and
-`audit.references == meshes.unchecked_material_references` for `ZBD/C1/gamez.zbd`.
+`audit.references == meshes.unchecked_material_references` for every archive.
+**What the audit reports on the installation, per archive**, from
+`material-corpus.json` (the evidence artifact, private copy):
 
-### The exact-name rule does not resolve anything, and that is the finding
+| Archive | stored material references | audit rows | `resolved` | `missing_texture` | `untextured` | out of range |
+| --- | --- | --- | --- | --- | --- | --- |
+| `ZBD/C1` | 22 678 | 561 | 0 | 552 | 9 | 0 |
+| `ZBD/C1B` | 11 169 | 314 | 0 | 310 | 4 | 0 |
+| `ZBD/C1C` | 10 173 | 279 | 0 | 275 | 4 | 0 |
+| `ZBD/C2` | 16 202 | 488 | 5 | 475 | 8 | 0 |
+| `ZBD/C2B` | 9 336 | 271 | 0 | 267 | 4 | 0 |
+| `ZBD/C3` | 20 506 | 441 | 5 | 429 | 7 | 0 |
+| `ZBD/C4` | 24 381 | 627 | 0 | 618 | 9 | 0 |
+| `ZBD/C5` | 28 396 | 562 | 0 | 555 | 7 | 0 |
+| **total** | **142 841** | **3 543** | **10** | **3 481** | **62** | **0** |
+
+`planes.zbd` is counted but **not** audited: it is the shared airframe library,
+has no world of its own, and which archive its materials resolve against is not
+established (deferred item 3 below). Its 19 810 stored references are inside its own 954-record material table,
+like every other archive's, and it contributes 954 materials and 298 texture
+names to the corpus totals above.
+
+### The exact-name rule resolves 10 of 3 543 rows, and that is the finding
 
 The discriminating acceptance case is the rule working as written, and on the
 installation it produces a large number of `missing_texture` rows. The reason is
@@ -423,13 +444,20 @@ lower case. The handful that match **nothing** are `pir_spinner.tif` and
 world's texture archives under any spelling this audit is allowed to try.
 
 So: **a case-insensitive, extension-insensitive match would resolve 549 of 551
-of `C1`'s names, and the exact rule the task specifies resolves none of them.**
+of `C1`'s names, and the exact rule the task specifies resolves none of
+`C1`'s.** Over the eight world archives the audit produces **3 543** rows and
+**10** of them resolve — the ten are `C2`'s and `C3`'s five extension-less
+lower-case names each. The other **3 481** are `missing_texture`.
+
 The task's rule is not relaxed here to make that number smaller, and no alias
 record is invented. The retail acceptance test asserts the rule on real data:
 `Sky1.tif` is `missing_texture` with the archive named, *and* the world's own
 archive is shown to store `sky1` and to resolve it. That pair of assertions is
 what distinguishes "a naming difference" from "a missing archive", and it is the
-honest report either way.
+honest report either way. `material-corpus.json` carries four such
+`naming_examples` per archive — the container's spelling beside the archive's —
+so the claim is checkable from the artifact without the artifact holding a
+single pixel.
 
 ## Test inventory (`accept_f10_c_02_*`)
 
@@ -464,55 +492,88 @@ constants out rather than importing the reader's).
 
 ## Mutation probes
 
-Each mutation was applied to `crates/cs_formats/src/gamez/materials.rs` (or, for
-the audit probes, to `crates/cs_content/src/mesh.rs`), the whole task selection
-was run, the file was restored, and the mutation was confirmed to fail at least
-one test. Suite size at the time of each round: 10 in `cs_formats`
-(`--test gamez`, `accept_f10_c_02_`) and 9 in `cs_content` (`--lib`).
+Every mutation below was **applied, run and restored**; the counts are what the
+runs reported, not what should have happened. Two selections, both with
+`--include-ignored` and `CS_GAME_DIR` set: the ten `cs_formats` task tests
+(`cargo test -p cs_formats --test gamez -- accept_f10_c_02_ --include-ignored`)
+and the nine `cs_content` task tests
+(`cargo test -p cs_content --lib -- accept_f10_c_02_ --include-ignored`). Each
+mutation is a single textual change to a production file; the mutation script is
+not committed, and the file is restored from git after every run.
+
+### The reader, `crates/cs_formats/src/gamez/materials.rs`
 
 | Mutation | Failing |
 | --- | --- |
-| texture name read after `unk40` instead of at offset 12 | 10 (every `cs_formats` test, including the retail one) |
-| material array sized from `count` instead of 1 000 slots | 4 |
-| zero slots skipped rather than walked | 3 |
-| cycle data read per material instead of after the whole array | 2 |
-| `count1` read where the record stores `count2` | 1 |
-| present slots' link rule used for the zero region as well | 1 |
-| zero slots' link rule used for the present slots as well | 1 |
-| `index_max`/`index_last` cross-check removed | 2 |
-| `texture_count` bound removed | 1 |
-| high-bit name check removed | 1 |
-| padding check removed | 1 |
-| the unterminated branch of the name decoder deleted (so a full field is a `StemOnly` name) | 1 |
-| the "restore the `.`" step removed from the name decoder | 1 |
-| `field32` (the `specular`/soil word) dropped from the record | 1 |
-| `texture_index` read from offset 20 instead of 16 | 1 |
-| the material-index range reported as a clamp to the last record | 2 |
-| the case-folded spelling tried when the exact one is not found | 1 |
-| the extension stripped from a name before the lookup | 1 |
-| the second archive of the catalog searched when the first does not hold the name | 1 |
-| a failed row dropped from `rows` | 3 |
-| `untextured` treated as a blocked row | 1 |
-| the container's duplicate names treated as a separate state instead of a reason | 1 |
+| the name field read after `unk40` instead of at offset 12 (the first draft's bug) | 10 — every test, retail included |
+| the stored `.` of a full name field is not restored | 1 |
+| the full-field name shape is read as a bare stem | 8 |
+| the material array is sized from `count` instead of a thousand slots | 9 |
+| the zero slots use the present slots' link rule | 4 |
+| the name field's non-ASCII check is narrowed | 10 |
+| the word the reference calls `specular` and newer source calls soil is dropped | 9 |
+| the material's texture index is read as a constant | 9 |
+| `index_max`/`index_last` are not cross-checked against `count` | 1 |
+| the `texture_count` bound is not checked | 1 |
+| the name field's padding check is removed | 1 |
+| the duplicate-name groups keep every name | 1 |
+| the cycle header's `count1` and `count2` reads are swapped | **0 — equivalent** |
+| the material's texture index read under the cycle pointer's label | **0 — equivalent** |
+| the texture table's vector capacity zeroed | **0 — equivalent** |
 
-Two of these deserve to be recorded as **fixture** lessons rather than reader
-bugs, because the mutation was invisible for a reason the fixture caused:
+### The audit, `crates/cs_content/src/mesh.rs`
 
-- *the fixture's own package writer* — the first version of the cs_content
-  fixture wrote the per-texture info block as six `u32` words instead of
-  `u32,u16,u16,u32,u16,u16`, so **every** cs_content audit test failed with
-  "the fixture archive opens: 1 failure" instead of testing the audit. The
-  constants are now spelled out in the test file so the writer cannot borrow the
-  reader's numbers.
-- *`array_size == count` in the corpus* — because the measured archives store
-  `array_size == count`, **no retail test can distinguish a reader that walks
-  1 000 slots from one that walks `array_size` slots**. Only the synthetic
-  fixture can, which is why
-  `..._the_array_is_a_thousand_slots_and_the_walk_ends_on_meshes_offset` exists
-  and why it asserts the *absence* of a boundary change when a second material is
-  added. This is the same class of gap the F10-B reviewer closed for the mesh
-  reader's two `Vec3` arrays, and the lesson generalises: a field the retail
-  corpus never varies must be covered by a fixture or not covered at all.
+| Mutation | Failing |
+| --- | --- |
+| a material index past the table is clamped to the last record | 1 |
+| the container's spelling is normalised (case folded, extension dropped) before the lookup | 3, retail included |
+| the mesh-level material reference list is not counted | 2, retail included |
+| a row that did not resolve is dropped from the audit | 7, retail included |
+| untextured is treated as a blocked row | 1 |
+| the container's duplicate name is not reported as a reason | 1 |
+| an unknown flag bit does not block the row | 1 |
+| an untextured material is treated as naming a texture | 1 (in `cs_formats`' selection, where the binding itself is pinned) |
+
+### The three survivors are equivalent mutations, not holes
+
+Recorded so that a later reader does not re-run them:
+
+- **Swapping the `count1` and `count2` reads.** The reader asserts
+  `count1 == count2` — the reference's own assertion — and reads the frames with
+  `count1`, so which of the two equal words is called "count1" is unobservable by
+  construction. The check that `count1 == count2` is pinned instead, by the
+  reader raising `cycle_field` for a disagreeing pair.
+- **Reading the material's texture index under the cycle pointer's label.** The
+  reads are positional: a struct literal's field order *is* the read order, so
+  changing the label string of one positional read changes only the error
+  message. (The F10-B reviewer found the same class of no-op in the mesh reader.)
+  What the mutation *did* reveal is that nothing asserted the material's
+  `cycle_ptr` value; the cycle test now pins `0x1111_1111` and `0x2222_2222` on
+  the two cycled fixtures and `0` on the uncycled one, and a **separate**
+  mutation that reads the texture index from the wrong *offset* is killed by that
+  same assertion.
+- **Zeroing the texture table's vector capacity.** The loop is driven by
+  `header.texture_count`, not by the reserved capacity, so the capacity is an
+  allocation hint and nothing observable. It is kept because F03 asks the ledger
+  to describe every buffer a parse hands out, not only the ones that could be
+  large — the same reasoning F10-B recorded for its two equivalent survivors.
+
+### Two fixture lessons, of the kind F10-B's reviewer found
+
+- **The first version of the `cs_content` fixture wrote the per-texture info
+  block as six `u32` words** instead of `u32,u16,u16,u32,u16,u16`, so every
+  audit test failed with "the fixture archive opens: 1 failure" rather than
+  testing the audit at all. The layout's numbers are now spelled out in the test
+  file so the writer cannot borrow the reader's constants.
+- **`array_size == count` in the whole measured corpus**, so **no retail test can
+  distinguish a reader that walks 1 000 slots from one that walks `array_size`
+  slots**. Only a fixture can, which is why
+  `..._the_array_is_a_thousand_slots_and_the_walk_ends_on_meshes_offset` asserts
+  the *absence* of a boundary change when a second material is added, and why
+  the `count`-sized mutation is killed by a synthetic test alone. This is the
+  same class of gap F10-B's reviewer closed for the mesh reader's two adjacent
+  `Vec3` arrays, and the lesson is the same: **a field the retail corpus never
+  varies must be covered by a fixture or not covered at all.**
 
 ## Recorded unknowns
 
@@ -570,7 +631,7 @@ is established from the pinned reference and the material section ends exactly o
 
 | # | Deferred item | Affected content | Resolving task | Gates |
 | --- | --- | --- | --- | --- |
-| 1 | **The name-matching rule between a GameZ container and a texture archive.** No case folding, no extension stripping, no alias, no second archive, as the task specifies. On the installation that resolves 5 of 2 271 distinct world-archive material names, against 2 510 for an extension- and case-insensitive match | every textured material of all eight world archives, and the 221 `planes.zbd` names | **F10-C.03** (#366) for the upload path's binding; the **owner** for the rule itself, which is a claim about what the original engine did | any claim that a rendered surface shows the *right* texture; the F10-C upload path may not substitute |
+| 1 | **The name-matching rule between a GameZ container and a texture archive.** No case folding, no extension stripping, no alias, no second archive, as the task specifies. On the installation that resolves **10 of the 3 543** audited material rows; an extension- and case-insensitive match would resolve 2 510 of the 2 271 distinct world-archive names, i.e. every one but the handful that are absent under any spelling | every textured material of all eight world archives, and the 221 `planes.zbd` names | **F10-C.03** (#366) for the upload path's binding; the **owner** for the rule itself, which is a claim about what the original engine did | any claim that a rendered surface shows the *right* texture; the F10-C upload path may not substitute |
 | 2 | **Names truncated by the 20-byte field** (`blo_fusalagebottom.ti`, `tracer_armorpierce.t`, `buildingspotlighted.`) and the seven names absent from every world archive | 3 truncated names in every world, plus `pir_spinner.tif`, `snow16x16.tif`, `c1c.jpg`, `cloud1.tif`, `cloud2.tif`, `canopycorner.tif`, `barngrill.tif` | **F10-D** (#46, retail) for the private corpus; the **owner** for whether the original engine matched by prefix | any claim that the audited texture set is complete |
 | 3 | **Which archive a container resolves against.** `planes.zbd` is a shared airframe library with no world; its names are absent from `rimage.zbd` (the UI set) and mostly present in a world's own `texture.zbd` | all 954 materials of `planes.zbd`, i.e. every airframe | **F10-C.03** (#366) and the consumer that knows the world | any claim about airframe materials; the audit's `archive` is the caller's for exactly this reason |
 | 4 | **Which of `texture.zbd`, `rtexture2/4/6/8/11/12/14/15.zbd` and `rimage.zbd` a mission uses, and when the resolution tier is chosen.** All the tiers of one world store the same 881 names, so the choice is invisible to a name lookup | every world, every tier | not scheduled; F08-C records the same open question | any claim that a mission's texture set is the right one |

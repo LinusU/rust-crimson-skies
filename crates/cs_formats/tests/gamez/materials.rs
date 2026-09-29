@@ -750,6 +750,20 @@ fn accept_f10_c_02_cycle_data_is_stored_after_the_whole_array() {
             .textures,
         [2]
     );
+    // The two words either side of the record's own ten are in their own slots:
+    // a cycled material's cycle pointer keeps the value the fixture gave it.
+    assert_eq!(
+        materials.material(0).expect("material 0").record.cycle_ptr,
+        0x1111_1111
+    );
+    assert_eq!(
+        materials.material(2).expect("material 2").record.cycle_ptr,
+        0x2222_2222
+    );
+    assert_eq!(
+        materials.material(1).expect("material 1").record.cycle_ptr,
+        0
+    );
     assert_eq!(materials.findings, Vec::new());
 }
 
