@@ -302,6 +302,26 @@ heading that called this stage `F12-B` (an already-merged stage with a
 different scope), and added the `@`-wrapper unknown to the `KeyedList`
 inventory row.
 
+## Evidence
+
+The contract requires an acceptance report of a task that uses a capability
+besides build/test, and this one used `retail`. It is
+`docs/findings/evidence/T351.json`, generated on the reviewed tree from two
+real runs (the task selection with `--include-ignored`, and the production
+`cs-inspect rof` report of the container): 5 tests, 5 passed, 0 failed, 0
+ignored; the `install_sha256` of the installation and a `content_sha256` over
+the production decoded digests of the 65 members this task read (2 keyed
+field list, 61 `.SCRIPT`, 2 resource-id headers). The artifacts stay in
+`private/evidence/T351/`.
+
+It is validated with `tools/validate_evidence.py` **without** `--require-pass`,
+because that flag rejects a report that still lists unresolved issues, and
+this task's own acceptance criterion is precisely that the nine unestablished
+rules stay recorded. Dropping them to make the flag pass would be exactly the
+shortcut the owner directive forbids, so the flag fails with "Unresolved
+issues" and the report says so. The claim is `implemented`: a merge awards
+`checked` at most, and nothing here observes the original game running.
+
 ## Mutation probes
 
 | Mutation | Failing tests |
@@ -314,11 +334,20 @@ inventory row.
 
 ## Commands
 
+Run by the implementer, and re-run by the reviewing agent on the rebased
+tree after the corrections above:
+
 - `cargo fmt --all -- --check` → 0
 - `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` → 0
-- `cargo test --workspace --locked` → 0
+- `cargo test --workspace --locked` → 0 (611 tests pass; the two new retail
+  tests are `#[ignore = "requires CS_GAME_DIR"]`)
 - `cargo test --workspace --locked -- accept_t351_ --include-ignored` → 0
-  (5 tests: 3 in `cs_formats` of which 2 retail, 2 in `cs_content`)
+  (5 tests: 3 in `cs_formats` of which 2 retail, 2 in `cs_content`; each
+  also passes alone with `--exact`)
+- `accept_f12_a_`/`accept_f12_b_`/`accept_f12_c_` → 39 tests, 0 failures
+- `python3 tools/validate_evidence.py private/evidence/T351/acceptance.json
+  --artifact-root private/evidence/T351` → `structurally_valid: true`
+  (deliberately without `--require-pass`; see **Evidence** above)
 
 ## Sources
 
