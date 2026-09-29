@@ -30,6 +30,7 @@
 //! exit 1  a runtime failure walking the layout or writing --out
 //! ```
 
+use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -192,24 +193,24 @@ struct ChapterSummary {
 
 /// Renders the deterministic JSON campaign-layout report.
 ///
-/// The mission list is already in `(chapter, mission number)` order from the
-/// production derivation; the chapter summary is derived here in the same
-/// canonical order. Every string is escaped by [`json_string`], so a path
-/// can never break out of its field.
+/// The mission rows are listed in the order the production derivation
+/// produced them, which is `(chapter, mission number)` order; the report
+/// does not reorder them, so the canonical order stays a property of the
+/// shared walk rather than of this renderer. The chapter summary is
+/// accumulated per chapter number and emitted in ascending chapter order, so
+/// it counts every mission of a chapter exactly once whatever order the
+/// rows arrive in. Every string is escaped by [`json_string`], so a path can
+/// never break out of its field.
 pub fn campaign_report(install_root: &Path, layout: &[CampaignLayoutEntry]) -> String {
-    let mut chapters: Vec<ChapterSummary> = Vec::new();
+    let mut grouped: BTreeMap<u32, ChapterSummary> = BTreeMap::new();
     for entry in layout {
-        let summary = match chapters.last_mut() {
-            Some(summary) if summary.chapter == entry.mission.chapter => summary,
-            _ => {
-                chapters.push(ChapterSummary {
-                    chapter: entry.mission.chapter,
-                    mission_count: 0,
-                    world_groups: Vec::new(),
-                });
-                chapters.last_mut().expect("just pushed")
-            }
-        };
+        let summary = grouped
+            .entry(entry.mission.chapter)
+            .or_insert_with(|| ChapterSummary {
+                chapter: entry.mission.chapter,
+                mission_count: 0,
+                world_groups: Vec::new(),
+            });
         summary.mission_count += 1;
         if !summary.world_groups.contains(&entry.mission.world_group) {
             summary.world_groups.push(entry.mission.world_group.clone());
@@ -217,9 +218,10 @@ pub fn campaign_report(install_root: &Path, layout: &[CampaignLayoutEntry]) -> S
     }
     // Canonical order inside a chapter, so the report does not depend on
     // which mission in the chapter happens to be walked first.
-    for summary in &mut chapters {
+    for summary in grouped.values_mut() {
         summary.world_groups.sort();
     }
+    let chapters: Vec<&ChapterSummary> = grouped.values().collect();
 
     let mut chapters_json = String::new();
     for (index, summary) in chapters.iter().enumerate() {
@@ -304,6 +306,43 @@ mod tests {
         assert!(
             report.contains("\"program_sha256\":null"),
             "an absent archive is explicit, got: {report}"
+        );
+    }
+
+    /// Chapter rows are accumulated per chapter number, so missions of one
+    /// chapter are counted and grouped together even when they are not
+    /// adjacent in the layout.
+    #[test]
+    fn report_counts_a_chapter_that_is_not_walked_contiguously() {
+        let layout = vec![
+            entry(2, 1, "c2", true),
+            entry(1, 1, "c1", true),
+            entry(2, 2, "c2b", true),
+            entry(1, 2, "c1b", true),
+        ];
+        let report = campaign_report(Path::new("/install"), &layout);
+        assert!(
+            report.contains("\"chapter\":1,\"mission_count\":2,\"world_groups\":[\"c1\",\"c1b\"]"),
+            "chapter 1 is one row of two missions, got: {report}"
+        );
+        assert!(
+            report.contains("\"chapter\":2,\"mission_count\":2,\"world_groups\":[\"c2\",\"c2b\"]"),
+            "chapter 2 is one row of two missions, got: {report}"
+        );
+        assert_eq!(
+            report.matches("\"chapter\":").count(),
+            6,
+            "two chapter rows and four mission rows, nothing split or repeated, got: {report}"
+        );
+        let chapters = report
+            .split_once("\"chapters\":[")
+            .and_then(|(_, tail)| tail.split_once("],\"missions\":["))
+            .map(|(head, _)| head)
+            .expect("the report separates its chapter rows from its mission rows");
+        assert_eq!(
+            chapters.matches("\"chapter\":").count(),
+            2,
+            "each chapter is one summary row, got: {chapters}"
         );
     }
 
