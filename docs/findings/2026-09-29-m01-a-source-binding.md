@@ -5,7 +5,13 @@ Date: 2026-09-29. Task: M01-A "Bind original mission data and branches"
 `docs/contracts/SCRIPT-MISSION.md`; identity rules
 `docs/contracts/IDENTITY-CONTENT.md`. Capabilities used: `retail`
 (`$CS_GAME_DIR` read-only, never written), `synthetic`. Implementer:
-**opencode-1**.
+**opencode-1** (session of 05:06Z). Reviewer: **opencode-1**, a separate
+session with fresh context that took no part in the implementation — same
+agent name, different context, so this review is *not* independent
+original-reference evidence and no agent review replaces the owner's human
+approval. The reviewer added the two `the_retail_title_block…` /
+`…outside_the_retail_title_block…` tests, corrected the string-id numbering
+below and recorded it as unknown.
 
 The stage's minimum acceptance scenario is *"Source-derived binding has no
 unresolved critical dependencies."* This note records what was read, how the
@@ -29,23 +35,36 @@ unknown, and which parts of the chain are inference rather than observation.
 - `missions/bindings/M01.json` (owner path): the generated binding record.
 - `missions/bindings/README.md` (owner path): what the directory holds now.
 - `crates/cs_app/tests/campaign/m01_a.rs` (owner path): the
-  `accept_m01_a_*` tests. `crates/cs_app/tests/campaign/evidence.rs` (owner
-  path): the evidence harness, deliberately not prefixed `accept_m01_a_`.
+  `accept_m01_a_*` tests — eight in all: four record/identity tests, the
+  two retail-title-block join tests added in review, and two synthetic
+  predicate tests.
+  `crates/cs_app/tests/campaign/evidence.rs` (owner path): the evidence
+  harness, deliberately not prefixed `accept_m01_a_`.
 - Wiring only (AGENTS rule 1): `crates/cs_content/src/lib.rs` (one doc
   paragraph), `crates/cs_app/tests/campaign/main.rs` (two `mod`
   declarations and a doc paragraph), `crates/cs_app/Cargo.toml`
   (`cs_assets` dev-dependency), root `Cargo.lock` (the new
   `cs_app -> cs_assets` edge).
 
-**One observable failure:** if `SourceContext::bind` resolved
-`CriticalDependency::MissionId` without producing a `catalog_id`, or if the
-campaign block check that ties the localized-title block to the declared
-campaign length were removed, then
-`accept_m01_a_source_derived_binding_has_no_unresolved_critical_dependencies`
-fails: it re-reads the installation, re-measures the installation hash,
-re-reads every cited span and asserts that the resolved identity selects a
-mission directory that really exists. That is the failure the stage exists
-to prevent — a binding that reads as resolved while pointing at nothing.
+**Observable failures (measured by mutation, applied and reverted):**
+
+- resolving `CriticalDependency::MissionId` without a `catalog_id` fails
+  `accept_m01_a_a_title_the_local_strings_do_not_carry_is_unresolved`,
+  through `SourceBinding::validate`'s "resolved but carries no value" rule;
+- answering a constant campaign position, or a constant mission identity,
+  fails `accept_m01_a_the_retail_title_block_binds_every_campaign_position`
+  at campaign position 1. **Before review no test caught this**: M01 *is*
+  position 0, the record carries no position, and the committed JSON carries
+  only `mission/ch1-m01`, so every earlier test passed with the join
+  replaced by a constant;
+- removing the campaign block-length check fails
+  `accept_m01_a_a_title_outside_the_retail_title_block_resolves_no_position`
+  (every retail row would then select some position, so the witness that
+  test needs would not exist). The stage's headline test does *not* catch
+  this mutation, contrary to what this note first claimed.
+
+That is the failure the stage exists to prevent — a binding that reads as
+resolved while pointing at nothing.
 
 ## What was read from the installation
 
@@ -58,8 +77,8 @@ same. Measured on this installation:
 | `install_sha256` | `b4e780ab…c631978` | `cs_assets::install::discover` + `fingerprint`, re-measured independently by the test |
 | Campaign layout | `ZBD/C1`, `C1B`, `C1C`, `C2`, `C2B`, `C3`, `C4`, `C5`, each holding `M<nn>` directories | directory walk |
 | Campaign size | 24 missions (5/5/5/5/4 per chapter) | directory walk, sorted by `(chapter, mission number)` |
-| Localized title | RT_STRING id **3496**, language **1033**, text `The Lost Treasure` behind the display tag `[AB14I]` | `GOSDATA/ASSETS/BINARIES/langui.dll` read through `cs_content::config::StringCatalog` |
-| Localized title block | ids **3496 … 3519**, contiguous, 24 rows | the maximal consecutive run of non-empty rows containing 3496 |
+| Localized title | string id **3480**, language **1033**, text `The Lost Treasure` behind the display tag `[AB14I]` | `GOSDATA/ASSETS/BINARIES/langui.dll` read through `cs_content::config::StringCatalog` |
+| Localized title block | ids **3480 … 3503**, contiguous, 24 rows | the maximal consecutive run of non-empty rows containing 3480 |
 | Mission id | `mission/ch1-m01` | campaign position 0 → chapter 1, mission 1 |
 | World group | `world/c1c` | the only chapter-1 group holding `M01`: `ZBD/C1C/M01/` |
 | Program | `script/c1c-m01-zrdr` | `ZBD/C1C/M01/zrdr.zbd`, the reader archive F13-B classifies as holding mission programs |
@@ -67,6 +86,20 @@ same. Measured on this installation:
 
 `langui.dll` is in the F02 inventory (228 files), so its bytes are covered
 by `install_sha256`.
+
+**String-id numbering (corrected in review).** The ids above are the ones
+`cs_formats::string_id` produces, `(block - 1) * 16 + index`: a read-only
+walk of the PE resource directory during review located the `RT_STRING`
+leaf at file offset 92088 (610 bytes) at path
+`[type 6, name 218, language 1033]`, and `(218 - 1) * 16 + 8 = 3480`. The
+documented Win32 rule for that leaf is `name * 16 + index = 3496`, so the
+engine's string ids sit one block (16) below the Win32 ids of the same
+text — this document originally recorded 3496 while production reports
+3480. The shift is uniform, the join below uses only contiguity and index
+inside the run, and `missions/bindings/M01.json` carries no string id, so
+M01-A is unaffected either way. Which numbering the project intends is
+**not** established here: recorded as an unknown below and filed as #374,
+not guessed.
 
 ## How the work order was matched to a retail mission
 
@@ -154,7 +187,7 @@ states stay separate. Two states, two fields:
   mission opcode table remains unmeasured (F13-C ships an empty signature
   table).
 
-## Test inventory (`accept_m01_a_*`, 6 tests)
+## Test inventory (`accept_m01_a_*`, 8 tests)
 
 | Test | What it pins |
 | --- | --- |
@@ -162,13 +195,17 @@ states stay separate. Two states, two fields:
 | `accept_m01_a_the_committed_record_is_what_the_installation_derives` (retail) | `missions/bindings/M01.json` is byte-identical to what production code derives, and carries the schema's fields |
 | `accept_m01_a_a_title_the_local_strings_do_not_carry_is_unresolved` (retail) | a title miss never resolves: title and the identities that depend on it stay unresolved, the installation hash stays resolved, the identity cell reads `Unknown`, and no span is cited |
 | `accept_m01_a_the_campaign_keeps_everything_else_unresolved_and_unready` (retail) | 24 missions, 168 cells, exactly 1 complete, 552 subsystem rows all unresolved, 24 unknown progressions, `is_ready()` false, and M01's closure counts 7 cells / 1 complete / 23 unresolved subsystems |
+| `accept_m01_a_the_retail_title_block_binds_every_campaign_position` (retail, **added in review**) | the join at all 24 positions: every row of the retail title block binds the campaign position its index names, the mission/world/program ids are the ones that campaign entry declares (never a constant), and every selected mission directory and reader archive exists on disk |
+| `accept_m01_a_a_title_outside_the_retail_title_block_resolves_no_position` (retail, **added in review**) | a retail title the strings carry but that sits in no campaign-length run resolves the title and the installation hash and **nothing** else: no position, no mission id, no world group, no program, and the identity cell stays `Unknown` |
 | `accept_m01_a_verified_and_unresolved_are_two_distinct_states` (synthetic) | both predicates are real: a complete authored record reads verified, one unresolved dependency stops it and is named, a resolved value with no value is refused, and clearing `unknowns` while a dependency is unresolved still does not verify |
 | `accept_m01_a_the_critical_dependency_set_is_the_checklists_first_five` (synthetic) | the critical set is exactly the checklist's five labels, unique and in order |
 
 Every test calls production code (`SourceContext`, `SourceBinding`,
 `CampaignBindings`); none repeats an expected value read from the record it
-checks — the retail assertions are re-measured from `$CS_GAME_DIR` or from
-the committed inventory.
+checks — the retail assertions are re-measured from `$CS_GAME_DIR`, from
+the string table the installation holds, or from the committed inventory.
+The two join tests read their titles out of the retail string table at
+runtime, so no retail title string is repeated in the test source.
 
 ## Mutation probes (applied, then reverted; results are the observed runs)
 
@@ -178,6 +215,9 @@ the committed inventory.
 | `SourceBinding::is_verified` always returns `false` | 1 test fails: `accept_m01_a_verified_and_unresolved_are_two_distinct_states` (the complete authored record must read as verified, so the predicate cannot be a constant) |
 | `SOURCE_BINDING_UNKNOWNS` emptied (no checklist entry recorded as unknown) | 2 tests fail: `accept_m01_a_source_derived_binding_has_no_unresolved_critical_dependencies` (the named checklist entries are gone) and `accept_m01_a_the_committed_record_is_what_the_installation_derives` (the committed record no longer matches) |
 | `CriticalDependency::MissionId` reported resolved even when `catalog_id` is `None` | 1 test fails: `accept_m01_a_a_title_the_local_strings_do_not_carry_is_unresolved`, through `SourceBinding::validate`'s "resolved but carries no value" rule |
+| `SourceContext::campaign_position` answers `Some(0)` for every title (**review probe**) | 2 tests fail: `accept_m01_a_the_retail_title_block_binds_every_campaign_position` (position 1 does not bind position 1) and `accept_m01_a_a_title_outside_the_retail_title_block_resolves_no_position` (nothing is left to witness). Before review **no** test failed this mutation |
+| the campaign block-length check removed, position computed for any run (**review probe**) | 1 test fails: `accept_m01_a_a_title_outside_the_retail_title_block_resolves_no_position` (every row resolves a position, so its witness does not exist). The stage's headline test passes this mutation |
+| the mission id fixed to `mission/ch1-m01` for every position (**review probe**) | 1 test fails: `accept_m01_a_the_retail_title_block_binds_every_campaign_position` (position 1 must not be M01). Before review **no** test failed this mutation either |
 
 ## Checks
 
@@ -186,7 +226,8 @@ the committed inventory.
 | `cargo fmt --all -- --check` | 0 |
 | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
 | `cargo test --workspace --locked` | 0 |
-| `cargo test --workspace --locked -- accept_m01_a_ --include-ignored` | 0 (6 tests: 4 retail, 2 synthetic) |
+| `cargo test --workspace --locked -- accept_m01_a_ --include-ignored` | 0 (8 tests: 6 retail, 2 synthetic) |
+| each of the 8 tests alone with `--exact --include-ignored` | 0 (1 passed each) |
 | `python3 tools/validate_evidence.py private/evidence/M01-A/acceptance.json --artifact-root private/evidence/M01-A --require-pass` | 0 |
 | schema check of `missions/bindings/M01.json` against `schemas/mission-binding.schema.json` | conforms, including the `verified`-implies clause (not committed as a tool: the workspace ships no JSON-schema validator) |
 
@@ -195,8 +236,17 @@ the committed inventory.
 - **`langui.dll` is not routed by `cs_formats::text`.** `cs-inspect config`
   refuses it ("an extension alone routes nothing"), so the localized
   mission-title table is reachable only through `StringCatalog` today.
-  Filed as a follow-up task; this stage calls the same production reader
-  directly rather than adding a dialect rule outside its owner paths.
+  Filed as #372 (`F12-D.langui`); this stage calls the same production
+  reader directly rather than adding a dialect rule outside its owner paths.
+- **String-id numbering is not established.** The engine numbers a row
+  `(block - 1) * 16 + index` (`cs_formats::string_id`, marked `Documented`),
+  while the documented Win32 rule for the same `RT_STRING` leaf is
+  `block * 16 + index`: for the title block at `langui.dll` offset 92088
+  (resource name 218) that is 3480 against 3496, one block apart, uniform
+  for every row. M01-A is unaffected (the join uses only contiguity and
+  index, and the record carries no string id), but any later stage that
+  addresses a string by id must settle which numbering it means. Filed as
+  #374, not guessed.
 - **No campaign-definition record was found.** The work-order ↔ retail-mission
   mapping rests on the join described above. `crimson.exe` and
   `crimson.icd` hold no plaintext mission list, and none was decompiled.
