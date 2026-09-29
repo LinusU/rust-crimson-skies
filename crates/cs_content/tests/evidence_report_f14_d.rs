@@ -254,11 +254,12 @@ fn evidence_report_f14_d_writes_the_acceptance_report() {
         suite.ignored,
         assertion_array(&suite.assertions),
         artifact_array(&artifacts),
-        // Deliberately empty: see the module doc — the task's own acceptance
-        // is complete, and the product-coverage limits live in `review.method`,
-        // the hashed artifact, `docs/findings/` and the follow-up tasks #388
-        // and #389 instead of being deleted.
-        "[]",
+        // Deliberately empty (the brackets are the template's): see the
+        // module doc — the task's own acceptance is complete, and the
+        // product-coverage limits live in `review.method`, the hashed
+        // artifact, `docs/findings/` and the follow-up tasks #388 and #389
+        // instead of being deleted.
+        "",
         jstr(&review),
         jstr(
             "acceptance suite run locally with the retail capability; this harness derives \
@@ -285,7 +286,7 @@ fn evidence_report_f14_d_writes_the_acceptance_report() {
         "\"install_sha256\"",
         "\"assertions\": [",
         "\"artifacts\": [",
-        "\"unknowns\": [",
+        "\"unknowns\": [],",
     ] {
         assert!(
             written.contains(needle),
