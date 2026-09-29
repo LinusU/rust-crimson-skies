@@ -7687,11 +7687,14 @@ mod tests {
                 group.as_str()
             );
             let dependencies = seam_dependencies(&textures, &archive);
+            // The report row is keyed by the **archive** path, the same
+            // spelling the format-level census uses, so the two artifacts
+            // compare line for line.
             report.push(f10_d_render_report(
                 &session,
                 &gamez_key(),
                 &dependencies,
-                group.as_str(),
+                &format!("{}/gamez.zbd", group.as_str()),
                 "world",
             ));
             worlds += 1;
