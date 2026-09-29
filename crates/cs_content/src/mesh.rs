@@ -95,6 +95,27 @@
 //!   `dependencies`, `parse_state`, `normalize_state`, `readiness`,
 //!   `unsupported_reasons` and `fingerprint` fields.
 //!
+//! # Blocking reasons are codes
+//!
+//! `unsupported_reasons` is a field a consumer **groups rows by**, so every
+//! entry in it is a code: the same cause is the same string whatever bytes
+//! caused it. What the bytes were is [`MaterialRow::reason_details`], which
+//! keeps one line per reason and de-duplicates nothing, and — for the polygons
+//! that store more than one material group — the count on
+//! [`MeshFaceCounts::multi_material_group_polygons`].
+//!
+//! The distinction is not cosmetic. The measured `planes.zbd` stores
+//! `bldhwk_cowling..tif` at 36 texture-table positions, so a reason that
+//! carried the name and the positions was 242 bytes and **differed per row**:
+//! two rows refusing that one cause would not have compared equal, and a
+//! container storing the name more often produced a longer "code" for the same
+//! reason. The codes are the `pub const`s [`CONTAINER_DUPLICATE_NAME`] and
+//! [`MULTI_MATERIAL_GROUP_POLYGONS`] and the plain state codes beside them, so
+//! a consumer matches on a closed vocabulary.
+//!
+//! The design is in
+//! `docs/findings/2026-09-29-f10-c-integration-and-reason-codes.md`.
+//!
 //! The measured consequence of the exact-name rule is in
 //! `docs/findings/2026-09-29-f10-c-02-gamez-material-records.md`: a GameZ
 //! container spells a texture `Sky1.tif` while the world's texture archive
@@ -134,8 +155,9 @@
 //! convention and the corner-colour meaning are all still unknown) and the test
 //! inventory are in
 //! `docs/findings/2026-09-29-f10-c-01-render-vertex-splitting.md`,
-//! `docs/findings/2026-09-29-f10-c-02-gamez-material-records.md` and
-//! `docs/findings/2026-09-29-f10-c-03-mesh-container-catalog-and-upload.md`.
+//! `docs/findings/2026-09-29-f10-c-02-gamez-material-records.md`,
+//! `docs/findings/2026-09-29-f10-c-03-mesh-container-catalog-and-upload.md` and
+//! `docs/findings/2026-09-29-f10-c-integration-and-reason-codes.md`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
@@ -1890,6 +1912,11 @@ pub struct MeshFaceCounts {
     pub rejected: usize,
     /// Triangles with two equal stored position indices. They are kept; a
     /// consumer that draws may skip them.
+    ///
+    /// Measured on the installation: `ZBD/C1/gamez.zbd` stores none and
+    /// `ZBD/planes.zbd` stores 10 497 of 71 645 (14.7 %), so the mark is
+    /// load-bearing on the airframes and not only on a fixture. Whether the
+    /// original renderer skipped them is unmeasured; F17-B's adapter decides.
     pub degenerate: usize,
     /// Stored polygons that stored more than one material group.
     ///
@@ -1897,6 +1924,11 @@ pub struct MeshFaceCounts {
     /// such a polygon, so a group beyond the first has no UV set in the render
     /// mesh. The count is reported, never silently dropped, and it is a reason
     /// on the row rather than a second state.
+    ///
+    /// Measured on the installation: the world archives store 1 006 such
+    /// polygons and `ZBD/planes.zbd` stores **none**, so this count is non-zero
+    /// for world geometry and zero for every airframe. See
+    /// `docs/findings/2026-09-29-f10-c-integration-and-reason-codes.md`.
     pub multi_material_group_polygons: usize,
 }
 
