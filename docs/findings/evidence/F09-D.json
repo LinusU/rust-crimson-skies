@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "F09-D",
+ "candidate_tree": "811166db5f419ada75ef70971276103904fd6525",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-09-29T19:17:38Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_f09_d_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/deepseek-1", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 6, "executed": 6, "passed": 6, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_f09_d_spelling_names_faction_prefix_and_part", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f09_d_catalog_records_dimensions_tail_and_refusals", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f09_d_catalog_discovers_combinations_and_keeps_findings", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f09_d_catalog_is_deterministic_in_spelling_order", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f09_d_retail_stock_liveries_and_combinations", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f09_d_retail_composed_liveries_match_the_pinned_reference", "status": "pass", "evidence": ["cargo-test.log"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "ca0bd9ccb57c453781ec3f2fb75e0915c33fecbacbcad991879eb0546985ae4c", "kind": "log"}, {"path": "livery-catalog.json", "sha256": "d8dc80c4e60d95b461fcfc3c7a438a43bc47674928366dc12fde2db92decf4a0", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "implemented by deepseek-1 (Rally #40); a Rally reviewer regenerates this report on the rebased commit. Same agent identity on both sides, so this is not independent evidence in the owner directive's sense, and no agent review replaces the owner's human approval.", "method": "acceptance suite run locally with the retail capability; this harness derives every field from the recorded log, production discovery and fingerprint of $CS_GAME_DIR, the production StockLiveryCatalog::discover over GOSDATA/ASSETS/crimson.rof (184 members, 14 factions, 11 prefixes, 33 prefix x faction combinations, zero findings; per-member names, dimensions and plane digests in livery-catalog.json), rustc and Cargo.lock. The reference comparison in the suite is against a pinned private Pillow reference that runs the S09/S10 tool algorithm, not the original renderer, so the claim is `implemented` only. Unknowns are recorded in docs/findings/2026-09-29-f09-d-stock-liveries-and-combinations.md. Validated with tools/validate_evidence.py --require-pass."},
+ "claim": "implemented"
+}
