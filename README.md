@@ -29,6 +29,16 @@ export CS_GAME_DIR="/absolute/path/to/Crimson Skies"   # read-only original inst
 export CS_CAPABILITIES="retail,gpu,audio"             # what this machine can really provide
 ```
 
+One more environment rule (task #383): **`CARGO_TARGET_DIR` must be private
+to the checkout.** Leave it unset — Cargo then uses the worktree-local
+`target/` — or point it at a directory that names this checkout, e.g.
+`export CARGO_TARGET_DIR="$PWD/target"` or
+`export CARGO_TARGET_DIR="$PWD/../target/$(basename "$PWD")"`. A
+`CARGO_TARGET_DIR` shared between checkouts lets concurrent builds reuse
+each other's artifacts, so a `cargo test` result is no longer evidence
+about the tree it ran in. `cargo run -p cs_xtask -- verify-target-dir`
+reports the directory cargo will really use and fails when it is shared.
+
 [`opencode.json`](opencode.json) configures the `rally` MCP server for opencode from `RALLY_AGENT_TOKEN`.
 
 ## License
