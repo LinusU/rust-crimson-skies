@@ -149,7 +149,9 @@ impl<'a> Reader<'a> {
     ///
     /// The window must lie inside the range this reader was handed: a range is
     /// the bound the F03 rules give it, and a window may not reach outside
-    /// it. A window that runs past [`Self::range_end`] is refused with
+    /// it — not past [`Self::range_end`], and not before the range's own
+    /// start, so a nested reader cannot reach back into the container around
+    /// it. A window that does is refused with
     /// [`crate::ParseErrorKind::UnexpectedEof`] at the window's own absolute
     /// `offset`, expecting `len` bytes and reporting how many of them the
     /// range holds — the same numbers [`Self::skip`] reports for the same read
@@ -368,7 +370,7 @@ impl<'a> Reader<'a> {
             )
         })?;
         let range_end = self.range_end();
-        if end > range_end {
+        if offset < self.base || end > range_end {
             // The window is refused where it was asked for. How many of the
             // requested bytes this reader can offer is counted inside its own
             // range: everything left from `offset` when the window starts
@@ -384,11 +386,14 @@ impl<'a> Reader<'a> {
                 available,
             ));
         }
-        // `end` is inside `bytes`, so both bounds are valid `usize` indices:
-        // the conversions below cannot truncate and the slice cannot panic.
-        let end = usize::try_from(end).expect("a checked window end fits in usize");
-        let start = end - usize::try_from(len).expect("a checked window length fits in usize");
-        Ok(start..end)
+        // The window is inside this reader's range, so both of its ends are
+        // valid indices into `self.bytes` once the range's own start is taken
+        // off: the conversions below cannot truncate and the slice cannot
+        // panic, because `start + len` is bounded by `bytes.len()` above.
+        let start = usize::try_from(offset - self.base)
+            .expect("a window inside the range starts inside it");
+        let len = usize::try_from(len).expect("a window inside the range fits the range");
+        Ok(start..start + len)
     }
 
     fn take(&mut self, field: &str, len: usize) -> Result<&'a [u8], ParseError> {

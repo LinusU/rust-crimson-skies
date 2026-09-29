@@ -52,20 +52,28 @@
 //! [`crate::text::resource_header`] table, or through both is **unknown** and
 //! is recorded as such.
 //!
-//! # Why the module decodes little-endian words itself
+//! # How the walk reads
 //!
-//! [`Reader`](crate::Reader) is a forward-only cursor: it has no seek, and
-//! `io.rs` is not an owner path of this stage, so the random-access walk
-//! cannot borrow its sequencing. [`Image`] therefore performs the same checks
-//! directly — a checked extent before every slice, explicit byte-wise
-//! little-endian decoding, no `unsafe` and no `transmute` — and builds the
-//! same [`ParseError`] values, anchored at the failing field's absolute
-//! offset.
+//! Every byte of every image is reached through [`Reader`]'s absolute-offset
+//! windows ([`Reader::window`] and [`Reader::window_bytes`], stage F12-F), and
+//! every little-endian word through that same reader's typed reads. The walk
+//! is random-access by nature — a directory entry names where its table is —
+//! so it keeps one reader over the whole image and opens a window at the
+//! absolute offset each structure names, rather than through a module-private
+//! set of accessors that would be a second implementation of the F03 bounded
+//! reads: the checked extent, the byte-wise decoding, the [`ParseError`]
+//! values anchored at the failing field's absolute offset and the refusal of
+//! a hostile range are the primitives `io.rs` implements and
+//! `specs/F03-bounded-binary-parsing-primitives.md` covers, used once.
+//!
+//! [`u16_at`] and [`u32_at`] are compositions of those primitives for the
+//! header fields read one at a time; a whole record (a section header, a
+//! directory header, a data entry) is read sequentially out of one window.
 
 use std::fmt;
 
 use crate::error::ParseError;
-use crate::io::{AllocationBudget, ParseContext, RecursionBudget};
+use crate::io::{AllocationBudget, ParseContext, Reader, RecursionBudget};
 
 /// Entrypoint label both passes scope their errors with.
 pub const PE_RESOURCES_ENTRYPOINT: &str = "pe.resources";
@@ -240,14 +248,14 @@ impl PeError {
     }
 
     fn malformed(
-        image: &Image<'_>,
+        image: &Reader<'_>,
         offset: u64,
         field: &str,
         expected: String,
         observed: String,
     ) -> Self {
         Self::Malformed {
-            container: image.container.clone(),
+            container: image.container().to_owned(),
             offset,
             field: field.to_owned(),
             expected,
@@ -255,9 +263,9 @@ impl PeError {
         }
     }
 
-    fn outside(image: &Image<'_>, offset: u64, field: &str, limit: u64, requested: u64) -> Self {
+    fn outside(image: &Reader<'_>, offset: u64, field: &str, limit: u64, requested: u64) -> Self {
         Self::OutsideTable {
-            container: image.container.clone(),
+            container: image.container().to_owned(),
             offset,
             field: field.to_owned(),
             limit,
@@ -266,14 +274,14 @@ impl PeError {
     }
 
     fn string(
-        image: &Image<'_>,
+        image: &Reader<'_>,
         offset: u64,
         field: &str,
         expected: String,
         observed: String,
     ) -> Self {
         Self::StringBlock {
-            container: image.container.clone(),
+            container: image.container().to_owned(),
             offset,
             field: field.to_owned(),
             expected,
@@ -520,11 +528,11 @@ struct LayoutFacts {
 
 /// Reads the header fields once, checking the same things [`read_layout`]
 /// checks, and books nothing.
-fn read_layout_facts(image: &Image<'_>) -> Result<LayoutFacts, PeError> {
+fn read_layout_facts(image: &Reader<'_>) -> Result<LayoutFacts, PeError> {
     let facts = read_header_fields(image)?;
     // The section table itself has to be inside the image before any of its
     // rows can be read.
-    image.slice(
+    image.window_bytes(
         facts.sections_at,
         u64::from(facts.section_count) * SECTION_HEADER_BYTES,
         "pe.sections",
@@ -540,44 +548,46 @@ struct PeLayoutFields {
     optional_magic: u16,
 }
 
-fn read_pe_offset(image: &Image<'_>) -> Result<PeLayoutFields, PeError> {
+fn read_pe_offset(image: &Reader<'_>) -> Result<PeLayoutFields, PeError> {
     let pe_offset = read_header_fields(image)?.pe_offset;
     let coff = u64::from(pe_offset) + 4;
     Ok(PeLayoutFields {
         pe_offset,
-        machine: image.u16(coff, "pe.coff.machine")?,
-        optional_magic: image.u16(coff + COFF_HEADER_BYTES, "pe.optional.magic")?,
+        machine: u16_at(image, coff, "pe.coff.machine")?,
+        optional_magic: u16_at(image, coff + COFF_HEADER_BYTES, "pe.optional.magic")?,
     })
 }
 
 /// The header fields shared by the allocation-free pass and
 /// [`read_layout`].
-fn read_header_fields(image: &Image<'_>) -> Result<LayoutFacts, PeError> {
-    if image.slice(0, 2, "pe.dos.magic")? != DOS_MAGIC {
+fn read_header_fields(image: &Reader<'_>) -> Result<LayoutFacts, PeError> {
+    let dos_magic = image.window_bytes(0, 2, "pe.dos.magic")?;
+    if dos_magic != DOS_MAGIC {
         return Err(PeError::malformed(
             image,
             0,
             "pe.dos.magic",
             "the DOS signature MZ".to_owned(),
-            format!("{:02x?}", image.slice(0, 2, "pe.dos.magic")?),
+            format!("{dos_magic:02x?}"),
         ));
     }
-    let pe_offset = image.u32(DOS_LFANEW_OFFSET, "pe.dos.e_lfanew")?;
+    let pe_offset = u32_at(image, DOS_LFANEW_OFFSET, "pe.dos.e_lfanew")?;
     let signature = u64::from(pe_offset);
-    if image.slice(signature, 4, "pe.signature")? != PE_MAGIC {
+    let nt_signature = image.window_bytes(signature, 4, "pe.signature")?;
+    if nt_signature != PE_MAGIC {
         return Err(PeError::malformed(
             image,
             signature,
             "pe.signature",
             "the NT signature PE\\0\\0".to_owned(),
-            format!("{:02x?}", image.slice(signature, 4, "pe.signature")?),
+            format!("{nt_signature:02x?}"),
         ));
     }
     let coff = signature + 4;
-    let section_count = image.u16(coff + 2, "pe.coff.number_of_sections")?;
-    let optional_size = u64::from(image.u16(coff + 16, "pe.coff.size_of_optional_header")?);
+    let section_count = u16_at(image, coff + 2, "pe.coff.number_of_sections")?;
+    let optional_size = u64::from(u16_at(image, coff + 16, "pe.coff.size_of_optional_header")?);
     let optional = coff + COFF_HEADER_BYTES;
-    let magic = image.u16(optional, "pe.optional.magic")?;
+    let magic = u16_at(image, optional, "pe.optional.magic")?;
     let directories = match magic {
         OPTIONAL_MAGIC_PE32 => DATA_DIRECTORIES_OFFSET[0],
         OPTIONAL_MAGIC_PE32PLUS => DATA_DIRECTORIES_OFFSET[1],
@@ -591,19 +601,21 @@ fn read_header_fields(image: &Image<'_>) -> Result<LayoutFacts, PeError> {
             ));
         }
     };
-    let headers_size = image.u32(
+    let headers_size = u32_at(
+        image,
         optional + SIZE_OF_HEADERS_OFFSET,
         "pe.optional.size_of_headers",
     )?;
     // `NumberOfRvaAndSizes` is the four bytes immediately before the first
     // `IMAGE_DATA_DIRECTORY` (offset 92 in PE32, 108 in PE32+).
-    let directory_count = image.u32(
+    let directory_count = u32_at(
+        image,
         optional + directories - 4,
         "pe.optional.number_of_rva_and_sizes",
     )?;
     let sections_at = optional.checked_add(optional_size).ok_or_else(|| {
         ParseError::length_overflow(
-            image.container.clone(),
+            image.container().to_owned(),
             optional,
             "pe.coff.size_of_optional_header",
             "the optional header end to fit in u64".to_owned(),
@@ -614,8 +626,8 @@ fn read_header_fields(image: &Image<'_>) -> Result<LayoutFacts, PeError> {
         let at =
             optional + directories + u64::from(RESOURCE_DIRECTORY_INDEX) * DATA_DIRECTORY_BYTES;
         Some(DataDirectory {
-            virtual_address: image.u32(at, "pe.directory.resource.virtual_address")?,
-            size: image.u32(at + 4, "pe.directory.resource.size")?,
+            virtual_address: u32_at(image, at, "pe.directory.resource.virtual_address")?,
+            size: u32_at(image, at + 4, "pe.directory.resource.size")?,
         })
     } else {
         None
@@ -630,26 +642,32 @@ fn read_header_fields(image: &Image<'_>) -> Result<LayoutFacts, PeError> {
 }
 
 /// One section header row, read on demand.
-fn section_span(image: &Image<'_>, sections_at: u64, index: u16) -> Result<SectionSpan, PeError> {
+///
+/// The four numbers the RVA translation needs are the second half of the
+/// 40-byte record, so one window over the record's tail is read forward
+/// through [`Reader`]'s typed reads rather than four windows over four
+/// fields.
+fn section_span(image: &Reader<'_>, sections_at: u64, index: u16) -> Result<SectionSpan, PeError> {
     let at = sections_at + u64::from(index) * SECTION_HEADER_BYTES + 8;
+    let mut row = image.window(at, 16, "pe.section")?;
     Ok(SectionSpan {
-        virtual_size: image.u32(at, "pe.section.virtual_size")?,
-        virtual_address: image.u32(at + 4, "pe.section.virtual_address")?,
-        raw_size: image.u32(at + 8, "pe.section.size_of_raw_data")?,
-        raw_pointer: image.u32(at + 12, "pe.section.pointer_to_raw_data")?,
+        virtual_size: row.read_u32("pe.section.virtual_size")?,
+        virtual_address: row.read_u32("pe.section.virtual_address")?,
+        raw_size: row.read_u32("pe.section.size_of_raw_data")?,
+        raw_pointer: row.read_u32("pe.section.pointer_to_raw_data")?,
     })
 }
 
 /// Translates an RVA with no section table collected: the headers are mapped
 /// one to one below the first section, and any other RVA must fall inside a
 /// section's `max(VirtualSize, SizeOfRawData)` span.
-fn map_rva(image: &Image<'_>, facts: &LayoutFacts, rva: u32) -> Result<Option<RvaSpan>, PeError> {
+fn map_rva(image: &Reader<'_>, facts: &LayoutFacts, rva: u32) -> Result<Option<RvaSpan>, PeError> {
     let mut first = None;
     let mut span_for = None;
     for index in 0..facts.section_count {
         let section = section_span(image, facts.sections_at, index)?;
         first.get_or_insert(section.virtual_address);
-        if let Some(span) = section.span(rva, image.image_len) {
+        if let Some(span) = section.span(rva, image.range_end()) {
             span_for = Some(span);
             break;
         }
@@ -662,7 +680,7 @@ fn map_rva(image: &Image<'_>, facts: &LayoutFacts, rva: u32) -> Result<Option<Rv
     let first = u64::from(first.unwrap_or(0));
     if u64::from(rva) < first {
         let offset = u64::from(rva);
-        let headers = u64::from(facts.headers_size).min(image.image_len);
+        let headers = u64::from(facts.headers_size).min(image.range_end());
         return Ok(Some(RvaSpan {
             file_offset: offset,
             available: headers.saturating_sub(offset),
@@ -841,72 +859,24 @@ impl PeResources {
     }
 }
 
-/// A read-only view of one PE image with absolute-offset, bounds-checked
-/// accessors.
+/// One little-endian `u16` of the image at the absolute offset `at`.
 ///
-/// Every accessor checks the extent against the image's length *before* it
-/// takes a slice, decodes little-endian byte by byte and reports the failing
-/// field's absolute offset, so a hostile `u32` costs nothing but the error.
-struct Image<'a> {
-    container: String,
-    bytes: &'a [u8],
-    image_len: u64,
+/// A composition of the two shared primitives and nothing else:
+/// [`Reader::window`] bounds-checks the two bytes against the image and
+/// [`Reader::read_u16`] decodes them, so a hostile `at` costs the
+/// [`ParseError`] the same primitive builds everywhere else and this module
+/// decodes no bytes itself.
+fn u16_at(image: &Reader<'_>, at: u64, field: &str) -> Result<u16, PeError> {
+    let mut window = image.window(at, 2, field)?;
+    Ok(window.read_u16(field)?)
 }
 
-impl<'a> Image<'a> {
-    fn new(container: String, bytes: &'a [u8]) -> Self {
-        Self {
-            container,
-            bytes,
-            image_len: bytes.len() as u64,
-        }
-    }
-
-    fn slice(&self, at: u64, len: u64, field: &str) -> Result<&'a [u8], PeError> {
-        let end = at.checked_add(len).ok_or_else(|| {
-            ParseError::length_overflow(
-                self.container.clone(),
-                at,
-                field,
-                "offset + length to fit in u64".to_owned(),
-                format!("offset {at} plus length {len}"),
-            )
-        })?;
-        if end > self.image_len {
-            return Err(ParseError::unexpected_eof(
-                self.container.clone(),
-                at,
-                field,
-                len,
-                self.image_len.saturating_sub(at),
-            )
-            .into());
-        }
-        let start = usize::try_from(at)
-            .ok()
-            .filter(|start| *start <= self.bytes.len());
-        match start {
-            Some(start) => Ok(&self.bytes[start..start + len as usize]),
-            None => Err(ParseError::length_overflow(
-                self.container.clone(),
-                at,
-                field,
-                "offset to fit in usize".to_owned(),
-                format!("offset {at}"),
-            )
-            .into()),
-        }
-    }
-
-    fn u16(&self, at: u64, field: &str) -> Result<u16, PeError> {
-        let bytes = self.slice(at, 2, field)?;
-        Ok(u16::from_le_bytes([bytes[0], bytes[1]]))
-    }
-
-    fn u32(&self, at: u64, field: &str) -> Result<u32, PeError> {
-        let bytes = self.slice(at, 4, field)?;
-        Ok(u32::from_le_bytes([bytes[0], bytes[1], bytes[2], bytes[3]]))
-    }
+/// One little-endian `u32` of the image at the absolute offset `at`.
+///
+/// See [`u16_at`] for what this composes and does not.
+fn u32_at(image: &Reader<'_>, at: u64, field: &str) -> Result<u32, PeError> {
+    let mut window = image.window(at, 4, field)?;
+    Ok(window.read_u32(field)?)
 }
 
 /// A key of the walk, still undecoded: an id, or the offset of a name string
@@ -923,7 +893,7 @@ enum KeyRef {
 /// The walk reads its section headers on demand through the `image` it was
 /// given, so the structure pass can run it without booking a section table.
 struct Walker<'i, 'b> {
-    image: &'i Image<'b>,
+    image: &'i Reader<'b>,
     facts: &'i LayoutFacts,
     /// File offset of the resource directory.
     base: u64,
@@ -935,7 +905,7 @@ struct Walker<'i, 'b> {
 
 impl<'i, 'b> Walker<'i, 'b> {
     fn new(
-        image: &'i Image<'b>,
+        image: &'i Reader<'b>,
         facts: &'i LayoutFacts,
         directory: DataDirectory,
     ) -> Result<Self, PeError> {
@@ -953,7 +923,7 @@ impl<'i, 'b> Walker<'i, 'b> {
                 image,
                 u64::from(directory.virtual_address),
                 "pe.directory.resource.virtual_address",
-                image.image_len,
+                image.range_end(),
                 u64::from(directory.size),
             )
         })?;
@@ -975,12 +945,20 @@ impl<'i, 'b> Walker<'i, 'b> {
         })
     }
 
-    /// Checks that `[rel, rel + len)` lies inside the resource directory.
-    fn table(&self, rel: u32, len: u64, field: &str) -> Result<&'b [u8], PeError> {
+    /// The absolute file offset of `[rel, rel + len)`, after checking that the
+    /// range lies inside the resource directory.
+    ///
+    /// This is the *directory's* bound, not the image's: every offset in the
+    /// tree is checked against the size the data directory declares (spec F12
+    /// non-negotiable #3), so a table that claims more than the section holds
+    /// is refused here even when the image itself is longer. The image's own
+    /// bound is the second half of the check, in [`Reader::window`], which
+    /// every window this walk opens goes through.
+    fn check_table(&self, rel: u32, len: u64, field: &str) -> Result<u64, PeError> {
         let offset = u64::from(rel);
         let end = offset.checked_add(len).ok_or_else(|| {
             ParseError::length_overflow(
-                self.image.container.clone(),
+                self.image.container().to_owned(),
                 self.base + offset,
                 field,
                 "offset + length to fit in u64".to_owned(),
@@ -996,7 +974,20 @@ impl<'i, 'b> Walker<'i, 'b> {
                 end,
             ));
         }
-        self.image.slice(self.base + offset, len, field)
+        Ok(self.base + offset)
+    }
+
+    /// A reader over `[rel, rel + len)` of the resource directory.
+    fn table(&self, rel: u32, len: u64, field: &str) -> Result<Reader<'b>, PeError> {
+        let at = self.check_table(rel, len, field)?;
+        Ok(self.image.window(at, len, field)?)
+    }
+
+    /// The bytes of `[rel, rel + len)` of the resource directory, borrowed
+    /// from the image rather than copied.
+    fn table_bytes(&self, rel: u32, len: u64, field: &str) -> Result<&'b [u8], PeError> {
+        let at = self.check_table(rel, len, field)?;
+        Ok(self.image.window_bytes(at, len, field)?)
     }
 
     /// One directory name word, decoded without allocating.
@@ -1008,36 +999,29 @@ impl<'i, 'b> Walker<'i, 'b> {
         // The count and the code units it announces both have to be inside
         // the directory, so a name that reaches past the section is refused
         // before a single unit is read.
-        let length_bytes = self.table(at, 2, "resources.name.length")?;
-        let length = u64::from(u16::from_le_bytes([length_bytes[0], length_bytes[1]]));
-        self.table(at, 2 + length * 2, "resources.name.code_units")?;
+        let mut length_word = self.table(at, 2, "resources.name.length")?;
+        let length = u64::from(length_word.read_u16("resources.name.length")?);
+        self.table_bytes(at, 2 + length * 2, "resources.name.code_units")?;
         Ok(KeyRef::Name {
             at,
             units: u32::try_from(length).expect("a u16 count fits in a u32"),
         })
     }
 
+    /// One `IMAGE_RESOURCE_DATA_ENTRY`, read forward out of a single window.
     fn data(&self, rel: u32) -> Result<ResourceData, PeError> {
         let at = u64::from(rel);
-        let bytes = self.table(rel, RESOURCE_DATA_ENTRY_BYTES, "resources.data")?;
-        let word = |index: usize| {
-            u32::from_le_bytes([
-                bytes[index],
-                bytes[index + 1],
-                bytes[index + 2],
-                bytes[index + 3],
-            ])
-        };
-        let rva = word(0);
-        let size = word(4);
-        let code_page = word(8);
-        let reserved = word(12);
+        let mut entry = self.table(rel, RESOURCE_DATA_ENTRY_BYTES, "resources.data")?;
+        let rva = entry.read_u32("resources.data.rva")?;
+        let size = entry.read_u32("resources.data.size")?;
+        let code_page = entry.read_u32("resources.data.code_page")?;
+        let reserved = entry.read_u32("resources.data.reserved")?;
         let span = map_rva(self.image, self.facts, rva)?.ok_or_else(|| {
             PeError::outside(
                 self.image,
                 self.base + at,
                 "resources.data.rva",
-                self.image.image_len,
+                self.image.range_end(),
                 u64::from(size),
             )
         })?;
@@ -1076,48 +1060,47 @@ impl<'i, 'b> Walker<'i, 'b> {
     ) -> Result<(), PeError> {
         if let Some(first) = path.ancestors().iter().position(|seen| *seen == rel) {
             return Err(PeError::DirectoryCycle {
-                container: self.image.container.clone(),
+                container: self.image.container().to_owned(),
                 offset: self.base + u64::from(rel),
                 first: self.base + u64::from(path.ancestors()[first]),
             });
         }
         let _budget = recursion.enter("resources.directory", self.base + u64::from(rel))?;
-        path.enter(rel, &self.image.container)?;
+        path.enter(rel, self.image.container())?;
         self.directories += 1;
 
-        let header = self.table(rel, RESOURCE_DIRECTORY_HEADER_BYTES, "resources.directory")?;
-        let named = u16::from_le_bytes([header[12], header[13]]);
-        let ids = u16::from_le_bytes([header[14], header[15]]);
+        // The directory header and the entry table that follows it are one
+        // contiguous table, so one window covers both: the counts come out of
+        // the header, and the entries are then read forward, two words at a
+        // time, exactly as they sit in the format.
+        let mut table = self.table(rel, RESOURCE_DIRECTORY_HEADER_BYTES, "resources.directory")?;
+        // `Characteristics`, `TimeDateStamp`, `MajorVersion` and
+        // `MinorVersion` are recorded by the format and interpreted by nothing
+        // here, so the walk steps over them rather than inventing meanings.
+        table.skip("resources.directory.uninterpreted_header", 12)?;
+        let named = table.read_u16("resources.directory.number_of_named_entries")?;
+        let ids = table.read_u16("resources.directory.number_of_id_entries")?;
         let count = u64::from(named) + u64::from(ids);
         let table_bytes = RESOURCE_DIRECTORY_HEADER_BYTES
             .checked_add(count * RESOURCE_DIRECTORY_ENTRY_BYTES)
             .ok_or_else(|| {
                 ParseError::length_overflow(
-                    self.image.container.clone(),
+                    self.image.container().to_owned(),
                     self.base + u64::from(rel),
                     "resources.directory.entries",
                     "directory table size to fit in u64".to_owned(),
                     format!("{count} entries"),
                 )
             })?;
-        let entries = self.table(rel, table_bytes, "resources.directory.entries")?;
-        let entry_bytes = RESOURCE_DIRECTORY_ENTRY_BYTES as usize;
-        let header_bytes = RESOURCE_DIRECTORY_HEADER_BYTES as usize;
+        let mut entries = self.table(rel, table_bytes, "resources.directory.entries")?;
+        entries.skip(
+            "resources.directory.header",
+            RESOURCE_DIRECTORY_HEADER_BYTES as usize,
+        )?;
 
-        for index in 0..count {
-            let at = header_bytes + index as usize * entry_bytes;
-            let name_word = u32::from_le_bytes([
-                entries[at],
-                entries[at + 1],
-                entries[at + 2],
-                entries[at + 3],
-            ]);
-            let target_word = u32::from_le_bytes([
-                entries[at + 4],
-                entries[at + 5],
-                entries[at + 6],
-                entries[at + 7],
-            ]);
+        for _ in 0..count {
+            let name_word = entries.read_u32("resources.directory.entries.name")?;
+            let target_word = entries.read_u32("resources.directory.entries.target")?;
             path.push_key(self.key(name_word)?);
             if target_word & HIGH_BIT == 0 {
                 let data = self.data(target_word)?;
@@ -1258,13 +1241,13 @@ fn scoped<T>(
 /// know), and [`PeError::Parse`] when a read runs past the image or the
 /// section table does not fit the parse's allocation budget.
 pub fn read_pe_layout(context: &mut ParseContext, bytes: &[u8]) -> Result<PeLayout, PeError> {
-    let image = Image::new(context.container().to_owned(), bytes);
+    let image = Reader::new(context.container(), bytes);
     scoped(context, bytes, |allocation, _recursion| {
         read_layout(&image, allocation)
     })
 }
 
-fn read_layout(image: &Image<'_>, allocation: &mut AllocationBudget) -> Result<PeLayout, PeError> {
+fn read_layout(image: &Reader<'_>, allocation: &mut AllocationBudget) -> Result<PeLayout, PeError> {
     let facts = read_layout_facts(image)?;
     let PeLayoutFields {
         pe_offset,
@@ -1277,15 +1260,14 @@ fn read_layout(image: &Image<'_>, allocation: &mut AllocationBudget) -> Result<P
     // booked (and can be refused) before it is built.
     let count = u64::from(facts.section_count);
     allocation.reserve("sections", facts.sections_at, count, SECTION_HEADER_BYTES)?;
-    let table = image.slice(
-        facts.sections_at,
-        count * SECTION_HEADER_BYTES,
-        "pe.sections",
-    )?;
     let mut sections = Vec::with_capacity(facts.section_count as usize);
     for index in 0..facts.section_count as usize {
-        let row = index * SECTION_HEADER_BYTES as usize;
-        let name_bytes: [u8; 8] = table[row..row + 8]
+        // One window per 40-byte `IMAGE_SECTION_HEADER`, read forward: the
+        // eight name bytes, then the four numbers the RVA translation needs.
+        let at = facts.sections_at + index as u64 * SECTION_HEADER_BYTES;
+        let mut row = image.window(at, SECTION_HEADER_BYTES, "pe.section")?;
+        let name_bytes: [u8; 8] = row
+            .read_bytes("pe.section.name", 8)?
             .try_into()
             .expect("an 8-byte name field");
         let end = name_bytes
@@ -1293,19 +1275,20 @@ fn read_layout(image: &Image<'_>, allocation: &mut AllocationBudget) -> Result<P
             .position(|byte| *byte == 0)
             .unwrap_or(name_bytes.len());
         let name = String::from_utf8_lossy(&name_bytes[..end]).into_owned();
-        let head = facts.sections_at + row as u64 + 8;
         sections.push(PeSection {
             name,
-            virtual_size: image.u32(head, "pe.section.virtual_size")?,
-            virtual_address: image.u32(head + 4, "pe.section.virtual_address")?,
-            raw_size: image.u32(head + 8, "pe.section.size_of_raw_data")?,
-            raw_pointer: image.u32(head + 12, "pe.section.pointer_to_raw_data")?,
+            virtual_size: row.read_u32("pe.section.virtual_size")?,
+            virtual_address: row.read_u32("pe.section.virtual_address")?,
+            raw_size: row.read_u32("pe.section.size_of_raw_data")?,
+            raw_pointer: row.read_u32("pe.section.pointer_to_raw_data")?,
         });
     }
 
     Ok(PeLayout {
-        container: image.container.clone(),
-        image_len: image.image_len,
+        container: image.container().to_owned(),
+        // The image reader spans the whole input, so its range end is the
+        // image's byte length.
+        image_len: image.range_end(),
         pe_offset,
         machine,
         optional_magic,
@@ -1333,7 +1316,7 @@ fn read_layout(image: &Image<'_>, allocation: &mut AllocationBudget) -> Result<P
 /// failure therefore cannot appear in the second pass, and the build tests
 /// exercise that pass's structural refusals directly.
 pub fn read_pe_resources(context: &mut ParseContext, bytes: &[u8]) -> Result<PeResources, PeError> {
-    let image = Image::new(context.container().to_owned(), bytes);
+    let image = Reader::new(context.container(), bytes);
     // Pass one: the whole structure. It allocates nothing — the section
     // headers and the two walk stacks are read from the image and the frame —
     // so a hostile image is refused with the ledger exactly as it was, and
@@ -1363,7 +1346,7 @@ pub fn read_pe_resources(context: &mut ParseContext, bytes: &[u8]) -> Result<PeR
 /// whose second level is a block id the format can number is a string block,
 /// and its counted units must fit its own extent. Every other leaf is a plain
 /// leaf and is not interpreted here.
-fn check_leaf(image: &Image<'_>, keys: &[KeyRef], data: &ResourceData) -> Result<(), PeError> {
+fn check_leaf(image: &Reader<'_>, keys: &[KeyRef], data: &ResourceData) -> Result<(), PeError> {
     if let Some((block, _)) = string_leaf(keys) {
         check_block_id(image, data, block)?;
         return check_string_block(image, data);
@@ -1386,7 +1369,7 @@ fn string_leaf(keys: &[KeyRef]) -> Option<(u32, u32)> {
 
 /// Refuses a block id the format cannot number a string with: `0`, and
 /// anything wider than the 16 bits a second-level id has.
-fn check_block_id(image: &Image<'_>, data: &ResourceData, block: u32) -> Result<u16, PeError> {
+fn check_block_id(image: &Reader<'_>, data: &ResourceData, block: u32) -> Result<u16, PeError> {
     let id = u16::try_from(block).map_err(|_| {
         PeError::string(
             image,
@@ -1410,8 +1393,8 @@ fn check_block_id(image: &Image<'_>, data: &ResourceData, block: u32) -> Result<
 
 /// Refuses a `RT_STRING` block whose counted units leave its own extent.
 /// Allocation free, so the structure pass runs it on every string block.
-fn check_string_block(image: &Image<'_>, data: &ResourceData) -> Result<(), PeError> {
-    let bytes = image.slice(
+fn check_string_block(image: &Reader<'_>, data: &ResourceData) -> Result<(), PeError> {
+    let bytes = image.window_bytes(
         data.file_offset,
         u64::from(data.size),
         "resources.string_block",
@@ -1448,7 +1431,7 @@ fn check_string_block(image: &Image<'_>, data: &ResourceData) -> Result<(), PeEr
 
 /// Builds every record of one image.
 fn build(
-    image: &Image<'_>,
+    image: &Reader<'_>,
     layout: &PeLayout,
     facts: &LayoutFacts,
     allocation: &mut AllocationBudget,
@@ -1476,7 +1459,7 @@ fn build(
 /// Turns one walked leaf into a record, booking every buffer it owns.
 fn build_leaf(
     resources: &mut PeResources,
-    image: &Image<'_>,
+    image: &Reader<'_>,
     base: u64,
     keys: &[KeyRef],
     data: &ResourceData,
@@ -1493,7 +1476,7 @@ fn build_leaf(
         path.push(match *key {
             KeyRef::Id(id) => ResourceKey::Id(id),
             KeyRef::Name { at, units } => {
-                let bytes = image.slice(
+                let bytes = image.window_bytes(
                     base + u64::from(at),
                     2 + u64::from(units) * 2,
                     "resources.name",
@@ -1541,13 +1524,13 @@ fn build_leaf(
 /// Decodes one `RT_STRING` block, booking every code unit and every decoded
 /// text it hands out.
 fn build_string_block(
-    image: &Image<'_>,
+    image: &Reader<'_>,
     block_id: u16,
     language: u32,
     data: &ResourceData,
     allocation: &mut AllocationBudget,
 ) -> Result<StringBlock, PeError> {
-    let bytes = image.slice(
+    let bytes = image.window_bytes(
         data.file_offset,
         u64::from(data.size),
         "resources.string_block",
