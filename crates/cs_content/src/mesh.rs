@@ -7470,6 +7470,40 @@ mod tests {
 
     // ============================================================ F10-D ===
 
+    /// One archive's render-gate verdict, as the evidence harness reads it:
+    /// asserted by [`f10_d_render_report`] and written to
+    /// `CS_EVIDENCE_DIR/render-gate.json` by the test when that variable is
+    /// set (the evidence run sets it; see the harness's module doc).
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    struct F10DRenderRow {
+        /// The archive's path as the report spells it.
+        path: String,
+        /// `"world"` or `"airframe"`.
+        kind: String,
+        /// Rows: one per present stored mesh.
+        rows: usize,
+        /// Rows that built a render mesh and have nothing open.
+        ready: usize,
+        /// Rows that built a render mesh with an open presentation decision.
+        blocked: usize,
+        /// Rows that built **no** render mesh: their faces are missing from
+        /// the render.
+        failed: usize,
+        /// Stored faces the container holds (the rows carry all of them).
+        faces: u64,
+        /// Faces that reach no drawable triangle (format layer).
+        missing_faces: u64,
+        /// Stored faces whose data is invalid.
+        invalid_faces: u64,
+        /// Stored faces this triangulator refuses.
+        unsupported_faces: u64,
+        /// Stored faces the render gate lost, i.e. every face of every
+        /// `Failed` row's mesh.
+        faces_in_failed_rows: u64,
+        /// The meshes the gate dropped, ascending.
+        refused_meshes: Vec<u32>,
+    }
+
     /// One archive's face accounting through the **render** gate: the format
     /// layer's census says which faces draw nothing, the catalog's rows say
     /// which meshes became render meshes, and this asserts the two name
@@ -7482,13 +7516,17 @@ mod tests {
     /// dropped for some other reason, fails here rather than in a renderer.
     /// A row that is `Blocked` still built a render mesh and loses nothing;
     /// only a `Failed` row's faces are missing from the render.
+    ///
+    /// The numbers are returned as well as asserted, so the evidence harness
+    /// can put this archive's gate verdict in the report instead of only in
+    /// the log.
     fn f10_d_render_report(
         session: &ContentSession,
         key: &AssetKey,
         dependencies: &MeshDependencies<'_>,
         label: &str,
         kind: &str,
-    ) {
+    ) -> F10DRenderRow {
         let catalog = MeshCatalog::open(session, std::slice::from_ref(key), dependencies);
         assert_eq!(
             catalog.failures().count(),
@@ -7577,6 +7615,20 @@ mod tests {
             census.invalid_faces,
             census.unsupported_faces,
         );
+        F10DRenderRow {
+            path: label.to_owned(),
+            kind: kind.to_owned(),
+            rows: records.len(),
+            ready: rows_ready,
+            blocked: rows_blocked,
+            failed: rows_failed,
+            faces: census.stored_faces,
+            missing_faces: census.missing_faces(),
+            invalid_faces: census.invalid_faces,
+            unsupported_faces: census.unsupported_faces,
+            faces_in_failed_rows,
+            refused_meshes: refused_meshes.clone(),
+        }
     }
 
     /// **AC04 through the render gate, over every private world and the
@@ -7616,6 +7668,7 @@ mod tests {
 
         let mut worlds = 0usize;
         let mut last_group = None;
+        let mut report: Vec<F10DRenderRow> = Vec::new();
         for group in &found.diagnosis.world_groups {
             let context = ResolveContext::new(install::fingerprint(&found.manifest))
                 .with_world_group(WorldGroup::from_relative(group.clone()));
@@ -7634,13 +7687,13 @@ mod tests {
                 group.as_str()
             );
             let dependencies = seam_dependencies(&textures, &archive);
-            f10_d_render_report(
+            report.push(f10_d_render_report(
                 &session,
                 &gamez_key(),
                 &dependencies,
                 group.as_str(),
                 "world",
-            );
+            ));
             worlds += 1;
             last_group = Some(group.clone());
         }
@@ -7668,18 +7721,97 @@ mod tests {
             "the world texture archive the airframe audit reads opens"
         );
         let dependencies = seam_dependencies(&textures, &archive);
-        f10_d_render_report(
+        report.push(f10_d_render_report(
             &session,
             &key,
             &dependencies,
             planes_zbd.as_str(),
             "airframe",
-        );
+        ));
 
         assert!(
             worlds == found.diagnosis.world_groups.len(),
             "every discovered world group was reported"
         );
+        assert_eq!(
+            report.len(),
+            found.diagnosis.world_groups.len() + 1,
+            "one report row per world and one for the airframes"
+        );
+        write_f10_d_render_gate(&report);
+    }
+
+    /// Writes `render-gate.tsv` under `CS_EVIDENCE_DIR` when the evidence run
+    /// sets it, so the acceptance report can carry the render gate's own
+    /// measured numbers instead of only the log line they are printed on.
+    /// Outside an evidence run the variable is absent and nothing is written:
+    /// the test asserts the same numbers either way.
+    ///
+    /// The file carries the candidate tree it was produced from, which the
+    /// harness checks against the commit it is reporting on, so a file left
+    /// over from an earlier commit is refused rather than reused. It is
+    /// tab-separated with a fixed header: a report artifact is read by a
+    /// harness that has no JSON parser, and every field is a count, a stable
+    /// code or a relative archive spelling.
+    fn write_f10_d_render_gate(report: &[F10DRenderRow]) {
+        let Ok(dir) = std::env::var("CS_EVIDENCE_DIR") else {
+            return;
+        };
+        let root = git_output(&["rev-parse", "--show-toplevel"]);
+        let path = if Path::new(&dir).is_absolute() {
+            PathBuf::from(dir)
+        } else {
+            Path::new(&root).join(dir)
+        };
+        std::fs::create_dir_all(&path).expect("the evidence directory is created");
+        let tree = git_output(&["rev-parse", "HEAD^{tree}"]);
+        let mut document = String::from("F10-D render-gate report\n");
+        document.push_str(&format!("candidate_tree\t{tree}\n"));
+        document.push_str(
+            "path\tkind\trows\tready\tblocked\tfailed\tfaces\tmissing_faces\tinvalid_faces\t\
+             unsupported_faces\tfaces_in_failed_rows\trefused_meshes\n",
+        );
+        for row in report {
+            let meshes: Vec<String> = row.refused_meshes.iter().map(u32::to_string).collect();
+            document.push_str(&format!(
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                row.path,
+                row.kind,
+                row.rows,
+                row.ready,
+                row.blocked,
+                row.failed,
+                row.faces,
+                row.missing_faces,
+                row.invalid_faces,
+                row.unsupported_faces,
+                row.faces_in_failed_rows,
+                meshes.join(","),
+            ));
+        }
+        let out = path.join("render-gate.tsv");
+        std::fs::write(&out, &document).unwrap_or_else(|error| {
+            panic!(
+                "cannot write the render-gate artifact {}: {error}",
+                out.display()
+            )
+        });
+        println!("wrote {}", out.display());
+    }
+
+    /// One `git` invocation's stdout, trimmed; panics with stderr when it
+    /// fails, so a report can never be produced from an unknown commit.
+    fn git_output(args: &[&str]) -> String {
+        let output = std::process::Command::new("git")
+            .args(args)
+            .output()
+            .expect("git runs");
+        assert!(
+            output.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).trim().to_owned()
     }
 
     // ================================================ F10-E: every stored group ===

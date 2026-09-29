@@ -309,6 +309,149 @@ fn accept_f10_d_census_counts_a_face_the_section_never_held() {
 
 // ----------------------------------------------------------------- retail ---
 
+/// `measured`'s companion question (deferred item 7 of
+/// `docs/findings/2026-09-29-f10-b-gamez-mesh-layout.md`): **are retail n-gons
+/// planar?** The tuple is `(outlines, above 1e-6 world units, above 1e-3)` per
+/// archive, measured as the largest corner distance from the outline's own
+/// Newell plane.
+///
+/// The two bins are **reporting thresholds this task authors** so the
+/// measurement is reproducible; they are not game values and nothing in the
+/// engine uses them. What is measured is the deviation itself, in world units,
+/// and the findings doc records the per-archive maxima.
+const EXPECTED_OUTLINE_PLANARITY: [(&str, u64, u64, u64); 9] = [
+    ("ZBD/C1/gamez.zbd", 12163, 644, 164),
+    ("ZBD/C1B/gamez.zbd", 5820, 317, 93),
+    ("ZBD/C1C/gamez.zbd", 5924, 306, 93),
+    ("ZBD/C2/gamez.zbd", 8587, 539, 123),
+    ("ZBD/C2B/gamez.zbd", 5353, 234, 72),
+    ("ZBD/C3/gamez.zbd", 9336, 617, 174),
+    ("ZBD/C4/gamez.zbd", 11008, 1475, 250),
+    ("ZBD/C5/gamez.zbd", 15908, 596, 182),
+    ("ZBD/planes.zbd", 8968, 940, 176),
+];
+
+/// The largest distance of an outline's corners from the plane its own Newell
+/// normal defines, in world units. Exact `f64` arithmetic over the stored
+/// `f32`s: no tolerance, no snapping, nothing this measurement could hide a
+/// corner behind.
+fn planarity_deviation(points: &[[f32; 3]]) -> f64 {
+    let widened: Vec<[f64; 3]> = points.iter().map(|point| point.map(f64::from)).collect();
+    let mut normal = [0.0f64; 3];
+    for (index, point) in widened.iter().enumerate() {
+        let next = widened[(index + 1) % widened.len()];
+        normal[0] += (point[1] - next[1]) * (point[2] + next[2]);
+        normal[1] += (point[2] - next[2]) * (point[0] + next[0]);
+        normal[2] += (point[0] - next[0]) * (point[1] + next[1]);
+    }
+    let length = (normal[0] * normal[0] + normal[1] * normal[1] + normal[2] * normal[2]).sqrt();
+    if length == 0.0 {
+        return 0.0;
+    }
+    let centroid = [
+        widened.iter().map(|point| point[0]).sum::<f64>() / widened.len() as f64,
+        widened.iter().map(|point| point[1]).sum::<f64>() / widened.len() as f64,
+        widened.iter().map(|point| point[2]).sum::<f64>() / widened.len() as f64,
+    ];
+    widened
+        .iter()
+        .map(|point| {
+            let signed = (point[0] - centroid[0]) * normal[0]
+                + (point[1] - centroid[1]) * normal[1]
+                + (point[2] - centroid[2]) * normal[2];
+            (signed / length).abs()
+        })
+        .fold(0.0f64, f64::max)
+}
+
+/// **The planarity half of F10-D's question, answered on the whole corpus.**
+/// Every stored outline with more than three corners of every private world
+/// and the airframes is measured: how many are exactly planar to the last bit,
+/// how far the rest stand off their own Newell plane, and how far the furthest
+/// one goes.
+///
+/// The measurement closes the "unmeasured" half of deferred item 7: retail
+/// n-gons are **not** all planar, in every archive, by amounts that reach
+/// hundreds of world units — which is why the triangulator projects onto the
+/// dominant plane instead of assuming coplanarity, and why the nine outlines
+/// it refuses are reported rather than triangulated as though they were flat.
+/// The counts are pinned per archive so a reader that mis-reads one corner
+/// index moves them.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_f10_d_retail_ngon_outlines_are_measured_for_planarity() {
+    let mut total_outlines = 0u64;
+    let mut total_planar = 0u64;
+    let mut total_off_plane = 0u64;
+    for (relative, _) in retail_archives() {
+        let parsed = read_retail(&relative);
+        let (mut outlines, mut above_1e6, mut above_1e3) = (0u64, 0u64, 0u64);
+        let mut max_deviation = 0.0f64;
+        for mesh in parsed.present() {
+            for polygon in &mesh.mesh.polygons {
+                if polygon.kind != PrimitiveKind::Polygon || polygon.corners.len() <= 3 {
+                    continue;
+                }
+                outlines += 1;
+                let outline: Vec<[f32; 3]> = polygon
+                    .corners
+                    .iter()
+                    .map(|corner| mesh.mesh.positions[corner.position as usize])
+                    .collect();
+                let deviation = planarity_deviation(&outline);
+                max_deviation = max_deviation.max(deviation);
+                if deviation > 1e-6 {
+                    above_1e6 += 1;
+                }
+                if deviation > 1e-3 {
+                    above_1e3 += 1;
+                }
+            }
+        }
+        let expected = EXPECTED_OUTLINE_PLANARITY
+            .iter()
+            .find(|(name, _, _, _)| *name == relative)
+            .unwrap_or_else(|| panic!("{relative}: the pinned measurement has a row for it"));
+        assert_eq!(
+            (outlines, above_1e6, above_1e3),
+            (expected.1, expected.2, expected.3),
+            "{relative}: outlines, and the two authored reporting bins"
+        );
+        assert!(outlines > 0, "{relative}: the corpus stores outlines");
+        assert!(
+            above_1e3 <= above_1e6 && above_1e6 <= outlines,
+            "{relative}: the bins are nested"
+        );
+        assert!(
+            above_1e6 > 0 && above_1e6 < outlines,
+            "{relative}: the archive stores both planar and off-plane outlines, \
+             so the measurement distinguishes real data"
+        );
+        assert!(
+            max_deviation.is_finite(),
+            "{relative}: a stored corner is a finite position"
+        );
+        println!(
+            "F10-D planarity {relative}: outlines {outlines}, exactly planar {}, \
+             above 1e-6 {above_1e6}, above 1e-3 {above_1e3}, max deviation {max_deviation:e} \
+             world units",
+            outlines - above_1e6,
+        );
+        total_outlines += outlines;
+        total_planar += outlines - above_1e6;
+        total_off_plane += above_1e6;
+    }
+    assert_eq!(
+        total_outlines, 83_067,
+        "every outline of the nine containers was measured"
+    );
+    assert!(total_planar > 0 && total_off_plane > 0);
+    println!(
+        "F10-D planarity totals: {total_outlines} outlines, {total_planar} exactly planar, \
+         {total_off_plane} standing off their own plane"
+    );
+}
+
 /// The archives the report covers: every world group discovery observed, plus
 /// the airframe container. Derived from production discovery so a new world
 /// group is reported rather than silently missing from the corpus.
