@@ -66,7 +66,7 @@
 //! a hostile range are the primitives `io.rs` implements and
 //! `specs/F03-bounded-binary-parsing-primitives.md` covers, used once.
 //!
-//! [`u16_at`] and [`u32_at`] are compositions of those primitives for the
+//! `u16_at` and `u32_at` are compositions of those primitives for the
 //! header fields read one at a time; a whole record (a section header, a
 //! directory header, a data entry) is read sequentially out of one window.
 
@@ -1121,7 +1121,7 @@ impl<'i, 'b> Walker<'i, 'b> {
 /// A `Designed` value (EvidenceClass `Designed`), like
 /// [`RecursionBudget::DEFAULT_MAX_DEPTH`]: the three surveyed images nest three
 /// levels, and a walk that would nest deeper than this is refused as
-/// [`ParseErrorKind::RecursionDepthExceeded`] rather than growing a vector. A
+/// [`crate::ParseErrorKind::RecursionDepthExceeded`] rather than growing a vector. A
 /// caller that genuinely needs more may raise
 /// [`RecursionBudget::max_depth`], but only up to this ceiling, so the walk's
 /// own memory stays bounded independently of the parse's budgets.

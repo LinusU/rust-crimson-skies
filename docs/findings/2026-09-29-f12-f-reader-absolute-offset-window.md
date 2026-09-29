@@ -97,13 +97,33 @@ image and opens windows at the absolute offsets the structures name:
   slice once and reuse the bytes for the error message instead of reading the
   same range twice.
 
-**The module decodes no bytes of its own any more**: there is no
-`u32::from_le_bytes([bytes[0], bytes[1], …])` left in it, and no private
-extent check. The only `ParseError`s it still builds by hand are the two the
-format's *own* rules need and `Reader` cannot express — an `offset + len`
-overflow while computing a table's position, and the `PeError` domain refusals
-(`Malformed`, `OutsideTable`, `DirectoryCycle`, `StringBlock`), which are not
-`ParseError`s at all.
+**The image bytes are no longer indexed or decoded by this module.** There is
+no `struct Image`, no `u32::from_le_bytes([bytes[0], bytes[1], …])`, no
+`&image.bytes[a as usize..b as usize]`, and no private extent check: every
+read of the image goes through `Reader::window` / `Reader::window_bytes`
+followed by a typed read, and every offset the walk uses is checked by exactly
+one of two bounds — `check_table` for the resource directory's declared size
+(spec F12 non-negotiable #3) and `Reader::window` for the image.
+
+Four hand-decoded little-endian `u16`s *do* remain, and they are deliberate.
+The `RT_STRING` block loop (`check_string_block`, `build_string_block`, and
+`build_leaf`'s name units) decodes its counted length word and its code-unit
+pairs with `u16::from_le_bytes` over a range `window_bytes` has already proved,
+because the refusals it raises are `PeError::StringBlock` domain errors that
+carry the block's own byte counts — routing them through `Reader` would swap
+those conditions for generic ones and lose what the format check exists to
+report. The bounded extent is *not* duplicated there; only the two-byte
+little-endian decode of an already-bounded word is.
+
+**Four `ParseError`s are still constructed by hand**, all of them for rules
+`Reader` cannot express rather than for a missing bounds check: three
+`length_overflow`s for an `offset + len` that a *domain* rule adds up first
+(the optional header's end, a table's absolute position, the directory's
+entry-table size) and one `recursion_depth_exceeded` for the walk's own
+`MAX_RESOURCE_DEPTH` ceiling, which is independent of the parse's
+`RecursionBudget`. The rest of the module's refusals are the four `PeError`
+domain variants (`Malformed`, `OutsideTable`, `DirectoryCycle`,
+`StringBlock`), which are not `ParseError`s at all.
 
 **Behaviour is unchanged:** the 16 `accept_f12_b_*` tests pass **unmodified**
 (the test file was not touched), including the truncation case
@@ -112,6 +132,33 @@ fixture image by 0x200 bytes), the cycle case, the bounds cases, the
 allocation-budget case, and — with `CS_GAME_DIR` set on this machine — the
 retail survey of `strings.dll`, `language.dll` and `langui.dll` through the
 ported walk.
+
+### What is *not* evidence for the port
+
+Recorded because a reader of this document could otherwise over-read it.
+
+**No runtime test can distinguish the ported reader from the deleted `Image`,
+and none is claimed to.** The port is behaviour-preserving on every host this
+project builds for, so re-adding a private `Image` with the same checks would
+make every test in the repository pass again. The only observable difference
+the two implementations have is on a target where `usize` is 32 bits — the old
+`Image::slice` reported `LengthOverflow` for an offset above `usize::MAX`
+where `Reader::window` reports `UnexpectedEof` with `0` bytes observed — and CI
+builds `x86_64` only, so that difference is untested.
+
+The evidence for the port is therefore: (a) the code itself — `struct Image`
+is gone, and `rg 'from_le_bytes|as usize\]'` over the module leaves only the
+four string-block decodes listed above; (b) the `accept_f12_b_*` suite,
+including the retail survey, passing **unmodified** through the new code path;
+and (c) `accept_f12_f_pe_resource_reads_go_through_the_shared_window`, which
+drives the ported `read_pe_layout` far enough to show the refusals still carry
+each missing field's own absolute offset and byte counts.
+
+That third item is deliberately weak and is called out as such: the test feeds
+stubs too small to hold a COFF header, so it never enters
+`Walker::walk`. Pinning the *walk* to the window API with a test would require
+asserting something about the implementation rather than its behaviour, which
+F03's acceptance tests deliberately do not do.
 
 ## The audit the task asked for: `rof.rs`, `zbd/`, `interp.rs`, `texture/`
 
@@ -126,6 +173,7 @@ is a follow-up rather than part of this slice.
 | `crates/cs_formats/src/rof.rs:1858` | `&file[start as usize..end as usize]` for a member extent whose ends came from checked reads. | **Adoption candidate.** `Reader::window_bytes` states the bound instead of asserting it with a cast. |
 | `crates/cs_formats/src/texture/tga.rs:647`, `crates/cs_formats/src/texture/zbd.rs:860` | The same shape: `&bytes[a as usize..b as usize]` after a checked `Reader` walk, with a comment saying the ends were reached by checked reads. | **Adoption candidate**, same reasoning, same risk (the surrounding F08 error types are not `ParseError`s). |
 | `crates/cs_formats/src/zbd/wave.rs:365-373`, `zbd/header.rs:261`, `zbd/archive.rs:640`, `zbd/sound_sample.rs:599`, `zbd/trailer.rs:316` | `u16_at`/`u32_at`/`id_at`/`le_u32`/`.get(start..end)` over an **already-bounded slice**, several returning `Option` or `None`. | **No change wanted.** These are accessors over a range the reader already proved, deliberately shaped as `Option` (a probe reports "absent", not a parse error). They are not a second bounded-read implementation, and turning them into `Result`-shaped windows would change their API for nothing. |
+| `crates/cs_formats/src/interp.rs:768`, `rof.rs:1039`, `texture/decode.rs:108`, `texture/tga.rs:675`, `texture/zbd.rs:836`, `zbd/sound_sample.rs:663-665` | The remaining `from_le_bytes` sites in the crate. Every one decodes a word out of a range that is already bounded: an `as_chunks::<N>()` remainder the reader's `checked_byte_len` made whole (with a `debug_assert!`), a record slice of exactly the record's byte count, a texel inside a decoded image, or an `area`/payload extent whose ends the same function just checked. | **No change wanted**, and this row exists to show the sweep was complete: `rg -n from_le_bytes crates/cs_formats/src/ --glob '!io.rs'` returns 14 hits, and these are the remaining ones. None re-derives an extent or an absolute offset — they are the *decode*, not the *bound*, and `Reader`'s window cannot express either without copying a record that is already a slice. |
 | `crates/cs_formats/src/interp.rs` | Sequential only: `Reader` plus `skip`/`read_*` over a validated container; no absolute re-entry anywhere. | **Nothing to port.** |
 
 Recorded as follow-up tasks rather than fixed inside this slice: **#378 (F05-G)**
@@ -136,24 +184,35 @@ and so must not be bundled with the mechanical replacements.
 ## Mutation probe (run, not argued)
 
 Both mutations were applied to the committed tree, the suite was run, and the
-tree was restored from a copy of the file afterwards.
+tree was restored from a copy of the file afterwards. The review pass re-ran
+both probes from a fresh copy of the committed `io.rs` on 2026-09-29 and got
+the same results. That re-run was done by the same agent that implemented the
+change, so it is a reproduction, **not** an independent review; the counts
+below come from `--no-fail-fast` runs over the whole selection, so they are
+complete rather than the first failure cargo stopped at.
 
 1. **The window silently clamps to the end of the input** (`window_range`'s
-   refusal disabled and both ends clamped to `bytes.len()`).
+   refusal disabled and both ends clamped to the range).
    `accept_f12_f_window_past_the_container_is_refused_exactly_as_a_skip`,
    `accept_f12_f_window_refuses_every_truncated_prefix_of_the_f03_corpus` and
-   `accept_f12_f_pe_resource_reads_go_through_the_shared_window` **fail**; the
-   other two still pass. The `accept_f12_b_*` tests and the F03 suites still
-   pass, because they never open a window — they always went through the
-   cursor. That is the honest limit of this probe: the window's own
-   sensitivity is proven by the new tests, not by the older ones.
+   `accept_f12_f_pe_resource_reads_go_through_the_shared_window` **fail** (3 of
+   5); the other two still pass. The 16 `accept_f12_b_*` tests and the 34
+   `accept_f03_*` tests still pass, because they never open a window — they
+   always went through the cursor. That is the honest limit of this probe: the
+   window's own sensitivity is proven by the new tests, not by the older ones,
+   and it is also why no test can prove the *port* (see "What is not evidence
+   for the port" above).
 2. **The shared cursor check clamps** (`Reader::take`, which every `skip`,
    `read_bytes` and `read_u16`/`read_u32` goes through).
-   `accept_f03_d_truncation_corpus_fails_at_every_boundary` **fails**, an
-   F03-B budget test fails, and so do
+   **15** `accept_f03_*` tests fail — every truncation-boundary and budget
+   suite, among them `accept_f03_d_truncation_corpus_fails_at_every_boundary`
+   and `accept_f03_b_refusals_allocate_no_buffer_from_input_lengths` — and so
+   do 2 of the 5 new tests,
    `accept_f12_f_window_reports_absolute_positions_and_borrows_the_input` and
-   `accept_f12_f_window_past_the_container_is_refused_exactly_as_a_skip` — the
-   latter because it compares the window's refusal against `skip`'s.
+   `accept_f12_f_window_past_the_container_is_refused_exactly_as_a_skip`, the
+   latter because it compares the window's refusal against `skip`'s. The other
+   three new tests pass, because the window's bound is a separate check from
+   the cursor's.
 
 Together these say what the two implementations are: the cursor rule is what
 the F03 corpus certifies, the window rule is what the F12-F tests certify, and
@@ -177,7 +236,16 @@ rather than a silent divergence.
   recorded.)
 - `cargo test --workspace --locked -- accept_f03_ --include-ignored` → 0
   (34 tests, including the truncation corpus and the budget suites)
+- `cargo test -p cs_formats --doc --locked` → 0 (10 doctests, including the
+  `Reader::window` and `Reader::window_bytes` examples)
+- `cargo test --workspace --locked --no-fail-fast -- accept_f03_ --include-ignored`
+  under mutation 2 → the 15 failures listed above (this run is what makes the
+  count complete rather than first-failure)
 
+`CS_GAME_DIR` was set on this machine for every command above, so the two
+`#[ignore = "requires CS_GAME_DIR"]` F12-B resource surveys really ran against
+the original `strings.dll`, `language.dll` and `langui.dll` through the ported
+walk. Nothing in this change reads, derives from, or commits any original byte.
 
 ## Still unknown (unchanged by this task)
 
