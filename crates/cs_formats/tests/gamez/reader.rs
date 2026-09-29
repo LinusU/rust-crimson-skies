@@ -52,16 +52,29 @@ impl Default for HeaderSpec {
     }
 }
 
-/// `count` distinct `Vec3`s, so a reader that shifted or reordered the array
-/// would read a different value rather than a plausible one.
-fn vectors(count: u32) -> Vec<[f32; 3]> {
+/// `count` distinct `Vec3`s from one **named block** of a mesh's vector array.
+///
+/// `block` displaces the values, so the positions and the normals of the same
+/// mesh can never hold the same numbers. That matters: the two arrays are
+/// adjacent and equally sized, so a reader that swapped them would still
+/// consume exactly the right bytes, still walk to `nodes_offset` and still
+/// satisfy every count — it would only be wrong. Distinguishable blocks are what
+/// make such a reader fail instead of passing by coincidence.
+fn vectors(block: u32, count: u32) -> Vec<[f32; 3]> {
     (0..count)
         .map(|index| {
-            let value = index as f32;
-            [value, value * 2.0, value * 3.0]
+            let value = (index + 1) as f32;
+            let base = f32::from(block as u8) * 1000.0;
+            [base + value, base + value * 2.0, base + value * 3.0]
         })
         .collect()
 }
+
+/// Block numbers for the three `Vec3` arrays a mesh stores in order, so a call
+/// site cannot accidentally fill two of them with the same values.
+const POSITIONS: u32 = 0;
+const NORMALS: u32 = 1;
+const MORPHS: u32 = 2;
 
 /// One mesh to write: its 100-byte record's fields and the parts its data is
 /// composed from.
@@ -127,8 +140,8 @@ impl MeshSpec {
             vertex_count: 3,
             normal_count: 3,
             vectors: {
-                let mut all = vectors(3);
-                all.extend(vectors(3));
+                let mut all = vectors(POSITIONS, 3);
+                all.extend(vectors(NORMALS, 3));
                 all
             },
             polygons: vec![polygon],
@@ -823,6 +836,63 @@ fn accept_f10_b_gamez_arrays_come_from_counts_not_pointers() {
     );
 }
 
+/// The three `Vec3` arrays of a mesh are stored back to back in one order —
+/// positions, then normals, then morph vectors — and each is reached by its own
+/// count. They are **distinct** blocks here, so a reader that read them in any
+/// other order, or dropped the morph vectors, would put the wrong values in the
+/// wrong array rather than satisfying every count at once.
+///
+/// `morph_count` is zero in all nine measured retail archives, so no retail test
+/// can cover this: a reader that never read morph vectors at all would still
+/// pass there. Only this fixture can.
+#[test]
+fn accept_f10_b_gamez_morph_vectors_are_read_after_the_normals() {
+    let spec = HeaderSpec::default();
+    let mut mesh = MeshSpec::triangle();
+    mesh.morph_count = 2;
+    let positions = vectors(POSITIONS, 3);
+    let normals = vectors(NORMALS, 3);
+    let morphs = vectors(MORPHS, 2);
+    mesh.vectors = {
+        let mut all = positions.clone();
+        all.extend(normals.clone());
+        all.extend(morphs.clone());
+        all
+    };
+    let bytes = authored_container(&spec, &[mesh], sequential_index(1, &[0]), &[]);
+    let parsed = parse_ok("synthetic/morphs.zbd", &bytes);
+    let read = parsed.get(0).expect("one present mesh");
+
+    assert_eq!(read.info.morph_count, 2);
+    assert_eq!(
+        read.mesh.positions,
+        positions.as_slice(),
+        "the positions are the first block"
+    );
+    assert_eq!(
+        read.mesh.normals,
+        normals.as_slice(),
+        "the normals are the second block"
+    );
+    assert_eq!(
+        read.morphs,
+        morphs.as_slice(),
+        "the morph vectors are the third block"
+    );
+
+    // The morph vectors are stored raw and are not read as positions: the IR's
+    // position array is untouched by them.
+    assert_eq!(read.mesh.positions.len(), 3);
+    assert_eq!(read.morphs.len(), 2);
+    assert!(
+        !read
+            .morphs
+            .iter()
+            .any(|vector| read.mesh.positions.contains(vector)),
+        "the morph block is a separate array, not a repeat of the positions"
+    );
+}
+
 /// `FLAG_TRIANGLE_STRIP` is the **only** thing that selects the corner topology,
 /// and `FLAG_NORMALS` is the only thing that says a normal index follows. A reader
 /// that inferred the topology from the corner count, or that always read a
@@ -997,8 +1067,8 @@ fn accept_f10_b_gamez_shared_position_keeps_both_corners() {
     mesh.vertex_count = 2;
     mesh.normal_count = 2;
     mesh.vectors = {
-        let mut all = vectors(2);
-        all.extend(vectors(2));
+        let mut all = vectors(POSITIONS, 2);
+        all.extend(vectors(NORMALS, 2));
         all
     };
     mesh.polygons = vec![polygon];
@@ -1652,8 +1722,8 @@ fn accept_f10_b_gamez_vertex_info_splits_into_nine_bit_fields() {
     mesh.vertex_count = 260;
     mesh.normal_count = 260;
     mesh.vectors = {
-        let mut all = vectors(260);
-        all.extend(vectors(260));
+        let mut all = vectors(POSITIONS, 260);
+        all.extend(vectors(NORMALS, 260));
         all
     };
     mesh.polygons = vec![wide];

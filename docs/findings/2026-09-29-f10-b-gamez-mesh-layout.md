@@ -390,6 +390,7 @@ contradict its own stored counts — so a fixture cannot accidentally parse.
 | `header_gates_the_section` | signature, version, `textures_offset == 40`, the section order, the section bounds, each with its own variant, offset and numbers |
 | `every_truncation_fails_loudly` | **every** byte length from 0 to `len-1` fails; only the whole container parses |
 | `arrays_come_from_counts_not_pointers` | the `*_ptr` fields point nowhere and are kept raw; positions, normals, polygon record, UVs still read correctly, in order |
+| `morph_vectors_are_read_after_the_normals` | the third `Vec3` array is read at its own count, after the normals, into its own array; the retail corpus stores none, so only a fixture can cover it |
 | `flags_select_strip_and_normals` | `TRI_STRIP` is the only topology selector, `NORMALS` the only one that adds a normal array, an unmapped bit is a finding and the face still decodes |
 | `keeps_every_material_group` | two groups, both material indices and both UV sets survive, group 0 mirrored onto the single-valued fields |
 | `shared_position_keeps_both_corners` | one position index used twice keeps two corners with different UVs and colours, visible through the source-corner map (F10 #3, AC03) |
@@ -406,10 +407,17 @@ contradict its own stored counts — so a fixture cannot accidentally parse.
 
 ## Mutation probes
 
-Applied to `crates/cs_formats/src/gamez/reader.rs`, one at a time, file restored
-after each, `cargo test --locked -p cs_formats --test gamez -- accept_f10_b_gamez_
---include-ignored` run with `CS_GAME_DIR` set. Counts are failing task tests out
-of sixteen.
+Two rounds. The first was run by the implementing agent. The second
+(**re-verification**, § "Re-verification by a second session") was run
+independently by `bunny-2` on the rebased branch with `CS_GAME_DIR` set, because
+the implementing agent's claim lapsed before it could run them.
+
+Both rounds use the same method: applied to
+`crates/cs_formats/src/gamez/reader.rs`, one mutation at a time, the file
+restored after each, then
+`cargo test --locked -p cs_formats --test gamez -- accept_f10_b_gamez_
+--include-ignored` with `CS_GAME_DIR` set. Counts are failing task tests out of
+sixteen (seventeen after the morph fixture was added in round two).
 
 | Mutation | Failing |
 | --- | --- |
@@ -457,6 +465,66 @@ of sixteen.
   any platform. The check is kept for the same reason, and the *observable* part
   of that bound — the extent against `nodes_offset` — is covered by
   `..._hostile_counts_are_refused_and_retryable`.
+
+## Re-verification by a second session
+
+The implementing agent (`bunny-1`) marked its own work **UNVERIFIED**: its claim
+lapsed before it could run the probe round, and nothing of it had been merged.
+`bunny-2` resumed the task from the owner's saved branch and re-verified it
+independently rather than trusting it.
+
+**The reader is sound.** Both retail tests pass unchanged on all nine archives,
+and the discriminating check holds: for every archive the mesh-data walk ends
+exactly on the `nodes_offset` the pinned reference itself records. The suite is
+17 task tests — 15 synthetic and 2 retail — all passing with `CS_GAME_DIR` set;
+without it the two retail tests fail loudly rather than skipping. The counts
+reproduced the recorded ones exactly: 128 734 stored polygons, 1 006 of them
+multi-group (999 with two groups, 7 with three), 783 lights, no morph vectors,
+no invalid face and no findings in any archive.
+
+Every probe the implementing agent had recorded as killing a test was re-run
+independently and did kill it, including the two structural ones (polygon
+records and polygon arrays interleaved, light headers and light extras
+interleaved) and the ones this layout is most exposed to: the 9-bit corner-count
+mask, the `TRI_STRIP` selector, the material groups and the fixup tables.
+
+**Two genuine holes were found and closed.** Both were in the *fixtures*, not the
+reader — in each case the reader was correct and had nothing wrong to catch.
+
+1. **The positions and the normals held identical values.** `MeshSpec::triangle`
+   built its vector array as `vectors(3)` twice, and the `vectors` helper
+   depended only on `count`, so both blocks held the same numbers. Swapping the
+   two array reads in `read_one_mesh` — a real misreading of a layout whose
+   three `Vec3` arrays are adjacent and separately counted — consumed exactly
+   the same bytes, walked to the same `nodes_offset`, satisfied every count and
+   **passed every one of the sixteen tests**. Fixed by giving `vectors` a block
+   number (`POSITIONS` / `NORMALS` / `MORPHS`) that displaces the values, so the
+   three arrays of one mesh can never hold the same numbers. The swap is now
+   killed by `..._arrays_come_from_counts_not_pointers`. This hole was latent
+   during round one too; it escaped notice only because that round's probe list
+   did not happen to include this mutation.
+
+2. **The morph array was never exercised.** `morph_count` is zero in all nine
+   measured archives, so the retail tests cannot cover the third `Vec3` array at
+   all: a reader that never read morph vectors, read them before the normals, or
+   discarded them after reading would pass the entire retail half. Added
+   `..._morph_vectors_are_read_after_the_normals`, which stores a mesh with
+   `morph_count = 2` in three distinct blocks. All three of those mutations are
+   now killed.
+
+Round-two probes, all killed, beyond those re-run from round one:
+
+| Mutation | Failing |
+| --- | --- |
+| positions and normals read in swapped order | 1 (of 17) |
+| morph vectors never read | 1 |
+| morph vectors read before the normals | 1 |
+| morph vectors read then discarded | 1 |
+
+The lesson worth keeping for the next fixture in this area: a synthetic fixture
+whose two arrays hold the same numbers cannot distinguish a reader that swaps
+them, and a field the retail corpus never exercises must be covered by a fixture
+or not covered at all.
 
 ## Recorded unknowns
 
