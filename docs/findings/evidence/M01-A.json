@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "M01-A",
+ "candidate_tree": "0ef79ca39a680b59ff5dc171a0825334df0a2591",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-09-29T06:42:03Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_m01_a_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/agent-1", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 6, "executed": 6, "passed": 6, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_m01_a_the_critical_dependency_set_is_the_checklists_first_five", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m01_a_verified_and_unresolved_are_two_distinct_states", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m01_a_a_title_the_local_strings_do_not_carry_is_unresolved", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m01_a_the_committed_record_is_what_the_installation_derives", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m01_a_the_campaign_keeps_everything_else_unresolved_and_unready", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m01_a_source_derived_binding_has_no_unresolved_critical_dependencies", "status": "pass", "evidence": ["cargo-test.log"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "6f74f8a20abeeaa3abaf33b39ab6152df034bba6447e1514e195885c27c4fc51", "kind": "log"}, {"path": "m01-binding.json", "sha256": "2fe5db0a76aec6339ea606d1568ef21e1017d4c42e905c170d1d4e44b4d1b99a", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "opencode-1 (implementing agent, self-check; the Rally reviewer regenerates this report on the rebased commit)", "method": "acceptance suite run locally with the retail capability; this harness derives every field from the recorded log, production discovery of $CS_GAME_DIR and the binding `SourceContext::read` + `SourceContext::bind` derive from it (all five critical dependencies resolved, checklist entries still unknown recorded in missions/bindings/M01.json); claim is implemented only; validated with tools/validate_evidence.py --require-pass"},
+ "claim": "implemented"
+}
