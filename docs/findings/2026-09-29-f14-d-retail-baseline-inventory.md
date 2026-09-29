@@ -257,8 +257,9 @@ point). No agent review awards more than `checked`.
   and no memory of the implementation. The reviewer was **not** a different
   agent instance or model, so this is not independent-model evidence, and it
   awards at most **checked** — the owner's human approval remains required.
-- **Rebased** the 9 commits onto `origin/main` `2a9f356` (clean, no
-  conflicts), then on that head: `cargo fmt --all -- --check` → 0,
+- **Rebased** the 9 commits onto `origin/main` `2a9f356`, and after the
+  `F16-D` merge onto `origin/main` `9cb8853` (both clean, no conflicts). On
+  that final head: `cargo fmt --all -- --check` → 0,
   `cargo clippy --workspace --all-targets --all-features --locked -- -D
   warnings` → 0, `cargo test --workspace --locked` → 0 (109 `test result:
   ok.` lines, 0 failures), and
