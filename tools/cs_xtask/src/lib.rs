@@ -13,12 +13,16 @@
 //! * [`bootstrap`] requires every workspace member the F00 deliverable names
 //!   to be listed with a real manifest, and composes the pin and CI guards so
 //!   one command freezes the platform bootstrap (F00-D).
+//! * [`target_dir`] requires the effective `CARGO_TARGET_DIR` to be private
+//!   to this worktree, so concurrent agent builds cannot reuse each other's
+//!   artifacts (task #383).
 //!
-//! The `cs_xtask` binary exposes `test-select`, `verify-ci` and
-//! `verify-bootstrap`; packaging and coverage commands arrive with later
-//! tooling tasks.
+//! The `cs_xtask` binary exposes `test-select`, `verify-ci`,
+//! `verify-bootstrap` and `verify-target-dir`; packaging and coverage
+//! commands arrive with later tooling tasks.
 
 pub mod bootstrap;
 pub mod ci;
 pub mod pins;
+pub mod target_dir;
 pub mod test_select;
