@@ -41,6 +41,17 @@
 //! duplicate identities refused, and the unsupported-mission count that
 //! keeps an unavailable mission in the denominator.
 //!
+//! [`campaign_bindings`] holds the engine-independent mission binding and
+//! campaign coverage records (`specs/F50-per-mission-compatibility-and-
+//! full-campaign-closure.md`, stage F50-A): the seven required content
+//! categories the F50 owner ruling preserves, one explicit unresolved
+//! dependency row per required subsystem, the frozen campaign denominator
+//! read from `missions/bindings/campaign-inventory.tsv`, and the coverage
+//! totals plus closure reports that keep a missing, unknown or unsupported
+//! child counted instead of ready. It reads no original data and claims no
+//! gameplay success; binding real missions is F50-B and the per-mission
+//! tasks.
+//!
 //! [`coordinates`] holds source coordinate conventions and their adapters
 //! into canonical space (`specs/F16-coordinates-units-origin-management-and-
 //! clocks.md`, stage F16-A): one validated declaration per source, and every
@@ -54,6 +65,7 @@
 //! [`cs_formats`]: cs_formats
 //! [`cs_assets`]: cs_assets
 
+pub mod campaign_bindings;
 pub mod catalog;
 pub mod config;
 pub mod coordinates;
