@@ -66,6 +66,20 @@ fn read_report(path: &Path) -> String {
     std::fs::read_to_string(path).expect("the --out report exists")
 }
 
+/// The `program_asset` of every mission row, in report order.
+fn program_assets(report: &str) -> Vec<String> {
+    report
+        .split("\"program_asset\":\"")
+        .skip(1)
+        .map(|row| {
+            row.split('"')
+                .next()
+                .expect("every asset value is closed")
+                .to_owned()
+        })
+        .collect()
+}
+
 /// The JSON field for one mission, located by its `program_asset` spelling.
 fn mission_object<'a>(report: &'a str, asset: &str) -> &'a str {
     let marker = format!("\"program_asset\":\"{asset}\"");
@@ -245,6 +259,70 @@ fn accept_f14_e_cs_path_wins_over_cs_game_dir_and_stdout_carries_json() {
     assert!(
         stdout.contains("\"program_asset\":\"ZBD/C3/M07/zrdr.zbd\""),
         "CS_GAME_DIR selects the installation, got: {stdout}"
+    );
+}
+
+/// The report is a comparison artifact, so its mission rows are in the
+/// canonical `(chapter, mission number)` order of the production walk and
+/// two runs over one tree produce the same bytes. The tree holds enough
+/// mission directories that a report following raw directory enumeration
+/// order cannot pass by accident.
+#[test]
+fn accept_f14_e_the_report_is_byte_stable_in_canonical_mission_order() {
+    let tree = TempTree::new("order");
+    let mut expected = Vec::new();
+    // Written in a deliberately non-canonical order (chapter 3 first, and
+    // descending mission numbers), so the report's order cannot come from
+    // how this test created the directories.
+    for chapter in [3u32, 1, 2] {
+        for number in (1..=8u32).rev() {
+            tree.write(&format!("ZBD/C{chapter}/M{number:02}/zrdr.zbd"), MISSION_A);
+            expected.push(format!("ZBD/C{chapter}/M{number:02}/zrdr.zbd"));
+        }
+    }
+    expected.sort_by_key(|asset| {
+        let chapter: u32 = asset
+            .split('/')
+            .nth(1)
+            .and_then(|group| group.strip_prefix('C'))
+            .and_then(|digits| digits.parse().ok())
+            .expect("the fixture spells C<chapter>");
+        let number: u32 = asset
+            .split('/')
+            .nth(2)
+            .and_then(|mission| mission.strip_prefix('M'))
+            .and_then(|digits| digits.parse().ok())
+            .expect("the fixture spells M<number>");
+        (chapter, number)
+    });
+
+    let report = |_| -> String {
+        let output = cs_inspect()
+            .arg("campaign")
+            .arg("--cs-path")
+            .arg(tree.root())
+            .env_remove("CS_GAME_DIR")
+            .output()
+            .expect("cs-inspect runs");
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "campaign exits zero, stderr: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        String::from_utf8_lossy(&output.stdout).into_owned()
+    };
+
+    let first = report(());
+    let second = report(());
+    assert_eq!(
+        first, second,
+        "two runs over one installation produce the same report bytes"
+    );
+    assert_eq!(
+        program_assets(&first),
+        expected,
+        "the rows are in canonical (chapter, mission number) order"
     );
 }
 
