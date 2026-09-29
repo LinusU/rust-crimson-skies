@@ -7,10 +7,10 @@
 //! `cs_content::campaign_bindings`.
 
 use cs_content::campaign_bindings::{
-    BindingCategory, BindingError, BindingRow, CampaignBindings, CategoryState, LabelError,
-    MissionLabel, Progression, SubsystemId, WORLD_ROLE,
+    BindingCategory, BindingError, BindingRow, CampaignBindings, CategoryState, DependencyState,
+    LabelError, MISSION_ROLE, MissionLabel, PROGRAM_ROLE, Progression, SubsystemId, WORLD_ROLE,
 };
-use cs_types::content::ContentKind;
+use cs_types::content::{ContentKind, Resolved};
 
 use crate::common::{cid, claim, designed, label, load_inventory, ready_binding};
 
@@ -198,5 +198,186 @@ fn accept_f50_a_invalid_records_are_refused_on_admission() {
     assert!(matches!(
         BindingRow::unknown("objective", claim("f50.a.blank_row"), ""),
         Err(BindingError::Resolved(_))
+    ));
+}
+
+/// A wrong-kind identity row is refused wherever it sits: the kind rule
+/// covers *every* row that claims an identity role, not only the first one,
+/// so a second `world` row pointing at a mission cannot slip past the check
+/// by being second.
+#[test]
+fn accept_f50_a_a_second_identity_row_is_checked_for_its_kind() {
+    let mut campaign = CampaignBindings::new();
+
+    let mut two_worlds = ready_binding("M01", "One", Progression::known(Vec::new()));
+    {
+        let Some(CategoryState::Rows(rows)) = two_worlds
+            .categories
+            .get_mut(&BindingCategory::MissionIdentity)
+        else {
+            panic!("the fixture records its identity as rows");
+        };
+        rows.push(
+            BindingRow::content(
+                WORLD_ROLE,
+                cid(ContentKind::Mission, "second-world-row"),
+                designed("f50.a.synthetic.second_world"),
+            )
+            .expect("the row is well formed"),
+        );
+    }
+    let error = campaign
+        .insert(two_worlds)
+        .expect_err("a second world row of the wrong kind is refused");
+    assert!(
+        matches!(
+            &error,
+            BindingError::WrongKind {
+                role,
+                expected: ContentKind::World,
+                found: ContentKind::Mission,
+            } if role == WORLD_ROLE
+        ),
+        "{error}"
+    );
+
+    // The same holds for the other two identity roles, and for a row that is
+    // not first in the recorded order.
+    for (role, kind, bad) in [
+        (MISSION_ROLE, ContentKind::Mission, ContentKind::World),
+        (PROGRAM_ROLE, ContentKind::Script, ContentKind::World),
+    ] {
+        let mut binding = ready_binding("M02", "Two", Progression::known(Vec::new()));
+        {
+            let Some(CategoryState::Rows(rows)) = binding
+                .categories
+                .get_mut(&BindingCategory::MissionIdentity)
+            else {
+                panic!("the fixture records its identity as rows");
+            };
+            rows.retain(|row| row.role() != role);
+            rows.insert(
+                0,
+                BindingRow::content(
+                    role,
+                    cid(kind, "first-row"),
+                    designed("f50.a.synthetic.first_row"),
+                )
+                .expect("the row is well formed"),
+            );
+            rows.push(
+                BindingRow::content(
+                    role,
+                    cid(bad, "second-row"),
+                    designed("f50.a.synthetic.second_row"),
+                )
+                .expect("the row is well formed"),
+            );
+        }
+        let error = campaign
+            .insert(binding)
+            .expect_err("a wrong-kind identity row is refused wherever it sits");
+        assert!(
+            matches!(
+                &error,
+                BindingError::WrongKind {
+                    role: found_role,
+                    found,
+                    ..
+                } if found_role == role && *found == bad
+            ),
+            "{error}"
+        );
+    }
+}
+
+/// The remaining identity and "explicit unknown" admission rules: a
+/// denominator entry for a mission nothing records, a binding for a label
+/// nothing records, a blank reason on the remaining explicit-unknown
+/// constructors, a malformed row role and a malformed subsystem or mission
+/// identity.
+#[test]
+fn accept_f50_a_every_explicit_unknown_and_identity_grammar_is_refused() {
+    let mut campaign = CampaignBindings::new();
+
+    // The denominator only ever grows over missions that are actually
+    // recorded: an unrecorded label is refused instead of silently enlarging
+    // the baseline.
+    let error = campaign
+        .declare(&label("M42"))
+        .expect_err("a mission nothing records cannot join the denominator");
+    assert!(
+        matches!(&error, BindingError::UnknownMission { label } if label.as_str() == "M42"),
+        "{error}"
+    );
+
+    // Binding a label nothing records is refused the same way.
+    let error = campaign
+        .bind(ready_binding(
+            "M42",
+            "Never declared",
+            Progression::known(Vec::new()),
+        ))
+        .expect_err("a mission nothing records cannot be bound");
+    assert!(
+        matches!(&error, BindingError::UnknownMission { label } if label.as_str() == "M42"),
+        "{error}"
+    );
+
+    // Every explicit unknown carries a reason, not a blank.
+    assert!(matches!(
+        CategoryState::unsupported("  \t "),
+        Err(BindingError::EmptyReason { .. })
+    ));
+    assert!(matches!(
+        DependencyState::unresolved(claim("f50.a.blank_dependency"), ""),
+        Err(BindingError::EmptyReason { .. })
+    ));
+    assert!(matches!(
+        DependencyState::unsupported(" "),
+        Err(BindingError::EmptyReason { .. })
+    ));
+
+    // A row role is a short, plain label: an empty role, an over-long one and
+    // one carrying a space or a slash are all refused.
+    let probe =
+        Resolved::unknown(claim("f50.a.role_probe"), "role probe").expect("the reason is given");
+    let too_long = "r".repeat(BindingRow::MAX_ROLE_LEN + 1);
+    for role in ["", "with space", "with/slash", too_long.as_str()] {
+        assert!(
+            matches!(
+                BindingRow::new(role, probe.clone()),
+                Err(BindingError::InvalidRole { .. })
+            ),
+            "role {role:?} must be refused"
+        );
+    }
+    assert!(
+        BindingRow::new(&"r".repeat(BindingRow::MAX_ROLE_LEN), probe.clone()).is_ok(),
+        "a role of exactly the maximum length is accepted"
+    );
+
+    // Both identity grammars are the same uppercase rule.
+    assert!(matches!(MissionLabel::new(""), Err(LabelError::Empty)));
+    assert!(matches!(
+        MissionLabel::new(&"M".repeat(MissionLabel::MAX_LEN + 1)),
+        Err(LabelError::TooLong { .. })
+    ));
+    assert!(matches!(
+        MissionLabel::new("M01 "),
+        Err(LabelError::BadCharacter { .. })
+    ));
+    assert!(matches!(SubsystemId::new(""), Err(LabelError::Empty)));
+    assert!(matches!(
+        SubsystemId::new("f39"),
+        Err(LabelError::BadCharacter { ch: 'f' })
+    ));
+    assert!(matches!(
+        SubsystemId::new(&"F".repeat(SubsystemId::MAX_LEN + 1)),
+        Err(LabelError::TooLong { .. })
+    ));
+    assert!(matches!(
+        SubsystemId::new("_F39"),
+        Err(LabelError::BadCharacter { .. })
     ));
 }

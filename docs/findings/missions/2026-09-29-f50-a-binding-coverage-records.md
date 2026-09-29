@@ -84,6 +84,10 @@ report. `insert()` refuses duplicate labels, missing/unknown/duplicated
 subsystem rows, wrong-kind identity rows and empty categories; `bind()`
 replaces a placeholder exactly once and reports `AlreadyBound` afterwards.
 
+`is_ready()` also requires a frozen denominator: no declared missions, or a
+recorded mission still outside the declared denominator, is never ready. See
+the review record below for why.
+
 ### The declared denominator
 
 `missions/bindings/campaign-inventory.tsv` declares the 24 work orders with
@@ -111,7 +115,10 @@ and are M01-A … M24-A's output; note that the protected schema has
 categories, subsystem rows, progression) deliberately does **not** fit in
 it and is not stored there.
 
-## Test inventory (18 tests, prefix `accept_f50_a_`)
+## Test inventory (23 tests, prefix `accept_f50_a_`)
+
+Eighteen tests were added by the implementing agent and five by the review
+round (marked **review**); the review record is below.
 
 | Test | What it pins |
 | --- | --- |
@@ -128,11 +135,16 @@ it and is not stored there.
 | `coverage::accept_f50_a_forced_airframes_are_a_first_class_row` | forced airframes are a row of the closed `actors` category |
 | `coverage::accept_f50_a_category_labels_round_trip` | every required category's stable label maps back to it, and an unknown label maps to nothing |
 | `coverage::accept_f50_a_reference_evidence_rows_carry_evidence_claims` | a reference/evidence row resolves to an evidence claim, never to a content id |
+| `coverage::accept_f50_a_readiness_requires_a_frozen_denominator` | **review** readiness needs a non-empty declared denominator covering every recorded mission |
 | `closure::accept_f50_a_every_declared_mission_closure_omits_nothing` | AC01's minimum scenario: one closure per declared mission, roots and reach are the full 24, every closure accounts for every required category and all 23 subsystem rows |
 | `closure::accept_f50_a_a_bound_chain_is_traversed_in_full` | a bound `M01 → M02 → M03` chain is walked and counted; a tail closure counts only itself |
 | `closure::accept_f50_a_cycle_duplicate_and_dangling_identities_are_reported` | duplicate insert, unknown root, cycle chain, dangling successor, dangling content identity, missing category and blank reason |
+| `closure::accept_f50_a_required_subsystems_match_the_sheet` | **review** `REQUIRED_SUBSYSTEMS` equals the F50 sheet's 23 prerequisite features, read from the sheet |
+| `closure::accept_f50_a_every_mission_carries_a_row_for_every_required_subsystem` | **review** every declared mission carries exactly the required subsystem rows, each an explicit unresolved row |
 | `identity::accept_f50_a_a_discovery_label_never_stands_in_for_a_retail_identity` | placeholder → `bind()` once → `AlreadyBound`; the catalog identity only appears once bound; lowercase label refused |
 | `identity::accept_f50_a_invalid_records_are_refused_on_admission` | wrong identity kind, missing subsystem, unknown subsystem, duplicated subsystem, empty rows, empty category, blank reasons |
+| `identity::accept_f50_a_a_second_identity_row_is_checked_for_its_kind` | **review** a wrong-kind identity row is refused wherever it sits, not only when it is the first row of its role |
+| `identity::accept_f50_a_every_explicit_unknown_and_identity_grammar_is_refused` | **review** `declare`/`bind` of an unrecorded label, the remaining blank-reason constructors, row-role grammar and mission/subsystem identity grammar |
 
 Mutation probes (implementation removed, test must fail, then reverted):
 
@@ -141,6 +153,10 @@ Mutation probes (implementation removed, test must fail, then reverted):
 | `cell_state` reports an absent category as `Complete` | 2 tests fail (`a_missing_child…`, `cycle_duplicate_and_dangling…`) |
 | `closures()` returns only the first root | `every_declared_mission_closure_omits_nothing` fails |
 | `CampaignInventory::parse` skips malformed lines instead of failing | `a_malformed_inventory_never_drops_a_mission_silently` fails |
+| `MissionBinding::validate` inspects only the first row per identity role (review) | `a_second_identity_row_is_checked_for_its_kind` fails |
+| `CoverageReport::is_ready` drops the frozen-denominator guard (review) | `readiness_requires_a_frozen_denominator` fails |
+| one entry removed from `REQUIRED_SUBSYSTEMS` (review) | `required_subsystems_match_the_sheet` fails |
+| `BindingRow::new` maps a bad role back to `BindingError::Label` (review) | `every_explicit_unknown_and_identity_grammar_is_refused` fails |
 
 ## Checks
 
@@ -149,7 +165,7 @@ Mutation probes (implementation removed, test must fail, then reverted):
 | `cargo fmt --all -- --check` | 0 |
 | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
 | `cargo test --workspace --locked` | 0 (93 test binaries/doctest groups green) |
-| `cargo test --workspace --locked -- accept_f50_a_ --include-ignored` | 0 (18 tests, all passing) |
+| `cargo test --workspace --locked -- accept_f50_a_ --include-ignored` | 0 (23 tests after the review round, all passing; 18 before it) |
 
 No `#[ignore]` test belongs to this stage: nothing here needs `CS_GAME_DIR`,
 and CI (which has no original data) runs these tests unchanged.
@@ -178,7 +194,130 @@ and CI (which has no original data) runs these tests unchanged.
   open and needs no change here.
 - Whether the campaign progression is a chain, a graph or per-difficulty is
   unmeasured: `Progression::Unknown` records that honestly today.
+- Whether one mission may legitimately record **two** rows for the same
+  identity role (two world variants, an intro program plus the mission
+  program) is unmeasured. `MissionBinding::validate` now checks the kind of
+  *every* row that claims an identity role, so a second contradictory row is
+  refused, but multiplicity itself is deliberately not restricted: a second
+  well-formed row of the right kind is allowed until original data says
+  otherwise. M01-A … M24-A settle this; do not add a singleton rule before
+  then.
 - If the owner later wants the complete record to live in JSON next to the
   per-mission files, `schemas/mission-binding.schema.json` (protected) would
   have to grow with it; that is an owner decision, recorded here rather
   than worked around.
+
+## Review record (bunny-1, 2026-09-29)
+
+Reviewer: **bunny-1**, a different agent instance from the implementer
+(**opencode-1**) and working from a fresh context: the implementer's
+submission summary and this findings document were read, but the code was
+judged against the F50 sheet, the 2026-09-28 owner ruling,
+`docs/contracts/SCRIPT-MISSION.md`, `docs/contracts/IDENTITY-CONTENT.md`
+and the owner-authored `missions/README.md`, not against the implementer's
+description of it. Not an independent *original-reference* observation: this
+stage reads no original data and no agent review replaces owner approval.
+
+Reviewed and accepted as sound: the closed seven-category set and its
+mapping onto the ruling's list; `Resolved<BindingTarget>` rows with explicit
+unknowns; the strict inventory reader; the frozen-denominator
+`CampaignBindings` API with no removal path; the closure traversal, where
+the cycle check runs *before* the visited check so an already-explored node
+can never hide a cycle reachable from it; and the honest "what this does not
+do" framing. The TSV-instead-of-JSON decision is sound and is recorded as
+an owner decision rather than worked around.
+
+Four defects were found and fixed on this branch.
+
+### 1. `validate` checked only the first row of each identity role
+
+`MissionBinding::validate` looked up each identity role with
+`rows.iter().find(...)`, so only the *first* `world`, `mission` or `program`
+row had its [`ContentKind`] verified. A binding carrying a well-formed
+`world` row followed by a second `world` row pointing at a `Mission` was
+admitted, and the cell then read `Complete` because both rows were known.
+The module documents "An identity row points at a catalog element of the
+wrong kind" as a refused admission rule, so this was a hole in a stated
+rule, not a design choice. The loop now walks every row and checks the kind
+of each one that claims an identity role. Multiplicity is left open on
+purpose (see the open points above).
+
+Observed failure before the fix:
+`identity::accept_f50_a_a_second_identity_row_is_checked_for_its_kind` failed
+with `a second world row of the wrong kind is refused: ()`.
+
+### 2. `BindingError::InvalidRole` was a dead variant
+
+`BindingRow::new` validated the role with `validate_role(role)?`, which goes
+through `From<LabelError>`, so every bad role produced
+`BindingError::Label(LabelError::…)` — indistinguishable from a bad mission
+label — while four doc comments promised `BindingError::InvalidRole` and no
+code path constructed it. The variant existed precisely to distinguish a bad
+row role, and the stage's other error variants all follow the same
+"name the specific failure" convention. `BindingRow::new` now maps the role
+error to `InvalidRole`; the docs are true and the variant is reachable.
+
+Observed failure before the fix: the new identity-grammar test failed with
+`role "" must be refused`.
+
+### 3. `is_ready` ignored the frozen denominator
+
+`CoverageReport::is_ready` compared only cell and subsystem counts, and its
+doc justified an empty campaign as "vacuously ready, exactly like
+`Catalog::is_fully_ready`". That is the "filtering to the working subset"
+failure spec F50 non-negotiable behavior 5 forbids: a campaign built
+without a denominator, or one whose recorded set no longer matches its
+declared set, reported itself complete. The owner ruling also puts the
+denominator first ("Aggregate completion fixes the denominator before
+testing"), so the denominator is part of the question rather than a
+precondition of it. `is_ready` now additionally requires a non-empty
+declared denominator that covers every recorded mission, and the
+`Catalog::is_fully_ready` precedent was dropped as a misleading analogy.
+`discovered_content_stays_visible` still holds: a discovered mission keeps
+the campaign unready until `declare` freezes it into the baseline.
+
+Observed failure before the fix:
+`coverage::accept_f50_a_readiness_requires_a_frozen_denominator` failed.
+
+### 4. Nothing pinned `REQUIRED_SUBSYSTEMS` to the sheet
+
+Every subsystem assertion in the implementer's tests compared a count
+against `REQUIRED_SUBSYSTEMS.len()` on *both* sides, so the set could
+shrink silently: deleting `"F38"` from the constant would have made every
+mission report one dependency row fewer and every test still pass — a
+dropped prerequisite feature becoming a silently lighter mission. The
+implementer already established the right pattern for the denominator
+(comparing the committed inventory against the protected
+`missions/README.md`); the same guard is now applied to the prerequisite
+list, read from `specs/F50-...md` and compared by identity, with the sheet's
+23 features counted explicitly.
+
+Observed failure before the fix (mutation applied, then reverted):
+`closure::accept_f50_a_required_subsystems_match_the_sheet` failed.
+
+### Also corrected
+
+- The `# Errors` sections of `CampaignBindings::insert` and `bind` listed
+  `DuplicateId`/`UnknownMission` before `MissionBinding::validate`, while
+  the code validates first. The doc now states the real order, so a record
+  that is both invalid and a duplicate is documented as reported as the
+  invalid record it is.
+
+### Review checks (bunny-1, 2026-09-29)
+
+| Command | Exit |
+| --- | --- |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
+| `RUSTDOCFLAGS="-D warnings" cargo doc -p cs_content --no-deps --all-features` | 0 |
+| `cargo test --workspace --locked` | 0 |
+| `cargo test --workspace --locked -- accept_f50_a_ --include-ignored` | 0 (23 tests, all passing) |
+
+No protected path is touched: `git diff --name-only origin/main...HEAD`
+lists only `missions/bindings/`,
+`crates/cs_content/src/campaign_bindings.rs`, `crates/cs_content/src/lib.rs`
+(wiring), `crates/cs_app/Cargo.toml` and `Cargo.lock` (wiring),
+`crates/cs_app/tests/campaign/` and this file. The new tests read two
+protected files (`missions/README.md`, already read by the implementer, and
+`specs/F50-...md`) read-only, to assert agreement.
+

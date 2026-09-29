@@ -546,7 +546,7 @@ impl BindingRow {
     /// [`BindingError::InvalidRole`] for an empty, over-long or
     /// out-of-grammar role.
     pub fn new(role: &str, target: Resolved<BindingTarget>) -> Result<Self, BindingError> {
-        validate_role(role)?;
+        validate_role(role).map_err(|error| BindingError::InvalidRole { error })?;
         Ok(Self {
             role: role.to_owned(),
             target,
@@ -1043,17 +1043,25 @@ impl MissionBinding {
         if let Some(CategoryState::Rows(rows)) =
             self.categories.get(&BindingCategory::MissionIdentity)
         {
-            for (role, expected) in IDENTITY_ROLE_KINDS {
-                let Some(row) = rows.iter().find(|row| row.role() == *role) else {
+            // Every row that claims an identity role is checked, not only the
+            // first: a second `world` row pointing at a mission is the same
+            // wrong-kind identity as a first one, and inspecting just the
+            // first would let a contradictory duplicate through.
+            for row in rows {
+                let Some((role, expected)) = IDENTITY_ROLE_KINDS
+                    .iter()
+                    .find(|(name, _)| *name == row.role())
+                    .copied()
+                else {
                     continue;
                 };
                 let Some(found) = row.content_target() else {
                     continue;
                 };
-                if found.kind() != *expected {
+                if found.kind() != expected {
                     return Err(BindingError::WrongKind {
-                        role: (*role).to_owned(),
-                        expected: *expected,
+                        role: role.to_owned(),
+                        expected,
                         found: found.kind(),
                     });
                 }
@@ -1483,11 +1491,17 @@ impl CoverageReport {
     /// Whether every cell of every recorded mission is complete, every
     /// subsystem row is resolved and every progression is recorded.
     ///
-    /// An empty campaign is vacuously ready, exactly like
-    /// [`Catalog::is_fully_ready`]; a campaign with a single missing,
-    /// unknown or unsupported cell never is.
+    /// The frozen denominator is part of the question, not a precondition of
+    /// it. A campaign with no declared denominator has nothing to be complete
+    /// against and is never ready, and a recorded mission still outside the
+    /// denominator keeps the campaign unready until it is declared — spec F50
+    /// non-negotiable behavior 5, "no filtering to the working subset". An
+    /// empty or under-declared aggregate is exactly how a short campaign would
+    /// otherwise report itself complete.
     pub fn is_ready(&self) -> bool {
-        self.cells == self.complete_cells
+        self.declared_missions > 0
+            && self.declared_missions == self.total_missions
+            && self.cells == self.complete_cells
             && self.subsystem_unresolved == 0
             && self.subsystem_unsupported == 0
             && self.progression_unknown == 0
@@ -1531,10 +1545,13 @@ impl CampaignBindings {
 
     /// Records one mission binding.
     ///
+    /// The record is validated before it is looked up, so a record that is
+    /// both invalid and a duplicate is reported as the invalid record it is.
+    ///
     /// # Errors
     ///
-    /// [`BindingError::DuplicateId`] when the label is already recorded,
-    /// then every rule of [`MissionBinding::validate`].
+    /// Every rule of [`MissionBinding::validate`], then
+    /// [`BindingError::DuplicateId`] when the label is already recorded.
     pub fn insert(&mut self, binding: MissionBinding) -> Result<(), BindingError> {
         binding.validate()?;
         if self.missions.contains_key(&binding.label) {
@@ -1569,14 +1586,16 @@ impl CampaignBindings {
     /// Replaces the placeholder standing in for `binding.label`.
     ///
     /// This is the hand-off every binding stage uses: the inventory declares
-    /// a mission as unresolved, the binding task fills it in once.
+    /// a mission as unresolved, the binding task fills it in once. Like
+    /// [`CampaignBindings::insert`], the incoming record is validated before
+    /// the existing one is looked up.
     ///
     /// # Errors
     ///
-    /// [`BindingError::UnknownMission`] when the label was never declared,
-    /// [`BindingError::AlreadyBound`] when the recorded mission is no
-    /// longer a placeholder (two real records with one identity would be a
-    /// duplicate), then every rule of [`MissionBinding::validate`].
+    /// Every rule of [`MissionBinding::validate`], then
+    /// [`BindingError::UnknownMission`] when the label was never recorded, and
+    /// [`BindingError::AlreadyBound`] when the recorded mission is no longer a
+    /// placeholder (two real records with one identity would be a duplicate).
     pub fn bind(&mut self, binding: MissionBinding) -> Result<(), BindingError> {
         binding.validate()?;
         let label = binding.label.clone();

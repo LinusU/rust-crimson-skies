@@ -438,3 +438,69 @@ fn accept_f50_a_reference_evidence_rows_carry_evidence_claims() {
         "f50.a.synthetic.evidence"
     );
 }
+
+/// The frozen denominator is part of readiness, not a precondition of it. A
+/// campaign with nothing declared, and a campaign whose recorded missions are
+/// not all in the declared denominator, are both unready even when every
+/// recorded cell is complete — that is the "filtering to the working subset"
+/// failure spec F50 non-negotiable behavior 5 forbids.
+#[test]
+fn accept_f50_a_readiness_requires_a_frozen_denominator() {
+    // Nothing declared at all: there is no denominator to be complete
+    // against, so the aggregate is not ready.
+    let empty = CampaignBindings::new().coverage();
+    assert_eq!(empty.total_missions, 0);
+    assert_eq!(empty.declared_missions, 0);
+    assert!(
+        !empty.is_ready(),
+        "a campaign with no declared denominator is never ready"
+    );
+
+    // Every cell complete, but the recorded set is not the declared one.
+    let mut undeclared = CampaignBindings::new();
+    for binding in [
+        ready_binding("M01", "One", Progression::known(Vec::new())),
+        ready_binding("M02", "Two", Progression::known(Vec::new())),
+        ready_binding("M03", "Three", Progression::known(Vec::new())),
+    ] {
+        undeclared
+            .insert(binding)
+            .expect("the synthetic binding records");
+    }
+    let report = undeclared.coverage();
+    assert_eq!(report.total_missions, 3);
+    assert_eq!(report.declared_missions, 0);
+    assert_eq!(report.complete_cells, report.cells);
+    assert_eq!(report.subsystem_unresolved, 0);
+    assert_eq!(report.progression_unknown, 0);
+    assert!(
+        !report.is_ready(),
+        "every cell complete is not readiness while the denominator is unfrozen"
+    );
+
+    // Declaring all but one still leaves the aggregate short of its baseline.
+    undeclared
+        .declare(&label("M01"))
+        .expect("a recorded mission joins the denominator");
+    undeclared
+        .declare(&label("M02"))
+        .expect("a recorded mission joins the denominator");
+    let partial = undeclared.coverage();
+    assert_eq!(partial.declared_missions, 2);
+    assert_eq!(partial.total_missions, 3);
+    assert!(!partial.is_ready(), "a partial denominator is not ready");
+    assert_eq!(partial.discovered_extra(), 1);
+
+    // Declaring the last one freezes the denominator and the campaign is ready.
+    undeclared
+        .declare(&label("M03"))
+        .expect("a recorded mission joins the denominator");
+    let frozen = undeclared.coverage();
+    assert_eq!(frozen.declared_missions, 3);
+    assert_eq!(frozen.discovered_extra(), 0);
+    assert_eq!(frozen.declared_cells(), frozen.cells);
+    assert!(
+        frozen.is_ready(),
+        "a fully bound campaign over a frozen denominator is ready"
+    );
+}

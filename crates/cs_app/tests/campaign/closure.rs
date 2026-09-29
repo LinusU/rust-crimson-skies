@@ -12,11 +12,13 @@ use std::collections::BTreeSet;
 
 use cs_content::campaign_bindings::{
     BindingCategory, BindingError, CampaignBindings, CategoryState, CellState, ClosureError,
-    Progression, REQUIRED_SUBSYSTEMS,
+    DependencyState, Progression, REQUIRED_SUBSYSTEMS, SubsystemId,
 };
 use cs_content::catalog::Catalog;
 
-use crate::common::{claim, declared, label, load_inventory, ready_binding, ready_campaign};
+use crate::common::{
+    claim, declared, label, load_inventory, ready_binding, ready_campaign, repo_path,
+};
 
 /// AC01: one closure per declared mission, and together they account for
 /// every declared mission and every required category of every mission they
@@ -239,4 +241,105 @@ fn accept_f50_a_cycle_duplicate_and_dangling_identities_are_reported() {
         ),
         "an unresolved category must carry a reason"
     );
+}
+
+/// The required subsystem rows are the F50 sheet's own prerequisite list,
+/// read from the sheet rather than restated here. The other subsystem
+/// assertions in this file compare counts against `REQUIRED_SUBSYSTEMS.len()`
+/// on both sides, so without this one the set could shrink — a dropped
+/// prerequisite feature would make every mission report one row fewer and
+/// still be ready.
+#[test]
+fn accept_f50_a_required_subsystems_match_the_sheet() {
+    let sheet = std::fs::read_to_string(repo_path(
+        "specs/F50-per-mission-compatibility-and-full-campaign-closure.md",
+    ))
+    .expect("the F50 sheet reads");
+
+    let line = sheet
+        .lines()
+        .find(|line| line.starts_with("**Prerequisite features:**"))
+        .expect("the sheet still names its prerequisite features");
+    let listed: Vec<String> = line
+        .trim_start_matches("**Prerequisite features:**")
+        .trim()
+        .trim_end_matches('.')
+        .split(',')
+        .map(|feature| feature.trim().to_owned())
+        .collect();
+
+    let expected: Vec<String> = listed
+        .iter()
+        .map(|feature| {
+            SubsystemId::new(feature)
+                .unwrap_or_else(|error| panic!("{feature} is a subsystem identity: {error}"))
+                .as_str()
+                .to_owned()
+        })
+        .collect();
+    let actual: Vec<String> = REQUIRED_SUBSYSTEMS
+        .iter()
+        .map(|id| (*id).to_owned())
+        .collect();
+
+    assert_eq!(
+        actual.len(),
+        expected.len(),
+        "one dependency row per prerequisite feature, no more and no fewer"
+    );
+    let mut sorted_expected = expected.clone();
+    let mut sorted_actual = actual.clone();
+    sorted_expected.sort();
+    sorted_actual.sort();
+    assert_eq!(
+        sorted_actual, sorted_expected,
+        "the required subsystem rows are exactly the sheet's prerequisite features"
+    );
+    assert_eq!(
+        sorted_actual.len(),
+        sorted_actual.iter().collect::<BTreeSet<_>>().len(),
+        "the sheet's prerequisite list names no feature twice"
+    );
+    assert_eq!(
+        sorted_actual.len(),
+        23,
+        "the F50 sheet names 23 prerequisite features"
+    );
+}
+
+/// Every required subsystem carries an explicit row for every mission, and a
+/// campaign built from the declared inventory starts with every one of those
+/// rows unresolved. A mission whose dependency list were ever shortened below
+/// the sheet's list is refused on admission, and one that carried a
+/// default/empty state instead of an explicit unknown would show up here.
+#[test]
+fn accept_f50_a_every_mission_carries_a_row_for_every_required_subsystem() {
+    let campaign = CampaignBindings::from_inventory(&load_inventory())
+        .expect("the declared inventory builds placeholders");
+    let required: BTreeSet<&str> = REQUIRED_SUBSYSTEMS.iter().copied().collect();
+
+    for mission in campaign.missions() {
+        let recorded: BTreeSet<&str> = mission
+            .dependencies
+            .iter()
+            .map(|row| row.subsystem.as_str())
+            .collect();
+        assert_eq!(
+            recorded, required,
+            "{} carries a row for exactly the required subsystems",
+            mission.label
+        );
+        for row in &mission.dependencies {
+            assert!(
+                matches!(row.state, DependencyState::Unresolved { .. }),
+                "{}/{} is an explicit unresolved row, not a default",
+                mission.label,
+                row.subsystem
+            );
+        }
+    }
+    let report = campaign.coverage();
+    assert_eq!(report.subsystem_rows, 24 * REQUIRED_SUBSYSTEMS.len());
+    assert_eq!(report.subsystem_resolved, 0);
+    assert_eq!(report.subsystem_unresolved, report.subsystem_rows);
 }
