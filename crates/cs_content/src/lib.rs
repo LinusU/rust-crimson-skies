@@ -41,12 +41,22 @@
 //! duplicate identities refused, and the unsupported-mission count that
 //! keeps an unavailable mission in the denominator.
 //!
+//! [`coordinates`] holds source coordinate conventions and their adapters
+//! into canonical space (`specs/F16-coordinates-units-origin-management-and-
+//! clocks.md`, stage F16-A): one validated declaration per source, and every
+//! position, direction, normal, rotation, winding, distance and angle
+//! conversion derived from it, so a format maps into the canonical
+//! convention exactly once. The declared sources are designed declarations
+//! with `Origin`/`Provenance`; which convention an original file uses is
+//! unmeasured (F16-D) and is never asserted here.
+//!
 //! [`cs_types`]: cs_types
 //! [`cs_formats`]: cs_formats
 //! [`cs_assets`]: cs_assets
 
 pub mod catalog;
 pub mod config;
+pub mod coordinates;
 pub mod livery;
 pub mod loading;
 pub mod textures;
