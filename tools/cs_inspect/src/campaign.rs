@@ -189,6 +189,7 @@ struct ChapterSummary {
     mission_count: usize,
     world_groups: Vec<String>,
 }
+
 /// Renders the deterministic JSON campaign-layout report.
 ///
 /// The mission list is already in `(chapter, mission number)` order from the
