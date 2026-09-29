@@ -80,7 +80,13 @@
 //! [`mesh`] is the F10-C render mesh
 //! (`specs/F10-gamez-mesh-topology-and-material-records.md`,
 //! `### F10-C`): the Bevy-free canonical render mesh built from F10-B's raw
-//! GameZ mesh IR and its topology. One render vertex per distinct
+//! GameZ mesh IR and its topology, the material/texture dependency audit, the
+//! F10-C.03 container-to-upload wiring, and F10-C.04's
+//! [`mesh::measure_bindings`], which *measures* which texture archive a
+//! container's materials bind to under five name readings and reports the
+//! weakest decision those numbers support — without touching the audit's own
+//! exact-name rule, and without resolving a tie it cannot settle. One render
+//! vertex per distinct
 //! `(position index, normal index, uv, color, material)` tuple, compared
 //! bit-exactly, so a shared position with different per-corner UVs keeps the
 //! authored seam; every render vertex and triangle keeps its source corner

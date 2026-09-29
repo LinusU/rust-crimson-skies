@@ -192,7 +192,7 @@
 //! `docs/findings/2026-09-29-f10-c-integration-and-reason-codes.md` and
 //! `docs/findings/2026-09-29-f10-e-material-groups-into-the-render-mesh.md`.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 
 use cs_assets::install::sha256;
@@ -206,10 +206,12 @@ use cs_formats::gamez::{
 };
 use cs_formats::zbd::ZbdFamily;
 use cs_types::asset_id::{AssetKey, AssetVariant, MountId, SourceSpan};
-use cs_types::evidence::ContentHash;
+use cs_types::evidence::{ClaimStatus, ContentHash};
 use cs_types::install::{ParseState, RelativePath};
 
-use crate::textures::{TextureAttempt, TextureCatalog, TextureId, TextureRef, TextureResolveError};
+use crate::textures::{
+    TextureArchive, TextureAttempt, TextureCatalog, TextureId, TextureRef, TextureResolveError,
+};
 
 /// A `(polygon, corner)` location in the stored [`RawMesh`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -1567,6 +1569,776 @@ fn material_bytes(material: &RawMaterial) -> Vec<u8> {
         "a material slot is forty bytes and two words"
     );
     out
+}
+
+// ================== which archive a container's materials bind to =========
+
+/// One reading of a GameZ container's stored texture name, measured against the
+/// name a texture archive stores.
+///
+/// # None of these is a lookup rule
+///
+/// [`MeshDependencyAudit`] resolves a name by byte equality, against the one
+/// archive its caller named, and nothing in this module changes that: the
+/// readings exist so that a **measurement** of the corpus can be *reported*, one
+/// number per reading, instead of a rule being quietly widened so that a count
+/// looks better. The contract's lookup rule is the exact one
+/// (`docs/contracts/IDENTITY-CONTENT.md`, "Lookup contract"), and the only way
+/// past it is an evidence-backed alias record with scope and test coverage —
+/// which needs an independent reference or an original-run capture, neither of
+/// which exists.
+///
+/// Why several readings: the container's name field holds a name **and** an
+/// extension in one 20-byte field, while a ZBD texture package's name field
+/// holds a bare NUL-padded stem, so the two sides of the comparison are not
+/// spelled the same way. Which way the original engine reconciled them is a
+/// claim about that engine, not about these files.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum TextureNameRule {
+    /// The container's stored name, byte for byte. This is the rule
+    /// [`MeshDependencyAudit`] looks up with and the contract's own.
+    Exact,
+    /// The stored name with everything from its **last** `.` removed, so
+    /// `Sky1.tif` and `buildingspotlighted.` both read as their stem. A name
+    /// with a dot inside it keeps everything up to that inner dot:
+    /// `bldhwk_cowling..tif` reads as `bldhwk_cowling.`.
+    LastSuffixDropped,
+    /// [`Self::LastSuffixDropped`], then ASCII lower case. ASCII only: no
+    /// Unicode case mapping is applied to a stored name.
+    LastSuffixCaseFolded,
+    /// The stored name with everything from its **first** `.` removed. It differs
+    /// from [`Self::LastSuffixDropped`] on exactly the names that carry a dot
+    /// inside them, which the corpus stores.
+    FirstDotDropped,
+    /// [`Self::FirstDotDropped`], then ASCII lower case.
+    FirstDotCaseFolded,
+}
+
+impl TextureNameRule {
+    /// How many readings there are, and the length of every [`RuleCounts`].
+    pub const COUNT: usize = 5;
+
+    /// Every reading, in declaration order. A [`ContainerBinding`] has one
+    /// decision per entry, in this order.
+    pub const ALL: [Self; Self::COUNT] = [
+        Self::Exact,
+        Self::LastSuffixDropped,
+        Self::LastSuffixCaseFolded,
+        Self::FirstDotDropped,
+        Self::FirstDotCaseFolded,
+    ];
+
+    /// Stable lowercase identifier for logs and structured diagnostics.
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Exact => "exact",
+            Self::LastSuffixDropped => "last_suffix_dropped",
+            Self::LastSuffixCaseFolded => "last_suffix_case_folded",
+            Self::FirstDotDropped => "first_dot_dropped",
+            Self::FirstDotCaseFolded => "first_dot_case_folded",
+        }
+    }
+
+    /// This reading's position in [`Self::ALL`], and its index into a
+    /// [`RuleCounts`].
+    pub const fn index(self) -> usize {
+        match self {
+            Self::Exact => 0,
+            Self::LastSuffixDropped => 1,
+            Self::LastSuffixCaseFolded => 2,
+            Self::FirstDotDropped => 3,
+            Self::FirstDotCaseFolded => 4,
+        }
+    }
+
+    /// Whether this reading is the contract's exact-name rule, the one
+    /// [`MeshDependencyAudit`] uses.
+    pub const fn is_exact(self) -> bool {
+        matches!(self, Self::Exact)
+    }
+
+    /// The container's stored name as this reading spells it, before it is
+    /// compared with an archive's name. The name is returned unchanged when the
+    /// reading does not change it, so the exact rule is byte-preserving.
+    #[must_use]
+    pub fn project(self, stored: &str) -> String {
+        match self {
+            Self::Exact => stored.to_owned(),
+            Self::LastSuffixDropped => cut_at(stored, stored.rfind('.')),
+            Self::LastSuffixCaseFolded => ascii_lower(&cut_at(stored, stored.rfind('.'))),
+            Self::FirstDotDropped => cut_at(stored, stored.find('.')),
+            Self::FirstDotCaseFolded => ascii_lower(&cut_at(stored, stored.find('.'))),
+        }
+    }
+
+    /// Whether this reading says the container's `stored` name and the archive's
+    /// `archive` name are the same texture.
+    ///
+    /// The archive side is never projected: what a texture package stores is
+    /// what the archive stores, so folding it would be a second guess about a
+    /// file this code has already read.
+    #[must_use]
+    pub fn accepts(self, stored: &str, archive: &str) -> bool {
+        self.project(stored) == archive
+    }
+}
+
+impl fmt::Display for TextureNameRule {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.code())
+    }
+}
+
+/// `name[..at]`, or the whole name when there is no `.` at all.
+fn cut_at(name: &str, at: Option<usize>) -> String {
+    match at {
+        Some(at) => name[..at].to_owned(),
+        None => name.to_owned(),
+    }
+}
+
+/// ASCII lower case only: a stored name is bytes, and a Unicode case mapping
+/// would be a claim about a text pipeline the format does not have.
+fn ascii_lower(name: &str) -> String {
+    name.to_ascii_lowercase()
+}
+
+/// How many of a container's things one candidate archive reached, per reading.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RuleCounts {
+    counts: [usize; TextureNameRule::COUNT],
+}
+
+impl RuleCounts {
+    /// How many, under `rule`.
+    #[must_use]
+    pub fn get(self, rule: TextureNameRule) -> usize {
+        self.counts[rule.index()]
+    }
+
+    fn set(&mut self, rule: TextureNameRule, value: usize) {
+        self.counts[rule.index()] = value;
+    }
+}
+
+/// One candidate texture archive a container's materials could bind to.
+///
+/// A candidate is a **measurement input**, not a search. The list a caller hands
+/// to [`measure_bindings`] is the whole search space: a name is only ever
+/// compared with the names these archives store, and nothing else is opened,
+/// searched or fallen back to.
+///
+/// # Why a candidate names a container, not only a key
+///
+/// An [`AssetKey`] addresses a mount, and **every world group mounts its own
+/// `texture.zbd` at the same key**: the key does not say which world a key
+/// reached, the session's [`cs_types::asset_id::ResolveContext`] does. A
+/// candidate therefore carries the container's installation-relative path, which
+/// does distinguish them, and the key beside it for provenance. A measurement
+/// that identified its candidates by key alone could not tell eight worlds'
+/// archives apart, and would report a tie over eight different name sets as a
+/// tie over one.
+#[derive(Clone, Copy, Debug)]
+pub struct TextureCandidate<'a> {
+    container: &'a str,
+    archive: &'a AssetKey,
+    names: &'a BTreeSet<String>,
+}
+
+impl<'a> TextureCandidate<'a> {
+    /// The archive at `container` — the production reader's own installation-
+    /// relative path — as storing exactly `names`, and reached through `archive`.
+    pub const fn new(
+        container: &'a str,
+        archive: &'a AssetKey,
+        names: &'a BTreeSet<String>,
+    ) -> Self {
+        Self {
+            container,
+            archive,
+            names,
+        }
+    }
+
+    /// The container this candidate is, installation-relative.
+    pub const fn container(&self) -> &'a str {
+        self.container
+    }
+
+    /// The archive's key, exactly as the caller spelled it.
+    pub const fn archive(&self) -> &'a AssetKey {
+        self.archive
+    }
+
+    /// The distinct names the archive stores.
+    pub const fn names(&self) -> &'a BTreeSet<String> {
+        self.names
+    }
+}
+
+/// The distinct names a catalogued texture archive stores, deduplicated, so the
+/// same archive can be handed to [`measure_bindings`] as a
+/// [`TextureCandidate`].
+///
+/// The names come from the production catalog's own table: no spelling is
+/// changed, folded or trimmed on the way in, so what the measurement compares
+/// against is what the archive stores.
+#[must_use]
+pub fn archive_names(archive: &TextureArchive) -> BTreeSet<String> {
+    archive
+        .ids()
+        .map(|id| id.name.clone())
+        .collect::<BTreeSet<String>>()
+}
+
+/// One stored texture name a container's textured materials name, and how many
+/// of its material rows name it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StoredTextureName {
+    /// The name the container stores, exactly.
+    pub name: String,
+    /// Material rows of this container that name it. A container's table stores
+    /// a name once and several materials can point at that one entry, so this
+    /// is not always `1`.
+    pub rows: u32,
+}
+
+/// One GameZ container's material facts, as a binding measurement needs them.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContainerMaterials<'a> {
+    /// A provenance label for the container, never a path that gets joined.
+    pub container: &'a str,
+    /// Distinct stored material indices the meshes reference, over both levels.
+    pub material_rows: usize,
+    /// Every stored material reference the meshes carry, over both levels.
+    pub references: usize,
+    /// Each material row's own state, counted once, by [`MaterialState::code`].
+    ///
+    /// One key has no [`MaterialState`] code: `"textured"`, a row whose record
+    /// names a stored texture. What that name reaches is
+    /// [`ArchiveCoverage`], per candidate, and is deliberately not folded in
+    /// here: this census is the container's own half and does not depend on any
+    /// archive.
+    pub row_states: BTreeMap<&'static str, usize>,
+    /// The distinct stored names the textured rows name, in the order the
+    /// traversal first reached them, with the number of rows naming each.
+    pub names: Vec<StoredTextureName>,
+}
+
+/// The census key for a row that names a stored texture, so every material row
+/// of every container is counted under exactly one key.
+///
+/// Its archive-side outcome is [`ArchiveCoverage`], not this census.
+pub const TEXTURED_ROW_STATE: &str = "textured";
+
+impl<'a> ContainerMaterials<'a> {
+    /// The material facts of one GameZ container.
+    ///
+    /// The traversal is the one [`MeshDependencyAudit::build`] uses: every
+    /// present mesh's own 12-byte material reference list, then every stored
+    /// polygon material group, in stored order. A reference is counted in
+    /// `references` and its index is resolved once for `material_rows`, so a
+    /// container's two counts say different things on purpose: how many stored
+    /// references there are, and how many distinct materials they reach.
+    #[must_use]
+    pub fn new(container: &'a str, meshes: &GameZMeshes, materials: &GameZMaterials) -> Self {
+        let mut order: Vec<u32> = Vec::new();
+        let mut seen: BTreeSet<u32> = BTreeSet::new();
+        let mut references = 0usize;
+        for mesh in meshes.present() {
+            for info in &mesh.materials {
+                references += 1;
+                if seen.insert(info.material_index) {
+                    order.push(info.material_index);
+                }
+            }
+            for groups in &mesh.material_groups {
+                for group in groups {
+                    references += 1;
+                    if seen.insert(group.material) {
+                        order.push(group.material);
+                    }
+                }
+            }
+        }
+
+        let mut row_states: BTreeMap<&'static str, usize> = BTreeMap::new();
+        let mut names: Vec<StoredTextureName> = Vec::new();
+        let mut name_index: BTreeMap<&str, usize> = BTreeMap::new();
+        for &index in &order {
+            let Some(material) = materials.material(index) else {
+                *row_states
+                    .entry(
+                        MaterialState::MaterialIndexOutOfRange {
+                            material: index,
+                            count: 0,
+                        }
+                        .code(),
+                    )
+                    .or_default() += 1;
+                continue;
+            };
+            if material.record.unknown_flag_bits() != 0 {
+                *row_states
+                    .entry(MaterialState::UnknownField { bits: 0 }.code())
+                    .or_default() += 1;
+                continue;
+            }
+            if material.kind() == MaterialKind::Colored {
+                *row_states
+                    .entry(MaterialState::Untextured.code())
+                    .or_default() += 1;
+                continue;
+            }
+            let Some(texture) = materials.texture_of(material) else {
+                *row_states
+                    .entry(
+                        MaterialState::TextureIndexOutOfRange {
+                            index: material.record.texture_index,
+                            available: 0,
+                        }
+                        .code(),
+                    )
+                    .or_default() += 1;
+                continue;
+            };
+            *row_states.entry(TEXTURED_ROW_STATE).or_default() += 1;
+            match name_index.get(texture.name.as_str()) {
+                Some(&at) => names[at].rows += 1,
+                None => {
+                    name_index.insert(texture.name.as_str(), names.len());
+                    names.push(StoredTextureName {
+                        name: texture.name.clone(),
+                        rows: 1,
+                    });
+                }
+            }
+        }
+
+        Self {
+            container,
+            material_rows: order.len(),
+            references,
+            row_states,
+            names,
+        }
+    }
+
+    /// The distinct stored texture names the container's textured rows name.
+    pub fn name_count(&self) -> usize {
+        self.names.len()
+    }
+}
+
+/// How much of one container one candidate archive holds, per reading.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArchiveCoverage {
+    /// The container that was searched, installation-relative, which is what
+    /// distinguishes two world groups' archives of the same key.
+    pub container: String,
+    /// The archive's key, exactly as the caller spelled it.
+    pub archive: AssetKey,
+    /// Distinct names the archive stores.
+    pub archive_names: usize,
+    /// Of the container's **distinct** stored names, how many the archive holds,
+    /// per reading.
+    pub names: RuleCounts,
+    /// Of the container's **material rows**, how many the archive's holding of
+    /// the name reaches, per reading.
+    pub rows: RuleCounts,
+    /// The container's stored names this archive holds under **no** reading, in
+    /// the container's own order. Every entry is a name the corpus does not
+    /// reconcile with this archive by any spelling this code is allowed to try,
+    /// so it is reported rather than dropped.
+    pub unreachable: Vec<String>,
+}
+
+/// The best any candidate other than the leader reached under one reading.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RunnerUp {
+    /// The container, installation-relative.
+    pub container: String,
+    /// Distinct names it reached.
+    pub covered: usize,
+}
+
+/// What a coverage measurement says about which archive a container's materials
+/// bind to.
+///
+/// The decision is deliberately the weakest one the numbers support: it names
+/// an archive only when exactly one candidate is the strict best, and reports
+/// the tie otherwise. A tie is not resolved here — the contract requires equal
+/// priority candidates to fail visibly, and a *measurement* is the place where
+/// that is visible.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TextureBinding {
+    /// Exactly one candidate reaches strictly more distinct names than every
+    /// other, under `rule`.
+    Unique {
+        /// The reading the decision was taken under.
+        rule: TextureNameRule,
+        /// The one container that led, installation-relative.
+        container: String,
+        /// Distinct names it reached.
+        covered: usize,
+        /// Distinct names the container names, in total.
+        considered: usize,
+        /// The best any other candidate reached, when one reached anything.
+        runner_up: Option<RunnerUp>,
+    },
+    /// More than one candidate shares the top count under `rule`, so the
+    /// measurement names none of them.
+    Tied {
+        /// The reading the decision was taken under.
+        rule: TextureNameRule,
+        /// Every container that shares the top count, installation-relative, in
+        /// the caller's order.
+        tied: Vec<String>,
+        /// How many **distinct stored name sets** those candidates hold.
+        ///
+        /// `1` means the tie is several files over one answer — a world group's
+        /// resolution tiers, which store the same names. More than one means the
+        /// tie is between answers, and the measurement does not name one.
+        name_sets: usize,
+        /// Distinct names the tied candidates reached.
+        covered: usize,
+        /// Distinct names the container names, in total.
+        considered: usize,
+        /// The best any candidate outside the tie reached, when one did.
+        runner_up: Option<RunnerUp>,
+    },
+    /// No candidate reaches a single name under any reading, so nothing is
+    /// decided.
+    Uncovered {
+        /// Distinct names the container names, in total.
+        considered: usize,
+        /// How many candidates were measured.
+        candidates: usize,
+    },
+}
+
+impl TextureBinding {
+    /// The evidence class of the claim this decision supports.
+    ///
+    /// Nothing here is ever [`ClaimStatus::VerifiedOriginal`]: no original game
+    /// has been run for this measurement, and reading the original files is not
+    /// evidence of what the original engine did with them. A named archive or a
+    /// single tied name set is `Inferred` — reasoned from a measurement — and
+    /// everything else is `Unknown`.
+    pub const fn evidence(&self) -> ClaimStatus {
+        match self {
+            Self::Unique { .. } => ClaimStatus::Inferred,
+            Self::Tied { name_sets: 1, .. } => ClaimStatus::Inferred,
+            Self::Tied { .. } => ClaimStatus::Unknown,
+            Self::Uncovered { .. } => ClaimStatus::Unknown,
+        }
+    }
+
+    /// The reading the decision was taken under, when one was.
+    pub const fn rule(&self) -> Option<TextureNameRule> {
+        match self {
+            Self::Unique { rule, .. } | Self::Tied { rule, .. } => Some(*rule),
+            Self::Uncovered { .. } => None,
+        }
+    }
+
+    /// Whether this decision names an archive, or one name set that several
+    /// archives store. A tie across name sets and an uncovered container do not.
+    pub const fn is_named(&self) -> bool {
+        matches!(self.evidence(), ClaimStatus::Inferred)
+    }
+}
+
+impl fmt::Display for TextureBinding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unique {
+                rule,
+                container,
+                covered,
+                considered,
+                runner_up,
+            } => {
+                write!(
+                    f,
+                    "{container} holds {covered} of {considered} names under {rule}"
+                )?;
+                if let Some(runner_up) = runner_up {
+                    write!(
+                        f,
+                        "; the next best is {} at {}",
+                        runner_up.container, runner_up.covered
+                    )?;
+                }
+                Ok(())
+            }
+            Self::Tied {
+                rule,
+                tied,
+                name_sets,
+                covered,
+                considered,
+                runner_up,
+            } => {
+                write!(
+                    f,
+                    "{} candidates tie at {covered} of {considered} names under {rule} over {name_sets} name set(s)",
+                    tied.len()
+                )?;
+                if let Some(runner_up) = runner_up {
+                    write!(
+                        f,
+                        "; the next best is {} at {}",
+                        runner_up.container, runner_up.covered
+                    )?;
+                }
+                Ok(())
+            }
+            Self::Uncovered {
+                considered,
+                candidates,
+            } => write!(
+                f,
+                "no candidate of {candidates} reaches any of {considered} names"
+            ),
+        }
+    }
+}
+
+/// One container's measured binding: what its material rows are, what each
+/// candidate archive holds of its texture names, and what that says about which
+/// archive the materials bind to.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ContainerBinding {
+    /// The container's provenance label, as the caller spelled it.
+    pub container: String,
+    /// Distinct stored material indices the meshes reference.
+    pub material_rows: usize,
+    /// Every stored material reference the meshes carry, over both levels.
+    pub references: usize,
+    /// Each material row's own state, counted once. See
+    /// [`ContainerMaterials::row_states`].
+    pub row_states: BTreeMap<&'static str, usize>,
+    /// The distinct stored names the container's textured rows name.
+    pub names: Vec<StoredTextureName>,
+    /// One entry per candidate, in the caller's order.
+    pub candidates: Vec<ArchiveCoverage>,
+    /// One decision per reading, in [`TextureNameRule::ALL`] order.
+    pub bindings: Vec<TextureBinding>,
+}
+
+impl ContainerBinding {
+    /// The decision taken under `rule`.
+    ///
+    /// # Panics
+    ///
+    /// When `rule` is not one of [`TextureNameRule::ALL`]. Every
+    /// `TextureBinding` this module produces has one decision per reading in
+    /// that order, so a `TextureNameRule` always has one.
+    #[must_use]
+    pub fn binding(&self, rule: TextureNameRule) -> &TextureBinding {
+        self.bindings
+            .get(rule.index())
+            .expect("one decision per TextureNameRule::ALL reading")
+    }
+
+    /// The coverage of the candidate at the container spelled `container`.
+    pub fn candidate(&self, container: &str) -> Option<&ArchiveCoverage> {
+        self.candidates
+            .iter()
+            .find(|coverage| coverage.container == container)
+    }
+
+    /// The distinct stored names the container's textured rows name.
+    pub fn name_count(&self) -> usize {
+        self.names.len()
+    }
+
+    /// The stored names **no** candidate reaches under any reading, in the
+    /// container's own order. A name in here is absent from the whole measured
+    /// archive set under every spelling this code is allowed to try.
+    #[must_use]
+    pub fn unreconciled(&self) -> Vec<&str> {
+        self.names
+            .iter()
+            .filter(|stored| {
+                self.candidates
+                    .iter()
+                    .all(|coverage| coverage.unreachable.iter().any(|name| name == &stored.name))
+            })
+            .map(|stored| stored.name.as_str())
+            .collect()
+    }
+}
+
+/// Measures, for every container, which of the caller's candidate archives its
+/// materials' texture names bind to.
+///
+/// The candidates are the caller's, and they are the **whole** search space: no
+/// archive outside the list is opened, no name is widened beyond the readings
+/// [`TextureNameRule`] names, and no default is substituted for a name nothing
+/// holds. A caller with every catalogued archive in hand measures a whole
+/// installation; a caller with one archive in hand reads one column.
+///
+/// Nothing here can fail and nothing is dropped. A container with no textured
+/// row reports [`TextureBinding::Uncovered`], a candidate that holds nothing
+/// reports zeros, and a name no candidate holds appears in
+/// [`ContainerBinding::unreconciled`].
+///
+/// [`must_use`]
+#[must_use]
+pub fn measure_bindings(
+    containers: &[ContainerMaterials<'_>],
+    candidates: &[TextureCandidate<'_>],
+) -> Vec<ContainerBinding> {
+    containers
+        .iter()
+        .map(|container| measure_one(container, candidates))
+        .collect()
+}
+
+fn measure_one(
+    container: &ContainerMaterials<'_>,
+    candidates: &[TextureCandidate<'_>],
+) -> ContainerBinding {
+    let considered = container.names.len();
+
+    let coverages = candidates
+        .iter()
+        .map(|candidate| {
+            // One pass per reading over the container's names. Each reading's
+            // number is its own measurement, so no reading can inherit
+            // another's, and a name is only ever compared with a name the
+            // candidate actually stores.
+            let mut names = RuleCounts::default();
+            let mut rows = RuleCounts::default();
+            for rule in TextureNameRule::ALL {
+                let mut covered_names = 0usize;
+                let mut covered_rows = 0usize;
+                for stored in &container.names {
+                    if candidate
+                        .names()
+                        .iter()
+                        .any(|archive| rule.accepts(&stored.name, archive))
+                    {
+                        covered_names += 1;
+                        covered_rows += stored.rows as usize;
+                    }
+                }
+                names.set(rule, covered_names);
+                rows.set(rule, covered_rows);
+            }
+            let unreachable = container
+                .names
+                .iter()
+                .filter(|stored| {
+                    !TextureNameRule::ALL.iter().any(|rule| {
+                        candidate
+                            .names()
+                            .iter()
+                            .any(|archive| rule.accepts(&stored.name, archive))
+                    })
+                })
+                .map(|stored| stored.name.clone())
+                .collect();
+            ArchiveCoverage {
+                container: (*candidate.container()).to_owned(),
+                archive: (*candidate.archive()).clone(),
+                archive_names: candidate.names().len(),
+                names,
+                rows,
+                unreachable,
+            }
+        })
+        .collect::<Vec<ArchiveCoverage>>();
+
+    let bindings = TextureNameRule::ALL
+        .iter()
+        .map(|rule| decide(*rule, &coverages, candidates, considered))
+        .collect();
+
+    ContainerBinding {
+        container: container.container.to_owned(),
+        material_rows: container.material_rows,
+        references: container.references,
+        row_states: container.row_states.clone(),
+        names: container.names.clone(),
+        candidates: coverages,
+        bindings,
+    }
+}
+
+fn decide(
+    rule: TextureNameRule,
+    coverages: &[ArchiveCoverage],
+    candidates: &[TextureCandidate<'_>],
+    considered: usize,
+) -> TextureBinding {
+    if considered == 0 {
+        return TextureBinding::Uncovered {
+            considered,
+            candidates: coverages.len(),
+        };
+    }
+    let mut ranked: Vec<(usize, &str)> = coverages
+        .iter()
+        .map(|coverage| (coverage.names.get(rule), coverage.container.as_str()))
+        .collect();
+    // The container spelling breaks a tie between equal counts, so the runner-up
+    // is a function of the arguments and not of the sort's stability.
+    ranked.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(right.1)));
+    let top = ranked[0].0;
+    if top == 0 {
+        return TextureBinding::Uncovered {
+            considered,
+            candidates: coverages.len(),
+        };
+    }
+    let runner_up =
+        ranked
+            .iter()
+            .find(|(covered, _)| *covered < top)
+            .map(|(covered, container)| RunnerUp {
+                container: (*container).to_owned(),
+                covered: *covered,
+            });
+    // The tied set is reported in the caller's order, so the decision is a
+    // function of the arguments and not of the sort used to find the top.
+    let leading: Vec<&str> = coverages
+        .iter()
+        .filter(|coverage| coverage.names.get(rule) == top)
+        .map(|coverage| coverage.container.as_str())
+        .collect();
+    if leading.len() == 1 {
+        return TextureBinding::Unique {
+            rule,
+            container: leading[0].to_owned(),
+            covered: top,
+            considered,
+            runner_up,
+        };
+    }
+    // How many distinct stored name sets the tied candidates hold. A tie between
+    // files over one set is a different fact from a tie between sets, and only
+    // the second one leaves the binding unnamed.
+    let name_sets = leading
+        .iter()
+        .filter_map(|container| {
+            candidates
+                .iter()
+                .find(|candidate| candidate.container() == *container)
+        })
+        .map(|candidate| candidate.names().clone())
+        .collect::<BTreeSet<BTreeSet<String>>>()
+        .len();
+    TextureBinding::Tied {
+        rule,
+        tied: leading.into_iter().map(str::to_owned).collect(),
+        name_sets,
+        covered: top,
+        considered,
+        runner_up,
+    }
 }
 
 // ============================================ the container, catalog, upload ===
@@ -7639,6 +8411,926 @@ mod tests {
              {multi_group_polygons} such polygons ({three_group_polygons} of three groups), \
              {extra_draws} extra draws, {second_group_seams} second-group-only seams, \
              {identical_uv_groups} polygons whose groups agree on every coordinate"
+        );
+    }
+
+    // ============================ F10-C.04: the binding measurement =========
+
+    /// The names a candidate archive stores, as the production catalog hands
+    /// them over: no spelling changed on the way in.
+    fn candidate_names_of(catalog: &TextureCatalog) -> BTreeSet<String> {
+        let archive = catalog
+            .archives()
+            .next()
+            .expect("the catalog holds the archive it was opened with");
+        let names = archive_names(archive);
+        assert_eq!(
+            names.len(),
+            archive.ids().count(),
+            "the fixture's stored names are distinct"
+        );
+        names
+    }
+
+    /// A world with two texture archives whose name sets are deliberately
+    /// **equal** (`texture.zbd` and `rtexture2.zbd`), the shape the measured
+    /// installation's resolution tiers have: several files over one answer.
+    fn tiered_tree() -> Tree {
+        Tree::world(&["sky", "ground"], &["sky", "ground"])
+    }
+
+    /// The installation-relative container the fixture archives live at, so a
+    /// candidate says which file it is rather than only which key reached it.
+    const FIXTURE_CONTAINER: &str = "ZBD/c1/texture.zbd";
+
+    /// A second fixture archive's container, in the same world group, so a
+    /// candidate set can hold two different name sets under the same namespace.
+    const FIXTURE_TIER_CONTAINER: &str = "ZBD/c1/rtexture2.zbd";
+
+    #[test]
+    fn accept_f10_c_04_every_material_row_is_counted_exactly_once() {
+        // The census is the container's own half, so it must partition the
+        // stored material rows with nothing dropped and nothing double counted:
+        // one textured row, one flat-colour row, one row whose stored index is
+        // outside the table, and one row that is out of range as a material.
+        let materials = tables(
+            &["sky", "unused"],
+            vec![
+                material(0, 0, true),
+                RawMaterial {
+                    index: 1,
+                    record: record(0, false),
+                    link1: 2,
+                    link2: 0,
+                    cycle: None,
+                },
+                // A textured record naming a texture index the table lacks.
+                RawMaterial {
+                    index: 2,
+                    record: record(9, true),
+                    link1: -1,
+                    link2: 1,
+                    cycle: None,
+                },
+            ],
+        );
+        // Material 2 and material 7 are reached from the **polygon** level only:
+        // the mesh's own 12-byte reference list does not carry them, and a walk
+        // that read only that list would report two references and two rows
+        // instead of eight and four. The reader's own count is the cross-check.
+        let meshes = container(vec![container_mesh(
+            0,
+            &[0, 1],
+            &[vec![0], vec![1], vec![2], vec![7]],
+        )]);
+        assert_eq!(
+            meshes.unchecked_material_references, 6,
+            "the reader counted two at the mesh level and four at the polygon level"
+        );
+        let facts = ContainerMaterials::new("fixture", &meshes, &materials);
+
+        assert_eq!(facts.references, 6, "both levels, counted separately");
+        assert_eq!(facts.material_rows, 4, "four distinct stored indices");
+        assert_eq!(
+            facts.row_states.get("textured"),
+            Some(&1),
+            "one row names a stored texture"
+        );
+        assert_eq!(
+            facts.row_states.get("untextured"),
+            Some(&1),
+            "a flat colour names no texture and is still a row"
+        );
+        assert_eq!(
+            facts.row_states.get("texture_index_out_of_range"),
+            Some(&1),
+            "the record names a texture the container does not store"
+        );
+        assert_eq!(
+            facts.row_states.get("material_index_out_of_range"),
+            Some(&1),
+            "a stored index past the table is reported, never clamped"
+        );
+        let total: usize = facts.row_states.values().sum();
+        assert_eq!(total, facts.material_rows, "the census partitions the rows");
+        // The unreconcilable name is not among the container's names: it names no
+        // stored texture, so it is a row state and not a name.
+        assert_eq!(
+            facts
+                .names
+                .iter()
+                .map(|n| n.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["sky"]
+        );
+        assert_eq!(facts.names[0].rows, 1, "one row names it");
+    }
+
+    #[test]
+    fn accept_f10_c_04_several_rows_naming_one_texture_are_counted_once_per_name() {
+        // A container's texture table stores a name once and several materials
+        // can point at that entry, so the distinct-name count and the row count
+        // are different numbers. A measurement that conflated them would report
+        // the same coverage for a container with and without shared materials.
+        let materials = tables(
+            &["sky"],
+            vec![
+                material(0, 0, true),
+                RawMaterial {
+                    index: 1,
+                    record: record(0, true),
+                    link1: 2,
+                    link2: 0,
+                    cycle: None,
+                },
+            ],
+        );
+        let meshes = container(vec![container_mesh(0, &[0, 1], &[vec![0, 1]])]);
+        let facts = ContainerMaterials::new("fixture", &meshes, &materials);
+        assert_eq!(facts.material_rows, 2, "two rows");
+        assert_eq!(facts.name_count(), 1, "one distinct name");
+        assert_eq!(facts.names[0].rows, 2, "both rows name it");
+
+        let archive_key = texture_key();
+        let stored = BTreeSet::from(["sky".to_owned()]);
+        let report = measure_bindings(
+            std::slice::from_ref(&facts),
+            &[TextureCandidate::new(
+                FIXTURE_CONTAINER,
+                &archive_key,
+                &stored,
+            )],
+        );
+        let binding = &report[0];
+        let coverage = binding.candidate(FIXTURE_CONTAINER).expect("the candidate");
+        assert_eq!(coverage.names.get(TextureNameRule::Exact), 1, "one name");
+        assert_eq!(coverage.rows.get(TextureNameRule::Exact), 2, "both rows");
+    }
+
+    #[test]
+    fn accept_f10_c_04_the_exact_rule_reaches_nothing_and_decides_nothing() {
+        // The measured installation's shape, on a fixture: the container spells
+        // `Sky1.tif` and the archive stores `sky1`, so the exact rule the audit
+        // uses resolves nothing. The audit is not touched, and the measurement
+        // says so rather than quietly picking a looser rule.
+        let materials = tables(&["Sky1.tif"], vec![material(0, 0, true)]);
+        let meshes = container(vec![container_mesh(0, &[0], &[vec![0]])]);
+        let facts = ContainerMaterials::new("fixture", &meshes, &materials);
+        let archive_key = texture_key();
+        let stored = BTreeSet::from(["sky1".to_owned()]);
+        let report = measure_bindings(
+            std::slice::from_ref(&facts),
+            &[TextureCandidate::new(
+                FIXTURE_CONTAINER,
+                &archive_key,
+                &stored,
+            )],
+        );
+        let binding = &report[0];
+        let coverage = binding.candidate(FIXTURE_CONTAINER).expect("the candidate");
+        assert_eq!(coverage.names.get(TextureNameRule::Exact), 0);
+        assert_eq!(coverage.names.get(TextureNameRule::LastSuffixDropped), 0);
+        assert_eq!(
+            coverage.names.get(TextureNameRule::FirstDotCaseFolded),
+            1,
+            "only the case-folded reading reaches the archive's spelling"
+        );
+        assert!(
+            coverage.unreachable.is_empty(),
+            "a name one reading reaches is not unreachable: the corpus reconciles \
+             it with this archive, even though the exact rule does not"
+        );
+
+        // The exact rule decides nothing, and its evidence class says so.
+        let exact = binding.binding(TextureNameRule::Exact);
+        assert_eq!(
+            *exact,
+            TextureBinding::Uncovered {
+                considered: 1,
+                candidates: 1,
+            }
+        );
+        assert_eq!(exact.evidence(), ClaimStatus::Unknown);
+        assert!(!exact.is_named());
+        // And the audit still resolves nothing against that archive.
+        let tree = Tree::world(&["sky1"], &["sky1"]);
+        let (session, catalog, key) = catalog(&tree);
+        let audit =
+            MeshDependencyAudit::build(&meshes, &materials, &context(&session, &catalog, &key));
+        assert_eq!(audit.resolved, 0, "the exact rule is still exact");
+        assert_eq!(audit.rows.len(), 1);
+        assert!(matches!(
+            &audit.rows[0].state,
+            MaterialState::MissingTexture { name, .. } if name == "Sky1.tif"
+        ));
+    }
+
+    #[test]
+    fn accept_f10_c_04_a_tie_over_one_name_set_still_names_the_binding() {
+        // The measured shape of a world group's resolution tiers: six files
+        // storing one name set. No single file is the strict best, so a decision
+        // that only knew about "one leader" would report a tie and lose the
+        // answer. A tie over one name set is a tie between files over one
+        // answer, and it is reported as such.
+        let tree = tiered_tree();
+        let session = world_session(&tree.0, "ZBD/c1");
+        let base = texture_key();
+        let tier = world_key("rtexture2.zbd");
+        let base_catalog = TextureCatalog::open(&session, std::slice::from_ref(&base));
+        let tier_catalog = TextureCatalog::open(&session, std::slice::from_ref(&tier));
+        assert_eq!(base_catalog.failures().count(), 0);
+        assert_eq!(tier_catalog.failures().count(), 0);
+        let base_names = candidate_names_of(&base_catalog);
+        let tier_names = candidate_names_of(&tier_catalog);
+        assert_eq!(base_names, tier_names, "the fixture's tiers are identical");
+
+        let materials = tables(
+            &["sky", "ground"],
+            vec![material(0, 0, true), material(1, 1, true)],
+        );
+        let meshes = container(vec![container_mesh(0, &[0, 1], &[vec![0], vec![1]])]);
+        let facts = ContainerMaterials::new("fixture", &meshes, &materials);
+        let report = measure_bindings(
+            std::slice::from_ref(&facts),
+            &[
+                TextureCandidate::new(FIXTURE_CONTAINER, &base, &base_names),
+                TextureCandidate::new(FIXTURE_TIER_CONTAINER, &tier, &tier_names),
+            ],
+        );
+        let binding = &report[0];
+
+        // Under the exact rule both store `sky` and `ground` verbatim, so there
+        // is no single best and the tie is one name set: the answer is named.
+        let exact = binding.binding(TextureNameRule::Exact);
+        let TextureBinding::Tied {
+            rule,
+            tied,
+            name_sets,
+            covered,
+            considered,
+            ..
+        } = exact
+        else {
+            panic!("two archives over one name set is a tie, not a leader: {exact}");
+        };
+        assert_eq!(*rule, TextureNameRule::Exact);
+        assert_eq!(
+            *tied,
+            vec![
+                FIXTURE_CONTAINER.to_owned(),
+                FIXTURE_TIER_CONTAINER.to_owned()
+            ],
+            "both containers are named, and by their installation-relative path: \
+             the two keys are equal, so a key-only identity could not tell them apart"
+        );
+        assert_eq!(*name_sets, 1, "one name set over two files");
+        assert_eq!(*covered, 2);
+        assert_eq!(*considered, 2);
+        assert_eq!(exact.evidence(), ClaimStatus::Inferred);
+        assert!(exact.is_named());
+    }
+
+    #[test]
+    fn accept_f10_c_04_a_tie_across_name_sets_names_nothing() {
+        // The airframe shape: an archive that holds a different set of names, so
+        // the tie is between answers rather than between files. The measurement
+        // must refuse to name one, because picking the leader would be a claim
+        // about the original engine that nothing here supports.
+        let tree = Tree::world(&["sky", "ground"], &["sky", "hull", "prop"]);
+        let session = world_session(&tree.0, "ZBD/c1");
+        let base = texture_key();
+        let other = world_key("rtexture2.zbd");
+        let base_catalog = TextureCatalog::open(&session, std::slice::from_ref(&base));
+        let other_catalog = TextureCatalog::open(&session, std::slice::from_ref(&other));
+        let base_names = candidate_names_of(&base_catalog);
+        let other_names = candidate_names_of(&other_catalog);
+        assert_ne!(base_names, other_names, "the two sets differ");
+
+        // One material naming a name **both** archives store, so the tie is
+        // about a shared name rather than about one archive holding nothing.
+        let materials = tables(&["sky"], vec![material(0, 0, true)]);
+        let meshes = container(vec![container_mesh(0, &[0], &[vec![0]])]);
+        let facts = ContainerMaterials::new("fixture", &meshes, &materials);
+        let report = measure_bindings(
+            std::slice::from_ref(&facts),
+            &[
+                TextureCandidate::new(FIXTURE_CONTAINER, &base, &base_names),
+                TextureCandidate::new(FIXTURE_TIER_CONTAINER, &other, &other_names),
+            ],
+        );
+        let exact = &report[0].binding(TextureNameRule::Exact);
+        let TextureBinding::Tied {
+            tied,
+            name_sets,
+            covered,
+            considered,
+            runner_up,
+            ..
+        } = exact
+        else {
+            panic!("a shared name over two name sets is a tie: {exact}");
+        };
+        assert_eq!(
+            *tied,
+            vec![
+                FIXTURE_CONTAINER.to_owned(),
+                FIXTURE_TIER_CONTAINER.to_owned()
+            ],
+            "both are reported, neither is picked"
+        );
+        assert_eq!(
+            *name_sets, 2,
+            "two name sets, so the tie is between answers"
+        );
+        assert_eq!(*covered, 1);
+        assert_eq!(*considered, 1);
+        assert!(runner_up.is_none(), "nothing reached less than the tie");
+        assert_eq!(
+            exact.evidence(),
+            ClaimStatus::Unknown,
+            "and it names nothing"
+        );
+        assert!(!exact.is_named());
+    }
+
+    #[test]
+    fn accept_f10_c_04_one_strict_leader_is_named_with_its_margin() {
+        // The world shape: a container that names one texture the other archive
+        // also stores, and one it does not. The archive holding more of the
+        // container's names is named, and the margin over the runner-up is on
+        // the decision rather than left for the reader to compute.
+        let tree = Tree::world(&["sky", "ground"], &["sky"]);
+        let session = world_session(&tree.0, "ZBD/c1");
+        let base = texture_key();
+        let other = world_key("rtexture2.zbd");
+        let base_catalog = TextureCatalog::open(&session, std::slice::from_ref(&base));
+        let other_catalog = TextureCatalog::open(&session, std::slice::from_ref(&other));
+        let base_names = candidate_names_of(&base_catalog);
+        let other_names = candidate_names_of(&other_catalog);
+
+        let materials = tables(
+            &["sky", "ground"],
+            vec![material(0, 0, true), material(1, 1, true)],
+        );
+        let meshes = container(vec![container_mesh(0, &[0, 1], &[vec![0], vec![1]])]);
+        let facts = ContainerMaterials::new("fixture", &meshes, &materials);
+        let report = measure_bindings(
+            std::slice::from_ref(&facts),
+            &[
+                TextureCandidate::new(FIXTURE_CONTAINER, &base, &base_names),
+                TextureCandidate::new(FIXTURE_TIER_CONTAINER, &other, &other_names),
+            ],
+        );
+        let exact = &report[0].binding(TextureNameRule::Exact);
+        let TextureBinding::Unique {
+            rule,
+            container,
+            covered,
+            considered,
+            runner_up,
+        } = exact
+        else {
+            panic!("one strict leader: {exact}");
+        };
+        assert_eq!(*rule, TextureNameRule::Exact);
+        assert_eq!(
+            *container, FIXTURE_CONTAINER,
+            "the container holding both names is named, by its path"
+        );
+        assert_eq!(*covered, 2);
+        assert_eq!(*considered, 2);
+        assert_eq!(
+            *runner_up,
+            Some(RunnerUp {
+                container: FIXTURE_TIER_CONTAINER.to_owned(),
+                covered: 1,
+            }),
+            "and the margin is on the decision"
+        );
+        assert_eq!(exact.evidence(), ClaimStatus::Inferred);
+    }
+
+    #[test]
+    fn accept_f10_c_04_a_container_with_no_textured_row_is_uncovered_not_empty() {
+        // A container whose every material is a flat colour has no texture
+        // dependency at all. That is not a successful binding and it is not a
+        // failure to report: the decision says "no candidate was reached",
+        // which is the truth, and the row census still shows the rows exist.
+        let materials = tables(&["sky"], vec![material(0, 0, false)]);
+        let meshes = container(vec![container_mesh(0, &[0], &[vec![0]])]);
+        let facts = ContainerMaterials::new("fixture", &meshes, &materials);
+        assert_eq!(facts.row_states.get("untextured"), Some(&1));
+        assert_eq!(facts.name_count(), 0, "no texture name is named");
+
+        let archive_key = texture_key();
+        let stored = BTreeSet::from(["sky".to_owned()]);
+        let report = measure_bindings(
+            std::slice::from_ref(&facts),
+            &[TextureCandidate::new(
+                FIXTURE_CONTAINER,
+                &archive_key,
+                &stored,
+            )],
+        );
+        for rule in TextureNameRule::ALL {
+            assert_eq!(
+                report[0].binding(rule),
+                &TextureBinding::Uncovered {
+                    considered: 0,
+                    candidates: 1,
+                },
+                "{rule} decides nothing when no name is named"
+            );
+        }
+        assert!(report[0].unreconciled().is_empty());
+    }
+
+    #[test]
+    fn accept_f10_c_04_the_readings_differ_only_where_the_corpus_differs() {
+        // The two dot readings are separate because the corpus separates them:
+        // `bldhwk_cowling..tif` keeps its inner dot under a last-suffix reading
+        // and loses it under a first-dot one, so the airframe's own name reaches
+        // the archive's spelling under one reading and not the other. A reader
+        // that collapsed them would report a coverage number the corpus does not
+        // support.
+        assert!(
+            TextureNameRule::LastSuffixDropped.project("bldhwk_cowling..tif") == "bldhwk_cowling."
+        );
+        assert!(
+            TextureNameRule::FirstDotDropped.project("bldhwk_cowling..tif") == "bldhwk_cowling"
+        );
+        assert!(TextureNameRule::FirstDotCaseFolded.project("Sky1.tif") == "sky1");
+        // A name with no dot at all is unchanged by the dropping readings and is
+        // only case-folded by the folding ones.
+        for rule in [
+            TextureNameRule::LastSuffixDropped,
+            TextureNameRule::FirstDotDropped,
+        ] {
+            assert_eq!(rule.project("lightmap"), "lightmap", "{rule}");
+        }
+        // The exact rule is byte-preserving, and a reading never touches the
+        // archive's side of the comparison.
+        assert!(TextureNameRule::Exact.is_exact());
+        assert_eq!(TextureNameRule::Exact.project("Sky1.tif"), "Sky1.tif");
+        assert!(
+            !TextureNameRule::FirstDotCaseFolded.accepts("Sky1.tif", "Sky1.tif"),
+            "the archive's own spelling is compared as stored"
+        );
+        assert!(TextureNameRule::FirstDotCaseFolded.accepts("Sky1.tif", "sky1"));
+    }
+
+    #[test]
+    fn accept_f10_c_04_a_name_no_candidate_holds_is_reported_not_dropped() {
+        // A name the whole measured archive set cannot reach under any reading
+        // must survive into the report: the corpus decides the answer, not the
+        // absence of a match.
+        let materials = tables(
+            &["sky", "pir_spinner.tif", "snow16x16.tif"],
+            vec![
+                material(0, 0, true),
+                RawMaterial {
+                    index: 1,
+                    record: record(1, true),
+                    link1: 2,
+                    link2: 0,
+                    cycle: None,
+                },
+                RawMaterial {
+                    index: 2,
+                    record: record(2, true),
+                    link1: -1,
+                    link2: 1,
+                    cycle: None,
+                },
+            ],
+        );
+        let meshes = container(vec![container_mesh(
+            0,
+            &[0, 1, 2],
+            &[vec![0], vec![1], vec![2]],
+        )]);
+        let facts = ContainerMaterials::new("fixture", &meshes, &materials);
+        let archive_key = texture_key();
+        let stored = BTreeSet::from(["sky".to_owned()]);
+        let report = measure_bindings(
+            std::slice::from_ref(&facts),
+            &[TextureCandidate::new(
+                FIXTURE_CONTAINER,
+                &archive_key,
+                &stored,
+            )],
+        );
+        let binding = &report[0];
+        assert_eq!(binding.name_count(), 3, "all three names are measured");
+        assert_eq!(
+            binding.unreconciled(),
+            vec!["pir_spinner.tif", "snow16x16.tif"],
+            "and the two no archive holds are named, in the container's order"
+        );
+        let coverage = binding.candidate(FIXTURE_CONTAINER).expect("the candidate");
+        assert_eq!(
+            coverage.unreachable,
+            vec!["pir_spinner.tif".to_owned(), "snow16x16.tif".to_owned()]
+        );
+        // A name reached under one reading is not unreachable.
+        assert!(!coverage.unreachable.iter().any(|name| name == "sky"));
+    }
+
+    #[test]
+    fn accept_f10_c_04_the_measurement_is_a_function_of_the_bytes() {
+        // Two measurements of the same arguments are equal, and one stored name
+        // changed produces different numbers. Without this the report could be a
+        // function of the sort order or of the caller's candidate order instead
+        // of the data.
+        let materials = tables(
+            &["sky", "ground"],
+            vec![material(0, 0, true), material(1, 1, true)],
+        );
+        let meshes = container(vec![container_mesh(0, &[0, 1], &[vec![0], vec![1]])]);
+        let facts = ContainerMaterials::new("fixture", &meshes, &materials);
+        let base = texture_key();
+        let other = world_key("rtexture2.zbd");
+        let base_names = BTreeSet::from(["sky".to_owned(), "ground".to_owned()]);
+        let other_names = BTreeSet::from(["sky".to_owned()]);
+        let candidates = [
+            TextureCandidate::new(FIXTURE_CONTAINER, &base, &base_names),
+            TextureCandidate::new(FIXTURE_TIER_CONTAINER, &other, &other_names),
+        ];
+        let first = measure_bindings(std::slice::from_ref(&facts), &candidates);
+        let second = measure_bindings(std::slice::from_ref(&facts), &candidates);
+        assert_eq!(first, second, "the report is a function of its inputs");
+        // Reversing the candidate order must not change which archive is named,
+        // only the order the ties are listed in.
+        let reversed = [
+            TextureCandidate::new(FIXTURE_TIER_CONTAINER, &other, &other_names),
+            TextureCandidate::new(FIXTURE_CONTAINER, &base, &base_names),
+        ];
+        let third = measure_bindings(std::slice::from_ref(&facts), &reversed);
+        let named = |report: &[ContainerBinding]| match report[0].binding(TextureNameRule::Exact) {
+            TextureBinding::Unique { container, .. } => container.clone(),
+            other => panic!("a unique leader either way: {other}"),
+        };
+        assert_eq!(
+            named(&first),
+            named(&third),
+            "the answer does not depend on order"
+        );
+        // One stored name changed, and the coverage changes with it.
+        let changed = ContainerMaterials {
+            names: vec![StoredTextureName {
+                name: "hull".to_owned(),
+                rows: 2,
+            }],
+            ..facts.clone()
+        };
+        let fourth = measure_bindings(&[changed], &candidates);
+        assert_eq!(
+            fourth[0]
+                .candidate(FIXTURE_CONTAINER)
+                .expect("the candidate")
+                .names
+                .get(TextureNameRule::Exact),
+            0,
+            "a name no archive stores is covered by neither"
+        );
+        assert_eq!(fourth[0].unreconciled(), vec!["hull"]);
+    }
+
+    #[test]
+    #[ignore = "requires CS_GAME_DIR"]
+    fn accept_f10_c_04_retail_planes_binds_to_no_catalogued_archive() {
+        use cs_assets::vfs::INSTALL_NAMESPACE;
+
+        let game_dir = PathBuf::from(std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR"));
+        let found = install::discover(&game_dir).expect("the installation is discovered");
+        let fingerprint = install::fingerprint(&found.manifest);
+
+        // Every texture archive the installation holds, opened through the
+        // production catalog: one session per world group, because a world key
+        // resolves inside the group its `ResolveContext` selected. The
+        // installation is discovered and hashed **once** and the mounts are
+        // rebuilt per group, so the cost is the directory walks, not the hashing.
+        let mut stored: Vec<(String, AssetKey, BTreeSet<String>)> = Vec::new();
+        for group in &found.diagnosis.world_groups {
+            let context = ResolveContext::new(fingerprint)
+                .with_world_group(WorldGroup::from_relative(group.clone()));
+            let mut builder = SessionBuilder::new(context);
+            builder
+                .mount_installation(&game_dir, &found.diagnosis)
+                .expect("the installation mounts");
+            let session = builder.open();
+            let keys: Vec<AssetKey> = [
+                "texture.zbd",
+                "rtexture2.zbd",
+                "rtexture4.zbd",
+                "rtexture6.zbd",
+                "rtexture8.zbd",
+            ]
+            .iter()
+            .map(|file| world_key(file))
+            .collect();
+            let catalog = TextureCatalog::open(&session, &keys);
+            assert_eq!(
+                catalog.failures().count(),
+                0,
+                "every texture archive of {} opens",
+                group.as_str()
+            );
+            for archive in catalog.archives() {
+                stored.push((
+                    archive.path().as_str().to_owned(),
+                    archive.key().clone(),
+                    archive_names(archive),
+                ));
+            }
+            session.close();
+        }
+        // The install-root archive, which shares no world group's directory.
+        let install = {
+            let mut builder = SessionBuilder::new(ResolveContext::new(fingerprint));
+            builder
+                .mount_installation(&game_dir, &found.diagnosis)
+                .expect("the installation mounts");
+            builder.open()
+        };
+        let ui = AssetKey::from_spelling(INSTALL_NAMESPACE, "ZBD/rimage.zbd", "default")
+            .expect("an install key");
+        let catalog = TextureCatalog::open(&install, std::slice::from_ref(&ui));
+        assert_eq!(catalog.failures().count(), 0, "the UI set opens");
+        for archive in catalog.archives() {
+            stored.push((
+                archive.path().as_str().to_owned(),
+                archive.key().clone(),
+                archive_names(archive),
+            ));
+        }
+        install.close();
+
+        // The airframe container, read by the two production section readers.
+        let relative = "ZBD/planes.zbd";
+        let bytes = fs::read(game_dir.join(relative)).expect("planes.zbd is readable");
+        let mut parse = cs_formats::ParseContext::with_defaults(relative);
+        let meshes = cs_formats::gamez::read_gamez_meshes(&mut parse, relative, &bytes)
+            .expect("the mesh section reads");
+        let materials = cs_formats::gamez::read_gamez_materials(&mut parse, relative, &bytes)
+            .expect("the material section reads");
+        assert!(meshes.findings.is_empty() && materials.findings.is_empty());
+        let facts = ContainerMaterials::new(relative, &meshes, &materials);
+
+        stored.sort_by(|left, right| left.0.cmp(&right.0));
+        assert!(
+            stored.len() > 8,
+            "several archives were measured, not one world group's"
+        );
+        // The container paths are distinct even though the world keys are not:
+        // every world group mounts its own `texture.zbd` at the same key.
+        let mut containers: Vec<&str> = stored.iter().map(|entry| entry.0.as_str()).collect();
+        containers.sort_unstable();
+        let before = containers.len();
+        containers.dedup();
+        assert_eq!(before, containers.len(), "each container is named once");
+        let candidates: Vec<TextureCandidate<'_>> = stored
+            .iter()
+            .map(|(container, key, names)| TextureCandidate::new(container, key, names))
+            .collect();
+
+        let report = measure_bindings(std::slice::from_ref(&facts), &candidates);
+        let binding = &report[0];
+        assert_eq!(binding.material_rows, facts.material_rows);
+        assert!(binding.name_count() > 0, "the airframes name textures");
+
+        // The measured census: every material row is counted exactly once and the
+        // textured rows are the ones that reach for a name at all.
+        let total: usize = binding.row_states.values().sum();
+        assert_eq!(total, binding.material_rows);
+        assert_eq!(
+            binding.row_states.get(TEXTURED_ROW_STATE),
+            Some(&926),
+            "926 of the 935 airframe material rows name a stored texture"
+        );
+        assert_eq!(
+            binding.row_states.get("untextured"),
+            Some(&9),
+            "and the other nine are flat colours, which name no texture"
+        );
+
+        // The exact rule reaches nothing, so it decides nothing: the audit's own
+        // number and this measurement's agree.
+        assert_eq!(
+            *binding.binding(TextureNameRule::Exact),
+            TextureBinding::Uncovered {
+                considered: binding.name_count(),
+                candidates: candidates.len(),
+            }
+        );
+        for coverage in &binding.candidates {
+            assert_eq!(coverage.names.get(TextureNameRule::Exact), 0);
+            assert_eq!(coverage.rows.get(TextureNameRule::Exact), 0);
+        }
+
+        // The install-root archive is the UI set: it holds none of the airframe
+        // names under **any** reading, so no GameZ material in the installation
+        // binds to it. That is the one archive-side fact this measurement
+        // settles, and it settles it by exclusion.
+        let ui_coverage = binding
+            .candidate("ZBD/rimage.zbd")
+            .expect("the UI set is a candidate");
+        for rule in TextureNameRule::ALL {
+            assert_eq!(
+                ui_coverage.names.get(rule),
+                0,
+                "{rule}: the UI/HUD set holds no airframe name"
+            );
+        }
+        assert_eq!(
+            ui_coverage.unreachable.len(),
+            binding.name_count(),
+            "every airframe name is unreachable from the UI set"
+        );
+
+        // The loosest reading reaches several world groups, so the measurement
+        // cannot name one: a tie across name sets, reported as such.
+        let loosest = binding.binding(TextureNameRule::FirstDotCaseFolded);
+        let TextureBinding::Tied {
+            tied,
+            name_sets,
+            covered,
+            considered,
+            ..
+        } = loosest
+        else {
+            panic!("the airframes are not decided by a leader: {loosest}");
+        };
+        assert!(
+            tied.len() > 1,
+            "several world groups reach the airframe names, not one"
+        );
+        assert!(
+            *name_sets > 1,
+            "and they are different name sets, so no single archive is named"
+        );
+        assert_eq!(*considered, binding.name_count());
+        assert!(*covered > 0, "some airframe name is covered by somebody");
+        assert_eq!(
+            loosest.evidence(),
+            ClaimStatus::Unknown,
+            "so the airframe binding is unknown, and stays unknown"
+        );
+        assert!(!loosest.is_named());
+
+        // Every name the whole archive set cannot reach is named, not dropped.
+        let unreconciled = binding.unreconciled();
+        assert!(!unreconciled.is_empty(), "some airframe name is absent");
+    }
+
+    #[test]
+    #[ignore = "requires CS_GAME_DIR"]
+    fn accept_f10_c_04_retail_each_world_binds_to_its_own_group() {
+        let game_dir = PathBuf::from(std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR"));
+        let found = install::discover(&game_dir).expect("the installation is discovered");
+        let fingerprint = install::fingerprint(&found.manifest);
+
+        // The world's own GameZ container, read by the production readers.
+        let group_name = "ZBD/C1";
+        let relative = "ZBD/C1/gamez.zbd";
+        let bytes = fs::read(game_dir.join(relative)).expect("the world's container is readable");
+        let mut parse = cs_formats::ParseContext::with_defaults(relative);
+        let meshes = cs_formats::gamez::read_gamez_meshes(&mut parse, relative, &bytes)
+            .expect("the mesh section reads");
+        let materials = cs_formats::gamez::read_gamez_materials(&mut parse, relative, &bytes)
+            .expect("the material section reads");
+        assert!(meshes.findings.is_empty() && materials.findings.is_empty());
+        let facts = ContainerMaterials::new(relative, &meshes, &materials);
+        assert_eq!(
+            facts.references, meshes.unchecked_material_references,
+            "both stored reference levels are walked"
+        );
+
+        // The candidate set: this world's own five archives plus a sibling
+        // world's, so the decision has something to be right about.
+        let mut stored: Vec<(String, AssetKey, BTreeSet<String>)> = Vec::new();
+        let mut own_container = None;
+        for group in &found.diagnosis.world_groups {
+            let spelling = group.as_str();
+            let is_own = spelling.eq_ignore_ascii_case(group_name);
+            if !is_own && !spelling.eq_ignore_ascii_case("ZBD/C3") {
+                continue;
+            }
+            let context = ResolveContext::new(fingerprint)
+                .with_world_group(WorldGroup::from_relative(group.clone()));
+            let mut builder = SessionBuilder::new(context);
+            builder
+                .mount_installation(&game_dir, &found.diagnosis)
+                .expect("the installation mounts");
+            let session = builder.open();
+            let catalog = TextureCatalog::open(
+                &session,
+                &[
+                    world_key("texture.zbd"),
+                    world_key("rtexture2.zbd"),
+                    world_key("rtexture4.zbd"),
+                    world_key("rtexture6.zbd"),
+                    world_key("rtexture8.zbd"),
+                ],
+            );
+            assert_eq!(
+                catalog.failures().count(),
+                0,
+                "every texture archive of {spelling} opens"
+            );
+            for archive in catalog.archives() {
+                if is_own && own_container.is_none() {
+                    own_container = Some(archive.path().as_str().to_owned());
+                }
+                stored.push((
+                    archive.path().as_str().to_owned(),
+                    archive.key().clone(),
+                    archive_names(archive),
+                ));
+            }
+            session.close();
+        }
+        let own_container = own_container.expect("the world's own texture archive was opened");
+        stored.sort_by(|left, right| left.0.cmp(&right.0));
+        let candidates: Vec<TextureCandidate<'_>> = stored
+            .iter()
+            .map(|(container, key, names)| TextureCandidate::new(container, key, names))
+            .collect();
+        assert_eq!(
+            candidates.len(),
+            10,
+            "two world groups of five archives each"
+        );
+
+        let report = measure_bindings(std::slice::from_ref(&facts), &candidates);
+        let binding = &report[0];
+
+        // The census partitions the rows, and the audit's own reference count
+        // agrees with this one.
+        let total: usize = binding.row_states.values().sum();
+        assert_eq!(total, binding.material_rows);
+        assert_eq!(binding.references, facts.references);
+        assert_eq!(
+            binding.row_states.get(TEXTURED_ROW_STATE),
+            Some(&552),
+            "552 of the 561 world material rows name a stored texture"
+        );
+
+        // Under the exact rule the world binds to nothing, which is the
+        // F10-C.02 finding this task inherits.
+        assert_eq!(
+            *binding.binding(TextureNameRule::Exact),
+            TextureBinding::Uncovered {
+                considered: binding.name_count(),
+                candidates: candidates.len(),
+            }
+        );
+        let own = binding.candidate(&own_container).expect("the own archive");
+        assert_eq!(own.names.get(TextureNameRule::Exact), 0);
+
+        // Under a reading that drops the extension and folds case, the world's
+        // own group leads: it holds nearly all of the container's names, and the
+        // sibling world holds far fewer. A decision that could not tell a tie
+        // over one name set from a tie between answers would report this as the
+        // same thing as the airframes' case, so the two are asserted apart.
+        let loosest = binding.binding(TextureNameRule::FirstDotCaseFolded);
+        let TextureBinding::Tied {
+            tied,
+            name_sets,
+            covered,
+            ..
+        } = loosest
+        else {
+            panic!("a world's tiers are several files over one name set: {loosest}");
+        };
+        assert_eq!(
+            *name_sets, 1,
+            "one name set: the world's own resolution tiers"
+        );
+        assert_eq!(tied.len(), 5, "all five of the world's archives are named");
+        assert!(
+            tied.contains(&own_container),
+            "and the world's own archive is among them"
+        );
+        assert!(
+            tied.iter().all(|container| container.contains("/C1/")),
+            "and every named container is this world's, not the sibling's: {}",
+            tied.join(", ")
+        );
+        assert_eq!(*covered, 549, "549 of the world's distinct names are held");
+        assert_eq!(loosest.evidence(), ClaimStatus::Inferred);
+        assert!(loosest.is_named());
+
+        // The sibling world's archives are excluded by coverage, not by being
+        // absent: they are candidates, they were measured, and they lost.
+        let sibling = binding
+            .candidates
+            .iter()
+            .find(|coverage| !tied.contains(&coverage.container))
+            .expect("a candidate outside the tie");
+        assert!(
+            sibling.names.get(TextureNameRule::FirstDotCaseFolded) < *covered,
+            "a candidate outside the tie covers fewer names"
         );
     }
 }
