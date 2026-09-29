@@ -3,8 +3,9 @@
 //! readers.
 //!
 //! ```text
-//! cs-inspect config --file <path> [--container <spelling>] [--member <member>]
-//!     [--install-sha256 <hex>] [--string <id>[:<language>]]...
+//! cs-inspect config --file <path> [--cs-path <dir>] [--container <spelling>]
+//!     [--member <member>] [--install-sha256 <hex>]
+//!     [--string <id>[:<language>]]...
 //!     [--field <consumer>=<section>:<key>:<index>:<width>:<signed>]...
 //!     [--out <file>]
 //! ```
@@ -18,6 +19,28 @@
 //! `--container GOSDATA/ASSETS/crimson.rof --member ASSETS/LAYOUT.CSV` reads a
 //! loose file as that keyed list. A member no rule covers is refused; an
 //! extension alone routes nothing.
+//!
+//! # Which spelling a member is routed under
+//!
+//! The inventory writes every loose member rule as a path **relative to the
+//! installation root** ([`MemberRule::Loose`]), and
+//! `GOSDATA/ASSETS/BINARIES/langui.dll` is such a rule: its file name alone
+//! (`langui.dll`) is not the spelling the rule speaks, so a `--file` under
+//! the installation would be unrouted by name. The routing therefore tries,
+//! most specific first ([`routing_candidates`]):
+//!
+//! 1. the explicit `--container` spelling, when one was given, and nothing
+//!    else — an override names the member, so no inference may contradict it;
+//! 2. the file's **installation-relative** spelling, when the file lies under
+//!    the selected root (`--cs-path`, which wins over `CS_GAME_DIR`);
+//! 3. the file name, which is what a loose export carries.
+//!
+//! The spelling that routed is the one the report's `source.container`
+//! records, so provenance names the member the rules describe rather than a
+//! guess. A root that does not contain the file contributes no candidate: it
+//! is a routing hint, not a precondition for reading the file, and a stale
+//! `CS_GAME_DIR` can therefore never turn a working run into a failure.
+//! Nothing is mounted and no other file of the installation is read.
 //!
 //! The JSON report is one of two shapes, named by `"kind"`:
 //!
@@ -55,10 +78,11 @@
 //! [`UNAFFILIATED_INSTALL_SHA256`], a documented sentinel rather than an
 //! invented digest.
 
+use std::ffi::{OsStr, OsString};
 use std::fmt::{self, Write as _};
 use std::fs;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 
 use cs_content::config::{
@@ -69,6 +93,7 @@ use cs_formats::ParseContext;
 use cs_formats::text::{TextDialect, dialect_for_member};
 use cs_types::asset_id::SourceSpan;
 use cs_types::evidence::ContentHash;
+use cs_types::install::RelativePath;
 
 /// The report format version.
 pub const CONFIG_REPORT_VERSION: &str = "cs-inspect-config/1";
@@ -116,8 +141,9 @@ pub enum ConfigCommandError {
     },
     /// No observed dialect covers the member.
     UnknownDialect {
-        /// The container path routing was attempted with.
-        container: String,
+        /// Every container spelling routing was attempted with, in the
+        /// order it was tried.
+        candidates: Vec<String>,
         /// The member key, `None` for a loose file.
         member: Option<String>,
     },
@@ -141,17 +167,24 @@ impl fmt::Display for ConfigCommandError {
             Self::Output { path, source } => {
                 write!(f, "cannot write report to {}: {source}", path.display())
             }
-            Self::UnknownDialect { container, member } => match member {
-                Some(member) => write!(
-                    f,
-                    "no observed dialect covers member {member:?} of {container:?}; an extension \
-                     alone routes nothing"
-                ),
-                None => write!(
-                    f,
-                    "no observed dialect covers {container:?}; an extension alone routes nothing"
-                ),
-            },
+            Self::UnknownDialect { candidates, member } => {
+                let tried = candidates
+                    .iter()
+                    .map(|candidate| format!("{candidate:?}"))
+                    .collect::<Vec<String>>()
+                    .join(" or ");
+                match member {
+                    Some(member) => write!(
+                        f,
+                        "no observed dialect covers member {member:?} of {tried}; an extension \
+                         alone routes nothing"
+                    ),
+                    None => write!(
+                        f,
+                        "no observed dialect covers {tried}; an extension alone routes nothing"
+                    ),
+                }
+            }
             Self::UnsupportedDialect { dialect } => write!(
                 f,
                 "dialect {} has no F12-C consumer; this command reads keyed lists (typed tuning) \
@@ -188,6 +221,7 @@ struct FieldDecl {
 #[derive(Debug, Default)]
 struct ConfigArgs {
     file: Option<PathBuf>,
+    cs_path: Option<PathBuf>,
     container: Option<String>,
     member: Option<String>,
     install_sha256: Option<ContentHash>,
@@ -283,6 +317,7 @@ fn parse_config_args(args: &[String]) -> Result<ConfigArgs, ConfigCommandError> 
         let value_flag = matches!(
             flag,
             "--file"
+                | "--cs-path"
                 | "--container"
                 | "--member"
                 | "--install-sha256"
@@ -292,8 +327,8 @@ fn parse_config_args(args: &[String]) -> Result<ConfigArgs, ConfigCommandError> 
         );
         if !value_flag {
             return Err(ConfigCommandError::Usage(format!(
-                "cs-inspect config: unsupported argument {flag:?}; expected --file, --container, \
-                 --member, --install-sha256, --string, --field or --out"
+                "cs-inspect config: unsupported argument {flag:?}; expected --file, --cs-path, \
+                 --container, --member, --install-sha256, --string, --field or --out"
             )));
         }
         let Some(value) = cursor.next() else {
@@ -303,6 +338,7 @@ fn parse_config_args(args: &[String]) -> Result<ConfigArgs, ConfigCommandError> 
         };
         match flag {
             "--file" => parsed.file = Some(PathBuf::from(value)),
+            "--cs-path" => parsed.cs_path = Some(PathBuf::from(value)),
             "--container" => parsed.container = Some(value.clone()),
             "--member" => parsed.member = Some(value.clone()),
             "--out" => parsed.out = Some(PathBuf::from(value)),
@@ -345,9 +381,79 @@ impl ConfigRun {
     }
 }
 
+/// Every container spelling one `--file` is routed under, most specific
+/// first (see the module documentation).
+///
+/// An explicit `--container` is the only candidate, because an override names
+/// the member and no inference may contradict it. Otherwise the file's
+/// installation-relative spelling comes first, because that is how the
+/// inventory writes every loose rule ([`MemberRule::Loose`]), and the file
+/// name last, because that is what a loose export carries. Two spellings that
+/// route to the same dialect are not two candidates: the more specific one
+/// is already tried.
+fn routing_candidates(
+    container: Option<&str>,
+    file: &Path,
+    label: &str,
+    root: Option<&Path>,
+) -> Vec<String> {
+    if let Some(container) = container {
+        return vec![container.to_owned()];
+    }
+    let mut candidates = Vec::new();
+    if let Some(spelling) = root.and_then(|root| installation_relative_spelling(root, file)) {
+        candidates.push(spelling);
+    }
+    if !candidates.iter().any(|candidate| candidate == label) {
+        candidates.push(label.to_owned());
+    }
+    candidates
+}
+
+/// The installation-relative spelling of `file`, or `None` when `file` does
+/// not lie under `root`.
+///
+/// Root components are matched ASCII case-insensitively and the remainder
+/// keeps its own case, joined with `/`: the same rule (and the same reason)
+/// as `cs_assets::install::relative_spelling`, so a `CS_GAME_DIR` whose
+/// letter case disagrees with the `--file` path still routes the same member.
+/// A relative spelling that is absolute, empty, or carries a `.`/`..`
+/// component is no spelling at all, so it routes nothing.
+fn installation_relative_spelling(root: &Path, file: &Path) -> Option<String> {
+    fn parts(path: &Path) -> Vec<&OsStr> {
+        path.components()
+            .filter(|component| !matches!(component, Component::CurDir))
+            .map(|component| component.as_os_str())
+            .collect()
+    }
+    let (root_parts, file_parts) = (parts(root), parts(file));
+    if file_parts.len() <= root_parts.len()
+        || !file_parts
+            .iter()
+            .zip(root_parts.iter())
+            .all(|(part, prefix)| {
+                part.as_encoded_bytes()
+                    .eq_ignore_ascii_case(prefix.as_encoded_bytes())
+            })
+    {
+        return None;
+    }
+    let spelling: Option<String> = file_parts[root_parts.len()..]
+        .iter()
+        .map(|component| component.to_str().map(str::to_owned))
+        .collect::<Option<Vec<String>>>()
+        .map(|components| components.join("/"));
+    let spelling = RelativePath::new(spelling.as_deref()?).ok()?;
+    Some(spelling.as_str().to_owned())
+}
+
 /// Runs the `config` command and returns its exit code.
+///
+/// `CS_GAME_DIR` selects the installation whose relative spelling routes a
+/// file inside it; `--cs-path` wins over it, as in every other command of
+/// this binary.
 pub fn config_command(args: &[String]) -> ExitCode {
-    let run = config_command_result(args);
+    let run = config_command_result(args, std::env::var_os("CS_GAME_DIR"));
     for line in &run.diagnostics {
         eprintln!("cs-inspect: {line}");
     }
@@ -362,7 +468,10 @@ pub fn config_command(args: &[String]) -> ExitCode {
 }
 
 /// The body of [`config_command`].
-pub fn config_command_result(args: &[String]) -> ConfigRun {
+///
+/// `env_cs_path` is the `CS_GAME_DIR` value, passed in so a test decides the
+/// environment instead of inheriting the machine's.
+pub fn config_command_result(args: &[String], env_cs_path: Option<OsString>) -> ConfigRun {
     let parsed = match parse_config_args(args) {
         Ok(parsed) => parsed,
         Err(error) => return ConfigRun::failed(EXIT_INVALID_INPUT, &error),
@@ -412,12 +521,21 @@ pub fn config_command_result(args: &[String]) -> ConfigRun {
         .map(|name| name.to_string_lossy().into_owned())
         .unwrap_or_else(|| path.to_string_lossy().into_owned());
 
-    let container = parsed.container.clone().unwrap_or_else(|| label.clone());
+    // The selected installation root: `--cs-path` wins over `CS_GAME_DIR`, the
+    // same precedence every other command of this binary uses. Only the
+    // routing depends on it, so a root that does not exist costs nothing.
+    let root = parsed
+        .cs_path
+        .as_deref()
+        .or_else(|| env_cs_path.as_deref().map(Path::new));
+    let candidates = routing_candidates(parsed.container.as_deref(), path, &label, root);
     let member = parsed.member.clone();
-    let Some(dialect) = dialect_for_member(&container, member.as_deref()) else {
+    let Some((container, dialect)) = candidates.iter().find_map(|candidate| {
+        dialect_for_member(candidate, member.as_deref()).map(|dialect| (candidate.clone(), dialect))
+    }) else {
         return ConfigRun::failed(
             EXIT_REFUSED,
-            &ConfigCommandError::UnknownDialect { container, member },
+            &ConfigCommandError::UnknownDialect { candidates, member },
         );
     };
     let install_sha256 = parsed.install_sha256.unwrap_or(UNAFFILIATED_INSTALL_SHA256);
@@ -883,6 +1001,7 @@ mod tests {
 
     use super::*;
     use cs_formats::RT_STRING;
+    use cs_formats::text::{MemberRule, TEXT_DIALECT_INVENTORY};
 
     static NEXT_TREE: AtomicU64 = AtomicU64::new(0);
 
@@ -1020,8 +1139,41 @@ mod tests {
         fixture_image(&bytes)
     }
 
+    /// A two-block image: `alpha` at id 0 and `beta` at id 16. Its
+    /// accounting (32 counted units) differs from [`one_block_image`]'s 16,
+    /// so a report says which of two files it read.
+    fn two_block_image() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        let root = rsrc_dir(&mut bytes, 2);
+        rsrc_id(&mut bytes, root, 0, RT_STRING);
+        let strings = rsrc_dir(&mut bytes, 2);
+        rsrc_sub(&mut bytes, root, 0, strings);
+        for (index, block) in [1u32, 2].into_iter().enumerate() {
+            rsrc_id(&mut bytes, strings, index, block);
+            let languages = rsrc_dir(&mut bytes, 1);
+            rsrc_id(&mut bytes, languages, 0, 1033);
+            rsrc_sub(&mut bytes, strings, index, languages);
+            let payload = string_payload(&[if index == 0 { "alpha" } else { "beta" }]);
+            let rva = RSRC_RVA + bytes.len() as u32;
+            bytes.extend_from_slice(&payload);
+            let entry = bytes.len();
+            bytes.extend_from_slice(&rva.to_le_bytes());
+            bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+            bytes.extend_from_slice(&1252u32.to_le_bytes());
+            bytes.extend_from_slice(&0u32.to_le_bytes());
+            rsrc_data(&mut bytes, languages, 0, entry);
+        }
+        fixture_image(&bytes)
+    }
+
     const LAYOUT: &str = "GOSDATA/ASSETS/crimson.rof";
     const LAYOUT_MEMBER: &str = "ASSETS/LAYOUT.CSV";
+
+    /// The command with no installation selected, so a test routes by
+    /// `--cs-path` alone and never inherits the machine's `CS_GAME_DIR`.
+    fn config_run(args: &[String]) -> ConfigRun {
+        config_command_result(args, None)
+    }
 
     /// A small authored keyed-list member, routed as `LAYOUT.CSV`.
     fn layout_member() -> &'static [u8] {
@@ -1040,7 +1192,7 @@ mod tests {
             LAYOUT_MEMBER.to_owned(),
         ];
         list.extend(extra.iter().map(|arg| (*arg).to_owned()));
-        config_command_result(&list)
+        config_run(&list)
     }
 
     /// The `config` command reads a PE image through the bounded reader and
@@ -1049,7 +1201,7 @@ mod tests {
     fn accept_f12_c_config_reports_pe_strings_and_resolves_a_lookup() {
         let temp = Temp::new("pe");
         let path = temp.write("strings.dll", &one_block_image());
-        let run = config_command_result(&args(&[
+        let run = config_run(&args(&[
             "--file",
             path.to_str().expect("utf-8 path"),
             "--string",
@@ -1081,7 +1233,7 @@ mod tests {
         rsrc_sub(&mut rsrc, root, 0, root); // a directory that points at itself
         let temp = Temp::new("cycle");
         let path = temp.write("strings.dll", &fixture_image(&rsrc));
-        let run = config_command_result(&args(&["--file", path.to_str().expect("utf-8 path")]));
+        let run = config_run(&args(&["--file", path.to_str().expect("utf-8 path")]));
         assert_eq!(run.exit_code, EXIT_REFUSED);
         assert!(run.report.is_none());
         assert!(
@@ -1096,8 +1248,7 @@ mod tests {
         // the corruption's, not the fixture's.
         let good = Temp::new("good");
         let good_path = good.write("strings.dll", &one_block_image());
-        let run =
-            config_command_result(&args(&["--file", good_path.to_str().expect("utf-8 path")]));
+        let run = config_run(&args(&["--file", good_path.to_str().expect("utf-8 path")]));
         assert_eq!(run.exit_code, 0, "{:?}", run.diagnostics);
     }
 
@@ -1151,7 +1302,7 @@ mod tests {
     fn accept_f12_c_config_refuses_an_unrouted_member() {
         let temp = Temp::new("unrouted");
         let path = temp.write("mystery.bin", b"not a surveyed member");
-        let run = config_command_result(&args(&["--file", path.to_str().expect("utf-8 path")]));
+        let run = config_run(&args(&["--file", path.to_str().expect("utf-8 path")]));
         assert_eq!(run.exit_code, EXIT_REFUSED);
         assert!(run.report.is_none());
         assert!(
@@ -1170,7 +1321,7 @@ mod tests {
     fn accept_f12_c_config_reports_an_unresolved_lookup() {
         let temp = Temp::new("missing");
         let path = temp.write("strings.dll", &one_block_image());
-        let run = config_command_result(&args(&[
+        let run = config_run(&args(&[
             "--file",
             path.to_str().expect("utf-8 path"),
             "--string",
@@ -1194,7 +1345,7 @@ mod tests {
     fn accept_f12_c_config_refuses_a_request_of_the_wrong_shape() {
         let temp = Temp::new("pe-field");
         let path = temp.write("strings.dll", &one_block_image());
-        let run = config_command_result(&args(&[
+        let run = config_run(&args(&[
             "--file",
             path.to_str().expect("utf-8 path"),
             "--field",
@@ -1220,6 +1371,320 @@ mod tests {
                 .any(|line| line.contains("a keyed list has none")),
             "{:?}",
             run.diagnostics
+        );
+    }
+
+    // ------------------------------------------------------- F12-D routing
+    //
+    // The inventory writes a loose member rule as a path relative to the
+    // installation root, so `GOSDATA/ASSETS/BINARIES/langui.dll` is not
+    // routable by the file name `langui.dll`. These cases pin the routing
+    // order the command applies to reach it, and they are written against
+    // authored fixture images: no original byte is used here.
+
+    const LANGUI: &str = "GOSDATA/ASSETS/BINARIES/langui.dll";
+
+    /// The localized UI image under a selected installation routes without
+    /// `--container`, reports the string accounting and resolves `--string`
+    /// against it, and records the installation-relative spelling as its
+    /// source container.
+    #[test]
+    fn accept_f12_d_config_routes_a_localized_image_by_its_installation_path() {
+        let temp = Temp::new("langui");
+        let root = temp.0.clone();
+        let path = temp.write(LANGUI, &one_block_image());
+        let run = config_run(&args(&[
+            "--file",
+            path.to_str().expect("utf-8 path"),
+            "--cs-path",
+            root.to_str().expect("utf-8 root"),
+            "--string",
+            "0:1033",
+        ]));
+        assert_eq!(run.exit_code, 0, "{:?}", run.diagnostics);
+        let report = run.report.expect("a report");
+        assert!(report.contains("\"kind\":\"pe_resources\""), "{report}");
+        assert!(report.contains("\"dialect\":\"pe.resources\""), "{report}");
+        // The provenance names the member the inventory rule spells, not the
+        // file name that failed to route it.
+        assert!(
+            report.contains(&format!("\"container\":\"{LANGUI}\"")),
+            "{report}"
+        );
+        assert!(report.contains("\"member\":null"), "{report}");
+        assert!(report.contains("\"languages\":[1033]"), "{report}");
+        assert!(report.contains("\"strings\":16"), "{report}");
+        assert!(report.contains("\"undecodable\":0"), "{report}");
+        assert!(report.contains("\"outcome\":\"found\""), "{report}");
+        assert!(report.contains("\"text\":\"alpha\""), "{report}");
+    }
+
+    /// `--cs-path` wins over `CS_GAME_DIR`. The selected root derives the
+    /// routing spelling, so a root that contains the file under one more
+    /// component produces a *different* spelling and the report's source
+    /// container says which root routed it.
+    #[test]
+    fn accept_f12_d_config_cs_path_wins_over_the_environment() {
+        // The file lies under both roots: the outer one (the environment's)
+        // spells it `inner/GOSDATA/…`, the inner one spells it
+        // `GOSDATA/…`. Only the second is a surveyed member.
+        let outer = Temp::new("env-root");
+        let file = outer.write(&format!("inner/{LANGUI}"), &one_block_image());
+        let inner = outer.0.join("inner");
+        let env = Some(outer.0.clone().into_os_string());
+        let file_arg = file.to_str().expect("utf-8 path");
+
+        // The explicit root wins: its spelling routes, and it is the
+        // installation-relative one.
+        let mut explicit = args(&["--file", file_arg]);
+        explicit.extend(args(&["--cs-path", inner.to_str().expect("utf-8 root")]));
+        let run = config_command_result(&explicit, env.clone());
+        assert_eq!(run.exit_code, 0, "{:?}", run.diagnostics);
+        let report = run.report.expect("a report");
+        assert!(
+            report.contains(&format!("\"container\":\"{LANGUI}\"")),
+            "--cs-path routed the file: {report}"
+        );
+
+        // Without it the environment's root is the one that derives a
+        // spelling, and that spelling covers no observed dialect — so the
+        // refusal names it instead of inventing another member.
+        let run = config_command_result(&args(&["--file", file_arg]), env);
+        assert_eq!(run.exit_code, EXIT_REFUSED);
+        assert!(run.report.is_none());
+        let refusal = run
+            .diagnostics
+            .iter()
+            .find(|line| line.contains("no observed dialect covers"))
+            .expect("a routing refusal");
+        assert!(
+            refusal.contains(&format!("\"inner/{LANGUI}\"")),
+            "the environment's root derived this spelling: {refusal}"
+        );
+    }
+
+    /// A root that does not contain the file contributes no candidate: the
+    /// name is still tried, and the diagnostic names every spelling routing
+    /// was attempted with, so a refusal says which member it looked for.
+    #[test]
+    fn accept_f12_d_config_refuses_a_file_no_rule_covers_and_says_what_it_tried() {
+        let temp = Temp::new("unrouted-root");
+        let root = temp.0.clone();
+        let path = temp.write(
+            "GOSDATA/ASSETS/BINARIES/mystery.dll",
+            b"not a surveyed member",
+        );
+        let run = config_run(&args(&[
+            "--file",
+            path.to_str().expect("utf-8 path"),
+            "--cs-path",
+            root.to_str().expect("utf-8 root"),
+        ]));
+        assert_eq!(run.exit_code, EXIT_REFUSED);
+        assert!(run.report.is_none());
+        let refusal = run
+            .diagnostics
+            .iter()
+            .find(|line| line.contains("no observed dialect covers"))
+            .expect("a routing refusal");
+        assert!(
+            refusal.contains("GOSDATA/ASSETS/BINARIES/mystery.dll")
+                && refusal.contains("\"mystery.dll\""),
+            "both spellings are named, the installation-relative one first: {refusal}"
+        );
+
+        // The file outside every selected root is refused the same way, with
+        // the name as its only candidate.
+        let outside = Temp::new("outside");
+        let path = outside.write(LANGUI, &one_block_image());
+        let run = config_run(&args(&[
+            "--file",
+            path.to_str().expect("utf-8 path"),
+            "--cs-path",
+            root.to_str().expect("utf-8 root"),
+        ]));
+        assert_eq!(run.exit_code, EXIT_REFUSED);
+        assert!(
+            run.diagnostics
+                .iter()
+                .any(|line| line.contains("no observed dialect covers \"langui.dll\"")),
+            "{:?}",
+            run.diagnostics
+        );
+    }
+
+    /// An explicit `--container` is the only candidate: an override names the
+    /// member, and the installation-relative spelling never contradicts it.
+    #[test]
+    fn accept_f12_d_config_keeps_an_explicit_container_over_the_installation_path() {
+        let temp = Temp::new("override");
+        let root = temp.0.clone();
+        let path = temp.write(LANGUI, &two_block_image());
+        let run = config_run(&args(&[
+            "--file",
+            path.to_str().expect("utf-8 path"),
+            "--cs-path",
+            root.to_str().expect("utf-8 root"),
+            "--container",
+            "strings.dll",
+            "--string",
+            "16:1033",
+        ]));
+        assert_eq!(run.exit_code, 0, "{:?}", run.diagnostics);
+        let report = run.report.expect("a report");
+        assert!(report.contains("\"container\":\"strings.dll\""), "{report}");
+        assert!(report.contains("\"text\":\"beta\""), "{report}");
+    }
+
+    /// The real installation: each of the three surveyed PE images routes by
+    /// its installation-relative spelling with no `--container` override,
+    /// reports the recorded accounting, and resolves a recorded id to a row
+    /// with a recorded code page and block extent. Structure and ids are
+    /// compared; no original text is asserted, printed or kept.
+    #[test]
+    #[ignore = "requires CS_GAME_DIR"]
+    fn accept_f12_d_retail_config_routes_every_surveyed_pe_image() {
+        /// One surveyed image: its installation-relative spelling, the number
+        /// of counted string units the F12-B survey recorded, the code page
+        /// it recorded, and an id the image is observed to carry.
+        struct Surveyed {
+            path: &'static str,
+            strings: u64,
+            code_page: u32,
+            /// Other, non-string leaves the image carries.
+            other_leaves: u64,
+            probe: u32,
+        }
+        const SURVEY: &[Surveyed] = &[
+            Surveyed {
+                path: "strings.dll",
+                strings: 1_792,
+                code_page: 1252,
+                other_leaves: 2,
+                probe: 101,
+            },
+            Surveyed {
+                path: "GOSDATA/ASSETS/BINARIES/language.dll",
+                strings: 48,
+                code_page: 0,
+                other_leaves: 0,
+                probe: 0,
+            },
+            Surveyed {
+                path: "GOSDATA/ASSETS/BINARIES/langui.dll",
+                strings: 1_616,
+                code_page: 0,
+                other_leaves: 0,
+                probe: 0,
+            },
+        ];
+
+        let dir = std::env::var_os("CS_GAME_DIR")
+            .expect("CS_GAME_DIR is not set: this test needs the original installation");
+        let dir = PathBuf::from(dir);
+        assert!(dir.is_dir(), "CS_GAME_DIR is not a directory");
+
+        for expected in SURVEY {
+            let file = dir.join(expected.path);
+            let length = fs::metadata(&file)
+                .unwrap_or_else(|error| panic!("{}: {error}", file.display()))
+                .len();
+            // The inventory records the length of every rule it matches, and
+            // the rule is what routes the file; read the recorded value
+            // rather than repeating the survey's number in this test.
+            let rule = TEXT_DIALECT_INVENTORY
+                .iter()
+                .flat_map(|record| record.members.iter())
+                .find_map(|rule| match rule {
+                    MemberRule::Loose { path, length }
+                        if path.eq_ignore_ascii_case(expected.path) =>
+                    {
+                        Some(*length)
+                    }
+                    _ => None,
+                })
+                .unwrap_or_else(|| panic!("the inventory does not route {}", expected.path));
+            assert_eq!(rule, length, "{}: the surveyed length", expected.path);
+
+            let mut list = vec![
+                "--file".to_owned(),
+                file.to_str().expect("utf-8 path").to_owned(),
+            ];
+            list.extend(args(&["--string", &format!("{}:1033", expected.probe)]));
+            let run = config_command_result(&list, Some(dir.clone().into_os_string()));
+            assert_eq!(run.exit_code, 0, "{}: {:?}", expected.path, run.diagnostics);
+            let report = run.report.expect("a report");
+            assert!(
+                report.contains(&format!("\"container\":\"{}\"", expected.path)),
+                "{}: the installation-relative spelling is the source",
+                expected.path
+            );
+            assert!(report.contains("\"kind\":\"pe_resources\""), "{report}");
+            assert!(report.contains("\"languages\":[1033]"), "{report}");
+            assert!(
+                report.contains(&format!("\"strings\":{}", expected.strings)),
+                "{}: the surveyed string accounting",
+                expected.path
+            );
+            assert!(
+                report.contains(&format!("\"other_leaves\":{}", expected.other_leaves)),
+                "{}: the surveyed non-string leaves",
+                expected.path
+            );
+            assert!(report.contains("\"undecodable\":0"), "{report}");
+            assert!(report.contains("\"duplicate_ids\":0"), "{report}");
+            assert!(
+                report.contains(&format!("\"code_page\":{}", expected.code_page)),
+                "{}: the surveyed code page",
+                expected.path
+            );
+            assert!(report.contains("\"outcome\":\"found\""), "{report}");
+        }
+
+        // The mission-title table is reachable by id as well: the row M01-A
+        // recorded for the localized M01 title is at id 3480, in the block
+        // at byte offset 92088 of 610 bytes. The id is this engine's own
+        // numbering (`(block - 1) * 16 + index`, `Documented`); which
+        // numbering the original game addresses strings with is #374 and is
+        // not settled by this test.
+        let file = dir.join("GOSDATA/ASSETS/BINARIES/langui.dll");
+        let list = vec![
+            "--file".to_owned(),
+            file.to_str().expect("utf-8 path").to_owned(),
+            "--string".to_owned(),
+            "3480:1033".to_owned(),
+        ];
+        let run = config_command_result(&list, Some(dir.clone().into_os_string()));
+        assert_eq!(run.exit_code, 0, "{:?}", run.diagnostics);
+        let report = run.report.expect("a report");
+        // The `lookups` array answers the request itself, so the resolved row
+        // is read from there rather than from the whole report (which holds
+        // every row of the image, most of them empty). The array ends at the
+        // `tunings` field that follows it, which a decoded title may contain
+        // any character inside, so the closing is not searched for.
+        let lookups = report
+            .split_once("\"lookups\":[")
+            .expect("a lookups array")
+            .1;
+        let lookups = &lookups[..lookups
+            .rfind("\"tunings\":")
+            .expect("the tunings field follows the lookups")];
+        assert!(
+            lookups.contains("\"id\":3480,\"language\":1033"),
+            "{lookups}"
+        );
+        assert!(lookups.contains("\"outcome\":\"found\""), "{lookups}");
+        assert!(lookups.contains("\"code_page\":0"), "{lookups}");
+        assert!(
+            lookups.contains("\"span\":{\"offset\":92088,\"length\":610}"),
+            "the recorded block extent of the M01 title row: {lookups}"
+        );
+        // The row carries a non-empty localized title; it is not quoted, kept
+        // or compared here, because no original text belongs in this
+        // repository.
+        assert!(
+            !lookups.contains("\"text\":null") && !lookups.contains("\"text\":\"\""),
+            "the recorded row carries the localized title: {lookups}"
         );
     }
 }

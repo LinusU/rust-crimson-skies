@@ -20,8 +20,10 @@
 //! source offset, the `texture-audit` command (F08-D) compares every
 //! ZBD texture's decode with a pinned reference extraction and can write a
 //! private contact sheet, and the `config` command (F12-C) routes one
-//! configuration member or PE resource image by its observed rule and
-//! resolves declared tuning fields and localized string ids through the
+//! configuration member or PE resource image by its observed rule — a file
+//! inside the installation selected by `--cs-path`/`CS_GAME_DIR` by its
+//! installation-relative spelling — and resolves declared tuning fields and
+//! localized string ids through the
 //! `cs_content::config` consumers, and the `scripts` command (F13-B) routes
 //! every ZBD container and locates and classifies its loading, mission and
 //! animation programs, and — F13-C — probes each located program in isolated
@@ -116,21 +118,26 @@ COMMANDS
         one private contact sheet (TGA) per archive. Exits 0 when no
         unexplained difference remains, 3 otherwise.
 
-    config --file <path> [--container <spelling>] [--member <member>]
-           [--install-sha256 <hex>] [--string <id>[:<language>]]...
+    config --file <path> [--cs-path <dir>] [--container <spelling>]
+           [--member <member>] [--install-sha256 <hex>]
+           [--string <id>[:<language>]]...
            [--field <consumer>=<section>:<key>:<index>:<width>:<signed>]...
            [--out <file>]
         Read one configuration member or PE resource image (F12-C), routed by
         its observed member rule (--container/--member override the routing
-        for a loose export). A `strings.dll` image is read as inert PE data
-        into the string catalog and --string resolves a stable id to its
-        text, language, code page and provenance; a keyed list (LAYOUT.CSV)
-        is read into a lossless document and --field resolves a declared
-        value to a checked tuning constant (width 8|16|32|64|f32|f64;
-        signed|unsigned for a whole number). Exits 0 when the file reads and
-        every request resolves, 2 on invalid input, 3 when the member is
-        unrouted or refused, or a requested lookup or field does not resolve,
-        and 1 on a runtime failure.
+        for a loose export). A `strings.dll`, `language.dll` or `langui.dll`
+        image is read as inert PE data into the string catalog and --string
+        resolves a stable id to its text, language, code page and provenance;
+        a keyed list (LAYOUT.CSV) is read into a lossless document and
+        --field resolves a declared value to a checked tuning constant
+        (width 8|16|32|64|f32|f64; signed|unsigned for a whole number). The
+        inventory spells a loose member relative to the installation root, so
+        a file inside the installation selected by --cs-path (which wins over
+        CS_GAME_DIR) is routed by its installation-relative spelling and a
+        loose export by its file name. Exits 0 when the file reads and every
+        request resolves, 2 on invalid input, 3 when the member is unrouted
+        or refused, or a requested lookup or field does not resolve, and 1 on
+        a runtime failure.
 
     scripts [--cs-path <dir>] [--coverage] [--signatures <file>]
             [--word-bytes <n>] [--budget <n>] [--out <file>]
