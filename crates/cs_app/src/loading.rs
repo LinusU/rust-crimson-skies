@@ -665,11 +665,21 @@ impl LoadTransaction {
 
     /// `Requested -> Loading`.
     ///
+    /// An empty closure has nothing to read, so `begin` advances it
+    /// `Loading -> Validating` in the same step — the same rule
+    /// [`LoadTransaction::accept`] applies when the last item settles.
+    /// Without it an empty load could never leave `Loading` and could
+    /// only be cancelled.
+    ///
     /// # Errors
     ///
     /// [`TransitionError`] when the transaction is not `Requested`.
     pub fn begin(&mut self) -> Result<(), TransitionError> {
-        self.transition(LoadState::Loading)
+        self.transition(LoadState::Loading)?;
+        if self.all_settled() {
+            self.transition(LoadState::Validating)?;
+        }
+        Ok(())
     }
 
     /// Issues a read for item `index`, moving it `Pending -> InFlight`.
@@ -756,18 +766,18 @@ impl LoadTransaction {
                 if self.items[index].criticality == Criticality::GameplayCritical {
                     // A legal transition: Loading -> Failed. A world
                     // missing critical content may never become
-                    // interactive, so the whole load ends here.
+                    // interactive, so the whole load ends here — and its
+                    // remaining in-flight reads are detached exactly as a
+                    // cancel would flag them; `cancel` cannot be called on
+                    // a terminal transaction to do it later.
                     self.state = LoadState::Failed;
+                    self.detach_tickets();
                     return CompletionVerdict::ItemFailed;
                 }
                 CompletionVerdict::ItemFailed
             }
         };
-        if self
-            .states
-            .iter()
-            .all(|status| matches!(status, ItemStatus::Loaded { .. } | ItemStatus::Failed))
-        {
+        if self.all_settled() {
             // Every item is settled; the load leaves IO behind. Deferred
             // failures stay on the record; the world decides readiness at
             // validation.
@@ -789,11 +799,7 @@ impl LoadTransaction {
     /// [`TransitionError`] when the transaction is already terminal.
     pub fn cancel(&mut self) -> Result<CancelReport, TransitionError> {
         self.transition(LoadState::Cancelled)?;
-        let mut detached = 0;
-        for ticket in self.tickets.iter_mut().flatten() {
-            ticket.cancel();
-            detached += 1;
-        }
+        let detached = self.detach_tickets();
         Ok(CancelReport {
             identity: self.identity,
             detached,
@@ -836,6 +842,33 @@ impl LoadTransaction {
             hasher.update(digest.as_bytes());
         }
         self.closure_hash = Some(hasher.finalize());
+        Ok(())
+    }
+
+    /// `Validating -> Failed`: the checks that run during validation
+    /// refuse the closure — for example an integrity re-verification of a
+    /// delivered payload failing after the reads settled (F15-B's share
+    /// of non-negotiable behavior 3). `failure` names the offending item
+    /// and the recovery path, as non-negotiable behavior 5 requires, and
+    /// joins the transaction's failure record.
+    ///
+    /// Without this method the transaction table's `Validating -> Failed`
+    /// arc would be unreachable and validation could only approve. The
+    /// refusal is strictly that arc: a `Loading` transaction fails
+    /// through a gameplay-critical `Fault`, not through validation.
+    ///
+    /// # Errors
+    ///
+    /// [`TransitionError`] when the transaction is not `Validating`.
+    pub fn reject_validation(&mut self, failure: LoadFailure) -> Result<(), TransitionError> {
+        if self.state != LoadState::Validating {
+            return Err(TransitionError {
+                from: self.state,
+                to: LoadState::Failed,
+            });
+        }
+        self.transition(LoadState::Failed)?;
+        self.failures.push(failure);
         Ok(())
     }
 
@@ -925,6 +958,27 @@ impl LoadTransaction {
             items,
             omitted,
         })
+    }
+
+    /// Whether every item is settled (loaded or failed): the auto-advance
+    /// rule `begin` applies to an empty closure and `accept` applies when
+    /// the last completion arrives.
+    fn all_settled(&self) -> bool {
+        self.states
+            .iter()
+            .all(|status| matches!(status, ItemStatus::Loaded { .. } | ItemStatus::Failed))
+    }
+
+    /// Flags every outstanding ticket's cancel switch and reports how
+    /// many were in flight — the detach half of `cancel` and of a
+    /// critical failure's transition to `Failed`.
+    fn detach_tickets(&mut self) -> usize {
+        let mut detached = 0;
+        for ticket in self.tickets.iter_mut().flatten() {
+            ticket.cancel();
+            detached += 1;
+        }
+        detached
     }
 
     /// Applies one transition, refusing what [`LoadState::permits`] does

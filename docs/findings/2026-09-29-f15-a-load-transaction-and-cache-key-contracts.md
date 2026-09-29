@@ -33,7 +33,7 @@ behavior; the whole design is `designed` by construction.
   `CanonicalAsset`, `ConvertedAsset` (`verify_fresh`), `ConversionError`.
 - Tests (`crates/cs_assets/tests/`, selected by `accept_f15_a_`):
   `accept_f15_a_cache_contract.rs` (6 tests),
-  `accept_f15_a_load_transaction.rs` (5 tests),
+  `accept_f15_a_load_transaction.rs` (8 tests after the review addendum),
   `accept_f15_a_conversion_boundary.rs` (2 tests); shared synthetic
   fixture helpers added to `crates/cs_assets/tests/common/mod.rs`.
 
@@ -170,6 +170,46 @@ All from the repository root on branch
 - `Cargo.lock`: regenerated for the two manifest changes.
 
 No protected path, original datum or binary file is involved.
+
+## Review addendum (2026-09-29, devin-1 review of `d3a7519`)
+
+Three contract-completeness gaps found and fixed during review; each is
+covered by a new `accept_f15_a_` test:
+
+- **An empty closure wedged in `Loading`.** `begin` only moved
+  `Requested -> Loading`; with zero items no `IoTicket` can ever be
+  issued, `accept` can never run its settled-advance and `validate`
+  refuses `Loading`, so the transaction could only be cancelled. `begin`
+  now applies the same all-settled rule `accept` uses and advances an
+  empty load `Loading -> Validating`; it can then validate, bundle and
+  attach zero entities honestly. Test:
+  `accept_f15_a_empty_closure_load_advances_and_bundles_empty`.
+- **A critical failure left in-flight reads unflagged.** The
+  `Loading -> Failed` path ended the transaction but never flagged the
+  remaining tickets' `ReadCancel`, and `cancel` cannot be invoked on a
+  terminal state to do it later — dead reads ran to completion even
+  though their completions were discarded. The failure path now flags
+  them through the shared `detach_tickets` helper `cancel` uses. Test:
+  `accept_f15_a_critical_failure_detaches_in_flight_reads`.
+- **`Validating -> Failed` was unreachable.** `LoadState::permits`
+  allows the arc but no public method performed it — validation could
+  only approve. `reject_validation(LoadFailure)` is strictly that arc:
+  it refuses unless the transaction is `Validating`, records the
+  offending item's failure and recovery path (behavior 5) and fails the
+  load. It is the entry point F15-B's integrity re-verification uses.
+  Test: `accept_f15_a_validation_refusal_fails_the_load_with_its_reason`.
+
+Implementation detail: `accept`'s settled check and `cancel`'s ticket
+loop were extracted into `all_settled`/`detach_tickets` so the three
+producers share one rule. `reject_validation` guards on
+`LoadState::Validating` itself rather than leaning on the permits table,
+because `Loading -> Failed` is a legal arc whose producer is a critical
+item `Fault` — a validation refusal must not double as an early abort.
+
+Review commands, all exit 0 on the rebased head: `cargo fmt --all --
+--check`; `cargo clippy --workspace --all-targets --all-features
+--locked -- -D warnings`; `cargo test --workspace --locked`; `cargo test
+--workspace --locked -- accept_f15_a_ --include-ignored` (16 tests).
 
 ## Sources
 

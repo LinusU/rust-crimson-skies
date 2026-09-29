@@ -13,9 +13,9 @@ mod common;
 use bevy::ecs::world::World;
 
 use cs_app::loading::{
-    CompletionVerdict, Criticality, HandoffError, IoOutcome, IoTicket, IssueError, LoadIdentity,
-    LoadItem, LoadRequest, LoadState, LoadTarget, LoadTransaction, LoadedItemBinding, RecoveryPath,
-    TransitionError,
+    CompletionVerdict, Criticality, HandoffError, IoOutcome, IoTicket, IssueError, LoadFailure,
+    LoadIdentity, LoadItem, LoadRequest, LoadState, LoadTarget, LoadTransaction, LoadedItemBinding,
+    RecoveryPath, TransitionError,
 };
 use cs_assets::vfs::SessionBuilder;
 use cs_types::content::ContentKind;
@@ -437,4 +437,138 @@ fn accept_f15_a_ready_bundle_reports_deferred_omissions() {
         bundle.omitted(),
         &[synthetic_key("world", "sound/engine.wav")]
     );
+}
+
+/// An empty closure is a legal load: there is nothing to read, so `begin`
+/// walks it straight to `Validating` — without that rule an empty load
+/// could never leave `Loading` — and its bundle is still the only entity
+/// path, attaching zero entities.
+#[test]
+fn accept_f15_a_empty_closure_load_advances_and_bundles_empty() {
+    let session = open_session("zbd/c1");
+    let mut load = LoadTransaction::issue(mission_request(
+        session.generation(),
+        "zbd/c1",
+        "m01",
+        vec![],
+    ));
+    load.begin().expect("a requested load begins");
+    assert_eq!(
+        load.state(),
+        LoadState::Validating,
+        "an empty closure has nothing to read and advances like a settled load"
+    );
+    load.validate().expect("an empty closure validates");
+    assert_eq!(load.state(), LoadState::Ready);
+    assert!(load.is_world_interactive());
+    let bundle = load.ready_bundle().expect("an empty ready bundle exists");
+    assert!(bundle.items().is_empty());
+    assert!(bundle.omitted().is_empty());
+
+    let mut world = World::new();
+    let spawned = bundle
+        .attach(&mut world, load.identity())
+        .expect("the empty bundle still attaches under its identity");
+    assert!(spawned.is_empty());
+    assert_eq!(bound_entities(&mut world), 0);
+}
+
+/// A gameplay-critical failure ends the load like a cancel does for the
+/// reads still in flight: they are flagged cancelled — `cancel` cannot be
+/// invoked on the now-terminal transaction — and their late completions
+/// are discarded.
+#[test]
+fn accept_f15_a_critical_failure_detaches_in_flight_reads() {
+    let session = open_session("zbd/c1");
+    let mut load = LoadTransaction::issue(mission_request(
+        session.generation(),
+        "zbd/c1",
+        "m01",
+        vec![
+            critical_item("texture/hull.bmp", "c1.hull", 100),
+            critical_item("texture/mask.bmp", "c1.mask", 300),
+        ],
+    ));
+    load.begin().expect("begins");
+    let hull = load.issue_io(0).expect("issuable");
+    let mask = load.issue_io(1).expect("issuable");
+
+    assert_eq!(
+        load.accept(hull.complete(IoOutcome::Fault {
+            code: "not_found",
+            detail: "no mount holds the member".to_owned(),
+            recovery: RecoveryPath::MissingDependency,
+        })),
+        CompletionVerdict::ItemFailed
+    );
+    assert_eq!(load.state(), LoadState::Failed);
+    assert!(
+        mask.cancel_handle().is_cancelled(),
+        "the failed load's remaining read must be detached, not left running"
+    );
+    assert_eq!(
+        load.accept(mask.complete(read_outcome(0xD0))),
+        CompletionVerdict::Discarded {
+            state: LoadState::Failed
+        },
+        "the detached read's late completion is still discarded"
+    );
+}
+
+/// Validation can refuse the closure it checks: the transaction table's
+/// `Validating -> Failed` arc, reachable through `reject_validation`,
+/// records the offending item's failure and recovery path.
+#[test]
+fn accept_f15_a_validation_refusal_fails_the_load_with_its_reason() {
+    let session = open_session("zbd/c1");
+    let mut load = LoadTransaction::issue(mission_request(
+        session.generation(),
+        "zbd/c1",
+        "m01",
+        vec![critical_item("texture/hull.bmp", "c1.hull", 100)],
+    ));
+    let refusal = || LoadFailure {
+        key: synthetic_key("world", "texture/hull.bmp"),
+        code: "digest_mismatch",
+        detail: "the re-verified payload disagrees with its read digest".to_owned(),
+        recovery: RecoveryPath::RebuildDerived,
+    };
+
+    // Too early: a load still reading is not validating yet, and a
+    // refused call records nothing.
+    load.begin().expect("begins");
+    assert!(matches!(
+        load.reject_validation(refusal()),
+        Err(TransitionError {
+            from: LoadState::Loading,
+            to: LoadState::Failed
+        })
+    ));
+    assert_eq!(load.state(), LoadState::Loading);
+    assert!(load.failures().is_empty());
+
+    let ticket = load.issue_io(0).expect("issuable");
+    assert_eq!(
+        load.accept(ticket.complete(read_outcome(0xC1))),
+        CompletionVerdict::Accepted
+    );
+    assert_eq!(load.state(), LoadState::Validating);
+
+    load.reject_validation(refusal())
+        .expect("validation can refuse the closure");
+    assert_eq!(load.state(), LoadState::Failed);
+    assert!(!load.is_world_interactive());
+    assert_eq!(load.failures().len(), 1);
+    assert_eq!(load.failures()[0].code, "digest_mismatch");
+    assert_eq!(load.failures()[0].recovery, RecoveryPath::RebuildDerived);
+    assert_eq!(
+        load.failures()[0].key,
+        synthetic_key("world", "texture/hull.bmp")
+    );
+    assert!(matches!(
+        load.ready_bundle(),
+        Err(HandoffError::NotReady {
+            state: LoadState::Failed
+        })
+    ));
 }
