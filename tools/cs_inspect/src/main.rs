@@ -30,7 +30,10 @@
 //! runs for its instruction/native signature while reporting, with structural
 //! evidence, which inventory record every located program reaches. The
 //! `catalog` and `closure` commands (F14-C) inspect the canonical content
-//! catalog and the transitive dependency closure of a launchable mission.
+//! catalog and the transitive dependency closure of a launchable mission,
+//! and — F14-D — read the complete private baseline inventory of an
+//! installation selected by `--cs-path`/`CS_GAME_DIR`, so the coverage
+//! denominator comes from the original data instead of a filtered list.
 //! The remaining subcommand from `docs/contracts/CLI-EVIDENCE.md`
 //! (`handling`) arrives with later tasks.
 //! Until then the binary refuses invalid input with a nonzero exit code and
@@ -165,24 +168,33 @@ COMMANDS
         input (including a malformed signature file), 4 when no installation
         is selected.
 
-    catalog [--out <file>]
-        Inspect the canonical content catalog (F14-C): report every row with
-        its parse, normalize and readiness state and the declared launchable
-        baseline, and write the deterministic JSON catalog report. The rows
-        are the validated synthetic catalog fixture, so the report names its
-        source and is never retail-ready; the retail baseline inventory is
-        F14-D. Exits 0 when the report is written.
+    catalog [--cs-path <dir>] [--out <file>]
+        Inspect the canonical content catalog (F14-C/F14-D): report every row
+        with its parse, normalize and readiness state and the declared
+        launchable baseline, and write the deterministic JSON report. With
+        --cs-path (which wins over CS_GAME_DIR) the rows are the complete
+        private baseline inventory read from that installation: one row per
+        inventoried file, one row per campaign mission program, one declared
+        launchable row per campaign mission, plus the reachable/unreachable
+        coverage accounting and the reader-archive directories no campaign
+        mission claims. Without an installation the rows are the validated
+        synthetic catalog fixture, whose report names its source and is never
+        retail-ready, so a synthetic row is never presented as a retail
+        catalog entry. Exits 0 when the report is written, 2 on invalid
+        input, 3 when the installation declares no campaign mission or a
+        declared mission has no program archive, and 1 on a runtime failure.
 
-    closure --mission <catalog-id> [--strict] [--out <file>]
-        Inspect the transitive dependency closure (F14-C) of one declared
-        launchable mission/scenario over the same catalog: report every
-        reached node with its predecessor chain from the mission, its
+    closure [--cs-path <dir>] --mission <catalog-id> [--strict] [--out <file>]
+        Inspect the transitive dependency closure (F14-C/F14-D) of one
+        declared launchable mission/scenario over the same catalog: report
+        every reached node with its predecessor chain from the mission, its
         readiness and the orphaned references, and write the deterministic
-        JSON closure report. --strict exits 3 when the closure is not
-        complete (a node is unavailable or a reference is orphaned). Exits 0
-        when the closure computes and, with --strict, is complete; 2 on
-        invalid input or an unknown/non-launchable mission; 3 on failed
-        validation.
+        JSON closure report. With --cs-path the closure runs over that
+        installation's baseline inventory; without one it runs over the
+        synthetic fixture. --strict exits 3 when the closure is not complete
+        (a node is unavailable or a reference is orphaned). Exits 0 when the
+        closure computes and, with --strict, is complete; 2 on invalid input
+        or an unknown/non-launchable mission; 3 on failed validation.
 
     campaign [--cs-path <dir>] [--out <file>]
         Read the installation's retail campaign directory layout (F14-E) and
