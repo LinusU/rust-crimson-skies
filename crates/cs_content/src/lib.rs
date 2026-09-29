@@ -19,10 +19,12 @@
 //! `### F08-C`): texture archives resolved through a content session, the
 //! image catalog they populate, and the handoff to the GPU upload boundary.
 //!
-//! [`livery`] is the F09-B paint composition
-//! (`specs/F09-bm-multilayer-liveries-and-paint-composition.md`,
-//! `### F09-B`): the three mask colors of a BM livery, the deterministic
-//! cache key of a composed variant and the composed RGB8 image.
+//! [`livery`] is the F09 paint composition
+//! (`specs/F09-bm-multilayer-liveries-and-paint-composition.md`): the three
+//! mask colors of a BM livery, the deterministic cache key of a composed
+//! variant and the composed RGB8 image (stage F09-B), plus the
+//! session-scoped [`livery::LiveryVariantStore`] that caches those variants
+//! keyed by every input that distinguishes them (stage F09-C).
 //!
 //! [`config`] holds lossless configuration documents with provenance and
 //! key accounting (`specs/F12-text-configuration-strings-and-pe-

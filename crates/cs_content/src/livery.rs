@@ -24,11 +24,23 @@
 //! * [`compose_livery`] returns the key together with the composed RGB8
 //!   image.
 //!
+//! Stage **F09-C** adds the production cache map this stage left open
+//! ([`LiveryVariantStore`]): composed variants keyed by every input that
+//! distinguishes them, with [`variant_key`] exposing the key of a
+//! source/paint pair before anything is composed. Requesting a different
+//! paint adds a new entry and never mutates the stored bytes, so two model
+//! instances that share a source and choose different faction colors cannot
+//! contaminate each other (spec non-negotiable #5). The store produces and
+//! owns composed content; mapping instances onto entries, the construction
+//! preview and teardown are the app layer's (`cs_app::livery`).
+//!
 //! Composition is deterministic: the same source and paint always give the
-//! same key and the same bytes. Session selection, per-instance variants, the
-//! cache map itself and the construction preview are F09-C; this module
-//! produces keys and values, it does not store them. Findings and the
-//! recorded unknowns: `docs/findings/2026-09-28-f09-b-deterministic-layered-composition.md`.
+//! same key and the same bytes. Findings and the recorded unknowns:
+//! `docs/findings/2026-09-28-f09-b-deterministic-layered-composition.md` and
+//! `docs/findings/2026-09-29-f09-c-model-instances-and-construction-preview.md`.
+
+use std::collections::HashMap;
+use std::collections::hash_map::Entry;
 
 use cs_assets::install::sha256;
 use cs_formats::bm::{BM_COMPOSITION_VERSION, BmComposite, BmError, BmFile, BmPlane, PaintColor};
@@ -146,6 +158,20 @@ pub fn source_fingerprint(file: &BmFile<'_>) -> ContentHash {
     sha256(&material)
 }
 
+/// The deterministic key of the variant that composes `file` with `paint`.
+///
+/// This is exactly the key [`compose_livery`] stamps onto its result and the
+/// key [`LiveryVariantStore`] indexes by, exposed so a caller can ask whether
+/// a variant already exists — or tell two variants apart — without composing
+/// anything.
+pub fn variant_key(file: &BmFile<'_>, paint: &LiveryPaint) -> LiveryVariantKey {
+    LiveryVariantKey {
+        source: source_fingerprint(file),
+        colors: paint.colors,
+        algorithm: BM_COMPOSITION_VERSION,
+    }
+}
+
 /// Composes `file` with `paint` and returns the deterministic variant key
 /// together with the composed image.
 ///
@@ -159,12 +185,109 @@ pub fn compose_livery(
     budget: &mut AllocationBudget,
 ) -> Result<ComposedLivery, BmError> {
     let image = file.compose(paint.colors, budget)?;
-    let key = LiveryVariantKey {
-        source: source_fingerprint(file),
-        colors: paint.colors,
-        algorithm: BM_COMPOSITION_VERSION,
-    };
-    Ok(ComposedLivery { key, image })
+    Ok(ComposedLivery {
+        key: variant_key(file, paint),
+        image,
+    })
+}
+
+/// The composed variants a runtime has produced, keyed by every input that
+/// distinguishes them: the source fingerprint, the three colors and the
+/// algorithm version.
+///
+/// The store is the production cache map F09-B deferred. It never mutates a
+/// stored variant in place: composing a source with a different paint inserts
+/// a second entry and leaves the first variant's bytes and key untouched
+/// (spec non-negotiable #5). So two model instances that share one source
+/// image but choose different faction colors resolve to independent entries,
+/// and switching one instance's paint cannot cross-contaminate the other.
+///
+/// Entries are released explicitly — [`Self::remove`], [`Self::retain`] or
+/// [`Self::clear`] — never silently evicted as a side effect of a lookup.
+#[derive(Debug, Default)]
+pub struct LiveryVariantStore {
+    variants: HashMap<LiveryVariantKey, ComposedLivery>,
+}
+
+impl LiveryVariantStore {
+    /// An empty store.
+    pub fn new() -> Self {
+        Self {
+            variants: HashMap::new(),
+        }
+    }
+
+    /// How many composed variants are stored.
+    pub fn len(&self) -> usize {
+        self.variants.len()
+    }
+
+    /// Whether no variant is stored.
+    pub fn is_empty(&self) -> bool {
+        self.variants.is_empty()
+    }
+
+    /// The key of `file` composed with `paint`, without composing it.
+    pub fn key_for(file: &BmFile<'_>, paint: &LiveryPaint) -> LiveryVariantKey {
+        variant_key(file, paint)
+    }
+
+    /// Whether the variant for `file` and `paint` is already stored.
+    pub fn contains(&self, file: &BmFile<'_>, paint: &LiveryPaint) -> bool {
+        self.variants.contains_key(&variant_key(file, paint))
+    }
+
+    /// Returns the stored variant for `file` and `paint`, composing and
+    /// storing it on the first request.
+    ///
+    /// A hit returns the existing bytes unchanged; a miss composes once and
+    /// inserts. A failed composition stores nothing and leaves every existing
+    /// variant untouched, so a retry can be attempted with a larger budget.
+    ///
+    /// # Errors
+    ///
+    /// As [`compose_livery`].
+    pub fn compose(
+        &mut self,
+        file: &BmFile<'_>,
+        paint: &LiveryPaint,
+        budget: &mut AllocationBudget,
+    ) -> Result<&ComposedLivery, BmError> {
+        let key = variant_key(file, paint);
+        if let Entry::Vacant(entry) = self.variants.entry(key) {
+            entry.insert(compose_livery(file, paint, budget)?);
+        }
+        Ok(self
+            .variants
+            .get(&key)
+            .expect("the variant was either already present or just inserted"))
+    }
+
+    /// The stored variant under `key`, if any.
+    pub fn get(&self, key: &LiveryVariantKey) -> Option<&ComposedLivery> {
+        self.variants.get(key)
+    }
+
+    /// Removes and returns the variant under `key`; every other variant is
+    /// untouched.
+    pub fn remove(&mut self, key: &LiveryVariantKey) -> Option<ComposedLivery> {
+        self.variants.remove(key)
+    }
+
+    /// Keeps only the variants whose keys `is_referenced` accepts and returns
+    /// how many were dropped.
+    pub fn retain(&mut self, mut is_referenced: impl FnMut(&LiveryVariantKey) -> bool) -> usize {
+        let before = self.variants.len();
+        self.variants.retain(|key, _| is_referenced(key));
+        before - self.variants.len()
+    }
+
+    /// Removes every variant and returns how many were dropped.
+    pub fn clear(&mut self) -> usize {
+        let dropped = self.variants.len();
+        self.variants.clear();
+        dropped
+    }
 }
 
 /// Acceptance stage F09-B. Every fixture is newly authored synthetic bytes
@@ -317,5 +440,145 @@ mod tests {
         let error = compose_livery(&file, &paint, &mut tiny).expect_err("too small");
         assert_eq!(error.code(), "allocation_budget_exceeded");
         assert_eq!(tiny.used(), 0, "nothing is charged when the reserve fails");
+    }
+
+    /// A larger source so the content-level F09-C tests can pick paints that
+    /// really change the bytes. 2x2, full mask on every plane and a
+    /// transparent overlay, same layout as [`build`].
+    fn two_by_two(masks: [u8; 3], overlay_alpha: u8) -> Vec<u8> {
+        build(masks, overlay_alpha)
+    }
+
+    const FACTIONS: [[PaintColor; 3]; 2] = [
+        [RED, PAINT_X, PaintColor::WHITE],
+        [PaintColor::WHITE, PAINT_X, BLUE],
+    ];
+
+    /// Two variants of one source, one store: composing the second paint must
+    /// not change the first variant's bytes or key, and both stay stored.
+    #[test]
+    fn accept_f09_c_store_keeps_two_paints_of_one_source_distinct() {
+        let bytes = two_by_two([255, 255, 255], 0);
+        let file = parse(&bytes).expect("the synthetic image parses");
+        let first = LiveryPaint::new(FACTIONS[0]);
+        let second = LiveryPaint::new(FACTIONS[1]);
+        let key_first = variant_key(&file, &first);
+        let key_second = variant_key(&file, &second);
+        assert_ne!(
+            key_first, key_second,
+            "the paint colors are part of the key"
+        );
+
+        let mut store = LiveryVariantStore::new();
+        assert!(store.is_empty());
+        let a = store
+            .compose(&file, &first, &mut budget())
+            .expect("composition fits");
+        let a_rgb = a.rgb().to_vec();
+        let a_key = *a.key();
+        assert_eq!(a_key, key_first, "key_for agrees with the composed key");
+        assert_eq!(store.len(), 1);
+
+        let b = store
+            .compose(&file, &second, &mut budget())
+            .expect("composition fits");
+        assert_eq!(*b.key(), key_second);
+        assert_ne!(b.rgb(), a_rgb.as_slice(), "the two factions differ");
+
+        assert_eq!(store.len(), 2, "a second paint adds a second variant");
+        assert!(store.contains(&file, &first));
+        assert!(store.contains(&file, &second));
+        assert_eq!(
+            store.get(&a_key).expect("the first variant stays").rgb(),
+            a_rgb.as_slice(),
+            "composing the second paint must not mutate the first"
+        );
+        assert_eq!(*store.get(&a_key).expect("stored").key(), a_key);
+    }
+
+    /// A repeated request is the same one variant, and entries are released
+    /// only explicitly: remove drops one, retain drops only unreferenced.
+    #[test]
+    fn accept_f09_c_store_reuses_and_releases_variants_explicitly() {
+        let bytes = two_by_two([255, 255, 255], 0);
+        let file = parse(&bytes).expect("the synthetic image parses");
+        let first = LiveryPaint::new(FACTIONS[0]);
+        let second = LiveryPaint::new(FACTIONS[1]);
+        let key_first = variant_key(&file, &first);
+        let key_second = variant_key(&file, &second);
+
+        let mut store = LiveryVariantStore::new();
+        let one = store
+            .compose(&file, &first, &mut budget())
+            .expect("composition fits")
+            .rgb()
+            .to_vec();
+        let again = store
+            .compose(&file, &first, &mut budget())
+            .expect("composition fits")
+            .rgb()
+            .to_vec();
+        assert_eq!(one, again, "the same request keeps the same bytes");
+        assert_eq!(store.len(), 1, "a repeated request is one variant");
+        store
+            .compose(&file, &second, &mut budget())
+            .expect("composition fits");
+        assert_eq!(store.len(), 2);
+
+        // Evict every variant except the first; the second alone is dropped.
+        let evicted = store.retain(|key| *key == key_first);
+        assert_eq!(evicted, 1);
+        assert_eq!(store.len(), 1);
+        assert!(store.get(&key_first).is_some());
+        assert!(store.get(&key_second).is_none());
+
+        let removed = store.remove(&key_first).expect("the first is stored");
+        assert_eq!(*removed.key(), key_first);
+        assert!(store.is_empty());
+        assert_eq!(store.remove(&key_first), None, "removing twice is a no-op");
+
+        store
+            .compose(&file, &first, &mut budget())
+            .expect("composition fits");
+        store
+            .compose(&file, &second, &mut budget())
+            .expect("composition fits");
+        assert_eq!(store.clear(), 2);
+        assert!(store.is_empty());
+    }
+
+    /// A refused composition stores nothing and leaves existing variants
+    /// intact, so the caller can retry with a budget that fits.
+    #[test]
+    fn accept_f09_c_store_refuses_over_budget_without_partial_state() {
+        let bytes = two_by_two([255, 255, 255], 0);
+        let file = parse(&bytes).expect("the synthetic image parses");
+        let first = LiveryPaint::new(FACTIONS[0]);
+        let second = LiveryPaint::new(FACTIONS[1]);
+
+        let mut store = LiveryVariantStore::new();
+        store
+            .compose(&file, &first, &mut budget())
+            .expect("composition fits");
+
+        // 2x2 RGB8 needs 12 bytes; 5 is refused.
+        let mut tiny = AllocationBudget::new("synthetic/f09-c.bm", 5);
+        let error = store
+            .compose(&file, &second, &mut tiny)
+            .expect_err("the second variant does not fit");
+        assert_eq!(error.code(), "allocation_budget_exceeded");
+        assert_eq!(tiny.used(), 0, "a refused reservation allocates nothing");
+        assert_eq!(store.len(), 1, "the failed variant stored nothing");
+        assert!(!store.contains(&file, &second));
+        assert!(
+            store.contains(&file, &first),
+            "the existing variant is untouched"
+        );
+
+        // Retry with a sufficient budget succeeds and leaves both variants.
+        store
+            .compose(&file, &second, &mut budget())
+            .expect("the retry fits");
+        assert_eq!(store.len(), 2);
     }
 }
