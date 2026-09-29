@@ -495,6 +495,20 @@ fn accept_f14_d_retail_baseline_inventory_is_complete_and_never_synthetic() {
         baseline.content_sha256,
         install_api::content_fingerprint(&discovery.manifest).to_hex()
     );
+    // The installation the published M01 binding cites is this one, so the
+    // baseline's fingerprints and that binding's recorded fingerprint cannot
+    // drift apart.
+    let published = fs::read_to_string(workspace_root().join("missions/bindings/M01.json"))
+        .expect("the published M01 binding reads");
+    let cited = published
+        .split("\"install_sha256\": \"")
+        .nth(1)
+        .and_then(|rest| rest.split('"').next())
+        .expect("M01.json cites an installation fingerprint");
+    assert_eq!(
+        install_sha, cited,
+        "the baseline fingerprints the installation the published binding cites"
+    );
     for element in catalog.elements() {
         assert!(
             element.origin.is_original(),
