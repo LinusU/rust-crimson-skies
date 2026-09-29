@@ -1,149 +1,165 @@
 {
- "schema_version": 1,
- "task_id": "F12-D.langui",
- "candidate_tree": "a311e2a235933b9156cf6aacb9a8a397d201d626",
- "engine": {
-  "rust": "rustc 1.98.1 (48a229cea 2026-09-01)",
-  "bevy": "0.19.1",
-  "avian": "0.7.0"
- },
- "created_at": "2026-09-29T09:11:52Z",
- "command": {
-  "argv": [
-   "cargo",
-   "test",
-   "--workspace",
-   "--locked",
-   "--",
-   "accept_f12_d_",
-   "--include-ignored"
+  "schema_version": 1,
+  "task_id": "F12-D.langui",
+  "candidate_tree": "76f5abbd7bbf9c52061a4ecec6d2f0075a1064de",
+  "engine": {
+    "rust": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "bevy": "0.19.1",
+    "avian": "0.7.0"
+  },
+  "created_at": "2026-09-29T09:28:03Z",
+  "command": {
+    "argv": [
+      "cargo",
+      "test",
+      "--workspace",
+      "--locked",
+      "--",
+      "accept_f12_d_",
+      "--include-ignored"
+    ],
+    "cwd": "/Users/linus/coding/rust-crimson-skies/review-372",
+    "exit_code": 0
+  },
+  "source": {
+    "install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978",
+    "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"
+  },
+  "seed": 0,
+  "ticks": {
+    "start": 0,
+    "end": 0
+  },
+  "overrides": [],
+  "capabilities": [
+    "retail",
+    "synthetic"
   ],
-  "cwd": "/Users/linus/coding/rust-crimson-skies/bunny-alpha-1",
-  "exit_code": 0
- },
- "source": {
-  "install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978",
-  "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"
- },
- "seed": 0,
- "ticks": {
-  "start": 0,
-  "end": 0
- },
- "overrides": [],
- "capabilities": [
-  "retail",
-  "synthetic"
- ],
- "tests": {
-  "discovered": 5,
-  "executed": 5,
-  "passed": 5,
-  "failed": 0,
-  "ignored": 0
- },
- "assertions": [
-  {
-   "id": "cs-inspect config strings.dll (no --container) routes, accounts and resolves",
-   "status": "pass",
-   "evidence": [
-    "config-strings.json",
-    "source.container strings.dll, accounting {'strings': 1792, 'undecodable': 0, 'other_leaves': 2, 'duplicate_ids': 0}, languages [1033], lookup 101 outcome found span {'offset': 79288, 'length': 636}"
-   ]
+  "tests": {
+    "discovered": 7,
+    "executed": 7,
+    "passed": 7,
+    "failed": 0,
+    "ignored": 0
   },
-  {
-   "id": "cs-inspect config GOSDATA/ASSETS/BINARIES/language.dll (no --container) routes, accounts and resolves",
-   "status": "pass",
-   "evidence": [
-    "config-language.json",
-    "source.container GOSDATA/ASSETS/BINARIES/language.dll, accounting {'strings': 48, 'undecodable': 0, 'other_leaves': 0, 'duplicate_ids': 0}, languages [1033], lookup 0 outcome found span {'offset': 24768, 'length': 1160}"
-   ]
+  "assertions": [
+    {
+      "id": "cs-inspect config strings.dll (no --container) routes, accounts and resolves",
+      "status": "pass",
+      "evidence": [
+        "config-strings.json",
+        "source.container strings.dll, accounting {'strings': 1792, 'undecodable': 0, 'other_leaves': 2, 'duplicate_ids': 0}, languages [1033], lookup 101 outcome found code_page 1252 span {'offset': 79288, 'length': 636} (13 characters of original text, not quoted)"
+      ]
+    },
+    {
+      "id": "cs-inspect config GOSDATA/ASSETS/BINARIES/language.dll (no --container) routes, accounts and resolves",
+      "status": "pass",
+      "evidence": [
+        "config-language.json",
+        "source.container GOSDATA/ASSETS/BINARIES/language.dll, accounting {'strings': 48, 'undecodable': 0, 'other_leaves': 0, 'duplicate_ids': 0}, languages [1033], lookup 0 outcome found code_page 0 span {'offset': 24768, 'length': 1160} (7 characters of original text, not quoted)"
+      ]
+    },
+    {
+      "id": "cs-inspect config GOSDATA/ASSETS/BINARIES/langui.dll (no --container) routes, accounts and resolves",
+      "status": "pass",
+      "evidence": [
+        "config-langui.json",
+        "source.container GOSDATA/ASSETS/BINARIES/langui.dll, accounting {'strings': 1616, 'undecodable': 0, 'other_leaves': 0, 'duplicate_ids': 0}, languages [1033], lookup 3480 outcome found code_page 0 span {'offset': 92088, 'length': 610} (24 characters of original text, not quoted)"
+      ]
+    },
+    {
+      "id": "config::tests::accept_f12_d_config_an_empty_root_leaves_the_file_name_routing",
+      "status": "pass",
+      "evidence": [
+        "cargo-test.log",
+        "run once with --exact --include-ignored"
+      ]
+    },
+    {
+      "id": "config::tests::accept_f12_d_config_cs_path_wins_over_the_environment",
+      "status": "pass",
+      "evidence": [
+        "cargo-test.log",
+        "run once with --exact --include-ignored"
+      ]
+    },
+    {
+      "id": "config::tests::accept_f12_d_config_keeps_an_explicit_container_over_the_installation_path",
+      "status": "pass",
+      "evidence": [
+        "cargo-test.log",
+        "run once with --exact --include-ignored"
+      ]
+    },
+    {
+      "id": "config::tests::accept_f12_d_config_refuses_a_file_no_rule_covers_and_says_what_it_tried",
+      "status": "pass",
+      "evidence": [
+        "cargo-test.log",
+        "run once with --exact --include-ignored"
+      ]
+    },
+    {
+      "id": "config::tests::accept_f12_d_config_routes_a_file_whose_root_disagrees_in_case",
+      "status": "pass",
+      "evidence": [
+        "cargo-test.log",
+        "run once with --exact --include-ignored"
+      ]
+    },
+    {
+      "id": "config::tests::accept_f12_d_config_routes_a_localized_image_by_its_installation_path",
+      "status": "pass",
+      "evidence": [
+        "cargo-test.log",
+        "run once with --exact --include-ignored"
+      ]
+    },
+    {
+      "id": "config::tests::accept_f12_d_retail_config_routes_every_surveyed_pe_image",
+      "status": "pass",
+      "evidence": [
+        "cargo-test.log",
+        "run once with --exact --include-ignored"
+      ]
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "cargo-test.log",
+      "sha256": "72e2a8f5f196729d1b89a3ab5a071c74d427a79641c05183014aa3f64afee823",
+      "kind": "log"
+    },
+    {
+      "path": "inventory.json",
+      "sha256": "cfa55a3c3ea1b88952eebf647b09df5fd58a9fc1ac9501dc80f2220e85af493d",
+      "kind": "json"
+    },
+    {
+      "path": "config-strings.json",
+      "sha256": "064d0f66f6cb61f03c7b258bfae7615b219601b6a0a3a5766bdc54ea953c2aa2",
+      "kind": "json"
+    },
+    {
+      "path": "config-language.json",
+      "sha256": "e1f38d7a3bc4af91b2fb769cc299dd15b961150a435688890dc9d2e74c82ba27",
+      "kind": "json"
+    },
+    {
+      "path": "config-langui.json",
+      "sha256": "c83c2771f40f72801e40fe47d5dbc4dc349d68e934bc37303c678fb87498de2a",
+      "kind": "json"
+    }
+  ],
+  "unknowns": [
+    "Which RT_STRING numbering the original game addresses strings with: this engine numbers a row (block - 1) * 16 + index (Documented) and the documented Win32 rule for the same leaf is one block apart, uniformly. Resolving task #374; it gates every id this command reports and the retail test's id 3480 is the engine's own numbering, not a verified original id.",
+    "Whether a localized installation keeps langui.dll's block ids, language 1033 and code page 0: only one English installation was surveyed, so F12-D AC04 (a localized installation preserves stable ids while changing display text) stays open for the F12-D stage and for the M02-A..M24-A title confirmations that follow.",
+    "Whether the game reaches these strings through the Win32 resource API, through the project's own RESOURCE.H, or through both: recorded on the pe.resources dialect row, not measured.",
+    "The lead left for #374 and not measured here: the original's own ASSETS/SCRIPTS/RESOURCE.H ('Used by LangUI.rc') defines IDS_MISSIONAREA 1220 and langui.dll's engine-numbered id 1220 is a region string; the block name of that leaf decides the numbering and was not read."
+  ],
+  "review": {
+    "identity": "Regenerated by the reviewer bunny-2 (Space Bunny Free, a different agent instance with fresh context) on the rebased review tree, after it added two acceptance tests and corrected one doc comment; the implementer of the routing change was bunny-alpha-1. The reviewer re-ran every command in this report. The report is still not independent original-reference evidence: no agent ran the original game, so per AGENTS.md a merge awards `checked` at most.",
+    "method": "Generated by private/evidence/F12-D.langui/harness.py on candidate tree 76f5abbd7bbf9c52061a4ecec6d2f0075a1064de from real runs, not written by hand: the task selection (`cargo test --workspace --locked -- accept_f12_d_ --include-ignored`) and then each discovered acceptance test again with `--exact --include-ignored` (both in cargo-test.log), plus one `cs-inspect config` report per surveyed PE image with no `--container` override and one `cs-inspect inventory` run whose `fingerprints` supply install_sha256 and content_sha256. The capabilities are `synthetic` (the six fixture-image tests) and `retail` (the one test that reads $CS_GAME_DIR, the three config reports and the inventory). `retail` means read access to the installation files; the original executable was not run, so the claim is `implemented` and no behaviour claim is made. The report keeps its `unknowns` non-empty, so `tools/validate_evidence.py --require-pass` rejects it with 'Unresolved issues' by design (the T351 precedent): dropping them to make the flag pass would hide that F12-D's AC04 and #374 are open. Only hashes and paths are committed; the artifacts, which contain original strings, stay in private/. The report is committed after this run, so the committed candidate_tree is the tree of its parent commit and the only later delta is this report's own copy under docs/findings/evidence/."
   },
-  {
-   "id": "cs-inspect config GOSDATA/ASSETS/BINARIES/langui.dll (no --container) routes, accounts and resolves",
-   "status": "pass",
-   "evidence": [
-    "config-langui.json",
-    "source.container GOSDATA/ASSETS/BINARIES/langui.dll, accounting {'strings': 1616, 'undecodable': 0, 'other_leaves': 0, 'duplicate_ids': 0}, languages [1033], lookup 3480 outcome found span {'offset': 92088, 'length': 610}"
-   ]
-  },
-  {
-   "id": "config::tests::accept_f12_d_config_routes_a_localized_image_by_its_installation_path",
-   "status": "pass",
-   "evidence": [
-    "cargo-test.log",
-    "run once with --exact --include-ignored"
-   ]
-  },
-  {
-   "id": "config::tests::accept_f12_d_config_refuses_a_file_no_rule_covers_and_says_what_it_tried",
-   "status": "pass",
-   "evidence": [
-    "cargo-test.log",
-    "run once with --exact --include-ignored"
-   ]
-  },
-  {
-   "id": "config::tests::accept_f12_d_config_cs_path_wins_over_the_environment",
-   "status": "pass",
-   "evidence": [
-    "cargo-test.log",
-    "run once with --exact --include-ignored"
-   ]
-  },
-  {
-   "id": "config::tests::accept_f12_d_config_keeps_an_explicit_container_over_the_installation_path",
-   "status": "pass",
-   "evidence": [
-    "cargo-test.log",
-    "run once with --exact --include-ignored"
-   ]
-  },
-  {
-   "id": "config::tests::accept_f12_d_retail_config_routes_every_surveyed_pe_image",
-   "status": "pass",
-   "evidence": [
-    "cargo-test.log",
-    "run once with --exact --include-ignored"
-   ]
-  }
- ],
- "artifacts": [
-  {
-   "path": "cargo-test.log",
-   "sha256": "a47f51c2939dbefbce7c8da5472e94ffdef5fae83b450e2f57d367922bb487f1",
-   "kind": "log"
-  },
-  {
-   "path": "inventory.json",
-   "sha256": "cfa55a3c3ea1b88952eebf647b09df5fd58a9fc1ac9501dc80f2220e85af493d",
-   "kind": "json"
-  },
-  {
-   "path": "config-strings.json",
-   "sha256": "064d0f66f6cb61f03c7b258bfae7615b219601b6a0a3a5766bdc54ea953c2aa2",
-   "kind": "json"
-  },
-  {
-   "path": "config-language.json",
-   "sha256": "e1f38d7a3bc4af91b2fb769cc299dd15b961150a435688890dc9d2e74c82ba27",
-   "kind": "json"
-  },
-  {
-   "path": "config-langui.json",
-   "sha256": "c83c2771f40f72801e40fe47d5dbc4dc349d68e934bc37303c678fb87498de2a",
-   "kind": "json"
-  }
- ],
- "unknowns": [
-  "Which RT_STRING numbering the original game addresses strings with: this engine numbers a row (block - 1) * 16 + index (Documented) and the documented Win32 rule for the same leaf is one block apart, uniformly. Resolving task #374; it gates every id this command reports and the retail test's id 3480 is the engine's own numbering, not a verified original id.",
-  "Whether a localized installation keeps langui.dll's block ids, language 1033 and code page 0: only one English installation was surveyed, so F12-D AC04 (a localized installation preserves stable ids while changing display text) stays open for the F12-D stage and for the M02-A..M24-A title confirmations that follow.",
-  "Whether the game reaches these strings through the Win32 resource API, through the project's own RESOURCE.H, or through both: recorded on the pe.resources dialect row, not measured.",
-  "The lead left for #374 and not measured here: the original's own ASSETS/SCRIPTS/RESOURCE.H ('Used by LangUI.rc') defines IDS_MISSIONAREA 1220 and langui.dll's engine-numbered id 1220 is a region string; the block name of that leaf decides the numbering and was not read."
- ],
- "review": {
-  "identity": "implementer: bunny-alpha-1 (Space Bunny Alpha), the agent that submitted #372. No agent has reviewed this branch yet; the report is written by the implementer, so per AGENTS.md it is not independent original-reference evidence and a merge awards `checked` at most.",
-  "method": "Generated by private/evidence/F12-D.langui/harness.py on candidate tree a311e2a235933b9156cf6aacb9a8a397d201d626 from real runs, not written by hand: the task selection (`cargo test --workspace --locked -- accept_f12_d_ --include-ignored`) and then each discovered acceptance test again with `--exact --include-ignored` (both runs are in cargo-test.log), plus one `cs-inspect config` report per surveyed PE image with no `--container` override (the routing this task adds) and one `cs-inspect inventory` run whose `fingerprints` supply install_sha256 and content_sha256. The capabilities are `synthetic` (the four fixture-image tests) and `retail` (the one test that reads $CS_GAME_DIR; the three config reports and the inventory are further retail reads). `retail` means read access to the installation files; the original executable was not run, so the claim is `implemented` and no behaviour claim is made. The report keeps its `unknowns` non-empty, so `tools/validate_evidence.py --require-pass` rejects it with 'Unresolved issues' by design (the T351 precedent): dropping them to make the flag pass would hide that F12-D's AC04 and #374 are open. Only hashes and paths are committed; the artifacts, which contain original strings, stay in private/. The report is committed after this run, so the committed candidate_tree is the tree of its parent commit and the only later delta is this report's own copy under docs/findings/evidence/, whose bytes are that file."
- },
- "claim": "implemented"
+  "claim": "implemented"
 }
