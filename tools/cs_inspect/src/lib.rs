@@ -32,8 +32,13 @@
 //! observer and capture method — with its three-valued admission rules
 //! (valid, invalid, unavailable) and the reserved-holdout gate that keeps
 //! fitting acceleration alone from standing in for handling fidelity.
+//! [`config`] is the F12-C `config` command: one configuration member or PE
+//! resource image routed by its observed rule, read through the
+//! `cs_content::config` consumers, with declared tuning fields resolved to
+//! checked constants and localized string ids resolved through the catalog.
 
 pub mod catalog;
+pub mod config;
 pub mod evidence;
 pub mod install;
 pub mod interp;

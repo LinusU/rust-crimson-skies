@@ -17,9 +17,12 @@
 //! container and reports its lossless tokens, and with `--plan` reads the
 //! same container as a loading plan (F07-C), resolving the registered
 //! commands through a content session and reporting every failure with its
-//! source offset, and the `texture-audit` command (F08-D) compares every
+//! source offset, the `texture-audit` command (F08-D) compares every
 //! ZBD texture's decode with a pinned reference extraction and can write a
-//! private contact sheet. The remaining subcommands from
+//! private contact sheet, and the `config` command (F12-C) routes one
+//! configuration member or PE resource image by its observed rule and
+//! resolves declared tuning fields and localized string ids through the
+//! `cs_content::config` consumers. The remaining subcommands from
 //! `docs/contracts/CLI-EVIDENCE.md` (`catalog`, `closure`,
 //! `scripts`, `handling`) arrive with later tasks.
 //! Until then the binary refuses invalid input with a nonzero exit code and
@@ -107,6 +110,22 @@ COMMANDS
         one private contact sheet (TGA) per archive. Exits 0 when no
         unexplained difference remains, 3 otherwise.
 
+    config --file <path> [--container <spelling>] [--member <member>]
+           [--install-sha256 <hex>] [--string <id>[:<language>]]...
+           [--field <consumer>=<section>:<key>:<index>:<width>:<signed>]...
+           [--out <file>]
+        Read one configuration member or PE resource image (F12-C), routed by
+        its observed member rule (--container/--member override the routing
+        for a loose export). A `strings.dll` image is read as inert PE data
+        into the string catalog and --string resolves a stable id to its
+        text, language, code page and provenance; a keyed list (LAYOUT.CSV)
+        is read into a lossless document and --field resolves a declared
+        value to a checked tuning constant (width 8|16|32|64|f32|f64;
+        signed|unsigned for a whole number). Exits 0 when the file reads and
+        every request resolves, 2 on invalid input, 3 when the member is
+        unrouted or refused, or a requested lookup or field does not resolve,
+        and 1 on a runtime failure.
+
     catalog  closure  scripts  handling
         Not implemented in this workspace stage; they are documented in
         docs/contracts/CLI-EVIDENCE.md.
@@ -135,8 +154,8 @@ fn main() -> ExitCode {
         None => {
             eprintln!(
                 "cs-inspect: missing command; expected one of inventory, audit, resolve, rof, \
-                 zbd-audit, interp, texture-audit, catalog, closure, scripts, handling (see \
-                 docs/contracts/CLI-EVIDENCE.md)"
+                 zbd-audit, interp, texture-audit, config, catalog, closure, scripts, handling \
+                 (see docs/contracts/CLI-EVIDENCE.md)"
             );
             ExitCode::from(EXIT_INVALID_INPUT)
         }
@@ -147,11 +166,12 @@ fn main() -> ExitCode {
         Some("zbd-audit") => cs_inspect::zbd::zbd_audit_command(&args[1..]),
         Some("interp") => cs_inspect::interp::interp_command(&args[1..]),
         Some("texture-audit") => cs_inspect::textures::texture_audit_command(&args[1..]),
+        Some("config") => cs_inspect::config::config_command(&args[1..]),
         Some(command) => {
             eprintln!(
                 "cs-inspect: unsupported command {command:?}; this workspace stage implements \
-                 only `inventory`, `audit`, `resolve`, `rof`, `zbd-audit`, `interp` and \
-                 `texture-audit`"
+                 only `inventory`, `audit`, `resolve`, `rof`, `zbd-audit`, `interp`, \
+                 `texture-audit` and `config`"
             );
             ExitCode::from(EXIT_INVALID_INPUT)
         }
