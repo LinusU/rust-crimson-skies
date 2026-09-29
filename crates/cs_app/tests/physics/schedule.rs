@@ -77,9 +77,10 @@ fn accept_f23_a_every_declared_tick_integrates_exactly_once_at_a_constant_dt() {
 /// tick, so the pre-integration probe still sees the start velocity and the
 /// tick's end already contains the delta-v.
 ///
-/// Observable failure if the force hook is scheduled after
-/// `PhysicsSystems::Prepare` (the delta-v would land a tick late) or outside
-/// the fixed schedule (the probe count and integration count would diverge).
+/// Observable failure if the force hook is scheduled after the integration
+/// step (`PhysicsSystems::StepSimulation`) or outside the fixed schedule: the
+/// delta-v lands a tick late, so the probe/integration counts diverge and the
+/// same tick's end velocity stays zero.
 #[test]
 fn accept_f23_a_force_hook_runs_before_the_integration_step() {
     let mass_kg = 2.0_f32;
