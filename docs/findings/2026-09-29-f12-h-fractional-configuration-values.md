@@ -39,7 +39,8 @@ installed data needed the rule or merely tolerated it.
   `accept_f12_h_the_fractional_spelling_is_a_designed_rule` (authored) and
   `accept_f12_h_retail_configuration_values_are_never_fractional` (retail).
 - `docs/findings/2026-09-29-f12-h-fractional-configuration-values.md` (this
-  file) and one forward pointer added to the F12-B finding.
+  file), one forward pointer added to the F12-B finding, and
+  `docs/findings/evidence/F12-H.json` (the acceptance report; see "Evidence").
 - Wiring only: none. No module, re-export or dependency changed.
 
 **The parser is unchanged.** The measurement did not find a shape to extend it
@@ -94,9 +95,11 @@ no entry at all).
 ### The shape of every dotted value
 
 Every one of the 229 is a **file name**, at field index 1 of its entry
-(221 values) or at index 7 and 8 of the eight volume-slider entries
-(`PF_B_SliderSlot.png`, `PF_B_Slider.png`): a stem, exactly one `.`, and an
-alphabetic extension. 125 distinct names. The extension set, case included:
+(221 values) or at indices 7 and 8 of the four slider entries
+(`AP_S_MVOLUME`, `AP_S_EVOLUME`, `AP_S_VVOLUME` and `CP_S_MOUSE`, each naming
+`PF_B_SliderSlot.png` and `PF_B_Slider.png`, so eight values): a stem, exactly
+one `.`, and an alphabetic extension. 125 distinct names. The extension set,
+case included:
 
 | Extension | Values | Case-folded |
 | --- | --- | --- |
@@ -195,30 +198,31 @@ The retail test fails with "CS_GAME_DIR is not set" when run without it.
 | the member-wide byte count looks for `;` instead of `.` (review probe) | `…retail_configuration_values_are_never_fractional` (`SCRAPBOOK.CSV` `.` bytes 0 → 25) |
 | the exponent-shape classification demands upper case again, with the misspelling matched in full (review probe) | `…retail_configuration_values_are_never_fractional` (`MS_P_19_01_SwanWelcomeHome1` is unaccounted for) |
 
-A fifth probe, dropping the **R4** blank-trimming of `RawField::value`, changed
-nothing: the seven padded fields of `SCRAPBOOK.CSV` are resource-id *names*,
-which were never numeric. Recorded because it bounds what this task's tests
-claim — they pin the value shapes, not the padding rules.
+One earlier probe, dropping the **R4** blank-trimming of `RawField::value`,
+changed nothing: the seven padded fields of `SCRAPBOOK.CSV` are resource-id
+*names*, which were never numeric. Recorded because it bounds what this task's
+tests claim — they pin the value shapes, not the padding rules.
 
-The probes also bound the negative claims above: the four
-`SCRAPBOOK.CSV` exponent-shaped values and the 21 `LAYOUT.CSV` ones that are
-neither hexadecimal literals nor placeholders are resource-id names, and the
-classification is now what proves it rather than a permissive predicate. What
-these tests cannot detect is a value that is a fraction without being spelled
-with a `.` — the rule admits no such spelling, and that is a property of the
-rule, not of this survey.
+The probes also bound the negative claims above: the 115 exponent-shaped values
+of `LAYOUT.CSV` are 28 hexadecimal literals, 63 `<NAME>` placeholders, 21
+resource-id names and the 3 misspellings, and the four of `SCRAPBOOK.CSV` are
+all names, so the classification is now what proves that rather than a
+permissive predicate. What these tests cannot detect is a value that is a
+fraction without being spelled with a `.` — the rule admits no such spelling,
+and that is a property of the rule, not of this survey.
 
 ## Review notes
 
 Recorded because the reviewer of this branch is the same agent identity that
 implemented it (`bunny-2/bunny-2`, Rally claim on #369), so per AGENTS.md this
 is **not** independent evidence, and a merged task is `checked`, never
-`verified_original`. The review re-derived every number in the table above from
-the exported members with a parser written separately from the production
-readers (byte and field counts, the dotted census with its extension histogram
-and stem classification, the hexadecimal/decimal split of 444 + 3 220 = 3 664,
-the exponent census of 115 + 4, and the three `oxff1E283C` lines) and found
-them all correct. It fixed three things the implementer left:
+`verified_original`. The review re-derived every number in the table above
+from the exported members with a parser written separately from the production
+readers — byte and field counts, the dotted census with its extension
+histogram and stem classification, the hexadecimal/decimal split of
+444 + 3 220 = 3 664, the exponent census of 115 + 4, and the three
+`oxff1E283C` lines — and found them all correct. It fixed three things the
+implementer left:
 
 1. the retail test's `rounded` list was unreachable — `tune` refuses a
    fractional value for a whole-number width as an `Overflow`, so no value
@@ -233,6 +237,28 @@ them all correct. It fixed three things the implementer left:
 3. the `232` `.` bytes the production doc comment states were not asserted.
    Both members' byte counts are now pinned (232 and 0), which is also what
    keeps the difference between a `.` byte and a fractional *value* honest.
+
+## Evidence
+
+The contract requires an acceptance report of a task that uses a capability
+besides build/test, and this one used `retail` (it reads the original
+installation, read-only). It is `docs/findings/evidence/F12-H.json`, generated
+on the reviewed tree `b266998f39ab26137943d67022962f2778e3cc7b` (commit
+`d10f66a`, the commit before this report was added, as in every other report
+here) by `private/evidence/F12-H/harness.py` from real runs: the task's own
+selection with `--include-ignored` (2 tests, 2 passed, 0 failed, 0 ignored — the
+retail test is in the selection, so it ran) and the production `cs-inspect
+inventory` fingerprint plus two production `cs-inspect rof` decodes of
+`ASSETS/LAYOUT.CSV` and `ASSETS/SCRAPBOOK.CSV`. The report carries digests,
+counts and lengths only; the artifacts stay in `private/evidence/F12-H/`. The
+harness refuses to write a report unless both expected tests ran and passed.
+
+It is validated with `tools/validate_evidence.py` **without** `--require-pass`,
+because that flag rejects a report that still lists unresolved issues, and this
+task's acceptance criterion is precisely that the unestablished reading rules
+stay recorded. Deleting the two `unknowns` to make the flag pass would be
+exactly the thing the contract forbids: one is the original's tolerance of a
+fraction (F12-D's measurement) and one is the `oxff1E283C` data slip (F12-J).
 
 ## Commands
 
