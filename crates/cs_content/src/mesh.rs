@@ -451,6 +451,7 @@ pub struct RenderMesh {
     source_faces: usize,
     degenerate_triangles: usize,
     extra_group_triangles: usize,
+    extra_group_degenerate: usize,
 }
 
 /// Where a render mesh's per-corner material and texture coordinate come from.
@@ -591,6 +592,7 @@ impl RenderMesh {
         let mut lookup: HashMap<VertexKey, u32> = HashMap::new();
         let mut triangles: Vec<RenderTriangle> = Vec::new();
         let mut extra_group_triangles = 0usize;
+        let mut extra_group_degenerate = 0usize;
 
         for triangle in &topology.triangles {
             let Some(polygon) = mesh.polygons.get(triangle.polygon) else {
@@ -674,6 +676,9 @@ impl RenderMesh {
                 }
                 if group > 0 {
                     extra_group_triangles += 1;
+                    if triangle.is_degenerate() {
+                        extra_group_degenerate += 1;
+                    }
                 }
                 triangles.push(RenderTriangle {
                     vertices: indices,
@@ -711,6 +716,7 @@ impl RenderMesh {
             source_faces: mesh.polygons.len(),
             degenerate_triangles,
             extra_group_triangles,
+            extra_group_degenerate,
         })
     }
 
@@ -749,10 +755,9 @@ impl RenderMesh {
     ///
     /// A polygon that kept `n` material groups fed `n` render triangles per
     /// topology triangle, so this is the number of **draws**, not the number of
-    /// stored triangles. The stored count is
-    /// [`Self::source_triangles`] minus [`Self::extra_group_triangles`] unless a
-    /// group carried no triangle of its own, which cannot happen: a group is
-    /// only missing when the whole mesh was refused.
+    /// stored triangles. The stored count is this minus
+    /// [`Self::extra_group_triangles`], which is also how a catalog row's
+    /// [`MeshFaceCounts::triangles`] relates to it.
     #[must_use]
     pub fn source_triangles(&self) -> usize {
         self.triangles.len()
@@ -772,8 +777,25 @@ impl RenderMesh {
         self.extra_group_triangles
     }
 
-    /// Triangles with two equal stored position indices. They are kept; a
-    /// consumer that draws may skip them.
+    /// Of [`Self::extra_group_triangles`], the degenerate ones.
+    ///
+    /// Degeneracy is a property of the stored position indices, so a degenerate
+    /// step is degenerate in **every** group of its polygon and the two counts
+    /// stand or fall together. It is stated separately because a consumer that
+    /// skips degenerate draws needs to know how many of them it is skipping
+    /// beyond the stored ones, not only the total.
+    #[must_use]
+    pub fn extra_group_degenerate_triangles(&self) -> usize {
+        self.extra_group_degenerate
+    }
+
+    /// Render triangles that draw nothing, because two of their three stored
+    /// position indices are equal. They are kept; a consumer that draws may skip
+    /// them.
+    ///
+    /// A mesh that keeps every stored material group has one of these per
+    /// group, so this is the stored count plus
+    /// [`Self::extra_group_degenerate_triangles`].
     #[must_use]
     pub fn degenerate_triangles(&self) -> usize {
         self.degenerate_triangles
@@ -4651,7 +4673,7 @@ mod tests {
         /// The same polygon as a triangle **strip** of those corners. A strip
         /// decodes through `decode_strip`, so it may repeat a position index —
         /// which is how the corpus authors a seam inside one polygon.
-        fn as_strip(mut self) -> Self {
+        fn stored_as_strip(mut self) -> Self {
             self.strip = true;
             self
         }
@@ -4690,7 +4712,7 @@ mod tests {
         /// The packed `vertex_info` word: the corner count in the low nine bits,
         /// the flag byte shifted up by eight. `FLAG_NORMALS` is always set, so
         /// the polygon stores one normal index per corner and no bit outside the
-        /// layout's own flag field is set; [`Self::as_strip`] adds the strip bit.
+        /// layout's own flag field is set; [`Self::stored_as_strip`] adds the strip bit.
         fn vertex_info(&self) -> u32 {
             let mut flags = FLAG_NORMALS;
             if self.strip {
@@ -5263,7 +5285,7 @@ mod tests {
             block(1000.0, 4),
             vec![
                 StoredPolygon::new(&STRIP_CORNERS, 0, &STRIP_GROUP_ZERO)
-                    .as_strip()
+                    .stored_as_strip()
                     .with_groups(&[(1, &STRIP_GROUP_ONE)]),
                 StoredPolygon::new(&[0, 1, 2], 0, &[[0.0, 0.0], [0.5, 0.0], [0.25, 0.25]])
                     .with_groups(&[
@@ -5317,11 +5339,7 @@ mod tests {
     /// The render triangles one polygon and one stored group produced, in
     /// drawing order. The `group` field is part of the lookup so a test cannot
     /// accidentally read another group's triangles.
-    fn group_triangles<'a>(
-        render: &'a RenderMesh,
-        polygon: usize,
-        group: usize,
-    ) -> Vec<&'a RenderTriangle> {
+    fn group_triangles(render: &RenderMesh, polygon: usize, group: usize) -> Vec<&RenderTriangle> {
         render
             .triangles()
             .iter()
@@ -5336,11 +5354,7 @@ mod tests {
     /// to two groups of one polygon or to two polygons, so the set is not a
     /// partition. [`group_vertex_slots`] is the reading that keeps the corner a
     /// vertex was reached for.
-    fn group_vertices<'a>(
-        render: &'a RenderMesh,
-        polygon: usize,
-        group: usize,
-    ) -> Vec<&'a RenderVertex> {
+    fn group_vertices(render: &RenderMesh, polygon: usize, group: usize) -> Vec<&RenderVertex> {
         let mut out: Vec<&RenderVertex> = Vec::new();
         for triangle in group_triangles(render, polygon, group) {
             for &index in &triangle.vertices {
@@ -6260,8 +6274,21 @@ mod tests {
                 .expect("a decoded mesh uploads");
             let counts = row.faces.expect("face counts");
             assert_eq!(upload.render().source_faces(), counts.faces);
-            assert_eq!(upload.render().source_triangles(), counts.triangles);
-            assert_eq!(upload.render().degenerate_triangles(), counts.degenerate);
+            // The render mesh draws every stored material group of a polygon, so
+            // its triangle count is the stored topology count **plus** the draws
+            // the later groups add. On this container that is 1 042 extra over
+            // 390 multi-group polygons; on `planes.zbd`, which stores none, the
+            // two are equal.
+            assert_eq!(
+                upload.render().source_triangles(),
+                counts.triangles + upload.render().extra_group_triangles(),
+                "the draws beyond the first group are exactly the groups' own"
+            );
+            assert_eq!(
+                upload.render().degenerate_triangles(),
+                counts.degenerate + upload.render().extra_group_degenerate_triangles(),
+                "a degenerate stored step is degenerate in every group of its polygon"
+            );
             assert_eq!(upload.id(), row.id.as_ref().expect("an id"));
             assert_eq!(upload.render().vertices().len() >= 3, counts.triangles > 0);
 
@@ -6543,8 +6570,25 @@ mod tests {
                 .expect("every stored airframe mesh uploads");
             let counts = row.faces.expect("face counts");
             assert_eq!(upload.render().source_faces(), counts.faces);
-            assert_eq!(upload.render().source_triangles(), counts.triangles);
-            assert_eq!(upload.render().degenerate_triangles(), counts.degenerate);
+            // The render mesh draws every stored material group of a polygon.
+            // `ZBD/planes.zbd` stores no multi-group polygon at all, so on the
+            // airframe corpus the draws beyond the first are none and the two
+            // counts are equal; the assertion states the general relation so a
+            // future airframe that stores one would still have to hold.
+            assert_eq!(
+                upload.render().source_triangles(),
+                counts.triangles + upload.render().extra_group_triangles(),
+                "the draws beyond the first group are exactly the groups' own"
+            );
+            assert_eq!(
+                upload.render().degenerate_triangles(),
+                counts.degenerate + upload.render().extra_group_degenerate_triangles()
+            );
+            assert_eq!(
+                upload.faces().multi_material_group_polygons,
+                0,
+                "the measured airframe corpus stores no multi-group polygon"
+            );
             // A mesh that became a render mesh had no polygon rejected, so the
             // faces the render mesh saw are all of the stored ones.
             assert_eq!(counts.rejected, 0, "a mesh that uploaded rejected none");
@@ -6737,6 +6781,20 @@ mod tests {
             2,
             "the one strip step, twice"
         );
+        assert_eq!(
+            render.extra_group_degenerate_triangles(),
+            1,
+            "the one degenerate strip step, once more in the second group"
+        );
+        // The counts a catalog row carries are the stored topology's; the render
+        // mesh's are those plus the later groups' own draws. Every degenerate
+        // step of a polygon is degenerate in every group, so the two relations
+        // hold together.
+        assert_eq!(faces.triangles + render.extra_group_triangles(), 14);
+        assert_eq!(
+            faces.degenerate + render.extra_group_degenerate_triangles(),
+            2
+        );
 
         // Every raw material index the stored groups name is a material of the
         // payload's own audit rows, so nothing was dropped on the way there
@@ -6786,7 +6844,7 @@ mod tests {
         // The first group really has no seam at position 2, so the second
         // group's seam cannot be an accident of the fixture.
         assert_eq!(
-            uvs_at(render, &topology, 0, 0, 2),
+            uvs_at(render, topology, 0, 0, 2),
             vec![[0.0f32.to_bits(), 1.0f32.to_bits()]],
             "the first group stores one coordinate for both corners at position 2"
         );
@@ -6796,7 +6854,7 @@ mod tests {
         ];
         expected.sort_unstable();
         assert_eq!(
-            uvs_at(render, &topology, 0, 1, 2),
+            uvs_at(render, topology, 0, 1, 2),
             expected,
             "the second group authors two coordinates at one position, and the seam survives"
         );
@@ -6809,12 +6867,12 @@ mod tests {
             let same = [1.0f32.to_bits(), 1.0f32.to_bits()];
             let want = if position == 1 { only } else { same };
             assert_eq!(
-                uvs_at(render, &topology, 0, 0, position),
+                uvs_at(render, topology, 0, 0, position),
                 vec![want],
                 "position {position} in the first group"
             );
             assert_eq!(
-                uvs_at(render, &topology, 0, 1, position),
+                uvs_at(render, topology, 0, 1, position),
                 vec![want],
                 "position {position} in the second group"
             );
@@ -7254,6 +7312,236 @@ mod tests {
             one.corners.len(),
             3,
             "the IR fixture the refusals above ran against is the one the reader would build"
+        );
+    }
+
+    /// **The corpus, through the whole production path.** Every GameZ polygon of
+    /// `ZBD/C1/gamez.zbd` stores one, two or three material groups, and this
+    /// states on the original installation that
+    ///
+    /// * every row's draws are its stored topology triangles plus exactly the
+    ///   draws the later groups add — the arithmetic that only holds when no
+    ///   group is dropped and none is invented;
+    /// * for every multi-group polygon of every row, each stored group's own raw
+    ///   material index and its own per-corner UV set are on the payload, corner
+    ///   for corner, through the production source map;
+    /// * a seam that exists **only** in a group beyond the first is visible,
+    ///   which is AC03 for the second group on real data and not only on the
+    ///   fixture;
+    /// * the presentation question is on the rows that stored such a polygon and
+    ///   on no other, and the retired loss code is on none.
+    ///
+    /// It asserts the *invariants*, not this owner's exact numbers; the measured
+    /// figures are in
+    /// `docs/findings/2026-09-29-f10-e-material-groups-into-the-render-mesh.md`
+    /// and the per-archive counts are F10-B's
+    /// `accept_f10_b_gamez_retail_flags_groups_and_seams_over_the_whole_corpus`.
+    #[test]
+    #[ignore = "requires CS_GAME_DIR"]
+    fn accept_f10_e_retail_world_multi_group_polygons_keep_every_stored_group() {
+        let game_dir = PathBuf::from(std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR"));
+        let found = install::discover(&game_dir).expect("the installation is discovered");
+        let group = found
+            .diagnosis
+            .world_groups
+            .iter()
+            .find(|group| group.as_str().eq_ignore_ascii_case("ZBD/c1"))
+            .expect("world C1 is discovered")
+            .clone();
+        let context = ResolveContext::new(install::fingerprint(&found.manifest))
+            .with_world_group(WorldGroup::from_relative(group));
+        let mut builder = SessionBuilder::new(context);
+        builder
+            .mount_installation(&game_dir, &found.diagnosis)
+            .expect("the installation mounts");
+        let session = builder.open();
+
+        let archive = texture_key();
+        let textures = TextureCatalog::open(&session, std::slice::from_ref(&archive));
+        assert_eq!(textures.failures().count(), 0, "the archive opens");
+        let key = gamez_key();
+        let catalog = MeshCatalog::open(
+            &session,
+            std::slice::from_ref(&key),
+            &seam_dependencies(&textures, &archive),
+        );
+        assert_eq!(
+            catalog.failures().count(),
+            0,
+            "the world's own GameZ container opens and both readers accept it"
+        );
+        let container = catalog.containers().next().expect("one container");
+
+        let presentation = MeshPresentationUnknown::MultiMaterialGroup.code();
+        let mut rows = 0usize;
+        let mut multi_group_polygons = 0usize;
+        let mut meshes_with_multi_group = 0usize;
+        let mut extra_draws = 0usize;
+        let mut three_group_polygons = 0usize;
+        // Seams that only exist in a group beyond the first, per the corpus's own
+        // stored bytes rather than per the render mesh.
+        let mut second_group_seams = 0usize;
+        let mut identical_uv_groups = 0usize;
+
+        for row in catalog.records() {
+            let index = row.mesh_index.expect("every row is about a mesh");
+            let counts = row.faces.expect("face counts");
+            let resolved = catalog
+                .resolve(&session, &key, index)
+                .expect("every stored world mesh resolves");
+            let upload = catalog
+                .prepare_upload(&session, &resolved)
+                .expect("every stored world mesh uploads");
+            let render = upload.render();
+            rows += 1;
+
+            assert_eq!(render.source_faces(), counts.faces);
+            assert_eq!(
+                render.source_triangles(),
+                counts.triangles + render.extra_group_triangles(),
+                "mesh {index}: the draws are the stored triangles plus each polygon's own groups"
+            );
+            assert_eq!(
+                render.degenerate_triangles(),
+                counts.degenerate + render.extra_group_degenerate_triangles()
+            );
+            assert_eq!(
+                row.unsupported_reasons.contains(&presentation.to_owned()),
+                counts.multi_material_group_polygons > 0,
+                "mesh {index}: the presentation question is on the row only where it is real"
+            );
+            assert_eq!(
+                upload
+                    .unknowns()
+                    .contains(&MeshPresentationUnknown::MultiMaterialGroup),
+                counts.multi_material_group_polygons > 0
+            );
+            for reason in &row.unsupported_reasons {
+                assert_ne!(reason, "multi_material_group_polygons");
+            }
+            if counts.multi_material_group_polygons == 0 {
+                assert_eq!(render.extra_group_triangles(), 0, "mesh {index}");
+                continue;
+            }
+            meshes_with_multi_group += 1;
+            multi_group_polygons += counts.multi_material_group_polygons;
+            extra_draws += render.extra_group_triangles();
+
+            let stored = container.meshes().get(index).expect("the stored mesh");
+            let topology = container.topology(index).expect("the stored topology");
+            assert!(
+                stored.groups_are_complete(),
+                "mesh {index}: every stored polygon has its own group list"
+            );
+            for (polygon, face) in stored.mesh.polygons.iter().enumerate() {
+                let groups = stored.groups(polygon).expect("groups");
+                if groups.len() == 1 {
+                    continue;
+                }
+                if groups.len() == 3 {
+                    three_group_polygons += 1;
+                }
+                // Every stored group holds one coordinate per corner of its
+                // polygon — the reader's own arithmetic, checked here against
+                // the IR it produced.
+                for attributes in groups {
+                    assert_eq!(
+                        attributes.uvs.len(),
+                        face.corners.len(),
+                        "mesh {index} polygon {polygon}: one stored coordinate per corner"
+                    );
+                }
+                if groups.iter().skip(1).all(|g| g.uvs == groups[0].uvs) {
+                    identical_uv_groups += 1;
+                }
+                // Every group is drawn, with its own material and its own UVs.
+                for (group, attributes) in groups.iter().enumerate() {
+                    assert_group_samples_its_own_uvs(render, stored, topology, polygon, group);
+                    for triangle in group_triangles(render, polygon, group) {
+                        assert_eq!(triangle.material, attributes.material);
+                    }
+                }
+                // And the corpus's shared positions: a position two or more of
+                // this polygon's corners use. For every group, the render mesh
+                // must hold exactly the coordinates that group authors there,
+                // over **all** of the polygon's corners at that position.
+                let mut at: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
+                for (corner, raw) in face.corners.iter().enumerate() {
+                    at.entry(raw.position).or_default().push(corner);
+                }
+                for (position, corners) in at {
+                    if corners.len() < 2 {
+                        continue;
+                    }
+                    let authored = |group: usize| {
+                        let mut bits: Vec<[u32; 2]> = corners
+                            .iter()
+                            .map(|&corner| {
+                                let uv = groups[group].uvs[corner];
+                                [uv[0].to_bits(), uv[1].to_bits()]
+                            })
+                            .collect();
+                        bits.sort_unstable();
+                        bits.dedup();
+                        bits
+                    };
+                    for group in 0..groups.len() {
+                        assert_eq!(
+                            uvs_at(render, topology, polygon, group, position),
+                            authored(group),
+                            "mesh {index} polygon {polygon} group {group}: position {position} \
+                             keeps every coordinate that group authors there"
+                        );
+                    }
+                    // A seam the first-group mirroring could not show: the first
+                    // group authors one coordinate for the whole position while a
+                    // group beyond it authors more than one. This is AC03 for the
+                    // second group on real data.
+                    if authored(0).len() == 1 && (1..groups.len()).any(|g| authored(g).len() > 1) {
+                        second_group_seams += 1;
+                    }
+                }
+            }
+        }
+
+        // The measured figures for this installation. They are stated as a
+        // floor rather than a checksum: the invariants above are what must hold
+        // for any owner copy, and these say this one really exercises the path.
+        assert!(
+            rows > 2_000,
+            "the world stores thousands of meshes, got {rows}"
+        );
+        assert!(
+            multi_group_polygons > 0,
+            "the world stores multi-group polygons"
+        );
+        assert!(
+            meshes_with_multi_group > 0,
+            "on stored meshes, not a whole archive"
+        );
+        assert!(three_group_polygons > 0, "three-group polygons occur");
+        assert!(
+            extra_draws > multi_group_polygons,
+            "the later groups really add draws: {extra_draws} over {multi_group_polygons}"
+        );
+        assert!(
+            second_group_seams > 0,
+            "the corpus authors a seam that only a group beyond the first can show, which is \
+             AC03 for the second group on real data"
+        );
+        // Some polygons store the same coordinates in every group, so the split
+        // there is on the material index alone. Recorded because the measured
+        // corpus has them (17 of 1 006) and the code is only right if both cases
+        // are real.
+        assert!(
+            identical_uv_groups > 0,
+            "the corpus stores polygons whose groups agree on every coordinate"
+        );
+        println!(
+            "C1: {rows} rows, {meshes_with_multi_group} with a multi-group polygon, \
+             {multi_group_polygons} such polygons ({three_group_polygons} of three groups), \
+             {extra_draws} extra draws, {second_group_seams} second-group-only seams, \
+             {identical_uv_groups} polygons whose groups agree on every coordinate"
         );
     }
 }
