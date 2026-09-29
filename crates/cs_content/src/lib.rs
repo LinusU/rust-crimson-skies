@@ -66,6 +66,17 @@
 //! with `Origin`/`Provenance`; which convention an original file uses is
 //! unmeasured (F16-D) and is never asserted here.
 //!
+//! [`mesh`] is the F10-C.01 render mesh
+//! (`specs/F10-gamez-mesh-topology-and-material-records.md`,
+//! `### F10-C`): the Bevy-free canonical render mesh built from F10-B's raw
+//! GameZ mesh IR and its topology. One render vertex per distinct
+//! `(position index, normal index, uv, color, material)` tuple, compared
+//! bit-exactly, so a shared position with different per-corner UVs keeps the
+//! authored seam; every render vertex and triangle keeps its source corner
+//! or step; an incomplete topology is refused naming each rejected face's
+//! `FaceIssue` code; and triangles are grouped by their raw material index,
+//! never interpreting polygon flags.
+//!
 //! [`cs_types`]: cs_types
 //! [`cs_formats`]: cs_formats
 //! [`cs_assets`]: cs_assets
@@ -76,4 +87,5 @@ pub mod config;
 pub mod coordinates;
 pub mod livery;
 pub mod loading;
+pub mod mesh;
 pub mod textures;
