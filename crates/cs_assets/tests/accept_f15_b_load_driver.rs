@@ -651,6 +651,13 @@ fn accept_f15_b_failures_name_the_dependency_and_the_recovery_path() {
     let ItemRead::Failed { failure } = &read else {
         panic!("{read:?}");
     };
+    assert_eq!(failure.code, "source_read");
+    assert_eq!(
+        failure.key,
+        synthetic_key("world", "hud.dss"),
+        "the deferred failure names the item that failed, not another one"
+    );
+    assert!(failure.detail.contains("leaves the"), "{}", failure.detail);
     assert_eq!(failure.recovery, RecoveryPath::Retry);
     deferred.validate_delivered().expect("the load validates");
     assert!(deferred.transaction().is_world_interactive());
@@ -691,10 +698,20 @@ fn accept_f15_b_an_item_is_read_once_per_driver() {
             convert_default,
         )
         .expect_err("a settled item is not read again");
-    let DriverError::NotAccepted { index, state, .. } = &error else {
+    let DriverError::NotAccepted {
+        index,
+        state,
+        error: reason,
+    } = &error
+    else {
         panic!("{error}");
     };
     assert_eq!(*index, 0);
+    assert_eq!(
+        *reason,
+        cs_app::loading::IssueError::ItemBusy { index: 0 },
+        "the second read is refused as a busy item, not read again"
+    );
     assert_eq!(*state, LoadState::Loading, "the second item is still open");
     let error = driver
         .load_item(

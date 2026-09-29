@@ -1424,12 +1424,10 @@ pub struct LoadDriver {
     store: CacheStore,
     cancel: ReadCancel,
     /// Per item: the digest it delivered and whether it came from the
-    /// store, which is what the validation re-verification walks.
+    /// store, which is what the validation re-verification walks. An
+    /// unsettled item keeps the zero digest, so the walk skips it — the
+    /// transaction, not the driver, decides which items have been read.
     delivered: Vec<DeliveredItem>,
-    /// Per item: whether this driver has settled it. A driver refuses to
-    /// read an item twice, so a retry is a new transaction rather than a
-    /// second read racing for one slot.
-    settled: Vec<bool>,
 }
 
 /// What the driver delivered for one item.
@@ -1457,7 +1455,6 @@ impl LoadDriver {
                 };
                 items
             ],
-            settled: vec![false; items],
         }
     }
 
@@ -1523,14 +1520,14 @@ impl LoadDriver {
     ///
     /// The item is settled through the transaction in every case, so the
     /// load's own state machine — not this method — decides whether a
-    /// critical failure ends it.
+    /// critical failure ends it, and it is also what refuses a second read
+    /// of an item that has already settled: one authority, with no
+    /// duplicate bookkeeping here that could drift from it.
     ///
     /// # Errors
     ///
     /// [`DriverError::NotAccepted`] when the index is not the
-    /// transaction's, is already settled, or the load is not `Loading`;
-    /// [`DriverError::Store`] when the store cannot be written and the
-    /// transaction has already moved on.
+    /// transaction's, is already settled, or the load is not `Loading`.
     pub fn load_item(
         &mut self,
         index: usize,
@@ -1538,20 +1535,6 @@ impl LoadDriver {
         read_source: impl FnOnce() -> Result<Vec<u8>, ReadError>,
         convert: impl FnOnce(&CanonicalPayload) -> Result<Vec<u8>, ConversionError>,
     ) -> Result<ItemRead, DriverError> {
-        if index >= self.transaction.items().len() {
-            return Err(DriverError::NotAccepted {
-                index,
-                state: self.transaction.state(),
-                error: IssueError::UnknownItem { index },
-            });
-        }
-        if self.settled[index] {
-            return Err(DriverError::NotAccepted {
-                index,
-                state: self.transaction.state(),
-                error: IssueError::ItemBusy { index },
-            });
-        }
         let ticket =
             self.transaction
                 .issue_io(index)
@@ -1563,11 +1546,7 @@ impl LoadDriver {
         let snapshot = self.transaction.progress();
         let mut report = |step: StepProgress| progress(step);
         if self.cancel.is_cancelled() {
-            return Ok(self.stop_cancelled(
-                index,
-                ticket,
-                "the load was cancelled before the read began",
-            ));
+            return Ok(self.stop_cancelled(ticket, "the load was cancelled before the read began"));
         }
         let item = self.transaction.items()[index].clone();
 
@@ -1609,11 +1588,9 @@ impl LoadDriver {
                             ));
                         }
                         Err(CacheReadError::Cancelled { .. }) => {
-                            return Ok(self.stop_cancelled(
-                                index,
-                                ticket,
-                                "the bounded cache read was cancelled",
-                            ));
+                            return Ok(
+                                self.stop_cancelled(ticket, "the bounded cache read was cancelled")
+                            );
                         }
                         Err(error) => {
                             let _ = self.store.discard(key);
@@ -1645,7 +1622,6 @@ impl LoadDriver {
             Ok(bytes) => CanonicalPayload::new(item.content.kind(), bytes),
             Err(error) => {
                 return Ok(self.settle_failure(
-                    index,
                     ticket,
                     self.failure(index, "source_read", error.to_string(), RecoveryPath::Retry),
                 ));
@@ -1655,7 +1631,6 @@ impl LoadDriver {
             Ok(bytes) => bytes,
             Err(error) => {
                 return Ok(self.settle_failure(
-                    index,
                     ticket,
                     self.failure(index, "conversion", error.to_string(), RecoveryPath::Abort),
                 ));
@@ -1713,7 +1688,7 @@ impl LoadDriver {
     pub fn validate_delivered(&mut self) -> Result<(), DriverError> {
         for index in 0..self.transaction.items().len() {
             let delivered = self.delivered[index];
-            if !delivered.from_cache || !self.settled[index] {
+            if !delivered.from_cache {
                 continue;
             }
             let Some(key) = self.transaction.items()[index].derived.clone() else {
@@ -1779,9 +1754,9 @@ impl LoadDriver {
             .transaction
             .accept(ticket.complete(IoOutcome::Read { payload_sha256 }));
         // `Discarded` means the load moved on while the read was in
-        // flight; `ItemFailed` cannot happen for a `Read` outcome.
-        self.settled[index] = matches!(verdict, CompletionVerdict::Accepted);
-        if self.settled[index] {
+        // flight; `ItemFailed` cannot happen for a `Read` outcome. A
+        // discarded read delivered nothing, so nothing is recorded.
+        if matches!(verdict, CompletionVerdict::Accepted) {
             self.delivered[index] = DeliveredItem {
                 payload_sha256,
                 from_cache,
@@ -1792,16 +1767,12 @@ impl LoadDriver {
 
     /// Settles one item with a fault, letting the transaction decide
     /// whether a critical failure ends the load.
-    fn settle_failure(&mut self, index: usize, ticket: IoTicket, failure: LoadFailure) -> ItemRead {
+    fn settle_failure(&mut self, ticket: IoTicket, failure: LoadFailure) -> ItemRead {
         self.transaction.accept(ticket.complete(IoOutcome::Fault {
             code: failure.code,
             detail: failure.detail.clone(),
             recovery: failure.recovery,
         }));
-        // The item's slot is settled either way: a fault that ended the
-        // whole load is no more in flight than one that did not, and a
-        // caller must not be able to read it a second time.
-        self.settled[index] = true;
         ItemRead::Failed { failure }
     }
 
@@ -1814,9 +1785,9 @@ impl LoadDriver {
     /// the caller as a retryable failure. Cancelling is what a world switch
     /// does, and a switched-away load must not be reported as broken
     /// content.
-    fn stop_cancelled(&mut self, index: usize, ticket: IoTicket, detail: &str) -> ItemRead {
+    fn stop_cancelled(&mut self, ticket: IoTicket, detail: &str) -> ItemRead {
         let failure = self.failure(
-            index,
+            ticket.item(),
             "read_cancelled",
             detail.to_owned(),
             RecoveryPath::Retry,
@@ -1826,7 +1797,6 @@ impl LoadDriver {
         // settling it would only produce a discarded record.
         drop(ticket);
         let _ = self.transaction.cancel();
-        self.settled[index] = true;
         ItemRead::Failed { failure }
     }
 

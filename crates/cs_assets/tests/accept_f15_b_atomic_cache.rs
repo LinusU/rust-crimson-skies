@@ -489,6 +489,65 @@ fn accept_f15_b_tampered_entry_is_refused_never_served() {
     assert_eq!(store.usage().entries, 0);
 }
 
+/// A record whose facets no longer hash to its own key is not decodable
+/// at all: the identity is checked, not trusted.
+#[test]
+fn accept_f15_b_partially_published_entry_is_refused_and_rebuilt() {
+    let fixture = Fixture::new("f15-b-partial");
+    let key = key_a();
+    let bytes = payload(4096);
+    let mut store = fixture.store(8, 1 << 20);
+    store
+        .commit(sealed(&store, &key, &bytes))
+        .expect("the write commits");
+
+    // The published entry loses the tail of its payload while keeping its
+    // committed record: the exact shape a half-finished publication would
+    // leave. It must never be served.
+    let entry = fixture
+        .cache_root
+        .join(ENTRIES_DIR)
+        .join(key.digest().to_hex());
+    fs::write(entry.join(PAYLOAD_FILE), &bytes[..bytes.len() / 2])
+        .expect("the payload is truncated");
+    assert!(
+        matches!(
+            store.begin_read(&key),
+            Ok(CacheLookup::Rebuild {
+                reason: IntegrityError::LengthMismatch { .. }
+            })
+        ),
+        "a payload that is not what the record declares is a rebuild, not a hit"
+    );
+
+    // And the entry with no payload at all.
+    fs::remove_file(entry.join(PAYLOAD_FILE)).expect("the payload is removed");
+    assert!(matches!(
+        store.begin_read(&key),
+        Ok(CacheLookup::Rebuild {
+            reason: IntegrityError::LengthMismatch { actual: 0, .. }
+        })
+    ));
+
+    // Startup recovery drops it rather than serving or repairing it, and
+    // the rebuild commits cleanly afterwards.
+    let mut store = fixture.reopen(8, 1 << 20);
+    assert_eq!(store.recovery().dropped_corrupt, 1);
+    assert_eq!(store.usage().entries, 0);
+    assert!(matches!(store.begin_read(&key), Ok(CacheLookup::Miss)));
+    let entry = store
+        .commit(sealed(&store, &key, &bytes))
+        .expect("the rebuild commits");
+    assert_eq!(entry.payload_sha256, sha256(&bytes));
+    let CacheLookup::Hit(read) = store.begin_read(&key).expect("the lookup runs") else {
+        panic!("a committed entry is a hit");
+    };
+    assert_eq!(
+        read.complete().expect("the entry verifies").payload(),
+        bytes
+    );
+}
+
 /// The streaming header constructor the bounded writer uses is gated by
 /// `verify_entry` like any other: a writer that misreports the length or
 /// the digest of its payload has its entry refused.
