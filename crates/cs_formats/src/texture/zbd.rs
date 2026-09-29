@@ -634,7 +634,7 @@ pub fn read_zbd_textures<'a>(
 
     let mut textures = Vec::with_capacity(entry_count);
     for (index, entry) in entries.into_iter().enumerate() {
-        let texture = read_texture(container, &mut reader, bytes, budget, index, &entry)
+        let texture = read_texture(container, &mut reader, budget, index, &entry)
             .map_err(|error| texture_error(container, index, entry.name.clone(), error))?;
         textures.push(texture);
     }
@@ -731,7 +731,6 @@ fn read_entry(
 fn read_texture<'a>(
     container: &str,
     reader: &mut Reader<'a>,
-    bytes: &'a [u8],
     budget: &mut AllocationBudget,
     index: usize,
     entry: &Entry,
@@ -856,8 +855,15 @@ fn read_texture<'a>(
     })
     .map_err(ZbdTextureEntryError::Descriptor)?;
 
-    // Both ends were reached by checked reads of `bytes`, so they fit.
-    let stored = &bytes[level_start as usize..level_end as usize];
+    // The level is the absolute window between the two positions the checked
+    // reads above reached, so it is inside the container; asking the reader
+    // for it keeps the bound in the one shared check instead of a slice
+    // re-deriving it with a cast.
+    let stored = reader.window_bytes(
+        level_start,
+        level_end - level_start,
+        "texture.level",
+    )?;
     let label = format!("{container}#{index}:{}", entry.name);
     check_level(&label, &descriptor, extent, stored).map_err(ZbdTextureEntryError::Pixels)?;
 

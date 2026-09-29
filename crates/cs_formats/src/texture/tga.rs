@@ -644,7 +644,11 @@ fn read_trailer(
         });
     }
 
-    let area = &bytes[pixels_end as usize..footer_at as usize];
+    // The extension area is the absolute window between the end of the pixels
+    // and the start of the footer. Both ends were established above, so the
+    // window is inside the container; asking for it keeps the bound in the
+    // one shared check instead of re-deriving it in a slice.
+    let area = reader.window_bytes(pixels_end, footer_at - pixels_end, "tga.extension")?;
     // Read up to the footer only, so errors carry absolute offsets.
     let mut reader = Reader::new(container, &bytes[..footer_at as usize]);
     reader.skip("tga.extension", pixels_end as usize)?;

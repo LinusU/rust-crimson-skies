@@ -176,7 +176,7 @@ use std::slice;
 use miniz_oxide::inflate::stream::{InflateState, inflate};
 use miniz_oxide::{DataFormat, MZError, MZFlush, MZStatus};
 
-use crate::error::ParseError;
+use crate::error::{ParseError, ParseErrorKind};
 use crate::io::{AllocationBudget, ParseContext, Reader, RecursionBudget};
 
 /// Error scope stamped onto failures raised inside [`read_directory`].
@@ -1755,8 +1755,12 @@ impl<'ctx, 'bytes> Walker<'ctx, 'bytes> {
 /// The order of operations is the spec's (non-negotiable #3): the extent
 /// is established first — `start + raw_length_on_disk` must lie inside the
 /// container — and only then does the decoder see a single input byte. The
-/// flags decide how the span may be read at all: an unobserved word is
-/// refused as [`RofError::UnsupportedLayout`] instead of being guessed at
+/// extent is established by asking the container's [`Reader`] for that
+/// absolute window (`Reader::window_bytes`), the shared bounds check F03
+/// put in one place, so this reader states no bound of its own and cannot
+/// hand the decoder a span the reader has not proved. The flags decide how
+/// the span may be read at all: an unobserved word is refused as
+/// [`RofError::UnsupportedLayout`] instead of being guessed at
 /// (non-negotiable #5), which makes this function safe to call with a
 /// hand-built [`RofMember`] as well as one from [`read_tree`].
 ///
@@ -1810,27 +1814,39 @@ pub fn read_member(
     let stored_len = member.stored_len();
     let declared_len = member.declared_decoded_len();
 
-    // 1. Establish the extent. `start + raw_length_on_disk` is computed with
-    //    checked arithmetic (a hand-built member can carry anything) and
-    //    must end inside the container.
-    let end = start.checked_add(stored_len).ok_or_else(|| {
-        RofError::Parse(ParseError::length_overflow(
-            container.to_owned(),
-            start,
-            "member.extent",
-            "start + stored length to fit in u64".to_owned(),
-            format!("start {start} plus stored length {stored_len}"),
-        ))
-    })?;
-    if end > file.len() as u64 {
-        return Err(RofError::ExtentOutOfBounds {
-            container: container.to_owned(),
-            offset: start,
-            start,
-            length: stored_len,
-            file_len: file.len() as u64,
-        });
-    }
+    // 1. Establish the extent. The member's span is *asked for* as an
+    //    absolute window of the container, so the one shared bounds check
+    //    states the bound instead of a hand-written comparison plus a
+    //    narrowing cast re-deriving it: `start + raw_length_on_disk` is
+    //    computed with checked arithmetic (a hand-built member can carry
+    //    anything) and both ends must lie inside the container.
+    //
+    //    The reader is a short-lived view of the whole container: it holds
+    //    the container's own label and no position of its own, so it costs
+    //    one small label and proves the same range the slice would have
+    //    needed.
+    let window = Reader::new(container, file);
+    let file_len = window.range_end();
+    let extent = window
+        .window_bytes(start, stored_len, "member.extent")
+        .map_err(|error| match error.kind {
+            // A window the container does not hold is this reader's own
+            // domain error rather than a structural one, reported with the
+            // same numbers the check above used to state by hand: the
+            // extent's start, its declared length and the container length
+            // it was checked against.
+            ParseErrorKind::UnexpectedEof => RofError::ExtentOutOfBounds {
+                container: container.to_owned(),
+                offset: start,
+                start,
+                length: stored_len,
+                file_len,
+            },
+            // `start + stored_len` overflowing `u64` is structural, and
+            // `window_bytes` reports it at `start` with the field named
+            // `member.extent`, exactly as the checked addition did.
+            _ => RofError::Parse(error),
+        })?;
 
     // 2. Decide how the span may be read, before reading it.
     let flags = member.record.flags;
@@ -1855,7 +1871,6 @@ pub fn read_member(
         });
     }
 
-    let extent = &file[start as usize..end as usize];
     let read = if flags.is_compressed() {
         decode_zlib(container, start, extent, limits, declared_len)?
     } else {
