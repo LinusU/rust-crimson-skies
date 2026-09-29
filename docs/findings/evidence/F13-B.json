@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "F13-B",
+ "candidate_tree": "4295502e173ca3f1613fa6ac2cb22bb46f17837f",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-09-29T01:27:15Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_f13_b_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/agent-4", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 12, "executed": 12, "passed": 12, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_f13_b_ledger_names_reached_opcodes_and_fails_closed", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f13_b_walk_refuses_empty_truncated_and_unbounded_programs", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f13_b_refusals_stay_visible_without_guessing_programs", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f13_b_mission_scope_is_the_mission_directory", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f13_b_reader_members_are_classified_by_name_and_mission_scope", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f13_b_classifies_loading_and_animation_programs", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f13_b_unknown_opcode_at_reached_pc_fails_with_mission_and_location", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f13_b_retail_locates_mission_programs", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f13_b_cli_refuses_bad_input_and_missing_installation", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f13_b_cli_coverage_fails_on_a_container_that_hides_its_programs", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f13_b_cli_locates_loading_mission_and_animation_programs", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f13_b_retail_cli_locates_every_campaign_program", "status": "pass", "evidence": ["cargo-test.log"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "1a91553e4704b00da46e07ae159c11b17bedb3db65159ec1ee43831ed0b33c0c", "kind": "log"}, {"path": "scripts.json", "sha256": "49c3cdfcd6592f3cdb3c1e11024bab47779978d50e8d398e9b9aa63d4ced4df1", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "deepseek-1 (implementing agent)", "method": "acceptance suite run locally with the retail capability; this harness derives every field from the recorded log, production discovery of $CS_GAME_DIR, and the production `cs-inspect scripts --coverage` run over every retail ZBD container (scripts.json). The command routes all 184 ZBD containers: 124 script containers (interp, reader, animation) yield 1452 located programs ({\"camera_animation\": 16, \"loading\": 98, \"mission\": 629, \"mission_animation\": 106, \"reader_entry\": 603}) with no discovery finding, and 60 families excluded from the script search stay listed; the located programs are container/member byte ranges plus a name/path role, never decoded instructions and never copied original bytes. The unknown mission-language opcode table is recorded in docs/findings/2026-09-29-f13-b-locate-and-classify-programs.md. Validated with tools/validate_evidence.py --require-pass"},
+ "claim": "implemented"
+}
