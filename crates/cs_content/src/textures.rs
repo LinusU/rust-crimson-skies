@@ -42,8 +42,13 @@
 //! * It is stamped with the [`SessionGeneration`] that read it:
 //!   [`TextureCatalog::resolve`] and [`TextureCatalog::prepare_upload`]
 //!   refuse any other session, so a texture resolved for world `c1` is never
-//!   served after a switch to world `c2`; a [`ResolvedTexture`] from another
-//!   catalog of the same session is refused too.
+//!   served after a switch to world `c2`.
+//! * A [`ResolvedTexture`] additionally carries the process-local
+//!   [`TextureCatalog::serial`] of the catalog that resolved it, and
+//!   [`TextureCatalog::prepare_upload`] and [`TextureCatalog::decode`]
+//!   compare it: a [`ResolvedTexture`] from another catalog of the same
+//!   session — a sibling opened over the same archives, which shares the
+//!   generation — is refused too.
 //! * [`TextureCatalog::retry_failed`] reopens only the failed archives of
 //!   the same session and keeps the ones that loaded.
 //!
@@ -53,6 +58,7 @@
 
 use std::fmt;
 use std::ops::Range;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use cs_assets::install::sha256;
 use cs_assets::vfs::{ContentSession, ResolutionTrace, SessionGeneration};
@@ -346,9 +352,14 @@ impl fmt::Display for TextureAttempt {
 }
 
 /// One resolved texture: its exact origin and how it was chosen.
+///
+/// It is bound to the catalog that resolved it through [`Self::serial`] as
+/// well as its [`SessionGeneration`]: a sibling catalog of the same session
+/// shares the generation but not the serial.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResolvedTexture {
     generation: SessionGeneration,
+    serial: u64,
     id: TextureId,
     archive_span: SourceSpan,
     attempts: Vec<TextureAttempt>,
@@ -374,6 +385,12 @@ impl ResolvedTexture {
     /// The session generation that resolved it.
     pub fn generation(&self) -> SessionGeneration {
         self.generation
+    }
+
+    /// The process-local serial of the catalog that resolved it, which is
+    /// what binds it to that catalog.
+    pub const fn serial(&self) -> u64 {
+        self.serial
     }
 }
 
@@ -423,7 +440,8 @@ pub enum TextureResolveError {
         /// The attempts taken; the last names the table length.
         attempts: Vec<TextureAttempt>,
     },
-    /// A resolved texture handed back to this catalog did not come from it.
+    /// A resolved texture handed back to this catalog did not come from it:
+    /// another catalog resolved it, a sibling of the same session included.
     NotFromThisCatalog {
         /// The texture handed in.
         id: Box<TextureId>,
@@ -714,6 +732,19 @@ pub struct ImageRecord {
 /// The consumer every catalogued texture row feeds.
 pub const GPU_UPLOAD_CONSUMER: &str = "gpu_upload";
 
+/// The process-local serial of the next catalog.
+///
+/// A [`TextureCatalog`]'s serial is what binds a [`ResolvedTexture`] to the
+/// catalog that resolved it. Two catalogs opened from the **same** session
+/// over the same archives share a [`SessionGeneration`], so the generation
+/// alone cannot tell them apart: without this, a payload resolved against one
+/// of them would be served by the other without a word.
+static NEXT_CATALOG_SERIAL: AtomicU64 = AtomicU64::new(1);
+
+fn next_catalog_serial() -> u64 {
+    NEXT_CATALOG_SERIAL.fetch_add(1, Ordering::Relaxed)
+}
+
 #[derive(Debug)]
 struct ArchiveSlot {
     key: AssetKey,
@@ -722,8 +753,14 @@ struct ArchiveSlot {
 
 /// The texture archives one session makes available, and the images they
 /// hold.
+///
+/// Two catalogs opened from the same session over the same archives stay two
+/// distinct catalogs: each takes its own process-local [`Self::serial`], a
+/// [`ResolvedTexture`] carries the serial of the catalog that resolved it,
+/// and the upload boundary refuses a resolution whose serial is not its own.
 #[derive(Debug)]
 pub struct TextureCatalog {
+    serial: u64,
     generation: SessionGeneration,
     slots: Vec<ArchiveSlot>,
 }
@@ -744,9 +781,17 @@ impl TextureCatalog {
             });
         }
         Self {
+            serial: next_catalog_serial(),
             generation: session.generation(),
             slots,
         }
+    }
+
+    /// This catalog's process-local serial, which every [`ResolvedTexture`]
+    /// it produces carries so that a sibling catalog of the same session
+    /// cannot answer for it.
+    pub const fn serial(&self) -> u64 {
+        self.serial
     }
 
     /// The session generation that read the catalog.
@@ -855,6 +900,7 @@ impl TextureCatalog {
         match entries.as_slice() {
             [entry_index] => Ok(ResolvedTexture {
                 generation: self.generation,
+                serial: self.serial,
                 id: archive.entries[*entry_index].id.clone(),
                 archive_span: archive.span().clone(),
                 attempts,
@@ -901,6 +947,7 @@ impl TextureCatalog {
         match texture_archive.entry(entry_index) {
             Some(entry) => Ok(ResolvedTexture {
                 generation: self.generation,
+                serial: self.serial,
                 id: entry.id.clone(),
                 archive_span: texture_archive.span().clone(),
                 attempts,
@@ -919,7 +966,9 @@ impl TextureCatalog {
         let not_ours = || TextureResolveError::NotFromThisCatalog {
             id: Box::new(resolved.id.clone()),
         };
-        if resolved.generation != self.generation {
+        // The generation alone cannot separate two catalogs opened by the
+        // same session over the same archives; the serial can.
+        if resolved.generation != self.generation || resolved.serial != self.serial {
             return Err(not_ours());
         }
         self.archives()
@@ -937,8 +986,9 @@ impl TextureCatalog {
     ///
     /// # Errors
     ///
-    /// [`UploadError::Resolve`] when the texture is not from this catalog or
-    /// `session` is foreign, [`UploadError::Decode`] when decoding fails.
+    /// [`UploadError::Resolve`] when the texture is not from this catalog —
+    /// another catalog resolved it, a sibling of this session included — or
+    /// when `session` is foreign; [`UploadError::Decode`] when decoding fails.
     pub fn decode(
         &self,
         session: &ContentSession,
@@ -1719,5 +1769,76 @@ mod tests {
                 .code(),
             "foreign_session"
         );
+    }
+
+    /// F08-D.02: a resolution is bound to the catalog that made it, not only
+    /// to the session. Two catalogs opened from one session over one archive
+    /// share the generation, so the sibling must be refused by the catalog
+    /// serial alone; a session that read neither catalog is refused first,
+    /// with its own code; and each catalog still serves what it resolved.
+    #[test]
+    fn accept_f08_d_02_sibling_catalog_of_the_same_session_is_refused() {
+        let tree = Tree::two_worlds();
+        let session = world_session(&tree.0, "ZBD/c1");
+        let key = world_key("texture.zbd");
+        let first = TextureCatalog::open(&session, std::slice::from_ref(&key));
+        let second = TextureCatalog::open(&session, std::slice::from_ref(&key));
+        assert_eq!(
+            first.generation(),
+            second.generation(),
+            "the siblings share the session generation, which is why it cannot decide"
+        );
+        assert_ne!(first.serial(), second.serial(), "two catalogs, two serials");
+
+        let resolved = first
+            .resolve(&session, &texture_ref("sky"))
+            .expect("sky resolves");
+        assert_eq!(resolved.serial(), first.serial());
+
+        // The sibling holds the same archive, at the same span, with the same
+        // entry: only the serial tells it this resolution is not its own.
+        let refused = second
+            .prepare_upload(&session, &resolved)
+            .expect_err("a sibling catalog does not answer for it");
+        assert_eq!(refused.code(), "not_from_this_catalog");
+        match refused {
+            UploadError::Resolve(TextureResolveError::NotFromThisCatalog { id }) => {
+                assert_eq!(*id, *resolved.id());
+            }
+            other => panic!("expected a refusal naming the texture, got {other:?}"),
+        }
+        assert_eq!(
+            second
+                .decode(&session, &resolved)
+                .expect_err("a sibling does not decode it either")
+                .code(),
+            "not_from_this_catalog"
+        );
+
+        // A session that read neither catalog is refused before the catalog
+        // identity, and with its own code.
+        let foreign = world_session(&tree.0, "ZBD/c2");
+        assert_eq!(
+            first
+                .prepare_upload(&foreign, &resolved)
+                .expect_err("foreign session")
+                .code(),
+            "foreign_session"
+        );
+
+        // Each catalog still uploads what it resolved itself.
+        let first_upload = first
+            .prepare_upload(&session, &resolved)
+            .expect("the owning catalog uploads");
+        assert_eq!(first_upload.id(), resolved.id());
+        assert_eq!(words(&first_upload), SKY_C1);
+        let by_entry = second
+            .resolve_entry(&session, &key, 1)
+            .expect("the sibling resolves the entry itself");
+        assert_eq!(by_entry.serial(), second.serial());
+        let second_upload = second
+            .prepare_upload(&session, &by_entry)
+            .expect("the sibling uploads what it resolved");
+        assert_eq!(words(&second_upload), SKY_C1);
     }
 }
