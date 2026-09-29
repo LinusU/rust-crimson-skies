@@ -185,7 +185,11 @@ All run on this machine with `CS_GAME_DIR` set.
 
 - `cargo fmt --all -- --check` → 0
 - `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` → 0
-- `cargo test --workspace --locked` → 0 (778 passed, 0 failed, 70 ignored)
+- `cargo test --workspace --locked` → 0 (801 passed, 0 failed, 71 ignored; these
+  are the counts of the branch **as it stands rebased onto `main`**. An earlier
+  run, made before the branch was rebased, reported 778/0/70, and that stale
+  pair is what this list used to record. These totals move whenever `main`
+  moves, so re-run the command rather than trusting the number here.)
 - `cargo test --workspace --locked --no-fail-fast -- accept_f05_h_ --include-ignored` → 0 (1 test)
 - `cargo test --workspace --locked --no-fail-fast -- accept_f05_ --include-ignored` → 0
   (47 tests, 0 ignored: the synthetic F05-A/B/G ones, the F05-C ones in
@@ -195,6 +199,50 @@ All run on this machine with `CS_GAME_DIR` set.
 - `cargo test --workspace --locked --no-fail-fast -- accept_f12_ --include-ignored` → 0 (76 tests)
 - the two mutation probes above, with `--no-fail-fast` over each selection, so
   the counts are complete rather than first-failure
+
+## Reviewer reproduction (not an independent review)
+
+**Who:** reviewer and implementer are the **same agent identity**,
+`bunny-alpha-1/bunny-alpha-1`. The review session had a fresh context — it had
+not seen the implementation while writing it — but per `AGENTS.md` a review by
+the same agent is **not** independent evidence, and nothing below should be
+read as a second pair of eyes. Both mutation probes above were reproduced, and
+one extra check was run that the implementing agent had not.
+
+* **Probe 1 (window clamps to the end of the input)** — reproduced.
+  `accept_f05_h_the_block_is_a_window_of_the_container` fails at its case 1 with
+  `"parse"` where the test requires `"extent_out_of_bounds"`, exactly as
+  reported, plus 1/1 `accept_f05_g_`, 2/5 `accept_f12_f_` and 1/12
+  `accept_f05_b_`. The `accept_f05_b_` count is 1 here rather than the 2 above,
+  because this reproduction's clamp still refused a window that clamped to
+  *nothing*; the mutation's exact shape decides how many of those cases it
+  reaches, and the case the acceptance rests on is the same either way.
+* **Probe 2 (the window rebases once and `in_block` again)** — reproduced
+  exactly: the nested `EmptyName` of case 6 is reported at `104` instead of
+  `68`, and 1/12 `accept_f05_b_`
+  (`accept_f05_b_invalid_name_table_fails_a_nested_block`) fails with it.
+  F05-A, F05-C, F05-D, F05-G, F12-F and F03 are unaffected.
+* **Differential check, run for this review and not committed.** The section
+  above argues the two implementations agree by construction. That argument can
+  be *checked* instead: a throwaway harness generated 15,870 containers —
+  24 uniform-random byte strings at every length from 0 to 96 and 24
+  block-shaped ones (a small plausible header, then random record words) at
+  every length from 8 to 160, so every header, table and name-table boundary
+  is hit at every offset; hand-built root-plus-nested-block trees with each
+  record word perturbed; clean trees of nesting depth 0 to 4 with 0 to 4
+  members each, duplicate basenames on and off; and the random corpus again
+  through `read_directory`. It recorded the full outcome of every call
+  (every `RofError` variant with all of its numbers, or the whole walked tree:
+  block offsets, record words, member extents, paths, ids). It was run once on
+  this branch and once with `crates/cs_formats/src/rof.rs` replaced by
+  `origin/main`'s, and the two transcripts are **byte-identical**: 15,870 lines,
+  no difference. 100 of those calls succeed, 50 of them clean multi-directory
+  trees whose nested blocks are read through windows.
+  This is a *review-time* check, not a committed test: it compares two
+  revisions of the module rather than asserting a property of one, and it
+  writes its transcript to a file, so it belongs to no test suite. It supports
+  the argument; it does not replace it, and it is not portable evidence about
+  the original game.
 
 ## Still unknown (unchanged by this task)
 
