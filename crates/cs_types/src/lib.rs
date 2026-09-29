@@ -14,6 +14,7 @@ pub mod content;
 pub mod evidence;
 pub mod install;
 pub mod random;
+pub mod space;
 
 /// Zero-based simulation tick. Integer ticks are the only time value that may
 /// cross crate boundaries.
