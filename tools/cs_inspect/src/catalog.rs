@@ -518,14 +518,20 @@ pub fn closure_run(
 /// renders the full predecessor chain from the root, so a texture deleted
 /// several edges deep is reported as its complete `mission -> … -> texture`
 /// path even though the orphan has no node row of its own.
+///
+/// The chain is the *reference's own*: `root -> … -> from -> target`, built
+/// from the referrer's chain plus the missing target. `Closure::chain_to` on
+/// the target would give the first-discovery path to that id, which need not
+/// pass through this reference's `from` when two elements reference the same
+/// missing id; the referrer's own chain is the path this edge actually takes.
 fn closure_report_json(closure: &Closure, strict: bool, source: &str) -> String {
     let mut chains: Vec<String> = closure
         .unresolved()
         .iter()
         .map(|reference| {
-            let chain = closure
-                .chain_to(&reference.target)
-                .unwrap_or_default()
+            let mut chain = closure.chain_to(&reference.from).unwrap_or_default();
+            chain.push(reference.target.clone());
+            let chain = chain
                 .iter()
                 .map(|id| json_string(id.as_str()))
                 .collect::<Vec<_>>()
@@ -1060,6 +1066,73 @@ mod tests {
                 .report
                 .expect("reports")
                 .contains(&format!("\"id\":\"{}\"", texture.as_str()))
+        );
+    }
+
+    /// Two elements reference the same deleted texture: each orphaned
+    /// reference reports its *own* chain root -> referrer -> texture, not the
+    /// first-discovery chain of the target. Reporting the target's chain for
+    /// both would attribute one referrer's path to the other.
+    #[test]
+    fn accept_f14_c_closure_reports_each_referrers_own_orphan_chain() {
+        let mission = id(ContentKind::Mission, "m01");
+        let airframe = id(ContentKind::Airframe, "scout");
+        let skin = id(ContentKind::Material, "scout_skin");
+        let missing = id(ContentKind::Image, "missing_texture");
+
+        let mut catalog = Catalog::new();
+        catalog
+            .insert(ready_element(
+                airframe.clone(),
+                "Synthetic Scout",
+                &[&missing],
+            ))
+            .expect("airframe inserts");
+        catalog
+            .insert(ready_element(
+                skin.clone(),
+                "Synthetic Scout Skin",
+                &[&missing],
+            ))
+            .expect("material inserts");
+        catalog
+            .insert(ready_element(
+                mission.clone(),
+                "Synthetic Mission M01",
+                &[&airframe, &skin],
+            ))
+            .expect("mission inserts");
+        catalog
+            .declare_launchable(&mission)
+            .expect("the mission is launchable");
+
+        let run = closure_run(
+            &catalog,
+            std::slice::from_ref(&mission),
+            true,
+            SYNTHETIC_SOURCE_LABEL,
+        );
+        assert_eq!(run.exit_code, 3, "both referrers are orphaned");
+        assert_eq!(
+            run.summary.expect("the closure computed").unresolved,
+            2,
+            "each reference to the missing texture is reported"
+        );
+
+        let report = run.report.expect("the closure reports");
+        assert!(
+            report.contains(
+                "\"from\":\"airframe/scout\",\"target\":\"image/missing_texture\",\
+                 \"chain\":[\"mission/m01\",\"airframe/scout\",\"image/missing_texture\"]"
+            ),
+            "the airframe's own chain: {report}"
+        );
+        assert!(
+            report.contains(
+                "\"from\":\"material/scout_skin\",\"target\":\"image/missing_texture\",\
+                 \"chain\":[\"mission/m01\",\"material/scout_skin\",\"image/missing_texture\"]"
+            ),
+            "the material's own chain: {report}"
         );
     }
 

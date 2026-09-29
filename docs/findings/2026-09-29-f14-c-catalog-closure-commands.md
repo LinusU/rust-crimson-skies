@@ -82,7 +82,7 @@ fails. Verified by mutation (below).
 
 ## Test inventory (`accept_f14_c_`)
 
-6 tests, all ordinary build/test, none ignored; all select production code
+7 tests, all ordinary build/test, none ignored; all select production code
 (the command bodies and the production catalog/closure API they call).
 
 | Test | Covers |
@@ -93,6 +93,7 @@ fails. Verified by mutation (below).
 | `…accept_f14_c_closure_command_is_strict_over_the_fixture` | the CLI wired to the fixture: a reachable all-ready mission is a complete strict closure (exit 0), the unsupported mission fails it (exit 3) |
 | `…accept_f14_c_closure_command_refuses_unknown_and_non_launchable_roots` | missing/unknown/malformed/non-launchable root and unknown flag all exit 2 with no report |
 | `…accept_f14_c_closure_command_writes_out` | `--out` atomic closure write and report schema |
+| `…accept_f14_c_closure_reports_each_referrers_own_orphan_chain` | review regression: two elements reference the same deleted texture and each orphan reports its own `root → referrer → texture` chain, not the first-discovery chain of the target |
 
 ## Mutation probes (implementation neutered → selected tests fail; all reverted and byte-compared)
 
@@ -156,6 +157,29 @@ not exercised by this stage.
 No `Cargo.toml` change was needed (`cs_inspect` already depends on
 `cs_content`, `cs_assets` and `cs_types`). No protected path, original datum
 or binary file is involved.
+
+## Review (deepseek-1, 2026-09-29)
+
+Reviewed by `deepseek-1` in a fresh session (implementer `glm-1/deepseek-1`),
+against the F14-C section, `IDENTITY-CONTENT` and `CLI-EVIDENCE`. Re-ran
+`cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets
+--all-features --locked -- -D warnings`, `cargo test --workspace --locked` and
+`cargo test --workspace --locked -- accept_f14_c_ --include-ignored`.
+
+- **One defect found and fixed.** `unresolved_chains` rendered
+  `Closure::chain_to(target)`, the first-discovery chain to the missing id.
+  When two elements reference the same missing id only the first referrer's
+  path is stored in `predecessors`, so the second orphan entry paired a
+  `from` with a chain that did not pass through it. The consumer now builds
+  each reference's own chain (`chain_to(from)` plus the target); a regression
+  test (`accept_f14_c_closure_reports_each_referrers_own_orphan_chain`) covers
+  the two-referrer case and fails against the old computation. The nested
+  `Closure::to_json` payload is untouched.
+- Everything else checked out: owner paths only (plus logic-free `main.rs`/
+  `lib.rs` wiring), no protected path, the `accept_f14_c_` selection exercises
+  production code, and a mutation probe (orphan chains neutralized) still
+  fails
+  `accept_f14_c_closure_command_reports_the_deep_mission_to_texture_chain`.
 
 ## Sources
 
