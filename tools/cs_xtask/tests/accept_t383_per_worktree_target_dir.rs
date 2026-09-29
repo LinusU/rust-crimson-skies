@@ -285,6 +285,82 @@ fn accept_t383_metadata_extraction_decodes_json_string_escapes() {
     );
 }
 
+/// The command agents actually run, end to end: `cs_xtask verify-target-dir`
+/// exits 0 and names the verified directory when it is worktree-private,
+/// exits 1 spelling out the fix when `CARGO_TARGET_DIR` names a directory
+/// other checkouts can share, exits 1 on an unusable root and exits 2 on a
+/// bad option. Removing the subcommand — or letting it print success on a
+/// shared directory — fails this test.
+#[test]
+fn accept_t383_verify_target_dir_command_reports_and_fails_loudly() {
+    let bin = env!("CARGO_BIN_EXE_cs_xtask");
+    let fixture = worktree("cli-probe", "MARKER");
+
+    // With CARGO_TARGET_DIR removed the fixture resolves its own target/:
+    // exit 0, and the command says which directory it verified.
+    let passing = Command::new(bin)
+        .args(["verify-target-dir", "--workspace-root"])
+        .arg(&fixture)
+        .env_remove("CARGO_TARGET_DIR")
+        .output()
+        .expect("the cs_xtask binary must run");
+    assert_eq!(
+        passing.status.code(),
+        Some(0),
+        "verify-target-dir must pass on a worktree-private target dir; stderr: {}",
+        String::from_utf8_lossy(&passing.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&passing.stdout);
+    assert!(
+        stdout.contains("is private to worktree") && stdout.contains("target"),
+        "the command must report the directory it verified, got: {stdout:?}"
+    );
+
+    // A directory no worktree owns fails the gate with the fix on stderr —
+    // never a printed success.
+    let shared = fixture
+        .parent()
+        .expect("the fixture has a parent")
+        .join("cli-shared-target");
+    let failing = Command::new(bin)
+        .args(["verify-target-dir", "--workspace-root"])
+        .arg(&fixture)
+        .env("CARGO_TARGET_DIR", &shared)
+        .output()
+        .expect("the cs_xtask binary must run");
+    assert_eq!(
+        failing.status.code(),
+        Some(1),
+        "a shared CARGO_TARGET_DIR must fail the gate, not print success"
+    );
+    let stderr = String::from_utf8_lossy(&failing.stderr);
+    assert!(
+        stderr.contains("CARGO_TARGET_DIR") && stderr.contains("cli-probe"),
+        "the failure must name the variable and the worktree, got: {stderr:?}"
+    );
+
+    let unusable = Command::new(bin)
+        .args(["verify-target-dir", "--workspace-root"])
+        .arg(fixture.join("target/not-a-workspace"))
+        .output()
+        .expect("the cs_xtask binary must run");
+    assert_eq!(
+        unusable.status.code(),
+        Some(1),
+        "an unusable workspace root must fail the gate"
+    );
+
+    let bad_option = Command::new(bin)
+        .args(["verify-target-dir", "--bogus"])
+        .output()
+        .expect("the cs_xtask binary must run");
+    assert_eq!(
+        bad_option.status.code(),
+        Some(2),
+        "an unknown option must be a usage error"
+    );
+}
+
 /// The live gate: *this* checkout's environment must already satisfy the
 /// rule — `cargo test --workspace` itself fails loudly on an agent whose
 /// `CARGO_TARGET_DIR` is still shared, instead of producing results that

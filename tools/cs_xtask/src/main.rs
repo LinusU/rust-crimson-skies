@@ -69,7 +69,7 @@ OPTIONS
     -V, --version           Print the version and exit 0
 ";
 
-/// Options shared by both commands.
+/// Options shared by the subcommands.
 struct Options {
     prefix: Option<String>,
     workspace_root: PathBuf,

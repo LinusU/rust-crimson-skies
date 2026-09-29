@@ -122,6 +122,12 @@ These are not doable from inside a task branch:
   path or an in-worktree `target/` avoids that.
 * `cargo metadata` is spawned per `verify_workspace` call; inside the test
   suite that is one subprocess on `cargo test --workspace`.
+* `target_dir_from_metadata` takes the first `"target_directory"` string
+  field in the `cargo metadata` JSON, matching the hand-rolled extraction
+  used elsewhere in `cs_xtask`. A workspace member that carried such a key
+  under `[package.metadata]` would shadow the real field — the gate then
+  rejects the stray value, failing loudly rather than silently accepting a
+  shared directory.
 * The gate runs where the agent runs checks. It cannot fix environments it
   never sees; it makes a wrong environment fail loudly instead of passing
   quietly.
