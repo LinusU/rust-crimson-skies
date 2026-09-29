@@ -1,15 +1,21 @@
-//! Shared fixture helpers for the F02-B acceptance tests.
+//! Shared fixture helpers for the F02-B and F15-A acceptance tests.
 //!
 //! Every tree built here is newly authored fixture data written under the
 //! system temporary directory: it proves nothing about retail
 //! installations, it never touches `$CS_GAME_DIR`, and it is removed again
-//! when the test finishes (including on panic).
+//! when the test finishes (including on panic). The F15-A helpers likewise
+//! build only synthetic identities: fixed digests, spelled spans and
+//! contexts that name no original file.
 #![allow(dead_code)] // each test binary compiles this module and uses a subset
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+use cs_types::asset_id::{AssetKey, ResolveContext, SourceSpan, WorldGroup};
+use cs_types::content::{ContentId, ContentKind};
+use cs_types::evidence::ContentHash;
 
 /// Serial counter so parallel test binaries cannot collide on one name.
 static NEXT_TREE: AtomicU64 = AtomicU64::new(0);
@@ -68,4 +74,51 @@ impl Drop for TempTree {
     fn drop(&mut self) {
         let _ = fs::remove_dir_all(&self.root);
     }
+}
+
+// --- F15-A synthetic identities ------------------------------------------
+
+/// A deterministic synthetic digest: `byte` repeated 32 times.
+///
+/// Values like this stand in for real installation and payload digests;
+/// they name no original bytes.
+pub fn fixed_hash(byte: u8) -> ContentHash {
+    ContentHash::from_bytes([byte; 32])
+}
+
+/// A synthetic source span: `container[member]` at `offset`, 64 bytes long,
+/// under installation `install`, with member digest `member_hash`.
+pub fn synthetic_span(
+    install: ContentHash,
+    container: &str,
+    member: &str,
+    offset: u64,
+    member_hash: ContentHash,
+) -> SourceSpan {
+    SourceSpan::new(
+        install,
+        container,
+        Some(member),
+        offset,
+        64,
+        Some(member_hash),
+    )
+    .expect("the fixture span is valid")
+}
+
+/// A synthetic resolution context selecting world group `world` under
+/// installation `install`.
+pub fn synthetic_context(install: ContentHash, world: &str) -> ResolveContext {
+    ResolveContext::new(install)
+        .with_world_group(WorldGroup::new(world).expect("the fixture world spelling is valid"))
+}
+
+/// A synthetic asset key, all labels already lowercase and valid.
+pub fn synthetic_key(namespace: &str, path: &str) -> AssetKey {
+    AssetKey::from_spelling(namespace, path, "default").expect("the fixture key is valid")
+}
+
+/// A synthetic content id of `kind` keyed by `name`.
+pub fn synthetic_content(kind: ContentKind, name: &str) -> ContentId {
+    ContentId::from_source(kind, name).expect("the fixture content id is valid")
 }
