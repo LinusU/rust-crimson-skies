@@ -42,6 +42,7 @@ and every fixture is synthetic.
   `accept_f15_b_load_driver.rs` (9 tests). `crates/cs_app/tests/` is
   outside this task's owner paths, so the driver tests live beside the
   store tests over the existing `cs_assets` dev-dependency on `cs_app`.
+  (The reviewer added four more; see "Review" below — 14 and 10.)
 
 **One observable failure:** a process is killed while a derived entry is
 being written, and the next startup either serves the half-written bytes
@@ -160,6 +161,13 @@ rebuilt from its sources and startup completes cleanly.
   closures; the real per-format converters arrive with F08+/F15-C. What is
   production here is the read, the atomic publish, the settle and the
   validation gate around them.
+- **The validation gate is stricter than the minimum.** A cache-delivered
+  item is re-read from the store before the load may go `Ready`, and an
+  entry that has meanwhile been *evicted* (not corrupted) fails the load
+  with `RebuildDerived` rather than passing on bytes whose stored copy can
+  no longer be re-verified. With one store per process and loads run one
+  at a time this cannot happen in F15-C; a future concurrent-loader
+  design would have to say which of the two it wants.
 
 None of these needed a new task: they are the declared scopes of F15-C
 (UI, schedule, simulation handoff) and F15-D (cold/warm/restart on real
@@ -205,8 +213,11 @@ All from the repository root on branch
 | --- | --- |
 | `cargo fmt --all -- --check` | 0 |
 | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
-| `cargo test --workspace --locked` | 0 (926 tests) |
-| `cargo test --workspace --locked -- accept_f15_b_ --include-ignored` | 0 (20 tests: 11 store, 9 driver) |
+| `cargo test --workspace --locked` | 0 |
+| `cargo test --workspace --locked -- accept_f15_b_ --include-ignored` | 0 |
+
+The reviewer reran all four on the review head; the counts it measured
+are the ones in the "Review" section below.
 
 ## Wiring edits (outside owner paths, logic-free)
 
@@ -226,3 +237,96 @@ hash strings; the closure-hash and unsupported-reason rules), and the
 F15-A finding `docs/findings/2026-09-29-f15-a-load-transaction-and-cache-key-contracts.md`,
 which left the on-disk layout, the atomicity mechanism, the eviction policy
 and the `Validating -> Failed` re-verification to this stage.
+
+## Review (2026-09-30, agent `bunny-2`)
+
+**Independence, stated plainly:** the same agent instance that implemented
+this stage reviewed it. The context was **not** fresh — the reviewer had
+the implementation's own reasoning in front of it. Per `AGENTS.md` this
+review is therefore *not* independent evidence; it is a self-review, and
+it must not be cited as independent verification of the store, the record
+format or the AC02 result. F15-D's cold/warm/restart run on real content,
+and a review by another agent instance, remain the evidence this stage
+still owes.
+
+The design, the record codec, the kill scenario and the injection
+boundaries were re-read against the sheet and the contract and found
+sound: the commit is one rename, the whole key is persisted and rebuilt
+before it is trusted, every delivered byte passes `verify_entry`, the
+driver settles items only through the transaction, and the tests exercise
+production code only. The recorded limitations (copy-instead-of-rename
+not being kill-testable from userspace, one store per cache root, the
+Windows `sync_dir` no-op, the injected conversion) are real, correctly
+stated, and are not fixed by guessing.
+
+Five defects were found and fixed, each with a test that fails without the
+fix:
+
+1. **A failed `seal` left the write unusable, and the next call panicked.**
+   `seal` took the payload handle and the hasher out of the write *before*
+   the fallible record write, so any I/O error during the seal left a write
+   whose `sealed` flag was still false but whose handle and digest were
+   gone: the next `append` or `seal` hit an `expect` and panicked inside
+   the library. `hasher` is now kept (the digest is taken from a clone),
+   the handle is closed only once the seal has succeeded, and the one
+   remaining "no handle" branch reports `StoreError::Sealed` instead of
+   panicking. Test:
+   `accept_f15_b_a_failed_seal_leaves_the_write_retryable`.
+2. **The write sequence never reached the published record.** `seal`
+   wrote `sequence 0` and `commit` never rewrote it, so after a restart
+   every entry had sequence 0 and the documented eviction policy silently
+   degenerated into the digest tie-break. `commit` now writes the assigned
+   sequence into the staged record before the rename (still scratch, so
+   the commit is still the rename), and before it evicts anything.
+   Test: `accept_f15_b_eviction_order_survives_a_restart`, which commits
+   in the reverse of the digest order so the two policies disagree.
+3. **`commit` published whatever the sealed record claimed, without
+   looking.** A staged payload truncated behind the write's back was
+   published; the entry was then refused on read and dropped at the next
+   startup. `commit` now compares the staged file against the record and
+   refuses with `StoreError::PayloadChanged`, so the store never publishes
+   a record it already knows is wrong. Test:
+   `accept_f15_b_commit_refuses_a_staged_payload_that_changed`.
+4. **The in-memory index could outlive the disk.** The replaced entry
+   stayed in `entries`/`bytes` until after the rename, so a failed rename
+   left `usage()` reporting an entry that no longer existed (and the store
+   one entry over its real budget). The index now follows the disk: the
+   replaced entry leaves the index with its directory, and the new one
+   enters it as soon as the rename has happened, before the directory
+   sync that can still fail. This one is a reordering of existing
+   operations on an error path; it has no test of its own, and is recorded
+   here rather than claimed as covered.
+5. **A rebuild that *was* published was reported as "not cached".** The
+   driver kept the store's read fault as the `Uncached` reason even when
+   the publish then succeeded, so `ItemRead::Uncached` — documented as
+   "the derived form was not cached" — could name an entry the store now
+   held. The verdict is now taken from the publish alone; `cause` still
+   carries the read fault. Test:
+   `accept_f15_b_rebuild_replaces_an_entry_the_store_could_not_read`.
+
+Three smaller corrections came with them: `CacheReadError::rebuilds`
+claimed *every* failure rebuilds the entry, which is false of a
+cancellation (nothing is wrong with the entry and it is left alone); a doc
+link pointed at a type that does not exist (`LoadDriverError::Integrity`);
+and one test's doc comment described the previous test's scenario.
+
+Each of the four new tests was mutation-checked: the pre-fix code was
+restored for one defect at a time and the named test failed (three store
+tests by a panic or a wrong eviction, one driver test by the
+`Uncached`/`Rebuilt` verdict), then the fix was restored. Mutations 1–3
+are in the table above; the fourth is the driver's verdict and the fifth
+(reordering) is not mutation-testable from userspace.
+
+Commands on the review head (Rust 1.98.1, macOS), all exit 0:
+
+| Command | Result |
+| --- | --- |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
+| `cargo test --workspace --locked` | 0 (954 passed, 78 ignored) |
+| `cargo test --workspace --locked -- accept_f15_b_ --include-ignored` | 0 (24 tests: 14 store, 10 driver) |
+
+No original data, no evidence report and no `verified_original` claim:
+this stage's capabilities are ordinary build/test only, and F15-D still
+owes the cold/warm/restart run on real content.
+
