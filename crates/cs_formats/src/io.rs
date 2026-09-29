@@ -8,6 +8,10 @@
 //!    remaining bytes are insufficient (acceptance test AC01).
 //! 3. Sub-readers keep the container provenance and rebase their offsets, so
 //!    a failure inside a nested range still reports its absolute offset.
+//!    [`Reader::window`] does the same for a range an absolute offset names,
+//!    which is what a table-driven parser needs when a container points into
+//!    its own middle: random access uses these primitives instead of a second
+//!    private implementation of them.
 //! 4. Length arithmetic is checked before any slice is taken, so overflowing
 //!    `count * element_size` or `offset + length` fails without allocating.
 //! 5. [`AllocationBudget`] and [`RecursionBudget`] are separate limits (spec
@@ -24,6 +28,8 @@
 //!    hands out borrows the attempt's own bytes, so an attempt returns
 //!    bounded fields as slices instead of being forced to copy them.
 
+use std::ops::Range;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::error::ParseError;
@@ -32,10 +38,13 @@ use crate::error::ParseError;
 ///
 /// The reader never owns or allocates buffer memory: slices are handed out
 /// borrow-checked from the input, so a hostile length cannot cause an
-/// allocation here.
+/// allocation here. The provenance label is shared ([`Arc`]) rather than
+/// copied, so opening a [`Self::window`] inside a container costs no
+/// allocation either — a parser that opens one window per field is not
+/// quietly allocating per field.
 #[derive(Clone, Debug)]
 pub struct Reader<'a> {
-    container: String,
+    container: Arc<str>,
     bytes: &'a [u8],
     /// Absolute offset of `bytes[0]` inside `container`.
     base: u64,
@@ -47,7 +56,7 @@ impl<'a> Reader<'a> {
     /// `container` (a display label, never a path that gets joined).
     pub fn new(container: impl Into<String>, bytes: &'a [u8]) -> Self {
         Self {
-            container: container.into(),
+            container: Arc::from(container.into()),
             bytes,
             base: 0,
             pos: 0,
@@ -62,6 +71,19 @@ impl<'a> Reader<'a> {
     /// Absolute offset of the next read inside the container.
     pub fn position(&self) -> u64 {
         self.base + self.pos as u64
+    }
+
+    /// Absolute offset one past the last byte of the current range.
+    ///
+    /// This is the outer bound every range of this reader is checked against:
+    /// a window may not reach past it, and a caller that needs the whole
+    /// container's length (for a diagnostic, or to bound a loop over it) has
+    /// it here without keeping the input slice a second time.
+    pub fn range_end(&self) -> u64 {
+        // A range never starts past the container and never claims more bytes
+        // than the container holds, so this cannot overflow in practice;
+        // saturating keeps a hostile caller from wrapping it either.
+        self.base.saturating_add(self.bytes.len() as u64)
     }
 
     /// Bytes still available in the current range.
@@ -99,11 +121,90 @@ impl<'a> Reader<'a> {
         let base = self.position();
         let bytes = self.take(field, len)?;
         Ok(Reader {
-            container: self.container.clone(),
+            container: Arc::clone(&self.container),
             bytes,
             base,
             pos: 0,
         })
+    }
+
+    /// A reader over the `len` bytes at the absolute offset `offset` inside
+    /// the container.
+    ///
+    /// [`Self::sub_reader`] opens the range *at the cursor*; this opens the
+    /// range an absolute offset names, which is what a table-driven parser
+    /// needs when the bytes it wants sit in the middle of the container and
+    /// the table that says so was read earlier (a PE resource directory, a
+    /// ROF member, a level inside a texture package). The window borrows
+    /// `offset..offset + len` of the input — no copy, no allocation, whatever
+    /// `len` is — and is read with exactly the same accessors as any other
+    /// range, so there is one implementation of the bounded reads rather than
+    /// one per parser that needs random access.
+    ///
+    /// The window's [`Self::position`] is the absolute `offset`, and a window
+    /// of a window stays absolute, so a failure inside a nested range is
+    /// reported where the bytes are, not where the range began.
+    ///
+    /// # Refusals
+    ///
+    /// The window must lie inside the range this reader was handed: a range is
+    /// the bound the F03 rules give it, and a window may not reach outside
+    /// it. A window that runs past [`Self::range_end`] is refused with
+    /// [`crate::ParseErrorKind::UnexpectedEof`] at the window's own absolute
+    /// `offset`, expecting `len` bytes and reporting how many of them the
+    /// range holds — the same numbers [`Self::skip`] reports for the same read
+    /// at the same offset, so a caller that refuses a window and a caller
+    /// that refuses a skip describe one condition identically. Nothing is
+    /// clamped to the end of the input and no short window is ever handed
+    /// back: a hostile offset costs the caller the error and no bytes. An
+    /// `offset + len` that overflows is a
+    /// [`crate::ParseErrorKind::LengthOverflow`], checked before anything is
+    /// sliced.
+    ///
+    /// ```
+    /// use cs_formats::{ParseError, Reader};
+    ///
+    /// let bytes = [10u8, 20, 30, 40];
+    /// let mut second = Reader::new("record", &bytes).window(1, 2, "block")?;
+    /// assert_eq!(second.position(), 1, "a window reports absolute offsets");
+    /// assert_eq!(second.read_u8("block.value")?, 20);
+    ///
+    /// // The same refusal a `skip` past the end of the container gives.
+    /// let refused = Reader::new("record", &bytes).window(3, 2, "block");
+    /// assert_eq!(refused.unwrap_err().offset, 3);
+    /// # Ok::<(), ParseError>(())
+    /// ```
+    pub fn window(&self, offset: u64, len: u64, field: &str) -> Result<Reader<'a>, ParseError> {
+        let range = self.window_range(offset, len, field)?;
+        Ok(Self {
+            container: Arc::clone(&self.container),
+            bytes: &self.bytes[range],
+            base: offset,
+            pos: 0,
+        })
+    }
+
+    /// The `len` bytes at the absolute offset `offset`, as a borrow of the
+    /// input.
+    ///
+    /// This is [`Self::window`]'s bounds check handed out as the range itself,
+    /// for the caller that wants the bytes of a whole record (a table, a
+    /// member payload) rather than sequential fields through a reader. The
+    /// slice points into the original input, so nothing is copied and nothing
+    /// is allocated on the success path.
+    ///
+    /// ```
+    /// use cs_formats::{ParseError, Reader};
+    ///
+    /// let bytes = [10u8, 20, 30, 40];
+    /// let reader = Reader::new("record", &bytes);
+    /// assert_eq!(reader.window_bytes(2, 2, "block")?, &bytes[2..4]);
+    /// assert!(reader.window_bytes(3, 2, "block").is_err());
+    /// # Ok::<(), ParseError>(())
+    /// ```
+    pub fn window_bytes(&self, offset: u64, len: u64, field: &str) -> Result<&'a [u8], ParseError> {
+        let range = self.window_range(offset, len, field)?;
+        Ok(&self.bytes[range])
     }
 
     /// Reads one little-endian `u8`.
@@ -169,7 +270,7 @@ impl<'a> Reader<'a> {
         let bytes = self.take(field, len)?;
         std::str::from_utf8(bytes).map_err(|e| {
             ParseError::invalid_encoding(
-                self.container.clone(),
+                self.container.to_string(),
                 start + e.valid_up_to() as u64,
                 field,
                 e.valid_up_to(),
@@ -191,12 +292,12 @@ impl<'a> Reader<'a> {
         let start = self.position();
         let bytes = self.take(field, max_len)?;
         let end = bytes.iter().position(|&b| b == 0).ok_or_else(|| {
-            ParseError::missing_terminator(self.container.clone(), start, field, max_len as u64)
+            ParseError::missing_terminator(self.container.to_string(), start, field, max_len as u64)
         })?;
         let text = &bytes[..end];
         std::str::from_utf8(text).map_err(|e| {
             ParseError::invalid_encoding(
-                self.container.clone(),
+                self.container.to_string(),
                 start + e.valid_up_to() as u64,
                 field,
                 e.valid_up_to(),
@@ -220,7 +321,7 @@ impl<'a> Reader<'a> {
             .and_then(|total| usize::try_from(total).ok())
             .ok_or_else(|| {
                 ParseError::length_overflow(
-                    self.container.clone(),
+                    self.container.to_string(),
                     self.position(),
                     field,
                     "count * element_size to fit in usize".to_owned(),
@@ -237,7 +338,7 @@ impl<'a> Reader<'a> {
     pub fn checked_extent(&self, field: &str, offset: u64, len: u64) -> Result<u64, ParseError> {
         offset.checked_add(len).ok_or_else(|| {
             ParseError::length_overflow(
-                self.container.clone(),
+                self.container.to_string(),
                 self.position(),
                 field,
                 "offset + length to fit in u64".to_owned(),
@@ -246,11 +347,55 @@ impl<'a> Reader<'a> {
         })
     }
 
+    /// The half-open range of `bytes` the window `[offset, offset + len)` is,
+    /// with both ends proven to be inside this reader's range.
+    ///
+    /// This is the one bounds check behind [`Self::window`] and
+    /// [`Self::window_bytes`], and it is deliberately the same check
+    /// [`Self::take`] performs, at the same anchor: overflow of
+    /// `offset + len` is a [`crate::ParseErrorKind::LengthOverflow`] before
+    /// anything is sliced, and a range this reader does not hold is a
+    /// [`crate::ParseErrorKind::UnexpectedEof`] reporting how many of the
+    /// requested bytes the range actually offers.
+    fn window_range(&self, offset: u64, len: u64, field: &str) -> Result<Range<usize>, ParseError> {
+        let end = offset.checked_add(len).ok_or_else(|| {
+            ParseError::length_overflow(
+                self.container.to_string(),
+                offset,
+                field,
+                "offset + length to fit in u64".to_owned(),
+                format!("offset {offset} plus length {len}"),
+            )
+        })?;
+        let range_end = self.range_end();
+        if end > range_end {
+            // The window is refused where it was asked for. How many of the
+            // requested bytes this reader can offer is counted inside its own
+            // range: everything left from `offset` when the window starts
+            // inside it (which is what a `skip` at `offset` reports), and only
+            // the part that overlaps when a window asks for bytes before the
+            // range it was given.
+            let available = end.min(range_end).saturating_sub(offset.max(self.base));
+            return Err(ParseError::unexpected_eof(
+                self.container.to_string(),
+                offset,
+                field,
+                len,
+                available,
+            ));
+        }
+        // `end` is inside `bytes`, so both bounds are valid `usize` indices:
+        // the conversions below cannot truncate and the slice cannot panic.
+        let end = usize::try_from(end).expect("a checked window end fits in usize");
+        let start = end - usize::try_from(len).expect("a checked window length fits in usize");
+        Ok(start..end)
+    }
+
     fn take(&mut self, field: &str, len: usize) -> Result<&'a [u8], ParseError> {
         let available = self.remaining();
         if available < len {
             return Err(ParseError::unexpected_eof(
-                self.container.clone(),
+                self.container.to_string(),
                 self.position(),
                 field,
                 len as u64,
