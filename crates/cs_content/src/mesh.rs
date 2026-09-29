@@ -761,8 +761,23 @@ pub struct MaterialRow {
     pub runtime_consumers: Vec<&'static str>,
     /// Readiness.
     pub readiness: DependencyReadiness,
-    /// Stable codes of everything that keeps the row from being ready.
+    /// Stable codes of everything that keeps the row from being ready, in
+    /// discovery order and without a code twice.
+    ///
+    /// Every entry is a **code**: a consumer matches on it, and the same cause
+    /// is the same string whatever the bytes that caused it were. The text
+    /// saying what those bytes were is [`Self::reason_details`], and it is
+    /// never folded into a code — a code carrying a texture name and a table
+    /// index list would differ per row, would not compare equal across rows
+    /// that share a cause, and would grow without bound.
     pub unsupported_reasons: Vec<String>,
+    /// One line per blocking reason, in the same discovery order as
+    /// [`Self::unsupported_reasons`] but **not** de-duplicated: two findings of
+    /// the same code with different stored values are two lines, because the
+    /// values are the evidence. A line exists for every reason, so
+    /// `unsupported_reasons` is always a prefix-length summary of this list's
+    /// distinct codes.
+    pub reason_details: Vec<String>,
     /// SHA-256 of the record's 40 stored bytes plus its two link words, in
     /// stored order. `None` when the material index is outside the table, where
     /// there are no stored bytes to hash.
@@ -791,7 +806,8 @@ pub struct MeshDependencyAudit {
     pub references: usize,
     /// Rows whose dependency reached exactly one stored texture.
     pub resolved: usize,
-    /// Rows that did not, and why they are still present.
+    /// Rows that did not, and why they are still present: one line per blocked
+    /// row's state and one per blocking reason, in prose rather than as codes.
     pub blocked: Vec<String>,
 }
 
@@ -856,9 +872,18 @@ impl MeshDependencyAudit {
             if row.state.is_resolved() && row.readiness == DependencyReadiness::Ready {
                 resolved += 1;
             } else {
+                // This list is prose for a human, not a code list, so it names
+                // the **detail** lines where the row has them: a bare code would
+                // say only what went wrong and not which stored bytes did it.
                 blocked.push(format!("material {index}: {}", row.state));
-                for reason in &row.unsupported_reasons {
-                    blocked.push(format!("material {index}: {reason}"));
+                if row.reason_details.is_empty() {
+                    for reason in &row.unsupported_reasons {
+                        blocked.push(format!("material {index}: {reason}"));
+                    }
+                } else {
+                    for detail in &row.reason_details {
+                        blocked.push(format!("material {index}: {detail}"));
+                    }
                 }
             }
             rows.push(row);
@@ -961,13 +986,17 @@ fn audit_material(
     duplicated: &BTreeMap<String, Vec<u32>>,
     archive_state: Option<&MaterialState>,
 ) -> MaterialRow {
+    // The codes are what a consumer groups by, so they carry no data; the lines
+    // below carry the data, and both are kept so nothing measured is dropped.
     let mut reasons: Vec<String> = Vec::new();
+    let mut details: Vec<String> = Vec::new();
     for finding in materials
         .findings
         .iter()
         .filter(|finding| finding.material() == index)
     {
-        reasons.push(format!("{}:{}", finding.code(), finding));
+        reasons.push(finding.code().to_owned());
+        details.push(finding.to_string());
     }
     let count = materials.count();
     let record = materials.material(index).cloned();
@@ -982,6 +1011,7 @@ fn audit_material(
         runtime_consumers: vec![MATERIAL_CONSUMER],
         readiness: DependencyReadiness::Blocked,
         unsupported_reasons: Vec::new(),
+        reason_details: Vec::new(),
         fingerprint: record
             .as_ref()
             .map(|material| sha256(&material_bytes(material))),
@@ -995,30 +1025,40 @@ fn audit_material(
             material: index,
             count,
         };
-        return finish(row, false, state, reasons);
+        return finish(row, false, state, reasons, details);
     };
     let bits = material.record.unknown_flag_bits();
     if bits != 0 {
-        return finish(row, true, MaterialState::UnknownField { bits }, reasons);
+        return finish(
+            row,
+            true,
+            MaterialState::UnknownField { bits },
+            reasons,
+            details,
+        );
     }
     if material.kind() == MaterialKind::Colored {
-        return finish(row, true, MaterialState::Untextured, reasons);
+        return finish(row, true, MaterialState::Untextured, reasons, details);
     }
     let Some(texture) = materials.texture(material.record.texture_index) else {
         let state = MaterialState::TextureIndexOutOfRange {
             index: material.record.texture_index,
             available: materials.textures.len() as u32,
         };
-        return finish(row, true, state, reasons);
+        return finish(row, true, state, reasons, details);
     };
     if let Some(indices) = duplicated.get(&texture.name) {
-        reasons.push(format!(
-            "container_texture_name_duplicated: {} table indices {indices:?}",
+        // The code names the cause; the name and the table positions go in the
+        // detail line, because the measured corpus stores one name at 36 table
+        // positions and that list is evidence, not a reason code.
+        reasons.push(CONTAINER_DUPLICATE_NAME.to_owned());
+        details.push(format!(
+            "the container stores `{}` at table indices {indices:?}",
             texture.name
         ));
     }
     if let Some(state) = archive_state {
-        return finish(row, true, state.clone(), reasons);
+        return finish(row, true, state.clone(), reasons, details);
     }
     let reference = TextureRef::new(context.archive.clone(), &texture.name);
     match context.catalog.resolve(context.session, &reference) {
@@ -1026,10 +1066,11 @@ fn audit_material(
             let state = MaterialState::Resolved {
                 texture: resolved.id().clone(),
             };
-            finish(row, true, state, reasons)
+            finish(row, true, state, reasons, details)
         }
         Err(error) => {
             reasons.push(error.code().to_owned());
+            details.push(error.to_string());
             let state = match &error {
                 TextureResolveError::Duplicate { attempts, .. } => {
                     let mut entries = Vec::new();
@@ -1053,7 +1094,7 @@ fn audit_material(
                     code: other.code().to_owned(),
                 },
             };
-            finish(row, true, state, reasons)
+            finish(row, true, state, reasons, details)
         }
     }
 }
@@ -1064,18 +1105,34 @@ fn audit_material(
 /// all: a stored index outside the table is a **failed parse**, while every other
 /// state is a record that was read and whose dependency did or did not reach an
 /// origin.
+///
+/// `reasons` are stable codes and `details` the matching evidence lines. The
+/// codes are de-duplicated **as a set**, not by collapsing neighbours: the same
+/// cause reached through two findings is one code, and `Vec::dedup` would keep
+/// a second copy of it whenever a different code sits between the two. Every
+/// detail line is kept, because two findings of one code with different stored
+/// values are two pieces of evidence.
 fn finish(
     mut row: MaterialRow,
     has_record: bool,
     state: MaterialState,
-    mut reasons: Vec<String>,
+    reasons: Vec<String>,
+    details: Vec<String>,
 ) -> MaterialRow {
-    reasons.dedup();
-    if !state.is_complete() && reasons.is_empty() {
-        reasons.push(state.code().to_owned());
+    let mut codes: Vec<String> = Vec::new();
+    for code in reasons {
+        if !codes.contains(&code) {
+            codes.push(code);
+        }
     }
-    let ready = state.is_complete() && reasons.is_empty();
-    let diagnostic = reasons
+    if !state.is_complete() && codes.is_empty() {
+        codes.push(state.code().to_owned());
+    }
+    let ready = state.is_complete() && codes.is_empty();
+    // The diagnostic prefers a detail line, because it names the stored bytes
+    // rather than only naming the cause; the state's own text is the fallback
+    // for a blocked state that raised no separate reason.
+    let diagnostic = details
         .first()
         .cloned()
         .unwrap_or_else(|| state.to_string());
@@ -1096,7 +1153,8 @@ fn finish(
     } else {
         DependencyReadiness::Blocked
     };
-    row.unsupported_reasons = reasons;
+    row.unsupported_reasons = codes;
+    row.reason_details = details;
     row.state = state;
     row
 }
@@ -1131,6 +1189,15 @@ fn material_bytes(material: &RawMaterial) -> Vec<u8> {
 
 // ============================================ the container, catalog, upload ===
 
+/// The code for a texture name the **container itself** stores more than once.
+///
+/// It is a bare code: which name, and which table positions hold it, are
+/// evidence and live in [`MaterialRow::reason_details`], because the measured
+/// `planes.zbd` stores `bldhwk_cowling..tif` at 36 positions — a code carrying
+/// them was 242 bytes of data on every row that shares the cause, and two rows
+/// sharing the cause would not have compared equal.
+pub const CONTAINER_DUPLICATE_NAME: &str = "container_texture_name_duplicated";
+
 /// Always `"render_mesh"`: the IDENTITY-CONTENT catalog `kind` for a GameZ
 /// render mesh ("render meshes/materials/images").
 pub const RENDER_MESH_KIND: &str = "render_mesh";
@@ -1139,6 +1206,15 @@ pub const RENDER_MESH_KIND: &str = "render_mesh";
 /// adapter turns into a GPU mesh. F17-B owns that adapter; this slice stops at
 /// the boundary, exactly as F08-C stopped at the image upload boundary.
 pub const MESH_UPLOAD_CONSUMER: &str = "mesh_upload";
+
+/// The code for a stored polygon that keeps more than one material group.
+///
+/// The render mesh carries the **first** group, because F10-A's IR shape has one
+/// `material` and one per-corner `uv` per polygon and this stage does not change
+/// it, so a group beyond the first has no UV set here. How many polygons of
+/// this mesh are in that state is the count on
+/// [`MeshFaceCounts::multi_material_group_polygons`], not part of the code.
+pub const MULTI_MATERIAL_GROUP_POLYGONS: &str = "multi_material_group_polygons";
 
 /// Stable identity of one stored mesh inside one GameZ container.
 ///
@@ -1936,7 +2012,14 @@ pub struct RenderMeshRecord {
     pub runtime_consumers: Vec<&'static str>,
     /// How far the row got.
     pub readiness: RenderMeshReadiness,
-    /// Stable codes of everything that keeps the row from being ready.
+    /// Stable codes of everything that keeps the row from being ready, in
+    /// discovery order and without a code twice.
+    ///
+    /// Every entry is a **code**, never a code with the data attached: a
+    /// consumer groups rows by this list, so a reason that varied with the
+    /// stored bytes would split one cause across many strings. The bytes are
+    /// named on the [`MaterialRow`]s the upload carries, in their own
+    /// [`MaterialRow::reason_details`].
     pub unsupported_reasons: Vec<String>,
     /// SHA-256 of the mesh's stored data span inside the container, or of
     /// nothing for a container that was never read. The span is exactly the
@@ -2352,10 +2435,11 @@ fn mesh_record(
             if let Some(faces) = row.faces
                 && faces.multi_material_group_polygons > 0
             {
-                reason(format!(
-                    "multi_material_group_polygons:{}",
-                    faces.multi_material_group_polygons
-                ));
+                // A bare code, like every other entry here: the count is the
+                // evidence and it is already on the row in
+                // `faces.multi_material_group_polygons`, so embedding it in the
+                // reason would only make one cause read as several.
+                reason(MULTI_MATERIAL_GROUP_POLYGONS.to_owned());
             }
             // The audit rows this mesh's own stored references reach, so the row
             // states its own material readiness rather than the container's.
@@ -3138,7 +3222,7 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use cs_assets::install;
-    use cs_assets::vfs::{ContentSession, SessionBuilder, WORLD_NAMESPACE};
+    use cs_assets::vfs::{ContentSession, INSTALL_NAMESPACE, SessionBuilder, WORLD_NAMESPACE};
     use cs_formats::gamez::materials::{
         GameZMaterials, GameZTextureName, MATERIAL_FLAG_ALWAYS, MATERIAL_FLAG_TEXTURED,
         MaterialInfo, RawMaterial, RawMaterialRecord, TextureNameEncoding,
@@ -3938,13 +4022,22 @@ mod tests {
             row.state
         );
         // …and the container-level duplicate is named as its own reason, so a
-        // caller can see that no single container entry owns this name.
+        // caller can see that no single container entry owns this name. The
+        // reason is the bare code and the measured positions are on their own
+        // line, because the corpus stores this one name at 36 of them.
         assert!(
             row.unsupported_reasons
                 .iter()
-                .any(|reason| reason.starts_with("container_texture_name_duplicated:")),
+                .any(|reason| reason == CONTAINER_DUPLICATE_NAME),
             "{:?}",
             row.unsupported_reasons
+        );
+        assert!(
+            row.reason_details
+                .iter()
+                .any(|detail| detail.contains("[0, 1]")),
+            "the table positions are the evidence: {:?}",
+            row.reason_details
         );
     }
 
@@ -4128,18 +4221,45 @@ mod tests {
         corners: Vec<u32>,
         material: u32,
         uvs: Vec<[f32; 2]>,
+        /// Stored material groups beyond the first, each its own material index
+        /// and its own UV set. The measured corpus stores one group for
+        /// 127 728 polygons and two or three for 1 006, and a fixture that could
+        /// only ever store one group could not reach
+        /// `multi_material_group_polygons` at all.
+        extra_groups: Vec<(u32, Vec<[f32; 2]>)>,
     }
 
     impl StoredPolygon {
         /// A polygon whose corners are `corners` and whose UVs are `uvs`, one per
-        /// corner, in the same order.
+        /// corner, in the same order. It stores exactly one material group.
         fn new(corners: &[u32], material: u32, uvs: &[[f32; 2]]) -> Self {
             assert_eq!(corners.len(), uvs.len(), "one uv per corner");
             Self {
                 corners: corners.to_vec(),
                 material,
                 uvs: uvs.to_vec(),
+                extra_groups: Vec::new(),
             }
+        }
+
+        /// The same polygon plus `groups` further stored material groups. The
+        /// first is the one the reader mirrors onto the IR's single-valued
+        /// fields, so a fixture can reproduce a polygon the render mesh carries
+        /// only partly.
+        fn with_groups(mut self, groups: &[(u32, &[[f32; 2]])]) -> Self {
+            self.extra_groups = groups
+                .iter()
+                .map(|&(material, uvs)| {
+                    assert_eq!(uvs.len(), self.corners.len(), "one uv per corner");
+                    (material, uvs.to_vec())
+                })
+                .collect();
+            self
+        }
+
+        /// How many material groups this polygon stores.
+        fn group_count(&self) -> u32 {
+            1 + self.extra_groups.len() as u32
         }
 
         /// The packed `vertex_info` word: the corner count in the low nine bits,
@@ -4161,7 +4281,7 @@ mod tests {
                 0,
                 0xAAAA_0000 | polygon,
                 0xAAAA_1000 | polygon,
-                1,
+                self.group_count(),
                 0xAAAA_2000 | polygon,
                 0xAAAA_3000 | polygon,
                 0xAAAA_4000 | polygon,
@@ -4175,8 +4295,9 @@ mod tests {
         }
 
         /// The five corner arrays the layout stores after the records: the
-        /// position indices, the normal indices (the flag byte says so), the one
-        /// material index, that group's UVs, then one colour per corner.
+        /// position indices, the normal indices (the flag byte says so), the
+        /// stored material indices — one per group, `mat_count` of them — then
+        /// each group's own UVs, then one colour per corner.
         fn corner_bytes(&self) -> Vec<u8> {
             let mut out = Vec::new();
             for index in &self.corners {
@@ -4186,9 +4307,21 @@ mod tests {
                 out.extend_from_slice(&(corner as u32 % 2).to_le_bytes());
             }
             out.extend_from_slice(&self.material.to_le_bytes());
+            for (material, _) in &self.extra_groups {
+                out.extend_from_slice(&material.to_le_bytes());
+            }
+            // The first group's UVs, then each further group's own set: the
+            // reader reads `mat_count` UV sets back to back, so a writer that
+            // interleaved them differently would desynchronise the next polygon.
             for uv in &self.uvs {
                 out.extend_from_slice(&uv[0].to_le_bytes());
                 out.extend_from_slice(&uv[1].to_le_bytes());
+            }
+            for (_, uvs) in &self.extra_groups {
+                for uv in uvs {
+                    out.extend_from_slice(&uv[0].to_le_bytes());
+                    out.extend_from_slice(&uv[1].to_le_bytes());
+                }
             }
             // One distinct colour per corner, so a reader that took the colours
             // from a neighbouring corner is visible on the render vertices.
@@ -4616,6 +4749,26 @@ mod tests {
             &[0, 9, 2],
             &[Ok(mesh)],
         )
+    }
+
+    /// The world's `gamez.zbd` when one mesh stores **two** material groups on
+    /// each of its two polygons. The CS layout stores one UV set per group, so a
+    /// second group is a second UV set for the same corners; the render mesh
+    /// carries the first group only, which is what the row's
+    /// `multi_material_group_polygons` count reports.
+    fn multi_group_container() -> Vec<u8> {
+        let group_uvs = [[0.75, 0.75], [0.5, 0.5], [0.25, 0.25]];
+        let mesh = StoredMesh::new(
+            block(0.0, 4),
+            block(1000.0, 4),
+            vec![
+                StoredPolygon::new(&[0, 1, 2], 0, &[[0.0, 0.0], [0.5, 0.0], [0.25, 0.25]])
+                    .with_groups(&[(1, &group_uvs)]),
+                StoredPolygon::new(&[2, 1, 3], 0, &[[0.5, 0.5], [1.0, 0.0], [1.0, 1.0]])
+                    .with_groups(&[(1, &group_uvs)]),
+            ],
+        );
+        gamez_container_with(&["sky"], &[0], &[Ok(mesh)])
     }
 
     fn gamez_key() -> AssetKey {
@@ -5491,6 +5644,265 @@ mod tests {
         assert!(
             uv_seams > 0,
             "at least one split is a UV seam, which is the case AC03 names"
+        );
+    }
+
+    // ================================================== F10-C (the parent) ===
+
+    /// A blocking reason is a **code**, and the evidence that produced it is a
+    /// separate line. This is the integration contract the three slices have to
+    /// agree on: F10-C.02 builds the material reasons, F10-C.03 copies them onto
+    /// the render-mesh row, and F10-C is where the two meet, so it is F10-C that
+    /// pins what a code is.
+    ///
+    /// It matters because a code is what a consumer groups rows by. The measured
+    /// corpus stores `bldhwk_cowling..tif` at 36 table positions, so a reason
+    /// that carried the name and the positions was 242 bytes and **differed per
+    /// row**: two rows refusing the same cause would not have compared equal,
+    /// and a container that stored the name more often would have produced a
+    /// longer string for the same reason. Both are the "reason code" contract
+    /// broken, on data measured in the original installation.
+    #[test]
+    fn accept_f10_c_blocking_reasons_are_stable_codes_and_keep_their_evidence() {
+        let tree = Tree::world(&["bldhwk_cowling"], &["tier"]);
+        let (session, catalog, key) = catalog(&tree);
+        // The container stores one texture name twice, exactly as the measured
+        // `planes.zbd` stores `bldhwk_cowling..tif` 36 times.
+        let meshes = container(vec![container_mesh(0, &[0], &[])]);
+        let materials = tables(
+            &["bldhwk_cowling..tif", "bldhwk_cowling..tif"],
+            vec![material(0, 1, true)],
+        );
+        let audit =
+            MeshDependencyAudit::build(&meshes, &materials, &context(&session, &catalog, &key));
+        let row = &audit.rows[0];
+
+        // The code is the code, with nothing appended to it.
+        assert!(
+            row.unsupported_reasons
+                .iter()
+                .any(|reason| reason == CONTAINER_DUPLICATE_NAME),
+            "the container-level duplicate is a code: {:?}",
+            row.unsupported_reasons
+        );
+        for reason in &row.unsupported_reasons {
+            assert!(
+                !reason.contains("bldhwk_cowling"),
+                "a code carries no stored name: {reason:?}"
+            );
+            assert!(
+                !reason.contains("table indices"),
+                "a code carries no table position list: {reason:?}"
+            );
+        }
+        // The evidence is not dropped: the name and the positions it is stored
+        // at are on the row, on their own line.
+        assert!(
+            row.reason_details
+                .iter()
+                .any(|detail| detail.contains("bldhwk_cowling..tif") && detail.contains("[0, 1]")),
+            "the measured bytes are named on their own line: {:?}",
+            row.reason_details
+        );
+    }
+
+    /// The same code is one entry however many materials reach it, and the count
+    /// of the affected polygons is the count on the row rather than a suffix on
+    /// the code. This is the seam between the audit's reasons and the render
+    /// mesh's own: both have to be sets, or a consumer cannot group rows.
+    #[test]
+    fn accept_f10_c_a_render_mesh_row_names_each_reason_once_as_a_bare_code() {
+        let tree = Tree::world(&["sky", "ground"], &["tier"]);
+        tree.write("ZBD/c1/gamez.zbd", &repeated_reason_container());
+        let session = world_session(&tree.0, "ZBD/c1");
+        let textures = TextureCatalog::open(&session, std::slice::from_ref(&texture_key()));
+        let archive = texture_key();
+        let dependencies = seam_dependencies(&textures, &archive);
+        let catalog = MeshCatalog::open(&session, &[gamez_key()], &dependencies);
+        assert_eq!(catalog.failures().count(), 0, "the fixture container opens");
+
+        let records = catalog.records();
+        let row = &records[0];
+        // Every entry is a code: a fixed, closed vocabulary, so a consumer can
+        // match on it. Nothing here carries a material index, a texture name or
+        // a polygon count.
+        let vocabulary = [
+            CONTAINER_DUPLICATE_NAME,
+            "texture_not_found",
+            "texture_index_out_of_range",
+            "material_index_out_of_range",
+            "unknown_field",
+            "duplicate_texture_name",
+            "archive_unavailable",
+            MULTI_MATERIAL_GROUP_POLYGONS,
+            "front_face_winding_unknown",
+            "uv_origin_unknown",
+            "vertex_color_unknown",
+        ];
+        for reason in &row.unsupported_reasons {
+            assert!(
+                vocabulary.contains(&reason.as_str()),
+                "{reason:?} is not a code from the closed vocabulary"
+            );
+        }
+        // Two of this mesh's three materials are refused for the same cause, so
+        // the row names that cause once.
+        assert_eq!(
+            row.unsupported_reasons
+                .iter()
+                .filter(|reason| reason.as_str() == "texture_not_found")
+                .count(),
+            1,
+            "{:?}",
+            row.unsupported_reasons
+        );
+        // And the render mesh's own reason about multi-group polygons is a bare
+        // code as well, with the count kept as a number on the row. This is
+        // checked on a container that really stores two groups per polygon, so
+        // the reason is reached through the production reader rather than
+        // constructed.
+        let multi_tree = Tree::world(&["sky"], &["tier"]);
+        multi_tree.write("ZBD/c1/gamez.zbd", &multi_group_container());
+        let multi_session = world_session(&multi_tree.0, "ZBD/c1");
+        let multi_textures =
+            TextureCatalog::open(&multi_session, std::slice::from_ref(&texture_key()));
+        let multi_archive = texture_key();
+        let multi_catalog = MeshCatalog::open(
+            &multi_session,
+            &[gamez_key()],
+            &seam_dependencies(&multi_textures, &multi_archive),
+        );
+        assert_eq!(multi_catalog.failures().count(), 0, "the fixture opens");
+        let multi_records = multi_catalog.records();
+        let multi = multi_records
+            .iter()
+            .find(|r| r.mesh_index == Some(0))
+            .expect("the multi-group mesh");
+        let counts = multi.faces.expect("face counts");
+        assert_eq!(
+            counts.multi_material_group_polygons, 2,
+            "both stored polygons keep two material groups"
+        );
+        assert!(
+            multi
+                .unsupported_reasons
+                .iter()
+                .any(|r| r == MULTI_MATERIAL_GROUP_POLYGONS),
+            "{:?}",
+            multi.unsupported_reasons
+        );
+        for reason in &multi.unsupported_reasons {
+            assert!(
+                !reason.starts_with(&format!("{MULTI_MATERIAL_GROUP_POLYGONS}:")),
+                "the count is not part of the code: {reason:?}"
+            );
+        }
+    }
+
+    /// The airframe producer, which the sheet names beside the world producer
+    /// ("world geometry and PLANES.ZBD meshes"), reaches the same upload
+    /// boundary through the same production path. It is a **different mount** —
+    /// `install`, not a world group — so the integration has to work across
+    /// namespaces, not only inside the one the world fixture happens to use.
+    #[test]
+    #[ignore = "requires CS_GAME_DIR"]
+    fn accept_f10_c_retail_airframe_meshes_reach_the_upload_payload() {
+        let game_dir = PathBuf::from(std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR"));
+        let found = install::discover(&game_dir).expect("the installation is discovered");
+        let group = found
+            .diagnosis
+            .world_groups
+            .iter()
+            .find(|group| group.as_str().eq_ignore_ascii_case("ZBD/c1"))
+            .expect("world C1 is discovered")
+            .clone();
+        let context = ResolveContext::new(install::fingerprint(&found.manifest))
+            .with_world_group(WorldGroup::from_relative(group));
+        let mut builder = SessionBuilder::new(context);
+        builder
+            .mount_installation(&game_dir, &found.diagnosis)
+            .expect("the installation mounts");
+        let session = builder.open();
+
+        // The airframe container is mounted at the install root, not inside a
+        // world group, so it resolves through a different namespace and mount.
+        let key = AssetKey::from_spelling(INSTALL_NAMESPACE, "ZBD/planes.zbd", "default")
+            .expect("a valid key");
+        let archive = texture_key();
+        let textures = TextureCatalog::open(&session, std::slice::from_ref(&archive));
+        assert_eq!(textures.failures().count(), 0, "the archive opens");
+        let dependencies = seam_dependencies(&textures, &archive);
+        let catalog = MeshCatalog::open(&session, std::slice::from_ref(&key), &dependencies);
+        assert_eq!(
+            catalog.failures().count(),
+            0,
+            "the airframe GameZ container opens and both readers accept it"
+        );
+
+        let container = catalog.containers().next().expect("one container");
+        // It is the airframe archive, not a world one, that was read.
+        assert!(
+            container.label().starts_with("install"),
+            "{}",
+            container.label()
+        );
+        let records = catalog.records();
+        assert_eq!(records.len(), container.meshes().present_count());
+        assert!(!records.is_empty(), "the airframes store meshes");
+
+        // Every stored mesh of the airframes reaches the upload payload, and
+        // every row's exact face accounting survives to it.
+        let mut uploaded = 0usize;
+        let mut faces = 0usize;
+        let mut uv_seams = 0usize;
+        for row in &records {
+            let index = row.mesh_index.expect("every row is about a mesh");
+            let resolved = catalog
+                .resolve(&session, &key, index)
+                .expect("every stored airframe mesh resolves");
+            let upload = catalog
+                .prepare_upload(&session, &resolved)
+                .expect("every stored airframe mesh uploads");
+            let counts = row.faces.expect("face counts");
+            assert_eq!(upload.render().source_faces(), counts.faces);
+            assert_eq!(upload.render().source_triangles(), counts.triangles);
+            assert_eq!(upload.render().degenerate_triangles(), counts.degenerate);
+            assert_eq!(
+                upload.render().source_faces(),
+                counts.faces - counts.rejected
+            );
+            faces += counts.faces;
+
+            // AC03 on the airframes too: a shared position with different
+            // per-corner UVs is still two vertices here.
+            let mut at: BTreeMap<u32, Vec<[u32; 2]>> = BTreeMap::new();
+            for vertex in upload.render().vertices() {
+                at.entry(vertex.position_index).or_default().push(
+                    vertex
+                        .uv
+                        .map(|uv| [uv[0].to_bits(), uv[1].to_bits()])
+                        .unwrap_or([0, 0]),
+                );
+            }
+            for uvs in at.values() {
+                if uvs.len() < 2 {
+                    continue;
+                }
+                let before = uvs.len();
+                let mut sorted = uvs.clone();
+                sorted.sort_unstable();
+                sorted.dedup();
+                if sorted.len() < before {
+                    uv_seams += 1;
+                }
+            }
+            uploaded += 1;
+        }
+        assert_eq!(uploaded, records.len(), "every airframe row uploaded");
+        assert!(faces > 0, "the airframes store faces");
+        assert!(
+            uv_seams > 0,
+            "the airframe corpus authors UV seams, which is the case AC03 names"
         );
     }
 }
