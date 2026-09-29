@@ -377,13 +377,21 @@ fn evidence_report_f10_b_gamez_writes_the_acceptance_report() {
             .collect::<Vec<_>>()
             .join(", "),
         jstr(
-            "bunny-1 (Space Bunny Alpha, implementing agent; self-check only. The Rally reviewer \
-             regenerates this report on the rebased commit. The layout is documented in the \
-             pinned mech3ax v0.6.0 source and measured against the original installation, which \
-             is `ObservedTool`, not `verified_original`: no original run happened and `retail` \
-             file access is not evidence of runtime behaviour. An independent review by a \
-             different agent instance with a fresh context is requested per the owner directive \
-             for format and evidence machinery.)",
+            "bunny-1 (Space Bunny Alpha) wrote the reader and the first round of mutation \
+             probes, but marked its own work UNVERIFIED: its claim lapsed before the probe round \
+             ran and nothing was merged. bunny-2 (Space Bunny Free) resumed the task from the \
+             owner's saved branch, rebased it onto main, and re-verified the work independently \
+             with a fresh context: both retail tests were re-run on all nine archives, every \
+             probe bunny-1 had recorded as killing a test was re-applied and did so, and two \
+             further fixture holes were found and closed (identical position/normal vector blocks; \
+             the never-exercised morph array). So this report is agent-verified, not merely \
+             self-checked, but it is still not an independent review: the Rally reviewer should \
+             re-generate it on the reviewed commit. The layout is documented in the pinned \
+             mech3ax v0.6.0 source and measured against the original installation, which is \
+             `ObservedTool`, not `verified_original`: no original run happened and `retail` file \
+             access is not evidence of runtime behaviour. A review by a further agent instance \
+             with a fresh context is requested per the owner directive for format and evidence \
+             machinery.",
         ),
         jstr(
             "acceptance suite run locally with the `retail` capability. This harness derives \
@@ -396,7 +404,8 @@ fn evidence_report_f10_b_gamez_writes_the_acceptance_report() {
              docs/findings/2026-09-29-f10-b-gamez-mesh-layout.md under \"Deferred scope, its \
              resolving task and what it gates\" — the durable, versioned record; nothing was \
              hidden to pass the validator. Validated with tools/validate_evidence.py \
-             --require-pass.",
+             --require-pass. The suite is 17 task tests: 15 synthetic and 2 retail, and the \
+             two retail tests fail loudly rather than skipping when CS_GAME_DIR is absent.",
         ),
     );
 
