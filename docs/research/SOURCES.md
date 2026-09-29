@@ -38,7 +38,7 @@ Explains installation-based extraction and reported broken/missing geometry/mate
 
 https://github.com/rozab/crimsonskies2blend/blob/main/extract_rof.py
 
-File blob 3cd197de1fc6ff00d18cd832160316ec79cd5d8f. Directory structure, flags and zlib use observed; compressed length semantics not resolved.
+File blob 3cd197de1fc6ff00d18cd832160316ec79cd5d8f. Directory structure, flags and zlib use observed. Compressed length semantics resolved by F05-D (`docs/findings/2026-09-28-f05-d-resolve-compressed-length-semantics.md`, `docs/findings/evidence/F05-D.json`): the record's first length word is the decoded byte count and the second is the stored byte count, the opposite of what the field names suggest. This extractor stays the observed reference for layout and flags, but not the authority on member extents.
 
 **Evidence:** Source observation; no supplied retail corpus was tested.
 
