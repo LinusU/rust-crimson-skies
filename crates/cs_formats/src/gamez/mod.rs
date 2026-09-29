@@ -1,12 +1,10 @@
-//! GameZ mesh topology: the lossless raw mesh IR, strip decoding and n-gon
-//! triangulation (`specs/F10-gamez-mesh-topology-and-material-records.md`,
-//! stages `### F10-A` and `### F10-B`).
+//! GameZ mesh topology and the CS GameZ mesh-array reader
+//! (`specs/F10-gamez-mesh-topology-and-material-records.md`, stages
+//! `### F10-A` and `### F10-B`).
 //!
 //! These modules define the typed input and output every GameZ mesh reader
-//! shares and turn it into triangles. No `gamez.zbd` / `planes.zbd` bytes
-//! are parsed yet: the stored layout is not established in the research
-//! pack, and no installation bytes were read (ordinary build/test
-//! capability only):
+//! shares, turn it into triangles, and read the Crimson Skies GameZ mesh
+//! section out of real `planes.zbd` / `gamez.zbd` bytes:
 //!
 //! * [`mesh`] is the IR: a [`RawMesh`] keeps stored positions, normals,
 //!   polygons, raw flags, raw material indices and per-corner attributes,
@@ -17,16 +15,40 @@
 //! * [`polygon`] triangulates polygon outlines with more than three corners
 //!   by validated ear clipping, never a fan, and names why an outline it
 //!   cannot triangulate was rejected.
+//! * [`reader`] is the layout: the 40-byte container header, the
+//!   non-sequential mesh index with its measured fixup tables, the 100-byte
+//!   mesh record, the 40-byte polygon record with its packed corner/flag
+//!   word, the per-corner index, UV and colour arrays, the 12-byte mesh
+//!   material reference and the 76-byte mesh light record. The layout was
+//!   read from the pinned mech3ax v0.6.0 revision and checked against the
+//!   original installation; [`read_gamez_meshes`] produces [`GameZMeshes`],
+//!   whose entries are [`RawMesh`] values with everything still raw.
+//!
+//! What this does **not** read: the texture-name table, the material records
+//! (F10-C.02) and the node array (F11-A). Because the material table is not
+//! parsed, a material index stays a raw reference and is never range-checked
+//! here; [`GameZMeshes::unchecked_material_references`] states how many such
+//! references the container stores.
+//!
+//! The lossless raw mesh IR ([`RawMesh`], [`RawPolygon`], [`RawCorner`]) is stage
+//! F10-A's published contract and this task does not change its shape. A stored
+//! polygon's material groups — the CS layout stores one UV set per group — are
+//! therefore carried beside the polygons on [`GameZMesh::material_groups`], one
+//! entry per stored polygon, reachable through [`GameZMesh::groups`] and
+//! [`GameZMesh::corner_uv`]. The IR's single `material` and per-corner `uv`
+//! mirror the first group.
 //!
 //! Design decisions and recorded unknowns are in
-//! `docs/findings/2026-09-28-f10-a-lossless-mesh-ir-and-strip-fixtures.md`
-//! and `docs/findings/2026-09-29-f10-b-validated-ngon-triangulation.md`.
-//! The fixtures exercised by `crates/cs_formats/tests/gamez/` are newly
-//! authored synthetic values; nothing here is derived from original game
-//! data.
+//! `docs/findings/2026-09-28-f10-a-lossless-mesh-ir-and-strip-fixtures.md`,
+//! `docs/findings/2026-09-29-f10-b-validated-ngon-triangulation.md` and
+//! `docs/findings/2026-09-29-f10-b-gamez-mesh-layout.md`. The synthetic
+//! fixtures exercised by `crates/cs_formats/tests/gamez/` are newly authored
+//! values; only the `#[ignore]`d retail tests read original game data, and
+//! nothing derived from it is committed.
 
 pub mod mesh;
 pub mod polygon;
+pub mod reader;
 pub mod strip;
 
 pub use mesh::{
@@ -34,4 +56,12 @@ pub use mesh::{
     RawPolygon,
 };
 pub use polygon::{NgonIssue, triangulate_polygon};
+pub use reader::{
+    CORNER_COUNT_MASK, FLAG_MASK, FLAG_NORMALS, FLAG_SHIFT, FLAG_TRIANGLE_STRIP, FLAG_UNK2,
+    FLAG_UNK3, FLAG_UNK6, GAMEZ_HEADER_BYTES, GameZError, GameZHeader, GameZMesh, GameZMeshes,
+    KNOWN_POLYGON_FLAGS, MAX_POLYGON_CORNERS, MAX_POLYGON_FLAGS, MESH_INDEX_BYTES, MESH_INFO_BYTES,
+    MESH_INFO_TRAILER_BYTES, MESH_LIGHT_HEADER_BYTES, MESH_MATERIAL_INFO_BYTES, MESHES_ENTRYPOINT,
+    MeshIndex, POLYGON_INFO_BYTES, ParseFinding, RawMeshInfo, RawMeshLight, RawMeshLightHeader,
+    RawMeshMaterialInfo, RawPolygonInfo, UNK08_C4, UNK08_PLANES, VEC3_BYTES, read_gamez_meshes,
+};
 pub use strip::{MIN_STRIP_INDICES, StripError, StripTriangle, decode_strip};

@@ -39,9 +39,12 @@
 //! `specs/F09-bm-multilayer-liveries-and-paint-composition.md` (stage F09-A,
 //! [`bm`]), stage F09-B, [`bm::BmFile::compose`]).
 //!
-//! The lossless GameZ mesh IR and triangle-strip decoding:
+//! The lossless GameZ mesh IR, triangle-strip decoding and validated n-gon
+//! triangulation:
 //! `specs/F10-gamez-mesh-topology-and-material-records.md` (stage F10-A,
-//! [`gamez`]).
+//! [`gamez`]), plus the established CS GameZ mesh-array layout and the reader
+//! that turns `planes.zbd` / `gamez.zbd` bytes into those values (stage
+//! F10-B, [`gamez::read_gamez_meshes`]).
 //!
 //! The inventory of text configuration dialects, the lossless line scan and
 //! the lossless nodes of the keyed field list dialect:
