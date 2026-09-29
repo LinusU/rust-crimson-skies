@@ -1,6 +1,7 @@
-//! Canonical render mesh: GameZ vertices split per corner attribute
-//! (`specs/F10-gamez-mesh-topology-and-material-records.md`, stage
-//! `### F10-C`, slice F10-C.01; shared contract
+//! Canonical render mesh: GameZ vertices split per corner attribute, and the
+//! dependency audit a GameZ mesh's material records imply
+//! (`specs/F10-gamez-mesh-topology-and-material-records.md`, stages
+//! `### F10-C`, slices F10-C.01 and F10-C.02; shared contract
 //! `docs/contracts/IDENTITY-CONTENT.md`).
 //!
 //! [`RenderMesh`] is the Bevy-free handoff between a GameZ mesh reader
@@ -8,6 +9,11 @@
 //! It is built with [`RenderMesh::build`], which computes the topology, or
 //! with [`RenderMesh::from_parts`], which takes a topology the caller
 //! already has. No Bevy or Avian type appears here.
+//!
+//! [`MeshDependencyAudit`] is the other half of that handoff: it resolves every
+//! stored material index a mesh carries to a material record, every material
+//! record to the texture name it stores, and that name to exactly one stored
+//! texture in one named archive — or records why it could not.
 //!
 //! # Splitting
 //!
@@ -44,6 +50,32 @@
 //! ([`RenderGroup`]). Raw polygon flags are never read: two meshes that
 //! differ only in a polygon's `raw_flags` build the same render mesh.
 //!
+//! # The dependency audit
+//!
+//! A GameZ material record stores a **number**, not a name: an index into its
+//! container's texture-name table. [`MeshDependencyAudit`] is the only place
+//! that number becomes a name, and the name becomes an origin:
+//!
+//! * the archive to search is the caller's, through [`DependencyContext`]. The
+//!   audit never picks one, never tries a second and never substitutes a
+//!   default;
+//! * the name is compared exactly — no case folding, no extension stripping, no
+//!   alias, per the IDENTITY-CONTENT lookup contract's "no filename guessing"
+//!   rule;
+//! * a material index outside the material table is **reported**, never clamped
+//!   to the last record and never wrapped;
+//! * every row is kept, including the failures (IDENTITY-CONTENT: "collections
+//!   cannot exclude failed entries"), and each row carries the contract's
+//!   `dependencies`, `parse_state`, `normalize_state`, `readiness`,
+//!   `unsupported_reasons` and `fingerprint` fields.
+//!
+//! The measured consequence of the exact-name rule is in
+//! `docs/findings/2026-09-29-f10-c-02-gamez-material-records.md`: a GameZ
+//! container spells a texture `Sky1.tif` while the world's texture archive
+//! stores `sky1`, so the row is `MissingTexture`. That is the honest answer for
+//! the rule as written, and the rule is not quietly relaxed here to make the
+//! number smaller.
+//!
 //! # Degenerate triangles
 //!
 //! Degenerate triangles — two equal *position indices* — are **kept**, marked
@@ -54,12 +86,21 @@
 //!
 //! The design decisions, the recorded unknowns (front-face winding is still
 //! unknown) and the test inventory are in
-//! `docs/findings/2026-09-29-f10-c-01-render-vertex-splitting.md`.
+//! `docs/findings/2026-09-29-f10-c-01-render-vertex-splitting.md` and
+//! `docs/findings/2026-09-29-f10-c-02-gamez-material-records.md`.
 
 use std::collections::{BTreeMap, HashMap};
 use std::fmt;
 
-use cs_formats::gamez::{FaceStatus, MeshTopology, RawMesh};
+use cs_assets::install::sha256;
+use cs_assets::vfs::ContentSession;
+use cs_formats::gamez::materials::{GameZMaterials, MaterialKind, RawMaterial};
+use cs_formats::gamez::{FaceStatus, GameZMeshes, MeshTopology, RawMesh};
+use cs_types::asset_id::{AssetKey, SourceSpan};
+use cs_types::evidence::ContentHash;
+use cs_types::install::ParseState;
+
+use crate::textures::{TextureAttempt, TextureCatalog, TextureId, TextureRef, TextureResolveError};
 
 /// A `(polygon, corner)` location in the stored [`RawMesh`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -457,6 +498,562 @@ fn stored<'a, T>(
             index: u64::from(index),
             available: array.len(),
         })
+}
+
+// ------------------------------------------------- the dependency audit ---
+
+/// The consumer every audited material row feeds.
+pub const MATERIAL_CONSUMER: &str = "mesh_material_binding";
+
+/// Always `"material"`, the IDENTITY-CONTENT catalog `kind` for these rows.
+pub const MATERIAL_KIND: &str = "material";
+
+/// Whether a row's dependencies all reached exactly one origin.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DependencyReadiness {
+    /// The material record exists, names a texture, and that name is stored
+    /// exactly once in the named archive.
+    Ready,
+    /// At least one step did not. [`MaterialRow::unsupported_reasons`] says
+    /// which; the row itself is still present.
+    Blocked,
+}
+
+/// Where one stored material reference sits, so an audit row can name the exact
+/// places that depend on it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum MaterialReference {
+    /// The mesh record's own 12-byte material reference list, at this position.
+    MeshRecord {
+        /// Position in that list.
+        position: usize,
+    },
+    /// One stored polygon material group.
+    PolygonGroup {
+        /// Polygon in stored order.
+        polygon: usize,
+        /// Group within that polygon.
+        group: usize,
+    },
+}
+
+/// One stored reference that reaches a material.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MaterialUse {
+    /// Mesh array index.
+    pub mesh: u32,
+    /// Where in that mesh the reference is stored.
+    pub reference: MaterialReference,
+}
+
+/// What happened when one material's texture dependency was followed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MaterialState {
+    /// The material record exists, names a texture, and that name is stored
+    /// exactly once in the named archive. This is the only state with an
+    /// origin.
+    Resolved {
+        /// The one texture the name reached.
+        texture: TextureId,
+    },
+    /// The material names a texture, and the named archive does not store that
+    /// name. The row carries the **exact** stored name and the **exact** archive
+    /// that was searched. No other archive is searched, no case is folded, no
+    /// extension is stripped and no default is substituted.
+    MissingTexture {
+        /// The name the container stores, exactly.
+        name: String,
+        /// The archive that was searched, exactly.
+        archive: AssetKey,
+    },
+    /// The named archive stores the name more than once, so there is no single
+    /// origin. Both entry indices are reported rather than one being picked.
+    DuplicateTexture {
+        /// The name the container stores, exactly.
+        name: String,
+        /// The archive that was searched, exactly.
+        archive: AssetKey,
+        /// Every table position in that archive holding the name, ascending.
+        entries: Vec<usize>,
+    },
+    /// The material record names a texture index the container's texture table
+    /// does not have. The reference asserts this cannot happen; the record is
+    /// still reported, with no name.
+    TextureIndexOutOfRange {
+        /// The stored index.
+        index: u32,
+        /// Entries in the container's texture table.
+        available: u32,
+    },
+    /// A stored material index is outside the container's material table. It is
+    /// reported and never clamped to the last record and never wrapped.
+    MaterialIndexOutOfRange {
+        /// The stored index.
+        material: u32,
+        /// Present material records.
+        count: u32,
+    },
+    /// The material record exists and is not textured: it is a flat colour and
+    /// has no texture dependency at all. Not a failure.
+    Untextured,
+    /// The material record has flag bits the reference's own `MaterialFlags`
+    /// does not name, so even whether the record is textured at all is not
+    /// established. The raw record is still on the row.
+    UnknownField {
+        /// The unmapped flag bits.
+        bits: u8,
+    },
+    /// The archive the caller named is not in the catalog, or it failed to
+    /// open, so no lookup was possible.
+    ArchiveUnavailable {
+        /// The archive the caller named.
+        archive: AssetKey,
+        /// The catalog's error code for it.
+        code: String,
+    },
+}
+
+impl MaterialState {
+    /// Stable lowercase identifier for logs and structured diagnostics.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::Resolved { .. } => "resolved",
+            Self::MissingTexture { .. } => "missing_texture",
+            Self::DuplicateTexture { .. } => "duplicate_texture",
+            Self::TextureIndexOutOfRange { .. } => "texture_index_out_of_range",
+            Self::MaterialIndexOutOfRange { .. } => "material_index_out_of_range",
+            Self::Untextured => "untextured",
+            Self::UnknownField { .. } => "unknown_field",
+            Self::ArchiveUnavailable { .. } => "archive_unavailable",
+        }
+    }
+
+    /// The texture this dependency reached, when it reached one.
+    pub fn texture(&self) -> Option<&TextureId> {
+        match self {
+            Self::Resolved { texture } => Some(texture),
+            _ => None,
+        }
+    }
+
+    /// Whether the dependency reached exactly one stored texture.
+    pub fn is_resolved(&self) -> bool {
+        matches!(self, Self::Resolved { .. })
+    }
+}
+
+impl fmt::Display for MaterialState {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let code = self.code();
+        match self {
+            Self::Resolved { texture } => write!(f, "{code}: {texture}"),
+            Self::MissingTexture { name, archive } => {
+                write!(f, "{code}: {archive} stores no `{name}`")
+            }
+            Self::DuplicateTexture {
+                name,
+                archive,
+                entries,
+            } => write!(
+                f,
+                "{code}: {archive} stores `{name}` at {entries:?}"
+            ),
+            Self::TextureIndexOutOfRange { index, available } => {
+                write!(f, "{code}: texture {index} of {available}")
+            }
+            Self::MaterialIndexOutOfRange { material, count } => {
+                write!(f, "{code}: material {material} of {count}")
+            }
+            Self::Untextured => write!(f, "{code}: the material is a flat colour"),
+            Self::UnknownField { bits } => {
+                write!(f, "{code}: the material has flag bits 0x{bits:02X}")
+            }
+            Self::ArchiveUnavailable { archive, code } => {
+                write!(f, "archive_unavailable: {archive} is {code}")
+            }
+        }
+    }
+}
+
+/// One row of the material dependency audit: the contract's catalog element for
+/// a material a mesh needs, and the state of its texture dependency.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MaterialRow {
+    /// Stable id: the material's array index inside its container.
+    pub id: String,
+    /// Always [`MATERIAL_KIND`].
+    pub kind: &'static str,
+    /// The stored material index this row is about.
+    pub material: u32,
+    /// Where the container came from, when the caller knows.
+    pub origin: Option<SourceSpan>,
+    /// The archives this row depends on. One, the caller's: the audit never
+    /// widens the search.
+    pub dependencies: Vec<AssetKey>,
+    /// Whether the material record was read. A material index outside the table
+    /// has no record, so it is `Failed` with the diagnostic.
+    pub parse_state: ParseState,
+    /// Whether the dependency reached a usable origin. A row that did not is
+    /// `Failed` with the same diagnostic as its state.
+    pub normalize_state: ParseState,
+    /// The consumers this row feeds.
+    pub runtime_consumers: Vec<&'static str>,
+    /// Readiness.
+    pub readiness: DependencyReadiness,
+    /// Stable codes of everything that keeps the row from being ready.
+    pub unsupported_reasons: Vec<String>,
+    /// SHA-256 of the record's 40 stored bytes plus its two link words, in
+    /// stored order. `None` when the material index is outside the table, where
+    /// there are no stored bytes to hash.
+    pub fingerprint: Option<ContentHash>,
+    /// The state of the dependency.
+    pub state: MaterialState,
+    /// Every stored reference that reached this material.
+    pub used_by: Vec<MaterialUse>,
+    /// The record's ten stored words, raw, when the row has a record. The
+    /// field the reference calls `specular` and newer classification calls soil
+    /// is [`RawMaterial::record`]`::field32` and is **not** interpreted.
+    pub record: Option<RawMaterial>,
+}
+
+/// The outcome of auditing one container's meshes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MeshDependencyAudit {
+    /// The container the audited meshes came from, as a provenance label.
+    pub container: String,
+    /// The archive every material's texture name was looked for in.
+    pub archive: AssetKey,
+    /// One row per distinct stored material index the meshes reference, in
+    /// ascending index order. Failed rows are here too.
+    pub rows: Vec<MaterialRow>,
+    /// Every stored material reference the meshes carry, over both levels.
+    pub references: usize,
+    /// Rows whose dependency reached exactly one stored texture.
+    pub resolved: usize,
+    /// Rows that did not, and why they are still present.
+    pub blocked: Vec<String>,
+}
+
+impl MeshDependencyAudit {
+    /// Audits every material index `meshes` stores, resolving each through
+    /// `materials` and then through `context`'s archive.
+    ///
+    /// Nothing here can fail: a dependency that does not resolve is a row with a
+    /// state, not an error, because a caller has to be able to enumerate the
+    /// whole set and see which parts are missing.
+    #[must_use]
+    pub fn build(
+        meshes: &GameZMeshes,
+        materials: &GameZMaterials,
+        context: &DependencyContext<'_>,
+    ) -> Self {
+        // Which stored references reach which material index, in a deterministic
+        // order, so two audits of the same bytes produce the same rows.
+        let mut uses: BTreeMap<u32, Vec<MaterialUse>> = BTreeMap::new();
+        let mut references = 0usize;
+        for mesh in meshes.present() {
+            for (position, info) in mesh.materials.iter().enumerate() {
+                references += 1;
+                uses.entry(info.material_index).or_default().push(MaterialUse {
+                    mesh: mesh.index,
+                    reference: MaterialReference::MeshRecord { position },
+                });
+            }
+            for (polygon, groups) in mesh.material_groups.iter().enumerate() {
+                for (group, entry) in groups.iter().enumerate() {
+                    references += 1;
+                    uses.entry(entry.material).or_default().push(MaterialUse {
+                        mesh: mesh.index,
+                        reference: MaterialReference::PolygonGroup { polygon, group },
+                    });
+                }
+            }
+        }
+
+        // Container-level facts that several rows share. A texture name the
+        // container stores more than once is a property of the container, not of
+        // one material, so it is a reason on the rows that use the name rather
+        // than a second state.
+        let duplicated: BTreeMap<String, Vec<u32>> =
+            materials.duplicate_names().into_iter().collect();
+        let archive_state = archive_state(context);
+
+        let mut rows = Vec::with_capacity(uses.len());
+        let mut resolved = 0usize;
+        let mut blocked = Vec::new();
+        for (index, used_by) in uses {
+            let row = audit_material(
+                index,
+                &used_by,
+                materials,
+                context,
+                &duplicated,
+                archive_state.as_ref(),
+            );
+            if row.state.is_resolved() && row.readiness == DependencyReadiness::Ready {
+                resolved += 1;
+            } else {
+                blocked.push(format!("material {index}: {}", row.state));
+                for reason in &row.unsupported_reasons {
+                    blocked.push(format!("material {index}: {reason}"));
+                }
+            }
+            rows.push(row);
+        }
+        let blocked = blocked
+            .into_iter()
+            .fold(Vec::new(), |mut kept, entry| {
+                if !kept.contains(&entry) {
+                    kept.push(entry);
+                }
+                kept
+            });
+
+        Self {
+            container: context.container.to_owned(),
+            archive: context.archive.clone(),
+            rows,
+            references,
+            resolved,
+            blocked,
+        }
+    }
+
+    /// The rows whose dependency reached a stored texture, in index order.
+    pub fn resolved_rows(&self) -> impl Iterator<Item = &MaterialRow> {
+        self.rows.iter().filter(|row| row.state.is_resolved())
+    }
+
+    /// The rows that did not, in index order.
+    pub fn blocked_rows(&self) -> impl Iterator<Item = &MaterialRow> {
+        self.rows.iter().filter(|row| !row.state.is_resolved())
+    }
+
+    /// The stored material indices the audit reports as out of range.
+    pub fn out_of_range(&self) -> impl Iterator<Item = (u32, u32)> + '_ {
+        self.rows.iter().filter_map(|row| match &row.state {
+            MaterialState::MaterialIndexOutOfRange { material, count } => Some((*material, *count)),
+            _ => None,
+        })
+    }
+}
+
+/// What the audit needs from its caller.
+///
+/// The archive is the caller's decision on purpose: which texture archive a
+/// mission or a world uses is not established (F08-C records that as an open
+/// question), and the audit must not answer it by searching. A caller with
+/// several archives in mind runs the audit once per archive and compares.
+#[derive(Clone, Debug)]
+pub struct DependencyContext<'a> {
+    /// The archive every texture name is looked for in.
+    pub archive: &'a AssetKey,
+    /// The session that read the catalog, for its generation check.
+    pub session: &'a ContentSession,
+    /// The catalog that answers the name lookups.
+    pub catalog: &'a TextureCatalog,
+    /// Where the container came from, when the caller knows.
+    pub origin: Option<SourceSpan>,
+    /// A provenance label for the container, never a path that gets joined.
+    pub container: &'a str,
+}
+
+/// The catalog's own verdict on the caller's archive: `None` when it opened.
+fn archive_state(context: &DependencyContext<'_>) -> Option<MaterialState> {
+    let session_error = context
+        .catalog
+        .generation()
+        .ne(&context.session.generation());
+    if session_error {
+        return Some(MaterialState::ArchiveUnavailable {
+            archive: context.archive.clone(),
+            code: "foreign_session".to_owned(),
+        });
+    }
+    for (key, error) in context.catalog.failures() {
+        if key == context.archive {
+            return Some(MaterialState::ArchiveUnavailable {
+                archive: context.archive.clone(),
+                code: error.code().to_owned(),
+            });
+        }
+    }
+    let known = context
+        .catalog
+        .archives()
+        .any(|archive| archive.key() == context.archive);
+    if !known {
+        return Some(MaterialState::ArchiveUnavailable {
+            archive: context.archive.clone(),
+            code: "archive_not_catalogued".to_owned(),
+        });
+    }
+    None
+}
+
+#[allow(clippy::too_many_arguments)]
+fn audit_material(
+    index: u32,
+    used_by: &[MaterialUse],
+    materials: &GameZMaterials,
+    context: &DependencyContext<'_>,
+    duplicated: &BTreeMap<String, Vec<u32>>,
+    archive_state: Option<&MaterialState>,
+) -> MaterialRow {
+    let mut reasons: Vec<String> = Vec::new();
+    for finding in materials
+        .findings
+        .iter()
+        .filter(|finding| finding.material() == index)
+    {
+        reasons.push(format!("{}:{}", finding.code(), finding));
+    }
+    let count = materials.count();
+    let record = materials.material(index).cloned();
+    let row = MaterialRow {
+        id: format!("gamez.materials[{index}]"),
+        kind: MATERIAL_KIND,
+        material: index,
+        origin: context.origin.clone(),
+        dependencies: vec![context.archive.clone()],
+        parse_state: ParseState::Unparsed,
+        normalize_state: ParseState::Unparsed,
+        runtime_consumers: vec![MATERIAL_CONSUMER],
+        readiness: DependencyReadiness::Blocked,
+        unsupported_reasons: Vec::new(),
+        fingerprint: record.as_ref().map(|material| sha256(&material_bytes(material))),
+        state: MaterialState::Untextured,
+        used_by: used_by.to_vec(),
+        record,
+    };
+
+    let Some(material) = materials.material(index) else {
+        let state = MaterialState::MaterialIndexOutOfRange { material: index, count };
+        return finish(row, false, state, reasons);
+    };
+    let bits = material.record.unknown_flag_bits();
+    if bits != 0 {
+        return finish(row, true, MaterialState::UnknownField { bits }, reasons);
+    }
+    if material.kind() == MaterialKind::Colored {
+        return finish(row, true, MaterialState::Untextured, reasons);
+    }
+    let Some(texture) = materials.texture(material.record.texture_index) else {
+        let state = MaterialState::TextureIndexOutOfRange {
+            index: material.record.texture_index,
+            available: materials.textures.len() as u32,
+        };
+        return finish(row, true, state, reasons);
+    };
+    if let Some(indices) = duplicated.get(&texture.name) {
+        reasons.push(format!(
+            "container_texture_name_duplicated: {} table indices {indices:?}",
+            texture.name
+        ));
+    }
+    if let Some(state) = archive_state {
+        return finish(row, true, state.clone(), reasons);
+    }
+    let reference = TextureRef::new(context.archive.clone(), &texture.name);
+    match context.catalog.resolve(context.session, &reference) {
+        Ok(resolved) => {
+            let state = MaterialState::Resolved {
+                texture: resolved.id().clone(),
+            };
+            finish(row, true, state, reasons)
+        }
+        Err(error) => {
+            reasons.push(error.code().to_owned());
+            let state = match &error {
+                TextureResolveError::Duplicate { attempts, .. } => {
+                    let mut entries = Vec::new();
+                    for attempt in attempts {
+                        if let TextureAttempt::Name { entries: found, .. } = attempt {
+                            entries = found.clone();
+                        }
+                    }
+                    MaterialState::DuplicateTexture {
+                        name: texture.name.clone(),
+                        archive: context.archive.clone(),
+                        entries,
+                    }
+                }
+                other if other.code() == "texture_not_found" => MaterialState::MissingTexture {
+                    name: texture.name.clone(),
+                    archive: context.archive.clone(),
+                },
+                other => MaterialState::ArchiveUnavailable {
+                    archive: context.archive.clone(),
+                    code: other.code().to_owned(),
+                },
+            };
+            finish(row, true, state, reasons)
+        }
+    }
+}
+
+/// Fills in the four fields that follow from the state, and returns the row.
+///
+/// `has_record` says whether the material table holds a record for this index at
+/// all: a stored index outside the table is a **failed parse**, while every other
+/// state is a record that was read and whose dependency did or did not reach an
+/// origin.
+fn finish(
+    mut row: MaterialRow,
+    has_record: bool,
+    state: MaterialState,
+    mut reasons: Vec<String>,
+) -> MaterialRow {
+    reasons.dedup();
+    if !state.is_resolved() && reasons.is_empty() {
+        reasons.push(state.code().to_owned());
+    }
+    let ready = state.is_resolved() && reasons.is_empty();
+    let diagnostic = reasons.first().cloned().unwrap_or_else(|| state.to_string());
+    row.parse_state = if has_record {
+        ParseState::Parsed
+    } else {
+        ParseState::Failed {
+            diagnostic: state.to_string(),
+        }
+    };
+    row.normalize_state = if ready {
+        ParseState::Parsed
+    } else {
+        ParseState::Failed { diagnostic }
+    };
+    row.readiness = if ready {
+        DependencyReadiness::Ready
+    } else {
+        DependencyReadiness::Blocked
+    };
+    row.unsupported_reasons = reasons;
+    row.state = state;
+    row
+}
+
+/// The stored bytes a material's fingerprint is taken over: the record's ten
+/// words in stored order, then its two link words. Exactly the bytes the layout
+/// stores, so two materials that differ anywhere differ here.
+fn material_bytes(material: &RawMaterial) -> Vec<u8> {
+    let record = &material.record;
+    let mut out = Vec::with_capacity(44);
+    out.push(record.alpha);
+    out.push(record.flags);
+    out.extend_from_slice(&record.rgb.to_le_bytes());
+    for value in record.color {
+        out.extend_from_slice(&value.to_bits().to_le_bytes());
+    }
+    out.extend_from_slice(&record.texture_index.to_le_bytes());
+    out.extend_from_slice(&record.field20.to_bits().to_le_bytes());
+    out.extend_from_slice(&record.field24.to_bits().to_le_bytes());
+    out.extend_from_slice(&record.field28.to_bits().to_le_bytes());
+    out.extend_from_slice(&record.field32.to_bits().to_le_bytes());
+    out.extend_from_slice(&record.cycle_ptr.to_le_bytes());
+    out.extend_from_slice(&material.link1.to_le_bytes());
+    out.extend_from_slice(&material.link2.to_le_bytes());
+    debug_assert_eq!(out.len(), 44, "a material slot is forty bytes and two words");
+    out
 }
 
 #[cfg(test)]

@@ -1288,7 +1288,7 @@ fn read_meshes(
     allocation: &mut AllocationBudget,
     container_len: u64,
 ) -> Result<GameZMeshes, GameZError> {
-    let header = read_header(reader, container_len)?;
+    let header = read_container_header(reader, container_len)?;
     let (index, records) = read_mesh_index(reader, allocation, &header, container_len)?;
     let fixup = Fixup::for_unk08(header.unk08);
     check_mesh_index(&index, &records, fixup, &header, reader.position())?;
@@ -1318,7 +1318,15 @@ fn read_meshes(
     })
 }
 
-fn read_header(reader: &mut Reader<'_>, container_len: u64) -> Result<GameZHeader, GameZError> {
+/// Reads and validates the 40-byte container header.
+///
+/// Shared with the material-record reader so both entrypoints reject the same
+/// bytes for the same reason: it is the header, not either section, that says
+/// which container this is and where its sections are.
+pub(crate) fn read_container_header(
+    reader: &mut Reader<'_>,
+    container_len: u64,
+) -> Result<GameZHeader, GameZError> {
     let signature = reader.read_u32("header.signature")?;
     let version = reader.read_u32("header.version")?;
     if signature != GAMEZ_SIGNATURE {

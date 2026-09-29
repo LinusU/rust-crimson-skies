@@ -23,12 +23,19 @@
 //!   read from the pinned mech3ax v0.6.0 revision and checked against the
 //!   original installation; [`read_gamez_meshes`] produces [`GameZMeshes`],
 //!   whose entries are [`RawMesh`] values with everything still raw.
+//! * [`materials`] is the rest of the container header's sections: the
+//!   44-byte texture-name record with its NUL-suffixed name encoding, the
+//!   16-byte material section header, the 40-byte material record, the
+//!   1000-slot array with its zero region and the cycle data stored after
+//!   it. [`read_gamez_materials`] produces [`GameZMaterials`], which is where
+//!   a material index finally resolves to a texture **name** — the material
+//!   record stores an index into the container's texture table, not a name.
 //!
-//! What this does **not** read: the texture-name table, the material records
-//! (F10-C.02) and the node array (F11-A). Because the material table is not
-//! parsed, a material index stays a raw reference and is never range-checked
-//! here; [`GameZMeshes::unchecked_material_references`] states how many such
-//! references the container stores.
+//! What this does **not** read: the node array (F11-A) and anything past the
+//! two sections above. Which archive a texture name is looked up in, and
+//! whether the lookup succeeds, is the dependency audit in
+//! `cs_content::mesh`, which is fed the two values above; neither reader picks
+//! an archive, folds case or falls back to another one.
 //!
 //! The lossless raw mesh IR ([`RawMesh`], [`RawPolygon`], [`RawCorner`]) is stage
 //! F10-A's published contract and this task does not change its shape. A stored
@@ -40,17 +47,28 @@
 //!
 //! Design decisions and recorded unknowns are in
 //! `docs/findings/2026-09-28-f10-a-lossless-mesh-ir-and-strip-fixtures.md`,
-//! `docs/findings/2026-09-29-f10-b-validated-ngon-triangulation.md` and
-//! `docs/findings/2026-09-29-f10-b-gamez-mesh-layout.md`. The synthetic
+//! `docs/findings/2026-09-29-f10-b-validated-ngon-triangulation.md`,
+//! `docs/findings/2026-09-29-f10-b-gamez-mesh-layout.md` and
+//! `docs/findings/2026-09-29-f10-c-02-gamez-material-records.md`. The synthetic
 //! fixtures exercised by `crates/cs_formats/tests/gamez/` are newly authored
 //! values; only the `#[ignore]`d retail tests read original game data, and
 //! nothing derived from it is committed.
 
+pub mod materials;
 pub mod mesh;
 pub mod polygon;
 pub mod reader;
 pub mod strip;
 
+pub use materials::{
+    CYCLE_FRAME_BYTES, CYCLE_HEADER_BYTES, GameZMaterialError, GameZMaterials,
+    GameZTextureName, KNOWN_MATERIAL_FLAGS, MATERIAL_FLAG_ALWAYS, MATERIAL_FLAG_CYCLED,
+    MATERIAL_FLAG_FREE, MATERIAL_FLAG_TEXTURED, MATERIAL_FLAG_UNKNOWN, MATERIALS_ENTRYPOINT,
+    MATERIAL_HEADER_BYTES, MATERIAL_LINK_BYTES, MATERIAL_RECORD_BYTES, MATERIAL_SLOT_BYTES,
+    MaterialFinding, MaterialInfo, MaterialKind, NG_MATERIAL_SLOTS, RawCycle, RawMaterial,
+    RawMaterialRecord, TEXTURE_INFO_BYTES, TEXTURE_NAME_BYTES, TextureNameEncoding,
+    read_gamez_materials,
+};
 pub use mesh::{
     FaceIssue, FaceStatus, MeshTopology, MeshTriangle, PrimitiveKind, RawCorner, RawMesh,
     RawPolygon,
