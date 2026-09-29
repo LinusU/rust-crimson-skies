@@ -380,18 +380,26 @@ fn evidence_report_f10_b_gamez_writes_the_acceptance_report() {
             "bunny-1 (Space Bunny Alpha) wrote the reader and the first round of mutation \
              probes, but marked its own work UNVERIFIED: its claim lapsed before the probe round \
              ran and nothing was merged. bunny-2 (Space Bunny Free) resumed the task from the \
-             owner's saved branch, rebased it onto main, and re-verified the work independently \
-             with a fresh context: both retail tests were re-run on all nine archives, every \
-             probe bunny-1 had recorded as killing a test was re-applied and did so, and two \
-             further fixture holes were found and closed (identical position/normal vector blocks; \
-             the never-exercised morph array). So this report is agent-verified, not merely \
-             self-checked, but it is still not an independent review: the Rally reviewer should \
-             re-generate it on the reviewed commit. The layout is documented in the pinned \
-             mech3ax v0.6.0 source and measured against the original installation, which is \
-             `ObservedTool`, not `verified_original`: no original run happened and `retail` file \
-             access is not evidence of runtime behaviour. A review by a further agent instance \
-             with a fresh context is requested per the owner directive for format and evidence \
-             machinery.",
+             owner's saved branch, rebased it onto main, and re-verified the work with a fresh \
+             context: both retail tests were re-run on all nine archives, every probe bunny-1 \
+             had recorded as killing a test was re-applied and did so, and two further fixture \
+             holes were found and closed (identical position/normal vector blocks; the \
+             never-exercised morph array). bunny-2 then reviewed its own task branch as the \
+             Rally reviewer, again with a fresh context: it re-derived the layout from the \
+             worksheet in a throwaway walk that reproduces every measured count from the bytes, \
+             ran a third probe round, and closed six further real test-sensitivity holes (three \
+             of four ParseFinding variants unasserted, a finding able to name the wrong mesh, \
+             the section chain's strictness unpinned, the no-material-group path unexercised, the \
+             raw mesh-material and polygon record words parsed then discarded, and a redundant \
+             data-offset lower bound). It also found and recorded one deviation from the pinned \
+             reference (the stored data offset's upper bound). The reviewer context was fresh \
+             but the reviewer identity is the same agent that implemented the work, so this is \
+             agent-verified twice over, NOT independent review: per the owner directive, a \
+             further agent instance with a fresh context should still review the format and \
+             evidence machinery, and no agent review replaces the owner's approval. The layout is \
+             documented in the pinned mech3ax v0.6.0 source and measured against the original \
+             installation, which is `ObservedTool`, not `verified_original`: no original run \
+             happened and `retail` file access is not evidence of runtime behaviour.",
         ),
         jstr(
             "acceptance suite run locally with the `retail` capability. This harness derives \
@@ -403,9 +411,13 @@ fn evidence_report_f10_b_gamez_writes_the_acceptance_report() {
              resolve is a named deferred scope boundary with a resolving task, written down in \
              docs/findings/2026-09-29-f10-b-gamez-mesh-layout.md under \"Deferred scope, its \
              resolving task and what it gates\" — the durable, versioned record; nothing was \
-             hidden to pass the validator. Validated with tools/validate_evidence.py \
-             --require-pass. The suite is 17 task tests: 15 synthetic and 2 retail, and the \
-             two retail tests fail loudly rather than skipping when CS_GAME_DIR is absent.",
+             hidden to pass the validator. One further item is NOT a deferred boundary but a \
+             recorded deviation from the pinned reference — the stored data offset's upper bound \
+             excludes `nodes_offset` where the reference's assertion is inclusive, so a present \
+             mesh record with no data would be refused here and accepted there — and it is item \
+             11 of that same table. Validated with tools/validate_evidence.py --require-pass. \
+             The suite is 20 task tests: 18 synthetic and 2 retail, and the two retail tests \
+             fail loudly rather than skipping when CS_GAME_DIR is absent.",
         ),
     );
 

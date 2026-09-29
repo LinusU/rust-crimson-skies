@@ -23,10 +23,11 @@ use cs_formats::ParseContext;
 use cs_formats::gamez::reader::{Fixup, MESH_INFO_BYTES, MESH_INFO_TRAILER_BYTES};
 use cs_formats::gamez::{
     CORNER_COUNT_MASK, FLAG_NORMALS, FLAG_SHIFT, FLAG_TRIANGLE_STRIP, FLAG_UNK2,
-    GAMEZ_HEADER_BYTES, GameZError, GameZMeshes, PrimitiveKind, UNK08_C4, UNK08_PLANES,
-    read_gamez_meshes,
+    GAMEZ_HEADER_BYTES, GameZError, GameZMeshes, ParseFinding, PrimitiveKind, UNK08_C4,
+    UNK08_PLANES, read_gamez_meshes,
 };
 use cs_formats::zbd::{GAMEZ_SIGNATURE, GAMEZ_VERSION};
+use cs_types::evidence::ClaimStatus;
 
 // --------------------------------------------------------------- fixtures ---
 
@@ -727,6 +728,25 @@ fn accept_f10_b_gamez_header_gates_the_section() {
         other => panic!("out-of-order sections must be refused, got {other:?}"),
     }
 
+    // Strictly, not merely: two sections may not start at the same offset, which
+    // is what the reference asserts. Every offset here stays inside the
+    // container, so only the strictness of the relation can refuse it — a
+    // non-strict check would read the same bytes happily.
+    let mut abutting = good.clone();
+    abutting[20..24].copy_from_slice(&meshes_offset.to_le_bytes());
+    match parse("synthetic/abutting_sections.zbd", &abutting) {
+        Err(GameZError::SectionOrder {
+            pair,
+            first,
+            second,
+        }) => {
+            assert_eq!(pair, "materials_offset < meshes_offset");
+            assert_eq!(first, meshes_offset);
+            assert_eq!(second, meshes_offset, "two sections may not abut");
+        }
+        other => panic!("two sections at one offset must be refused, got {other:?}"),
+    }
+
     // And a section past the end of the container is refused on its own.
     let huge = u32::try_from(good.len() + 1_000_000).expect("the fixture is small");
     let mut out_of_bounds = good.clone();
@@ -993,6 +1013,200 @@ fn accept_f10_b_gamez_flags_select_strip_and_normals() {
     );
 }
 
+/// Everything the reference's assertions exclude is **reported, not refused and
+/// not silently accepted**. The reader still reads the face — the stored lengths
+/// are well defined, so dropping it would make the face counts inexact — and
+/// names the mesh and the polygon so a consumer can find it.
+///
+/// Each of the three findings this pins is checked on its own container variant:
+/// a strip without normals, a polygon with no material group and a polygon with
+/// fewer than three corners. The corpus happens to contain none of them, so
+/// without this the retail half could not tell a reader that never raised them
+/// from one that did, and the `corners < 3` boundary itself would be unpinned.
+#[test]
+fn accept_f10_b_gamez_findings_name_what_the_profile_excludes() {
+    let spec = HeaderSpec::default();
+    // Two meshes, so the mesh a finding names is not always zero: a finding
+    // pointing at the wrong mesh would otherwise pass unnoticed.
+    let mut mesh = MeshSpec::triangle();
+    mesh.polygon_count = 4;
+    // A four-corner strip that stores no normal array: the reference asserts
+    // "has normals when tri strip".
+    let strip = PolygonSpec::triangle().with(4, FLAG_TRIANGLE_STRIP);
+    // A good triangle that stored no material group at all.
+    let mut no_material = PolygonSpec::triangle();
+    no_material.mat_count = 0;
+    no_material.resize();
+    // Two corners: one below the three a face needs.
+    let short = PolygonSpec::triangle().with(2, 0);
+    // And one polygon entirely inside the profile, so the list is not just
+    // "everything is a finding".
+    let good = PolygonSpec::triangle().with(3, 0);
+    mesh.polygons = vec![strip, no_material.clone(), short, good];
+    let reported = authored_container(
+        &spec,
+        &[MeshSpec::triangle(), mesh],
+        sequential_index(2, &[0, 1]),
+        &[],
+    );
+    let parsed = parse_ok("synthetic/findings.zbd", &reported);
+    assert!(
+        parsed.get(0).expect("mesh 0").groups_are_complete(),
+        "the mesh inside the profile is complete"
+    );
+
+    assert_eq!(
+        parsed.findings,
+        vec![
+            ParseFinding::StripWithoutNormals {
+                mesh: 1,
+                polygon: 0
+            },
+            ParseFinding::PolygonWithoutMaterial {
+                mesh: 1,
+                polygon: 1
+            },
+            ParseFinding::PolygonTooFewCorners {
+                mesh: 1,
+                polygon: 2,
+                corners: 2
+            },
+        ],
+        "each excluded record is named by mesh and polygon, in stored order"
+    );
+    assert_eq!(parsed.findings[0].mesh(), 1, "a finding names its mesh");
+    assert_eq!(parsed.findings[0].code(), "strip_without_normals");
+    assert_eq!(parsed.findings[0].evidence(), ClaimStatus::ObservedTool);
+    assert!(
+        parsed.findings[0].to_string().contains("polygon 0"),
+        "{parsed:#?}"
+    );
+
+    // The fourth finding is the unmapped flag bit, and it too must name the mesh
+    // and the polygon the record is really in: this polygon is the second of
+    // mesh 1, so a reader that reported mesh 0, the wrong mesh, or polygon 0
+    // would be sending a consumer to the wrong face.
+    let mut flagged = MeshSpec::triangle();
+    flagged.polygon_count = 2;
+    flagged.polygons = vec![
+        PolygonSpec::triangle().with(3, 0),
+        PolygonSpec::triangle().with(3, 1 << 7),
+    ];
+    let named = authored_container(
+        &spec,
+        &[MeshSpec::triangle(), flagged],
+        sequential_index(2, &[0, 1]),
+        &[],
+    );
+    let parsed = parse_ok("synthetic/named_flag.zbd", &named);
+    assert_eq!(
+        parsed.findings,
+        vec![ParseFinding::UnknownPolygonFlagBits {
+            mesh: 1,
+            polygon: 1,
+            bits: 1 << 7
+        }],
+        "an unmapped bit names the mesh and the polygon it is stored in"
+    );
+    assert!(
+        parsed.findings[0].to_string().contains("0x80"),
+        "and the bits it found: {}",
+        parsed.findings[0]
+    );
+
+    // The boundary itself: three corners is inside the profile, two is not, and
+    // no corner count below three is. The polygon sits in mesh 1 of a two-mesh
+    // container, so the mesh a finding names is checked to be the one the
+    // polygon is actually in — a reader that reported the wrong mesh, or the
+    // wrong polygon, would be indistinguishable from one that is right.
+    for corners in 0..3u32 {
+        let mut second = MeshSpec::triangle();
+        second.polygons = vec![PolygonSpec::triangle().with(corners, 0)];
+        let bytes = authored_container(
+            &spec,
+            &[MeshSpec::triangle(), second],
+            sequential_index(2, &[0, 1]),
+            &[],
+        );
+        let parsed = parse_ok(&format!("synthetic/{corners}_corners.zbd"), &bytes);
+        assert_eq!(
+            parsed.findings,
+            vec![ParseFinding::PolygonTooFewCorners {
+                mesh: 1,
+                polygon: 0,
+                corners
+            }],
+            "{corners} corners is below the three a face needs, in the mesh it is in"
+        );
+        assert_eq!(parsed.findings[0].mesh(), 1, "and the mesh it names");
+    }
+
+    // Nothing is dropped: every stored polygon of the four-polygon mesh reaches
+    // `RawMesh::topology` and is counted exactly once, so the report stays
+    // exact. Three of the four decode, the two-corner face is invalid and none
+    // is a triangulation limit.
+    let read = parse_ok("synthetic/findings.zbd", &reported)
+        .get(1)
+        .expect("mesh 1")
+        .clone();
+    assert!(
+        read.groups_are_complete(),
+        "every polygon has its group list"
+    );
+    let topology = read.topology();
+    assert_eq!(topology.faces.len(), 4, "one status per stored polygon");
+    assert_eq!(topology.decoded_faces(), 3, "the strip and two outlines");
+    assert_eq!(
+        topology.invalid_faces(),
+        1,
+        "the two-corner face is invalid"
+    );
+    assert_eq!(
+        topology.unsupported_faces(),
+        0,
+        "and it is not a triangulation limit"
+    );
+    match &topology.faces[2] {
+        cs_formats::gamez::FaceStatus::Rejected(issue) => {
+            assert_eq!(issue.code(), "too_few_corners");
+        }
+        other => panic!("the two-corner face must be rejected, got {other:?}"),
+    }
+    // The strip that has no normal array is still read as a strip.
+    assert_eq!(read.mesh.polygons[0].kind, PrimitiveKind::TriangleStrip);
+    assert!(
+        read.mesh.polygons[0]
+            .corners
+            .iter()
+            .all(|corner| corner.normal.is_none()),
+        "and still has no normal index"
+    );
+    // The mesh inside the profile raised nothing at all.
+    let first = parse_ok("synthetic/findings.zbd", &reported);
+    assert_eq!(first.get(0).expect("mesh 0").topology().faces.len(), 1);
+
+    // A polygon with no stored group has no coordinate to mirror, so every
+    // corner's UV is `None` and the single-valued `material` is the documented
+    // zero. A reader that invented a group here would be wrong about the face.
+    let mut mesh = MeshSpec::triangle();
+    mesh.polygons = vec![no_material];
+    let bytes = authored_container(&spec, &[mesh], sequential_index(1, &[0]), &[]);
+    let parsed = parse_ok("synthetic/no_group.zbd", &bytes);
+    let read = &parsed.get(0).expect("one present mesh").mesh.polygons[0];
+    assert_eq!(
+        read.material, 0,
+        "no group stored means no material reference"
+    );
+    assert!(
+        read.corners.iter().all(|corner| corner.uv.is_none()),
+        "and no coordinate is invented for a corner"
+    );
+    assert!(
+        parsed.get(0).expect("one present mesh").groups(0) == Some(&[][..]),
+        "the group list is empty, not missing and not guessed"
+    );
+}
+
 /// A polygon stores one UV set **per material group**, and both the group
 /// material indices and every group's coordinates survive. A reader that kept
 /// only the first group would look right on a single-material asset and silently
@@ -1047,6 +1261,155 @@ fn accept_f10_b_gamez_keeps_every_material_group() {
     assert_eq!(read.material, authored.material_indices[0]);
     assert_eq!(read.corners[0].uv, Some(authored.uvs[0]));
     assert_eq!(read.corners[2].uv, Some(authored.uvs[2]));
+}
+
+/// Every **raw** word of the mesh material reference survives in its own slot.
+/// The reader keeps these fields only to avoid discarding bytes and, for
+/// `material_index`, so F10-C.02 has a real reference to range-check (F10
+/// non-negotiable #5: nothing is interpreted here).
+///
+/// A reader that transposed `material_index` and `polygon_usage_count` would
+/// look entirely correct to every other assertion in this file -- neither field
+/// is interpreted -- and would hand F10-C.02 the wrong number to check against
+/// the material count.
+#[test]
+fn accept_f10_b_gamez_material_reference_words_survive_in_their_own_slots() {
+    let spec = HeaderSpec::default();
+    let mut mesh = MeshSpec::triangle();
+    mesh.material_count = 2;
+    mesh.materials_ptr = 0x5A5A_5A5A;
+    // Distinct in all three words, and the two references differ from each
+    // other, so no transposition can be symmetric.
+    mesh.material_refs = vec![(0x0102_0304, 0x1111_2222, 0x3333_4444), (9, 8, 7)];
+    let refs = mesh.material_refs.clone();
+    let bytes = authored_container(&spec, &[mesh], sequential_index(1, &[0]), &[]);
+    let parsed = parse_ok("synthetic/material_refs.zbd", &bytes);
+    let read = parsed.get(0).expect("one present mesh");
+
+    assert_eq!(
+        read.info.materials_ptr, 0x5A5A_5A5A,
+        "the pointer stays raw"
+    );
+    assert_eq!(read.materials.len(), 2, "both stored references are read");
+    for (got, (material_index, polygon_usage_count, unk_ptr)) in read.materials.iter().zip(&refs) {
+        assert_eq!(got.material_index, *material_index);
+        assert_eq!(got.polygon_usage_count, *polygon_usage_count);
+        assert_eq!(got.unk_ptr, *unk_ptr);
+    }
+    // The per-polygon reference is a different list and stays separate: a reader
+    // that merged the two levels would report the polygon's group index as a
+    // mesh-level material reference.
+    assert_eq!(read.groups(0).expect("polygon 0")[0].material, 11);
+    assert_eq!(
+        parsed.unchecked_material_references,
+        2 + 1,
+        "the mesh-level references and the per-polygon groups are counted apart"
+    );
+}
+
+/// Every **raw** word of the polygon record survives in its own slot. The IR
+/// keeps only the flag byte, the corner topology and the corners, so these ten
+/// words are the only place a consumer can see what the record actually held:
+/// the four `Ptr` fields, which are never followed, and the `unk` words, whose
+/// meaning is not established (F10 non-negotiable #5).
+///
+/// A reader that transposed two `unk` words, or that read a pointer from the
+/// wrong slot, would be indistinguishable through the IR — and would hand
+/// F10-C.02 or F10-D the wrong stored value to audit.
+#[test]
+fn accept_f10_b_gamez_polygon_record_words_survive_in_their_own_slots() {
+    let spec = HeaderSpec::default();
+    let mut first = PolygonSpec::triangle();
+    first.unk04 = -50;
+    first.vertices_ptr = 0x1111_1111;
+    first.normals_ptr = 0x2222_2222;
+    first.uvs_ptr = 0x3333_3333;
+    first.colors_ptr = 0x4444_4444;
+    first.unk28 = 0x5555_5555;
+    first.unk32 = 0x6666_6666;
+    first.unk36 = 0x0000_FFFF;
+    let mut second = PolygonSpec::triangle();
+    second.unk04 = 50;
+    second.vertices_ptr = 0x7777_7777;
+    second.normals_ptr = 0x8888_8888;
+    second.uvs_ptr = 0x9999_9999;
+    second.colors_ptr = 0xAAAA_AAAA;
+    second.unk28 = 0xBBBB_BBBB;
+    second.unk32 = 0xCCCC_CCCC;
+    second.unk36 = 0x0000_0001;
+    let authored = vec![first, second];
+    let mut mesh = MeshSpec::triangle();
+    mesh.polygon_count = 2;
+    mesh.polygons = authored.clone();
+    let bytes = authored_container(&spec, &[mesh], sequential_index(1, &[0]), &[]);
+    let parsed = parse_ok("synthetic/polygon_words.zbd", &bytes);
+    let read = parsed.get(0).expect("one present mesh");
+
+    assert_eq!(read.polygon_records.len(), 2, "one raw record per polygon");
+    assert!(read.groups_are_complete(), "records and groups both align");
+    for (index, (got, source)) in read.polygon_records.iter().zip(&authored).enumerate() {
+        assert_eq!(
+            got.vertex_info,
+            source.vertex_info(),
+            "polygon {index} word 0"
+        );
+        assert_eq!(got.unk04, source.unk04, "polygon {index} word 1");
+        assert_eq!(
+            got.vertices_ptr, source.vertices_ptr,
+            "polygon {index} word 2"
+        );
+        assert_eq!(
+            got.normals_ptr, source.normals_ptr,
+            "polygon {index} word 3"
+        );
+        assert_eq!(got.mat_count, source.mat_count, "polygon {index} word 4");
+        assert_eq!(got.uvs_ptr, source.uvs_ptr, "polygon {index} word 5");
+        assert_eq!(got.colors_ptr, source.colors_ptr, "polygon {index} word 6");
+        assert_eq!(got.unk28, source.unk28, "polygon {index} word 7");
+        assert_eq!(got.unk32, source.unk32, "polygon {index} word 8");
+        assert_eq!(got.unk36, source.unk36, "polygon {index} word 9");
+    }
+    // The split is available on the kept record, so nothing has to be re-masked.
+    assert_eq!(
+        read.polygon_records.len(),
+        2,
+        "one record per stored polygon"
+    );
+    assert_eq!(read.record(0).expect("polygon 0").corners(), 3);
+    assert_eq!(
+        read.record(1).expect("polygon 1").flags(),
+        FLAG_NORMALS,
+        "and the flag byte is the stored one"
+    );
+    assert_eq!(read.record(2), None, "an unstored polygon has no record");
+
+    // The alignment invariant the two accessors rely on: the record list, the
+    // group list and the IR polygon list are the same length, so index `i`
+    // reaches the same stored polygon in all three. A reader that dropped or
+    // reordered a record would make `record(i)` describe a different face than
+    // `groups(i)` and `polygons[i]`.
+    assert!(
+        read.groups_are_complete(),
+        "all three lists are the same length"
+    );
+    for index in 0..read.mesh.polygons.len() {
+        let record = read.record(index).expect("a record per polygon");
+        assert_eq!(
+            record.mat_count as usize,
+            read.groups(index).expect("a group list per polygon").len(),
+            "polygon {index}: the record's mat_count is what was read"
+        );
+        assert_eq!(
+            record.corners() as usize,
+            read.mesh.polygons[index].corners.len(),
+            "polygon {index}: the record's corner count is what was read"
+        );
+        assert_eq!(
+            record.flags(),
+            read.mesh.polygons[index].raw_flags,
+            "polygon {index}: the record's flag byte is what was kept"
+        );
+    }
 }
 
 /// Two corners sharing a position keep both sets of attributes: spec F10
@@ -1743,11 +2106,19 @@ fn accept_f10_b_gamez_vertex_info_splits_into_nine_bit_fields() {
     );
 }
 
-/// A mesh record's stored data offset is where the walk must already be. A
-/// container whose second mesh declares an offset the sequential walk never
-/// reaches is refused **naming that mesh and both offsets**, which is a different
-/// and more useful failure than the generic "the section did not end where the
-/// header said".
+/// A mesh record's stored data offset is where the walk must already be, and it
+/// must lie inside the mesh section and not move backwards. A container whose
+/// second mesh declares an offset the sequential walk never reaches is refused
+/// **naming that mesh and both offsets**, which is a different and more useful
+/// failure than the generic "the section did not end where the header said".
+///
+/// The bound is asserted here rather than left to the retail half, because a
+/// container the reader accepts wrongly has to be synthesised: the corpus has no
+/// backwards offset, and it has no zero-length present mesh either. The
+/// **last** of those two is a recorded deviation from the reference (its own
+/// assertion is inclusive at `nodes_offset`, this range is not), so it is pinned
+/// as the behaviour this reader has, with the deviation recorded, rather than
+/// changed on a guess about which reading the original engine used.
 #[test]
 fn accept_f10_b_gamez_a_meshes_declared_offset_must_match_the_walk() {
     let spec = HeaderSpec::default();
@@ -1791,6 +2162,84 @@ fn accept_f10_b_gamez_a_meshes_declared_offset_must_match_the_walk() {
         other => {
             panic!("a declared offset the walk cannot reach must be refused, got {other:?}")
         }
+    }
+
+    // Backwards: point the second mesh at an offset the walk has already passed.
+    // A reader that only compared a declared offset with the walk's position
+    // would catch this too, but a reader that only checked the *section* bounds
+    // would accept it and then read the second mesh's arrays from inside the
+    // first one's data.
+    let mut backwards = bytes.clone();
+    backwards[second_trailer_at..second_trailer_at + 4]
+        .copy_from_slice(&(second_offset as u32 - 4).to_le_bytes());
+    match parse("synthetic/backwards.zbd", &backwards) {
+        Err(GameZError::MeshDataNotSequential {
+            mesh,
+            declared,
+            walked,
+        }) => {
+            assert_eq!(mesh, 1, "a data offset below the previous mesh's end is");
+            assert_eq!(
+                declared,
+                second_offset as u32 - 4,
+                "refused, naming the mesh"
+            );
+            assert_eq!(u64::from(declared), walked - 4, "and both offsets");
+        }
+        other => panic!("a backwards data offset must be refused, got {other:?}"),
+    }
+
+    // At the end of the section: a *present* record that stores no data at all,
+    // last in the array, declares exactly `nodes_offset`. The reference's own
+    // assertion is inclusive there and this reader's bound is not, so this
+    // container is refused. The corpus contains no such record, so the two
+    // readings cannot be told apart from real data; the strict one is kept and
+    // recorded as a finding (see the module note in the reader).
+    let empty_last = authored_container(
+        &spec,
+        &[MeshSpec::triangle(), MeshSpec::present()],
+        sequential_index(2, &[0, 1]),
+        &[],
+    );
+    let record_bytes = MESH_INFO_BYTES as usize + MESH_INFO_TRAILER_BYTES as usize;
+    let record_at = GAMEZ_HEADER_BYTES as usize + spec.texture_count as usize * 4 + 8 + 12;
+    let last_trailer_at = record_at + record_bytes + MESH_INFO_BYTES as usize;
+    let nodes_offset = u32::from_le_bytes(empty_last[36..40].try_into().unwrap());
+    // The fixture writer lays present records' data offsets out back-to-back, so
+    // the empty record declares the end of the section. Confirm it rather than
+    // assume it: this whole case is about that one word.
+    let declared = u32::from_le_bytes(
+        empty_last[last_trailer_at..last_trailer_at + 4]
+            .try_into()
+            .unwrap(),
+    );
+    assert_eq!(
+        declared, nodes_offset,
+        "a present record with no data declares the end of the section"
+    );
+    assert_eq!(
+        MeshSpec::present().polygon_count,
+        0,
+        "it is a present record, not a stub"
+    );
+    match parse("synthetic/at_nodes_offset.zbd", &empty_last) {
+        Err(GameZError::MeshDataOffset {
+            mesh,
+            offset,
+            previous,
+            end,
+        }) => {
+            assert_eq!(mesh, 1, "the empty present mesh is named");
+            assert_eq!(offset, nodes_offset, "its declared offset");
+            assert_eq!(end, nodes_offset, "the end the range is exclusive of");
+            assert!(
+                u64::from(previous) < u64::from(end),
+                "and the range it fell outside, [{previous}, {end})"
+            );
+        }
+        other => panic!(
+            "a present mesh declaring nodes_offset is refused by this reader's bound, got {other:?}"
+        ),
     }
 }
 

@@ -677,6 +677,17 @@ pub struct GameZMesh {
     pub info: RawMeshInfo,
     /// The stored arrays and polygons, parsed.
     pub mesh: RawMesh,
+    /// The 40-byte record of every stored polygon, raw, in stored order.
+    ///
+    /// Parallel to [`GameZMesh::mesh`]'s polygons and the same length. These are
+    /// kept rather than dropped for the same reason [`GameZMesh::info`] is: the
+    /// `unk` words and the four `Ptr` fields have no established meaning (F10
+    /// non-negotiable #5) and the pointers are never followed, so a consumer
+    /// auditing a face — F10-C.02's material binding, F10-D's private-corpus pass
+    /// — has to be able to see what was stored rather than trust that the reader
+    /// saw it. The IR's [`RawPolygon`] keeps the flag byte, the kind and the
+    /// corners; everything else the record held is here.
+    pub polygon_records: Vec<RawPolygonInfo>,
     /// The stored mesh lights, in stored order.
     pub lights: Vec<RawMeshLight>,
     /// The stored morph vectors, in stored order.
@@ -727,6 +738,18 @@ impl GameZMesh {
     /// a single-group asset but not for a polygon that stores two or three.
     pub fn corner_uv(&self, polygon: usize, group: usize, corner: usize) -> Option<[f32; 2]> {
         self.groups(polygon)?.get(group)?.uvs.get(corner).copied()
+    }
+
+    /// The raw 40-byte record of one stored polygon, or `None` when `polygon` is
+    /// out of range.
+    ///
+    /// The IR's [`RawPolygon`] keeps the flag byte, the corner topology and the
+    /// corners; this is the rest of what the record stored, kept so an auditing
+    /// consumer can see the `unk` words and the never-followed pointers.
+    ///
+    /// Index-aligned with [`GameZMesh::mesh`]'s polygons, in stored order.
+    pub fn record(&self, polygon: usize) -> Option<&RawPolygonInfo> {
+        self.polygon_records.get(polygon)
     }
 
     /// Whether every stored polygon has its own group list: the invariant
@@ -1502,7 +1525,24 @@ fn check_mesh_index(
             // The reference asserts `prev_offset <= mesh_offset <=
             // nodes_offset` while reading the array, starting from the offset
             // just after the index.
-            if !(previous..header.nodes_offset).contains(&record.trailer) {
+            //
+            // Only the **upper** half is checked here. The lower half is
+            // subsumed by the sequential walk in `read_mesh_data`: a declared
+            // offset below the previous record's is not where the walk stands,
+            // so it is refused there as [`GameZError::MeshDataNotSequential`]
+            // with both offsets. Keeping the redundant comparison would only
+            // duplicate one check in two places.
+            //
+            // Recorded deviation from the reference: its assertion is inclusive
+            // at `nodes_offset`, this bound is not. So a *present* mesh record
+            // with no data at all, sitting last in the array, is refused here and
+            // accepted there. No measured archive contains one (all 17 139
+            // present records across the nine GameZ containers store data), so
+            // the corpus cannot say which reading is right. The strict reading
+            // is kept and the deviation is recorded rather than resolved by
+            // guessing; see
+            // `docs/findings/2026-09-29-f10-b-gamez-mesh-layout.md`.
+            if record.trailer >= header.nodes_offset {
                 return Err(GameZError::MeshDataOffset {
                     mesh: record.index,
                     offset: record.trailer,
@@ -1580,7 +1620,11 @@ fn read_one_mesh(
     let normals = read_vec3s(reader, allocation, info.normal_count, "mesh.normals")?;
     let morphs = read_vec3s(reader, allocation, info.morph_count, "mesh.morphs")?;
     let lights = read_mesh_lights(reader, allocation, info.light_count)?;
-    let (polygons, material_groups) = read_mesh_polygons(
+    let PolygonData {
+        records: polygon_records,
+        polygons,
+        material_groups,
+    } = read_mesh_polygons(
         reader,
         allocation,
         record.index,
@@ -1597,6 +1641,7 @@ fn read_one_mesh(
             normals,
             polygons,
         },
+        polygon_records,
         lights,
         morphs,
         materials,
@@ -1702,7 +1747,7 @@ fn read_mesh_polygons(
     mesh: u32,
     count: u32,
     findings: &mut Vec<ParseFinding>,
-) -> Result<(Vec<RawPolygon>, Vec<Vec<RawMaterialGroup>>), GameZError> {
+) -> Result<PolygonData, GameZError> {
     allocation.reserve(
         "polygon.records",
         reader.position(),
@@ -1756,7 +1801,21 @@ fn read_mesh_polygons(
         material_groups.push(groups);
     }
     debug_assert_eq!(polygons.len(), material_groups.len());
-    Ok((polygons, material_groups))
+    Ok(PolygonData {
+        records: infos,
+        polygons,
+        material_groups,
+    })
+}
+
+/// The three per-polygon results, all in stored order and all the same length.
+struct PolygonData {
+    /// The raw 40-byte records.
+    records: Vec<RawPolygonInfo>,
+    /// The parsed IR polygons.
+    polygons: Vec<RawPolygon>,
+    /// Every stored material group, one entry per polygon.
+    material_groups: Vec<Vec<RawMaterialGroup>>,
 }
 
 fn read_polygon_info(reader: &mut Reader<'_>) -> Result<RawPolygonInfo, GameZError> {

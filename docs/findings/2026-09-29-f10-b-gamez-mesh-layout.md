@@ -291,7 +291,7 @@ node performs, with `GameZMesh::index` naming the slot.
 
 ## Files and the one observable failure (listed before editing)
 
-- `crates/cs_formats/src/gamez/reader.rs` (new, ~1 800 lines): the layout
+- `crates/cs_formats/src/gamez/reader.rs` (new, ~1 900 lines): the layout
   constants (`GAMEZ_HEADER_BYTES`, `MESH_INFO_BYTES`, `POLYGON_INFO_BYTES`,
   `MESH_MATERIAL_INFO_BYTES`, `MESH_LIGHT_HEADER_BYTES`, `MESH_INDEX_BYTES`,
   `MESH_INFO_TRAILER_BYTES`, `VEC3_BYTES`, `CORNER_COUNT_MASK`, `FLAG_MASK`,
@@ -299,24 +299,24 @@ node performs, with `GameZMesh::index` naming the slot.
   `FLAG_NORMALS`, `FLAG_TRIANGLE_STRIP`, `FLAG_UNK2/3/6`, `UNK08_PLANES`,
   `UNK08_C4`), `Fixup` with both measured tables, `GameZHeader`, `MeshIndex`,
   `RawMeshInfo`, `RawPolygonInfo` (+ `corners`/`flags`/`has_normals`/
-  `is_triangle_strip`/`kind`/`unknown_flag_bits`), `RawMeshMaterialInfo`,
-  `RawMeshLightHeader`, `RawMeshLight`, `GameZMesh`, `GameZMeshes` (+ `present`,
-  `present_count`, `get`, `topologies`, `layout_evidence`),
-  `unchecked_material_references`, `ParseFinding`, `GameZError`,
-  `MESHES_ENTRYPOINT` and `read_gamez_meshes`.
-- `crates/cs_formats/src/gamez/mesh.rs`: `RawPolygon` gains
-  `materials: Vec<RawMaterialGroup>` (new type `RawMaterialGroup { material,
-  uvs }`), and `RawPolygon::material` / `RawCorner::uv` are documented as the
-  **first** group mirrored onto the single-valued IR fields. `RawMesh` itself is
-  unchanged.
+  `is_triangle_strip`/`kind`/`unknown_flag_bits`), `RawMaterialGroup`,
+  `RawMeshMaterialInfo`, `RawMeshLightHeader`, `RawMeshLight`, `GameZMesh`,
+  `GameZMeshes` (+ `present`, `present_count`, `get`, `topologies`,
+  `layout_evidence`), `unchecked_material_references`, `ParseFinding`,
+  `GameZError`, `MESHES_ENTRYPOINT` and `read_gamez_meshes`.
+- `crates/cs_formats/src/gamez/mesh.rs` is **unchanged**: `RawMesh`,
+  `RawPolygon` and `RawCorner` are F10-A's published contract and F10-C.01 has
+  merged a consumer of them, so the material groups are carried beside the
+  polygons on `GameZMesh::material_groups` instead of on `RawPolygon`. (An
+  earlier revision of this branch did add a field to `RawPolygon`; see §
+  "Re-verification by a second session".)
 - `crates/cs_formats/src/gamez/mod.rs` (wiring): `pub mod reader;`, re-exports,
   module doc.
 - `crates/cs_formats/src/lib.rs` (wiring): one module-doc paragraph.
 - `crates/cs_formats/tests/gamez/reader.rs` (new): the fixture writer and
-  sixteen `accept_f10_b_gamez_*` tests, two of them retail.
-- `crates/cs_formats/tests/gamez/main.rs`, `ngon.rs`: the two F10-A/F10-B
-  fixtures now state their (single) material group explicitly. No assertion
-  changed.
+  eighteen `accept_f10_b_gamez_*` tests, two of them retail.
+- `crates/cs_formats/tests/gamez/main.rs` (wiring): one `mod reader;` and a
+  module-doc sentence. `ngon.rs` is unchanged.
 - `docs/findings/2026-09-29-f10-b-gamez-mesh-layout.md` (this file),
   `docs/findings/evidence/F10-B-gamez-layout.json`,
   `crates/cs_formats/tests/evidence_report_f10_b_gamez.rs` (evidence harness).
@@ -387,11 +387,14 @@ contradict its own stored counts — so a fixture cannot accidentally parse.
 
 | Test | Covers |
 | --- | --- |
-| `header_gates_the_section` | signature, version, `textures_offset == 40`, the section order, the section bounds, each with its own variant, offset and numbers |
+| `header_gates_the_section` | signature, version, `textures_offset == 40`, the section order (**strictly**: two sections may not share an offset), the section bounds, each with its own variant, offset and numbers |
 | `every_truncation_fails_loudly` | **every** byte length from 0 to `len-1` fails; only the whole container parses |
 | `arrays_come_from_counts_not_pointers` | the `*_ptr` fields point nowhere and are kept raw; positions, normals, polygon record, UVs still read correctly, in order |
 | `morph_vectors_are_read_after_the_normals` | the third `Vec3` array is read at its own count, after the normals, into its own array; the retail corpus stores none, so only a fixture can cover it |
 | `flags_select_strip_and_normals` | `TRI_STRIP` is the only topology selector, `NORMALS` the only one that adds a normal array, an unmapped bit is a finding and the face still decodes |
+| `findings_name_what_the_profile_excludes` | all four `ParseFinding` variants, each naming the mesh and polygon the record is really in, the `corners < 3` boundary at 0, 1 and 2, that nothing is dropped (every stored polygon still reaches `RawMesh::topology`) and that a polygon with no group invents neither a UV nor a material reference |
+| `material_reference_words_survive_in_their_own_slots` | the three raw words of a `MeshMaterialInfo` in their own slots, distinct per reference and non-symmetric, and the mesh-level and per-polygon reference lists counted apart |
+| `polygon_record_words_survive_in_their_own_slots` | all ten raw words of a `PolygonNgC` in their own slots, two polygons differing in every word, the record list index-aligned with the IR polygons and the group lists |
 | `keeps_every_material_group` | two groups, both material indices and both UV sets survive, group 0 mirrored onto the single-valued fields |
 | `shared_position_keeps_both_corners` | one position index used twice keeps two corners with different UVs and colours, visible through the source-corner map (F10 #3, AC03) |
 | `light_records_are_read_two_pass` | two lights with one and two trailing vectors; all 19 header fields survive; the second light's vectors would be misread if the passes were interleaved |
@@ -401,7 +404,7 @@ contradict its own stored counts — so a fixture cannot accidentally parse.
 | `hostile_counts_are_refused_and_retryable` | `0xFFFF_FFFF` positions and three oversized `array_size` values refused before allocating; the ledger is unchanged afterwards and the same context then reads a good container; the record-table reservation is load-bearing at a budget one byte short |
 | `data_section_ends_at_nodes_offset` | the walk lands on `nodes_offset`; two meshes abut exactly; a container whose data does not fill its section is refused with both numbers, and a claimed section past the end is refused first |
 | `vertex_info_splits_into_nine_bit_fields` | the count is **nine** bits and the flags the top **seven**; both fields' full width, and a 260-corner stored record no eight-bit mask could describe |
-| `a_meshes_declared_offset_must_match_the_walk` | a mesh whose declared data offset the walk cannot reach is refused **naming that mesh and both offsets** |
+| `a_meshes_declared_offset_must_match_the_walk` | a mesh whose declared data offset the walk cannot reach is refused **naming that mesh and both offsets**; a **backwards** offset is refused by the sequential walk; and a present-but-empty last mesh, whose offset is exactly `nodes_offset`, is refused by the upper bound — the recorded deviation from the reference's inclusive assertion |
 | `retail_every_archive_lands_on_the_reference_offset` (retail) | all nine archives: the walk lands on the reference's own recorded `nodes_offset`, the header matches the reference's recorded words, the index is self-consistent, both remapped archives select their table and store the measured `last_index`, every face is counted exactly once, no invalid face, no findings |
 | `retail_flags_groups_and_seams_over_the_whole_corpus` (retail) | all nine archives: 128 734 polygons, strips only where `TRI_STRIP` is set, both normal cases, raw flag bytes include the bits the source does not name and are all one byte, **every stored group holds one coordinate per corner** and the corpus has two- and three-group polygons, corners share positions and shared ones keep their own attributes, 783 lights read, **no morph vectors anywhere**, and the unchecked-material count matches at both levels |
 
@@ -416,8 +419,9 @@ Both rounds use the same method: applied to
 `crates/cs_formats/src/gamez/reader.rs`, one mutation at a time, the file
 restored after each, then
 `cargo test --locked -p cs_formats --test gamez -- accept_f10_b_gamez_
---include-ignored` with `CS_GAME_DIR` set. Counts are failing task tests out of
-sixteen (seventeen after the morph fixture was added in round two).
+--include-ignored` with `CS_GAME_DIR` set. Counts are failing task tests out of the suite
+at the time: sixteen (seventeen after the morph fixture was added in round
+two, twenty after the reviewer's round three).
 
 | Mutation | Failing |
 | --- | --- |
@@ -476,7 +480,8 @@ independently rather than trusting it.
 **The reader is sound.** Both retail tests pass unchanged on all nine archives,
 and the discriminating check holds: for every archive the mesh-data walk ends
 exactly on the `nodes_offset` the pinned reference itself records. The suite is
-17 task tests — 15 synthetic and 2 retail — all passing with `CS_GAME_DIR` set;
+17 task tests — 15 synthetic and 2 retail — all passing with `CS_GAME_DIR` set
+(the reviewer's round three below brings it to 20);
 without it the two retail tests fail loudly rather than skipping. The counts
 reproduced the recorded ones exactly: 128 734 stored polygons, 1 006 of them
 multi-group (999 with two groups, 7 with three), 783 lights, no morph vectors,
@@ -525,6 +530,85 @@ The lesson worth keeping for the next fixture in this area: a synthetic fixture
 whose two arrays hold the same numbers cannot distinguish a reader that swaps
 them, and a field the retail corpus never exercises must be covered by a fixture
 or not covered at all.
+
+## Review by a second agent: findings, fixes and a third probe round
+
+The Rally reviewer of #363 re-derived the layout independently before reading
+the code, from this worksheet rather than from `reader.rs`: a throwaway walk
+written straight from the tables above lands **exactly** on the recorded
+`nodes_offset` for all nine archives and reproduces every headline number
+(128 734 stored polygons, 1 006 multi-group, 783 lights, 0 morph vectors,
+32 904 mesh-level material references), the nine `unk08` values match the nine
+`nodes_offset` values, and both fixup tables are **fully exercised** with zero
+mismatches — no table entry is dead, and the seven archives that select no table
+match the sequential expectation exactly. The header claims are therefore
+confirmed from the bytes, not taken on trust.
+
+**Six real test-sensitivity holes were found and closed.** Every one was
+verified by mutation: the mutation was applied to `reader.rs`, the whole task
+selection run, and the mutation confirmed to fail at least one test.
+
+1. **Three of the four `ParseFinding` variants were never asserted.** The reader
+   raises `StripWithoutNormals`, `PolygonWithoutMaterial` and
+   `PolygonTooFewCorners` — and the corpus contains none of the three, so the
+   retail half could not tell a reader that never raised them from one that did.
+   Deleting each `if` outright, and relaxing `corners < 3` to `corners < 2`,
+   **all survived the entire suite**. Added
+   `..._findings_name_what_the_profile_excludes`, which pins all four variants,
+   the corner-count boundary at 0/1/2, and that each finding names the mesh and
+   polygon the record is really in (a second mesh, so the index is not always
+   zero).
+2. **A finding could name the wrong mesh and nothing noticed it.** The original
+   fixtures that trigger a finding all put it in mesh 0, so `mesh + 1` in the
+   reader passed. The same test now places the excluded records in mesh 1 and
+   asserts the exact index.
+3. **The section chain's strictness was unpinned.** `first >= second` weakened to
+   `first > second` — letting two sections share an offset — survived. Added a
+   variant to `..._header_gates_the_section` in which `materials_offset` is set
+   equal to `meshes_offset`; only the strictness of the relation can refuse it.
+4. **A polygon with no stored material group was never exercised.** The IR's
+   `RawPolygon::material` falls back to a documented zero, and every corner's
+   `uv` is `None`; changing that fallback to a sentinel survived. Now asserted.
+5. **The raw words of the mesh material reference and of the polygon record were
+   read and then dropped.** `MeshMaterialInfo`'s three words and `PolygonNgC`'s
+   ten were parsed, but the reader kept only `material_index`-as-a-count for the
+   mesh list and nothing at all for the polygon list, so transposing
+   `material_index` with `polygon_usage_count`, or `unk28` with `unk32`, was
+   invisible to every assertion. Worse, the polygon's `unk` words and its four
+   never-followed `Ptr` fields were **discarded**, so a consumer auditing a face
+   had nowhere to see what was stored. Fixed on both sides: `GameZMesh` now keeps
+   `polygon_records` (`GameZMesh::record(polygon)`) alongside the existing
+   `material_groups`, exactly as the mesh record and the light headers are kept,
+   and two tests pin every word in its own slot.
+6. **The stored data offset's lower bound was checked twice.** `check_mesh_index`
+   compared the declared offset against `previous..nodes_offset`, but the
+   sequential walk in `read_mesh_data` already refuses any offset the walk has
+   not reached. Weakening the lower bound to `0..` survived. The lower half was
+   removed (with a comment saying where it is enforced instead) and the test now
+   asserts the **backwards** case is refused as `MeshDataNotSequential` with both
+   offsets, which is the check that actually does the work.
+
+**One recorded deviation from the reference was found** and is now stated in the
+code, the test and this document rather than left implicit. The reference's own
+assertion is quoted as `prev_offset <= mesh_offset <= nodes_offset`, **inclusive**
+at `nodes_offset`; this reader's bound is exclusive there. A *present* mesh
+record storing no data at all, last in the array, is therefore **refused** by
+this reader and **accepted** by the reference. Measured: all 17 139 present
+records across the nine containers store data, so no archive exercises the
+difference and the corpus cannot say which reading the original engine used. The
+strict reading is kept — it cannot turn a readable container into a wrong one,
+and the deviation is pinned by a test rather than resolved by a guess. It is
+deferred item 11 below.
+
+Two mutations the reviewer applied are **equivalent** rather than holes, and are
+recorded so a later reader does not re-run them: swapping the *scope strings* of
+two positional reads in a struct literal (`vertex_count: read("…normal_count")`)
+changes only an error message, since both reads still take the next four bytes in
+source order; and lowering the per-corner UV reservation's bound cannot be made
+load-bearing because the colour reservation beside it is always larger. The
+reviewer also found and killed two label-swap mutations of the same no-op kind by
+reading the generated code rather than the diff, which is why the first
+"swapped the two array reads" probe result was wrong.
 
 ## Recorded unknowns
 
@@ -588,6 +672,7 @@ parent is marked done.
 | 8 | Light records are parsed only because their length is needed to reach the polygons; their role in the original renderer is not established | 783 light records across the nine archives | F18 (light inventory) | any lighting claim |
 | 9 | Morph vectors: the layout and the reader handle them, `morph_count` is zero in all nine archives | none in the measured corpus | not scheduled; no content is affected | nothing currently |
 | 10 | Original-run behaviour of any kind: how the engine consumed this section, what it did with an ngon, what a light did | the whole mesh section | the owner (`human_play` / `human_review`) | every `verified_original` and `release_approved` claim; this report's claim is `implemented` and its layout class is `ObservedTool` |
+| 11 | **Recorded deviation from the pinned reference.** The reference asserts `prev_offset <= mesh_offset <= nodes_offset`, inclusive at the top; this reader's bound excludes `nodes_offset`, so a **present mesh record storing no data at all, last in the array**, is refused here and accepted there. No measured archive contains such a record (all 17 139 present records across the nine containers store data), so the corpus cannot decide which reading the original engine used; the strict one is kept and pinned by `..._a_meshes_declared_offset_must_match_the_walk` | any GameZ container with a zero-length present mesh record; none of the nine measured archives | **F10-D** (#46, retail) — the private corpus is the only place such a record can appear | any claim that this reader accepts exactly the reference's containers; a `MeshDataOffset` whose `offset` equals `nodes_offset` is the signal to check this item first |
 
 ## What F10-C.02 and F10-C.03 need from this
 
