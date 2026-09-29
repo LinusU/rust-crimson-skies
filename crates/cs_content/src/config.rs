@@ -40,6 +40,18 @@
 //! Values stay raw here: [`TuningSchema`] turns a declared field into a
 //! checked, typed [`Tuning`], and a field nothing is known about is never
 //! converted.
+//!
+//! Task #371 adds the record-kind schema: the keyed list members document
+//! the field list of every record kind in their own comments
+//! ([`cs_formats::text::records`]), but no type, unit, signedness or range.
+//! [`RecordSchema`] joins the two — it declares, per observed position, the
+//! documented field name (where the documented list and the shipped data
+//! establish it) and the [`FieldKind`] the retail data measures, or
+//! [`FieldKind::Unknown`] where nothing establishes it. A value of an
+//! unknown kind stays raw and is counted by
+//! [`RecordView::accounting`]; nothing here converts it. What the shipped
+//! data does *not* match, and why, is recorded in
+//! `docs/findings/2026-09-29-f12-i-record-kind-schemas.md`.
 
 use std::fmt;
 
@@ -47,11 +59,13 @@ use cs_formats::AllocationBudget;
 use cs_formats::ParseContext;
 use cs_formats::error::ParseError;
 use cs_formats::text::{
-    DialectReader, Fields, KeyedList, LineKind, LineTerminator, PlaceholderTable, QuoteIssue,
-    TextDialect, Unclassified, dialect_for_member, read_keyed_list, read_placeholders,
+    DialectReader, DocumentedField, Fields, KeyedList, LineKind, LineTerminator, PlaceholderTable,
+    QuoteIssue, RecordKind, TextDialect, Unclassified, dialect_for_member, documented_fields,
+    documented_scrapbook_fields, read_keyed_list, read_placeholders,
 };
 use cs_formats::{PeError, PeResources, RT_STRING, ResourceKey, ResourceLeaf, read_pe_resources};
 use cs_types::asset_id::SourceSpan;
+use cs_types::evidence::ClaimStatus;
 
 /// Entrypoint label [`ConfigDocument::read`] scopes the parse that books
 /// its owned nodes with.
@@ -1425,6 +1439,616 @@ pub fn resolve_tunings<'a>(
         resolved.push(ResolvedTuning { binding, outcome });
     }
     TuningReport { resolved }
+}
+
+// ---------------------------------------------------------------------------
+// Record kinds and their documented field lists (stage F12-I)
+// ---------------------------------------------------------------------------
+
+/// What kind of value one field of a configuration record holds.
+///
+/// The keyed list members document their *field lists* and nothing else:
+/// not one type, unit, signedness or range is stated, so these kinds claim
+/// only what the 636 object records of `ASSETS/LAYOUT.CSV` and the 461
+/// items of `ASSETS/SCRAPBOOK.CSV` establish. A kind nothing establishes is
+/// [`FieldKind::Unknown`], and a value of an unknown kind stays raw and is
+/// counted ([`RecordView::accounting`]); it is never converted.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FieldKind {
+    /// A whole number. `signed` is true when the retail data spells a
+    /// negative value in that position.
+    Integer {
+        /// Whether the field may be negative.
+        signed: bool,
+    },
+    /// A documented boolean (a `?` in the comment) spelled `0` or `1`.
+    Bool,
+    /// An eight-hex-digit `0x…` colour literal.
+    Color,
+    /// A file or asset name (`*.png`, `*.MPG`, …).
+    Path,
+    /// A name: a UI name, a resource-id name or an `IDS_…` string name.
+    Name,
+    /// Nothing establishes a kind; the value stays raw and is counted.
+    Unknown,
+}
+
+impl FieldKind {
+    /// Stable, machine-matchable label.
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Integer { .. } => "integer",
+            Self::Bool => "bool",
+            Self::Color => "color",
+            Self::Path => "path",
+            Self::Name => "name",
+            Self::Unknown => "unknown",
+        }
+    }
+
+    /// Whether a value of this kind can be typed at all. A `false` kind is
+    /// retained and counted, never converted.
+    pub const fn is_known(self) -> bool {
+        !matches!(self, Self::Unknown)
+    }
+}
+
+/// One field of one record kind's typed schema.
+///
+/// `name` is the documented field this position carries, or `None` when the
+/// documented list and the shipped data leave the position's identity
+/// unresolved. `None` is a recorded unknown: [`RecordView::accounting`]
+/// counts it only when the *kind* is also unknown. `evidence` records how the
+/// entry was established, weakest link first:
+/// [`ClaimStatus::Documented`] when the documented list and the data agree
+/// position for position, [`ClaimStatus::Inferred`] when the documented
+/// list leaves the field after the omissions the shipped data forces,
+/// [`ClaimStatus::ObservedTool`] when only the kind is measured (the name
+/// is not), and [`ClaimStatus::Unknown`] when neither a name nor a kind is
+/// established.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecordFieldSpec {
+    /// The observed position, `0` being the record letter / first field.
+    pub position: usize,
+    /// The documented field name, or `None` for a recorded unknown.
+    pub name: Option<&'static str>,
+    /// The kind, or [`FieldKind::Unknown`].
+    pub kind: FieldKind,
+    /// How the name and kind were established.
+    pub evidence: ClaimStatus,
+}
+
+/// Which documented schema a configuration entry follows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordSchema {
+    /// A one-letter `ASSETS/LAYOUT.CSV` record kind.
+    Layout(RecordKind),
+    /// A `ASSETS/SCRAPBOOK.CSV` `Mission_Spread_Item`.
+    Scrapbook,
+}
+
+impl RecordSchema {
+    /// The observed positions' specs, `0` being the record letter / first
+    /// field. The slice covers every position the member's records use, so
+    /// a field beyond it cannot occur.
+    pub const fn fields(self) -> &'static [RecordFieldSpec] {
+        match self {
+            Self::Layout(kind) => layout_schema(kind),
+            Self::Scrapbook => &SCRAPBOOK_SCHEMA,
+        }
+    }
+
+    /// The documented field list the schema cites, from the member's own
+    /// comments (`cs_formats::text::records`).
+    pub fn documented(self) -> &'static [DocumentedField] {
+        match self {
+            Self::Layout(kind) => documented_fields(kind),
+            Self::Scrapbook => documented_scrapbook_fields(),
+        }
+    }
+
+    /// A short label for a report.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Layout(kind) => kind.documented_name(),
+            Self::Scrapbook => "Mission_Spread_Item",
+        }
+    }
+
+    /// Which schema `entry` follows, or `None` when no documented record
+    /// covers it.
+    ///
+    /// A `LAYOUT.CSV` record is recognized by a one-letter first field the
+    /// documented record kinds own, and a `V`/`G` variable-definition key
+    /// is excluded first, because a definition's value could in principle
+    /// be a one-letter name. Whether the original tells the two apart by
+    /// the key or by the first field is **not** established — the two
+    /// rules agree on every observed line — so this picks the rule that
+    /// cannot misclassify a definition. A `SCRAPBOOK.CSV` item is
+    /// recognized by the shape the member uses for all 461 of its entries:
+    /// sixteen fields, the first a number. The recorded unknown is in
+    /// `docs/findings/2026-09-29-f12-i-record-kind-schemas.md`.
+    pub fn for_entry(entry: &ConfigEntry) -> Option<Self> {
+        if is_definition_key(&entry.key) {
+            return None;
+        }
+        let RawValue::Fields(fields) = &entry.value else {
+            return None;
+        };
+        let first = fields.first()?.value();
+        if let [letter] = first
+            && let Some(kind) = RecordKind::from_letter(*letter)
+        {
+            return Some(Self::Layout(kind));
+        }
+        if fields.len() == SCRAPBOOK_SCHEMA.len() && is_whole_number(first) {
+            return Some(Self::Scrapbook);
+        }
+        None
+    }
+}
+
+/// Whether `key` is a `V<digits>` or `G<digits>` name-placeholder
+/// definition, the second of the two rules the shipped data cannot tell
+/// apart (task #351).
+fn is_definition_key(key: &[u8]) -> bool {
+    matches!(key.first(), Some(b'V' | b'G'))
+        && key.len() > 1
+        && key[1..].iter().all(u8::is_ascii_digit)
+}
+
+const INTEGER: FieldKind = FieldKind::Integer { signed: false };
+const SIGNED_INTEGER: FieldKind = FieldKind::Integer { signed: true };
+const BOOL: FieldKind = FieldKind::Bool;
+const COLOR: FieldKind = FieldKind::Color;
+const PATH: FieldKind = FieldKind::Path;
+const NAME: FieldKind = FieldKind::Name;
+const UNRESOLVED: FieldKind = FieldKind::Unknown;
+
+const DOCUMENTED: ClaimStatus = ClaimStatus::Documented;
+const INFERRED: ClaimStatus = ClaimStatus::Inferred;
+const MEASURED: ClaimStatus = ClaimStatus::ObservedTool;
+const UNRESOLVED_EVIDENCE: ClaimStatus = ClaimStatus::Unknown;
+
+const fn field(
+    position: usize,
+    name: Option<&'static str>,
+    kind: FieldKind,
+    evidence: ClaimStatus,
+) -> RecordFieldSpec {
+    RecordFieldSpec {
+        position,
+        name,
+        kind,
+        evidence,
+    }
+}
+
+/// `B`: the shipped records have 15, 16, 19 or 20 fields and move the
+/// documented coordinates, so only the positions the data pins are named.
+/// Positions 9-12 and 19 are empty in every record; position 5 holds `0`
+/// in the records without colours and a `!` or an `IDS_…` name in those
+/// with them, so neither its name nor its kind is established.
+static BUTTON_SCHEMA: [RecordFieldSpec; 20] = [
+    field(0, Some("ID"), NAME, DOCUMENTED),
+    field(1, Some("ArtPath"), PATH, INFERRED),
+    field(2, Some("X"), INTEGER, INFERRED),
+    field(3, Some("Y"), INTEGER, INFERRED),
+    field(4, Some("Z"), INTEGER, INFERRED),
+    field(5, None, UNRESOLVED, UNRESOLVED_EVIDENCE),
+    field(6, None, NAME, MEASURED),
+    field(7, None, INTEGER, MEASURED),
+    field(8, None, INTEGER, MEASURED),
+    field(9, None, UNRESOLVED, UNRESOLVED_EVIDENCE),
+    field(10, None, UNRESOLVED, UNRESOLVED_EVIDENCE),
+    field(11, None, UNRESOLVED, UNRESOLVED_EVIDENCE),
+    field(12, None, UNRESOLVED, UNRESOLVED_EVIDENCE),
+    field(13, None, INTEGER, MEASURED),
+    field(14, Some("Checked?"), BOOL, INFERRED),
+    field(15, Some("ColorDisabled"), COLOR, INFERRED),
+    field(16, Some("ColorActive"), COLOR, INFERRED),
+    field(17, Some("ColorRollover"), COLOR, INFERRED),
+    field(18, Some("ColorDepressed"), COLOR, INFERRED),
+    field(19, None, UNRESOLVED, UNRESOLVED_EVIDENCE),
+];
+
+/// `P`: nine fields against ten documented; `HelpID` is the one the
+/// shipped data does not spell, and the eight remaining positions' kinds
+/// then line up with the documented list in order.
+static PANE_SCHEMA: [RecordFieldSpec; 9] = [
+    field(0, Some("ID"), NAME, DOCUMENTED),
+    field(1, Some("ArtPath"), PATH, INFERRED),
+    field(2, Some("X"), SIGNED_INTEGER, INFERRED),
+    field(3, Some("Y"), SIGNED_INTEGER, INFERRED),
+    field(4, Some("Z"), INTEGER, INFERRED),
+    field(5, Some("NUMFRAMES"), INTEGER, INFERRED),
+    field(6, Some("IsRegion?"), BOOL, INFERRED),
+    field(7, Some("AlphaType"), INTEGER, INFERRED),
+    field(8, Some("Volatile?"), BOOL, INFERRED),
+];
+
+/// `T`: nine fields, exactly the documented list, kinds measured.
+static TEXT_SCHEMA: [RecordFieldSpec; 9] = [
+    field(0, Some("ID"), NAME, DOCUMENTED),
+    field(1, Some("ResID"), NAME, DOCUMENTED),
+    field(2, Some("X"), INTEGER, DOCUMENTED),
+    field(3, Some("Y"), INTEGER, DOCUMENTED),
+    field(4, Some("Z"), INTEGER, DOCUMENTED),
+    field(5, Some("Width"), INTEGER, DOCUMENTED),
+    field(6, Some("Height"), INTEGER, DOCUMENTED),
+    field(7, Some("Color"), COLOR, DOCUMENTED),
+    field(8, Some("Justify"), INTEGER, DOCUMENTED),
+];
+
+/// `E`: eleven fields against thirteen documented; `HelpID` and `TabOrder`
+/// are the two the shipped data does not spell before the three colours.
+static EDIT_BOX_SCHEMA: [RecordFieldSpec; 11] = [
+    field(0, Some("ID"), NAME, DOCUMENTED),
+    field(1, Some("FontID"), NAME, INFERRED),
+    field(2, Some("X"), INTEGER, INFERRED),
+    field(3, Some("Y"), INTEGER, INFERRED),
+    field(4, Some("Z"), INTEGER, INFERRED),
+    field(5, Some("Width"), INTEGER, INFERRED),
+    field(6, Some("Height"), INTEGER, INFERRED),
+    field(7, Some("MaxChars"), INTEGER, INFERRED),
+    field(8, Some("TexTCOLOR"), COLOR, INFERRED),
+    field(9, Some("FrameColor"), COLOR, INFERRED),
+    field(10, Some("CursorColor"), COLOR, INFERRED),
+];
+
+/// `M`: nine fields like the documented list, but the first field after
+/// `ID` is the movie's file name — a field the documented list does not
+/// name — while `HelpID` is absent. Position 1 is a recorded unknown.
+static MOVIE_SCHEMA: [RecordFieldSpec; 9] = [
+    field(0, Some("ID"), NAME, DOCUMENTED),
+    field(1, None, PATH, MEASURED),
+    field(2, Some("X"), INTEGER, INFERRED),
+    field(3, Some("Y"), INTEGER, INFERRED),
+    field(4, Some("Z"), INTEGER, INFERRED),
+    field(5, Some("ScaleX"), INTEGER, INFERRED),
+    field(6, Some("ScaleY"), INTEGER, INFERRED),
+    field(7, Some("# Loops"), INTEGER, INFERRED),
+    field(8, Some("Region?"), BOOL, INFERRED),
+];
+
+/// `A`: nine fields against ten documented; `HelpID` is absent and the
+/// remaining eight line up in order.
+static TEXT_LIST_SCHEMA: [RecordFieldSpec; 9] = [
+    field(0, Some("ID"), NAME, DOCUMENTED),
+    field(1, Some("X"), INTEGER, INFERRED),
+    field(2, Some("Y"), INTEGER, INFERRED),
+    field(3, Some("Z"), INTEGER, INFERRED),
+    field(4, Some("Width"), INTEGER, INFERRED),
+    field(5, Some("Height"), INTEGER, INFERRED),
+    field(6, Some("TexTCOLOR"), COLOR, INFERRED),
+    field(7, Some("Justify"), INTEGER, INFERRED),
+    field(8, Some("ItemSpacing"), INTEGER, INFERRED),
+];
+
+/// `S`: thirteen fields against fourteen documented. Position 11 is empty
+/// in every record, so whether it is the documented `TabOrder` or `ResID`
+/// (or neither) is not established; the trailing colour's position is.
+static SCROLLING_TEXT_SCHEMA: [RecordFieldSpec; 13] = [
+    field(0, Some("ID"), NAME, DOCUMENTED),
+    field(1, Some("BorderColor"), COLOR, INFERRED),
+    field(2, Some("BackColor"), COLOR, INFERRED),
+    field(3, Some("Slider"), NAME, INFERRED),
+    field(4, Some("UpArrow"), NAME, INFERRED),
+    field(5, Some("DownArrow"), NAME, INFERRED),
+    field(6, Some("X"), INTEGER, INFERRED),
+    field(7, Some("Y"), INTEGER, INFERRED),
+    field(8, Some("Z"), INTEGER, INFERRED),
+    field(9, Some("Width"), INTEGER, INFERRED),
+    field(10, Some("Height"), INTEGER, INFERRED),
+    field(11, None, UNRESOLVED, UNRESOLVED_EVIDENCE),
+    field(12, Some("Color"), COLOR, INFERRED),
+];
+
+/// `D`: twelve fields against fourteen documented; `ScriptPointer` (whose
+/// documented position holds a coordinate in the data) and the trailing
+/// `TabOrder` are the two the shipped data does not spell.
+static DROPDOWN_SCHEMA: [RecordFieldSpec; 12] = [
+    field(0, Some("ID"), NAME, DOCUMENTED),
+    field(1, Some("Slider"), NAME, INFERRED),
+    field(2, Some("UpArrow"), NAME, INFERRED),
+    field(3, Some("DownArrow"), NAME, INFERRED),
+    field(4, Some("DropUp"), NAME, INFERRED),
+    field(5, Some("DropDown"), NAME, INFERRED),
+    field(6, Some("X"), INTEGER, INFERRED),
+    field(7, Some("Y"), INTEGER, INFERRED),
+    field(8, Some("Z"), INTEGER, INFERRED),
+    field(9, Some("Width"), INTEGER, INFERRED),
+    field(10, Some("Height"), INTEGER, INFERRED),
+    field(11, Some("TotalDisplayed"), INTEGER, INFERRED),
+];
+
+/// `L`: ten fields against twelve documented; as for the dropdown,
+/// `ScriptPointer` and `TabOrder` are absent.
+static LISTBOX_SCHEMA: [RecordFieldSpec; 10] = [
+    field(0, Some("ID"), NAME, DOCUMENTED),
+    field(1, Some("Slider"), NAME, INFERRED),
+    field(2, Some("UpArrow"), NAME, INFERRED),
+    field(3, Some("DownArrow"), NAME, INFERRED),
+    field(4, Some("X"), INTEGER, INFERRED),
+    field(5, Some("Y"), INTEGER, INFERRED),
+    field(6, Some("Z"), INTEGER, INFERRED),
+    field(7, Some("Width"), INTEGER, INFERRED),
+    field(8, Some("Height"), INTEGER, INFERRED),
+    field(9, Some("TotalDisplayed"), INTEGER, INFERRED),
+];
+
+/// `Z`: thirteen fields, exactly the documented list, kinds measured.
+static SLIDER_SCHEMA: [RecordFieldSpec; 13] = [
+    field(0, Some("ID"), NAME, DOCUMENTED),
+    field(1, Some("X"), INTEGER, DOCUMENTED),
+    field(2, Some("Y"), INTEGER, DOCUMENTED),
+    field(3, Some("Z"), INTEGER, DOCUMENTED),
+    field(4, Some("MinVal"), INTEGER, DOCUMENTED),
+    field(5, Some("MaxVal"), INTEGER, DOCUMENTED),
+    field(6, Some("CurrVal"), INTEGER, DOCUMENTED),
+    field(7, Some("RegionFile"), PATH, DOCUMENTED),
+    field(8, Some("SliderFile"), PATH, DOCUMENTED),
+    field(9, Some("Left"), INTEGER, DOCUMENTED),
+    field(10, Some("Top"), SIGNED_INTEGER, DOCUMENTED),
+    field(11, Some("Right"), INTEGER, DOCUMENTED),
+    field(12, Some("Bottom"), SIGNED_INTEGER, DOCUMENTED),
+];
+
+/// `W`: documented but absent from the shipped member, so every field but
+/// the record letter is a recorded unknown. Its names come from the
+/// documented list and are never claimed to hold a kind.
+static SOUND_OBJECT_SCHEMA: [RecordFieldSpec; 6] = [
+    field(0, Some("ID"), NAME, DOCUMENTED),
+    field(1, Some("WAVFileName"), UNRESOLVED, UNRESOLVED_EVIDENCE),
+    field(2, Some("Channel"), UNRESOLVED, UNRESOLVED_EVIDENCE),
+    field(3, Some("Volume"), UNRESOLVED, UNRESOLVED_EVIDENCE),
+    field(
+        4,
+        Some("LoopCount (0=continuous)"),
+        UNRESOLVED,
+        UNRESOLVED_EVIDENCE,
+    ),
+    field(5, Some("Autostart?"), UNRESOLVED, UNRESOLVED_EVIDENCE),
+];
+
+/// The `Mission_Spread_Item` schema: sixteen fields, exactly the documented
+/// list, all 461 items consistent, kinds measured.
+static SCRAPBOOK_SCHEMA: [RecordFieldSpec; 16] = [
+    field(0, Some("Objective"), SIGNED_INTEGER, DOCUMENTED),
+    field(1, Some("ResourceID"), NAME, DOCUMENTED),
+    field(2, Some("ImageName"), PATH, DOCUMENTED),
+    field(3, Some("ImageType"), NAME, DOCUMENTED),
+    field(4, Some("X"), INTEGER, DOCUMENTED),
+    field(5, Some("Y"), INTEGER, DOCUMENTED),
+    field(6, Some("Alpha"), INTEGER, DOCUMENTED),
+    field(7, Some("Width"), INTEGER, DOCUMENTED),
+    field(8, Some("Height"), INTEGER, DOCUMENTED),
+    field(9, Some("DrawOrder"), INTEGER, DOCUMENTED),
+    field(10, Some("Left,Top,Right,Bottom"), NAME, DOCUMENTED),
+    field(11, Some("Zoom"), NAME, DOCUMENTED),
+    field(12, Some("ZoomX"), INTEGER, DOCUMENTED),
+    field(13, Some("ZoomY"), INTEGER, DOCUMENTED),
+    field(14, Some("TitleResID"), NAME, DOCUMENTED),
+    field(15, Some("TextResID"), NAME, DOCUMENTED),
+];
+
+/// The typed schema of one `LAYOUT.CSV` record kind.
+pub const fn layout_schema(kind: RecordKind) -> &'static [RecordFieldSpec] {
+    match kind {
+        RecordKind::Button => &BUTTON_SCHEMA,
+        RecordKind::Pane => &PANE_SCHEMA,
+        RecordKind::Text => &TEXT_SCHEMA,
+        RecordKind::EditBox => &EDIT_BOX_SCHEMA,
+        RecordKind::Movie => &MOVIE_SCHEMA,
+        RecordKind::TextList => &TEXT_LIST_SCHEMA,
+        RecordKind::ScrollingText => &SCROLLING_TEXT_SCHEMA,
+        RecordKind::Dropdown => &DROPDOWN_SCHEMA,
+        RecordKind::Listbox => &LISTBOX_SCHEMA,
+        RecordKind::Slider => &SLIDER_SCHEMA,
+        RecordKind::SoundObject => &SOUND_OBJECT_SCHEMA,
+    }
+}
+
+/// The typing of one `SCRAPBOOK.CSV` item.
+pub const fn scrapbook_schema() -> &'static [RecordFieldSpec] {
+    &SCRAPBOOK_SCHEMA
+}
+
+/// What the bytes of one observed field themselves show, before any schema
+/// is applied. This is a spelling, not a kind: a `<NAME>` placeholder is
+/// resolved separately by the F12-E pass and may stand for a value of any
+/// kind.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FieldSpelling {
+    /// The field has no bytes.
+    Empty,
+    /// A `<NAME>` reference the F12-E pass resolves.
+    Placeholder,
+    /// A decimal whole number, optionally signed.
+    Integer,
+    /// A `0x`/`0X`-prefixed whole number that is not an eight-digit colour.
+    Hex,
+    /// An eight-hex-digit `0x…` colour.
+    Color,
+    /// Anything else.
+    Text,
+}
+
+/// One observed field of a record, matched to its schema position.
+#[derive(Clone, Copy, Debug)]
+pub struct RecordField<'a> {
+    /// The observed position, `0` being the record letter / first field.
+    pub position: usize,
+    /// The schema entry for the position, `None` when no documented record
+    /// covers it (which cannot happen for a schema the view was built for).
+    pub spec: Option<&'static RecordFieldSpec>,
+    /// The field as written.
+    pub field: &'a RawField,
+    /// What the bytes themselves show.
+    pub spelling: FieldSpelling,
+}
+
+impl RecordField<'_> {
+    /// The declared kind, or [`FieldKind::Unknown`] when nothing establishes
+    /// one. A value of an unknown kind is retained and counted, not
+    /// converted.
+    pub fn kind(&self) -> FieldKind {
+        self.spec.map_or(FieldKind::Unknown, |spec| spec.kind)
+    }
+
+    /// The documented field name, or `None` for a recorded unknown.
+    pub fn name(&self) -> Option<&'static str> {
+        self.spec.and_then(|spec| spec.name)
+    }
+}
+
+/// One record entry read against its kind's schema, retaining every field.
+#[derive(Clone, Debug)]
+pub struct RecordView<'a> {
+    schema: RecordSchema,
+    fields: Vec<RecordField<'a>>,
+    unsplit: bool,
+}
+
+impl<'a> RecordView<'a> {
+    /// Reads `entry` against `schema`, classifying each field's spelling.
+    /// Nothing is converted and no byte changes: the view borrows the
+    /// document's own fields.
+    pub fn new(schema: RecordSchema, entry: &'a ConfigEntry) -> Self {
+        let specs = schema.fields();
+        let (fields, unsplit) = match &entry.value {
+            RawValue::Fields(owned) => (
+                owned
+                    .iter()
+                    .enumerate()
+                    .map(|(position, field)| RecordField {
+                        position,
+                        spec: specs.get(position),
+                        field,
+                        spelling: spell(field.value()),
+                    })
+                    .collect(),
+                false,
+            ),
+            RawValue::Unsplit { .. } => (Vec::new(), true),
+        };
+        Self {
+            schema,
+            fields,
+            unsplit,
+        }
+    }
+
+    /// Reads `entry` against whichever schema it follows, or `None` when no
+    /// documented record covers it.
+    pub fn for_entry(entry: &'a ConfigEntry) -> Option<Self> {
+        RecordSchema::for_entry(entry).map(|schema| Self::new(schema, entry))
+    }
+
+    /// The schema the entry was read against.
+    pub fn schema(&self) -> RecordSchema {
+        self.schema
+    }
+
+    /// Every field, in member order.
+    pub fn fields(&self) -> &[RecordField<'a>] {
+        &self.fields
+    }
+
+    /// Whether the entry's value could not be split into fields at all, so
+    /// no field was classified and the whole value stays raw.
+    pub fn unsplit(&self) -> bool {
+        self.unsplit
+    }
+
+    /// What the record yielded: how many fields were typed, how many stayed
+    /// unknown, and how many were placeholders or empty.
+    ///
+    /// `unknown` is the count the spec's non-negotiable #5 cares about: a
+    /// field whose kind cannot be established is retained in the document
+    /// and counted here rather than dropped. A record whose value did not
+    /// split reports `unsplit` and counts the whole value as one unknown.
+    pub fn accounting(&self) -> RecordAccounting {
+        let mut accounting = RecordAccounting {
+            schema: self.schema.label(),
+            unsplit: self.unsplit,
+            ..RecordAccounting::default()
+        };
+        if self.unsplit {
+            accounting.unknown = 1;
+            return accounting;
+        }
+        for field in &self.fields {
+            accounting.fields += 1;
+            match field.spelling {
+                FieldSpelling::Empty => accounting.empty += 1,
+                FieldSpelling::Placeholder => accounting.placeholders += 1,
+                _ => {}
+            }
+            if field.kind().is_known() {
+                accounting.typed += 1;
+            } else {
+                accounting.unknown += 1;
+            }
+        }
+        accounting
+    }
+}
+
+/// What one record's fields yielded.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RecordAccounting {
+    /// The schema's report label.
+    pub schema: &'static str,
+    /// Fields the value split into.
+    pub fields: usize,
+    /// Fields whose kind is established.
+    pub typed: usize,
+    /// Fields whose kind is not established (including a value that did not
+    /// split at all, which is one unknown).
+    pub unknown: usize,
+    /// Fields spelled as a `<NAME>` placeholder (a spelling compatible with
+    /// any kind).
+    pub placeholders: usize,
+    /// Empty fields.
+    pub empty: usize,
+    /// Whether the value could not be split into fields at all.
+    pub unsplit: bool,
+}
+
+/// Whether `text` is a decimal whole number, optionally signed.
+fn is_whole_number(text: &[u8]) -> bool {
+    let digits = match text.first() {
+        Some(b'-' | b'+') => &text[1..],
+        _ => text,
+    };
+    !digits.is_empty() && digits.iter().all(u8::is_ascii_digit)
+}
+
+/// What the bytes of one field show, without applying a schema.
+fn spell(text: &[u8]) -> FieldSpelling {
+    if text.is_empty() {
+        return FieldSpelling::Empty;
+    }
+    if text.first() == Some(&b'<') && text.last() == Some(&b'>') && text.len() > 2 {
+        return FieldSpelling::Placeholder;
+    }
+    if let Some(hex) = text
+        .strip_prefix(b"0x")
+        .or_else(|| text.strip_prefix(b"0X"))
+        && !hex.is_empty()
+        && hex.iter().all(u8::is_ascii_hexdigit)
+    {
+        return if hex.len() == 8 {
+            FieldSpelling::Color
+        } else {
+            FieldSpelling::Hex
+        };
+    }
+    if is_whole_number(text) {
+        return FieldSpelling::Integer;
+    }
+    FieldSpelling::Text
 }
 
 #[cfg(test)]
@@ -3281,5 +3905,410 @@ J=0x1.8\r\n";
             "SCRAPBOOK.CSV carries the misspelling too: {:?}",
             scrapbook.exponent_shaped
         );
+    }
+
+
+    /// Authored from the observed *shapes*: a twenty-field `B` button record
+    /// — the widest the retail member has — carrying a number at the one
+    /// position whose kind the documented list and the data do not establish,
+    /// a `<NAME>` placeholder, and four empty fields between the coordinates.
+    /// No original byte or value is reproduced.
+    const BUTTON_RECORD: &[u8] = b"BTN_OK=B,art.png,1,2,3,0,IDS_LABEL,4,5,,,,,6,1,\
+0xff000000,0xff0000ff,0x00ff00ff,0x0000ffff,<GROUP>\r\n";
+
+    /// An entry whose value never split, shaped like the observed dialect.
+    const BROKEN_BUTTON: &[u8] = b"BTN_BAD=B,\"open\r\n";
+
+    fn records(member: &[u8]) -> ConfigDocument {
+        let mut context = ParseContext::with_defaults("fixture");
+        ConfigDocument::read(&mut context, source(LAYOUT, member.len()), member)
+            .expect("an observed keyed list member reads")
+    }
+
+    /// Every declared field spec is traceable: a named position carries a name
+    /// from that kind's own documented list, evidence of a measured kind (or
+    /// an inferred one) is paired with that name, a kind nothing establishes
+    /// is the weakest evidence, and a measured kind with no documented name
+    /// records the missing name as `None`. Positions are contiguous, so every
+    /// observed field has a spec, and a documented list the data matches
+    /// position for position is transcribed into the schema in that order.
+    #[test]
+    fn accept_f12_i_record_schemas_are_traceable_to_documented_lists() {
+        for kind in RecordKind::ALL {
+            let schema = layout_schema(kind);
+            assert!(!schema.is_empty(), "{}", kind.documented_name());
+            for (index, spec) in schema.iter().enumerate() {
+                assert_eq!(spec.position, index, "{}", kind.documented_name());
+                if let Some(name) = spec.name {
+                    assert!(
+                        documented_fields(kind)
+                            .iter()
+                            .any(|field| field.name == name),
+                        "{} names `{name}`, which its documented list does not",
+                        kind.documented_name()
+                    );
+                }
+                match spec.evidence {
+                    // A name and a kind both established, or the name inferred
+                    // once the data's omissions are removed: both are known.
+                    ClaimStatus::Documented | ClaimStatus::Inferred => {
+                        assert!(spec.kind.is_known(), "{}", kind.documented_name());
+                        assert!(spec.name.is_some(), "{}", kind.documented_name());
+                    }
+                    // Only the kind was measured; the name is recorded as
+                    // missing rather than invented.
+                    ClaimStatus::ObservedTool => {
+                        assert!(spec.kind.is_known(), "{}", kind.documented_name());
+                        assert_eq!(spec.name, None, "{}", kind.documented_name());
+                    }
+                    // Nothing establishes the kind: the recorded unknown that
+                    // the accounting retains and counts.
+                    ClaimStatus::Unknown => {
+                        assert_eq!(spec.kind, FieldKind::Unknown, "{}", kind.documented_name());
+                    }
+                    other => panic!("{}: unexpected evidence {other:?}", kind.documented_name()),
+                }
+                // A kind nothing establishes is exactly the weakest evidence.
+                if spec.kind == FieldKind::Unknown {
+                    assert_eq!(
+                        spec.evidence,
+                        ClaimStatus::Unknown,
+                        "{}",
+                        kind.documented_name()
+                    );
+                }
+            }
+            // A name is never reused inside one kind's schema.
+            let mut names: Vec<&str> = schema.iter().filter_map(|spec| spec.name).collect();
+            let before = names.len();
+            names.sort_unstable();
+            names.dedup();
+            assert_eq!(
+                names.len(),
+                before,
+                "{} reclaims a name",
+                kind.documented_name()
+            );
+        }
+
+        // The scrapbook schema is the documented Mission_Spread_Item list,
+        // sixteen contiguous positions, every one documented and known.
+        let scrapbook = scrapbook_schema();
+        assert_eq!(scrapbook.len(), 16);
+        assert_eq!(RecordSchema::Scrapbook.fields(), scrapbook);
+        assert_eq!(
+            RecordSchema::Scrapbook.documented(),
+            documented_scrapbook_fields()
+        );
+        for (index, spec) in scrapbook.iter().enumerate() {
+            assert_eq!(spec.position, index);
+            assert_eq!(spec.name, Some(documented_scrapbook_fields()[index].name));
+            assert_eq!(spec.evidence, ClaimStatus::Documented);
+            assert!(spec.kind.is_known());
+        }
+
+        // The two kinds whose documented list and data agree position for
+        // position are transcribed whole: name and kind, in order.
+        for kind in [RecordKind::Text, RecordKind::Slider] {
+            let schema = layout_schema(kind);
+            let documented = documented_fields(kind);
+            assert_eq!(schema.len(), documented.len(), "{}", kind.documented_name());
+            for (index, spec) in schema.iter().enumerate() {
+                assert_eq!(spec.name, Some(documented[index].name));
+                assert_eq!(spec.evidence, ClaimStatus::Documented);
+                assert!(spec.kind.is_known());
+            }
+        }
+
+        // The sound object was never observed: its documented names stand,
+        // but no field of it but the record letter claims a kind.
+        let sound = layout_schema(RecordKind::SoundObject);
+        assert_eq!(
+            sound
+                .iter()
+                .filter_map(|spec| spec.name)
+                .collect::<Vec<_>>(),
+            documented_fields(RecordKind::SoundObject)
+                .iter()
+                .map(|field| field.name)
+                .collect::<Vec<_>>()
+        );
+        assert!(
+            sound
+                .iter()
+                .skip(1)
+                .all(|spec| spec.kind == FieldKind::Unknown)
+        );
+    }
+
+    /// Non-negotiable #5 applied to record fields: a field whose kind the
+    /// documented list and the data do not establish stays in the document
+    /// and is counted as unknown even when its bytes look like a number; a
+    /// value that never split is one unknown rather than a silent success.
+    /// The accounting is reached through the production
+    /// `RecordView::for_entry`.
+    #[test]
+    fn accept_f12_i_unknown_kinds_stay_raw_and_are_counted() {
+        let document = records(BUTTON_RECORD);
+        let entry = entry_of(&document, b"BTN_OK");
+        let view = RecordView::for_entry(entry).expect("a B record has a schema");
+        assert_eq!(view.schema(), RecordSchema::Layout(RecordKind::Button));
+        assert!(!view.unsplit());
+        assert_eq!(view.fields().len(), 20);
+        assert_eq!(
+            view.accounting(),
+            RecordAccounting {
+                schema: "Button",
+                fields: 20,
+                typed: 14,
+                unknown: 6,
+                placeholders: 1,
+                empty: 4,
+                unsplit: false,
+            }
+        );
+        // The unresolved position holds a number and is neither converted nor
+        // dropped: it is still the member's own bytes, and the spelling says
+        // `Integer` while the kind stays `Unknown`.
+        let unresolved = view.fields()[5];
+        assert_eq!(unresolved.name(), None);
+        assert_eq!(unresolved.kind(), FieldKind::Unknown);
+        assert_eq!(unresolved.spelling, FieldSpelling::Integer);
+        assert_eq!(unresolved.field.value(), b"0");
+        // A placeholder is a spelling compatible with any kind, so its
+        // position is an unknown too — counted once and kept.
+        assert_eq!(view.fields()[19].spelling, FieldSpelling::Placeholder);
+        assert_eq!(view.fields()[19].kind(), FieldKind::Unknown);
+        // Nothing was converted: every byte survives and the entry is still
+        // the document's own.
+        assert_eq!(document.reassemble(), BUTTON_RECORD);
+        assert_eq!(document.accounting().entries, 1);
+        assert_eq!(document.accounting().unconsumed, 1);
+
+        // A value that never split has no field to classify: `for_entry` finds
+        // no schema for it, and reading it directly against a schema reports
+        // the whole value as one unknown, never as success.
+        let broken = records(BROKEN_BUTTON);
+        let entry = entry_of(&broken, b"BTN_BAD");
+        assert!(RecordView::for_entry(entry).is_none());
+        let view = RecordView::new(RecordSchema::Layout(RecordKind::Button), entry);
+        assert!(view.unsplit());
+        assert!(view.fields().is_empty());
+        assert_eq!(
+            view.accounting(),
+            RecordAccounting {
+                schema: "Button",
+                fields: 0,
+                typed: 0,
+                unknown: 1,
+                placeholders: 0,
+                empty: 0,
+                unsplit: true,
+            }
+        );
+        assert_eq!(broken.reassemble(), BROKEN_BUTTON);
+    }
+
+    /// The documented record kinds are recognized through the production
+    /// entry point: a record letter selects its kind, a `V`/`G` definition is
+    /// excluded first — its value may itself begin with a record letter — and
+    /// a `SCRAPBOOK.CSV` item is the sixteen-field numeric-first shape. A
+    /// shape no documented record has is left without a schema.
+    #[test]
+    fn accept_f12_i_for_entry_selects_documented_kinds_and_excludes_definitions() {
+        /// Authored: two definitions, one whose value spells a record letter;
+        /// a normal record; a lower-case letter no kind owns; and a
+        /// sixteen-field numeric-first scrapbook item.
+        const SHAPES: &[u8] = b"V9=B,1\r\n\
+G2=T,2\r\n\
+BTN_OK=B,art.png,1,2,3,0,IDS_LABEL,4,5,,,,,6,1,0xff000000,0xff0000ff,0x00ff00ff,0x0000ffff,<GROUP>\r\n\
+LOWER=b,1\r\n\
+SBROW=1,IDS_IMG,thumb.png,PNG,10,20,255,64,64,0,\"0,0,64,64\",1,1,1,TITLE,TEXT\r\n";
+        let document = records(SHAPES);
+
+        // The definition rule wins: a definition whose value spells a record
+        // letter is not a record, which is the one distinction the two
+        // candidate rules cannot disagree about here.
+        assert_eq!(RecordSchema::for_entry(entry_of(&document, b"V9")), None);
+        assert_eq!(RecordSchema::for_entry(entry_of(&document, b"G2")), None);
+        assert!(RecordView::for_entry(entry_of(&document, b"V9")).is_none());
+        assert_eq!(
+            RecordSchema::for_entry(entry_of(&document, b"BTN_OK")),
+            Some(RecordSchema::Layout(RecordKind::Button))
+        );
+        assert_eq!(
+            RecordView::for_entry(entry_of(&document, b"BTN_OK"))
+                .expect("a record")
+                .schema(),
+            RecordSchema::Layout(RecordKind::Button)
+        );
+        // A lower-case letter is not a documented record letter.
+        assert_eq!(RecordSchema::for_entry(entry_of(&document, b"LOWER")), None);
+        // Sixteen fields with a numeric first field is the scrapbook shape.
+        assert_eq!(
+            RecordSchema::for_entry(entry_of(&document, b"SBROW")),
+            Some(RecordSchema::Scrapbook)
+        );
+        assert_eq!(RecordSchema::Scrapbook.label(), "Mission_Spread_Item");
+        assert_eq!(RecordSchema::Layout(RecordKind::Button).label(), "Button");
+
+        // The schema a consumer gets names the documented list it cites.
+        assert_eq!(
+            RecordSchema::Layout(RecordKind::EditBox).documented(),
+            documented_fields(RecordKind::EditBox)
+        );
+    }
+
+    // ------------------------------------------------- F12-I retail reads
+
+    /// The original installation's `crimson.rof`, or a loud panic naming
+    /// `CS_GAME_DIR`.
+    fn retail_rof() -> Vec<u8> {
+        let dir = std::env::var_os("CS_GAME_DIR")
+            .expect("CS_GAME_DIR is not set: this test needs the original installation");
+        let path = std::path::PathBuf::from(dir).join(cs_formats::text::dialect::CRIMSON_ROF);
+        std::fs::read(&path).unwrap_or_else(|error| panic!("{}: {error}", path.display()))
+    }
+
+    /// Reads one member of the retail archive through the production
+    /// directory and bounded-member readers; `path` is relative to the
+    /// archive root, e.g. `ASSETS/LAYOUT.CSV`.
+    fn retail_member(rof: &[u8], path: &str) -> Vec<u8> {
+        let mut offset = 0u32;
+        let segments: Vec<&str> = path.split('/').collect();
+        for (depth, segment) in segments.iter().enumerate() {
+            let mut context = ParseContext::with_defaults(cs_formats::text::dialect::CRIMSON_ROF);
+            let block = cs_formats::read_directory(&mut context, &rof[offset as usize..])
+                .expect("a retail directory block reads");
+            let (_, record) = block
+                .entries()
+                .map(|entry| {
+                    let name = entry.name.strip_suffix(&[0]).unwrap_or(entry.name);
+                    (String::from_utf8_lossy(name).into_owned(), entry.record)
+                })
+                .find(|(name, _)| name.eq_ignore_ascii_case(segment))
+                .unwrap_or_else(|| panic!("{path}: no `{segment}` in the retail archive"));
+            if depth + 1 < segments.len() {
+                assert!(
+                    record.flags.is_directory(),
+                    "{path}: {segment} is a directory"
+                );
+                offset = record.start;
+                continue;
+            }
+            let member = cs_formats::RofMember {
+                path: Vec::new(),
+                record,
+                start: u64::from(record.start),
+                stored_end: u64::from(record.start) + u64::from(record.raw_length_on_disk),
+            };
+            let context = ParseContext::with_defaults(cs_formats::text::dialect::CRIMSON_ROF);
+            return cs_formats::read_member(
+                &context,
+                rof,
+                &member,
+                &cs_formats::RofLimits::default(),
+            )
+            .expect("a retail member reads")
+            .data;
+        }
+        unreachable!("paths have at least one segment")
+    }
+
+    fn read_member_document(member: &str, bytes: &[u8]) -> ConfigDocument {
+        let mut context = ParseContext::with_defaults(member);
+        ConfigDocument::read(&mut context, source(member, bytes.len()), bytes)
+            .expect("an observed keyed list member reads")
+    }
+
+    /// Retail: the shipped `ASSETS/LAYOUT.CSV` has exactly the 636 object
+    /// records the survey measured — one per record letter but the absent
+    /// sound object — every observed field position covered by its schema,
+    /// and the fully-documented kinds type every field while the button's
+    /// underdetermined positions are retained and counted. The shipped
+    /// `ASSETS/SCRAPBOOK.CSV` has 461 sixteen-field items, all fully typed.
+    #[test]
+    #[ignore = "requires CS_GAME_DIR"]
+    fn accept_f12_i_retail_record_kinds_are_typed_and_unknowns_are_counted() {
+        use std::collections::HashMap;
+
+        let rof = retail_rof();
+
+        let layout_bytes = retail_member(&rof, "ASSETS/LAYOUT.CSV");
+        let layout = read_member_document("ASSETS/LAYOUT.CSV", &layout_bytes);
+        assert_eq!(layout.accounting().entries, 822);
+        let mut per_kind: HashMap<RecordKind, usize> = HashMap::new();
+        let mut button_shapes: HashMap<usize, usize> = HashMap::new();
+        let mut unknown_total: HashMap<RecordKind, usize> = HashMap::new();
+        let mut classified = 0usize;
+        for entry in layout.entries() {
+            let Some(view) = RecordView::for_entry(entry) else {
+                continue;
+            };
+            let RecordSchema::Layout(kind) = view.schema() else {
+                panic!("the layout member holds layout records");
+            };
+            classified += 1;
+            *per_kind.entry(kind).or_default() += 1;
+            if kind == RecordKind::Button {
+                *button_shapes.entry(view.fields().len()).or_default() += 1;
+            }
+            let accounting = view.accounting();
+            assert_eq!(accounting.typed + accounting.unknown, accounting.fields);
+            assert!(
+                view.fields().len() <= view.schema().fields().len(),
+                "{}: an observed position has no spec",
+                kind.documented_name()
+            );
+            *unknown_total.entry(kind).or_default() += accounting.unknown;
+        }
+        assert_eq!(classified, 636, "the shipped member's object records");
+        assert_eq!(per_kind.len(), 10, "the sound object is absent");
+        assert_eq!(per_kind.get(&RecordKind::Button), Some(&119));
+        assert_eq!(per_kind.get(&RecordKind::Pane), Some(&106));
+        assert_eq!(per_kind.get(&RecordKind::Text), Some(&297));
+        assert_eq!(per_kind.get(&RecordKind::EditBox), Some(&4));
+        assert_eq!(per_kind.get(&RecordKind::Movie), Some(&6));
+        assert_eq!(per_kind.get(&RecordKind::TextList), Some(&16));
+        assert_eq!(per_kind.get(&RecordKind::ScrollingText), Some(&8));
+        assert_eq!(per_kind.get(&RecordKind::Dropdown), Some(&70));
+        assert_eq!(per_kind.get(&RecordKind::Listbox), Some(&6));
+        assert_eq!(per_kind.get(&RecordKind::Slider), Some(&4));
+        assert_eq!(
+            button_shapes,
+            HashMap::from([(15, 65), (16, 9), (19, 44), (20, 1)]),
+            "the button's four observed shapes"
+        );
+        // A kind whose documented list and data agree position for position
+        // types every field...
+        assert_eq!(unknown_total.get(&RecordKind::Text), Some(&0));
+        assert_eq!(unknown_total.get(&RecordKind::Slider), Some(&0));
+        assert_eq!(unknown_total.get(&RecordKind::Pane), Some(&0));
+        assert_eq!(unknown_total.get(&RecordKind::EditBox), Some(&0));
+        assert_eq!(unknown_total.get(&RecordKind::Movie), Some(&0));
+        assert_eq!(unknown_total.get(&RecordKind::TextList), Some(&0));
+        assert_eq!(unknown_total.get(&RecordKind::Dropdown), Some(&0));
+        assert_eq!(unknown_total.get(&RecordKind::Listbox), Some(&0));
+        // The scrolling text's one empty position carries no measured kind:
+        // eight records, one unknown each.
+        assert_eq!(unknown_total.get(&RecordKind::ScrollingText), Some(&8));
+        // ...while the button's underdetermined positions are retained and
+        // counted rather than guessed away: five in a fifteen-, sixteen- or
+        // nineteen-field record and six in the twenty-field one.
+        assert_eq!(unknown_total.get(&RecordKind::Button), Some(&(5 * 118 + 6)));
+
+        let scrapbook_bytes = retail_member(&rof, "ASSETS/SCRAPBOOK.CSV");
+        let scrapbook = read_member_document("ASSETS/SCRAPBOOK.CSV", &scrapbook_bytes);
+        let mut items = 0usize;
+        for entry in scrapbook.entries() {
+            let view = RecordView::for_entry(entry).expect("a scrapbook item");
+            assert_eq!(view.schema(), RecordSchema::Scrapbook);
+            assert_eq!(view.fields().len(), 16);
+            let accounting = view.accounting();
+            assert_eq!(accounting.typed, 16, "the list is fully documented");
+            assert_eq!(accounting.unknown, 0, "the list is fully documented");
+            items += 1;
+        }
+        assert_eq!(items, 461);
     }
 }
