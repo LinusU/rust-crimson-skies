@@ -2,10 +2,9 @@
 
 The binding records for the campaign: one work order at a time, bound to the
 original data the private installation actually contains. Nothing in this
-directory is original game data — no assets, scripts or extracted bytes —
-and nothing here has been read from `$CS_GAME_DIR` yet.
+directory is original game data — no assets, scripts or extracted bytes.
 
-## What is here now (stage F50-A)
+## What is here
 
 - `campaign-inventory.tsv` — the frozen denominator of the campaign: one
   `label<TAB>title` line per mission work order, read by
@@ -14,23 +13,34 @@ and nothing here has been read from `$CS_GAME_DIR` yet.
   bound, playable or verified. `crates/cs_app/tests/campaign/` asserts the
   list still matches the work orders in `../README.md`, so the denominator
   cannot shrink without a failing test.
+- `M01.json` — the M01 binding output (stage M01-A), in the shape
+  `schemas/mission-binding.schema.json` describes. It is **generated** by
+  production code: `SourceContext::read` + `SourceContext::bind`
+  (`crates/cs_content/src/campaign_bindings.rs`) derive it from
+  `$CS_GAME_DIR`, and `accept_m01_a_the_committed_record_is_what_the_installation_derives`
+  fails if the committed file and the freshly derived record differ. It
+  carries identities, hashes and byte-range spans — never original bytes.
 
-The typed records those missions will fill in — the seven required content
+  Its `catalog_id`, `world_id` and `program_id` are resolved, and its
+  `install_sha256` matches production discovery, so the record has no
+  unresolved critical dependency. `verified` is deliberately `false` and
+  `unknowns` deliberately non-empty: the checklist entries M01-A does not
+  bind (actors, objectives, media, rewards, difficulty branches, precedence,
+  progression, `closure_sha256`) are recorded there and keep the mission out
+  of any readiness claim.
+
+The typed records those missions fill in — the seven required content
 categories, one unresolved dependency row per required subsystem, coverage
 totals and closure reports — live in
 `crates/cs_content/src/campaign_bindings.rs`.
 
 ## What is not here yet
 
-- `M01.json` … `M24.json` — the per-mission binding output named by the
-  work-order sheets (for example `missions/M01.md`: "Binding output:
-  `missions/bindings/M01.json` created from the template in
-  `examples/mission-bindings/M01.json`"). Those are created by the
-  per-mission binding stages (M01-A … M24-A) from original data, with
-  `schemas/mission-binding.schema.json` as their contract. Every binding
-  starts unresolved.
+- `M02.json` … `M24.json` — the per-mission binding outputs of M02-A …
+  M24-A, created from original data the same way. Every one of them starts
+  unresolved.
 
 Readiness, coverage and closure are reported, never awarded: synthetic
 fixtures prove the schema and its validation only (F50 owner ruling,
-2026-09-28). Binding real identities, running the real campaign and
-collecting ordinary-play evidence stay with F50-B, F50-C and F50-D.
+2026-09-28). Binding the rest of the identities, running the real campaign
+and collecting ordinary-play evidence stay with F50-B, F50-C and F50-D.

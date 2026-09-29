@@ -53,9 +53,13 @@
 //! dependency row per required subsystem, the frozen campaign denominator
 //! read from `missions/bindings/campaign-inventory.tsv`, and the coverage
 //! totals plus closure reports that keep a missing, unknown or unsupported
-//! child counted instead of ready. It reads no original data and claims no
-//! gameplay success; binding real missions is F50-B and the per-mission
-//! tasks.
+//! child counted instead of ready. Its M01-A stage adds the first
+//! source-derived binding: `SourceContext` reads the original installation's
+//! fingerprint, campaign directory layout and localized string table, and
+//! `SourceBinding` resolves the five critical dependencies of the mission
+//! sheets' data-binding checklist while keeping every unbound checklist
+//! entry in its `unknowns`. It claims no gameplay success and no
+//! `verified_original` state; running missions stays with the runtime stages.
 //!
 //! [`coordinates`] holds source coordinate conventions and their adapters
 //! into canonical space (`specs/F16-coordinates-units-origin-management-and-

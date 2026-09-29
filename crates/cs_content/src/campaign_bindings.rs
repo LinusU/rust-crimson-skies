@@ -49,16 +49,45 @@
 //! same work orders, and `crates/cs_app/tests/campaign/` asserts the two
 //! agree, so the denominator cannot shrink without a failing test.
 //!
-//! Nothing in this module is derived from original game data.
+//! ## Source-derived binding
+//!
+//! The records above are schema: [`SourceContext`] and [`SourceBinding`]
+//! are the first stage that reads original data. `SourceContext::read`
+//! fingerprints `$CS_GAME_DIR`, walks its `ZBD/<chapter><variant>/<mission>`
+//! campaign layout and loads the localized UI string table;
+//! `SourceContext::bind` then confirms one work order's discovery title
+//! against the local strings and resolves the five [`CriticalDependency`]
+//! anchors of the mission sheets' data-binding checklist. The result is the
+//! `missions/bindings/M01.json` record (`schemas/mission-binding.schema.json`)
+//! and the [`MissionBinding`] the campaign records consume.
+//!
+//! Two states stay deliberately apart. **Source-derived** means every
+//! critical dependency resolved, which is what the `M01-A` acceptance
+//! scenario asks for. **Verified** ([`SourceBinding::is_verified`]) means
+//! nothing at all is left unknown: the checklist entries this stage does
+//! not bind — actors, objectives, media, rewards, difficulty branches,
+//! precedence, progression and the dependency closure hash — stay in
+//! [`SourceBinding::unknowns`] and keep `verified` false. A binding can
+//! therefore be source-derived *and* honestly incomplete at the same time.
+//!
+//! The join from a work-order title to a retail mission directory is an
+//! inference, not a direct observation: it rests on the localized title
+//! block's position matching the campaign the directory layout declares. It
+//! is recorded with [`ClaimStatus::Inferred`] provenance, never as
+//! `verified_original` (AGENTS.md rule 8).
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
-use std::path::Path;
+use std::fs;
+use std::path::{Path, PathBuf};
 
+use cs_formats::ParseContext;
+use cs_types::asset_id::SourceSpan;
 use cs_types::content::{ContentId, ContentKind, Known, Provenance, Resolved, ResolvedError};
-use cs_types::evidence::{ClaimId, ClaimIdError};
+use cs_types::evidence::{ClaimId, ClaimIdError, ClaimStatus, ContentHash};
 
 use crate::catalog::Catalog;
+use crate::config::{StringCatalog, StringRow};
 
 /// The identities of the subsystems every mission binding depends on.
 ///
@@ -1820,4 +1849,1098 @@ impl CampaignBindings {
         path.pop();
         Ok(())
     }
+}
+
+// ---------------------------------------------------------------------
+// Source-derived binding (the per-mission `M01-A` … `M24-A` stages).
+// ---------------------------------------------------------------------
+
+/// The dependencies a **source-derived** binding must resolve before any
+/// branch or content work can start.
+///
+/// These are the first five entries of the data-binding checklist every
+/// mission sheet carries (`missions/M01.md`, "Data binding checklist":
+/// *canonical mission id; installation/rules hash; title string; program and
+/// source map; world group/variant*). They are the anchors every later
+/// entry of the checklist is read *through*: without a mission id, an
+/// installation hash, a confirmed title, a program source map and a world
+/// group there is nothing for actors, objectives, media, rewards or
+/// difficulty branches to hang on. That is what the `M01-A` minimum
+/// acceptance scenario ("Source-derived binding has no unresolved critical
+/// dependencies") asks for, and it is why this list exists as data instead
+/// of an adjective.
+///
+/// The rest of the checklist is *content* the binding records rather than a
+/// dependency it needs: those entries are kept in
+/// [`SourceBinding::unknowns`], keep [`SourceBinding::is_verified`] false
+/// and keep the campaign unready. Resolving the five critical dependencies
+/// therefore never hides an unbound checklist entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum CriticalDependency {
+    /// The canonical mission id of the checklist's first entry.
+    MissionId,
+    /// The installation/rules hash of the second entry.
+    InstallHash,
+    /// The localized title string of the third entry.
+    TitleString,
+    /// The program identity and its source map of the fourth entry.
+    ProgramSourceMap,
+    /// The world group/variant of the fifth entry.
+    WorldGroupVariant,
+}
+
+impl CriticalDependency {
+    /// Every critical dependency, in checklist order.
+    pub const ALL: &'static [CriticalDependency] = &[
+        Self::MissionId,
+        Self::InstallHash,
+        Self::TitleString,
+        Self::ProgramSourceMap,
+        Self::WorldGroupVariant,
+    ];
+
+    /// The stable label of this dependency, used in claim ids and reports.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::MissionId => "mission_id",
+            Self::InstallHash => "installation_hash",
+            Self::TitleString => "title_string",
+            Self::ProgramSourceMap => "program_source_map",
+            Self::WorldGroupVariant => "world_group_variant",
+        }
+    }
+
+    /// The claim id this dependency carries for one mission label.
+    fn claim(self, label: &MissionLabel) -> Result<ClaimId, ClaimIdError> {
+        ClaimId::new(&format!(
+            "{}.{}",
+            label.as_str().to_ascii_lowercase(),
+            self.label()
+        ))
+    }
+}
+
+impl fmt::Display for CriticalDependency {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+/// One critical dependency of one source-derived binding and how it stands.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceDependency {
+    /// Which critical dependency.
+    pub id: CriticalDependency,
+    /// Resolved with provenance, or explicitly unresolved with a reason.
+    pub state: DependencyState,
+}
+
+/// One byte range of one original asset a source-derived binding rests on.
+///
+/// `sha256` is the digest of the whole asset named by `asset_id`;
+/// `offset`/`length` locate this span inside it. A span carries no bytes, so
+/// a binding record can cite original data without containing any.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceSpanRecord {
+    /// The asset's logical path inside the installation.
+    pub asset_id: String,
+    /// Where the span starts inside that asset.
+    pub offset: u64,
+    /// How many bytes the span covers.
+    pub length: u64,
+    /// The digest of the whole asset.
+    pub sha256: String,
+}
+
+/// One campaign mission as the installation's directory layout declares it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CampaignMission {
+    /// The chapter the mission belongs to (`ZBD/C1*` → 1).
+    pub chapter: u32,
+    /// The mission's number inside its chapter (`ZBD/*/M01` → 1).
+    pub mission_number: u32,
+    /// The world group directory, lowercased for identity.
+    pub world_group: String,
+    /// The mission reader archive's logical path, as spelled on disk.
+    pub program_asset: String,
+    /// Whether that archive is present in this installation.
+    pub program_present: bool,
+}
+
+/// The checklist entries a source binding deliberately does **not**
+/// resolve, with why. Every one of them keeps `verified` false.
+const SOURCE_BINDING_UNKNOWNS: &[&str] = &[
+    "initial player and wingmate configurations: not bound from original data at this stage",
+    "actor/spawn/route sets: not bound from original data at this stage",
+    "objective graph: not bound from original data at this stage",
+    "interaction authorizations: not bound from original data at this stage",
+    "script/native coverage: the mission opcode table is unmeasured, so F13-C probes every \
+     program against an empty signature table",
+    "required geometry/collision/materials: not bound from original data at this stage",
+    "audio/dialogue/video/camera cues: not bound from original data at this stage",
+    "initial and terminal campaign state: not bound from original data at this stage",
+    "optional/stunt/reward ids: not bound from original data at this stage",
+    "difficulty branches: not bound from original data at this stage",
+    "exact failure/success precedence: not measured",
+    "campaign progression: the successor mission is not bound to original mission ids",
+    "closure_sha256: the mission dependency closure hash needs the retail content catalog \
+     (F14-D) and decoded mission programs (F37/F38)",
+];
+
+/// Why a source-derived binding could not be produced at all.
+///
+/// A *semantic* miss — a title that the local strings do not carry, a
+/// campaign position that cannot be resolved — is never an error: it becomes
+/// an unresolved [`CriticalDependency`] so the record says what is missing.
+/// Only I/O and a structurally unusable installation stop the derivation.
+#[derive(Debug)]
+pub enum SourceBindingError {
+    /// Installation discovery refused the directory.
+    Discover {
+        /// The directory that was refused.
+        path: String,
+        /// Why discovery refused it.
+        source: cs_assets::install::DiscoveryError,
+    },
+    /// A file could not be read.
+    Io {
+        /// The path that failed.
+        path: String,
+        /// The I/O error.
+        source: std::io::Error,
+    },
+    /// The UI string image is not a PE resource table this engine can read.
+    Strings {
+        /// The asset that failed to read.
+        path: String,
+        /// Why it was refused.
+        message: String,
+    },
+    /// The installation holds no campaign mission directories.
+    NoCampaign,
+    /// A provenance, claim id, content id or dependency row could not be
+    /// built from facts that were read successfully.
+    Inconsistent {
+        /// What did not hold.
+        reason: String,
+    },
+}
+
+impl fmt::Display for SourceBindingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Discover { path, source } => {
+                write!(f, "cannot discover the installation at {path}: {source}")
+            }
+            Self::Io { path, source } => write!(f, "cannot read {path}: {source}"),
+            Self::Strings { path, message } => {
+                write!(f, "cannot read the UI string table {path}: {message}")
+            }
+            Self::NoCampaign => write!(
+                f,
+                "the installation declares no campaign mission directories under ZBD/"
+            ),
+            Self::Inconsistent { reason } => write!(f, "inconsistent source binding: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for SourceBindingError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Discover { source, .. } => Some(source),
+            Self::Io { source, .. } => Some(source),
+            Self::Strings { .. } | Self::NoCampaign | Self::Inconsistent { .. } => None,
+        }
+    }
+}
+
+impl From<ClaimIdError> for SourceBindingError {
+    fn from(error: ClaimIdError) -> Self {
+        Self::Inconsistent {
+            reason: format!("a claim id does not validate: {error}"),
+        }
+    }
+}
+
+impl From<BindingError> for SourceBindingError {
+    fn from(error: BindingError) -> Self {
+        Self::Inconsistent {
+            reason: format!("a dependency row does not validate: {error}"),
+        }
+    }
+}
+
+/// The expensive half of a source binding: everything read once from the
+/// installation, so one run can bind several work orders.
+///
+/// Reading fingerprints the installation, walks the campaign directory
+/// layout and loads the localized UI string table. [`SourceContext::bind`]
+/// then answers one work order from those facts without touching the disk
+/// again (except for the one mission program archive it cites).
+#[derive(Clone, Debug)]
+pub struct SourceContext {
+    /// Where the installation lives on this host.
+    install_root: PathBuf,
+    /// The installation fingerprint of the read bytes.
+    install_hash: ContentHash,
+    /// The hex form of [`SourceContext::install_hash`].
+    install_sha256: String,
+    /// The localized UI string asset, as spelled inside the installation.
+    string_asset: String,
+    /// The digest of that whole asset.
+    string_asset_sha256: String,
+    /// Every localizable string of that asset.
+    strings: StringCatalog,
+    /// The campaign, ordered by `(chapter, mission number)`.
+    campaign: Vec<CampaignMission>,
+}
+
+impl SourceContext {
+    /// Fingerprints `install_root`, reads its campaign directory layout and
+    /// its localized UI string table.
+    ///
+    /// # Errors
+    ///
+    /// [`SourceBindingError::Discover`] when installation discovery refuses
+    /// the directory, [`SourceBindingError::Io`] when a required file cannot
+    /// be read, [`SourceBindingError::Strings`] when the UI string asset is
+    /// not a PE resource image this engine reads, and
+    /// [`SourceBindingError::NoCampaign`] when no campaign mission directory
+    /// exists.
+    pub fn read(install_root: &Path) -> Result<Self, SourceBindingError> {
+        let found = cs_assets::install::discover(install_root).map_err(|source| {
+            SourceBindingError::Discover {
+                path: install_root.display().to_string(),
+                source,
+            }
+        })?;
+        let install_hash = cs_assets::install::fingerprint(&found.manifest);
+
+        let campaign = scan_campaign(install_root)?;
+        if campaign.is_empty() {
+            return Err(SourceBindingError::NoCampaign);
+        }
+
+        let string_asset = "GOSDATA/ASSETS/BINARIES/langui.dll";
+        let string_path = install_root.join(string_asset);
+        let bytes = read_file(&string_path)?;
+        let string_asset_sha256 = cs_assets::install::sha256(&bytes).to_hex();
+        // A loose file is its own source, so it carries no member digest
+        // (the same rule `cs-inspect config` applies to `strings.dll`).
+        let source = SourceSpan::new(
+            install_hash,
+            string_asset,
+            None,
+            0,
+            bytes.len() as u64,
+            None,
+        )
+        .map_err(|error| SourceBindingError::Inconsistent {
+            reason: format!("the UI string span does not validate: {error}"),
+        })?;
+        let mut context = ParseContext::with_defaults(string_asset);
+        let strings = StringCatalog::read(&mut context, source, &bytes).map_err(|error| {
+            SourceBindingError::Strings {
+                path: string_asset.to_owned(),
+                message: error.to_string(),
+            }
+        })?;
+
+        Ok(Self {
+            install_root: install_root.to_path_buf(),
+            install_hash,
+            install_sha256: install_hash.to_hex(),
+            string_asset: string_asset.to_owned(),
+            string_asset_sha256,
+            strings,
+            campaign,
+        })
+    }
+
+    /// The installation fingerprint this context was read under.
+    pub fn install_sha256(&self) -> &str {
+        &self.install_sha256
+    }
+
+    /// The campaign, ordered by `(chapter, mission number)`.
+    pub fn campaign(&self) -> &[CampaignMission] {
+        &self.campaign
+    }
+
+    /// The localized UI string rows, for callers that need the table itself.
+    pub fn string_rows(&self) -> &[StringRow] {
+        self.strings.rows()
+    }
+
+    /// Binds one work order to the original data this context was read from.
+    ///
+    /// `discovery_title` is the work-order title from the declared
+    /// inventory; it is *confirmed* against the local strings rather than
+    /// assumed to match. A title the local strings do not carry, or carry
+    /// more than once, leaves [`CriticalDependency::TitleString`]
+    /// unresolved — which in turn leaves the mission, world and program
+    /// unresolved, because there is no campaign position to read them from.
+    ///
+    /// # Errors
+    ///
+    /// [`SourceBindingError::Io`] when the mission program archive cannot be
+    /// read, and [`SourceBindingError::Inconsistent`] when a fact that was
+    /// read cannot be turned into an id, a claim or a provenance.
+    pub fn bind(
+        &self,
+        label: MissionLabel,
+        discovery_title: &str,
+    ) -> Result<SourceBinding, SourceBindingError> {
+        let mut source_spans = Vec::new();
+
+        // --- title string: confirm the discovery title against the local
+        // strings, exactly once, and keep the block span it was read from.
+        let matches: Vec<&StringRow> = self
+            .strings
+            .rows()
+            .iter()
+            .filter(|row| {
+                row.text
+                    .as_deref()
+                    .is_some_and(|text| strip_font_tag(text) == discovery_title)
+            })
+            .collect();
+        let title_row = match matches.as_slice() {
+            [only] => Some(*only),
+            _ => None,
+        };
+        let title_reason = if matches.is_empty() {
+            "no local string equals the discovery title"
+        } else {
+            "several local strings equal the discovery title"
+        };
+
+        let mut title_source = None;
+        if let Some(row) = title_row {
+            title_source = Some(row.span.clone());
+            source_spans.push(SourceSpanRecord {
+                asset_id: self.string_asset.clone(),
+                offset: row.span.offset(),
+                length: row.span.length(),
+                sha256: self.string_asset_sha256.clone(),
+            });
+        }
+
+        // --- campaign position: the localized titles form one contiguous id
+        // block, and that block must be exactly as long as the campaign the
+        // directory layout declares. Anything else is not a position.
+        let position = title_row.and_then(|row| self.campaign_position(row.id));
+        let entry = position.and_then(|index| self.campaign.get(index));
+
+        // --- program source map: the mission's reader archive.
+        let mut program_source = None;
+        let mut program_digest = None;
+        if let Some(entry) = entry
+            && entry.program_present
+        {
+            let path = self.install_root.join(&entry.program_asset);
+            let bytes = read_file(&path)?;
+            program_digest = Some((
+                entry.program_asset.clone(),
+                bytes.len() as u64,
+                cs_assets::install::sha256(&bytes).to_hex(),
+            ));
+            let span = SourceSpan::new(
+                self.install_hash,
+                &entry.program_asset,
+                None,
+                0,
+                bytes.len() as u64,
+                None,
+            )
+            .map_err(|error| SourceBindingError::Inconsistent {
+                reason: format!("the program span does not validate: {error}"),
+            })?;
+            program_source = Some(span);
+        }
+        if let Some((asset_id, length, sha256)) = &program_digest {
+            source_spans.push(SourceSpanRecord {
+                asset_id: asset_id.clone(),
+                offset: 0,
+                length: *length,
+                sha256: sha256.clone(),
+            });
+        }
+
+        // --- identities.
+        let catalog_id = entry
+            .map(mission_key)
+            .map(|key| ContentId::from_source(ContentKind::Mission, &key))
+            .transpose()
+            .map_err(|error| SourceBindingError::Inconsistent {
+                reason: format!("the mission id is not valid: {error}"),
+            })?;
+        let world_id = entry
+            .map(|entry| ContentId::from_source(ContentKind::World, &entry.world_group))
+            .transpose()
+            .map_err(|error| SourceBindingError::Inconsistent {
+                reason: format!("the world id is not valid: {error}"),
+            })?;
+        let program_id = if program_source.is_some() {
+            entry
+                .map(|entry| ContentId::from_source(ContentKind::Script, &program_key(entry)))
+                .transpose()
+                .map_err(|error| SourceBindingError::Inconsistent {
+                    reason: format!("the program id is not valid: {error}"),
+                })?
+        } else {
+            None
+        };
+
+        // --- the five critical dependencies.
+        let mut dependencies = Vec::new();
+        for &id in CriticalDependency::ALL {
+            let state = match id {
+                CriticalDependency::InstallHash => DependencyState::resolved(
+                    Provenance::new(id.claim(&label)?, ClaimStatus::ObservedTool, None)
+                        .map_err(map_provenance)?,
+                ),
+                CriticalDependency::TitleString => match &title_source {
+                    Some(source) => DependencyState::resolved(
+                        Provenance::new(
+                            id.claim(&label)?,
+                            ClaimStatus::ObservedTool,
+                            Some(source.clone()),
+                        )
+                        .map_err(map_provenance)?,
+                    ),
+                    None => DependencyState::unresolved(id.claim(&label)?, title_reason)?,
+                },
+                CriticalDependency::MissionId => match &catalog_id {
+                    Some(_) => DependencyState::resolved(
+                        Provenance::new(
+                            id.claim(&label)?,
+                            ClaimStatus::Inferred,
+                            program_source.clone(),
+                        )
+                        .map_err(map_provenance)?,
+                    ),
+                    None => DependencyState::unresolved(
+                        id.claim(&label)?,
+                        "the campaign position could not be resolved, so no original mission id \
+                         was located",
+                    )?,
+                },
+                CriticalDependency::WorldGroupVariant => match &world_id {
+                    Some(_) => DependencyState::resolved(
+                        Provenance::new(
+                            id.claim(&label)?,
+                            ClaimStatus::Inferred,
+                            program_source.clone(),
+                        )
+                        .map_err(map_provenance)?,
+                    ),
+                    None => DependencyState::unresolved(
+                        id.claim(&label)?,
+                        "the world group could not be located because the campaign position is \
+                         unknown",
+                    )?,
+                },
+                CriticalDependency::ProgramSourceMap => match &program_source {
+                    Some(source) => DependencyState::resolved(
+                        Provenance::new(
+                            id.claim(&label)?,
+                            ClaimStatus::ObservedTool,
+                            Some(source.clone()),
+                        )
+                        .map_err(map_provenance)?,
+                    ),
+                    None => DependencyState::unresolved(
+                        id.claim(&label)?,
+                        "the mission program archive was not located in the installation",
+                    )?,
+                },
+            };
+            dependencies.push(SourceDependency { id, state });
+        }
+
+        let unknowns = SOURCE_BINDING_UNKNOWNS
+            .iter()
+            .map(|entry| (*entry).to_owned())
+            .collect();
+
+        Ok(SourceBinding {
+            label,
+            discovery_title: discovery_title.to_owned(),
+            install_sha256: self.install_sha256.clone(),
+            campaign_position: position,
+            campaign_size: self.campaign.len(),
+            catalog_id,
+            world_id,
+            program_id,
+            localized_title_id: title_row.map(|row| row.id),
+            localized_title_language: title_row.map(|row| row.language),
+            dependencies,
+            source_spans,
+            identity_source: program_source,
+            title_source,
+            closure_sha256: None,
+            evidence_ids: Vec::new(),
+            unknowns,
+        })
+    }
+
+    /// The index of the contiguous localized-title block `id` sits in, when
+    /// that block is exactly as long as the declared campaign.
+    fn campaign_position(&self, id: u32) -> Option<usize> {
+        let present: BTreeSet<u32> = self
+            .strings
+            .rows()
+            .iter()
+            .filter(|row| {
+                row.text
+                    .as_deref()
+                    .is_some_and(|text| !strip_font_tag(text).is_empty())
+            })
+            .map(|row| row.id)
+            .collect();
+        let mut start = id;
+        while start > 0 && present.contains(&(start - 1)) {
+            start -= 1;
+        }
+        let mut end = id;
+        while present.contains(&(end + 1)) {
+            end += 1;
+        }
+        if usize::try_from(end - start + 1).ok()? != self.campaign.len() {
+            return None;
+        }
+        Some((id - start) as usize)
+    }
+}
+
+/// One campaign mission's canonical mission id key.
+fn mission_key(entry: &CampaignMission) -> String {
+    format!("ch{}-m{:02}", entry.chapter, entry.mission_number)
+}
+
+/// One campaign mission's program id key: the reader archive of the world
+/// group the mission is stored in.
+fn program_key(entry: &CampaignMission) -> String {
+    format!("{}-m{:02}-zrdr", entry.world_group, entry.mission_number)
+}
+
+/// Drops a leading presentation tag such as `[AB14I]` from a localized
+/// string, so the *text* can be compared with a discovery title. The tag is
+/// a display instruction, not part of the title.
+fn strip_font_tag(text: &str) -> &str {
+    let Some(rest) = text.strip_prefix('[') else {
+        return text;
+    };
+    let Some(end) = rest.find(']') else {
+        return text;
+    };
+    &text[end + 2..]
+}
+
+/// Reads one file, naming it in the error.
+fn read_file(path: &Path) -> Result<Vec<u8>, SourceBindingError> {
+    fs::read(path).map_err(|source| SourceBindingError::Io {
+        path: path.display().to_string(),
+        source,
+    })
+}
+
+/// Names the provenance that could not be built.
+fn map_provenance(error: cs_types::content::ProvenanceError) -> SourceBindingError {
+    SourceBindingError::Inconsistent {
+        reason: format!("provenance does not validate: {error}"),
+    }
+}
+
+/// Walks `ZBD/<chapter><variant>/<mission>` and returns the campaign in
+/// `(chapter, mission number)` order.
+///
+/// A chapter is a `ZBD/C<digits><letters>` directory and a mission is an
+/// `M<digits>` directory inside one of them. Mission numbers must be unique
+/// inside a chapter: two groups of one chapter holding the same mission
+/// number would make the mission's world ambiguous, so the whole layout is
+/// refused instead of picking one.
+fn scan_campaign(install_root: &Path) -> Result<Vec<CampaignMission>, SourceBindingError> {
+    let zbd = find_container_dir(install_root, "ZBD")?;
+    let zbd_name = zbd
+        .file_name()
+        .map(|name| name.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "ZBD".to_owned());
+    let entries = fs::read_dir(&zbd).map_err(|source| SourceBindingError::Io {
+        path: zbd.display().to_string(),
+        source,
+    })?;
+    let mut chapters: Vec<(u32, String, PathBuf)> = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|source| SourceBindingError::Io {
+            path: zbd.display().to_string(),
+            source,
+        })?;
+        let path = entry.path();
+        if !path.is_dir() {
+            continue;
+        }
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let Some(chapter) = chapter_number(&name) else {
+            continue;
+        };
+        chapters.push((chapter, name, path));
+    }
+
+    let mut campaign: Vec<CampaignMission> = Vec::new();
+    let mut seen = BTreeSet::new();
+    for (chapter, group, path) in chapters {
+        let groups = fs::read_dir(&path).map_err(|source| SourceBindingError::Io {
+            path: path.display().to_string(),
+            source,
+        })?;
+        for entry in groups {
+            let entry = entry.map_err(|source| SourceBindingError::Io {
+                path: path.display().to_string(),
+                source,
+            })?;
+            let mission_path = entry.path();
+            if !mission_path.is_dir() {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let Some(mission_number) = mission_number(&name) else {
+                continue;
+            };
+            if !seen.insert((chapter, mission_number)) {
+                return Err(SourceBindingError::Inconsistent {
+                    reason: format!(
+                        "chapter {chapter} stores mission {mission_number} in more than one world \
+                         group, so the mission's world is ambiguous"
+                    ),
+                });
+            }
+            let program = mission_path.join("zrdr.zbd");
+            campaign.push(CampaignMission {
+                chapter,
+                mission_number,
+                world_group: group.to_ascii_lowercase(),
+                program_asset: format!("{zbd_name}/{group}/{name}/zrdr.zbd"),
+                program_present: program.is_file(),
+            });
+        }
+    }
+    campaign.sort_by_key(|entry| (entry.chapter, entry.mission_number));
+    Ok(campaign)
+}
+
+/// The installation directory holding one container family, matched without
+/// regard to case (the original installation spells it `ZBD`).
+fn find_container_dir(install_root: &Path, wanted: &str) -> Result<PathBuf, SourceBindingError> {
+    let entries = fs::read_dir(install_root).map_err(|source| SourceBindingError::Io {
+        path: install_root.display().to_string(),
+        source,
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|source| SourceBindingError::Io {
+            path: install_root.display().to_string(),
+            source,
+        })?;
+        let path = entry.path();
+        if path.is_dir()
+            && entry
+                .file_name()
+                .to_string_lossy()
+                .eq_ignore_ascii_case(wanted)
+        {
+            return Ok(path);
+        }
+    }
+    Err(SourceBindingError::Io {
+        path: install_root.join(wanted).display().to_string(),
+        source: std::io::Error::from(std::io::ErrorKind::NotFound),
+    })
+}
+
+/// The chapter a `ZBD/C<digits><letters>` directory name declares.
+fn chapter_number(name: &str) -> Option<u32> {
+    let rest = name.strip_prefix(['c', 'C'])?;
+    let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
+    if digits.is_empty() {
+        return None;
+    }
+    let suffix = &rest[digits.len()..];
+    if !suffix.is_empty() && !suffix.chars().all(|ch| ch.is_ascii_alphabetic()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// The mission number an `M<digits>` directory name declares.
+fn mission_number(name: &str) -> Option<u32> {
+    let rest = name.strip_prefix(['m', 'M'])?;
+    if rest.is_empty() || !rest.chars().all(|ch| ch.is_ascii_digit()) {
+        return None;
+    }
+    rest.parse().ok()
+}
+
+/// The facts one work order was bound to, as read from the installation.
+///
+/// A binding is *source-derived* when every [`CriticalDependency`] is
+/// resolved; it is *verified* only when nothing at all is left unknown,
+/// which additionally needs the dependency closure hash and evidence claims
+/// that later stages produce. Keeping those two states apart is deliberate:
+/// a source-derived binding with `unknowns` says exactly what is still
+/// missing instead of reading as finished.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceBinding {
+    /// The work-order discovery label the record belongs to.
+    pub label: MissionLabel,
+    /// The declared discovery title, confirmed against the local strings.
+    pub discovery_title: String,
+    /// The installation fingerprint the binding was read under.
+    pub install_sha256: String,
+    /// The binding's index in the retail campaign, when one was resolved.
+    pub campaign_position: Option<usize>,
+    /// How many missions the installation's campaign declares.
+    pub campaign_size: usize,
+    /// The canonical mission id, when one was resolved.
+    pub catalog_id: Option<ContentId>,
+    /// The world group/variant, when one was resolved.
+    pub world_id: Option<ContentId>,
+    /// The mission program identity, when one was resolved.
+    pub program_id: Option<ContentId>,
+    /// The localized string id that confirmed the discovery title.
+    pub localized_title_id: Option<u32>,
+    /// The language of that string.
+    pub localized_title_language: Option<u32>,
+    /// The five critical dependencies, in checklist order.
+    pub dependencies: Vec<SourceDependency>,
+    /// The original byte ranges the binding cites, with no bytes in them.
+    pub source_spans: Vec<SourceSpanRecord>,
+    /// Provenance source for the identity rows, when a program was read.
+    pub identity_source: Option<SourceSpan>,
+    /// Provenance source for the confirmed title string.
+    pub title_source: Option<SourceSpan>,
+    /// The mission dependency closure hash, produced by a later stage.
+    pub closure_sha256: Option<String>,
+    /// Evidence claim ids this binding rests on.
+    pub evidence_ids: Vec<ClaimId>,
+    /// The checklist entries that stay unknown, each saying so.
+    pub unknowns: Vec<String>,
+}
+
+impl SourceBinding {
+    /// The state of one critical dependency.
+    pub fn dependency(&self, id: CriticalDependency) -> Option<&DependencyState> {
+        self.dependencies
+            .iter()
+            .find(|dependency| dependency.id == id)
+            .map(|dependency| &dependency.state)
+    }
+
+    /// Every critical dependency that is not resolved, in checklist order.
+    ///
+    /// This is the M01-A acceptance question: an empty vector is "the
+    /// source-derived binding has no unresolved critical dependencies".
+    pub fn unresolved_critical(&self) -> Vec<CriticalDependency> {
+        CriticalDependency::ALL
+            .iter()
+            .copied()
+            .filter(|id| !matches!(self.dependency(*id), Some(DependencyState::Resolved { .. })))
+            .collect()
+    }
+
+    /// Whether the binding says nothing is left unknown.
+    ///
+    /// True only when every critical dependency is resolved, no checklist
+    /// entry remains unknown, the dependency closure hash is present and at
+    /// least one evidence claim is recorded — the conditions
+    /// `schemas/mission-binding.schema.json` imposes on `verified: true`.
+    pub fn is_verified(&self) -> bool {
+        self.unresolved_critical().is_empty()
+            && self.unknowns.is_empty()
+            && self.closure_sha256.is_some()
+            && !self.evidence_ids.is_empty()
+    }
+
+    /// The record's own invariants.
+    ///
+    /// # Errors
+    ///
+    /// [`SourceBindingError::Inconsistent`] when a critical dependency is
+    /// missing or repeated, when a resolved dependency has no value or an
+    /// unresolved one still carries one, when the installation hash is not
+    /// canonical lowercase hex, or when `verified` disagrees with the state
+    /// the record actually holds.
+    pub fn validate(&self) -> Result<(), SourceBindingError> {
+        let inconsistent = |reason: String| SourceBindingError::Inconsistent { reason };
+
+        if self.dependencies.len() != CriticalDependency::ALL.len() {
+            return Err(inconsistent(format!(
+                "expected {} critical dependency rows, found {}",
+                CriticalDependency::ALL.len(),
+                self.dependencies.len()
+            )));
+        }
+        for (expected, found) in CriticalDependency::ALL.iter().zip(&self.dependencies) {
+            if found.id != *expected {
+                return Err(inconsistent(format!(
+                    "critical dependency {} is recorded as {}",
+                    expected.label(),
+                    found.id.label()
+                )));
+            }
+            let has_value = match found.id {
+                CriticalDependency::MissionId => self.catalog_id.is_some(),
+                CriticalDependency::InstallHash => true,
+                CriticalDependency::TitleString => self.localized_title_id.is_some(),
+                CriticalDependency::ProgramSourceMap => self.program_id.is_some(),
+                CriticalDependency::WorldGroupVariant => self.world_id.is_some(),
+            };
+            match &found.state {
+                DependencyState::Resolved { .. } if !has_value => {
+                    return Err(inconsistent(format!(
+                        "critical dependency {} is resolved but carries no value",
+                        found.id.label()
+                    )));
+                }
+                DependencyState::Unresolved { reason, .. } if has_value => {
+                    return Err(inconsistent(format!(
+                        "critical dependency {} is unresolved ({reason}) but carries a value",
+                        found.id.label()
+                    )));
+                }
+                DependencyState::Unresolved { reason, .. } if reason.trim().is_empty() => {
+                    return Err(inconsistent(format!(
+                        "critical dependency {} is unresolved without a reason",
+                        found.id.label()
+                    )));
+                }
+                _ => {}
+            }
+        }
+        if self.install_sha256.len() != 64
+            || !self
+                .install_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(inconsistent(
+                "the installation hash is not canonical lowercase hex".to_owned(),
+            ));
+        }
+        if self.is_verified() != (self.unresolved_critical().is_empty() && self.unknowns.is_empty())
+        {
+            return Err(inconsistent(
+                "verified disagrees with the unknowns the record still carries".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+
+    /// The binding record as `schemas/mission-binding.schema.json` describes
+    /// it: the bytes committed as `missions/bindings/<label>.json`.
+    ///
+    /// The emission is hand-written like the rest of the workspace's JSON,
+    /// and holds identities, hashes and spans only — never original content.
+    pub fn to_json(&self) -> String {
+        let optional = |value: &Option<String>| match value {
+            Some(value) => json_string(value),
+            None => "null".to_owned(),
+        };
+        let id = |value: &Option<ContentId>| match value {
+            Some(value) => json_string(value.as_str()),
+            None => "null".to_owned(),
+        };
+        let spans = self
+            .source_spans
+            .iter()
+            .map(|span| {
+                format!(
+                    "{{\"asset_id\": {}, \"offset\": {}, \"length\": {}, \"sha256\": {}}}",
+                    json_string(&span.asset_id),
+                    span.offset,
+                    span.length,
+                    json_string(&span.sha256)
+                )
+            })
+            .collect::<Vec<_>>();
+        let unknowns: Vec<String> = self
+            .unknowns
+            .iter()
+            .map(|entry| json_string(entry))
+            .collect();
+        let evidence: Vec<String> = self
+            .evidence_ids
+            .iter()
+            .map(|claim| json_string(claim.as_str()))
+            .collect();
+
+        format!(
+            "{{\n\
+             \x20\"schema_version\": 1,\n\
+             \x20\"work_order\": {},\n\
+             \x20\"discovery_title\": {},\n\
+             \x20\"verified\": {},\n\
+             \x20\"install_sha256\": {},\n\
+             \x20\"catalog_id\": {},\n\
+             \x20\"world_id\": {},\n\
+             \x20\"program_id\": {},\n\
+             \x20\"closure_sha256\": {},\n\
+             \x20\"source_spans\": {},\n\
+             \x20\"required_actor_ids\": [],\n\
+             \x20\"objective_ids\": [],\n\
+             \x20\"interaction_ids\": [],\n\
+             \x20\"media_ids\": [],\n\
+             \x20\"stunt_ids\": [],\n\
+             \x20\"reward_ids\": [],\n\
+             \x20\"difficulty_ids\": [],\n\
+             \x20\"unknowns\": {},\n\
+             \x20\"evidence_ids\": {}\n\
+             }}\n",
+            json_string(self.label.as_str()),
+            json_string(&self.discovery_title),
+            self.is_verified(),
+            json_string(&self.install_sha256),
+            id(&self.catalog_id),
+            id(&self.world_id),
+            id(&self.program_id),
+            optional(&self.closure_sha256),
+            array_of_objects(&spans),
+            array_of_strings(&unknowns),
+            array_of_strings(&evidence),
+        )
+    }
+
+    /// The campaign record this binding contributes: the identity category
+    /// bound when every identity was resolved, everything else explicitly
+    /// unresolved, every required subsystem row unresolved because the
+    /// subsystems themselves are not implemented yet, progression unknown.
+    ///
+    /// # Errors
+    ///
+    /// [`BindingError`] when a claim id, role or reason built here is
+    /// rejected by the record's admission rules.
+    pub fn to_mission_binding(&self) -> Result<MissionBinding, BindingError> {
+        let claim = ClaimId::new(&format!(
+            "{}.source_binding",
+            self.label.as_str().to_ascii_lowercase()
+        ))?;
+        let mut categories = BTreeMap::new();
+
+        match (&self.catalog_id, &self.world_id, &self.program_id) {
+            (Some(mission), Some(world), Some(program)) => {
+                // `Provenance::new` only refuses a `verified_original` claim
+                // with no source span; an inferred identity never does.
+                let provenance = Provenance::new(
+                    ClaimId::new("source_binding.identity").map_err(BindingError::ClaimId)?,
+                    ClaimStatus::Inferred,
+                    self.identity_source.clone(),
+                )
+                .map_err(|_| BindingError::EmptyReason {
+                    what: "the identity provenance",
+                })?;
+                categories.insert(
+                    BindingCategory::MissionIdentity,
+                    CategoryState::rows(vec![
+                        BindingRow::content(MISSION_ROLE, mission.clone(), provenance.clone())?,
+                        BindingRow::content(WORLD_ROLE, world.clone(), provenance.clone())?,
+                        BindingRow::content(PROGRAM_ROLE, program.clone(), provenance)?,
+                    ])?,
+                );
+            }
+            _ => {
+                categories.insert(
+                    BindingCategory::MissionIdentity,
+                    CategoryState::unresolved(
+                        claim.clone(),
+                        "the source-derived mission identity is incomplete",
+                    )?,
+                );
+            }
+        }
+        for category in BindingCategory::ALL {
+            if !categories.contains_key(category) {
+                categories.insert(
+                    *category,
+                    CategoryState::unresolved(claim.clone(), UNBOUND_CATEGORY_REASON)?,
+                );
+            }
+        }
+
+        let dependencies = REQUIRED_SUBSYSTEMS
+            .iter()
+            .map(|subsystem| {
+                Ok(SubsystemDependency {
+                    subsystem: SubsystemId::new(subsystem)?,
+                    state: DependencyState::unresolved(claim.clone(), UNBOUND_SUBSYSTEM_REASON)?,
+                })
+            })
+            .collect::<Result<Vec<_>, BindingError>>()?;
+
+        Ok(MissionBinding {
+            label: self.label.clone(),
+            discovery_title: Some(self.discovery_title.clone()),
+            categories,
+            dependencies,
+            progression: Progression::unknown(claim, UNBOUND_PROGRESSION_REASON)?,
+            placeholder: false,
+        })
+    }
+}
+
+/// Why a category outside `mission_identity` is unresolved in a
+/// source-derived record.
+const UNBOUND_CATEGORY_REASON: &str =
+    "not bound from original data; see the binding record's unknowns";
+
+/// Why a required subsystem row is unresolved in a source-derived record:
+/// the binding reads original data, it does not implement subsystems.
+const UNBOUND_SUBSYSTEM_REASON: &str =
+    "subsystem not implemented; M01-A binds source identity only";
+
+/// Why progression is unknown in a source-derived record.
+const UNBOUND_PROGRESSION_REASON: &str = "campaign progression not bound to original mission ids";
+
+/// A JSON string literal: quoted and escaped, so no record field can break
+/// out of its string.
+fn json_string(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for character in value.chars() {
+        match character {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            control if (control as u32) < 0x20 => {
+                out.push_str(&format!("\\u{:04x}", control as u32));
+            }
+            other => out.push(other),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// A JSON array of already-rendered objects: `[]` when empty, otherwise one
+/// object per line inside the brackets.
+fn array_of_objects(items: &[String]) -> String {
+    if items.is_empty() {
+        return "[]".to_owned();
+    }
+    let joined = items
+        .iter()
+        .map(|item| format!("\n    {item}"))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("[{joined}\n  ]")
+}
+
+/// A JSON array of already-rendered strings on one line.
+fn array_of_strings(items: &[String]) -> String {
+    if items.is_empty() {
+        return "[]".to_owned();
+    }
+    format!("[{}]", items.join(", "))
 }
