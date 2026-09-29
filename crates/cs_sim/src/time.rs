@@ -646,20 +646,25 @@ impl GameplayTimeline {
 
 /// One scripted step of a behavioral probe.
 ///
-/// A probe is a *script*, not a test: the same script runs at every render
-/// frame rate and produces a trace, and the traces are what get compared. That
-/// is what makes "does pause freeze the game" a measurement (the trace shows
-/// zero advancement) rather than an assertion someone wrote twice.
+/// A probe is a *script*, not a test: the same script is run at several render
+/// frame rates and produces a trace for each, and the traces are what get
+/// compared. That is what makes "does pause freeze the game" a measurement
+/// (the trace shows zero advancement at every delivery rate) rather than an
+/// assertion someone wrote twice.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProbeStep {
-    /// Advance `nanos` of wall time, delivered as `frames` render frames of
-    /// the same length plus a final remainder frame. Zero frames means "one
-    /// frame carrying all of it", so a probe can express a single long frame.
+    /// Deliver `nanos` of wall time as whole render frames at the probe's
+    /// frame rate, plus a final frame carrying the remainder.
     Advance {
         /// Wall time to deliver, in nanoseconds.
         nanos: u64,
-        /// How many render frames to deliver it in.
-        frames: u32,
+    },
+    /// Deliver `nanos` of wall time as a **single** render frame — the
+    /// pathological stall a real run can hit after a blocking load, and the
+    /// sharpest test that a paused frame commits nothing however long it is.
+    OneFrame {
+        /// Wall time to deliver, in nanoseconds.
+        nanos: u64,
     },
     /// Pause or resume the session clock.
     Pause(bool),
@@ -796,23 +801,141 @@ impl ProbeTrace {
     }
 }
 
+/// Why a behavioral probe was refused.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ProbeError {
+    /// The probe's render frame rate is zero, or so fast that one frame is
+    /// shorter than a nanosecond, so no wall time could be delivered in whole
+    /// frames.
+    UnusableRenderRate {
+        /// The refused frame rate.
+        render_fps: u32,
+    },
+    /// A step asks for more render frames than
+    /// [`MAX_FRAMES_PER_STEP`], so the run would be unbounded work.
+    FrameCountTooLarge {
+        /// The wall time the step asked for, in nanoseconds.
+        nanos: u64,
+        /// How many frames that would take.
+        frames: u64,
+    },
+    /// Two steps observe the same label, which would make a reference trace
+    /// ambiguous.
+    DuplicateObservationLabel {
+        /// The label that appears twice.
+        label: &'static str,
+    },
+    /// The script observes nothing, so it measures nothing.
+    NoObservations,
+    /// The timeline the probe was handed refused to be built.
+    Time(TimeError),
+}
+
+impl std::fmt::Display for ProbeError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnusableRenderRate { render_fps } => write!(
+                f,
+                "render rate {render_fps} cannot deliver wall time in whole nanosecond frames"
+            ),
+            Self::FrameCountTooLarge { nanos, frames } => write!(
+                f,
+                "{nanos} ns would need {frames} render frames, over the {} frame limit",
+                MAX_FRAMES_PER_STEP
+            ),
+            Self::DuplicateObservationLabel { label } => {
+                write!(f, "observation label {label:?} is used twice")
+            }
+            Self::NoObservations => write!(f, "a probe must observe at least one sample"),
+            Self::Time(source) => write!(f, "{source}"),
+        }
+    }
+}
+
+impl std::error::Error for ProbeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Time(source) => Some(source),
+            _ => None,
+        }
+    }
+}
+
+impl From<TimeError> for ProbeError {
+    fn from(source: TimeError) -> Self {
+        Self::Time(source)
+    }
+}
+
+/// The most render frames one probe step may ask for.
+///
+/// A step is wall time, and wall time divided by a frame length is
+/// unbounded: `u64::MAX` nanoseconds at 144 frames per second is about 10¹²
+/// frames. The bound keeps a probe from turning a typo into an out-of-memory
+/// or a hang, and the refusal names both numbers so the caller can see which
+/// step was too large.
+pub const MAX_FRAMES_PER_STEP: u64 = 1_000_000;
+
 /// Runs a scripted [`ProbeStep`] list against a real [`GameplayTimeline`] and
 /// returns what it measured.
 ///
-/// `render_fps` is a *delivery* parameter, not part of the script: the same
-/// steps run at 30, 60 and 144 render FPS, and the traces must agree. A probe
-/// that only agrees with itself at one frame rate has measured the render
-/// loop, not the game.
-#[derive(Clone, Copy, Debug)]
+/// The render frame rate belongs to the probe, not to the call site: the same
+/// script is run at several rates, and the traces must agree. A script whose
+/// traces only agree with itself at one rate has measured the render loop, not
+/// the game.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BehavioralProbe {
+    name: &'static str,
+    render_fps: u32,
     steps: &'static [ProbeStep],
 }
 
 impl BehavioralProbe {
-    /// A probe that runs `steps` verbatim.
+    /// A probe named `name` that delivers its wall time at `render_fps`.
+    ///
+    /// # Errors
+    ///
+    /// [`ProbeError::UnusableRenderRate`] for a zero or sub-nanosecond frame
+    /// rate, [`ProbeError::NoObservations`] when the script observes nothing
+    /// and [`ProbeError::DuplicateObservationLabel`] when two steps share a
+    /// label.
+    pub fn new(
+        name: &'static str,
+        render_fps: u32,
+        steps: &'static [ProbeStep],
+    ) -> Result<Self, ProbeError> {
+        if frame_nanos(render_fps)? == 0 {
+            return Err(ProbeError::UnusableRenderRate { render_fps });
+        }
+        let mut labels: Vec<&'static str> = Vec::new();
+        for step in steps {
+            if let ProbeStep::Observe(label) = step {
+                if labels.contains(label) {
+                    return Err(ProbeError::DuplicateObservationLabel { label });
+                }
+                labels.push(label);
+            }
+        }
+        if labels.is_empty() {
+            return Err(ProbeError::NoObservations);
+        }
+        Ok(Self {
+            name,
+            render_fps,
+            steps,
+        })
+    }
+
+    /// The probe's name.
     #[must_use]
-    pub const fn new(steps: &'static [ProbeStep]) -> Self {
-        Self { steps }
+    pub const fn name(&self) -> &'static str {
+        self.name
+    }
+
+    /// The render frame rate this probe delivers its wall time at.
+    #[must_use]
+    pub const fn render_fps(&self) -> u32 {
+        self.render_fps
     }
 
     /// The steps this probe runs.
@@ -821,39 +944,37 @@ impl BehavioralProbe {
         self.steps
     }
 
-    /// Runs the script at `render_fps` against a fresh timeline built by
-    /// `make`.
+    /// Runs the script against a fresh timeline built by `make` and returns
+    /// the trace.
     ///
     /// `make` is supplied by the caller so the timeline's rate, cooldown and
-    /// objective period are the caller's scenario, not a hidden constant.
-    /// Ticks the timeline cannot commit (because its counter would wrap) are
-    /// surfaced by [`ProbeTrace::committed_ticks`] being lower than the sum of
-    /// the requested wall time, and by the samples showing the tick they
-    /// stopped at.
+    /// objective period are the caller's scenario, not a hidden constant of
+    /// this module.
     ///
     /// # Errors
     ///
-    /// [`TimeError::TickOverflow`] if a step's wall time would wrap the tick
-    /// counter; the trace is not produced, so a caller can never compare a
-    /// truncated run.
-    pub fn run<MakeTimeline>(
-        &self,
-        name: &'static str,
-        render_fps: u32,
-        mut make: MakeTimeline,
-    ) -> Result<ProbeTrace, TimeError>
+    /// [`ProbeError::Time`] when the timeline refuses to be built or a step
+    /// would wrap the tick counter — a refused step produces no trace, so a
+    /// truncated run can never be compared as a real one — and
+    /// [`ProbeError::FrameCountTooLarge`] when a step would ask for more
+    /// frames than [`MAX_FRAMES_PER_STEP`].
+    pub fn run<MakeTimeline>(&self, mut make: MakeTimeline) -> Result<ProbeTrace, ProbeError>
     where
         MakeTimeline: FnMut() -> Result<GameplayTimeline, TimeError>,
     {
+        let frame = frame_nanos(self.render_fps)?;
         let mut timeline = make()?;
         let mut samples = Vec::new();
         let mut committed = 0u64;
         for step in self.steps {
             match *step {
-                ProbeStep::Advance { nanos, frames } => {
-                    for span in frame_spans(nanos, frames) {
+                ProbeStep::Advance { nanos } => {
+                    for span in frame_spans(nanos, frame)? {
                         committed += timeline.advance_frame(span)?;
                     }
+                }
+                ProbeStep::OneFrame { nanos } => {
+                    committed += timeline.advance_frame(Duration::from_nanos(nanos))?;
                 }
                 ProbeStep::Pause(paused) => timeline.set_paused(paused),
                 ProbeStep::Fire => timeline.fire(),
@@ -870,33 +991,55 @@ impl BehavioralProbe {
             }
         }
         Ok(ProbeTrace {
-            name,
-            render_fps,
+            name: self.name,
+            render_fps: self.render_fps,
             committed_ticks: committed,
             samples,
         })
     }
 }
 
-/// Splits `nanos` of wall time into `frames` equal render frames plus a
-/// final remainder frame, so the frames always sum to exactly `nanos` and no
-/// nanosecond is dropped or invented at a frame boundary.
+/// One render frame at `render_fps`, in whole nanoseconds.
 ///
-/// `frames == 0` or `nanos == 0` means "one frame carrying everything": a
-/// probe can express a single long frame, and a zero-length delivery is still
-/// one (empty) frame, without dividing by zero.
-fn frame_spans(nanos: u64, frames: u32) -> Vec<Duration> {
-    if frames == 0 || nanos == 0 {
-        return vec![Duration::from_nanos(nanos)];
+/// # Errors
+///
+/// [`ProbeError::UnusableRenderRate`] when `render_fps` is zero or a frame
+/// would be shorter than one nanosecond.
+fn frame_nanos(render_fps: u32) -> Result<u64, ProbeError> {
+    if render_fps == 0 {
+        return Err(ProbeError::UnusableRenderRate { render_fps });
     }
-    let count = u64::from(frames);
-    let per_frame = nanos / count;
-    let mut spans = vec![Duration::from_nanos(per_frame); frames as usize];
-    let rest = nanos - per_frame * count;
+    let rate = u128::from(render_fps);
+    let frame = NANOS_PER_SECOND / rate;
+    u64::try_from(frame).map_err(|_| ProbeError::UnusableRenderRate { render_fps })
+}
+
+/// Splits `nanos` of wall time into whole render frames of `frame` plus a
+/// final frame carrying the remainder, so the frames sum to exactly `nanos`
+/// and no nanosecond is dropped or invented at a frame boundary.
+///
+/// # Errors
+///
+/// [`ProbeError::FrameCountTooLarge`] when the split would exceed
+/// [`MAX_FRAMES_PER_STEP`].
+fn frame_spans(nanos: u64, frame: u64) -> Result<Vec<Duration>, ProbeError> {
+    if frame == 0 {
+        return Ok(vec![Duration::from_nanos(nanos)]);
+    }
+    let whole = nanos / frame;
+    if whole > MAX_FRAMES_PER_STEP {
+        return Err(ProbeError::FrameCountTooLarge {
+            nanos,
+            frames: whole + 1,
+        });
+    }
+    let mut spans = Vec::with_capacity(whole as usize + 1);
+    spans.resize(whole as usize, Duration::from_nanos(frame));
+    let rest = nanos - whole * frame;
     if rest > 0 {
         spans.push(Duration::from_nanos(rest));
     }
-    spans
+    Ok(spans)
 }
 
 /// A reference trace a measured trace is compared against, with the evidence
@@ -1488,29 +1631,22 @@ mod tests {
 
     /// A comparison that agrees can claim only what its reference's evidence
     /// supports. A synthetic-fixture reference is `observed_tool` and never
-    /// `verified_original`; a diverging trace is `contradicted` even when the
-    /// reference would have verified.
+    /// `verified_original`; a diverging trace is `contradicted` whatever the
+    /// evidence says; and a trace that observed *less* than the reference
+    /// diverges rather than passing as agreement.
     #[test]
     fn accept_f16_d_probe_comparison_claims_only_what_its_evidence_supports() {
         static STEPS: &[ProbeStep] = &[
             ProbeStep::Advance {
                 nanos: NANOS_PER_SECOND as u64,
-                frames: 1,
             },
             ProbeStep::Observe("after-one-second"),
         ];
-        let probe = BehavioralProbe::new(STEPS);
+        let probe = BehavioralProbe::new("one-second", 30, STEPS).expect("valid probe");
         let make = || GameplayTimeline::new(TickRate::new(64).expect("valid"), 120, 600);
-        let measured = probe.run("measured", 30, make).expect("the probe runs");
+        let measured = probe.run(make).expect("the probe runs");
 
-        let reference = ProbeReference::new(
-            "reference",
-            probe
-                .run("reference", 30, make)
-                .expect("the reference runs"),
-            fixture_evidence(),
-            0,
-        );
+        let reference = ProbeReference::new("reference", measured.clone(), fixture_evidence(), 0);
         let comparison = ProbeComparison::new(&measured, &reference);
         assert!(comparison.agrees(), "{}", comparison.summary());
         assert_eq!(
@@ -1519,12 +1655,11 @@ mod tests {
             "agreement against a synthetic fixture is not original verification"
         );
         assert!(!comparison.verified_original());
+        assert!(comparison.summary().contains("claim observed_tool"));
 
         // A trace that does not match is contradicted, whatever the evidence.
         let mut diverged = probe
-            .run("diverged", 30, || {
-                GameplayTimeline::new(TickRate::new(64).expect("valid"), 120, 900)
-            })
+            .run(|| GameplayTimeline::new(TickRate::new(64).expect("valid"), 120, 900))
             .expect("the probe runs");
         diverged.samples[0].objective_remaining_ticks = 0;
         let comparison = ProbeComparison::new(&diverged, &reference);
@@ -1539,10 +1674,8 @@ mod tests {
             comparison.summary()
         );
 
-        // A trace that observed *less* than the reference diverges too: a
-        // shorter trace must never pass as agreement.
-        let short = probe.run("short", 30, make).expect("runs").clone();
-        let mut short = short;
+        // A shorter trace diverges too, and names the missing sample.
+        let mut short = probe.run(make).expect("runs");
         short.samples.clear();
         let comparison = ProbeComparison::new(&short, &reference);
         assert!(!comparison.agrees());
@@ -1551,6 +1684,19 @@ mod tests {
             comparison.divergences()[0].field,
             "sample-present-in-measurement"
         );
+
+        // A tolerance is selected before the comparison, not fitted to it: one
+        // tick of difference is inside a one-tick tolerance and outside a
+        // zero-tick one.
+        diverged.samples[0].objective_remaining_ticks =
+            measured.samples()[0].objective_remaining_ticks + 1;
+        let within = ProbeComparison::new(
+            &diverged,
+            &ProbeReference::new("reference", measured.clone(), fixture_evidence(), 1),
+        );
+        assert!(within.agrees(), "{}", within.summary());
+        let outside = ProbeComparison::new(&diverged, &reference);
+        assert!(!outside.agrees(), "{}", outside.summary());
     }
 
     /// A refused timeline is reported, never traced: the probe propagates the
@@ -1561,49 +1707,95 @@ mod tests {
         static STEPS: &[ProbeStep] = &[
             ProbeStep::Advance {
                 nanos: NANOS_PER_SECOND as u64,
-                frames: 1,
             },
             ProbeStep::Observe("never-observed"),
         ];
-        let probe = BehavioralProbe::new(STEPS);
-        let refused = probe.run("refused", 30, || {
-            GameplayTimeline::new(TickRate::new(64).expect("valid"), 0, 600)
-        });
+        let probe = BehavioralProbe::new("refused", 30, STEPS).expect("valid probe");
         assert_eq!(
-            refused,
-            Err(TimeError::ZeroTimerPeriod),
+            probe.run(|| GameplayTimeline::new(TickRate::new(64).expect("valid"), 0, 600)),
+            Err(ProbeError::Time(TimeError::ZeroTimerPeriod)),
             "a refused timeline must not produce a trace"
         );
     }
 
-    /// The frame split loses nothing: `nanos` delivered as `frames` frames
-    /// always commits the same number of ticks, including at a frame rate that
-    /// does not divide a second evenly, where the remainder frame carries the
-    /// difference.
+    /// The probe's own refusals: an unusable render rate, a script that
+    /// observes nothing, a repeated label, and a step that would ask for an
+    /// unbounded number of frames.
+    #[test]
+    fn accept_f16_d_probe_refuses_unusable_rates_labels_and_frame_counts() {
+        static OBSERVES: &[ProbeStep] = &[ProbeStep::Observe("only")];
+        assert_eq!(
+            BehavioralProbe::new("zero-rate", 0, OBSERVES),
+            Err(ProbeError::UnusableRenderRate { render_fps: 0 })
+        );
+        assert_eq!(
+            BehavioralProbe::new("sub-nanosecond-rate", u32::MAX, OBSERVES),
+            Err(ProbeError::UnusableRenderRate {
+                render_fps: u32::MAX
+            })
+        );
+        assert_eq!(
+            BehavioralProbe::new("silent", 60, &[ProbeStep::Pause(true)]),
+            Err(ProbeError::NoObservations)
+        );
+        static REPEATED: &[ProbeStep] = &[
+            ProbeStep::Observe("twice"),
+            ProbeStep::Observe("once"),
+            ProbeStep::Observe("twice"),
+        ];
+        assert_eq!(
+            BehavioralProbe::new("repeated", 60, REPEATED),
+            Err(ProbeError::DuplicateObservationLabel { label: "twice" })
+        );
+
+        static HUGE: &[ProbeStep] = &[
+            ProbeStep::Advance { nanos: u64::MAX },
+            ProbeStep::Observe("never"),
+        ];
+        let probe = BehavioralProbe::new("huge", 60, HUGE).expect("valid probe");
+        let refused = probe.run(|| GameplayTimeline::new(TickRate::new(64).expect("valid"), 1, 1));
+        assert_eq!(
+            refused,
+            Err(ProbeError::FrameCountTooLarge {
+                nanos: u64::MAX,
+                frames: u64::MAX / (NANOS_PER_SECOND as u64 / 60) + 1
+            }),
+            "a step of unbounded frame count must be refused, not attempted"
+        );
+    }
+
+    /// The frame split loses nothing: the same wall time commits the same
+    /// ticks at every render rate, including one that does not divide a second
+    /// evenly, where the remainder frame carries the difference.
     #[test]
     fn accept_f16_d_frame_split_is_exact_at_every_delivery_rate() {
         static ONE_SECOND: &[ProbeStep] = &[
             ProbeStep::Advance {
                 nanos: NANOS_PER_SECOND as u64,
-                frames: 1,
             },
             ProbeStep::Observe("after-one-second"),
         ];
-        let probe = BehavioralProbe::new(ONE_SECOND);
-        for frames in [0_u32, 1, 7, 30, 60, 144, 1000] {
+        for render_fps in [1_u32, 7, 30, 60, 144, 1000] {
+            let probe = BehavioralProbe::new("split", render_fps, ONE_SECOND).expect("valid probe");
             let trace = probe
-                .run("split", frames.max(1), || {
-                    GameplayTimeline::new(TickRate::new(64).expect("valid"), 120, 600)
-                })
+                .run(|| GameplayTimeline::new(TickRate::new(64).expect("valid"), 120, 600))
                 .expect("the probe runs");
             assert_eq!(
                 trace.committed_ticks(),
                 64,
-                "one second at 64 Hz is 64 ticks, delivered as {frames} frame(s)"
+                "one second at 64 Hz is 64 ticks, delivered at {render_fps} fps"
             );
             assert_eq!(
                 trace.sample("after-one-second").expect("observed").tick(),
                 Tick(64)
+            );
+            assert_eq!(
+                trace
+                    .sample("after-one-second")
+                    .expect("observed")
+                    .cooldown_remaining_ticks(),
+                120 - 64,
+                "the cooldown counted the same ticks at {render_fps} fps"
             );
         }
     }
