@@ -257,12 +257,15 @@ point). No agent review awards more than `checked`.
   and no memory of the implementation. The reviewer was **not** a different
   agent instance or model, so this is not independent-model evidence, and it
   awards at most **checked** — the owner's human approval remains required.
-- **Rebased** the 9 commits onto `origin/main` `2a9f356`, and after the
-  `F16-D` merge onto `origin/main` `9cb8853` (both clean, no conflicts). On
-  that final head: `cargo fmt --all -- --check` → 0,
-  `cargo clippy --workspace --all-targets --all-features --locked -- -D
-  warnings` → 0, `cargo test --workspace --locked` → 0 (109 `test result:
-  ok.` lines, 0 failures), and
+- **Rebased and re-verified on every push.** `main` moved three times during
+  this review (`2a9f356`, then `9cb8853` after the `F16-D` merge, then
+  `ceeda79`); each time the 9–11 commits rebased cleanly and the whole
+  check set below was re-run on the resulting head, with the evidence
+  regenerated there, so the pushed commit is always a clean fast-forward of
+  the `main` it was tested against. On the final head: `cargo fmt --all --
+  --check` → 0, `cargo clippy --workspace --all-targets --all-features
+  --locked -- -D warnings` → 0, `cargo test --workspace --locked` → 0 (111
+  `test result: ok.` lines, 0 failures), and
   `cargo test --workspace --locked -- accept_f14_d_ --include-ignored` with
   `CS_GAME_DIR` set → 0 with **10/10** tests passing (9 unignored + the
   retail test).
