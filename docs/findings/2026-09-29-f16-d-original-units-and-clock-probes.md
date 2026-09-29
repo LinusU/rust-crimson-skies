@@ -306,7 +306,7 @@ The methodological note about `--no-fail-fast` in the table above is correct and
 was confirmed: the first re-run of a probe with a plain `cargo test` reported
 fewer failures because the run stopped at the first failing test target.
 
-### Defects found and fixed (commit `96df71a`)
+### Defects found and fixed (commit "Fix five F16-D review findings in the probe and calibration code")
 
 1. **An untested boundary described as tested.**
    `GameplayTimeline::advance_fixed_ticks` claimed to be "a named, *tested*
@@ -346,7 +346,7 @@ what this stage asked for. It is recorded as a note on **F16-E (#390)**, togethe
 with the question of how a landmark's free-text description becomes a
 `SourceConvention`.
 
-### Review probes (commit `96df71a`)
+### Review probes (same commit)
 
 | # | Edit | Result of the 16 tests |
 | --- | --- | --- |
