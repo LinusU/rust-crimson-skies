@@ -13,15 +13,17 @@
 //! once-per-press [`Action`] edges in an [`InputFrame`]. The adapters that
 //! read real devices and calibrate axes are F22-B; the
 //! [`CommandStream`] a session records at its input boundary, which is what
-//! makes replay display-rate independent, is F22-C; original command coverage
-//! is F22-D.
+//! makes replay display-rate independent, is F22-C; the coverage of this
+//! declared vocabulary across every declared device family is F22-D.
 //!
 //! **Designed vocabulary, never original data.** Every label, the action set
 //! and the [`ActionMap::designed_default`] map are newly authored project
 //! design. Which commands the original 2000 PC game exposes, which keys and
-//! devices it binds them to and how it labels them are **unknown** until
-//! F22-D measures them; nothing here claims otherwise
-//! (`docs/findings/2026-09-29-f22-a-command-schema-and-action-map.md`).
+//! devices it binds them to and how it labels them are **unknown**: F22-D
+//! covered the declared vocabulary end to end and recorded that measuring the
+//! original's is still open (`docs/findings/2026-09-30-f22-d-device-families-and-command-coverage.md`,
+//! `docs/findings/2026-09-29-f22-a-command-schema-and-action-map.md`). Nothing
+//! here claims otherwise.
 //!
 //! **`cs_types` stays dependency-free** (`docs/01-ARCHITECTURE.md`), so the
 //! device vocabulary is a small engine-owned enum set instead of winit,
@@ -1556,14 +1558,17 @@ impl ActionMap {
             .map(|binding| binding.target.action())
     }
 
-    /// A designed keyboard/mouse/gamepad default map.
+    /// A designed keyboard/mouse/gamepad/joystick default map.
     ///
     /// **Designed, not original.** The bindings below are newly authored
-    /// development defaults that exercise every device class; they are not
-    /// measurements of the original 2000 PC game, whose command coverage and
-    /// bindings are unknown until F22-D. F22-B may replace them per profile.
-    /// The map validates itself, so a future edit that introduces a conflict
-    /// fails at construction instead of silently shadowing a binding.
+    /// development defaults that exercise every device class and every
+    /// declared command — the F22-D coverage tests keep both true —; they are
+    /// not measurements of the original 2000 PC game, whose command coverage
+    /// and bindings remain unknown and are recorded as unknown in
+    /// `docs/findings/2026-09-30-f22-d-device-families-and-command-coverage.md`.
+    /// F22-B may replace them per profile. The map validates itself, so a
+    /// future edit that introduces a conflict fails at construction instead of
+    /// silently shadowing a binding.
     pub fn designed_default() -> Self {
         use BindingSource as S;
         use BindingTarget::{Axis, Command, Ui};
@@ -1653,6 +1658,19 @@ impl ActionMap {
                 source: S::Key(Key::T),
                 target: Command(FlightCommand::TargetNext),
             },
+            // Targeting steps through the target list with the arrow keys:
+            // left is the previous target in flight and right the next one,
+            // while a screen that owns the devices navigates with them. This
+            // is the two-context case the action map documents, in the map
+            // the game itself uses.
+            Binding {
+                source: S::Key(Key::ArrowLeft),
+                target: Command(FlightCommand::TargetPrev),
+            },
+            Binding {
+                source: S::Key(Key::ArrowRight),
+                target: Command(FlightCommand::TargetNext),
+            },
             Binding {
                 source: S::Key(Key::G),
                 target: Command(FlightCommand::ToggleGear),
@@ -1660,6 +1678,12 @@ impl ActionMap {
             Binding {
                 source: S::Key(Key::B),
                 target: Command(FlightCommand::FlapStep),
+            },
+            // Eject sits on the number row, away from the flight cluster and
+            // the fire keys: a mis-press must not cost the aircraft.
+            Binding {
+                source: S::Key(Key::Digit3),
+                target: Command(FlightCommand::Eject),
             },
             // Mouse flight mode (a disclosed designed option).
             Binding {
@@ -3212,5 +3236,102 @@ mod tests {
         );
         neutral.set_axis(AxisValue::from_quantized(FlightCommand::Yaw, 1).expect("one is valid"));
         assert!(!neutral.is_inert(), "one non-neutral sample is input");
+    }
+
+    /// F22-D: the designed default map reaches **every** declared command and
+    /// **every** declared device family, and the context gate holds for each
+    /// of them. A declared command with no source is a coverage hole — nothing
+    /// in the game could ever produce it — and a source that resolves in the
+    /// wrong context is the failure that lets a text field fire the guns.
+    #[test]
+    fn accept_f22_d_the_designed_map_reaches_every_declared_command_and_family() {
+        let map = ActionMap::designed_default();
+
+        for command in FlightCommand::ALL {
+            let action = Action::Flight(*command);
+            let sources: Vec<BindingSource> = map
+                .bindings()
+                .iter()
+                .filter(|binding| binding.target.action() == action)
+                .map(|binding| binding.source)
+                .collect();
+            assert!(
+                !sources.is_empty(),
+                "the declared command {command} has no source in the designed \
+                 default map, so no device can produce it"
+            );
+            for source in sources {
+                assert_eq!(
+                    map.resolve(InputContext::Flight, source),
+                    Some(action),
+                    "{source} drives {command} in flight"
+                );
+                assert_eq!(
+                    map.resolve(InputContext::TextEntry, source),
+                    None,
+                    "text entry gates {command}"
+                );
+                assert_eq!(
+                    map.resolve(InputContext::Cinematic, source),
+                    None,
+                    "a cinematic gates {command}"
+                );
+                assert!(
+                    !matches!(
+                        map.resolve(InputContext::UiNavigation, source),
+                        Some(Action::Flight(_))
+                    ),
+                    "a menu can never fire {command} through {source}"
+                );
+            }
+        }
+
+        for wanted in UiAction::ALL {
+            let action = Action::Ui(*wanted);
+            let sources: Vec<BindingSource> = map
+                .bindings()
+                .iter()
+                .filter(|binding| binding.target.action() == action)
+                .map(|binding| binding.source)
+                .collect();
+            assert!(
+                !sources.is_empty(),
+                "the declared UI action {wanted} has no source in the designed \
+                 default map, so no screen can receive it"
+            );
+            for source in sources {
+                assert_eq!(
+                    map.resolve(InputContext::UiNavigation, source),
+                    Some(action),
+                    "{source} requests {wanted}"
+                );
+                assert!(
+                    !matches!(
+                        map.resolve(InputContext::Flight, source),
+                        Some(Action::Ui(_))
+                    ),
+                    "a UI action is not a flight command: {source}"
+                );
+                assert_eq!(map.resolve(InputContext::TextEntry, source), None);
+                assert_eq!(map.resolve(InputContext::Cinematic, source), None);
+            }
+        }
+
+        for class in DeviceClass::ALL {
+            assert!(
+                map.bindings()
+                    .iter()
+                    .any(|binding| binding.source.device_class() == *class),
+                "the declared device family {class} has a binding, otherwise the \
+                 family can never reach a command"
+            );
+        }
+        for binding in map.bindings() {
+            assert!(
+                DeviceClass::ALL.contains(&binding.source.device_class()),
+                "{} names an undeclared device family",
+                binding.source
+            );
+        }
     }
 }
