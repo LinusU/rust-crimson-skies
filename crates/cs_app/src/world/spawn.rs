@@ -22,9 +22,10 @@
 //! What this stage deliberately does *not* do, and where it goes:
 //!
 //! * mesh-derived colliders ([`WorldCollisionShape::FromMesh`]) are reported
-//!   as [`SkipReason::MeshColliderDeferred`] — building them needs the Avian
-//!   collider-from-mesh path on a real asset stack (owner ruling 2026-09-28,
-//!   task #333) and is **F18-B**;
+//!   as [`SkipReason::MeshColliderDeferred`] — the Avian collider-from-mesh
+//!   path on a real asset stack now exists
+//!   ([`crate::asset_stack::spawn_static_mesh_collider`], task #333), and
+//!   building these instances with it is **F18-B**;
 //! * mission overlays and streaming teardown are **F18-C**;
 //! * retail geometry import is **F18-B/D**; everything this module spawns
 //!   comes from a synthetic fixture (`super::fixture`).
