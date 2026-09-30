@@ -214,6 +214,113 @@ fn accept_f18_b_shear_the_presentation_carries_the_whole_authored_affine() {
     );
 }
 
+/// **A representable object keeps its `Transform`, so F18-C can still move it.**
+/// The removal of `Transform` is scoped to the sheared case, which is the only
+/// one where a `Transform` beside the affine would destroy it. A
+/// translation/rotation/scale object must present exactly as it did before this
+/// decision, including the pose F18-C's overlay consumer writes to.
+///
+/// Observable failure: the presentation of an ordinary object loses its
+/// `Transform`, and `displace_object` then moves only the collider's position —
+/// the render/collision split F18 non-negotiable behavior 1 exists to prevent.
+#[test]
+fn accept_f18_b_shear_a_representable_object_still_carries_the_pose_overlays_write_to() {
+    let upright = CanonicalTransform::try_new(
+        [[0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        PANEL_POS_M,
+    )
+    .expect("a rotation and a translation are finite");
+    let fixture = WorldFixture::builder(one_panel_world("upright", upright))
+        .build()
+        .expect("a representable panel is placeable");
+    let visual = fixture
+        .spawned()
+        .visual_for(&object("upright"))
+        .expect("the panel is presented");
+    let pose = fixture.world().get::<Transform>(visual).expect(
+        "a representable object's presentation carries a `Transform`: it is what \
+                 `overlays::displace_object` writes to move a drawn object",
+    );
+    assert!(
+        pose.to_matrix()
+            .to_cols_array()
+            .iter()
+            .all(|value| value.is_finite()),
+        "the decomposition must be finite for a representable matrix"
+    );
+    // And it is the authored matrix, so nothing regressed for the common case.
+    let drawn = fixture
+        .world()
+        .get::<GlobalTransform>(visual)
+        .expect("the visual entity still exists");
+    assert!(
+        drawn
+            .to_matrix()
+            .to_cols_array()
+            .iter()
+            .zip(canonical_matrix(&upright).to_cols_array())
+            .all(|(got, want)| (got - want).abs() < 1e-5),
+        "for a representable matrix the pose and the affine agree, so the object is drawn \
+         where the record says"
+    );
+}
+
+/// **A sheared object refuses a displacement instead of moving half of itself.**
+/// Its presentation deliberately has no `Transform`, so `displace_object` must
+/// refuse by name rather than write only the collider's `Position` — a door that
+/// visibly opens while its collision stays shut is the mismatch F18
+/// non-negotiable behavior 1 exists to prevent.
+///
+/// Observable failure: the displacement is applied anyway, and afterwards the
+/// drawn half and the collided half are at different places.
+#[test]
+fn accept_f18_b_shear_a_sheared_object_refuses_a_displacement_rather_than_moving_half_of_itself() {
+    use cs_app::world::overlays::{OverlayError, displace_object};
+
+    let mut fixture = WorldFixture::builder(sheared_world())
+        .build()
+        .expect("the sheared panel is placeable");
+    let spawned = fixture
+        .spawned()
+        .object(&object("sheared"))
+        .cloned()
+        .expect("the panel is in the report");
+    let collider = spawned
+        .collider
+        .as_ref()
+        .expect("a solid cuboid object has a collider")
+        .entity;
+    let position_before = fixture
+        .world()
+        .get::<Position>(collider)
+        .expect("the collider has a position")
+        .0;
+
+    let error = displace_object(
+        fixture.app_mut().world_mut(),
+        &spawned,
+        Vec3::new(0.0, 0.0, 2.0),
+    )
+    .expect_err("a sheared object has no `Transform` to move, so it must be refused");
+    assert!(
+        matches!(
+            &error,
+            OverlayError::Undisplaceable { target, .. } if target.as_str() == "sheared"
+        ),
+        "the refusal must name the object, got {error:?}"
+    );
+
+    let position_after = fixture
+        .world()
+        .get::<Position>(collider)
+        .expect("the collider still has a position")
+        .0;
+    assert_eq!(
+        position_before, position_after,
+        "a refused displacement must move nothing at all, not even the collision half"
+    );
+}
+
 // -------------------------------------------------------- 2. the collision ---
 
 /// **The collision carries the shear in its shape, exactly.** The collider's

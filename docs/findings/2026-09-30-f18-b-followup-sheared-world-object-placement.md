@@ -82,16 +82,51 @@ therefore the one combination this stage refuses:
   private `parallelepiped` that builds the eight mapped corners and their twelve
   triangles.
 * `crates/cs_app/src/world/spawn.rs` (edited): `instance_transform` →
-  `instance_placement`, which resolves **both** the placement and the collider
-  geometry before anything is spawned; `PlannedCollider`; `WorldSpawnError::
-  UnrepresentableTransform` → `UnplaceableAffine { object, source }`; the visual
-  entity carries `GlobalTransform` only; the collider entity is built from
-  `Collider::from(shape)` and the placement's pose.
+  `instance_placement`; `WorldSpawnError::UnrepresentableTransform` →
+  `UnplaceableAffine { object, source }`; `instance_placements` is the pre-flight
+  and now **bakes** each declared cuboid as well as classifying it; the visual
+  entity carries the whole authored `GlobalTransform`, plus a `Transform`
+  **only** when the placement is representable (`pose_for`); the collider entity
+  is built from `Collider::from(shape)` and the placement's pose.
+* `crates/cs_app/src/world/overlays.rs` (edited by the **review**, see below):
+  `OverlayError::Undisplaceable`, and `displace_object` checks every target
+  entity for a `Transform` before writing anything.
+
+### What the review found about the `Transform`
+
+The first version of this slice removed `Transform` from **every** presentation
+entity, because that is the minimal way to guarantee a shear survives
+propagation. The review caught that this was too broad: **F18-C** had meanwhile
+landed on `main`, and its `overlays::displace_object` moves a drawn object by
+writing `Transform` (and Avian's `Position`) — with the reason measured and
+recorded in that module: writing only `Transform` leaves the collider behind for
+a tick, so both are written together. Removing `Transform` from every
+presentation entity made that consumer a no-op on the render half, which is the
+render/collision split F18 non-negotiable behavior 1 exists to prevent, and it
+broke eight `accept_f18_c_*` tests.
+
+The fix scopes the removal to where it is actually required. A **representable**
+placement carries both components, exactly as F18-A built them — for such a
+matrix the two agree, so nothing changes for every object that is not sheared,
+and F18-C's consumer works unchanged. A **sheared** placement carries the
+`GlobalTransform` alone, because a `Transform` beside it is what destroys the
+shear. The consequence is a real gap and is named rather than hidden: a sheared
+object has no component for a displacement to write to, so
+`displace_object` refuses it with `OverlayError::Undisplaceable` **before**
+writing anything. Half-applying a displacement would have been the one outcome
+both stages forbid. Affected content: a sheared world object that a mission
+overlay would displace. Resolving task: **F18-C**'s overlay policy together with
+the F18-D census; recorded here rather than guessed.
+
+This is the second time in this slice that "keep the change as small as it looks"
+was wrong: the first was the pre-flight not baking, the second this. Both were
+found by running the *whole* workspace suite against a `main` that had moved on
+under the branch, not by reading the diff.
 * `crates/cs_app/src/world/mod.rs`, `crates/cs_app/src/world/fixture.rs`
   (wiring and one `world_mut` accessor only), `crates/cs_app/src/lib.rs`
   untouched.
-* `crates/cs_app/tests/world/shear.rs` (new): the nine
-  `accept_f18_b_shear_*` acceptance tests.
+* `crates/cs_app/tests/world/shear.rs` (new): the `accept_f18_b_shear_*`
+  acceptance tests (twelve after the review).
 * `crates/cs_app/tests/world/spawn.rs` (edited): the F18-A refusal test now
   pins the **narrowed** refusal — see "What changed in an existing test" below.
 * `crates/cs_app/tests/world/main.rs` (wiring: one `mod shear;`).
@@ -190,14 +225,14 @@ linear map `[[1, 0.5, 0], [0, 1, 0], [0, 0, 1]]` (a shear of 0.5 per meter of
 ## Test sensitivity (mutation matrix)
 
 Every mutation below was applied, `cargo test -p cs_app --test world --
-accept_f18_b_shear_` was run, and the source was restored. All nine tests pass
-unmutated.
+accept_f18_b_shear_` was run, and the source was restored. All twelve tests pass
+unmutated. The last four rows were added by the **review**.
 
 | mutation | tests that failed |
 | --- | --- |
 | put a `Transform` back on the presentation entity | `..._the_presentation_carries_the_whole_authored_affine` |
 | bake with `Mat3::IDENTITY` (the shear never reaches the geometry) | 4: `..._the_collision_carries_...`, `..._blocks_inside_the_shear...`, `..._a_mirrored_shear_is_placed...`, `..._the_authored_box_is_the_shape_the_bake_starts_from` |
-| refuse every non-TRS affine again (the F18-A contract) | all 9 |
+| refuse every non-TRS affine again (the F18-A contract) | every `accept_f18_b_shear_*` test |
 | accept a determinant-zero map (place a zero-volume object) | `..._only_a_map_with_no_exact_placement_is_still_refused` |
 | place a sheared mesh object too (drop the second-asset refusal) | `..._a_sheared_mesh_object_is_refused...` |
 | drop the authored translation from the collider pose | 2: `..._the_collision_carries_...`, `..._blocks_inside_the_shear...` |
@@ -207,6 +242,10 @@ unmutated.
 | drop the bake's mirror reversal (`det < 0`) | `..._a_mirrored_shear_is_placed_with_the_mirrored_geometry` |
 | bake the box with the *unswapped* quad order (`[q0,q2,q1]`) | `..._the_collision_carries_the_authored_linear_map_in_its_shape` |
 | build the plan inside the spawn loop instead of before it | none — a **semantic no-op**, recorded as such |
+| drop the `Transform` from a **sheared** presentation again | `..._the_presentation_carries_the_whole_authored_affine`, `..._a_sheared_object_refuses_a_displacement...` |
+| drop the `Transform` from a **representable** presentation | 8 `accept_f18_c_*` tests, and `..._a_representable_object_still_carries_the_pose...` |
+| `displace_object` moves the collider even with no `Transform` (half-apply) | `..._a_sheared_object_refuses_a_displacement_rather_than_moving_half_of_itself` |
+| drop the pre-flight's bake (classify only) | none directly; `..._the_pre_flight_refuses_before_anything_is_spawned` pins that the pre-flight covers the classification reasons |
 
 Three rows deserve a word. The two winding rows and the mirror row were
 **re-measured by the review and the earlier "semantic no-op" claim withdrawn**:
@@ -298,6 +337,21 @@ unmodified.
   capability this stage claims, and AGENTS.md rule 5 (a parsed asset needs a
   working runtime consumer) is the reason it is documented as a recipe rather
   than quietly presented as supported.
+* **A sheared object cannot be displaced by a mission overlay, and that gap is
+  this stage's decision to leave open** (added by the review, see "What the
+  review found about the `Transform`"). A sheared presentation deliberately
+  carries no `Transform`, so `overlays::displace_object` refuses it with
+  `OverlayError::Undisplaceable` rather than moving the collider's `Position`
+  alone. This is the correct trade — half a displacement is the render/collision
+  split F18 non-negotiable behavior 1 forbids — but it means a sheared door or
+  gate would not open. Affected content: any retail world object that both has a
+  sheared authored matrix and is a mission overlay's target. Resolving task:
+  **F18-C**'s overlay policy (which may need to displace a `GlobalTransform`
+  directly for such an object, and must then also move the collider's `Position`
+  in the same tick); gated on the F18-D census for whether such an object
+  exists. Recorded rather than guessed, and deliberately not fixed here: the
+  right way for an overlay to move a sheared object is F18-C's decision, not a
+  side effect of this one.
 
 ## Designed vocabulary, not original data
 
@@ -316,12 +370,33 @@ required for this task. Commands run locally:
 ```sh
 cargo fmt --all -- --check                                        # exit 0
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings   # exit 0
-cargo test --workspace --locked                                   # exit 0
+cargo test --workspace --locked                                   # exit 0, 0 failed
 cargo test --workspace --locked -- accept_f18_b_shear_ --include-ignored
-#   9 tests run, 9 passed (crates/cs_app/tests/world)
+#   12 tests run, 12 passed (crates/cs_app/tests/world)
 cargo test --workspace --locked -- accept_f18_a_ --include-ignored
-#   14 tests run, 14 passed (crates/cs_app/tests/world), plus F18-B's own 17
+#   14 tests run, 14 passed (crates/cs_app/tests/world)
+cargo test --workspace --locked -- accept_f18_b_ --include-ignored
+#   30 tests run, 30 passed (crates/cs_app/tests/world), including F18-C's
+cargo test --locked -p cs_app --test world
+#   64 tests run, 64 passed -- the whole world suite, F18-A through F18-C
 ```
+
+## Implementer and reviewer
+
+* Implementer: **bunny-alpha-2/bunny-alpha-2** (agent, model
+  `openrouter/stealth/space-bunny-alpha`).
+* Reviewer: **bunny-alpha-2/bunny-alpha-2** — the *same agent identity* that
+  implemented the work, in a **fresh session with no prior context** for this
+  task (it was handed the branch and the acceptance criteria, not the
+  implementation session's reasoning). It tried and failed to obtain an
+  independent second review from a different model instance (the subagent
+  request failed for lack of credits twice), so this review is **not independent
+  evidence** and is recorded as such. Everything it changed was re-derived from
+  the pinned sources in the local cargo registry and from running the suite, not
+  from the implementer's notes; the two claims it withdrew — that parry
+  re-orients faces, and that a reversed winding is a no-op — were both verified
+  by reading `parry3d-0.27.0` and by mutation, and the implementer's own
+  recorded mutation matrix had listed the reversal as a semantic no-op.
 
 ## Sources
 

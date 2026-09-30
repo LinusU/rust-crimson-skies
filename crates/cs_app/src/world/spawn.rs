@@ -675,6 +675,7 @@ pub fn spawn_object(
         return Ok(gap(
             app,
             object,
+            &placement,
             binding(),
             resolved,
             SkipReason::UnknownCollisionRole,
@@ -685,7 +686,7 @@ pub fn spawn_object(
     if !role.creates_collider() {
         return Ok(SpawnedObject {
             object: object.id().clone(),
-            visual: present(app, object, binding(), resolved),
+            visual: present(app, object, &placement, binding(), resolved),
             collider: None,
             mesh: resolved.map(ResolvedUpload::reference),
             non_colliding: true,
@@ -699,6 +700,7 @@ pub fn spawn_object(
         return Ok(gap(
             app,
             object,
+            &placement,
             binding(),
             resolved,
             SkipReason::UnknownCollisionShape,
@@ -740,7 +742,7 @@ pub fn spawn_object(
             }
             Ok(SpawnedObject {
                 object: object.id().clone(),
-                visual: present(app, object, binding(), resolved),
+                visual: present(app, object, &placement, binding(), resolved),
                 collider: Some(SpawnedCollider {
                     object: object.id().clone(),
                     entity,
@@ -766,7 +768,7 @@ pub fn spawn_object(
                     .err()
                     .copied()
                     .unwrap_or(SkipReason::UnknownMesh);
-                return Ok(gap(app, object, binding(), None, reason));
+                return Ok(gap(app, object, &placement, binding(), None, reason));
             };
             let entity = spawn_mesh_collider(app, transform, upload, role, binding());
             Ok(SpawnedObject {
@@ -798,13 +800,14 @@ pub fn spawn_object(
 fn gap(
     app: &mut App,
     object: &WorldObjectInstance,
+    placement: &AffinePlacement,
     binding: WorldObjectBinding,
     upload: Option<ResolvedUpload<'_>>,
     reason: SkipReason,
 ) -> SpawnedObject {
     SpawnedObject {
         object: object.id().clone(),
-        visual: present(app, object, binding, upload),
+        visual: present(app, object, placement, binding, upload),
         collider: None,
         mesh: upload.map(ResolvedUpload::reference),
         non_colliding: false,
@@ -818,17 +821,39 @@ fn gap(
 fn present(
     app: &mut App,
     object: &WorldObjectInstance,
+    placement: &AffinePlacement,
     binding: WorldObjectBinding,
     upload: Option<ResolvedUpload<'_>>,
 ) -> Entity {
+    let affine = GlobalTransform::from(canonical_matrix(object.transform()));
+    let pose = pose_for(placement);
     match upload {
-        Some(upload) => spawn_mesh_presentation(
-            app,
-            GlobalTransform::from(canonical_matrix(object.transform())),
-            upload.upload.mesh().clone(),
-            binding,
-        ),
-        None => spawn_presentation(app, object, binding),
+        Some(upload) => {
+            spawn_mesh_presentation(app, pose, affine, upload.upload.mesh().clone(), binding)
+        }
+        None => spawn_presentation(app, object, pose, binding),
+    }
+}
+
+/// The `Transform` a presentation entity for `placement` carries, if any.
+///
+/// A **representable** placement carries one: the authored matrix decomposed,
+/// which for such a matrix equals the authored matrix, so this is exactly what
+/// F18-A built and what [`super::overlays::displace_object`] writes to move a
+/// drawn object.
+///
+/// A **sheared** placement carries **none**. Bevy's transform propagation
+/// recomputes a `GlobalTransform` from a `Transform` on the same entity, so a
+/// second component would silently replace the shear with a
+/// translation/rotation/scale on the first update — measured on the pinned pair;
+/// see [`super::affine`]. The consequence is recorded rather than hidden: a
+/// sheared object has no `Transform` for a displacement to write to, and
+/// [`super::overlays::displace_object`] must refuse it rather than move the
+/// collision half and leave the drawn half behind.
+fn pose_for(placement: &AffinePlacement) -> Option<Transform> {
+    match placement {
+        AffinePlacement::Trs { transform } => Some(transform.to_transform()),
+        AffinePlacement::Sheared { .. } => None,
     }
 }
 
@@ -836,38 +861,48 @@ fn present(
 /// carries the object's identity, its authored transform and its binding, with
 /// no geometry of its own.
 ///
-/// The entity carries the **whole** authored affine in its `GlobalTransform`
-/// and **no** `Transform`: Bevy's transform propagation overwrites a
-/// `GlobalTransform` from a `Transform` on the same entity, so a shear would
-/// be replaced by the identity on the first update without saying so. Measured
-/// on the pinned pair; see [`super::affine`].
+/// The entity carries the **whole** authored affine in its `GlobalTransform`,
+/// plus a `Transform` only when the affine has one — see
+/// [`pose_for`] for why a shear may not have one.
 fn spawn_presentation(
     app: &mut App,
     object: &WorldObjectInstance,
+    pose: Option<Transform>,
     binding: WorldObjectBinding,
 ) -> Entity {
-    app.world_mut()
-        .spawn((
-            WorldVisual,
-            binding,
-            GlobalTransform::from(canonical_matrix(object.transform())),
-        ))
-        .id()
+    let affine = GlobalTransform::from(canonical_matrix(object.transform()));
+    if let Some(pose) = pose {
+        app.world_mut()
+            .spawn((WorldVisual, binding, pose, affine))
+            .id()
+    } else {
+        app.world_mut().spawn((WorldVisual, binding, affine)).id()
+    }
 }
 
 /// Presents geometry for an object that never collides: the upload goes into
 /// the world's asset stack once and a `Mesh3d` points at it. No rigid body and
 /// no collider are created, so role `None` stays a presentation.
+///
+/// The pose components are the same choice [`spawn_presentation`] makes, and for
+/// the same reason: see [`pose_for`].
 fn spawn_mesh_presentation(
     app: &mut App,
+    pose: Option<Transform>,
     affine: GlobalTransform,
     mesh: Mesh,
     binding: WorldObjectBinding,
 ) -> Entity {
     let handle = app.world_mut().resource_mut::<Assets<Mesh>>().add(mesh);
-    app.world_mut()
-        .spawn((WorldVisual, binding, affine, Mesh3d(handle)))
-        .id()
+    if let Some(pose) = pose {
+        app.world_mut()
+            .spawn((WorldVisual, binding, pose, affine, Mesh3d(handle)))
+            .id()
+    } else {
+        app.world_mut()
+            .spawn((WorldVisual, binding, affine, Mesh3d(handle)))
+            .id()
+    }
 }
 
 /// Builds a mesh-derived static collider and the node that presents it.

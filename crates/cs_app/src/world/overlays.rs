@@ -169,6 +169,23 @@ pub enum OverlayError {
         /// What the world reported.
         reason: String,
     },
+    /// The target is **sheared**: its presentation carries the whole authored
+    /// affine in its `GlobalTransform` and deliberately no `Transform`, because
+    /// a `Transform` beside it would make Bevy's propagation replace the shear
+    /// with a translation/rotation/scale on the first update
+    /// (`super::affine::pose_for`). There is therefore no component for a
+    /// displacement to write to.
+    ///
+    /// Refused rather than half-applied: moving the collider's `Position`
+    /// alone is exactly the mismatch this module exists to prevent — a drawn
+    /// object that opens while its collision stays shut, which passes any test
+    /// that reads the pose after a hundred ticks.
+    Undisplaceable {
+        /// The object the effect names.
+        target: WorldObjectId,
+        /// The entity with no `Transform` to move.
+        entity: Entity,
+    },
 }
 
 impl std::fmt::Display for OverlayError {
@@ -197,6 +214,12 @@ impl std::fmt::Display for OverlayError {
             } => write!(
                 f,
                 "the overlay moves `{target}`, but its entity {entity} is gone ({reason})"
+            ),
+            Self::Undisplaceable { target, entity } => write!(
+                f,
+                "the overlay moves `{target}`, but its entity {entity} is sheared and carries \
+                 no `Transform` to move: writing only the collider's position would leave the \
+                 drawn half behind"
             ),
         }
     }
@@ -425,6 +448,22 @@ pub fn displace_object(
                 entity: *entity,
                 reason: format!("{reason:?}"),
             })?;
+    }
+    // Checked before anything is written, so a refusal moves nothing: an entity
+    // with no `Transform` is a **sheared** object, and writing only its
+    // collider's position is the render/collision split this module exists to
+    // prevent. See [`OverlayError::Undisplaceable`].
+    for entity in &entities {
+        let pose_exists = world
+            .get_entity(*entity)
+            .map(|entity_ref| entity_ref.contains::<Transform>())
+            .unwrap_or(false);
+        if !pose_exists {
+            return Err(OverlayError::Undisplaceable {
+                target: spawned.object.clone(),
+                entity: *entity,
+            });
+        }
     }
     for entity in &entities {
         let Ok(mut entity_ref) = world.get_entity_mut(*entity) else {
