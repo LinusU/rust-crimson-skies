@@ -1801,6 +1801,10 @@ impl ExceptionalControlLaw {
                 // per-source split is in `ExceptionalDiagnostics`.
                 lift_n: base.diagnostics.lift_n + rotor_lift_n,
                 drag_n: base.diagnostics.drag_n + rotor_drag_n,
+                // The authority is this law's, not the wing's: the shared
+                // channel would otherwise report an exceptional airframe as
+                // though it had no rotor at all.
+                control_authority,
                 ..base.diagnostics
             },
         };
@@ -3408,6 +3412,22 @@ mod law_tests {
                 .abs()
                 < 1e-6
         );
+        // The full-stick case saturates the yaw axis, which is what the bound is
+        // for: the rate command alone already asks for more than the tuning
+        // allows.
+        let rate_command = computed.diagnostics.rate_command_torque_nm;
+        let precession = computed.diagnostics.precession_torque_nm;
+        let applied = computed.diagnostics.control_axis_torque_nm;
+        assert!(
+            rate_command[2] + precession[2] + computed.diagnostics.rotor_yaw_torque_nm
+                > max_torque[2],
+            "the probe is one where the yaw axis saturates"
+        );
+        assert!(
+            (applied[2] - max_torque[2]).abs() < 1e-6,
+            "a saturated axis is clamped to the tuning's maximum, not passed on"
+        );
+        assert!(rate_command[0] < max_torque[0] + 1e-9);
         // With no airflow the rotor never starts, so there is no gyroscopic
         // term and no yaw reaction at all — only the wing's rate command.
         let mut stopped = RotorDrive::stopped();
@@ -3465,5 +3485,96 @@ mod law_tests {
             exceptional.diagnostics.rotor_yaw_torque_nm > 0.0,
             "a spinning rotor drags the airframe in the declared yaw direction"
         );
+
+        // With no stick on the yaw axis and no body rate there, the applied yaw
+        // torque *is* the rotor's reaction: the term reaches the integrator
+        // rather than only the diagnostics.
+        let applied = exceptional.diagnostics.control_axis_torque_nm;
+        let rate_command = exceptional.diagnostics.rate_command_torque_nm;
+        let precession = exceptional.diagnostics.precession_torque_nm;
+        let reaction = exceptional.diagnostics.rotor_yaw_torque_nm;
+        assert!(reaction > 0.0);
+        assert!(reaction < max_torque[2]);
+        assert!((rate_command[2] - 0.0).abs() < 1e-12);
+        assert!((precession[2] - 0.0).abs() < 1e-12);
+        assert!(
+            (applied[2] - reaction).abs() < 1e-6,
+            "the applied yaw torque is the rotor's reaction"
+        );
+    }
+
+    /// AC02's minimum scenario from the producing side: a tick the law could
+    /// have got wrong is **refused**, not handed on. A non-finite value is named,
+    /// and a force the law produced without recording where it came from is
+    /// caught by the accounting check, so neither can reach an integrator.
+    #[test]
+    fn accept_f25_b_a_doctored_or_nonfinite_tick_is_refused_by_name() {
+        let law = law();
+        let state = level(12.0, Some(0.6));
+        let input = stick(0.2, 0.2, 0.0, 0.6);
+        let mut rotor = RotorDrive::stopped();
+        let good = one_tick(&law, &state, &input, Tick(1), &mut rotor);
+        assert_eq!(good.validate(), Ok(()));
+
+        type Doctor = Box<dyn Fn(ExceptionalTick) -> ExceptionalTick>;
+        let doctors: [(&str, Doctor); 4] = [
+            (
+                "world_force_n[0]",
+                Box::new(|mut tick: ExceptionalTick| {
+                    tick.output.world_force_n[0] = f64::NAN;
+                    tick
+                }),
+            ),
+            (
+                "world_torque_nm[2]",
+                Box::new(|mut tick: ExceptionalTick| {
+                    tick.output.world_torque_nm[2] = f64::INFINITY;
+                    tick
+                }),
+            ),
+            (
+                "rotor_lift_n",
+                Box::new(|mut tick: ExceptionalTick| {
+                    tick.diagnostics.rotor_lift_n = f64::NAN;
+                    tick
+                }),
+            ),
+            (
+                "control_authority",
+                Box::new(|mut tick: ExceptionalTick| {
+                    tick.diagnostics.control_authority = f64::NAN;
+                    tick
+                }),
+            ),
+        ];
+        for (field, doctor) in doctors {
+            assert_eq!(
+                doctor(good).validate().err(),
+                Some(ExceptionalLawError::NonFiniteOutput { field }),
+                "a non-finite {field} must be refused by name"
+            );
+        }
+
+        // A force the law produced without recording a contribution for is
+        // caught by the accounting check rather than integrated silently.
+        let mut unaccounted = good;
+        unaccounted.output.world_force_n[1] += 1.0;
+        match unaccounted.validate() {
+            Err(ExceptionalLawError::UnaccountedForce { residual_n }) => {
+                assert!(
+                    (residual_n - 1.0).abs() < 1e-9,
+                    "the residual is the unaccounted component, got {residual_n}"
+                );
+            }
+            other => panic!("an unaccounted force must be refused, got {other:?}"),
+        }
+        // And a recorded contribution the force does not contain is caught the
+        // same way.
+        let mut phantom = good;
+        phantom.diagnostics.rotor_lift_force_n[0] += 25.0;
+        assert!(matches!(
+            phantom.validate(),
+            Err(ExceptionalLawError::UnaccountedForce { .. })
+        ));
     }
 }

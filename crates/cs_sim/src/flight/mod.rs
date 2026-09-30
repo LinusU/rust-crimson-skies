@@ -16,19 +16,28 @@
 //!   tick, so equal inputs produce equal forces at any render rate.
 //! * [`synthetic`] is the declared synthetic fixture and open-loop probe the
 //!   acceptance tests drive.
-//! * [`autogyro`] is F25-A's exceptional side: the shared
+//! * [`autogyro`] is F25-A's and F25-B's exceptional side: the shared
 //!   [`autogyro::FlightTelemetry`] interface HUD, AI and probes read, the
 //!   [`autogyro::RotorDrive`] a fixed tick advances together with the explicit
-//!   [`autogyro::RotorSpeedMapping`] its mesh is drawn at, and the
+//!   [`autogyro::RotorSpeedMapping`] its mesh is drawn at, the
 //!   [`autogyro::ReferenceManeuverEnvelope`] an exceptional airframe must be
-//!   recorded on. It contributes no force law: that is F25-B's.
+//!   recorded on, and the [`autogyro::ExceptionalControlLaw`] that evaluates one
+//!   tick of an exceptional airframe. The law is the shared boundary plus a
+//!   rotor — lift along the shaft axis, drag against the airflow, a
+//!   torque-reaction yaw and an exact gyroscopic precession torque — with the
+//!   control authority coming from the rotor as well as from airspeed. Its
+//!   rotor drive takes an air-relative speed and nothing else, so no throttle
+//!   setting reaches it and a profile claiming hover is refused by name rather
+//!   than flown.
 //!
 //! The provenance-carrying, normalization-side schema that records where each
 //! tuning value came from lives in `cs_content::flight_tuning`; F24-C wires
 //! that producer into this consumer. What the original 2000 PC game's exact
 //! equations and units were is not recovered here (`F24` "Research boundary");
-//! no field in this module is an extracted original coefficient, and the
-//! calibration against fingerprinted reference traces is F24-D.
+//! no field in this module is an extracted original coefficient, the
+//! calibration against fingerprinted reference traces is F24-D, and the
+//! exceptional law's profile is declared design with
+//! [`autogyro::ExceptionalProfile::is_measured`] `false`.
 //!
 //! `cs_sim` may depend only on [`cs_types`] and [`cs_script`]
 //! (`docs/01-ARCHITECTURE.md`), so the model input is declared on the
@@ -43,10 +52,13 @@ pub mod synthetic;
 pub mod tuning;
 
 pub use autogyro::{
-    EnvelopeError, EnvelopeStatus, FlightTelemetry, ManeuverKind, ManeuverSpec, MappedVisualRate,
-    ReferenceManeuverEnvelope, RotorDrive, RotorSpeedMapping, RotorTelemetry, RotorVisualSample,
-    SYNTHETIC_TICK_DT_S, SharedTelemetry, TelemetryError, TelemetryFrame,
-    synthetic_exceptional_envelope, synthetic_rotor_drive, synthetic_rotor_mapping,
+    EnvelopeError, EnvelopeStatus, ExceptionalControlLaw, ExceptionalDiagnostics,
+    ExceptionalLawError, ExceptionalProfile, ExceptionalTick, FlightTelemetry, HoverCapability,
+    ManeuverKind, ManeuverSpec, MappedVisualRate, ProfileError, ReferenceManeuverEnvelope,
+    RotorDrive, RotorSpeedMapping, RotorTelemetry, RotorVisualSample, SYNTHETIC_TICK_DT_S,
+    SharedTelemetry, TelemetryError, TelemetryFrame, synthetic_exceptional_envelope,
+    synthetic_exceptional_profile, synthetic_exceptional_tuning, synthetic_rotor_drive,
+    synthetic_rotor_mapping,
 };
 pub use model::{
     BODY_FORWARD, BODY_RIGHT, BODY_UP, EngineState, FlightDiagnostics, FlightEnvironment,
