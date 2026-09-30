@@ -28,7 +28,7 @@ nothing, and it was not reviewed by a human.
   `FRAMING_DISTANCE_FACTOR`, `CAPTURE_VIEW_DIRECTION`, `NEAR_PLANE_FRACTION`,
   `FAR_PLANE_FACTOR`.
 - `crates/cs_app/src/world/mod.rs` (wiring and module docs only).
-- `crates/cs_app/tests/world/audit.rs` (new): the seven `accept_f18_d_*`
+- `crates/cs_app/tests/world/audit.rs` (new): the eight `accept_f18_d_*`
   tests. `crates/cs_app/tests/world/audit/evidence.rs` (new): the evidence
   harness, deliberately **not** named with the task prefix.
 - This file and `docs/findings/evidence/F18-D.json`.
@@ -113,6 +113,16 @@ vertices and not others. Measured, not inferred; the distinct refusals were
 | `material group 0 carries a normal on 76 of 112 vertices; …` | 2 |
 | the other eleven refusals, between `8 of 180` and `132 of 172` vertices | 9 |
 
+**Which material group was refused, re-measured after the review fix.** Over the
+23 refusals the refused group is **0 nine times, 1 twelve times and 9 twice** —
+so the group matters and it is not usually the first one. The submitted branch
+recorded `0` for all 23 (see the review section: the group was scraped out of
+the adapter's message with a two-word prefix that never matched), which means
+the census as submitted was wrong for the twelve group-1 refusals and the two
+group-9 refusals. The refusal *count* and the verbatim messages were correct
+throughout; only the structured field was wrong. `world-group-census.json` now
+carries the adapter's own group per refusal.
+
 The adapter is **right** to refuse: a buffer filled with an invented normal for
 the corners that store none is exactly the "developer placeholder" the sheet
 forbids, and F17-B's contract is to refuse rather than default. So this is not a
@@ -124,8 +134,11 @@ it:
 
 * `RepresentativeGeometry::upload` carries the adapter's own verdict — the
   census no longer reads as "presentable" for a mesh the world load would refuse.
-* `GroupFacts::refused_representatives` counts them, and
-  `WorldGroupCensus::refused()` iterates them.
+* `WorldGroupCensus::refused_representatives()` counts them **from the
+  representatives' own verdicts**, and `WorldGroupCensus::refused()` iterates
+  them. (This branch originally also carried a `GroupFacts` field of the same
+  name; it was removed in review because `WorldGroupCensus::new` never read it,
+  so two fields held the same number and one was dead.)
 * The capture draws a **second**, separately declared selection:
   `SurveyedContainer::presentable`, the largest stored mesh inside
   `PRESENTABLE_PROBE_MESHES = 64` candidates (by stored `polygon_count`) that
@@ -283,7 +296,8 @@ and its stored material-group table, both from the container.
 | `a_gpu_capture_proves_the_stored_geometry_was_drawn` (`#[ignore]`, needs a GPU) | the `gpu` half of the mapping arm: a real offscreen render of a real `RenderMesh` built through `RenderMesh::build`, more than one luminance level, non-zero coverage, coverage above zero and below a thousand per mille, the adapter named, one material group and eight submitted triangles for the authored arch, and the PNG's digest equal to the capture's | the frame is blank, the capture hides the adapter, the counts stop matching the upload, or the digest is of a buffer rather than the file |
 | `a_capture_that_drew_nothing_is_refused_rather_than_written` (`#[ignore]`, needs a GPU) | the refusal half: a mesh with no polygon is refused by name with its group and index, **and no PNG is left behind** | an empty mesh is captured into a file, or a refusal still writes an artifact |
 | `retail_every_discovered_world_group_is_visited_and_compared` (`#[ignore = "requires CS_GAME_DIR"]`) | **AC04 over the real installation**: eight groups in discovered order with no repeats and no absent reference lead, every group carrying a campaign mission, eight visited and none blocked, 15 373 present meshes and 292 236 drawn triangles in total, per group the measured bounds and the representative budget and fingerprint-free ordering, `Undecoded` placement with a non-zero node-record count, `vertex_scale_to_m == None`, zero routes, both traversal blockers in order with the scale one quoting a measured extent, all five opening classes unlocated and self-naming, no gaps, and more than 10 000 stored node records over the eight groups | a group is missed or duplicated, a census of zeroes passes for a group, a route appears, a blocker is dropped, a class is reported located, or the traversal verdict silently changes |
-| `retail_every_world_group_draws_a_measured_frame_on_the_gpu` (`#[ignore]`, needs `CS_GAME_DIR` and a GPU) | the `gpu` half over the real installation: one measured non-uniform frame per discovered world group from the group's largest **uploadable** mesh, the adapter named, and the count of refused candidates non-zero so a run that asked the adapter nothing cannot pass | a group's frame is blank, the adapter is unnamed, or the upload verdicts were skipped |
+| `retail_every_world_group_draws_a_measured_frame_on_the_gpu` (`#[ignore]`, needs `CS_GAME_DIR` and a GPU) | the `gpu` half over the real installation: one measured non-uniform frame per discovered world group from the group's largest **uploadable** mesh, the adapter named, a geometry digest recorded per frame and the distinct count reported, and the count of refused candidates non-zero so a run that asked the adapter nothing cannot pass | a group's frame is blank, the adapter is unnamed, or the upload verdicts were skipped |
+| `a_refused_upload_names_the_material_group_the_adapter_refused` (unignored; **added in review**) | the refusal **attribution**, through the production `cs_app::world::upload_verdict` the census itself calls: an authored stored mesh with two material groups whose second stores a normal on one of three corners, so the adapter refuses **group 1**; the verdict must name group 1, the carried verbatim message must name the same group, and the census must carry that verdict unchanged | the group is scraped out of the adapter's message instead of read from its typed error — the submitted branch's form, which reported group 0 for all 23 retail refusals. Restoring it fails with `left: 0, right: 1` |
 
 The evidence harness (`evidence_report_f18_d_writes_the_acceptance_report`,
 deliberately **not** named with the task prefix) derives
@@ -296,7 +310,7 @@ failing report when the acceptance run failed.
 ## Sensitivity check (mutations applied and reverted while implementing)
 
 Every row below was applied to the source, the whole `accept_f18_d_` selection
-was run with `--include-ignored`, and the source was restored. All seven tests
+was run with `--include-ignored`, and the source was restored. All eight tests
 pass unmutated. **Two rows did not fail and are reported as such** rather than
 claimed as coverage.
 
@@ -313,10 +327,23 @@ claimed as coverage.
 | the `UniformFrame` refusal is dropped | 1: `a_capture_that_drew_nothing_...`. **This row initially did not fail**, because `UniformFrame` had no reachable case: with the view direction fixed no group produced a blank frame, and the empty-mesh test exercises a different error. The variant was documented but untested production code. A fixture whose stored triangle is degenerate (`0, 0, 1`) now reaches it |
 | `discard_capture` is made a no-op | 1: `a_capture_that_drew_nothing_...`, on "a refused capture must leave no file". Found by that same test: the renderer writes the PNG the moment the frame arrives, *before* the code has looked at it, so a uniform frame was leaving a file that read exactly like a good capture |
 
+### Reviewer rows (bunny-alpha-2)
+
+| Mutation | Failing `accept_f18_d_*` tests |
+| --- | --- |
+| `upload_verdict` reads the refused group out of the adapter's `Display` with the original two-word `strip_prefix` (the submitted form) | 1: `a_refused_upload_names_the_material_group_the_adapter_refused`, on `left: 0, right: 1`. **This row is the review's main finding** — the mutation restores the exact code the branch shipped, and the retail run then reports group 0 for all 23 refusals where 12 are group 1 and 2 are group 9 |
+| `read_file` is given the lowercased logical key again | 0 on this machine — the retail installation sits on a case-insensitive filesystem, so `zbd/c1c/gamez.zbd` and `ZBD/C1C/gamez.zbd` are the same file. **Recorded as not discriminating here**, and fixed anyway: the defect is real on a case-sensitive host, which is where a reviewer or the owner may well run this, and no test on this machine can prove it |
+| `census_verdict`'s `UnknownOpeningClass` check is restored | 0 — and it cannot be made to fail, which is why the variant was removed rather than tested. The openings it inspects are already filtered by a class from `OpeningClass::ALL`, and `StuntOpening::class` is a closed enum, so the branch is unreachable by construction |
+| the retail test's `refused_representatives()` assertion is restored to `== census.refused().count()` | 0 — that is the point: the submitted form compares a method with its own definition, so it could not fail. It is replaced with a count taken from the representatives' own verdicts plus a typed-group-against-message check |
+
 The two rows that initially did not fail are the reason this table is worth
 having. In both cases the code was correct-looking and **unreachable** — a
 documented refusal with nothing that could reach it, and a check that only fired
 when two conditions held together. Neither was visible from reading the code.
+The reviewer's rows make the same point from the other side: of the four defects
+found here, two (the message-scraping and the tautological assertion) are
+invisible to the eye precisely because the code reads correctly, and a third
+(the case-folded read path) cannot be made to fail on this machine at all.
 
 ## Designed vocabulary, not original data
 
