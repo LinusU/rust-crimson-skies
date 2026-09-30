@@ -91,12 +91,36 @@ caught it.
 
 ## The measured state, per container
 
-Nine GameZ containers, **41** texture archives (eight world groups × five tiers
-plus the install-root `rimage.zbd`), read through `install::discover` →
-`SessionBuilder::mount_installation` → `TextureCatalog` → `archive_names`, and
-through `read_gamez_meshes` + `read_gamez_materials` for the containers.
-Everything below is a per-reading count of **distinct stored names** the archive
-holds, produced by production code.
+Nine GameZ containers, **49** texture archives, read through
+`install::discover` → `SessionBuilder::mount_installation` →
+`TextureCatalog` → `archive_names`, and through `read_gamez_meshes` +
+`read_gamez_materials` for the containers. Everything below is a per-reading
+count of **distinct stored names** the archive holds, produced by production
+code.
+
+The candidate set is the **49 archives the installation actually holds**, and
+that is worth stating because getting it wrong is the error this section
+supersedes. Each world group carries **six** texture archives: a primary
+`texture.zbd` and **five** `rtexture*` resolution tiers. Four tier numbers
+(`rtexture2`, `rtexture4`, `rtexture6`, `rtexture8`) are the same in every
+group, but the fifth differs per world — `rtexture9` in `C2B`, `rtexture10` in
+`C1C`, `rtexture11` in `C1B`, `rtexture12` in `C3`, and `rtexture14` or
+`rtexture15` elsewhere. Naming only the four common ones yields 41 archives and
+silently drops one real tier from every world. The tests enumerate each group's
+`.zbd` members from the production inventory and let the catalog decide which of
+them is a texture package, so no archive is left out by name; a member that is
+not a texture package is a reported failure, and the test asserts that failures
+and archives add up to the members offered. `crates/cs_formats/tests/texture/retail.rs`'s
+`accept_f08_b_retail_zbd_texture_packages_read_and_decode_with_the_recorded_census`
+independently records the same census of 49.
+
+The measurements below do not depend on the tier numbering: the tiers of one
+group hold an identical name set, so including the fifth changes no count and
+only widens the tie by one file. The conclusions are the same either way. The
+correction matters because a candidate set that is quietly missing a fifth of
+each world's archives is a measurement of the wrong question, and the numbers
+below should be reproducible from the installation rather than from a list
+someone typed.
 
 ### The material-row census, every row counted exactly once
 
@@ -132,7 +156,7 @@ answer and not incidental:
 
 ### Under the exact rule: nothing binds, anywhere
 
-| Container | distinct names | held by any of the 41 archives, `Exact` |
+| Container | distinct names | held by any of the 49 archives, `Exact` |
 | --- | --- | --- |
 | all nine except `C2`, `C3` | 221–605 | **0** |
 | `ZBD/C2/gamez.zbd` | 479 | **5** |
@@ -146,16 +170,17 @@ honest state of the contract's rule on this corpus: **the exact-name lookup the
 contract specifies resolves 10 of 4 478 material rows.**
 
 `ZBD/C2` and `ZBD/C3` therefore do not get a `Unique` decision under `Exact` —
-they get a 40-way tie at 5 of their names, over **8** name sets, which is
+they get a 48-way tie at 5 of their names, over **8** name sets, which is
 `Unknown`. A container that reaches 5 names out of 479 is not bound to
 anything; a measurement that named a leader there would be reading noise as a
-signal.
+signal. (The 48 are every world archive; the install-root `rimage.zbd` reaches 0
+and is the reported runner-up.)
 
 ### Under a reading that drops the extension and folds case: each world binds to its own group
 
-Every world container's **own** group leads, by a wide margin, and the five
-tiers of that group are exactly tied because they store **one identical name
-set** (measured: all five archives of a world group hold the same names, so
+Every world container's **own** group leads, by a wide margin, and that group's
+six archives are exactly tied because they store **one identical name set**
+(measured: all six archives of a world group hold the same names, so
 `name_sets == 1`).
 
 | Container | own group holds (`FirstDotCaseFolded`) | next best archive | unreconciled names |
@@ -172,38 +197,49 @@ set** (measured: all five archives of a world group hold the same names, so
 **A world's GameZ container binds to its own world group's texture archives.**
 The margin is large everywhere: `C4` holds 602 names and the next best archive
 anywhere in the installation holds 365; `C2` 477 against 321. The decision is a
-`Tied` with `name_sets == 1` over the group's five tiers, and its evidence class
-is **`ClaimStatus::Inferred`** — reasoned from a measurement, not observed from a
-run.
+`Tied` with `name_sets == 1` over the group's six archives, and its evidence
+class is **`ClaimStatus::Inferred`** — reasoned from a measurement, not observed
+from a run.
 
-Note what the `name_sets == 1` distinction buys. The five tiers of a world store
-identical names, so a decision that could not tell a tie over one name set from a
-tie between answers would have to answer "we cannot say" for every world, losing
-the finding. A tie over one set is several files over one answer, and it is
-named as such.
+`unreconciled` in that table is the count of names **no** archive in the
+installation holds under **any** reading, which is not the number the leading
+reading misses. `ZBD/C3` is the case that shows the difference: its own group
+holds 419 of 423, so four names go unreached by the loosest reading, but two of
+those are reached by a different reading, and only **two** are absent from the
+whole installation. `ContainerBinding::unreconciled()` reports the second
+number, and the difference between the two is a fact about the readings rather
+than about the corpus.
+
+Note what the `name_sets == 1` distinction buys. The six archives of a world
+store identical names, so a decision that could not tell a tie over one name set
+from a tie between answers would have to answer "we cannot say" for every world,
+losing the finding. A tie over one set is several files over one answer, and it
+is named as such.
 
 ### `ZBD/planes.zbd`: no archive is named, and that is the finding
 
 | Reading | best count | candidates tied | name sets | class |
 | --- | --- | --- | --- | --- |
 | `Exact` | **0** | — | — | `Unknown` |
-| `LastSuffixDropped` | 217 of 221 | 30 | 6 | `Unknown` |
-| `LastSuffixCaseFolded` | 218 of 221 | 30 | 6 | `Unknown` |
-| `FirstDotDropped` | 218 of 221 | 30 | 6 | `Unknown` |
-| `FirstDotCaseFolded` | **219** of 221 | 30 | **6** | `Unknown` |
+| `LastSuffixDropped` | 217 of 221 | 36 | 6 | `Unknown` |
+| `LastSuffixCaseFolded` | 218 of 221 | 36 | 6 | `Unknown` |
+| `FirstDotDropped` | 218 of 221 | 36 | 6 | `Unknown` |
+| `FirstDotCaseFolded` | **219** of 221 | 36 | **6** | `Unknown` |
 
-The airframe container's 221 names are held, at best, by **30 of the 41**
-archives — six world groups' worth — and the next best group is only **one
-name** behind (218). `rimage.zbd`, the one archive at the installation root
-beside `planes.zbd`, holds **0 of 221 under every reading**, so no GameZ
-material in the installation binds to the UI set; that one fact is settled, and
-it is settled by exclusion.
+The airframe container's 221 names are held, at best, by **36 of the 49**
+archives — six world groups' worth, all six of each — and the best archive
+outside those six reaches **218**, one name behind. `rimage.zbd`, the one
+archive at the installation root beside `planes.zbd`, holds **0 of 221 under
+every reading**, so no *airframe* material binds to the UI set. That one fact
+is settled, and it is settled by exclusion. It is a statement about the
+airframe container's 221 names; the world's containers are not searched against
+the UI set in that measurement, so nothing is claimed here about them.
 
 So the honest answer to the task's question is:
 
 > **The airframe materials bind to no single catalogued archive, and this
-> measurement cannot say which. Every world group's tier set is an equally good
-> candidate, separated by a single name out of 221.**
+> measurement cannot say which. Six world groups' archive sets are equally good
+> candidates, separated by a single name out of 221.**
 
 This is `ClaimStatus::Unknown`, and it is **not** a gap in the measurement — it
 is the measurement's answer. A world group's airframes are drawn while that world
@@ -248,7 +284,7 @@ scores 219 rather than 218.
 | # | Gated claim | Why it is gated | Resolving path |
 | --- | --- | --- | --- |
 | 1 | Any claim that a GameZ material is **bound** to a texture | The exact rule the contract specifies resolves 10 of 4 478 rows. The relaxed readings are measurements, not rules, and no alias is admitted without independent evidence | the **owner** — the engine's actual name-matching rule is a claim about the original engine; then an alias record with scope and tests |
-| 2 | Any claim that an **airframe** material is bound to a texture | 30 archives tie at 217–219 of 221 names over 6 name sets, margin 1. The binding is a runtime fact about which world is loaded | an original-run capture (**owner**, `human_play` / `human_review`), or a consumer that knows the active world and passes it in — the latter is a *runtime* answer, not a static binding, and must be recorded as such |
+| 2 | Any claim that an **airframe** material is bound to a texture | 36 archives tie at 217–219 of 221 names over 6 name sets, margin 1. The binding is a runtime fact about which world is loaded | an original-run capture (**owner**, `human_play` / `human_review`), or a consumer that knows the active world and passes it in — the latter is a *runtime* answer, not a static binding, and must be recorded as such |
 | 3 | Any render-mesh fidelity claim | The three `MeshPresentationUnknown` codes (winding, UV origin, vertex colour) are open on every row, and F10-C.03 reports no row as `Ready` | **F17-B** |
 | 4 | That the two dot readings reflect the engine's own name parsing | The corpus distinguishes them on one name (`bldhwk_cowling..tif`) and the reading that wins is a *measurement* of which spelling the archive happens to store | the same evidence as #1 |
 | 5 | `snow16x16.tif` and `pir_spinner.tif` (every world), `canopycorner.tif` (`C4`), `barngrill.tif` (`C5`), `pea_shadow.tif` (`planes`) | Absent from the whole installation under every reading this code may try. Whether the original engine found them in a built-in resource is not established | **F10-D** (#46) on the private corpus; the owner for built-in resources |
@@ -263,11 +299,15 @@ or an original-run capture — not an inference from a count.
 
 ## Files, and the one observable failure
 
+The gating is unchanged by the review, except that items 1 and 2 now rest on
+measurements over the installation's full archive set rather than a subset of
+it, and item 5's counts are asserted per container.
+
 - `crates/cs_content/src/mesh.rs` (owner path): `TextureNameRule`, `RuleCounts`,
   `TextureCandidate`, `StoredTextureName`, `ContainerMaterials`,
   `TEXTURED_ROW_STATE`, `ArchiveCoverage`, `RunnerUp`, `TextureBinding`,
   `ContainerBinding`, `archive_names`, `measure_bindings`, `measure_one`,
-  `decide`, `cut_at`, `ascii_lower`, the module doc section, the twelve
+  `decide`, `cut_at`, `ascii_lower`, the module doc section, the sixteen
   `accept_f10_c_04_` tests, and the F10-C.01/02/03 test and production code
   unchanged.
 - `crates/cs_content/src/lib.rs` (wiring, allowed by AGENTS rule 1): one
@@ -277,15 +317,15 @@ or an original-run capture — not an inference from a count.
 
 **One observable failure:** identifying a candidate by its `AssetKey` instead of
 its container path. Every world group mounts `texture.zbd` at the same key, so
-`decide`'s name-set count collapses eight different world name sets onto one and
-reports the airframe's 30-way, 6-set tie as a 1-set tie — i.e. it claims the
+`decide`'s name-set count collapses six different world name sets onto one and
+reports the airframe's 36-way, 6-set tie as a 1-set tie — i.e. it claims the
 airframes bind to a named answer. `accept_f10_c_04_retail_planes_binds_to_no_catalogued_archive`
 fails on `name_sets > 1`. This is not hypothetical: the first draft of this task
 did exactly this, and the two retail tests found it.
 
 ## Test inventory (`accept_f10_c_04_*`)
 
-All twelve in `crates/cs_content/src/mesh.rs`, all calling production code.
+All sixteen in `crates/cs_content/src/mesh.rs`, all calling production code.
 
 | Test | What it pins |
 | --- | --- |
@@ -299,8 +339,12 @@ All twelve in `crates/cs_content/src/mesh.rs`, all calling production code.
 | `..._the_readings_differ_only_where_the_corpus_differs` | the four name shapes: the double dot, no dot, the exact rule byte-preserving, and the archive's side never projected |
 | `..._a_name_no_candidate_holds_is_reported_not_dropped` | `unreconciled()` names the absent textures in the container's order, and a reached name is not among them |
 | `..._the_measurement_is_a_function_of_the_bytes` | two runs equal; the named leader does not depend on the caller's candidate order; one changed name changes the coverage |
-| `..._retail_planes_binds_to_no_catalogued_archive` *(retail)* | the airframe measurement: the census (926 textured of 935 rows, 9 untextured), `Exact` reaches 0 for all 41 candidates, `rimage.zbd` reaches 0 under **every** reading, and the loosest reading is a >1-name-set tie classed `Unknown` |
-| `..._retail_each_world_binds_to_its_own_group` *(retail)* | a world's container against its own five tiers plus a sibling world's five: `name_sets == 1` over 549 of 551 names, every named container in `C1`, the sibling excluded by coverage, and the reader's own reference count agreeing |
+| `..._an_empty_candidate_set_is_reported_not_indexed` | a caller with no archive in hand measures nothing and is told so: `Uncovered { candidates: 0 }` under all five readings, the names reported unreconciled, the census unaffected — a report, not an index panic |
+| `..._a_repeated_container_spelling_does_not_collapse_a_tie` | two candidates under one spelling, two name sets: the tied set's name-set count is 2 and the decision `Unknown`. The count is taken by position, so a repeated label cannot read one name set twice and turn a tie between answers into a named binding |
+| `..._retail_planes_binds_to_no_catalogued_archive` *(retail)* | the airframe measurement against **every** archive the installation holds: the census (926 textured of 935 rows, 9 untextured, 221 distinct names, 19 810 stored references), 49 candidates, `Exact` reaches 0 for all of them, `rimage.zbd` reaches 0 under **every** reading, and the loosest reading is a 36-way tie over 6 name sets at 219 of 221 with the best outsider at 218, classed `Unknown`. The two absent airframe names are named exactly |
+| `..._retail_each_world_binds_to_its_own_group` *(retail)* | a world's container against its own six archives plus a sibling world's six: `name_sets == 1` over 549 of 551 names, all six named and all in `C1`, the sibling excluded by coverage, and the reader's own reference count agreeing |
+| `..._retail_every_container_row_is_census_ed_once` *(retail)* | the census table of this document, container by container: stored references, distinct material rows, textured, untextured and distinct names for all nine containers, each row counted under exactly one state, totalling 162 651 references and 4 478 rows. It needs no mount and no archive, so the container's own half cannot drift with the archive set |
+| `..._retail_each_container_is_measured_against_every_archive` *(retail)* | the per-world table above, over all 49 archives: each world's own group leads on 6 tied archives over 1 name set at the recorded count, the runner-up is the recorded count, and `Exact` is `Uncovered` everywhere except `C2` and `C3`, which get an 8-name-set tie at 5 names and stay `Unknown` |
 
 ### Sensitivity probes actually run
 
@@ -336,6 +380,33 @@ Two probes found real gaps in the first draft, both fixed here:
   archives differently got a different list. It is now taken in the caller's
   order, and `..._the_measurement_is_a_function_of_the_bytes` pins it.
 
+### Review probes
+
+Three more, run by the reviewer against the rebased branch. Each is a single
+textual change, applied and reverted.
+
+| Probe | Result |
+| --- | --- |
+| `decide`'s name-set count taken by a **name lookup** into the candidate list instead of by position | **1 failed** — `..._a_repeated_container_spelling_does_not_collapse_a_tie` reads one name set twice, reports `name_sets == 1` and claims a named binding over two different answers |
+| the empty-candidate guard removed from `decide` | **1 failed** — `..._an_empty_candidate_set_is_reported_not_indexed` panics indexing the empty `ranked` list |
+| the candidate enumeration narrowed back to the four tiers every group shares (`rtexture2/4/6/8`) | **3 failed** — all three retail tests, on the archive census (40 against 49) and on the world's own archive count (10 against 12) |
+
+The third probe is the one that matters. It is the state this finding was
+originally written from: a measurement that silently omitted one real
+resolution tier from every world group. It passed the assertions written beside
+it, because those assertions had been written from the same incomplete list.
+The measurements it changes are the tie *widths* (36 candidates rather than 30,
+6 archives per world rather than 5) and the archive census; the conclusions do
+not move, because the omitted tier holds a name set identical to the four it
+was left out of. The candidate enumeration is now derived from the production
+inventory rather than named, and the census is asserted, so the omission cannot
+come back unnoticed.
+
+That is the general lesson, and it is the same one F10-B's teaches: **a
+measurement's search space is part of its evidence.** A count taken over an
+arbitrary subset of the candidates answers a different question, and nothing in
+the numbers says which subset was used.
+
 ## Recorded unknowns
 
 - **Whether the original engine matched a texture name with or without its
@@ -348,8 +419,8 @@ Two probes found real gaps in the first draft, both fixed here:
   active world group, that answer is a *runtime* fact and must be recorded with
   the session generation that produced it — not baked into a container record.
 - **Which tier of a world group a mission loads**, and when the choice is made.
-  All five tiers of a group hold identical names (measured), so the choice is
-  invisible to a name lookup. F10-C.02 deferred item 4, unchanged.
+  All five tiers and the primary of a group hold identical names (measured), so
+  the choice is invisible to a name lookup. F10-C.02 deferred item 4, unchanged.
 - **The two names absent from the whole installation** (`pea_shadow.tif`,
   `canopycorner.tif` for the airframes; plus the world's per-container two or
   three) and whether a built-in resource supplies them.
@@ -361,8 +432,14 @@ Two probes found real gaps in the first draft, both fixed here:
 - The original installation at `$CS_GAME_DIR`, read-only, through
   `install::discover`, `SessionBuilder::mount_installation`, `TextureCatalog`,
   `archive_names`, `read_gamez_meshes` and `read_gamez_materials`. Every number
-  in this document comes from production code over those files; the two retail
-  tests reproduce the tables.
+  in this document comes from production code over those files, and all of them
+  are asserted by the four `accept_f10_c_04_retail_` tests: the census table by
+  `..._retail_every_container_row_is_census_ed_once`, the per-world coverage
+  table by `..._retail_each_container_is_measured_against_every_archive`, the
+  airframe measurement by `..._retail_planes_binds_to_no_catalogued_archive`, and
+  the archive census of 49 by both of the last two. The candidate archives are
+  enumerated from the production inventory, so the search space is the
+  installation's, not a list.
 - `docs/findings/2026-09-29-f10-c-02-gamez-material-records.md` — the material
   worksheet, the texture-name encoding, the exact-name rule, deferred items 1–4.
 - `docs/findings/2026-09-29-f10-c-03-mesh-container-catalog-and-upload.md` — the

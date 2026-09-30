@@ -2034,6 +2034,15 @@ impl TextureBinding {
         }
     }
 
+    /// The best any candidate outside the leading set reached, when one did.
+    #[must_use]
+    pub const fn runner_up(&self) -> Option<&RunnerUp> {
+        match self {
+            Self::Unique { runner_up, .. } | Self::Tied { runner_up, .. } => runner_up.as_ref(),
+            Self::Uncovered { .. } => None,
+        }
+    }
+
     /// The reading the decision was taken under, when one was.
     pub const fn rule(&self) -> Option<TextureNameRule> {
         match self {
@@ -2182,8 +2191,19 @@ impl ContainerBinding {
 ///
 /// Nothing here can fail and nothing is dropped. A container with no textured
 /// row reports [`TextureBinding::Uncovered`], a candidate that holds nothing
-/// reports zeros, and a name no candidate holds appears in
+/// reports zeros, an **empty** candidate list reports `Uncovered` with zero
+/// candidates, and a name no candidate holds appears in
 /// [`ContainerBinding::unreconciled`].
+///
+/// # The search space is evidence
+///
+/// What this returns is a statement about the candidates it was handed, not
+/// about an installation. A caller that leaves an archive out narrows the
+/// question without narrowing the answer's appearance: the numbers change and
+/// nothing says which archives were considered. So a caller measuring a whole
+/// installation should pass every archive it holds, and a report that quotes a
+/// count should say how many candidates produced it — the retail tests assert
+/// their candidate census for exactly that reason.
 ///
 /// [`must_use`]
 #[must_use]
@@ -2203,24 +2223,27 @@ fn measure_one(
 ) -> ContainerBinding {
     let considered = container.names.len();
 
+    // Every reading's spelling of every stored name, projected once. Each
+    // reading's number is its own measurement, so no reading can inherit
+    // another's, and a name is only ever compared with a name the candidate
+    // actually stores -- but the spelling does not depend on the candidate, so
+    // projecting it per candidate would repeat the same work once per archive.
+    let spelled: Vec<[String; TextureNameRule::COUNT]> = container
+        .names
+        .iter()
+        .map(|stored| TextureNameRule::ALL.map(|rule| rule.project(&stored.name)))
+        .collect();
+
     let coverages = candidates
         .iter()
         .map(|candidate| {
-            // One pass per reading over the container's names. Each reading's
-            // number is its own measurement, so no reading can inherit
-            // another's, and a name is only ever compared with a name the
-            // candidate actually stores.
             let mut names = RuleCounts::default();
             let mut rows = RuleCounts::default();
             for rule in TextureNameRule::ALL {
                 let mut covered_names = 0usize;
                 let mut covered_rows = 0usize;
-                for stored in &container.names {
-                    if candidate
-                        .names()
-                        .iter()
-                        .any(|archive| rule.accepts(&stored.name, archive))
-                    {
+                for (stored, projected) in container.names.iter().zip(&spelled) {
+                    if candidate.names().contains(projected[rule.index()].as_str()) {
                         covered_names += 1;
                         covered_rows += stored.rows as usize;
                     }
@@ -2231,15 +2254,13 @@ fn measure_one(
             let unreachable = container
                 .names
                 .iter()
-                .filter(|stored| {
-                    !TextureNameRule::ALL.iter().any(|rule| {
-                        candidate
-                            .names()
-                            .iter()
-                            .any(|archive| rule.accepts(&stored.name, archive))
-                    })
+                .zip(&spelled)
+                .filter(|(_, projected)| {
+                    !TextureNameRule::ALL
+                        .iter()
+                        .any(|rule| candidate.names().contains(projected[rule.index()].as_str()))
                 })
-                .map(|stored| stored.name.clone())
+                .map(|(stored, _)| stored.name.clone())
                 .collect();
             ArchiveCoverage {
                 container: (*candidate.container()).to_owned(),
@@ -2280,6 +2301,15 @@ fn decide(
             candidates: coverages.len(),
         };
     }
+    // A caller with no archive in hand has measured nothing, which is a report
+    // of zero candidates and not a crash. The measurement documents that it
+    // cannot fail, so it must not index an empty candidate set.
+    if coverages.is_empty() {
+        return TextureBinding::Uncovered {
+            considered,
+            candidates: 0,
+        };
+    }
     let mut ranked: Vec<(usize, &str)> = coverages
         .iter()
         .map(|coverage| (coverage.names.get(rule), coverage.container.as_str()))
@@ -2303,16 +2333,19 @@ fn decide(
                 covered: *covered,
             });
     // The tied set is reported in the caller's order, so the decision is a
-    // function of the arguments and not of the sort used to find the top.
-    let leading: Vec<&str> = coverages
+    // function of the arguments and not of the sort used to find the top. The
+    // candidates are addressed by position, because the spelling is a label and
+    // two candidates may carry the same one.
+    let leading: Vec<usize> = coverages
         .iter()
-        .filter(|coverage| coverage.names.get(rule) == top)
-        .map(|coverage| coverage.container.as_str())
+        .enumerate()
+        .filter(|(_, coverage)| coverage.names.get(rule) == top)
+        .map(|(at, _)| at)
         .collect();
     if leading.len() == 1 {
         return TextureBinding::Unique {
             rule,
-            container: leading[0].to_owned(),
+            container: coverages[leading[0]].container.clone(),
             covered: top,
             considered,
             runner_up,
@@ -2323,17 +2356,15 @@ fn decide(
     // the second one leaves the binding unnamed.
     let name_sets = leading
         .iter()
-        .filter_map(|container| {
-            candidates
-                .iter()
-                .find(|candidate| candidate.container() == *container)
-        })
-        .map(|candidate| candidate.names().clone())
+        .map(|&at| candidates[at].names().clone())
         .collect::<BTreeSet<BTreeSet<String>>>()
         .len();
     TextureBinding::Tied {
         rule,
-        tied: leading.into_iter().map(str::to_owned).collect(),
+        tied: leading
+            .into_iter()
+            .map(|at| coverages[at].container.clone())
+            .collect(),
         name_sets,
         covered: top,
         considered,
@@ -8432,6 +8463,159 @@ mod tests {
         names
     }
 
+    /// The `.zbd` members directly inside `dir`, from the production inventory,
+    /// in a stable order.
+    ///
+    /// The list is whatever discovery inventoried, not a spelling rule: a tier
+    /// whose file name no reader has named before is still offered.
+    fn zbd_members(found: &install::Discovery, dir: &str) -> Vec<String> {
+        let prefix = format!("{}/", dir.to_ascii_lowercase());
+        let mut members: Vec<String> = found
+            .manifest
+            .files
+            .iter()
+            .filter_map(|file| {
+                let key = file.relative_spelling.logical_key();
+                let name = key.strip_prefix(&prefix)?;
+                (name.ends_with(".zbd") && !name.contains('/')).then(|| name.to_owned())
+            })
+            .collect();
+        members.sort();
+        members
+    }
+
+    /// The texture archives of the world groups spelled `groups`, as
+    /// `(container, key, names)`, discovered rather than listed.
+    ///
+    /// Every `.zbd` member of each group is offered to the production
+    /// [`TextureCatalog`], which is what decides which of them is a texture
+    /// package: a member that is not one is a reported failure, never a
+    /// silently dropped row, and the assertion below keeps the two counts
+    /// adding up to the members offered.
+    ///
+    /// Nothing is excluded by name. The installation gives each world a
+    /// `texture.zbd` plus **five** `rtexture*` tiers whose numbers differ per
+    /// group -- `rtexture2/4/6/8` everywhere, then `rtexture9`, `rtexture10`,
+    /// `rtexture11`, `rtexture12`, `rtexture14` or `rtexture15` -- so a list of
+    /// the four common ones would silently drop one real archive per world from
+    /// a measurement whose question is *which* archive binds.
+    fn world_texture_archives(
+        found: &install::Discovery,
+        fingerprint: ContentHash,
+        groups: &[&str],
+    ) -> Vec<(String, AssetKey, BTreeSet<String>)> {
+        let mut stored = Vec::new();
+        for group in &found.diagnosis.world_groups {
+            let spelling = group.as_str();
+            // `groups` names a group's own directory (`C1`, `ZBD/C1` or
+            // `c1`): a lead is compared against the last component and a path
+            // against the whole spelling, so a caller may spell either.
+            let leaf = spelling.rsplit('/').next().unwrap_or(spelling);
+            let wanted = groups.iter().any(|wanted| {
+                wanted.eq_ignore_ascii_case(spelling) || wanted.eq_ignore_ascii_case(leaf)
+            });
+            if !wanted {
+                continue;
+            }
+            let context = ResolveContext::new(fingerprint)
+                .with_world_group(WorldGroup::from_relative(group.clone()));
+            let mut builder = SessionBuilder::new(context);
+            builder
+                .mount_installation(&found.manifest.host_root, &found.diagnosis)
+                .expect("the installation mounts");
+            let session = builder.open();
+            let members = zbd_members(found, spelling);
+            let keys: Vec<AssetKey> = members.iter().map(|name| world_key(name)).collect();
+            let catalog = TextureCatalog::open(&session, &keys);
+            assert_eq!(
+                catalog.archives().count() + catalog.failures().count(),
+                members.len(),
+                "every member of {spelling} is a texture package or a reported failure"
+            );
+            for archive in catalog.archives() {
+                stored.push((
+                    archive.path().as_str().to_owned(),
+                    archive.key().clone(),
+                    archive_names(archive),
+                ));
+            }
+            session.close();
+        }
+        stored
+    }
+
+    /// The texture archives of the `ZBD` root, the ones no world group owns.
+    /// The airframe container and the UI set are its neighbours, and the UI set
+    /// is the archive a GameZ material must not be assumed to bind to.
+    fn root_texture_archives(
+        found: &install::Discovery,
+        fingerprint: ContentHash,
+    ) -> Vec<(String, AssetKey, BTreeSet<String>)> {
+        use cs_assets::vfs::INSTALL_NAMESPACE;
+
+        let zbd = found
+            .diagnosis
+            .zbd_dir
+            .clone()
+            .expect("the installation's zbd directory is observed");
+        let mut builder = SessionBuilder::new(ResolveContext::new(fingerprint));
+        builder
+            .mount_installation(&found.manifest.host_root, &found.diagnosis)
+            .expect("the installation mounts");
+        let session = builder.open();
+        let members = zbd_members(found, zbd.as_str());
+        let keys: Vec<AssetKey> = members
+            .iter()
+            .map(|name| {
+                AssetKey::from_spelling(INSTALL_NAMESPACE, &format!("{zbd}/{name}"), "default")
+                    .expect("an install key")
+            })
+            .collect();
+        let catalog = TextureCatalog::open(&session, &keys);
+        assert_eq!(
+            catalog.archives().count() + catalog.failures().count(),
+            members.len(),
+            "every member of the zbd root is a texture package or a reported failure"
+        );
+        let stored = catalog
+            .archives()
+            .map(|archive| {
+                (
+                    archive.path().as_str().to_owned(),
+                    archive.key().clone(),
+                    archive_names(archive),
+                )
+            })
+            .collect();
+        session.close();
+        stored
+    }
+
+    /// One GameZ container's material facts, read from the installation.
+    ///
+    /// The facts own their names, so only the container's spelling borrows.
+    fn container_facts<'a>(game_dir: &Path, relative: &'a str) -> ContainerMaterials<'a> {
+        let bytes = fs::read(game_dir.join(relative)).expect("the container is readable");
+        let mut parse = cs_formats::ParseContext::with_defaults(relative);
+        let meshes = cs_formats::gamez::read_gamez_meshes(&mut parse, relative, &bytes)
+            .expect("the mesh section reads");
+        let materials = cs_formats::gamez::read_gamez_materials(&mut parse, relative, &bytes)
+            .expect("the material section reads");
+        assert!(meshes.findings.is_empty() && materials.findings.is_empty());
+        // Both readers proved their own section boundary from the same bytes.
+        assert_eq!(meshes.data_end, u64::from(meshes.header.nodes_offset));
+        assert_eq!(
+            materials.data_end,
+            u64::from(materials.header.meshes_offset)
+        );
+        let facts = ContainerMaterials::new(relative, &meshes, &materials);
+        assert_eq!(
+            facts.references, meshes.unchecked_material_references,
+            "{relative}: both stored reference levels are walked"
+        );
+        facts
+    }
+
     /// A world with two texture archives whose name sets are deliberately
     /// **equal** (`texture.zbd` and `rtexture2.zbd`), the shape the measured
     /// installation's resolution tiers have: several files over one answer.
@@ -8999,88 +9183,27 @@ mod tests {
     #[test]
     #[ignore = "requires CS_GAME_DIR"]
     fn accept_f10_c_04_retail_planes_binds_to_no_catalogued_archive() {
-        use cs_assets::vfs::INSTALL_NAMESPACE;
-
         let game_dir = PathBuf::from(std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR"));
         let found = install::discover(&game_dir).expect("the installation is discovered");
         let fingerprint = install::fingerprint(&found.manifest);
 
         // Every texture archive the installation holds, opened through the
-        // production catalog: one session per world group, because a world key
-        // resolves inside the group its `ResolveContext` selected. The
-        // installation is discovered and hashed **once** and the mounts are
-        // rebuilt per group, so the cost is the directory walks, not the hashing.
-        let mut stored: Vec<(String, AssetKey, BTreeSet<String>)> = Vec::new();
-        for group in &found.diagnosis.world_groups {
-            let context = ResolveContext::new(fingerprint)
-                .with_world_group(WorldGroup::from_relative(group.clone()));
-            let mut builder = SessionBuilder::new(context);
-            builder
-                .mount_installation(&game_dir, &found.diagnosis)
-                .expect("the installation mounts");
-            let session = builder.open();
-            let keys: Vec<AssetKey> = [
-                "texture.zbd",
-                "rtexture2.zbd",
-                "rtexture4.zbd",
-                "rtexture6.zbd",
-                "rtexture8.zbd",
-            ]
-            .iter()
-            .map(|file| world_key(file))
-            .collect();
-            let catalog = TextureCatalog::open(&session, &keys);
-            assert_eq!(
-                catalog.failures().count(),
-                0,
-                "every texture archive of {} opens",
-                group.as_str()
-            );
-            for archive in catalog.archives() {
-                stored.push((
-                    archive.path().as_str().to_owned(),
-                    archive.key().clone(),
-                    archive_names(archive),
-                ));
-            }
-            session.close();
-        }
-        // The install-root archive, which shares no world group's directory.
-        let install = {
-            let mut builder = SessionBuilder::new(ResolveContext::new(fingerprint));
-            builder
-                .mount_installation(&game_dir, &found.diagnosis)
-                .expect("the installation mounts");
-            builder.open()
-        };
-        let ui = AssetKey::from_spelling(INSTALL_NAMESPACE, "ZBD/rimage.zbd", "default")
-            .expect("an install key");
-        let catalog = TextureCatalog::open(&install, std::slice::from_ref(&ui));
-        assert_eq!(catalog.failures().count(), 0, "the UI set opens");
-        for archive in catalog.archives() {
-            stored.push((
-                archive.path().as_str().to_owned(),
-                archive.key().clone(),
-                archive_names(archive),
-            ));
-        }
-        install.close();
-
-        // The airframe container, read by the two production section readers.
-        let relative = "ZBD/planes.zbd";
-        let bytes = fs::read(game_dir.join(relative)).expect("planes.zbd is readable");
-        let mut parse = cs_formats::ParseContext::with_defaults(relative);
-        let meshes = cs_formats::gamez::read_gamez_meshes(&mut parse, relative, &bytes)
-            .expect("the mesh section reads");
-        let materials = cs_formats::gamez::read_gamez_materials(&mut parse, relative, &bytes)
-            .expect("the material section reads");
-        assert!(meshes.findings.is_empty() && materials.findings.is_empty());
-        let facts = ContainerMaterials::new(relative, &meshes, &materials);
+        // production catalog and discovered rather than listed: one session per
+        // world group, because a world key resolves inside the group its
+        // `ResolveContext` selected. The installation is discovered and hashed
+        // **once** and the mounts are rebuilt per group, so the cost is the
+        // directory walks, not the hashing.
+        let mut stored =
+            world_texture_archives(&found, fingerprint, &install::REFERENCE_WORLD_GROUP_LEADS);
+        stored.extend(root_texture_archives(&found, fingerprint));
+        let facts = container_facts(&game_dir, "ZBD/planes.zbd");
 
         stored.sort_by(|left, right| left.0.cmp(&right.0));
-        assert!(
-            stored.len() > 8,
-            "several archives were measured, not one world group's"
+        assert_eq!(
+            stored.len(),
+            49,
+            "eight world groups of six texture archives and the zbd root's one: \
+             the F08-B census, so no archive is left out of the measurement"
         );
         // The container paths are distinct even though the world keys are not:
         // every world group mounts its own `texture.zbd` at the same key.
@@ -9097,12 +9220,20 @@ mod tests {
         let report = measure_bindings(std::slice::from_ref(&facts), &candidates);
         let binding = &report[0];
         assert_eq!(binding.material_rows, facts.material_rows);
-        assert!(binding.name_count() > 0, "the airframes name textures");
+        assert_eq!(
+            binding.name_count(),
+            221,
+            "the airframe container names 221 distinct textures"
+        );
 
         // The measured census: every material row is counted exactly once and the
         // textured rows are the ones that reach for a name at all.
         let total: usize = binding.row_states.values().sum();
         assert_eq!(total, binding.material_rows);
+        assert_eq!(
+            binding.references, 19_810,
+            "every stored material reference the airframe meshes carry"
+        );
         assert_eq!(
             binding.row_states.get(TEXTURED_ROW_STATE),
             Some(&926),
@@ -9128,10 +9259,11 @@ mod tests {
             assert_eq!(coverage.rows.get(TextureNameRule::Exact), 0);
         }
 
-        // The install-root archive is the UI set: it holds none of the airframe
-        // names under **any** reading, so no GameZ material in the installation
-        // binds to it. That is the one archive-side fact this measurement
-        // settles, and it settles it by exclusion.
+        // The install-root archive is the UI set, and it holds none of the
+        // airframe names under **any** reading. So no *airframe* material binds
+        // to it -- settled by exclusion, over this container's 221 names. It
+        // says nothing about the world containers, which this measurement does
+        // not search against it.
         let ui_coverage = binding
             .candidate("ZBD/rimage.zbd")
             .expect("the UI set is a candidate");
@@ -9161,16 +9293,30 @@ mod tests {
         else {
             panic!("the airframes are not decided by a leader: {loosest}");
         };
-        assert!(
-            tied.len() > 1,
-            "several world groups reach the airframe names, not one"
+        // Six world groups' six archives each tie at 219 of the 221 names -- 36
+        // of the 49 candidates -- and they hold six different name sets. A
+        // measurement that narrowed the candidate list to one world, or that
+        // counted the tied files as one answer, would name an archive here.
+        assert_eq!(
+            tied.len(),
+            36,
+            "six world groups of six archives tie: the airframe names are world-wide"
         );
-        assert!(
-            *name_sets > 1,
-            "and they are different name sets, so no single archive is named"
+        assert_eq!(
+            *name_sets, 6,
+            "and they are six worlds' name sets, so no single archive is named"
+        );
+        assert_eq!(*covered, 219);
+        // The margin is one name: the best archive outside the tie reaches 218.
+        assert_eq!(
+            loosest.runner_up(),
+            Some(&RunnerUp {
+                container: "ZBD/C1C/rtexture10.zbd".to_owned(),
+                covered: 218,
+            }),
+            "a single name separates the six groups, so no group leads"
         );
         assert_eq!(*considered, binding.name_count());
-        assert!(*covered > 0, "some airframe name is covered by somebody");
         assert_eq!(
             loosest.evidence(),
             ClaimStatus::Unknown,
@@ -9179,8 +9325,131 @@ mod tests {
         assert!(!loosest.is_named());
 
         // Every name the whole archive set cannot reach is named, not dropped.
-        let unreconciled = binding.unreconciled();
-        assert!(!unreconciled.is_empty(), "some airframe name is absent");
+        let mut unreconciled = binding.unreconciled();
+        unreconciled.sort_unstable();
+        assert_eq!(
+            unreconciled,
+            vec!["canopycorner.tif", "pea_shadow.tif"],
+            "the two airframe names absent from the whole installation"
+        );
+    }
+
+    /// A caller with no archive in hand has measured nothing. That is a report
+    /// of zero candidates under every reading, not a crash: the measurement
+    /// documents that it cannot fail, so it must not index an empty candidate
+    /// set, and a crash here would take down a caller that has simply not
+    /// mounted anything yet.
+    #[test]
+    fn accept_f10_c_04_an_empty_candidate_set_is_reported_not_indexed() {
+        let materials = tables(
+            &["sky", "ground"],
+            vec![material(0, 0, true), material(1, 1, true)],
+        );
+        let meshes = container(vec![container_mesh(0, &[0, 1], &[vec![0], vec![1]])]);
+        let facts = ContainerMaterials::new("fixture", &meshes, &materials);
+        assert_eq!(facts.name_count(), 2, "the container names two textures");
+
+        let report = measure_bindings(std::slice::from_ref(&facts), &[]);
+        assert_eq!(report.len(), 1, "the container is still measured");
+        let binding = &report[0];
+        assert!(binding.candidates.is_empty(), "no candidate, no coverage");
+        for rule in TextureNameRule::ALL {
+            assert_eq!(
+                binding.binding(rule),
+                &TextureBinding::Uncovered {
+                    considered: 2,
+                    candidates: 0,
+                },
+                "{rule}: nothing was searched, so nothing is decided"
+            );
+            assert!(
+                !binding.binding(rule).is_named(),
+                "{rule}: and nothing is named"
+            );
+        }
+        // The names are still reported as unreconciled: no archive held them,
+        // which is a fact about the search space, not a dropped row.
+        assert_eq!(
+            binding.unreconciled(),
+            vec!["sky", "ground"],
+            "an unsearched name is unreconciled, not absent"
+        );
+        assert_eq!(binding.material_rows, 2, "the census is unaffected");
+    }
+
+    /// Two candidates may carry the same container spelling -- the label is a
+    /// provenance string, not an identity -- and the tied set's name-set count
+    /// must be taken from the candidates themselves, by position. A
+    /// name-lookup that found the *first* candidate with a matching spelling
+    /// would read the same name set twice and report one set where there are
+    /// two, turning a tie between answers into a named binding.
+    #[test]
+    fn accept_f10_c_04_a_repeated_container_spelling_does_not_collapse_a_tie() {
+        // Two archives, the same spelling, two different name sets. The
+        // container names three textures and each archive holds two of them, so
+        // they tie at the same count with different answers underneath.
+        let first = BTreeSet::from(["sky".to_owned(), "ground".to_owned()]);
+        let second = BTreeSet::from(["sky".to_owned(), "hull".to_owned()]);
+        let materials = tables(
+            &["sky", "ground", "hull"],
+            vec![
+                material(0, 0, true),
+                RawMaterial {
+                    index: 1,
+                    record: record(1, true),
+                    link1: 2,
+                    link2: 0,
+                    cycle: None,
+                },
+                RawMaterial {
+                    index: 2,
+                    record: record(2, true),
+                    link1: -1,
+                    link2: 1,
+                    cycle: None,
+                },
+            ],
+        );
+        let meshes = container(vec![container_mesh(
+            0,
+            &[0, 1, 2],
+            &[vec![0], vec![1], vec![2]],
+        )]);
+        let facts = ContainerMaterials::new("fixture", &meshes, &materials);
+        assert_eq!(facts.name_count(), 3);
+
+        let base = texture_key();
+        let other = world_key("rtexture2.zbd");
+        let report = measure_bindings(
+            std::slice::from_ref(&facts),
+            &[
+                // Both spelled `ZBD/c1/texture.zbd`, as two mounts of one key
+                // would be.
+                TextureCandidate::new(FIXTURE_CONTAINER, &base, &first),
+                TextureCandidate::new(FIXTURE_CONTAINER, &other, &second),
+            ],
+        );
+        let exact = report[0].binding(TextureNameRule::Exact);
+        let TextureBinding::Tied {
+            tied,
+            name_sets,
+            covered,
+            considered,
+            ..
+        } = exact
+        else {
+            panic!("each archive holds two of the three names: {exact}");
+        };
+        assert_eq!(*covered, 2);
+        assert_eq!(*considered, 3);
+        assert_eq!(tied.len(), 2, "both candidates tie");
+        assert_eq!(
+            *name_sets, 2,
+            "two name sets behind one spelling: the tie is between answers, so \
+             nothing is named"
+        );
+        assert_eq!(exact.evidence(), ClaimStatus::Unknown);
+        assert!(!exact.is_named());
     }
 
     #[test]
@@ -9191,75 +9460,31 @@ mod tests {
         let fingerprint = install::fingerprint(&found.manifest);
 
         // The world's own GameZ container, read by the production readers.
-        let group_name = "ZBD/C1";
         let relative = "ZBD/C1/gamez.zbd";
-        let bytes = fs::read(game_dir.join(relative)).expect("the world's container is readable");
-        let mut parse = cs_formats::ParseContext::with_defaults(relative);
-        let meshes = cs_formats::gamez::read_gamez_meshes(&mut parse, relative, &bytes)
-            .expect("the mesh section reads");
-        let materials = cs_formats::gamez::read_gamez_materials(&mut parse, relative, &bytes)
-            .expect("the material section reads");
-        assert!(meshes.findings.is_empty() && materials.findings.is_empty());
-        let facts = ContainerMaterials::new(relative, &meshes, &materials);
-        assert_eq!(
-            facts.references, meshes.unchecked_material_references,
-            "both stored reference levels are walked"
-        );
+        let facts = container_facts(&game_dir, relative);
+        assert_eq!(facts.material_rows, 561);
+        assert_eq!(facts.references, 22_678);
+        assert_eq!(facts.name_count(), 551);
 
-        // The candidate set: this world's own five archives plus a sibling
-        // world's, so the decision has something to be right about.
-        let mut stored: Vec<(String, AssetKey, BTreeSet<String>)> = Vec::new();
-        let mut own_container = None;
-        for group in &found.diagnosis.world_groups {
-            let spelling = group.as_str();
-            let is_own = spelling.eq_ignore_ascii_case(group_name);
-            if !is_own && !spelling.eq_ignore_ascii_case("ZBD/C3") {
-                continue;
-            }
-            let context = ResolveContext::new(fingerprint)
-                .with_world_group(WorldGroup::from_relative(group.clone()));
-            let mut builder = SessionBuilder::new(context);
-            builder
-                .mount_installation(&game_dir, &found.diagnosis)
-                .expect("the installation mounts");
-            let session = builder.open();
-            let catalog = TextureCatalog::open(
-                &session,
-                &[
-                    world_key("texture.zbd"),
-                    world_key("rtexture2.zbd"),
-                    world_key("rtexture4.zbd"),
-                    world_key("rtexture6.zbd"),
-                    world_key("rtexture8.zbd"),
-                ],
-            );
-            assert_eq!(
-                catalog.failures().count(),
-                0,
-                "every texture archive of {spelling} opens"
-            );
-            for archive in catalog.archives() {
-                if is_own && own_container.is_none() {
-                    own_container = Some(archive.path().as_str().to_owned());
-                }
-                stored.push((
-                    archive.path().as_str().to_owned(),
-                    archive.key().clone(),
-                    archive_names(archive),
-                ));
-            }
-            session.close();
-        }
-        let own_container = own_container.expect("the world's own texture archive was opened");
-        stored.sort_by(|left, right| left.0.cmp(&right.0));
+        // The candidate set: this world's own archives plus a sibling world's,
+        // so the decision has something to be right about. Both groups are
+        // enumerated from the inventory, so the world's own `rtexture15.zbd`
+        // is measured beside the four tiers the groups share.
+        let stored = world_texture_archives(&found, fingerprint, &["ZBD/C1", "ZBD/C3"]);
+        let own_container = stored
+            .iter()
+            .map(|(container, _, _)| container.as_str())
+            .find(|container| container.eq_ignore_ascii_case("ZBD/C1/texture.zbd"))
+            .expect("the world's own primary archive was opened")
+            .to_owned();
         let candidates: Vec<TextureCandidate<'_>> = stored
             .iter()
             .map(|(container, key, names)| TextureCandidate::new(container, key, names))
             .collect();
         assert_eq!(
             candidates.len(),
-            10,
-            "two world groups of five archives each"
+            12,
+            "two world groups of six archives each: a primary and five tiers"
         );
 
         let report = measure_bindings(std::slice::from_ref(&facts), &candidates);
@@ -9305,12 +9530,16 @@ mod tests {
         };
         assert_eq!(
             *name_sets, 1,
-            "one name set: the world's own resolution tiers"
+            "one name set: the world's own primary and its five tiers"
         );
-        assert_eq!(tied.len(), 5, "all five of the world's archives are named");
+        assert_eq!(
+            tied.len(),
+            6,
+            "all six of the world's archives are named, the odd-numbered tier included"
+        );
         assert!(
             tied.contains(&own_container),
-            "and the world's own archive is among them"
+            "and the world's own primary archive is among them"
         );
         assert!(
             tied.iter().all(|container| container.contains("/C1/")),
@@ -9331,6 +9560,252 @@ mod tests {
         assert!(
             sibling.names.get(TextureNameRule::FirstDotCaseFolded) < *covered,
             "a candidate outside the tie covers fewer names"
+        );
+    }
+
+    /// The per-container table of the finding, over **every** archive the
+    /// installation holds: for each GameZ container, its own group's coverage
+    /// under the loosest reading, the best archive outside that group, and the
+    /// names no archive in the installation holds.
+    ///
+    /// The per-world table in the finding is nine containers x 49 archives, and
+    /// this is the test that produces it, so the table is a measurement rather
+    /// than a transcript: a candidate set that quietly lost an archive, or a
+    /// decision that named a leader where the numbers say a tie, fails here.
+    #[test]
+    #[ignore = "requires CS_GAME_DIR"]
+    fn accept_f10_c_04_retail_each_container_is_measured_against_every_archive() {
+        let game_dir = PathBuf::from(std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR"));
+        let found = install::discover(&game_dir).expect("the installation is discovered");
+        let fingerprint = install::fingerprint(&found.manifest);
+        let mut stored =
+            world_texture_archives(&found, fingerprint, &install::REFERENCE_WORLD_GROUP_LEADS);
+        stored.extend(root_texture_archives(&found, fingerprint));
+        stored.sort_by(|left, right| left.0.cmp(&right.0));
+        let candidates: Vec<TextureCandidate<'_>> = stored
+            .iter()
+            .map(|(container, key, names)| TextureCandidate::new(container, key, names))
+            .collect();
+        assert_eq!(
+            candidates.len(),
+            49,
+            "every texture archive the installation holds: eight groups of six \
+             and the zbd root's one"
+        );
+
+        let mut containers = vec!["ZBD/planes.zbd".to_owned()];
+        for group in &found.diagnosis.world_groups {
+            containers.push(format!("{}/gamez.zbd", group.as_str()));
+        }
+        let mut facts = Vec::new();
+        for relative in &containers {
+            facts.push(container_facts(&game_dir, relative));
+        }
+        let report = measure_bindings(&facts, &candidates);
+        assert_eq!(report.len(), containers.len());
+
+        // The world table: each world's own group leads under the loosest
+        // reading, holds one name set across its six archives, and leaves the
+        // runner-up far behind.
+        //
+        // (own group coverage, the names it does not hold, the runner-up's
+        // coverage) under `FirstDotCaseFolded`.
+        let expected: BTreeMap<&str, (usize, usize, usize)> = BTreeMap::from([
+            ("ZBD/C1/gamez.zbd", (549, 2, 323)),
+            ("ZBD/C1B/gamez.zbd", (307, 2, 274)),
+            ("ZBD/C1C/gamez.zbd", (272, 2, 262)),
+            ("ZBD/C2/gamez.zbd", (477, 2, 321)),
+            ("ZBD/C2B/gamez.zbd", (264, 2, 238)),
+            ("ZBD/C3/gamez.zbd", (419, 2, 334)),
+            ("ZBD/C4/gamez.zbd", (602, 3, 365)),
+            ("ZBD/C5/gamez.zbd", (535, 3, 328)),
+        ]);
+        for binding in &report {
+            let Some(&(covered, unreconciled, runner)) = expected.get(binding.container.as_str())
+            else {
+                // The airframe container is the other half of the finding and is
+                // measured in its own test against the same 49 archives.
+                assert_eq!(binding.container, "ZBD/planes.zbd");
+                assert_eq!(binding.name_count(), 221);
+                continue;
+            };
+            // `unreconciled` is the count of names **no** archive holds under any
+            // reading, which is not `considered - covered`: a name the loosest
+            // reading misses may still be reached by another.
+            assert_eq!(
+                binding.unreconciled().len(),
+                unreconciled,
+                "{}: the names no archive in the installation holds",
+                binding.container
+            );
+            let loosest = binding.binding(TextureNameRule::FirstDotCaseFolded);
+            let TextureBinding::Tied {
+                tied,
+                name_sets,
+                covered: reached,
+                considered,
+                runner_up,
+                ..
+            } = loosest
+            else {
+                panic!(
+                    "{} is a tie over its own group, not a leader: {loosest}",
+                    binding.container
+                );
+            };
+            assert_eq!(*reached, covered, "{}", binding.container);
+            assert_eq!(*considered, binding.name_count());
+            assert_eq!(
+                *name_sets, 1,
+                "{}: one name set over six files",
+                binding.container
+            );
+            assert_eq!(
+                tied.len(),
+                6,
+                "{}: the primary and all five tiers, the odd-numbered one included",
+                binding.container
+            );
+            let group = binding
+                .container
+                .rsplit_once('/')
+                .map(|(dir, _)| dir.to_owned())
+                .expect("a world container path");
+            assert!(
+                tied.iter().all(|container| container.contains(&group)),
+                "{}: every named archive is this world's: {}",
+                binding.container,
+                tied.join(", ")
+            );
+            assert_eq!(
+                runner_up.as_ref().map(|runner| runner.covered),
+                Some(runner),
+                "{}: and the best archive outside the group is far behind",
+                binding.container
+            );
+            assert_eq!(
+                loosest.evidence(),
+                ClaimStatus::Inferred,
+                "{}: one name set is a named binding",
+                binding.container
+            );
+            // The exact rule decides nothing for any container but the two that
+            // store five extension-less names some archive happens to hold.
+            let exact = binding.binding(TextureNameRule::Exact);
+            match &binding.container[..] {
+                "ZBD/C2/gamez.zbd" | "ZBD/C3/gamez.zbd" => {
+                    let TextureBinding::Tied {
+                        covered, name_sets, ..
+                    } = exact
+                    else {
+                        panic!(
+                            "{}: five names over many archives is a tie: {exact}",
+                            binding.container
+                        );
+                    };
+                    assert_eq!(*covered, 5, "{}", binding.container);
+                    assert_eq!(
+                        *name_sets, 8,
+                        "{}: and it is a tie over eight name sets, so it is not a \
+                         binding -- a 40-way tie at 5 of 479 names is noise",
+                        binding.container
+                    );
+                    assert_eq!(exact.evidence(), ClaimStatus::Unknown);
+                }
+                other => assert_eq!(
+                    *exact,
+                    TextureBinding::Uncovered {
+                        considered: binding.name_count(),
+                        candidates: candidates.len(),
+                    },
+                    "{other}"
+                ),
+            }
+        }
+    }
+
+    /// The census of **every** GameZ container the installation holds, which is
+    /// the table the finding reports: stored references, distinct material rows,
+    /// and each row's state counted exactly once.
+    ///
+    /// This is the container's own half of the measurement, so it needs no
+    /// mount and no archive: the counts must not depend on which archive a
+    /// caller happened to name.
+    #[test]
+    #[ignore = "requires CS_GAME_DIR"]
+    fn accept_f10_c_04_retail_every_container_row_is_census_ed_once() {
+        let game_dir = PathBuf::from(std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR"));
+        let found = install::discover(&game_dir).expect("the installation is discovered");
+
+        // The airframe container, then every world group discovery observed.
+        let mut containers = vec!["ZBD/planes.zbd".to_owned()];
+        for group in &found.diagnosis.world_groups {
+            containers.push(format!("{}/gamez.zbd", group.as_str()));
+        }
+        assert_eq!(
+            containers.len(),
+            9,
+            "the airframe container and the eight world groups"
+        );
+
+        // (stored references, material rows, textured, untextured, distinct
+        // names) per container, as the finding's census table reports them.
+        let expected: BTreeMap<&str, (usize, usize, usize, usize, usize)> = BTreeMap::from([
+            ("ZBD/C1/gamez.zbd", (22_678, 561, 552, 9, 551)),
+            ("ZBD/C1B/gamez.zbd", (11_169, 314, 310, 4, 309)),
+            ("ZBD/C1C/gamez.zbd", (10_173, 279, 275, 4, 274)),
+            ("ZBD/C2/gamez.zbd", (16_202, 488, 480, 8, 479)),
+            ("ZBD/C2B/gamez.zbd", (9_336, 271, 267, 4, 266)),
+            ("ZBD/C3/gamez.zbd", (20_506, 441, 434, 7, 423)),
+            ("ZBD/C4/gamez.zbd", (24_381, 627, 618, 9, 605)),
+            ("ZBD/C5/gamez.zbd", (28_396, 562, 555, 7, 538)),
+            ("ZBD/planes.zbd", (19_810, 935, 926, 9, 221)),
+        ]);
+
+        let mut totals = (0usize, 0usize, 0usize, 0usize, 0usize);
+        for relative in &containers {
+            let facts = container_facts(&game_dir, relative);
+            let counted: usize = facts.row_states.values().sum();
+            assert_eq!(
+                counted, facts.material_rows,
+                "{relative}: every material row is counted under exactly one state"
+            );
+            let textured = facts
+                .row_states
+                .get(TEXTURED_ROW_STATE)
+                .copied()
+                .unwrap_or(0);
+            let untextured = facts.row_states.get("untextured").copied().unwrap_or(0);
+            assert_eq!(
+                counted,
+                textured + untextured,
+                "{relative}: every row is a flat colour or a row naming a stored texture"
+            );
+            let want = expected
+                .get(relative.as_str())
+                .copied()
+                .unwrap_or_else(|| panic!("{relative} is a container the census does not cover"));
+            assert_eq!(
+                (
+                    facts.references,
+                    facts.material_rows,
+                    textured,
+                    untextured,
+                    facts.name_count()
+                ),
+                want,
+                "{relative}"
+            );
+            totals.0 += facts.references;
+            totals.1 += facts.material_rows;
+            totals.2 += textured;
+            totals.3 += untextured;
+            totals.4 += facts.name_count();
+        }
+        assert_eq!(
+            totals,
+            (162_651, 4_478, 4_417, 61, 3_666),
+            "the census over the whole installation"
         );
     }
 }

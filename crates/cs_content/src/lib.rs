@@ -85,8 +85,9 @@
 //! [`mesh::measure_bindings`], which *measures* which texture archive a
 //! container's materials bind to under five name readings and reports the
 //! weakest decision those numbers support — without touching the audit's own
-//! exact-name rule, and without resolving a tie it cannot settle. One render
-//! vertex per distinct
+//! exact-name rule, and without resolving a tie it cannot settle. Its candidates
+//! are the caller's, so a measurement's search space is part of its evidence.
+//! One render vertex per distinct
 //! `(position index, normal index, uv, color, material)` tuple, compared
 //! bit-exactly, so a shared position with different per-corner UVs keeps the
 //! authored seam; every render vertex and triangle keeps its source corner
