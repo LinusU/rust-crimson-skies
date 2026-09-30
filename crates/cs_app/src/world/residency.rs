@@ -63,7 +63,7 @@ use super::contacts::WorldObjectBinding;
 use super::meshes::WorldMeshes;
 use super::overlays::reapply_object;
 use super::spawn::{
-    SpawnedObject, SpawnedWorld, WorldSpawnError, instance_transforms, spawn_object,
+    SpawnedObject, SpawnedWorld, WorldSpawnError, instance_placements, spawn_object,
 };
 
 /// The condition of the object an entity belongs to.
@@ -498,7 +498,7 @@ pub fn load_world(
         .iter()
         .filter(|object| instance.activates(object.id()))
         .collect();
-    instance_transforms(&population)?;
+    instance_placements(&population)?;
 
     let sectors: BTreeSet<SectorId> = definition
         .sectors()
@@ -536,7 +536,7 @@ pub fn load_world(
         let spawned = spawn_object(app, definition, object, meshes)?;
         let condition = resident.condition(object.id());
         if let Err(err) = stamp(app.world_mut(), &spawned, condition) {
-            // Unreachable after `instance_transforms` above, and handled rather
+            // Unreachable after `instance_placements` above, and handled rather
             // than assumed: a half-loaded world is the one outcome this module
             // exists to prevent.
             despawn_all(app.world_mut(), resident.objects.values());
@@ -681,7 +681,7 @@ pub fn load_sector(
     };
     {
         let borrowed: Vec<_> = records.iter().collect();
-        instance_transforms(&borrowed)?;
+        instance_placements(&borrowed)?;
     }
 
     // 2. Spawn. Each object is stamped with the condition the load already holds

@@ -26,6 +26,11 @@
 //! be stopped by it. `sweep` owns that geometry, `spawn` owns the spawn boundary
 //! and `records` owns the typed contract in `cs_content::world`.
 //!
+//! **#421** (`accept_f18_b_shear_`) is the F18-A follow-up that narrows the
+//! whole-build refusal from "no translation/rotation/scale triple" to "no exact
+//! placement at all": a sheared world object is placed, exactly, in the
+//! presentation and in the collision. `shear` owns it.
+//!
 //! **F18-B** (`accept_f18_b_`) is the import path and the load transaction.
 //! `import` owns mesh-derived static collision — one asset behind the drawn and
 //! the collided geometry, each declared role honoured, water bounded, missing
@@ -46,6 +51,7 @@ mod import;
 mod overlays;
 mod records;
 mod residency;
+mod shear;
 mod spawn;
 mod sweep;
 mod visibility;

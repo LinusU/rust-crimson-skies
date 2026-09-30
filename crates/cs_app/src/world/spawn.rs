@@ -40,15 +40,21 @@
 //!   default: this stage performs *none*, and a stage that wants one must
 //!   record the source mesh, the operation and the openings it affects
 //!   (`docs/findings/2026-09-30-f18-b-world-import-and-static-collision.md`);
-//! * an authored matrix no runtime transform can hold (a shear) is refused
-//!   whole rather than approximated; whether mesh colliders may instead follow
-//!   the render path's full affine is an open limitation, because the
-//!   *presented* half of the object cannot;
+//! * an authored affine that has no exact placement is refused whole rather
+//!   than approximated — but a **shear is not such an affine**: the
+//!   *presented* half carries the whole authored matrix in its
+//!   `GlobalTransform` (no `Transform` beside it, so Bevy's propagation cannot
+//!   overwrite it) and the *collision* half carries the authored linear map
+//!   inside its **shape**, which leaves the collider's own pose an exact
+//!   translation/rotation/scale. That split is [`super::affine`]'s decision and
+//!   this module's one use of it; a mesh-derived object is the exception, for
+//!   the reason [`AffinePlacementError::ShearedMeshUndecided`] names;
 //! * **mission overlays and visibility-driven streaming policy** are F18-C;
 //!   [`super::residency`] owns the load/unload transaction itself;
 //! * **retail geometry import** is F18-B/D: everything spawned from a fixture
 //!   here is `Origin::SyntheticFixture` and never claims to be original.
 
+use avian3d::parry::shape::{Cuboid, SharedShape};
 use avian3d::prelude::{
     Collider, CollisionEventsEnabled, CollisionLayers as AvianCollisionLayers, Position, RigidBody,
     Rotation, Sensor,
@@ -65,6 +71,7 @@ use cs_sim::collision::{CollisionLayer, CollisionLayers};
 use cs_types::content::{ContentId, Resolved};
 use cs_types::evidence::ContentHash;
 
+use super::affine::{AffinePlacement, AffinePlacementError};
 use super::contacts::{WorldColliderInstance, WorldObjectBinding, WorldVisual};
 use super::meshes::WorldMeshes;
 
@@ -80,10 +87,11 @@ pub const INSTANCE_TRANSFORM_TOLERANCE: f32 = 1e-4;
 /// Why the geometry an object instance names could not be used, although the
 /// object was presented.
 ///
-/// An authored matrix that no runtime transform can hold is *not* one of these:
+/// An authored affine that has no exact placement is *not* one of these:
 /// [`spawn_world`] refuses that definition outright (see
-/// [`WorldSpawnError::UnrepresentableTransform`]) before any entity exists,
-/// so it never reaches the report.
+/// [`WorldSpawnError::UnplaceableAffine`]) before any entity exists, so it
+/// never reaches the report. A shear is not such an affine — see
+/// [`super::affine`].
 ///
 /// A mesh reason can surface twice over in one report, for two different
 /// objects: a colliding object reports it in
@@ -375,30 +383,40 @@ impl SpawnedWorld {
 /// Why [`spawn_world`] refused to build the world at all.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorldSpawnError {
-    /// An object's authored matrix cannot be represented as a runtime
-    /// transform at all. The refusal happens **before the first entity is
-    /// spawned**: a world that failed halfway would carry some objects and
-    /// not others while the caller holds no [`SpawnedWorld`] to ask which,
-    /// so nothing is spawned and nothing is approximated (guessing a
-    /// placement is exactly how a traversable opening gets closed).
-    UnrepresentableTransform {
-        /// The object whose transform was refused.
+    /// One object's authored affine has no exact placement; see
+    /// [`AffinePlacementError`] for the reasons, each of them a fact about the
+    /// record and never a guess. A shear is deliberately *not* one of them.
+    ///
+    /// The refusal happens **before the first entity is spawned**: a world that
+    /// failed halfway would carry some objects and not others while the caller
+    /// holds no [`SpawnedWorld`] to ask which, so nothing is spawned and
+    /// nothing is approximated (guessing a placement is exactly how a
+    /// traversable opening gets closed).
+    UnplaceableAffine {
+        /// The object whose authored affine was refused.
         object: WorldObjectId,
+        /// Why it has no exact placement.
+        source: AffinePlacementError,
     },
 }
 
 impl std::fmt::Display for WorldSpawnError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::UnrepresentableTransform { object } => write!(
-                f,
-                "object `{object}` has an authored matrix no runtime transform can represent"
-            ),
+            Self::UnplaceableAffine { object, source } => {
+                write!(f, "object `{object}` has no exact placement: {source}")
+            }
         }
     }
 }
 
-impl std::error::Error for WorldSpawnError {}
+impl std::error::Error for WorldSpawnError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::UnplaceableAffine { source, .. } => Some(source),
+        }
+    }
+}
 
 /// The decomposed runtime form of one instance's authored transform.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -461,48 +479,54 @@ pub fn canonical_matrix(transform: &CanonicalTransform) -> Mat4 {
     )
 }
 
-/// Decomposes an authored canonical transform into the translation, rotation
-/// and scale a runtime entity is built from, refusing any matrix the
-/// decomposition cannot reproduce.
+/// Classifies one instance's authored affine: which runtime half carries the
+/// linear map, and — for a sheared *mesh* — that this stage does not build it.
+///
+/// The test for [`AffinePlacement::Trs`] is exactly the one F18-A used, so
+/// every matrix F18-A placed is still placed the same way. What changed is the
+/// other branch: a matrix that is not a rotation-times-scale product is no
+/// longer refused for being one.
 ///
 /// # Errors
 ///
-/// [`WorldSpawnError::UnrepresentableTransform`] when rebuilding from the
-/// decomposition does not land back on the authored matrix within
-/// [`INSTANCE_TRANSFORM_TOLERANCE`] — a shear, or a degenerate scale.
-/// [`spawn_world`] runs this over every instance *before* spawning anything,
-/// so such a definition is refused whole rather than built at an approximate
-/// pose.
-pub fn instance_transform(
+/// [`WorldSpawnError::UnplaceableAffine`] when the authored affine has no exact
+/// placement — see [`AffinePlacement::of`] — or when a mesh-derived object is
+/// the sheared one, for
+/// [`AffinePlacementError::ShearedMeshUndecided`]. [`spawn_world`] runs this
+/// over every instance *before* spawning anything, so such a definition is
+/// refused whole rather than built at an approximate pose.
+pub fn instance_placement(
     object: &WorldObjectInstance,
-) -> Result<InstanceTransform, WorldSpawnError> {
-    let authored = canonical_matrix(object.transform());
-    let (scale, rotation, translation) = authored.to_scale_rotation_translation();
-    let rebuilt = Mat4::from_scale_rotation_translation(scale, rotation, translation);
-    if !authored.abs_diff_eq(rebuilt, INSTANCE_TRANSFORM_TOLERANCE) {
-        return Err(WorldSpawnError::UnrepresentableTransform {
-            object: object.id().clone(),
-        });
+) -> Result<AffinePlacement, WorldSpawnError> {
+    let refuse = |source: AffinePlacementError| WorldSpawnError::UnplaceableAffine {
+        object: object.id().clone(),
+        source,
+    };
+    let placement = AffinePlacement::of(object.transform()).map_err(refuse)?;
+    // A sheared cuboid bakes into a convex polyhedron here, so it is placed.
+    // A sheared *mesh* cannot be, and the reason is not an engine limit: the
+    // collision would have to become a **derived** upload whose fingerprint is
+    // no longer the authored one, which is F18-B's one-asset provenance claim
+    // and therefore F18-B's decision, not this module's. It is refused by name
+    // rather than placed from a second asset the report would misattribute.
+    if placement.is_sheared() && object.known_shape() == Some(WorldCollisionShape::FromMesh) {
+        return Err(refuse(AffinePlacementError::ShearedMeshUndecided));
     }
-    Ok(InstanceTransform {
-        translation,
-        rotation,
-        scale,
-    })
+    Ok(placement)
 }
 
-/// Decomposes the given instances in order, before anything is spawned.
+/// Classifies the given instances in order, before anything is spawned.
 ///
 /// # Errors
 ///
-/// [`WorldSpawnError::UnrepresentableTransform`] naming the first object whose
-/// authored matrix has no runtime form.
-pub fn instance_transforms(
+/// [`WorldSpawnError::UnplaceableAffine`] naming the first object whose
+/// authored affine has no exact placement.
+pub fn instance_placements(
     objects: &[&WorldObjectInstance],
-) -> Result<Vec<InstanceTransform>, WorldSpawnError> {
+) -> Result<Vec<AffinePlacement>, WorldSpawnError> {
     objects
         .iter()
-        .map(|object| instance_transform(object))
+        .map(|object| instance_placement(object))
         .collect()
 }
 
@@ -584,15 +608,16 @@ fn resolve_upload<'a>(
 ///
 /// # Errors
 ///
-/// [`WorldSpawnError::UnrepresentableTransform`] when the instance's authored
-/// matrix has no runtime form; nothing is spawned then.
+/// [`WorldSpawnError::UnplaceableAffine`] when the instance's authored affine
+/// has no exact placement; nothing is spawned then.
 pub fn spawn_object(
     app: &mut App,
     definition: &WorldDefinition,
     object: &WorldObjectInstance,
     meshes: &WorldMeshes,
 ) -> Result<SpawnedObject, WorldSpawnError> {
-    let instance = instance_transform(object)?;
+    let placement = instance_placement(object)?;
+    let instance = placement.collider_pose();
     let binding = || {
         WorldObjectBinding::new(
             definition.id().clone(),
@@ -616,7 +641,6 @@ pub fn spawn_object(
         return Ok(gap(
             app,
             object,
-            &instance,
             binding(),
             resolved,
             SkipReason::UnknownCollisionRole,
@@ -627,7 +651,7 @@ pub fn spawn_object(
     if !role.creates_collider() {
         return Ok(SpawnedObject {
             object: object.id().clone(),
-            visual: present(app, object, &instance, binding(), resolved),
+            visual: present(app, object, binding(), resolved),
             collider: None,
             mesh: resolved.map(ResolvedUpload::reference),
             non_colliding: true,
@@ -641,7 +665,6 @@ pub fn spawn_object(
         return Ok(gap(
             app,
             object,
-            &instance,
             binding(),
             resolved,
             SkipReason::UnknownCollisionShape,
@@ -650,9 +673,24 @@ pub fn spawn_object(
 
     match shape {
         WorldCollisionShape::Cuboid { half_extents_m } => {
-            // The box is authored in the instance's local frame; the entity's
-            // `Transform` carries the same rotation and scale the visual entity
-            // carries, and Avian applies that scale to the collider itself.
+            // The box is authored in the instance's local frame. A
+            // rotation-times-scale instance needs nothing more: Avian applies
+            // the entity's own scale to the collider. A **sheared** instance
+            // cannot — Avian derives `Position`, `Rotation` and the collider
+            // scale from a translation/rotation/scale decomposition — so the
+            // authored linear map goes into the *shape* and the pose keeps only
+            // the translation. Same vertices, same conversion, one asset.
+            let authored_box = SharedShape::new(Cuboid::new(Vec3::new(
+                half_extents_m[0] as f32,
+                half_extents_m[1] as f32,
+                half_extents_m[2] as f32,
+            )));
+            let geometry = placement.bake(&authored_box).map_err(|source| {
+                WorldSpawnError::UnplaceableAffine {
+                    object: object.id().clone(),
+                    source,
+                }
+            })?;
             let entity = app
                 .world_mut()
                 .spawn((
@@ -662,11 +700,7 @@ pub fn spawn_object(
                     Position(instance.translation),
                     Rotation(instance.rotation),
                     RigidBody::Static,
-                    Collider::cuboid(
-                        (half_extents_m[0] * 2.0) as f32,
-                        (half_extents_m[1] * 2.0) as f32,
-                        (half_extents_m[2] * 2.0) as f32,
-                    ),
+                    Collider::from(geometry),
                     avian_layers(static_world_membership()),
                     CollisionEventsEnabled,
                 ))
@@ -676,7 +710,7 @@ pub fn spawn_object(
             }
             Ok(SpawnedObject {
                 object: object.id().clone(),
-                visual: spawn_presentation(app, object, &instance, binding()),
+                visual: present(app, object, binding(), resolved),
                 collider: Some(SpawnedCollider {
                     object: object.id().clone(),
                     entity,
@@ -702,7 +736,7 @@ pub fn spawn_object(
                     .err()
                     .copied()
                     .unwrap_or(SkipReason::UnknownMesh);
-                return Ok(gap(app, object, &instance, binding(), None, reason));
+                return Ok(gap(app, object, binding(), None, reason));
             };
             let entity = spawn_mesh_collider(app, transform, upload, role, binding());
             Ok(SpawnedObject {
@@ -734,14 +768,13 @@ pub fn spawn_object(
 fn gap(
     app: &mut App,
     object: &WorldObjectInstance,
-    instance: &InstanceTransform,
     binding: WorldObjectBinding,
     upload: Option<ResolvedUpload<'_>>,
     reason: SkipReason,
 ) -> SpawnedObject {
     SpawnedObject {
         object: object.id().clone(),
-        visual: present(app, object, instance, binding, upload),
+        visual: present(app, object, binding, upload),
         collider: None,
         mesh: upload.map(ResolvedUpload::reference),
         non_colliding: false,
@@ -755,35 +788,38 @@ fn gap(
 fn present(
     app: &mut App,
     object: &WorldObjectInstance,
-    instance: &InstanceTransform,
     binding: WorldObjectBinding,
     upload: Option<ResolvedUpload<'_>>,
 ) -> Entity {
     match upload {
         Some(upload) => spawn_mesh_presentation(
             app,
-            instance.to_transform(),
+            GlobalTransform::from(canonical_matrix(object.transform())),
             upload.upload.mesh().clone(),
             binding,
         ),
-        None => spawn_presentation(app, object, instance, binding),
+        None => spawn_presentation(app, object, binding),
     }
 }
 
 /// Spawns the presentation-only entity of a record: the F18-A marker that
 /// carries the object's identity, its authored transform and its binding, with
 /// no geometry of its own.
+///
+/// The entity carries the **whole** authored affine in its `GlobalTransform`
+/// and **no** `Transform`: Bevy's transform propagation overwrites a
+/// `GlobalTransform` from a `Transform` on the same entity, so a shear would
+/// be replaced by the identity on the first update without saying so. Measured
+/// on the pinned pair; see [`super::affine`].
 fn spawn_presentation(
     app: &mut App,
     object: &WorldObjectInstance,
-    instance: &InstanceTransform,
     binding: WorldObjectBinding,
 ) -> Entity {
     app.world_mut()
         .spawn((
             WorldVisual,
             binding,
-            instance.to_transform(),
             GlobalTransform::from(canonical_matrix(object.transform())),
         ))
         .id()
@@ -794,19 +830,13 @@ fn spawn_presentation(
 /// no collider are created, so role `None` stays a presentation.
 fn spawn_mesh_presentation(
     app: &mut App,
-    transform: Transform,
+    affine: GlobalTransform,
     mesh: Mesh,
     binding: WorldObjectBinding,
 ) -> Entity {
     let handle = app.world_mut().resource_mut::<Assets<Mesh>>().add(mesh);
     app.world_mut()
-        .spawn((
-            WorldVisual,
-            binding,
-            transform,
-            GlobalTransform::from(transform),
-            Mesh3d(handle),
-        ))
+        .spawn((WorldVisual, binding, affine, Mesh3d(handle)))
         .id()
 }
 
@@ -872,7 +902,7 @@ fn spawn_mesh_collider(
 /// world without it records no contacts — a gap in that composition, not
 /// something this conversion can repair.
 ///
-/// Every instance's authored matrix is decomposed **before** the first entity
+/// Every instance's authored affine is classified **before** the first entity
 /// exists, so a refusal leaves the app exactly as it was. An object whose mesh
 /// reference resolves to an upload in `meshes` is presented *and* collided from
 /// that one upload; anything this source cannot build is reported in
@@ -881,8 +911,8 @@ fn spawn_mesh_collider(
 ///
 /// # Errors
 ///
-/// [`WorldSpawnError::UnrepresentableTransform`] naming the object whose
-/// authored matrix has no runtime form, with nothing spawned. Every other gap
+/// [`WorldSpawnError::UnplaceableAffine`] naming the object whose authored
+/// affine has no exact placement, with nothing spawned. Every other gap
 /// — an unknown role, an unknown shape, a mesh this source does not hold — is
 /// *not* an error: it is reported next to the objects that *were* built, so the
 /// gap stays visible.
@@ -894,7 +924,7 @@ pub fn spawn_world(
     // Refuse the whole definition before anything changes — no entity at all;
     // see `WorldSpawnError`.
     let objects: Vec<&WorldObjectInstance> = definition.objects().iter().collect();
-    instance_transforms(&objects)?;
+    instance_placements(&objects)?;
 
     let mut spawned = SpawnedWorld::of(definition.id());
     for object in objects {

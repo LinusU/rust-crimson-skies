@@ -3,9 +3,11 @@
 //!
 //! The sweep tests prove the *geometry*; these prove the *report*:
 //!
-//! * an authored matrix no runtime transform can hold is refused **whole**,
-//!   before any entity exists — a half-built world would carry some objects
-//!   and not others while the caller holds no `SpawnedWorld` to ask which;
+//! * an authored affine with no exact placement is refused **whole**, before any
+//!   entity exists — a half-built world would carry some objects and not others
+//!   while the caller holds no `SpawnedWorld` to ask which. A *shear* is no
+//!   longer such an affine: it is placed exactly, which the
+//!   `accept_f18_b_shear_*` tests in `shear` measure;
 //! * `None` means presented and never colliding, `Solid` means a collider
 //!   that is *not* a sensor, and `Sensor` means a collider Avian will only
 //!   report — three different outcomes from three declared roles;
@@ -15,7 +17,7 @@ use avian3d::prelude::{CollisionLayers as AvianCollisionLayers, RigidBody, Senso
 use bevy::prelude::{App, Time, Vec3, World};
 use bevy::time::Fixed;
 use cs_app::world::{
-    WorldFixture, WorldMeshes, WorldSpawnError, arch_world,
+    AffinePlacementError, WorldFixture, WorldMeshes, WorldSpawnError, arch_world,
     fixture::{SENSOR_HALF_M, SENSOR_POS_M},
     spawn_world,
 };
@@ -45,19 +47,24 @@ fn object(key: &str) -> cs_content::world::WorldObjectId {
     cs_content::world::WorldObjectId::new(key).expect("the test object key is valid")
 }
 
-/// A two-object world whose *second* instance carries a **shear**: a linear
-/// map no translation/rotation/scale triple can rebuild, and therefore one
-/// [`spawn_world`] must refuse instead of approximating.
+/// A two-object world whose *second* instance carries an authored affine with
+/// **no exact placement**: its linear map collapses space (determinant zero), so
+/// no collider of that object exists and [`spawn_world`] must refuse rather than
+/// approximate.
 ///
 /// The first instance is perfectly representable on purpose: a build that
 /// spawned as it walked would leave that one behind after failing on the
 /// second, which is exactly what the refusal must not do.
-fn sheared_world() -> WorldDefinition {
-    let sheared = CanonicalTransform::try_new(
-        [[1.0, 0.5, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+///
+/// The *sheared* counterpart of this world is no longer refused at all — it is
+/// placed exactly in both halves, which the `accept_f18_b_shear_*` tests
+/// measure.
+fn collapsed_world() -> WorldDefinition {
+    let collapsed = CanonicalTransform::try_new(
+        [[1.0, 1.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
         [1.0, 2.0, 3.0],
     )
-    .expect("the shear is finite");
+    .expect("the collapsed map is finite");
     let mesh_id = || {
         known(
             ContentId::from_source(ContentKind::Mesh, "synthetic.panel")
@@ -84,9 +91,9 @@ fn sheared_world() -> WorldDefinition {
     )
     .expect("the sector list has no duplicates");
     let broken = WorldObjectInstance::try_new(
-        object("sheared.panel"),
+        object("collapsed.panel"),
         mesh_id(),
-        sheared,
+        collapsed,
         known(WorldCollisionRole::Solid, "collision"),
         known(
             WorldCollisionShape::cuboid([1.0, 1.0, 1.0]).expect("the box is valid"),
@@ -94,12 +101,12 @@ fn sheared_world() -> WorldDefinition {
         ),
         known(SurfaceRole::Ground, "surface"),
         vec![SectorId::new("only").expect("the sector key is valid")],
-        provenance("sheared.panel"),
+        provenance("collapsed.panel"),
     )
     .expect("the sector list has no duplicates");
 
     WorldDefinition::try_new(
-        WorldId::from_key("test.sheared_world").expect("the world key is valid"),
+        WorldId::from_key("test.collapsed_world").expect("the world key is valid"),
         Origin::SyntheticFixture,
         known(cs_content::world::WorldBoundary::default(), "boundary"),
         vec![Sector::new(
@@ -112,17 +119,17 @@ fn sheared_world() -> WorldDefinition {
     .expect("the definition is structurally valid: one sector, two objects")
 }
 
-/// **AC01's precondition, on the refusal side:** a matrix the runtime cannot
-/// hold stops the whole build *before the first entity exists*.
+/// **AC01's precondition, on the refusal side:** an affine with no exact
+/// placement stops the whole build *before the first entity exists*.
 ///
 /// Observable failure if the build is not atomic: the caller gets an error
 /// while the app has already been filled with the objects that came before
 /// the bad one, and no `SpawnedWorld` survives to say which were built.
 #[test]
 fn accept_f18_a_spawn_refuses_a_matrix_no_runtime_transform_can_hold_before_spawning_anything() {
-    let definition = sheared_world();
-    // The record itself is legal; only the second placement has no runtime
-    // form, and the first one is perfectly spawnable.
+    let definition = collapsed_world();
+    // The record itself is legal; only the second placement has no exact form,
+    // and the first one is perfectly spawnable.
     assert_eq!(
         definition.objects().len(),
         2,
@@ -136,13 +143,15 @@ fn accept_f18_a_spawn_refuses_a_matrix_no_runtime_transform_can_hold_before_spaw
     // whole story for this refusal: nothing here is refused for want of
     // geometry, only for want of a runtime transform.
     let error = spawn_world(&mut app, &definition, &WorldMeshes::new())
-        .expect_err("a sheared matrix must be refused, not approximated");
+        .expect_err("an affine with no exact placement must be refused, not approximated");
     assert!(
         matches!(
             &error,
-            WorldSpawnError::UnrepresentableTransform { object } if object.as_str() == "sheared.panel"
+            WorldSpawnError::UnplaceableAffine { object, source }
+                if object.as_str() == "collapsed.panel"
+                    && *source == AffinePlacementError::CollapsesSpace
         ),
-        "the refusal must name the object whose matrix was refused, got {error:?}"
+        "the refusal must name the object and why, got {error:?}"
     );
 
     assert_eq!(

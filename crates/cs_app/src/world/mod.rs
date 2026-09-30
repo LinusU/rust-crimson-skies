@@ -31,7 +31,12 @@
 //! * [`residency`] is the load transaction: one world at a time, one sector in
 //!   and out at a time, and the per-object condition that survives both
 //!   (acceptance scenario AC02). It carries no streaming *policy* — that is
-//!   [`visibility`].
+//!   [`visibility`] and [`overlays`] (acceptance scenarios AC02 and AC03).
+//! * [`affine`] owns the one decision F18-A's review left open (#421): how an
+//!   authored affine that no translation/rotation/scale triple reproduces — a
+//!   shear — is placed. The presentation keeps the whole affine and the
+//!   collision carries the linear map inside its **shape**, so neither half
+//!   approximates and no affine is refused for being sheared.
 //! * [`overlays`] is the mission-overlay runtime: the producer that turns a
 //!   sensor volume a body reached into a request, the hand-off between the two
 //!   ends, and the consumer that applies the load's declared effect to an
@@ -55,6 +60,7 @@
 //! `docs/findings/2026-09-30-f18-b-world-import-and-static-collision.md` and
 //! `docs/findings/2026-09-30-f18-c-mission-overlays-and-visibility-streaming.md`.
 
+pub mod affine;
 pub mod contacts;
 pub mod fixture;
 pub mod meshes;
@@ -63,6 +69,7 @@ pub mod residency;
 pub mod spawn;
 pub mod visibility;
 
+pub use affine::{AffinePlacement, AffinePlacementError, bake_shape, shear_residual};
 pub use contacts::{
     WorldColliderInstance, WorldContact, WorldContacts, WorldObjectBinding, WorldPlugin,
     WorldVisual, record_world_contacts,
@@ -98,7 +105,7 @@ pub use residency::{
 pub use spawn::{
     INSTANCE_TRANSFORM_TOLERANCE, InstanceTransform, MeshReference, SkipReason, SkippedInstance,
     SpawnedCollider, SpawnedObject, SpawnedWorld, WorldSpawnError, avian_layers, canonical_matrix,
-    instance_transform, instance_transforms, spawn_object, spawn_world, static_world_membership,
+    instance_placement, instance_placements, spawn_object, spawn_world, static_world_membership,
 };
 pub use visibility::{
     VisibilityError, VisibilityRequest, VisibilityUpdate, holds_sector, retained_sectors,
