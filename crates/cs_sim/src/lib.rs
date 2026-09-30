@@ -24,6 +24,16 @@
 //! rate. The device adapters and calibration are `cs_app::input::devices`;
 //! focus, replay and full ownership wiring are F22-C.
 //!
+//! [`audio_events`] is the F41-A audio runtime
+//! (`specs/F41-audio-music-radio-dialogue-and-spatial-mixing.md`, stage
+//! `### F41-A`): the audio-scoped [`audio_events::AudioEventId`] event identity,
+//! the bounded [`audio_events::AudioRouter`] whose per-`(session, producer)`
+//! sequence ledger accepts a one-shot exactly once and suppresses a replay, and
+//! the loop-emitter registry that stops on despawn, swap, declared pause policy
+//! or device loss. The provenance-carrying producer record is
+//! `cs_content::audio`; the conversion boundary is `cs_app::audio` (F41-B
+//! implements decoding, spatial emitters and the real mixer).
+//!
 //! [`collision`] is the F23-A collision vocabulary
 //! (`specs/F23-avian-integration-collision-and-fixed-step-authority.md`,
 //! stage `### F23-A`): the six declared [`collision::CollisionLayer`]s, the
@@ -104,6 +114,7 @@
 
 pub mod ai;
 pub mod animated_object;
+pub mod audio_events;
 pub mod collision;
 pub mod control;
 pub mod damage;

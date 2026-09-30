@@ -181,6 +181,17 @@
 //! loadout. Its declared roster is synthetic and its rotor mapping is an
 //! explicit unknown; F25-C wires it into the runtime launch path.
 //!
+//! [`audio`] is the F41-A declared audio catalog
+//! (`specs/F41-audio-music-radio-dialogue-and-spatial-mixing.md`, stage
+//! `### F41-A`): the provenance-carrying [`audio::AudioAssetRecord`] binding an
+//! audio id to its [`audio::AudioPlayback`] metadata (one of the seven
+//! [`audio::AudioBus`]es, a validated [`audio::AudioLevel`] and a
+//! [`audio::PlaybackMode`]) and to a [`audio::DecodedPcm`] reference, with the
+//! [`audio::AudioCatalog`] that refuses a duplicate id. Its runtime counterpart
+//! is `cs_sim::audio_events`; the conversion boundary is `cs_app::audio`. The
+//! original audio pipeline is undecoded, so every value here is designed or an
+//! explicit unknown, never an original measurement.
+//!
 //! [`animation`] is the F20-A declared animation IR
 //! (`specs/F20-object-animation-and-authored-destruction-states.md`, stage
 //! `### F20-A`): the provenance-carrying [`animation::AnimationClip`] record
@@ -207,6 +218,7 @@
 
 pub mod airframe_roles;
 pub mod animation;
+pub mod audio;
 pub mod campaign_bindings;
 pub mod catalog;
 pub mod config;
