@@ -189,6 +189,13 @@ run and reverted from a byte-identical backup:
 - F25-D (retail) still needs an actual integration/reference evidence run, and
   AC04's "compare the distinctive handling against the original" is entirely
   out of this stage's reach.
+- **Two different "envelopes" now exist in the tree and must not be conflated.**
+  This stage's `cs_sim::flight::ReferenceManeuverEnvelope` records *which reference traces a
+  calibration must contain* (F25 + `FLIGHT-PHYSICS` "Calibration acceptance"),
+  while `cs_sim::ai::navigation::ManeuverEnvelope` (F31-A, merged into `main`
+  while this branch was being reviewed) bounds the *rates an AI navigator may
+  command*. The names collide; the concepts do not. F25-B/F25-C should not reuse
+  either type for the other purpose.
 
 ## Review corrections (2026-09-30, `bunny-alpha-2` reviewing #97)
 
