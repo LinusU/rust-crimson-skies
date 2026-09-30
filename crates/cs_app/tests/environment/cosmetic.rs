@@ -96,10 +96,11 @@ fn accept_f19_b_cosmetic_particles_are_drawn_only_from_the_cosmetic_weather_stre
             "particle {index} must be the cosmetic weather stream's own draw"
         );
     }
-    assert!(
-        stream.unit_f64() < 1.0,
-        "the field consumed exactly three draws per particle and stopped there"
-    );
+    // The replay above *is* the draw-count check: it consumes the stream three
+    // components per particle and compares each particle, so a field that drew
+    // a different number of components per particle would misalign the replay
+    // and fail on the first particle that did not match. No separate
+    // post-condition is needed, and none is asserted here.
 
     // The field is bounded: a fixed count, inside the declared designed
     // volume. A particle outside it would be a frame nobody could draw.
@@ -115,15 +116,16 @@ fn accept_f19_b_cosmetic_particles_are_drawn_only_from_the_cosmetic_weather_stre
     }
 
     // A non-finite elapsed time is refused rather than putting a particle at
-    // an unrepresentable place.
+    // an unrepresentable place. The refusal names the bad argument, not a
+    // particle: no particle is at fault when the caller's `elapsed_s` is bad.
     let wind = wind_of(&rain_state());
     assert!(matches!(
         field.particles()[0].drifted_offset_m(&wind, f64::NAN),
-        Err(CosmeticFieldError::NonFiniteDraw { .. })
+        Err(CosmeticFieldError::NonFiniteElapsed { elapsed_s }) if elapsed_s.is_nan()
     ));
     assert!(matches!(
         field.drifted(&wind, -1.0),
-        Err(CosmeticFieldError::NonFiniteDraw { .. })
+        Err(CosmeticFieldError::NonFiniteElapsed { elapsed_s: -1.0 })
     ));
 }
 
@@ -189,8 +191,6 @@ fn accept_f19_b_a_gust_advects_the_particles_without_moving_their_draws() {
         assert_eq!(particle.offset_m(), drawn.offset_m());
     }
 
-    // The same wind drives the air the aircraft flies in: the decoration is
-    // advected by the one authoritative field, not by a second decorative one.
     // The same wind drives the air the aircraft flies in: the decoration is
     // advected by the one authoritative field, not by a second decorative one.
     // The gust here runs *along* the flight path, so it shows up as a

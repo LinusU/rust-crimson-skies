@@ -60,7 +60,7 @@ pub const COSMETIC_FIELD_HALF_EXTENT_M: f64 = 60.0;
 /// cost; the original's particle count is unknown.
 pub const COSMETIC_PARTICLE_COUNT: usize = 16;
 
-/// Why a [`CosmeticField`] could not be built from a seed.
+/// Why a [`CosmeticField`] could not be built or advected.
 #[derive(Clone, Debug, PartialEq)]
 pub enum CosmeticFieldError {
     /// A drawn offset was not finite, which would put a particle at an
@@ -69,6 +69,15 @@ pub enum CosmeticFieldError {
         /// The index of the offending particle.
         index: usize,
     },
+    /// The elapsed time an advection was asked for was negative or not finite.
+    ///
+    /// This is deliberately *not* a [`CosmeticFieldError::NonFiniteDraw`]: no
+    /// particle is at fault when the caller supplies a bad `elapsed_s`, and
+    /// reporting an index would name a particle that drew perfectly well.
+    NonFiniteElapsed {
+        /// The rejected value.
+        elapsed_s: f64,
+    },
 }
 
 impl fmt::Display for CosmeticFieldError {
@@ -76,6 +85,12 @@ impl fmt::Display for CosmeticFieldError {
         match self {
             Self::NonFiniteDraw { index } => {
                 write!(f, "cosmetic particle {index} drew a non-finite offset")
+            }
+            Self::NonFiniteElapsed { elapsed_s } => {
+                write!(
+                    f,
+                    "cosmetic advection elapsed_s = {elapsed_s} must be finite"
+                )
             }
         }
     }
@@ -113,15 +128,15 @@ impl CosmeticParticle {
     ///
     /// # Errors
     ///
-    /// [`CosmeticFieldError::NonFiniteDraw`] when `elapsed_s` is negative or
-    /// not finite.
+    /// [`CosmeticFieldError::NonFiniteElapsed`] when `elapsed_s` is negative
+    /// or not finite.
     pub fn drifted_offset_m(
         &self,
         wind: &AuthoritativeWind,
         elapsed_s: f64,
     ) -> Result<[f64; 3], CosmeticFieldError> {
         if !elapsed_s.is_finite() || elapsed_s < 0.0 {
-            return Err(CosmeticFieldError::NonFiniteDraw { index: 0 });
+            return Err(CosmeticFieldError::NonFiniteElapsed { elapsed_s });
         }
         Ok([
             self.offset_m[0] + wind.velocity_m_s()[0] * elapsed_s,
@@ -187,8 +202,8 @@ impl CosmeticField {
     ///
     /// # Errors
     ///
-    /// [`CosmeticFieldError::NonFiniteDraw`] when `elapsed_s` is negative or
-    /// not finite.
+    /// [`CosmeticFieldError::NonFiniteElapsed`] when `elapsed_s` is negative
+    /// or not finite.
     pub fn drifted(
         &self,
         wind: &AuthoritativeWind,

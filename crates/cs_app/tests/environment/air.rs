@@ -128,9 +128,14 @@ fn accept_f19_b_wind_changes_aircraft_airspeed_and_projectile_velocity_consisten
         );
         assert!(airspeed.is_finite());
     }
+
+    // All three fixture winds push the air in the aircraft's direction of
+    // travel, so each one is a tailwind and the true airspeed *rises* with the
+    // wind. A headwind (`+Z`) would lower it instead; the sign is what the
+    // `air_relative` conversion fixes, and both directions follow from it.
     assert!(
         airspeeds[0] < airspeeds[1] && airspeeds[1] < airspeeds[2],
-        "a stronger headwind component must lower the airspeed: {airspeeds:?}"
+        "a stronger tailwind must raise the airspeed: {airspeeds:?}"
     );
 
     // The projectile reads the same field: its air-relative speed is
@@ -191,7 +196,6 @@ fn accept_f19_b_wind_changes_aircraft_airspeed_and_projectile_velocity_consisten
     let target_air_m_s = [0.0, 0.0, -55.0];
     assert_eq!(shot.closing_speed_m_s(target_air_m_s), 65.0);
 
-    // But the two *world* velocities the wind produced really are different,
     // Hold both bodies' *air* velocities fixed — the aircraft at the airspeed it
     // has in the calm field, the target at its own — and let the wind decide
     // their world velocities. Every world velocity moves by the wind's own

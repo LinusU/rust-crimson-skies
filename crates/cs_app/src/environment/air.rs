@@ -41,6 +41,22 @@
 //! velocity and nothing else, so nothing here can be mistaken for a measured
 //! ballistic model. The unknowns are recorded in
 //! `docs/findings/2026-09-30-f19-b-sky-fog-light-and-weather-effects.md`.
+//!
+//! # Where this conversion lives, and why that is not settled
+//!
+//! The code that *applies* a wind is below this module: `cs_sim` owns
+//! [`FlightEnvironment::wind_velocity_mps`] and the subtraction inside
+//! [`FlightModel`](cs_sim::flight::FlightModel), and F27-B will need the same
+//! subtraction again for swept ballistics. The crate dependency runs
+//! `cs_app -> cs_sim` and never the reverse, so **`cs_sim` cannot call
+//! [`AuthoritativeWind::air_relative`]**. The authoritative *record* is shared —
+//! one [`EnvironmentState::wind`] every consumer reads — but the *conversion*
+//! is currently reachable only from above the simulation, so a second copy in
+//! `cs_sim` is a live risk this module cannot prevent from where it sits.
+//!
+//! Treat this as settled by task #434 `F19-WIND-CONVERSION-OWNER`, not by this
+//! module. Until then, the "one conversion" claim in this file's docs is a
+//! statement about the consumers that exist today, not about the whole engine.
 
 use std::fmt;
 

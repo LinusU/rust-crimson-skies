@@ -56,7 +56,8 @@ AC02 asks about:
 * `world_velocity_m_s` is `air_velocity + wind`, so two winds move a projectile
   by exactly their own difference;
 * `closing_speed_m_s` is a relative quantity *inside one air* and takes no
-  wind at all: `closing_speed == -closing_speed(-Δwind, target_air)`;
+  wind at all: it is a function of the two air-relative velocities and of the
+  projectile's own flight path, so no `AuthoritativeWind` can move it;
 * `world_closing_speed_m_s` is the world-space closure and **does** depend on
   the wind, because a target whose world velocity is held fixed while the air
   speeds up is genuinely being blown at a different rate. The distinction is
@@ -116,7 +117,7 @@ drive production code only — `cs_content::environment`'s records,
 `cs_app::environment` modules. No test carries its own environment builder,
 wind conversion, fog curve or particle draw.
 
-Eight defects were injected one at a time and reverted; each was caught:
+Eleven defects were injected one at a time and reverted; each was caught:
 
 | injected defect | test that failed |
 | --- | --- |
@@ -136,6 +137,36 @@ The first cosmetic defect needed a stronger test: "the field is deterministic
 and differs from another seed's" does **not** discriminate the domain. The test
 now replays `CosmeticWeatherSeed::stream()` itself and asserts the field is
 exactly those draws — which is what pins the domain.
+
+### Independent re-verification during review
+
+The reviewer re-ran the sensitivity check from scratch rather than trusting
+the table above, injecting **fourteen** defects one at a time into
+`air.rs`, `effects.rs` and `cosmetic.rs` and reverting each. All fourteen were
+caught by a named `accept_f19_b_*` test; three of them are not in the table
+above and are recorded here:
+
+| injected defect | test that failed |
+| --- | --- |
+| `air_relative` *added* the wind instead of subtracting it | `accept_f19_b_air_relative_velocity_is_one_lossless_field_conversion`, `..._the_wind_the_timeline_installed_is_the_wind_consumers_read`, `..._wind_changes_aircraft_airspeed_and_projectile_velocity_consistently`, `accept_f19_b_a_gust_advects_the_particles_without_moving_their_draws` |
+| `relative_air_velocity` added the wind back into the difference | `accept_f19_b_wind_changes_aircraft_airspeed_and_projectile_velocity_consistently` |
+| the fog transmittance was linear instead of exponential | `accept_f19_b_fog_fades_the_frame_and_never_becomes_a_sight_range` |
+
+The reviewer also fixed, without weakening any assertion:
+
+* `CosmeticFieldError` grew a `NonFiniteElapsed { elapsed_s }` variant. A bad
+  `elapsed_s` is not a bad *draw*, and reporting `NonFiniteDraw { index: 0 }`
+  named a particle that had drawn perfectly well.
+* a duplicated comment paragraph and a dangling sentence in the `air.rs` test;
+* an assertion message that claimed a headwind where the fixture winds are
+  tailwinds, so the airspeeds *rise* (53.584 → 55.578 → 59.203 m/s);
+* a tautological assertion in the cosmetic-domain test
+  (`unit_f64() < 1.0` is true of every draw) whose message claimed a check it
+  did not perform. The per-particle stream replay above it already pins the draw
+  count, so the assertion was removed rather than replaced with another fake
+  one;
+* the "eight defects" count in this section, which contradicted its own
+  eleven-row table, and a garbled formula in the closing-speed bullet.
 
 ## Commands run (exit codes)
 
@@ -167,12 +198,45 @@ Everything in this stage is **designed** engine contract. The following are
 | --- | --- | --- |
 | Whether the original stores an environment record at all, its layout, its addressing and its units | no original bytes were read for this task | F19-D and any F19 format stage |
 | The original's sun, ambient, fog and wind tuning values | no measurement exists; both fixtures author `designed` or explicitly unknown values | F19-D against private captures |
-| Whether a projectile is ballistic, guided or straight at all in the original, and whether wind affects it | no original weapon or projectile dynamics exist in this workspace yet; `ProjectileMotion` models constant air-relative velocity and says so | a weapon/dynamics stage, then F19-D |
+| Whether a projectile is ballistic, guided or straight at all in the original, and whether wind affects it | no original weapon or projectile dynamics exist in this workspace yet; `ProjectileMotion` models constant air-relative velocity and says so | F27-B for the dynamics, then F19-D for the original's behaviour |
 | Whether the original's precipitation affects flight at all, and with what profile | nothing measured; this stage deliberately draws **no** rain/snow fall-speed or drift tuning, so the two kinds share one authored-agnostic field | F19-D |
 | Whether the original applies fog as an exponential transmittance, a lookup or a fixed curve | the exponential here is a declared presentation model, not a reproduction | F19-D |
 | What particle count and camera-relative volume the original uses for decorative weather | `COSMETIC_PARTICLE_COUNT` and `COSMETIC_FIELD_HALF_EXTENT_M` are declared presentation design | F19-D |
 | Where environment records belong in the canonical catalog | inherited from F19-A: `ContentKind` has no environment namespace, tracked as #407 `F19-A-CATALOG-KIND` | #407, owner decision |
 | Whether a retail run may substitute anything for a missing sky texture | this stage answers "no" from the sheet; the original's own behaviour is unmeasured | F19-D |
+
+## An architectural seam this stage ran into: the wind conversion lives above the simulation
+
+`AuthoritativeWind` and `ProjectileMotion` live in `cs_app::environment::air`,
+but the code that actually *applies* a wind lives below them: `cs_sim` owns
+`FlightEnvironment::wind_velocity_mps`, the `sub(state.linear_velocity_mps,
+environment.wind_velocity_mps)` inside `FlightModel::compute`, and (from F27-B)
+whatever moves a projectile. The dependency runs `cs_app -> cs_sim`, never the
+reverse, so **`cs_sim` cannot call `AuthoritativeWind::air_relative`**. The one
+conversion F19 non-negotiable behavior 2 asks for therefore lives in the crate
+that sits *above* the simulation, while three separate consumers may each want
+their own copy of it:
+
+* `FlightModel::compute` already subtracts the wind itself (correctly, and this
+  stage's tests measure against it);
+* `F27-B` will need the same subtraction for swept ballistics, in
+  `crates/cs_sim/src/weapons/`;
+* this stage's `AuthoritativeWind::air_relative` is the third.
+
+The *record* is genuinely shared — `cs_content::environment::EnvironmentState::wind`
+is one field every consumer reads — so "the same authoritative field" holds at
+the data level today. The **conversion** is not yet guaranteed to be one, and
+nothing in F19-B, F19-C or F27-B can enforce it from where it sits. Neither
+F19-C nor this task's owner paths reach `crates/cs_sim/src/flight.rs` or a
+`cs_sim` environment module, so this stage cannot fix it.
+
+The obvious resolutions are to move the field and its conversion down into
+`cs_sim` (where the consumer is) or to publish it from `cs_types`, so both
+`cs_sim` and `cs_app` can reach one function. Which one is an owner decision
+about crate layout, so it is filed as **#434 `F19-WIND-CONVERSION-OWNER`**
+rather than guessed here. Until then, treat AC02 as proven **between the two
+consumers that exist today** (the flight model and this stage's
+`ProjectileMotion`), not as a property of the whole engine.
 
 ## What is not claimed
 
