@@ -29,9 +29,10 @@
 //!   otherwise show up as "the same scene" that is not.
 //! * **Reported refusals.** A surface the adapters refused is not drawn and
 //!   not silently dropped: it appears in [`FrameCapture::refusals`] with its
-//!   reason code, in the capture's digest, and next to the pass it would have
-//!   drawn in. Spec F17 non-negotiable 2 asks for limitations to be reported
-//!   instead of geometry hidden.
+//!   reason code, it is part of the capture's digest, and its phase stays
+//!   present but empty. A frame with a hole in it is therefore visibly
+//!   different from a frame that never had one. Spec F17 non-negotiable 2 asks
+//!   for limitations to be reported instead of geometry hidden.
 //!
 //! The camera is a [`Projection`] next to the [`SceneView`] pose, because a
 //! screenshot comparison that does not pin the field of view is not a
@@ -443,7 +444,8 @@ impl SurfaceRefusal {
         &self.key
     }
 
-    /// The reason codes, in adapter order: geometry, then state, then image.
+    /// The reason codes, in adapter order: geometry, then state, then image,
+    /// then the coverage/image agreement.
     pub fn reasons(&self) -> &[&'static str] {
         &self.reasons
     }
@@ -662,8 +664,8 @@ pub fn capture(
             .collect();
         passes.push(CapturedPass { phase, surfaces });
     }
-    // Refusals in submission order, so a report of what did not draw is as
-    // stable as the draw order it interrupts.
+    // Refusals ordered by draw item key, so the report of what did not draw is
+    // the same list whichever order the plan happened to draw the rest in.
     refusals.sort_by(|a, b| a.key.cmp(&b.key));
 
     // The digest is taken over the finished capture, so it cannot miss a
@@ -806,7 +808,7 @@ impl FrameCapture {
         self.passes.iter().flat_map(|pass| pass.surfaces.iter())
     }
 
-    /// The surfaces that did not draw, in submission order.
+    /// The surfaces that did not draw, ordered by draw item key.
     pub fn refusals(&self) -> &[SurfaceRefusal] {
         &self.refusals
     }
