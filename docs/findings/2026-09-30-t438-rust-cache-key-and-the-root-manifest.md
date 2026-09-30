@@ -58,7 +58,8 @@ hashed. The accurate statement is: the key covers every workspace **member**
 
 ## Why a profile can never reach that key
 
-Two measurements, on this workspace, this machine.
+Two measurements on this machine: the first on a scratch workspace under
+`target/`, the second on this one.
 
 **1. Cargo ignores a profile that is not in the root manifest.** A scratch
 workspace under `target/` with one member:
@@ -87,12 +88,20 @@ over it exactly as the action runs cargo:
 cargo metadata --all-features --format-version 1 --no-deps
 ```
 
-returns 10 packages, none of them at the root:
+returns 10 packages, none of them at the root. Their `manifest_path`s,
+relative to the workspace root — i.e. the ten manifests the action hashes:
 
 ```
-crates/cs_app/Cargo.toml   crates/cs_formats/Cargo.toml   crates/cs_sim/Cargo.toml   tools/cs_xtask/Cargo.toml
-crates/cs_assets/Cargo.toml crates/cs_net/Cargo.toml      crates/cs_types/Cargo.toml
-crates/cs_content/Cargo.toml crates/cs_script/Cargo.toml tools/cs_inspect/Cargo.toml
+crates/cs_app/Cargo.toml
+crates/cs_assets/Cargo.toml
+crates/cs_content/Cargo.toml
+crates/cs_formats/Cargo.toml
+crates/cs_net/Cargo.toml
+crates/cs_script/Cargo.toml
+crates/cs_sim/Cargo.toml
+crates/cs_types/Cargo.toml
+tools/cs_inspect/Cargo.toml
+tools/cs_xtask/Cargo.toml
 ```
 
 plus the root `Cargo.lock`. So the hashed set is: those 10 member manifests, the
@@ -119,25 +128,27 @@ Cache up-to-date.
 ```
 
 Every line of that is explained by "the key did not change": the restore
-matched the pre-#430 entry exactly, the rebuild happened on top of the
-restored full-DWARF tree, and nothing was re-uploaded.
+brought back the pre-#430 entry, the rebuild happened on top of the restored
+full-DWARF tree, and nothing was re-uploaded. The excerpt quoted in the #430
+finding does not include the restore step's `full match:` line, so *how* it
+matched is an inference from these lines; the next section measures it.
 
-The last line can be read exactly, from the action's own source. `save.ts`
-begins with `if (isCacheUpToDate()) { core.info("Cache up-to-date."); return; }`,
-and `isCacheUpToDate()` is `core.getState(STATE_CONFIG) === ""`. The restore
-step calls `config.saveState()` — which is what clears that check — in exactly
-two cases: `No cache found.` (nothing matched) or a *partial* match
+That inference can be read off the action's own source. `save.ts` begins with
+`if (isCacheUpToDate()) { core.info("Cache up-to-date."); return; }`, and
+`isCacheUpToDate()` is `core.getState(STATE_CONFIG) === ""`. The restore step
+calls `config.saveState()` — which is what clears that check — in exactly two
+cases: `No cache found.` (nothing matched) or a *partial* match
 (`Restored from cache key "…" full match: false`, after which it also
 pre-cleans the target directory). So `Cache up-to-date.` means the save step
-declined to run, i.e. the restore was an **exact** hit on the same key. That is
-the same conclusion the #430 finding reached, but it is now read off the
-action's control flow rather than inferred from the outcome.
+declined to run, and of the two ways to reach that, the only one consistent
+with a multi-minute `Cache Size:` restore is the **exact** hit: the save step's
+`saveCache` also cannot overwrite an existing key.
 
 ## Confirmed on a later run
 
 CI run **36762497676**, the push of this finding's own branch, head `746bb8e`
 (both jobs green). It is a second, independent observation of the same
-mechanism, on a branch three commits past #430 and after #430 reached `main`:
+mechanism, two commits past the `main` that carries #430:
 
 ```
 Run Swatinem/rust-cache@v2   Cache Size: ~2577 MB (2702354412 B)
@@ -202,13 +213,18 @@ intent — *add* the manifest hash to the key the action already computes.
 +          key: ${{ hashFiles('**/Cargo.toml') }}
 ```
 
-`hashFiles('**/Cargo.toml')` matches the root manifest as well as the members
-(a leading `**/` matches zero directories), and GitHub's own documentation uses
-that pattern for the root `Cargo.lock`. The member manifests it also matches
-are already hashed by the action, so the line adds the root manifest and costs
-nothing extra in re-keying. The narrower `hashFiles('Cargo.toml')` would be
-equivalent for the profile and would not see a member manifest — but a member
-manifest is already in the key, so there is nothing to gain by being narrow.
+`hashFiles('**/Cargo.toml')` matches the root manifest as well as the members: a
+leading `**/` matches zero directories as well as many, which is why the
+ecosystem's `**/package-lock.json` idiom catches the root lockfile. That idiom
+is *not* re-verified here — GitHub's `hashFiles` is implemented runner-side,
+not with the `@actions/glob` the action itself uses — which is exactly why the
+first row of the log-reading table below is a check to run rather than an
+assumption to make: read `.. Prefix:` in the run after the edit and see the
+extra component. The member manifests the pattern also matches are already
+hashed by the action, so the line adds the root manifest and costs nothing
+extra in re-keying. The narrower `hashFiles('Cargo.toml')` would be equivalent
+for the profile, and would not depend on the `**/` behaviour at all — which is
+the tie-breaker if the owner prefers the least clever expression.
 
 ## What the owner should read in the run log
 
