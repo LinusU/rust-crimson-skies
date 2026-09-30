@@ -354,9 +354,11 @@ pub enum InputFault {
         /// The content that was refused.
         content: FlightContent,
     },
-    /// The frame carried content this session's policy suppressed.
+    /// The frame — or a press still queued from an earlier frame — carried
+    /// content this session's policy suppressed, so it was never consumed.
+    /// The reason says which policy refused it.
     Suppressed {
-        /// The tick the frame was stamped for.
+        /// The tick the frame (or the switch) belonged to.
         tick: Tick,
         /// The content that was not consumed.
         content: FlightContent,
@@ -971,8 +973,30 @@ impl InputSession {
     /// field, a pause screen and the simulation therefore cannot disagree about
     /// who owns the devices (non-negotiable behavior 5). The previous context
     /// is returned so a caller can restore it.
+    ///
+    /// A press belongs to the context it was made in, so a context that
+    /// actually changes discards the edges the buffer has not delivered yet
+    /// and reports the discard: opening text entry must not fire the weapon
+    /// the pilot pressed one frame earlier, and a menu must not execute a
+    /// press the clock had not committed a tick to. The world keeps ticking
+    /// and the devices keep their holds — a closed screen never invents a
+    /// re-arm requirement — but nothing queued for the old context is
+    /// delivered from inside the new one.
     pub fn set_context(&mut self, context: InputContext) -> InputContext {
         let previous = self.gate.context();
+        if previous != context {
+            let discarded = self.controls.drain_pending();
+            if !discarded.is_empty() {
+                self.faults.push(InputFault::Suppressed {
+                    tick: self.tick,
+                    content: FlightContent {
+                        edges: discarded,
+                        axes: Vec::new(),
+                    },
+                    reason: SuppressReason::Context,
+                });
+            }
+        }
         self.gate.set_context(context);
         self.collector.set_context(context);
         previous
@@ -2723,5 +2747,77 @@ mod tests {
             "resuming twice is a no-op"
         );
         assert!((ThrottleSteps::IDLE - session.throttle().position()).abs() < 1e-6);
+    }
+
+    /// Non-negotiable behavior 5, the queued half of it: a press the input
+    /// boundary has not delivered yet belongs to the context it was made in.
+    /// Opening a menu or a text field therefore discards it and reports the
+    /// discard, instead of firing it later from inside the screen — which is
+    /// what would happen whenever the clock had committed no tick between the
+    /// press and the screen, the ordinary case at a display rate above the
+    /// tick rate.
+    #[test]
+    fn accept_f22_d_switching_context_discards_the_press_that_was_queued_for_it() {
+        for screen in [InputContext::UiNavigation, InputContext::TextEntry] {
+            let mut session = session(SessionMode::SinglePlayer);
+
+            // A frame the clock committed no tick to: the press is queued for
+            // the next input boundary.
+            session
+                .pump_frame(FrameInput::Devices(&keys(&[Key::Space])), 0)
+                .expect("the fixture frame applies");
+            assert_eq!(session.controls().pending_edges(), 1);
+
+            // The screen opens before that boundary runs.
+            session.set_context(screen);
+            let reported = session.take_faults();
+            assert_eq!(
+                reported.len(),
+                1,
+                "the discarded press is reported, not swallowed: {reported:?}"
+            );
+            match &reported[0] {
+                InputFault::Suppressed {
+                    content, reason, ..
+                } => {
+                    assert_eq!(*reason, SuppressReason::Context);
+                    assert_eq!(content.edges, vec![fire()]);
+                }
+                other => panic!("a discarded press reports as a suppression, got {other:?}"),
+            }
+            assert_eq!(
+                session.controls().pending_edges(),
+                0,
+                "the press queued for the flight context is gone at the switch"
+            );
+
+            // The boundaries run inside the screen and hand over nothing: the
+            // press is neither delivered there nor deferred to later.
+            let closed = session
+                .pump_frame(FrameInput::Devices(&keys(&[Key::Space])), 2)
+                .expect("the fixture frame applies");
+            assert_eq!(
+                closed.delivered,
+                Vec::<Action>::new(),
+                "{screen} must not fire the weapons: {:?}",
+                closed.delivered
+            );
+            assert_eq!(closed.ticks_ran, 2, "the world keeps ticking");
+
+            // Back in flight the discarded press does not reappear either.
+            session.set_context(InputContext::Flight);
+            let reopened = session
+                .pump_frame(FrameInput::Devices(&keys(&[])), 1)
+                .expect("the fixture frame applies");
+            assert!(
+                reopened.delivered.is_empty(),
+                "a discarded press is not resurrected by the closing screen: {:?}",
+                reopened.delivered
+            );
+            assert!(
+                session.take_faults().is_empty(),
+                "the switch itself is policy, not a fault"
+            );
+        }
     }
 }

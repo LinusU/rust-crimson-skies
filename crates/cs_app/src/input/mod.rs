@@ -1,8 +1,8 @@
 //! Local input binding state, per-frame input collection and the device
-//! adapters (F22-A, F22-B, F22-C).
+//! adapters (F22-A, F22-B, F22-C, F22-D).
 //!
 //! Spec: `specs/F22-input-bindings-devices-and-control-ownership.md`, stages
-//! `### F22-A`, `### F22-B` and `### F22-C`. Shared contract:
+//! `### F22-A` through `### F22-D`. Shared contract:
 //! `docs/contracts/UI-NETWORK.md` ("Network ownership table": a client owns
 //! only local input requests; "UI transition discipline": a UI action requests
 //! a domain transaction).
@@ -22,7 +22,9 @@
 //!   the simulation's buffer, control gate and throttle, and it is the only
 //!   thing that changes the session's context, focus, pause or control
 //!   authority, so the UI and the simulation cannot disagree about who owns
-//!   the devices.
+//!   the devices. A context that changes discards the presses the buffer has
+//!   not delivered yet and reports them, because a press belongs to the
+//!   context it was made in (F22-D).
 //!
 //! The context lives here and is passed *into* the adapters, so a menu, a text
 //! field and a cinematic can never disagree with the simulation about which
