@@ -161,4 +161,7 @@ recreate it, e.g. cargo clean --target-dir /…/bunny-alpha-1/target.
 The gate now says what cargo cannot, but it cannot undo the artifacts: a
 worktree that is removed still has to have its `target/` directory deleted, and
 with it the reuse stops. The gate exists so that forgetting is loud instead of
-silent.
+silent. The same stale-binary symptom also arrives through a *renamed* rather
+than removed checkout, and the steps to clear it by hand are in
+`docs/findings/2026-09-30-t441-renamed-worktree-stale-test-binaries.md`; the
+gate here is the automated half of that note.
