@@ -127,6 +127,18 @@
 //! and static-collision generation; no collider, file or renderer is touched
 //! here.
 //!
+//! [`environment`] is the F19-A environment contract
+//! (`specs/F19-sky-atmosphere-weather-and-visibility.md`, stage `### F19-A`):
+//! one authored [`environment::EnvironmentDefinition`] that separates sky
+//! art, sky orientation, fog, lighting, cloud layers, precipitation, wind
+//! and gameplay visibility into their own records, a renderer default that
+//! is tagged `designed`, a gameplay visibility that is never derived from
+//! fog, and an [`environment::EnvironmentTimeline`] of weather changes at
+//! whole simulation ticks. Which time domain those ticks belong to is
+//! decided in `cs_sim::visibility`, because this crate must not depend on
+//! `cs_sim`. No sky is rendered and no file is opened here; F19-B builds the
+//! sky/fog/light and weather effects from these records.
+//!
 //! [`flight_tuning`] is the F24-A provenance-carrying tuning schema
 //! (`specs/F24-fixed-wing-flight-engine-stall-and-arcade-assists.md`, stage
 //! `### F24-A`): every numeric field the `cs_sim::flight` equations consume,
@@ -153,6 +165,7 @@ pub mod campaign_bindings;
 pub mod catalog;
 pub mod config;
 pub mod coordinates;
+pub mod environment;
 pub mod flight_tuning;
 pub mod livery;
 pub mod loading;
