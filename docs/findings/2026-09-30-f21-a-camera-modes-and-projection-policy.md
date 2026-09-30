@@ -123,9 +123,16 @@ Two mutations, applied and reverted, both against production code:
 1. `LoweredProjection::horizontal_fov_at` made to ignore the aspect for
    `PreserveVertical` (returning the reference-aspect value) →
    `accept_f21_a_framing_at_three_aspect_ratios_keeps_vertical_extent_and_reveals_more_world`
-   and `accept_f21_a_lower_projection_keeps_the_declared_vertical_policy`
+   and
+   `accept_f21_a_lower_projection_converts_horizontal_to_vertical_and_back`
    **fail**: the horizontal FOV no longer grows, so the 45° target is not
-   revealed by 16:9 (2 failed).
+   revealed by 16:9, and the vertical→horizontal→vertical round trip no
+   longer returns the authored vertical FOV (2 failed). The mutation only
+   changes `horizontal_fov_at`, so tests that read the declared vertical FOV
+   alone — `accept_f21_a_lower_projection_keeps_the_declared_vertical_policy`
+   — correctly keep passing. Re-measured during review by applying the
+   mutation and running `cargo test -p cs_app --test camera -- accept_f21_a_`
+   (11 passed, exactly the 2 above failed), then reverting it.
 2. The `StretchFraming` refusal removed from `lower_projection` (so a
    declared `Stretch` lowers) →
    `accept_f21_a_lower_projection_refuses_unknowns_stretch_and_corruption`

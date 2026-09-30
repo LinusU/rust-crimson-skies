@@ -285,9 +285,11 @@ impl std::error::Error for MagnificationError {}
 
 /// A validated magnification factor: finite and strictly positive.
 ///
-/// `1.0` is no magnification. A factor below one would shrink the view and
-/// is refused with the others: the spyglass's "magnification" is a zoom in,
-/// never a zoom out.
+/// `1.0` is no magnification. Any positive factor is representable; whether
+/// a factor is plausible for a view is the mode rules' concern (a spyglass
+/// magnifies, the other kinds declare none). Zero, negative, NaN and
+/// infinite factors are refused so a magnification can never be a divide by
+/// zero or an unbounded zoom.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Magnification(f64);
 

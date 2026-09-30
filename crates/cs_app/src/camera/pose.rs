@@ -6,8 +6,8 @@
 //! `docs/contracts/UI-NETWORK.md`.
 //!
 //! [`CameraPose`] is an **input** record: a position and a rotation copied
-//! from the authoritative aircraft/frame, never owned here. [`CameraPose::
-//! basis`] derives the right/up/forward [`CameraBasis`], and
+//! from the authoritative aircraft/frame, never owned here.
+//! [`CameraPose::basis`] derives the right/up/forward [`CameraBasis`], and
 //! [`crate::camera::LoweredProjection::framing_of`] turns a world-space
 //! target into normalized viewport coordinates. Nothing in this module
 //! writes flight state, holds it mutably or advances it: a camera is a
