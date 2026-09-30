@@ -31,7 +31,9 @@
 use core::time::Duration;
 use std::fmt;
 
-use avian3d::prelude::{Forces, PhysicsSystems, RigidBody, Sleeping, WriteRigidBodyForces};
+use avian3d::prelude::{
+    Forces, PhysicsSystems, RigidBody, Sleeping, SubstepCount, WriteRigidBodyForces,
+};
 use bevy::{
     ecs::schedule::IntoScheduleConfigs,
     prelude::{
@@ -42,6 +44,30 @@ use bevy::{
 
 /// The designed fixed simulation rate, in Hz (`### F23-A`: "initially 120 Hz").
 pub const BASELINE_FIXED_HZ: u32 = 120;
+
+/// The measured solver substeps per fixed tick the product installs (F23-D).
+///
+/// **Measured, not designed.** Avian's `SubstepCount` is the engine's own
+/// answer to the defect F23-D measured: with a single solver step per tick, a
+/// body whose travel per tick exceeds roughly `1.25 m` penetrates a thin
+/// obstacle deeper than the obstacle is thick, and the penetration correction
+/// then ejects it *out the far side* — a projectile at 300 m/s and 120 Hz
+/// (2.5 m per tick) passed through a 2 cm wall and kept going, while a body
+/// travelling 1 m per tick was correctly stopped. One extra substep removes
+/// the failure across the whole probed envelope (60/120/240 Hz, 60–1200 m/s,
+/// obstacles down to 4 mm thick): the projectile stops exactly on the contact
+/// (`x = -0.0596` for a 2 cm wall and a 10 cm projectile) and the crossing is
+/// reported exactly once. See
+/// `docs/findings/2026-09-30-f23-d-stability-high-speed-contact-and-convergence-evidence.md`.
+///
+/// The count is frozen from the measurement above, not chosen for taste: a
+/// per-rate or speed-derived table measured no better, and the value is
+/// revisited if the swept speed envelope grows.
+///
+/// Substeps are internal to `PhysicsSystems::StepSimulation`, so this does not
+/// change the one-integration-per-tick accounting: the ledger still counts one
+/// `StepSimulation` per fixed tick.
+pub const DECLARED_SUBSTEP_COUNT: u32 = 2;
 
 /// A non-finite or otherwise unusable force request.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -195,26 +221,54 @@ pub struct PhysicsTickLedger {
 ///
 /// The plugin pins the fixed schedule the F00-B probe measured: force requests
 /// are drained in `FixedPostUpdate` before `PhysicsSystems::Prepare`, and the
-/// integration counter observes `PhysicsSystems::StepSimulation`.
+/// integration counter observes `PhysicsSystems::StepSimulation`. It also
+/// installs the F23-D measured [`DECLARED_SUBSTEP_COUNT`] solver substeps, the
+/// value the high-speed contact probe measured as sufficient.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PhysicsAdapterPlugin {
     fixed_hz: u32,
+    substeps: u32,
 }
 
 impl PhysicsAdapterPlugin {
-    /// A plugin running at `fixed_hz` fixed steps per second.
+    /// A plugin running at `fixed_hz` fixed steps per second with the
+    /// [`DECLARED_SUBSTEP_COUNT`] solver substeps.
     ///
     /// # Panics
     ///
     /// Building the app panics when `fixed_hz` is zero: a zero rate would
     /// divide the timestep by zero instead of failing loudly at the boundary.
     pub const fn new(fixed_hz: u32) -> Self {
-        Self { fixed_hz }
+        Self {
+            fixed_hz,
+            substeps: DECLARED_SUBSTEP_COUNT,
+        }
+    }
+
+    /// Overrides the solver substeps per fixed tick.
+    ///
+    /// [`PhysicsFixture`](super::PhysicsFixture) uses
+    /// [`with_substeps`](Self::with_substeps) to pin one substep so its
+    /// one-integration-per-tick assertions stay literal; the product session
+    /// keeps the declared default.
+    ///
+    /// # Panics
+    ///
+    /// Building the app panics when `substeps` is zero: Avian would divide the
+    /// substep delta by zero instead of failing loudly at the boundary.
+    pub const fn with_substeps(mut self, substeps: u32) -> Self {
+        self.substeps = substeps;
+        self
     }
 
     /// The declared fixed rate.
     pub const fn fixed_hz(&self) -> u32 {
         self.fixed_hz
+    }
+
+    /// The declared solver substeps per fixed tick.
+    pub const fn substeps(&self) -> u32 {
+        self.substeps
     }
 
     /// The fixed timestep as a [`Duration`].
@@ -240,8 +294,13 @@ impl Plugin for PhysicsAdapterPlugin {
             self.fixed_hz > 0,
             "PhysicsAdapterPlugin fixed_hz must be greater than zero"
         );
+        assert!(
+            self.substeps > 0,
+            "PhysicsAdapterPlugin substeps must be greater than zero"
+        );
 
         app.insert_resource(Time::<Fixed>::from_seconds(self.timestep().as_secs_f64()));
+        app.insert_resource(SubstepCount(self.substeps));
         app.init_resource::<ForceRequests>();
         app.init_resource::<PhysicsTickLedger>();
 

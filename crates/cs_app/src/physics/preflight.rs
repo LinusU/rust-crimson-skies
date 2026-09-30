@@ -19,12 +19,12 @@
 //! velocity, before the body has moved:
 //!
 //! * if the closest *solid* hit lands inside the tick's travel, the body's
-//!   `Position` and `Transform` are moved to the contact point while
-//!   `LinearVelocity` is untouched, so the tick resolves the contact instead
-//!   of tunnelling through it. Sensor overlaps do not stop a spawn: the cast
-//!   keeps the first hit the declared matrix calls a solid contact, which is
-//!   the "apply damage once / sensor is not damage" boundary enforced at
-//!   spawn, not after the fact;
+//!   `Position` and `Transform` are moved to the contact point and the
+//!   velocity component that carries it *into* the obstacle is removed
+//!   (F23-D: a clamp alone is not a fix — see below). Sensor overlaps do not
+//!   stop a spawn: the cast keeps the first hit the declared matrix calls a
+//!   solid contact, which is the "apply damage once / sensor is not damage"
+//!   boundary enforced at spawn, not after the fact;
 //! * either way the correction is an [`SpawnPreflightEvent`] in
 //!   [`SpawnPreflightLog`], the same authoritative-event channel the contact
 //!   reports drain through, so a clamped spawn is a recorded gameplay fact
@@ -32,6 +32,28 @@
 //!
 //! A body that spawns at rest or whose layer never needed the sweep carries
 //! no marker and is never cast.
+//!
+//! # Why the clamp also stops the body (F23-D)
+//!
+//! F23-C clamped the spawn *position* only and left `LinearVelocity` alone. The
+//! F23-D contact probe measured what that does at the rates and speeds the
+//! game uses: the clamp moves the body onto the contact, and then the very
+//! tick it is about to run carries it a further `travel - distance` meters —
+//! straight through the obstacle, because a body spawned this tick is still
+//! invisible to the broad phase (F23-B limitation 1). Measured at 120 Hz: a
+//! 10 cm projectile spawned 0.4 ticks (0.2 m) short of a 2 cm wall at 60 m/s
+//! ended the tick at `x = +0.44`, sailed to `+3.94` and produced **no contact
+//! report at all**; the same happened at 300/600 m/s, at every probed rate, and
+//! with 2, 4 or 8 solver substeps. The engine's swept CCD and the substep
+//! policy cannot help, because the pair is not in the collision detection
+//! until the tick after the spawn.
+//!
+//! So the spawn's swept response is complete: the body lands on the contact
+//! and its into-obstacle motion ends there. The tick that follows sees a
+//! touching pair in the broad phase and reports the contact like any other
+//! (AC02: exactly once, one tick later than an in-flight hit). The tangential
+//! velocity is untouched, so a projectile that only grazes the wall keeps
+//! sliding along it.
 //!
 //! **Designed rule, not original data.** Whether the original clamped a
 //! spawn, refused it or let it tunnel is unknown; this is the declared fix
@@ -52,6 +74,21 @@ use bevy::{
 use cs_sim::collision::{ContactKind, ShapeClass, classify_contact};
 
 use super::body::BodyLayer;
+
+/// The overlap a clamped spawn keeps, in meters.
+///
+/// The swept layers run with `SpeculativeMargin::ZERO` (F23-B: an unbounded
+/// speculative margin stops a fast body metres in front of an obstacle, which
+/// is the hitbox inflation the spec forbids), and a zero margin means a pair
+/// that only *touches* generates no contact. A spawn stopped exactly at the
+/// time of impact would therefore be silent: measured at every probed rate and
+/// speed, the projectile rested on the wall at `x = -0.0600` and the crossing
+/// produced **no** contact report at all. This declared overlap — a tenth of
+/// Avian's own 1 mm contact tolerance, and smaller than the thinnest obstacle
+/// the contact probe covers — is what makes the following tick's narrow phase
+/// see a real overlap, so the clamped spawn is reported exactly once like any
+/// other crossing. The solver removes it over the following ticks.
+pub const SPAWN_CONTACT_OVERLAP_M: f32 = 0.001;
 
 /// Marks a just-spawned swept body whose first tick needs a preflight sweep.
 ///
@@ -74,6 +111,10 @@ pub struct SpawnPreflightEvent {
     pub distance_m: Option<f32>,
     /// Whether the spawn position was moved to the contact point.
     pub clamped: bool,
+    /// Whether the velocity component carrying the body into the obstacle was
+    /// removed with the clamp. F23-D measured that a clamp without it still
+    /// tunnels: the tick the clamp lands in carries the body through.
+    pub stopped: bool,
 }
 
 /// The recorded preflight events of a running world.
@@ -89,6 +130,8 @@ pub struct SpawnPreflightLog {
     total: u64,
     /// Preflights that clamped a spawn since the log was built or cleared.
     clamped: u64,
+    /// Preflights that also stopped a spawn's motion into an obstacle.
+    stopped: u64,
 }
 
 impl SpawnPreflightLog {
@@ -107,6 +150,11 @@ impl SpawnPreflightLog {
         self.clamped
     }
 
+    /// Preflights that also stopped a spawn's motion into an obstacle.
+    pub fn stopped(&self) -> u64 {
+        self.stopped
+    }
+
     /// Takes every recorded event, leaving the counters.
     pub fn take(&mut self) -> Vec<SpawnPreflightEvent> {
         core::mem::take(&mut self.events)
@@ -117,12 +165,16 @@ impl SpawnPreflightLog {
         self.events.clear();
         self.total = 0;
         self.clamped = 0;
+        self.stopped = 0;
     }
 
     fn record(&mut self, event: SpawnPreflightEvent) {
         self.total += 1;
         if event.clamped {
             self.clamped += 1;
+        }
+        if event.stopped {
+            self.stopped += 1;
         }
         self.events.push(event);
     }
@@ -145,9 +197,10 @@ type FreshSweep<'w> = (
 /// of linear travel. The cast's predicate accepts only a hit the declared
 /// matrix would resolve as a solid contact, so the closest sensor or
 /// non-interacting collider never stops a spawn. A solid hit inside the
-/// tick moves the body to the contact point — writing `Position` before the
-/// tick integrates is a teleport only in the bookkeeping sense: the body has
-/// not simulated yet, so no continuity is broken.
+/// tick moves the body to the contact point and ends the velocity component
+/// that carries it into the obstacle — writing `Position`/`LinearVelocity`
+/// before the tick integrates is a teleport only in the bookkeeping sense:
+/// the body has not simulated yet, so no continuity is broken.
 fn resolve_spawn_preflights(
     time: Res<Time<Fixed>>,
     spatial: SpatialQuery,
@@ -169,6 +222,7 @@ fn resolve_spawn_preflights(
                 hit: None,
                 distance_m: None,
                 clamped: false,
+                stopped: false,
             });
             continue;
         }
@@ -209,16 +263,32 @@ fn resolve_spawn_preflights(
                 // of `PhysicsSystems::Prepare`, so it lands before the tick
                 // integrates — a teleport in the bookkeeping sense only: the
                 // body has not simulated yet, so no continuity is broken.
-                let clamped_to = position.0 + *direction * hit.distance;
+                let clamped_to = position.0 + *direction * (hit.distance + SPAWN_CONTACT_OVERLAP_M);
                 commands.entity(entity).insert((
                     Position(clamped_to),
                     Transform::from_translation(clamped_to).with_rotation(rotation.0),
                 ));
+                // The clamp alone is not enough (see the module docs): the
+                // tick this body is about to run would carry it the rest of
+                // the tick's travel, past the obstacle, while the pair is
+                // still invisible to the broad phase. Ending the component of
+                // the velocity that points into the obstacle is the swept
+                // response for the spawn: the body stops on the contact and
+                // the tick after this one reports it. Only the along-sweep
+                // component is touched, so a graze keeps sliding.
+                let into = velocity.0.dot(*direction);
+                let stopped = into > 0.0;
+                if stopped {
+                    commands
+                        .entity(entity)
+                        .insert(LinearVelocity(velocity.0 - *direction * into));
+                }
                 log.record(SpawnPreflightEvent {
                     body: entity,
                     hit: Some(hit.entity),
                     distance_m: Some(hit.distance),
                     clamped: true,
+                    stopped,
                 });
             }
             None => {
@@ -227,6 +297,7 @@ fn resolve_spawn_preflights(
                     hit: None,
                     distance_m: Some(travel),
                     clamped: false,
+                    stopped: false,
                 });
             }
         }

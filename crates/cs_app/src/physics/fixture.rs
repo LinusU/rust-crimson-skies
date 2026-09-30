@@ -21,7 +21,6 @@ use std::fmt;
 
 use avian3d::prelude::{
     AngularVelocity, Collider, Gravity, LinearVelocity, Mass, Position, RigidBody, Rotation,
-    SubstepCount,
 };
 use bevy::{
     prelude::{App, Entity, Transform, Vec3, World},
@@ -173,10 +172,13 @@ impl PhysicsFixtureBuilder {
         let frame = Duration::from_secs_f64(1.0 / fixed_hz as f64);
 
         let mut app = crate::asset_stack::headless_app();
-        app.add_plugins(PhysicsAdapterPlugin::new(fixed_hz));
+        // One solver substep, so "one integration per tick" stays literal here.
+        // The product's own schedule installs the F23-D measured
+        // `DECLARED_SUBSTEP_COUNT` instead; the contact probe in
+        // `crate::physics::evidence` measures both.
+        app.add_plugins(PhysicsAdapterPlugin::new(fixed_hz).with_substeps(1));
         app.add_plugins(PhysicsBodiesPlugin);
         app.insert_resource(TimeUpdateStrategy::ManualDuration(frame));
-        app.insert_resource(SubstepCount(1));
         app.insert_resource(Gravity::ZERO);
 
         // Seed the real clock baseline so the first counted update already

@@ -55,8 +55,9 @@
 
 use core::time::Duration;
 use std::fmt;
+use std::sync::Arc;
 
-use avian3d::prelude::{AngularVelocity, Gravity, LinearVelocity, Position, SubstepCount};
+use avian3d::prelude::{AngularVelocity, Gravity, LinearVelocity, Position};
 use bevy::{
     prelude::{App, Entity, Transform, Vec3, World},
     time::{Real, Time, TimeUpdateStrategy},
@@ -152,7 +153,13 @@ impl From<BodyTransitionError> for PhysicsSessionError {
 pub struct PhysicsSessionBuilder {
     fixed_hz: u32,
     gravity: Vec3,
+    configure: Option<ConfigureHook>,
 }
+
+/// A re-runnable world configuration step, kept so
+/// [`restart`](PhysicsSession::restart) rebuilds exactly what
+/// [`build`](PhysicsSessionBuilder::build) built.
+type ConfigureHook = Arc<dyn Fn(&mut App) + Send + Sync>;
 
 impl PhysicsSessionBuilder {
     /// Overrides the fixed simulation rate. Defaults to
@@ -171,6 +178,19 @@ impl PhysicsSessionBuilder {
         self
     }
 
+    /// Registers extra plugins, systems or resources before the world is
+    /// finalized — the seam the F23-D stability probe needs to host the
+    /// F24-B [`FlightForcesPlugin`](super::FlightForcesPlugin) in the
+    /// production session, and the same seam
+    /// [`PhysicsFixtureBuilder::configure`](super::PhysicsFixtureBuilder::configure)
+    /// exposes. The hook is remembered, so
+    /// [`restart`](PhysicsSession::restart) rebuilds the same world rather
+    /// than a plainer one.
+    pub fn configure(mut self, configure: impl Fn(&mut App) + Send + Sync + 'static) -> Self {
+        self.configure = Some(Arc::new(configure));
+        self
+    }
+
     /// Builds the session.
     ///
     /// # Panics
@@ -182,23 +202,28 @@ impl PhysicsSessionBuilder {
             self.fixed_hz > 0,
             "PhysicsSession fixed_hz must be greater than zero"
         );
+        let app = Self::app(self.fixed_hz, self.gravity, self.configure.as_deref());
         PhysicsSession {
-            app: Some(Self::app(self.fixed_hz, self.gravity)),
+            app: Some(app),
             fixed_hz: self.fixed_hz,
             gravity: self.gravity,
+            configure: self.configure,
             frames: 0,
             tick_seen: 0,
         }
     }
 
-    fn app(fixed_hz: u32, gravity: Vec3) -> App {
+    fn app(
+        fixed_hz: u32,
+        gravity: Vec3,
+        configure: Option<&(dyn Fn(&mut App) + Send + Sync)>,
+    ) -> App {
         // `PhysicsPlugins::default()` needs Bevy's asset stack under Avian's
         // pinned feature set, so the session builds its world through the one
         // shared headless composition rather than spelling the tuple out.
         let mut app = crate::asset_stack::headless_app();
         app.add_plugins(PhysicsAdapterPlugin::new(fixed_hz));
         app.add_plugins(PhysicsBodiesPlugin);
-        app.insert_resource(SubstepCount(1));
         app.insert_resource(Gravity(gravity));
 
         // The session is the single-clock authority (F23-A limitation 3):
@@ -213,6 +238,10 @@ impl PhysicsSessionBuilder {
         app.world_mut()
             .resource_mut::<Time<Real>>()
             .update_with_instant(startup);
+
+        if let Some(configure) = configure {
+            configure(&mut app);
+        }
 
         app.finish();
         app.cleanup();
@@ -230,6 +259,7 @@ pub struct PhysicsSession {
     app: Option<App>,
     fixed_hz: u32,
     gravity: Vec3,
+    configure: Option<ConfigureHook>,
     frames: u64,
     tick_seen: u64,
 }
@@ -241,6 +271,7 @@ impl PhysicsSession {
         PhysicsSessionBuilder {
             fixed_hz: super::BASELINE_FIXED_HZ,
             gravity: Vec3::ZERO,
+            configure: None,
         }
     }
 
@@ -448,10 +479,15 @@ impl PhysicsSession {
         self.app = None;
     }
 
-    /// Rebuilds the world exactly as built: same rate, same gravity, tick 0,
-    /// no reports, no queued requests and no retained active pairs.
+    /// Rebuilds the world exactly as built: same rate, same gravity, same
+    /// configured plugins, tick 0, no reports, no queued requests and no
+    /// retained active pairs.
     pub fn restart(&mut self) {
-        self.app = Some(PhysicsSessionBuilder::app(self.fixed_hz, self.gravity));
+        self.app = Some(PhysicsSessionBuilder::app(
+            self.fixed_hz,
+            self.gravity,
+            self.configure.as_deref(),
+        ));
         self.frames = 0;
         self.tick_seen = 0;
     }
