@@ -27,11 +27,15 @@
 //!
 //! Every policy and fixture in this module is newly authored project design,
 //! not measured original behavior. Which original commands exist, how they
-//! are bound and how the original game distributes control are unknown until
-//! F22-D; the calibration and device adapters are F22-B, and the focus, replay
-//! and control-ownership wiring that drives this buffer is F22-C
+//! are bound and how the original game distributes control are **still
+//! unknown**: F22-D covered every command this project declares, across every
+//! declared device family, and recorded that measuring the original's own
+//! vocabulary is a separate, still-unrun measurement; the calibration and
+//! device adapters are F22-B, the focus, replay and control-ownership wiring
+//! that drives this buffer is F22-C
 //! (`docs/findings/2026-09-29-f22-a-command-schema-and-action-map.md`,
-//! `docs/findings/2026-09-30-f22-c-focus-ui-replay-ownership.md`).
+//! `docs/findings/2026-09-30-f22-c-focus-ui-replay-ownership.md`,
+//! `docs/findings/2026-09-30-f22-d-device-families-and-command-coverage.md`).
 
 use cs_types::Tick;
 use cs_types::input::{
@@ -476,11 +480,13 @@ impl ControlBuffer {
     ///
     /// This is the teardown half of "an edge is consumed by the first input
     /// boundary at or after its frame tick": an edge discarded here was never
-    /// delivered, so control ownership can change without the new owner
-    /// executing the previous owner's queued press. A focus loss, a pause, a
-    /// control handover and a teardown all drop their queued edges through this
-    /// one call, and the returned record says what was dropped instead of
-    /// letting a press vanish silently.
+    /// delivered, so control ownership or the active context can change
+    /// without the new owner or the new screen executing the previous
+    /// context's queued press. A focus loss, a pause, a control handover and a
+    /// teardown all drop their queued edges through this one call and return
+    /// what they dropped, and a context change drops them the same way while
+    /// `cs_app::input::InputSession` reports them as a suppression — so no
+    /// press ever vanishes silently.
     pub fn drain_pending(&mut self) -> Vec<Action> {
         let drained = std::mem::take(&mut self.pending);
         drained.into_iter().map(|edge| edge.action).collect()
@@ -1136,5 +1142,66 @@ mod tests {
             "and the new deflection is held again"
         );
         assert_eq!(buffer.axis(FlightCommand::Pitch), Some(0.0));
+    }
+
+    /// F22-D, the consumer half of the declared command coverage: every
+    /// `FlightCommand::ALL` entry is buffered the way its kind demands. A
+    /// continuous command is held across boundaries and keeps driving every
+    /// substep; an edge command is delivered exactly once and never moves an
+    /// axis. A declared command the buffer dropped, re-fired or blurred into
+    /// the other kind fails this loop, so the coverage is the consumer's and
+    /// not only the map's.
+    #[test]
+    fn accept_f22_d_the_consumer_buffers_every_declared_command() {
+        let tick = Tick(9);
+        for command in FlightCommand::ALL {
+            let mut buffer = ControlBuffer::new();
+            let mut frame = InputFrame::new(tick);
+
+            if command.is_continuous() {
+                frame.set_axis(
+                    AxisValue::from_unit(*command, 0.5).expect("a half-scale sample is valid"),
+                );
+                buffer.apply_frame(&frame).expect("the frame applies");
+                let driven = buffer.axis(*command).expect("the axis reached the buffer");
+                assert!(
+                    (driven - 0.5).abs() < 1e-3,
+                    "{command} reaches the buffer as its sample, got {driven}"
+                );
+                assert!(
+                    buffer.begin_tick(tick).is_empty(),
+                    "{command} is a deflection, not an edge"
+                );
+                let held = buffer.axis(*command).expect("the axis is still driven");
+                assert!(
+                    (held - 0.5).abs() < 1e-3,
+                    "{command} keeps driving every substep, got {held}"
+                );
+                assert_eq!(buffer.pending_edges(), 0);
+            } else {
+                frame.push_edge(Action::Flight(*command));
+                buffer.apply_frame(&frame).expect("the frame applies");
+                assert_eq!(
+                    buffer.pending_edges(),
+                    1,
+                    "{command} is queued for its input boundary"
+                );
+                assert_eq!(
+                    buffer.begin_tick(tick),
+                    vec![Action::Flight(*command)],
+                    "{command} is delivered to the consumer at its tick"
+                );
+                assert_eq!(
+                    buffer.begin_tick(tick),
+                    Vec::<Action>::new(),
+                    "{command} is delivered exactly once, however many substeps follow"
+                );
+                assert_eq!(buffer.pending_edges(), 0);
+                assert!(
+                    buffer.axes().is_neutral(),
+                    "an edge never moves a continuous axis"
+                );
+            }
+        }
     }
 }
