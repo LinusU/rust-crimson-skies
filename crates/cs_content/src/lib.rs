@@ -170,6 +170,17 @@
 //! silent default. Its runtime counterpart is `cs_sim::targeting`; the
 //! conversion boundary is `cs_app::targeting`.
 //!
+//! [`airframe_roles`] is the F25-A role record
+//! (`specs/F25-hoplite-autogyro-and-exceptional-flight-configurations.md`,
+//! stage `### F25-A`): what one airframe *is* — its control-law label, its
+//! roster presence versus ordinary menu availability, and its explicit
+//! controllability, launch and weapon constraints — plus the pure
+//! [`airframe_roles::AirframeRoles::resolve_launch`] that decides which
+//! airframe a session launches, so a mission's forced assignment overrides the
+//! player's hangar selection for that session without writing to the owned
+//! loadout. Its declared roster is synthetic and its rotor mapping is an
+//! explicit unknown; F25-C wires it into the runtime launch path.
+//!
 //! [`animation`] is the F20-A declared animation IR
 //! (`specs/F20-object-animation-and-authored-destruction-states.md`, stage
 //! `### F20-A`): the provenance-carrying [`animation::AnimationClip`] record
@@ -194,6 +205,7 @@
 //! [`cs_formats`]: cs_formats
 //! [`cs_assets`]: cs_assets
 
+pub mod airframe_roles;
 pub mod animation;
 pub mod campaign_bindings;
 pub mod catalog;
