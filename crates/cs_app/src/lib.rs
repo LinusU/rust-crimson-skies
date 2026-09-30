@@ -123,11 +123,23 @@
 //! [`render::plan::DrawPlan`], and the [`render::golden`] synthetic test
 //! scene — overlapping glass, an alpha-cut fence, an additive sprite and
 //! per-corner colors. The Bevy adapters and profiles are F17-B/C.
+//!
+//! [`environment`] is the F19-A environment boundary
+//! (`specs/F19-sky-atmosphere-weather-and-visibility.md`, stage
+//! `### F19-A`): [`environment::SkyFrame`], the one record that centres a
+//! sky on the camera's **world** position while carrying the authored sky
+//! orientation and sun direction unchanged, so a world rebase cannot rotate
+//! or pop the sky (AC01); [`environment::EnvironmentClock`], which runs a
+//! definition's authored weather timeline on authoritative-gameplay time;
+//! and the synthetic [`environment::clear_sky_environment`] /
+//! [`environment::storm_environment`] fixtures the acceptance tests drive.
+//! No sky is rendered here — F19-B consumes these records.
 
 pub mod airframe_visual;
 pub mod animation;
 pub mod assets;
 pub mod cli;
+pub mod environment;
 pub mod input;
 pub mod livery;
 pub mod loading;
