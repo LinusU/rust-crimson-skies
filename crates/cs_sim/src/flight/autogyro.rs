@@ -1278,16 +1278,15 @@ pub struct ExceptionalProfile {
 }
 
 impl ExceptionalProfile {
-    /// Checks the airframe identity, the hover declaration and every numeric
-    /// bound.
+    /// Checks the airframe identity, the hover declaration, the origin and
+    /// every numeric bound, in that order.
     ///
     /// # Errors
     ///
     /// [`ProfileError`] naming the first problem: an id that is not an
-    /// airframe, a hover claim nothing measured, a non-finite or
-    /// out-of-bound number, a control band whose full value is not above its
-    /// zero value, or an installation origin whose claim is not an
-    /// observation.
+    /// airframe, a hover claim nothing measured, an installation origin whose
+    /// claim is not an observation, a non-finite or out-of-bound number, or a
+    /// control band whose full value is not above its zero value.
     pub fn validate(&self) -> Result<(), ProfileError> {
         if self.airframe_id.kind() != ContentKind::Airframe {
             return Err(ProfileError::NotAnAirframe {
