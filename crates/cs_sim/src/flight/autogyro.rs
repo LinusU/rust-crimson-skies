@@ -1,15 +1,16 @@
 //! Exceptional flight configurations: the shared telemetry interface, the
-//! rotor drive and the reference maneuver envelope (F25-A).
+//! rotor drive, the reference maneuver envelope (F25-A) and the declared
+//! exceptional control law (F25-B).
 //!
 //! Spec: `specs/F25-hoplite-autogyro-and-exceptional-flight-configurations.md`,
-//! stage `### F25-A`. Shared contract: `docs/contracts/FLIGHT-PHYSICS.md`,
-//! sections "Inputs and outputs", "Boost and special models" and "Calibration
-//! acceptance".
+//! stages `### F25-A` and `### F25-B`. Shared contract:
+//! `docs/contracts/FLIGHT-PHYSICS.md`, sections "Inputs and outputs", "Boost and
+//! special models" and "Calibration acceptance".
 //!
-//! **This stage is the typed boundary, not a control law.** The sheet asks for
+//! **F25-A is the typed boundary, not a control law.** The sheet asks for
 //! "typed inputs/outputs and a minimal synthetic fixture first; do not jump
-//! ahead to a whole runtime", and this module is exactly that. It adds three
-//! things the exceptional stages need and nothing else:
+//! ahead to a whole runtime", and that half of the module is exactly that. It
+//! adds three things the exceptional stages need and nothing else:
 //!
 //! * [`FlightTelemetry`] — the one interface HUD, AI and probes read
 //!   (non-negotiable behavior 5: "A shared `FlightTelemetry` interface keeps
@@ -37,23 +38,39 @@
 //!   fixture cannot be promoted into an approved reference trace by setting a
 //!   status.
 //!
-//! **No helicopter hover is invented here.** Non-negotiable behavior 1 and
-//! `FLIGHT-PHYSICS` ("Do not use the word autogyro as permission to invent
-//! helicopter hover") mean the exceptional *force* law is F25-B's, derived
-//! from measurement; this module contributes no force, no lift curve and no
-//! hover. Nothing here is an extracted original coefficient, a measured
-//! autogyro handling value or a verified reference trace: the Hoplite name and
-//! prefix are source-observed while the exact control law remains
-//! measurement-dependent (`F25` "Research boundary"), which is why the
-//! declared envelope ships unmeasured and
-//! [`ReferenceManeuverEnvelope::is_ready_as_reference`] is `false`.
+//! **F25-B is the control law itself.** [`ExceptionalControlLaw`] evaluates one
+//! tick of an exceptional airframe: the shared flight boundary (wing, engine,
+//! world-space gravity, declared assist) plus a rotor that contributes lift
+//! along its shaft axis, drag against the air-relative velocity, a
+//! torque-reaction yaw and an exact gyroscopic precession torque, and an
+//! attitude law whose authority comes from the rotor as well as from airspeed.
+//! [`ExceptionalProfile`] is its provenance-carrying, per-airframe record, and
+//! [`HoverCapability`] makes "may this law hold the airframe's weight with no
+//! forward airspeed" a declared field rather than an inference from the model
+//! kind. [`ExceptionalDiagnostics`] records every contribution separately, so a
+//! probe can assert the total is their sum.
+//!
+//! **No helicopter hover is invented here, and no original number is claimed.**
+//! Non-negotiable behavior 1 and `FLIGHT-PHYSICS` ("Do not use the word autogyro
+//! as permission to invent helicopter hover") are enforced structurally: the
+//! rotor's drive takes an air-relative speed and nothing else, so no throttle
+//! setting reaches it, and a profile that claims hover is refused by name. The
+//! exceptional law's numbers are authored project design on
+//! [`Origin::SyntheticFixture`]; the Hoplite name and prefix are source-observed
+//! while the exact control law remains measurement-dependent (`F25` "Research
+//! boundary"), which is why the declared envelope ships unmeasured,
+//! [`ReferenceManeuverEnvelope::is_ready_as_reference`] is `false`, and
+//! [`ExceptionalProfile::is_measured`] is `false`.
 
 use cs_types::Tick;
-use cs_types::content::{Origin, Provenance};
+use cs_types::content::{ContentId, ContentKind, Origin, Provenance};
 use cs_types::evidence::ClaimStatus;
 
-use super::model::{FlightOutput, FlightState};
-use super::tuning::ModelKind;
+use super::model::{
+    FlightDiagnostics, FlightEnvironment, FlightError, FlightInput, FlightModel, FlightOutput,
+    FlightState,
+};
+use super::tuning::{AIRSPEED_EPSILON_MPS, AirframeTuning, DamageState, LoadoutMass, ModelKind};
 
 /// Two full turns of a rotor, in radians; the visual phase is wrapped into
 /// `[0, TAU)` so a long session cannot accumulate phase into a lossy float.
@@ -1147,6 +1164,986 @@ pub fn synthetic_exceptional_envelope() -> ReferenceManeuverEnvelope {
     }
 }
 
+// ---------------------------------------------------------------------------
+// F25-B: the declared exceptional control law.
+// ---------------------------------------------------------------------------
+
+/// Whether an exceptional law may hold the airframe's weight with no forward
+/// airspeed.
+///
+/// `FLIGHT-PHYSICS` ("Boost and special models") says: "Do not use the word
+/// autogyro as permission to invent helicopter hover." Making the capability a
+/// **declared field** rather than something inferred from the model kind is what
+/// keeps that checkable: a consumer reads [`ExceptionalProfile::hover`] instead
+/// of assuming, and the only value this project declares for a rotor-driven
+/// airframe is [`HoverCapability::NoHover`].
+///
+/// A profile that claims [`HoverCapability::Hover`] is refused by name
+/// ([`ProfileError::HoverNotMeasured`]) rather than accepted as a capability
+/// nothing has measured: the Hoplite name and prefix are source-observed but its
+/// handling is not (`F25` "Research boundary"), so a hover claim has no evidence
+/// behind it either way.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum HoverCapability {
+    /// The law cannot support the airframe's weight without forward airspeed.
+    NoHover,
+    /// The law can support the airframe's weight with no forward airspeed.
+    ///
+    /// Declared by no profile in this project; see the type's documentation.
+    Hover,
+}
+
+impl HoverCapability {
+    /// Every declared capability, in a stable order.
+    pub const ALL: [Self; 2] = [Self::NoHover, Self::Hover];
+
+    /// The stable label used in reports and persisted records.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::NoHover => "no_hover",
+            Self::Hover => "hover",
+        }
+    }
+
+    /// Whether the law may hold the airframe's weight with no forward airspeed.
+    #[must_use]
+    pub const fn is_hover(self) -> bool {
+        matches!(self, Self::Hover)
+    }
+}
+
+/// The declared per-airframe parameters the exceptional control law needs and a
+/// fixed-wing tuning does not have.
+///
+/// This is the *provenance-carrying* record for the law: every number is
+/// authored project design with an [`Origin`] and a [`Provenance`], and
+/// [`ExceptionalProfile::is_measured`] is `false` for all of them, because no
+/// original capture of an exceptional airframe exists. `FLIGHT-PHYSICS`
+/// ("Coordinate convention") allows this: "If original tuning does not map to
+/// physical coefficients, fit a clearly documented empirical model instead of
+/// pretending extracted values are SI coefficients." The rotor terms below are
+/// therefore documented empirical forms, not aerodynamic coefficients read out
+/// of the original game; the reference traces that would replace them are
+/// F25-D's, and they are exactly the maneuvers
+/// [`ReferenceManeuverEnvelope`] already demands.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExceptionalProfile {
+    /// The airframe this profile flies.
+    ///
+    /// Gameplay keys on this, never on a filename or a mission id (F25
+    /// deliverable).
+    pub airframe_id: ContentId,
+    /// Whether this law may hold the airframe's weight with no forward
+    /// airspeed. See [`HoverCapability`].
+    pub hover: HoverCapability,
+    /// Rotor tip radius, in metres. Strictly positive.
+    pub rotor_radius_m: f64,
+    /// How fast the airflow over a free rotor drives its rate, in rad/s per m/s
+    /// of air-relative speed. Strictly positive.
+    pub rotor_drive_radps_per_mps: f64,
+    /// First-order response of the rotor's rate, in `s⁻¹`: the rate moves
+    /// toward its command by at most this much per second. Strictly positive.
+    pub rotor_response_per_s: f64,
+    /// Rotor lift along the shaft axis, in newtons per m/s of rotor tip speed.
+    /// Strictly positive.
+    pub rotor_lift_n_per_mps_tip: f64,
+    /// The most rotor lift the law may produce, in newtons. Strictly positive.
+    pub rotor_lift_max_n: f64,
+    /// Rotor drag against the air-relative velocity, in newtons per
+    /// (m/s of tip speed)·(m/s of air speed). Must not be negative.
+    pub rotor_drag_n_per_tip_air: f64,
+    /// The rotor's torque-reaction yaw about the shaft axis, in newton-metres
+    /// per rad/s of rotor rate. Must not be negative.
+    ///
+    /// The sign convention is the same as a positive yaw command, so the
+    /// declared law turns the airframe toward the reaction. Which way the
+    /// original airframe actually yawed is a measured question, not a designed
+    /// one, and is recorded as unknown in the F25-B finding.
+    pub rotor_yaw_nm_per_radps: f64,
+    /// The rotor's polar inertia about the shaft axis, in kg·m², for the
+    /// gyroscopic precession term. Strictly positive.
+    pub rotor_polar_inertia_kg_m2: f64,
+    /// Rotor tip speed below which the rotor contributes no control authority,
+    /// in m/s. Must not be negative.
+    pub control_tip_speed_zero_mps: f64,
+    /// Rotor tip speed at which the rotor's own control authority reaches its
+    /// full value, in m/s. Strictly greater than
+    /// [`Self::control_tip_speed_zero_mps`].
+    pub control_tip_speed_full_mps: f64,
+    /// Where the declared numbers came from.
+    pub origin: Origin,
+    /// The claim the declaration backs.
+    pub provenance: Provenance,
+}
+
+impl ExceptionalProfile {
+    /// Checks the airframe identity, the hover declaration and every numeric
+    /// bound.
+    ///
+    /// # Errors
+    ///
+    /// [`ProfileError`] naming the first problem: an id that is not an
+    /// airframe, a hover claim nothing measured, a non-finite or
+    /// out-of-bound number, a control band whose full value is not above its
+    /// zero value, or an installation origin whose claim is not an
+    /// observation.
+    pub fn validate(&self) -> Result<(), ProfileError> {
+        if self.airframe_id.kind() != ContentKind::Airframe {
+            return Err(ProfileError::NotAnAirframe {
+                kind: self.airframe_id.kind(),
+            });
+        }
+        if self.hover.is_hover() {
+            return Err(ProfileError::HoverNotMeasured {
+                declared: self.hover,
+            });
+        }
+        if self.origin.is_original()
+            && !matches!(
+                self.provenance.class,
+                ClaimStatus::ObservedTool | ClaimStatus::VerifiedOriginal
+            )
+        {
+            return Err(ProfileError::OriginalOriginWithoutObservation {
+                class: self.provenance.class,
+            });
+        }
+        profile_positive("profile.rotor_radius_m", self.rotor_radius_m)?;
+        profile_positive(
+            "profile.rotor_drive_radps_per_mps",
+            self.rotor_drive_radps_per_mps,
+        )?;
+        profile_positive("profile.rotor_response_per_s", self.rotor_response_per_s)?;
+        profile_positive(
+            "profile.rotor_lift_n_per_mps_tip",
+            self.rotor_lift_n_per_mps_tip,
+        )?;
+        profile_positive("profile.rotor_lift_max_n", self.rotor_lift_max_n)?;
+        profile_non_negative(
+            "profile.rotor_drag_n_per_tip_air",
+            self.rotor_drag_n_per_tip_air,
+        )?;
+        profile_non_negative(
+            "profile.rotor_yaw_nm_per_radps",
+            self.rotor_yaw_nm_per_radps,
+        )?;
+        profile_positive(
+            "profile.rotor_polar_inertia_kg_m2",
+            self.rotor_polar_inertia_kg_m2,
+        )?;
+        profile_non_negative(
+            "profile.control_tip_speed_zero_mps",
+            self.control_tip_speed_zero_mps,
+        )?;
+        profile_positive(
+            "profile.control_tip_speed_full_mps",
+            self.control_tip_speed_full_mps,
+        )?;
+        if self.control_tip_speed_full_mps <= self.control_tip_speed_zero_mps {
+            return Err(ProfileError::InvertedControlBand {
+                zero_mps: self.control_tip_speed_zero_mps,
+                full_mps: self.control_tip_speed_full_mps,
+            });
+        }
+        Ok(())
+    }
+
+    /// Whether an original measurement backs these numbers.
+    ///
+    /// It is `false` for every profile this project declares, and a `true` here
+    /// still does not make the airframe reference-calibrated: that needs the
+    /// [`ReferenceManeuverEnvelope`] an original trace fills in.
+    #[must_use]
+    pub fn is_measured(&self) -> bool {
+        self.origin.is_original()
+            && matches!(
+                self.provenance.class,
+                ClaimStatus::ObservedTool | ClaimStatus::VerifiedOriginal
+            )
+    }
+}
+
+/// Why an [`ExceptionalProfile`] was refused.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ProfileError {
+    /// The id does not name an airframe.
+    NotAnAirframe {
+        /// The kind the id actually names.
+        kind: ContentKind,
+    },
+    /// The profile claims the law can hold the airframe's weight with no
+    /// forward airspeed, which nothing has measured.
+    HoverNotMeasured {
+        /// The capability the profile claimed.
+        declared: HoverCapability,
+    },
+    /// A named field contained NaN or infinity.
+    NonFinite {
+        /// The offending field.
+        field: &'static str,
+    },
+    /// A field that must be strictly positive was zero or negative.
+    NonPositive {
+        /// The offending field.
+        field: &'static str,
+    },
+    /// A field that must not be negative was negative.
+    Negative {
+        /// The offending field.
+        field: &'static str,
+    },
+    /// The rotor's control band is empty or inverted: its full-authority tip
+    /// speed is not above its zero-authority tip speed.
+    InvertedControlBand {
+        /// The declared zero-authority tip speed.
+        zero_mps: f64,
+        /// The declared full-authority tip speed.
+        full_mps: f64,
+    },
+    /// The profile claims an installation origin while its claim is not an
+    /// observation, so it asserts an original measurement its own provenance
+    /// denies.
+    OriginalOriginWithoutObservation {
+        /// The claim class the provenance carried.
+        class: ClaimStatus,
+    },
+}
+
+impl std::fmt::Display for ProfileError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotAnAirframe { kind } => {
+                write!(
+                    f,
+                    "an exceptional profile must reference an airframe, got {kind}"
+                )
+            }
+            Self::HoverNotMeasured { declared } => write!(
+                f,
+                "the {} capability is declared by no measurement and this project refuses it",
+                declared.label()
+            ),
+            Self::NonFinite { field } => write!(f, "{field} must be finite"),
+            Self::NonPositive { field } => write!(f, "{field} must be greater than zero"),
+            Self::Negative { field } => write!(f, "{field} must not be negative"),
+            Self::InvertedControlBand { zero_mps, full_mps } => write!(
+                f,
+                "the rotor control band is empty: {full_mps} m/s of tip speed does not reach full authority above {zero_mps} m/s"
+            ),
+            Self::OriginalOriginWithoutObservation { class } => write!(
+                f,
+                "a profile with an installation origin must carry an observed or verified original claim, not {class}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ProfileError {}
+
+/// Why an [`ExceptionalControlLaw`] tick was refused.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ExceptionalLawError {
+    /// The tuning does not declare the exceptional control law, so this law
+    /// must not evaluate it.
+    NotAnExceptionalAirframe {
+        /// The model kind the tuning declared.
+        declared: ModelKind,
+    },
+    /// The profile failed its own boundary.
+    Profile(ProfileError),
+    /// The shared flight boundary refused one of its inputs.
+    Flight(FlightError),
+    /// The rotor drive refused the tick, so no rotor state was advanced.
+    Rotor(TelemetryError),
+    /// The tick this law produced held a non-finite value, which is refused by
+    /// name rather than handed on.
+    NonFiniteOutput {
+        /// The offending field.
+        field: &'static str,
+    },
+    /// The produced world force is not the sum of the contributions this law
+    /// recorded, so something in the law produced an unaccounted force.
+    UnaccountedForce {
+        /// The largest component difference, in newtons.
+        residual_n: f64,
+    },
+}
+
+impl std::fmt::Display for ExceptionalLawError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotAnExceptionalAirframe { declared } => write!(
+                f,
+                "the exceptional control law does not fly a {} airframe",
+                declared.label()
+            ),
+            Self::Profile(error) => write!(f, "{error}"),
+            Self::Flight(error) => write!(f, "{error}"),
+            Self::Rotor(error) => write!(f, "{error}"),
+            Self::NonFiniteOutput { field } => {
+                write!(f, "the computed exceptional tick's {field} is not finite")
+            }
+            Self::UnaccountedForce { residual_n } => write!(
+                f,
+                "the exceptional force is not the sum of its contributions; the largest component differs by {residual_n} N"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ExceptionalLawError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Profile(error) => Some(error),
+            Self::Flight(error) => Some(error),
+            Self::Rotor(error) => Some(error),
+            Self::NotAnExceptionalAirframe { .. }
+            | Self::NonFiniteOutput { .. }
+            | Self::UnaccountedForce { .. } => None,
+        }
+    }
+}
+
+impl From<ProfileError> for ExceptionalLawError {
+    fn from(error: ProfileError) -> Self {
+        Self::Profile(error)
+    }
+}
+
+impl From<FlightError> for ExceptionalLawError {
+    fn from(error: FlightError) -> Self {
+        Self::Flight(error)
+    }
+}
+
+impl From<TelemetryError> for ExceptionalLawError {
+    fn from(error: TelemetryError) -> Self {
+        Self::Rotor(error)
+    }
+}
+
+/// The control-axis order the tuning's `angular` block uses, restated here.
+///
+/// Each entry is the body component its axis turns and the sign of a positive
+/// command, in tuning order `(roll, pitch, yaw)`. It is identical to the
+/// fixed-wing law's private `CONTROL_AXIS`, which this module cannot reach, so
+/// the two laws agree on the sign convention by restatement plus an
+/// `accept_f25_b_*` test that compares them at an airspeed where both reach full
+/// authority.
+const EXCEPTIONAL_CONTROL_AXIS: [(usize, f64); 3] = [(2, -1.0), (0, 1.0), (1, 1.0)];
+
+/// The exceptional control law: the shared flight boundary plus a rotor.
+///
+/// # What it is
+///
+/// `FLIGHT-PHYSICS` ("Boost and special models") requires that "Exceptional
+/// airframes implement the same input/output boundary but can use a different
+/// control law", and this is that law. It is deliberately assembled from the
+/// fixed-wing equations plus a declared rotor rather than as a second,
+/// parallel set of aerodynamic formulas, because the contract also forbids
+/// integrating a body twice:
+///
+/// * [`super::model::FlightModel::compute`] produces the **shared boundary**:
+///   wing lift, parasitic drag, engine/boost thrust, world-space gravity and the
+///   declared assist, all validated at the edge. This law never adds a second
+///   gravity, a second drag or a second integrator.
+/// * The **rotor** is the exceptional part: its authoritative rate is
+///   [`RotorDrive`]'s, advanced exactly once per strictly newer tick, and it
+///   contributes lift along the shaft axis, drag against the air-relative
+///   velocity, a torque-reaction yaw and an exact gyroscopic precession torque.
+/// * The **attitude law** is the fixed wing's rate command with a different
+///   authority source: authority is the larger of the wing's airspeed ramp and
+///   the rotor's own support, so a spinning rotor answers the stick at airspeeds
+///   where a wing cannot. Nothing else about the rate command changes, so the
+///   two laws are directly comparable.
+///
+/// # What it is not
+///
+/// It is **not** a fixed wing with a spinning mesh and **not** a hovering
+/// helicopter, and both are structural rather than documentary:
+///
+/// * [`ExceptionalControlLaw::commanded_rotor_radps`] takes an air-relative
+///   speed and nothing else — no [`super::model::FlightInput`], no
+///   [`super::model::EngineState`]. The throttle has no path to the rotor, so no
+///   engine setting can create lift at zero airspeed, and a rotor at rest stays
+///   at rest however hard the throttle is pushed.
+/// * A pre-spun rotor with no airspeed decays toward zero at the profile's
+///   response rate, so even a spinning rotor cannot hold the airframe up: it
+///   has no thrust to replace the energy the rotor gives back.
+///
+/// **Designed, not measured.** Every value in the profile is authored project
+/// design with an [`Origin`] and a [`Provenance`], and
+/// [`ExceptionalProfile::is_measured`] is `false` for the synthetic fixture. The
+/// law's *shape* is this project's engineering design; the original Hoplite's
+/// numbers are not recovered (`F25` "Research boundary"), the reference envelope
+/// ships [`EnvelopeStatus::Unmeasured`], and only a calibration against an
+/// original trace (F25-D) can turn any of it into a fidelity claim.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExceptionalControlLaw {
+    tuning: AirframeTuning,
+    profile: ExceptionalProfile,
+    /// The shared flight boundary this law adds rotor terms to.
+    wing: FlightModel,
+}
+
+impl ExceptionalControlLaw {
+    /// Builds the law from an exceptional tuning and a validated profile.
+    ///
+    /// # Errors
+    ///
+    /// [`ExceptionalLawError::NotAnExceptionalAirframe`] when the tuning does
+    /// not declare [`ModelKind::Exceptional`], or
+    /// [`ExceptionalLawError::Profile`] for the first profile field that fails
+    /// its boundary.
+    pub fn new(
+        tuning: AirframeTuning,
+        profile: ExceptionalProfile,
+    ) -> Result<Self, ExceptionalLawError> {
+        if tuning.model_kind != ModelKind::Exceptional {
+            return Err(ExceptionalLawError::NotAnExceptionalAirframe {
+                declared: tuning.model_kind,
+            });
+        }
+        profile.validate()?;
+        Ok(Self {
+            wing: FlightModel::new(tuning.clone()),
+            tuning,
+            profile,
+        })
+    }
+
+    /// The tuning this law evaluates.
+    #[must_use]
+    pub const fn tuning(&self) -> &AirframeTuning {
+        &self.tuning
+    }
+
+    /// The declared profile this law flies.
+    #[must_use]
+    pub const fn profile(&self) -> &ExceptionalProfile {
+        &self.profile
+    }
+
+    /// The rotor rate the airflow over the disc commands, in rad/s.
+    ///
+    /// This is the whole of the rotor's drive, and its **signature is the
+    /// anti-hover mechanism**: it takes an air-relative speed and returns a
+    /// rate, so neither the throttle nor the engine state can reach it. A rotor
+    /// whose drive had any engine coupling would need a different, declared and
+    /// measured law here rather than a hidden term.
+    ///
+    /// # Errors
+    ///
+    /// [`ProfileError::NonFinite`] for a non-finite airspeed and
+    /// [`ProfileError::Negative`] for a negative one.
+    pub fn commanded_rotor_radps(&self, airspeed_mps: f64) -> Result<f64, ProfileError> {
+        profile_finite("rotor.airspeed_mps", airspeed_mps)?;
+        if airspeed_mps < 0.0 {
+            return Err(ProfileError::Negative {
+                field: "rotor.airspeed_mps",
+            });
+        }
+        Ok(self.profile.rotor_drive_radps_per_mps * airspeed_mps)
+    }
+
+    /// The rotor's tip speed for a given rate, in m/s.
+    ///
+    /// # Errors
+    ///
+    /// [`ProfileError::NonFinite`] for a non-finite rate.
+    pub fn rotor_tip_speed_mps(&self, rotor_radps: f64) -> Result<f64, ProfileError> {
+        profile_finite("rotor.radps", rotor_radps)?;
+        Ok(self.profile.rotor_radius_m * rotor_radps)
+    }
+
+    /// The rotor's own contribution to control authority, in `[0, 1]`.
+    ///
+    /// It ramps from [`ExceptionalProfile::control_tip_speed_zero_mps`] of tip
+    /// speed to [`ExceptionalProfile::control_tip_speed_full_mps`], so a rotor
+    /// at rest contributes nothing and the ramp is a declared linear band, not
+    /// a fitted curve.
+    ///
+    /// # Errors
+    ///
+    /// [`ProfileError::NonFinite`] for a non-finite rate.
+    pub fn rotor_support(&self, rotor_radps: f64) -> Result<f64, ProfileError> {
+        let tip = self.rotor_tip_speed_mps(rotor_radps)?;
+        let zero = self.profile.control_tip_speed_zero_mps;
+        let full = self.profile.control_tip_speed_full_mps;
+        Ok(((tip - zero) / (full - zero)).clamp(0.0, 1.0))
+    }
+
+    /// Computes one tick's force, torque and instruments for the exceptional
+    /// airframe, advancing `rotor` exactly once.
+    ///
+    /// `dt_s` is the fixed simulation timestep and `tick` must be strictly newer
+    /// than the rotor's last, which is what refuses a second advance in one tick
+    /// and stops a render frame from driving the rotor's physics. At zero
+    /// airspeed with a rotor at rest every produced value is finite, the rotor
+    /// lift and drag are exactly zero, and the only vertical force is gravity.
+    ///
+    /// # Errors
+    ///
+    /// [`ExceptionalLawError`] for a rejected profile, environment, loadout,
+    /// damage, state, input or timestep (through the shared boundary), a rotor
+    /// tick the drive refused, or a produced tick this law's own check refused
+    /// ([`ExceptionalLawError::NonFiniteOutput`],
+    /// [`ExceptionalLawError::UnaccountedForce`]).
+    // The argument list is the contract's own vocabulary — environment, loadout,
+    // damage, state, input, timestep — plus the tick and the rotor the
+    // exceptional airframe additionally carries. Grouping them would hide which
+    // value came from where at the boundary, so the lint is allowed here rather
+    // than the shape changed.
+    #[allow(clippy::too_many_arguments)]
+    pub fn compute(
+        &self,
+        environment: &FlightEnvironment,
+        loadout: &LoadoutMass,
+        damage: &DamageState,
+        state: &FlightState,
+        input: &FlightInput,
+        dt_s: f64,
+        tick: Tick,
+        rotor: &mut RotorDrive,
+    ) -> Result<ExceptionalTick, ExceptionalLawError> {
+        self.profile.validate()?;
+
+        // The shared boundary: wing lift, parasitic drag, engine/boost thrust,
+        // world-space gravity and the declared assist, validated once.
+        let base = self
+            .wing
+            .compute(environment, loadout, damage, state, input, dt_s)?;
+
+        // The rotor: driven by the airflow, advanced once per strictly newer
+        // tick. A refused tick leaves `rotor` untouched.
+        let airspeed_mps = base.instrument_state.airspeed_mps;
+        let commanded_rotor_radps = self.commanded_rotor_radps(airspeed_mps)?;
+        rotor.advance_tick(
+            commanded_rotor_radps,
+            self.profile.rotor_response_per_s,
+            tick,
+            dt_s,
+        )?;
+        let rotor_radps = rotor.physical_speed_radps();
+        let rotor_tip_speed_mps = self.rotor_tip_speed_mps(rotor_radps)?;
+
+        // Rotor forces. Lift acts along the shaft axis (body up) and is capped,
+        // so the rotor can never carry the whole weight on its own: the airframe
+        // still needs the wing, and therefore forward speed. Drag acts against
+        // the air-relative velocity and vanishes with it, which is the term that
+        // stops a spinning rotor from parking in mid-air.
+        let rotor_lift_n = (self.profile.rotor_lift_n_per_mps_tip * rotor_tip_speed_mps)
+            .clamp(0.0, self.profile.rotor_lift_max_n);
+        let rotor_drag_n =
+            self.profile.rotor_drag_n_per_tip_air * rotor_tip_speed_mps * airspeed_mps;
+        let up_world = rotated(super::model::BODY_UP, state.orientation);
+        let air_velocity_world =
+            subtracted(state.linear_velocity_mps, environment.wind_velocity_mps);
+        let air_direction = scaled(
+            air_velocity_world,
+            1.0 / airspeed_mps.max(AIRSPEED_EPSILON_MPS),
+        );
+        let rotor_lift_force_n = scaled(up_world, rotor_lift_n);
+        let rotor_drag_force_n = scaled(air_direction, -rotor_drag_n);
+
+        // Attitude. The same rate command the fixed wing uses, with an
+        // authority that comes from the rotor as well as from airspeed, plus the
+        // two torque terms a spinning rotor adds and a wing has not got.
+        let wing_authority =
+            (airspeed_mps / self.tuning.angular.control_airspeed_full_mps).clamp(0.0, 1.0);
+        let rotor_support = self.rotor_support(rotor_radps)?;
+        let control_authority = (base.instrument_state.stall_scale
+            * damage.control_authority
+            * wing_authority.max(rotor_support))
+        .clamp(0.0, 1.0);
+
+        let rate_command_torque_nm = self.rate_command_torque(state, input, control_authority);
+        // Gyroscopic precession is an identity, not a fitted curve: a symmetric
+        // rotor's angular momentum points along the shaft, so the airframe must
+        // supply `ω × L` to hold attitude, which couples body pitch rate into
+        // roll torque and body roll rate into pitch torque. Only the rotor's
+        // polar inertia and rate are declared numbers.
+        let precession_arm = self.profile.rotor_polar_inertia_kg_m2 * rotor_radps;
+        let rotor_yaw_torque_nm = self.profile.rotor_yaw_nm_per_radps * rotor_radps;
+        let precession_torque_nm = [
+            -precession_arm * state.angular_velocity_radps[0],
+            -precession_arm * state.angular_velocity_radps[2],
+            0.0,
+        ];
+        let max_torque = self.tuning.angular.max_torque_nm;
+        let mut control_axis_torque_nm = [0.0; 3];
+        for axis in 0..3 {
+            let total = rate_command_torque_nm[axis]
+                + precession_torque_nm[axis]
+                + rotor_yaw_torque_nm * f64::from(axis == 2);
+            control_axis_torque_nm[axis] = total.clamp(-max_torque[axis], max_torque[axis]);
+        }
+
+        let body_torque_nm = axis_torque_to_body(control_axis_torque_nm);
+        let world_torque_nm = added(
+            rotated(body_torque_nm, state.orientation),
+            base.diagnostics.assist_torque_nm,
+        );
+        let world_force_n = added(
+            added(base.world_force_n, rotor_lift_force_n),
+            rotor_drag_force_n,
+        );
+
+        let output = FlightOutput {
+            world_force_n,
+            world_torque_nm,
+            instrument_state: base.instrument_state,
+            accepted_boost_consumption: base.accepted_boost_consumption,
+            diagnostics: FlightDiagnostics {
+                // `lift_n` and `drag_n` are the true totals for this airframe,
+                // so a shared consumer is never told the wing's lift alone; the
+                // per-source split is in `ExceptionalDiagnostics`.
+                lift_n: base.diagnostics.lift_n + rotor_lift_n,
+                drag_n: base.diagnostics.drag_n + rotor_drag_n,
+                ..base.diagnostics
+            },
+        };
+        let computed = ExceptionalTick {
+            output,
+            diagnostics: ExceptionalDiagnostics {
+                base_force_n: base.world_force_n,
+                base: base.diagnostics,
+                commanded_rotor_radps,
+                rotor_radps,
+                rotor_tip_speed_mps,
+                rotor_lift_n,
+                rotor_lift_force_n,
+                rotor_drag_n,
+                rotor_drag_force_n,
+                rotor_yaw_torque_nm,
+                precession_torque_nm,
+                rate_command_torque_nm,
+                control_axis_torque_nm,
+                wing_authority,
+                rotor_support,
+                control_authority,
+            },
+            rotor: *rotor,
+        };
+        computed.validate()?;
+        Ok(computed)
+    }
+
+    /// The bounded rate-command torque in control-axis order `(roll, pitch,
+    /// yaw)`.
+    ///
+    /// The same law the fixed wing uses, with the exceptional authority in
+    /// place of the wing's: the desired rate is the command times the declared
+    /// maximum rate times the authority, and the torque is the inertia-scaled
+    /// rate error with the declared damping, bounded per axis.
+    fn rate_command_torque(
+        &self,
+        state: &FlightState,
+        input: &FlightInput,
+        authority: f64,
+    ) -> [f64; 3] {
+        let commands = [input.roll, input.pitch, input.yaw];
+        let angular = &self.tuning.angular;
+        let mut torque = [0.0; 3];
+        for axis in 0..3 {
+            let &(component, sign) = &EXCEPTIONAL_CONTROL_AXIS[axis];
+            let rate = sign * state.angular_velocity_radps[component];
+            let desired_rate =
+                commands[axis].clamp(-1.0, 1.0) * angular.max_rate_radps[axis] * authority;
+            let rate_error = desired_rate - rate;
+            let inertia = self.tuning.mass.inertia_kg_m2[axis];
+            let raw = inertia
+                * (angular.rate_gain_per_s * rate_error - angular.rate_damping_per_s * rate);
+            torque[axis] = raw.clamp(-angular.max_torque_nm[axis], angular.max_torque_nm[axis]);
+        }
+        torque
+    }
+}
+
+/// The exceptional law's per-source record for one tick.
+///
+/// Every force is a world-space vector and every rotor term a scalar, so a
+/// probe can see exactly what the rotor added to the shared boundary and can
+/// assert that the total is their sum ([`Self::total_force_n`]).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ExceptionalDiagnostics {
+    /// The shared boundary's world force for this tick, before the rotor terms.
+    pub base_force_n: [f64; 3],
+    /// The shared boundary's per-source contributions, so the wing's own lift,
+    /// drag, thrust, gravity and assist stay visible beside the rotor's.
+    pub base: FlightDiagnostics,
+    /// The rotor rate the airflow commanded this tick, in rad/s.
+    pub commanded_rotor_radps: f64,
+    /// The authoritative rotor rate after this tick's single advance, in rad/s.
+    pub rotor_radps: f64,
+    /// `rotor_radius_m · rotor_radps`, in m/s.
+    pub rotor_tip_speed_mps: f64,
+    /// Rotor lift along the shaft axis, in newtons.
+    pub rotor_lift_n: f64,
+    /// Rotor lift as a world-space vector.
+    pub rotor_lift_force_n: [f64; 3],
+    /// Rotor drag against the air-relative velocity, in newtons.
+    pub rotor_drag_n: f64,
+    /// Rotor drag as a world-space vector.
+    pub rotor_drag_force_n: [f64; 3],
+    /// The rotor's torque-reaction yaw, in newton-metres, in the same sign as a
+    /// positive yaw command.
+    pub rotor_yaw_torque_nm: f64,
+    /// The gyroscopic precession torque in control-axis order `(roll, pitch,
+    /// yaw)`.
+    pub precession_torque_nm: [f64; 3],
+    /// The rate-command torque in control-axis order, before the rotor terms.
+    pub rate_command_torque_nm: [f64; 3],
+    /// The total torque actually applied, in control-axis order, bounded per
+    /// axis by the tuning's maximum.
+    pub control_axis_torque_nm: [f64; 3],
+    /// The wing's airspeed authority ramp, in `[0, 1]`.
+    pub wing_authority: f64,
+    /// The rotor's own control support, in `[0, 1]`.
+    pub rotor_support: f64,
+    /// The authority actually applied this tick, in `[0, 1]`.
+    pub control_authority: f64,
+}
+
+impl ExceptionalDiagnostics {
+    /// The world force this law produced, as the sum of its recorded
+    /// contributions.
+    ///
+    /// This must equal the produced [`FlightOutput`]'s `world_force_n`;
+    /// [`ExceptionalTick::validate`] checks that, so a term this law added
+    /// without recording it is a refusal rather than a silent force.
+    #[must_use]
+    pub fn total_force_n(&self) -> [f64; 3] {
+        added(
+            added(self.base_force_n, self.rotor_lift_force_n),
+            self.rotor_drag_force_n,
+        )
+    }
+
+    /// The total torque as a body-space vector.
+    #[must_use]
+    pub fn body_torque_nm(&self) -> [f64; 3] {
+        axis_torque_to_body(self.control_axis_torque_nm)
+    }
+}
+
+/// One evaluated exceptional tick: the shared output, this law's per-source
+/// record, and the rotor state the single advance produced.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ExceptionalTick {
+    /// The shared input/output boundary's result, unchanged in shape from a
+    /// fixed-wing tick.
+    pub output: FlightOutput,
+    /// The exceptional law's per-source record.
+    pub diagnostics: ExceptionalDiagnostics,
+    /// The authoritative rotor state after this tick's single advance.
+    pub rotor: RotorDrive,
+}
+
+impl ExceptionalTick {
+    /// Checks that the produced tick is finite and that its world force is the
+    /// sum of the contributions it recorded.
+    ///
+    /// # Errors
+    ///
+    /// [`ExceptionalLawError::NonFiniteOutput`] naming the first non-finite
+    /// value, or [`ExceptionalLawError::UnaccountedForce`] with the largest
+    /// component difference.
+    pub fn validate(&self) -> Result<(), ExceptionalLawError> {
+        for (field, value) in [
+            ("world_force_n[0]", self.output.world_force_n[0]),
+            ("world_force_n[1]", self.output.world_force_n[1]),
+            ("world_force_n[2]", self.output.world_force_n[2]),
+            ("world_torque_nm[0]", self.output.world_torque_nm[0]),
+            ("world_torque_nm[1]", self.output.world_torque_nm[1]),
+            ("world_torque_nm[2]", self.output.world_torque_nm[2]),
+            ("rotor_lift_n", self.diagnostics.rotor_lift_n),
+            ("rotor_drag_n", self.diagnostics.rotor_drag_n),
+            ("rotor_yaw_torque_nm", self.diagnostics.rotor_yaw_torque_nm),
+            (
+                "commanded_rotor_radps",
+                self.diagnostics.commanded_rotor_radps,
+            ),
+            ("rotor_radps", self.diagnostics.rotor_radps),
+            ("rotor_tip_speed_mps", self.diagnostics.rotor_tip_speed_mps),
+            ("control_authority", self.diagnostics.control_authority),
+            ("rotor_support", self.diagnostics.rotor_support),
+        ] {
+            if !value.is_finite() {
+                return Err(ExceptionalLawError::NonFiniteOutput { field });
+            }
+        }
+        let total = self.diagnostics.total_force_n();
+        let residual_n = (0..3)
+            .map(|axis| (total[axis] - self.output.world_force_n[axis]).abs())
+            .fold(0.0_f64, f64::max);
+        let scale = total
+            .into_iter()
+            .map(f64::abs)
+            .fold(0.0_f64, f64::max)
+            .max(1.0);
+        if residual_n > 1.0e-9 * scale {
+            return Err(ExceptionalLawError::UnaccountedForce { residual_n });
+        }
+        Ok(())
+    }
+
+    /// The validated telemetry frame for this tick.
+    ///
+    /// This is how the exceptional law reaches the shared
+    /// [`FlightTelemetry`] channel HUD, AI and probes read: the same
+    /// [`SharedTelemetry`] numbers a fixed wing reports, plus this airframe's
+    /// rotor channel mapped through an explicit
+    /// [`RotorSpeedMapping`] (or no visual rate at all when none is declared).
+    ///
+    /// # Errors
+    ///
+    /// [`TelemetryError`] from [`TelemetryFrame::exceptional`]: a non-finite
+    /// reading, a value outside its declared bound, or a rotor mapping that
+    /// produces a non-finite drawn rate.
+    pub fn telemetry(
+        &self,
+        state: &FlightState,
+        tick: Tick,
+        mapping: Option<&RotorSpeedMapping>,
+    ) -> Result<TelemetryFrame, TelemetryError> {
+        TelemetryFrame::exceptional(
+            self.diagnostics_model_kind(),
+            state,
+            &self.output,
+            tick,
+            &self.rotor,
+            mapping,
+        )
+    }
+
+    /// The model kind this law declares. It is always
+    /// [`ModelKind::Exceptional`]; the method exists so [`Self::telemetry`]
+    /// cannot pass a fixed-wing kind by accident.
+    const fn diagnostics_model_kind(&self) -> ModelKind {
+        ModelKind::Exceptional
+    }
+}
+
+fn profile_finite(field: &'static str, value: f64) -> Result<(), ProfileError> {
+    if value.is_finite() {
+        Ok(())
+    } else {
+        Err(ProfileError::NonFinite { field })
+    }
+}
+
+fn profile_positive(field: &'static str, value: f64) -> Result<(), ProfileError> {
+    profile_finite(field, value)?;
+    if value > 0.0 {
+        Ok(())
+    } else {
+        Err(ProfileError::NonPositive { field })
+    }
+}
+
+fn profile_non_negative(field: &'static str, value: f64) -> Result<(), ProfileError> {
+    profile_finite(field, value)?;
+    if value >= 0.0 {
+        Ok(())
+    } else {
+        Err(ProfileError::Negative { field })
+    }
+}
+
+/// Rotates a body-space vector into world space.
+fn rotated(vector: [f64; 3], orientation: cs_types::space::Quaternion) -> [f64; 3] {
+    let [x, y, z, w] = orientation.components();
+    let axis = [x, y, z];
+    let axis_cross = cross(axis, vector);
+    let twice = scaled(axis_cross, 2.0 * w);
+    let second = cross(axis, axis_cross);
+    added(added(vector, twice), scaled(second, 2.0))
+}
+
+fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+
+fn added(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+
+fn subtracted(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+
+fn scaled(a: [f64; 3], factor: f64) -> [f64; 3] {
+    [a[0] * factor, a[1] * factor, a[2] * factor]
+}
+
+/// Maps a control-axis torque onto the body components its axes turn.
+fn axis_torque_to_body(axis_torque_nm: [f64; 3]) -> [f64; 3] {
+    let mut body = [0.0; 3];
+    for (axis, &(component, sign)) in EXCEPTIONAL_CONTROL_AXIS.iter().enumerate() {
+        body[component] = sign * axis_torque_nm[axis];
+    }
+    body
+}
+
+/// The synthetic exceptional tuning: the F24 fixture's numbers with the
+/// exceptional model kind.
+///
+/// Only [`AirframeTuning::model_kind`] differs from
+/// [`super::synthetic::synthetic_fixed_wing`], so a test can compare the two
+/// control laws on identical mass, wing, engine and stall behavior and see only
+/// the exceptional difference. The *airframe's* real mass, area and thrust are
+/// unknown and F25-D's; this fixture claims nothing about them
+/// ([`Origin::SyntheticFixture`], [`ExceptionalProfile::is_measured`] is
+/// `false`).
+#[must_use]
+pub fn synthetic_exceptional_tuning() -> AirframeTuning {
+    AirframeTuning {
+        model_kind: ModelKind::Exceptional,
+        ..super::synthetic::synthetic_fixed_wing()
+    }
+}
+
+/// The synthetic exceptional profile: an 8 m rotor that the airflow alone
+/// drives, with lift capped at half the fixture's weight and no hover.
+///
+/// Every value is authored design with [`Origin::SyntheticFixture`] and a
+/// `designed` claim; [`ExceptionalProfile::is_measured`] is `false`, so nothing
+/// built from it may be read as a measured original value. The numbers are
+/// chosen only to make the law's declared behavior testable and *plausible in
+/// order of magnitude*: 0.4 rad/s per m/s puts a 4 m rotor at 16 rad/s and 64 m/s
+/// of tip speed in 40 m/s of flight, the lift cap keeps the rotor from carrying
+/// the 1200 kg fixture's 11.8 kN, and the 0–24 m/s tip-speed band gives the
+/// rotor more control authority than the wing below about 15 m/s.
+#[must_use]
+pub fn synthetic_exceptional_profile() -> ExceptionalProfile {
+    ExceptionalProfile {
+        airframe_id: ContentId::from_source(ContentKind::Airframe, "fixture.synthetic-autogyro")
+            .expect("the synthetic airframe id is valid"),
+        hover: HoverCapability::NoHover,
+        rotor_radius_m: 4.0,
+        rotor_drive_radps_per_mps: 0.4,
+        rotor_response_per_s: 1.0,
+        rotor_lift_n_per_mps_tip: 220.0,
+        rotor_lift_max_n: 6_000.0,
+        rotor_drag_n_per_tip_air: 2.0,
+        rotor_yaw_nm_per_radps: 60.0,
+        rotor_polar_inertia_kg_m2: 220.0,
+        control_tip_speed_zero_mps: 0.0,
+        control_tip_speed_full_mps: 24.0,
+        origin: Origin::SyntheticFixture,
+        provenance: Provenance::designed(
+            cs_types::evidence::ClaimId::new("f25b.profile.synthetic-autogyro")
+                .expect("the declared claim id is valid"),
+        ),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1645,5 +2642,828 @@ mod tests {
             Some(ManeuverKind::RotorVisual)
         );
         assert_eq!(ManeuverKind::from_label("warp_drive"), None);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// F25-B tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod law_tests {
+    use super::*;
+    use crate::flight::model::{BODY_UP, EngineState};
+    use crate::flight::synthetic::synthetic_fixed_wing;
+    use cs_types::asset_id::SourceSpan;
+    use cs_types::evidence::ContentHash;
+    use cs_types::space::Quaternion;
+
+    /// A **synthetic** installation span, used only to drive the provenance
+    /// gate below. It names no real installation and backs no original-data
+    /// claim: the test asserts that such a profile becomes *measured* on its
+    /// boundary, not that any measurement exists.
+    fn synthetic_span() -> SourceSpan {
+        SourceSpan::new(
+            ContentHash::from_bytes([0x2b; 32]),
+            "fixture.synthetic-exceptional.zbd",
+            None,
+            0,
+            16,
+            None,
+        )
+        .expect("a valid synthetic span")
+    }
+
+    /// Ticks that let the declared first-order rotor response settle on its
+    /// command. With `rotor_response_per_s == 1.0` and a `1/120` s tick the
+    /// remaining error after `n` ticks is `exp(-n/120)`, so 2400 ticks is
+    /// twenty seconds and leaves under `1e-6` rad/s of error.
+    const SETTLE_TICKS: u64 = 2400;
+
+    fn law() -> ExceptionalControlLaw {
+        ExceptionalControlLaw::new(
+            synthetic_exceptional_tuning(),
+            synthetic_exceptional_profile(),
+        )
+        .expect("the declared synthetic exceptional law is valid")
+    }
+
+    fn wing_model() -> FlightModel {
+        FlightModel::new(synthetic_fixed_wing())
+    }
+
+    fn level(speed_mps: f64, spool: Option<f64>) -> FlightState {
+        FlightState {
+            linear_velocity_mps: [0.0, 0.0, -speed_mps],
+            engine: spool.map_or(EngineState::STOPPED, EngineState::direct),
+            ..FlightState::at_rest(Quaternion::IDENTITY)
+        }
+    }
+
+    fn stick(pitch: f64, roll: f64, yaw: f64, throttle: f64) -> FlightInput {
+        FlightInput::try_new(pitch, roll, yaw, throttle, false)
+            .expect("the probe input is inside its declared range")
+    }
+
+    fn one_tick(
+        law: &ExceptionalControlLaw,
+        state: &FlightState,
+        input: &FlightInput,
+        tick: Tick,
+        rotor: &mut RotorDrive,
+    ) -> ExceptionalTick {
+        law.compute(
+            &FlightEnvironment::SEA_LEVEL,
+            &LoadoutMass::EMPTY,
+            &DamageState::PRISTINE,
+            state,
+            input,
+            SYNTHETIC_TICK_DT_S,
+            tick,
+            rotor,
+        )
+        .expect("the probe tick is a legal exceptional tick")
+    }
+
+    /// A rotor already spun up to `commanded_radps`, together with the first
+    /// tick a caller may advance it at. Returning the tick matters: the drive
+    /// refuses a tick that is not strictly newer, so a test that pre-spins a
+    /// rotor cannot then evaluate a tick from the start of the sequence.
+    fn prespun(commanded_radps: f64) -> (RotorDrive, u64) {
+        let mut rotor = RotorDrive::stopped();
+        let mut tick = 0;
+        while (rotor.physical_speed_radps() - commanded_radps).abs() > 1e-9 {
+            tick += 1;
+            assert!(
+                tick <= SETTLE_TICKS,
+                "the pre-spin settles inside the declared tick budget"
+            );
+            rotor
+                .advance_tick(commanded_radps, 400.0, Tick(tick), SYNTHETIC_TICK_DT_S)
+                .expect("each pre-spin tick is newer than the last");
+        }
+        assert!((rotor.physical_speed_radps() - commanded_radps).abs() < 1e-6);
+        (rotor, tick + 1)
+    }
+
+    /// A rotor already settled on the command the airflow declares for
+    /// `airspeed_mps`, with the first tick a caller may use.
+    fn settled_rotor(law: &ExceptionalControlLaw, airspeed_mps: f64) -> (RotorDrive, u64) {
+        let commanded = law
+            .commanded_rotor_radps(airspeed_mps)
+            .expect("a positive airspeed commands a finite rate");
+        prespun(commanded)
+    }
+
+    /// Rotates a world-space vector into body space, which is how a probe reads
+    /// the two laws' torques in the same frame.
+    fn into_body(vector: [f64; 3], orientation: Quaternion) -> [f64; 3] {
+        let [x, y, z, w] = orientation.components();
+        let conjugate =
+            Quaternion::try_new([-x, -y, -z, w]).expect("a conjugate of a unit rotation is unit");
+        rotated(vector, conjugate)
+    }
+
+    fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
+        a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
+    }
+
+    /// AC02's low-speed half: every declared low-speed, engine-on and engine-off
+    /// state is a legal tick, every produced value is finite, and the rotor
+    /// answers the profile's own closed form rather than a plausible-looking
+    /// number.
+    #[test]
+    fn accept_f25_b_low_speed_states_stay_finite_and_answer_the_profile() {
+        let law = law();
+        let inputs = [
+            FlightInput::NEUTRAL,
+            stick(0.0, 0.0, 0.0, 1.0),
+            stick(1.0, 0.0, 0.0, 0.0),
+            stick(-1.0, 0.0, 0.0, 0.0),
+            stick(0.0, 1.0, 0.0, 0.0),
+            stick(0.0, -1.0, 0.0, 0.0),
+            stick(0.0, 0.0, 1.0, 0.0),
+            stick(0.5, -0.5, 0.5, 0.5),
+        ];
+        let engines = [Some(0.0), Some(0.5), Some(1.0), None];
+
+        for speed in [0.0, 0.25, 1.0, 3.0, 8.0, 15.0] {
+            for spool in engines {
+                for input in inputs {
+                    let state = level(speed, spool);
+                    let mut rotor = RotorDrive::stopped();
+                    let computed = one_tick(&law, &state, &input, Tick(1), &mut rotor);
+                    computed
+                        .validate()
+                        .expect("every produced value is finite and fully accounted");
+
+                    // The rotor's rate after one tick is the profile's own
+                    // first-order response, not a plausible number.
+                    let commanded = law
+                        .commanded_rotor_radps(speed)
+                        .expect("the airspeed is a legal rotor command");
+                    assert_eq!(computed.diagnostics.commanded_rotor_radps, commanded);
+                    let profile = law.profile();
+                    let expected =
+                        commanded.min(profile.rotor_response_per_s * SYNTHETIC_TICK_DT_S);
+                    assert!(
+                        (computed.rotor.physical_speed_radps() - expected).abs() < 1e-12,
+                        "at {speed} m/s the rotor moved to {expected} rad/s, not {}",
+                        computed.rotor.physical_speed_radps()
+                    );
+                    // Rotor lift is capped and never negative, and both rotor
+                    // force terms are zero without rotation.
+                    assert!(computed.diagnostics.rotor_lift_n >= 0.0);
+                    assert!(computed.diagnostics.rotor_lift_n <= profile.rotor_lift_max_n);
+                    assert!(computed.diagnostics.rotor_drag_n >= 0.0);
+                    if speed == 0.0 {
+                        assert_eq!(computed.diagnostics.rotor_lift_n, 0.0);
+                        assert_eq!(computed.diagnostics.rotor_drag_n, 0.0);
+                        assert_eq!(computed.diagnostics.rotor_radps, 0.0);
+                    }
+                }
+            }
+        }
+
+        // At rest, with a rotor at rest and the throttle wide open, the only
+        // vertical force is gravity: the exceptional airframe falls.
+        let at_rest = FlightState::at_rest(Quaternion::IDENTITY);
+        let mut rotor = RotorDrive::stopped();
+        let computed = one_tick(
+            &law,
+            &at_rest,
+            &stick(0.0, 0.0, 0.0, 1.0),
+            Tick(1),
+            &mut rotor,
+        );
+        assert_eq!(computed.rotor.physical_speed_radps(), 0.0);
+        assert_eq!(computed.diagnostics.control_authority, 0.0);
+        let weight_n = 1200.0 * FlightEnvironment::SEA_LEVEL.gravity_mps2;
+        assert!(
+            (computed.output.world_force_n[1] + weight_n).abs() < 1e-9,
+            "at rest the vertical force is gravity alone, got {}",
+            computed.output.world_force_n[1]
+        );
+        assert!(
+            computed.output.world_force_n[1] < 0.0,
+            "an exceptional airframe with no airflow and no thrust falls"
+        );
+    }
+
+    /// Non-negotiable behavior 1, first half: the airframe is not a fixed wing
+    /// with a spinning mesh. At low speed the rotor carries the authority and
+    /// most of the lift, where the fixed wing on the identical airframe has
+    /// neither.
+    #[test]
+    fn accept_f25_b_the_rotor_carries_low_speed_authority_and_lift() {
+        let law = law();
+        let profile = law.profile().clone();
+        let speed = 3.0;
+        let state = level(speed, Some(0.5));
+        let input = stick(0.0, 0.0, 0.5, 0.5);
+        let mut rotor = RotorDrive::stopped();
+        let mut computed = None;
+        for tick in 1..=SETTLE_TICKS {
+            computed = Some(one_tick(&law, &state, &input, Tick(tick), &mut rotor));
+        }
+        let computed = computed.expect("the settled run produced a tick");
+
+        // The rotor settled on the airflow's command, and every derived reading
+        // is the profile's own function of it.
+        let commanded = profile.rotor_drive_radps_per_mps * speed;
+        assert!((computed.rotor.physical_speed_radps() - commanded).abs() < 1e-6);
+        let tip = profile.rotor_radius_m * commanded;
+        assert!((computed.diagnostics.rotor_tip_speed_mps - tip).abs() < 1e-5);
+        assert!(
+            (computed.diagnostics.rotor_support - tip / profile.control_tip_speed_full_mps).abs()
+                < 1e-5
+        );
+        assert!(
+            (computed.diagnostics.wing_authority
+                - speed / law.tuning().angular.control_airspeed_full_mps)
+                .abs()
+                < 1e-12
+        );
+        assert!(
+            (computed.diagnostics.control_authority - computed.diagnostics.rotor_support).abs()
+                < 1e-5,
+            "at 3 m/s the rotor, not the wing, sets the authority"
+        );
+        assert!(
+            computed.diagnostics.rotor_support > computed.diagnostics.wing_authority,
+            "the rotor's declared band puts it above the wing's airspeed ramp here"
+        );
+
+        // Rotor lift and drag are real, and rotor lift dominates the wing's at
+        // this airspeed.
+        let expected_lift = profile.rotor_lift_n_per_mps_tip * tip;
+        assert!((computed.diagnostics.rotor_lift_n - expected_lift).abs() < 1e-3);
+        assert!(computed.diagnostics.rotor_lift_n < profile.rotor_lift_max_n);
+        assert!(computed.diagnostics.rotor_drag_n > 0.0);
+        assert!(
+            computed.diagnostics.rotor_lift_n > 50.0 * computed.diagnostics.base.lift_n,
+            "the rotor, not the wing, is the low-speed lift source"
+        );
+        assert!(
+            dot(
+                computed.diagnostics.rotor_drag_force_n,
+                state.linear_velocity_mps
+            ) < 0.0
+        );
+
+        // The identical airframe under the fixed-wing law has far less of both.
+        let fixed = wing_model()
+            .compute(
+                &FlightEnvironment::SEA_LEVEL,
+                &LoadoutMass::EMPTY,
+                &DamageState::PRISTINE,
+                &state,
+                &input,
+                SYNTHETIC_TICK_DT_S,
+            )
+            .expect("the fixed-wing tick is legal");
+        assert!(fixed.diagnostics.control_authority < computed.diagnostics.control_authority * 0.5);
+        assert_ne!(fixed.world_force_n, computed.output.world_force_n);
+
+        // Rotor lift acts along the shaft axis whatever the airframe's
+        // attitude, so the law follows the body, not the world.
+        let banked = FlightState {
+            orientation: Quaternion::try_new([0.258_819_045_1, 0.0, 0.0, 0.965_925_826_3])
+                .expect("a unit rotation"),
+            ..state
+        };
+        let (mut banked_rotor, next_tick) = settled_rotor(&law, speed);
+        let banked_tick = one_tick(&law, &banked, &input, Tick(next_tick), &mut banked_rotor);
+        let up_world = rotated(BODY_UP, banked.orientation);
+        assert!(
+            (banked_tick.diagnostics.rotor_lift_force_n[1]
+                - banked_tick.diagnostics.rotor_lift_n * up_world[1])
+                .abs()
+                < 1e-9
+        );
+        assert!(
+            up_world[1] < 1.0,
+            "the test banked the airframe away from level"
+        );
+    }
+
+    /// AC02's engine-off half: with the engine stopped the rotor winds down to
+    /// the airflow's command rather than to nothing, the thrust is exactly
+    /// zero, and no value becomes non-finite — and the same airspeed with the
+    /// engine running settles on the *same* rotor rate, which is what shows the
+    /// rotor is driven by the air and not by the engine.
+    #[test]
+    fn accept_f25_b_engine_off_winds_the_rotor_down_and_stays_finite() {
+        let law = law();
+        let profile = law.profile().clone();
+        let speed = 20.0;
+        let input = stick(0.0, 0.0, 0.0, 0.0);
+        let engine_off = level(speed, None);
+        let commanded = law
+            .commanded_rotor_radps(speed)
+            .expect("the airspeed is a legal rotor command");
+
+        // A rotor pre-spun well above the airflow's command, as a launch would
+        // leave it.
+        let (mut rotor, next_tick) = prespun(20.0);
+        let pre_spun = rotor.physical_speed_radps();
+        assert!((pre_spun - 20.0).abs() < 1e-6);
+
+        let mut previous = pre_spun;
+        let mut computed = None;
+        for step in 0..SETTLE_TICKS {
+            let tick = next_tick + step;
+            let out = one_tick(&law, &engine_off, &input, Tick(tick), &mut rotor);
+            assert_eq!(
+                out.output.diagnostics.thrust_n, 0.0,
+                "a stopped engine produces no thrust at all"
+            );
+            assert_eq!(out.output.accepted_boost_consumption, 0.0);
+            out.validate()
+                .expect("an engine-off tick stays finite and fully accounted");
+
+            // The step is bounded by the profile's response, so nothing but the
+            // fixed tick can move the rate.
+            let max_step = profile.rotor_response_per_s * SYNTHETIC_TICK_DT_S;
+            let moved_radps = (out.rotor.physical_speed_radps() - previous).abs();
+            assert!(
+                moved_radps <= max_step + 1e-12,
+                "the rotor moved {moved_radps} rad/s in one tick"
+            );
+            assert!(
+                out.rotor.physical_speed_radps() <= previous + 1e-12,
+                "with the engine off the rotor never speeds up"
+            );
+            if previous - commanded > max_step {
+                assert!(
+                    out.rotor.physical_speed_radps() < previous,
+                    "with the engine off the rotor winds down toward the airflow's command"
+                );
+            }
+            previous = out.rotor.physical_speed_radps();
+            computed = Some(out);
+        }
+        let computed = computed.expect("the settled engine-off run produced a tick");
+        assert!(
+            (computed.rotor.physical_speed_radps() - commanded).abs() < 1e-6,
+            "the rotor settles on the airflow's command, not on zero"
+        );
+        assert!(computed.diagnostics.rotor_lift_n > 0.0);
+
+        // The same airspeed with the engine running settles on the same rate.
+        let mut running_rotor = RotorDrive::stopped();
+        let mut running = None;
+        for tick in 1..=SETTLE_TICKS {
+            running = Some(one_tick(
+                &law,
+                &level(speed, Some(0.8)),
+                &stick(0.0, 0.0, 0.0, 0.8),
+                Tick(tick),
+                &mut running_rotor,
+            ));
+        }
+        let running = running.expect("the settled engine-on run produced a tick");
+        assert!(running.output.diagnostics.thrust_n > 0.0);
+        assert!(
+            (running.rotor.physical_speed_radps() - computed.rotor.physical_speed_radps()).abs()
+                < 1e-6,
+            "the rotor's steady state is the airflow's, not the engine's"
+        );
+
+        // With no airspeed at all a pre-spun rotor gives its energy back: the
+        // rate reaches exactly zero, the lift with it, and the airframe falls.
+        let (mut quiet, quiet_tick) = prespun(20.0);
+        let at_rest = FlightState::at_rest(Quaternion::IDENTITY);
+        let mut step = 0;
+        let last = loop {
+            let tick = one_tick(
+                &law,
+                &at_rest,
+                &stick(0.0, 0.0, 0.0, 1.0),
+                Tick(quiet_tick + step),
+                &mut quiet,
+            );
+            step += 1;
+            if tick.rotor.physical_speed_radps() == 0.0 {
+                break tick;
+            }
+            assert!(
+                step <= SETTLE_TICKS,
+                "a pre-spun rotor gives its energy back inside the declared budget"
+            );
+        };
+        assert_eq!(last.rotor.physical_speed_radps(), 0.0);
+        assert_eq!(last.diagnostics.rotor_lift_n, 0.0);
+        assert!(last.output.world_force_n[1] < 0.0);
+    }
+
+    /// Non-negotiable behavior 1, second half: the airframe is not a hovering
+    /// helicopter. The throttle reaches the engine and the engine's spool
+    /// reaches the thrust, but **no path exists from either to the rotor** — and
+    /// a profile that claims hover is refused by name rather than flown.
+    #[test]
+    fn accept_f25_b_throttle_has_no_path_to_the_rotor() {
+        let law = law();
+        let speed = 12.0;
+        let full = stick(0.0, 0.0, 0.0, 1.0);
+        let idle = stick(0.0, 0.0, 0.0, 0.0);
+
+        // The engine spool is the throttle's path into the simulation, and it
+        // changes the thrust and nothing about the rotor.
+        let spooled_down = one_tick(
+            &law,
+            &level(speed, Some(0.0)),
+            &full,
+            Tick(1),
+            &mut RotorDrive::stopped(),
+        );
+        let spooled_up = one_tick(
+            &law,
+            &level(speed, Some(1.0)),
+            &full,
+            Tick(1),
+            &mut RotorDrive::stopped(),
+        );
+        assert!(
+            spooled_up.output.diagnostics.thrust_n > spooled_down.output.diagnostics.thrust_n,
+            "the engine state is the throttle's path into the simulation"
+        );
+        for (field, down, up) in [
+            (
+                "commanded_rotor_radps",
+                spooled_down.diagnostics.commanded_rotor_radps,
+                spooled_up.diagnostics.commanded_rotor_radps,
+            ),
+            (
+                "rotor_radps",
+                spooled_down.diagnostics.rotor_radps,
+                spooled_up.diagnostics.rotor_radps,
+            ),
+            (
+                "rotor_tip_speed_mps",
+                spooled_down.diagnostics.rotor_tip_speed_mps,
+                spooled_up.diagnostics.rotor_tip_speed_mps,
+            ),
+            (
+                "rotor_lift_n",
+                spooled_down.diagnostics.rotor_lift_n,
+                spooled_up.diagnostics.rotor_lift_n,
+            ),
+            (
+                "rotor_drag_n",
+                spooled_down.diagnostics.rotor_drag_n,
+                spooled_up.diagnostics.rotor_drag_n,
+            ),
+            (
+                "rotor_yaw_torque_nm",
+                spooled_down.diagnostics.rotor_yaw_torque_nm,
+                spooled_up.diagnostics.rotor_yaw_torque_nm,
+            ),
+            (
+                "rotor_support",
+                spooled_down.diagnostics.rotor_support,
+                spooled_up.diagnostics.rotor_support,
+            ),
+            (
+                "control_authority",
+                spooled_down.diagnostics.control_authority,
+                spooled_up.diagnostics.control_authority,
+            ),
+        ] {
+            assert!(
+                (down - up).abs() < 1e-12,
+                "the engine spool must not reach {field}: {down} against {up}"
+            );
+        }
+
+        // The throttle command itself changes no rotor term either, and cannot
+        // start a rotor at rest.
+        let throttled = one_tick(
+            &law,
+            &level(speed, Some(0.5)),
+            &full,
+            Tick(1),
+            &mut RotorDrive::stopped(),
+        );
+        let unthrottled = one_tick(
+            &law,
+            &level(speed, Some(0.5)),
+            &idle,
+            Tick(1),
+            &mut RotorDrive::stopped(),
+        );
+        assert_eq!(
+            throttled.diagnostics.rotor_radps,
+            unthrottled.diagnostics.rotor_radps
+        );
+        assert_eq!(
+            throttled.diagnostics.rotor_lift_n,
+            unthrottled.diagnostics.rotor_lift_n
+        );
+        assert_eq!(
+            throttled.output.world_force_n[1], unthrottled.output.world_force_n[1],
+            "the throttle changes no vertical force, because it changes no rotor term"
+        );
+
+        let at_rest = FlightState::at_rest(Quaternion::IDENTITY);
+        let held = one_tick(&law, &at_rest, &full, Tick(1), &mut RotorDrive::stopped());
+        assert_eq!(held.rotor.physical_speed_radps(), 0.0);
+        assert_eq!(held.diagnostics.rotor_lift_n, 0.0);
+        assert!(held.output.world_force_n[1] < 0.0);
+
+        // Hover is a declared capability, and the only value this project
+        // declares for a rotor-driven airframe is `NoHover`.
+        assert!(!HoverCapability::NoHover.is_hover());
+        assert_eq!(HoverCapability::NoHover.label(), "no_hover");
+        let mut hovering = synthetic_exceptional_profile();
+        hovering.hover = HoverCapability::Hover;
+        assert_eq!(
+            hovering.validate(),
+            Err(ProfileError::HoverNotMeasured {
+                declared: HoverCapability::Hover
+            })
+        );
+        assert_eq!(
+            ExceptionalControlLaw::new(synthetic_exceptional_tuning(), hovering).err(),
+            Some(ExceptionalLawError::Profile(
+                ProfileError::HoverNotMeasured {
+                    declared: HoverCapability::Hover
+                }
+            )),
+            "a law that claims hover is refused, not flown"
+        );
+    }
+
+    /// The refusals are named. A fixed-wing tuning, a corrupt profile, a
+    /// repeated tick, a zero-length tick, a corrupt command and an unusable
+    /// environment are each refused by name, and a refused tick leaves the
+    /// rotor exactly where it was.
+    #[test]
+    fn accept_f25_b_the_law_refuses_a_fixed_wing_tuning_and_a_corrupt_profile() {
+        assert_eq!(
+            ExceptionalControlLaw::new(synthetic_fixed_wing(), synthetic_exceptional_profile())
+                .err(),
+            Some(ExceptionalLawError::NotAnExceptionalAirframe {
+                declared: ModelKind::FixedWing
+            })
+        );
+
+        let corrupt = |edit: &dyn Fn(&mut ExceptionalProfile)| {
+            let mut profile = synthetic_exceptional_profile();
+            edit(&mut profile);
+            profile
+        };
+        assert_eq!(
+            corrupt(&|profile| profile.rotor_radius_m = 0.0).validate(),
+            Err(ProfileError::NonPositive {
+                field: "profile.rotor_radius_m"
+            })
+        );
+        assert_eq!(
+            corrupt(&|profile| profile.rotor_drive_radps_per_mps = f64::NAN).validate(),
+            Err(ProfileError::NonFinite {
+                field: "profile.rotor_drive_radps_per_mps"
+            })
+        );
+        assert_eq!(
+            corrupt(&|profile| profile.rotor_drag_n_per_tip_air = -1.0).validate(),
+            Err(ProfileError::Negative {
+                field: "profile.rotor_drag_n_per_tip_air"
+            })
+        );
+        assert_eq!(
+            corrupt(&|profile| profile.control_tip_speed_zero_mps = 30.0).validate(),
+            Err(ProfileError::InvertedControlBand {
+                zero_mps: 30.0,
+                full_mps: 24.0
+            })
+        );
+        assert_eq!(
+            corrupt(&|profile| {
+                profile.airframe_id =
+                    ContentId::from_source(ContentKind::Mesh, "fixture.synthetic-autogyro")
+                        .expect("a valid id");
+            })
+            .validate(),
+            Err(ProfileError::NotAnAirframe {
+                kind: ContentKind::Mesh
+            })
+        );
+        let claimed = corrupt(&|profile| {
+            profile.origin = Origin::Installation {
+                source: synthetic_span(),
+            };
+        });
+        assert_eq!(
+            claimed.validate(),
+            Err(ProfileError::OriginalOriginWithoutObservation {
+                class: ClaimStatus::Designed
+            }),
+            "an installation origin with a designed claim asserts a measurement nobody made"
+        );
+        assert!(!claimed.is_measured());
+
+        // A profile that *is* backed by an observation passes its boundary, and
+        // only then reports itself measured.
+        let mut observed = claimed.clone();
+        observed.provenance = Provenance::new(
+            cs_types::evidence::ClaimId::new("f25b.test.observed").expect("a valid claim id"),
+            ClaimStatus::VerifiedOriginal,
+            Some(synthetic_span()),
+        )
+        .expect("a located verified_original provenance is accepted");
+        assert_eq!(observed.validate(), Ok(()));
+        assert!(observed.is_measured());
+        assert!(!synthetic_exceptional_profile().is_measured());
+
+        // A repeated tick is refused by the rotor drive and changes nothing.
+        let law = law();
+        let state = level(15.0, Some(0.5));
+        let input = stick(0.0, 0.0, 0.0, 0.5);
+        let mut rotor = RotorDrive::stopped();
+        one_tick(&law, &state, &input, Tick(5), &mut rotor);
+        let after_first = rotor.physical_speed_radps();
+        assert_eq!(
+            law.compute(
+                &FlightEnvironment::SEA_LEVEL,
+                &LoadoutMass::EMPTY,
+                &DamageState::PRISTINE,
+                &state,
+                &input,
+                SYNTHETIC_TICK_DT_S,
+                Tick(5),
+                &mut rotor,
+            )
+            .err(),
+            Some(ExceptionalLawError::Rotor(
+                TelemetryError::NonMonotonicTick {
+                    last: Tick(5),
+                    got: Tick(5)
+                }
+            ))
+        );
+        assert_eq!(rotor.physical_speed_radps(), after_first);
+
+        assert_eq!(
+            law.compute(
+                &FlightEnvironment::SEA_LEVEL,
+                &LoadoutMass::EMPTY,
+                &DamageState::PRISTINE,
+                &state,
+                &input,
+                0.0,
+                Tick(6),
+                &mut rotor,
+            )
+            .err(),
+            Some(ExceptionalLawError::Rotor(TelemetryError::NonPositive {
+                field: "rotor.tick_dt_s"
+            }))
+        );
+
+        let mut hot_throttle = FlightInput::NEUTRAL;
+        hot_throttle.throttle = 1.5;
+        assert_eq!(
+            law.compute(
+                &FlightEnvironment::SEA_LEVEL,
+                &LoadoutMass::EMPTY,
+                &DamageState::PRISTINE,
+                &state,
+                &hot_throttle,
+                SYNTHETIC_TICK_DT_S,
+                Tick(6),
+                &mut rotor,
+            )
+            .err(),
+            Some(ExceptionalLawError::Flight(FlightError::OutOfRange {
+                field: "input.throttle",
+                value: 1.5,
+                min: 0.0,
+                max: 1.0
+            }))
+        );
+
+        let mut thin_air = FlightEnvironment::SEA_LEVEL;
+        thin_air.air_density_kg_m3 = 0.0;
+        assert_eq!(
+            law.compute(
+                &thin_air,
+                &LoadoutMass::EMPTY,
+                &DamageState::PRISTINE,
+                &state,
+                &input,
+                SYNTHETIC_TICK_DT_S,
+                Tick(6),
+                &mut rotor,
+            )
+            .err(),
+            Some(ExceptionalLawError::Flight(FlightError::Environment(
+                "environment.air_density_kg_m3"
+            )))
+        );
+    }
+
+    /// The rotor's torque terms are separate, bounded and physically coupled:
+    /// precession turns a body pitch rate into a roll torque and a body roll
+    /// rate into a pitch torque, the rotor drags the airframe in yaw, and at an
+    /// airspeed where both laws reach full authority the two agree on the sign
+    /// convention of every control axis.
+    #[test]
+    fn accept_f25_b_rotor_torque_is_bounded_and_couples_attitude() {
+        let law = law();
+        let profile = law.profile().clone();
+        let speed = 40.0;
+        let state = FlightState {
+            angular_velocity_radps: [0.3, 0.0, -0.2],
+            ..level(speed, Some(0.8))
+        };
+        let input = stick(0.4, -0.6, 0.8, 0.8);
+        let (mut rotor, next_tick) = settled_rotor(&law, speed);
+        let computed = one_tick(&law, &state, &input, Tick(next_tick), &mut rotor);
+        computed.validate().expect("the tick is finite");
+
+        let max_torque = law.tuning().angular.max_torque_nm;
+        for (axis, limit) in max_torque.iter().enumerate() {
+            assert!(
+                computed.diagnostics.control_axis_torque_nm[axis].abs() <= limit + 1e-9,
+                "axis {axis} torque is bounded by the tuning"
+            );
+        }
+
+        // The gyroscopic term is `ω × L` for a symmetric rotor.
+        let arm = profile.rotor_polar_inertia_kg_m2 * computed.diagnostics.rotor_radps;
+        assert!(arm > 0.0);
+        assert!(
+            (computed.diagnostics.precession_torque_nm[0] + arm * 0.3).abs() < 1e-6,
+            "a body pitch rate precesses into a roll torque"
+        );
+        assert!(
+            (computed.diagnostics.precession_torque_nm[1] - arm * 0.2).abs() < 1e-6,
+            "a body roll rate precesses into a pitch torque"
+        );
+        assert_eq!(computed.diagnostics.precession_torque_nm[2], 0.0);
+        assert!(
+            (computed.diagnostics.rotor_yaw_torque_nm
+                - profile.rotor_yaw_nm_per_radps * computed.diagnostics.rotor_radps)
+                .abs()
+                < 1e-6
+        );
+        // With no airflow the rotor never starts, so there is no gyroscopic
+        // term and no yaw reaction at all — only the wing's rate command.
+        let mut stopped = RotorDrive::stopped();
+        let no_rotor = one_tick(
+            &law,
+            &level(0.0, Some(0.8)),
+            &input,
+            Tick(next_tick),
+            &mut stopped,
+        );
+        assert_eq!(no_rotor.rotor.physical_speed_radps(), 0.0);
+        assert_eq!(no_rotor.diagnostics.precession_torque_nm, [0.0, 0.0, 0.0]);
+        assert_eq!(no_rotor.diagnostics.rotor_yaw_torque_nm, 0.0);
+
+        // The control-axis order maps onto the body components both laws share.
+        let body = computed.diagnostics.body_torque_nm();
+        assert!((body[0] - computed.diagnostics.control_axis_torque_nm[1]).abs() < 1e-12);
+        assert!((body[1] - computed.diagnostics.control_axis_torque_nm[2]).abs() < 1e-12);
+        assert!((body[2] + computed.diagnostics.control_axis_torque_nm[0]).abs() < 1e-12);
+
+        // At 40 m/s the rotor's support band is saturated, so both laws command
+        // full authority and their rate-command parts must agree in sign and
+        // size on the roll and pitch axes.
+        let quiet = level(speed, Some(0.8));
+        let roll_only = stick(0.0, 1.0, 0.0, 0.0);
+        let (mut quiet_rotor, quiet_tick) = settled_rotor(&law, speed);
+        let exceptional = one_tick(&law, &quiet, &roll_only, Tick(quiet_tick), &mut quiet_rotor);
+        let fixed = wing_model()
+            .compute(
+                &FlightEnvironment::SEA_LEVEL,
+                &LoadoutMass::EMPTY,
+                &DamageState::PRISTINE,
+                &quiet,
+                &roll_only,
+                SYNTHETIC_TICK_DT_S,
+            )
+            .expect("the fixed-wing tick is legal");
+        assert!((exceptional.diagnostics.control_authority - 1.0).abs() < 1e-12);
+        assert!((fixed.diagnostics.control_authority - 1.0).abs() < 1e-12);
+        let exceptional_body = exceptional.diagnostics.body_torque_nm();
+        let fixed_body = into_body(fixed.world_torque_nm, quiet.orientation);
+        assert!(
+            (exceptional_body[0] - fixed_body[0]).abs() < 1e-6,
+            "both laws pitch the same way"
+        );
+        assert!(
+            (exceptional_body[2] - fixed_body[2]).abs() < 1e-6,
+            "both laws roll the same way"
+        );
+        assert!(
+            exceptional_body[2] < 0.0,
+            "a positive roll command is right-wing-down, a negative torque about body +Z"
+        );
+        assert!(
+            exceptional.diagnostics.rotor_yaw_torque_nm > 0.0,
+            "a spinning rotor drags the airframe in the declared yaw direction"
+        );
     }
 }
