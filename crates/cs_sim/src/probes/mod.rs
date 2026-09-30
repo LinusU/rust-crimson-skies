@@ -51,6 +51,7 @@
 pub mod comparison;
 pub mod envelope;
 pub mod maneuver;
+pub mod runner;
 pub mod synthetic;
 
 pub use comparison::{
@@ -61,6 +62,7 @@ pub use envelope::{
     TimingUncertainty, Tolerance,
 };
 pub use maneuver::{ProbeKind, ProbeQuantity};
+pub use runner::{DEFAULT_PROBE_DT_S, EnvelopeRun, ProbeError, ProbeRun, ProbeRunner, horizon_s};
 pub use synthetic::{
     SYNTHETIC_HANDLING_AIRFRAME, synthetic_acceleration_tuned_turn_outside,
     synthetic_covering_assessment, synthetic_covering_trace, synthetic_out_of_envelope_assessment,
