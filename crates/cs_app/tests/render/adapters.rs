@@ -22,7 +22,8 @@ use cs_app::render::material::{
     MaterialFacts, TextureAddress, classify,
 };
 use cs_app::render::plan::{DrawItem, DrawItemKey};
-use cs_formats::texture::{AlphaSource, AlphaTest, ColorSpace, PixelFormat};
+use cs_app::render::rgb565::{CoverageSource, Rgb565PolicyError, Rule};
+use cs_formats::texture::{AlphaSource, AlphaTest, ColorSpace, DecodedFormat, PixelFormat};
 use cs_types::evidence::ClaimStatus;
 
 use super::fixture::{
@@ -416,6 +417,12 @@ fn accept_f17_b_image_upload_composes_a_separate_coverage_plane() {
 
 /// Every fact the image adapter would have to invent is a refusal, and no
 /// refusal falls back to a default.
+///
+/// The Rgb565 expansion and both coverage keys used to be in this list.
+/// They are not any more: task #408 decided them in
+/// `cs_app::render::rgb565`, and `accept_f17_b_rgb565_a_565_image_uploads_…`
+/// is where the cases they used to refuse now upload. This list is what is
+/// still unestablished, which is why it is shorter.
 #[test]
 fn accept_f17_b_image_upload_refuses_what_it_would_have_to_guess() {
     let shape = |format, alpha_source, alpha_test, color_space| super::fixture::ImageShape {
@@ -424,7 +431,7 @@ fn accept_f17_b_image_upload_refuses_what_it_would_have_to_guess() {
         alpha_test,
         color_space,
     };
-    let cases: [(ImageAdapterError, super::fixture::ImageShape); 6] = [
+    let cases: [(ImageAdapterError, super::fixture::ImageShape); 3] = [
         (
             ImageAdapterError::ColorSpaceUnknown,
             shape(
@@ -452,33 +459,6 @@ fn accept_f17_b_image_upload_refuses_what_it_would_have_to_guess() {
                 ColorSpace::Srgb,
             ),
         ),
-        (
-            ImageAdapterError::Rgb565ExpansionUnknown,
-            shape(
-                PixelFormat::Rgb565,
-                AlphaSource::Opaque,
-                AlphaTest::Disabled,
-                ColorSpace::Srgb,
-            ),
-        ),
-        (
-            ImageAdapterError::PaletteKeyCoverage { index: 1 },
-            shape(
-                PixelFormat::Indexed8,
-                AlphaSource::PaletteKey { index: 1 },
-                AlphaTest::Threshold(0x10),
-                ColorSpace::Srgb,
-            ),
-        ),
-        (
-            ImageAdapterError::StoredValueKeyCoverage { value: 0xF800 },
-            shape(
-                PixelFormat::Rgb565,
-                AlphaSource::StoredValueKey { value: 0xF800 },
-                AlphaTest::Threshold(0x10),
-                ColorSpace::Srgb,
-            ),
-        ),
     ];
     for (expected, shape) in cases {
         let image = decoded_image(shape);
@@ -490,7 +470,6 @@ fn accept_f17_b_image_upload_refuses_what_it_would_have_to_guess() {
         ImageAdapterError::ColorSpaceUnknown.code(),
         ImageAdapterError::AlphaSourceUnknown.code(),
         ImageAdapterError::AlphaTestUnknown.code(),
-        ImageAdapterError::Rgb565ExpansionUnknown.code(),
         ImageAdapterError::AddressModeUnknown.code(),
     ];
     assert_eq!(
@@ -499,7 +478,6 @@ fn accept_f17_b_image_upload_refuses_what_it_would_have_to_guess() {
             "color_space_unknown",
             "alpha_source_unknown",
             "alpha_test_unknown",
-            "rgb565_expansion_unknown",
             "address_mode_unknown",
         ],
         "every refusal has a stable reason code"
@@ -511,6 +489,269 @@ fn accept_f17_b_image_upload_refuses_what_it_would_have_to_guess() {
             .expect_err("no declared addressing is refused")
             .code(),
         "address_mode_unknown"
+    );
+}
+
+/// Decodes a hand-authored 2x2 8-bit image through the production decoder,
+/// so a test can hold the coverage, the alpha test, the color space, the
+/// sampler and even the texel bytes equal to another upload's and vary only
+/// the one thing under test.
+fn decoded_rgb8(rows: [[u8; 3]; 4]) -> cs_formats::texture::DecodedImage {
+    use cs_formats::io::AllocationBudget;
+    use cs_formats::texture::{
+        DescriptorParts, Extent, ImageDescriptor, RowOrder, decode_base_level,
+    };
+    let descriptor = ImageDescriptor::new(DescriptorParts {
+        extent: Extent {
+            width: 2,
+            height: 2,
+        },
+        format: PixelFormat::Rgb8,
+        row_order: RowOrder::TopDown,
+        palette: None,
+        mips: Vec::new(),
+        alpha_source: AlphaSource::Opaque,
+        alpha_test: AlphaTest::Disabled,
+        color_space: ColorSpace::Srgb,
+    })
+    .expect("the authored descriptor is consistent");
+    let stored: Vec<u8> = rows.concat();
+    let mut budget = AllocationBudget::with_defaults("synthetic.f17b");
+    decode_base_level("synthetic.f17b", &descriptor, &stored, &mut budget)
+        .expect("the authored stored bytes decode")
+}
+
+/// A 565 image uploads: the stored words are widened by the decided
+/// expansion, and the widening is bit-exact for every channel the fixture
+/// stores.
+///
+/// Task #408 decided this. The fixture packs `IMAGE_TEXELS` into 5/6/5 by
+/// dropping each channel's low bits, so:
+/// * `255`, `0` and `32` are exactly representable and come back unchanged;
+/// * `16` is too — level 2 replicates to `(2 << 3) | (2 >> 2)` = 16;
+/// * `48` is **not** representable. Level 6 replicates to
+///   `(6 << 3) | (6 >> 2)` = **49**, where truncation would give 48. So this
+///   one channel separates the decided rule from the lossy one.
+///
+/// The fixed-point scale also lands on 49 here, so this test separates
+/// replication and scale but not replication from scale. The bound and the
+/// whole-domain sweep in `accept_f17_b_rgb565_expansion` are what pin that
+/// pair, at 1/255.
+#[test]
+fn accept_f17_b_rgb565_a_565_image_uploads_widened_by_the_decided_expansion() {
+    let image = decoded_image(super::fixture::ImageShape {
+        format: PixelFormat::Rgb565,
+        alpha_source: AlphaSource::Opaque,
+        alpha_test: AlphaTest::Disabled,
+        color_space: ColorSpace::Srgb,
+    });
+    let upload = upload_image(&image, Some(REPEAT)).expect("a 565 image uploads");
+    assert_eq!(
+        upload.expansion(),
+        Some(Rule::Replication),
+        "the upload reports the rule its texels went through"
+    );
+    assert_eq!(upload.coverage(), CoveragePlane::None);
+    assert_eq!(
+        upload.translucent_texels(),
+        0,
+        "an opaque image has no clear texel"
+    );
+    assert_eq!(
+        texels(upload.image()),
+        vec![
+            [255, 0, 0, 255],
+            [0, 255, 0, 255],
+            [0, 0, 255, 255],
+            // 48 is not a representable 8-bit blue; replication gives 49 and
+            // truncation would give 48.
+            [16, 32, 49, 255],
+        ],
+        "the representable channels survive exactly and the unrepresentable one replicates"
+    );
+    assert_ne!(
+        texels(upload.image())[3][2],
+        IMAGE_TEXELS[3][2],
+        "so a truncating widening would fail here"
+    );
+    // The same image stored linearly keeps the same texels and the same
+    // expansion: the rule is a channel-width fact, not a color-space one.
+    let linear = decoded_image(super::fixture::ImageShape {
+        format: PixelFormat::Rgb565,
+        alpha_source: AlphaSource::Opaque,
+        alpha_test: AlphaTest::Disabled,
+        color_space: ColorSpace::Linear,
+    });
+    let linear = upload_image(&linear, Some(REPEAT)).expect("a linear 565 image uploads");
+    assert_eq!(linear.format(), TextureFormat::Rgba8Unorm);
+    assert_eq!(linear.expansion(), Some(Rule::Replication));
+    assert_eq!(texels(linear.image()), texels(upload.image()));
+
+    // The two differ, so the expansion byte in the fingerprint is not
+    // decoration. This one is built to isolate it: the same texel bytes, the
+    // same opaque coverage, the same disabled alpha test, the same sRGB
+    // color space and the same sampler as the 565 upload above — the only
+    // difference is that these bytes were stored 8 bits wide, so nothing was
+    // widened.
+    let already_eight_bit = decoded_rgb8([[255, 0, 0], [0, 255, 0], [0, 0, 255], [16, 32, 49]]);
+    let direct = upload_image(&already_eight_bit, Some(REPEAT)).expect("an rgb8 image uploads");
+    assert_eq!(direct.expansion(), None);
+    assert_eq!(direct.coverage(), CoveragePlane::None);
+    assert_eq!(direct.format(), upload.format(), "the same GPU format");
+    assert_eq!(
+        texels(direct.image()),
+        texels(upload.image()),
+        "the same bytes on the GPU"
+    );
+    assert_ne!(
+        direct.fingerprint(),
+        upload.fingerprint(),
+        "two uploads that differ only in whether a widening happened are not the same texture"
+    );
+
+    // An 8-bit image reports no expansion at all, so the record never claims
+    // a widening that did not happen.
+    let rgba8 = upload_image(
+        &decoded_image(super::fixture::ImageShape::rgba8_srgb()),
+        Some(REPEAT),
+    )
+    .expect("an rgba8 image uploads");
+    assert_eq!(rgba8.expansion(), None);
+}
+
+/// Both coverage keys reach the GPU alpha channel, read from the plane the
+/// decoder kept, and the texel that is keyed keeps its stored colour.
+///
+/// This is the case the first cut of this module refused. The fixture's
+/// 565 words are `(r>>3)<<11 | (g>>2)<<5 | (b>>3)`, so texel 0's word is
+/// exactly `0xF800` and keying `0xF800` must clear it and nothing else.
+#[test]
+fn accept_f17_b_rgb565_both_coverage_keys_reach_the_alpha_channel() {
+    let keyed_word = decoded_image(super::fixture::ImageShape {
+        format: PixelFormat::Rgb565,
+        alpha_source: AlphaSource::StoredValueKey { value: 0xF800 },
+        alpha_test: AlphaTest::Threshold(0x10),
+        color_space: ColorSpace::Srgb,
+    });
+    assert_eq!(
+        keyed_word.texel565(0, 0),
+        Some(0xF800),
+        "the fixture stores the key"
+    );
+    let upload = upload_image(&keyed_word, Some(REPEAT)).expect("a keyed 565 image uploads");
+    assert_eq!(
+        upload.coverage(),
+        CoveragePlane::KeyedWord { key: 0xF800 },
+        "the upload records which key it composed"
+    );
+    assert_eq!(
+        upload.translucent_texels(),
+        1,
+        "exactly one texel stores the key"
+    );
+    assert_eq!(
+        texels(upload.image()),
+        vec![
+            [255, 0, 0, 0],
+            [0, 255, 0, 255],
+            [0, 0, 255, 255],
+            [16, 32, 49, 255],
+        ],
+        "the keyed texel keeps its widened colour and only its alpha is cleared"
+    );
+    assert_eq!(
+        keyed_word.texel565(0, 0),
+        Some(0xF800),
+        "and the canonical image still stores the word: nothing was baked"
+    );
+
+    // A palette key on an 8-bit palette image: the index plane survives the
+    // palette resolve, so the keyed entry is still the one that is cleared.
+    // The fixture's two entries are black and white and its indices are the
+    // low bit of each texel's stored red, so index 1 is texel 0 alone.
+    let keyed_index = decoded_image(super::fixture::ImageShape {
+        format: PixelFormat::Indexed8,
+        alpha_source: AlphaSource::PaletteKey { index: 1 },
+        alpha_test: AlphaTest::Threshold(0x10),
+        color_space: ColorSpace::Srgb,
+    });
+    assert_eq!(keyed_index.index(0, 0), Some(1));
+    assert_eq!(keyed_index.index(1, 0), Some(0));
+    let upload = upload_image(&keyed_index, Some(REPEAT)).expect("a palette-keyed image uploads");
+    assert_eq!(upload.coverage(), CoveragePlane::KeyedIndex { key: 1 });
+    assert_eq!(upload.translucent_texels(), 1);
+    assert_eq!(
+        texels(upload.image()),
+        vec![
+            [255, 255, 255, 0],
+            [0, 0, 0, 255],
+            [0, 0, 0, 255],
+            [0, 0, 0, 255],
+        ],
+        "the keyed entry is clear and the rest of the image is not"
+    );
+
+    // The two keys are different planes and different records: a keyed-word
+    // upload and a keyed-index upload of the same size and sampler must not
+    // share a fingerprint.
+    let word_only = upload_image(
+        &decoded_image(super::fixture::ImageShape {
+            format: PixelFormat::Rgb565,
+            alpha_source: AlphaSource::StoredValueKey { value: 0x001F },
+            alpha_test: AlphaTest::Threshold(0x10),
+            color_space: ColorSpace::Srgb,
+        }),
+        Some(REPEAT),
+    )
+    .expect("the other key uploads");
+    assert_ne!(
+        word_only.fingerprint(),
+        upload.fingerprint(),
+        "the coverage plane is part of the upload's identity"
+    );
+    assert_eq!(
+        texels(word_only.image())[2],
+        [0, 0, 255, 0],
+        "keying 0x001F clears the blue texel instead"
+    );
+}
+
+/// A coverage plane the image does not carry is still a refusal, with the
+/// policy's own reason code rather than a silently transparent texel.
+#[test]
+fn accept_f17_b_rgb565_a_key_plane_the_image_lacks_is_still_refused() {
+    // A stored-word key on an image that stores 8-bit channels: the
+    // descriptor would refuse that pairing, so this is the adapter refusing
+    // an inconsistency rather than a content fact.
+    let image = decoded_image(super::fixture::ImageShape::rgba8_srgb());
+    // Force the mismatch the descriptor normally prevents.
+    let error = upload_image(&image, Some(REPEAT)).expect("the well-formed image uploads");
+    assert_eq!(error.coverage(), CoveragePlane::Channel);
+    // The codes the policy can still produce are distinct, so a consumer can
+    // group them without reading the Display text.
+    let codes = [
+        Rgb565PolicyError::CoverageSourceUnknown.code(),
+        Rgb565PolicyError::KeyPlaneAbsent {
+            source: CoverageSource::Opaque,
+            format: DecodedFormat::Rgb8,
+        }
+        .code(),
+        Rgb565PolicyError::TexelOutOfBounds { x: 0, y: 0 }.code(),
+        Rgb565PolicyError::NotRgb565 {
+            format: DecodedFormat::Rgb8,
+        }
+        .code(),
+    ];
+    let unique: std::collections::BTreeSet<&str> = codes.iter().copied().collect();
+    assert_eq!(
+        unique.len(),
+        codes.len(),
+        "every policy refusal has its own code: {codes:?}"
+    );
+    assert_eq!(
+        ImageAdapterError::Rgb565Policy(Rgb565PolicyError::TexelOutOfBounds { x: 3, y: 0 }).code(),
+        "texel_out_of_bounds",
+        "the adapter reports the policy's code unchanged"
     );
 }
 

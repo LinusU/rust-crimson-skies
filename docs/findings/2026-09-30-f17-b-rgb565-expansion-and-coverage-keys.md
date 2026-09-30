@@ -24,14 +24,16 @@ presentation facts, and this task decides two of them:
 | `AlphaSourceUnknown` | no — `AlphaSource::Unknown` names no plane | still unknown; F17-D |
 | `AlphaTestUnknown` | no — the ZBD reader declares `AlphaTest::Unknown` for every package row | F17-A facts / F17-D |
 | `AddressModeUnknown` | no — the material never declared addressing | F17-D |
-| **`Rgb565ExpansionUnknown`** | **yes — bit replication, `ClaimStatus::Designed`** | this task |
-| **`PaletteKeyCoverage`** | **yes — representable from the retained index plane** | this task |
-| **`StoredValueKeyCoverage`** | **yes — representable from the stored 16-bit word** | this task |
+| **`Rgb565ExpansionUnknown`** | **yes — removed; a 565 image uploads** | this task |
+| **`PaletteKeyCoverage`** | **yes — removed; the key reaches the alpha channel** | this task |
+| **`StoredValueKeyCoverage`** | **yes — removed; the key reaches the alpha channel** | this task |
 
 The expansion and the two keys are decided *as a policy*, in
 `crates/cs_app/src/render/rgb565.rs`, which is Bevy-free and holds no
-Bevy asset. The adapter applies it; the policy owns the choice, the
-status, the evidence-free refusals and the reason codes.
+Bevy asset. `cs_app::render::bevy_image` applies it: every texel's color
+and alpha now come from that module, and the three refusals above are gone
+from `ImageAdapterError`. What the adapter still refuses is the four
+decisions nobody has made.
 
 ## Decision 1: the expansion is `designed`, not an F17-D gate
 
@@ -86,6 +88,18 @@ for F17-D.
 a choice about a *transfer function*; a 565 word stores no transfer
 function. Correcting one would double-correct the sampler, which spec F17
 non-negotiable 3 forbids. It is named here so nobody adds it later.
+
+**The sRGB interaction, stated because a reviewer will ask.** Spec F17
+non-negotiable 3 says decoding and GPU sampling must not double-correct.
+The expansion does not affect that, and the order is the same on both
+routes: a 5/6/5 word is widened to 8-bit unorm (by a card's expander on
+the original, by [`Rule::Replication`] here), and *then* the sRGB unit
+decodes. Uploading the widened bytes as `Rgba8UnormSrgb` therefore
+reproduces "widen, then decode" exactly; it does not decode first and
+widen afterwards, which is the mistake that would double-correct. Note
+this is still gated behind the color-space refusal: the ZBD reader
+declares `ColorSpace::Unknown` for all 37,004 package rows, so no upload
+format is chosen for any of them yet.
 
 ## Decision 2: both coverage keys survive, and neither needs a decision
 
@@ -198,22 +212,48 @@ task and none of them is guessed away.
 
 ## What is refused, and with which reason code
 
-`Rgb565PolicyError` — every variant has a stable code, and the test
-asserts the four codes are distinct so a consumer can group by them.
+`ImageAdapterError` after this task: the four decisions nobody has made
+(`ColorSpaceUnknown`, `AlphaSourceUnknown`, `AlphaTestUnknown`,
+`AddressModeUnknown`), plus `Rgb565Policy(Rgb565PolicyError)`, which
+forwards the policy's own code unchanged. The policy's four refusals each
+have a stable code, and a test asserts the four codes are distinct so a
+consumer can group by them.
 
 | Refusal | Code | What is missing |
 | --- | --- | --- |
-| `CoverageSourceUnknown` | `coverage_source_unknown` | the stored `AlphaSource` is `Unknown`; affects 22 retail rows |
+| `CoverageSourceUnknown` | `coverage_source_unknown` | the stored `AlphaSource` is `Unknown`; affects 22 retail rows. The adapter maps this one to its own `alpha_source_unknown`, which is F17-B's existing code for the same fact. |
 | `KeyPlaneAbsent` | `coverage_key_plane_absent` | the image does not store the plane the key names (a bug, not content) |
 | `TexelOutOfBounds` | `texel_out_of_bounds` | the coordinate is outside the image |
 | `NotRgb565` | `not_rgb565` | the image stores no 16-bit word |
 | `ExpansionPolicyError(Unknown \| Contradicted)` | — | a refusal is not an expansion, so it cannot be built as a policy |
 
+One behaviour change worth naming: the adapter used to `expect` the alpha
+channel and the coverage plane to be there, and would have panicked on an
+image that did not carry the plane its `AlphaSource` named. It now goes
+through `coverage_byte`, which reports `KeyPlaneAbsent` instead. The
+descriptor normally prevents that pairing, so this is defence in depth
+rather than a fixed crash, but the adapter no longer has a panic path in
+that loop.
+
 ## Files and the one observable failure (listed before editing)
 
 - `crates/cs_app/src/render/rgb565.rs` (new): the policy.
 - `crates/cs_app/tests/accept_f17_b_rgb565_expansion.rs` (new): 10
-  synthetic tests + 1 retail census.
+  synthetic policy tests + 1 retail census.
+- `crates/cs_app/src/render/bevy_image.rs`: the adapter now **applies**
+  the policy. `ImageAdapterError` loses `Rgb565ExpansionUnknown`,
+  `PaletteKeyCoverage` and `StoredValueKeyCoverage` and gains
+  `Rgb565Policy(Rgb565PolicyError)`, which reports the policy's own reason
+  code. `CoveragePlane` gains `KeyedWord { key }` and `KeyedIndex { key }`
+  so the upload *records* which key it composed. Every texel — color and
+  alpha — now comes from `render::rgb565`; the adapter widens and keys
+  nothing itself. The fingerprint descriptor gains the expansion rule and
+  is versioned `v1` → `v2` (a `v1` digest can no longer be read as a `v2`
+  one, and no `v1` digest for a 565 image can exist because a 565 image
+  used to be refused). `ImageUpload::expansion()` reports the rule.
+- `crates/cs_app/tests/render/adapters.rs`: 3 new `accept_f17_b_rgb565_`
+  tests at the adapter level, plus the F17-B refusal test trimmed to the
+  three refusals that are still unestablished (it listed six).
 - `crates/cs_app/src/render/mod.rs`: one `pub mod rgb565;` line (wiring).
 
 **One observable failure:** if `expand_texel` did not read the coverage
@@ -221,10 +261,31 @@ from the `CoverageSource` it was handed — hardcoding `Opaque`, say, or
 recomputing the word comparison itself — the keyed fixtures fail.
 Observed, then reverted (rows M8 and M8b below).
 
+## Where the adapter-level tests live, and why
+
+The policy tests are a standalone binary
+(`crates/cs_app/tests/accept_f17_b_rgb565_expansion.rs`); the adapter tests
+are three cases inside F17-B's own `crates/cs_app/tests/render/adapters.rs`.
+Both carry the `accept_f17_b_rgb565_` prefix, so one task selection finds
+both. The split is deliberate: the adapter tests need F17-B's shared
+fixture, and duplicating that fixture would have been a second copy of the
+same production-fed inputs that could drift from the first.
+
+That fixture turned out to be a better discriminator than expected. It
+packs its colours into 5/6/5 by dropping each channel's low bits, and one
+of them, `(16, 32, 48)`, has a blue level of 6 that is **not** exactly
+representable: replication gives `(6 << 3) | (6 >> 2)` = 49 where
+truncation gives 48. So the adapter test separates the decided rule from
+the lossy one on a real upload, and the fixed-point scale happens to land
+on 49 as well, so it separates replication from scale only through the
+whole-domain sweep and the 1/255 bound. That is stated in the test rather
+than glossed.
+
 ## Tests and what each acceptance criterion is pinned by
 
-11 tests, all `accept_f17_b_rgb565_`. The ten synthetic ones need no
-`CS_GAME_DIR`; the census is `#[ignore]`d and fails loudly without it.
+14 tests carry the prefix: 10 synthetic policy tests, 3 adapter tests, and
+1 retail census. The synthetic and adapter ones need no `CS_GAME_DIR`; the
+census is `#[ignore]`d and fails loudly (exit 101) without it.
 
 | Criterion | Test |
 | --- | --- |
@@ -237,7 +298,10 @@ Observed, then reverted (rows M8 and M8b below).
 | `StoredValueKey` coverage | `..._a_stored_word_key_marks_exactly_the_texels_storing_the_key` |
 | `PaletteKey` coverage, through a duplicate entry | `..._a_palette_index_key_survives_a_duplicate_palette_entry` |
 | coverage is independent of the rule | `..._a_coverage_key_does_not_depend_on_the_expansion_rule` |
-| the remaining refusals | `..._an_absent_key_plane_and_an_out_of_range_texel_stay_refusals` |
+| the remaining policy refusals | `..._an_absent_key_plane_and_an_out_of_range_texel_stay_refusals` |
+| **a 565 image uploads, widened, and the widening is in its identity** | `render::adapters::..._a_565_image_uploads_widened_by_the_decided_expansion` |
+| **both keys reach the alpha channel and the texel keeps its colour** | `render::adapters::..._both_coverage_keys_reach_the_alpha_channel` |
+| **the adapter still refuses a key plane the image lacks** | `render::adapters::..._a_key_plane_the_image_lacks_is_still_refused` |
 | affected retail content quantified | `..._retail_565_rows_and_coverage_keys_are_counted` (ignored, `retail`) |
 
 The expected channel values are **tables written into the test file**,
@@ -246,18 +310,23 @@ not the production formula recomputed: `REPLICATION_5` and
 `expand5`/`expand6`/`Rule` shows up as a wrong channel at a named level.
 `Rule::max_channel_deviation` and `Rule::is_injective` are additionally
 cross-checked against brute-force sweeps in the test, over every ordered
-pair of rules and every pair of levels.
+pair of rules and every pair of levels. The adapter's texel expectations
+are written out per coordinate, and the isolation case for the fingerprint
+is a hand-authored 8-bit image with the *same* texel bytes, coverage, alpha
+test, color space and sampler, so the only variable is whether a widening
+happened.
 
 ## Mutation verification (applied, run, reverted)
 
-Every row was applied to `crates/cs_app/src/render/rgb565.rs`, the
-`accept_f17_b_rgb565_expansion` target was run, and the change reverted;
-the tree was clean afterwards. The "not caught" rows are real and are
-reported as such.
+Every row was applied to the module it names, the relevant target was run,
+and the change reverted; the tree was clean afterwards. The "not caught"
+rows are real and are reported as such.
+
+### Policy module
 
 | # | Mutation | Caught by |
 | --- | --- | --- |
-| M1 | `expand5` → `level << 3` (truncation) | **5 tests** fail: `..._every_channel_level_widens_to_the_decided_value`, `..._every_one_of_the_65_536_stored_words_expands`, `..._a_stored_word_key_marks_exactly_the_texels_storing_the_key`, `..._a_palette_index_key_survives_a_duplicate_palette_entry`, `..._the_deviation_between_rules_is_computed_and_bounded` |
+| M1 | `expand5` → `level << 3` (truncation) | **5 tests** fail: `..._every_channel_level_widens_to_the_decided_value`, `..._every_one_of_the_65_536_stored_words_expands`, `..._a_stored_word_key_...`, `..._a_palette_index_key_...`, `..._the_deviation_between_rules_...` |
 | M2 | `expand6` → `level * 255 / 63` (fixed-point scale) | **2 tests** fail: `..._every_channel_level_widens_to_the_decided_value` (6-bit level 16 is 64, not 65) and `..._every_one_of_the_65_536_stored_words_expands` |
 | M3 | `StoredValueKey` coverage compares `expand(word)` against `expand(key)` | **NOT CAUGHT — semantic no-op.** Every rule is injective, so this is the same function. Recorded, not hidden; see Decision 2's honest limit. |
 | M4 | `PaletteIndex` coverage ignores the key and returns opaque | `..._a_palette_index_key_survives_a_duplicate_palette_entry` |
@@ -270,11 +339,22 @@ reported as such.
 | M10 | `expand5` drops the `& 0x1F` level mask | `..._every_one_of_the_65_536_stored_words_expands` — **only after the probe found it escaped**: the first version never passed a level wider than the channel. The test now sweeps levels 32..=255 and 64..=255. |
 | M11 | a missing key plane returns `Ok(0)` instead of `KeyPlaneAbsent` | `..._an_absent_key_plane_and_an_out_of_range_texel_stay_refusals` |
 
-**Two of these were real gaps in my own tests** (M9, M10) and were fixed
-by the probe rather than argued away. Two are genuine semantic no-ops
-(M3, M8) that no test in this task can discriminate, and the honest
-response is the injectivity check and the note above, not a claim that
-the choice is pinned.
+### The adapter wiring
+
+| # | Mutation | Caught by |
+| --- | --- | --- |
+| N1 | the adapter refuses a 565 image again | **2 tests** fail: `..._a_565_image_uploads_widened_by_the_decided_expansion` and `..._both_coverage_keys_reach_the_alpha_channel` |
+| N2 | the adapter widens with `Rule::Truncation` | **2 tests** fail, on the unrepresentable blue channel: 48 instead of 49 |
+| N3 | `CoveragePlane::from(StoredWord)` maps a key onto `Separate` | `..._both_coverage_keys_reach_the_alpha_channel` (the upload would misreport which key it composed) |
+| N4 | `ImageUpload::expansion()` always reports `None` | `..._a_565_image_uploads_widened_by_the_decided_expansion` |
+| N5 | the expansion byte is dropped from the fingerprint descriptor | `..._a_565_image_uploads_widened_by_the_decided_expansion` — **only after the probe found it escaped**: the first version compared a 565 upload against an RGBA8 one, which differ in the coverage and the alpha test too, so it proved nothing about the expansion byte. The test now builds a hand-authored 8-bit image with the *same* texels, coverage, alpha test, color space and sampler, and the assertion is that those two uploads are not the same texture. |
+| N6 | the descriptor version stays `v1` | **NOT CAUGHT**, and it is not pinned on purpose. A version tag's whole job is to differ from what it replaced, and no digest from the old layout is stored in the workspace to compare against — the derived cache under `private/` is git-ignored and machine-local. Pinning a literal digest would catch this and would also fail on any future, intended descriptor change, which would be a worse trade. |
+
+**Three of these were real gaps in my own tests** (M9, M10, N5) and were
+fixed by the probe rather than argued away. Two are genuine semantic no-ops
+(M3, M8) and one is an unpinned tag (N6); the honest response to those is
+the injectivity check, the note above and the stated reason, not a claim
+that a test pins them.
 
 ## Recorded unknowns and limitations
 

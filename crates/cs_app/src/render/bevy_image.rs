@@ -17,10 +17,18 @@
 //! | Choice | Made from | Refused when |
 //! | --- | --- | --- |
 //! | color space | `DecodedImage::color_space` | `ColorSpace::Unknown` |
-//! | coverage encoding | `AlphaSource` | `Unknown`, or a key that lives in a plane the GPU never sees |
+//! | coverage encoding | [`crate::render::rgb565::CoverageSource`] | `Unknown`, or a key whose plane the image does not carry |
 //! | alpha test | `AlphaTest` | `Unknown` on an image that carries coverage |
-//! | channel layout | `DecodedFormat` | `Rgb565`, whose expansion is unmeasured |
+//! | channel layout | [`crate::render::rgb565`] | never: the expansion is decided, so a 565 image uploads |
 //! | addressing | `MaterialFacts::addressing` | never declared |
+//!
+//! The channel-layout and coverage-encoding rows are the two this module
+//! used to refuse. They are decided in [`crate::render::rgb565`] (task
+//! #408, `docs/findings/2026-09-30-f17-b-rgb565-expansion-and-coverage-keys.md`):
+//! a 5/6/5 word is widened by bit replication, claimed
+//! `ClaimStatus::Designed`, and both coverage keys are read from the plane
+//! F08's decoder already retains. The adapter *applies* that policy; it
+//! does not re-derive it, and it never widens or keys a value itself.
 //!
 //! # The double-correction rule (spec F17 non-negotiable 3)
 //!
@@ -53,12 +61,11 @@ use bevy::asset::RenderAssetUsages;
 use bevy::image::{Image, ImageAddressMode, ImageFilterMode, ImageSampler, ImageSamplerDescriptor};
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use cs_assets::install::sha256;
-use cs_formats::texture::{
-    AlphaSource, AlphaTest, ColorSpace, DecodedFormat, DecodedImage, Extent,
-};
+use cs_formats::texture::{AlphaTest, ColorSpace, DecodedImage, Extent};
 use cs_types::evidence::ContentHash;
 
 use crate::render::material::{AddressMode, TextureAddress};
+use crate::render::rgb565::{self, CoverageSource, ExpansionPolicy, Rgb565PolicyError, Rule};
 
 /// Why a canonical image was refused instead of uploaded.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -73,23 +80,10 @@ pub enum ImageAdapterError {
     /// The image carries coverage but the alpha test is unestablished, so
     /// the discard threshold would have to be invented.
     AlphaTestUnknown,
-    /// A 16-bit-per-channel image whose texel words are stored raw. How the
-    /// original engine expanded them is unmeasured
-    /// (`PresentationUnknown::Rgb565Expansion`).
-    Rgb565ExpansionUnknown,
-    /// Coverage keyed on a palette index. The index plane is not a GPU
-    /// input, and two palette entries may resolve to the same color, so the
-    /// key cannot survive the resolve.
-    PaletteKeyCoverage {
-        /// The keyed palette entry.
-        index: u8,
-    },
-    /// Coverage keyed on a stored 565 word. Refused for the same reason as
-    /// [`Self::Rgb565ExpansionUnknown`].
-    StoredValueKeyCoverage {
-        /// The keyed texel word.
-        value: u16,
-    },
+    /// A key plane the image does not carry, a texel outside the image, or
+    /// an image that stores no 16-bit word to widen. The decided expansion
+    /// and the two decided keys are *not* here any more: they upload.
+    Rgb565Policy(Rgb565PolicyError),
     /// The material never declared texture addressing, so the sampler's
     /// address modes would be invented.
     AddressModeUnknown,
@@ -102,9 +96,7 @@ impl ImageAdapterError {
             Self::ColorSpaceUnknown => "color_space_unknown",
             Self::AlphaSourceUnknown => "alpha_source_unknown",
             Self::AlphaTestUnknown => "alpha_test_unknown",
-            Self::Rgb565ExpansionUnknown => "rgb565_expansion_unknown",
-            Self::PaletteKeyCoverage { .. } => "palette_key_coverage_unknown",
-            Self::StoredValueKeyCoverage { .. } => "stored_value_key_coverage_unknown",
+            Self::Rgb565Policy(error) => error.code(),
             Self::AddressModeUnknown => "address_mode_unknown",
         }
     }
@@ -121,19 +113,7 @@ impl fmt::Display for ImageAdapterError {
                 f,
                 "the image carries coverage but its alpha test is not established"
             ),
-            Self::Rgb565ExpansionUnknown => write!(
-                f,
-                "the stored 16-bit texel words have no measured expansion to 8 bits"
-            ),
-            Self::PaletteKeyCoverage { index } => {
-                write!(
-                    f,
-                    "coverage is keyed on palette index {index}, which the resolve loses"
-                )
-            }
-            Self::StoredValueKeyCoverage { value } => {
-                write!(f, "coverage is keyed on stored texel word 0x{value:04X}")
-            }
+            Self::Rgb565Policy(error) => write!(f, "{error}"),
             Self::AddressModeUnknown => write!(
                 f,
                 "the material declares no texture addressing, so the sampler would be invented"
@@ -144,13 +124,29 @@ impl fmt::Display for ImageAdapterError {
 
 impl std::error::Error for ImageAdapterError {}
 
-/// How many coverage planes the decoder found.
+/// Where the decoder found the coverage the upload composed into its alpha
+/// channel.
+///
+/// The two keyed variants were refusals in the first cut of this module;
+/// they are planes like the others now, read through
+/// [`crate::render::rgb565::coverage_byte`] while the stored plane is still
+/// there.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CoveragePlane {
     /// The stored alpha channel of an RGBA8 image.
     Channel,
     /// A separate coverage plane stored after the color texels.
     Separate,
+    /// A stored 16-bit texel word compared against the key.
+    KeyedWord {
+        /// The transparent stored word.
+        key: u16,
+    },
+    /// A retained palette index compared against the key.
+    KeyedIndex {
+        /// The transparent palette index.
+        key: u8,
+    },
     /// No coverage anywhere: every texel is opaque.
     None,
 }
@@ -161,7 +157,21 @@ impl CoveragePlane {
         match self {
             Self::Channel => "channel",
             Self::Separate => "separate",
+            Self::KeyedWord { .. } => "keyed_word",
+            Self::KeyedIndex { .. } => "keyed_index",
             Self::None => "none",
+        }
+    }
+}
+
+impl From<CoverageSource> for CoveragePlane {
+    fn from(source: CoverageSource) -> Self {
+        match source {
+            CoverageSource::Opaque => Self::None,
+            CoverageSource::Channel => Self::Channel,
+            CoverageSource::StoredPlane => Self::Separate,
+            CoverageSource::StoredWord { key } => Self::KeyedWord { key },
+            CoverageSource::PaletteIndex { key } => Self::KeyedIndex { key },
         }
     }
 }
@@ -182,6 +192,7 @@ pub struct ImageUpload {
     coverage: CoveragePlane,
     alpha_test: AlphaTest,
     address: TextureAddress,
+    expansion: Option<Rule>,
     translucent_texels: u32,
     fingerprint: ContentHash,
 }
@@ -204,26 +215,31 @@ pub fn upload_image(
         ColorSpace::Unknown => return Err(ImageAdapterError::ColorSpaceUnknown),
     };
     let address = address.ok_or(ImageAdapterError::AddressModeUnknown)?;
-    let alpha_source = image.alpha_source();
-    let coverage = match alpha_source {
-        AlphaSource::Opaque => CoveragePlane::None,
-        AlphaSource::Channel => CoveragePlane::Channel,
-        AlphaSource::Plane => CoveragePlane::Separate,
-        AlphaSource::Unknown => return Err(ImageAdapterError::AlphaSourceUnknown),
-        AlphaSource::PaletteKey { index } => {
-            return Err(ImageAdapterError::PaletteKeyCoverage { index });
+    // `CoverageSource` is the decided projection of a stored `AlphaSource`
+    // onto the plane its coverage is read from, and the only constructor of
+    // one. The single failure it has is `AlphaSource::Unknown`, which keeps
+    // this module's own `alpha_source_unknown` reason code.
+    let coverage_source = match CoverageSource::from_source(image.alpha_source()) {
+        Ok(source) => source,
+        Err(Rgb565PolicyError::CoverageSourceUnknown) => {
+            return Err(ImageAdapterError::AlphaSourceUnknown);
         }
-        AlphaSource::StoredValueKey { value } => {
-            return Err(ImageAdapterError::StoredValueKeyCoverage { value });
-        }
+        Err(error) => return Err(ImageAdapterError::Rgb565Policy(error)),
     };
+    let coverage = CoveragePlane::from(coverage_source);
     let alpha_test = image.alpha_test();
     if coverage != CoveragePlane::None && alpha_test == AlphaTest::Unknown {
         return Err(ImageAdapterError::AlphaTestUnknown);
     }
-    if image.format() == DecodedFormat::Rgb565 {
-        return Err(ImageAdapterError::Rgb565ExpansionUnknown);
-    }
+    // A 565 image — directly, or through a 565 palette, which decodes to the
+    // same layout — is widened by the decided policy instead of being
+    // refused. `image.format()` is the decoded layout, so this is one
+    // decision covering both stored variants.
+    let expansion = if rgb565::stores_texel_words(image.format()) {
+        Some(ExpansionPolicy::DECIDED)
+    } else {
+        None
+    };
 
     let extent = image.extent();
     let width = extent.width;
@@ -237,25 +253,31 @@ pub fn upload_image(
     let mut translucent_texels = 0u32;
     for y in 0..height {
         for x in 0..width {
-            // The decoder's texel length is the channel count of the decoded
-            // format; the alpha source has already been validated against it,
-            // so an RGB image carries coverage only in a separate plane.
-            let texel = image
-                .texel(x, y)
-                .expect("a decoded image has a texel at every texel of its extent");
-            let alpha = match coverage {
-                CoveragePlane::None => u8::MAX,
-                CoveragePlane::Channel => *texel
-                    .get(3)
-                    .expect("an alpha channel source validated against the format"),
-                CoveragePlane::Separate => image
-                    .alpha_at(x, y)
-                    .expect("a coverage plane has a byte at every texel of its extent"),
+            // Every texel comes from the policy, both halves of it: the
+            // color from the stored word through the decided expansion, or
+            // from the stored bytes when the image stores them directly,
+            // and the alpha from whichever plane the key lives in. This
+            // module widens and keys nothing itself.
+            let [red, green, blue, alpha] = match expansion {
+                Some(policy) => rgb565::expand_texel(image, coverage_source, &policy, x, y)
+                    .map_err(ImageAdapterError::Rgb565Policy)?,
+                None => {
+                    // The decoder's texel length is the channel count of the
+                    // decoded format; the alpha source has already been
+                    // validated against it, so an RGB image carries coverage
+                    // only in a separate plane.
+                    let texel = image
+                        .texel(x, y)
+                        .expect("a decoded image has a texel at every texel of its extent");
+                    let alpha = rgb565::coverage_byte(image, coverage_source, x, y)
+                        .map_err(ImageAdapterError::Rgb565Policy)?;
+                    [texel[0], texel[1], texel[2], alpha]
+                }
             };
             if alpha != u8::MAX {
                 translucent_texels = translucent_texels.saturating_add(1);
             }
-            data.extend_from_slice(&[texel[0], texel[1], texel[2], alpha]);
+            data.extend_from_slice(&[red, green, blue, alpha]);
         }
     }
     debug_assert_eq!(
@@ -293,6 +315,7 @@ pub fn upload_image(
         coverage,
         alpha_test,
         address,
+        expansion.map_or(0u8, |policy| rule_descriptor(policy.rule())),
         translucent_texels,
     );
     let fingerprint = image_fingerprint(&descriptor, &texture);
@@ -305,6 +328,7 @@ pub fn upload_image(
         coverage,
         alpha_test,
         address,
+        expansion: expansion.map(|policy| policy.rule()),
         translucent_texels,
         fingerprint,
     })
@@ -326,16 +350,22 @@ fn descriptor_bytes(
     coverage: CoveragePlane,
     alpha_test: AlphaTest,
     address: TextureAddress,
+    expansion: u8,
     translucent_texels: u32,
 ) -> Vec<u8> {
     let mut bytes = Vec::new();
-    bytes.extend_from_slice(b"cs/render/bevy_image/v1\0");
+    // v2 adds the expansion rule. A 565 image used to be refused, so no v1
+    // fingerprint can exist for one; the version is bumped anyway because
+    // the byte count changed, so a digest computed by either version can
+    // never be read as the other.
+    bytes.extend_from_slice(b"cs/render/bevy_image/v2\0");
     bytes.extend_from_slice(&extent.width.to_le_bytes());
     bytes.extend_from_slice(&extent.height.to_le_bytes());
     bytes.extend_from_slice(&format_descriptor(format));
     bytes.extend_from_slice(&color_space_code(color_space));
     bytes.extend_from_slice(coverage.code().as_bytes());
     bytes.push(0);
+    bytes.push(expansion);
     match alpha_test {
         AlphaTest::Disabled => bytes.push(0),
         AlphaTest::Unknown => bytes.push(1),
@@ -381,6 +411,17 @@ const fn color_space_code(color_space: ColorSpace) -> [u8; 1] {
         ColorSpace::Srgb => *b"s",
         ColorSpace::Linear => *b"l",
         ColorSpace::Unknown => *b"?",
+    }
+}
+
+/// A stable byte per [`Rule`], so the fingerprint does not depend on the
+/// `Debug` spelling of a variant. `0` is "no expansion": the image stores
+/// 8-bit channels already.
+const fn rule_descriptor(rule: Rule) -> u8 {
+    match rule {
+        Rule::Replication => 1,
+        Rule::FixedPointScale => 2,
+        Rule::Truncation => 3,
     }
 }
 
@@ -434,6 +475,16 @@ impl ImageUpload {
     /// The declared addressing, as it reached the sampler.
     pub const fn address(&self) -> TextureAddress {
         self.address
+    }
+
+    /// The widening the stored 16-bit texel words went through, or `None`
+    /// when the image stores 8-bit channels already.
+    ///
+    /// The answer is on the upload rather than inside
+    /// [`crate::render::rgb565`] so a consumer can report which rule
+    /// produced these bytes without re-deriving the format.
+    pub const fn expansion(&self) -> Option<Rule> {
+        self.expansion
     }
 
     /// How many texels are **not** fully opaque after composition — the texels
