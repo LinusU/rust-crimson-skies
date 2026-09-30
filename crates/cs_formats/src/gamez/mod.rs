@@ -23,6 +23,10 @@
 //!   read from the pinned mech3ax v0.6.0 revision and checked against the
 //!   original installation; [`read_gamez_meshes`] produces [`GameZMeshes`],
 //!   whose entries are [`RawMesh`] values with everything still raw.
+//! * [`census`] is the report: [`FaceCensus`] accounts for every face a
+//!   container declares — what the records claim, what the section held, and
+//!   each face that reaches no drawable triangle — which is AC04's exact
+//!   missing/invalid face count for one archive.
 //! * [`materials`] is the rest of the container header's sections: the
 //!   44-byte texture-name record with its NUL-suffixed name encoding, the
 //!   16-byte material section header, the 40-byte material record, the

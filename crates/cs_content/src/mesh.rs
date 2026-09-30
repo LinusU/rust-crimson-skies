@@ -7472,7 +7472,7 @@ mod tests {
 
     /// One archive's render-gate verdict, as the evidence harness reads it:
     /// asserted by [`f10_d_render_report`] and written to
-    /// `CS_EVIDENCE_DIR/render-gate.json` by the test when that variable is
+    /// `CS_EVIDENCE_DIR/render-gate.tsv` by the test when that variable is
     /// set (the evidence run sets it; see the harness's module doc).
     #[derive(Debug, Clone, PartialEq, Eq)]
     struct F10DRenderRow {
