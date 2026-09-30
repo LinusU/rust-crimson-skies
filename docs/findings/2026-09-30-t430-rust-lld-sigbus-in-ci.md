@@ -30,7 +30,7 @@ error: doctest failed, to rerun pass `-p cs_app --doc`
 | 36728255759 | rally/417 | 2026-09-30 14:55 | `cargo test` failed at this link |
 | 36729946195 | rally/420 | 2026-09-30 14:33 and 14:55 | `cargo test` failed at this link |
 | 36725414616 | rally/420 | 2026-09-30 14:08 and 14:21 | `cargo test` failed at this link |
-| 36723571849 | rally/417 | 2026-09-30 14:0x | `cargo test` failed at this link |
+| 36723571849 | rally/417 | 2026-09-30, earlier | `cargo test` failed at this link |
 | 36728100091 | main | 2026-09-30 14:18 | passed, same restored cache |
 | 36722210693 | rally/420 | 2026-09-30 13:31 | passed, same tree |
 
@@ -196,18 +196,21 @@ and `accept_t430_the_workspace_keeps_backtrace_line_numbers` fail and
 ## CI verification
 
 CI runs on every push, and the acceptance criterion for this task is repeated
-green runs. Run **36739807340** (push, head `de07a45`) is green on
-`ubuntu24`, including the step that was failing:
+green runs. Run **36739807340** (push, head `de07a45`, attempts 1 and 2 both
+green) and run **36747597757** (push, head `8bc12bc`, green after the rebase
+onto the then-current `main`) are green on `ubuntu24`, including the step that
+was failing:
 
 * the `cargo test` step recompiled **395 crates** (`bevy_pbr`, `bevy_render`,
   `wgpu`, `naga`, …), so the failing link really did run against
   `line-tables-only` rlibs instead of the cached full-DWARF ones;
 * the merged doctest linked and passed: `Doc-tests cs_app` →
-  `test crates/cs_app/src/livery.rs - livery (line 49) ... ok`,
-  `merged doctests compilation took 2.03s`;
+  `test crates/cs_app/src/livery.rs - livery (line 49) ... ok`
+  (`merged doctests compilation took 2.03s` in 36739807340, `1.85s` in
+  36747597757 — the same link that died after 3.03s in the failing runs);
 * the five `accept_t430_` tests pass there;
 * the restored cache was the **old** one (`Cache Size: ~2577 MB`) and the
-  post-job step reported `Cache up-to-date`, so this run started from the
+  post-job step reported `Cache up-to-date`, so these runs started from the
   full-DWARF tree — the harder direction, not the easier one.
 
 The runs are listed in the handover summary; every one of them is a
