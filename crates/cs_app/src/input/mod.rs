@@ -183,24 +183,6 @@ impl InputCollector {
         }
     }
 
-    /// Appends an already resolved action to the current frame.
-    ///
-    /// This is the seam the session's manual path uses: `observe_edge` resolves
-    /// a source through the bindings and this method appends the result, so a
-    /// caller that has already decided which action a source produced (because
-    /// it also has to route the action to a UI request) does not have to resolve
-    /// it twice. A continuous command is refused here: its value comes from the
-    /// device adapters, never from a press.
-    pub fn push_action(&mut self, action: Action) -> bool {
-        if let Action::Flight(command) = action
-            && command.is_continuous()
-        {
-            return false;
-        }
-        self.frame.push_edge(action);
-        true
-    }
-
     /// Applies one device event to the current frame (F22-B).
     ///
     /// This is the production path a Bevy system calls from a

@@ -14,8 +14,8 @@ required, no `gpu`/`audio`/`human_play`/`network_real` needed).
   `ControlHandover`/`HandoverReason`, `InputFault`/`SuppressReason`,
   `UiRequest`, `FlightContent`, `SessionError`, `ReplayCursor`,
   `ReplayWindow`, `ReplayReport`, `ReplayError` and `CommandReplay`.
-- `crates/cs_app/src/input/mod.rs`: `InputCollector::push_action`, the
-  `session` module declaration and the re-exports.
+- `crates/cs_app/src/input/mod.rs`: the `session` module declaration and the
+  re-exports.
 - `crates/cs_app/src/input/devices.rs`: `DeviceAdapters::suppress` and
   `SuppressedHolds` (the release a focus loss, a pause and a handover use when
   nothing was removed), and `DeviceAdapters::neutralize_unreported` (the shared
@@ -97,7 +97,9 @@ fails under every one of those.
    `ticks_refused` and reported as `InputFault::TicksWhilePaused` — never
    executed into a frozen world. UI actions keep flowing, because the pause
    screen is driven by them, and a press made before the pause is discarded at
-   the pause rather than resurrected by the resume.
+   the pause rather than resurrected by the resume. `CommandReplay` freezes its
+   own clock with the session, so a paused replay does not consume the recorded
+   window it could not execute: the records are still ahead when it resumes.
 8. **Replay is the recorded stream, and the record is made at the input
    boundary** (AC03). `start_recording` appends one `InputFrame` per boundary,
    holding the edges that boundary delivered and the quantized axis samples the
@@ -117,12 +119,25 @@ fails under every one of those.
 10. **Every fault is reported and no frame is lost with it.** A refused device
     report is an `InputFault::Device` and the frame keeps the input every other
     device delivered; a suppressed or non-authoritative frame is reported with
-    its content; a refused stream record and a refused session operation are
-    refused by name. The frame's faults appear in `FrameOutcome` *and* in the
-    `take_faults` queue, so a caller that only drains the queue cannot miss one.
-    An **inert** frame — empty, or restating an axis as exactly neutral — is not
-    a fault and is applied even while input is suppressed, which is what stops a
-    stale deflection without inventing a second neutralization rule.
+    its content; a refused stream record, a refused axis and a refused buffer
+    are refused by name. The frame's faults appear in `FrameOutcome` *and* in
+    the `take_faults` queue, so a caller that only drains the queue cannot miss
+    one. Content reported as suppressed is **not** applied: a frame that arrives
+    by another route into a closed path (an unfocused window, a pause, an actor
+    this seat does not own) is reported and hands the simulation nothing, so
+    "suppressed" can never mean "applied and ignored". The one thing a closed
+    path still applies is an **inert** frame — empty, or restating an axis as
+    exactly neutral — which is what stops a stale deflection without inventing a
+    second neutralization rule.
+11. **The manual source path is a real producer path.**
+    `InputSession::observe_source` resolves one physical source through the
+    session's gate and queues an accepted edge in the **consumer's** buffer,
+    stamped at the session's current tick, so the next input boundary delivers
+    it exactly once and the recorded stream contains it. It is deliberately not
+    appended to the collector's frame: `pump_frame` opens every live frame with
+    `begin_frame`, which discards whatever was collected before it, so an edge
+    parked there would be reported to the caller and then silently dropped by
+    the next frame.
 
 ## Designed vocabulary, not original data
 
@@ -195,6 +210,23 @@ not measurements.
   feeding a session that does not own the actor. That is deliberate — it is a
   wiring error and it is visible — but a caller that hands the actor to another
   authority is expected to stop feeding that session.
+- **A neutral a finished frame writes is written once.**
+  `DeviceAdapters::neutralize_unreported` re-bases what the last frame drove to
+  the axes a frame stated *before* the neutrals are added, so a released axis is
+  stated exactly neutral once and not restated on every later frame. Restating
+  it would be noise in the producer's frame and a phantom axis in every
+  suppression report. The device-level record (`driven_axes`) is separate: only
+  a fresh report from that device corrects it, so a suppression between the two
+  still names the axis the device last drove.
+- **A paused replay runs behind the wall clock.** `CommandReplay::frame` does
+  not advance its clock while the session is paused, because the world's time is
+  frozen while it is paused and a window read now could not be executed. The
+  replay resumes from the same stream position after the resume, which is what
+  keeps `is_complete()` honest.
+- **A refused window still counts as read.** `ReplayReport::delivered` and
+  `ReplayWindow::matched` count the stream being consumed, not the commands
+  being executed: a session that refuses a frame names every command it refused
+  in that frame's `FrameOutcome`, which is where a caller reads it.
 - **`CommandStream::fingerprint` is FNV-1a**, a change-detection fingerprint,
   not a cryptographic digest. An evidence report that needs a cryptographic
   commitment must hash the stream itself.
@@ -220,7 +252,7 @@ with a fresh context:
 
 Task-test prefix `accept_f22_c_`. The selection
 `cargo test --workspace --locked -- accept_f22_c_ --include-ignored` discovers
-and runs **16** tests, all passing:
+and runs **19** tests, all passing:
 
 - `cs_types::input` (1): the stream records ascending quantized ticks, refuses a
   repeated or stale tick without half-applying it, looks a record up by tick,
@@ -230,29 +262,30 @@ and runs **16** tests, all passing:
 - `cs_sim::control` (1): `drain_pending` discards in order and never delivers
   later, `neutralize_axes` states and names the axes it changed and reports
   nothing the second time, and the buffer still works afterwards.
-- `cs_app::input::devices` (1): `suppress` releases the holds and the driven
+- `cs_app::input::devices` (2): `suppress` releases the holds and the driven
   axes without a `DeviceLoss`, leaves the device set, the calibration and the
   report counter alone, neutralizes nothing twice, and lets a fresh report
-  re-establish control.
-- `cs_app::input::session` (9): focus loss pausing single-player and only
+  re-establish control; and a neutral sample is written once and not restated.
+- `cs_app::input::session` (10): focus loss pausing single-player and only
   neutralizing multiplayer, including the ticks-while-paused refusal and the
   device removed while unfocused; UI actions as requests with the input session
   performing nothing; a control handover releasing holds, queued edges and axes,
   a server-owned actor executing nothing, a replay refused at it, and a
-  cost-free refused transfer; teardown stopping the loop and a restart arming a
-  new session; a refused device report reported and keeping other input; a
-  pause refusing ticks while keeping the pause screen alive; a replay window
-  merging to the freshest sample and counting orphans; and a recorded stream
-  replaying at 30/60/144 FPS.
-- `crates/cs_app/tests/accept_f22_c_focus_ui_replay_ownership.rs` (5): AC03 end
+  cost-free refused transfer; the manual source path queuing its edge for the
+  next boundary; teardown stopping the loop and a restart arming a new session; a
+  refused device report reported and keeping other input; a pause refusing ticks
+  while keeping the pause screen alive; a replay window merging to the freshest
+  sample and counting orphans; and a recorded stream replaying at 30/60/144 FPS.
+- `crates/cs_app/tests/accept_f22_c_focus_ui_replay_ownership.rs` (6): AC03 end
   to end (live 144 FPS recording replayed at 30/60/144, identical world trace,
   throttle, axis state and tick count, fingerprint round trip at the reference
   rate, bounded lateness, and a frame split that really differs); focus in both
   modes with a frozen clock and a device removed while unfocused; text entry
   and a pause screen closing the whole path with the context-agreement loop; a
-  handover, teardown and restart across a refused transfer; and the replay's
-  own refusals for a torn-down session, a drifted clock and a multiplayer clock
-  policy.
+  handover, teardown and restart across a refused transfer; the replay's own
+  refusals for a torn-down session, a drifted clock and a multiplayer clock
+  policy; and a recorded stream fed into a closed path (an unfocused window, and
+  a pause) reported, never executed, and re-read after the resume.
 
 No test needs the original installation, so none is `#[ignore]`d.
 
@@ -275,6 +308,33 @@ caught.
 | the replay steps one tick per frame instead of the clock's committed ticks | `accept_f22_c_replay_the_same_quantized_command_stream_...` |
 | `ControlBuffer::neutralize_axes` neutralizes nothing | `..._teardown_stops_the_loop_...`, `..._focus_loss_pauses_single_player_...`, `..._control_handover_releases_holds_...`, and `accept_f22_c_draining_and_neutralizing_end_the_local_hold` (4) |
 
+### The review's own probes (2026-09-30)
+
+Each was applied to the branch, the `accept_f22_c_` selection was run, and the
+mutation was reverted. Each one is a real defect the review found and fixed,
+not a hypothetical: the first three were live holes in the submitted code and
+the fourth was a change to F22-B's behavior the refactor did not need.
+
+| Mutation | Caught by |
+| --- | --- |
+| an unfocused session applies a frame it reported as suppressed (the submitted code) | `accept_f22_c_a_replayed_stream_is_reported_not_executed_while_the_path_is_closed` |
+| `CommandReplay::frame` advances its clock while the session is paused (the submitted code), which consumed the window it could not execute and then failed with a `TickDivergence` on the next frame | the same test |
+| `observe_source` reports an accepted action without queueing it (the submitted code parked it in the collector's frame, which the next `begin_frame` discarded) | `accept_f22_c_the_manual_source_path_queues_its_edge_for_the_next_boundary` |
+| `finish_frame` remembers the neutral it just wrote as a driven axis, so every later frame restates it (the submitted refactor) | `accept_f22_c_a_neutral_sample_is_written_once_and_not_restated` |
+
+### The review's own probes (2026-09-30)
+
+Each was applied to the branch, the `accept_f22_c_` selection was run, and the
+mutation was reverted. Each one is a real defect the review found and fixed,
+not a hypothetical: the first three were live holes in the submitted code and
+the fourth was a change to F22-B's behavior the refactor did not need.
+
+One latent inconsistency was fixed without a discriminating test, because it is
+unreachable with the current invariants and therefore cannot be provoked: a
+refused `CommandStream` record and a refused axis were queued as faults but
+never appeared in the `FrameOutcome`, while the module promises that a frame's
+faults are in both places. `record_tick` now takes the frame's fault list.
+
 One probe was a **semantic no-op** and is recorded rather than hidden: replacing
 the focus path's `match self.mode` with an unconditional `pause_local` call
 changed no behavior at all, because `pause_local` is itself the one place the
@@ -293,7 +353,8 @@ fails there.
 
 ## Checks
 
-Run locally before hand-over (all exit 0):
+Run locally by the implementer before hand-over and again by the review after
+its fixes (all exit 0):
 
 ```
 cargo fmt --all -- --check
@@ -302,13 +363,46 @@ cargo test --workspace --locked
 cargo test --workspace --locked -- accept_f22_c_ --include-ignored
 ```
 
-`cargo doc -p cs_app --no-deps` is also clean of new warnings; the four it
-reports are pre-existing (`Resolved::Unknown`, `Self::calibrated_readings`,
-`LoadState::permits` and `run.rs`'s redundant link target).
+`cargo doc -p cs_app --no-deps` reports seven warnings, and the review
+re-checked the same seven with and without this stage's changes: they are
+pre-existing and none of them is in code this stage added
+(`Resolved::Unknown` in `animation`, the private `Self::calibrated_readings`
+link in F22-B's `apply`, `LoadState::permits`, three unresolved links in
+`world`/`sensor`, and `run.rs`'s redundant link target).
 
 ## Review
 
-Not yet reviewed. This stage was implemented and self-probed by `bunny-2`; the
-mutation table above is the implementer's own evidence and is **not**
+**Not independent.** The implementer of this stage and the reviewer are the
+same agent instance and the same model (`bunny-2`). The review is a second pass
+over the same knowledge, not a fresh-context check, and it is **not**
 independent review and not original-reference evidence. F22-D remains the stage
 that measures anything about the original game.
+
+What the review (2026-09-30) did:
+
+1. Read the whole branch against `specs/F22-...`'s `### F22-C` section, the
+   `docs/contracts/UI-NETWORK.md` rules the stage claims, and `AGENTS.md`.
+2. Found and fixed four defects, all recorded with a probe under "The review's
+   own probes" above: a suppressed frame was still applied while the window was
+   unfocused, a paused replay consumed the window it could not execute and then
+   failed with a clock divergence, the manual source path reported an accepted
+   action it then dropped, and the extracted neutralization helper made every
+   later frame restate a neutral it had already written. Three new tests pin
+   them (19 `accept_f22_c_` tests in total).
+3. Removed `InputCollector::push_action`, which existed only for the manual
+   path this review changed, and added `InputFault::Buffer` so a buffer refusal
+   on that path is reported rather than turned into a `Some`.
+4. Corrected the documentation that had drifted from the code: what
+   `ReplayReport::delivered` and `is_complete` count, what
+   `neutralize_unreported` shares with `suppress` (they do not share the
+   method; `suppress` is the no-frame case and unions the device-level record
+   too), and that a recorded neutral is written once.
+
+Judged acceptable and left alone, with the reasons recorded above rather than
+hidden: the AC03 invariant is over the sampled stream, so the cross-rate world
+comparison uses a held axis and the merge rule has its own test; a focus gain or
+a resume does not invent a re-arm requirement, because a device report is the
+device's whole state; and `NotAuthoritative` repeats every frame while a caller
+keeps feeding a session that does not own the actor, which is a wiring error
+that is meant to be visible.
+

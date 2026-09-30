@@ -44,7 +44,8 @@ use cs_sim::control::{ControlAuthority, LocalSeatId, ThrottleSteps};
 use cs_sim::time::{ClockPolicy, NANOS_PER_SECOND, SimClock, TickRate};
 use cs_types::Tick;
 use cs_types::input::{
-    Action, CommandStream, DeviceClass, DeviceId, FlightCommand, InputContext, Key, UiAction,
+    Action, AxisValue, CommandStream, DeviceClass, DeviceId, FlightCommand, InputContext,
+    InputFrame, Key, UiAction,
 };
 
 /// The fixed simulation rate of every fixture: 64 Hz.
@@ -808,7 +809,7 @@ fn accept_f22_c_ownership_handover_and_teardown_never_leave_input_for_the_next_o
     assert!(refused.is_clean(), "{:?}", refused.faults);
 
     let mut recorded = CommandStream::new();
-    let mut stale = cs_types::input::InputFrame::new(owned.tick());
+    let mut stale = InputFrame::new(owned.tick());
     stale.push_edge(fire());
     recorded
         .record_tick(stale)
@@ -899,7 +900,7 @@ fn accept_f22_c_ownership_handover_and_teardown_never_leave_input_for_the_next_o
 #[test]
 fn accept_f22_c_replay_refuses_a_torn_down_session_and_a_drifted_clock() {
     let mut recorded = CommandStream::new();
-    let mut record = cs_types::input::InputFrame::new(Tick(0));
+    let mut record = InputFrame::new(Tick(0));
     record.push_edge(fire());
     recorded
         .record_tick(record)
@@ -959,4 +960,155 @@ fn accept_f22_c_replay_refuses_a_torn_down_session_and_a_drifted_clock() {
         cs_sim::time::PausePolicy::Freeze
     );
     let _ = ThrottleSteps::DESIGNED_STEP;
+}
+
+/// A recorded stream replayed into a session whose input path is **closed** is
+/// reported and never executed, whichever way the path is closed.
+///
+/// A live device report cannot reach a closed path at all — the session is not
+/// reading the devices — so the only frame that can arrive there is one from
+/// another route. Non-negotiable behavior 4 still governs it: a backgrounded
+/// window must not command the aircraft, and a frame that is reported as
+/// suppressed must not also be handed to the simulation.
+#[test]
+fn accept_f22_c_a_replayed_stream_is_reported_not_executed_while_the_path_is_closed() {
+    // Four recorded ticks: one press, with the deflection held throughout.
+    let mut recorded = CommandStream::new();
+    for tick in 0..4_u64 {
+        let mut record = InputFrame::new(Tick(tick));
+        record.set_axis(AxisValue::from_unit(FlightCommand::Pitch, 1.0).expect("valid"));
+        if tick == 1 {
+            record.push_edge(fire());
+        }
+        recorded.record_tick(record).expect("the record follows");
+    }
+
+    // A networked session: a focus loss neutralizes the input and does not
+    // pause, so the world's ticks keep committing while the path is closed.
+    let mut unfocused = session(SessionMode::Multiplayer);
+    unfocused.set_focus(false);
+    let mut cursor = cs_app::input::ReplayCursor::new(recorded.clone());
+    let refused = unfocused
+        .pump_frame(FrameInput::Replay(&mut cursor), 4)
+        .expect("a refused replay frame is not a session error");
+    assert_eq!(refused.ticks_ran, 4, "the world's ticks keep committing");
+    assert!(
+        refused.delivered.is_empty(),
+        "a backgrounded window executes nothing: {:?}",
+        refused.delivered
+    );
+    assert_eq!(refused.suppressed.edges, vec![fire()]);
+    assert_eq!(refused.suppress_reason, Some(SuppressReason::Unfocused));
+    assert!(
+        matches!(
+            refused.faults.as_slice(),
+            [InputFault::Suppressed {
+                reason: SuppressReason::Unfocused,
+                ..
+            }]
+        ),
+        "the refusal is reported by name: {:?}",
+        refused.faults
+    );
+    assert_eq!(
+        unfocused.controls().pending_edges(),
+        0,
+        "a reported frame is not also queued for a boundary"
+    );
+    assert!(
+        !matches!(
+            unfocused.controls().axis(FlightCommand::Pitch),
+            Some(value) if value != 0.0
+        ),
+        "and the deflection it carried never reached the aircraft: {:?}",
+        unfocused.controls().axis(FlightCommand::Pitch)
+    );
+
+    // Nothing the closed path read is executed when the path is open again: a
+    // session that never lost focus runs the same stream, so the commands were
+    // never lost — the closed path simply refused them.
+    let mut open = session(SessionMode::Multiplayer);
+    let mut cursor = cs_app::input::ReplayCursor::new(recorded.clone());
+    let after = open
+        .pump_frame(FrameInput::Replay(&mut cursor), 4)
+        .expect("the replay frame applies");
+    assert_eq!(
+        after.delivered,
+        vec![fire()],
+        "an open path executes the recorded press"
+    );
+    assert_eq!(open.controls().axis(FlightCommand::Pitch), Some(1.0));
+    assert!(after.is_clean(), "{:?}", after.faults);
+
+    // A single-player session closes the same way: a focus loss pauses it, and
+    // a paused session runs no input boundary, so the recorded window is not
+    // consumed either — the replay freezes with it and picks the stream up
+    // where it stopped once the caller resumes.
+    let mut paused = session(SessionMode::SinglePlayer);
+    let mut replay = CommandReplay::new(
+        recorded.clone(),
+        TickRate::new(TICK_HZ).expect("64 Hz is a valid rate"),
+        SessionMode::SinglePlayer,
+        Tick(0),
+    )
+    .expect("the replay clock is valid");
+    let one_tick = Duration::from_nanos(
+        u64::try_from(NANOS_PER_SECOND / u128::from(TICK_HZ)).expect("a tick is under a second"),
+    );
+    // One boundary, so the press on the recorded tick 1 has not run yet.
+    replay
+        .frame(&mut paused, one_tick)
+        .expect("the replay frame applies");
+    let before = replay.report();
+    assert_eq!(before.delivered, 1, "the first recorded tick ran");
+    assert!(!before.is_complete(), "three are still ahead: {before:?}");
+
+    paused.set_focus(false);
+    assert!(paused.is_paused(), "a single-player focus loss pauses");
+    for _ in 0..3 {
+        let frame = replay
+            .frame(&mut paused, one_tick)
+            .expect("a paused replay advances no clock and refuses no frame");
+        assert_eq!(frame.ticks_ran, 0, "a frozen world runs no input boundary");
+        assert!(frame.delivered.is_empty());
+    }
+    let during = replay.report();
+    assert_eq!(
+        during.ticks, before.ticks,
+        "the replay clock is frozen with the world: {during:?}"
+    );
+    assert_eq!(
+        during.delivered, before.delivered,
+        "and the stream is not consumed by a window nothing could execute"
+    );
+    assert_eq!(during.remaining, before.remaining, "{during:?}");
+
+    // The caller resumes; the replay continues from the same place and finishes
+    // the stream, executing the press exactly once. The focus gain restores the
+    // context the loss closed, and only the caller resumes the world.
+    assert_eq!(paused.set_focus(true).context, InputContext::Flight);
+    assert!(paused.is_paused(), "a focus gain must not resume the world");
+    paused.resume();
+    let mut delivered = Vec::new();
+    // Bounded: a replay that stopped consuming the stream would otherwise hang
+    // the test instead of failing it.
+    for _ in 0..8 {
+        if replay.report().is_complete() {
+            break;
+        }
+        let frame = replay
+            .frame(&mut paused, one_tick)
+            .expect("the replay frame applies");
+        delivered.extend(frame.delivered);
+    }
+    assert_eq!(
+        delivered,
+        vec![fire()],
+        "the recorded press ran exactly once over the whole replay"
+    );
+    assert!(
+        replay.report().is_complete() && replay.report().orphaned == 0,
+        "{:?}",
+        replay.report()
+    );
 }

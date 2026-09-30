@@ -52,14 +52,21 @@
 //!    device event, content this session's policy suppressed, ticks asked for
 //!    while paused and a refused stream record are all [`InputFault`]s the
 //!    caller drains. The input the same frame collected from the other devices
-//!    still reaches the simulation.
+//!    still reaches the simulation. Content that is reported as suppressed is
+//!    also **not** applied: a closed path reports the frame it refused and hands
+//!    the simulation nothing, so "suppressed" can never mean "applied and
+//!    ignored". The one thing a closed path still applies is an inert frame —
+//!    empty, or restating an axis as exactly neutral — because that is what
+//!    stops the last deflection sticking.
 //! 6. **Replay is the recorded stream, and the stream is quantized** (AC03).
 //!    [`InputSession::start_recording`] records, at the input boundary, exactly
 //!    what the consumer executed on each tick as a [`CommandStream`].
 //!    [`CommandReplay`] feeds that stream back through the *same* pump at any
 //!    display rate, driven by a real [`cs_sim::time::SimClock`], and the
 //!    ordered command sequence, the throttle trace and the final axis state
-//!    must not depend on how the wall time was cut into render frames.
+//!    must not depend on how the wall time was cut into render frames. A paused
+//!    session runs no boundary, so the replay's clock freezes with it and the
+//!    window is re-read after the resume rather than consumed and dropped.
 //!
 //! # Designed, not original
 //!
@@ -371,6 +378,15 @@ pub enum InputFault {
         /// The stream's own refusal.
         error: StreamError,
     },
+    /// The consumer's buffer refused a frame, so it changed nothing. Reported
+    /// with the buffer's own refusal; a pump that is refused this way returns
+    /// the error to its caller instead.
+    Buffer {
+        /// The tick the frame was stamped for.
+        tick: Tick,
+        /// The buffer's refusal.
+        error: ControlError,
+    },
     /// A held axis could not be turned back into a quantized sample for the
     /// record. Unreachable while the buffer only accepts validated values, and
     /// reported rather than ignored if it ever happens.
@@ -538,7 +554,10 @@ pub enum FrameInput<'a> {
 /// How one replay window matched the recorded stream.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ReplayWindow {
-    /// The recorded ticks this window delivered.
+    /// The recorded ticks this window read out of the stream into its frame.
+    /// The session may still refuse that frame — a path that is closed or does
+    /// not own the actor — and says so with the frame's own
+    /// [`suppressed`](FrameOutcome::suppressed) content.
     pub matched: usize,
     /// The recorded ticks this window passed over, because the session's tick
     /// had already moved past them. A correct run has none.
@@ -580,7 +599,12 @@ impl ReplayCursor {
         &self.stream
     }
 
-    /// How many recorded ticks have been delivered.
+    /// How many recorded ticks have been read out of the stream into a frame.
+    ///
+    /// This counts the stream being consumed, not the commands being executed:
+    /// a session whose path is closed or which does not own the actor reads the
+    /// window and refuses it, and reports every command it refused in the
+    /// frame's own outcome.
     #[must_use]
     pub const fn delivered(&self) -> usize {
         self.delivered
@@ -647,9 +671,11 @@ impl ReplayCursor {
 pub struct ReplayReport {
     /// The render frames the replay pumped.
     pub frames: u64,
-    /// The input boundaries the replay's clock committed.
+    /// The input boundaries the replay's clock committed. A paused session
+    /// commits none, and the replay's clock does not move either.
     pub ticks: u64,
-    /// The recorded ticks delivered into a frame.
+    /// The recorded ticks read out of the stream into a frame. Whether the
+    /// session executed them is in each [`FrameOutcome`], not here.
     pub delivered: usize,
     /// The recorded ticks the replay passed over.
     pub orphaned: usize,
@@ -658,7 +684,12 @@ pub struct ReplayReport {
 }
 
 impl ReplayReport {
-    /// Whether the whole stream was delivered and nothing was orphaned.
+    /// Whether the whole stream was consumed and nothing was orphaned.
+    ///
+    /// This says the *stream* ran out, not that every command was executed: a
+    /// session that refused the frames names what it refused in each
+    /// [`FrameOutcome`], and a paused session leaves records here until the
+    /// replay picks them up again.
     #[must_use]
     pub fn is_complete(&self) -> bool {
         self.remaining == 0 && self.orphaned == 0
@@ -1177,7 +1208,21 @@ impl InputSession {
     /// events uses; the device adapters are the other. A UI action becomes a
     /// [`UiRequest`] instead of an edge, a continuous command is not an edge at
     /// all (its value comes from the adapters), and nothing is accepted while
-    /// the window is unfocused or the seat does not own the actor.
+    /// the window is unfocused, the session is paused or the seat does not own
+    /// the actor.
+    ///
+    /// An accepted edge is queued in the **consumer's** buffer, stamped at the
+    /// session's current tick, so the next input boundary delivers it exactly
+    /// once — the same shape a device report produces. It is deliberately not
+    /// appended to the collector's frame: [`pump_frame`](Self::pump_frame)
+    /// opens every live frame with `begin_frame`, which discards whatever was
+    /// collected before it, so an edge parked there would be reported to the
+    /// caller here and then silently dropped by the next frame.
+    ///
+    /// The returned action is therefore the action the session accepted, not a
+    /// promise about a later delivery: a pause, a handover or a teardown
+    /// discards it like any other queued edge, and says so in the handover it
+    /// reports.
     pub fn observe_source(&mut self, source: BindingSource) -> Option<Action> {
         if !self.active || !self.focused {
             return None;
@@ -1198,7 +1243,20 @@ impl InputSession {
                     self.suppress(SuppressReason::Paused, flight);
                     return None;
                 }
-                self.collector.push_action(flight);
+                let mut frame = InputFrame::new(self.tick);
+                frame.push_edge(flight);
+                // `apply_frame` validates the whole frame before mutating any of
+                // it, so a refusal leaves the buffer exactly as it was. It is
+                // reported rather than returned as a `Some`, because a caller
+                // that only reads the return value would otherwise command an
+                // aircraft the session refused.
+                if let Err(error) = self.controls.apply_frame(&frame) {
+                    self.faults.push(InputFault::Buffer {
+                        tick: self.tick,
+                        error,
+                    });
+                    return None;
+                }
                 Some(flight)
             }
         }
@@ -1278,7 +1336,11 @@ impl InputSession {
         // axis as exactly neutral. It is applied even where this session's
         // policy suppresses input, because its only content is the neutral
         // restatement that stops the last deflection sticking — but it is never
-        // delivered and never reported as suppressed input.
+        // delivered and never reported as suppressed input. Anything else is
+        // **not** applied where the policy suppresses it: reporting a frame as
+        // suppressed and then handing it to the simulation anyway would command
+        // the aircraft from a path that is closed, which is the one thing
+        // non-negotiable behavior 4 and the single-authority rule forbid.
         let inert = frame.is_inert();
         let apply = if !self.focused {
             if !inert {
@@ -1290,7 +1352,11 @@ impl InputSession {
                     reason: SuppressReason::Unfocused,
                 });
             }
-            true
+            // A live frame cannot reach here with content (a report is not read
+            // while the window is unfocused), so this only decides a frame that
+            // arrived by another route: a recorded stream replayed into a
+            // backgrounded window is reported, and never executed.
+            inert
         } else if !self.gate.accepts_local_input() {
             // The gate is the single owner: local device input reaches the
             // simulation only while it accepts it. A live report never gets
@@ -1334,9 +1400,9 @@ impl InputSession {
             let edges = self.controls.begin_tick(self.tick);
             self.throttle.apply_tick(&edges);
             if self.recording
-                && let Err(error) = self.record_tick(&edges)
+                && let Err(error) = self.record_tick(&edges, &mut faults)
             {
-                self.faults.push(InputFault::Stream { error });
+                faults.push(InputFault::Stream { error });
             }
             delivered.extend(edges);
             self.tick = Tick(self.tick.0 + 1);
@@ -1399,7 +1465,15 @@ impl InputSession {
     }
 
     /// Appends one tick's executed commands to the stream.
-    fn record_tick(&mut self, edges: &[Action]) -> Result<(), StreamError> {
+    ///
+    /// Every fault raised on the way is appended to `faults`, so a record that
+    /// could not be made exactly is in the frame's own outcome as well as in
+    /// the session's queue.
+    fn record_tick(
+        &mut self,
+        edges: &[Action],
+        faults: &mut Vec<InputFault>,
+    ) -> Result<(), StreamError> {
         let mut record = InputFrame::new(self.tick);
         for edge in edges {
             record.push_edge(*edge);
@@ -1416,7 +1490,7 @@ impl InputSession {
             match AxisValue::from_unit(*command, value) {
                 Ok(sample) => record.set_axis(sample),
                 Err(error) => {
-                    self.faults.push(InputFault::Axis {
+                    faults.push(InputFault::Axis {
                         command: *command,
                         error,
                     });
@@ -1538,6 +1612,14 @@ impl CommandReplay {
 
     /// Pumps one render frame of `elapsed` wall time into `session`.
     ///
+    /// A paused session runs no input boundary, so the replay clock does not
+    /// move either: the world's time is frozen while it is paused
+    /// (`cs_sim::time::PausePolicy::Freeze`), and a window read now could not
+    /// be executed, which would consume the recorded ticks it covers and leave
+    /// the replay reporting a complete run that executed nothing. The replay
+    /// therefore runs behind the wall clock while paused and picks the window
+    /// up again where it stopped once the session resumes.
+    ///
     /// # Errors
     ///
     /// [`ReplayError::Time`] when the clock refuses the wall time,
@@ -1559,7 +1641,11 @@ impl CommandReplay {
         if !session.is_active() {
             return Err(ReplayError::SessionInactive);
         }
-        let ticks = self.clock.advance(elapsed).map_err(ReplayError::Time)?;
+        let ticks = if session.is_paused() {
+            0
+        } else {
+            self.clock.advance(elapsed).map_err(ReplayError::Time)?
+        };
         let outcome = session
             .pump_frame(FrameInput::Replay(&mut self.cursor), ticks)
             .map_err(|error| ReplayError::SessionRefused {
@@ -1934,7 +2020,7 @@ mod tests {
         assert_eq!(
             cursor.delivered(),
             1,
-            "the replay read the record and the session refused to execute it, \\
+            "the replay read the record and the session refused to execute it, \
              which is the report the caller needs"
         );
 
@@ -1981,6 +2067,103 @@ mod tests {
             "control returned, so the devices are read again from their own state"
         );
         assert!(resumed.is_clean(), "{:?}", resumed.faults);
+    }
+
+    /// The manual source path queues its edge in the **consumer's** buffer, so
+    /// the next input boundary delivers it exactly once. An implementation that
+    /// parked the edge in the collector's frame instead — which
+    /// [`pump_frame`](InputSession::pump_frame) opens afresh on every live
+    /// frame — would report the action to its caller here and then drop it
+    /// silently on the next pump.
+    #[test]
+    fn accept_f22_c_the_manual_source_path_queues_its_edge_for_the_next_boundary() {
+        let mut session = session(SessionMode::SinglePlayer);
+        assert_eq!(
+            session.observe_source(BindingSource::Key(Key::Space)),
+            Some(fire()),
+            "a bound press in flight is accepted"
+        );
+        assert_eq!(
+            session.controls().pending_edges(),
+            1,
+            "it is queued for a boundary, not delivered by the observation"
+        );
+        let idle = session
+            .pump_frame(FrameInput::Devices(&[]), 0)
+            .expect("the fixture frame applies");
+        assert!(idle.delivered.is_empty(), "no boundary ran yet");
+        assert_eq!(
+            session.controls().pending_edges(),
+            1,
+            "and opening the next render frame did not drop it"
+        );
+        let delivered = session
+            .pump_frame(FrameInput::Devices(&[]), 1)
+            .expect("the fixture frame applies");
+        assert_eq!(
+            delivered.delivered,
+            vec![fire()],
+            "one press is one command, at the boundary"
+        );
+        assert_eq!(session.controls().pending_edges(), 0);
+        assert!(delivered.is_clean(), "{:?}", delivered.faults);
+
+        // A continuous command is never an edge from a press: its value comes
+        // from the device adapters.
+        assert_eq!(session.observe_source(BindingSource::Key(Key::S)), None);
+
+        // An accepted edge is recorded like any other delivered command, so a
+        // replay of this session's stream contains it.
+        session.start_recording();
+        assert_eq!(
+            session.observe_source(BindingSource::Key(Key::Space)),
+            Some(fire())
+        );
+        session
+            .pump_frame(FrameInput::Devices(&[]), 1)
+            .expect("the fixture frame applies");
+        assert_eq!(session.stream().edges(), vec![fire()]);
+
+        // A press accepted before a pause is discarded with the rest of the
+        // queued input, exactly like a device report's edge.
+        assert_eq!(
+            session.observe_source(BindingSource::Key(Key::Space)),
+            Some(fire())
+        );
+        let paused = session.pause(PauseReason::PlayerRequest);
+        assert_eq!(
+            paused.released.discarded_edges,
+            vec![fire()],
+            "the manual path's press does not outlive the pause"
+        );
+
+        // While paused a source resolves to nothing, and the refusal is
+        // reported rather than swallowed.
+        assert!(
+            session
+                .observe_source(BindingSource::Key(Key::Space))
+                .is_none()
+        );
+        assert!(
+            matches!(
+                session.faults().last(),
+                Some(InputFault::Suppressed {
+                    reason: SuppressReason::Paused,
+                    ..
+                })
+            ),
+            "a press refused by the pause is named: {:?}",
+            session.faults()
+        );
+        session.resume();
+        let after = session
+            .pump_frame(FrameInput::Devices(&[]), 1)
+            .expect("the fixture frame applies");
+        assert!(
+            after.delivered.is_empty(),
+            "and the discarded press is not resurrected: {:?}",
+            after.delivered
+        );
     }
 
     /// Teardown stops the loop and a restart arms a genuinely new session, so a
@@ -2438,7 +2621,7 @@ mod tests {
         assert_eq!(
             (window.orphaned, behind.orphaned()),
             (4, 4),
-            "every record the session had already passed is counted, not \\
+            "every record the session had already passed is counted, not \
              delivered late"
         );
         assert!(behind.is_exhausted());

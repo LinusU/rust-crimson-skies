@@ -719,6 +719,13 @@ impl DeviceAdapters {
     /// Without this a released key or a removed stick would leave its last
     /// deflection in `cs_sim::control::AxisState` forever, because the
     /// simulation only ever moves an axis a frame names.
+    ///
+    /// The neutral is written **once**. `neutralize_unreported` re-bases what
+    /// the last frame drove to the axes this frame stated *before* the neutrals
+    /// are added, so a sample this call wrote is not remembered as a driven
+    /// axis: restating it every later frame would be noise, and it would make
+    /// [`suppress`](Self::suppress) claim an axis was being driven when nothing
+    /// had driven it for a long time.
     pub fn finish_frame(&mut self, frame: &mut InputFrame) {
         for command in self.neutralize_unreported(frame) {
             // Only a continuous command ever reaches `driven_last_frame`, so
@@ -727,18 +734,19 @@ impl DeviceAdapters {
                 .expect("a driven command is a continuous axis");
             frame.set_axis(neutral);
         }
-        self.driven_last_frame = frame.axes().iter().map(|axis| axis.command()).collect();
     }
 
     /// The commands the previous frame drove and this one does not, and
-    /// re-bases the record of what the last frame drove to this frame's axes.
+    /// re-bases the record of what the last frame drove to the axes `frame`
+    /// states.
     ///
     /// This is the part of [`finish_frame`](Self::finish_frame) that decides
-    /// *which* axes need a neutral sample. [`suppress`](Self::suppress) and a
-    /// caller that has no frame to close — a session whose window is not
-    /// focused, whose input path is closed, or whose controls are being torn
-    /// down — use it to state exactly the same neutrals without inventing a
-    /// second, different neutralization rule.
+    /// *which* axes need a neutral sample. It is public so a caller that closes
+    /// a frame of its own applies exactly the same rule instead of inventing a
+    /// second one. [`suppress`](Self::suppress) is the case with no frame to
+    /// close: it unions the axes the devices are driving with the axes the last
+    /// finished frame drove, clears both, and therefore leaves a frame closed
+    /// afterwards nothing to restate.
     pub fn neutralize_unreported(&mut self, frame: &InputFrame) -> Vec<FlightCommand> {
         let driven_now: Vec<FlightCommand> =
             frame.axes().iter().map(|axis| axis.command()).collect();
@@ -2336,7 +2344,7 @@ mod tests {
         assert_eq!(
             neutralized,
             vec![FlightCommand::Pitch, FlightCommand::Roll],
-            "every axis any device was driving is named, including one whose last \\
+            "every axis any device was driving is named, including one whose last \
              finished frame is the only record of it"
         );
         assert!(!released.is_empty());
@@ -2347,7 +2355,7 @@ mod tests {
         assert!(adapters.driven_axes().is_empty());
         assert!(
             adapters.losses().is_empty(),
-            "a suppression is not a device loss: the player was not told their \\
+            "a suppression is not a device loss: the player was not told their \
              joystick disappeared"
         );
         assert!(adapters.is_connected(&device), "the stick is still there");
@@ -2396,5 +2404,61 @@ mod tests {
             "the trigger fires again after the suppression, exactly once"
         );
         assert!(fresh.axis(FlightCommand::Roll).is_some());
+    }
+
+    /// The neutral a finished frame writes is written **once**: it is not
+    /// remembered as a driven axis, so a later frame that names no axis states
+    /// nothing at all, and a suppression does not claim an axis nothing has
+    /// driven for a long time. Restating it every frame would be noise on the
+    /// producer's side and a phantom axis in every report the session makes
+    /// about what it released.
+    #[test]
+    fn accept_f22_c_a_neutral_sample_is_written_once_and_not_restated() {
+        let device = stick("joy.stick.test/0");
+        let mut adapters = connected_one(&device);
+
+        let mut driven = InputFrame::new(Tick(0));
+        adapters
+            .apply(
+                &DeviceEvent::JoystickFrame {
+                    device: device.clone(),
+                    buttons: vec![],
+                    axes: vec![(0, 0.75)],
+                },
+                &map(),
+                InputContext::Flight,
+                &mut driven,
+            )
+            .expect("the report applies");
+        assert!(driven.axis(FlightCommand::Roll).is_some());
+        adapters.finish_frame(&mut driven);
+
+        // The stick is released: the frame that no longer names the axis states
+        // it exactly neutral, which is what stops the deflection sticking.
+        let mut released = InputFrame::new(Tick(1));
+        adapters.finish_frame(&mut released);
+        let roll = released
+            .axis(FlightCommand::Roll)
+            .expect("the released axis is stated neutral");
+        assert_eq!(roll.quantized(), 0);
+
+        // And that neutral is not itself a driven axis, so it is not restated.
+        let mut quiet = InputFrame::new(Tick(2));
+        adapters.finish_frame(&mut quiet);
+        assert!(
+            quiet.axes().is_empty(),
+            "a neutral is stated once, not on every later frame: {:?}",
+            quiet.axes()
+        );
+        // The device's own record still names the axis it last drove, and only a
+        // fresh report corrects that, so a suppression here legitimately still
+        // names the roll axis: this test is about the frame, not the device
+        // record.
+        assert!(
+            adapters
+                .suppress()
+                .neutralized_axes
+                .contains(&FlightCommand::Roll)
+        );
     }
 }
