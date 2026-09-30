@@ -1589,16 +1589,12 @@ impl WorldInstance {
     }
 
     /// The objects gameplay requires, in stable order: the load declares these
-    /// as ones streaming must not take away.
+    /// as ones streaming must not take away. The whole declaration, and the only
+    /// way to read it — a per-object `is_required` here would be a second
+    /// spelling of `required_objects().contains(..)`, not a second question.
     #[must_use]
     pub const fn required_objects(&self) -> &BTreeSet<WorldObjectId> {
         &self.required_objects
-    }
-
-    /// Whether `object` is one gameplay cannot lose to streaming.
-    #[must_use]
-    pub fn is_required(&self, object: &WorldObjectId) -> bool {
-        self.required_objects.contains(object)
     }
 
     /// The definition this load reads from.
