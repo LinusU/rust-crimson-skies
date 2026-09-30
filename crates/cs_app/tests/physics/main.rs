@@ -1,18 +1,24 @@
-//! F23-A acceptance tests: the verified Avian schedule adapter, the one-tick
-//! force/torque path and the declared collision layers.
+//! F23 acceptance tests: the verified Avian schedule adapter, the declared
+//! collision layers, the body-creation path, the wake/drop accounting of the
+//! force queue and the swept crossing detection.
 //!
 //! Spec: `specs/F23-avian-integration-collision-and-fixed-step-authority.md`,
-//! stage `### F23-A`. Task test prefix: `accept_f23_a_`.
+//! stages `### F23-A` and `### F23-B`. Task test prefixes: `accept_f23_a_`
+//! (stage A) and `accept_f23_b_` (stage B).
 //!
 //! These tests drive production code only: [`cs_app::physics`] builds the real
-//! pinned Bevy/Avian plugin group with the real adapter and a known `Mass`, and
-//! `cs_sim::collision` owns the layer vocabulary. No original data and no
-//! `CS_GAME_DIR` access: they prove the interface and the schedule, never the
-//! original game.
+//! pinned Bevy/Avian plugin group with the real adapters, spawns bodies
+//! through the production creation path and reads the production contact
+//! reporter; `cs_sim::collision` owns the layer vocabulary. No original data
+//! and no `CS_GAME_DIR` access: they prove the interface and the schedule,
+//! never the original game.
 //!
 //! Every value here is newly authored fixture data.
 
+mod bodies;
 mod common;
 mod forces;
 mod layers;
 mod schedule;
+mod sweeps;
+mod wake;

@@ -29,6 +29,7 @@ use bevy::{
 };
 
 use super::adapter::{ForceRequest, ForceRequests, PhysicsAdapterPlugin, PhysicsTickLedger};
+use super::contacts::PhysicsBodiesPlugin;
 
 /// The body a [`PhysicsFixture`] spawns: an explicit mass and box, at rest.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -174,6 +175,7 @@ impl PhysicsFixtureBuilder {
         let mut app = App::new();
         app.add_plugins((MinimalPlugins, TransformPlugin, PhysicsPlugins::default()));
         app.add_plugins(PhysicsAdapterPlugin::new(fixed_hz));
+        app.add_plugins(PhysicsBodiesPlugin);
         app.insert_resource(TimeUpdateStrategy::ManualDuration(frame));
         app.insert_resource(SubstepCount(1));
         app.insert_resource(Gravity::ZERO);
@@ -259,6 +261,12 @@ impl PhysicsFixture {
     /// Read-only access to the world, for diagnostics and schedule probes.
     pub fn world(&self) -> &World {
         self.app.world()
+    }
+
+    /// Mutable access to the world, for tests that must reconfigure a live
+    /// body (control-mode transitions, layer rebinding).
+    pub fn world_mut(&mut self) -> &mut World {
+        self.app.world_mut()
     }
 
     /// Advances the world by exactly `ticks` fixed steps.

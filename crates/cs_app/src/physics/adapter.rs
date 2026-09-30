@@ -11,10 +11,12 @@
 //! * drain a one-tick [`ForceRequests`] queue into Avian's real force
 //!   accumulator in `FixedPostUpdate` **before** `PhysicsSystems::Prepare`, so
 //!   a request is applied to exactly the tick that submitted it and never
-//!   lingers across ticks;
+//!   lingers across ticks, waking a sleeping target first so that tick still
+//!   integrates it;
 //! * record one [`PhysicsTickLedger`] entry per fixed tick boundary and one
 //!   per integration, so a test can assert one integration per tick and a
-//!   constant (never variable) dt.
+//!   constant (never variable) dt, and so a request that reached no dynamic
+//!   body is counted rather than silently lost.
 //!
 //! The schedule hooks are the ones measured in F00-B
 //! (`docs/findings/2026-09-23-pinned-bevy-0.19-avian-0.7-schedule-api.md`):
@@ -29,10 +31,12 @@
 use core::time::Duration;
 use std::fmt;
 
-use avian3d::prelude::{Forces, PhysicsSystems, WriteRigidBodyForces};
+use avian3d::prelude::{Forces, PhysicsSystems, RigidBody, Sleeping, WriteRigidBodyForces};
 use bevy::{
     ecs::schedule::IntoScheduleConfigs,
-    prelude::{App, Entity, FixedPostUpdate, Plugin, Query, Res, ResMut, Resource, Vec3},
+    prelude::{
+        App, Commands, Entity, FixedPostUpdate, Plugin, Query, Res, ResMut, Resource, Vec3, With,
+    },
     time::{Fixed, Time},
 };
 
@@ -157,6 +161,12 @@ impl ForceRequests {
 /// "one integration per declared tick" assertion; `timestep_s` is sampled from
 /// Avian's own `Time<Fixed>` so a hidden variable dt would show up as a
 /// changing value.
+///
+/// A request that reached no dynamic body is never silently lost:
+/// `dropped_requests` counts the ones this tick that were not applied (a
+/// despawned entity, a static or kinematic body, a disabled body), and
+/// `woken_requests` counts the sleeping bodies this tick that had to be woken
+/// before their request could apply.
 #[derive(Resource, Clone, Copy, Debug, Default, PartialEq)]
 pub struct PhysicsTickLedger {
     /// Fixed tick boundaries crossed.
@@ -169,6 +179,14 @@ pub struct PhysicsTickLedger {
     pub applied_requests: u64,
     /// Requests applied since the adapter was built.
     pub total_applied_requests: u64,
+    /// Requests that reached no dynamic body during the most recent tick.
+    pub dropped_requests: u64,
+    /// Requests that reached no dynamic body since the adapter was built.
+    pub total_dropped_requests: u64,
+    /// Sleeping bodies woken during the most recent tick.
+    pub woken_requests: u64,
+    /// Sleeping bodies woken since the adapter was built.
+    pub total_woken_requests: u64,
 }
 
 /// Installs the fixed-rate clock and the force/tick adapter systems.
@@ -227,7 +245,11 @@ impl Plugin for PhysicsAdapterPlugin {
 
         app.add_systems(
             FixedPostUpdate,
-            (record_tick_boundary, apply_force_requests)
+            (
+                record_tick_boundary,
+                wake_requested_bodies,
+                apply_force_requests,
+            )
                 .chain()
                 .before(PhysicsSystems::Prepare),
         );
@@ -238,28 +260,69 @@ impl Plugin for PhysicsAdapterPlugin {
     }
 }
 
-/// Opens the tick: records the timestep and resets the per-tick request count.
+/// Opens the tick: records the timestep and resets the per-tick counters.
 fn record_tick_boundary(time: Res<Time<Fixed>>, mut ledger: ResMut<PhysicsTickLedger>) {
     ledger.ticks += 1;
     ledger.timestep_s = time.timestep().as_secs_f32();
     ledger.applied_requests = 0;
+    ledger.dropped_requests = 0;
+    ledger.woken_requests = 0;
+}
+
+/// Wakes every sleeping body that has a request waiting for this tick.
+///
+/// A sleeping body has no `SolverBody`, so applying a force to it alone would
+/// park the acceleration in `VelocityIntegrationData` where the sleeping step
+/// neither applies it nor clears it: the request would surface a tick later,
+/// scaled a second time by the timestep (F23-A limitation 1, measured in
+/// `docs/findings/2026-09-30-f23-b-body-creation-forces-sweeps-and-transitions.md`).
+/// Removing `Sleeping` here rebuilds the solver body at the automatic sync
+/// point the `.chain()` places before [`apply_force_requests`], so the request
+/// applies to exactly the tick that submitted it, awake.
+///
+/// Bodies that are merely missing, static, kinematic or disabled are left
+/// alone: enabling a disabled body or moving a static one is a gameplay
+/// decision, not something a force queue may do behind the caller's back.
+fn wake_requested_bodies(
+    requests: Res<ForceRequests>,
+    sleeping: Query<(), With<Sleeping>>,
+    mut commands: Commands,
+    mut ledger: ResMut<PhysicsTickLedger>,
+) {
+    for request in requests.0.iter() {
+        let body = request.body();
+        if sleeping.get(body).is_err() {
+            continue;
+        }
+        commands.entity(body).remove::<Sleeping>();
+        ledger.woken_requests += 1;
+        ledger.total_woken_requests += 1;
+    }
 }
 
 /// Drains the request queue into Avian's accumulator before integration.
 ///
-/// A request for an entity that no longer matches Avian's force query (for
-/// example a despawned body) is dropped rather than panicking, because the
-/// queue is a gameplay-facing boundary and a stale generation must not crash a
-/// tick.
+/// Only a dynamic body can take a force, so a request for a kinematic or
+/// static body — or for an entity that no longer exists — is dropped and
+/// counted instead of being applied to something that would ignore it or
+/// silently half-apply it. The queue is a gameplay-facing boundary: a stale
+/// generation must not crash a tick, and it must not look like a hit either.
 fn apply_force_requests(
     mut requests: ResMut<ForceRequests>,
-    mut bodies: Query<Forces>,
+    mut bodies: Query<(Forces, &RigidBody)>,
     mut ledger: ResMut<PhysicsTickLedger>,
 ) {
     for request in requests.take() {
-        let Ok(mut forces) = bodies.get_mut(request.body()) else {
+        let Ok((mut forces, rigid_body)) = bodies.get_mut(request.body()) else {
+            ledger.dropped_requests += 1;
+            ledger.total_dropped_requests += 1;
             continue;
         };
+        if !rigid_body.is_dynamic() {
+            ledger.dropped_requests += 1;
+            ledger.total_dropped_requests += 1;
+            continue;
+        }
         forces.apply_force(Vec3::from_array(request.force_n()));
         forces.apply_torque(Vec3::from_array(request.torque_nm()));
         ledger.applied_requests += 1;

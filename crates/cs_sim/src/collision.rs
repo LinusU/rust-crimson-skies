@@ -127,6 +127,33 @@ impl CollisionLayer {
                 | (Debris, Trigger)
         )
     }
+
+    /// Whether bodies on this layer produce contact reports.
+    ///
+    /// Avian writes a collision event when *either* side of a pair carries the
+    /// event flag, so enabling it for the layers whose gameplay rules consume
+    /// contacts — aircraft and projectiles (hits, damage) and triggers
+    /// (checkpoints, activation zones) — reports every gameplay-relevant pair,
+    /// while a pair that only involves world geometry or debris settles
+    /// silently. Which rules the original applied to each layer is **unknown**
+    /// until the compatibility work measures it (F23-D); this split is
+    /// designed project content.
+    pub const fn emits_contact_reports(self) -> bool {
+        matches!(self, Self::Aircraft | Self::Projectile | Self::Trigger)
+    }
+
+    /// The designed interaction partners of this one layer, as a set.
+    ///
+    /// This is the row of [`CollisionLayer::designed_collides_with`] for
+    /// `self`, so a physics engine that filters with it agrees with the
+    /// declared matrix instead of restating it. It stays engine-independent:
+    /// `cs_sim` links no physics crate.
+    pub fn designed_partners(self) -> CollisionLayers {
+        CollisionLayer::ALL
+            .into_iter()
+            .filter(|other| self.designed_collides_with(*other))
+            .collect()
+    }
 }
 
 impl fmt::Display for CollisionLayer {
