@@ -1,10 +1,11 @@
 //! Local input binding state, per-frame input collection and the device
-//! adapters (F22-A, F22-B).
+//! adapters (F22-A, F22-B, F22-C).
 //!
 //! Spec: `specs/F22-input-bindings-devices-and-control-ownership.md`, stages
-//! `### F22-A` and `### F22-B`. Shared contract: `docs/contracts/UI-NETWORK.md`
-//! ("Network ownership table": a client owns only local input requests; "UI
-//! transition discipline": a UI action requests a domain transaction).
+//! `### F22-A`, `### F22-B` and `### F22-C`. Shared contract:
+//! `docs/contracts/UI-NETWORK.md` ("Network ownership table": a client owns
+//! only local input requests; "UI transition discipline": a UI action requests
+//! a domain transaction).
 //!
 //! This is the application-side boundary between a device adapter and the
 //! simulation:
@@ -17,6 +18,11 @@
 //! * [`InputCollector`] owns both, stamps the render frame with the
 //!   simulation tick it is meant for, and hands one
 //!   `cs_types::input::InputFrame` to `cs_sim::control::ControlBuffer`.
+//! * [`session::InputSession`] is the F22-C loop: it owns a collector **and**
+//!   the simulation's buffer, control gate and throttle, and it is the only
+//!   thing that changes the session's context, focus, pause or control
+//!   authority, so the UI and the simulation cannot disagree about who owns
+//!   the devices.
 //!
 //! The context lives here and is passed *into* the adapters, so a menu, a text
 //! field and a cinematic can never disagree with the simulation about which
@@ -24,17 +30,22 @@
 //!
 //! The module is deliberately asset- and ECS-free: it is plain typed state so
 //! a headless test can drive it exactly like the render loop, and so no game
-//! state hides in UI code (`docs/01-ARCHITECTURE.md`). F22-C wires it to the
-//! real platform sources, focus and UI state, replay and control ownership.
+//! state hides in UI code (`docs/01-ARCHITECTURE.md`).
 
 use cs_types::Tick;
 use cs_types::input::{Action, ActionMap, BindingSource, DeviceId, InputContext, InputFrame};
 
 pub mod devices;
+pub mod session;
 
 pub use devices::{
     AdapterError, DESIGNED_DEAD_ZONE, DeviceAdapters, DeviceEvent, DeviceLoss, HeldEdge,
-    designed_axis_calibration, normalize_gamepad_axis,
+    SuppressedHolds, designed_axis_calibration, normalize_gamepad_axis,
+};
+pub use session::{
+    CommandReplay, ControlHandover, FlightContent, FocusOutcome, FrameInput, FrameOutcome,
+    HandoverReason, InputFault, InputSession, PauseDecision, PauseReason, ReplayCursor,
+    ReplayError, ReplayReport, ReplayWindow, SessionError, SessionMode, SuppressReason, UiRequest,
 };
 
 /// The active action map and input context of one local session.
@@ -170,6 +181,24 @@ impl InputCollector {
                 Some(action)
             }
         }
+    }
+
+    /// Appends an already resolved action to the current frame.
+    ///
+    /// This is the seam the session's manual path uses: `observe_edge` resolves
+    /// a source through the bindings and this method appends the result, so a
+    /// caller that has already decided which action a source produced (because
+    /// it also has to route the action to a UI request) does not have to resolve
+    /// it twice. A continuous command is refused here: its value comes from the
+    /// device adapters, never from a press.
+    pub fn push_action(&mut self, action: Action) -> bool {
+        if let Action::Flight(command) = action
+            && command.is_continuous()
+        {
+            return false;
+        }
+        self.frame.push_edge(action);
+        true
     }
 
     /// Applies one device event to the current frame (F22-B).
@@ -468,7 +497,7 @@ mod tests {
         assert_eq!(
             quiet.axis(FlightCommand::Pitch).map(AxisValue::quantized),
             Some(0),
-            "a frame that observed no device neutralizes the axis rather than \\
+            "a frame that observed no device neutralizes the axis rather than \
              freezing the last deflection"
         );
 

@@ -46,7 +46,7 @@
 //! [`scene::NodeDisabled`] markers, so loading and unloading the same
 //! airframe a hundred times leaves the live entity count unchanged (AC03).
 //!
-//! [`input`] is the F22-A/F22-B application boundary
+//! [`input`] is the F22-A/F22-B/F22-C application boundary
 //! (`specs/F22-input-bindings-devices-and-control-ownership.md`):
 //! the active action map and input context ([`input::InputBindings`]) and the
 //! per-render-frame collector ([`input::InputCollector`]) that resolves
@@ -56,8 +56,20 @@
 //! per render frame, calibrated per [`cs_types::input::DeviceId`] identity and
 //! [`cs_types::input::AxisChannel`], with device removal releasing the held
 //! buttons, neutralizing the axes the device drove and reporting a
-//! [`input::DeviceLoss`]. Wiring the adapters to the real platform sources is
-//! F22-C.
+//! [`input::DeviceLoss`]. Stage `### F22-C` adds the loop that owns both ends:
+//! [`input::InputSession`] holds a collector *and* the simulation's
+//! [`cs_sim::control::ControlBuffer`], [`cs_sim::control::ControlGate`] and
+//! [`cs_sim::control::ThrottleSteps`], and is the only thing that changes the
+//! session's context, focus, pause or control authority, so a menu, a text
+//! field, a pause screen and the simulation cannot disagree about who owns the
+//! devices. It routes every [`cs_types::input::Action::Ui`] out of the flight
+//! path as an [`input::UiRequest`] and performs none of them, pauses only where
+//! the [`input::SessionMode`] allows it, runs no input boundary while paused,
+//! and releases the whole local input path — holds, queued edges, held axes —
+//! on a focus loss, a pause, a control handover and a teardown. It also records
+//! the [`cs_types::input::CommandStream`] the consumer executed at each input
+//! boundary, which [`input::CommandReplay`] feeds back through the same pump at
+//! any display rate (AC03).
 //!
 //! [`animation`] is the F20-A application boundary
 //! (`specs/F20-object-animation-and-authored-destruction-states.md`, stage
