@@ -67,10 +67,10 @@
 
 use std::collections::BTreeSet;
 use std::fmt;
-use std::hash::{Hash, Hasher};
 
+use cs_assets::install::sha256;
 use cs_types::content::{ContentId, ContentIdError, ContentKind, Origin, Provenance, Resolved};
-use cs_types::evidence::ClaimId;
+use cs_types::evidence::ContentHash;
 
 use crate::scene::CanonicalTransform;
 
@@ -1171,107 +1171,132 @@ impl WorldDefinition {
             .collect()
     }
 
-    /// A stable, sorted digest of the definition's identity and structure:
-    /// the world id, sector ids and bounds, and every object's id, roles and
-    /// transform, hashed into a short lowercase hex string.
+    /// A canonical SHA-256 fingerprint of the definition's identity and
+    /// structure: the world id, its declared boundary, every sector's id and
+    /// bounds, and every object's id, mesh reference, transform, three roles
+    /// and sector membership.
     ///
-    /// It fingerprints the *record*, not the source bytes, so two definitions
-    /// that describe the same world compare equal regardless of insertion
-    /// order.
+    /// Sectors, objects and each object's sector list are hashed **in id
+    /// order**, so two definitions that describe the same world compare
+    /// equal regardless of the order their records were supplied in (sector
+    /// and object ids are unique in a definition, so id order is total).
+    ///
+    /// It fingerprints the *record*, not the source bytes, and it
+    /// deliberately leaves `origin` and `provenance` out: those say where the
+    /// record came from, not what it says. Like every other fingerprint in
+    /// the workspace it is a [`ContentHash`] (64 lowercase hex characters),
+    /// stable across Rust releases — not an implementation-defined hash.
     #[must_use]
-    pub fn record_fingerprint(&self) -> String {
-        use std::hash::DefaultHasher;
-
-        let mut hasher = DefaultHasher::new();
-        self.id.as_str().hash(&mut hasher);
-        for sector in &self.sectors {
-            "sector".hash(&mut hasher);
-            sector.id().as_str().hash(&mut hasher);
-            hash_aabb(&mut hasher, &sector.bounds());
-        }
-        for object in &self.objects {
-            "object".hash(&mut hasher);
-            object.id().as_str().hash(&mut hasher);
-            hash_resolved_mesh(&mut hasher, object.mesh());
-            hash_resolved_collision(&mut hasher, object.collision());
-            hash_resolved_shape(&mut hasher, object.shape());
-            hash_resolved_surface(&mut hasher, object.surface());
-            for sector in object.sectors() {
-                sector.as_str().hash(&mut hasher);
+    pub fn record_fingerprint(&self) -> ContentHash {
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"cs/content/world/record/v1\0");
+        push_text(&mut bytes, self.id.as_str());
+        push_resolved(&mut bytes, &self.boundary, |bytes, boundary| {
+            push_optional_f64(bytes, boundary.floor_m());
+            push_optional_f64(bytes, boundary.ceiling_m());
+            match boundary.lateral_m() {
+                None => bytes.push(0),
+                Some(bounds) => {
+                    bytes.push(1);
+                    push_aabb(bytes, &bounds);
+                }
             }
+        });
+
+        let mut sectors: Vec<&Sector> = self.sectors.iter().collect();
+        sectors.sort_by(|left, right| left.id().cmp(right.id()));
+        bytes.extend_from_slice(&(sectors.len() as u32).to_le_bytes());
+        for sector in sectors {
+            push_text(&mut bytes, sector.id().as_str());
+            push_aabb(&mut bytes, &sector.bounds());
+        }
+
+        let mut objects: Vec<&WorldObjectInstance> = self.objects.iter().collect();
+        objects.sort_by(|left, right| left.id().cmp(right.id()));
+        bytes.extend_from_slice(&(objects.len() as u32).to_le_bytes());
+        for object in objects {
+            push_text(&mut bytes, object.id().as_str());
+            push_resolved(&mut bytes, object.mesh(), |bytes, id| {
+                push_text(bytes, id.as_str())
+            });
+            push_resolved(&mut bytes, object.collision(), |bytes, role| {
+                push_text(bytes, role.label())
+            });
+            push_resolved(&mut bytes, object.shape(), |bytes, shape| match shape {
+                WorldCollisionShape::Cuboid { half_extents_m } => {
+                    bytes.push(0);
+                    for extent in half_extents_m {
+                        push_f64(bytes, *extent);
+                    }
+                }
+                WorldCollisionShape::FromMesh => bytes.push(1),
+            });
+            push_resolved(&mut bytes, object.surface(), |bytes, role| {
+                push_text(bytes, role.label())
+            });
             for row in object.transform().linear() {
                 for cell in row {
-                    cell.to_bits().hash(&mut hasher);
+                    push_f64(&mut bytes, cell);
                 }
             }
             for cell in object.transform().translation() {
-                cell.to_bits().hash(&mut hasher);
+                push_f64(&mut bytes, cell);
+            }
+            let mut members: Vec<&SectorId> = object.sectors().iter().collect();
+            members.sort();
+            bytes.extend_from_slice(&(members.len() as u32).to_le_bytes());
+            for member in members {
+                push_text(&mut bytes, member.as_str());
             }
         }
-        format!("{:016x}", hasher.finish())
+        sha256(&bytes)
     }
 }
 
-fn hash_aabb(hasher: &mut impl Hasher, bounds: &Aabb) {
-    for cell in bounds.min() {
-        cell.to_bits().hash(hasher);
-    }
-    for cell in bounds.max() {
-        cell.to_bits().hash(hasher);
+/// Appends a length-free, NUL-terminated string: no byte sequence can be
+/// mistaken for a terminator inside the next field.
+fn push_text(bytes: &mut Vec<u8>, value: &str) {
+    bytes.extend_from_slice(value.as_bytes());
+    bytes.push(0);
+}
+
+fn push_f64(bytes: &mut Vec<u8>, value: f64) {
+    bytes.extend_from_slice(&value.to_bits().to_le_bytes());
+}
+
+fn push_optional_f64(bytes: &mut Vec<u8>, value: Option<f64>) {
+    match value {
+        None => bytes.push(0),
+        Some(value) => {
+            bytes.push(1);
+            push_f64(bytes, value);
+        }
     }
 }
 
-fn hash_unknown(hasher: &mut impl Hasher, claim_id: &ClaimId, reason: &str) {
-    "unknown".hash(hasher);
-    claim_id.as_str().hash(hasher);
-    reason.hash(hasher);
+fn push_aabb(bytes: &mut Vec<u8>, bounds: &Aabb) {
+    for value in bounds.min().into_iter().chain(bounds.max()) {
+        push_f64(bytes, value);
+    }
 }
 
-fn hash_resolved_mesh(hasher: &mut impl Hasher, value: &Resolved<ContentId>) {
+/// Encodes a [`Resolved`] record: a `1` and the value, or a `0`, the claim
+/// id and the reason an explicit unknown carries.
+fn push_resolved<T>(
+    bytes: &mut Vec<u8>,
+    value: &Resolved<T>,
+    push_value: impl FnOnce(&mut Vec<u8>, &T),
+) {
     match value {
         Resolved::Known(known) => {
-            "known".hash(hasher);
-            known.value.as_str().hash(hasher);
+            bytes.push(1);
+            push_value(bytes, &known.value);
         }
-        Resolved::Unknown { claim_id, reason } => hash_unknown(hasher, claim_id, reason),
-    }
-}
-
-fn hash_resolved_collision(hasher: &mut impl Hasher, value: &Resolved<WorldCollisionRole>) {
-    match value {
-        Resolved::Known(known) => {
-            "known".hash(hasher);
-            known.value.label().hash(hasher);
+        Resolved::Unknown { claim_id, reason } => {
+            bytes.push(0);
+            push_text(bytes, claim_id.as_str());
+            push_text(bytes, reason);
         }
-        Resolved::Unknown { claim_id, reason } => hash_unknown(hasher, claim_id, reason),
-    }
-}
-
-fn hash_resolved_surface(hasher: &mut impl Hasher, value: &Resolved<SurfaceRole>) {
-    match value {
-        Resolved::Known(known) => {
-            "known".hash(hasher);
-            known.value.label().hash(hasher);
-        }
-        Resolved::Unknown { claim_id, reason } => hash_unknown(hasher, claim_id, reason),
-    }
-}
-
-fn hash_resolved_shape(hasher: &mut impl Hasher, value: &Resolved<WorldCollisionShape>) {
-    match value {
-        Resolved::Known(known) => {
-            "known".hash(hasher);
-            match &known.value {
-                WorldCollisionShape::Cuboid { half_extents_m } => {
-                    "cuboid".hash(hasher);
-                    for extent in half_extents_m {
-                        extent.to_bits().hash(hasher);
-                    }
-                }
-                WorldCollisionShape::FromMesh => "from_mesh".hash(hasher),
-            }
-        }
-        Resolved::Unknown { claim_id, reason } => hash_unknown(hasher, claim_id, reason),
     }
 }
 

@@ -99,6 +99,13 @@ fn one_sector() -> Sector {
     )
 }
 
+fn other_sector() -> Sector {
+    Sector::new(
+        sector("other"),
+        Aabb::try_new([-10.0, 0.0, 0.0], [-1.0, 10.0, 10.0]).expect("the bounds are valid"),
+    )
+}
+
 /// The definition refuses duplicate identities, dangling sector references
 /// and a malformed boundary — each by name, so an authoring mistake is
 /// reported instead of becoming a runtime surprise.
@@ -337,6 +344,115 @@ fn accept_f18_a_each_world_instance_states_its_variant_population_and_damage() {
             Err(WorldError::DefinitionMismatch { .. })
         ),
         "checking a load against another world must be refused"
+    );
+}
+
+/// The record fingerprint is a canonical digest of what the record *says*:
+/// the same records in a different order fingerprint equally, and a record
+/// that says something else fingerprints differently.
+///
+/// Observable failure if the digest were taken in supplied order (the
+/// documented claim) or left a field out: the reordered pair would differ,
+/// or a changed boundary/transform would stay equal.
+#[test]
+fn accept_f18_a_record_fingerprint_is_order_independent_and_tracks_the_record() {
+    let first = one_object_definition(
+        "test.fingerprint",
+        vec![one_sector(), other_sector()],
+        vec![
+            plain_object("a", vec![sector("only")]),
+            plain_object("b", vec![sector("other")]),
+        ],
+    )
+    .expect("the definition is structurally valid");
+    let reordered = one_object_definition(
+        "test.fingerprint",
+        vec![other_sector(), one_sector()],
+        vec![
+            plain_object("b", vec![sector("other")]),
+            plain_object("a", vec![sector("only")]),
+        ],
+    )
+    .expect("the same records in another order are still valid");
+
+    assert_eq!(
+        first.record_fingerprint(),
+        reordered.record_fingerprint(),
+        "the same records must fingerprint equally regardless of insertion order"
+    );
+
+    let hex = first.record_fingerprint().to_hex();
+    assert_eq!(
+        hex.len(),
+        64,
+        "a fingerprint is a sha256 digest: 64 lowercase hex characters, got {hex:?}"
+    );
+    assert!(
+        hex.chars()
+            .all(|ch| ch.is_ascii_digit() || ('a'..='f').contains(&ch)),
+        "the canonical text form is lowercase hex, got {hex:?}"
+    );
+
+    // A boundary nobody chose must not be invisible: the same objects under
+    // a different floor rule are a different record.
+    let moved_floor = WorldDefinition::try_new(
+        WorldId::from_key("test.fingerprint").expect("the world key is valid"),
+        Origin::SyntheticFixture,
+        known(
+            WorldBoundary::try_new(Some(-50.0), Some(100.0), None).expect("the boundary is valid"),
+            "boundary",
+        ),
+        vec![one_sector(), other_sector()],
+        vec![
+            plain_object("a", vec![sector("only")]),
+            plain_object("b", vec![sector("other")]),
+        ],
+        provenance("definition"),
+    )
+    .expect("the definition is structurally valid");
+    assert_ne!(
+        first.record_fingerprint(),
+        moved_floor.record_fingerprint(),
+        "a changed boundary must change the fingerprint"
+    );
+
+    // And so must a moved object.
+    let moved_object = WorldObjectInstance::try_new(
+        object("b"),
+        known(
+            cs_types::content::ContentId::from_source(
+                cs_types::content::ContentKind::Mesh,
+                "synthetic.b",
+            )
+            .expect("the mesh id is valid"),
+            "mesh",
+        ),
+        CanonicalTransform::try_new(
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            [0.0, 2.5, 0.0],
+        )
+        .expect("the transform is finite"),
+        known(cs_content::world::WorldCollisionRole::Solid, "collision"),
+        known(
+            cs_content::world::WorldCollisionShape::cuboid([1.0, 1.0, 1.0])
+                .expect("the box is valid"),
+            "shape",
+        ),
+        known(cs_content::world::SurfaceRole::Ground, "surface"),
+        vec![sector("other")],
+        provenance("object"),
+    )
+    .expect("the sector list has no duplicates");
+    let moved = one_object_definition(
+        "test.fingerprint",
+        vec![one_sector(), other_sector()],
+        vec![plain_object("a", vec![sector("only")]), moved_object],
+    )
+    .expect("the definition is structurally valid");
+    assert_ne!(
+        first.record_fingerprint(),
+        moved.record_fingerprint(),
+        "a moved object must change the fingerprint"
     );
 }
 
