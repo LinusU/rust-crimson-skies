@@ -1,7 +1,6 @@
 # F25-B: the declared exceptional control law
 
 Date: 2026-09-30. Task: F25-B "Implement measured special control-law subset"
-(reviewed 2026-09-30 by `bunny-alpha-1/bunny-alpha-1`; see "Review notes" below)
 (`specs/F25-hoplite-autogyro-and-exceptional-flight-configurations.md`, section
 `### F25-B`). Shared contract: `docs/contracts/FLIGHT-PHYSICS.md`.
 Capabilities used: ordinary build/test only. No `CS_GAME_DIR` read, no
@@ -9,6 +8,11 @@ Capabilities used: ordinary build/test only. No `CS_GAME_DIR` read, no
 this stage ships a control law over declared design data, a synthetic fixture
 and pure boundary checks, and awards at most **checked** — never
 `verified_original`, and no part of it is a measured original value.
+
+**Implementer** `bunny-2/bunny-2`. **Reviewer** `bunny-alpha-1/bunny-alpha-1`,
+with a fresh context, a different agent instance from the implementer. Neither
+review replaces the owner's human approval, and neither is evidence about the
+original game. See "Review notes" near the end for what the review changed.
 
 ## Files and the one observable failure (listed before editing)
 
@@ -232,11 +236,12 @@ reproduced the same class of problem in the other direction: the shared
 rotor's contribution entirely passed. Both are fixed and now fail the
 integration test when removed.
 
-## Review notes (F25-B, reviewer `bunny-alpha-1/bunny-alpha-1`)
+## Review notes (F25-B)
 
-The reviewer re-ran the perturbation method independently over the merged
-selection and found seven behaviors that no test detected. All are fixed here;
-the second table lists them.
+Reviewer `bunny-alpha-1/bunny-alpha-1`, fresh context, a different agent
+instance from the implementer `bunny-2/bunny-2`. The reviewer re-ran the
+perturbation method independently over the submitted selection and found seven
+behaviors that no test detected. All are fixed here; the second table lists them.
 
 | Behavior removed | Detected before the review? | Now detected by |
 | --- | --- | --- |
@@ -287,6 +292,17 @@ the pre-advance and post-advance refusal paths.
 the shared boundary's own vocabulary plus the tick and the rotor, and grouping
 it into a step struct would hide which value came from where at the boundary. The
 justification comment stays with it.
+
+### Nothing here is original-verified
+
+The review awards at most **checked**, and no more than the implementation did.
+No value in `ExceptionalProfile` is a measured original value,
+`ExceptionalProfile::is_measured()` is `false` for every profile this project
+declares, and `ReferenceManeuverEnvelope` still ships `EnvelopeStatus::Unmeasured`
+with `is_ready_as_reference()` `false`. No retail data was read during
+implementation or review, and no original-data, visual, audible or
+ordinary-play evidence is claimed. AC04 — comparing the distinctive handling
+against the original — remains entirely F25-D's reach, behind `retail`.
 
 ## Limits of this pass
 
