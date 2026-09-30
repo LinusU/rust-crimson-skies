@@ -130,10 +130,18 @@ production `install_file_key` normalizer and `AirframeRoster::audit`
 | **total** | **56,620** | | **16,139** |
 
 Each `nodes_offset` was cross-checked against the value the pinned mech3ax
-v0.6.0 reference records for that archive, and each `node_array_size` /
-`nodes_offset` pair was read twice — once by `read_gamez_meshes` and once by
-`read_gamez_materials` — so the census cannot be a reader disagreeing with
-itself.
+v0.6.0 reference records for that archive, and each container's mesh data walk
+has to end exactly on the `nodes_offset` its own header declares.
+
+What the second entrypoint adds is worth stating precisely, because it is
+weaker than "read twice" sounds. `read_gamez_meshes` and
+`read_gamez_materials` both parse the 40 header bytes through the *same*
+`cs_formats::gamez::reader::read_container_header`, so the census asserting
+that the two agree about `node_array_size` and `nodes_offset` is a consistency
+check over one header, not a second independent parse. The independent evidence
+for those two words is the pinned reference table; the walk-based evidence is
+that each mesh section ends exactly on `nodes_offset` and each material section
+exactly on `meshes_offset`.
 
 The verdict: **9 containers audited, 9 blocked, 0 roots mapped, 0 parts, 0
 mounts and 0 cockpit bindings mapped, 0 airframes discovered, 56,620 stored
@@ -161,7 +169,7 @@ Two things follow from the table, and both matter for the task title
 | `roster_audit_maps_every_root_part_mount_and_cockpit_binding` (cs_content/tests/scene.rs) | **AC04's mapping arm**: two containers (one converted, one whose node array is undecoded) and five roster rows. Both reachable roots are mapped with their exact socket sets in stable-id order, per-role counts for all seven roles, the gun's zone/animation/provenance, the gun's pose equal to `world_transform`/`collision_transform`/`PartSocket::pose`, the container census and its `UnmatchedRule` gap, the blocked container's measured facts quoted in its `Display`, `alpha` complete (every declared role bound, availability evidenced, no gaps), `beta` mapped but **not** selectable with `AvailabilityUndiscovered` + `ForcedAssignmentOnly` + its pod's `UnknownRole`, the three airframe blockers (`ContainerUndecoded` with the container's numbers, `RootUndiscovered`, `RootMissing`), the report totals, and the roster's own two-directional assignment queries | sockets are bound by position instead of identity, a mapped socket loses its provenance/zone/animation/pose, an unmeasured role is mapped instead of reported, a forced assignment is promoted to selectable, a blocker drops the container's numbers, a blocked airframe is reported as mapped, a missing root falls back to another root, or the report totals stop reconciling |
 | `roster_audit_reports_each_shortfall_instead_of_a_pass` | **AC04's negative arm**: a container whose header declares 99 stored node records where three were decoded (`NodeCountMismatch`), a socket with an evidenced gameplay role but an unevidenced collision role (`UnknownRole` quoting the *unresolved* claim, not the rule's), two `MissingRole` gaps for roles nothing bound, an airframe in a container the audit never covered (`ContainerNotAudited`), an airframe in a container whose conversion was refused (`ContainerUndecoded` carrying the refusal), and the totals with `mapped_socket_count() == 0` | a partial decode rounds up to a pass, an unevidenced role is defaulted, a required role is silently satisfied, an uncovered container is skipped, a refusal is swallowed, or any of these still reports `is_complete()` |
 | `roster_records_refuse_contradictions` | construction-time refusals: a non-airframe row, a non-mission assignment, a non-airframe assignment, a role required twice, the same airframe audited twice, the same assignment recorded twice, two missions forcing one airframe (the normal case, accepted), a mission forcing an airframe **no row audits** (refused), and an empty roster auditing nothing | a roster accepts a contradiction, an assignment can name a plane outside the roster, or an audit of nothing reads as complete |
-| `retail_the_private_installation_roster_audit_flags_every_container` (`#[ignore = "requires CS_GAME_DIR"]`) | **AC04 over the real installation**: production discovery, both production GameZ readers, the nine-archive census, the reference `nodes_offset` cross-check, the 56,620-record total, the mission-only ratio, and the blocked verdict with every container's measured facts | the corpus changes, a reader mis-walks a container, the two readers disagree, the audit invents a mapping, a blocker loses its numbers, or the report claims completeness |
+| `retail_the_private_installation_roster_audit_flags_every_container` (`#[ignore = "requires CS_GAME_DIR"]`) | **AC04 over the real installation**: production discovery, the production GameZ readers, the nine-archive census under the ZBD root, the reference `nodes_offset` cross-check, the walk ending on `nodes_offset`, the 56,620-record total, the mission-only ratio, and the blocked verdict with every container's measured facts | the corpus changes, a reader mis-walks a container, the two entrypoints disagree, the audit invents a mapping, a blocker loses its numbers, or the report claims completeness |
 
 The evidence harness (`evidence_report_f11_d_writes_the_acceptance_report`,
 deliberately **not** named with the task prefix) derives
@@ -190,6 +198,46 @@ clause of `is_complete()` is covered by the synthetic test only, and
 `mapped_root_count()` is covered by the synthetic mapping test only (with every
 retail container blocked there is no mapping to count, so a mutation there is
 indistinguishable from the original).
+
+
+## Review fix
+
+The reviewing agent re-ran the sensitivity matrix independently rather than
+trusting the table above. Every claim in it reproduced, and the two that matter
+most were re-derived from scratch: making the audit ignore the graph source's
+typed error fails the retail test with `left: 9 right: 0` on
+`mapped_containers().count()` plus both synthetic mapping tests, and gutting
+`AirframeRoster::audit` to `RosterAuditReport::default()` fails three of the
+four `accept_f11_d_*` tests (the contradiction test still passes, because it
+only ever exercises construction-time refusal — that is what it is for).
+
+Three real defects were fixed rather than waved through:
+
+1. **The census's "read twice" claim was stronger than the code.** Both
+   `read_gamez_meshes` and `read_gamez_materials` parse the 40 header bytes
+   through the same `cs_formats::gamez::reader::read_container_header`, so
+   asserting they agree about `node_array_size` / `nodes_offset` is a
+   consistency check over one header, not an independent second parse. The
+   documentation, the assertion message and this file now say so. The
+   assertions themselves are kept and are not vacuous: they still catch a field
+   mix-up between the two entrypoints, and the real independent evidence — the
+   pinned reference offsets and the mesh walk landing on `nodes_offset` — was
+   already there and is now named as such.
+2. **The test file's module doc said "nothing reads original data"**, which was
+   true of the F11-A/B/C tests and false of the file as it now stood, because
+   the retail AC04 test reads `$CS_GAME_DIR`. The doc now lists all four stages
+   and states which tests read original data and what is derived from them.
+3. **`AirframeRoster::audit` asked `graph_of` twice per container** (once for
+   the container verdict, once per airframe rooted in it) and then
+   `expect`ed the second answer to agree with the first. The behaviour is
+   correct and the mutation table shows the check fires, but the contract was
+   undocumented; `audit`'s doc now says the source must be stable, and
+   `mapped_root_count`'s doc says it counts one mapping per mapped airframe
+   rather than distinct roots.
+
+A redundant assertion in the retail test (`report.is_empty() || !is_complete`,
+implied by the very next line) was replaced by a positive `!is_empty()` check,
+which is the half that was actually unproven.
 
 
 ## Unknowns and limitations (all recorded, none guessed)

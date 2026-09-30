@@ -2570,7 +2570,9 @@ impl RosterAuditReport {
         self.airframes.len()
     }
 
-    /// How many roots were reached and mapped.
+    /// How many roots were reached and mapped: one per mapped airframe, so two
+    /// roster rows that name the same root are counted as the two mappings they
+    /// are. [`Self::mapped_containers`] is the count of distinct containers.
     #[must_use]
     pub fn mapped_root_count(&self) -> usize {
         self.airframes
@@ -2756,6 +2758,18 @@ impl AirframeRoster {
     /// over the converted graph instead and the same audit maps it. Nothing
     /// else changes, which is what keeps "blocked" and "mapped" the same
     /// verdict with a different input rather than two different reports.
+    ///
+    /// It is called about a container once for that container's own verdict and
+    /// once more for every airframe whose root lives in it, so the source must
+    /// answer the same way each time: a graph that is there on the first call
+    /// and gone on the second is a contract violation, and the audit trips its
+    /// own consistency check instead of reporting a pass.
+    ///
+    /// It is asked about a container once for that container's own verdict and
+    /// once more for every airframe whose root lives in it, so a source must
+    /// answer the same way every time: a graph that is there on the first call
+    /// and gone on the second is a contract violation, and the audit trips its
+    /// own consistency check rather than reporting a pass.
     ///
     /// The verdict is per airframe and per container, and both are kept: a
     /// container can be converted while one of its airframes still has no

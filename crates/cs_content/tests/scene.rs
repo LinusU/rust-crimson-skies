@@ -1,15 +1,26 @@
-//! Acceptance scenario F11-A (AC01): nested transforms and negative scale
-//! preserve visual/collision alignment after canonical conversion — plus the
-//! hierarchy-validation failure cases and the semantic binding records; and
-//! the F11-B (AC02) LOD selection rule over converted bands.
+//! Acceptance scenarios for the scene hierarchy, the LOD rule, the part
+//! sockets and the airframe roster audit:
+//!
+//! * F11-A (AC01): nested transforms and negative scale preserve
+//!   visual/collision alignment after canonical conversion, plus the
+//!   hierarchy-validation failure cases and the semantic binding records.
+//! * F11-B (AC02): the LOD selection rule over converted bands.
+//! * F11-C: a part socket carries its role, its one composed pose and the
+//!   provenance of the rule that bound it.
+//! * F11-D (AC04): the roster audit maps every root, part, mount and cockpit
+//!   binding it can reach, or names a typed blocker — over synthetic fixtures
+//!   and, in the `#[ignore]`d retail test, over the owner's installation.
 //!
 //! These tests exercise production code only: `cs_content::scene` over the
 //! declared `cs_content::coordinates` adapters and the `cs_types` identity
 //! records. Removing or neutering the axis-map conjugation, the composition
-//! order, the mirror tracking, the link validation or the LOD band rule
-//! makes them fail.
+//! order, the mirror tracking, the link validation, the LOD band rule or the
+//! roster audit makes them fail.
 //!
-//! All fixture values are newly authored; nothing reads original data.
+//! Every fixture value is newly authored. The only tests that read original
+//! data are `#[ignore = "requires CS_GAME_DIR"]` and fail loudly without
+//! `$CS_GAME_DIR`; nothing derived from them beyond counts, offsets and
+//! digests is committed.
 
 use cs_content::coordinates::SourceAdapter;
 use cs_content::scene::{
@@ -1895,10 +1906,10 @@ fn accept_f11_d_roster_records_refuse_contradictions() {
 /// These are the reference's own numbers, not this test's output, so a reader
 /// or a census that mis-walks a container cannot pass by agreeing with
 /// itself. The `node_array_size` column is *not* pinned here: the reference
-/// records it per container, but no independent copy of those numbers exists
-/// in this repository, so the retail test only asserts the ones it can check
-/// two ways (the mesh reader and the material reader reading the same 40
-/// header bytes) and that the count is non-zero.
+/// documents the field, but no independent copy of the per-container values
+/// exists in this repository, so the retail test asserts only what it can
+/// check independently — the `nodes_offset` against this table, the mesh walk
+/// landing on it, and a non-zero record count.
 const RETAIL_GAMEZ_NODES_OFFSET: [(&str, u32); 9] = [
     ("zbd/planes.zbd", 4_881_228),
     ("zbd/c1/gamez.zbd", 4_326_296),
@@ -1939,9 +1950,17 @@ struct GameZCensusRow {
 /// root, offered to the production GameZ reader and measured.
 ///
 /// The reader's own signature and version check is what classifies a
-/// container, so no filename decides this; the second production reader of the
-/// same 40 header bytes must agree about the node array, or the census would
-/// be measuring a disagreement. Rows come back in logical-key order.
+/// container, so no filename decides this. What the second entrypoint adds is
+/// stated exactly, because it is weaker than it looks: both
+/// `read_gamez_meshes` and `read_gamez_materials` parse the 40 header bytes
+/// through the *same* `cs_formats::gamez::reader::read_container_header`, so
+/// agreeing about `node_array_size` and `nodes_offset` is a consistency check
+/// on two pipelines over one header, not a second independent parse. The
+/// independent evidence for the offsets is the pinned reference table in
+/// `RETAIL_GAMEZ_NODES_OFFSET`; what the mesh entrypoint adds is a *walk* that
+/// has to end exactly on the `nodes_offset` the header declares, and what the
+/// material entrypoint adds is a material section that has to end exactly on
+/// `meshes_offset`. Rows come back in logical-key order.
 fn retail_gamez_census(game_dir: &std::path::Path) -> Vec<GameZCensusRow> {
     use cs_assets::install as install_api;
     use cs_content::catalog::baseline::install_file_key;
@@ -1970,13 +1989,17 @@ fn retail_gamez_census(game_dir: &std::path::Path) -> Vec<GameZCensusRow> {
             read_gamez_materials(&mut context, &logical, &bytes).unwrap_or_else(|error| {
                 panic!("{logical}: the retail material section must read: {error}")
             });
+        // Both entrypoints share one header parser (see this function's doc),
+        // so this is a consistency check, not a second parse; the mesh walk
+        // below is the independent evidence that the node array really starts
+        // where the header says.
         assert_eq!(
             (
                 materials.header.node_array_size,
                 materials.header.nodes_offset
             ),
             (meshes.header.node_array_size, meshes.header.nodes_offset),
-            "{logical}: the two readers disagree about the node array"
+            "{logical}: the two entrypoints disagree about the node array words"
         );
         assert_eq!(
             meshes.data_end,
@@ -1995,12 +2018,13 @@ fn retail_gamez_census(game_dir: &std::path::Path) -> Vec<GameZCensusRow> {
     census
 }
 
-/// AC04 over the real installation. Every GameZ archive the owner has is
-/// discovered by production discovery, classified by the production GameZ
-/// reader, and measured: how many stored node records each container's own
-/// header declares and where the array starts, cross-checked against the
-/// pinned reference and against the second production reader of the same 40
-/// header bytes.
+/// AC04 over the real installation. Every GameZ archive under the installation's
+/// ZBD root is discovered by production discovery, classified by the production
+/// GameZ reader, and measured: how many stored node records each container's own
+/// header declares and where the array starts. The `nodes_offset` values are
+/// cross-checked against the pinned reference — the independent check — and each
+/// container's mesh data walk has to end exactly on the offset its header
+/// declares.
 ///
 /// The verdict is the honest one, and it is the verdict this stage is for: no
 /// production path decodes a GameZ node array (#392), so the audit maps **no**
@@ -2107,11 +2131,13 @@ fn accept_f11_d_retail_the_private_installation_roster_audit_flags_every_contain
         0,
         "no airframe element is discovered yet"
     );
+    // Nine blocked containers and no airframe row at all: the report is not
+    // empty (it audited something) and it is not a pass.
+    assert!(!report.is_empty(), "nine containers were audited");
     assert!(
-        report.is_empty() || !report.is_complete(),
+        !report.is_complete(),
         "an audit that mapped nothing is never a pass"
     );
-    assert!(!report.is_complete());
     assert_eq!(report.blocker_count(), 9, "one blocker per container");
     for (audit, row) in report.containers().iter().zip(&census) {
         assert_eq!(audit.container().key(), row.catalog_key);
