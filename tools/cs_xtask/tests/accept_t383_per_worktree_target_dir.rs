@@ -39,7 +39,11 @@ fn workspace_root() -> PathBuf {
         let manifest = dir.join("Cargo.toml");
         if manifest.is_file()
             && fs::read_to_string(&manifest)
-                .map(|contents| contents.contains("[workspace]"))
+                .map(|contents| {
+                    contents
+                        .lines()
+                        .any(|line| line.trim_start().starts_with("[workspace]"))
+                })
                 .unwrap_or(false)
         {
             return dir.to_path_buf();
