@@ -102,22 +102,26 @@ impl AffinePlacement {
     /// * [`AffinePlacementError::NotRepresentable`] when a component does not
     ///   survive the record's f64 to the runtime's f32.
     /// * [`AffinePlacementError::CollapsesSpace`] when the authored linear map
-    ///   has determinant zero: the object has no volume, so no collision
-    ///   geometry of it exists. F18-A refused these too — a zero scale axis
-    ///   makes glam's decomposition return a NaN rotation, which never
-    ///   round-trips — but it could only report "unrepresentable".
+    ///   has determinant zero, in the record or in the runtime's `f32` cast of
+    ///   it: the object has no volume, so no collision geometry of it exists.
+    ///   F18-A refused these too — a zero scale axis makes glam's decomposition
+    ///   return a NaN rotation, which never round-trips — but it could only
+    ///   report "unrepresentable".
     ///
-    /// A matrix that *mirrors* (`det < 0`) is placed like any other: measured,
-    /// a mirrored sheared box bakes to the same six outward face normals as the
-    /// unmirrored one over its own (mirrored) corner set, so the mirror is a
-    /// fact about the geometry rather than a reason to refuse it.
+    /// A matrix that *mirrors* (`det < 0`) is placed like any other: the baked
+    /// corner set is the authored map's exact image, so the mirror reaches the
+    /// collision geometry rather than being refused for existing.
     pub fn of(transform: &CanonicalTransform) -> Result<Self, AffinePlacementError> {
         let authored = canonical_matrix(transform);
         if !authored.is_finite() {
             return Err(AffinePlacementError::NotRepresentable);
         }
-        let determinant = transform.determinant();
-        if determinant == 0.0 {
+        let linear = Mat3::from_mat4(authored);
+        // The record's determinant and the runtime's are two different tests:
+        // an `f64` map that survives can still collapse when narrowed, and a
+        // collapsed corner set bakes into a hull of duplicate points whose face
+        // normals are all zero rather than into a thin solid.
+        if transform.determinant() == 0.0 || linear.determinant() == 0.0 {
             return Err(AffinePlacementError::CollapsesSpace);
         }
 
@@ -134,7 +138,7 @@ impl AffinePlacement {
         }
         Ok(Self::Sheared {
             translation: authored.w_axis.truncate(),
-            linear: Mat3::from_mat4(authored),
+            linear,
             residual: shear_residual(authored),
         })
     }
@@ -200,9 +204,21 @@ pub enum AffinePlacementError {
     /// the runtime's f32, so neither half can draw or collide with it.
     NotRepresentable,
     /// The authored linear map has determinant zero: the object has no volume,
-    /// so no collider of it exists. (A zero scale *axis* with a non-zero
-    /// determinant is a different object and is placed as a zero-thickness
-    /// primitive, as F18-A placed it.)
+    /// so no collider of it exists.
+    ///
+    /// Measured on the record *and* on the runtime's `f32` cast of it. The two
+    /// are not the same test: an `f64` map whose determinant survives can still
+    /// collapse when narrowed (`1e-30` beside `1e30` is zero in `f32`), and a
+    /// corner set that has collapsed is not a thin solid, it is a hull of
+    /// duplicate points with no face normals. Such a matrix has no exact
+    /// placement either, so it is refused here rather than baked.
+    ///
+    /// F18-A refused these too, but only as "unrepresentable": a zero scale
+    /// axis makes glam's decomposition return a NaN rotation, which never
+    /// round-trips, so the round-trip test caught them by accident and could not
+    /// say why. Note there is no separate "zero scale axis" case hiding behind
+    /// this one: a matrix with a zero scale axis *has* determinant zero, so it
+    /// is refused here, exactly as F18-A refused it.
     CollapsesSpace,
     /// The physics library could not build a solid from the exact affine image
     /// of the authored collision geometry.
@@ -300,16 +316,48 @@ pub fn shear_residual(authored: Mat4) -> f32 {
 /// is a runtime shape derived from the same record the presentation draws
 /// (F18 non-negotiable behavior 1).
 ///
+/// # The `TriMesh` branch is not a capability yet
+///
+/// [`crate::world::spawn_object`] refuses a **sheared mesh-derived** object by
+/// name ([`AffinePlacementError::ShearedMeshUndecided`]) before any shape
+/// reaches this function, so the branch below is reachable only from tests
+/// today. It is kept, and documented as the *recipe* rather than removed,
+/// because it is the decision this task was asked to make and the one place a
+/// reader can see what the mesh path would cost: the collision would become a
+/// derived upload whose fingerprint is no longer the authored one. Do not wire
+/// it to a `Collider` before F18-B's mesh policy and F18-D's census of sheared
+/// retail geometry have decided it; doing so would claim a provenance the
+/// report cannot back.
+///
 /// # Errors
 ///
 /// [`AffinePlacementError::UnbuildableCollision`] for any other shape kind, and
-/// when the physics library cannot build a solid from the mapped geometry.
+/// when the physics library cannot build a solid from the mapped geometry — or
+/// builds one whose faces carry no normal, which is a degenerate hull rather
+/// than a solid and is refused instead of being spawned.
 pub fn bake_shape(shape: &SharedShape, linear: Mat3) -> Result<SharedShape, AffinePlacementError> {
     if let Some(box_shape) = shape.as_cuboid() {
         let (points, triangles) = parallelepiped(box_shape.half_extents, linear);
-        return ConvexPolyhedron::from_convex_mesh(points, &triangles)
-            .map(SharedShape::new)
-            .ok_or(AffinePlacementError::UnbuildableCollision);
+        let polyhedron = ConvexPolyhedron::from_convex_mesh(points, &triangles)
+            .ok_or(AffinePlacementError::UnbuildableCollision)?;
+        // A collapsed corner set makes every triangle degenerate, and parry
+        // stores `Vector::ZERO` as a degenerate triangle's normal
+        // (`Triangle { normal: normal.unwrap_or(Vector::ZERO), .. }`). A solid
+        // with such faces is the complement of the authored one as far as
+        // `contains_local_point`, `project_local_point` and any
+        // `face.normal`-built manifold are concerned, so it is refused.
+        if polyhedron
+            .faces()
+            .iter()
+            .any(|face| !face.normal.is_finite())
+            || polyhedron
+                .faces()
+                .iter()
+                .any(|face| face.normal.length_squared() == 0.0)
+        {
+            return Err(AffinePlacementError::UnbuildableCollision);
+        }
+        return Ok(SharedShape::new(polyhedron));
     }
     if let Some(mesh) = shape.as_trimesh() {
         let vertices: Vec<Vec3> = mesh
@@ -328,18 +376,25 @@ pub fn bake_shape(shape: &SharedShape, linear: Mat3) -> Result<SharedShape, Affi
 /// of the parallelepiped they form.
 ///
 /// The corner at index `i` takes its `x`, `y` and `z` signs from bits 0, 1 and 2
-/// of `i` (a clear bit is the negative side). The six quads are wound
-/// counter-clockwise seen from outside the solid in the *local* frame.
+/// of `i` (a clear bit is the negative side). Each quad is emitted as
+/// `(q0, q1, q2)` and `(q0, q2, q3)`, which winds the solid's faces
+/// **counter-clockwise seen from outside** — but only when `linear` preserves
+/// orientation. A **mirroring** map (`det < 0`) reverses every triangle it is
+/// applied to, so the same index winding would build a solid whose faces point
+/// *into* it; the emitted triangles are therefore reversed for a negative
+/// determinant. Measured, and asserted: the acceptance test checks that every
+/// baked face normal points away from the solid's own centre, for a sheared map
+/// and for a mirrored sheared one.
 ///
-/// The winding is **not load-bearing** on the pinned pair, which is why the
-/// mirror case needs no special handling: measured, reversing every triangle
-/// leaves the built solid's six face normals bit-identical, and a linear map
-/// that mirrors (`det < 0`) produces the same six normals over its own mirrored
-/// corner set. `ConvexPolyhedron::from_convex_mesh` merges each coplanar quad
-/// and orients the merged face from the polygon's own geometry, so what decides
-/// the outward direction is the corner set — and that *is* the authored map's
-/// exact image. The acceptance test asserts the six normals as that image's,
-/// not the winding this table happens to use.
+/// Both halves of that are load-bearing, and the pinned pair is why
+/// (`parry3d-0.27.0/src/shape/convex_polyhedron.rs`): `from_convex_mesh` builds
+/// each merged face with `normal: triangles[i].normal`, and a triangle's normal
+/// is `utils::ccw_face_normal([p0, p1, p2])` — the cross product of the winding
+/// as handed in. There is **no re-orientation step**. A solid whose faces point
+/// inward still collides, because contact generation uses sign-agnostic support
+/// functions, but it inverts `contains_local_point`, `project_local_point` and
+/// any manifold built from `face.normal` — which is why the orientation is
+/// checked directly rather than inferred from a body bouncing off the panel.
 fn parallelepiped(half: Vec3, linear: Mat3) -> (Vec<Vec3>, Vec<[u32; 3]>) {
     let points: Vec<Vec3> = (0..8)
         .map(|index| {
@@ -355,10 +410,15 @@ fn parallelepiped(half: Vec3, linear: Mat3) -> (Vec<Vec3>, Vec<[u32; 3]>) {
         [0, 4, 6, 2],
         [1, 3, 7, 5],
     ];
-    let triangles: Vec<[u32; 3]> = QUADS
+    let mut triangles: Vec<[u32; 3]> = QUADS
         .iter()
-        .flat_map(|quad| [[quad[0], quad[2], quad[1]], [quad[0], quad[3], quad[2]]])
+        .flat_map(|quad| [[quad[0], quad[1], quad[2]], [quad[0], quad[2], quad[3]]])
         .collect();
+    if linear.determinant() < 0.0 {
+        for triangle in &mut triangles {
+            triangle.swap(1, 2);
+        }
+    }
     debug_assert_eq!(points.len(), 8);
     debug_assert_eq!(triangles.len(), 12);
     (points, triangles)

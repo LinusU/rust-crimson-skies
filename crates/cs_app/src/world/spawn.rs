@@ -391,7 +391,9 @@ pub enum WorldSpawnError {
     /// failed halfway would carry some objects and not others while the caller
     /// holds no [`SpawnedWorld`] to ask which, so nothing is spawned and
     /// nothing is approximated (guessing a placement is exactly how a
-    /// traversable opening gets closed).
+    /// traversable opening gets closed). [`instance_placements`] is what makes
+    /// that true for *every* reason here, including the one only a bake can
+    /// find.
     UnplaceableAffine {
         /// The object whose authored affine was refused.
         object: WorldObjectId,
@@ -515,19 +517,51 @@ pub fn instance_placement(
     Ok(placement)
 }
 
+/// The collision geometry one declared cuboid is built from: the authored box
+/// in the instance's local frame, read through the one production conversion.
+/// Exactly what [`AffinePlacement::bake`] starts from, so the pre-flight and
+/// the spawn cannot disagree about the box.
+fn authored_cuboid(half_extents_m: [f64; 3]) -> SharedShape {
+    SharedShape::new(Cuboid::new(Vec3::new(
+        half_extents_m[0] as f32,
+        half_extents_m[1] as f32,
+        half_extents_m[2] as f32,
+    )))
+}
+
 /// Classifies the given instances in order, before anything is spawned.
+///
+/// This is the **pre-flight**, and it covers every reason
+/// [`WorldSpawnError::UnplaceableAffine`] can carry — including the one only
+/// the bake can find ([`AffinePlacementError::UnbuildableCollision`]). That
+/// matters for the atomicity [`WorldSpawnError`] promises: `spawn_world`
+/// spawns object by object, so a reason found during the *second* object's
+/// bake would leave the first object behind with no `SpawnedWorld` to ask
+/// which. The declared cuboid is therefore baked here and discarded — the same
+/// function the spawn calls, on the same record, so the two agree by
+/// construction rather than by luck.
 ///
 /// # Errors
 ///
-/// [`WorldSpawnError::UnplaceableAffine`] naming the first object whose
-/// authored affine has no exact placement.
+/// [`WorldSpawnError::UnplaceableAffine`] naming the first object that has no
+/// exact placement, with its reason.
 pub fn instance_placements(
     objects: &[&WorldObjectInstance],
 ) -> Result<Vec<AffinePlacement>, WorldSpawnError> {
-    objects
-        .iter()
-        .map(|object| instance_placement(object))
-        .collect()
+    let mut placements = Vec::with_capacity(objects.len());
+    for object in objects {
+        let placement = instance_placement(object)?;
+        if let Some(WorldCollisionShape::Cuboid { half_extents_m }) = object.known_shape() {
+            placement
+                .bake(&authored_cuboid(half_extents_m))
+                .map_err(|source| WorldSpawnError::UnplaceableAffine {
+                    object: object.id().clone(),
+                    source,
+                })?;
+        }
+        placements.push(placement);
+    }
+    Ok(placements)
 }
 
 /// Maps the engine-independent [`CollisionLayers`] membership onto Avian's
@@ -680,11 +714,7 @@ pub fn spawn_object(
             // scale from a translation/rotation/scale decomposition — so the
             // authored linear map goes into the *shape* and the pose keeps only
             // the translation. Same vertices, same conversion, one asset.
-            let authored_box = SharedShape::new(Cuboid::new(Vec3::new(
-                half_extents_m[0] as f32,
-                half_extents_m[1] as f32,
-                half_extents_m[2] as f32,
-            )));
+            let authored_box = authored_cuboid(half_extents_m);
             let geometry = placement.bake(&authored_box).map_err(|source| {
                 WorldSpawnError::UnplaceableAffine {
                     object: object.id().clone(),

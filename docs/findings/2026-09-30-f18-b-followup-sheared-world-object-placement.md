@@ -31,7 +31,10 @@ component that does not survive the runtime's f32
 (`CollapsesSpace` — the object has no volume, so no collider of it exists), and
 collision geometry the physics library cannot turn into a solid
 (`UnbuildableCollision`). It still happens **before the first entity is
-spawned**, so a refused definition leaves the app exactly as it was.
+spawned**, so a refused definition leaves the app exactly as it was — and that
+holds for *every* reason listed, including the last one, because the pre-flight
+(`instance_placements`) bakes each declared cuboid with the same function
+`spawn_object` calls rather than only classifying the affine.
 
 ### The two alternatives, and why not
 
@@ -151,14 +154,27 @@ linear map `[[1, 0.5, 0], [0, 1, 0], [0, 0, 1]]` (a shear of 0.5 per meter of
   corners. A mesh-derived collider must not be hulled — that is exactly the
   "never close a traversable opening through convex-hull simplification" half of
   F18 behavior 1 — and for a box it would silently thin the wall.
-* **The built solid's face normals are the authored image's, and the input
-  winding does not decide them.** `from_convex_mesh` merges each coplanar quad
-  and orients the merged face from the polygon's own geometry. Measured: with
-  every triangle of the input reversed the six normals are bit-identical, and a
-  linear map that *mirrors* (`det < 0`) produces the same six normals over its
-  own mirrored corner set. The test therefore asserts the six normals against
-  `±(g₂ × g₃)`, `±(g₃ × g₁)`, `±(g₁ × g₂)` computed from the record's own map,
-  and a mirrored shear is **placed**, not refused.
+* **The built solid's faces point out of it, and the input winding does decide
+  that.** `from_convex_mesh` gives each merged face `normal: triangles[i].normal`
+  (`parry3d-0.27.0/src/shape/convex_polyhedron.rs`), and a triangle's normal is
+  `utils::ccw_face_normal([p0, p1, p2])` — the cross product of the winding as
+  handed in. There is **no re-orientation step**. Measured: reversing every
+  input triangle negates all six face normals, and a *mirroring* authored map
+  (`det < 0`) reverses the effective winding of every triangle it is applied to,
+  so the bake reverses its own emission when the determinant is negative.
+  **This corrects an earlier claim in this finding**, that the normals are
+  "orientation-free" and that reversing the winding is a no-op; it was measured
+  wrongly and the review re-measured it.
+  The consequence is worth stating because it is easy to get wrong: a solid with
+  inward faces still *collides* correctly, because contact generation uses
+  sign-agnostic support functions, but it inverts `contains_local_point`,
+  `project_local_point` and any manifold built from `face.normal`. So a
+  bouncing body does **not** prove the orientation, and the acceptance test does
+  not rely on one: it asserts the six directions against `±(g₂ × g₃)`,
+  `±(g₃ × g₁)`, `±(g₁ × g₂)` computed from the record's own map, **and** that
+  every stored face normal has a positive dot product with the direction from
+  the solid's own centre to that face's centre. A mirrored shear is **placed**,
+  not refused, and its faces are checked the same way.
 * **A baked box is still a support map, so swept CCD still holds a body.**
   Measured: a `SweptCcd` probe with `SpeculativeMargin::ZERO` at 400 m/s into
   the sheared panel's slanted `+x` face is clamped at `x = -0.617`, which is
@@ -187,17 +203,30 @@ unmutated.
 | drop the authored translation from the collider pose | 2: `..._the_collision_carries_...`, `..._blocks_inside_the_shear...` |
 | never bake (`Sheared` returns the authored primitive untouched) | the same 4 as the identity bake |
 | the mesh bake drops one triangle | `..._the_same_bake_keeps_every_stored_mesh_triangle` |
-| reverse every triangle of the baked box | none — a **semantic no-op**, recorded as such |
+| reverse every triangle of the baked box | `..._the_collision_carries_the_authored_linear_map_in_its_shape` |
+| drop the bake's mirror reversal (`det < 0`) | `..._a_mirrored_shear_is_placed_with_the_mirrored_geometry` |
+| bake the box with the *unswapped* quad order (`[q0,q2,q1]`) | `..._the_collision_carries_the_authored_linear_map_in_its_shape` |
 | build the plan inside the spawn loop instead of before it | none — a **semantic no-op**, recorded as such |
 
-Two rows deserve a word. *Reversing the winding* is a no-op because the physics
-library derives each merged face's orientation from the corner set, not from the
-input winding (measured above); the orientation claim is pinned by the
-face-normal assertion instead. *Building the plan inside the loop instead of
-before it* was also a no-op, because the loop still completes before any
-`world.spawn`; the atomicity property is pinned by
+Three rows deserve a word. The two winding rows and the mirror row were
+**re-measured by the review and the earlier "semantic no-op" claim withdrawn**:
+the input winding does decide the built solid's face orientation, so reversing
+it fails the assertion, and so does forgetting to reverse it for a mirroring
+map. Each of the three is pinned by exactly one test, and they are different
+tests, so the shear case and the mirror case are separately covered. *Building
+the plan inside the loop instead of before it* was a genuine no-op, because the
+loop still completes before any `world.spawn`; the atomicity property is pinned
+by
 `accept_f18_a_spawn_refuses_a_matrix_no_runtime_transform_can_hold_before_spawning_anything`,
 which F18-A's own matrix already showed to be sensitive to it.
+
+The review also found a second way the pre-flight was incomplete, and fixed it:
+`instance_placements` classified every instance but did not *bake*, so
+`AffinePlacementError::UnbuildableCollision` — the one reason only the bake can
+find — could surface from `spawn_object` on the second or third object, leaving
+the first behind. That contradicts the atomicity `WorldSpawnError` promises. The
+pre-flight now bakes each declared cuboid with the same function the spawn
+calls, on the same record, so the two agree by construction.
 
 ## What changed in an existing test
 
@@ -249,16 +278,26 @@ unmodified.
   reachable half of `NotRepresentable` is an f64 value too large for f32; it is
   named rather than tested with a synthetic record, because building one would
   mean writing a `CanonicalTransform` through a path its constructor refuses.
-* **The mesh bake's winding after a mirror** is measured to be orientation-free
-  for the convex-hull path (`from_convex_mesh`), but a `TriMesh` bake under a
-  mirroring map is *not* covered: `TriMesh::new` keeps the caller's triangle
-  winding, and a mirror reverses it. `bake_shape` therefore places a mirrored
-  **box** exactly, and a mirrored **mesh** would arrive with inward-facing
-  triangles — a fact F18-B's mesh path must decide before it adopts the call for
-  a mirroring object. Affected content: a retail world object whose collision is
-  mesh-derived and whose authored matrix both mirrors and shears. Resolving
-  task: **F18-B** (#86) together with the F18-D census; recorded here rather
-  than guessed.
+* **The mesh bake's winding after a mirror is not covered.** `TriMesh::new`
+  keeps the caller's triangle winding, and a mirroring authored map reverses the
+  effective winding of every triangle it is applied to — the same fact that
+  makes the convex path reverse its own emission. `bake_shape` therefore places a
+  mirrored **box** exactly, and a mirrored **mesh** would arrive with
+  inward-facing triangles. This is *not* silently relied upon: the whole sheared
+  mesh case is refused by name before any shape is baked (see above), so the
+  `TriMesh` branch is unreachable from `spawn_object` and is kept as the recipe
+  F18-B's mesh path would have to adopt — with the mirror handled — before it
+  may be wired to a collider. Affected content: a retail world object whose
+  collision is mesh-derived and whose authored matrix both mirrors and shears.
+  Resolving task: **F18-B** (#86) together with the F18-D census; recorded here
+  rather than guessed.
+* **The `TriMesh` branch of `bake_shape` has no production consumer.** It is
+  reachable only from the acceptance tests, because the sheared mesh case is
+  refused by name. It is kept, and labelled on the function, so the decision is
+  visible in one place and so a future stage has the recipe — but it is not a
+  capability this stage claims, and AGENTS.md rule 5 (a parsed asset needs a
+  working runtime consumer) is the reason it is documented as a recipe rather
+  than quietly presented as supported.
 
 ## Designed vocabulary, not original data
 

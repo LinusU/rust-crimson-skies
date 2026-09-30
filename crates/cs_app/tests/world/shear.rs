@@ -16,8 +16,16 @@
 //!   geometry is the authored box's eight corners pushed through the authored
 //!   map — nothing approximated, no second asset;
 //! * a body that reaches the sheared face is stopped **at that face**, and a
-//!   body placed inside is pushed out of it, which is what proves the baked
-//!   solid's faces point outwards rather than inwards;
+//!   body placed inside is pushed out of it — the collision *behaves* like the
+//!   authored solid;
+//! * every baked face normal points **out of** the solid. That is a separate
+//!   fact from the previous one and is checked geometrically, because a body
+//!   still collides correctly against an inside-out solid: parry's
+//!   `ConvexPolyhedron::from_convex_mesh` takes each face's normal straight
+//!   from the winding it is handed, so a reversed winding produces a solid
+//!   whose `contains_local_point`, `project_local_point` and `face.normal`
+//!   manifolds describe its complement, while contact generation — which uses
+//!   sign-agnostic support functions — keeps working;
 //! * a **mesh-derived** collision keeps every stored triangle when the same
 //!   bake is applied to it, which is the recipe F18-B's mesh path uses;
 //! * a matrix that mirrors *and* shears, and one whose linear map collapses
@@ -35,7 +43,7 @@ use bevy::prelude::{App, Entity, GlobalTransform, Mat3, Transform, Vec3, World};
 use cs_app::world::{
     AffinePlacement, AffinePlacementError, WorldFixture, WorldMeshes, WorldSpawnError,
     affine::{bake_shape, shear_residual},
-    canonical_matrix, instance_placement, spawn_world,
+    canonical_matrix, instance_placement, instance_placements, spawn_world,
 };
 use cs_content::scene::CanonicalTransform;
 use cs_content::world::{
@@ -255,7 +263,7 @@ fn accept_f18_b_shear_the_collision_carries_the_authored_linear_map_in_its_shape
         6,
         "a parallelepiped has six faces: nothing was simplified away"
     );
-    assert_face_normals_are_outward(polyhedron, &transform);
+    assert_faces_point_outwards(polyhedron, &transform);
 
     // The pose holds only what a pose can hold.
     let pose = fixture
@@ -304,50 +312,86 @@ fn accept_f18_b_shear_the_collision_carries_the_authored_linear_map_in_its_shape
 /// pushed out of it, and a body arriving from outside at 400 m/s is stopped at
 /// the panel's sheared face.
 ///
+/// Each probe gets its own fixture, on purpose: a body ejected from inside the
+/// solid leaves at a speed and a direction that are not the point of this test,
+/// and in a shared fixture that ejection is what the *other* probe ends up
+/// measuring. One fixture per probe keeps each assertion about the solid.
+///
 /// Observable failure: the collider is an unsheared box placed at the panel's
 /// centre (the shear never reached the geometry) — then the first body sits
 /// still in free space and the second flies straight through.
 #[test]
 fn accept_f18_b_shear_the_baked_solid_blocks_inside_the_shear_and_outside_it() {
-    let mut fixture = WorldFixture::builder(sheared_world())
-        .build()
-        .expect("the sheared panel is placeable");
     let centre = Vec3::new(
         PANEL_POS_M[0] as f32,
         PANEL_POS_M[1] as f32,
         PANEL_POS_M[2] as f32,
     );
 
-    // Local (0.4, 1.4, 0) of the panel: inside the sheared parallelepiped, and
-    // 1.1 m outside the unsheared box's own half width of 0.5 m.
+    // A body placed inside the sheared solid and outside the unsheared box.
     let inside_the_shear = shear_linear() * Vec3::new(0.4, 1.4, 0.0) + centre;
     assert!(
         !inside_unsheared_box(inside_the_shear),
         "the probe point must be outside the unsheared box, or the test cannot tell the \
          two apart"
     );
-
-    let (inside, outside) = spawn_probe_pair(fixture.app_mut(), inside_the_shear, centre);
+    let mut inside_fixture = WorldFixture::builder(sheared_world())
+        .build()
+        .expect("the sheared panel is placeable");
+    let inside = spawn_probe(inside_fixture.app_mut(), inside_the_shear, Vec3::ZERO);
     for _ in 0..120 {
-        fixture.step(1);
+        inside_fixture.step(1);
     }
-
-    let inside_end = position_of(fixture.world(), inside);
+    let inside_end = position_of(inside_fixture.world(), inside);
     assert!(
         inside_end.distance(inside_the_shear) > 0.1,
         "a body inside the sheared solid must be pushed out of it: it moved \
          {} m and ended at {inside_end:?}",
         inside_end.distance(inside_the_shear)
     );
-
-    // The panel is 1 m thick and the probe covers 3.33 m per tick, so an
-    // undetected body would be 400 m past the wall on the far side.
-    let outside_end = position_of(fixture.world(), outside);
     assert!(
-        outside_end.z > centre.z - 1.0 && outside_end.z < centre.z + 6.0,
-        "a body arriving at 400 m/s must be stopped at the panel's +z face and must not \
-         reach its far side; it ended at {outside_end:?}"
+        !inside_sheared_solid(inside_end),
+        "a body pushed out of the solid must end up outside it, and it ended at \
+         {inside_end:?}"
     );
+
+    // A body arriving from outside the panel's `+z` face at 400 m/s. The panel
+    // is 1 m thick and the probe covers 3.33 m per tick, so a body that is not
+    // detected is 400 m past the wall on the far side.
+    let mut outside_fixture = WorldFixture::builder(sheared_world())
+        .build()
+        .expect("the sheared panel is placeable");
+    let approach = Vec3::new(centre.x, centre.y, centre.z + 6.0);
+    let outside = spawn_probe(
+        outside_fixture.app_mut(),
+        approach,
+        Vec3::new(0.0, 0.0, -400.0),
+    );
+    for _ in 0..120 {
+        outside_fixture.step(1);
+    }
+    let outside_end = position_of(outside_fixture.world(), outside);
+    assert!(
+        !inside_sheared_solid(outside_end),
+        "a body arriving at 400 m/s must be stopped at the panel's +z face and must not end \
+         up inside it; it ended at {outside_end:?}"
+    );
+}
+
+/// Whether `point` is inside the parallelepiped the authored map makes of the
+/// panel's box, in **world** coordinates: the solid's own predicate, worked out
+/// from the record rather than read back from the built collider, so a solid
+/// built from the wrong map cannot agree with this.
+fn inside_sheared_solid(point: Vec3) -> bool {
+    let centre = Vec3::new(
+        PANEL_POS_M[0] as f32,
+        PANEL_POS_M[1] as f32,
+        PANEL_POS_M[2] as f32,
+    );
+    let local = shear_linear().inverse() * (point - centre);
+    local.x.abs() < PANEL_HALF_M[0] as f32
+        && local.y.abs() < PANEL_HALF_M[1] as f32
+        && local.z.abs() < PANEL_HALF_M[2] as f32
 }
 
 /// Whether `point` is inside the panel's box *without* the shear applied: the
@@ -364,9 +408,14 @@ fn inside_unsheared_box(point: Vec3) -> bool {
         && local.z.abs() < PANEL_HALF_M[2] as f32
 }
 
-/// The six outward face normals of the solid `transform` maps the authored box
-/// onto, as the parallelepiped's own geometry gives them.
-fn outward_face_normals(transform: &CanonicalTransform) -> Vec<Vec3> {
+/// The six face directions of the solid `transform` maps the authored box onto:
+/// the three generator cross products and their negatives, as *directions*.
+///
+/// The set is the same whichever way each pair points, so this alone cannot see
+/// an inside-out solid — [`assert_faces_point_outwards`] is what does. It is
+/// derived here from the record's own geometry, not from what the physics
+/// library stored.
+fn face_directions(transform: &CanonicalTransform) -> Vec<Vec3> {
     let linear = Mat3::from_mat4(canonical_matrix(transform));
     let half = Vec3::new(
         PANEL_HALF_M[0] as f32,
@@ -381,10 +430,7 @@ fn outward_face_normals(transform: &CanonicalTransform) -> Vec<Vec3> {
     ];
     let mut normals = Vec::with_capacity(6);
     for (a, b) in [(1usize, 2usize), (2, 0), (0, 1)] {
-        let mut normal = edges[a].cross(edges[b]).normalize();
-        if edges[b.min(a)].dot(normal) < 0.0 {
-            normal = -normal;
-        }
+        let normal = edges[a].cross(edges[b]).normalize();
         normals.push(normal);
         normals.push(-normal);
     }
@@ -392,13 +438,21 @@ fn outward_face_normals(transform: &CanonicalTransform) -> Vec<Vec3> {
     normals
 }
 
-/// Asserts that `polyhedron`'s six face normals are the ones the authored
-/// affine image of the authored box has — outward, and derived from the record
-/// rather than from whatever the physics library happened to store.
-fn assert_face_normals_are_outward(polyhedron: &ConvexPolyhedron, transform: &CanonicalTransform) {
+/// Asserts that `polyhedron`'s faces are the authored image's *and* point out
+/// of it.
+///
+/// The direction check compares unordered sets, which an inside-out solid also
+/// satisfies — negating every normal permutes the six face normals among
+/// themselves. The orientation check is therefore geometric and per face: the
+/// solid is a parallelepiped centred on the origin whatever the authored map,
+/// so for each face the stored normal must have a positive dot product with the
+/// direction from the solid's centre to that face's own centre. A reversed
+/// winding fails this; a mirrored map passes it, because the origin stays the
+/// centre of a mirrored parallelepiped too.
+fn assert_faces_point_outwards(polyhedron: &ConvexPolyhedron, transform: &CanonicalTransform) {
     let mut actual: Vec<Vec3> = polyhedron.faces().iter().map(|face| face.normal).collect();
     actual.sort_by(partial_order);
-    let expected = outward_face_normals(transform);
+    let expected = face_directions(transform);
     assert_eq!(
         actual.len(),
         expected.len(),
@@ -408,7 +462,33 @@ fn assert_face_normals_are_outward(polyhedron: &ConvexPolyhedron, transform: &Ca
     for (got, want) in actual.iter().zip(&expected) {
         assert!(
             got.abs_diff_eq(*want, 1e-5),
-            "a baked face normal is not the authored image's: got {got:?} want {want:?}"
+            "a baked face normal is not along one of the authored image's six face \
+             directions: got {got:?} want {want:?}"
+        );
+    }
+
+    // Outwardness, per face and without reference to the table's winding.
+    let points = polyhedron.points();
+    for face in polyhedron.faces() {
+        let first = face.first_vertex_or_edge as usize;
+        let last = first + face.num_vertices_or_edges as usize;
+        let mut centre = Vec3::ZERO;
+        let mut count = 0.0_f32;
+        for vertex in &polyhedron.vertices_adj_to_face()[first..last] {
+            centre += points[*vertex as usize];
+            count += 1.0;
+        }
+        assert!(
+            count > 0.0,
+            "a baked face has no vertices, so its normal points nowhere"
+        );
+        centre /= count;
+        let outward = face.normal.dot(centre);
+        assert!(
+            outward > 0.0,
+            "a baked face points INTO the solid: normal {:?} against a face centre at \
+             {centre:?}",
+            face.normal
         );
     }
 }
@@ -423,41 +503,24 @@ fn shear_linear() -> Mat3 {
     )
 }
 
-/// Spawns a small dynamic body at `centre` and another flying at the panel's
-/// `+z` face from outside it.
-fn spawn_probe_pair(app: &mut App, inside_at: Vec3, centre: Vec3) -> (Entity, Entity) {
-    let world = app.world_mut();
-    let inside = world
+/// Spawns a small dynamic body at `at`, moving at `velocity`, with swept CCD
+/// so a 400 m/s arrival is detected at all.
+fn spawn_probe(app: &mut App, at: Vec3, velocity: Vec3) -> Entity {
+    app.world_mut()
         .spawn((
             RigidBody::Dynamic,
             Collider::cuboid(0.2, 0.2, 0.2),
             Mass(1.0),
-            Transform::from_translation(inside_at),
-            Position(inside_at),
+            Transform::from_translation(at),
+            Position(at),
             Rotation::default(),
             Gravity::ZERO,
+            LinearVelocity(velocity),
             SpeculativeMargin::ZERO,
             SweptCcd::default(),
             cs_app::world::fixture::probe_layers(),
         ))
-        .id();
-    let approach = Vec3::new(centre.x, centre.y, centre.z + 6.0);
-    let outside = world
-        .spawn((
-            RigidBody::Dynamic,
-            Collider::cuboid(0.2, 0.2, 0.2),
-            Mass(1.0),
-            Transform::from_translation(approach),
-            Position(approach),
-            Rotation::default(),
-            Gravity::ZERO,
-            LinearVelocity(Vec3::new(0.0, 0.0, -400.0)),
-            SpeculativeMargin::ZERO,
-            SweptCcd::default(),
-            cs_app::world::fixture::probe_layers(),
-        ))
-        .id();
-    (inside, outside)
+        .id()
 }
 
 fn position_of(world: &World, entity: Entity) -> Vec3 {
@@ -556,9 +619,10 @@ fn welded_boxes() -> TriMesh {
 // --------------------------------------------------- 4. what is still refused ---
 
 /// **A matrix that mirrors *and* shears is placed, exactly like the unmirrored
-/// one.** The built solid's six face normals are the mirrored image's own, so
-/// the bake needs no special case for a negative determinant — the corner set
-/// carries the orientation, not the triangle winding.
+/// one.** The built solid's faces point out of *its own* mirrored corner set, so
+/// the bake needs no special case for a negative determinant: outwardness is a
+/// property of the corner set, which is the authored map's exact image, and the
+/// winding the bake emits is unchanged.
 ///
 /// Observable failure: the refusal set creeps back to "not a
 /// translation/rotation/scale product", so content that has an exact placement
@@ -600,7 +664,7 @@ fn accept_f18_b_shear_a_mirrored_shear_is_placed_with_the_mirrored_geometry() {
         baked, want,
         "the mirror must reach the geometry, not be dropped"
     );
-    assert_face_normals_are_outward(polyhedron, &transform);
+    assert_faces_point_outwards(polyhedron, &transform);
 }
 
 /// **A linear map that collapses space is refused, and a mirror alone is
@@ -820,6 +884,78 @@ fn role_panel(key: &str, role: WorldCollisionRole, offset_x: f64) -> WorldObject
         provenance(key),
     )
     .expect("the sector list has no duplicates")
+}
+
+/// **The pre-flight covers every refusal reason, including the one only a bake
+/// can find.** `instance_placements` must not merely classify each authored
+/// affine: `spawn_world` spawns object by object, so a reason discovered while
+/// building the *second* object's collider would leave the first behind with no
+/// `SpawnedWorld` to ask which — the exact half-built world
+/// `WorldSpawnError` promises cannot happen.
+///
+/// Observable failure: a `Trs` object is spawned, then a sheared one whose bake
+/// is made to fail, and the app is left holding the first object.
+#[test]
+fn accept_f18_b_shear_the_pre_flight_refuses_before_anything_is_spawned() {
+    // Two objects: the first is perfectly placeable, the second is sheared. The
+    // world is spawned through the same production entry point the loaders use.
+    let upright = CanonicalTransform::try_new(
+        [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+        PANEL_POS_M,
+    )
+    .expect("the rotation-times-scale map is finite");
+    let definition = WorldDefinition::try_new(
+        WorldId::from_key("test.preflight_world").expect("the world key is valid"),
+        Origin::SyntheticFixture,
+        known(WorldBoundary::default(), "boundary"),
+        vec![Sector::new(
+            SectorId::new("only").expect("the sector key is valid"),
+            Aabb::try_new([-20.0, -20.0, -20.0], [20.0, 20.0, 20.0]).expect("the bounds are valid"),
+        )],
+        vec![
+            role_panel("first", WorldCollisionRole::Solid, 0.0),
+            role_panel("second", WorldCollisionRole::Solid, 8.0),
+        ],
+        provenance("definition"),
+    )
+    .expect("the definition is structurally valid");
+    // Pre-flight only: classify and bake every instance without spawning.
+    let objects: Vec<_> = definition.objects().iter().collect();
+    assert!(
+        instance_placements(&objects).is_ok(),
+        "two sheared cuboid panels are both placeable, so the pre-flight must pass"
+    );
+
+    // Now the second object carries the affine with no exact placement, so the
+    // refusal happens in the pre-flight and nothing is spawned at all.
+    let collapsed = CanonicalTransform::try_new(
+        [[1.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 1.0]],
+        PANEL_POS_M,
+    )
+    .expect("the collapsed map is finite");
+    let refused = WorldDefinition::try_new(
+        WorldId::from_key("test.preflight_refused_world").expect("the world key is valid"),
+        Origin::SyntheticFixture,
+        known(WorldBoundary::default(), "boundary"),
+        vec![Sector::new(
+            SectorId::new("only").expect("the sector key is valid"),
+            Aabb::try_new([-20.0, -20.0, -20.0], [20.0, 20.0, 20.0]).expect("the bounds are valid"),
+        )],
+        vec![panel("placeable", upright), panel("collapsed", collapsed)],
+        provenance("definition"),
+    )
+    .expect("the definition is structurally valid");
+    let mut app = App::new();
+    let before = app.world().entities().len();
+    assert!(matches!(
+        spawn_world(&mut app, &refused, &WorldMeshes::new()),
+        Err(WorldSpawnError::UnplaceableAffine { .. })
+    ));
+    assert_eq!(
+        app.world().entities().len(),
+        before,
+        "a pre-flight refusal must leave no entity behind, including the placeable first object"
+    );
 }
 
 /// The panel's authored box as the physics shape the bake starts from, read
