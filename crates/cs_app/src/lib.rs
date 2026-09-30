@@ -45,6 +45,16 @@
 //! ticked `cs_types::input::InputFrame` the simulation buffers. The device
 //! adapters and axis calibration are F22-B.
 //!
+//! [`animation`] is the F20-A application boundary
+//! (`specs/F20-object-animation-and-authored-destruction-states.md`, stage
+//! `### F20-A`): [`animation::lower::lower_clip`] lowers a declared
+//! `cs_content::animation::AnimationClip` into the
+//! `cs_sim::animated_object::AnimatedClip` the fixed-tick evaluator plays,
+//! [`animation::presentation::interpolated_pose`] is the render-side
+//! fractional-alpha sampler that changes presentation only, and
+//! [`animation::AnimatedNodeBinding`] is the generation-stamped ECS record
+//! tying an entity to one animated node.
+//!
 //! [`physics`] is the F23-A Avian boundary
 //! (`specs/F23-avian-integration-collision-and-fixed-step-authority.md`,
 //! `### F23-A`): the fixed-rate schedule adapter, the one-tick force/torque
@@ -71,6 +81,7 @@
 //! per-corner colors. The Bevy adapters and profiles are F17-B/C.
 
 pub mod airframe_visual;
+pub mod animation;
 pub mod assets;
 pub mod cli;
 pub mod input;
