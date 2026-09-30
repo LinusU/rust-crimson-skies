@@ -66,7 +66,7 @@ pub use fixture::{
     object_set, probe_layers, spawn_discrete_probe, spawn_swept_probe, static_world_layers,
     world_app, world_instance,
 };
-pub use meshes::{WorldMesh, WorldMeshes};
+pub use meshes::{WorldMesh, WorldMeshBuildError, WorldMeshGroup, WorldMeshes};
 pub use residency::{
     ObjectCondition, ResidentWorld, SectorLoad, WorldLoadError, WorldResidency, condition_of,
     damage_object, load_sector, load_world, residency, unload_sector, unload_world,

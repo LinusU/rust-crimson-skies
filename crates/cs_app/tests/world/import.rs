@@ -336,6 +336,140 @@ fn accept_f18_b_a_mesh_collision_is_the_geometry_the_object_draws_and_keeps_its_
     }
 }
 
+/// **Every material group of one stored mesh reaches the collider.** F17-B's
+/// adapter groups triangles by their stored raw material index, so a mesh whose
+/// polygons store more than one index produces more than one group. The harbor
+/// shell's three boxes store three different indices; a source that uploaded
+/// only group `0` — or only the smallest material's triangles — would present
+/// and collide one box and silently drop the other two.
+///
+/// The groups themselves are asserted to be three distinct uploads before the
+/// flight is measured, so a source that reported three groups while uploading
+/// one buffer cannot pass: each group's own triangle count, fingerprint and
+/// material index is checked, and then a body is flown at a box of group 1 (the
+/// right leg) and a box of group 2 (the lintel). A `WorldMeshes::insert` of
+/// `upload_group(render, 0)` — the map's single-group path — fails every
+/// assertion below.
+#[test]
+fn accept_f18_b_every_material_group_of_a_stored_mesh_reaches_the_collider() {
+    let (mut app, definition, meshes, report) = loaded();
+    let reference = definition
+        .object(&object(HARBOR_OBJECT_HANGAR))
+        .expect("the fixture declares the hangar")
+        .mesh()
+        .clone()
+        .known()
+        .expect("the hangar's mesh reference is known");
+    let upload = meshes
+        .get(&reference)
+        .expect("the source holds the hangar's mesh");
+
+    // The shape of the merge: one entry per stored material index.
+    assert_eq!(
+        upload.group_count(),
+        3,
+        "the shell's three boxes store three material indices, so the source \
+         must have three groups, saw {:?}",
+        upload.groups()
+    );
+    let materials: Vec<u32> = upload
+        .groups()
+        .iter()
+        .map(|group| group.material())
+        .collect();
+    assert_eq!(
+        materials,
+        vec![0, 1, 2],
+        "groups are in ascending stored material order"
+    );
+    let triangles: usize = upload.groups().iter().map(|group| group.triangles()).sum();
+    assert_eq!(
+        triangles, HARBOR_HANGAR_TRIANGLES,
+        "the groups together hold every stored triangle"
+    );
+    for (group, expected) in upload.groups().iter().zip([12, 12, 12]) {
+        assert_eq!(
+            group.triangles(),
+            expected,
+            "each box is six quads, so twelve triangles: {group:?}"
+        );
+    }
+    let mut fingerprints: Vec<Vec<u8>> = upload
+        .groups()
+        .iter()
+        .map(|group| group.fingerprint().as_bytes().to_vec())
+        .collect();
+    fingerprints.sort();
+    fingerprints.dedup();
+    assert_eq!(
+        fingerprints.len(),
+        3,
+        "each box must be its own uploaded buffer, not one buffer counted thrice"
+    );
+    assert!(
+        !upload
+            .groups()
+            .iter()
+            .any(|group| group.fingerprint() == upload.fingerprint()),
+        "a merged mask's fingerprint must describe the merge, not one of its groups"
+    );
+    assert!(
+        upload.dropped_attributes().is_empty(),
+        "the fixture stores no per-corner attribute, so nothing can be lost in \
+         the merge, saw {:?}",
+        upload.dropped_attributes()
+    );
+
+    // The collider is the merged geometry, and it still carries every triangle.
+    let collider_entity = report
+        .object(&object(HARBOR_OBJECT_HANGAR))
+        .and_then(|spawned| spawned.collider.as_ref())
+        .expect("the hangar is collided")
+        .entity;
+    let derived = app
+        .world()
+        .get::<Collider>(collider_entity)
+        .expect("Avian derived a collider from the merged mesh");
+    assert_eq!(
+        collider_triangles(derived),
+        HARBOR_HANGAR_TRIANGLES,
+        "the collider must carry all three groups' triangles"
+    );
+
+    // And a body flies at the boxes group 1 and group 2 draw. Group 0 is the
+    // left leg (`z = -1.5`), which the map's own single-group path would keep.
+    let into_right_leg =
+        spawn_swept_probe(&mut app, &probe_at(ARCH_Y_M, ARCH_LEG_Z_M)).expect("valid probe");
+    let into_lintel = spawn_swept_probe(&mut app, &probe_at(3.5, 0.0)).expect("valid probe");
+    step(&mut app, TICKS);
+
+    let hangar = object(HARBOR_OBJECT_HANGAR);
+    let log = contacts(&app);
+    for (probe, what) in [
+        (into_right_leg, "the right leg"),
+        (into_lintel, "the lintel"),
+    ] {
+        assert!(
+            log.iter()
+                .any(|contact| contact.object == hangar && contact.other == probe),
+            "a body aimed at {what} must reach the shell; the contacts were {:?}",
+            log.iter()
+                .map(|contact| (contact.object.as_str(), contact.other.index()))
+                .collect::<Vec<_>>()
+        );
+        let end = app
+            .world()
+            .get::<Position>(probe)
+            .expect("the probe still exists")
+            .0;
+        assert!(
+            end.x < 1.0,
+            "the arch is 1 m thick, so a body aimed at {what} must be stopped \
+             near x = 0; it ended at {end:?}"
+        );
+    }
+}
+
 /// The same claim, **travelled**: a swept body passes through the opening the
 /// stored mesh describes, and a second body is stopped by the leg the same mesh
 /// describes. The opening is in the mesh, not in a subtraction the collision

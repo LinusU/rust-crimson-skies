@@ -273,13 +273,14 @@ struct StoredMesh {
 }
 
 impl StoredMesh {
-    /// Appends one axis-aligned box: its eight corners and its six quad faces.
+    /// Appends one axis-aligned box: its eight corners and its six quad faces,
+    /// every face carrying the raw stored `material` index.
     ///
     /// Boxes are **not** welded to each other — each keeps its own eight
     /// corners, exactly as a stored polygon soup looks like — so a derived
     /// triangle mesh has to reconcile the coincidence itself and nothing here
     /// pre-merges geometry the way a collision builder might.
-    fn box_at(&mut self, min: [f32; 3], max: [f32; 3]) -> &mut Self {
+    fn box_at(&mut self, min: [f32; 3], max: [f32; 3], material: u32) -> &mut Self {
         let base = self.positions.len() as u32;
         for corner in [
             [min[0], min[1], min[2]],
@@ -306,7 +307,7 @@ impl StoredMesh {
             self.polygons.push(RawPolygon {
                 kind: PrimitiveKind::Polygon,
                 raw_flags: 0,
-                material: 0,
+                material,
                 corners: face
                     .iter()
                     .map(|corner| RawCorner {
@@ -331,14 +332,15 @@ impl StoredMesh {
     }
 }
 
-/// The stored mesh of a single box, in metres.
+/// The stored mesh of a single box, in metres, on stored material `0`.
 fn box_mesh(half: [f32; 3]) -> RawMesh {
     let mut mesh = StoredMesh::default();
-    mesh.box_at([-half[0], -half[1], -half[2]], half);
+    mesh.box_at([-half[0], -half[1], -half[2]], half, 0);
     mesh.build()
 }
 
-/// The stored mesh of the hangar shell: the arch as **one** mesh.
+/// The stored mesh of the hangar shell: the arch as **one** mesh, and its three
+/// boxes on three **different** stored material indices.
 ///
 /// The two legs and the lintel are separate boxes in one polygon soup, so the
 /// stored geometry has a rectangular tunnel through it along `x` and a convex
@@ -347,24 +349,28 @@ fn box_mesh(half: [f32; 3]) -> RawMesh {
 /// only way "never close a traversable opening through convex-hull
 /// simplification" (F18 non-negotiable behavior 1) is a testable claim about
 /// this stage.
+///
+/// The three material indices are deliberate. F17-B groups triangles by their
+/// stored raw material index, so a source built from only group `0` would
+/// present and collide the left leg alone and silently drop the right leg and
+/// the lintel. Every material index being `0` would hide exactly the bug this
+/// fixture has to be able to see.
 fn hangar_shell_mesh() -> RawMesh {
     let mut mesh = StoredMesh::default();
     // A leg: 1 m thick along `x`, 3 m tall, 1 m deep, its inner face at
-    // `z = ∓1` so the opening is 2 m wide.
-    mesh.box_at([-0.5, 0.0, -2.0], [0.5, 3.0, -1.0]);
-    mesh.box_at([-0.5, 0.0, 1.0], [0.5, 3.0, 2.0]);
+    // `z = ∓1` so the opening is 2 m wide. The left leg is material 0.
+    mesh.box_at([-0.5, 0.0, -2.0], [0.5, 3.0, -1.0], 0);
+    // The right leg is material 1.
+    mesh.box_at([-0.5, 0.0, 1.0], [0.5, 3.0, 2.0], 1);
     // The lintel closes the arch above the opening, its underside at `y = 3`.
-    mesh.box_at([-0.5, 3.0, -2.0], [0.5, 4.0, 2.0]);
+    mesh.box_at([-0.5, 3.0, -2.0], [0.5, 4.0, 2.0], 2);
     mesh.build()
 }
 
-/// Uploads one stored mesh through the production F17-B adapter, as a single
-/// material group.
-fn upload(mesh: RawMesh) -> crate::render::bevy_mesh::GroupUpload {
-    let render =
-        RenderMesh::build(&mesh).expect("the fixture's stored mesh has a decodable outline");
-    crate::render::bevy_mesh::upload_group(&render, 0, &MESH_UNKNOWNS)
-        .expect("the fixture's single material group uploads")
+/// The F17-B render mesh of one stored fixture mesh: the split view the world
+/// mesh source consumes, exactly as a catalog's `MeshUpload::render` hands over.
+fn render_mesh(stored: &RawMesh) -> RenderMesh {
+    RenderMesh::build(stored).expect("the fixture's stored mesh has a decodable outline")
 }
 
 /// The mesh reference an object record names, from its own key.
@@ -764,12 +770,16 @@ pub fn harbor_world() -> Result<WorldDefinition, WorldError> {
     )
 }
 
-/// The mesh source the harbor world is loaded with: the upload of each stored
-/// mesh the fixture authored, keyed by the reference its record names.
+/// The mesh source the harbor world is loaded with: each stored mesh the
+/// fixture authored, keyed by the reference its record names, built through the
+/// production [`WorldMeshes::insert_render_mesh`] path — which uploads **every**
+/// material group of the mesh, not just one.
 ///
 /// [`HARBOR_OBJECT_ABSENT`] is deliberately **not** in it, so the report has one
-/// real gap to name. Every other object is served by exactly one upload, which
-/// is what makes "one asset, one set of triangles" checkable.
+/// real gap to name. Every other object is served by exactly one entry, which
+/// is what makes "one asset, one set of triangles" checkable. The hangar shell
+/// carries three material groups, so this is also where "every group reaches
+/// the collider" is exercised.
 #[must_use]
 pub fn harbor_meshes() -> WorldMeshes {
     let mut meshes = WorldMeshes::new();
@@ -788,7 +798,9 @@ pub fn harbor_meshes() -> WorldMeshes {
         let reference = mesh(key)
             .known()
             .expect("the fixture mesh references are known");
-        meshes.insert(reference, upload(stored));
+        meshes
+            .insert_render_mesh(reference, &render_mesh(&stored), &MESH_UNKNOWNS)
+            .expect("the fixture's stored meshes upload through every material group");
     }
     meshes
 }
