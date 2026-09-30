@@ -113,10 +113,20 @@
 //! silent zero. It carries no original coefficient; F24-C maps the record
 //! into the model and F24-D calibrates it against reference traces.
 //!
+//! [`animation`] is the F20-A declared animation IR
+//! (`specs/F20-object-animation-and-authored-destruction-states.md`, stage
+//! `### F20-A`): the provenance-carrying [`animation::AnimationClip`] record
+//! with its transform, visibility, material and attachment channels and the
+//! [`animation::EventMarker`]s whose unknown effects block rather than skip
+//! gameplay transitions. Its runtime counterpart is
+//! `cs_sim::animated_object`; the conversion boundary is
+//! `cs_app::animation`.
+//!
 //! [`cs_types`]: cs_types
 //! [`cs_formats`]: cs_formats
 //! [`cs_assets`]: cs_assets
 
+pub mod animation;
 pub mod campaign_bindings;
 pub mod catalog;
 pub mod config;
