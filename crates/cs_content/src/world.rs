@@ -1,4 +1,4 @@
-//! World instances, sectors and collision roles (F18-A).
+//! World instances, sectors and collision roles (F18-A, F18-B).
 //!
 //! Spec: `specs/F18-world-geometry-terrain-water-and-traversable-interiors.md`,
 //! stage `### F18-A`. Shared contract: `docs/contracts/IDENTITY-CONTENT.md`.
@@ -7,8 +7,9 @@
 //! nothing here builds a collider, opens a file or touches Bevy (`cs_content`
 //! must never depend on Bevy or Avian). Stage F18-A declares what a world
 //! importer produces and what the runtime consumes; stage F18-B implements the
-//! importer and the static-collision generation against these records, and
-//! F18-C adds mission overlays and streaming.
+//! importer and the static-collision generation against these records (adding
+//! the condition vocabulary the load owns), and F18-C adds mission overlays and
+//! streaming policy.
 //!
 //! # The records
 //!
@@ -42,6 +43,12 @@
 //!   states its own population and damage, and
 //!   [`WorldInstance::validate_against`] refuses an id the definition does not
 //!   have.
+//! * [`WorldObjectCondition`] is the two-value answer to "in what condition is
+//!   this object, for the load that owns it". It is what makes F18
+//!   non-negotiable behavior 3 ("object identity survives sector streaming")
+//!   a statement about *state* as well as identity: a condition belongs to the
+//!   load, never to a spawned entity, so unloading a sector cannot lose it and
+//!   reloading it cannot invent a fresh one.
 //!
 //! # Known is known, unknown is unknown
 //!
@@ -526,13 +533,17 @@ impl fmt::Display for WorldCollisionRole {
 /// What geometry bounds a world object's collider.
 ///
 /// **Designed vocabulary.** [`WorldCollisionShape::Cuboid`] is what the
-/// F18-A synthetic fixture authors; [`WorldCollisionShape::FromMesh`] is the
-/// declared input for stage F18-B, which builds the collider from the *same*
-/// mesh reference the instance's visual uses (F18 non-negotiable behavior 1:
+/// synthetic fixtures author; [`WorldCollisionShape::FromMesh`] is the
+/// declared input for real geometry, and it is built from the *same* mesh
+/// reference the instance's visual uses (F18 non-negotiable behavior 1:
 /// shared provenance, possibly different verified simplifications, and never
-/// a convex hull that closes a traversable opening). This stage spawns no
-/// mesh collider — it reports such an instance as unsupported instead of
-/// pretending it collided.
+/// a convex hull that closes a traversable opening). The shape names **no
+/// mesh of its own** on purpose: the instance's `mesh` field is the single
+/// reference both consumers resolve, which is what makes "one upload, one
+/// asset, one set of triangles" checkable rather than merely intended.
+/// F18-B builds this variant through `cs_app::world::spawn`; an instance whose
+/// evidence never resolved a shape arrives as [`Resolved::Unknown`] and is
+/// reported, never guessed.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub enum WorldCollisionShape {
     /// An axis-aligned box in the instance's local frame, half extents in
@@ -972,6 +983,15 @@ pub enum WorldError {
         /// Which collection of the instance named it.
         context: &'static str,
     },
+    /// A load authored damage for an object its own population never activates.
+    ///
+    /// The object can never be spawned by that load, so the condition names a
+    /// state nothing could ever show: exactly the silent gap F18 non-negotiable
+    /// behavior 5 forbids.
+    DamagedObjectNotActivated {
+        /// The object the damage names.
+        object: WorldObjectId,
+    },
     /// A load instance declared an empty explicit population, which would
     /// load nothing while looking configured.
     EmptyPopulation,
@@ -993,6 +1013,10 @@ impl fmt::Display for WorldError {
             Self::UnknownInstanceObject { object, context } => write!(
                 f,
                 "load instance names `{object}` in {context}, which the definition does not declare"
+            ),
+            Self::DamagedObjectNotActivated { object } => write!(
+                f,
+                "load instance starts `{object}` damaged, but its population never activates it"
             ),
             Self::EmptyPopulation => {
                 write!(f, "an explicit world population must not be empty")
@@ -1302,6 +1326,68 @@ fn push_resolved<T>(
 
 // ------------------------------------------------------------- load record ---
 
+/// The condition one world object is in, for the load that owns it.
+///
+/// **Designed vocabulary, not original data.** F18 non-negotiable behavior 3
+/// requires object *identity* to survive sector streaming, and behavior 5
+/// requires a load to apply its authored "damage initial state". Both are
+/// statements about a world object that outlives the entities that currently
+/// present it, so the condition is a value the **load** owns — never a
+/// component that despawns with a sector. This two-value vocabulary is the
+/// smallest answer that lets a consumer tell "the condition the record
+/// authored" from "a condition that accumulated since", which is exactly what
+/// reloading a sector has to preserve (AC02).
+///
+/// Whether the original tracks per-object damage on world geometry at all, and
+/// what a damaged world object *is* (destroyed, burning, merely dented) are
+/// **unmeasured**; nothing here claims the original has this distinction. The
+/// damage *rules* — integrity, hit attribution, what a hit removes — belong to
+/// `cs_content::damage` and `cs_sim::damage`; this value only says which
+/// condition an object is in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum WorldObjectCondition {
+    /// Nothing has damaged the object since its load began: it is in the
+    /// condition the load authored.
+    Authored,
+    /// The object is damaged — either because the load authored it damaged, or
+    /// because it was damaged after the load began. The two are deliberately
+    /// not distinguished: the source of the damage is the damage system's
+    /// record, not the world record's.
+    Damaged,
+}
+
+impl WorldObjectCondition {
+    /// Every declared condition, in a stable order.
+    pub const ALL: [Self; 2] = [Self::Authored, Self::Damaged];
+
+    /// The stable label used in ids and reports.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Authored => "authored",
+            Self::Damaged => "damaged",
+        }
+    }
+
+    /// Looks a condition up by its label; `None` for an unknown spelling.
+    #[must_use]
+    pub fn from_label(label: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|role| role.label() == label)
+    }
+
+    /// Whether this condition means the object was damaged.
+    #[must_use]
+    pub const fn is_damaged(self) -> bool {
+        matches!(self, Self::Damaged)
+    }
+}
+
+impl fmt::Display for WorldObjectCondition {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
 /// Which objects a [`WorldInstance`] activates (F18 non-negotiable behavior
 /// 5).
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1395,6 +1481,23 @@ impl WorldInstance {
         }
     }
 
+    /// The condition this load *authors* `object` in.
+    ///
+    /// Only the load's own initial damage set decides it, so a condition
+    /// reached in a previous run of the same world cannot reach this one —
+    /// there is nowhere for it to live. An object the load does not activate
+    /// is [`WorldObjectCondition::Authored`] here, and
+    /// [`WorldInstance::validate_against`] refuses a load that names an
+    /// unactivated object as damaged, so the two can never disagree.
+    #[must_use]
+    pub fn initial_condition(&self, object: &WorldObjectId) -> WorldObjectCondition {
+        if self.initially_damaged.contains(object) {
+            WorldObjectCondition::Damaged
+        } else {
+            WorldObjectCondition::Authored
+        }
+    }
+
     /// Checks every id this load names against the definition it reads from.
     ///
     /// # Errors
@@ -1433,6 +1536,11 @@ impl WorldInstance {
         }
         for object in &self.initially_damaged {
             check(object, "the initial damage set")?;
+            if !self.activates(object) {
+                return Err(WorldError::DamagedObjectNotActivated {
+                    object: object.clone(),
+                });
+            }
         }
         Ok(())
     }

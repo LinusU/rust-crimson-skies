@@ -1,7 +1,7 @@
-//! The minimal synthetic world fixture and the swept probe (F18-A).
+//! The synthetic world fixtures and the swept probe (F18-A, F18-B).
 //!
 //! Spec: `specs/F18-world-geometry-terrain-water-and-traversable-interiors.md`,
-//! stage `### F18-A`.
+//! stages `### F18-A` and `### F18-B`.
 //!
 //! Like [`crate::synthetic`] and [`crate::physics::fixture`], this is
 //! **production bootstrap code**, not a test-only reimplementation: it authors
@@ -31,6 +31,27 @@
 //! render" and "the hole in the collision" cannot be authored separately: a
 //! body that fits through the visual gap also fits through the collision gap.
 //!
+//! # The harbor world
+//!
+//! [`harbor_world`] is the F18-B fixture: the arch **as one stored mesh**, so
+//! the only way its opening can survive the world path is if the collision
+//! really is built from the object's own geometry. A convex hull of the same
+//! corners is a closed box, so a substituted shape would be visible in the
+//! triangle count. Its other objects exercise the rest of the load: a bounded
+//! water patch, a sensor volume, a non-colliding banner, a ground slab that
+//! belongs to two sectors, and one object whose mesh this source deliberately
+//! does not hold.
+//!
+//! # Units
+//!
+//! A stored mesh's vertex positions are in **stored** units
+//! (`cs_content::mesh` is explicit that it applies no scale), and the original's
+//! world-vertex scale is unmeasured. These fixtures author their geometry in
+//! metres by construction, so a position and the object's authored transform
+//! speak the same unit; that is a property of the fixture, not a conversion this
+//! stage claims to perform. See
+//! `docs/findings/2026-09-30-f18-b-world-import-and-static-collision.md`.
+//!
 //! Everything here is newly authored synthetic fixture content
 //! (`Origin::SyntheticFixture`); it never claims to be original geometry.
 //! Which geometry the original worlds contain, and how they store sectors, is
@@ -47,14 +68,18 @@ use avian3d::prelude::{
 };
 use bevy::prelude::{App, Entity, Transform, Vec3};
 use bevy::time::{Real, Time, TimeUpdateStrategy};
+use cs_content::mesh::{MeshPresentationUnknown, RenderMesh};
 use cs_content::scene::CanonicalTransform;
 use cs_content::world::{
     Aabb, Sector, SectorId, SurfaceRole, WorldBoundary, WorldCollisionRole, WorldCollisionShape,
-    WorldDefinition, WorldError, WorldId, WorldObjectId, WorldObjectInstance,
+    WorldDefinition, WorldError, WorldId, WorldInstance, WorldObjectId, WorldObjectInstance,
+    WorldPopulation,
 };
+use cs_formats::gamez::{PrimitiveKind, RawCorner, RawMesh, RawPolygon};
 use cs_types::content::{ContentId, ContentKind, Known, Origin, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
 
+use super::meshes::WorldMeshes;
 use super::spawn::{SpawnedWorld, avian_layers};
 use cs_sim::collision::{CollisionLayer, CollisionLayers};
 
@@ -123,6 +148,79 @@ pub const NON_COLLIDING_HALF_M: [f64; 3] = [1.5, 1.0, 0.1];
 /// probe path.
 pub const NON_COLLIDING_POS_M: [f64; 3] = [-15.0, 6.0, -4.0];
 
+// ------------------------------------------------------- harbor (F18-B) ---
+
+/// The harbor world's id key.
+pub const HARBOR_WORLD_KEY: &str = "synthetic.harbor_world";
+
+/// The west sector of the harbor world: the approach to the yard, `x < -1`.
+pub const HARBOR_SECTOR_APPROACH: &str = "approach";
+/// The yard: the hangar and the trigger volume, `x ∈ [-1, 14]`.
+pub const HARBOR_SECTOR_YARD: &str = "yard";
+
+/// The damaged objective: one stored mesh, an arch with an opening.
+pub const HARBOR_OBJECT_HANGAR: &str = "objective.hangar";
+/// The trigger volume, a mesh with the same role semantics as the arch's.
+pub const HARBOR_OBJECT_SENSOR: &str = "trigger.sensor";
+/// The banner: mesh geometry that must never collide.
+pub const HARBOR_OBJECT_BANNER: &str = "banner.non_colliding";
+/// The water patch, a bounded slab.
+pub const HARBOR_OBJECT_WATER: &str = "water.patch";
+/// The ground slab, in both sectors so it survives either one unloading.
+pub const HARBOR_OBJECT_GROUND: &str = "terrain.ground";
+/// A solid object whose mesh reference this fixture deliberately does not
+/// resolve, so the "geometry nobody supplied" path is exercised by the same
+/// fixture the happy paths are.
+pub const HARBOR_OBJECT_ABSENT: &str = "strip.absent_mesh";
+
+/// How many boxes the hangar shell is welded from, and therefore how many
+/// triangles its stored mesh holds: three boxes, six quad faces each, two
+/// triangles per face.
+///
+/// The convex hull of the same 24 corners is a closed box with 12 triangles, so
+/// this count is what tells a real trimesh from a substituted primitive.
+pub const HARBOR_HANGAR_TRIANGLES: usize = 36;
+
+/// The triangle count a convex hull of the hangar shell's corners would carry.
+pub const HARBOR_HANGAR_HULL_TRIANGLES: usize = 12;
+
+/// The hangar's own placement: at the origin, so the opening is the same
+/// `z ∈ (-1, 1)`, `y ∈ (0, 3)` gap the cuboid arch uses.
+pub const HARBOR_HANGAR_POS_M: [f64; 3] = [0.0, 0.0, 0.0];
+
+/// The water slab's half sizes: a patch, not a plane.
+pub const HARBOR_WATER_HALF_M: [f64; 3] = [4.0, 0.2, 4.0];
+/// The water slab's centre, well clear of the hangar's flight line and inside
+/// the `approach` sector's lateral extent.
+pub const HARBOR_WATER_POS_M: [f64; 3] = [0.0, 0.2, -20.0];
+/// A flight line beside the water patch, in the same `x` sweep, that must
+/// never reach it.
+pub const HARBOR_WATER_OFF_AXIS_Z_M: f64 = -40.0;
+
+/// The trigger volume's half sizes: long along `x`, as F18-A's is.
+pub const HARBOR_SENSOR_HALF_M: [f64; 3] = [4.0, 0.75, 0.75];
+/// The trigger volume's centre, inside the `yard` sector.
+pub const HARBOR_SENSOR_POS_M: [f64; 3] = [10.0, 1.5, -6.0];
+
+/// The banner's half sizes, as a mesh box.
+pub const HARBOR_BANNER_HALF_M: [f64; 3] = [1.5, 1.0, 0.1];
+/// The banner's centre, clear of every probe path.
+pub const HARBOR_BANNER_POS_M: [f64; 3] = [-15.0, 6.0, -4.0];
+
+/// The ground slab's half sizes and centre, as in the arch world.
+pub const HARBOR_GROUND_HALF_M: [f64; 3] = [20.0, 0.5, 15.0];
+/// The ground slab's centre: its top face is `y = 0`.
+pub const HARBOR_GROUND_POS_M: [f64; 3] = [0.0, -0.5, 0.0];
+
+/// The absent-mesh object's placement, inside the `approach` sector.
+pub const HARBOR_ABSENT_POS_M: [f64; 3] = [-20.0, 3.0, 4.0];
+
+/// How many updates a mesh-derived collider needs before it exists: the
+/// `ColliderConstructorHierarchy` is an `Update` system, and the collider is
+/// attached to its body by a pass that can only see it on a later frame. The
+/// same measurement is pinned by `accept_t333_*`.
+pub const MESH_SETTLE_UPDATES: u64 = 4;
+
 // ---------------------------------------------------------------- identity ---
 
 /// The synthetic world's id key.
@@ -156,6 +254,124 @@ pub const OBJECT_SENSOR: &str = "trigger.sensor";
 pub const OBJECT_UNEVIDENCED_ROLE: &str = "sign.unevidenced_role";
 /// An object with a solid role but an unresolved collision shape.
 pub const OBJECT_UNEVIDENCED_SHAPE: &str = "hangar.unevidenced_shape";
+
+// --------------------------------------------------------- stored meshes ---
+
+/// The presentation questions a bare stored mesh leaves open. They travel with
+/// each upload untouched; nothing in this fixture settles them.
+const MESH_UNKNOWNS: [MeshPresentationUnknown; 2] = [
+    MeshPresentationUnknown::FrontFaceWinding,
+    MeshPresentationUnknown::UvOrigin,
+];
+
+/// A stored mesh under construction: positions and polygon outlines, in stored
+/// units and stored order.
+#[derive(Debug, Default)]
+struct StoredMesh {
+    positions: Vec<[f32; 3]>,
+    polygons: Vec<RawPolygon>,
+}
+
+impl StoredMesh {
+    /// Appends one axis-aligned box: its eight corners and its six quad faces.
+    ///
+    /// Boxes are **not** welded to each other — each keeps its own eight
+    /// corners, exactly as a stored polygon soup looks like — so a derived
+    /// triangle mesh has to reconcile the coincidence itself and nothing here
+    /// pre-merges geometry the way a collision builder might.
+    fn box_at(&mut self, min: [f32; 3], max: [f32; 3]) -> &mut Self {
+        let base = self.positions.len() as u32;
+        for corner in [
+            [min[0], min[1], min[2]],
+            [max[0], min[1], min[2]],
+            [max[0], max[1], min[2]],
+            [min[0], max[1], min[2]],
+            [min[0], min[1], max[2]],
+            [max[0], min[1], max[2]],
+            [max[0], max[1], max[2]],
+            [min[0], max[1], max[2]],
+        ] {
+            self.positions.push(corner);
+        }
+        // Six quad faces, in the order the F17-B upload path and the t333
+        // fixture both use, so a derived shape here is comparable with theirs.
+        for face in [
+            [0, 1, 2, 3], // z = min
+            [4, 5, 6, 7], // z = max
+            [0, 1, 5, 4], // y = min
+            [1, 2, 6, 5], // x = max
+            [2, 3, 7, 6], // y = max
+            [3, 0, 4, 7], // x = min
+        ] {
+            self.polygons.push(RawPolygon {
+                kind: PrimitiveKind::Polygon,
+                raw_flags: 0,
+                material: 0,
+                corners: face
+                    .iter()
+                    .map(|corner| RawCorner {
+                        position: base + corner,
+                        normal: None,
+                        uv: None,
+                        color: None,
+                    })
+                    .collect(),
+            });
+        }
+        self
+    }
+
+    /// The stored mesh.
+    fn build(self) -> RawMesh {
+        RawMesh {
+            positions: self.positions,
+            normals: Vec::new(),
+            polygons: self.polygons,
+        }
+    }
+}
+
+/// The stored mesh of a single box, in metres.
+fn box_mesh(half: [f32; 3]) -> RawMesh {
+    let mut mesh = StoredMesh::default();
+    mesh.box_at([-half[0], -half[1], -half[2]], half);
+    mesh.build()
+}
+
+/// The stored mesh of the hangar shell: the arch as **one** mesh.
+///
+/// The two legs and the lintel are separate boxes in one polygon soup, so the
+/// stored geometry has a rectangular tunnel through it along `x` and a convex
+/// hull of the same corners does not. The opening is therefore a property of
+/// the mesh, not of a subtraction the collision builder performs — which is the
+/// only way "never close a traversable opening through convex-hull
+/// simplification" (F18 non-negotiable behavior 1) is a testable claim about
+/// this stage.
+fn hangar_shell_mesh() -> RawMesh {
+    let mut mesh = StoredMesh::default();
+    // A leg: 1 m thick along `x`, 3 m tall, 1 m deep, its inner face at
+    // `z = ∓1` so the opening is 2 m wide.
+    mesh.box_at([-0.5, 0.0, -2.0], [0.5, 3.0, -1.0]);
+    mesh.box_at([-0.5, 0.0, 1.0], [0.5, 3.0, 2.0]);
+    // The lintel closes the arch above the opening, its underside at `y = 3`.
+    mesh.box_at([-0.5, 3.0, -2.0], [0.5, 4.0, 2.0]);
+    mesh.build()
+}
+
+/// Uploads one stored mesh through the production F17-B adapter, as a single
+/// material group.
+fn upload(mesh: RawMesh) -> crate::render::bevy_mesh::GroupUpload {
+    let render =
+        RenderMesh::build(&mesh).expect("the fixture's stored mesh has a decodable outline");
+    crate::render::bevy_mesh::upload_group(&render, 0, &MESH_UNKNOWNS)
+        .expect("the fixture's single material group uploads")
+}
+
+/// The mesh reference an object record names, from its own key.
+#[must_use]
+pub fn mesh_reference(key: &str) -> Resolved<ContentId> {
+    mesh(key)
+}
 
 // --------------------------------------------------------------- provenance ---
 
@@ -399,6 +615,225 @@ pub fn arch_world() -> Result<WorldDefinition, WorldError> {
     )
 }
 
+/// Builds the harbor world: the F18-B fixture for the import path and for
+/// mesh-derived static collision.
+///
+/// Six object instances, all `Origin::SyntheticFixture`:
+///
+/// | object | role | shape | surface | sectors |
+/// | --- | --- | --- | --- | --- |
+/// | `objective.hangar` | `Solid` | `FromMesh` (36 triangles) | `Ground` | `yard` |
+/// | `trigger.sensor` | `Sensor` | `FromMesh` | `Ground` | `yard` |
+/// | `banner.non_colliding` | `None` | `FromMesh` | `Ground` | `approach` |
+/// | `water.patch` | `Solid` | `FromMesh` | `Water` | *resident* |
+/// | `terrain.ground` | `Solid` | `Cuboid` | `Ground` | `approach`, `yard` |
+/// | `strip.absent_mesh` | `Solid` | `FromMesh` | `Ground` | `approach` |
+///
+/// The hangar's opening is in its *mesh*, so a collision built from anything
+/// other than that mesh closes it. The water patch is a bounded slab, so a
+/// collision plane invented over low flight would show. The ground belongs to
+/// both sectors, so it must survive either one unloading. The last object names
+/// a mesh this fixture does not resolve, so "geometry nobody supplied" is
+/// exercised by the same fixture as the happy paths.
+///
+/// # Errors
+///
+/// Never for this fixture — its ids, transforms and shapes are constants
+/// validated on the path here — but kept as `Result` like
+/// [`arch_world`], so both fixtures have the same shape as the importer's own
+/// constructor.
+pub fn harbor_world() -> Result<WorldDefinition, WorldError> {
+    let approach = sector(HARBOR_SECTOR_APPROACH);
+    let yard = sector(HARBOR_SECTOR_YARD);
+
+    let sectors = vec![
+        Sector::new(
+            approach.clone(),
+            Aabb::try_new([-40.0, -2.0, -46.0], [-1.0, 12.0, 30.0])
+                .expect("the approach bounds are well formed"),
+        ),
+        Sector::new(
+            yard.clone(),
+            Aabb::try_new([-1.0, -2.0, -30.0], [14.0, 12.0, 30.0])
+                .expect("the yard bounds are well formed"),
+        ),
+    ];
+
+    let ground_surface = known(SurfaceRole::Ground, "harbor.surface.ground");
+    let water_surface = known(SurfaceRole::Water, "harbor.surface.water");
+    let solid = known(WorldCollisionRole::Solid, "harbor.collision-role.solid");
+    let sensor = known(WorldCollisionRole::Sensor, "harbor.collision-role.sensor");
+    let none_role = known(WorldCollisionRole::None, "harbor.collision-role.none");
+    let from_mesh = known(
+        WorldCollisionShape::FromMesh,
+        "harbor.collision-shape.from-mesh",
+    );
+
+    let objects = vec![
+        // The damaged objective: the arch, as one mesh.
+        WorldObjectInstance::try_new(
+            object(HARBOR_OBJECT_HANGAR),
+            mesh(HARBOR_OBJECT_HANGAR),
+            translated(HARBOR_HANGAR_POS_M),
+            solid.clone(),
+            from_mesh.clone(),
+            ground_surface.clone(),
+            vec![yard.clone()],
+            fixture_provenance("harbor.hangar.record"),
+        )
+        .expect("the fixture sector lists contain no duplicates"),
+        // A trigger volume whose collision is derived from a mesh as well, so
+        // the sensor role is exercised on the mesh path.
+        WorldObjectInstance::try_new(
+            object(HARBOR_OBJECT_SENSOR),
+            mesh(HARBOR_OBJECT_SENSOR),
+            translated(HARBOR_SENSOR_POS_M),
+            sensor,
+            from_mesh.clone(),
+            ground_surface.clone(),
+            vec![yard.clone()],
+            fixture_provenance("harbor.sensor.record"),
+        )
+        .expect("the fixture sector lists contain no duplicates"),
+        // Mesh geometry that must never collide.
+        WorldObjectInstance::try_new(
+            object(HARBOR_OBJECT_BANNER),
+            mesh(HARBOR_OBJECT_BANNER),
+            translated(HARBOR_BANNER_POS_M),
+            none_role,
+            from_mesh.clone(),
+            ground_surface.clone(),
+            vec![approach.clone()],
+            fixture_provenance("harbor.banner.record"),
+        )
+        .expect("the fixture sector lists contain no duplicates"),
+        // Water: a bounded patch with its own surface rule, and no sector, so
+        // it is resident whatever the streaming policy does.
+        WorldObjectInstance::try_new(
+            object(HARBOR_OBJECT_WATER),
+            mesh(HARBOR_OBJECT_WATER),
+            translated(HARBOR_WATER_POS_M),
+            solid.clone(),
+            from_mesh.clone(),
+            water_surface,
+            vec![],
+            fixture_provenance("harbor.water.record"),
+        )
+        .expect("the fixture sector lists contain no duplicates"),
+        // The ground slab belongs to both sectors, so it stays while either is
+        // loaded: a cuboid, so both collision paths are in one record.
+        WorldObjectInstance::try_new(
+            object(HARBOR_OBJECT_GROUND),
+            mesh(HARBOR_OBJECT_GROUND),
+            translated(HARBOR_GROUND_POS_M),
+            solid,
+            cuboid(HARBOR_GROUND_HALF_M),
+            ground_surface.clone(),
+            vec![approach.clone(), yard],
+            fixture_provenance("harbor.ground.record"),
+        )
+        .expect("the fixture sector lists contain no duplicates"),
+        // A solid object whose mesh this source does not hold: the load must
+        // report it, not invent geometry for it.
+        WorldObjectInstance::try_new(
+            object(HARBOR_OBJECT_ABSENT),
+            mesh(HARBOR_OBJECT_ABSENT),
+            translated(HARBOR_ABSENT_POS_M),
+            known(WorldCollisionRole::Solid, "harbor.collision-role.solid"),
+            from_mesh,
+            ground_surface,
+            vec![approach],
+            fixture_provenance("harbor.absent_mesh.record"),
+        )
+        .expect("the fixture sector lists contain no duplicates"),
+    ];
+
+    let boundary = known(
+        WorldBoundary::try_new(Some(-50.0), Some(500.0), None)
+            .expect("the fixture boundary is well formed"),
+        "harbor.boundary",
+    );
+
+    WorldDefinition::try_new(
+        WorldId::from_key(HARBOR_WORLD_KEY).expect("the harbor world key is valid"),
+        Origin::SyntheticFixture,
+        boundary,
+        sectors,
+        objects,
+        fixture_provenance("harbor_world.record"),
+    )
+}
+
+/// The mesh source the harbor world is loaded with: the upload of each stored
+/// mesh the fixture authored, keyed by the reference its record names.
+///
+/// [`HARBOR_OBJECT_ABSENT`] is deliberately **not** in it, so the report has one
+/// real gap to name. Every other object is served by exactly one upload, which
+/// is what makes "one asset, one set of triangles" checkable.
+#[must_use]
+pub fn harbor_meshes() -> WorldMeshes {
+    let mut meshes = WorldMeshes::new();
+    for (key, stored) in [
+        (HARBOR_OBJECT_HANGAR, hangar_shell_mesh()),
+        (
+            HARBOR_OBJECT_SENSOR,
+            box_mesh(half_f32(HARBOR_SENSOR_HALF_M)),
+        ),
+        (
+            HARBOR_OBJECT_BANNER,
+            box_mesh(half_f32(HARBOR_BANNER_HALF_M)),
+        ),
+        (HARBOR_OBJECT_WATER, box_mesh(half_f32(HARBOR_WATER_HALF_M))),
+    ] {
+        let reference = mesh(key)
+            .known()
+            .expect("the fixture mesh references are known");
+        meshes.insert(reference, upload(stored));
+    }
+    meshes
+}
+
+/// One f64 half-extent triple as the stored mesh's f32 unit triple.
+fn half_f32(half: [f64; 3]) -> [f32; 3] {
+    [half[0] as f32, half[1] as f32, half[2] as f32]
+}
+
+/// One mission's load record for `definition`.
+///
+/// `variant` is `None` for "the evidence never named a variant", which becomes
+/// an explicit unknown rather than a default. `population` and `damaged` are the
+/// authored choices the load states for itself (F18 non-negotiable behavior 5).
+///
+/// # Errors
+///
+/// [`WorldError`] from the record's own validation, or
+/// [`WorldError::DamagedObjectNotActivated`] when `damaged` names an object
+/// `population` does not activate.
+pub fn world_instance(
+    definition: &WorldDefinition,
+    variant: Option<&str>,
+    population: &[&str],
+    damaged: &[&str],
+) -> Result<WorldInstance, WorldError> {
+    let variant = match variant {
+        Some(key) => known(
+            WorldId::from_key(key).expect("the fixture variant key is valid"),
+            "fixture.variant",
+        ),
+        None => unknown::<WorldId>(
+            "variant.unmeasured",
+            "no evidence has named a variant for this load",
+        ),
+    };
+    WorldInstance::try_new(
+        definition.id().clone(),
+        variant,
+        WorldPopulation::Only(object_set(population)),
+        object_set(damaged),
+        fixture_provenance("load.record"),
+    )
+}
+
 // -------------------------------------------------------------------- probe ---
 
 /// Why a swept probe could not be spawned.
@@ -603,6 +1038,40 @@ pub fn object_set(keys: &[&str]) -> BTreeSet<WorldObjectId> {
 
 // ---------------------------------------------------------------- harness ---
 
+/// Builds the headless Bevy world every world fixture runs on: the real pinned
+/// plugin group through [`crate::asset_stack::headless_app`], the real F23-A
+/// fixed-rate adapter, gravity zero, and a manually driven clock seeded so the
+/// first counted update produces the full manual delta and exactly one fixed
+/// step (see `docs/findings/2026-09-23-t334-first-frame-fixed-step.md`).
+///
+/// This is the one place that composition is written down, so a mesh-derived
+/// collider — which needs the asset stack Avian's `collider-from-mesh` systems
+/// read — cannot be built on a world that lacks it while the cuboid path works
+/// fine.
+pub fn world_app() -> App {
+    let frame = Duration::from_secs_f64(1.0 / crate::physics::BASELINE_FIXED_HZ as f64);
+
+    let mut app = crate::asset_stack::headless_app();
+    app.add_plugins((
+        // The world contact log belongs to the composition that runs a world:
+        // a load happens after `App::finish`, where `add_plugins` would panic,
+        // so the recorder is installed here or not at all.
+        super::contacts::WorldPlugin,
+        crate::physics::PhysicsAdapterPlugin::new(crate::physics::BASELINE_FIXED_HZ),
+    ));
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(frame));
+    app.insert_resource(SubstepCount(1));
+    app.insert_resource(Gravity::ZERO);
+
+    let startup = app.world().resource::<Time<Real>>().startup();
+    app.world_mut()
+        .resource_mut::<Time<Real>>()
+        .update_with_instant(startup);
+    app.finish();
+    app.cleanup();
+    app
+}
+
 /// Why a [`WorldFixture`] could not be built.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorldFixtureError {
@@ -638,6 +1107,7 @@ impl From<ProbeError> for WorldFixtureError {
 /// Builds a [`WorldFixture`].
 pub struct WorldFixtureBuilder {
     definition: WorldDefinition,
+    meshes: WorldMeshes,
     probe: Option<ProbeSpec>,
     discrete_probe: bool,
 }
@@ -648,9 +1118,22 @@ impl WorldFixtureBuilder {
     pub fn new(definition: WorldDefinition) -> Self {
         Self {
             definition,
+            meshes: WorldMeshes::new(),
             probe: None,
             discrete_probe: false,
         }
+    }
+
+    /// The geometry the definition's mesh references resolve to.
+    ///
+    /// A world built without one can still collide through every object whose
+    /// record carries a `Cuboid`; a `FromMesh` object is then reported as
+    /// [`SkipReason::MeshUnavailable`](super::spawn::SkipReason::MeshUnavailable)
+    /// rather than given invented geometry.
+    #[must_use]
+    pub fn meshes(mut self, meshes: WorldMeshes) -> Self {
+        self.meshes = meshes;
+        self
     }
 
     /// Also spawn a swept probe. Without one, the fixture is a static world.
@@ -680,25 +1163,9 @@ impl WorldFixtureBuilder {
     /// [`WorldFixtureError`] when the definition cannot be spawned or the
     /// probe's spec is invalid.
     pub fn build(self) -> Result<WorldFixture, WorldFixtureError> {
-        let frame = Duration::from_secs_f64(1.0 / crate::physics::BASELINE_FIXED_HZ as f64);
+        let mut app = world_app();
 
-        let mut app = crate::asset_stack::headless_app();
-        app.add_plugins(crate::physics::PhysicsAdapterPlugin::new(
-            crate::physics::BASELINE_FIXED_HZ,
-        ));
-        app.insert_resource(TimeUpdateStrategy::ManualDuration(frame));
-        app.insert_resource(SubstepCount(1));
-        app.insert_resource(Gravity::ZERO);
-
-        // Seed the real clock baseline so the first counted update produces
-        // the full manual delta and one fixed step; see
-        // `docs/findings/2026-09-23-t334-first-frame-fixed-step.md`.
-        let startup = app.world().resource::<Time<Real>>().startup();
-        app.world_mut()
-            .resource_mut::<Time<Real>>()
-            .update_with_instant(startup);
-
-        let spawned = super::spawn_world(&mut app, &self.definition)?;
+        let spawned = super::spawn_world(&mut app, &self.definition, &self.meshes)?;
         let probe = match self.probe {
             Some(spec) => Some(if self.discrete_probe {
                 spawn_discrete_probe(&mut app, &spec)?
@@ -707,9 +1174,6 @@ impl WorldFixtureBuilder {
             }),
             None => None,
         };
-
-        app.finish();
-        app.cleanup();
 
         Ok(WorldFixture {
             app,
@@ -774,6 +1238,42 @@ impl WorldFixture {
     #[must_use]
     pub fn world(&self) -> &bevy::prelude::World {
         self.app.world()
+    }
+
+    /// Mutable access to the Bevy world, for a load, an unload or a
+    /// [`WorldResidency`](super::residency::WorldResidency) read.
+    ///
+    /// [`spawn_world`](super::spawn::spawn_world) and
+    /// [`load_world`](super::residency::load_world) take an `&mut App`, so
+    /// changing a loaded world means handing the whole app over; this is the
+    /// borrow that makes that possible from a test.
+    #[allow(clippy::mut_from_ref)]
+    pub fn app_mut(&mut self) -> &mut App {
+        &mut self.app
+    }
+
+    /// Spawns a swept probe *after* the world was built.
+    ///
+    /// A mesh-derived collider does not exist until Avian's hierarchy
+    /// constructor has run ([`MESH_SETTLE_UPDATES`] updates), so a probe
+    /// spawned at build time would already be through the geometry before the
+    /// collision it is supposed to meet exists.
+    ///
+    /// # Errors
+    ///
+    /// [`ProbeError`] when the spec is invalid; nothing is spawned then.
+    pub fn spawn_swept_probe(&mut self, spec: ProbeSpec) -> Result<Entity, ProbeError> {
+        spawn_swept_probe(&mut self.app, &spec)
+    }
+
+    /// Spawns a probe with no continuous detection, after the world was built:
+    /// detection by discrete overlap only.
+    ///
+    /// # Errors
+    ///
+    /// [`ProbeError`] when the spec is invalid; nothing is spawned then.
+    pub fn spawn_discrete_probe(&mut self, spec: ProbeSpec) -> Result<Entity, ProbeError> {
+        spawn_discrete_probe(&mut self.app, &spec)
     }
 
     /// The probe's current position in meters, or `None` without a probe.

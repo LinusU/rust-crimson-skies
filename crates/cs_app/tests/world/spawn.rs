@@ -15,7 +15,7 @@ use avian3d::prelude::{CollisionLayers as AvianCollisionLayers, RigidBody, Senso
 use bevy::prelude::{App, Time, Vec3, World};
 use bevy::time::Fixed;
 use cs_app::world::{
-    WorldFixture, WorldSpawnError, arch_world,
+    WorldFixture, WorldMeshes, WorldSpawnError, arch_world,
     fixture::{SENSOR_HALF_M, SENSOR_POS_M},
     spawn_world,
 };
@@ -132,7 +132,10 @@ fn accept_f18_a_spawn_refuses_a_matrix_no_runtime_transform_can_hold_before_spaw
     let mut app = App::new();
     let entities_before = app.world().entities().len();
 
-    let error = spawn_world(&mut app, &definition)
+    // The arch world carries no mesh-derived object, so an empty source is the
+    // whole story for this refusal: nothing here is refused for want of
+    // geometry, only for want of a runtime transform.
+    let error = spawn_world(&mut app, &definition, &WorldMeshes::new())
         .expect_err("a sheared matrix must be refused, not approximated");
     assert!(
         matches!(
@@ -201,9 +204,10 @@ fn accept_f18_a_every_collision_role_decides_what_is_spawned() {
         fixture.world().get::<RigidBody>(trigger_entity) == Some(&RigidBody::Static),
         "the sensor is static world geometry"
     );
-    let reported = spawned
+    let reported = fixture
+        .spawned()
         .colliders()
-        .iter()
+        .into_iter()
         .find(|entry| entry.object == trigger)
         .expect("the sensor collider is in the report");
     assert_eq!(

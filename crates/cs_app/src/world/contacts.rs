@@ -20,35 +20,44 @@ use bevy::ecs::schedule::IntoScheduleConfigs;
 use bevy::prelude::{
     Component, Entity, FixedPostUpdate, MessageReader, Plugin, Query, ResMut, Resource,
 };
-use cs_content::world::{SectorId, WorldCollisionRole, WorldId, WorldObjectId};
-use cs_types::content::Provenance;
+use cs_content::world::{SectorId, SurfaceRole, WorldCollisionRole, WorldId, WorldObjectId};
+use cs_types::content::{Provenance, Resolved};
 
 /// The identity a spawned world entity carries.
 ///
-/// One binding per object instance, cloned onto both the visual entity and
-/// the collider entity, so a contact and a draw resolve to the same authored
-/// id.
+/// One binding per object instance, cloned onto every entity the object owns,
+/// so a contact and a draw resolve to the same authored id, the same sectors
+/// and the same gameplay surface rule.
 #[derive(Component, Clone, Debug, PartialEq)]
 pub struct WorldObjectBinding {
     world: WorldId,
     object: WorldObjectId,
     sectors: Vec<SectorId>,
+    surface: Resolved<SurfaceRole>,
     provenance: Provenance,
 }
 
 impl WorldObjectBinding {
     /// Builds a binding from the record's own parts.
+    ///
+    /// `surface` is the instance's own `Resolved<SurfaceRole>`, carried
+    /// unchanged: a contact must be able to say which gameplay surface rule it
+    /// follows (F18 non-negotiable behavior 2), which an object whose evidence
+    /// never classified its surface cannot answer — so the explicit unknown
+    /// travels with the contact instead of a default.
     #[must_use]
     pub fn new(
         world: WorldId,
         object: WorldObjectId,
         sectors: Vec<SectorId>,
+        surface: Resolved<SurfaceRole>,
         provenance: Provenance,
     ) -> Self {
         Self {
             world,
             object,
             sectors,
+            surface,
             provenance,
         }
     }
@@ -69,6 +78,13 @@ impl WorldObjectBinding {
     #[must_use]
     pub fn sectors(&self) -> &[SectorId] {
         &self.sectors
+    }
+
+    /// The gameplay surface rule a contact with this object follows, or the
+    /// explicit unknown the record left.
+    #[must_use]
+    pub fn surface(&self) -> &Resolved<SurfaceRole> {
+        &self.surface
     }
 
     /// The provenance of the record the binding came from.
@@ -104,7 +120,7 @@ impl WorldColliderInstance {
 }
 
 /// One recorded contact between an actor and a world object.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct WorldContact {
     /// The world whose object was touched.
     pub world: WorldId,
@@ -114,6 +130,11 @@ pub struct WorldContact {
     pub sectors: Vec<SectorId>,
     /// The role the touched collider was built with.
     pub role: WorldCollisionRole,
+    /// The gameplay surface rule the touched object was authored with, or the
+    /// explicit unknown its evidence left. This is what lets a consumer follow
+    /// the water rule instead of the ground rule without re-reading the record
+    /// (F18 non-negotiable behavior 2).
+    pub surface: Resolved<SurfaceRole>,
     /// The actor entity that touched it.
     pub other: Entity,
 }
@@ -196,6 +217,7 @@ pub fn record_world_contacts(
             object: binding.object().clone(),
             sectors: binding.sectors().to_vec(),
             role: marker.role(),
+            surface: binding.surface().clone(),
             other,
         });
     }
