@@ -62,6 +62,31 @@ cs_script = { path = "crates/cs_script" }
 cs_sim = { path = "crates/cs_sim" }
 cs_types = { path = "crates/cs_types" }
 
+# The CI runner's disk is the build budget this workspace has to live inside
+# (task #430, docs/findings/2026-09-30-t430-rust-lld-sigbus-in-ci.md).
+# Measured inside the failing `rust` job of run 36736183776 on the ubuntu24
+# image: the root filesystem held 1.91 GiB free (99% used) while
+# `cargo test` ran, and the job died a few seconds into linking the merged
+# `cs_app` doctest — the largest single write of the run — with
+# `collect2: fatal error: ld terminated with signal 7 [Bus error]` in
+# rust-lld's writer threads, which is what an mmap'd output file that cannot
+# be written looks like. The doctest binary lands in `/tmp`, on that same
+# filesystem.
+#
+# Full DWARF is what spends that budget: `debug = 2`, rustc's default, is
+# 61% of a dependency rlib by bytes and 14x its code (measured:
+# `libbevy_pbr.rlib` is 169.5 MB, of which 102.7 MB is `__debug_*` — 77.9 MB
+# of it `__debug_str` — against 7.1 MB of `__text`), and most of the linked
+# doctest binary that tips the disk over. `line-tables-only` keeps `file:line`
+# in panic backtraces and drops the type, variable and name DWARF: 4.9 MB of
+# the 102.7 MB above is the line program that survives.
+#
+# `incremental` is deliberately *not* set here: the runner already exports
+# CARGO_INCREMENTAL=0 (same run), and disabling it in the manifest would only
+# slow the owner's local edit-build loop.
+[profile.dev]
+debug = "line-tables-only"
+
 # Keep the linked `__eh_frame` under the Apple linker's 16 MiB compact-unwind
 # encoding limit (task #336, docs/findings/2026-09-23-t336-*): at opt-level 0
 # the dependency graph emits ~17 MiB of DWARF unwind data, so FDEs past the
