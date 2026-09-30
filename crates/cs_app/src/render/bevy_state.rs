@@ -38,9 +38,24 @@
 //! surface that writes depth would hide the surfaces behind it and make the
 //! back-to-front sort pointless. That is a design decision this stage records,
 //! not a measured original behavior.
+//!
+//! # How the state reaches a drawable material
+//!
+//! [`RenderState::to_standard_material`] may only produce a material that draws
+//! the way the state says, and in Bevy 0.19 that constrains three of the
+//! fields: `alpha_mode` *is* the blend input, the cull mode is the cull face,
+//! and `unlit` is the lighting decision. One of the five classes cannot be
+//! expressed by a `StandardMaterial` at all — additive, whose `One`/`One`
+//! blend has no mode (see [`MaterialGap`]) — and a second can only be
+//! expressed *through* a mode: a blended surface is `AlphaMode::Blend`, which
+//! is what asks Bevy for `BlendState::ALPHA_BLENDING` and a pipeline that does
+//! not write depth, exactly the two decisions the state records. A declared
+//! constant opacity is applied to the base color's alpha, which is where a PBR
+//! material keeps coverage.
 
 use std::fmt;
 
+use bevy::color::Color;
 use bevy::material::AlphaMode;
 use bevy::pbr::StandardMaterial;
 use bevy::render::render_resource::{
@@ -97,9 +112,11 @@ impl std::error::Error for StateError {}
 /// express, and that is a shader problem, not a classification one.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MaterialGap {
-    /// `StandardMaterial::alpha_mode` is `Opaque`/`Mask`/`Blend` only. An
-    /// additive surface needs a blend state of `One`/`One`, which needs a
-    /// material with its own blend state (and, in
+    /// `StandardMaterial` cannot reach a blend state of `One`/`One`. Its
+    /// `alpha_mode` is the only blend input, and Bevy maps `AlphaMode::Add`
+    /// onto the *premultiplied* alpha pipeline, which multiplies the source
+    /// by its own alpha rather than adding it. An additive surface therefore
+    /// needs a material with its own blend state (and, in
     /// `crates/cs_app/assets/shaders/`, its own shader). The state is
     /// recorded and carried; the drawable material is not fabricated.
     AdditiveBlendState,
@@ -195,11 +212,22 @@ pub fn render_state(material: &ClassifiedMaterial) -> Result<RenderState, StateE
     );
     let alpha_mode = match (class, alpha_test) {
         (MaterialClass::Masked, AlphaTest::Threshold(t)) => {
-            // Bevy keeps fully opaque above the cutoff and fully transparent
-            // at or below it, which is the declared rule: coverage below the
-            // threshold is discarded. `/255` because the classification
-            // carries the stored byte and the cutoff is a normalized float.
+            // Bevy keeps a texel whose coverage is *at or above* the cutoff
+            // (`color.a >= material.alpha_cutoff` in the forward PBR shader,
+            // drawn fully opaque) and discards one below it, which is the
+            // declared rule: coverage below the threshold is discarded.
+            // `/255` because the classification carries the stored byte and
+            // the cutoff is a normalized float.
             AlphaMode::Mask(f32::from(t) / f32::from(u8::MAX))
+        }
+        (MaterialClass::Blended, _) => {
+            // A `StandardMaterial` has no blend-state field: Bevy picks the
+            // pipeline from `alpha_mode`, and `Blend` is what requests
+            // `BlendState::ALPHA_BLENDING` and a pipeline that does not write
+            // depth — the two decisions this state records for a blended
+            // surface. Anything else here would hand the consumer a material
+            // that contradicts the state beside it.
+            AlphaMode::Blend
         }
         _ => AlphaMode::Opaque,
     };
@@ -315,7 +343,10 @@ impl RenderState {
         self.cull_face
     }
 
-    /// The coverage treatment, `Mask(threshold)` for an alpha-cut surface.
+    /// The coverage treatment, `Mask(threshold)` for an alpha-cut surface and
+    /// `Blend` for a blended one. In a `StandardMaterial` this field *is* the
+    /// blend input, so the state and the material it produces agree on the
+    /// blend and on the depth write.
     pub const fn alpha_mode(&self) -> &AlphaMode {
         &self.alpha_mode
     }
@@ -362,12 +393,28 @@ impl RenderState {
         if self.class == MaterialClass::Additive {
             return Err(MaterialGap::AdditiveBlendState);
         }
+        // A declared constant opacity is the whole coverage of a surface that
+        // carries no image, and in a PBR material coverage *is* the base
+        // color's alpha: the blend factor and the mask both read the output
+        // alpha. It is applied here because the classification declares it
+        // and nothing downstream would otherwise. The color channels stay the
+        // identity multiplier `1.0` — no tint is declared anywhere, so none is
+        // invented — and Bevy passes an `Srgba` value's alpha through
+        // unchanged, so the stored byte reaches the shader as `alpha / 255`
+        // with no encoding change on the way.
+        let base_color = match (self.class, self.coverage) {
+            (MaterialClass::Masked | MaterialClass::Blended, Coverage::Uniform(alpha)) => {
+                Color::srgba(1.0, 1.0, 1.0, f32::from(alpha) / f32::from(u8::MAX))
+            }
+            _ => Color::WHITE,
+        };
         // The mask threshold travels inside `AlphaMode::Mask`; the cutoff
         // uniform it feeds is a shader-side field this stage does not set.
         Ok(StandardMaterial {
             alpha_mode: self.alpha_mode,
             cull_mode: self.cull_face,
             unlit: self.unlit,
+            base_color,
             ..StandardMaterial::default()
         })
     }

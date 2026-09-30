@@ -8,6 +8,7 @@
 //! unchanged, and a fact nothing established becomes a reason code instead of
 //! a value.
 
+use bevy::color::Color;
 use bevy::image::ImageAddressMode;
 use bevy::material::AlphaMode;
 use bevy::mesh::{Indices, Mesh, VertexAttributeValues};
@@ -599,6 +600,25 @@ fn accept_f17_b_render_state_differs_per_class_and_refuses_unmeasured_facts() {
         "a blended surface must not occlude the surface behind it"
     );
     assert_eq!(glass.coverage(), Coverage::Uniform(102));
+    // A `StandardMaterial` takes its blend from `alpha_mode`, so the material
+    // the state hands out has to say the same thing the state says. A state
+    // that records a blend and a material that does not blend is the one
+    // combination the rest of this module exists to prevent.
+    let glass_material = glass
+        .to_standard_material()
+        .expect("a blended surface has a StandardMaterial");
+    assert_eq!(
+        glass_material.alpha_mode,
+        AlphaMode::Blend,
+        "the drawable material blends exactly as the state does"
+    );
+    assert_eq!(
+        glass_material.base_color,
+        Color::srgba(1.0, 1.0, 1.0, 102.0_f32 / 255.0),
+        "the declared constant opacity is the coverage the blend factor reads, \
+         not a value the state records and the material drops; the color \
+         channels stay neutral because no tint is declared anywhere"
+    );
 
     let emissive = render_state(&material(
         MaterialClass::Emissive,
@@ -637,6 +657,14 @@ fn accept_f17_b_render_state_differs_per_class_and_refuses_unmeasured_facts() {
             .expect("a masked surface has a StandardMaterial")
             .alpha_mode
             == AlphaMode::Mask(128.0_f32 / 255.0)
+    );
+    assert_eq!(
+        opaque
+            .to_standard_material()
+            .expect("an opaque surface has a StandardMaterial")
+            .base_color,
+        Color::WHITE,
+        "a class that ignores coverage keeps the neutral opacity"
     );
 
     assert_eq!(
