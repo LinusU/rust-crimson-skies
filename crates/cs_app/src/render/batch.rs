@@ -55,10 +55,11 @@
 //!   paint, so it is drawn unbatched and reported as
 //!   [`limitation_codes::UNBOUND_INSTANCE`].
 //!
-//! The additive class still has no drawable `StandardMaterial`
-//! ([`crate::render::bevy_state::MaterialGap`]); the batch records the gap and
-//! draws the rest of the frame, so the additive pass is reported rather than
-//! hidden (`docs/findings/2026-09-30-f17-c-profiles-and-instance-batching.md`).
+//! Every class has a drawable material, the additive one included
+//! ([`crate::render::additive::AdditiveMaterial`]), so a batch always has one
+//! and the frame records *which* kind each batch draws with. F17-B and F17-C
+//! recorded the additive class as a material gap; that gap is closed in
+//! `docs/findings/2026-09-30-f17-c-followup-additive-material.md`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -69,6 +70,7 @@ use cs_types::Tick;
 use cs_types::evidence::ContentHash;
 
 use crate::livery::{LiveryError, LiveryRuntime, LiverySession, ModelInstanceId, ModelLivery};
+use crate::render::bevy_state::MaterialKind;
 use crate::render::capture::{SceneOutcome, SurfaceRefusal, SurfaceUpload, scene_codes};
 use crate::render::material::RenderPhase;
 use crate::render::plan::{DrawItem, DrawItemKey, DrawPlan};
@@ -343,7 +345,7 @@ impl BatchInstance {
 pub struct InstanceBatch {
     key: BatchKey,
     instances: Vec<BatchInstance>,
-    material_gap: Option<&'static str>,
+    material_kind: MaterialKind,
     mergeable: bool,
 }
 
@@ -383,12 +385,14 @@ impl InstanceBatch {
         self.mergeable
     }
 
-    /// Why this batch has no drawable `StandardMaterial`, when it has none.
+    /// Which drawable material this batch draws with.
     ///
-    /// The batch is still ordered, batched and reported: the additive class is
-    /// a material gap, not a dropped surface.
-    pub const fn material_gap(&self) -> Option<&'static str> {
-        self.material_gap
+    /// Every class has one, so this is *which* and never "none": the additive
+    /// class draws with its own material
+    /// ([`crate::render::additive::AdditiveMaterial`]) and every other class
+    /// with a `StandardMaterial`.
+    pub const fn material_kind(&self) -> MaterialKind {
+        self.material_kind
     }
 
     /// The row of `instance` in this batch, when it is one of them.
@@ -680,14 +684,16 @@ pub fn batch_frame(
                     center_m: submitted.item.center_m(),
                     depth_m_bits: entry.depth_m.to_bits(),
                 };
-                let gap = upload.material_gap().map(|gap| gap.code());
+                let material_kind = upload.material_kind();
                 // A batch whose paint is not established holds one row and
                 // never merges: two unresolved paints may be different, so
                 // merging them would invent a match.
                 let mergeable = livery.is_some();
                 match open.as_mut() {
                     Some(batch)
-                        if batch.key == key && batch.material_gap == gap && batch.mergeable =>
+                        if batch.key == key
+                            && batch.material_kind == material_kind
+                            && batch.mergeable =>
                     {
                         batch.instances.push(row);
                     }
@@ -696,7 +702,7 @@ pub fn batch_frame(
                         open = Some(InstanceBatch {
                             key,
                             instances: vec![row],
-                            material_gap: gap,
+                            material_kind,
                             mergeable,
                         });
                     }
@@ -771,14 +777,12 @@ fn frame_fingerprint(frame: &BatchedFrame) -> ContentHash {
         bytes.extend_from_slice(batch.key.state.as_bytes());
         push_optional_hash(&mut bytes, batch.key.image);
         push_optional_hash(&mut bytes, batch.key.livery);
-        match batch.material_gap {
-            None => bytes.push(0),
-            Some(code) => {
-                bytes.push(1);
-                bytes.extend_from_slice(code.as_bytes());
-                bytes.push(0);
-            }
-        }
+        // `material_kind` is deliberately not digested: it is a function of the
+        // class, and `batch.key.state` above digests the render state, which
+        // digests the class. A separate byte here would be redundant rather than
+        // load-bearing — the acceptance selection
+        // `accept_f17_c_additive_the_reported_material_kind_follows_the_state_class`
+        // pins the reported kind to the class instead.
         bytes.push(u8::from(batch.mergeable));
         bytes.extend_from_slice(&(batch.instances.len() as u32).to_le_bytes());
         for row in &batch.instances {

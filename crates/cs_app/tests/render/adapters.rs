@@ -15,7 +15,7 @@ use bevy::mesh::{Indices, Mesh, VertexAttributeValues};
 use bevy::render::render_resource::{BlendFactor, BlendOperation, Face, TextureFormat};
 use cs_app::render::bevy_image::{CoveragePlane, ImageAdapterError, upload_image};
 use cs_app::render::bevy_mesh::{AttributeKind, MeshAdapterError, upload_group, upload_groups};
-use cs_app::render::bevy_state::{MaterialGap, StateError, render_state};
+use cs_app::render::bevy_state::{DrawableMaterial, MaterialKind, StateError, render_state};
 use cs_app::render::capture::{SceneSurface, surface_codes, upload_surface};
 use cs_app::render::material::{
     AddressMode, Classification, ClassifiedMaterial, Coverage, DeclaredClass, MaterialClass,
@@ -887,9 +887,8 @@ fn accept_f17_b_render_state_differs_per_class_and_refuses_unmeasured_facts() {
     // the state hands out has to say the same thing the state says. A state
     // that records a blend and a material that does not blend is the one
     // combination the rest of this module exists to prevent.
-    let glass_material = glass
-        .to_standard_material()
-        .expect("a blended surface has a StandardMaterial");
+    let glass_drawable = glass.to_drawable_material();
+    let glass_material = standard_material(&glass_drawable);
     assert_eq!(
         glass_material.alpha_mode,
         AlphaMode::Blend,
@@ -927,25 +926,33 @@ fn accept_f17_b_render_state_differs_per_class_and_refuses_unmeasured_facts() {
     assert_eq!(blend.color.src_factor, BlendFactor::One);
     assert_eq!(blend.color.dst_factor, BlendFactor::One);
     assert!(!sprite.depth_write());
-    assert_eq!(
-        sprite
-            .to_standard_material()
-            .expect_err("no additive mode exists"),
-        MaterialGap::AdditiveBlendState,
-        "the state is complete even where the drawable material is not"
-    );
+    // The additive class is the one class a `StandardMaterial` cannot express,
+    // so its drawable material is not one: it is the additive material, and it
+    // carries the blend this state records. (Its own acceptance selection,
+    // `accept_f17_c_additive_`, is what checks that material end to end.)
+    let additive = sprite.to_drawable_material();
+    assert_eq!(additive.kind(), MaterialKind::Additive);
     assert!(
-        fence
-            .to_standard_material()
-            .expect("a masked surface has a StandardMaterial")
-            .alpha_mode
-            == AlphaMode::Mask(128.0_f32 / 255.0)
+        additive.standard().is_none(),
+        "the additive class does not fall back to a StandardMaterial"
+    );
+    let additive = additive
+        .additive()
+        .expect("the additive class has its own material");
+    assert_eq!(
+        *additive.blend(),
+        *sprite.blend(),
+        "the material draws with the blend the state records, not a second table"
+    );
+    assert!(!additive.depth_write());
+    assert_eq!(additive.cull_face(), sprite.cull_face());
+    assert_eq!(
+        standard_material(&fence.to_drawable_material()).alpha_mode,
+        AlphaMode::Mask(128.0_f32 / 255.0),
+        "an alpha-cut surface is still drawn with a StandardMaterial"
     );
     assert_eq!(
-        opaque
-            .to_standard_material()
-            .expect("an opaque surface has a StandardMaterial")
-            .base_color,
+        standard_material(&opaque.to_drawable_material()).base_color,
         Color::WHITE,
         "a class that ignores coverage keeps the neutral opacity"
     );
@@ -966,6 +973,14 @@ fn accept_f17_b_render_state_differs_per_class_and_refuses_unmeasured_facts() {
         StateError::CullFaceUnknown.to_string(),
         "nothing established whether the original drew this surface two-sided"
     );
+}
+
+/// The `StandardMaterial` out of a drawable material, or a failure naming the
+/// class that has its own.
+fn standard_material(material: &DrawableMaterial) -> &bevy::pbr::StandardMaterial {
+    material
+        .standard()
+        .unwrap_or_else(|| panic!("{material:?} is not drawn with a StandardMaterial"))
 }
 
 /// The scene-level upload checks the material's declared coverage against the

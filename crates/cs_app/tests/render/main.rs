@@ -18,6 +18,7 @@
 //! original renderer. `CS_GAME_DIR` is not needed.
 
 mod adapters;
+mod additive_material;
 mod classification;
 mod fixture;
 mod frame_capture;

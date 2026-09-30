@@ -9,6 +9,7 @@
 //! the tick, the camera, the projection or the geometry would also be equal
 //! twice, and a capture taken under unpinned settings compares nothing.
 
+use cs_app::render::bevy_state::MaterialKind;
 use cs_app::render::capture::{
     CaptureError, ComparisonSettings, Projection, SceneOutcome, SceneSurface, SurfaceRefusal,
     Tonemap, capture, scene_codes, upload_surface,
@@ -169,9 +170,10 @@ fn accept_f17_b_capture_of_the_same_camera_and_tick_twice_is_identical() {
         .find(|surface| surface.key().as_str() == "fence")
         .expect("the fence is captured");
     assert!(fence.image().is_some(), "the fence samples its image");
-    assert!(
-        fence.material_gap().is_none(),
-        "and has a drawable material"
+    assert_eq!(
+        fence.material_kind(),
+        MaterialKind::Standard,
+        "and is drawn with a StandardMaterial"
     );
     let sprite = first
         .surfaces()
@@ -179,9 +181,9 @@ fn accept_f17_b_capture_of_the_same_camera_and_tick_twice_is_identical() {
         .expect("the sprite is captured");
     assert!(sprite.image().is_none(), "the sprite is untextured");
     assert_eq!(
-        sprite.material_gap(),
-        Some("additive_blend_state_needs_custom_material"),
-        "the additive pass is captured with its recorded gap, not dropped"
+        sprite.material_kind(),
+        MaterialKind::Additive,
+        "the additive pass is captured with the material its class needs, not dropped"
     );
     let percorner = first
         .surfaces()

@@ -81,7 +81,36 @@
 //! forbidden options refused, an enhanced profile refused as comparison
 //! evidence, no enhancement changing a draw decision, and the consumer's
 //! teardown, refusal and retry paths.
+//!
+//! ## The additive class's material
+//!
+//! F17-C's follow-up closes the one material gap F17-B left recorded. Every
+//! class now has a drawable material:
+//!
+//! * [`additive::AdditiveMaterial`] is a `bevy::pbr::Material` whose blend
+//!   state is the `One`/`One` the render state already records — copied from
+//!   there, not re-derived — and whose fragment shader is
+//!   [`additive::ADDITIVE_FRAGMENT_SHADER`], a real WGSL file in
+//!   `crates/cs_app/assets/shaders/` that this material loads.
+//! * [`bevy_state::MaterialKind`] says which material a surface or a batch
+//!   draws with, and [`bevy_state::DrawableMaterial`] is the value the adapter
+//!   hands the consumer; [`sync::sync_frame`] binds each batch with the
+//!   component its own class's material is.
+//!
+//! `MaterialGap` and `FrameSync::unmaterialed` are gone with it: no class can
+//! reach the consumer without a material, so the additive pass is placed like
+//! any other batch instead of being counted as a gap.
+//!
+//! # Acceptance tests
+//!
+//! The `accept_f17_c_additive_` selection in
+//! `crates/cs_app/tests/render/additive_material.rs` covers this stage: the
+//! additive class yields a drawable material whose blend and depth write are
+//! the state's, whose pipeline specialization writes them into a descriptor, and
+//! whose shader path is a file that exists; and a non-additive class is
+//! unaffected.
 
+pub mod additive;
 pub mod batch;
 pub mod bevy_image;
 pub mod bevy_mesh;

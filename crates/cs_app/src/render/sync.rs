@@ -36,11 +36,13 @@
 //!    the per-instance entities below it, which a recursive despawn takes with
 //!    it. Reloading a frame a hundred times leaves the live entity count
 //!    unchanged.
-//! 4. **Nothing is drawn from nothing.** A world with no image store is
-//!    refused ([`SyncError::NoImageStore`]) rather than drawn with unbound
-//!    textures, and a batch whose material gap is still open is *not* spawned:
-//!    it is counted in [`FrameSync::unmaterialed`], so the additive pass is
-//!    visible instead of silently missing.
+//! 4. **Nothing is drawn from nothing.** A world with no asset store is
+//!    refused ([`SyncError::NoAssetStore`]) rather than drawn with unbound
+//!    textures, and every batch draws with the material its own render state
+//!    produced — the additive class with
+//!    [`AdditiveMaterial`](crate::render::additive::AdditiveMaterial), every
+//!    other class with a `StandardMaterial` — so the additive pass is placed
+//!    like any other instead of being counted as a gap.
 //! 5. **Teardown ends the session.** [`teardown`] despawns every batch entity
 //!    and drops the state; a second call is a no-op, and a frame synced after
 //!    it is refused because there is no session ([`SyncError::NoSession`]).
@@ -100,7 +102,9 @@ use cs_assets::install::sha256;
 use cs_types::evidence::ContentHash;
 
 use crate::livery::ModelInstanceId;
+use crate::render::additive::AdditiveMaterial;
 use crate::render::batch::{BatchInstance, BatchedFrame, InstanceBatch, SubmittedDraw};
+use crate::render::bevy_state::{DrawableMaterial, MaterialKind};
 use crate::render::capture::SceneOutcome;
 use crate::render::material::RenderPhase;
 use crate::render::plan::DrawItemKey;
@@ -345,9 +349,6 @@ pub struct FrameSync {
     /// aircraft is drawn at its own place" a reported fact rather than an
     /// assumption.
     pub placed: usize,
-    /// Batches that have no drawable material, so nothing was spawned for
-    /// them.
-    pub unmaterialed: usize,
     /// Draws the frame withheld, unchanged by the sync.
     pub withheld: usize,
     /// How far the applied presentation reached.
@@ -384,7 +385,8 @@ pub enum SyncError {
     /// The world has no asset store for one of the resources a batch needs, so
     /// a mesh, image or material handle cannot be bound.
     NoAssetStore {
-        /// Which store is missing: `"Image"`, `"Mesh"` or `"StandardMaterial"`.
+        /// Which store is missing: `"Image"`, `"Mesh"`, `"StandardMaterial"`
+        /// or `"AdditiveMaterial"`.
         kind: &'static str,
     },
     /// The applied profile's sample count is not one this world can express.
@@ -699,12 +701,21 @@ pub fn sync_frame(
     // below.
     let presentation = state.presentation();
     let msaa = msaa_for(presentation.msaa_samples()).map_err(SyncError::Profile)?;
+    // Every store a batch can bind into, resolved before the first entity is
+    // written. The additive class's store is here for the same reason the
+    // other three are: every class has a drawable material now, so a frame
+    // with an additive batch would otherwise be discovered — and half-written
+    // — before the missing store was noticed.
     for (kind, present) in [
         ("Image", world.get_resource::<Assets<Image>>().is_some()),
         ("Mesh", world.get_resource::<Assets<Mesh>>().is_some()),
         (
             "StandardMaterial",
             world.get_resource::<Assets<StandardMaterial>>().is_some(),
+        ),
+        (
+            "AdditiveMaterial",
+            world.get_resource::<Assets<AdditiveMaterial>>().is_some(),
         ),
     ] {
         if !present {
@@ -776,14 +787,13 @@ pub fn sync_frame(
     let mut live = BTreeMap::new();
 
     for (key, digest, batch, upload) in prepared {
-        // No drawable material yet: the batch is reported, not faked with
-        // another class's blend, and the entity a previous frame left for it is
-        // despawned rather than dropped from the map and left in the world.
-        let Some(base) = upload.standard_material() else {
-            report.unmaterialed += 1;
-            release(&mut previous, key, world, &mut report.released);
-            continue;
-        };
+        // The material is a function of the batch key — the key carries the
+        // render state, and the render state carries the class, so it decides
+        // the material kind. A reused batch already holds the one this call
+        // would add; adding it again would leave an orphan in the store on
+        // every frame of a stable frame, which is a leak no test that only
+        // counts batches would see.
+        let base = upload.material().clone();
         let existing = reuse_batch(&mut previous, key, world, &mut report.released);
         let reused = existing.is_some();
         let (entity, mesh) = match existing {
@@ -816,33 +826,17 @@ pub fn sync_frame(
                     .add(source.image().clone()),
             ),
         };
-        // The material is a function of the batch key — the key carries the
-        // render state and the image digests it is built from — so a reused
-        // batch already holds the one this call would add. Adding it again
-        // would leave an orphan `StandardMaterial` in the store on every frame
-        // of a stable frame, which is a leak no test that only counts batches
-        // would see.
-        let material = match world.get::<MeshMaterial3d<StandardMaterial>>(entity) {
-            Some(current) => current.0.clone(),
-            None => {
-                let mut material = base.clone();
-                if let Some(handle) = image.clone() {
-                    material.base_color_texture = Some(handle);
-                }
-                world
-                    .resource_mut::<Assets<StandardMaterial>>()
-                    .add(material)
-            }
+        let material = match stored_material(world, entity, base.kind()) {
+            Some(current) => current,
+            None => add_material(world, base, image.clone()),
         };
-        world.entity_mut(entity).insert((
-            MeshMaterial3d::<StandardMaterial>(material.clone()),
-            BatchDraw {
-                key: digest,
-                phase: batch.phase(),
-                image,
-                instances: batch.instances().to_vec(),
-            },
-        ));
+        world.entity_mut(entity).insert(BatchDraw {
+            key: digest,
+            phase: batch.phase(),
+            image,
+            instances: batch.instances().to_vec(),
+        });
+        set_material(world, entity, material.clone());
         // One placed entity per row. The batch key covers the rows, so a reused
         // entity's placements are the same rows; they are only rebuilt when
         // their count no longer matches, which catches placements removed behind
@@ -861,22 +855,82 @@ pub fn sync_frame(
     Ok(report)
 }
 
-/// Despawns the entity the previous frame tracked under `key`, counting it.
+/// The material handle one batch and its placements draw with.
 ///
-/// A batch this frame does not draw must not leave the entity a previous frame
-/// spawned behind: dropping it from the tracking map instead would orphan it in
-/// the world with nothing left to release it.
-fn release(
-    previous: &mut BTreeMap<[u8; 32], Entity>,
-    key: [u8; 32],
+/// A `Handle` cannot name which material *type* it is, but the ECS component
+/// does: `MeshMaterial3d<AdditiveMaterial>` and `MeshMaterial3d<StandardMaterial>`
+/// are different components, and a batch draws with whichever one its class's
+/// material is. Carrying the kind alongside the handle is what lets the
+/// placements below share one argument and one code path for both classes.
+#[derive(Clone, Debug)]
+enum BatchMaterial {
+    /// A `StandardMaterial`, for opaque, masked, blended and emissive surfaces.
+    Standard(Handle<StandardMaterial>),
+    /// The additive class's own material, for the `One`/`One` blend.
+    Additive(Handle<AdditiveMaterial>),
+}
+
+/// Adds `material` to the world, with the batch's image bound to it.
+///
+/// The image is bound here rather than in the caller because both material
+/// types have a differently named field for it, and because the two are the
+/// only difference between the branches: everything else the caller already
+/// decided.
+fn add_material(
     world: &mut World,
-    released: &mut usize,
-) {
-    if let Some(entity) = previous.remove(&key)
-        && world.get_entity(entity).is_ok()
-    {
-        *released += 1;
-        world.entity_mut(entity).despawn();
+    material: DrawableMaterial,
+    image: Option<Handle<Image>>,
+) -> BatchMaterial {
+    match material {
+        DrawableMaterial::Standard(mut standard) => {
+            standard.base_color_texture = image;
+            BatchMaterial::Standard(
+                world
+                    .resource_mut::<Assets<StandardMaterial>>()
+                    .add(*standard),
+            )
+        }
+        DrawableMaterial::Additive(mut additive) => {
+            additive.base_color_texture = image;
+            BatchMaterial::Additive(
+                world
+                    .resource_mut::<Assets<AdditiveMaterial>>()
+                    .add(additive),
+            )
+        }
+    }
+}
+
+/// The material `entity` already draws with, when it draws with `kind`'s.
+///
+/// A handle of the wrong kind is not this batch's material: the batch key
+/// digests the render state, which carries the class, so an entity found under
+/// the key is drawing the right class's material and `None` means it is
+/// missing or damaged.
+fn stored_material(world: &World, entity: Entity, kind: MaterialKind) -> Option<BatchMaterial> {
+    match kind {
+        MaterialKind::Standard => world
+            .get::<MeshMaterial3d<StandardMaterial>>(entity)
+            .map(|current| BatchMaterial::Standard(current.0.clone())),
+        MaterialKind::Additive => world
+            .get::<MeshMaterial3d<AdditiveMaterial>>(entity)
+            .map(|current| BatchMaterial::Additive(current.0.clone())),
+    }
+}
+
+/// Puts `material` on `entity` as the component its kind calls for.
+fn set_material(world: &mut World, entity: Entity, material: BatchMaterial) {
+    match material {
+        BatchMaterial::Standard(handle) => {
+            world
+                .entity_mut(entity)
+                .insert(MeshMaterial3d::<StandardMaterial>(handle));
+        }
+        BatchMaterial::Additive(handle) => {
+            world
+                .entity_mut(entity)
+                .insert(MeshMaterial3d::<AdditiveMaterial>(handle));
+        }
     }
 }
 
@@ -939,7 +993,7 @@ fn place_rows(
     world: &mut World,
     batch: Entity,
     mesh: Handle<Mesh>,
-    material: Handle<StandardMaterial>,
+    material: BatchMaterial,
     rows: &[BatchInstance],
 ) -> usize {
     // The placements this batch already has, by the draw item each one is.
@@ -964,25 +1018,21 @@ fn place_rows(
         // placement is reused per row.
         let placement = BatchInstancePlacement { row: row.clone() };
         let transform = Transform::from_translation(Vec3::from(row.center_m()));
-        match existing.remove(&row.item_index()) {
+        let child = match existing.remove(&row.item_index()) {
             Some(child) => {
-                world.entity_mut(child).insert((
-                    transform,
-                    Mesh3d(mesh.clone()),
-                    MeshMaterial3d::<StandardMaterial>(material.clone()),
-                    placement,
-                ));
+                world
+                    .entity_mut(child)
+                    .insert((transform, Mesh3d(mesh.clone()), placement));
+                child
             }
-            None => {
-                world.spawn((
-                    ChildOf(batch),
-                    transform,
-                    Mesh3d(mesh.clone()),
-                    MeshMaterial3d::<StandardMaterial>(material.clone()),
-                    placement,
-                ));
-            }
-        }
+            None => world
+                .spawn((ChildOf(batch), transform, Mesh3d(mesh.clone()), placement))
+                .id(),
+        };
+        // The material goes on after the spawn, by kind: the component's own
+        // type *is* the material, so one fixed `spawn` bundle would push every
+        // class through the `StandardMaterial` type.
+        set_material(world, child, material.clone());
     }
     // Whatever is left is a placement this frame does not claim.
     for child in existing.into_values() {

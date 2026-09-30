@@ -41,7 +41,6 @@
 
 use std::fmt;
 
-use bevy::pbr::StandardMaterial;
 use cs_assets::install::sha256;
 use cs_content::mesh::{MeshPresentationUnknown, RenderMesh};
 use cs_formats::texture::DecodedImage;
@@ -50,7 +49,7 @@ use cs_types::evidence::ContentHash;
 
 use crate::render::bevy_image::{ImageUpload, upload_image};
 use crate::render::bevy_mesh::{GroupUpload, upload_group};
-use crate::render::bevy_state::{MaterialGap, RenderState, render_state};
+use crate::render::bevy_state::{DrawableMaterial, MaterialKind, RenderState, render_state};
 use crate::render::material::{Coverage, RenderPhase};
 use crate::render::plan::{DrawItem, DrawItemKey, DrawPlan, SceneView, SortingLimitation};
 use crate::render::profile::Resolution;
@@ -336,37 +335,37 @@ impl Projection {
 }
 
 /// One surface that reached the renderer: its geometry, its image, its render
-/// state and the drawable material when one exists.
+/// state and the drawable material that state became.
+///
+/// Every class has a drawable material, so there is no "no material" case to
+/// report: what a capture records is *which* material the surface was given
+/// ([`SurfaceUpload::material_kind`]), because that is a render decision.
 #[derive(Debug)]
 pub struct SurfaceUpload {
     key: DrawItemKey,
     geometry: GroupUpload,
     state: RenderState,
-    standard_material: Option<StandardMaterial>,
-    material_gap: Option<MaterialGap>,
+    material: DrawableMaterial,
     image: Option<ImageUpload>,
 }
 
 impl SurfaceUpload {
     /// What one draw item needs at the renderer: the material group of its
-    /// mesh, the render state its classified material reads out, and the
-    /// canonical image it samples when it has one.
+    /// mesh, the render state its classified material reads out, the drawable
+    /// material that state became, and the canonical image it samples when it
+    /// has one.
     pub fn new(
         key: DrawItemKey,
         geometry: GroupUpload,
         state: RenderState,
         image: Option<ImageUpload>,
     ) -> Self {
-        let (standard_material, material_gap) = match state.to_standard_material() {
-            Ok(material) => (Some(material), None),
-            Err(gap) => (None, Some(gap)),
-        };
+        let material = state.to_drawable_material();
         Self {
             key,
             geometry,
             state,
-            standard_material,
-            material_gap,
+            material,
             image,
         }
     }
@@ -386,15 +385,15 @@ impl SurfaceUpload {
         &self.state
     }
 
-    /// The drawable `StandardMaterial`, when this class has one.
-    pub const fn standard_material(&self) -> Option<&StandardMaterial> {
-        self.standard_material.as_ref()
+    /// The drawable material, carrying no image handle: binding one needs an
+    /// `Assets<Image>` and is the consumer's job.
+    pub const fn material(&self) -> &DrawableMaterial {
+        &self.material
     }
 
-    /// Why this surface has no `StandardMaterial`, when it has none. The
-    /// surface is still captured: the state above is complete.
-    pub const fn material_gap(&self) -> Option<MaterialGap> {
-        self.material_gap
+    /// Which drawable material this surface is drawn with.
+    pub const fn material_kind(&self) -> MaterialKind {
+        self.material.kind()
     }
 
     /// The canonical image this surface samples, if it has one.
@@ -619,7 +618,7 @@ pub struct CapturedSurface {
     geometry: ContentHash,
     state: ContentHash,
     image: Option<ContentHash>,
-    material_gap: Option<&'static str>,
+    material_kind: MaterialKind,
 }
 
 /// One pass of the capture: a render phase and the surfaces that draw in it,
@@ -718,7 +717,7 @@ pub fn capture(
                     geometry: upload.geometry().fingerprint(),
                     state: upload.state().fingerprint(),
                     image: upload.image().map(ImageUpload::fingerprint),
-                    material_gap: upload.material_gap().map(MaterialGap::code),
+                    material_kind: upload.material_kind(),
                 });
             }
             SceneOutcome::Refused(refusal) => refusals.push(refusal.clone()),
@@ -824,14 +823,12 @@ fn capture_fingerprint(capture: &FrameCapture) -> ContentHash {
                     bytes.extend_from_slice(hash.as_bytes());
                 }
             }
-            match surface.material_gap {
-                None => bytes.push(0),
-                Some(code) => {
-                    bytes.push(1);
-                    bytes.extend_from_slice(code.as_bytes());
-                }
-            }
-            bytes.push(0);
+            // The material kind is deliberately *not* digested here. It is a
+            // function of the class, and `surface.state` above already digests
+            // the class, so a separate byte could only differ where the state
+            // already differs: it is redundant, not load-bearing. The reported
+            // kind is the capture's public field, and the class is what a
+            // comparison actually reads.
         }
     }
     bytes.extend_from_slice(&(refusals.len() as u32).to_le_bytes());
@@ -949,8 +946,9 @@ impl CapturedSurface {
         self.image
     }
 
-    /// Why this surface has no drawable `StandardMaterial`, when it has none.
-    pub const fn material_gap(&self) -> Option<&'static str> {
-        self.material_gap
+    /// Which drawable material this surface is drawn with. Every class has one,
+    /// so this is a report of *which*, never of a surface that could not draw.
+    pub const fn material_kind(&self) -> MaterialKind {
+        self.material_kind
     }
 }

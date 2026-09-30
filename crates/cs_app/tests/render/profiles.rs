@@ -37,6 +37,7 @@ use bevy::transform::prelude::Transform;
 use bevy::window::{Window, WindowResolution};
 
 use cs_app::livery::{LiveryRuntime, LiverySession, ModelInstanceId, PaintChoice};
+use cs_app::render::additive::AdditiveMaterial;
 use cs_app::render::batch::{
     BatchedFrame, BatchingLimitation, InstanceVisual, InstanceVisuals, PartRef, SubmittedDraw,
     batch_frame, limitation_codes, withheld_codes,
@@ -665,12 +666,12 @@ fn accept_f17_c_the_consumer_draws_one_entity_per_batch_with_every_row() {
     let frame = fixture.batch(&RenderProfile::faithful());
     let report = sync_frame(&mut world, &submitted, &frame, SESSION).expect("the frame syncs");
 
-    // Four draws: two wing batches and two body batches. The additive gap is
-    // not in this scene, so nothing is unmaterialed.
+    // Four draws: two wing batches and two body batches, every one of them
+    // spawnable — this scene has no additive class, and the additive selection
+    // in `additive_material.rs` is what covers that one.
     assert_eq!(report.spawned, 4);
     assert_eq!(report.reused, 0);
     assert_eq!(report.released, 0);
-    assert_eq!(report.unmaterialed, 0);
     assert_eq!(report.withheld, 1);
     assert_eq!(report.placed, 5, "one placed draw per row the frame draws");
     assert_eq!(batch_entities(&world), 4);
@@ -1819,11 +1820,16 @@ fn accept_f17_c_batching_refuses_a_scene_that_does_not_match_the_plan() {
 
 /// A Bevy world with the asset stores the consumer binds into, and nothing
 /// else.
+///
+/// `Assets<AdditiveMaterial>` is here because the consumer refuses a world
+/// without it: every class has a drawable material now, so the store is part of
+/// what a world must have before a frame is synced into it.
 fn render_world() -> World {
     let mut world = World::new();
     world.insert_resource(Assets::<Image>::default());
     world.insert_resource(Assets::<Mesh>::default());
     world.insert_resource(Assets::<StandardMaterial>::default());
+    world.insert_resource(Assets::<AdditiveMaterial>::default());
     world
 }
 

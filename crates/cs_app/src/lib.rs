@@ -127,8 +127,11 @@
 //! the comparison frame capture ([`render::capture`]), the faithful profile and
 //! its independently switchable enhanced options ([`render::profile`]), the
 //! instance batching that keeps every aircraft's committed paint and damage
-//! state per instance ([`render::batch`]), and the session that applies a
-//! profile and syncs a batched frame into the ECS ([`render::sync`]).
+//! state per instance ([`render::batch`]), the session that applies a profile
+//! and syncs a batched frame into the ECS ([`render::sync`]), and the additive
+//! class's own material and WGSL shader ([`render::additive`]) — the `One`/`One`
+//! blend a `StandardMaterial` cannot reach, which every class now has a
+//! drawable form of.
 //!
 //! [`environment`] is the F19-A environment boundary
 //! (`specs/F19-sky-atmosphere-weather-and-visibility.md`, stage
