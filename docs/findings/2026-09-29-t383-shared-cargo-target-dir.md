@@ -127,6 +127,15 @@ These are not doable from inside a task branch:
   path or an in-worktree `target/` avoids that.
 * `cargo metadata` is spawned per `verify_workspace` call; inside the test
   suite that is one subprocess on `cargo test --workspace`.
+* The live gate used to bake the workspace root at compile time through
+  `env!("CARGO_MANIFEST_DIR")`, which let a *stale* binary — compiled in one
+  checkout, run in another because the shared directory reused it — compare
+  the runtime target directory against the foreign compile-time root and
+  misfire on a genuinely private directory. Fixed by #437: the test derives
+  the workspace root at run time by walking up from the process working
+  directory to the manifest with `[workspace]` (cargo runs test binaries
+  with the package root as cwd), so a stale binary gates the checkout it
+  runs in rather than the one that produced it.
 * `target_dir_from_metadata` takes the first `"target_directory"` string
   field in the `cargo metadata` JSON, matching the hand-rolled extraction
   used elsewhere in `cs_xtask`. A workspace member that carried such a key
