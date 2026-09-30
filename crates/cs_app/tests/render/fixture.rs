@@ -121,6 +121,38 @@ pub fn quad_mesh_with_colors(shape: QuadShape, material: u32, colors: [[f32; 3];
     RenderMesh::build(&mesh).expect("the authored quad has a decodable outline")
 }
 
+/// Two triangles of one material that share two positions: the first stores a
+/// normal on every corner, the second stores none. This is the retail shape
+/// (`NORMALS` is a per-polygon flag), so one material group has a normal on
+/// three of its four render vertices.
+pub fn mixed_normal_mesh() -> RenderMesh {
+    let corner = |position: u32, normal: Option<u32>| RawCorner {
+        position,
+        normal,
+        uv: None,
+        color: None,
+    };
+    let mesh = RawMesh {
+        positions: QUAD_POSITIONS.to_vec(),
+        normals: QUAD_NORMALS.to_vec(),
+        polygons: vec![
+            RawPolygon {
+                kind: PrimitiveKind::Polygon,
+                raw_flags: 0,
+                material: 4,
+                corners: vec![corner(0, Some(0)), corner(1, Some(1)), corner(2, Some(2))],
+            },
+            RawPolygon {
+                kind: PrimitiveKind::Polygon,
+                raw_flags: 0,
+                material: 4,
+                corners: vec![corner(1, None), corner(2, None), corner(3, None)],
+            },
+        ],
+    };
+    RenderMesh::build(&mesh).expect("the authored triangles have a decodable outline")
+}
+
 /// The canonical mesh IR of a triangle strip whose middle triangle repeats a
 /// position index, so the IR carries exactly one degenerate triangle.
 pub fn degenerate_strip_mesh() -> RenderMesh {

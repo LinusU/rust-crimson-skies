@@ -14,7 +14,11 @@ use bevy::material::AlphaMode;
 use bevy::mesh::{Indices, Mesh, VertexAttributeValues};
 use bevy::render::render_resource::{BlendFactor, BlendOperation, Face, TextureFormat};
 use cs_app::render::bevy_image::{CoveragePlane, ImageAdapterError, upload_image};
-use cs_app::render::bevy_mesh::{AttributeKind, MeshAdapterError, upload_group, upload_groups};
+use cs_app::render::bevy_mesh::{
+    AttributeKind, GroupPart, MeshAdapterError, ORIGINAL_NORMAL_FREE_BEHAVIOR,
+    OriginalNormalFreeBehavior, PARTIAL_NORMAL_POLICY, PartialNormalPolicy, upload_group,
+    upload_group_parts, upload_groups,
+};
 use cs_app::render::bevy_state::{DrawableMaterial, MaterialKind, StateError, render_state};
 use cs_app::render::capture::{SceneSurface, surface_codes, upload_surface};
 use cs_app::render::material::{
@@ -30,7 +34,7 @@ use cs_types::evidence::ClaimStatus;
 
 use super::fixture::{
     IMAGE_TEXELS, MESH_UNKNOWNS, QUAD_COLORS, QUAD_NORMALS, QUAD_POSITIONS, QUAD_UVS, QuadShape,
-    decoded_image, degenerate_strip_mesh, quad_mesh,
+    decoded_image, degenerate_strip_mesh, mixed_normal_mesh, quad_mesh,
 };
 
 const REPEAT: TextureAddress = TextureAddress {
@@ -286,6 +290,71 @@ fn accept_f17_b_mesh_upload_refuses_a_partially_stored_attribute() {
             .len(),
         1
     );
+}
+
+/// A material group whose polygons differ in whether they store a normal
+/// uploads under the declared split policy: the strict adapter still refuses
+/// it (so the policy is what lifts the refusal, not a loosened check), the
+/// split output holds every stored normal and invents none, and the policy is
+/// declared next to the fact that the original's behavior is unmeasured.
+///
+/// The two alternatives fail here: *padding* would give the normal-free part a
+/// normal buffer, and *dropping* would leave the normal-bearing part without
+/// one.
+#[test]
+fn accept_f17_g_partial_normals_split_by_stored_presence() {
+    assert_eq!(
+        PARTIAL_NORMAL_POLICY,
+        PartialNormalPolicy::SplitByStoredPresence
+    );
+    assert_eq!(
+        ORIGINAL_NORMAL_FREE_BEHAVIOR,
+        OriginalNormalFreeBehavior::Unmeasured
+    );
+    let render = mixed_normal_mesh();
+    assert_eq!(
+        upload_group(&render, 0, &MESH_UNKNOWNS)
+            .expect_err("the strict adapter still refuses a partial normal set"),
+        MeshAdapterError::IncompleteAttribute {
+            group: 0,
+            attribute: AttributeKind::Normal,
+            present: 3,
+            total: 6,
+        }
+    );
+
+    let parts = upload_group_parts(&render, 0, &MESH_UNKNOWNS).expect("the split covers it");
+    assert_eq!(parts.len(), 2);
+    let (bearing, free) = (&parts[0], &parts[1]);
+    assert_eq!(bearing.part(), GroupPart::NormalBearing);
+    assert_eq!(free.part(), GroupPart::NormalFree);
+    assert_eq!((bearing.material(), free.material()), (4, 4));
+    assert_eq!((bearing.group(), free.group()), (0, 0));
+    assert_eq!(
+        (bearing.report().triangles, free.report().triangles),
+        (1, 1)
+    );
+    assert!(bearing.report().normals && !free.report().normals);
+    assert_eq!(
+        vectors_of(bearing.mesh(), Mesh::ATTRIBUTE_NORMAL),
+        vec![QUAD_NORMALS[0], QUAD_NORMALS[1], QUAD_NORMALS[2]],
+        "every stored normal is uploaded unchanged"
+    );
+    assert!(
+        free.mesh().attribute(Mesh::ATTRIBUTE_NORMAL).is_none(),
+        "no normal is invented for the normal-free polygons"
+    );
+    assert_ne!(bearing.fingerprint(), free.fingerprint());
+
+    // `upload_groups` is the consumer path and follows the policy.
+    let all = upload_groups(&render, &MESH_UNKNOWNS).expect("the world path uploads it");
+    assert_eq!(all.len(), 2);
+
+    // A clean group is unchanged: one whole upload.
+    let whole = upload_group_parts(&quad_mesh(QuadShape::full(), 0), 0, &MESH_UNKNOWNS)
+        .expect("a clean group uploads");
+    assert_eq!(whole.len(), 1);
+    assert_eq!(whole[0].part(), GroupPart::Whole);
 }
 
 /// A degenerate triangle stays in the index buffer and is counted. Dropping

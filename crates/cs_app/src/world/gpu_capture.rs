@@ -74,7 +74,7 @@ use cs_assets::install::sha256;
 use cs_content::mesh::{MeshPresentationUnknown, RenderMesh};
 use cs_types::evidence::ContentHash;
 
-use crate::render::bevy_mesh::{GroupUpload, upload_group};
+use crate::render::bevy_mesh::{GroupUpload, upload_group_parts};
 
 /// The capture frame's width in pixels.
 ///
@@ -495,18 +495,20 @@ fn upload_all(request: &CaptureRequest<'_>) -> Result<Vec<Mesh>, GpuCaptureError
             groups: request.render.groups().len(),
         });
     }
-    (0..request.render.groups().len())
-        .map(|group| {
-            upload_group(request.render, group, request.unknowns)
-                .map(GroupUpload::into_mesh)
-                .map_err(|error| GpuCaptureError::GroupRefused {
+    let mut meshes = Vec::new();
+    for group in 0..request.render.groups().len() {
+        let parts =
+            upload_group_parts(request.render, group, request.unknowns).map_err(|error| {
+                GpuCaptureError::GroupRefused {
                     group: request.group.to_owned(),
                     mesh_index: request.mesh_index,
                     material_group: group,
                     reason: error.to_string(),
-                })
-        })
-        .collect()
+                }
+            })?;
+        meshes.extend(parts.into_iter().map(GroupUpload::into_mesh));
+    }
+    Ok(meshes)
 }
 
 /// The total vertex and triangle count the uploads will draw.

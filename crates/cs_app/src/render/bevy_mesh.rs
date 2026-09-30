@@ -25,7 +25,10 @@
 //!   gets no buffer at all; a group where *some* do is refused
 //!   ([`MeshAdapterError::IncompleteAttribute`]) rather than padded with
 //!   zeroes, because a padded normal or UV is an invented value that would
-//!   silently change every shaded fragment.
+//!   silently change every shaded fragment. The one exception is the
+//!   declared [`PARTIAL_NORMAL_POLICY`]: [`upload_groups`] splits a group
+//!   whose *polygons* differ in whether they store a normal into two uploads,
+//!   each complete-or-absent, so nothing is padded and nothing is dropped.
 //! * **No triangle is dropped.** `RenderTriangle::degenerate` is counted into
 //!   [`GroupReport::degenerate_triangles`] and the triangles stay in the
 //!   index buffer: removing them here would be a presentation decision made
@@ -141,6 +144,55 @@ impl fmt::Display for MeshAdapterError {
 
 impl std::error::Error for MeshAdapterError {}
 
+/// What the presentation does with a material group in which some polygons
+/// store normals and some do not.
+///
+/// The GameZ layout stores normal indices **per polygon**, behind the
+/// polygon's own `NORMALS` flag bit (`docs/findings/2026-09-29-f10-b-gamez-
+/// mesh-layout.md`), so a material group that mixes both kinds of polygon has a
+/// vertex set with a normal on some vertices and none on the others. A render
+/// vertex is keyed on its stored normal *index*, so a vertex never belongs to
+/// both kinds of polygon: the split below is exact.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PartialNormalPolicy {
+    /// One upload for the polygons that store normals
+    /// ([`GroupPart::NormalBearing`]) and one for those that store none
+    /// ([`GroupPart::NormalFree`]). Every stored value is uploaded unchanged,
+    /// no normal is invented and no stored normal is dropped.
+    SplitByStoredPresence,
+}
+
+/// How far the original's treatment of a normal-free polygon is known.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OriginalNormalFreeBehavior {
+    /// Unmeasured: whether the original drew such a polygon unlit, flat shaded,
+    /// lit from a computed normal or as an overlay is **not** established (no
+    /// original run, no decompiled renderer path, and the pinned mech3ax
+    /// reference is silent on it), so the split settles the *data* and leaves
+    /// the *shading* of [`GroupPart::NormalFree`] open.
+    Unmeasured,
+}
+
+/// The declared policy for a group with partly stored normals.
+pub const PARTIAL_NORMAL_POLICY: PartialNormalPolicy = PartialNormalPolicy::SplitByStoredPresence;
+
+/// What is known about the original's behavior for the same case. A reader of
+/// the policy must read this next to it: the policy is an engineering decision
+/// about lossless upload, not a claim about the original.
+pub const ORIGINAL_NORMAL_FREE_BEHAVIOR: OriginalNormalFreeBehavior =
+    OriginalNormalFreeBehavior::Unmeasured;
+
+/// Which part of a material group an upload holds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GroupPart {
+    /// The whole group: its normals are complete or absent.
+    Whole,
+    /// Only the group's polygons that store a normal on every corner.
+    NormalBearing,
+    /// Only the group's polygons that store no normal.
+    NormalFree,
+}
+
 /// What one uploaded group turned out to contain.
 ///
 /// Every number is a count of what the buffers hold, so a consumer can report
@@ -171,6 +223,7 @@ pub struct GroupReport {
 pub struct GroupUpload {
     material: u32,
     group: usize,
+    part: GroupPart,
     mesh: Mesh,
     report: GroupReport,
     unknowns: Vec<MeshPresentationUnknown>,
@@ -198,16 +251,84 @@ pub fn upload_group(
             group,
             groups: render.groups().len(),
         })?;
+    build_upload(
+        render,
+        group,
+        source.material,
+        &source.triangles,
+        GroupPart::Whole,
+        unknowns,
+    )
+}
 
+/// Uploads one material group under [`PARTIAL_NORMAL_POLICY`]: one upload when
+/// the group's normals are complete or absent, two (normal-bearing first) when
+/// its polygons differ in whether they store a normal.
+///
+/// # Errors
+///
+/// As [`upload_group`], except that a group whose polygons *consistently* store
+/// or omit normals is no longer refused. A single triangle whose own corners
+/// mix stored and absent normals still is, as is a partial UV or color set.
+pub fn upload_group_parts(
+    render: &RenderMesh,
+    group: usize,
+    unknowns: &[MeshPresentationUnknown],
+) -> Result<Vec<GroupUpload>, MeshAdapterError> {
+    let source = render
+        .groups()
+        .get(group)
+        .ok_or(MeshAdapterError::GroupOutOfRange {
+            group,
+            groups: render.groups().len(),
+        })?;
+    let (mut bearing, mut free) = (Vec::new(), Vec::new());
+    for &triangle_index in &source.triangles {
+        let triangle = &render.triangles()[triangle_index];
+        let stored = triangle
+            .vertices
+            .iter()
+            .filter(|&&vertex| render.vertices()[vertex as usize].normal.is_some())
+            .count();
+        match stored {
+            0 => free.push(triangle_index),
+            3 => bearing.push(triangle_index),
+            // A triangle with its own corners split: no partition is exact, so
+            // the strict adapter reports it.
+            _ => return upload_group(render, group, unknowns).map(|upload| vec![upload]),
+        }
+    }
+    if bearing.is_empty() || free.is_empty() {
+        return upload_group(render, group, unknowns).map(|upload| vec![upload]);
+    }
+    [
+        (GroupPart::NormalBearing, bearing),
+        (GroupPart::NormalFree, free),
+    ]
+    .into_iter()
+    .map(|(part, triangles)| {
+        build_upload(render, group, source.material, &triangles, part, unknowns)
+    })
+    .collect()
+}
+
+fn build_upload(
+    render: &RenderMesh,
+    group: usize,
+    material: u32,
+    source_triangles: &[usize],
+    part: GroupPart,
+    unknowns: &[MeshPresentationUnknown],
+) -> Result<GroupUpload, MeshAdapterError> {
     // Compact the group's triangles into their own vertex list. Slots are
     // handed out in first-reached order while walking the group's triangles
     // in stored order, so identical input always yields an identical buffer.
     let vertices = render.vertices();
     let triangles = render.triangles();
-    let mut slot_of: HashMap<u32, u32> = HashMap::with_capacity(source.triangles.len() * 3);
-    let mut indices = Vec::with_capacity(source.triangles.len() * 3);
+    let mut slot_of: HashMap<u32, u32> = HashMap::with_capacity(source_triangles.len() * 3);
+    let mut indices = Vec::with_capacity(source_triangles.len() * 3);
     let mut degenerate = 0usize;
-    for &triangle_index in &source.triangles {
+    for &triangle_index in source_triangles {
         let triangle = triangles
             .get(triangle_index)
             .expect("RenderMesh validates its own triangle indices at construction");
@@ -288,24 +409,27 @@ pub fn upload_group(
 
     let report = GroupReport {
         vertices: total,
-        triangles: source.triangles.len(),
+        triangles: source_triangles.len(),
         degenerate_triangles: degenerate,
         normals: has_normals,
         uvs: has_uvs,
         colors: has_colors,
     };
+    // The material, then a part tag; a whole group keeps the digest it always
+    // had, a part names itself.
+    let mut identity = material.to_le_bytes().to_vec();
+    match part {
+        GroupPart::Whole => {}
+        GroupPart::NormalBearing => identity.extend_from_slice(b"part:normal\0"),
+        GroupPart::NormalFree => identity.extend_from_slice(b"part:no-normal\0"),
+    }
     let fingerprint = geometry_fingerprint(
-        source.material,
-        &report,
-        &positions,
-        &normals,
-        &uvs,
-        &colors,
-        &indices,
+        &identity, &report, &positions, &normals, &uvs, &colors, &indices,
     );
     Ok(GroupUpload {
-        material: source.material,
+        material,
         group,
+        part,
         mesh,
         report,
         unknowns: unknowns.to_vec(),
@@ -314,7 +438,8 @@ pub fn upload_group(
 }
 
 /// Uploads every material group of `render`, in group order, carrying
-/// `unknowns` into each one.
+/// `unknowns` into each one, under [`PARTIAL_NORMAL_POLICY`] (a group that
+/// splits contributes two uploads sharing one [`GroupUpload::group`]).
 ///
 /// The first refusal wins and names its group: a mesh whose third group
 /// cannot be drawn is never silently uploaded as a two-group mesh.
@@ -322,9 +447,11 @@ pub fn upload_groups(
     render: &RenderMesh,
     unknowns: &[MeshPresentationUnknown],
 ) -> Result<Vec<GroupUpload>, MeshAdapterError> {
-    (0..render.groups().len())
-        .map(|group| upload_group(render, group, unknowns))
-        .collect()
+    let mut uploads = Vec::new();
+    for group in 0..render.groups().len() {
+        uploads.extend(upload_group_parts(render, group, unknowns)?);
+    }
+    Ok(uploads)
 }
 
 /// Whether `stored` means "no vertex has it" (`Ok(false)`) or "every vertex
@@ -350,7 +477,7 @@ fn attribute_is_complete(
 /// Digests the bit patterns handed to Bevy, so the capture pins the uploaded
 /// geometry without depending on Bevy's own buffer layout.
 fn geometry_fingerprint(
-    material: u32,
+    identity: &[u8],
     report: &GroupReport,
     positions: &[[f32; 3]],
     normals: &[[f32; 3]],
@@ -360,7 +487,7 @@ fn geometry_fingerprint(
 ) -> ContentHash {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(b"cs/render/bevy_mesh/v1\0");
-    bytes.extend_from_slice(&material.to_le_bytes());
+    bytes.extend_from_slice(identity);
     for value in [
         report.vertices as u64,
         report.triangles as u64,
@@ -398,6 +525,11 @@ impl GroupUpload {
     /// The group's index in [`RenderMesh::groups`].
     pub const fn group(&self) -> usize {
         self.group
+    }
+
+    /// Which part of the group this upload holds.
+    pub const fn part(&self) -> GroupPart {
+        self.part
     }
 
     /// The Bevy mesh: one compacted vertex/index buffer pair for this group.

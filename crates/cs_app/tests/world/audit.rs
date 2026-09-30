@@ -1425,10 +1425,14 @@ fn accept_f18_d_retail_every_world_group_draws_a_measured_frame_on_the_gpu() {
          share meshes, so equal digests are shared content and not a reused capture",
         distinct.len()
     );
-    assert!(
-        refused > 0,
-        "the retail corpus is expected to hold representative meshes the upload adapter refuses: \
-         a capture run that refused none would mean the adapter was not asked"
+    // F17-G: the partial-normal refusal this stage first measured (23 of 24
+    // representatives) is lifted by `PARTIAL_NORMAL_POLICY`, which splits a
+    // group by stored normal presence. Anything still refused would be a
+    // different cause and must fail here rather than be skipped in silence.
+    assert_eq!(
+        refused, 0,
+        "no retail representative is expected to be refused under the declared partial-normal \
+         policy"
     );
     eprintln!(
         "F18-D GPU: {captured} measured frames; {refused} probed stored meshes were refused by \
@@ -1492,4 +1496,50 @@ fn evidence_dir() -> PathBuf {
                 .join("../../private/evidence/F18-D")
                 .to_path_buf()
         })
+}
+
+/// F17-G on the retail corpus: every representative mesh the partial-normal
+/// refusal used to stop uploads under the declared split policy, the split
+/// loses no triangle (each group's parts add up to the group's own stored
+/// triangles) and at least one group really splits, so the policy — not an
+/// unrelated change — is what lifted the refusal.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_f17_g_retail_representatives_upload_under_the_partial_normal_policy() {
+    use cs_app::render::bevy_mesh::{GroupPart, upload_group, upload_group_parts};
+
+    let game_dir =
+        PathBuf::from(std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR is set for a retail test"));
+    let survey =
+        survey_world_groups(&game_dir).expect("the installation is discovered and surveyed");
+    let (mut meshes, mut split_groups, mut strict_refusals) = (0_usize, 0_usize, 0_usize);
+    for group in &survey.groups {
+        let container = group.container().expect("every group's container read");
+        for (index, render, _) in &container.representatives {
+            meshes += 1;
+            for (group_index, source) in render.groups().iter().enumerate() {
+                if upload_group(render, group_index, &[]).is_err() {
+                    strict_refusals += 1;
+                }
+                let parts = upload_group_parts(render, group_index, &[])
+                    .unwrap_or_else(|error| panic!("mesh {index} group {group_index}: {error}"));
+                let triangles: usize = parts.iter().map(|part| part.report().triangles).sum();
+                assert_eq!(
+                    triangles,
+                    source.triangles.len(),
+                    "mesh {index} group {group_index}: the split must keep every stored triangle"
+                );
+                if parts.iter().any(|part| part.part() != GroupPart::Whole) {
+                    split_groups += 1;
+                }
+            }
+        }
+    }
+    assert_eq!(meshes, 24, "three representatives in each of eight groups");
+    assert!(
+        split_groups > 0 && split_groups == strict_refusals,
+        "every group the strict adapter refused splits, and only those: {split_groups} split, \
+         {strict_refusals} refused strictly"
+    );
+    eprintln!("F17-G: {meshes} representatives, {split_groups} material groups split");
 }
