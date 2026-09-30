@@ -1048,7 +1048,10 @@ pub fn depot_meshes() -> WorldMeshes {
     let reference = mesh(DEPOT_OBJECT_HANGAR)
         .known()
         .expect("the fixture mesh references are known");
-    meshes.insert(reference, upload(hangar_shell_mesh()));
+    let stored = hangar_shell_mesh();
+    meshes
+        .insert_render_mesh(reference, &render_mesh(&stored), &MESH_UNKNOWNS)
+        .expect("the fixture's stored meshes upload through every material group");
     meshes
 }
 
