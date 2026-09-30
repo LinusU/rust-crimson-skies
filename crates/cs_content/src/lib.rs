@@ -112,6 +112,21 @@
 //! preserves nested transforms and negative scale, and the evidence-backed
 //! [`scene::BindingMap`] semantic-binding records.
 //!
+//! [`world`] is the F18-A world contract
+//! (`specs/F18-world-geometry-terrain-water-and-traversable-interiors.md`,
+//! `### F18-A`): one authored [`world::WorldDefinition`] holding its sectors,
+//! its object instances and its declared boundary, and one concrete
+//! [`world::WorldInstance`] load record carrying the variant, the object
+//! population and the initial damage a mission applies — so reusing a world
+//! for another mission is a record, never a leftover (F18 non-negotiable
+//! behavior 5). Each instance keeps the render mesh reference, the authored
+//! transform, the collision role, the collision shape and the gameplay
+//! surface role as **separate roles over one record**, and every role arrives
+//! as [`Resolved`], so an unevidenced role stays an explicit unknown instead
+//! of a guessed default. The records are Bevy-free inputs for F18-B's import
+//! and static-collision generation; no collider, file or renderer is touched
+//! here.
+//!
 //! [`flight_tuning`] is the F24-A provenance-carrying tuning schema
 //! (`specs/F24-fixed-wing-flight-engine-stall-and-arcade-assists.md`, stage
 //! `### F24-A`): every numeric field the `cs_sim::flight` equations consume,
@@ -144,3 +159,4 @@ pub mod loading;
 pub mod mesh;
 pub mod scene;
 pub mod textures;
+pub mod world;
