@@ -234,9 +234,10 @@ fn accept_f18_b_a_damaged_object_survives_a_sector_unload_and_reload() {
 
 /// **The residency record and the Bevy world are the same fact, not two.** An
 /// unload really takes the object's entities out of the world — every one of
-/// them, the body and the node the derived collider hangs from — and a reload
-/// brings the object back under the same id with the same number of entities, so
-/// nothing accumulates and nothing is left behind.
+/// them, and a mesh object is exactly one (its collider is on its body) while a
+/// cuboid object is a presentation plus a collider — and a reload brings the
+/// object back under the same id with the same number of entities, so nothing
+/// accumulates and nothing is left behind.
 ///
 /// The other residency tests read the *record*; this one reads the world. A
 /// despawn that despawns nothing passes every record-level assertion, because
@@ -258,10 +259,12 @@ fn accept_f18_b_an_unload_really_despawns_the_objects_entities_and_a_reload_rest
     let yard = sector(HARBOR_SECTOR_YARD);
 
     let hangar_before = entities_of(&mut app, &hangar);
-    assert!(
-        hangar_before.len() >= 2,
-        "a mesh object owns a body and a node, so the unload has two entities to \
-         take; saw {hangar_before:?}"
+    assert_eq!(
+        hangar_before.len(),
+        1,
+        "a mesh object is one entity — its collider is on its body, per the \
+         collider-on-body rule — so the unload has exactly that one to take; \
+         saw {hangar_before:?}"
     );
     let ground_before = entities_of(&mut app, &ground);
     assert_eq!(

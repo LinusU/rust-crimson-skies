@@ -29,7 +29,8 @@
 //!   `SkipReason::MeshUnavailable`, and given no collider at all.
 
 use avian3d::prelude::{
-    Collider, CollisionLayers as AvianCollisionLayers, Position, RigidBodyColliders, Rotation,
+    Collider, CollisionLayers as AvianCollisionLayers, Position, RigidBody, RigidBodyColliders,
+    Rotation,
 };
 use bevy::asset::Assets;
 use bevy::mesh::{Mesh, Mesh3d, VertexAttributeValues};
@@ -278,10 +279,14 @@ fn accept_f18_b_a_mesh_collision_is_the_geometry_the_object_draws_and_keeps_its_
         "a mesh object is presented and collided by one entity, so its \
          presentation and its collision cannot be moved apart"
     );
-    assert_ne!(
+    // The collider is on the *body* entity, which is also the presentation: a
+    // body with no collider of its own is skipped by Avian's `SweptCcdBodyQuery`
+    // (the collider-on-body rule, task #424), so a mesh object that split the
+    // collider onto a child node would be invisible to every swept body.
+    assert_eq!(
         collider.body, collider.entity,
-        "the derived collider hangs off its static body, which is a separate \
-         entity the report must name"
+        "a mesh object's body *is* its collider node: the derived collider must \
+         land on the rigid body or swept bodies pass through the geometry"
     );
     let world = app.world_mut();
     assert!(world.get::<WorldVisual>(spawned.visual).is_some());
@@ -291,6 +296,10 @@ fn accept_f18_b_a_mesh_collision_is_the_geometry_the_object_draws_and_keeps_its_
             .map(|colliders| colliders.len()),
         Some(1),
         "the body must own exactly the one derived collider"
+    );
+    assert!(
+        world.get::<RigidBody>(collider.body).is_some(),
+        "and it must be the body that owns it, not a marker entity beside it"
     );
 
     let handle = world
@@ -417,32 +426,40 @@ fn accept_f18_b_a_swept_body_flies_through_the_mesh_opening_and_is_stopped_by_it
     );
 }
 
-/// **A pinned engine limitation, not a design choice.** On the pinned pair a body
-/// whose tick outruns a mesh-derived wall passes through it, while the same body
-/// is stopped by the cuboid wall of the arch world — and both halves are
-/// measured here so the gap cannot go unnoticed.
+/// **A tunnelling body must not miss imported mesh geometry.** On the pinned pair
+/// a body whose tick outruns a mesh-derived wall is stopped by it, and this is
+/// the guard that keeps it that way.
 ///
-/// The cause is in the pinned dependencies, not in this stage: Avian's swept CCD
-/// asks parry for a shape cast
-/// (`avian3d-0.7.0/src/dynamics/ccd/mod.rs::compute_ccd_toi`), and parry's
-/// `DefaultQueryDispatcher::cast_shapes` has no `TriMesh` case, so a cast against
-/// a `TrimeshFromMesh` collider returns `Unsupported` and no time of impact is
-/// ever found (`parry3d-0.27.0/src/query/default_query_dispatcher.rs:437`). A
-/// cuboid takes the support-map path, which is why F18-A's 400 m/s arch test
-/// clamps at the wall.
+/// This test used to assert the opposite — that the body *passed through* — and
+/// that assertion was a real limitation, but the recorded **attribution was
+/// wrong**. It was not that parry cannot cast against a `TriMesh`:
+/// `TriMesh::as_composite_shape` returns `Some(self)`
+/// (`parry3d-0.27.0/src/shape/shape.rs:1141`), so `cast_shapes` routes a
+/// trimesh through the composite branch and does produce a time of impact. The
+/// cause is that Avian's `solve_swept_ccd` resolves a body through
+/// `SweptCcdBodyQuery`, whose `collider: &'static Collider` field is read off
+/// the **body** entity
+/// (`avian3d-0.7.0/src/dynamics/ccd/mod.rs`). `ColliderConstructorHierarchy`
+/// derives only onto *descendants*, so a body-plus-child-node layout has no
+/// collider on the body, the query fails, the pair is skipped and no cast is
+/// ever attempted. Placement, not shape: a cuboid on a child node tunnels
+/// identically.
 ///
-/// Affected content: every world object whose collision is mesh-derived and thin
-/// relative to one tick, at any body speed above the discrete sampling rate —
-/// which is the whole of retail world geometry once F18-D imports it. F18-B does
-/// not paper over it with invented geometry; the follow-up is filed as a task
-/// and recorded in
-/// `docs/findings/2026-09-30-f18-b-world-import-and-static-collision.md`.
+/// The fix is an entity layout, not geometry and not a policy — one entity
+/// carries `RigidBody::Static` + `Mesh3d` +
+/// `ColliderConstructor::TrimeshFromMesh`, so the derived collider lands on the
+/// body itself. Same uploaded mesh, every stored triangle (asserted by
+/// `..._a_mesh_collision_is_the_geometry_the_object_draws_and_keeps_its_opening`),
+/// swept CCD working. The decision and the full 2x2 measurement are in
+/// `docs/findings/2026-09-30-t420-mesh-ccd-decision.md`; the layout is the
+/// collider-on-body rule recorded in `docs/findings/2026-09-30-f18-b-world-import-and-static-collision.md`.
 ///
-/// Observable failure in the *good* direction: when the pinned engine learns to
-/// cast against a triangle mesh this test fails, which is the moment the
-/// limitation has to be re-measured and re-decided rather than assumed away.
+/// Observable failure: a body that ends past the arch, or a contact log with no
+/// hangar entry, means the imported geometry became invisible to fast bodies
+/// again — which is the whole of retail world geometry once F18-D imports it.
+/// The failure is silent in play and loud here, which is the point.
 #[test]
-fn accept_f18_b_a_tunnelling_body_misses_mesh_geometry_which_is_a_pinned_engine_limit() {
+fn accept_f18_b_a_tunnelling_body_is_stopped_by_the_mesh_geometry_it_flys_at() {
     // The mesh world, at a speed where a tick outruns the wall.
     let (mut app, _, _, _) = loaded();
     let dt = app
@@ -456,6 +473,12 @@ fn accept_f18_b_a_tunnelling_body_misses_mesh_geometry_which_is_a_pinned_engine_
         "a tick of {step_m} m must outrun probe-plus-wall ({ARCH_WALL_THICKNESS_M} m \
          of arch plus {PROBE_HALF_M} m of probe) or this test measures nothing"
     );
+    let free_end_x = PROBE_START_X_M as f32 + TUNNELLING_SPEED_M_S as f32 * (20.0 * dt);
+    assert!(
+        free_end_x > 1.0,
+        "a body this fast, unstopped, would end at {free_end_x} m — past the \
+         arch — so a stop below x = 1 m can only be the wall"
+    );
     let fast = spawn_swept_probe(
         &mut app,
         &probe_flying(ARCH_Y_M, ARCH_LEG_Z_M, TUNNELLING_SPEED_M_S),
@@ -468,21 +491,23 @@ fn accept_f18_b_a_tunnelling_body_misses_mesh_geometry_which_is_a_pinned_engine_
         .expect("the probe still exists")
         .0;
     assert!(
-        end.x > 1.0,
-        "the pinned engine does not stop a tunnelling body against a triangle \
-         mesh; this body ended at {end:?}. When it is stopped, re-measure the \
-         limitation in the F18-B finding before changing anything else"
+        end.x < 1.0,
+        "a swept body that outruns its own sampling must still be stopped by the \
+         imported mesh; it ended at {end:?}. If the collider has moved off the \
+         body entity, Avian's SweptCcdBodyQuery cannot resolve it and the pair \
+         is skipped without a cast"
     );
     assert!(
-        !contacts(&app)
+        contacts(&app)
             .iter()
             .any(|contact| contact.object == object(HARBOR_OBJECT_HANGAR)),
-        "and no contact is reported either: the body was never detected against \
-         the wall it flew through"
+        "and the contact is reported, so the stop is a real detection and not a \
+         body that merely ran out of ticks"
     );
 
-    // The cuboid path, at the same speed, is stopped — which is what makes the
-    // difference a property of the collider's shape rather than of the fixture.
+    // The cuboid path, at the same speed, is stopped too — the two layouts agree
+    // now, which is what the previous "only the cuboid stops" result said was
+    // missing.
     let mut cuboid = WorldFixture::arch();
     let blocked = cuboid
         .spawn_swept_probe(probe_at_cuboid(ARCH_LEG_Z_M))
@@ -1064,10 +1089,15 @@ fn accept_f18_b_a_mesh_object_lands_where_its_record_puts_it() {
         hangar.transform().linear() == [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
         "this fixture authors no rotation, so the two must agree on identity"
     );
+    // The collider lands on this same entity. Avian's `SweptCcdBodyQuery` reads
+    // `Collider` off the *body*, so a mesh object whose collider sat on a child
+    // node was skipped by swept CCD and every fast body passed through it — the
+    // measured limitation F18-B recorded and task #424 closed. Placement, not
+    // shape: a cuboid on a child node tunnels the same way.
     assert!(
-        !app.world().get::<Collider>(body).is_some(),
-        "the collider is on the node, not the body: an unattached collider \
-         collides with nothing"
+        app.world().get::<Collider>(body).is_some(),
+        "the derived collider must be on the body entity itself, or the body is \
+         invisible to swept CCD"
     );
 }
 
@@ -1094,9 +1124,12 @@ fn accept_f18_b_every_entity_of_a_mesh_object_carries_its_condition() {
 
     let hangar = object(HARBOR_OBJECT_HANGAR);
     let spawned = report.object(&hangar).expect("the hangar is reported");
-    assert!(
-        spawned.entities().len() >= 2,
-        "a mesh object owns at least a body and a node, saw {:?}",
+    assert_eq!(
+        spawned.entities().len(),
+        1,
+        "a mesh object is exactly one entity — body, collider and presentation \
+         together, per the collider-on-body rule — so every entity it owns has \
+         the same condition and there is no second, unmarked one; saw {:?}",
         spawned.entities()
     );
     let world = app.world_mut();
