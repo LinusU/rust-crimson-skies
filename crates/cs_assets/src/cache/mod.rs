@@ -42,7 +42,7 @@ pub use key::{
     ConverterVersion, DecoderId, IrVersion, OptionsError, SourceSpanHash,
 };
 pub use store::{
-    CACHE_IO_CHUNK, CacheLookup, CacheReadError, CacheStore, HEADER_FILE, HEADER_FORMAT,
-    InvalidationReport, PAYLOAD_FILE, PendingCacheRead, PendingStoreWrite, RecoveryReport,
-    StoreError, StoreUsage, StoredEntry,
+    CACHE_IO_CHUNK, CacheLookup, CacheReadError, CacheStore, ENTRIES_DIR, HEADER_FILE,
+    HEADER_FORMAT, InvalidationReport, PAYLOAD_FILE, PendingCacheRead, PendingStoreWrite,
+    RecoveryReport, STAGING_DIR, StoreError, StoreUsage, StoredEntry,
 };
