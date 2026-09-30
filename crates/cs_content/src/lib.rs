@@ -168,6 +168,17 @@
 //! `cs_sim::animated_object`; the conversion boundary is
 //! `cs_app::animation`.
 //!
+//! [`routes`] is the F31-A declared route graph
+//! (`specs/F31-ai-navigation-routes-and-obstacle-avoidance.md`, stage
+//! `### F31-A`): the provenance-carrying [`routes::RouteDefinition`] with its
+//! stable [`routes::RouteNodeId`]s and authored sequences, its
+//! [`routes::TriggerVolume`]s, its [`routes::ReferenceFrame`] (world or a
+//! moving carrier/train/escort) and its adjacency-only [`routes::RouteEdge`]s,
+//! so an authored route can never encode a shortcut past a mandatory marker.
+//! Its runtime counterpart is `cs_sim::ai::navigation`; the conversion
+//! boundary is F31-C. The original route encoding is undecoded, so every value
+//! here is designed or an explicit unknown, never an original route.
+//!
 //! [`cs_types`]: cs_types
 //! [`cs_formats`]: cs_formats
 //! [`cs_assets`]: cs_assets
@@ -183,6 +194,7 @@ pub mod flight_tuning;
 pub mod livery;
 pub mod loading;
 pub mod mesh;
+pub mod routes;
 pub mod scene;
 pub mod textures;
 pub mod world;
