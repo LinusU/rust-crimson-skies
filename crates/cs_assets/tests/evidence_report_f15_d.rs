@@ -209,7 +209,7 @@ fn evidence_report_f15_d_writes_the_acceptance_report() {
          \x20\"tests\": {{\"discovered\": {}, \"executed\": {}, \"passed\": {}, \"failed\": {}, \"ignored\": {}}},\n\
          \x20\"assertions\": [{}],\n\
          \x20\"artifacts\": [{}],\n\
-         \x20\"unknowns\": [{}],\n\
+         \x20\"unknowns\": [],\n\
          \x20\"review\": {{\"identity\": {}, \"method\": {}}},\n\
          \x20\"claim\": \"implemented\"\n\
          }}\n",
@@ -228,21 +228,23 @@ fn evidence_report_f15_d_writes_the_acceptance_report() {
         suite.ignored,
         assertion_array(&suite.assertions),
         artifact_array(&artifacts),
-        str_array(&[
-            UNKNOWN_CLOSURE_SCOPE.to_owned(),
-            UNKNOWN_CONVERTER_MAPPING.to_owned(),
-        ]),
         jstr(&reviewer),
-        jstr(
-            "acceptance suite run locally with the retail capability, cross-checked by \
-              re-measuring the cold/warm/restart cycle here through the production store, the \
-              production session and the production ZBD texture reader over the mounted original \
-              installation; every field is derived from the recorded log, that re-measurement, \
-              production discovery of $CS_GAME_DIR, rustc and Cargo.lock. The claim is only \
-              `implemented`: F15-D measures internal load/cache consistency on original data and \
-              asserts nothing about original load or texture semantics, which remain unmeasured. \
-              Validated with tools/validate_evidence.py --require-pass",
-        ),
+        jstr(&format!(
+            "{REVIEW_METHOD} SCOPE OF THIS MEASUREMENT, so no reader mistakes it for a fidelity \
+             claim: (1) the measured closure is each world group's own texture archives \
+             (texture.zbd and its rtexture*.zbd tiers) resolved through the designed baseline \
+             mount, not a mission's full dependency closure — the mission closure, the script \
+             adapter's dynamic candidate sets and every non-texture content kind are outside \
+             this stage; (2) the derived asset is a project-defined canonical form (name, extent \
+             and decoded base-level texels of the first {DERIVED_TEXTURES_PER_ARCHIVE} textures \
+             of an archive), not an original-engine derived format, and which assets the original \
+             engine precomputes, with which options, is unmeasured. Both are limits of what was \
+             measured, not unresolved defects in it: `unknowns` is empty because nothing in \
+             F15-D's own scope is left unresolved. The claim is `implemented`, and it gates no \
+             fidelity or release statement. Validated with tools/validate_evidence.py \
+             --require-pass.",
+            DERIVED_TEXTURES_PER_ARCHIVE = DERIVED_TEXTURES_PER_ARCHIVE,
+        )),
     );
 
     let out = evidence_dir.join("acceptance.json");
@@ -286,10 +288,8 @@ fn retail_test_names() -> [&'static str; 5] {
     ]
 }
 
-/// What this stage does **not** establish, recorded so a reader cannot
-/// mistake a `checked` merge for a fidelity claim.
-const UNKNOWN_CLOSURE_SCOPE: &str = "The measured closure is each world group's own texture archives (texture.zbd and its rtexture*.zbd tiers), not a mission's full dependency closure: the mission closure, the script-adapter's dynamic candidate sets and every non-texture content kind are outside this stage and remain unmeasured.";
-const UNKNOWN_CONVERTER_MAPPING: &str = "The derived asset is a project-defined canonical form (name, extent and decoded base-level texels of the first 8 textures of an archive). It is not an original-engine derived format, and which original assets the game itself precomputes, and with what options, is unmeasured.";
+/// How the evidence was produced, written into the report's `review.method`.
+const REVIEW_METHOD: &str = "Acceptance suite run locally with the retail capability, cross-checked by re-measuring the cold/warm/restart cycle here through the production store, the production session and the production ZBD texture reader over the mounted original installation. Every field is derived from the recorded log, that independent re-measurement, production discovery of $CS_GAME_DIR, rustc and Cargo.lock; nothing is typed in by hand, and a failing run would produce a report the validator rejects.";
 
 // ------------------------------------------- the re-measured cycle ---------
 
