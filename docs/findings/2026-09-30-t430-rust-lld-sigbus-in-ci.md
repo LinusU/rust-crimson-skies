@@ -270,15 +270,22 @@ was failing:
 The runs are listed in the handover summary; every one of them is a
 `cargo test` step that had to link the merged `cs_app` doctest.
 
-**Cost, stated plainly:** `Swatinem/rust-cache`'s key covers the toolchain
-and `Cargo.lock`, not the profile, so the post-job step does not re-upload
-and every later run restores the *older, larger* tree and recompiles those
-395 crates. The `cargo test` step went from ~7 min to ~19 min in run
-36739807340. The owner can make the cache follow the profile with
-`shared-key: ${{ hashFiles('**/Cargo.toml') }}` on the cache step; that is a
-`.github/` change and was not made here. What that costs in *disk* is measured
-in "The cache key does not follow the profile" below, and it is the reason the
-same change is a prerequisite rather than only a speed-up.
+**Cost, stated plainly:** `Swatinem/rust-cache`'s key cannot see the profile,
+so the post-job step does not re-upload and every later run restores the
+*older, larger* tree and recompiles those 395 crates. The `cargo test` step went
+from ~7 min to ~19 min in run 36739807340. The owner can make the cache follow
+the profile with `key: ${{ hashFiles('**/Cargo.toml') }}` on the cache step;
+that is a `.github/` change and was not made here. What that costs in *disk* is
+measured in "The cache key does not follow the profile" below, and it is the
+reason the same change is a prerequisite rather than only a speed-up.
+
+Corrected in task #438, which is blocked on the owner for the same reason: the
+key does hash `Cargo.toml` files, but only the *members'* — and a profile is
+only effective in the root workspace manifest, which the action never hashes.
+`docs/findings/2026-09-30-t438-rust-cache-key-and-the-root-manifest.md` has the
+mechanism read from the action's source, the two local measurements behind that
+sentence, and why the input is `key:` rather than the `shared-key:` first
+suggested here.
 
 ## Left to the owner
 
@@ -287,7 +294,9 @@ These need `.github/` and were deliberately not done here:
 * the cache key above, so a profile change does not leave every run
   recompiling the graph — and, until it lands, so that the footprint saving
   this branch makes is actually collected (see "The cache key does not follow
-  the profile");
+  the profile"). Tracked as task #438, which is blocked on this same
+  `.github/` edit; its finding states the one line to add and what to read in
+  the run log afterwards;
 * `debug = "none"` (or `[profile.test] debug = false`) for another ~31% of
   the object bytes, at the cost of `file:line` in test failure output. The
   review pass made that cost enforced rather than merely documented:
