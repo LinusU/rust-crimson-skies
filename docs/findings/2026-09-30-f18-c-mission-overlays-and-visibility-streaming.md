@@ -142,9 +142,10 @@ are two entities and a one-sided update is visible.
   every trigger it crosses. F18-A measured the same rule on an 8 m volume (2.416
   m): the loss is the distance from the previous sample to the face. The loss
   scales with the volume, so this stage's trigger is thin by design; a retail
-  trigger's thickness is F18-D's to measure. **No fidelity claim is made here that
-  a swept body passes a sensor volume untouched**, and task #401 remains the
-  resolving task.
+  trigger's thickness and a mission's trigger placement are unmeasured and are
+  filed as task **#427**. **No fidelity claim is made here that a swept body
+  passes a sensor volume untouched**, and task #401 remains the resolving task
+  for the interaction itself.
 * **The panel is 4 m ahead of the volume, which is 1.2 ticks at 400 m/s.** A body
   that fast therefore still meets the *closed* panel on the tick after the
   volume, and is stopped by it before the effect lands. That is a property of
@@ -152,7 +153,8 @@ are two entities and a one-sided update is visible.
   traversal assertion uses a speed whose sampling cannot outrun the distance
   between a trigger and the geometry it opens. A real mission would place its
   triggers further from the geometry they open, or the door would open a tick
-  late for a fast aircraft — recorded, not designed around.
+  late for a fast aircraft — recorded, not designed around, and filed as part of
+  task **#427**.
 * **A body resting against a collider is not released when the collider moves.**
   Measured by despawning and by displacing the panel under a resting body: the
   body's creep is **identical** in all three cases (move, despawn, untouched), so
@@ -161,7 +163,8 @@ are two entities and a one-sided update is visible.
   with no gravity and no drag it then drifts at the residual rate forever. This
   is ordinary contact behaviour, not an overlay bug, and it is recorded because
   "the door opened and the body inside it is still stuck" would otherwise look
-  like this stage's fault.
+  like this stage's fault. The contact/restitution rule that settles it is filed
+  as task **#428**.
 
 ## Test sensitivity (mutation matrix)
 
@@ -255,20 +258,21 @@ F06/F07 measure the original's own trigger and objective semantics.
   2.416 m against 8 m). Affected content: every world object with
   `WorldCollisionRole::Sensor` — the depot's `trigger.depot`, any retail trigger
   or objective volume F18-D imports — when the body reaching it carries
-  `SweptCcd` (F23's aircraft). Resolving task: **#401**. Until it is done, no
-  claim is made that a swept body passes a sensor volume untouched.
+  `SweptCcd` (F23's aircraft). Resolving task for the interaction: **#401**.
+  Retail volume thickness and mission trigger placement: **#427**. Until both
+  are done, no claim is made that a swept body passes a sensor volume untouched.
 * **A door opens one tick after the body that triggered it arrives at the
   panel**, if the trigger is closer to the panel than one tick of travel at the
   body's speed. Affected content: every mission overlay a fast aircraft can
   outrun. This is a *design* property of where a mission places its triggers and
-  has no engine fix; F18-D's original-mission integration is where the real
-  distances get measured.
+  has no engine fix; **#427** carries the measurement, and F18-D's
+  original-mission integration is where the real distances get read.
 * **A body in contact with world geometry is not released by an overlay that
   moves that geometry away** — measured, and traced to the contact killing the
   body's normal velocity rather than to the move (the creep is identical whether
   the collider moves, is despawned, or is untouched). Affected content: a door
-  that opens while something rests against it. Resolving task: the same physics
-  path as F23's contact work; not an overlay defect.
+  that opens while something rests against it. Resolving task: **#428**, in the
+  same physics path as F23's contact work; not an overlay defect.
 * **The visibility policy is a radius, and the original's rule is unmeasured.**
   Whether the 2000 PC original streamed by distance at all, by a mission-authored
   mask, or by neither is unknown, and this stage does not guess. Affected
