@@ -21,7 +21,8 @@ use std::path::PathBuf;
 use cs_app::assets::CanonicalPayload;
 use cs_app::loading::{
     Criticality, DriverError, HandoffError, ItemRead, LoadDriver, LoadItem, LoadRequest, LoadState,
-    LoadTarget, LoadTransaction, RebuildCause, RecoveryPath, StepProgress, UncachedReason,
+    LoadTarget, LoadTransaction, RebuildCause, RecoveryPath, SourceFault, StepProgress,
+    UncachedReason,
 };
 use cs_assets::cache::store::ENTRIES_DIR;
 use cs_assets::cache::{
@@ -184,7 +185,9 @@ impl World {
 
 /// Reads and converts the fixture's source item, counting the source read
 /// so a test can prove a warm load never touched it.
-fn from_source<'a>(reads: &'a Cell<u32>) -> impl FnOnce() -> Result<Vec<u8>, ReadError> + use<'a> {
+fn from_source<'a>(
+    reads: &'a Cell<u32>,
+) -> impl FnOnce() -> Result<Vec<u8>, SourceFault> + use<'a> {
     move || {
         reads.set(reads.get() + 1);
         Ok(source_bytes())
@@ -192,7 +195,7 @@ fn from_source<'a>(reads: &'a Cell<u32>) -> impl FnOnce() -> Result<Vec<u8>, Rea
 }
 
 /// A source read that must never happen, with the reason in the panic.
-fn no_source() -> impl FnOnce() -> Result<Vec<u8>, ReadError> {
+fn no_source() -> impl FnOnce() -> Result<Vec<u8>, SourceFault> {
     || panic!("a warm load must not read the source")
 }
 
@@ -652,7 +655,8 @@ fn accept_f15_b_failures_name_the_dependency_and_the_recovery_path() {
             || {
                 Err(ReadError::NoBacking {
                     mount: "world-0".to_owned(),
-                })
+                }
+                .into())
             },
             no_convert(),
         )
@@ -702,7 +706,8 @@ fn accept_f15_b_failures_name_the_dependency_and_the_recovery_path() {
                     start: 4096,
                     length: 16,
                     member_length: 8,
-                })
+                }
+                .into())
             },
             no_convert(),
         )

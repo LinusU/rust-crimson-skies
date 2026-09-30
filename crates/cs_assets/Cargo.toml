@@ -14,7 +14,11 @@ cs_types.workspace = true
 # contract and its Bevy entity boundary from `tests/`. A dev-only edge keeps
 # the production graph acyclic (cs_app already reaches this crate through
 # cs_content and, since F15-A, directly). `bevy` is needed to hold the
-# `World` the bundle attaches into.
+# `World` the bundle attaches into. The F15-C tests additionally run the
+# real `cs_formats` BM reader and composition as the wired livery
+# conversion, so the changed-source scenario covers a genuine derived
+# asset rather than a nominal one.
 [dev-dependencies]
 bevy.workspace = true
 cs_app.workspace = true
+cs_formats.workspace = true
