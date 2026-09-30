@@ -2070,7 +2070,8 @@ impl PlacementSource {
     pub const fn stored_node_records(&self) -> Option<u32> {
         match self {
             Self::Undecoded {
-                stored_node_records, ..
+                stored_node_records,
+                ..
             } => Some(*stored_node_records),
             Self::Decoded { .. } => None,
         }
@@ -2080,6 +2081,63 @@ impl PlacementSource {
     #[must_use]
     pub const fn is_decoded(&self) -> bool {
         matches!(self, Self::Decoded { .. })
+    }
+}
+
+/// What the production upload adapter did with one representative mesh.
+///
+/// The verdict is **measured by the adapter itself**, not predicted: the audit
+/// hands the render mesh to `cs_app::render::bevy_mesh::upload_groups` and
+/// records the answer. That matters because the answer is not always yes — the
+/// adapter refuses a buffer it cannot fill from stored values alone (a normal
+/// stored on some of a group's vertices and not others), and a world group whose
+/// largest meshes are in that state cannot be presented at all. A census that
+/// reported only triangles and vertices would read as "presentable" for a mesh
+/// the world load would refuse.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UploadVerdict {
+    /// The adapter uploaded every material group.
+    Uploaded {
+        /// How many material groups it drew, one draw each.
+        groups: usize,
+        /// Vertices it uploaded, after per-group compaction.
+        vertices: usize,
+        /// Triangles it uploaded, degenerate ones included.
+        triangles: usize,
+    },
+    /// The adapter refused a material group, with its own reason verbatim.
+    Refused {
+        /// The material group that would not upload.
+        material_group: usize,
+        /// The adapter's message, verbatim.
+        reason: String,
+    },
+}
+
+impl UploadVerdict {
+    /// Whether the mesh went through the upload adapter.
+    #[must_use]
+    pub const fn is_uploaded(&self) -> bool {
+        matches!(self, Self::Uploaded { .. })
+    }
+}
+
+impl fmt::Display for UploadVerdict {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Uploaded {
+                groups,
+                vertices,
+                triangles,
+            } => write!(
+                f,
+                "uploaded as {groups} group(s), {vertices} vertices and {triangles} triangles"
+            ),
+            Self::Refused {
+                material_group,
+                reason,
+            } => write!(f, "material group {material_group} refused: {reason}"),
+        }
     }
 }
 
@@ -2103,9 +2161,13 @@ pub struct RepresentativeGeometry {
     pub stored_min: [f64; 3],
     /// Highest stored corner over every axis, in stored units.
     pub stored_max: [f64; 3],
-    /// SHA-256 over exactly the stored span the reader walked for this mesh, so
-    /// two groups' representatives can be compared without a byte being copied.
+    /// SHA-256 that identifies this mesh: its container key and its array index,
+    /// hashed together. A per-mesh digest over the stored span would have to
+    /// keep the whole container alive, and the pair already names the geometry
+    /// exactly — index 12 of `c1` is not index 12 of `c5`.
     pub fingerprint: ContentHash,
+    /// What the production upload adapter did with it.
+    pub upload: UploadVerdict,
 }
 
 impl RepresentativeGeometry {
@@ -2152,6 +2214,14 @@ pub struct GroupFacts {
     pub bound_texture_names: usize,
     /// Stored polygons that carry more than one material group.
     pub multi_material_group_polygons: usize,
+    /// Of the group's [`REPRESENTATIVE_COUNT`](RepresentativeGeometry) meshes,
+    /// how many the production upload adapter refused.
+    ///
+    /// A non-zero value is a real finding, not a defect of the audit: those
+    /// meshes are the group's largest stored geometry and the world load would
+    /// refuse to present them, because the upload adapter will not fill a buffer
+    /// from a partly stored attribute.
+    pub refused_representatives: usize,
 }
 
 impl GroupFacts {
@@ -2343,6 +2413,26 @@ impl WorldGroupCensus {
     #[must_use]
     pub fn representative(&self) -> &[RepresentativeGeometry] {
         &self.representative
+    }
+
+    /// Of the representative meshes, the ones the upload adapter accepted.
+    pub fn uploadable(&self) -> impl Iterator<Item = &RepresentativeGeometry> + '_ {
+        self.representative
+            .iter()
+            .filter(|mesh| mesh.upload.is_uploaded())
+    }
+
+    /// Of the representative meshes, the ones the upload adapter refused.
+    pub fn refused(&self) -> impl Iterator<Item = &RepresentativeGeometry> + '_ {
+        self.representative
+            .iter()
+            .filter(|mesh| !mesh.upload.is_uploaded())
+    }
+
+    /// Of the representative meshes, how many the upload adapter refused.
+    #[must_use]
+    pub fn refused_representatives(&self) -> usize {
+        self.refused().count()
     }
 
     /// The traversal routes the survey established. Empty whenever
@@ -2667,7 +2757,10 @@ impl fmt::Display for WorldAuditGap {
                 "{world} states {routes} traversal routes and {openings} located openings while \
                  the facts they need are missing: a route without a placement has no referent"
             ),
-            Self::NoRouteMeasured { world, placed_objects } => write!(
+            Self::NoRouteMeasured {
+                world,
+                placed_objects,
+            } => write!(
                 f,
                 "{world} placed {placed_objects} objects and measured the unit scale, and still \
                  states no traversal route"
@@ -2730,10 +2823,16 @@ impl fmt::Display for WorldAuditError {
                 write!(f, "two audit rows declare the world group {world:?}")
             }
             Self::BlankMissionLabel { world, index } => {
-                write!(f, "world group {world:?} has a blank mission label at index {index}")
+                write!(
+                    f,
+                    "world group {world:?} has a blank mission label at index {index}"
+                )
             }
             Self::DuplicateMission { world, mission } => {
-                write!(f, "world group {world:?} declares mission {mission:?} twice")
+                write!(
+                    f,
+                    "world group {world:?} declares mission {mission:?} twice"
+                )
             }
             Self::NonFiniteVertexScale { world, scale } => write!(
                 f,
@@ -2810,18 +2909,16 @@ impl WorldGroupAudit {
         let groups = self
             .groups
             .iter()
-            .map(|group| {
-                match survey_of(group) {
-                    Ok(census) => census_verdict(group, census),
-                    Err(blocker) => WorldGroupVerdict {
-                        group: group.clone(),
-                        census: None,
-                        blocker: Some(blocker),
-                        openings: Vec::new(),
-                        traversal_blockers: Vec::new(),
-                        gaps: Vec::new(),
-                    },
-                }
+            .map(|group| match survey_of(group) {
+                Ok(census) => census_verdict(group, census),
+                Err(blocker) => WorldGroupVerdict {
+                    group: group.clone(),
+                    census: None,
+                    blocker: Some(blocker),
+                    openings: Vec::new(),
+                    traversal_blockers: Vec::new(),
+                    gaps: Vec::new(),
+                },
             })
             .collect();
         WorldGroupAuditReport { groups }

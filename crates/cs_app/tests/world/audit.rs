@@ -24,17 +24,17 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use cs_app::world::audit::{
-    GEOMETRY_CONTAINER_FILE, REPRESENTATIVE_MESHES, TEXTURE_ARCHIVE_FILE, audit_survey,
-    survey_world_groups,
+    GEOMETRY_CONTAINER_FILE, PRESENTABLE_PROBE_MESHES, REPRESENTATIVE_MESHES, TEXTURE_ARCHIVE_FILE,
+    audit_survey, survey_world_groups,
 };
 use cs_app::world::gpu_capture::{CaptureRequest, capture_world_mesh};
 use cs_content::mesh::RenderMesh;
-use cs_formats::gamez::{PrimitiveKind, RawCorner, RawMesh, RawPolygon};
 use cs_content::world::{
     GroupFacts, OpeningClass, PlacementSource, RepresentativeGeometry, StuntOpening,
-    StuntOpeningAudit, TraversalBlocker, TraversalRoute, WorldAuditError, WorldGroupAudit,
-    WorldGroupCensus, WorldGroupRef, WorldId,
+    StuntOpeningAudit, TraversalBlocker, TraversalRoute, UploadVerdict, WorldAuditError,
+    WorldGroupAudit, WorldGroupCensus, WorldGroupRef, WorldId,
 };
+use cs_formats::gamez::{PrimitiveKind, RawCorner, RawMesh, RawPolygon};
 use cs_types::evidence::ContentHash;
 
 // -------------------------------------------------------------- fixtures ---
@@ -76,6 +76,11 @@ fn synthetic_census(
             stored_min: [0.0, -1.0 - f64::from(step), 2.0],
             stored_max: [4.0, 1.0 + f64::from(step), 6.0],
             fingerprint: hash(&format!("{key}-mesh-{step}")),
+            upload: UploadVerdict::Uploaded {
+                groups: 1,
+                vertices: 12,
+                triangles: 40 - step as usize * 10,
+            },
         })
         .collect();
     let facts = GroupFacts {
@@ -89,6 +94,7 @@ fn synthetic_census(
         texture_names: 12,
         bound_texture_names: 10,
         multi_material_group_polygons: 4,
+        refused_representatives: 0,
     };
     WorldGroupCensus::new(
         WorldId::from_key(key).expect("a valid world key"),
@@ -182,15 +188,27 @@ fn accept_f18_d_the_audit_visits_every_group_and_compares_its_representative_geo
     assert_eq!(asked, vec!["c1c", "c1", "c2b"], "every group visited once");
 
     assert_eq!(report.groups().len(), 3);
-    assert_eq!(report.visited().count(), 2, "one group had no geometry at all");
+    assert_eq!(
+        report.visited().count(),
+        2,
+        "one group had no geometry at all"
+    );
     assert_eq!(report.blocked().count(), 1);
     assert!(!report.is_empty(), "three groups were declared");
     assert!(
         !report.is_complete(),
         "a group with no geometry and a group with no placement keep the report from a pass"
     );
-    assert_eq!(report.present_mesh_count(), 65, "40 + 25 stored meshes read");
-    assert_eq!(report.drawn_triangle_count(), 2_400, "1 200 per visited group");
+    assert_eq!(
+        report.present_mesh_count(),
+        65,
+        "40 + 25 stored meshes read"
+    );
+    assert_eq!(
+        report.drawn_triangle_count(),
+        2_400,
+        "1 200 per visited group"
+    );
 
     // The group with its facts established is the only routed one, and its
     // routes and openings are the ones its own census stated.
@@ -203,7 +221,7 @@ fn accept_f18_d_the_audit_visits_every_group_and_compares_its_representative_geo
     assert_eq!(c1c.routes().len(), 1);
     assert_eq!(c1c.routes()[0].route, "yard.through");
     assert_eq!(c1c.routes()[0].openings, vec![(OpeningClass::Hangar, 10)]);
-    assert_eq!(c1c.routes_measured(), true);
+    assert!(c1c.routes_measured());
     assert_eq!(c1c.gaps(), &[] as &[cs_content::world::WorldAuditGap]);
 
     // The opening audit visits **every** class the sheet names, whether or not
@@ -225,7 +243,10 @@ fn accept_f18_d_the_audit_visits_every_group_and_compares_its_representative_geo
         "a class audit that located something has nothing unlocated"
     );
     assert_eq!(
-        classified.iter().flat_map(|audit| audit.unlocated()).count(),
+        classified
+            .iter()
+            .flat_map(|audit| audit.unlocated())
+            .count(),
         0,
         "nothing is left unlocated in a measured group"
     );
@@ -238,9 +259,13 @@ fn accept_f18_d_the_audit_visits_every_group_and_compares_its_representative_geo
     // container's own numbers, and the scale blocker with the largest stored
     // extent the census measured.
     let c1 = &report.groups()[1];
-    assert_eq!(c1.routes_measured(), false);
+    assert!(!c1.routes_measured());
     assert!(c1.routes().is_empty());
-    assert_eq!(c1.traversal_blockers().len(), 2, "both missing facts are named");
+    assert_eq!(
+        c1.traversal_blockers().len(),
+        2,
+        "both missing facts are named"
+    );
     match &c1.traversal_blockers()[0] {
         TraversalBlocker::PlacementUndecoded {
             stored_node_records,
@@ -251,7 +276,8 @@ fn accept_f18_d_the_audit_visits_every_group_and_compares_its_representative_geo
             assert_eq!(*nodes_offset, 2_104_512);
             let text = c1.traversal_blockers()[0].to_string();
             assert!(
-                text.contains("4,328 stored node records") || text.contains("4328 stored node records"),
+                text.contains("4,328 stored node records")
+                    || text.contains("4328 stored node records"),
                 "the blocker must quote the measured count, got: {text}"
             );
         }
@@ -276,7 +302,11 @@ fn accept_f18_d_the_audit_visits_every_group_and_compares_its_representative_geo
     let blocker = c2b.blocker().expect("an empty group is blocked");
     assert_eq!(blocker.world().key(), "c2b");
     assert!(blocker.to_string().contains('7'), "{}", blocker);
-    assert_eq!(c2b.openings().len(), 0, "a group with no census has no opening audit");
+    assert_eq!(
+        c2b.openings().len(),
+        0,
+        "a group with no census has no opening audit"
+    );
 }
 
 // --------------------------------------------------- the negative arms ---
@@ -341,9 +371,7 @@ fn accept_f18_d_an_unlocated_opening_or_route_is_reported_instead_of_assumed() {
         Ok(synthetic_census(
             "c2",
             9,
-            PlacementSource::Decoded {
-                placed_objects: 7,
-            },
+            PlacementSource::Decoded { placed_objects: 7 },
             Some(0.05),
             Vec::new(),
             Vec::new(),
@@ -446,6 +474,7 @@ fn accept_f18_d_world_group_records_refuse_contradictions_and_impossible_values(
         texture_names: 0,
         bound_texture_names: 0,
         multi_material_group_polygons: 0,
+        refused_representatives: 0,
     };
     for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
         let refused = WorldGroupCensus::new(
@@ -453,17 +482,19 @@ fn accept_f18_d_world_group_records_refuse_contradictions_and_impossible_values(
             facts.clone(),
             PlacementSource::Undecoded {
                 stored_node_records: 1,
-                nodes_offset: 2
+                nodes_offset: 2,
             },
             Some(bad),
             Vec::new(),
             Vec::new(),
             Vec::new(),
         )
-        .err()
-        .expect("a non-finite scale must be refused, not stored");
+        .expect_err("a non-finite scale must be refused, not stored");
         match refused {
-            WorldAuditError::NonFiniteVertexScale { world: named, scale } => {
+            WorldAuditError::NonFiniteVertexScale {
+                world: named,
+                scale,
+            } => {
                 assert_eq!(named, "c1");
                 // Compared by bits, because `NaN != NaN` and a test that could
                 // not tell one non-finite value from another would pass on any.
@@ -485,6 +516,10 @@ fn accept_f18_d_world_group_records_refuse_contradictions_and_impossible_values(
         stored_min: [0.0, f64::NAN, 0.0],
         stored_max: [1.0; 3],
         fingerprint: hash("corner"),
+        upload: UploadVerdict::Refused {
+            material_group: 0,
+            reason: "authored".to_owned(),
+        },
     };
     assert_eq!(
         WorldGroupCensus::new(
@@ -573,10 +608,21 @@ fn accept_f18_d_a_gpu_capture_proves_the_stored_geometry_was_drawn() {
         capture.adapter
     );
     // The geometry that was submitted is the geometry the production upload
-    // built, and the report says so.
+    // built, and the report says so: four stored quad faces, two triangles each.
     assert_eq!(capture.groups, 1, "one material group, one draw");
-    assert!(capture.triangles >= 12, "{}", capture.triangles);
+    assert_eq!(capture.triangles, 8, "four quad faces of the authored arch");
     assert!(capture.vertices >= 3, "{}", capture.vertices);
+    // Back-face culling is expected and is *not* a defect here: the capture
+    // presents the stored winding, and which winding the original treated as
+    // front-facing is F17's open `FrontFaceWinding` question. The capture
+    // therefore reports the triangles it submitted and the coverage the
+    // surviving ones reached, and makes no claim about how many faces the
+    // original would have drawn.
+    assert!(
+        capture.covered_permille > 0 && capture.covered_permille < 1_000,
+        "the arch fills part of the frame and not all of it: {} per mille",
+        capture.covered_permille
+    );
     // The digest is of the file on disk, so it can be re-checked by a reader.
     let bytes = std::fs::read(&png).expect("the PNG is on disk");
     assert_eq!(cs_assets::install::sha256(&bytes), capture.png_sha256);
@@ -623,12 +669,24 @@ fn accept_f18_d_a_capture_that_drew_nothing_is_refused_rather_than_written() {
 fn synthetic_arch() -> RenderMesh {
     let positions: Vec<[f32; 3]> = vec![
         // left leg
-        [-2.0, 0.0, -0.5], [-2.0, 0.0, 0.5], [-2.0, 3.0, 0.5], [-2.0, 3.0, -0.5],
+        [-2.0, 0.0, -0.5],
+        [-2.0, 0.0, 0.5],
+        [-2.0, 3.0, 0.5],
+        [-2.0, 3.0, -0.5],
         // right leg
-        [2.0, 0.0, -0.5], [2.0, 0.0, 0.5], [2.0, 3.0, 0.5], [2.0, 3.0, -0.5],
+        [2.0, 0.0, -0.5],
+        [2.0, 0.0, 0.5],
+        [2.0, 3.0, 0.5],
+        [2.0, 3.0, -0.5],
         // lintel, front and back faces
-        [-2.0, 3.0, -0.5], [2.0, 3.0, -0.5], [2.0, 4.0, -0.5], [-2.0, 4.0, -0.5],
-        [-2.0, 3.0, 0.5], [2.0, 3.0, 0.5], [2.0, 4.0, 0.5], [-2.0, 4.0, 0.5],
+        [-2.0, 3.0, -0.5],
+        [2.0, 3.0, -0.5],
+        [2.0, 4.0, -0.5],
+        [-2.0, 4.0, -0.5],
+        [-2.0, 3.0, 0.5],
+        [2.0, 3.0, 0.5],
+        [2.0, 4.0, 0.5],
+        [-2.0, 4.0, 0.5],
     ];
     let quads: [[u32; 4]; 4] = [[0, 1, 2, 3], [4, 5, 6, 7], [8, 9, 10, 11], [12, 13, 14, 15]];
     let polygons = quads
@@ -683,10 +741,10 @@ fn empty_mesh() -> RenderMesh {
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_f18_d_retail_every_discovered_world_group_is_visited_and_compared() {
-    let game_dir = PathBuf::from(
-        std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR is set for a retail test"),
-    );
-    let survey = survey_world_groups(&game_dir).expect("the installation is discovered and surveyed");
+    let game_dir =
+        PathBuf::from(std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR is set for a retail test"));
+    let survey =
+        survey_world_groups(&game_dir).expect("the installation is discovered and surveyed");
 
     // Every discovered group is a row, and the discovered set is the reference
     // set of eight leads on this installation family.
@@ -783,8 +841,21 @@ fn accept_f18_d_retail_every_discovered_world_group_is_visited_and_compared() {
             "{}: the declared representative budget",
             group.world()
         );
+        // The refused count is the audit's own, and it is consistent with the
+        // verdicts the representatives carry: a report that dropped the
+        // refusals would read as "every representative is presentable".
+        assert_eq!(
+            census.refused_representatives(),
+            census.refused().count(),
+            "{}: the refused count is the refusal set",
+            group.world()
+        );
         for mesh in census.representative() {
-            assert!(mesh.triangles > 0, "{}: a representative must draw", group.world());
+            assert!(
+                mesh.triangles > 0,
+                "{}: a representative must draw",
+                group.world()
+            );
             for axis in 0..3 {
                 assert!(
                     mesh.stored_max[axis] >= mesh.stored_min[axis],
@@ -815,7 +886,11 @@ fn accept_f18_d_retail_every_discovered_world_group_is_visited_and_compared() {
                     "{}: a container with no stored node record holds no placed scene",
                     group.world()
                 );
-                assert!(nodes_offset > 0, "{}: the array starts somewhere", group.world());
+                assert!(
+                    nodes_offset > 0,
+                    "{}: the array starts somewhere",
+                    group.world()
+                );
                 total_stored_nodes += stored_node_records;
             }
             PlacementSource::Decoded { .. } => panic!(
@@ -833,22 +908,29 @@ fn accept_f18_d_retail_every_discovered_world_group_is_visited_and_compared() {
 
         // Traversal: both missing facts, named, and no route.
         assert_eq!(audit.routes().len(), 0);
-        assert_eq!(audit.routes_measured(), false);
+        assert!(!audit.routes_measured());
         let blockers = audit.traversal_blockers();
         assert_eq!(blockers.len(), 2, "{}: both facts are named", group.world());
         match &blockers[0] {
             TraversalBlocker::PlacementUndecoded { .. } => {}
-            other => panic!("{}: the missing placement is named first, got {other:?}", group.world()),
+            other => panic!(
+                "{}: the missing placement is named first, got {other:?}",
+                group.world()
+            ),
         }
         match &blockers[1] {
             TraversalBlocker::VertexScaleUnmeasured {
-                largest_stored_extent, ..
+                largest_stored_extent,
+                ..
             } => assert!(
                 *largest_stored_extent > 0.0,
                 "{}: the scale blocker quotes a measured extent",
                 group.world()
             ),
-            other => panic!("{}: the unmeasured scale is named second, got {other:?}", group.world()),
+            other => panic!(
+                "{}: the unmeasured scale is named second, got {other:?}",
+                group.world()
+            ),
         }
 
         // Openings: all five classes visited, none located, every one naming the
@@ -891,35 +973,42 @@ fn accept_f18_d_retail_every_discovered_world_group_is_visited_and_compared() {
 #[test]
 #[ignore = "requires CS_GAME_DIR and a GPU: CI has neither, so run it with --include-ignored"]
 fn accept_f18_d_retail_every_world_group_draws_a_measured_frame_on_the_gpu() {
-    let game_dir = PathBuf::from(
-        std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR is set for a retail test"),
+    let game_dir =
+        PathBuf::from(std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR is set for a retail test"));
+    let survey =
+        survey_world_groups(&game_dir).expect("the installation is discovered and surveyed");
+    assert_eq!(
+        survey.groups.len(),
+        8,
+        "every discovered world group is visited"
     );
-    let survey = survey_world_groups(&game_dir).expect("the installation is discovered and surveyed");
-    assert_eq!(survey.groups.len(), 8, "every discovered world group is visited");
 
     let directory = evidence_dir();
     std::fs::create_dir_all(&directory).expect("the private evidence directory is writable");
     let mut captured = 0_usize;
+    let mut refused = 0_usize;
     for group in &survey.groups {
         let container = group.container().expect("every group's container read");
-        // The group's own largest stored mesh, by the same declared rule the
-        // census uses, so the capture and the census name the same geometry.
-        let (mesh_index, render) = container
-            .representatives
-            .iter()
-            .max_by_key(|(_, render)| render.triangles().len())
-            .map(|(index, render)| (*index, render))
-            .unwrap_or_else(|| {
-                panic!(
-                    "{}: the survey chose no representative mesh to capture",
-                    group.world()
-                )
-            });
+        // The group's own largest **uploadable** stored mesh, by the same
+        // declared rule the census uses, so the capture and the census name the
+        // same geometry. "Uploadable" is the adapter's own verdict and the
+        // refused representatives are counted below rather than skipped in
+        // silence: several of the retail world's largest meshes store a normal
+        // on only some of their vertices, and the upload adapter will not fill a
+        // buffer from that.
+        let (mesh_index, render) = container.largest_presentable().unwrap_or_else(|| {
+            panic!(
+                "{}: none of the first {PRESENTABLE_PROBE_MESHES} stored meshes went through \
+                     the upload adapter, so there is nothing to draw",
+                group.world()
+            )
+        });
         assert!(
             !render.triangles().is_empty(),
             "{}: a representative mesh must draw",
             group.world()
         );
+        refused += container.refused_before_presentable();
 
         let png = directory.join(format!("render-{}.png", group.world().key()));
         let unknown = capture_group_mesh(group.world().key(), render, mesh_index, &png);
@@ -936,6 +1025,15 @@ fn accept_f18_d_retail_every_world_group_draws_a_measured_frame_on_the_gpu() {
         captured += 1;
     }
     assert_eq!(captured, 8, "one measured frame per discovered world group");
+    assert!(
+        refused > 0,
+        "the retail corpus is expected to hold representative meshes the upload adapter refuses: \
+         a capture run that refused none would mean the adapter was not asked"
+    );
+    eprintln!(
+        "F18-D GPU: {captured} measured frames; {refused} probed stored meshes were refused by \
+         the upload adapter before the first accepted one"
+    );
 }
 
 /// Renders one group's mesh through the production upload and captures it.
@@ -957,7 +1055,7 @@ fn capture_group_mesh(
     capture_world_mesh(&CaptureRequest {
         group,
         mesh_index,
-        render: &render,
+        render,
         unknowns: &[],
         png,
     })

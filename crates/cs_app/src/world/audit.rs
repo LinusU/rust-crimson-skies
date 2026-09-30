@@ -93,12 +93,14 @@ use std::path::Path;
 use cs_assets::install::{self, Discovery, REFERENCE_WORLD_GROUP_LEADS};
 use cs_content::campaign_bindings::campaign_layout;
 use cs_content::mesh::RenderMesh;
+use cs_content::world::UploadVerdict;
 use cs_content::world::{
     GroupFacts, PlacementSource, RepresentativeGeometry, WorldAuditError, WorldGroupAudit,
     WorldGroupAuditReport, WorldGroupBlocker, WorldGroupCensus, WorldGroupRef, WorldId,
 };
-use cs_formats::gamez::{FaceCensus, GameZMaterials, GameZMeshes, read_gamez_materials,
-    read_gamez_meshes};
+use cs_formats::gamez::{
+    FaceCensus, GameZMaterials, GameZMeshes, read_gamez_materials, read_gamez_meshes,
+};
 use cs_formats::io::ParseContext;
 
 /// The logical key every world group's geometry container has.
@@ -115,6 +117,20 @@ pub const GEOMETRY_CONTAINER_FILE: &str = "gamez.zbd";
 /// As [`GEOMETRY_CONTAINER_FILE`]: the world's own texture archive, which the
 /// `world` mount makes resolvable as `world/default/texture.zbd`.
 pub const TEXTURE_ARCHIVE_FILE: &str = "texture.zbd";
+
+/// How many stored meshes the survey may probe when it looks for the largest
+/// mesh the upload adapter accepts.
+///
+/// A **declared, bounded** window, and the reason it exists: the retail world's
+/// largest stored meshes are, measurably, not all presentable — several of them
+/// store a normal on only some of a material group's vertices, which the F17-B
+/// upload adapter refuses rather than fill with an invented value. The census
+/// reports that about the meshes it chose, and the capture needs a mesh that
+/// went through the adapter, so the survey probes the next-largest meshes until
+/// one is accepted or the window runs out. Sixty-four candidates is not a claim
+/// about the corpus: it is the point past which "the largest presentable mesh"
+/// stops being a useful thing to report and starts being an unbounded search.
+pub const PRESENTABLE_PROBE_MESHES: usize = 64;
 
 /// How many representative meshes one group's census carries.
 ///
@@ -147,10 +163,15 @@ pub enum WorldGroupSurveyError {
 impl fmt::Display for WorldGroupSurveyError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Discovery(error) => write!(f, "the installation could not be discovered: {error}"),
+            Self::Discovery(error) => {
+                write!(f, "the installation could not be discovered: {error}")
+            }
             Self::Layout(reason) => write!(f, "the campaign layout could not be walked: {reason}"),
             Self::GroupIdentity { directory, reason } => {
-                write!(f, "world group {directory:?} is not a usable world id: {reason}")
+                write!(
+                    f,
+                    "world group {directory:?} is not a usable world id: {reason}"
+                )
             }
             Self::Refused(error) => write!(f, "the world-group rows were refused: {error}"),
             Self::NoWorldGroups => {
@@ -179,19 +200,51 @@ pub struct SurveyedContainer {
     /// The exact face accounting over the whole container.
     pub faces: FaceCensus,
     /// One entry per representative mesh, in ascending array index: the mesh's
-    /// index and the production render mesh of it.
-    pub representatives: Vec<(u32, RenderMesh)>,
+    /// index, the production render mesh of it, and what the production upload
+    /// adapter did with it.
+    pub representatives: Vec<(u32, RenderMesh, UploadVerdict)>,
+    /// The largest stored mesh inside [`PRESENTABLE_PROBE_MESHES`] candidates
+    /// that the upload adapter accepted, and the verdict that says so.
+    ///
+    /// This is what a consumer can draw. It is a **different** selection from
+    /// [`Self::representatives`], on purpose: the census reports the largest
+    /// stored meshes whatever the adapter thinks of them, and this one answers
+    /// "what can actually be presented".
+    pub presentable: Option<(u32, RenderMesh)>,
+    /// How many probed candidates the adapter refused before the first accepted
+    /// one, or over the whole window.
+    pub refused_in_window: usize,
 }
 
 impl SurveyedContainer {
     /// The representative render mesh of one stored mesh, if the survey chose
-    /// it.
+    /// it, together with what the upload adapter did with it.
     #[must_use]
-    pub fn representative(&self, mesh_index: u32) -> Option<&RenderMesh> {
+    pub fn representative(&self, mesh_index: u32) -> Option<(&RenderMesh, &UploadVerdict)> {
         self.representatives
             .iter()
-            .find(|(index, _)| *index == mesh_index)
-            .map(|(_, render)| render)
+            .find(|(index, _, _)| *index == mesh_index)
+            .map(|(_, render, verdict)| (render, verdict))
+    }
+
+    /// The largest mesh the upload adapter accepted, by stored face count, and
+    /// its render mesh.
+    #[must_use]
+    pub fn largest_presentable(&self) -> Option<(u32, &RenderMesh)> {
+        self.presentable
+            .as_ref()
+            .map(|(index, render)| (*index, render))
+    }
+
+    /// How many of the probed candidates the upload adapter refused before the
+    /// first accepted one, or over the whole window when none was accepted.
+    ///
+    /// Reported because it is the number a reader needs to judge the finding: a
+    /// window where everything was refused is a corpus the adapter cannot
+    /// present at all, and one refused candidate is a single mesh.
+    #[must_use]
+    pub fn refused_before_presentable(&self) -> usize {
+        self.refused_in_window
     }
 }
 
@@ -248,9 +301,7 @@ impl WorldGroupSurvey {
     /// discover it.
     #[must_use]
     pub fn group(&self, world: &WorldId) -> Option<&SurveyedWorldGroup> {
-        self.groups
-            .iter()
-            .find(|group| group.world() == world)
+        self.groups.iter().find(|group| group.world() == world)
     }
 
     /// How many groups the survey holds.
@@ -274,9 +325,7 @@ impl WorldGroupSurvey {
 /// `gamez.zbd` against whichever mount won. That is the whole reason the
 /// sessions are separate, and it is why the survey is a per-group loop rather
 /// than one catalog over eight keys.
-pub fn survey_world_groups(
-    install_root: &Path,
-) -> Result<WorldGroupSurvey, WorldGroupSurveyError> {
+pub fn survey_world_groups(install_root: &Path) -> Result<WorldGroupSurvey, WorldGroupSurveyError> {
     let found = install::discover(install_root).map_err(WorldGroupSurveyError::Discovery)?;
     let discovered = found.diagnosis.world_groups.clone();
     if discovered.is_empty() {
@@ -463,7 +512,11 @@ fn survey_one(
     // mesh, while a triangle count needs the whole section triangulated; the
     // triangulated totals for the whole container come from
     // [`FaceCensus::of`] anyway.
-    let mut chosen: Vec<(u32, u32)> = meshes
+    // Every stored mesh with a face, largest stored face count first and the
+    // lower array index winning a tie. The census takes the first
+    // [`REPRESENTATIVE_MESHES`] of this; the presentable search takes the first
+    // accepted one inside [`PRESENTABLE_PROBE_MESHES`].
+    let mut ranked: Vec<(u32, u32)> = meshes
         .meshes
         .iter()
         .filter_map(|slot| {
@@ -471,8 +524,8 @@ fn survey_one(
             (mesh.info.polygon_count > 0).then_some((mesh.info.polygon_count, mesh.index))
         })
         .collect();
-    chosen.sort_by(|left, right| right.0.cmp(&left.0).then(left.1.cmp(&right.1)));
-    chosen.truncate(REPRESENTATIVE_MESHES);
+    ranked.sort_by(|left, right| right.0.cmp(&left.0).then(left.1.cmp(&right.1)));
+    let mut chosen: Vec<(u32, u32)> = ranked.iter().copied().take(REPRESENTATIVE_MESHES).collect();
     chosen.sort_by_key(|(_, index)| *index);
 
     let mut representatives = Vec::with_capacity(chosen.len());
@@ -487,8 +540,69 @@ fn survey_one(
         // census already counts its faces as missing, so the gap is reported
         // there rather than invented here.
         if let Ok(render) = RenderMesh::from_stored_groups(&mesh.mesh, &mesh.material_groups) {
-            representatives.push((*index, render));
+            // The verdict is the adapter's own answer, measured here rather than
+            // predicted: a mesh whose stored attributes are only partly present
+            // is refused, and that is a fact about the retail corpus.
+            let verdict = match crate::render::bevy_mesh::upload_groups(&render, &[]) {
+                Ok(uploads) => {
+                    let mut vertices = 0;
+                    let mut triangles = 0;
+                    for upload in &uploads {
+                        vertices += upload.mesh().count_vertices();
+                        triangles += upload.mesh().indices().map_or(0, |i| i.len() / 3);
+                    }
+                    UploadVerdict::Uploaded {
+                        groups: uploads.len(),
+                        vertices,
+                        triangles,
+                    }
+                }
+                Err(error) => {
+                    // The adapter names the group it refused; the message is
+                    // carried verbatim so a reader does not have to re-run it.
+                    let text = error.to_string();
+                    let group = text
+                        .split_whitespace()
+                        .find_map(|word| word.strip_prefix("material group "))
+                        .and_then(|digits| {
+                            digits
+                                .trim_end_matches(|c: char| !c.is_ascii_digit())
+                                .parse::<usize>()
+                                .ok()
+                        })
+                        .unwrap_or(0);
+                    UploadVerdict::Refused {
+                        material_group: group,
+                        reason: text,
+                    }
+                }
+            };
+            representatives.push((*index, render, verdict));
         }
+    }
+
+    // The presentable search, inside the declared window. Each candidate is
+    // built and handed to the adapter exactly as the census does, so a verdict
+    // here and a verdict there are the same measurement.
+    let mut presentable = None;
+    let mut refused_in_window = 0_usize;
+    for index in ranked
+        .iter()
+        .take(PRESENTABLE_PROBE_MESHES)
+        .map(|(_, index)| *index)
+    {
+        let Some(mesh) = meshes.meshes.get(index as usize).and_then(Option::as_ref) else {
+            continue;
+        };
+        let Ok(render) = RenderMesh::from_stored_groups(&mesh.mesh, &mesh.material_groups) else {
+            refused_in_window += 1;
+            continue;
+        };
+        if crate::render::bevy_mesh::upload_groups(&render, &[]).is_ok() {
+            presentable = Some((index, render));
+            break;
+        }
+        refused_in_window += 1;
     }
 
     let faces = FaceCensus::of(&meshes);
@@ -498,6 +612,8 @@ fn survey_one(
             materials,
             faces,
             representatives,
+            presentable,
+            refused_in_window,
         }),
         digest,
     )
@@ -518,10 +634,12 @@ fn read_file(host_root: &Path, logical_key: &str) -> Result<Vec<u8>, String> {
 /// A row that the content layer refuses stops the whole call: an audit over a
 /// set of rows it could not validate is a report about rows the caller does not
 /// have, which is the "silent hole" this path exists to prevent.
-pub fn declared_rows(
-    survey: &WorldGroupSurvey,
-) -> Result<Vec<WorldGroupRef>, WorldAuditError> {
-    Ok(survey.groups.iter().map(|group| group.group.clone()).collect())
+pub fn declared_rows(survey: &WorldGroupSurvey) -> Result<Vec<WorldGroupRef>, WorldAuditError> {
+    Ok(survey
+        .groups
+        .iter()
+        .map(|group| group.group.clone())
+        .collect())
 }
 
 /// Runs the whole F18-D audit over an installation: survey every discovered
@@ -554,14 +672,18 @@ pub fn audit_survey(survey: &WorldGroupSurvey) -> Result<WorldGroupAuditReport, 
 }
 
 /// The measured census of one declared group, or the blocker that replaced it.
-fn census_for(survey: &WorldGroupSurvey, row: &WorldGroupRef) -> Result<WorldGroupCensus, WorldGroupBlocker> {
-    let surveyed = survey
-        .group(row.world())
-        .ok_or_else(|| WorldGroupBlocker::GeometryUnreadable {
-            world: row.world().clone(),
-            container: row.geometry_container().to_owned(),
-            reason: "the survey did not discover this group".to_owned(),
-        })?;
+fn census_for(
+    survey: &WorldGroupSurvey,
+    row: &WorldGroupRef,
+) -> Result<WorldGroupCensus, WorldGroupBlocker> {
+    let surveyed =
+        survey
+            .group(row.world())
+            .ok_or_else(|| WorldGroupBlocker::GeometryUnreadable {
+                world: row.world().clone(),
+                container: row.geometry_container().to_owned(),
+                reason: "the survey did not discover this group".to_owned(),
+            })?;
     let container = match surveyed.container() {
         Ok(container) => container,
         Err(blocker) => return Err(blocker.clone()),
@@ -600,7 +722,7 @@ fn census_of(
     let candidates: Vec<RepresentativeGeometry> = container
         .representatives
         .iter()
-        .map(|(index, render)| {
+        .map(|(index, render, upload)| {
             let (min, max) = stored_bounds(render);
             RepresentativeGeometry {
                 mesh_index: *index,
@@ -622,6 +744,7 @@ fn census_of(
                 fingerprint: cs_assets::install::sha256(
                     format!("{container_key}#{index}").as_bytes(),
                 ),
+                upload: upload.clone(),
             }
         })
         .collect();
@@ -640,6 +763,10 @@ fn census_of(
         // makes no claim about it. Stated as a zero, not as a reconciled corpus.
         bound_texture_names: 0,
         multi_material_group_polygons: multi_group,
+        refused_representatives: candidates
+            .iter()
+            .filter(|mesh| !mesh.upload.is_uploaded())
+            .count(),
     };
     if !facts.has_geometry() {
         return Err(WorldGroupBlocker::NoGeometry {
@@ -715,8 +842,7 @@ pub fn reference_group_leads() -> [&'static str; 8] {
 /// The same set [`WorldGroupSurvey::groups`] carries, exposed on its own so a
 /// report can compare it against [`reference_group_leads`] without a survey.
 pub fn discovered_group_keys(install_root: &Path) -> Result<Vec<String>, WorldGroupSurveyError> {
-    let found =
-        install::discover(install_root).map_err(WorldGroupSurveyError::Discovery)?;
+    let found = install::discover(install_root).map_err(WorldGroupSurveyError::Discovery)?;
     Ok(found
         .diagnosis
         .world_groups
@@ -727,6 +853,7 @@ pub fn discovered_group_keys(install_root: &Path) -> Result<Vec<String>, WorldGr
 
 /// The lowercased set of keys a caller already has, for the comparison above.
 pub fn key_set(keys: impl IntoIterator<Item = String>) -> BTreeSet<String> {
-    keys.into_iter().map(|key| key.to_ascii_lowercase()).collect()
+    keys.into_iter()
+        .map(|key| key.to_ascii_lowercase())
+        .collect()
 }
-

@@ -52,8 +52,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use cs_assets::install::{content_fingerprint, discover, fingerprint};
 use cs_app::world::audit::audit_world_groups;
+use cs_assets::install::{content_fingerprint, discover, fingerprint};
 use cs_content::world::WorldGroupAuditReport;
 
 /// The acceptance tests whose capabilities this report declares.
@@ -355,9 +355,9 @@ fn placement_json(placement: cs_content::world::PlacementSource) -> String {
             "{{\"state\":\"undecoded\",\"stored_node_records\":{stored_node_records},\
               \"nodes_offset\":{nodes_offset}}}"
         ),
-        cs_content::world::PlacementSource::Decoded { placed_objects } => format!(
-            "{{\"state\":\"decoded\",\"placed_objects\":{placed_objects}}}"
-        ),
+        cs_content::world::PlacementSource::Decoded { placed_objects } => {
+            format!("{{\"state\":\"decoded\",\"placed_objects\":{placed_objects}}}")
+        }
     }
 }
 
@@ -710,7 +710,11 @@ fn civil_from_unix(seconds: i64) -> (i64, u32, u32, u32, u32, u32) {
     } else {
         month_prime - 9
     }) as u32;
-    let year = if month <= 2 { year_of_day + 1 } else { year_of_day };
+    let year = if month <= 2 {
+        year_of_day + 1
+    } else {
+        year_of_day
+    };
     (
         year,
         month,

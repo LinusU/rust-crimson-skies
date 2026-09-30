@@ -58,17 +58,18 @@ use std::fmt;
 use std::path::Path;
 use std::sync::Mutex;
 
+use bevy::app::PluginGroup;
 use bevy::asset::RenderAssetUsages;
 use bevy::camera::RenderTarget;
+use bevy::camera::{ClearColorConfig, PerspectiveProjection, Projection};
 use bevy::image::{Image, ImageSampler};
-use bevy::app::PluginGroup;
 use bevy::mesh::Mesh;
 use bevy::prelude::{
-    App, Assets, Camera3d, Color, DefaultPlugins, DirectionalLight, Handle, Mesh3d,
+    App, Assets, Camera, Camera3d, Color, DefaultPlugins, DirectionalLight, Handle, Mesh3d,
     MeshMaterial3d, On, Res, Resource, StandardMaterial, Transform, WindowPlugin, default,
 };
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
-use bevy::render::view::screenshot::{save_to_disk, Screenshot, ScreenshotCaptured};
+use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk};
 use cs_assets::install::sha256;
 use cs_content::mesh::{MeshPresentationUnknown, RenderMesh};
 use cs_types::evidence::ContentHash;
@@ -94,6 +95,35 @@ pub const CAPTURE_HEIGHT: u32 = 240;
 /// `2.75 r` leaves 14 % margin and still fills most of the frame. Written down
 /// so a reader can check the mesh was in shot rather than trusting a distance.
 pub const FRAMING_DISTANCE_FACTOR: f64 = 2.75;
+
+/// The capture camera's near plane, as a fraction of its framing distance, and
+/// the far plane as a multiple of it.
+///
+/// Declared because the default is wrong for this corpus, and measurably so: the
+/// retail world's stored geometry sits **thousands of stored units** from the
+/// origin — `ZBD/C1B` mesh 277 spans `-8157..-7230` — while Bevy's default
+/// perspective projection has a far plane of `1000` units. A capture that left
+/// the default clipped the entire mesh away and came back with a uniform frame,
+/// which is the failure the uniform-frame refusal then reported. The planes are
+/// therefore derived from the framing distance: near a hundredth of it, far four
+/// times it, which is wide enough for the whole bounding sphere and narrow enough
+/// to keep the depth buffer useful.
+pub const NEAR_PLANE_FRACTION: f64 = 0.01;
+
+/// The far plane, as a multiple of the framing distance. See
+/// [`NEAR_PLANE_FRACTION`].
+pub const FAR_PLANE_FACTOR: f64 = 4.0;
+
+/// The direction the capture camera looks from, relative to the mesh's centre.
+///
+/// A declared three-quarter view, and it is declared because a single axis will
+/// not do: measured on the retail corpus, `ZBD/C1B`'s largest presentable mesh
+/// (array index 277) stores a **flat sheet** — 927 × 1.3e-13 × 1 017 in stored
+/// units, lying in a plane — and a camera looking along `+z` sees such a sheet
+/// edge-on, where its projected area is zero and the frame comes back
+/// uniform. Every axis of this direction is non-zero, so a mesh flat in any one
+/// of them is still seen at an angle.
+pub const CAPTURE_VIEW_DIRECTION: [f64; 3] = [0.5, 0.6, 0.62];
 
 /// The clear colour the capture renders onto: the frame's background.
 ///
@@ -124,6 +154,15 @@ const KEY_LIGHT_ILLUMINANCE: f32 = 12_000.0;
 /// drew a mesh correctly from the fifth update onwards and produced a uniform
 /// frame before that.
 const WARMUP_FRAMES: u32 = 4;
+
+/// The bound on how many updates one capture may drive.
+///
+/// A bound and not a fixed count: the readback is asynchronous, so the number of
+/// updates a capture needs depends on the driver. On the pinned pair (Metal on
+/// Apple M3 Pro) the frame arrives on the update after the fourth following the
+/// request; the bound is generous, so a slower driver still has room and a driver
+/// that never answers is refused by name.
+const MAX_CAPTURE_UPDATES: u32 = 24;
 
 /// What one capture produced, all of it measured from the frame that came back.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -209,6 +248,13 @@ pub enum GpuCaptureError {
         mesh_index: u32,
         /// How many distinct luminance levels the frame held. Always one.
         distinct_luminance: usize,
+        /// Pixels that differ from the background, and how many pixels there
+        /// are. Both are carried because "nothing was drawn" and "one pixel was
+        /// drawn" are the same verdict here and very different facts to a
+        /// reader, and because a near miss is usually a framing or a clip-plane
+        /// problem whose size the reader can see.
+        covered_pixels: usize,
+        total_pixels: usize,
     },
     /// A material group refused to upload, with the adapter's own reason.
     GroupRefused {
@@ -259,11 +305,13 @@ impl fmt::Display for GpuCaptureError {
                 group,
                 mesh_index,
                 distinct_luminance,
+                covered_pixels,
+                total_pixels,
             } => write!(
                 f,
                 "{group} mesh {mesh_index} rendered a frame with {distinct_luminance} distinct \
-                 luminance level, i.e. the whole frame is the background: the geometry was not \
-                 drawn"
+                 luminance level and {covered_pixels} of {total_pixels} pixels off the \
+                 background, i.e. the geometry was not drawn"
             ),
             Self::GroupRefused {
                 group,
@@ -359,11 +407,14 @@ pub fn capture_world_mesh(request: &CaptureRequest<'_>) -> Result<GpuCapture, Gp
 
     let facts = {
         let recorded = app.world().resource::<CapturedFrame>();
-        let guard = recorded.0.lock().map_err(|_| GpuCaptureError::NoScreenshotCaptured {
-            updates: 0,
-        })?;
+        let guard = recorded
+            .0
+            .lock()
+            .map_err(|_| GpuCaptureError::NoScreenshotCaptured {
+                updates: MAX_CAPTURE_UPDATES,
+            })?;
         guard.ok_or(GpuCaptureError::NoScreenshotCaptured {
-            updates: WARMUP_FRAMES + 2,
+            updates: MAX_CAPTURE_UPDATES,
         })?
     };
     if facts.distinct_luminance <= 1 {
@@ -371,6 +422,8 @@ pub fn capture_world_mesh(request: &CaptureRequest<'_>) -> Result<GpuCapture, Gp
             group: request.group.to_owned(),
             mesh_index: request.mesh_index,
             distinct_luminance: facts.distinct_luminance,
+            covered_pixels: facts.covered_pixels,
+            total_pixels: facts.width as usize * facts.height as usize,
         });
     }
 
@@ -425,7 +478,7 @@ fn upload_counts(uploads: &[Mesh]) -> (usize, usize) {
     let mut vertices = 0;
     let mut triangles = 0;
     for mesh in uploads {
-        vertices += mesh.count_vertices() as usize;
+        vertices += mesh.count_vertices();
         triangles += mesh.indices().map_or(0, |indices| indices.len() / 3);
     }
     (vertices, triangles)
@@ -433,48 +486,79 @@ fn upload_counts(uploads: &[Mesh]) -> (usize, usize) {
 
 /// Spawns the camera, the key light, one entity per material group and the
 /// render target the frame is drawn into.
-fn spawn_scene(
-    app: &mut App,
-    uploads: &[Mesh],
-    request: &CaptureRequest<'_>,
-) -> CaptureTarget {
+fn spawn_scene(app: &mut App, uploads: &[Mesh], request: &CaptureRequest<'_>) -> CaptureTarget {
     let (min, max) = stored_bounds(request.render);
     let centre = [
         (min[0] + max[0]) * 0.5,
         (min[1] + max[1]) * 0.5,
         (min[2] + max[2]) * 0.5,
     ];
-    let radius = (0..3)
-        .map(|axis| max[axis] - min[axis])
-        .fold(0.0_f64, f64::max);
+    // The bounding-sphere radius of the stored AABB, so `radius` means what
+    // [`FRAMING_DISTANCE_FACTOR`] says it means whichever axis is longest.
+    let radius = 0.5
+        * (0..3)
+            .map(|axis| (max[axis] - min[axis]).powi(2))
+            .sum::<f64>()
+            .sqrt();
     let distance = radius * FRAMING_DISTANCE_FACTOR;
+    let unit = {
+        let length = CAPTURE_VIEW_DIRECTION
+            .iter()
+            .map(|component| component * component)
+            .sum::<f64>()
+            .sqrt();
+        [
+            CAPTURE_VIEW_DIRECTION[0] / length,
+            CAPTURE_VIEW_DIRECTION[1] / length,
+            CAPTURE_VIEW_DIRECTION[2] / length,
+        ]
+    };
+    let eye = [
+        centre[0] + unit[0] * distance,
+        centre[1] + unit[1] * distance,
+        centre[2] + unit[2] * distance,
+    ];
 
     let image = capture_image();
-    let handle = app
-        .world_mut()
-        .resource_mut::<Assets<Image>>()
-        .add(image);
+    let handle = app.world_mut().resource_mut::<Assets<Image>>().add(image);
 
     let centre_f = bevy::math::Vec3::new(centre[0] as f32, centre[1] as f32, centre[2] as f32);
-    let radius_f = radius as f32;
-    let distance_f = distance as f32;
+    let up = bevy::math::Vec3::Y;
+    // The camera clears onto [`CLEAR_COLOR`] **explicitly**. Left at
+    // `ClearColorConfig::Default` the background is the renderer's own clear
+    // colour, which is not the value `measure` compares against, so every
+    // background pixel would count as covered and the coverage measurement
+    // would be meaningless.
     app.world_mut().spawn((
         Camera3d::default(),
+        Camera {
+            clear_color: ClearColorConfig::Custom(Color::srgba(
+                CLEAR_COLOR[0],
+                CLEAR_COLOR[1],
+                CLEAR_COLOR[2],
+                CLEAR_COLOR[3],
+            )),
+            ..default()
+        },
         RenderTarget::Image(handle.clone().into()),
-        Transform::from_xyz(centre[0] as f32, centre[1] as f32, centre[2] as f32 + distance_f)
-            .looking_at(centre_f, bevy::math::Vec3::Y),
+        // The planes are derived from the framing distance; see
+        // [`NEAR_PLANE_FRACTION`] for why the defaults cannot be used here.
+        Projection::Perspective(PerspectiveProjection {
+            near: (distance * NEAR_PLANE_FRACTION) as f32,
+            far: (distance * FAR_PLANE_FACTOR) as f32,
+            ..PerspectiveProjection::default()
+        }),
+        Transform::from_xyz(eye[0] as f32, eye[1] as f32, eye[2] as f32).looking_at(centre_f, up),
     ));
+    // The key light sits on the camera's own axis, offset towards the target's
+    // `+y` by the bounding radius, so a sheet lying in a plane still catches it.
     app.world_mut().spawn((
         DirectionalLight {
             illuminance: KEY_LIGHT_ILLUMINANCE,
             ..default()
         },
-        Transform::from_xyz(
-            centre[0] as f32,
-            centre[1] as f32 + radius_f,
-            centre[2] as f32 + distance_f,
-        )
-        .looking_at(centre_f, bevy::math::Vec3::Y),
+        Transform::from_xyz(eye[0] as f32, eye[1] as f32 + radius as f32, eye[2] as f32)
+            .looking_at(centre_f, up),
     ));
 
     let surface: Handle<StandardMaterial> = app
@@ -483,13 +567,25 @@ fn spawn_scene(
         .add(StandardMaterial {
             base_color: Color::srgb(MESH_COLOR[0], MESH_COLOR[1], MESH_COLOR[2]),
             metallic: 0.0,
+            // No back-face culling, and this is a declared decision rather than a
+            // default. The capture is a **geometry** witness: whether a stored
+            // winding is front-facing is F17's open `FrontFaceWinding` question,
+            // so culling on an unmeasured rule would make the artifact depend on
+            // a question this stage does not answer — and a one-sided stored mesh
+            // would come back as an empty frame, which
+            // [`GpuCaptureError::UniformFrame`] would then refuse. Drawing both
+            // sides keeps the frame about the stored triangles and nothing else.
+            cull_mode: None,
             ..default()
         });
     for mesh in uploads {
         // The upload owns exactly the `f32`/`u32` bit patterns the content
         // pipeline produced; the handle is the only conversion, and it is the
         // same one the collider-on-body path uses.
-        let handle = app.world_mut().resource_mut::<Assets<Mesh>>().add(mesh.clone());
+        let handle = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(mesh.clone());
         app.world_mut().spawn((
             Mesh3d(handle),
             MeshMaterial3d(surface.clone()),
@@ -562,6 +658,15 @@ fn stored_bounds(render: &RenderMesh) -> ([f64; 3], [f64; 3]) {
 }
 
 /// Drives the app until the screenshot comes back or the updates run out.
+///
+/// The readback is **asynchronous**: the render app copies the target into a
+/// staging buffer, maps it on the async compute path, and only then sends the
+/// pixels to the main world, which drains the channel on a later `Update`. So a
+/// capture needs several updates *after* the one that asked for the screenshot,
+/// and stopping on a fixed count would be a race. The loop therefore stops the
+/// moment the frame arrives and only uses [`MAX_CAPTURE_UPDATES`] as the bound
+/// that turns a driver that never answers into
+/// [`GpuCaptureError::NoScreenshotCaptured`].
 fn drive_capture(
     app: &mut App,
     target: CaptureTarget,
@@ -576,14 +681,26 @@ fn drive_capture(
         save_to_disk(png.clone())(captured);
     };
     app.add_observer(observer);
-    for update in 0..(WARMUP_FRAMES + 2) {
+    for update in 0..MAX_CAPTURE_UPDATES {
         if update == WARMUP_FRAMES {
             app.world_mut()
                 .spawn(Screenshot::image(target.image.clone()));
         }
         app.update();
+        if app
+            .world()
+            .resource::<CapturedFrame>()
+            .0
+            .lock()
+            .expect("the capture frame mutex")
+            .is_some()
+        {
+            return Ok(());
+        }
     }
-    Ok(())
+    Err(GpuCaptureError::NoScreenshotCaptured {
+        updates: MAX_CAPTURE_UPDATES,
+    })
 }
 
 /// The measured facts of one frame: its size, how many distinct luminance
@@ -597,7 +714,7 @@ fn measure(image: &Image) -> FrameFacts {
     ];
     let mut levels: std::collections::BTreeSet<u8> = std::collections::BTreeSet::new();
     let mut covered = 0_usize;
-    for pixel in data.chunks_exact(4) {
+    for pixel in data.as_chunks::<4>().0 {
         // Rec. 601 luminance in eight bits: the frame's own shading order, not
         // a colour-fidelity claim.
         let luminance = ((29 * u32::from(pixel[0])

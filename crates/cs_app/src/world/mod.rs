@@ -91,10 +91,16 @@ pub mod visibility;
 
 pub use affine::{AffinePlacement, AffinePlacementError, bake_shape, shear_residual};
 pub use audit::{
+<<<<<<< HEAD
     GEOMETRY_CONTAINER_FILE, PRESENTABLE_PROBE_MESHES, REPRESENTATIVE_MESHES,
     TEXTURE_ARCHIVE_FILE, SurveyedContainer, SurveyedWorldGroup, WorldGroupSurvey,
     WorldGroupSurveyError, audit_survey, audit_world_groups, declared_rows, discovered_group_keys,
     survey_world_groups,
+=======
+    GEOMETRY_CONTAINER_FILE, PRESENTABLE_PROBE_MESHES, REPRESENTATIVE_MESHES, SurveyedContainer,
+    SurveyedWorldGroup, TEXTURE_ARCHIVE_FILE, WorldGroupSurvey, WorldGroupSurveyError,
+    audit_survey, audit_world_groups, declared_rows, discovered_group_keys, survey_world_groups,
+>>>>>>> 1c57d2b (Measure the upload adapter's verdict per world representative mesh)
 };
 pub use contacts::{
     WorldColliderInstance, WorldContact, WorldContacts, WorldObjectBinding, WorldPlugin,
