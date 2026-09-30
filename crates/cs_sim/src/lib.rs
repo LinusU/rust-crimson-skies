@@ -84,7 +84,7 @@
 //! whose held-out maneuver is outside the envelope. At least one entry must be
 //! held out of the fit, and a synthetic envelope can never support an
 //! original-fidelity claim. The headless probes that produce a real candidate
-//! are F26-B; the roster-wide deviation report is F26-C.
+//! are F26-B; the roster-wide audit and deviation report is `probes::audit` (F26-C).
 //!
 //! [`targeting`] is the F30-A targeting contract
 //! (`specs/F30-targeting-classification-aim-assistance-and-threat-cues.md`,

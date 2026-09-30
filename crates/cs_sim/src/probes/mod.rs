@@ -22,6 +22,8 @@
 //!   [`HandlingAssessment::supports_original_fidelity_claim`] additionally
 //!   requires an original-installation envelope and an original-observed
 //!   candidate.
+//! * [`audit`] is the roster-wide audit (F26-C): every airframe row is flown
+//!   and compared, and a row with no reference is unavailable, never a pass.
 //! * [`synthetic`] is the minimal declared fixture and the two candidates AC01
 //!   turns on.
 //!
@@ -48,12 +50,17 @@
 //! original measured*, in which unit, under which recorded conditions, and
 //! [`compare`] reads it.
 
+pub mod audit;
 pub mod comparison;
 pub mod envelope;
 pub mod maneuver;
 pub mod runner;
 pub mod synthetic;
 
+pub use audit::{
+    AirframeAudit, AssistReport, AuditError, AuditStatus, DeviationRow, RosterAudit, RosterRow,
+    UnavailableReason, audit_roster, synthetic_audit_roster,
+};
 pub use comparison::{
     HandlingAssessment, ProbeMeasurement, ProbeTrace, ProbeVerdict, VerdictStatus, compare,
 };
