@@ -79,15 +79,24 @@
 //! boundary, which [`input::CommandReplay`] feeds back through the same pump at
 //! any display rate (AC03).
 //!
-//! [`animation`] is the F20-A application boundary
-//! (`specs/F20-object-animation-and-authored-destruction-states.md`, stage
-//! `### F20-A`): [`animation::lower::lower_clip`] lowers a declared
-//! `cs_content::animation::AnimationClip` into the
+//! [`animation`] is the F20-A/F20-B application boundary
+//! (`specs/F20-object-animation-and-authored-destruction-states.md`, stages
+//! `### F20-A` and `### F20-B`): [`animation::lower::lower_clip`] lowers a
+//! declared `cs_content::animation::AnimationClip` into the
 //! `cs_sim::animated_object::AnimatedClip` the fixed-tick evaluator plays,
 //! [`animation::presentation::interpolated_pose`] is the render-side
 //! fractional-alpha sampler that changes presentation only, and
 //! [`animation::AnimatedNodeBinding`] is the generation-stamped ECS record
-//! tying an entity to one animated node.
+//! tying an entity to one animated node. Stage `### F20-B` adds
+//! [`animation::playback`]: [`animation::play_animation`] starts one
+//! lowered instance of a declared clip in the [`animation::AnimationPlayback`]
+//! resource, [`animation::advance_animation`] is the fixed-tick entry that
+//! advances every instance, publishes its markers into the
+//! [`animation::AnimationLog`] and applies the transform, material and
+//! attachment tracks to the entities whose binding verifies — a playing
+//! clip, the live scene generation and a node the clip actually drives —
+//! while an unknown material or parent is blocked and reported instead of
+//! applied, and [`animation::stop_animation`] ends an instance.
 //!
 //! [`physics`] is the F23-A Avian boundary
 //! (`specs/F23-avian-integration-collision-and-fixed-step-authority.md`,

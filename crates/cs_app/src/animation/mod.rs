@@ -1,4 +1,4 @@
-//! The animation application boundary (F20-A).
+//! The animation application boundary (F20-A, F20-B).
 //!
 //! Spec: `specs/F20-object-animation-and-authored-destruction-states.md`,
 //! stage `### F20-A`. Shared contract: `docs/contracts/IDENTITY-CONTENT.md`.
@@ -22,8 +22,24 @@
 //!   [`crate::scene::SceneNodeBinding`] so a reload can never leave a stale
 //!   binding looking live.
 //!
-//! Nothing here owns animation state: clip time, dedup and node states are
-//! the evaluator's; these records are outputs bound into the ECS.
+//! Stage `### F20-B` adds [`playback`], the fixed-tick playback that drives
+//! both ends of that boundary inside a session: [`playback::play_animation`]
+//! starts one lowered instance of a declared clip in the
+//! [`playback::AnimationPlayback`] resource,
+//! [`playback::advance_animation`] advances every instance once per
+//! committed session tick, publishes its markers into the
+//! [`playback::AnimationLog`] and applies the transform, material and
+//! attachment tracks to the entities whose [`AnimatedNodeBinding`] verifies
+//! (playing clip, live scene generation, driven node), and
+//! [`playback::stop_animation`] ends an instance. The applied values are the
+//! components [`playback::NodeAnimatedPose`],
+//! [`playback::NodeAnimatedMaterial`] and
+//! [`playback::NodeAnimatedAttachment`]; an unknown reference never becomes
+//! a component — it is blocked and reported instead (F20 non-negotiable
+//! behavior 2).
+//!
+//! The playback owns the animation state it applies; the records in this
+//! module remain the ECS outputs the consumers bind.
 
 use bevy::ecs::component::Component;
 use cs_types::content::ContentId;
@@ -31,7 +47,14 @@ use cs_types::content::ContentId;
 use crate::scene::SceneGeneration;
 
 pub mod lower;
+pub mod playback;
 pub mod presentation;
+
+pub use playback::{
+    AnimationLog, AnimationPlayError, AnimationPlayback, AnimationRefusal, BlockedTrack,
+    NodeAnimatedAttachment, NodeAnimatedMaterial, NodeAnimatedPose, TrackKind, advance_animation,
+    play_animation, stop_animation,
+};
 
 /// Component: marks an entity as presenting one node of one playing clip.
 ///
