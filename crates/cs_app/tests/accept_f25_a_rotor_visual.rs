@@ -36,11 +36,12 @@ fn autogyro_visual() -> AirframeVisual {
     .expect("a valid airframe visual")
 }
 
-/// A rotor binds by content id inside the airframe's own container. A node from
-/// another tree and a repeated node are refused by name, so the drawn phase can
-/// never depend on a foreign tree or on lookup order.
+/// A rotor binds by content id under the airframe's own root. A node from
+/// another tree, a node belonging to a sibling root of the same container and
+/// the root itself are refused by name, so the drawn phase can never depend on
+/// a foreign tree or on lookup order.
 #[test]
-fn accept_f25_a_rotor_visual_binds_a_node_under_the_airframe_container() {
+fn accept_f25_a_rotor_visual_binds_a_node_under_the_airframe_root() {
     let mut visual = autogyro_visual();
     assert!(visual.rotors().is_empty());
 
@@ -52,7 +53,7 @@ fn accept_f25_a_rotor_visual_binds_a_node_under_the_airframe_container() {
 
     visual
         .bind_rotor(binding.clone())
-        .expect("a rotor under the airframe's own container binds");
+        .expect("a rotor under the airframe's own root binds");
     assert_eq!(visual.rotors(), std::slice::from_ref(&binding));
     assert_eq!(visual.rotor(&rotor_node), Some(&binding));
 
@@ -73,6 +74,37 @@ fn accept_f25_a_rotor_visual_binds_a_node_under_the_airframe_container() {
             node: "gamez.autogyro.rotor_main".to_owned()
         })
     );
+
+    // Another root of the same container is another airframe.
+    assert_eq!(
+        visual.bind_rotor(RotorVisualBinding::new(
+            node("planes.autogyro_mk2.rotor_main"),
+            mapping.clone()
+        )),
+        Err(AirframeVisualError::RotorNodeOutsideAirframe {
+            root: "planes.autogyro".to_owned(),
+            node: "planes.autogyro_mk2.rotor_main".to_owned()
+        })
+    );
+
+    // The root itself is the whole airframe, not a rotor part.
+    let mut sibling = AirframeVisual::new(
+        cid(ContentKind::Airframe, "fixture.synthetic-autogyro-mk2"),
+        cid(ContentKind::InstallFile, "planes"),
+        node("planes.autogyro_mk2"),
+    )
+    .expect("a valid airframe visual");
+    assert_eq!(
+        sibling.bind_rotor(RotorVisualBinding::new(
+            node("planes.autogyro_mk2"),
+            mapping.clone()
+        )),
+        Err(AirframeVisualError::RotorNodeOutsideAirframe {
+            root: "planes.autogyro_mk2".to_owned(),
+            node: "planes.autogyro_mk2".to_owned()
+        })
+    );
+
     assert_eq!(
         visual.rotors().len(),
         1,

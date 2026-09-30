@@ -32,7 +32,10 @@
 //! * [`ReferenceManeuverEnvelope`] — the "separate reference maneuver
 //!   envelope" the contract requires, with the maneuver kinds an exceptional
 //!   airframe must be recorded on and an [`EnvelopeStatus`] that is
-//!   [`EnvelopeStatus::Unmeasured`] until an original trace exists.
+//!   [`EnvelopeStatus::Unmeasured`] until an original trace exists. Readiness
+//!   also requires an installation origin and an observed provenance, so a
+//!   fixture cannot be promoted into an approved reference trace by setting a
+//!   status.
 //!
 //! **No helicopter hover is invented here.** Non-negotiable behavior 1 and
 //! `FLIGHT-PHYSICS` ("Do not use the word autogyro as permission to invent
@@ -47,6 +50,7 @@
 
 use cs_types::Tick;
 use cs_types::content::{Origin, Provenance};
+use cs_types::evidence::ClaimStatus;
 
 use super::model::{FlightOutput, FlightState};
 use super::tuning::ModelKind;
@@ -469,8 +473,12 @@ impl RotorDrive {
     /// # Errors
     ///
     /// [`TelemetryError::NonFinite`] for a non-finite `previous.phase_rad` or
-    /// `render_dt_s`, and [`TelemetryError::NonPositive`] for a
-    /// non-positive `render_dt_s`.
+    /// `render_dt_s`, [`TelemetryError::NonPositive`] for a non-positive
+    /// `render_dt_s`, and [`TelemetryError::NonFinite`] naming the drawn field
+    /// when the finite inputs still produce a non-finite rate or phase (an
+    /// absurd physical rate times an absurd frame time overflows). The sample
+    /// is checked before it is handed out, so no consumer receives a
+    /// non-finite drawn phase as a plausible number.
     pub fn visual_sample(
         &self,
         mapping: Option<&RotorSpeedMapping>,
@@ -492,11 +500,13 @@ impl RotorDrive {
             Some(ref rate) => (previous.phase_rad + rate.speed_radps * render_dt_s).rem_euclid(TAU),
             None => previous.phase_rad,
         };
-        Ok(RotorVisualSample {
+        let sample = RotorVisualSample {
             phase_rad: phase,
             physical_speed_radps: self.physical_speed_radps,
             visual,
-        })
+        };
+        sample.validate()?;
+        Ok(sample)
     }
 }
 
@@ -799,6 +809,12 @@ pub enum EnvelopeStatus {
         reason: String,
     },
     /// An original reference trace backs this envelope.
+    ///
+    /// The provenance must be an **observation** — a
+    /// [`ClaimStatus::VerifiedOriginal`] or [`ClaimStatus::ObservedTool`] claim
+    /// — because a designed, inferred or contradicted claim is not a
+    /// measurement. [`ReferenceManeuverEnvelope::validate`] refuses the others
+    /// by name.
     Measured {
         /// The claim the reference backs. A `verified_original` provenance must
         /// name the source span it observed, so this variant cannot assert an
@@ -854,6 +870,12 @@ pub enum EnvelopeError {
     },
     /// No maneuver was held out of the fit.
     NoHeldOutManeuver,
+    /// A `measured` status was backed by a claim that is not an observation, so
+    /// the envelope asserts a reference trace nobody measured.
+    MeasuredWithoutObservation {
+        /// The claim class the status carried.
+        class: ClaimStatus,
+    },
 }
 
 impl std::fmt::Display for EnvelopeError {
@@ -901,6 +923,10 @@ impl std::fmt::Display for EnvelopeError {
                 f,
                 "a reference envelope must hold out at least one maneuver from the fit"
             ),
+            Self::MeasuredWithoutObservation { class } => write!(
+                f,
+                "a measured envelope must be backed by an observed or verified original claim, not {class}"
+            ),
         }
     }
 }
@@ -942,13 +968,16 @@ impl ReferenceManeuverEnvelope {
     /// Whether an original reference trace backs every required maneuver, so
     /// the envelope may be compared against as a reference.
     ///
-    /// A synthetic fixture's envelope is deliberately **not** ready: only an
-    /// [`EnvelopeStatus::Measured`] status with no missing maneuver can claim
-    /// that (`FLIGHT-PHYSICS`: "A synthetic physics pass cannot promote
-    /// faithful handling").
+    /// A synthetic fixture's envelope is deliberately **not** ready: an
+    /// [`EnvelopeStatus::Measured`] status with no missing maneuver still needs
+    /// an envelope read from the original installation, and a
+    /// `SyntheticFixture` or `Designed` origin never is one
+    /// (`FLIGHT-PHYSICS`: "A synthetic physics pass cannot promote faithful
+    /// handling"). Flipping a fixture's status therefore cannot turn it into an
+    /// approved reference trace.
     #[must_use]
     pub fn is_ready_as_reference(&self) -> bool {
-        self.status.is_measured() && self.missing_required().is_empty()
+        self.status.is_measured() && self.origin.is_original() && self.missing_required().is_empty()
     }
 
     /// Checks the envelope's identity, coverage and per-maneuver bounds.
@@ -956,12 +985,23 @@ impl ReferenceManeuverEnvelope {
     /// # Errors
     ///
     /// [`EnvelopeError`] naming the first problem: an empty airframe id, a
-    /// blank unmeasured reason, a duplicate maneuver, a missing required
-    /// maneuver, a maneuver with no initial conditions or an out-of-bound
-    /// number, or no held-out maneuver.
+    /// blank unmeasured reason, a measured status backed by a claim that is not
+    /// an observation, a duplicate maneuver, a missing required maneuver, a
+    /// maneuver with no initial conditions or an out-of-bound number, or no
+    /// held-out maneuver.
     pub fn validate(&self) -> Result<(), EnvelopeError> {
         if self.airframe_id.trim().is_empty() {
             return Err(EnvelopeError::EmptyAirframeId);
+        }
+        if let EnvelopeStatus::Measured { provenance } = &self.status
+            && !matches!(
+                provenance.class,
+                ClaimStatus::ObservedTool | ClaimStatus::VerifiedOriginal
+            )
+        {
+            return Err(EnvelopeError::MeasuredWithoutObservation {
+                class: provenance.class,
+            });
         }
         if let EnvelopeStatus::Unmeasured { reason } = &self.status
             && reason.trim().is_empty()
@@ -1112,6 +1152,24 @@ mod tests {
     use super::*;
     use crate::flight::model::{EngineState, FlightEnvironment, FlightInput, FlightModel};
     use crate::flight::synthetic::synthetic_fixed_wing;
+    use cs_types::asset_id::SourceSpan;
+    use cs_types::evidence::ContentHash;
+
+    /// A **synthetic** installation span, used only to drive the readiness gate
+    /// below. It names no real installation and backs no original-data claim:
+    /// the test asserts that such an envelope becomes reference-ready, not that
+    /// any reference exists.
+    fn synthetic_span() -> SourceSpan {
+        SourceSpan::new(
+            ContentHash::from_bytes([0x2a; 32]),
+            "fixture.synthetic-exceptional.zbd",
+            None,
+            0,
+            16,
+            None,
+        )
+        .expect("a valid synthetic span")
+    }
 
     fn state_at(speed_mps: f64, running: bool) -> FlightState {
         FlightState {
@@ -1405,9 +1463,48 @@ mod tests {
         );
     }
 
+    /// A drawn phase is checked before it leaves the boundary: finite inputs
+    /// whose product overflows (an absurd physical rate times an absurd frame
+    /// time) would otherwise hand a consumer a `NaN` phase that compares false
+    /// against every plausible expectation.
+    #[test]
+    fn accept_f25_a_visual_rotor_sample_never_returns_a_nonfinite_phase() {
+        let mut drive = synthetic_rotor_drive();
+        drive
+            .advance_tick(1e300, 1e300, Tick(1), SYNTHETIC_TICK_DT_S)
+            .expect("a finite commanded rate is accepted however absurd");
+        assert!(
+            drive.physical_speed_radps() > 1e290,
+            "the spool reached an absurd but finite rate"
+        );
+        let absurd = RotorSpeedMapping::new(1e300, Origin::SyntheticFixture)
+            .expect("a finite positive ratio is accepted however absurd");
+
+        assert_eq!(
+            drive
+                .visual_sample(Some(&absurd), RotorVisualSample::at_rest(), 1e300)
+                .err(),
+            Some(TelemetryError::NonFinite {
+                field: "rotor_visual.phase_rad"
+            }),
+            "an overflowing draw is refused by name, not returned as a NaN phase"
+        );
+        // The physical rate itself is finite, and the overflowing mapped rate is
+        // refused where it is produced.
+        assert!(drive.physical_speed_radps().is_finite());
+        assert_eq!(
+            drive.telemetry(Some(&absurd)).validate().err(),
+            Some(TelemetryError::NonFinite {
+                field: "rotor.visual_speed_radps"
+            })
+        );
+    }
+
     /// The exceptional envelope demands every maneuver its kind requires, holds
     /// one out of the fit, and is **not** ready as a reference: no original
-    /// capture backs the synthetic fixture.
+    /// capture backs the synthetic fixture, and neither setting a designed
+    /// provenance nor setting an observed one on a synthetic envelope can make
+    /// it one.
     #[test]
     fn accept_f25_a_exceptional_envelope_demands_its_maneuvers_and_is_unmeasured() {
         let envelope = synthetic_exceptional_envelope();
@@ -1442,20 +1539,78 @@ mod tests {
         assert_eq!(missing.missing_required(), vec![ManeuverKind::RotorVisual]);
         assert!(!missing.is_ready_as_reference());
 
-        // A measured status needs every required maneuver before it may be
-        // compared against, and needs a tolerance selected before the fit.
+        // A measured status backed by a claim nobody observed is refused: a
+        // designed envelope is not a measurement.
+        let claim =
+            || cs_types::evidence::ClaimId::new("f25a.test.envelope").expect("a valid claim id");
         let mut measured = synthetic_exceptional_envelope();
         measured.status = EnvelopeStatus::Measured {
-            provenance: Provenance::designed(
-                cs_types::evidence::ClaimId::new("f25a.test.envelope").expect("a valid claim id"),
-            ),
+            provenance: Provenance::designed(claim()),
         };
-        assert_eq!(measured.validate(), Ok(()));
-        assert!(measured.is_ready_as_reference());
-        for spec in &mut measured.maneuvers {
+        assert_eq!(
+            measured.validate(),
+            Err(EnvelopeError::MeasuredWithoutObservation {
+                class: ClaimStatus::Designed
+            }),
+            "an engineered fixture cannot declare itself a measured reference"
+        );
+        assert!(!measured.is_ready_as_reference());
+
+        // An observed provenance alone is still not enough: the envelope itself
+        // must have come from the original installation, so the synthetic
+        // fixture stays not-ready however its status is set.
+        let observed_source = synthetic_span();
+        let mut observed = synthetic_exceptional_envelope();
+        observed.status = EnvelopeStatus::Measured {
+            provenance: Provenance::new(
+                claim(),
+                ClaimStatus::VerifiedOriginal,
+                Some(observed_source.clone()),
+            )
+            .expect("a located verified_original provenance is accepted"),
+        };
+        assert_eq!(observed.validate(), Ok(()));
+        assert!(
+            !observed.is_ready_as_reference(),
+            "a synthetic envelope is never reference-ready"
+        );
+
+        // Only an installation-sourced envelope with an observed reference, full
+        // coverage and a held-out maneuver may be compared against.
+        let mut original = observed.clone();
+        original.origin = Origin::Installation {
+            source: observed_source,
+        };
+        assert_eq!(original.validate(), Ok(()));
+        assert!(original.is_ready_as_reference());
+
+        let mut undocumented = observed.clone();
+        undocumented.status = EnvelopeStatus::Measured {
+            provenance: Provenance::new(claim(), ClaimStatus::Documented, None)
+                .expect("a documented claim needs no source span"),
+        };
+        assert_eq!(
+            undocumented.validate(),
+            Err(EnvelopeError::MeasuredWithoutObservation {
+                class: ClaimStatus::Documented
+            })
+        );
+        assert!(!undocumented.is_ready_as_reference());
+
+        let mut incomplete = original.clone();
+        incomplete
+            .maneuvers
+            .retain(|spec| spec.kind != ManeuverKind::Turn);
+        assert!(
+            !incomplete.is_ready_as_reference(),
+            "a missing maneuver keeps the envelope out of reference use"
+        );
+
+        let mut no_holdout = original.clone();
+        for spec in &mut no_holdout.maneuvers {
             spec.held_out = false;
         }
-        assert_eq!(measured.validate(), Err(EnvelopeError::NoHeldOutManeuver));
+        assert_eq!(no_holdout.validate(), Err(EnvelopeError::NoHeldOutManeuver));
 
         let mut no_tolerance = synthetic_exceptional_envelope();
         no_tolerance.maneuvers[0].tolerance = 0.0;

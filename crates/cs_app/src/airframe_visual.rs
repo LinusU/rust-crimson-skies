@@ -19,8 +19,8 @@
 //! [`RotorSpeedMapping`] from the authoritative physical rotor rate to the rate
 //! the mesh is drawn at (F25 non-negotiable behavior 3: "Physical and visual
 //! rotor speeds may differ but require an explicit mapping"). The binding is
-//! content-addressed like everything else here — a rotor node must live in the
-//! same container as the airframe's own root, or the binding is refused — and
+//! content-addressed like everything else here — a rotor node must descend from
+//! the airframe's own root, or the binding is refused — and
 //! it carries no time of its own: [`RotorVisualBinding::sample`] takes `&self`
 //! and derives the drawn phase from the drive's physical rate plus the render
 //! frame time, so a render frame can never reach the simulation.
@@ -64,6 +64,14 @@ pub enum AirframeVisualError {
         /// The refused rotor node's key.
         node: String,
     },
+    /// A rotor node is in the container but does not descend from the airframe's
+    /// own root, so it belongs to a different root in the same container.
+    RotorNodeOutsideAirframe {
+        /// The airframe root the rotor node would have to descend from.
+        root: String,
+        /// The refused rotor node's key.
+        node: String,
+    },
     /// The same rotor node was bound twice, which would make the drawn phase
     /// depend on which binding a consumer reached first.
     DuplicateRotorNode {
@@ -88,6 +96,10 @@ impl core::fmt::Display for AirframeVisualError {
                 f,
                 "the rotor node {node} does not live in the airframe container {container}"
             ),
+            Self::RotorNodeOutsideAirframe { root, node } => write!(
+                f,
+                "the rotor node {node} is not a part of the airframe rooted at {root}"
+            ),
             Self::DuplicateRotorNode { node } => {
                 write!(f, "the rotor node {node} is bound more than once")
             }
@@ -101,6 +113,7 @@ impl std::error::Error for AirframeVisualError {
         match self {
             Self::AirframeKind { .. }
             | Self::RotorNodeOutsideContainer { .. }
+            | Self::RotorNodeOutsideAirframe { .. }
             | Self::DuplicateRotorNode { .. } => None,
             Self::Root(error) => Some(error),
             Self::RotorVisual(error) => Some(error),
@@ -209,23 +222,34 @@ impl AirframeVisual {
 
     /// Binds one rotor node to this airframe's visual.
     ///
-    /// The node is checked against the airframe's own container by content id —
+    /// The node is checked against the airframe's own root by content id —
     /// never by hierarchy position — so a rotor can only be drawn on a node of
-    /// the tree this visual anchors.
+    /// the tree this visual anchors: a node in another container, a node
+    /// belonging to another root of the same container, and the airframe root
+    /// itself (spinning the whole airframe is not a rotor) are each refused by
+    /// name.
     ///
     /// # Errors
     ///
     /// [`AirframeVisualError::RotorNodeOutsideContainer`] when the node does not
-    /// live in this airframe's container, and
+    /// live in this airframe's container,
+    /// [`AirframeVisualError::RotorNodeOutsideAirframe`] when the node does not
+    /// descend from this airframe's root, and
     /// [`AirframeVisualError::DuplicateRotorNode`] when that node is already
     /// bound.
     pub fn bind_rotor(&mut self, binding: RotorVisualBinding) -> Result<(), AirframeVisualError> {
         let container = self.root.container().key();
-        let prefix = format!("{container}.");
         let node = binding.node.key();
-        if !node.starts_with(&prefix) {
+        if !node.starts_with(&format!("{container}.")) {
             return Err(AirframeVisualError::RotorNodeOutsideContainer {
                 container: container.to_owned(),
+                node: node.to_owned(),
+            });
+        }
+        let airframe_root = self.root.root().key();
+        if !node.starts_with(&format!("{airframe_root}.")) {
+            return Err(AirframeVisualError::RotorNodeOutsideAirframe {
+                root: airframe_root.to_owned(),
                 node: node.to_owned(),
             });
         }
@@ -315,15 +339,17 @@ mod tests {
         );
     }
 
-    /// A rotor binds by content id inside the airframe's own container: a node
-    /// from another tree is refused, a repeated node is refused, and sampling the
-    /// visual cannot move the authoritative rotor rate however many render
-    /// frames a simulation tick contains.
+    /// A rotor binds by content id inside the airframe's own root: a node
+    /// from another tree, a node belonging to a sibling root of the same
+    /// container and the airframe root itself are all refused, a repeated node
+    /// is refused, and sampling the visual cannot move the authoritative rotor
+    /// rate however many render frames a simulation tick contains.
     #[test]
     fn accept_f25_a_rotor_visual_binds_by_id_and_cannot_drive_physics() {
         let planes = cid(ContentKind::InstallFile, "planes");
         let root = SceneNodeId::from_content_id(cid(ContentKind::SceneNode, "planes.corsair"))
             .expect("scene node id");
+        let root_key = root.clone();
         let rotor_node =
             SceneNodeId::from_content_id(cid(ContentKind::SceneNode, "planes.corsair.rotor_main"))
                 .expect("scene node id");
@@ -339,7 +365,7 @@ mod tests {
         assert_eq!(binding.mapping(), &mapping);
         visual
             .bind_rotor(binding.clone())
-            .expect("a rotor under the airframe's own container binds");
+            .expect("a rotor under the airframe's own root binds");
         assert_eq!(visual.rotors(), std::slice::from_ref(&binding));
         assert!(visual.rotor(&rotor_node).is_some());
 
@@ -361,6 +387,44 @@ mod tests {
                 container: "planes".to_owned(),
                 node: "gamez.corsair.rotor".to_owned()
             })
+        );
+
+        // Another root of the same container is another airframe: binding its
+        // part would spin this airframe's rotor on somebody else's node.
+        let sibling_root =
+            SceneNodeId::from_content_id(cid(ContentKind::SceneNode, "planes.corsair_mk2"))
+                .expect("scene node id");
+        let sibling_part = SceneNodeId::from_content_id(cid(
+            ContentKind::SceneNode,
+            "planes.corsair_mk2.rotor_main",
+        ))
+        .expect("scene node id");
+        assert_eq!(
+            visual.bind_rotor(RotorVisualBinding::new(sibling_part, mapping.clone())),
+            Err(AirframeVisualError::RotorNodeOutsideAirframe {
+                root: root_key.key().to_owned(),
+                node: "planes.corsair_mk2.rotor_main".to_owned()
+            })
+        );
+
+        // The airframe root itself is the whole airframe, not one of its rotors.
+        let mut sibling_visual = AirframeVisual::new(
+            cid(ContentKind::Airframe, "corsair_mk2"),
+            planes.clone(),
+            sibling_root.clone(),
+        )
+        .expect("valid airframe visual");
+        assert_eq!(
+            sibling_visual.bind_rotor(RotorVisualBinding::new(sibling_root, mapping.clone())),
+            Err(AirframeVisualError::RotorNodeOutsideAirframe {
+                root: "planes.corsair_mk2".to_owned(),
+                node: "planes.corsair_mk2".to_owned()
+            })
+        );
+        assert_eq!(
+            visual.rotors().len(),
+            1,
+            "a refused binding changes nothing"
         );
 
         // Drawing the rotor at one frame per tick and at many frames per tick

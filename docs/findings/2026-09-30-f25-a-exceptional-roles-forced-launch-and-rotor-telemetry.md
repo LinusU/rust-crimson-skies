@@ -150,6 +150,16 @@ Each behavior was removed temporarily and the named test re-run:
 
 All three perturbations were reverted and the suite re-run green.
 
+The reviewer added four more probes, one per review correction, each applied,
+run and reverted from a byte-identical backup:
+
+| Behavior removed | Tests that failed |
+| --- | --- |
+| the produced-sample check in `RotorDrive::visual_sample` | `accept_f25_a_visual_rotor_sample_never_returns_a_nonfinite_phase`, `accept_f25_a_rotor_visual_sampling_never_reaches_the_simulation` |
+| the root-descendant check in `AirframeVisual::bind_rotor` | `accept_f25_a_rotor_visual_binds_by_id_and_cannot_drive_physics` |
+| `origin.is_original()` in `is_ready_as_reference` | `accept_f25_a_exceptional_envelope_demands_its_maneuvers_and_is_unmeasured` |
+| the `MeasuredWithoutObservation` refusal in `validate` | `accept_f25_a_exceptional_envelope_demands_its_maneuvers_and_is_unmeasured` |
+
 ## Limits of this pass
 
 - The declared roster is synthetic. Nothing here has been checked against the
@@ -157,6 +167,12 @@ All three perturbations were reverted and the suite re-run green.
 - `resolve_launch` is a pure resolver with no producer yet. M17's forced
   assignment is not bound to a script, a catalog id or a mission program; that
   binding is F25-C/F25-D and needs the original data.
+- `resolve_launch` cannot tell a free-flight session from a mission session that
+  simply has no forced assignment, so it checks `hangar_selectable` and
+  `pilotable` on the garage path and leaves `mission_launchable` to the forced
+  path (see the field's doc comment). A third rule for "may this mission use the
+  garage plane at all" is **not** invented here; F25-C's wiring must decide it
+  from the mission data rather than from this record.
 - `TelemetryFrame` is produced from a **fixed-wing** `FlightOutput` in the tests
   because F25-B's exceptional law does not exist yet. Once it does, the shared
   channel is unchanged by construction, but the exceptional frame's shared
@@ -164,6 +180,81 @@ All three perturbations were reverted and the suite re-run green.
 - No consumer (HUD, AI, probe) reads `FlightTelemetry` yet; the interface is
   proven model-agnostic by construction and by a trait-object test, not by a
   runtime consumer trace.
+- A rotor node is bound by content id **under the airframe's own root**
+  (`<container>.<root>.<part>`), which assumes the authored node paths put an
+  airframe's parts under that airframe's root. F11's node keys
+  (`planes.corsair.wing_l`) are consistent with it, but no original node array
+  has been read by this stage: if a real rotor ever appears as a sibling root,
+  F25-C/D must relax the rule with the evidence, not by guessing now.
 - F25-D (retail) still needs an actual integration/reference evidence run, and
   AC04's "compare the distinctive handling against the original" is entirely
   out of this stage's reach.
+
+## Review corrections (2026-09-30, `bunny-alpha-2` reviewing #97)
+
+Four problems found in review, fixed on the task branch rather than handed
+back. Each is a boundary that accepted something it should have refused, or a
+documented rule the code did not match.
+
+1. **The drawn rotor phase could leave the boundary as `NaN`.**
+   `RotorDrive::visual_sample` validated its inputs but not the sample it
+   produced: a finite physical rate of `1e300` times a declared ratio of `1e300`
+   and a finite frame time overflowed to `inf`, and `inf.rem_euclid(TAU)` is
+   `NaN`, which was returned as `Ok`. The sample is now checked before it is
+   handed out (`RotorVisualSample::validate`), so an overflowing draw is refused
+   by name. New test `accept_f25_a_visual_rotor_sample_never_returns_a_nonfinite_phase`
+   plus an assertion in the integration telemetry test.
+
+2. **A rotor could bind another airframe's node.** `bind_rotor` checked only
+   that the node lived in the airframe's *container*, so `planes.corsair_mk2.rotor_main`
+   — a sibling root's part in the same container — was accepted and would have
+   spun this airframe's rotor on somebody else's node. The check now requires the
+   node to descend from this airframe's root (`RotorNodeOutsideAirframe`), the
+   root node itself is refused (spinning the whole airframe is not a rotor), and
+   the container refusal is kept for a node from another tree. Covered in the
+   `cs_app` unit test and in `accept_f25_a_rotor_visual_binds_a_node_under_the_airframe_root`.
+
+3. **A fixture could declare itself an approved reference trace.**
+   `is_ready_as_reference()` only asked for a `Measured` status and full
+   coverage, so setting that status on the synthetic fixture made it
+   reference-ready — with a *designed* provenance, which is not a measurement
+   at all. Readiness now also requires an `Origin::Installation` envelope, and
+   `validate()` refuses a `Measured` status whose provenance class is not
+   `ObservedTool` or `VerifiedOriginal` (`EnvelopeError::MeasuredWithoutObservation`).
+   The tests now assert the honest negative: a designed provenance is refused,
+   an observed provenance on a synthetic envelope is still not ready, and only
+   an installation-sourced envelope with an observed reference, full coverage
+   and a held-out maneuver is. The synthetic `SourceSpan` those tests construct
+   names **no** real installation and backs no original-data claim.
+
+4. **`mission_launchable` was documented as a rule the resolver did not apply.**
+   The field said "whether a mission may launch this airframe at all" while the
+   hangar path checked only `pilotable` and `hangar_selectable`. The field and
+   `resolve_launch`'s docs now state exactly what each path checks and why
+   (`mission_launchable` gates *assignments*; the garage plane is the player's
+   own plane), and the limit is recorded above for F25-C. No behavior was
+   changed: refusing a hangar-only plane on the garage path would make the
+   role meaningless, and adding a launch-context parameter would guess at a
+   mission rule this stage has no data for.
+
+### Reviewer notes
+
+Implementer: `bunny-alpha-2` (Space Bunny Alpha) on branch
+`rally/97-define-exceptional-model-roles-and-autog`. Reviewer: `bunny-alpha-2`
+(Space Bunny Alpha) again — the **same agent instance and model** as the
+implementer, in a fresh session that rebuilt its context from the spec, the
+contract and the diff. Per the owner directive a different agent instance or
+model is preferred for fidelity claims; this review is therefore independent by
+process only, not by identity, and it makes no original-reference claim.
+
+The reviewer re-ran all four required checks locally, reproduced the
+implementer's three mutation probes, and added four probes of its own for the
+corrections above (see the sensitivity table). No protected path, no original
+data and no binary file is touched: `git diff --name-only origin/main...HEAD`
+lists the three owner source files, their two wiring files, the three test files
+and this note.
+
+Still **checked**, never `verified_original` or `release_approved`: this stage
+ships a typed boundary, a synthetic fixture and one pure resolver, and
+`crates/cs_app/src/physics/flight.rs` still refuses `ModelKind::Exceptional`
+(#414), so no exceptional airframe can be flown yet.

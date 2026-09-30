@@ -92,8 +92,16 @@ impl Availability {
 /// What a mission may do with an airframe at launch.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LaunchConstraints {
-    /// Whether a mission may launch this airframe at all. A role that is not
-    /// pilotable must set this to `false`.
+    /// Whether a mission may **assign** this airframe to a session. It gates
+    /// the forced path of [`AirframeRoles::resolve_launch`]: a mission that
+    /// hands the session an airframe this role forbids cannot launch it. A role
+    /// that is not pilotable must set this to `false`.
+    ///
+    /// It is deliberately not checked on the hangar path, where the player
+    /// launches their own plane and [`LaunchConstraints::hangar_selectable`]
+    /// decides: a shop-listed airframe no mission assigns stays flyable. Whether
+    /// a *mission* session may use the garage plane at all is F25-C's wiring
+    /// decision, and this record does not invent a third rule for it.
     pub mission_launchable: bool,
     /// Whether the hangar may select this airframe as the player's own plane.
     /// A [`Availability::MissionOnly`] airframe must declare this `false`, or
@@ -515,8 +523,11 @@ impl AirframeRoles {
     /// than applied, because an assignment scoped to another session must not
     /// decide this one.
     ///
-    /// With `forced = None` the hangar selection must name a role the hangar
-    /// may select, otherwise the player's own plane could not be launched.
+    /// With `forced = None` the hangar selection must name a role that is pilotable
+    /// and hangar-selectable, otherwise the player's own plane could not be
+    /// launched; [`LaunchConstraints::mission_launchable`] is not consulted
+    /// there, because the garage plane is the player's own plane rather than a
+    /// mission's assignment.
     ///
     /// # Errors
     ///

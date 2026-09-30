@@ -19,7 +19,9 @@ use cs_sim::flight::{
     synthetic_rotor_mapping,
 };
 use cs_types::Tick;
-use cs_types::content::Origin;
+use cs_types::asset_id::SourceSpan;
+use cs_types::content::{Origin, Provenance};
+use cs_types::evidence::{ClaimId, ClaimStatus, ContentHash};
 use cs_types::space::Quaternion;
 
 fn state() -> cs_sim::flight::FlightState {
@@ -261,6 +263,23 @@ fn accept_f25_a_rotor_visual_sampling_never_reaches_the_simulation() {
             field: "rotor_visual.render_dt_s"
         })
     );
+
+    // Finite inputs that overflow are refused by name rather than handed out as
+    // a non-finite drawn phase.
+    let mut absurd_drive = synthetic_rotor_drive();
+    absurd_drive
+        .advance_tick(1e300, 1e300, Tick(1), SYNTHETIC_TICK_DT_S)
+        .expect("a finite commanded rate is accepted however absurd");
+    let absurd = RotorSpeedMapping::new(1e300, Origin::SyntheticFixture)
+        .expect("a finite positive ratio is accepted however absurd");
+    assert_eq!(
+        absurd_drive
+            .visual_sample(Some(&absurd), RotorVisualSample::at_rest(), 1e300)
+            .err(),
+        Some(TelemetryError::NonFinite {
+            field: "rotor_visual.phase_rad"
+        })
+    );
 }
 
 /// The exceptional envelope records every maneuver its kind requires, holds one
@@ -320,5 +339,55 @@ fn accept_f25_a_exceptional_envelope_covers_its_maneuvers_and_is_unmeasured() {
         Err(EnvelopeError::NonPositiveTolerance {
             kind: ManeuverKind::Acceleration
         })
+    );
+
+    // A synthetic envelope stays out of reference use however its status is set:
+    // a `measured` status needs an observed provenance, and even an observed
+    // provenance cannot make a `SyntheticFixture` envelope an original
+    // reference.
+    let mut designed = synthetic_exceptional_envelope();
+    designed.status = EnvelopeStatus::Measured {
+        provenance: Provenance::designed(ClaimId::new("f25a.it.envelope").expect("a claim id")),
+    };
+    assert_eq!(
+        designed.validate(),
+        Err(EnvelopeError::MeasuredWithoutObservation {
+            class: ClaimStatus::Designed
+        })
+    );
+    assert!(!designed.is_ready_as_reference());
+
+    // A synthetic span: it names no real installation and asserts no original
+    // claim. It exists only to drive the readiness gate.
+    let source = SourceSpan::new(
+        ContentHash::from_bytes([0x2a; 32]),
+        "fixture.synthetic-exceptional.zbd",
+        None,
+        0,
+        8,
+        None,
+    )
+    .expect("a valid synthetic span");
+    let mut observed = designed.clone();
+    observed.status = EnvelopeStatus::Measured {
+        provenance: Provenance::new(
+            ClaimId::new("f25a.it.observed").expect("a claim id"),
+            ClaimStatus::ObservedTool,
+            Some(source.clone()),
+        )
+        .expect("an observed claim is accepted"),
+    };
+    assert_eq!(observed.validate(), Ok(()));
+    assert!(
+        !observed.is_ready_as_reference(),
+        "the envelope still came from a synthetic fixture"
+    );
+
+    let mut original = observed;
+    original.origin = Origin::Installation { source };
+    assert_eq!(original.validate(), Ok(()));
+    assert!(
+        original.is_ready_as_reference(),
+        "an installation envelope with an observed reference and full coverage is ready"
     );
 }
