@@ -1,6 +1,6 @@
 //! `cs_xtask` — the workspace's reproducible testing and packaging gates.
 //!
-//! Four commands, all local (the owner's F00-C note keeps task-specific
+//! Five commands, all local (the owner's F00-C note keeps task-specific
 //! discovery out of CI):
 //!
 //! * `test-select --prefix <prefix>` runs the task's positive test selection
@@ -13,6 +13,9 @@
 //!   ([`bootstrap`]): every required workspace member is listed with a real
 //!   manifest, the Bevy/Avian/toolchain pins are frozen, and the CI gates
 //!   are still there.
+//! * `verify-ci-budget` checks that the profiles CI builds under do not emit
+//!   full DWARF, the footprint that ran the runner out of disk (task #430,
+//!   [`budget`]).
 //! * `verify-target-dir` checks that the effective `CARGO_TARGET_DIR` is
 //!   private to this worktree ([`target_dir`]), so concurrent agent builds
 //!   cannot reuse each other's artifacts (task #383).
@@ -25,6 +28,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use cs_xtask::bootstrap;
+use cs_xtask::budget;
 use cs_xtask::ci;
 use cs_xtask::target_dir;
 use cs_xtask::test_select;
@@ -56,6 +60,11 @@ COMMANDS
         [package] manifest, Cargo.lock and rust-toolchain.toml still freeze
         the Bevy 0.19 / Avian3d 0.7 pair and an exact toolchain, and the CI
         workflow keeps its gates.
+    verify-ci-budget [--workspace-root <dir>]
+        Check that the profiles CI builds under (dev, test, bench) do not
+        emit full DWARF. Full DWARF for the Bevy dependency graph is the
+        footprint that ran the runner out of disk and killed the cs_app
+        doctest link with SIGBUS (task #430).
     verify-target-dir [--workspace-root <dir>]
         Check that the effective CARGO_TARGET_DIR is private to this
         worktree: a directory shared between checkouts lets concurrent
@@ -94,6 +103,7 @@ fn main() -> ExitCode {
         "test-select" => run_test_select(&args[1..]),
         "verify-ci" => run_verify_ci(&args[1..]),
         "verify-bootstrap" => run_verify_bootstrap(&args[1..]),
+        "verify-ci-budget" => run_verify_ci_budget(&args[1..]),
         "verify-target-dir" => run_verify_target_dir(&args[1..]),
         other => {
             eprintln!("cs-xtask: unknown command {other:?}");
@@ -236,6 +246,30 @@ fn run_verify_bootstrap(args: &[String]) -> ExitCode {
                 "verify-bootstrap: {} keeps cargo fmt, cargo clippy with -D warnings \
  and the workspace test suite",
                 ci::WORKFLOW_PATH
+            );
+            ExitCode::from(EXIT_OK)
+        }
+        Err(error) => gate_failed(&error.to_string()),
+    }
+}
+
+/// Runs the CI build-footprint gate (task #430): the profiles CI links under
+/// must not emit full DWARF.
+fn run_verify_ci_budget(args: &[String]) -> ExitCode {
+    let options = match parse_options(args, false) {
+        Ok(options) => options,
+        Err(error) => return usage_error(&error),
+    };
+    if let Err(error) = require_workspace(&options.workspace_root) {
+        return gate_failed(&error);
+    }
+
+    match budget::verify_workspace(&options.workspace_root) {
+        Ok(()) => {
+            println!(
+                "verify-ci-budget: {} keeps [profile.dev] debug at a level that \
+does not emit full DWARF for CI's dev, test and bench profiles",
+                budget::MANIFEST_PATH
             );
             ExitCode::from(EXIT_OK)
         }
