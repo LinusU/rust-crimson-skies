@@ -50,6 +50,12 @@
 //! of an installation is routed and its loading, mission and animation
 //! programs located and classified, with an optional coverage check that
 //! fails closed on a container that hides its programs.
+//! [`routes`] is the F31-A `routes` command: the declared route-graph
+//! contract of `cs_content::routes` rendered as a read-only JSON report —
+//! every node's stable id, authored sequence, mandatory flag, resolved
+//! position and resolved trigger volume, plus the declared edges — from the
+//! authored synthetic fixture, which names its synthetic source and is never
+//! retail-ready.
 
 pub mod campaign;
 pub mod catalog;
@@ -60,6 +66,7 @@ pub mod interp;
 pub mod reference_capture;
 pub mod resolve;
 pub mod rof;
+pub mod routes;
 pub mod script_discovery;
 pub mod textures;
 pub mod zbd;
