@@ -613,7 +613,9 @@ impl FlightModel {
         let lift_direction = lift_direction(air_velocity_world, up_world, speed);
         let drag_direction = scale(air_velocity_world, -1.0 / speed.max(AIRSPEED_EPSILON_MPS));
 
-        // Thrust along body forward, with spool, damage and boost.
+        // Thrust along body forward, with spool, damage and boost. A stopped
+        // engine produces nothing at all: the idle thrust is the value at zero
+        // spool of a *running* engine, not a parked one's output.
         let spool = if state.engine.running {
             state.engine.spool.clamp(0.0, 1.0)
         } else {
@@ -621,7 +623,11 @@ impl FlightModel {
         };
         let boost_accepted =
             input.boost && state.boost_available && self.tuning.boost.thrust_n > 0.0;
-        let base_thrust_n = self.tuning.engine.thrust_at(spool) * damage.thrust_authority;
+        let base_thrust_n = if state.engine.running {
+            self.tuning.engine.thrust_at(spool) * damage.thrust_authority
+        } else {
+            0.0
+        };
         let boost_thrust_n = if boost_accepted {
             self.tuning.boost.thrust_n * damage.thrust_authority
         } else {
