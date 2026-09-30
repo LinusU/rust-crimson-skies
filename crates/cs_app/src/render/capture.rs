@@ -53,6 +53,7 @@ use crate::render::bevy_mesh::{GroupUpload, upload_group};
 use crate::render::bevy_state::{MaterialGap, RenderState, render_state};
 use crate::render::material::{Coverage, RenderPhase};
 use crate::render::plan::{DrawItem, DrawItemKey, DrawPlan, SceneView, SortingLimitation};
+use crate::render::profile::Resolution;
 
 /// The image tonemapping a comparison frame used.
 ///
@@ -84,12 +85,24 @@ impl Tonemap {
 /// The values are designed, not measured: F17 fixes *that* they are pinned
 /// during a comparison, not what the original renderer used, and nothing here
 /// asserts the latter.
+///
+/// F17-C added the last two fields. The fidelity baseline is
+/// [`crate::render::profile::RenderProfile`], and a profile that switches on
+/// shadow mapping or a render resolution changes the image; a fixed set that
+/// did not carry those two would accept the settings of an enhanced profile
+/// and compare frames that were not rendered the same way. Every field the
+/// profile's [`crate::render::profile::Presentation`] owns is therefore pinned
+/// here, and the profile builds this value from that presentation
+/// ([`crate::render::profile::RenderProfile::settings`]) so the two cannot
+/// disagree about what the baseline is.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ComparisonSettings {
     exposure: f32,
     tonemap: Tonemap,
     gamma: f32,
     msaa_samples: u32,
+    shadows: bool,
+    render_resolution: Option<Resolution>,
 }
 
 /// The exposure a comparison frame uses: no exposure change.
@@ -104,13 +117,17 @@ pub const COMPARISON_GAMMA: f32 = 2.2;
 pub const COMPARISON_MSAA_SAMPLES: u32 = 1;
 
 impl ComparisonSettings {
-    /// The fixed comparison set.
+    /// The fixed comparison set: no exposure change, no tone curve, the
+    /// display gamma, one sample per pixel, no shadows and no resolution
+    /// override.
     pub const fn comparison() -> Self {
         Self {
             exposure: COMPARISON_EXPOSURE,
             tonemap: Tonemap::None,
             gamma: COMPARISON_GAMMA,
             msaa_samples: COMPARISON_MSAA_SAMPLES,
+            shadows: false,
+            render_resolution: None,
         }
     }
 
@@ -132,6 +149,48 @@ impl ComparisonSettings {
         }
     }
 
+    /// A set with the given shadow setting, for the failure case that must be
+    /// refused.
+    pub const fn with_shadows(shadows: bool) -> Self {
+        Self {
+            shadows,
+            ..Self::comparison()
+        }
+    }
+
+    /// A set with the given render resolution, for the failure case that must
+    /// be refused.
+    pub const fn with_render_resolution(render_resolution: Option<Resolution>) -> Self {
+        Self {
+            render_resolution,
+            ..Self::comparison()
+        }
+    }
+
+    /// The set a profile's presentation renders under.
+    ///
+    /// [`crate::render::profile::RenderProfile::settings`] is the caller: the
+    /// fixed part of the set (exposure and gamma) is the same whatever the
+    /// profile, and the rest is the profile's own presentation, so the two
+    /// cannot disagree about what a frame was rendered with. A profile with an
+    /// enhancement on produces a set that is not [`Self::comparison`], which
+    /// is what [`capture`] refuses.
+    pub const fn for_presentation(
+        tonemap: Tonemap,
+        msaa_samples: u32,
+        shadows: bool,
+        render_resolution: Option<Resolution>,
+    ) -> Self {
+        Self {
+            exposure: COMPARISON_EXPOSURE,
+            tonemap,
+            gamma: COMPARISON_GAMMA,
+            msaa_samples,
+            shadows,
+            render_resolution,
+        }
+    }
+
     /// The camera exposure.
     pub const fn exposure(&self) -> f32 {
         self.exposure
@@ -150,6 +209,16 @@ impl ComparisonSettings {
     /// Samples per pixel.
     pub const fn msaa_samples(&self) -> u32 {
         self.msaa_samples
+    }
+
+    /// Whether the scene's lights cast shadows.
+    pub const fn shadows(&self) -> bool {
+        self.shadows
+    }
+
+    /// The internal render resolution, `None` for the window's own.
+    pub const fn render_resolution(&self) -> Option<Resolution> {
+        self.render_resolution
     }
 
     /// Whether this is exactly the fixed comparison set.
@@ -491,6 +560,10 @@ pub enum CaptureError {
         gamma_bits: u32,
         /// The sample count that was asked for.
         msaa_samples: u32,
+        /// The shadow setting that was asked for.
+        shadows: bool,
+        /// The render resolution that was asked for.
+        render_resolution: Option<Resolution>,
     },
     /// The scene and the plan disagree about which surfaces exist.
     SceneIncomplete {
@@ -509,10 +582,13 @@ impl fmt::Display for CaptureError {
                 tonemap,
                 gamma_bits,
                 msaa_samples,
+                shadows,
+                render_resolution,
             } => write!(
                 f,
                 "comparison settings must be the fixed set: asked for exposure {exposure_bits}, \
-                 tonemap {tonemap}, gamma {gamma_bits}, {msaa_samples} samples per pixel"
+                 tonemap {tonemap}, gamma {gamma_bits}, {msaa_samples} samples per pixel, \
+                 shadows {shadows}, resolution {render_resolution:?}"
             ),
             Self::SceneIncomplete { code, key } => {
                 write!(f, "the scene does not match the draw plan at {key}: {code}")
@@ -607,6 +683,8 @@ pub fn capture(
             tonemap: settings.tonemap().code(),
             gamma_bits: settings.gamma().to_bits(),
             msaa_samples: settings.msaa_samples(),
+            shadows: settings.shadows(),
+            render_resolution: settings.render_resolution(),
         });
     }
 
@@ -705,6 +783,15 @@ fn capture_fingerprint(capture: &FrameCapture) -> ContentHash {
         settings.msaa_samples(),
     ] {
         bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    bytes.push(u8::from(settings.shadows()));
+    match settings.render_resolution() {
+        None => bytes.push(0),
+        Some(resolution) => {
+            bytes.push(1);
+            bytes.extend_from_slice(&resolution.width.to_le_bytes());
+            bytes.extend_from_slice(&resolution.height.to_le_bytes());
+        }
     }
     bytes.extend_from_slice(settings.tonemap().code().as_bytes());
     bytes.push(0);

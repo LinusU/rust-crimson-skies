@@ -22,3 +22,4 @@ mod classification;
 mod fixture;
 mod frame_capture;
 mod golden_scene;
+mod profiles;

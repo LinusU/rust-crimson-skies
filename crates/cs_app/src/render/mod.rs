@@ -49,8 +49,39 @@
 //!
 //! Every adapter refuses rather than defaults: an unestablished fact becomes
 //! a reason code on a refusal the capture reports, never a value invented
-//! here. The faithful and enhanced profiles are F17-C.
+//! here.
+//!
+//! F17-C adds the two ends F17-B left open — the profile a frame renders under
+//! and the consumer that draws it:
+//!
+//! * [`profile::RenderProfile`] is the fidelity baseline plus the enhanced
+//!   options, each switchable on its own. A profile with any enhancement on
+//!   reports [`profile::ProfileParity::DesignedImprovement`] and is refused as
+//!   comparison evidence, and an enhancement reaches only
+//!   [`profile::Presentation`] — never a material, a sort, a collider or a
+//!   visibility rule.
+//! * [`batch::batch_frame`] groups the plan's draws into the batches that
+//!   share their GPU resources, keeping every instance's committed livery and
+//!   damage state per instance (AC03): a different paint is a different
+//!   batch, an unresolved paint is never merged, and a destroyed part is
+//!   withheld with its reason instead of being drawn or silently dropped.
+//! * [`sync::process_render_profile_request`] is the profile producer's
+//!   hand-off and [`sync::sync_frame`] the ECS consumer that turns a batched
+//!   frame into entities, binds each batch's image, applies the presentation
+//!   to the camera, light and window that own it, releases what the frame no
+//!   longer claims, and refuses a frame whose profile nobody applied so the
+//!   caller can apply it and retry.
+//!
+//! # Acceptance tests
+//!
+//! The `accept_f17_c_` selection in `crates/cs_app/tests/render/profiles.rs`
+//! covers the sheet's AC03 — two instances with different paint and damage
+//! staying visually independent after batching — plus the profile rules: every
+//! enhancement independently switchable, the two forbidden options refused, an
+//! enhanced profile refused as comparison evidence, no enhancement changing a
+//! draw decision, and the consumer's teardown, refusal and retry paths.
 
+pub mod batch;
 pub mod bevy_image;
 pub mod bevy_mesh;
 pub mod bevy_state;
@@ -58,4 +89,6 @@ pub mod capture;
 pub mod golden;
 pub mod material;
 pub mod plan;
+pub mod profile;
 pub mod rgb565;
+pub mod sync;
