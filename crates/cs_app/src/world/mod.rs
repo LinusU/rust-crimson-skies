@@ -89,7 +89,7 @@ pub use affine::{AffinePlacement, AffinePlacementError, bake_shape, shear_residu
 pub use audit::{
     GEOMETRY_CONTAINER_FILE, PRESENTABLE_PROBE_MESHES, REPRESENTATIVE_MESHES, SurveyedContainer,
     SurveyedWorldGroup, TEXTURE_ARCHIVE_FILE, WorldGroupSurvey, WorldGroupSurveyError,
-    audit_survey, audit_world_groups, declared_rows, discovered_group_keys, survey_world_groups,
+    audit_survey, audit_world_groups, declared_rows, survey_world_groups, upload_verdict,
 };
 pub use contacts::{
     WorldColliderInstance, WorldContact, WorldContacts, WorldObjectBinding, WorldPlugin,

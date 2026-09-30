@@ -86,11 +86,11 @@
 //! boundary rule and no route search. The unknowns F18-A/B/C recorded are still
 //! unknowns, and this file measures what can be measured and names the rest.
 
-use std::collections::BTreeSet;
 use std::fmt;
 use std::path::Path;
 
-use cs_assets::install::{self, Discovery, REFERENCE_WORLD_GROUP_LEADS};
+use crate::render::bevy_mesh::MeshAdapterError;
+use cs_assets::install::{self, Discovery};
 use cs_content::campaign_bindings::campaign_layout;
 use cs_content::mesh::RenderMesh;
 use cs_content::world::UploadVerdict;
@@ -442,7 +442,14 @@ fn survey_one(
         );
     };
     let digest = record.sha256.to_hex();
-    let bytes = match read_file(&found.manifest.host_root, &container_key) {
+    // The bytes come from the manifest row's **original spelling**, not from
+    // the lowercased logical key. The installation stores its world groups as
+    // `ZBD/C1C/gamez.zbd`, and `logical_key()` folds that to
+    // `zbd/c1c/gamez.zbd`; joining the folded key onto the host root happens
+    // to work on a case-insensitive filesystem and fails on a case-sensitive
+    // one, which is exactly the kind of difference the manifest preserved the
+    // original spelling to survive.
+    let bytes = match read_file(&found.manifest.host_root, record.relative_spelling.as_str()) {
         Ok(bytes) => bytes,
         Err(reason) => {
             return (
@@ -543,47 +550,16 @@ fn survey_one(
             // The verdict is the adapter's own answer, measured here rather than
             // predicted: a mesh whose stored attributes are only partly present
             // is refused, and that is a fact about the retail corpus.
-            let verdict = match crate::render::bevy_mesh::upload_groups(&render, &[]) {
-                Ok(uploads) => {
-                    let mut vertices = 0;
-                    let mut triangles = 0;
-                    for upload in &uploads {
-                        vertices += upload.mesh().count_vertices();
-                        triangles += upload.mesh().indices().map_or(0, |i| i.len() / 3);
-                    }
-                    UploadVerdict::Uploaded {
-                        groups: uploads.len(),
-                        vertices,
-                        triangles,
-                    }
-                }
-                Err(error) => {
-                    // The adapter names the group it refused; the message is
-                    // carried verbatim so a reader does not have to re-run it.
-                    let text = error.to_string();
-                    let group = text
-                        .split_whitespace()
-                        .find_map(|word| word.strip_prefix("material group "))
-                        .and_then(|digits| {
-                            digits
-                                .trim_end_matches(|c: char| !c.is_ascii_digit())
-                                .parse::<usize>()
-                                .ok()
-                        })
-                        .unwrap_or(0);
-                    UploadVerdict::Refused {
-                        material_group: group,
-                        reason: text,
-                    }
-                }
-            };
+            let verdict = upload_verdict(&render);
             representatives.push((*index, render, verdict));
         }
     }
 
     // The presentable search, inside the declared window. Each candidate is
-    // built and handed to the adapter exactly as the census does, so a verdict
-    // here and a verdict there are the same measurement.
+    // built and handed to the adapter exactly as the census does — through
+    // [`upload_verdict`], the same function — so a verdict here and a verdict
+    // there are the same measurement rather than two implementations that
+    // happen to agree.
     let mut presentable = None;
     let mut refused_in_window = 0_usize;
     for index in ranked
@@ -598,7 +574,7 @@ fn survey_one(
             refused_in_window += 1;
             continue;
         };
-        if crate::render::bevy_mesh::upload_groups(&render, &[]).is_ok() {
+        if upload_verdict(&render).is_uploaded() {
             presentable = Some((index, render));
             break;
         }
@@ -619,13 +595,63 @@ fn survey_one(
     )
 }
 
+/// What the **production** upload adapter does with one render mesh: the
+/// census's own measurement, and the single place it is taken.
+///
+/// Both the census and the presentable search go through this function, so a
+/// verdict in a census and a verdict in the capture path cannot be two
+/// implementations that happen to agree today.
+///
+/// The refused material group is read from the adapter's **typed** error
+/// ([`MeshAdapterError`]), never by scraping its `Display`. That is not
+/// stylistic: `split_whitespace` on `"material group 1 carries a normal on 24
+/// of 492 vertices; …"` yields `"material"`, `"group"` and `"1"` as three
+/// separate words, so matching the two-word prefix `"material group "` never
+/// fires and the group silently fell back to `0`. Every refusal the retail
+/// corpus produces on a group other than the first was therefore attributed to
+/// material group 0, while the message carried verbatim beside it said
+/// otherwise — a census that looked measured and was not. Both adapter
+/// refusals carry the group in their payload, so the message is only ever
+/// stored for a reader, never parsed.
+#[must_use]
+pub fn upload_verdict(render: &RenderMesh) -> UploadVerdict {
+    match crate::render::bevy_mesh::upload_groups(render, &[]) {
+        Ok(uploads) => {
+            let mut vertices = 0;
+            let mut triangles = 0;
+            for upload in &uploads {
+                vertices += upload.mesh().count_vertices();
+                triangles += upload.mesh().indices().map_or(0, |i| i.len() / 3);
+            }
+            UploadVerdict::Uploaded {
+                groups: uploads.len(),
+                vertices,
+                triangles,
+            }
+        }
+        Err(error) => {
+            let material_group = match &error {
+                MeshAdapterError::GroupOutOfRange { group, .. }
+                | MeshAdapterError::IncompleteAttribute { group, .. } => *group,
+            };
+            UploadVerdict::Refused {
+                material_group,
+                // Carried verbatim so a reader sees the adapter's own counts
+                // without re-running it.
+                reason: error.to_string(),
+            }
+        }
+    }
+}
+
 /// Reads one inventoried file's bytes from the installation, read-only.
 ///
-/// The path comes from the manifest, so the survey can only read a file
-/// production discovery already inventoried; nothing here joins a path the
-/// manifest did not spell.
-fn read_file(host_root: &Path, logical_key: &str) -> Result<Vec<u8>, String> {
-    let path = host_root.join(logical_key);
+/// `relative_spelling` comes from the manifest row and keeps the host's own
+/// case, so the survey can only read a file production discovery already
+/// inventoried and reads it under the name the host actually uses; nothing here
+/// joins a path the manifest did not spell.
+fn read_file(host_root: &Path, relative_spelling: &str) -> Result<Vec<u8>, String> {
+    let path = host_root.join(relative_spelling);
     std::fs::read(&path).map_err(|error| format!("{} could not be read: {error}", path.display()))
 }
 
@@ -763,10 +789,6 @@ fn census_of(
         // makes no claim about it. Stated as a zero, not as a reconciled corpus.
         bound_texture_names: 0,
         multi_material_group_polygons: multi_group,
-        refused_representatives: candidates
-            .iter()
-            .filter(|mesh| !mesh.upload.is_uploaded())
-            .count(),
     };
     if !facts.has_geometry() {
         return Err(WorldGroupBlocker::NoGeometry {
@@ -828,32 +850,4 @@ fn stored_bounds(render: &RenderMesh) -> ([f64; 3], [f64; 3]) {
         }
     }
     (min, max)
-}
-
-/// The reference world-group leads of spec F02, for a report that wants to state
-/// which of them an installation holds.
-#[must_use]
-pub fn reference_group_leads() -> [&'static str; 8] {
-    REFERENCE_WORLD_GROUP_LEADS
-}
-
-/// The discovered world-group keys of an installation, lowercased and sorted.
-///
-/// The same set [`WorldGroupSurvey::groups`] carries, exposed on its own so a
-/// report can compare it against [`reference_group_leads`] without a survey.
-pub fn discovered_group_keys(install_root: &Path) -> Result<Vec<String>, WorldGroupSurveyError> {
-    let found = install::discover(install_root).map_err(WorldGroupSurveyError::Discovery)?;
-    Ok(found
-        .diagnosis
-        .world_groups
-        .iter()
-        .map(|group| group.logical_key())
-        .collect())
-}
-
-/// The lowercased set of keys a caller already has, for the comparison above.
-pub fn key_set(keys: impl IntoIterator<Item = String>) -> BTreeSet<String> {
-    keys.into_iter()
-        .map(|key| key.to_ascii_lowercase())
-        .collect()
 }

@@ -12,20 +12,21 @@
 //! renderer. No test here carries its own world-group walk, its own census or its
 //! own render path.
 //!
-//! Three of the six tests read no original data and are not ignored, so CI runs
+//! Four of the eight tests read no original data and are not ignored, so CI runs
 //! them: they pin the audit's *contract* — what it maps, what it reports as
-//! missing, and what it refuses to construct — on synthetic fixtures. The
-//! remaining three need capabilities CI does not have and are marked accordingly:
-//! two need `CS_GAME_DIR` and one needs a GPU.
+//! missing, what it refuses to construct, and which material group a refused
+//! upload is attributed to — on synthetic fixtures. The remaining four need
+//! capabilities CI does not have and are marked accordingly: two need a GPU,
+//! two need `CS_GAME_DIR`, and one of the two needs both.
 
 mod evidence;
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 
 use cs_app::world::audit::{
     GEOMETRY_CONTAINER_FILE, PRESENTABLE_PROBE_MESHES, REPRESENTATIVE_MESHES, TEXTURE_ARCHIVE_FILE,
-    audit_survey, survey_world_groups,
+    audit_survey, survey_world_groups, upload_verdict,
 };
 use cs_app::world::gpu_capture::{CaptureRequest, capture_world_mesh};
 use cs_content::mesh::RenderMesh;
@@ -94,7 +95,6 @@ fn synthetic_census(
         texture_names: 12,
         bound_texture_names: 10,
         multi_material_group_polygons: 4,
-        refused_representatives: 0,
     };
     WorldGroupCensus::new(
         WorldId::from_key(key).expect("a valid world key"),
@@ -139,6 +139,169 @@ fn decoded_census(key: &str) -> WorldGroupCensus {
 /// no meaning beyond "these two are not the same bytes".
 fn hash(label: &str) -> ContentHash {
     cs_assets::install::sha256(label.as_bytes())
+}
+
+/// A stored mesh whose **second** material group is the one the upload adapter
+/// refuses, because that group stores a normal on only some of its vertices.
+///
+/// The refusal has to be attributed to group 1, not to group 0. The retail
+/// corpus is full of exactly this case, and an implementation that read the
+/// group out of the adapter's message by string matching (`split_whitespace`
+/// on `"material group 1 carries a normal on …"` yields `"material"`,
+/// `"group"`, `"1"` as separate words, so a two-word prefix never matches)
+/// reported every refusal as group 0 while the message beside it said
+/// otherwise. Only comparing the **typed** field against the message catches
+/// that, which is why this fixture and [`cs_app::world::upload_verdict`] — the
+/// production function the census calls — are the two halves of the test.
+///
+/// Built through the production [`RenderMesh::from_stored_groups`], so the
+/// fixture is the same value the census would measure.
+fn second_group_refusal() -> RenderMesh {
+    use cs_formats::gamez::RawMaterialGroup;
+
+    // Two polygons, one per material group, so the mesh really has two groups.
+    // Only the second carries a partial normal: one of its three corners names
+    // the mesh's single stored normal and two name none, which is the
+    // `IncompleteAttribute` refusal. `RawCorner::normal` is an **index** into
+    // the mesh's normal array, not a vector.
+    let positions = vec![
+        [0.0, 0.0, 0.0],
+        [2.0, 0.0, 0.0],
+        [0.0, 2.0, 0.0],
+        [2.0, 2.0, 0.0],
+    ];
+    let corner = |position: u32, normal: Option<u32>| RawCorner {
+        position,
+        normal,
+        uv: Some([0.0, 0.0]),
+        color: None,
+    };
+    let polygons = vec![
+        RawPolygon {
+            kind: PrimitiveKind::Polygon,
+            raw_flags: 0,
+            material: 0,
+            corners: vec![corner(0, None), corner(1, None), corner(2, None)],
+        },
+        RawPolygon {
+            kind: PrimitiveKind::Polygon,
+            raw_flags: 0,
+            material: 1,
+            corners: vec![corner(0, Some(0)), corner(3, None), corner(2, None)],
+        },
+    ];
+    // One group entry per polygon; the second names material 1.
+    let groups = vec![
+        vec![RawMaterialGroup {
+            material: 0,
+            uvs: vec![[0.0, 0.0]; 3],
+        }],
+        vec![RawMaterialGroup {
+            material: 1,
+            uvs: vec![[0.0, 0.0]; 3],
+        }],
+    ];
+    let render = RenderMesh::from_stored_groups(
+        &RawMesh {
+            positions,
+            normals: vec![[0.0, 0.0, 1.0]],
+            polygons,
+        },
+        &groups,
+    )
+    .expect("two polygons with one stored group each is valid stored data");
+    assert_eq!(
+        render.groups().len(),
+        2,
+        "the fixture must really have two material groups, or it cannot attribute a refusal to \
+         the second one"
+    );
+    render
+}
+
+/// **The refusal names the group it refused.** The head of this stage's finding
+/// is that 23 of the 24 retail representative meshes are refused by the
+/// production upload adapter, and the *group* the adapter named is part of that
+/// measured fact. Reading the group out of the adapter's `Display` instead of
+/// its typed payload attributed every one of those refusals to material group 0,
+/// including the ones the adapter refused on **group 1** — a census that
+/// looked measured and was not.
+///
+/// This test does not need the installation: the refusal is produced by the
+/// production adapter from an authored stored mesh, through the **production**
+/// [`cs_app::world::upload_verdict`] the census itself calls, so CI runs it and
+/// removing or breaking that function fails here.
+#[test]
+fn accept_f18_d_a_refused_upload_names_the_material_group_the_adapter_refused() {
+    let render = second_group_refusal();
+    let verdict = upload_verdict(&render);
+    let UploadVerdict::Refused {
+        material_group,
+        reason,
+    } = &verdict
+    else {
+        panic!(
+            "the fixture must be refused by the production adapter, or it proves nothing; got \
+             {verdict:?}"
+        );
+    };
+    assert_eq!(
+        *material_group, 1,
+        "the adapter refused the second material group, so the verdict must say 1 and not the \
+         first group: {reason}"
+    );
+    assert!(
+        reason.contains("material group 1 "),
+        "the adapter's own message is carried verbatim and must name the same group: {reason:?}"
+    );
+    assert_ne!(
+        *material_group, 0,
+        "a scraper that split the message on whitespace would produce exactly this 0"
+    );
+
+    // The census carries that same verdict, so a reader of a census sees the
+    // number the adapter reported rather than a re-derived one.
+    let carried = WorldGroupCensus::new(
+        WorldId::from_key("c1").expect("a valid world key"),
+        GroupFacts {
+            container_key: "k".to_owned(),
+            container_sha256: "d".to_owned(),
+            mesh_slots: 12,
+            present_meshes: 12,
+            declared_faces: 3,
+            drawn_triangles: 3,
+            missing_faces: 0,
+            texture_names: 0,
+            bound_texture_names: 0,
+            multi_material_group_polygons: 0,
+        },
+        PlacementSource::Undecoded {
+            stored_node_records: 10,
+            nodes_offset: 20,
+        },
+        None,
+        vec![RepresentativeGeometry {
+            mesh_index: 4,
+            triangles: render.triangles().len(),
+            vertices: render.vertices().len(),
+            material_groups: render.groups().len(),
+            stored_min: [0.0; 3],
+            stored_max: [2.0; 3],
+            fingerprint: hash("refused-representative"),
+            upload: verdict.clone(),
+        }],
+        Vec::new(),
+        Vec::new(),
+    )
+    .expect("finite authored values");
+    assert_eq!(carried.refused_representatives(), 1);
+    let refused = carried.refused().next().expect("the one refusal");
+    assert_eq!(refused.mesh_index, 4);
+    assert_eq!(refused.material_groups, 2);
+    assert_eq!(
+        refused.upload, verdict,
+        "the census carries the adapter's own verdict, group included"
+    );
 }
 
 // ------------------------------------------------------- the mapping arm ---
@@ -529,7 +692,6 @@ fn accept_f18_d_world_group_records_refuse_contradictions_and_impossible_values(
         texture_names: 0,
         bound_texture_names: 0,
         multi_material_group_polygons: 0,
-        refused_representatives: 0,
     };
     for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
         let refused = WorldGroupCensus::new(
@@ -1011,15 +1173,54 @@ fn accept_f18_d_retail_every_discovered_world_group_is_visited_and_compared() {
             "{}: the declared representative budget",
             group.world()
         );
-        // The refused count is the audit's own, and it is consistent with the
-        // verdicts the representatives carry: a report that dropped the
-        // refusals would read as "every representative is presentable".
+        // The refused count is the audit's own, and it is counted from the
+        // verdicts the representatives carry rather than from a second stored
+        // number, so the two cannot disagree. This was a tautology once
+        // (`refused_representatives()` compared with `refused().count()`, and
+        // the first is *defined* as the second); it now checks the verdicts
+        // themselves, so a census that reported every representative as
+        // presentable, or attributed a refusal to the wrong material group,
+        // fails here.
+        let refused_here = census
+            .representative()
+            .iter()
+            .filter(|mesh| matches!(mesh.upload, UploadVerdict::Refused { .. }))
+            .count();
         assert_eq!(
             census.refused_representatives(),
-            census.refused().count(),
-            "{}: the refused count is the refusal set",
+            refused_here,
+            "{}: the refused count is counted from the representatives' own verdicts",
             group.world()
         );
+        for mesh in census.refused() {
+            let UploadVerdict::Refused {
+                material_group,
+                reason,
+            } = &mesh.upload
+            else {
+                panic!("{}: refused() yielded an uploaded mesh", group.world());
+            };
+            // The group the adapter refused is carried **in the typed field**,
+            // and the message quotes the same group. An implementation that
+            // scraped the number out of the message instead would report
+            // `material_group: 0` for a refusal the adapter attributed to
+            // group 1, and the two would disagree.
+            assert!(
+                reason.contains(&format!("material group {material_group} ")),
+                "{} mesh {}: the verdict's group {material_group} is not the group the adapter's \
+                 own message names: {reason:?}",
+                group.world(),
+                mesh.mesh_index
+            );
+            assert!(
+                *material_group < mesh.material_groups,
+                "{} mesh {}: refused material group {material_group} is outside the mesh's own \
+                 {} material group(s)",
+                group.world(),
+                mesh.mesh_index,
+                mesh.material_groups
+            );
+        }
         for mesh in census.representative() {
             assert!(
                 mesh.triangles > 0,
@@ -1157,6 +1358,8 @@ fn accept_f18_d_retail_every_world_group_draws_a_measured_frame_on_the_gpu() {
     std::fs::create_dir_all(&directory).expect("the private evidence directory is writable");
     let mut captured = 0_usize;
     let mut refused = 0_usize;
+    // `(group, mesh index, uploadable, geometry digest)` for every frame drawn.
+    let mut drawn: BTreeMap<String, (u32, bool, String)> = BTreeMap::new();
     for group in &survey.groups {
         let container = group.container().expect("every group's container read");
         // The group's own largest **uploadable** stored mesh, by the same
@@ -1192,9 +1395,36 @@ fn accept_f18_d_retail_every_world_group_draws_a_measured_frame_on_the_gpu() {
         );
         assert!(!unknown.adapter.contains("no adapter reported"));
         assert_eq!(unknown.mesh_index, mesh_index);
+        // Two groups can legitimately draw the **same** stored geometry: the
+        // retail archives share meshes, and `c1c`, `c2b` and `c3` all hold
+        // array index 33 with identical vertex bytes, so their frames are
+        // byte-identical. That is a fact about the corpus, and the census must
+        // be able to *show* it rather than leave a reader comparing three
+        // identical PNG digests and wondering whether the capture reused a
+        // file. So the geometry that was drawn is fingerprinted here, and the
+        // distinct-geometry count is asserted against the frame count below.
+        drawn.insert(
+            group.world().key().to_owned(),
+            (
+                mesh_index,
+                cs_app::world::upload_verdict(render).is_uploaded(),
+                geometry_digest(render).to_hex(),
+            ),
+        );
         captured += 1;
     }
     assert_eq!(captured, 8, "one measured frame per discovered world group");
+    let distinct: BTreeSet<&String> = drawn.values().map(|(_, _, digest)| digest).collect();
+    assert!(
+        distinct.len() <= drawn.len(),
+        "each frame's geometry digest is one of the frames' own, so the distinct count cannot \
+         exceed the frame count"
+    );
+    eprintln!(
+        "F18-D GPU: {captured} measured frames over {} distinct stored geometries; the archives \
+         share meshes, so equal digests are shared content and not a reused capture",
+        distinct.len()
+    );
     assert!(
         refused > 0,
         "the retail corpus is expected to hold representative meshes the upload adapter refuses: \
@@ -1204,6 +1434,26 @@ fn accept_f18_d_retail_every_world_group_draws_a_measured_frame_on_the_gpu() {
         "F18-D GPU: {captured} measured frames; {refused} probed stored meshes were refused by \
          the upload adapter before the first accepted one"
     );
+}
+
+/// A digest of exactly the vertex bytes a capture would draw, so two frames
+/// with the same digest are known to be the same **geometry** rather than two
+/// draws that merely happened to look alike.
+///
+/// Deliberately over the render mesh's own positions, which are the production
+/// upload's input bit for bit; nothing about the camera, the colour or the
+/// adapter enters the digest, so it identifies the stored geometry alone.
+fn geometry_digest(render: &RenderMesh) -> cs_types::evidence::ContentHash {
+    let mut bytes: Vec<u8> = Vec::new();
+    for vertex in render.vertices() {
+        for component in vertex.position {
+            bytes.extend_from_slice(&component.to_le_bytes());
+        }
+    }
+    for group in 0..render.groups().len() {
+        bytes.extend_from_slice(&(group as u32).to_le_bytes());
+    }
+    cs_assets::install::sha256(&bytes)
 }
 
 /// Renders one group's mesh through the production upload and captures it.

@@ -191,6 +191,20 @@ presentable mesh, is a curved shell — the geometry is recognisably a *world pr
 not a heightfield substitute, which is the sheet's deliverable stated as an
 observation.
 
+**Three of the eight frames are byte-identical, and that is the corpus, not a
+reused capture.** `ZBD/C1C`, `ZBD/C2B` and `ZBD/C3` all select array index 33 as
+their largest presentable mesh, and its vertex bytes hash identically in all
+three (`23f98175e782…`): the world archives share meshes, so the same stored
+geometry is drawn three times and the PNGs come out equal. A reader comparing
+the artifact digests in `docs/findings/evidence/F18-D.json` will see
+`render-c1c.png`, `render-c2b.png` and `render-c3.png` carry one SHA-256, and
+should read that as shared content rather than as a capture that reused a file.
+The retail GPU test now records a geometry digest per frame and reports the
+distinct count (6 of 8), so the fact is measured rather than left for a reader
+to infer. Whether the original shares these meshes across chapter archives, or
+loads one copy per chapter from a shared source, is **not established here** and
+is not claimed.
+
 **What the frames are not.** They are not a placement (no mesh has a world
 position), not a metric (the stored vertex unit is unmeasured, so the camera's
 distances are in stored units), and not the original's appearance (a flat
@@ -390,6 +404,61 @@ Unknown, and **not** guessed:
    from a real adapter, not that the original's rendering was compared. Nothing
    here is `verified_original` or `release_approved`; this stage can award at
    most **checked**.
+
+## Review (bunny-alpha-2, fresh context, 2026-09-30)
+
+The review found **four defects** in the submitted branch. All four are fixed
+here; the first is the one that mattered.
+
+1. **Every refused upload was attributed to material group 0, whatever the
+   adapter said.** `census_of` read the refused group out of the adapter's
+   `Display` by `split_whitespace().find_map(|w| w.strip_prefix("material
+   group "))`. `"material group 1 carries a normal on 24 of 492 vertices; …"`
+   splits into `"material"`, `"group"`, `"1"`, so the two-word prefix never
+   matched, the `find_map` returned `None`, and the `unwrap_or(0)` fallback
+   made **every** refusal report group 0. The refusal table above is right
+   about the *messages* (they are carried verbatim) and the head count is
+   right, but the census's structured `material_group` field was wrong for
+   every refusal that was not on group 0 — which, per that same table, is most
+   of them. Both `MeshAdapterError` variants carry the group in their payload,
+   so the message never had to be parsed. Fixed by reading the typed error in
+   the new [`upload_verdict`], which is now the single place a verdict is taken
+   (the census and the presentable search both call it, so they cannot drift).
+   Regression test:
+   `accept_f18_d_a_refused_upload_names_the_material_group_the_adapter_refused`,
+   which fails with `left: 0, right: 1` when the parsing form is restored.
+2. **The container bytes were read through a lowercased path.** `read_file`
+   joined the *logical key* (`zbd/c1c/gamez.zbd`) onto the host root, but the
+   installation stores `ZBD/C1C/gamez.zbd`. That works on a case-insensitive
+   filesystem and fails on a case-sensitive one — the exact difference the
+   manifest's preserved original spelling exists to survive, and the row
+   carrying it was right there. Now reads `record.relative_spelling`.
+3. **A gap check that could not fire.** `census_verdict` pushed
+   `WorldAuditGap::UnknownOpeningClass` from inside a loop over openings that
+   had already been filtered by `opening.class == *class` for `class ∈
+   OpeningClass::ALL`, and `StuntOpening::class` is a closed enum. The branch
+   was unreachable and no test could reach it. This is the same class of
+   defect the implementer's own sensitivity table found twice
+   (`UniformFrame`, `DegenerateBounds`); the variant and the check are removed
+   rather than left as readable dead code.
+4. **A tautological assertion.** The retail test asserted
+   `census.refused_representatives() == census.refused().count()`, and the
+   first is *defined* as the second, so it could not fail. It now counts the
+   verdicts on the representatives themselves and additionally checks that each
+   refusal's typed group agrees with the message the adapter produced and lies
+   inside the mesh's own group count.
+
+`GroupFacts::refused_representatives` was also removed: it was written by every
+caller and **read by nobody** — `WorldGroupCensus::new` never copied it into the
+census, and the census derives the count from the representatives instead. Two
+fields claiming to hold the same number, one of them dead, is how a reader ends
+up comparing two values that quietly disagree.
+
+Not changed, and why: the `is_complete()` "every group visited" clause is
+redundant with the routed clause, as the implementer's table already recorded.
+It is harmless, the redundancy is documented, and removing it would delete a
+defensive check for no behavioural gain. The clip-plane derivation is likewise
+kept as the defensible choice with its "not established" note intact.
 
 ## Sources
 

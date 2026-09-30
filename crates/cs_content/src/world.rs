@@ -2214,14 +2214,6 @@ pub struct GroupFacts {
     pub bound_texture_names: usize,
     /// Stored polygons that carry more than one material group.
     pub multi_material_group_polygons: usize,
-    /// Of the group's [`REPRESENTATIVE_COUNT`](RepresentativeGeometry) meshes,
-    /// how many the production upload adapter refused.
-    ///
-    /// A non-zero value is a real finding, not a defect of the audit: those
-    /// meshes are the group's largest stored geometry and the world load would
-    /// refuse to present them, because the upload adapter will not fill a buffer
-    /// from a partly stored attribute.
-    pub refused_representatives: usize,
 }
 
 impl GroupFacts {
@@ -2735,14 +2727,6 @@ pub enum WorldAuditGap {
         /// The group the census is about.
         measured: WorldId,
     },
-    /// An opening of a class outside [`OpeningClass::ALL`], so a report could
-    /// hold a class no reader of the sheet knows about.
-    UnknownOpeningClass {
-        /// The group the census is about.
-        world: WorldId,
-        /// The class code that is not in the vocabulary.
-        code: String,
-    },
 }
 
 impl fmt::Display for WorldAuditGap {
@@ -2769,9 +2753,6 @@ impl fmt::Display for WorldAuditGap {
                 f,
                 "the audit row declares {declared} but the census is about {measured}"
             ),
-            Self::UnknownOpeningClass { world, code } => {
-                write!(f, "{world} located an opening of unknown class {code:?}")
-            }
         }
     }
 }
@@ -2983,6 +2964,13 @@ fn census_verdict(group: &WorldGroupRef, census: WorldGroupCensus) -> WorldGroup
     // The opening audit visits every class the sheet names, whether or not
     // anything located it, so a report can always be asked "was a hangar
     // looked for?" and get an answer.
+    //
+    // There is deliberately **no** "class outside the vocabulary" check here.
+    // It was written once and could never fire: `located` is filtered by
+    // `opening.class == *class` over `OpeningClass::ALL`, and
+    // `StuntOpening::class` is a closed enum, so an unknown class is not
+    // representable in the first place. The gap variant is gone rather than
+    // left as unreachable production code with no test that can reach it.
     let openings = OpeningClass::ALL
         .iter()
         .map(|class| {
@@ -2992,14 +2980,6 @@ fn census_verdict(group: &WorldGroupRef, census: WorldGroupCensus) -> WorldGroup
                 .filter(|opening| opening.class == *class)
                 .cloned()
                 .collect();
-            for opening in &located {
-                if !OpeningClass::ALL.contains(&opening.class) {
-                    gaps.push(WorldAuditGap::UnknownOpeningClass {
-                        world: group.world().clone(),
-                        code: opening.class.code().to_owned(),
-                    });
-                }
-            }
             let unlocated = if located.is_empty() {
                 vec![*class]
             } else {
