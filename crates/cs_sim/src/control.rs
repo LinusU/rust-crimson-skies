@@ -28,9 +28,10 @@
 //! Every policy and fixture in this module is newly authored project design,
 //! not measured original behavior. Which original commands exist, how they
 //! are bound and how the original game distributes control are unknown until
-//! F22-D; the calibration and device adapters are F22-B and the focus, replay
-//! and full ownership wiring are F22-C
-//! (`docs/findings/2026-09-29-f22-a-command-schema-and-action-map.md`).
+//! F22-D; the calibration and device adapters are F22-B, and the focus, replay
+//! and control-ownership wiring that drives this buffer is F22-C
+//! (`docs/findings/2026-09-29-f22-a-command-schema-and-action-map.md`,
+//! `docs/findings/2026-09-30-f22-c-focus-ui-replay-ownership.md`).
 
 use cs_types::Tick;
 use cs_types::input::{
@@ -468,6 +469,45 @@ impl ControlBuffer {
     #[must_use]
     pub fn pending_edges(&self) -> usize {
         self.pending.len()
+    }
+
+    /// Discards the edges that are still waiting for a boundary and returns
+    /// them (F22-C).
+    ///
+    /// This is the teardown half of "an edge is consumed by the first input
+    /// boundary at or after its frame tick": an edge discarded here was never
+    /// delivered, so control ownership can change without the new owner
+    /// executing the previous owner's queued press. A focus loss, a pause, a
+    /// control handover and a teardown all drop their queued edges through this
+    /// one call, and the returned record says what was dropped instead of
+    /// letting a press vanish silently.
+    pub fn drain_pending(&mut self) -> Vec<Action> {
+        let drained = std::mem::take(&mut self.pending);
+        drained.into_iter().map(|edge| edge.action).collect()
+    }
+
+    /// Sets every driven axis to exactly neutral and returns the commands it
+    /// changed (F22-C).
+    ///
+    /// [`AxisState`] holds a deflection until a later frame replaces it, so a
+    /// session that stops polling — a focus loss, a pause, a control handover,
+    /// a menu — must state the neutral explicitly or the aircraft keeps the
+    /// stick's last deflection forever. This is the same rule the device
+    /// adapters apply at the end of every finished frame, for the paths where
+    /// there is no next frame.
+    ///
+    /// Only the axes that were not already exactly neutral are reported, so a
+    /// second handover has nothing to claim and a trace shows the release that
+    /// actually changed something.
+    pub fn neutralize_axes(&mut self) -> Vec<FlightCommand> {
+        let mut neutralized = Vec::new();
+        for (command, value) in &mut self.axes.values {
+            if *value != 0.0 {
+                *value = 0.0;
+                neutralized.push(*command);
+            }
+        }
+        neutralized
     }
 }
 
@@ -1027,5 +1067,74 @@ mod tests {
             "a refused position changes nothing"
         );
         assert_eq!(steps.step(), ThrottleSteps::DESIGNED_STEP);
+    }
+
+    /// F22-C: the teardown half of the buffer. A handover ends local control,
+    /// and it has to be able to (a) drop the edges that no boundary has
+    /// delivered, so the next owner cannot execute the previous owner's press,
+    /// and (b) state the neutral for every axis the buffer holds, because
+    /// `AxisState` only ever moves an axis a frame names and a session that
+    /// stops polling has no next frame.
+    #[test]
+    fn accept_f22_c_draining_and_neutralizing_end_the_local_hold() {
+        let mut buffer = ControlBuffer::new();
+        let mut frame = InputFrame::new(Tick(5));
+        frame.push_edge(fire_primary());
+        frame.push_edge(Action::Flight(FlightCommand::Eject));
+        frame.set_axis(
+            AxisValue::from_unit(FlightCommand::Pitch, -0.5).expect("a valid deflection"),
+        );
+        frame.set_axis(
+            AxisValue::from_unit(FlightCommand::Throttle, 1.0).expect("full scale is valid"),
+        );
+        buffer.apply_frame(&frame).expect("the frame applies");
+        assert_eq!(buffer.pending_edges(), 2);
+
+        // The handover: the queued presses are gone and the axes are neutral.
+        let discarded = buffer.drain_pending();
+        assert_eq!(
+            discarded,
+            vec![fire_primary(), Action::Flight(FlightCommand::Eject)],
+            "an undelivered edge is discarded in observation order, and reported"
+        );
+        assert_eq!(buffer.pending_edges(), 0);
+        assert_eq!(
+            buffer.begin_tick(Tick(5)),
+            Vec::<Action>::new(),
+            "a discarded edge is never delivered, not even later"
+        );
+
+        let mut neutralized = buffer.neutralize_axes();
+        neutralized.sort();
+        assert_eq!(
+            neutralized,
+            vec![FlightCommand::Pitch, FlightCommand::Throttle],
+            "every held axis is stated neutral and named"
+        );
+        assert_eq!(buffer.axis(FlightCommand::Pitch), Some(0.0));
+        assert_eq!(buffer.axis(FlightCommand::Throttle), Some(0.0));
+        assert!(buffer.axes().is_neutral());
+
+        // A second handover has nothing left to do and says so, so a teardown
+        // that runs twice cannot deadlock or claim it released something.
+        assert!(buffer.drain_pending().is_empty());
+        assert!(
+            buffer.neutralize_axes().is_empty(),
+            "an axis that is already neutral is not reported as neutralized"
+        );
+
+        // A frame after the handover still works: the buffer is usable, not
+        // poisoned.
+        let mut fresh = InputFrame::new(Tick(6));
+        fresh.push_edge(fire_primary());
+        fresh
+            .set_axis(AxisValue::from_unit(FlightCommand::Roll, 0.25).expect("a valid deflection"));
+        buffer.apply_frame(&fresh).expect("the frame applies");
+        assert_eq!(buffer.begin_tick(Tick(6)), vec![fire_primary()]);
+        assert!(
+            (buffer.axis(FlightCommand::Roll).expect("roll") - 0.25).abs() < 1e-4,
+            "and the new deflection is held again"
+        );
+        assert_eq!(buffer.axis(FlightCommand::Pitch), Some(0.0));
     }
 }
