@@ -194,3 +194,33 @@ consumes `SkyFrame` yet, and nothing here is `verified_original`. F19-B is
 the stage that draws from these records and F19-D the stage that may compare
 them against original captures; synthetic fixtures alone cannot certify
 original-data behavior.
+
+## Review fixes (same task, reviewer pass)
+
+Two defects were found while reviewing this branch and fixed before it was
+accepted; both are covered by assertions that were shown to fail when the
+fix is reverted:
+
+1. **`record_fingerprint` hashed `origin`.** The function's own doc and
+   `WorldDefinition::record_fingerprint` both state that `origin` and
+   `provenance` are left out ("those say where the record came from, not
+   what it says"), but the implementation pushed `origin.label()` after the
+   record id — the only record fingerprint in the workspace that did so.
+   The digest now omits `origin`, matching the documented contract.
+   Sensitivity: re-adding the push makes
+   `accept_f19_a_environment_record_fingerprint_tracks_the_said_content`
+   fail at "the origin a record came from is not part of what it says".
+2. **`SkyArt::generated` bypassed `SkyArt::try_new`.** It assembled the
+   record directly, so a caller could build a `SkyArt` whose fallback was
+   `Generated { profile: Retail }` — the exact value `try_new` refuses with
+   `SkyArtError::NonSyntheticGeneratedSky`. It now returns
+   `Result<Self, SkyArtError>` and is built through `try_new`, so no public
+   constructor can produce a retail-stamped generated sky (F19
+   non-negotiable behavior 5).
+   Sensitivity: constructing the record directly again makes
+   `accept_f19_a_missing_sky_texture_is_a_diagnostic_and_a_generated_sky_needs_the_synthetic_profile`
+   fail at "a retail generated sky must be refused".
+
+Also corrected in passing: the `EnvironmentKeyError::Empty` doc claimed the
+variant covered keys that were "empty or only separators"; a
+separators-only key reports `NoAlphanumeric`, so the doc now says empty.
