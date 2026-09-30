@@ -118,14 +118,17 @@
 //!
 //! [`render`] is the F17 rendering contract
 //! (`specs/F17-rendering-material-fidelity-and-scalable-presentation.md`,
-//! stages `### F17-A` and `### F17-B`): the declared-not-derived material
-//! classification ([`render::material`]), the phase-ordered, depth-sorted
-//! [`render::plan::DrawPlan`], and the [`render::golden`] synthetic test
-//! scene — overlapping glass, an alpha-cut fence, an additive sprite and
-//! per-corner colors; plus the canonical-to-Bevy adapters
-//! ([`render::bevy_mesh`], [`render::bevy_image`], [`render::bevy_state`])
-//! and the comparison frame capture ([`render::capture`]). The faithful and
-//! enhanced render profiles are F17-C.
+//! stages `### F17-A`, `### F17-B` and `### F17-C`): the declared-not-derived
+//! material classification ([`render::material`]), the phase-ordered,
+//! depth-sorted [`render::plan::DrawPlan`], and the [`render::golden`]
+//! synthetic test scene — overlapping glass, an alpha-cut fence, an additive
+//! sprite and per-corner colors; plus the canonical-to-Bevy adapters
+//! ([`render::bevy_mesh`], [`render::bevy_image`], [`render::bevy_state`]),
+//! the comparison frame capture ([`render::capture`]), the faithful profile and
+//! its independently switchable enhanced options ([`render::profile`]), the
+//! instance batching that keeps every aircraft's committed paint and damage
+//! state per instance ([`render::batch`]), and the session that applies a
+//! profile and syncs a batched frame into the ECS ([`render::sync`]).
 //!
 //! [`environment`] is the F19-A environment boundary
 //! (`specs/F19-sky-atmosphere-weather-and-visibility.md`, stage

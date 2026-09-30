@@ -697,7 +697,11 @@ fn accept_f17_c_the_consumer_draws_one_entity_per_batch_with_every_row() {
     );
     assert_eq!(swapped.released, 3, "every stale draw is despawned");
     assert_eq!(swapped.spawned, 2, "b's red wing and the merged body draw");
-    assert_eq!(batch_entities(&world), 3, "no entity of the old frame is left");
+    assert_eq!(
+        batch_entities(&world),
+        3,
+        "no entity of the old frame is left"
+    );
     let merged = batch_entity(&world, &next, RenderPhase::Opaque, PLANE_B);
     assert_eq!(
         world
@@ -1338,19 +1342,22 @@ fn accept_f17_c_unresolved_paint_and_part_identity_are_reported_not_assumed() {
     // paints may be different, so merging them would invent a match.
     let mut all_unbound = fixture();
     for instance in [PLANE_A, PLANE_B, PLANE_C] {
-        all_unbound.visuals.insert(InstanceVisual::unbound(instance));
+        all_unbound
+            .visuals
+            .insert(InstanceVisual::unbound(instance));
     }
     // `a`'s wing is intact here, so the three wings are consecutive items with
     // one geometry, one state and one image between them.
-    all_unbound.visuals.insert(
-        InstanceVisual::unbound(PLANE_A)
-            .with_damage(&AirframeDamageState::new()),
-    );
+    all_unbound
+        .visuals
+        .insert(InstanceVisual::unbound(PLANE_A).with_damage(&AirframeDamageState::new()));
     let frame = all_unbound.batch(&RenderProfile::faithful());
     let wings = batches_of(&frame, RenderPhase::Masked);
     assert_eq!(wings.len(), 3, "three unresolved paints, three draws");
     assert!(
-        wings.iter().all(|batch| batch.len() == 1 && !batch.mergeable()),
+        wings
+            .iter()
+            .all(|batch| batch.len() == 1 && !batch.mergeable()),
         "no two unresolved paints may share a draw"
     );
     assert_eq!(frame.instance_count(), 6, "nothing was withheld or dropped");
