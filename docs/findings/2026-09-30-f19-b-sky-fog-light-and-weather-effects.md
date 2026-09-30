@@ -205,38 +205,42 @@ Everything in this stage is **designed** engine contract. The following are
 | Where environment records belong in the canonical catalog | inherited from F19-A: `ContentKind` has no environment namespace, tracked as #407 `F19-A-CATALOG-KIND` | #407, owner decision |
 | Whether a retail run may substitute anything for a missing sky texture | this stage answers "no" from the sheet; the original's own behaviour is unmeasured | F19-D |
 
-## An architectural seam this stage ran into: the wind conversion lives above the simulation
+## The seam this stage ran into: the wind conversion lived above the simulation
 
-`AuthoritativeWind` and `ProjectileMotion` live in `cs_app::environment::air`,
-but the code that actually *applies* a wind lives below them: `cs_sim` owns
-`FlightEnvironment::wind_velocity_mps`, the `sub(state.linear_velocity_mps,
-environment.wind_velocity_mps)` inside `FlightModel::compute`, and (from F27-B)
-whatever moves a projectile. The dependency runs `cs_app -> cs_sim`, never the
-reverse, so **`cs_sim` cannot call `AuthoritativeWind::air_relative`**. The one
-conversion F19 non-negotiable behavior 2 asks for therefore lives in the crate
-that sits *above* the simulation, while three separate consumers may each want
-their own copy of it:
+*Resolved by #434 `F19-WIND-CONVERSION-OWNER`; the decision is recorded in
+`docs/findings/2026-09-30-f19-wind-conversion-ownership.md`.*
 
-* `FlightModel::compute` already subtracts the wind itself (correctly, and this
-  stage's tests measure against it);
-* `F27-B` will need the same subtraction for swept ballistics, in
+As this stage was written, `AuthoritativeWind` and `ProjectileMotion` lived in
+`cs_app::environment::air`, but the code that actually *applies* a wind lived
+below them: `cs_sim` owns `FlightEnvironment::wind_velocity_mps`, the
+`sub(state.linear_velocity_mps, environment.wind_velocity_mps)` inside
+`FlightModel::compute`, and (from F27-B) whatever moves a projectile. The
+dependency runs `cs_app -> cs_sim`, never the reverse, so **`cs_sim` could not
+call `AuthoritativeWind::air_relative`**. The conversion F19 non-negotiable
+behavior 2 asks for therefore sat in the crate *above* the simulation, while
+three consumers each wanted their own copy of it:
+
+* `FlightModel::compute` subtracted the wind itself (correctly, and this stage's
+  tests measured against it);
+* `F27-B` would need the same subtraction for swept ballistics, in
   `crates/cs_sim/src/weapons/`;
-* this stage's `AuthoritativeWind::air_relative` is the third.
+* this stage's `AuthoritativeWind::air_relative` was the third.
 
-The *record* is genuinely shared — `cs_content::environment::EnvironmentState::wind`
-is one field every consumer reads — so "the same authoritative field" holds at
-the data level today. The **conversion** is not yet guaranteed to be one, and
-nothing in F19-B, F19-C or F27-B can enforce it from where it sits. Neither
-F19-C nor this task's owner paths reach `crates/cs_sim/src/flight.rs` or a
-`cs_sim` environment module, so this stage cannot fix it.
+The *record* was always shared — `cs_content::environment::EnvironmentState::wind`
+is one field every consumer reads — so "the same authoritative field" held at
+the data level. The **conversion** was not guaranteed to be one.
 
-The obvious resolutions are to move the field and its conversion down into
-`cs_sim` (where the consumer is) or to publish it from `cs_types`, so both
-`cs_sim` and `cs_app` can reach one function. Which one is an owner decision
-about crate layout, so it is filed as **#434 `F19-WIND-CONVERSION-OWNER`**
-rather than guessed here. Until then, treat AC02 as proven **between the two
-consumers that exist today** (the flight model and this stage's
-`ProjectileMotion`), not as a property of the whole engine.
+#434 moved the conversion down into `cs_sim::environment`, next to
+`FlightEnvironment`, and made every side call it: both flight models convert
+through `FlightEnvironment::air_relative_velocity_m_s`, `cs_app::environment::air`
+re-exports the same functions and `AuthoritativeWind` delegates to them. The
+record and the unknown-wind refusal stayed in `cs_app`, because
+`AuthoritativeWind::from_state` reads a `cs_content` environment state and
+`docs/01-ARCHITECTURE.md` does not let `cs_sim` depend on `cs_content`. F27-B
+must call the shared conversion rather than write its own. AC02 is therefore
+proven for the flight model and the projectile path together, on one
+implementation — still on synthetic fixtures, so still **checked**, not
+`verified_original`.
 
 ## What is not claimed
 
@@ -247,3 +251,12 @@ records and no ECS component holds an environment state: F19-C wires the
 records into their real producer and consumer, and F19-D is the stage that may
 compare them against original captures. Synthetic fixtures alone cannot
 certify original-data behavior.
+
+One wording correction, made by #434: this document previously limited AC02 to
+"the two consumers that exist today", because the conversion was reachable only
+from above the simulation. That limit no longer applies to the *conversion* —
+there is one implementation in `cs_sim::environment` and both the flight models
+and the projectile path call it. AC02 remains limited in two other ways that
+have not changed: it is proven on synthetic fixtures and designed winds only,
+and a projectile's drag, ballistics and wind-shear behaviour are unmeasured and
+unmodelled.

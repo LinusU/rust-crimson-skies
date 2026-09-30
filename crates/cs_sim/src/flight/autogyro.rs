@@ -1764,8 +1764,7 @@ impl ExceptionalControlLaw {
         let rotor_drag_n =
             self.profile.rotor_drag_n_per_tip_air * rotor_tip_speed_mps * airspeed_mps;
         let up_world = rotated(super::model::BODY_UP, state.orientation);
-        let air_velocity_world =
-            subtracted(state.linear_velocity_mps, environment.wind_velocity_mps);
+        let air_velocity_world = environment.air_relative_velocity_m_s(state.linear_velocity_mps);
         let air_direction = scaled(
             air_velocity_world,
             1.0 / airspeed_mps.max(AIRSPEED_EPSILON_MPS),
@@ -2116,10 +2115,6 @@ fn cross(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 
 fn added(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
-}
-
-fn subtracted(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
 }
 
 fn scaled(a: [f64; 3], factor: f64) -> [f64; 3] {
@@ -3107,7 +3102,7 @@ mod law_tests {
             wind_velocity_mps: crosswind,
             ..FlightEnvironment::SEA_LEVEL
         };
-        let cross_air = subtracted(state.linear_velocity_mps, crosswind);
+        let cross_air = environment.air_relative_velocity_m_s(state.linear_velocity_mps);
         let cross_airspeed = dot(cross_air, cross_air).sqrt();
         let (mut cross_rotor, cross_tick) = prespun(
             law.commanded_rotor_radps(cross_airspeed)

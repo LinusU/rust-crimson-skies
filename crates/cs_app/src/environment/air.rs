@@ -8,7 +8,7 @@
 //!
 //! F19 non-negotiable behavior 2 says *the wind used by flight and
 //! projectiles is the same authoritative field*. This module is where that
-//! sentence becomes one function instead of two:
+//! sentence becomes one field instead of two:
 //!
 //! * [`AuthoritativeWind`] lifts the single
 //!   [`cs_content::environment::WindField`] out of a current
@@ -16,14 +16,15 @@
 //!   event replaces — and refuses to exist at all while that field is an
 //!   explicit unknown. A caller therefore cannot quietly fly still air
 //!   through a storm whose wind nobody measured (F19 behavior 1: unknown
-//!   weather tuning stays unknown).
-//! * [`AuthoritativeWind::air_relative`] is the **one** conversion every
-//!   consumer uses. [`FlightModel`](cs_sim::flight::FlightModel) already
-//!   applies `v_air = v_world - wind_world` internally, so
-//!   [`AuthoritativeWind::flight_environment`] hands it that very velocity
-//!   rather than a second approximation of it; a projectile uses
-//!   [`AuthoritativeWind::world_velocity`] and
-//!   [`AuthoritativeWind::air_relative`] for the same field.
+//!   weather tuning stays unknown). This binding needs `cs_content`, which
+//!   `cs_sim` may not depend on, so the *record* is read here.
+//! * [`AuthoritativeWind::air_relative`] is a **delegation** to
+//!   [`air_relative_velocity_m_s`], the single implementation the simulation
+//!   itself uses: [`FlightModel`](cs_sim::flight::FlightModel) converts
+//!   through [`FlightEnvironment::air_relative_velocity_m_s`], so the aircraft
+//!   and this module subtract the same field by the same function, and a
+//!   projectile uses [`AuthoritativeWind::world_velocity`] — the exact inverse
+//!   — for the same field.
 //! * [`AuthoritativeWind::relative_air_velocity`] is what a weapon system
 //!   needs (closing speed between a projectile and a target). It is
 //!   deliberately **wind-invariant**: the air moves both bodies together, so
@@ -42,21 +43,18 @@
 //! ballistic model. The unknowns are recorded in
 //! `docs/findings/2026-09-30-f19-b-sky-fog-light-and-weather-effects.md`.
 //!
-//! # Where this conversion lives, and why that is not settled
+//! # Where the conversion lives
 //!
-//! The code that *applies* a wind is below this module: `cs_sim` owns
-//! [`FlightEnvironment::wind_velocity_mps`] and the subtraction inside
-//! [`FlightModel`](cs_sim::flight::FlightModel), and F27-B will need the same
-//! subtraction again for swept ballistics. The crate dependency runs
-//! `cs_app -> cs_sim` and never the reverse, so **`cs_sim` cannot call
-//! [`AuthoritativeWind::air_relative`]**. The authoritative *record* is shared —
-//! one [`EnvironmentState::wind`] every consumer reads — but the *conversion*
-//! is currently reachable only from above the simulation, so a second copy in
-//! `cs_sim` is a live risk this module cannot prevent from where it sits.
-//!
-//! Treat this as settled by task #434 `F19-WIND-CONVERSION-OWNER`, not by this
-//! module. Until then, the "one conversion" claim in this file's docs is a
-//! statement about the consumers that exist today, not about the whole engine.
+//! The subtraction is owned by [`cs_sim::environment`], not here: the code that
+//! *applies* a wind lives below this module (`cs_sim` owns
+//! [`FlightEnvironment::wind_velocity_mps`] and the conversion inside
+//! [`FlightModel`](cs_sim::flight::FlightModel)), and the crate dependency runs
+//! `cs_app -> cs_sim` and never the reverse, so a conversion defined here could
+//! not be reached from the simulation. Task #434 `F19-WIND-CONVERSION-OWNER`
+//! moved it down; the three functions are re-exported above and every method
+//! below delegates, so there is one implementation and both sides of the
+//! dependency call it. The reasoning is recorded in
+//! `docs/findings/2026-09-30-f19-wind-conversion-owner-434.md`.
 
 use std::fmt;
 
@@ -64,6 +62,13 @@ use cs_content::environment::EnvironmentState;
 use cs_sim::flight::FlightEnvironment;
 use cs_types::content::Resolved;
 use cs_types::evidence::ClaimId;
+
+// The conversion itself is owned by `cs_sim::environment` (task #434
+// `F19-WIND-CONVERSION-OWNER`), because the crate that *applies* a wind is
+// `cs_sim` and `cs_app -> cs_sim` is one-way. Re-exported here so a consumer
+// that already imports this module reaches the one implementation without
+// learning a second path to it; the methods below delegate to it.
+pub use cs_sim::environment::{air_relative_velocity_m_s, world_velocity_from_air_m_s};
 
 /// The largest velocity component, in m/s, [`AuthoritativeWind::try_new`] and
 /// [`ProjectileMotion::try_new`] accept.
@@ -213,43 +218,39 @@ impl AuthoritativeWind {
     /// The air-relative velocity of something moving at `world_velocity_m_s`
     /// in world space: `v_air = v_world - wind_world`.
     ///
-    /// This is the `FLIGHT-PHYSICS` sign convention and it is the one
-    /// conversion this module offers. An aircraft instrument, a projectile
-    /// and a closing-speed test all call it, so none of them can drift onto a
-    /// different sign or a different field.
+    /// This is the `FLIGHT-PHYSICS` sign convention. It delegates to
+    /// [`air_relative_velocity_m_s`], the one implementation
+    /// [`FlightModel`](cs_sim::flight::FlightModel) and every other consumer
+    /// inside the simulation use, so an aircraft instrument, a projectile and
+    /// a closing-speed test cannot drift onto a different sign or a different
+    /// field.
     #[must_use]
     pub fn air_relative(&self, world_velocity_m_s: [f64; 3]) -> [f64; 3] {
-        [
-            world_velocity_m_s[0] - self.velocity_m_s[0],
-            world_velocity_m_s[1] - self.velocity_m_s[1],
-            world_velocity_m_s[2] - self.velocity_m_s[2],
-        ]
+        air_relative_velocity_m_s(world_velocity_m_s, self.velocity_m_s)
     }
 
     /// The world velocity of something whose velocity is *authored* in
     /// air-relative terms — a projectile launched with a muzzle speed
     /// relative to the air it is about to fly through.
     ///
-    /// It is the exact inverse of [`AuthoritativeWind::air_relative`], so
+    /// It is the exact inverse of [`AuthoritativeWind::air_relative`] — the
+    /// shared [`world_velocity_from_air_m_s`] — so
     /// `world_velocity(air_relative(v)) == v` for every representable `v`.
     #[must_use]
     pub fn world_velocity(&self, air_velocity_m_s: [f64; 3]) -> [f64; 3] {
-        [
-            air_velocity_m_s[0] + self.velocity_m_s[0],
-            air_velocity_m_s[1] + self.velocity_m_s[1],
-            air_velocity_m_s[2] + self.velocity_m_s[2],
-        ]
+        world_velocity_from_air_m_s(air_velocity_m_s, self.velocity_m_s)
     }
 
     /// The air-relative speed of a world velocity: the aircraft's true
     /// airspeed, and the same number a projectile reads off its own velocity.
     ///
-    /// This is `|v_air|`. It is the magnitude the flight model computes as
-    /// its `InstrumentState::airspeed_mps`, so the effect and the model can
-    /// be compared in one assertion.
+    /// This is `|v_air|`, computed by the simulation's own
+    /// [`airspeed_m_s`](cs_sim::environment::airspeed_m_s). It is the magnitude
+    /// the flight model computes as its `InstrumentState::airspeed_mps`, so the
+    /// effect and the model can be compared in one assertion.
     #[must_use]
     pub fn airspeed_m_s(&self, world_velocity_m_s: [f64; 3]) -> f64 {
-        norm(self.air_relative(world_velocity_m_s))
+        cs_sim::environment::airspeed_m_s(world_velocity_m_s, self.velocity_m_s)
     }
 
     /// The velocity of `target` as seen from `origin`, both given as **world**

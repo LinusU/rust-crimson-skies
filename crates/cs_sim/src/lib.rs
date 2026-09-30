@@ -120,6 +120,19 @@
 //! The provenance-carrying producer record is `cs_content::routes`; F31-B
 //! wires pursuit and avoidance into the integrated flight loop.
 //!
+//! [`environment`] owns the air-relative velocity conversion and nothing else
+//! (`specs/F19-sky-atmosphere-weather-and-visibility.md`, non-negotiable
+//! behavior 2; task #434 `F19-WIND-CONVERSION-OWNER`):
+//! [`environment::air_relative_velocity_m_s`] is the single implementation of
+//! the `FLIGHT-PHYSICS` convention `v_air = v_world - wind_world`, and the
+//! flight models, `cs_app::environment::air` and every future weapon consumer
+//! call it. It sits here because the code that *applies* a wind is below the
+//! crate that first needed it, and `cs_app -> cs_sim` is one-way: F19-B could
+//! not reach its own conversion from here. No wind record, no still-air default
+//! and no wind profile live in this module — reading the authoritative field
+//! out of a `cs_content` environment state stays in `cs_app`, because
+//! `cs_content` is not a dependency this crate may take.
+//!
 //! [`cs_types`]: cs_types
 //! [`cs_script`]: cs_script
 
@@ -129,6 +142,7 @@ pub mod audio_events;
 pub mod collision;
 pub mod control;
 pub mod damage;
+pub mod environment;
 pub mod flight;
 pub mod probes;
 pub mod targeting;

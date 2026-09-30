@@ -280,6 +280,19 @@ impl FlightEnvironment {
         wind_velocity_mps: [0.0, 0.0, 0.0],
     };
 
+    /// The air-relative velocity of a body moving at `world_velocity_m_s`
+    /// through *this* environment's wind: `v_air = v_world - wind_world`.
+    ///
+    /// This is the environment's own conversion, so the flight models below and
+    /// every other consumer inside `cs_sim` (F27-B's swept ballistics) share
+    /// one implementation of the `FLIGHT-PHYSICS` convention instead of each
+    /// subtracting the wind itself. `cs_app::environment::air` reaches the same
+    /// function through it.
+    #[must_use]
+    pub const fn air_relative_velocity_m_s(&self, world_velocity_m_s: [f64; 3]) -> [f64; 3] {
+        crate::environment::air_relative_velocity_m_s(world_velocity_m_s, self.wind_velocity_mps)
+    }
+
     /// Validates the fields.
     ///
     /// # Errors
@@ -578,8 +591,10 @@ impl FlightModel {
         let up_world = rotate_vector(BODY_UP, state.orientation);
         let right_world = rotate_vector(BODY_RIGHT, state.orientation);
 
-        // Air-relative velocity, in world and then body space.
-        let air_velocity_world = sub(state.linear_velocity_mps, environment.wind_velocity_mps);
+        // Air-relative velocity, in world and then body space. The environment's
+        // own conversion, so the flight model, the projectile path and every
+        // other consumer subtract exactly one wind field once.
+        let air_velocity_world = environment.air_relative_velocity_m_s(state.linear_velocity_mps);
         let speed = norm(air_velocity_world);
         let forward_component = dot(air_velocity_world, forward_world);
         let up_component = dot(air_velocity_world, up_world);

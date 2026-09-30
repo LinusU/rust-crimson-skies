@@ -202,7 +202,9 @@
 //! projectiles read (`v_air = v_world - wind_world`, refused when the wind
 //! is unknown) together with [`environment::ProjectileMotion`], so a wind
 //! change moves aircraft airspeed and projectile-relative velocity
-//! consistently (AC02); [`environment::EnvironmentEffects`] and the
+//! consistently (AC02) — through `cs_sim::environment`'s one conversion, which
+//! the flight models call too (task #434 `F19-WIND-CONVERSION-OWNER`);
+//! [`environment::EnvironmentEffects`] and the
 //! [`environment::SkyEffect`] / [`environment::FogEffect`] /
 //! [`environment::LightEffect`] it gathers, which are what a frame may be
 //! drawn from — a missing sky texture stays a diagnostic, fog fades but never
