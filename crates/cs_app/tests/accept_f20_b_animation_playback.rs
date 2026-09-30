@@ -629,3 +629,114 @@ fn accept_f20_b_play_requires_a_session_and_refuses_a_second_instance() {
         "the applied state stays with its entity: teardown is the owner's work (F20-C)"
     );
 }
+
+// ------------------------------------------------------- start boundary ---
+
+/// An instance whose start tick has not arrived plays nothing at all: no
+/// marker (not even one authored at clip tick 0), no applied state, no
+/// refusal — so a clip scheduled to start at tick `N` is silent at `N - 1`
+/// and first fires at `N` (F20 non-negotiable behavior 1: markers fire at
+/// their authored tick of the fixed-tick simulation).
+#[test]
+fn accept_f20_b_a_clip_never_plays_before_its_start_tick() {
+    let mut world = World::new();
+    world.insert_resource(AnimationPlayback::new(11));
+    let generation = SceneGeneration::default().next();
+    let declared = declared_synthetic_propeller_clip();
+    let clip_id = declared.id().clone();
+    let rotor = node(SYNTHETIC_PROPELLER_NODE);
+    let entity = bind(&mut world, &clip_id, &rotor, generation);
+
+    play_animation(&mut world, &declared, generation, Tick(10)).expect("the playback starts");
+
+    // The session is one tick before the instance's own start tick.
+    advance_animation(&mut world, Tick(9));
+    assert!(
+        drain(&mut world).is_empty(),
+        "nothing is offered before the clip starts"
+    );
+    assert!(
+        world.get::<NodeAnimatedPose>(entity).is_none(),
+        "no state is applied before the clip starts"
+    );
+    assert_eq!(
+        world.resource::<AnimationPlayback>().time(&clip_id),
+        Some(0),
+        "the head has not moved"
+    );
+
+    // At the start tick the clip time reaches 0: the tick-0 marker fires
+    // there, stamped with that tick, and not one tick earlier.
+    advance_animation(&mut world, Tick(10));
+    let started = drain(&mut world);
+    assert_eq!(
+        started.events().len(),
+        1,
+        "only the clip's tick-0 marker crosses"
+    );
+    assert_eq!(
+        started.events()[0].marker,
+        SYNTHETIC_PROPELLER_PRESENTATION_MARKER
+    );
+    assert_eq!(started.events()[0].id.tick, Tick(10));
+    assert!(
+        started.refusals().is_empty(),
+        "a pending start is not a hold"
+    );
+    assert!(world.get::<NodeAnimatedPose>(entity).is_some());
+
+    advance_animation(&mut world, Tick(11));
+    let next = drain(&mut world);
+    assert_eq!(
+        next.events().len(),
+        1,
+        "the gameplay marker follows at its own clip tick"
+    );
+    assert_eq!(next.events()[0].marker, SYNTHETIC_PROPELLER_GAMEPLAY_MARKER);
+    assert_eq!(next.events()[0].id.tick, Tick(11));
+}
+
+// --------------------------------------------------------- unbound gaps ---
+
+/// A gap in the clip's own content is reported from the evaluated state
+/// alone: an unknown material or parent is visible in the log even when no
+/// entity is bound to that node, exactly like a blocked marker — while an
+/// unbound entity keeps its state (nothing is guessed into the world).
+#[test]
+fn accept_f20_b_an_unknown_reference_is_reported_without_a_bound_entity() {
+    let unknown = unknown_tracks_clip();
+    let mut world = World::new();
+    world.insert_resource(AnimationPlayback::new(12));
+    let generation = SceneGeneration::default().next();
+    let clip_id = unknown.id().clone();
+    // Deliberately no AnimatedNodeBinding anywhere in this world.
+    play_animation(&mut world, &unknown, generation, Tick(0))
+        .expect("unknowns are data, not errors");
+
+    advance_animation(&mut world, Tick(8));
+    let published = drain(&mut world);
+    assert_eq!(
+        published.blocked_tracks().len(),
+        2,
+        "both unknown tracks are reported without any binding"
+    );
+    assert!(
+        published
+            .blocked_tracks()
+            .iter()
+            .all(|blocked| blocked.clip == clip_id),
+        "each report names the clip it belongs to"
+    );
+    let mut poses = world.query::<&NodeAnimatedPose>();
+    assert_eq!(
+        poses.iter(&world).count(),
+        0,
+        "an unbound world is left untouched"
+    );
+    let mut materials = world.query::<&NodeAnimatedMaterial>();
+    assert_eq!(materials.iter(&world).count(), 0);
+
+    // The gap is reported once per instance, not once per tick.
+    advance_animation(&mut world, Tick(9));
+    assert!(drain(&mut world).is_empty());
+}

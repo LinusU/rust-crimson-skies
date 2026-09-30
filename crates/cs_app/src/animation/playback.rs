@@ -46,7 +46,10 @@
 //! becomes a component: the previously applied value stays and the refusal is
 //! published once as a [`BlockedTrack`] carrying the unknown's claim id and
 //! reason (F20 non-negotiable behavior 2 — an unknown retains its locator and
-//! blocks the transition it gates). The *other* tracks of the same node keep
+//! blocks the transition it gates). The report is a property of the playing
+//! clip, so it is published whether or not an entity happens to be bound to
+//! that node — the same way a blocked marker is — while the binding decides
+//! only whether a *value* is applied. The *other* tracks of the same node keep
 //! applying, and marker effects keep firing, so one undecoded reference
 //! cannot silently stop a whole clip — it is visible in the log instead.
 //!
@@ -173,10 +176,11 @@ impl TrackKind {
 
 /// A track application that was blocked by an unknown reference.
 ///
-/// Published once per (clip, node, track) per playing instance — an unknown
-/// that stays unresolved does not append one entry per tick, and the same
-/// clip played again reports its own gap again (the `AirframeSceneLog`
-/// "report the gap, not the frame" rule).
+/// Published once per (clip, node, track) per playing instance, from the
+/// clip's evaluated state alone — an entity does not have to be bound for a
+/// gap in the clip to be visible. An unknown that stays unresolved does not
+/// append one entry per tick, and the same clip played again reports its own
+/// gap again (the `AirframeSceneLog` "report the gap, not the frame" rule).
 #[derive(Clone, Debug, PartialEq)]
 pub struct BlockedTrack {
     /// The playing clip the track belongs to.
@@ -529,7 +533,10 @@ pub fn stop_animation(world: &mut World, clip: &ContentId) -> bool {
 /// (`at - started_at`), so the evaluator's head only ever moves forward: a
 /// session tick that goes backwards holds the instance where it is and
 /// publishes [`AnimationRefusal::Held`] instead of replaying anything (F20
-/// non-negotiable behavior 5).
+/// non-negotiable behavior 5). An instance whose own start tick has not
+/// arrived yet is passed over entirely — it offers no marker, applies no
+/// state and reports no hold, so a clip scheduled to start at tick `N` is
+/// silent at `N - 1`.
 ///
 /// With no [`AnimationPlayback`] resource the call does nothing — there is
 /// no session to advance.
@@ -545,7 +552,16 @@ pub fn advance_animation(world: &mut World, at: Tick) {
     let mut blocked_markers: Vec<BlockedMarker> = Vec::new();
     let mut refused: Vec<AnimationRefusal> = Vec::new();
     for (id, playing) in playback.playing.iter_mut() {
-        let target = at.0.saturating_sub(playing.started_at.0);
+        if at.0 < playing.started_at.0 {
+            // The instance's own start tick has not arrived: it has not
+            // played a single tick yet, so no marker is offered, no state is
+            // applied and there is no head to hold (a clip scheduled to
+            // start at tick N must not emit anything at tick N - 1 —
+            // non-negotiable behavior 1, markers fire at their authored
+            // tick of the fixed-tick simulation).
+            continue;
+        }
+        let target = at.0 - playing.started_at.0;
         if target < playing.object.time() {
             if !playing.held_reported {
                 playing.held_reported = true;
@@ -565,13 +581,54 @@ pub fn advance_animation(world: &mut World, at: Tick) {
         blocked_markers.extend(outcome.blocked);
     }
 
-    // 2. Snapshot the evaluated state of every instance: one coherent record
-    //    per driven node, owned locally so the world's borrow ends before
-    //    anything is written.
+    // 2. Snapshot the evaluated state of every instance that has started —
+    //    one coherent record per driven node, owned locally so the world's
+    //    borrow ends before anything is written — and publish the unknown
+    //    references its tracks carry. A gap in the clip's own content is
+    //    reported whether or not an entity happens to be bound to that node
+    //    (the same way a blocked marker is, without consulting the world);
+    //    the binding decides only whether a *value* is applied, never
+    //    whether a gap is visible.
     let mut states: BTreeMap<ContentId, (SceneGeneration, BTreeMap<ContentId, AnimatedNodeState>)> =
         BTreeMap::new();
-    for (id, playing) in &playback.playing {
-        states.insert(id.clone(), (playing.generation, playing.object.states()));
+    let mut blocked_tracks: Vec<BlockedTrack> = Vec::new();
+    for (id, playing) in playback.playing.iter_mut() {
+        if at.0 < playing.started_at.0 {
+            // Not started yet: the instance contributes no state, so its
+            // tracks apply to nothing and its gaps are not offered either.
+            continue;
+        }
+        let node_states = playing.object.states();
+        for (node, state) in &node_states {
+            match state.material() {
+                Some(Resolved::Unknown { claim_id, reason }) => publish_blocked(
+                    playing,
+                    &mut blocked_tracks,
+                    id,
+                    node,
+                    TrackKind::Material,
+                    claim_id,
+                    reason,
+                ),
+                Some(Resolved::Known(_)) | None => {}
+            }
+            if let Some(AttachmentState {
+                parent: Some(Resolved::Unknown { claim_id, reason }),
+                ..
+            }) = state.attachment()
+            {
+                publish_blocked(
+                    playing,
+                    &mut blocked_tracks,
+                    id,
+                    node,
+                    TrackKind::Attachment,
+                    claim_id,
+                    reason,
+                );
+            }
+        }
+        states.insert(id.clone(), (playing.generation, node_states));
     }
 
     // 3. The candidate bindings, collected from the world before any write.
@@ -582,9 +639,8 @@ pub fn advance_animation(world: &mut World, at: Tick) {
         .collect();
 
     // 4. Decide the writes: a track value reaches an entity only through a
-    //    verified binding, and an unknown reference is blocked instead.
+    //    verified binding, and an unknown reference is never written.
     let mut writes: Vec<(Entity, NodeWrite)> = Vec::new();
-    let mut blocked_tracks: Vec<BlockedTrack> = Vec::new();
     for (entity, binding) in bindings {
         let Some((generation, node_states)) = states.get(&binding.clip) else {
             // That track is not playing: the entity keeps its state.
@@ -601,47 +657,19 @@ pub fn advance_animation(world: &mut World, at: Tick) {
         if let Some(pose) = state.pose().copied() {
             writes.push((entity, NodeWrite::Pose(pose)));
         }
-        if let Some(material) = state.material() {
-            match material {
-                Resolved::Known(known) => {
-                    writes.push((entity, NodeWrite::Material(known.value.clone())));
-                }
-                Resolved::Unknown { claim_id, reason } => {
-                    let key = (binding.node.clone(), TrackKind::Material);
-                    let playing = playback.playing.get_mut(&binding.clip);
-                    if playing.is_some_and(|playing| playing.blocked_tracks.insert(key)) {
-                        blocked_tracks.push(BlockedTrack {
-                            clip: binding.clip.clone(),
-                            node: binding.node.clone(),
-                            track: TrackKind::Material,
-                            claim_id: claim_id.clone(),
-                            reason: reason.clone(),
-                        });
-                    }
-                }
-            }
+        if let Some(Resolved::Known(known)) = state.material() {
+            writes.push((entity, NodeWrite::Material(known.value.clone())));
         }
         if let Some(attachment) = state.attachment() {
             match &attachment.parent {
                 // `None` is a detach — a definite transition, not an
                 // unknown — and a known parent is kind-validated at clip
-                // assembly, so both apply.
+                // assembly, so both apply. An unknown parent was published
+                // above and is never written.
                 None | Some(Resolved::Known(_)) => {
                     writes.push((entity, NodeWrite::Attachment(attachment.clone())));
                 }
-                Some(Resolved::Unknown { claim_id, reason }) => {
-                    let key = (binding.node.clone(), TrackKind::Attachment);
-                    let playing = playback.playing.get_mut(&binding.clip);
-                    if playing.is_some_and(|playing| playing.blocked_tracks.insert(key)) {
-                        blocked_tracks.push(BlockedTrack {
-                            clip: binding.clip.clone(),
-                            node: binding.node.clone(),
-                            track: TrackKind::Attachment,
-                            claim_id: claim_id.clone(),
-                            reason: reason.clone(),
-                        });
-                    }
-                }
+                Some(Resolved::Unknown { .. }) => {}
             }
         }
     }
@@ -663,6 +691,29 @@ pub fn advance_animation(world: &mut World, at: Tick) {
         log.blocked_tracks.extend(blocked_tracks);
         log.refused.extend(refused);
         world.insert_resource(log);
+    }
+}
+
+/// Records one unknown track of a playing instance, the first time the
+/// evaluated state of that `(node, track)` reaches it — the once-per-instance
+/// publication the [`BlockedTrack`] doc promises, independent of any binding.
+fn publish_blocked(
+    playing: &mut PlayingClip,
+    published: &mut Vec<BlockedTrack>,
+    clip: &ContentId,
+    node: &ContentId,
+    track: TrackKind,
+    claim_id: &ClaimId,
+    reason: &str,
+) {
+    if playing.blocked_tracks.insert((node.to_owned(), track)) {
+        published.push(BlockedTrack {
+            clip: clip.to_owned(),
+            node: node.to_owned(),
+            track,
+            claim_id: claim_id.to_owned(),
+            reason: reason.to_owned(),
+        });
     }
 }
 
