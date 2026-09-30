@@ -71,6 +71,15 @@
 //! presented, a repair brings it back, and the damage survives a reload
 //! without being re-decided. An id that names no node of the live scene is
 //! reported as [`SceneEvent::UnknownDamage`] rather than ignored.
+//!
+//! The three systems have a required order, and a schedule that gets it
+//! wrong is wrong visibly rather than subtly:
+//! [`process_airframe_scene_request`] first (it publishes the
+//! [`LiveAirframeScene`] the other two read), then
+//! [`apply_airframe_damage`] (it writes the markers), then
+//! [`select_lod_presentation`] (it reads them). Damage that runs before the
+//! load in a frame is applied on the next one, and a distance that runs
+//! before the damage leaves that frame's presentation one verdict behind.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
@@ -1078,6 +1087,11 @@ pub fn process_airframe_scene_request(world: &mut World) {
 /// no-op and the damage state is kept for the next load — a part cannot be
 /// damaged into a scene that does not exist yet, and the state must not be
 /// lost while one is loading.
+///
+/// It is an exclusive system because it writes structural markers on the
+/// entity set the live record owns: the plan is computed from that record
+/// first, so no marker is written from a half-read table, and the pass stays
+/// convergent whatever else the schedule does in the same frame.
 pub fn apply_airframe_damage(world: &mut World) {
     // The plan is computed into owned locals first, so the world's borrow has
     // ended by the time a marker is written.
