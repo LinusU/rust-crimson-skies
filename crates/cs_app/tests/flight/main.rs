@@ -555,6 +555,67 @@ fn accept_f24_b_gravity_conflict_refuses_the_tick() {
     );
 }
 
+/// The other refusal boundary: an entity that carries the flight record but
+/// no `RigidBody` can never take a force, so it is refused by name on every
+/// tick — while the aircraft spawned through the production path keeps
+/// flying. One bad body never silences the rest of the squadron, and a
+/// refused aircraft never fabricates an output.
+#[test]
+fn accept_f24_b_missing_body_is_refused_by_name_without_stopping_the_others() {
+    let mut fixture = fixture();
+    let orphan = fixture
+        .world_mut()
+        .spawn(
+            FlightAircraft::new(
+                FlightModel::new(synthetic_fixed_wing()),
+                FlightEnvironment::SEA_LEVEL,
+            )
+            .expect("a valid aircraft record"),
+        )
+        .id();
+    let flying = aircraft(
+        &mut fixture,
+        &FlightSpawnSpec::level_at([0.0, 300.0, 0.0], [0.0, 0.0, -40.0]),
+    );
+
+    fixture.step(10);
+    let report = report(&fixture);
+    assert_eq!(report.ticks, 10, "the driver runs on every fixed tick");
+    assert_eq!(
+        report.refused, 10,
+        "an aircraft with no rigid body is refused every tick"
+    );
+    assert_eq!(
+        report.driven, 10,
+        "one refused aircraft must not stop the healthy one"
+    );
+    assert_eq!(
+        fixture.ledger().total_applied_requests,
+        10,
+        "the healthy aircraft still reaches the integrator"
+    );
+    match &report.last_refusal {
+        Some(refusal) => {
+            assert_eq!(refusal.entity, orphan);
+            assert_eq!(refusal.tick, 10, "the refusal carries its tick");
+            assert!(
+                matches!(refusal.reason, FlightRefusalReason::MissingBody),
+                "the refusal names the missing body: {:?}",
+                refusal.reason
+            );
+        }
+        None => panic!("a refused tick must be recorded"),
+    }
+    assert!(
+        aircraft_record(&fixture, orphan).last_output().is_none(),
+        "a refused aircraft never fabricates an output"
+    );
+    assert!(
+        speed(&sample_of(&fixture, flying)) > 0.0,
+        "the healthy aircraft still flies"
+    );
+}
+
 /// `spawn_flight_body` binds the declared mass properties, not the collider's
 /// derived ones: the body's mass is the tuning's airframe mass plus the
 /// loadout (the same number the model uses), and the principal inertia lands
