@@ -27,7 +27,7 @@ required.
 * `crates/cs_app/src/world/mod.rs` (new): module docs and re-exports.
 * `crates/cs_app/src/lib.rs`, `crates/cs_content/src/lib.rs` (wiring only):
   module declarations and docs.
-* `crates/cs_app/tests/world/{main,common,sweep,records,spawn}.rs` (new): the thirteen
+* `crates/cs_app/tests/world/{main,common,sweep,records,spawn}.rs` (new): the fourteen
   `accept_f18_a_*` acceptance tests.
 * This file.
 
@@ -130,7 +130,7 @@ flight height `y = 1.5`, arch legs 1 m thick along `x`.
 ## Test sensitivity (mutation matrix)
 
 Every mutation below was applied, the selector run, and the source restored.
-All thirteen tests pass unmutated.
+All fourteen tests pass unmutated.
 
 | mutation | tests that failed |
 | --- | --- |
@@ -144,6 +144,7 @@ All thirteen tests pass unmutated.
 | give role `None` a collider anyway (review mutation) | `..._unresolved_instances_are_reported_instead_of_guessed`, `..._every_collision_role_decides_what_is_spawned`, `..._visual_and_collision_instances_agree...` |
 | hash the record in supplied order instead of id order (review mutation) | `..._record_fingerprint_is_order_independent_and_tracks_the_record` |
 | drop the boundary from the fingerprint (review mutation) | `..._record_fingerprint_is_order_independent_and_tracks_the_record` |
+| derive the Avian filter as empty (`\|= 0`) (review mutation) | `..._spawned_bodies_carry_the_designed_collision_layers`, `..._a_probe_aimed_at_an_arch_leg_is_stopped_by_it`, `..._a_sensor_reports_the_probe_and_never_blocks_it` |
 
 The four record-level tests
 (`..._world_definition_refuses_duplicate_ids_and_dangling_sector_refs`,
@@ -255,8 +256,16 @@ problems rather than handing them back:
    only one object there was nothing to leave half-spawned. It now puts a
    valid object *before* the sheared one, which is what makes mutation 6
    below fail.
+5. **`probe_layers()` and `static_world_layers()` promised a test that did
+   not exist.** Both were exported "so a test can assert the probe and the
+   world were built from the same designed matrix", but nothing called them,
+   so `avian_layers` — the derivation from
+   `CollisionLayer::designed_collides_with` to Avian's membership/filter
+   masks — had no coverage of its own. It has now:
+   `accept_f18_a_spawned_bodies_carry_the_designed_collision_layers` pins the
+   spawned components to the designed sets and asserts the two sets interact.
 
-The first mutation matrix (five rows) is unchanged; the five review
+The first mutation matrix (five rows) is unchanged; the six review
 mutations were applied, run and reverted the same way.
 
 ## Evidence
@@ -269,10 +278,10 @@ cargo fmt --all -- --check                                        # exit 0
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings   # exit 0
 cargo test --workspace --locked                                   # exit 0
 cargo test --workspace --locked -- accept_f18_a_ --include-ignored
-#   13 tests run, 13 passed (crates/cs_app/tests/world)
+#   14 tests run, 14 passed (crates/cs_app/tests/world)
 ```
 
-The thirteen acceptance tests are listed with their failure sensitivity in
+The fourteen acceptance tests are listed with their failure sensitivity in
 the mutation matrix above.
 
 ## Sources
