@@ -159,6 +159,19 @@
 //! silent zero. It carries no original coefficient; F24-C maps the record
 //! into the model and F24-D calibrates it against reference traces.
 //!
+//! [`cameras`] is the F21-A declared camera contract
+//! (`specs/F21-cameras-cockpit-views-and-spyglass.md`, stage `### F21-A`):
+//! the provenance-carrying [`cameras::DeclaredCameraModes`] set of
+//! [`cameras::DeclaredCameraMode`] records (a designed
+//! [`cameras::CameraModeKind`] vocabulary, each mode's
+//! [`cameras::ProjectionPolicy`], its [`cameras::Magnification`] and its
+//! target-tracking flag) and the [`cameras::AspectFraming`] rule. Every
+//! load-bearing value is a `Resolved` and the original PC view list, field
+//! of view, axis, clipping planes and magnification are unmeasured, so the
+//! synthetic fixture is designed content and never an original measurement.
+//! Its runtime counterpart (the lowered projection and the framing math) is
+//! `cs_app::camera`.
+//!
 //! [`target_rules`] is the F30-A declared targeting schema
 //! (`specs/F30-targeting-classification-aim-assistance-and-threat-cues.md`,
 //! stage `### F30-A`): the provenance-carrying
@@ -219,6 +232,7 @@
 pub mod airframe_roles;
 pub mod animation;
 pub mod audio;
+pub mod cameras;
 pub mod campaign_bindings;
 pub mod catalog;
 pub mod config;
