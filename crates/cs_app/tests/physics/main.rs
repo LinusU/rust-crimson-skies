@@ -1,6 +1,7 @@
 //! F23 acceptance tests: the verified Avian schedule adapter, the declared
 //! collision layers, the body-creation path, the wake/drop accounting of the
-//! force queue and the swept crossing detection.
+//! force queue, the swept crossing detection and the contact reporter's
+//! refusal paths.
 //!
 //! Spec: `specs/F23-avian-integration-collision-and-fixed-step-authority.md`,
 //! stages `### F23-A` and `### F23-B`. Task test prefixes: `accept_f23_a_`
@@ -19,6 +20,7 @@ mod bodies;
 mod common;
 mod forces;
 mod layers;
+mod reports;
 mod schedule;
 mod sweeps;
 mod wake;

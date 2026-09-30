@@ -10,7 +10,7 @@
 //!
 //! Every value is authored fixture data.
 
-use avian3d::prelude::Position;
+use avian3d::prelude::{LinearVelocity, Position};
 use bevy::prelude::Entity;
 use cs_app::physics::{BodyMode, BodySpec, ContactReport, ContactReports, PhysicsFixture};
 use cs_sim::collision::{CollisionLayer, ContactKind, ShapeClass};
@@ -200,4 +200,41 @@ fn accept_f23_b_fast_crossing_of_a_thin_trigger_is_detected_exactly_once() {
         outcome.last_x > 5.0,
         "a sensor must let the projectile through: {outcome:?}"
     );
+}
+
+/// AC02 is *per crossing*, not "once ever": the same pair crossing a second
+/// time is a new contact episode and must be reported again.
+///
+/// Observable failure if a finished episode stays in the reporter's active
+/// set (its `CollisionEnd` never arrives, or it is processed after the next
+/// start), the second crossing is counted as `suppressed` and `total` stays
+/// at 1 — a trigger or impact that could only ever fire once.
+#[test]
+fn accept_f23_b_a_later_crossing_of_the_same_pair_is_reported_again() {
+    let (mut fixture, _trigger, projectile) = crossing(CollisionLayer::Trigger, ShapeClass::Sensor);
+
+    let first = run(&mut fixture, projectile);
+    assert_eq!(first.total, 1, "the first crossing: {first:?}");
+
+    // Reflect the same projectile back through the same trigger: one shot, one
+    // new contact episode.
+    fixture
+        .world_mut()
+        .entity_mut(projectile)
+        .get_mut::<LinearVelocity>()
+        .expect("the projectile has a velocity")
+        .0
+        .x = -CROSSING_SPEED_M_S;
+
+    let second = run(&mut fixture, projectile);
+    assert_eq!(
+        second.total, 2,
+        "the second crossing must be reported as its own episode: {second:?}"
+    );
+    assert_eq!(
+        second.suppressed, 0,
+        "the finished episode must not swallow the new start: {second:?}"
+    );
+    assert_eq!(second.unclassified, 0, "{second:?}");
+    assert_eq!(second.ignored, 0, "{second:?}");
 }
