@@ -18,8 +18,10 @@
 //!   [`budget`]).
 //! * `verify-target-dir` checks that the effective `CARGO_TARGET_DIR` is
 //!   private to this worktree ([`target_dir`]), so concurrent agent builds
-//!   cannot reuse each other's artifacts (task #383), and that it no longer
-//!   holds artifacts a removed worktree produced (task #433).
+//!   cannot reuse each other's artifacts (task #383); that it no longer holds
+//!   artifacts a removed worktree produced (task #433); and that it does not
+//!   hold artifacts a different worktree that is still there produced (task
+//!   #440).
 //!
 //! Exit codes: 0 gate passed, 1 the gate failed, 2 the request itself was
 //! invalid. Failures are printed on stderr, never returned as success.
@@ -68,12 +70,14 @@ COMMANDS
         doctest link with SIGBUS (task #430).
     verify-target-dir [--workspace-root <dir>]
         Check that the effective CARGO_TARGET_DIR is private to this
-        worktree and free of artifacts a removed worktree left behind: a
+        worktree and free of artifacts another checkout left behind: a
         directory shared between checkouts lets concurrent builds reuse each
-        other's artifacts, and one that outlived its worktree lets a later
-        build reuse artifacts whose CARGO_MANIFEST_DIR names a path that no
-        longer exists, so a green or red test run would not be evidence about
-        this tree (tasks #383 and #433).
+        other's artifacts; one that outlived its worktree lets a later build
+        reuse artifacts whose CARGO_MANIFEST_DIR names a path that no longer
+        exists; and one that still holds a live sibling worktree's artifacts
+        lets cargo run that worktree's binary. A green or red test run would
+        not be evidence about this tree in any of them (tasks #383, #433 and
+        #440).
 
 OPTIONS
     --prefix <prefix>       Task test prefix, e.g. accept_f00_c_

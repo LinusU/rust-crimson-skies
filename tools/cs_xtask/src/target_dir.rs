@@ -45,12 +45,25 @@
 //! hashing: a target directory with no such record — a fresh one, or one
 //! built only from this checkout — passes.
 //!
-//! [`verify_workspace`] is the gate: the `accept_t383_` and `accept_t433_`
-//! tests run it against this very checkout as part of `cargo test
-//! --workspace`, so an agent whose environment still exports a shared
-//! directory, or whose private directory still serves a removed worktree,
-//! gets a loud failure naming the fix instead of silently trusting foreign
-//! binaries.
+//! A *live* foreign checkout is the third case (task #440). A directory can be
+//! private by name and hold a record that still exists — a sibling worktree
+//! that built here and was never deleted — which the removed rule cannot see,
+//! because it is not gone. The recorded path's existence cannot separate
+//! "another checkout" from "cargo's own cache", but its location can: a
+//! recorded manifest directory that is neither inside this workspace root nor
+//! under cargo's home (`$CARGO_HOME`, else `~/.cargo`) belongs to a foreign
+//! checkout, alive or not. The cargo-home exclusion is load-bearing: any
+//! registry crate that reads `CARGO_MANIFEST_DIR` records
+//! `$CARGO_HOME/registry/src/…`, so without it the rule would fail on ordinary
+//! dependencies. [`foreign_manifest_dirs`] applies that, and
+//! [`verify_workspace`] reports it as [`TargetDirError::Foreign`].
+//!
+//! [`verify_workspace`] is the gate: the `accept_t383_`, `accept_t433_` and
+//! `accept_t440_` tests run it against this very checkout as part of `cargo
+//! test --workspace`, so an agent whose environment still exports a shared
+//! directory, whose private directory still serves a removed worktree, or
+//! whose private directory holds a live foreign checkout's artifacts, gets a
+//! loud failure naming the fix instead of silently trusting foreign binaries.
 
 use std::collections::BTreeSet;
 use std::env;
@@ -81,6 +94,15 @@ pub enum TargetDirError {
         workspace_root: PathBuf,
         target_dir: PathBuf,
         removed: Vec<PathBuf>,
+    },
+    /// The effective directory is private to this worktree, but it still
+    /// holds artifacts a *different, still-present* checkout produced: the
+    /// recorded manifest directories exist, yet none of them is this
+    /// worktree or cargo's own cache (task #440).
+    Foreign {
+        workspace_root: PathBuf,
+        target_dir: PathBuf,
+        foreign: Vec<PathBuf>,
     },
 }
 
@@ -127,6 +149,26 @@ e.g. cargo clean --target-dir {}.",
                 target_dir.display(),
                 workspace_root.display(),
                 paths(removed),
+                target_dir.display(),
+                target_dir.display()
+            ),
+            Self::Foreign {
+                workspace_root,
+                target_dir,
+                foreign,
+            } => write!(
+                f,
+                "the cargo target directory {} is private to worktree {}, but it \
+still holds artifacts a different, still-present checkout built: their \
+recorded CARGO_MANIFEST_DIR names {}, which is neither inside this worktree \
+nor cargo's own cache under CARGO_HOME, so `cargo test` can run another \
+worktree's binary with its source paths and fingerprints (task #440). The \
+directory name cannot express this, so give each checkout its own target \
+directory: delete {} and let the next build recreate it, e.g. cargo clean \
+--target-dir {}.",
+                target_dir.display(),
+                workspace_root.display(),
+                paths(foreign),
                 target_dir.display(),
                 target_dir.display()
             ),
@@ -241,9 +283,11 @@ pub fn is_per_worktree(workspace_root: &Path, target_dir: &Path) -> bool {
 }
 
 /// The whole gate: resolve the effective directory through Cargo, then
-/// require it to be private to `workspace_root` and free of artifacts a
-/// removed checkout left behind. The `Ok` payload is the directory itself, so
-/// callers can print what was verified.
+/// require it to be private to `workspace_root` and to hold only artifacts
+/// this checkout could have built — none from a checkout that is gone (task
+/// #433), none from a different checkout that is still there (task #440). The
+/// `Ok` payload is the directory itself, so callers can print what was
+/// verified.
 pub fn verify_workspace(workspace_root: &Path) -> Result<PathBuf, TargetDirError> {
     let target_dir = effective_target_dir(workspace_root)?;
     require_per_worktree(workspace_root, target_dir)
@@ -262,11 +306,12 @@ pub fn verify_workspace_with_env(
 }
 
 /// [`is_per_worktree`] as a verdict: `Err(Shared)` when the effective
-/// directory could be written by other checkouts too, then `Err(Stale)`
-/// when it is private but still serves a checkout that is gone (task #433).
-/// Order matters: a directory another live worktree could write to is the
-/// #383 defect whatever it contains, and that is the message an agent in the
-/// shared layout needs first.
+/// directory could be written by other checkouts too, then `Err(Stale)` or
+/// `Err(Foreign)` when it is private but still serves a checkout that is gone
+/// (task #433) or one that is still there (task #440). Order matters: a
+/// directory another live worktree could write to is the #383 defect whatever
+/// it contains, and that is the message an agent in the shared layout needs
+/// first.
 fn require_per_worktree(
     workspace_root: &Path,
     target_dir: PathBuf,
@@ -280,27 +325,121 @@ fn require_per_worktree(
     require_live(workspace_root, target_dir)
 }
 
-/// [`require_per_worktree`]'s second question: does the directory still hold
-/// only artifacts this checkout could have built?
+/// [`require_per_worktree`]'s second question: does the directory hold only
+/// artifacts this checkout could have built?
+///
+/// Two positive kinds of evidence say no, and they are reported in the order
+/// cargo's own evidence appears: a recorded checkout that is *gone*
+/// ([`TargetDirError::Stale`], task #433) comes before one that is *present but
+/// foreign* ([`TargetDirError::Foreign`], task #440). A removed directory is the
+/// stronger evidence — it is a path that cannot be checked out again — so it
+/// wins when a directory carries both, keeping #433's verdict unchanged.
 fn require_live(workspace_root: &Path, target_dir: PathBuf) -> Result<PathBuf, TargetDirError> {
     let removed: Vec<PathBuf> = removed_manifest_dirs(&target_dir).into_iter().collect();
-    if removed.is_empty() {
-        Ok(target_dir)
-    } else {
-        Err(TargetDirError::Stale {
+    if !removed.is_empty() {
+        return Err(TargetDirError::Stale {
             workspace_root: workspace_root.to_path_buf(),
             target_dir,
             removed,
-        })
+        });
     }
+    let foreign: Vec<PathBuf> = foreign_manifest_dirs(workspace_root, &target_dir)
+        .into_iter()
+        .collect();
+    if !foreign.is_empty() {
+        return Err(TargetDirError::Foreign {
+            workspace_root: workspace_root.to_path_buf(),
+            target_dir,
+            foreign,
+        });
+    }
+    Ok(target_dir)
+}
+
+/// Cargo's home: `$CARGO_HOME` when it is set and non-empty, else `~/.cargo`.
+///
+/// The registry cache cargo keeps there is not a foreign checkout — any
+/// registry crate that reads `CARGO_MANIFEST_DIR` records
+/// `$CARGO_HOME/registry/src/…` — so [`foreign_manifest_dirs`] must exclude it.
+/// `None` only when neither `CARGO_HOME` nor a home directory can be read; the
+/// exclusion is then impossible, which is reported by treating nothing as
+/// cargo's cache rather than by guessing one.
+pub fn cargo_home() -> Option<PathBuf> {
+    if let Some(value) = env::var_os("CARGO_HOME")
+        && !value.is_empty()
+    {
+        return Some(PathBuf::from(value));
+    }
+    home_dir().map(|home| home.join(".cargo"))
+}
+
+/// The platform's home directory, matching what cargo falls back to for
+/// `CARGO_HOME`: `$HOME` on Unix, `$USERPROFILE` (or `$HOMEDRIVE$HOMEPATH`) on
+/// Windows.
+#[cfg(not(windows))]
+fn home_dir() -> Option<PathBuf> {
+    env::var_os("HOME").map(PathBuf::from)
+}
+
+/// [`home_dir`] for Windows.
+#[cfg(windows)]
+fn home_dir() -> Option<PathBuf> {
+    if let Some(profile) = env::var_os("USERPROFILE") {
+        return Some(PathBuf::from(profile));
+    }
+    let drive = env::var_os("HOMEDRIVE")?;
+    let path = env::var_os("HOMEPATH")?;
+    let mut home = PathBuf::from(drive);
+    home.push(path);
+    Some(home)
+}
+
+/// The [`recorded_manifest_dirs`] that still exist but are a *different*
+/// checkout: neither inside `workspace_root` nor under cargo's home
+/// ([`cargo_home`]).
+///
+/// This is task #440's rule. The name alone cannot tell the two apart — a
+/// private directory can hold a live sibling worktree's record — but the
+/// location can: anything outside this workspace and outside cargo's own cache
+/// belongs to another checkout, whether or not that checkout is still on disk.
+/// A record that is gone is [`removed_manifest_dirs`]'s, not this function's.
+pub fn foreign_manifest_dirs(workspace_root: &Path, target_dir: &Path) -> BTreeSet<PathBuf> {
+    let home = cargo_home();
+    foreign_manifest_dirs_with_home(workspace_root, target_dir, home.as_deref())
+}
+
+/// [`foreign_manifest_dirs`] with cargo's home forced, the seam the acceptance
+/// tests use to point the exclusion at a fixture `CARGO_HOME` instead of the
+/// machine's real one.
+pub fn foreign_manifest_dirs_with_home(
+    workspace_root: &Path,
+    target_dir: &Path,
+    cargo_home: Option<&Path>,
+) -> BTreeSet<PathBuf> {
+    let root = canonicalize_lenient(workspace_root);
+    let home = cargo_home.map(canonicalize_lenient);
+    recorded_manifest_dirs(target_dir)
+        .into_iter()
+        .filter(|dir| dir.is_dir())
+        .filter(|dir| {
+            let candidate = canonicalize_lenient(dir);
+            if candidate.starts_with(&root) {
+                return false;
+            }
+            match &home {
+                Some(home) => !candidate.starts_with(home),
+                None => true,
+            }
+        })
+        .collect()
 }
 
 /// Cargo's marker for an environment variable a unit read while compiling,
 /// as it appears in a `.d` dep-info file.
 const ENV_DEP_MARKER: &str = "# env-dep:";
 /// The environment variable whose value is an absolute path into the checkout
-/// that produced the artifact — the one record of a removed worktree that
-/// survives in a target directory.
+/// that produced the artifact — the one record of another worktree, removed or
+/// still present, that survives in a target directory.
 pub const MANIFEST_DIR_VAR: &str = "CARGO_MANIFEST_DIR";
 
 /// Every `CARGO_MANIFEST_DIR` cargo recorded in `target_dir`'s dep-info files.
