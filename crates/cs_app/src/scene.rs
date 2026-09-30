@@ -4,8 +4,9 @@
 //!
 //! These are the typed *outputs* a scene consumer binds into the ECS — the
 //! records later stages attach to spawned entities. Stage `### F11-B` below
-//! adds the import path and the LOD selection system; wiring them into the
-//! running app (spawn, teardown, viewer distance) is F11-C's.
+//! adds the import path and the LOD selection system; stage `### F11-C` wires
+//! them into the running app: the load/unload request producer and consumer,
+//! the socket bindings, damage visuals and teardown.
 //!
 //! [`SceneNodeBinding`] ties an entity to its canonical
 //! [`cs_content::scene::SceneNode`] by [`ContentId`], stamped with the
@@ -43,17 +44,45 @@
 //! never writes an identity, a transform, a binding or a disable marker, so
 //! collision, weapon origins and damage identity cannot move with distance
 //! (F11 non-negotiable behavior 4; AC02).
+//!
+//! # F11-C: producer and consumer wiring, teardown and damage visuals
+//!
+//! The import path and the LOD system are now driven by a request resource
+//! ([`AirframeSceneRequest`]) that the producer inserts and
+//! [`process_airframe_scene_request`] consumes **once per run**:
+//!
+//! * [`AirframeSceneRequest::Load`] prepares first and commits second. The
+//!   subtree is imported under a fresh [`SceneGeneration`], its
+//!   [`PartSocket`]s are bound as [`PartBinding`]s, and only then is a
+//!   superseded scene released — so a refused load leaves the running
+//!   aircraft untouched and retryable, and a reload leaves no hidden old
+//!   root behind (F11 non-negotiable behavior 5). The refusal itself is
+//!   reported in [`AirframeSceneLog`] as [`SceneEvent::Refused`].
+//! * [`AirframeSceneRequest::Unload`] releases every entity the live
+//!   [`LiveAirframeScene`] owns, and is a no-op when nothing is live, so
+//!   loading and unloading the same airframe a hundred times leaves the live
+//!   entity count unchanged (AC03).
+//!
+//! [`apply_airframe_damage`] is the consumer of the bound parts: the
+//! recorded [`AirframeDamageState`] — part identities as stable
+//! [`SceneNodeId`]s, never positions — is made equal to the
+//! [`NodeDisabled`] markers of the live generation, so a destroyed part and
+//! everything mounted under it (its gun, its mesh variants) stop being
+//! presented, a repair brings it back, and the damage survives a reload
+//! without being re-decided. An id that names no node of the live scene is
+//! reported as [`SceneEvent::UnknownDamage`] rather than ignored.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::sync::Arc;
 
 use bevy::ecs::component::Component;
 use bevy::math::Mat4;
 use bevy::prelude::{ChildOf, Entity, GlobalTransform, Query, Res, Resource, With, World};
 use cs_content::scene::{
-    CanonicalTransform, LodInfo, LodSelectError, SceneGraph, SceneNode, SceneNodeId,
-    select_lod_variant,
+    CanonicalTransform, CollisionRole, LodInfo, LodSelectError, PartRole, PartSocket, SceneGraph,
+    SceneNode, SceneNodeId, select_lod_variant,
 };
-use cs_types::content::ContentId;
+use cs_types::content::{ContentId, Provenance, Resolved};
 use cs_types::space::Meters;
 
 use crate::airframe_visual::AirframeVisual;
@@ -223,9 +252,11 @@ impl std::error::Error for SceneImportError {
 /// stable [`SceneNodeId`], plus the [`SceneGeneration`] that stamped them.
 ///
 /// The map is the handle a later stage uses to reach a node by identity
-/// instead of by array position (F11 deliverable); it records what was
-/// spawned and never spawns or despawns by itself — teardown and reload
-/// lifetime are F11-C's.
+/// instead of by array position (F11 deliverable). It also records what
+/// [`process_airframe_scene_request`] must give back on teardown: the
+/// entities are listed in stable-id order and releasing them is the only way
+/// a scene leaves the world, so a repeated load/unload cycle cannot grow the
+/// live entity count (AC03).
 #[derive(Clone, Debug, PartialEq)]
 pub struct SceneImport {
     entities: BTreeMap<SceneNodeId, Entity>,
@@ -256,6 +287,16 @@ impl SceneImport {
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entities.is_empty()
+    }
+
+    /// Every imported node with the entity it owns, in stable-id order.
+    ///
+    /// This is the teardown list: releasing exactly these entities (and
+    /// nothing else) is what keeps repeated loads from accumulating nodes.
+    pub fn entities(&self) -> impl Iterator<Item = (SceneNodeId, Entity)> + '_ {
+        self.entities
+            .iter()
+            .map(|(id, entity)| (id.clone(), *entity))
     }
 }
 
@@ -598,13 +639,657 @@ pub fn select_lod_presentation(
     }
 }
 
+// ------------------------------------------------- load / unload wiring ---
+
+/// Resource: the request the scene loader processes on its next run.
+///
+/// This is the producer → consumer hand-off of stage `### F11-C`. The producer
+/// (the asset pipeline, `cs_app::loading`) inserts a request; the exclusive
+/// system [`process_airframe_scene_request`] consumes it **once**, so a
+/// request is never applied twice and never survives into a later run where
+/// it would be stale. A request is never a stored wish: it is either served or
+/// it is reported as refused, and the caller inspects [`AirframeSceneLog`].
+///
+/// The load arm carries the converted container graph. It is a shared
+/// `Arc`, not a copy: the real producer hands over the same record from its
+/// [`crate::loading::ReadyBundle`] once a retail reader exists (see the
+/// recorded GameZ node-array blocker in the findings doc), and until then the
+/// graph is what an already converted hierarchy looks like.
+#[derive(Resource, Clone, Debug, PartialEq)]
+pub enum AirframeSceneRequest {
+    /// Import one airframe's visual subtree, replacing the live scene.
+    Load {
+        /// The airframe → scene-root reference to import from.
+        airframe: AirframeVisual,
+        /// The converted container the root lives in.
+        graph: Arc<SceneGraph>,
+    },
+    /// Release the live scene.
+    Unload,
+}
+
+impl AirframeSceneRequest {
+    /// A request to import `airframe`'s visual subtree out of `graph`.
+    #[must_use]
+    pub fn load(airframe: AirframeVisual, graph: Arc<SceneGraph>) -> Self {
+        Self::Load { airframe, graph }
+    }
+
+    /// A request to release the live scene.
+    #[must_use]
+    pub const fn unload() -> Self {
+        Self::Unload
+    }
+}
+
+/// Resource: the scene generation counter.
+///
+/// Generations only ever count up and are never reused, not even after an
+/// unload or a refused load: a stamp a stale entity could still carry must
+/// never be handed out again (F11 non-negotiable behavior 5; `IDENTITY-CONTENT`:
+/// session generations). The counter is consumed by the load path alone.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct SceneGenerations(SceneGeneration);
+
+impl SceneGenerations {
+    /// The next generation, consuming it. A load that is later refused has
+    /// still burned its number, so the retry is distinguishable.
+    pub fn take_next(&mut self) -> SceneGeneration {
+        self.0 = self.0.next();
+        self.0
+    }
+
+    /// The most recently consumed generation (`0` before any load).
+    #[must_use]
+    pub const fn latest(&self) -> SceneGeneration {
+        self.0
+    }
+}
+
+/// Component: this node is an aircraft part/socket with an evidenced
+/// gameplay role.
+///
+/// The role, the collision role and the rule's provenance ride on the entity
+/// so a query can find a gun mount or a damage zone without consulting the
+/// content graph. The socket's **pose is not here**: the node entity's
+/// [`NodeVisualTransform`] is the one pose owner, and it is the same value
+/// collision evaluates, so a weapon origin cannot drift away from the visual
+/// (F11 non-negotiable behavior 4). A socket whose role the evidence left
+/// explicitly unknown is *not* given this component — the loader reports it
+/// in [`SceneEvent::Loaded`]'s `unresolved` list instead of defaulting a
+/// role.
+#[derive(Component, Clone, Debug, PartialEq)]
+pub struct PartBinding {
+    role: Resolved<PartRole>,
+    collision: Resolved<CollisionRole>,
+    zone_id: u32,
+    provenance: Provenance,
+}
+
+impl PartBinding {
+    /// The gameplay role with the rule's provenance, or the explicit unknown
+    /// the evidence left.
+    #[must_use]
+    pub fn role(&self) -> &Resolved<PartRole> {
+        &self.role
+    }
+
+    /// The known role, or `None` when the rule's role was unknown.
+    #[must_use]
+    pub fn known_role(&self) -> Option<PartRole> {
+        match &self.role {
+            Resolved::Known(known) => Some(known.value),
+            Resolved::Unknown { .. } => None,
+        }
+    }
+
+    /// The collision role, or the explicit unknown the evidence left.
+    #[must_use]
+    pub fn collision(&self) -> &Resolved<CollisionRole> {
+        &self.collision
+    }
+
+    /// The bound node's stored zone id, uninterpreted.
+    #[must_use]
+    pub const fn zone_id(&self) -> u32 {
+        self.zone_id
+    }
+
+    /// The provenance of the rule that produced this binding.
+    #[must_use]
+    pub const fn provenance(&self) -> &Provenance {
+        &self.provenance
+    }
+}
+
+/// Resource: the one live airframe scene, owned by its generation.
+///
+/// It is the ownership record of the imported subtree: the airframe and root
+/// it serves, the generation that stamped every entity, the imported entity
+/// of every node, which of those nodes are sockets, and the converted graph
+/// the sockets and mesh associations come from. A reload replaces the whole
+/// record; an unload removes it. Nothing outside this record is allowed to
+/// remember a node entity, so nothing can address a scene that is gone.
+#[derive(Resource, Clone, Debug, PartialEq)]
+pub struct LiveAirframeScene {
+    airframe: ContentId,
+    root: SceneNodeId,
+    generation: SceneGeneration,
+    import: SceneImport,
+    sockets: BTreeSet<SceneNodeId>,
+    graph: Arc<SceneGraph>,
+}
+
+impl LiveAirframeScene {
+    /// The airframe this scene visualizes.
+    #[must_use]
+    pub fn airframe(&self) -> &ContentId {
+        &self.airframe
+    }
+
+    /// The scene root the import started from.
+    #[must_use]
+    pub fn root(&self) -> &SceneNodeId {
+        &self.root
+    }
+
+    /// The generation that stamped every entity of this scene.
+    #[must_use]
+    pub const fn generation(&self) -> SceneGeneration {
+        self.generation
+    }
+
+    /// The entity a node of this scene was imported as.
+    #[must_use]
+    pub fn entity(&self, node: &SceneNodeId) -> Option<Entity> {
+        self.import.entity(node)
+    }
+
+    /// The evidence-backed socket record of one of this scene's nodes.
+    ///
+    /// The node must be part of this scene and a rule must have bound it. A
+    /// socket whose role is an explicit unknown is still returned — the
+    /// record exists and refusing to look at it would hide the gap; the
+    /// *bound* sockets are the ones with a [`PartBinding`], listed by
+    /// [`Self::sockets`].
+    #[must_use]
+    pub fn socket(&self, node: &SceneNodeId) -> Option<&PartSocket> {
+        self.import.entity(node)?;
+        self.graph.socket(node)
+    }
+
+    /// The nodes that were bound as [`PartBinding`]s, in stable-id order.
+    pub fn sockets(&self) -> impl Iterator<Item = &SceneNodeId> + '_ {
+        self.sockets.iter()
+    }
+
+    /// The import that produced the scene's entities.
+    #[must_use]
+    pub const fn import(&self) -> &SceneImport {
+        &self.import
+    }
+
+    /// The converted container the scene was imported from. The live record
+    /// shares it with the producer's request; it is dropped on unload.
+    #[must_use]
+    pub fn graph(&self) -> &SceneGraph {
+        &self.graph
+    }
+
+    /// How many nodes the scene holds.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.import.len()
+    }
+
+    /// Whether the scene holds no nodes (it never can: an import of an empty
+    /// subtree is refused).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.import.is_empty()
+    }
+}
+
+/// What one processed scene request or damage pass did.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SceneEvent {
+    /// An airframe's visual subtree was imported, bound and made live.
+    Loaded {
+        /// The airframe that was loaded.
+        airframe: ContentId,
+        /// The root the import started from.
+        root: SceneNodeId,
+        /// The generation every entity was stamped with.
+        generation: SceneGeneration,
+        /// How many nodes were imported.
+        nodes: usize,
+        /// How many sockets were bound as [`PartBinding`]s.
+        sockets: usize,
+        /// Sockets inside the subtree whose role is an explicit unknown; they
+        /// are reported here instead of being given a default role.
+        unresolved: Vec<SceneNodeId>,
+    },
+    /// A load request was refused. Nothing was spawned and the running scene
+    /// was left exactly as it was, so the request can be retried.
+    Refused {
+        /// The airframe that was requested.
+        airframe: ContentId,
+        /// The root the request named.
+        root: SceneNodeId,
+        /// The generation the refused attempt consumed. It is not reused.
+        generation: SceneGeneration,
+        /// The import error, propagated verbatim.
+        error: SceneImportError,
+    },
+    /// A scene was released: by an explicit unload or by a reload that
+    /// superseded it.
+    Released {
+        /// The airframe the scene served.
+        airframe: ContentId,
+        /// The generation that owned the released entities.
+        generation: SceneGeneration,
+        /// How many of the scene's entities were still live. Entities another
+        /// stage had already despawned are not counted.
+        entities: usize,
+    },
+    /// Recorded damage named nodes that are not part of the live scene; they
+    /// were not applied and are not silently dropped.
+    UnknownDamage {
+        /// The unresolvable part identities, in the order recorded.
+        ids: Vec<SceneNodeId>,
+    },
+}
+
+impl SceneEvent {
+    /// The generation this event concerns.
+    #[must_use]
+    pub fn generation(&self) -> Option<SceneGeneration> {
+        match self {
+            Self::Loaded { generation, .. }
+            | Self::Refused { generation, .. }
+            | Self::Released { generation, .. } => Some(*generation),
+            Self::UnknownDamage { .. } => None,
+        }
+    }
+}
+
+/// Resource: the append-only record of what the scene systems did, oldest
+/// first.
+///
+/// This is the error-propagation channel: a refused load, a released scene, a
+/// socket whose role is unknown and damage that named no node are all visible
+/// here instead of being logged away or defaulted. It grows with the number of
+/// requests and is meant to be drained by a diagnostic surface, not to grow
+/// without bound in a long session.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct AirframeSceneLog {
+    events: Vec<SceneEvent>,
+}
+
+impl AirframeSceneLog {
+    /// An empty log.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A log holding one event.
+    #[must_use]
+    pub fn with(event: SceneEvent) -> Self {
+        Self {
+            events: vec![event],
+        }
+    }
+
+    /// Appends one event.
+    pub fn push(&mut self, event: SceneEvent) {
+        self.events.push(event);
+    }
+
+    /// Every event, oldest first.
+    #[must_use]
+    pub fn events(&self) -> &[SceneEvent] {
+        &self.events
+    }
+
+    /// The most recent event.
+    #[must_use]
+    pub fn last(&self) -> Option<&SceneEvent> {
+        self.events.last()
+    }
+
+    /// How many events the log holds.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.events.len()
+    }
+
+    /// Whether the log is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+}
+
+/// Resource: the recorded damage of the live scene's parts, keyed by stable
+/// [`SceneNodeId`].
+///
+/// Damage names a *part identity*, never an array position or an entity, so
+/// the record is a different engine's decision (F29: zones, armor and system
+/// disablement) that this stage only reflects visually. The state outlives a
+/// scene: it is not cleared by an unload, so a reloaded airframe starts with
+/// the same damage instead of silently healing, and it is not cleared by a
+/// refused load either.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct AirframeDamageState {
+    destroyed: BTreeSet<SceneNodeId>,
+}
+
+impl AirframeDamageState {
+    /// An empty damage state.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Records a part as destroyed.
+    pub fn destroy(&mut self, node: SceneNodeId) {
+        self.destroyed.insert(node);
+    }
+
+    /// Records a part as repaired; reports whether it was destroyed before.
+    pub fn repair(&mut self, node: &SceneNodeId) -> bool {
+        self.destroyed.remove(node)
+    }
+
+    /// Whether a part is currently destroyed.
+    #[must_use]
+    pub fn is_destroyed(&self, node: &SceneNodeId) -> bool {
+        self.destroyed.contains(node)
+    }
+
+    /// The destroyed parts, in stable-id order.
+    pub fn destroyed(&self) -> impl Iterator<Item = &SceneNodeId> + '_ {
+        self.destroyed.iter()
+    }
+
+    /// How many parts are destroyed.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.destroyed.len()
+    }
+
+    /// Whether nothing is destroyed.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.destroyed.is_empty()
+    }
+}
+
+/// The producer → consumer hand-off: serves the queued [`AirframeSceneRequest`]
+/// once.
+///
+/// It is an exclusive system because the import path it drives is
+/// `&mut World`-shaped and because the whole load is one transaction: nothing
+/// observes a half-loaded scene, and no other system can run between the
+/// import and the release of the scene it supersedes.
+///
+/// * [`AirframeSceneRequest::Unload`] releases every entity of the live
+///   [`LiveAirframeScene`] and removes the record. Unloading when nothing is
+///   live is a no-op, so a repeated teardown or a teardown after a refused
+///   load is safe.
+/// * [`AirframeSceneRequest::Load`] takes the next generation, imports the
+///   referenced subtree, binds its sockets, releases the scene it supersedes
+///   and only then publishes the new [`LiveAirframeScene`]. A refusal
+///   (foreign container, unknown root, unrepresentable transform) is reported
+///   as [`SceneEvent::Refused`] and changes nothing: the running scene keeps
+///   its entities and its generation, and the request can be retried.
+///
+/// The [`LodDistance`] resource is *not* created here: the viewer distance is
+/// the camera stage's (F21/F17) input, and a scene that has none has no
+/// meaningful LOD selection.
+pub fn process_airframe_scene_request(world: &mut World) {
+    let Some(request) = world.remove_resource::<AirframeSceneRequest>() else {
+        return;
+    };
+    match request {
+        AirframeSceneRequest::Unload => unload_airframe_scene(world),
+        AirframeSceneRequest::Load { airframe, graph } => {
+            load_airframe_scene(world, &airframe, graph);
+        }
+    }
+}
+
+/// Applies [`AirframeDamageState`] to the live scene's [`NodeDisabled`]
+/// markers.
+///
+/// The damage state is the **single owner** of the marker inside the live
+/// generation: every node of the live scene ends up carrying the marker
+/// exactly when the damage state names it, so the system is convergent and
+/// idempotent (running it twice changes nothing), a stale marker cannot
+/// survive a repair, and a fresh generation inherits the recorded damage
+/// without the damage being decided twice. [`select_lod_presentation`] then
+/// propagates the marker to the part's descendants, which is how one damage
+/// identity covers a destroyed wing, both of its LOD bands and the gun mounted
+/// under it (AC02).
+///
+/// A recorded part that is not a node of the live scene is reported as
+/// [`SceneEvent::UnknownDamage`]. With no live scene at all the pass is a
+/// no-op and the damage state is kept for the next load — a part cannot be
+/// damaged into a scene that does not exist yet, and the state must not be
+/// lost while one is loading.
+pub fn apply_airframe_damage(world: &mut World) {
+    // The plan is computed into owned locals first, so the world's borrow has
+    // ended by the time a marker is written.
+    let Some(plan) = damage_plan(world) else {
+        return;
+    };
+    for (entity, destroyed) in plan.markers {
+        // An entity another stage already despawned is not resurrected and
+        // not counted; the live record is about to be replaced or removed.
+        if world.get_entity(entity).is_err() {
+            continue;
+        }
+        if destroyed {
+            world.entity_mut(entity).insert(NodeDisabled);
+        } else {
+            world.entity_mut(entity).remove::<NodeDisabled>();
+        }
+    }
+    if !plan.unknown.is_empty() {
+        log_scene_event(world, SceneEvent::UnknownDamage { ids: plan.unknown });
+    }
+}
+
+/// Which markers the live scene should carry, and which recorded part
+/// identities name no node of it.
+///
+/// `None` when there is no damage state or no live scene: with nothing live
+/// there is nothing to reflect onto, and the recorded state is kept for the
+/// next load.
+fn damage_plan(world: &World) -> Option<DamagePlan> {
+    let damage = world.get_resource::<AirframeDamageState>()?;
+    let live = world.get_resource::<LiveAirframeScene>()?;
+    let unknown = damage
+        .destroyed()
+        .filter(|node| live.entity(node).is_none())
+        .cloned()
+        .collect();
+    let plan = live
+        .import
+        .entities()
+        .map(|(node, entity)| (entity, damage.is_destroyed(&node)))
+        .collect();
+    Some(DamagePlan {
+        unknown,
+        markers: plan,
+    })
+}
+
+/// One damage pass's work: the part identities that name no node, and the
+/// entity/`NodeDisabled` verdict every imported node must end up with.
+struct DamagePlan {
+    unknown: Vec<SceneNodeId>,
+    markers: Vec<(Entity, bool)>,
+}
+
+/// Appends one event to the log, creating the resource if it is absent.
+fn log_scene_event(world: &mut World, event: SceneEvent) {
+    let mut log = world
+        .remove_resource::<AirframeSceneLog>()
+        .unwrap_or_default();
+    log.push(event);
+    world.insert_resource(log);
+}
+
+/// Despawns every entity `live` owns and reports how many were still there.
+///
+/// The list comes from the import's own record, so a release can never take
+/// another generation's entities with it, and Bevy takes the descendants of
+/// each despawned entity with it. An entity some other stage already
+/// despawned is simply absent and is not counted.
+fn release_scene(world: &mut World, live: &LiveAirframeScene) -> usize {
+    let present = live
+        .import
+        .entities()
+        .filter(|(_, entity)| world.get_entity(*entity).is_ok())
+        .count();
+    for (_, entity) in live.import.entities() {
+        // Descendants go with their parent, so an entity an earlier
+        // iteration already released is just gone.
+        let _ = world.try_despawn(entity);
+    }
+    present
+}
+
+/// Serves an [`AirframeSceneRequest::Load`]: prepare, release, publish.
+fn load_airframe_scene(world: &mut World, visual: &AirframeVisual, graph: Arc<SceneGraph>) {
+    let airframe = visual.airframe().clone();
+    let root = visual.root().root().clone();
+    // The generation is consumed before the attempt, so a refused load does
+    // not hand its stamp to the retry.
+    let generation = {
+        let mut generations = world
+            .remove_resource::<SceneGenerations>()
+            .unwrap_or_default();
+        let next = generations.take_next();
+        world.insert_resource(generations);
+        next
+    };
+
+    // Prepare: `import_airframe` converts every transform before it spawns
+    // anything, so a refusal leaves the world untouched.
+    let import = match import_airframe(world, &graph, visual, generation) {
+        Ok(import) => import,
+        Err(error) => {
+            log_scene_event(
+                world,
+                SceneEvent::Refused {
+                    airframe,
+                    root,
+                    generation,
+                    error,
+                },
+            );
+            return;
+        }
+    };
+
+    // Bind the sockets of the imported subtree. A socket outside the subtree
+    // belongs to another airframe; a socket whose role is an explicit unknown
+    // is reported instead of being given a role.
+    let mut sockets: BTreeSet<SceneNodeId> = BTreeSet::new();
+    let mut unresolved: Vec<SceneNodeId> = Vec::new();
+    for socket in graph.sockets() {
+        let Some(entity) = import.entity(socket.node()) else {
+            // The socket is on another root of the container: another
+            // airframe's part, not this scene's.
+            continue;
+        };
+        if world.get_entity(entity).is_err() {
+            continue;
+        }
+        match socket.role() {
+            Resolved::Known(_) => {
+                world.entity_mut(entity).insert(PartBinding {
+                    role: socket.role().clone(),
+                    collision: socket.collision().clone(),
+                    zone_id: socket.zone_id(),
+                    provenance: socket.provenance().clone(),
+                });
+                sockets.insert(socket.node().clone());
+            }
+            Resolved::Unknown { .. } => unresolved.push(socket.node().clone()),
+        }
+    }
+
+    // Commit: the superseded scene goes only now, so a load that succeeded is
+    // never the reason an aircraft loses its model.
+    if let Some(previous) = world.remove_resource::<LiveAirframeScene>() {
+        let released = release_scene(world, &previous);
+        log_scene_event(
+            world,
+            SceneEvent::Released {
+                airframe: previous.airframe().clone(),
+                generation: previous.generation(),
+                entities: released,
+            },
+        );
+    }
+
+    let nodes = import.len();
+    let bound = sockets.len();
+    world.insert_resource(LiveAirframeScene {
+        airframe: airframe.clone(),
+        root: root.clone(),
+        generation,
+        import,
+        sockets,
+        graph,
+    });
+    log_scene_event(
+        world,
+        SceneEvent::Loaded {
+            airframe,
+            root,
+            generation,
+            nodes,
+            sockets: bound,
+            unresolved,
+        },
+    );
+}
+
+/// Serves an [`AirframeSceneRequest::Unload`].
+fn unload_airframe_scene(world: &mut World) {
+    let Some(previous) = world.remove_resource::<LiveAirframeScene>() else {
+        // Nothing is live: a repeated teardown, or a teardown after a
+        // refused load, has nothing to release and is not an error.
+        return;
+    };
+    let released = release_scene(world, &previous);
+    log_scene_event(
+        world,
+        SceneEvent::Released {
+            airframe: previous.airframe().clone(),
+            generation: previous.generation(),
+            entities: released,
+        },
+    );
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use bevy::ecs::schedule::IntoScheduleConfigs;
     use bevy::prelude::{Children, Schedule};
     use cs_content::coordinates::SourceAdapter;
-    use cs_content::scene::{AuthoredTransform, BindingMap, ParsedNode, ParsedNodeKind};
-    use cs_types::content::ContentKind;
+    use cs_content::scene::{
+        AnimationBinding, AuthoredTransform, BindingMap, MeshBinding, ParsedNode, ParsedNodeKind,
+        SemanticBinding,
+    };
+    use cs_types::content::{ContentKind, Known};
+    use cs_types::evidence::ClaimId;
 
     /// The declared synthetic left-handed-centimeters-degrees adapter from
     /// F16-A's registry, the same one F11-A's acceptance fixture converts
@@ -762,6 +1447,225 @@ mod tests {
                 ))
             })
             .collect()
+    }
+
+    // ------------------------------------------------ F11-C test fixtures ---
+
+    fn claim(id: &str) -> ClaimId {
+        ClaimId::new(id).expect("test claim id is valid")
+    }
+
+    /// Every fixture rule is explicitly *designed* evidence: a synthetic
+    /// mapping authored here, not something read from original data.
+    fn designed(id: &str) -> Provenance {
+        Provenance::designed(claim(id))
+    }
+
+    fn known<T>(value: T) -> Resolved<T> {
+        Resolved::Known(Known::new(value, designed("f11c.test.rule")))
+    }
+
+    /// An explicit unknown: the fixture stands in for evidence that could not
+    /// resolve the value, and nothing may default it.
+    fn unmeasured<T>(id: &str, reason: &str) -> Resolved<T> {
+        Resolved::unknown(claim(id), reason).expect("the unknown carries a reason")
+    }
+
+    fn rule(
+        path: &str,
+        role: Resolved<PartRole>,
+        collision: Resolved<CollisionRole>,
+    ) -> SemanticBinding {
+        SemanticBinding {
+            path: path.to_owned(),
+            role,
+            collision,
+            animation: Vec::new(),
+            provenance: designed("f11c.test.rule"),
+        }
+    }
+
+    /// The F11-C fixture: the F11-B hierarchy plus the bindings F11-C binds —
+    /// an engine, a damage zone with its own two LOD bands, a gun mounted
+    /// under the wing, a pod whose role the evidence left unknown, a control
+    /// surface and a camera anchor — and a second root `beta` with a gun of
+    /// its own, so a load of `main` must not bind another airframe's socket.
+    ///
+    /// Stored slots: the F11-B fixture's 0..=10, then `pod` 11, `camera` 12,
+    /// and the `beta` root 13 with `beta_gun` 14.
+    fn bound_fixture() -> Vec<ParsedNode> {
+        let mut nodes = lod_fixture();
+        // `pod` is a second part under the wing, inside the subtree a
+        // destroyed wing covers.
+        let mut pod = object(11, "pod", 2);
+        pod.zone_id = 9;
+        nodes.push(pod);
+        nodes[2].children = vec![3, 5, 7, 11];
+        // A camera anchor under the root, and a mesh on the gun so the
+        // association the renderer needs is reachable from the live record.
+        let mut camera = ParsedNode::new(12, "camera", ParsedNodeKind::Camera);
+        camera.parent = Some(0);
+        nodes.push(camera);
+        nodes[0].children = vec![1, 2, 8, 12];
+        nodes[7].mesh = Some(MeshBinding {
+            index: 7,
+            mesh: known(cid(ContentKind::Mesh, "fix_planes.7")),
+        });
+        nodes[7].zone_id = 7;
+        nodes[2].zone_id = 4;
+        // A second root: another airframe in the same container.
+        let mut beta = ParsedNode::new(13, "beta", ParsedNodeKind::World);
+        beta.children = vec![14];
+        nodes.push(beta);
+        nodes.push(object(14, "beta_gun", 13));
+        nodes
+    }
+
+    /// The binding table for [`bound_fixture`]: six evidenced rules inside
+    /// `main` (one of them with an explicit unknown role), one rule on
+    /// `beta`'s gun and one rule that names no node at all.
+    fn bound_bindings() -> BindingMap {
+        BindingMap::new(vec![
+            rule(
+                "main.body",
+                known(PartRole::Engine),
+                known(CollisionRole::Collider),
+            ),
+            rule(
+                "main.wing",
+                known(PartRole::DamageZone),
+                known(CollisionRole::Collider),
+            ),
+            SemanticBinding {
+                animation: vec![AnimationBinding {
+                    channel: known(cid(ContentKind::AnimationTrack, "recoil")),
+                }],
+                ..rule(
+                    "main.wing.gun",
+                    known(PartRole::Gun),
+                    known(CollisionRole::Collider),
+                )
+            },
+            rule(
+                "main.wing.pod",
+                unmeasured(
+                    "f11c.test.pod-role-unmeasured",
+                    "the fixture's pod role was never evidenced",
+                ),
+                unmeasured(
+                    "f11c.test.pod-collision-unmeasured",
+                    "the fixture's pod collision role was never evidenced",
+                ),
+            ),
+            rule(
+                "main.tail",
+                known(PartRole::ControlSurface),
+                known(CollisionRole::None),
+            ),
+            rule(
+                "main.camera",
+                known(PartRole::CameraAnchor),
+                known(CollisionRole::None),
+            ),
+            rule(
+                "beta.beta_gun",
+                known(PartRole::Gun),
+                known(CollisionRole::Collider),
+            ),
+            rule(
+                "main.absent",
+                known(PartRole::DamageZone),
+                known(CollisionRole::None),
+            ),
+        ])
+        .expect("the fixture rules name distinct paths")
+    }
+
+    /// The converted container the F11-C tests load from: 15 nodes, of which
+    /// 13 hang under the `main` root.
+    fn build_bound_graph() -> SceneGraph {
+        let nodes = bound_fixture();
+        assert_eq!(nodes.len(), 15, "the fixture holds 15 nodes");
+        SceneGraph::build(
+            &cid(ContentKind::InstallFile, "fix_planes"),
+            &nodes,
+            &fixture_adapter(),
+            &bound_bindings(),
+        )
+        .expect("the F11-C fixture converts")
+    }
+
+    /// The airframe visual of the `main` root, the one every load test uses.
+    fn main_visual() -> AirframeVisual {
+        AirframeVisual::new(
+            cid(ContentKind::Airframe, "alpha"),
+            cid(ContentKind::InstallFile, "fix_planes"),
+            node_id("fix_planes.main"),
+        )
+        .expect("the main root reference is well formed")
+    }
+
+    /// A world with the viewer distance the LOD system needs, an empty
+    /// recorded damage state and the scene systems installed in the order
+    /// they must run in: the request first (a load publishes the live record
+    /// the damage pass reads), then the damage markers, then presentation.
+    fn scene_world() -> (World, Schedule) {
+        let mut world = World::new();
+        world.insert_resource(LodDistance::new(Meters(50.0)).expect("50 m is usable"));
+        world.insert_resource(AirframeDamageState::new());
+        let mut schedule = Schedule::default();
+        schedule.add_systems(
+            (
+                process_airframe_scene_request,
+                apply_airframe_damage,
+                select_lod_presentation,
+            )
+                .chain(),
+        );
+        (world, schedule)
+    }
+
+    fn load(
+        world: &mut World,
+        schedule: &mut Schedule,
+        visual: &AirframeVisual,
+        graph: &Arc<SceneGraph>,
+    ) {
+        world.insert_resource(AirframeSceneRequest::load(
+            visual.clone(),
+            Arc::clone(graph),
+        ));
+        schedule.run(world);
+    }
+
+    fn unload(world: &mut World, schedule: &mut Schedule) {
+        world.insert_resource(AirframeSceneRequest::unload());
+        schedule.run(world);
+    }
+
+    /// How many entities the world holds in total, counted off the world
+    /// itself.
+    ///
+    /// Bevy keeps entities of its own here — the placeholder, one per resource
+    /// and the schedule's own bookkeeping — so the number is not the scene's
+    /// size on its own; it is the *difference* between two moments that
+    /// proves a leak, which is why the tests compare it with a baseline
+    /// instead of with zero. The scene's own entities are counted exactly by
+    /// [`imported_count`].
+    fn live_entities(world: &World) -> usize {
+        world.iter_entities().count()
+    }
+
+    /// The node ids the live scene's entities are bound to, sorted, with their
+    /// generations.
+    fn live_bindings(world: &mut World) -> Vec<(String, SceneGeneration)> {
+        let mut bound: Vec<(String, SceneGeneration)> = world
+            .query_filtered::<(Entity, &SceneNodeBinding), With<SceneNodeBinding>>()
+            .iter(world)
+            .map(|(_, binding)| (binding.node.key().to_owned(), binding.generation))
+            .collect();
+        bound.sort();
+        bound
     }
 
     /// AC02's import half: every node becomes one generation-stamped entity,
@@ -1264,6 +2168,753 @@ mod tests {
         assert_eq!(
             NodeVisualTransform::from_canonical(&too_large).map(|_| ()),
             Err(NodeTransformError::NotRepresentable)
+        );
+    }
+
+    // ------------------------------------------------- F11-C: AC03 wiring ---
+
+    /// AC03, the minimum scenario: loading and unloading the same airframe a
+    /// hundred times leaves the live entity count unchanged.
+    ///
+    /// Every round loads the referenced subtree, reflects the recorded damage
+    /// and selects presentation, then unloads. The scene's own entities are
+    /// counted exactly (off the binding) and the *world's* total is compared
+    /// with the counts the first round established, so a leak anywhere —
+    /// including one the scene's bookkeeping does not know about — shows up as
+    /// growth. The generations count up, so no stamp is ever reused, and the
+    /// wing is destroyed in round 1 and repaired in round 50, so the marker
+    /// lifecycle runs inside the loop and the damage state has to survive both
+    /// teardown boundaries.
+    #[test]
+    fn accept_f11_c_load_and_unload_the_same_airframe_hundred_times_without_leaking_entities() {
+        let graph = Arc::new(build_bound_graph());
+        let visual = main_visual();
+        let (mut world, mut schedule) = scene_world();
+        let wing = node_id("fix_planes.main.wing");
+        let gun = node_id("fix_planes.main.wing.gun");
+        let body = node_id("fix_planes.main.body");
+        let subtree = 13;
+        // The counts round 1 establishes; every later round must reproduce
+        // them exactly.
+        let mut loaded_total: Option<usize> = None;
+        let mut resting_total: Option<usize> = None;
+
+        for round in 1..=100u64 {
+            if round == 1 {
+                world
+                    .get_resource_mut::<AirframeDamageState>()
+                    .expect("the damage state is installed")
+                    .destroy(wing.clone());
+            }
+            if round == 50 {
+                assert!(
+                    world
+                        .get_resource_mut::<AirframeDamageState>()
+                        .expect("the damage state is installed")
+                        .repair(&wing),
+                    "the wing was still destroyed before the repair"
+                );
+            }
+
+            load(&mut world, &mut schedule, &visual, &graph);
+            let live = world
+                .get_resource::<LiveAirframeScene>()
+                .expect("a load publishes a live scene")
+                .clone();
+            assert_eq!(live.generation(), SceneGeneration(round));
+            assert_eq!(live.len(), subtree);
+            assert_eq!(
+                imported_count(&mut world),
+                subtree,
+                "round {round}: the load spawned exactly the referenced subtree"
+            );
+            match loaded_total {
+                Some(expected) => assert_eq!(
+                    live_entities(&world),
+                    expected,
+                    "round {round}: the world holds no more entities than after round 1's load"
+                ),
+                None => loaded_total = Some(live_entities(&world)),
+            }
+            assert_eq!(
+                live_bindings(&mut world)
+                    .iter()
+                    .filter(|(_, generation)| *generation != live.generation())
+                    .count(),
+                0,
+                "round {round}: no entity of an older generation survives"
+            );
+
+            // The damage really is reflected in the visuals, so the loop is
+            // not just spawning and dropping identical trees.
+            let wing_entity = live.entity(&wing).expect("wing entity");
+            let gun_entity = live.entity(&gun).expect("gun entity");
+            let body_entity = live.entity(&body).expect("body entity");
+            if round < 50 {
+                assert_eq!(
+                    presentation(&world, wing_entity),
+                    PresentationState::Disabled
+                );
+                assert_eq!(
+                    presentation(&world, gun_entity),
+                    PresentationState::Disabled
+                );
+            } else {
+                assert_eq!(presentation(&world, wing_entity), PresentationState::Drawn);
+                assert_eq!(presentation(&world, gun_entity), PresentationState::Drawn);
+            }
+            assert_eq!(presentation(&world, body_entity), PresentationState::Drawn);
+
+            unload(&mut world, &mut schedule);
+            assert_eq!(
+                imported_count(&mut world),
+                0,
+                "round {round}: the unload released every node of the scene"
+            );
+            match resting_total {
+                Some(expected) => assert_eq!(
+                    live_entities(&world),
+                    expected,
+                    "round {round}: the world returned to its resting entity count"
+                ),
+                None => resting_total = Some(live_entities(&world)),
+            }
+            assert!(
+                world.get_resource::<LiveAirframeScene>().is_none(),
+                "round {round}: no live record outlives the unload"
+            );
+            assert!(
+                world.get_resource::<AirframeDamageState>().is_some(),
+                "round {round}: teardown does not clear recorded damage"
+            );
+        }
+
+        let log = world
+            .get_resource::<AirframeSceneLog>()
+            .expect("the systems reported what they did");
+        assert_eq!(log.len(), 200, "one Loaded and one Released per round");
+        assert_eq!(
+            log.events()
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    SceneEvent::Loaded {
+                        generation: SceneGeneration(100),
+                        ..
+                    }
+                ))
+                .count(),
+            1,
+            "exactly one load published generation 100"
+        );
+        assert_eq!(
+            world.resource::<SceneGenerations>().latest(),
+            SceneGeneration(100),
+            "every load consumed its own generation"
+        );
+        // A hundred cycles leave the world exactly where one cycle did: the
+        // scene's own entities are all gone and the rest is unchanged.
+        let resting = resting_total.expect("the loop ran");
+        assert_eq!(live_entities(&world), resting);
+        assert_eq!(
+            loaded_total.expect("the loop ran") - resting,
+            subtree,
+            "a loaded scene is exactly the subtree more than a resting world"
+        );
+    }
+
+    /// A reload is the session-generation hand-over (F11 non-negotiable
+    /// behavior 5): the superseded scene is released, no hidden old root
+    /// survives, the recorded damage follows the new generation instead of
+    /// being re-decided, and a second unload after the reload is a no-op.
+    #[test]
+    fn accept_f11_c_reload_releases_the_superseded_generation_and_leaves_no_old_root() {
+        let graph = Arc::new(build_bound_graph());
+        let visual = main_visual();
+        let (mut world, mut schedule) = scene_world();
+        let wing = node_id("fix_planes.main.wing");
+        let gun = node_id("fix_planes.main.wing.gun");
+
+        world
+            .get_resource_mut::<AirframeDamageState>()
+            .expect("the damage state is installed")
+            .destroy(wing.clone());
+        load(&mut world, &mut schedule, &visual, &graph);
+        let old_root = world
+            .get_resource::<LiveAirframeScene>()
+            .and_then(|live| live.entity(&node_id("fix_planes.main")))
+            .expect("the root entity of generation 1");
+        assert_eq!(imported_count(&mut world), 13);
+
+        // Reload the same airframe: a new generation, a fresh tree.
+        load(&mut world, &mut schedule, &visual, &graph);
+        let live = world
+            .get_resource::<LiveAirframeScene>()
+            .expect("the reload published a live scene")
+            .clone();
+        assert_eq!(live.generation(), SceneGeneration(2));
+        assert_eq!(imported_count(&mut world), 13, "the old tree is gone");
+        assert!(
+            world.get_entity(old_root).is_err(),
+            "the superseded root entity is despawned, not hidden"
+        );
+        assert_eq!(
+            live_bindings(&mut world)
+                .iter()
+                .map(|(_, generation)| *generation)
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([SceneGeneration(2)]),
+            "every live entity carries the new generation only"
+        );
+        assert!(
+            live.entity(&node_id("fix_planes.main")) != Some(old_root),
+            "the reload spawned a new root instead of reusing the old one"
+        );
+
+        // The damage recorded against the first generation still holds on the
+        // second: the part does not silently heal across a reload.
+        let wing_entity = live.entity(&wing).expect("wing entity");
+        assert_eq!(
+            presentation(&world, wing_entity),
+            PresentationState::Disabled
+        );
+        assert_eq!(
+            presentation(&world, live.entity(&gun).expect("gun entity")),
+            PresentationState::Disabled
+        );
+
+        let log = world.resource::<AirframeSceneLog>().clone();
+        assert_eq!(
+            log.events(),
+            &[
+                SceneEvent::Loaded {
+                    airframe: cid(ContentKind::Airframe, "alpha"),
+                    root: node_id("fix_planes.main"),
+                    generation: SceneGeneration(1),
+                    nodes: 13,
+                    sockets: 5,
+                    unresolved: vec![node_id("fix_planes.main.wing.pod")],
+                },
+                SceneEvent::Released {
+                    airframe: cid(ContentKind::Airframe, "alpha"),
+                    generation: SceneGeneration(1),
+                    entities: 13,
+                },
+                SceneEvent::Loaded {
+                    airframe: cid(ContentKind::Airframe, "alpha"),
+                    root: node_id("fix_planes.main"),
+                    generation: SceneGeneration(2),
+                    nodes: 13,
+                    sockets: 5,
+                    unresolved: vec![node_id("fix_planes.main.wing.pod")],
+                },
+            ],
+            "the reload released the superseded generation and then published the new one"
+        );
+
+        // Teardown is idempotent: the explicit unload releases the live tree
+        // and a second one has nothing to do and does not fail.
+        let before_teardown = world.resource::<AirframeSceneLog>().len();
+        unload(&mut world, &mut schedule);
+        assert_eq!(
+            world.resource::<AirframeSceneLog>().len(),
+            before_teardown + 1,
+            "the unload released the live scene"
+        );
+        assert_eq!(imported_count(&mut world), 0);
+        unload(&mut world, &mut schedule);
+        assert_eq!(
+            world.resource::<AirframeSceneLog>().len(),
+            before_teardown + 1,
+            "unloading an empty world reports nothing and changes nothing"
+        );
+        assert_eq!(imported_count(&mut world), 0);
+    }
+
+    /// Error propagation and retry: a refused load says exactly what went
+    /// wrong, spawns nothing, leaves the running scene exactly as it was, and
+    /// a corrected request then succeeds under a generation of its own.
+    #[test]
+    fn accept_f11_c_a_refused_load_propagates_its_error_and_leaves_the_running_scene_alone() {
+        let graph = Arc::new(build_bound_graph());
+        let visual = main_visual();
+        let (mut world, mut schedule) = scene_world();
+        let foreign = AirframeVisual::new(
+            cid(ContentKind::Airframe, "gamma"),
+            cid(ContentKind::InstallFile, "other"),
+            node_id("other.gamma"),
+        )
+        .expect("a well-formed reference into another container");
+        let missing = AirframeVisual::new(
+            cid(ContentKind::Airframe, "delta"),
+            cid(ContentKind::InstallFile, "fix_planes"),
+            node_id("fix_planes.delta"),
+        )
+        .expect("a well-formed reference to an absent root");
+        // A hierarchy whose composed scale overflows the render affine: the
+        // root and its child each scale by 1e38, so the composition is 1e76.
+        let mut main = ParsedNode::new(0, "main", ParsedNodeKind::World);
+        main.children = vec![1];
+        main.transform = AuthoredTransform {
+            scale: [1e38, 1.0, 1.0],
+            ..AuthoredTransform::IDENTITY
+        };
+        let mut child = object(1, "child", 0);
+        child.transform = AuthoredTransform {
+            scale: [1e38, 1.0, 1.0],
+            ..AuthoredTransform::IDENTITY
+        };
+        let unrepresentable = AirframeVisual::new(
+            cid(ContentKind::Airframe, "epsilon"),
+            cid(ContentKind::InstallFile, "fix_planes"),
+            node_id("fix_planes.main"),
+        )
+        .expect("a well-formed reference into the broken container");
+        let broken = Arc::new(
+            SceneGraph::build(
+                &cid(ContentKind::InstallFile, "fix_planes"),
+                &[main, child],
+                &fixture_adapter(),
+                &BindingMap::default(),
+            )
+            .expect("the transform is finite in f64"),
+        );
+
+        // A refusal before anything is live leaves nothing behind at all.
+        load(&mut world, &mut schedule, &foreign, &graph);
+        assert_eq!(imported_count(&mut world), 0);
+        assert!(world.get_resource::<LiveAirframeScene>().is_none());
+
+        load(&mut world, &mut schedule, &visual, &graph);
+        let live = world
+            .get_resource::<LiveAirframeScene>()
+            .expect("a load publishes a live scene")
+            .clone();
+        assert_eq!(live.generation(), SceneGeneration(2));
+
+        // Three refusals: a foreign container, an unknown root and a
+        // transform the render affine cannot hold. Each propagates its own
+        // error, spawns nothing and keeps the running scene. The first two
+        // generations were spent by the refusal above and the load below, so
+        // these attempts take 3, 4 and 5.
+        for (expected_generation, (request_graph, request_visual, error)) in (3..).zip([
+            (
+                Arc::clone(&graph),
+                &foreign,
+                SceneImportError::ForeignContainer {
+                    expected: "fix_planes".to_owned(),
+                    found: "other".to_owned(),
+                },
+            ),
+            (
+                Arc::clone(&graph),
+                &missing,
+                SceneImportError::UnknownNode {
+                    id: node_id("fix_planes.delta"),
+                },
+            ),
+            (
+                Arc::clone(&broken),
+                &unrepresentable,
+                SceneImportError::Transform {
+                    node: node_id("fix_planes.main.child"),
+                    source: NodeTransformError::NotRepresentable,
+                },
+            ),
+        ]) {
+            let before = live_bindings(&mut world);
+            world.insert_resource(AirframeSceneRequest::load(
+                request_visual.clone(),
+                request_graph,
+            ));
+            schedule.run(&mut world);
+            let log = world.resource::<AirframeSceneLog>();
+            let event = log.last().expect("the refusal was reported");
+            assert_eq!(
+                event.generation(),
+                Some(SceneGeneration(expected_generation)),
+                "a refused attempt consumes a generation of its own"
+            );
+            assert!(
+                matches!(event, SceneEvent::Refused { error: reported, .. } if *reported == error),
+                "the refusal propagates {error:?}, got {event:?}"
+            );
+            let still_live = world
+                .get_resource::<LiveAirframeScene>()
+                .expect("the running scene survives a refused load");
+            assert_eq!(still_live, &live, "the live record is untouched");
+            assert_eq!(
+                live_bindings(&mut world),
+                before,
+                "a refused load spawns nothing and removes nothing"
+            );
+            assert_eq!(imported_count(&mut world), 13);
+        }
+
+        // The retry succeeds, and under a generation no earlier attempt used.
+        load(&mut world, &mut schedule, &visual, &graph);
+        let retried = world
+            .get_resource::<LiveAirframeScene>()
+            .expect("the retry published a live scene");
+        assert_eq!(retried.generation(), SceneGeneration(6));
+        assert_eq!(retried.airframe(), live.airframe());
+        assert_eq!(retried.root(), live.root());
+        assert_eq!(retried.len(), live.len());
+        assert_eq!(
+            retried.sockets().collect::<Vec<_>>(),
+            live.sockets().collect::<Vec<_>>(),
+            "the retry bound the same parts"
+        );
+        assert!(
+            live_bindings(&mut world)
+                .iter()
+                .all(|(_, generation)| *generation == SceneGeneration(6)),
+            "the retry's entities all carry its own generation"
+        );
+        assert!(matches!(
+            world.resource::<AirframeSceneLog>().last(),
+            Some(SceneEvent::Loaded { .. })
+        ));
+    }
+
+    /// Parts and sockets are bound by identity, not by position: the gun of
+    /// the loaded airframe carries its evidenced role, the pod whose role was
+    /// never evidenced is reported instead of being given one, the other
+    /// root's gun is not bound at all, and an LOD transition changes the
+    /// presentation of a socket without moving its identity or its pose.
+    #[test]
+    fn accept_f11_c_sockets_are_bound_by_identity_and_survive_an_lod_transition() {
+        let graph = Arc::new(build_bound_graph());
+        let visual = main_visual();
+        let (mut world, mut schedule) = scene_world();
+        let gun = node_id("fix_planes.main.wing.gun");
+        let pod = node_id("fix_planes.main.wing.pod");
+        let body = node_id("fix_planes.main.body");
+        let beta_gun = node_id("fix_planes.beta.beta_gun");
+
+        load(&mut world, &mut schedule, &visual, &graph);
+        let live = world
+            .get_resource::<LiveAirframeScene>()
+            .expect("a load publishes a live scene");
+        assert_eq!(
+            live.sockets().cloned().collect::<Vec<_>>(),
+            vec![
+                node_id("fix_planes.main.body"),
+                node_id("fix_planes.main.camera"),
+                node_id("fix_planes.main.tail"),
+                node_id("fix_planes.main.wing"),
+                gun.clone(),
+            ],
+            "only the evidenced sockets of the loaded subtree are bound"
+        );
+
+        // The gun is a gun: role, collision role, zone and the rule's
+        // provenance all come from the content record.
+        let gun_entity = live.entity(&gun).expect("the gun is imported");
+        let binding = world
+            .get::<PartBinding>(gun_entity)
+            .expect("a bound socket carries its part binding");
+        assert_eq!(binding.known_role(), Some(PartRole::Gun));
+        assert_eq!(*binding.role(), known(PartRole::Gun));
+        assert_eq!(*binding.collision(), known(CollisionRole::Collider));
+        assert_eq!(binding.zone_id(), 7);
+        assert_eq!(binding.provenance(), &designed("f11c.test.rule"));
+        assert_eq!(
+            live.socket(&gun).map(|socket| socket.known_role()),
+            Some(Some(PartRole::Gun)),
+            "the live record reaches the socket by stable id"
+        );
+        assert_eq!(
+            live.socket(&gun)
+                .expect("the gun's socket")
+                .animation()
+                .len(),
+            1,
+            "the animation channel the rule bound is reachable from the live record"
+        );
+        assert_eq!(
+            live.graph()
+                .node(&gun)
+                .and_then(|node| node.mesh().cloned()),
+            live.graph()
+                .sockets()
+                .find(|socket| socket.node() == &gun)
+                .map(|_| live
+                    .graph()
+                    .node(&gun)
+                    .and_then(|node| node.mesh().cloned()))
+                .unwrap(),
+            "the mesh association a renderer needs stays on the content node"
+        );
+        assert!(live.graph().node(&gun).expect("gun node").mesh().is_some());
+
+        // The pose is the node's one composed transform, the same value
+        // collision evaluates: a socket never carries a second pose.
+        let socket_pose = live
+            .socket(&gun)
+            .expect("the gun's socket")
+            .pose()
+            .translation();
+        let node_pose = live
+            .graph()
+            .node(&gun)
+            .expect("gun node")
+            .collision_transform()
+            .translation();
+        assert_eq!(socket_pose, node_pose);
+        assert_eq!(
+            world
+                .get::<NodeVisualTransform>(gun_entity)
+                .expect("transform")
+                .global()
+                .to_matrix()
+                .w_axis
+                .truncate()
+                .to_array(),
+            [
+                node_pose[0] as f32,
+                node_pose[1] as f32,
+                node_pose[2] as f32
+            ],
+            "the ECS affine is that same pose"
+        );
+
+        // The pod's role was never evidenced: no binding, and the loader
+        // reported it instead of defaulting a role.
+        let pod_entity = live.entity(&pod).expect("the pod is imported");
+        assert!(world.get::<PartBinding>(pod_entity).is_none());
+        let unresolved = live
+            .socket(&pod)
+            .expect("the pod is still a socket record")
+            .role();
+        assert!(!unresolved.is_known());
+        assert!(
+            live.socket(&pod)
+                .and_then(|socket| socket.known_role())
+                .is_none(),
+            "an unmeasured role is not defaulted"
+        );
+        // Another airframe's socket is not bound into this scene, and that
+        // root's nodes are not imported at all.
+        assert!(live.entity(&beta_gun).is_none());
+        assert!(live.socket(&beta_gun).is_none());
+
+        // An LOD transition changes presentation only: identity, generation,
+        // role and pose of every socket are byte-identical across it.
+        let before: Vec<(SceneNodeId, PartRole, [f32; 16], SceneGeneration)> = live
+            .sockets()
+            .map(|node| {
+                let entity = live.entity(node).expect("a socket is imported");
+                let part = world.get::<PartBinding>(entity).expect("bound socket");
+                (
+                    node.clone(),
+                    part.known_role().expect("a bound socket has a role"),
+                    world
+                        .get::<NodeVisualTransform>(entity)
+                        .expect("transform")
+                        .global()
+                        .to_matrix()
+                        .to_cols_array(),
+                    world
+                        .get::<SceneNodeBinding>(entity)
+                        .expect("binding")
+                        .generation,
+                )
+            })
+            .collect();
+        world.insert_resource(LodDistance::new(Meters(150.0)).expect("150 m is usable"));
+        schedule.run(&mut world);
+        let live = world
+            .get_resource::<LiveAirframeScene>()
+            .expect("the live scene is untouched by a distance change");
+        let after: Vec<(SceneNodeId, PartRole, [f32; 16], SceneGeneration)> = live
+            .sockets()
+            .map(|node| {
+                let entity = live.entity(node).expect("a socket is imported");
+                let part = world.get::<PartBinding>(entity).expect("bound socket");
+                (
+                    node.clone(),
+                    part.known_role().expect("a bound socket has a role"),
+                    world
+                        .get::<NodeVisualTransform>(entity)
+                        .expect("transform")
+                        .global()
+                        .to_matrix()
+                        .to_cols_array(),
+                    world
+                        .get::<SceneNodeBinding>(entity)
+                        .expect("binding")
+                        .generation,
+                )
+            })
+            .collect();
+        assert_eq!(after, before, "a distance moves no socket's identity");
+
+        // The transition itself is real: the tail's far band took over at
+        // 150 m, and the gun mounted under the wing is still drawn with it.
+        let tail_lod0 = live
+            .entity(&node_id("fix_planes.main.tail.tail_lod0"))
+            .expect("tail band");
+        let tail_lod1 = live
+            .entity(&node_id("fix_planes.main.tail.tail_lod1"))
+            .expect("tail band");
+        assert_eq!(
+            presentation(&world, tail_lod0),
+            PresentationState::LodCulled
+        );
+        assert_eq!(presentation(&world, tail_lod1), PresentationState::Drawn);
+        assert_eq!(presentation(&world, gun_entity), PresentationState::Drawn);
+        assert_eq!(
+            presentation(&world, live.entity(&body).expect("engine")),
+            PresentationState::Drawn
+        );
+    }
+
+    /// Damage visuals: the recorded state owns the `NodeDisabled` markers of
+    /// the live generation, a destroyed part disables its whole subtree
+    /// through presentation, a repair clears the marker and brings the part
+    /// back, the pass is idempotent, an id that names no node is reported, and
+    /// damage recorded before the first load is applied by it.
+    #[test]
+    fn accept_f11_c_damage_marks_and_repairs_the_bound_part_subtree() {
+        let graph = Arc::new(build_bound_graph());
+        let visual = main_visual();
+        let (mut world, mut schedule) = scene_world();
+        let wing = node_id("fix_planes.main.wing");
+        let gun = node_id("fix_planes.main.wing.gun");
+        let pod = node_id("fix_planes.main.wing.pod");
+        let mesh_far = node_id("fix_planes.main.wing.wing_lod1.wing_mesh_far");
+        let body = node_id("fix_planes.main.body");
+        let unknown = node_id("fix_planes.omega");
+
+        // Damage recorded before anything is loaded is not lost: the first
+        // load's damage pass applies it to the fresh generation.
+        world
+            .get_resource_mut::<AirframeDamageState>()
+            .expect("the damage state is installed")
+            .destroy(wing.clone());
+        load(&mut world, &mut schedule, &visual, &graph);
+        let live = world
+            .get_resource::<LiveAirframeScene>()
+            .expect("a load publishes a live scene")
+            .clone();
+        let wing_entity = live.entity(&wing).expect("wing entity");
+        let gun_entity = live.entity(&gun).expect("gun entity");
+        let pod_entity = live.entity(&pod).expect("pod entity");
+        let mesh_far_entity = live.entity(&mesh_far).expect("far mesh entity");
+        let body_entity = live.entity(&body).expect("body entity");
+
+        // The marker is the damage identity on the part that was named; the
+        // *visual* disablement is subtree-wide, which is how one destroyed
+        // wing covers its pod, both LOD bands and the gun mounted on it.
+        assert!(world.get::<NodeDisabled>(wing_entity).is_some());
+        assert!(
+            world.get::<NodeDisabled>(gun_entity).is_none(),
+            "the gun is not named by the damage; it is disabled through its ancestor"
+        );
+        for entity in [wing_entity, pod_entity, mesh_far_entity, gun_entity] {
+            assert_eq!(presentation(&world, entity), PresentationState::Disabled);
+        }
+        assert!(world.get::<NodeDisabled>(body_entity).is_none());
+        assert_eq!(presentation(&world, body_entity), PresentationState::Drawn);
+
+        // Idempotent: running the pass again over the same state changes
+        // nothing. The request resource is gone, so this run is exactly the
+        // damage pass plus presentation.
+        let damaged: Vec<PresentationState> = live
+            .import()
+            .entities()
+            .map(|(_, entity)| presentation(&world, entity))
+            .collect();
+        let events = world.resource::<AirframeSceneLog>().len();
+        schedule.run(&mut world);
+        assert_eq!(
+            live.import()
+                .entities()
+                .map(|(_, entity)| presentation(&world, entity))
+                .collect::<Vec<_>>(),
+            damaged,
+            "the damage pass is convergent"
+        );
+        assert_eq!(
+            world.resource::<AirframeSceneLog>().len(),
+            events,
+            "a converged pass reports nothing"
+        );
+
+        // An id that names no node of the live scene is reported, and it does
+        // not disable anything.
+        world
+            .get_resource_mut::<AirframeDamageState>()
+            .expect("the damage state is installed")
+            .destroy(unknown.clone());
+        schedule.run(&mut world);
+        assert_eq!(
+            world.resource::<AirframeSceneLog>().last(),
+            Some(&SceneEvent::UnknownDamage {
+                ids: vec![unknown.clone()]
+            })
+        );
+        assert_eq!(
+            presentation(&world, wing_entity),
+            PresentationState::Disabled
+        );
+        assert!(
+            world
+                .get_resource::<AirframeDamageState>()
+                .expect("state")
+                .is_destroyed(&unknown),
+            "the unresolvable id is kept, not dropped"
+        );
+
+        // Repairing the wing clears the marker and brings the subtree back at
+        // the distance the viewer is at.
+        assert!(
+            world
+                .get_resource_mut::<AirframeDamageState>()
+                .expect("the damage state is installed")
+                .repair(&wing)
+        );
+        schedule.run(&mut world);
+        assert!(
+            world.get::<NodeDisabled>(wing_entity).is_none(),
+            "a stale marker cannot survive a repair"
+        );
+        for entity in [wing_entity, pod_entity, gun_entity] {
+            assert_eq!(
+                presentation(&world, entity),
+                PresentationState::Drawn,
+                "a repaired part is presented again"
+            );
+        }
+        // The far band is culled because the viewer is at 50 m, not because
+        // of damage: the damage is gone and the distance verdict is back.
+        assert_eq!(
+            presentation(&world, mesh_far_entity),
+            PresentationState::LodCulled
+        );
+
+        // With no live scene the pass is a no-op: a part cannot be damaged
+        // into a scene that does not exist, and the state is kept for the
+        // next load rather than cleared.
+        world
+            .get_resource_mut::<AirframeDamageState>()
+            .expect("the damage state is installed")
+            .destroy(wing.clone());
+        unload(&mut world, &mut schedule);
+        let events = world.resource::<AirframeSceneLog>().len();
+        apply_airframe_damage(&mut world);
+        assert_eq!(imported_count(&mut world), 0);
+        assert_eq!(
+            world.resource::<AirframeSceneLog>().len(),
+            events,
+            "damage with no live scene reports nothing"
+        );
+        assert!(
+            world
+                .get_resource::<AirframeDamageState>()
+                .expect("the state is kept")
+                .is_destroyed(&wing)
         );
     }
 }
