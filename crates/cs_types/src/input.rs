@@ -11,8 +11,10 @@
 //! physical [`BindingSource`] resolves to an [`Action`] through an
 //! [`ActionMap`], and how continuous [`AxisValue`]s travel separately from
 //! once-per-press [`Action`] edges in an [`InputFrame`]. The adapters that
-//! read real devices and calibrate axes are F22-B; focus, replay and control
-//! ownership wiring are F22-C; original command coverage is F22-D.
+//! read real devices and calibrate axes are F22-B; the
+//! [`CommandStream`] a session records at its input boundary, which is what
+//! makes replay display-rate independent, is F22-C; original command coverage
+//! is F22-D.
 //!
 //! **Designed vocabulary, never original data.** Every label, the action set
 //! and the [`ActionMap::designed_default`] map are newly authored project
@@ -1112,6 +1114,225 @@ impl InputFrame {
             .iter()
             .copied()
             .find(|axis| axis.command() == command)
+    }
+
+    /// Whether the frame carries no input at all: no edge, and every axis
+    /// sample exactly neutral (F22-C).
+    ///
+    /// This is what distinguishes a frame that *says* "the axes are neutral"
+    /// from a frame that asks the aircraft to do something. A session whose
+    /// window is not focused produces only the former — the neutral restatement
+    /// `DeviceAdapters::finish_frame` writes for an axis nothing drives any more
+    /// — and it is not an input event, so it is neither delivered nor reported
+    /// as suppressed input. A frame with one non-neutral sample is input.
+    #[must_use]
+    pub fn is_inert(&self) -> bool {
+        self.edges.is_empty() && self.axes.iter().all(|axis| axis.quantized() == 0)
+    }
+
+    /// Removes the frame's [`Action::Ui`] edges and returns them, leaving the
+    /// flight edges and the axes untouched (F22-C).
+    ///
+    /// This is the split the input session applies at the producer/consumer
+    /// boundary: a UI action is a *request* for a screen or the pause path
+    /// (`docs/contracts/UI-NETWORK.md`, "UI transition discipline"), so it must
+    /// never reach the flight simulation's control buffer, and a flight command
+    /// must never reach a menu. A frame carries both only while the session is
+    /// between two contexts (a screen that hands control back mid-frame).
+    pub fn take_ui_actions(&mut self) -> Vec<UiAction> {
+        let mut taken = Vec::new();
+        let mut kept = Vec::with_capacity(self.edges.len());
+        for edge in self.edges.drain(..) {
+            match edge {
+                Action::Ui(action) => taken.push(action),
+                flight => kept.push(flight),
+            }
+        }
+        self.edges = kept;
+        taken
+    }
+}
+
+/// Why a [`CommandStream`] refused a recorded tick.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StreamError {
+    /// The recorded tick is not after the last one the stream holds, so the
+    /// stream would stop being the record of a forward-moving session.
+    NotAfterLast {
+        /// The last tick the stream holds.
+        last: Tick,
+        /// The tick that was refused.
+        received: Tick,
+    },
+    /// The recorded tick was already recorded.
+    AlreadyRecorded {
+        /// The tick that is already in the stream.
+        tick: Tick,
+    },
+}
+
+impl fmt::Display for StreamError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotAfterLast { last, received } => write!(
+                f,
+                "recorded tick {} does not follow the stream's last tick {}",
+                received.0, last.0
+            ),
+            Self::AlreadyRecorded { tick } => {
+                write!(f, "tick {} is already recorded in this stream", tick.0)
+            }
+        }
+    }
+}
+
+impl std::error::Error for StreamError {}
+
+/// A recorded, **quantized** command stream: what the local input path handed
+/// the consumer on each simulation tick (F22-C).
+///
+/// The record is made at the input boundary, which is the one place where the
+/// render frame rate has already been divided out: a render frame that covered
+/// five fixed ticks contributes five records and a frame that covered none
+/// contributes nothing. Each record is an ordinary [`InputFrame`] stamped with
+/// the tick it belonged to, so a stream is fed straight back into
+/// `cs_sim::control::ControlBuffer` — replay is production code, not a
+/// parallel test-only path.
+///
+/// Because every axis sample is quantized ([`AxisValue`], `i16`), two float
+/// readings that differ below the quantization step are the *same* command and
+/// a replay compares exactly. The ticks need not be contiguous: a session that
+/// paused for ten ticks simply has no record for those ticks, and a replay
+/// reproduces the pause because there is nothing to replay.
+///
+/// [`fingerprint`](Self::fingerprint) is a stable FNV-1a digest of the whole
+/// stream, so an evidence report can state *which* input was recorded without
+/// embedding a dump of it. It is a content fingerprint for change detection,
+/// not a cryptographic digest.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CommandStream {
+    records: Vec<InputFrame>,
+}
+
+impl CommandStream {
+    /// An empty stream.
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            records: Vec::new(),
+        }
+    }
+
+    /// The recorded ticks, oldest first.
+    #[must_use]
+    pub fn records(&self) -> &[InputFrame] {
+        &self.records
+    }
+
+    /// How many ticks were recorded.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.records.len()
+    }
+
+    /// Whether nothing was recorded.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+
+    /// The first recorded tick, when the stream is not empty.
+    #[must_use]
+    pub fn first_tick(&self) -> Option<Tick> {
+        self.records.first().map(InputFrame::frame_tick)
+    }
+
+    /// The last recorded tick, when the stream is not empty.
+    #[must_use]
+    pub fn last_tick(&self) -> Option<Tick> {
+        self.records.last().map(InputFrame::frame_tick)
+    }
+
+    /// The record of `tick`, when it was recorded.
+    #[must_use]
+    pub fn record(&self, tick: Tick) -> Option<&InputFrame> {
+        self.records
+            .iter()
+            .find(|record| record.frame_tick() == tick)
+    }
+
+    /// Every edge in the stream, in tick order: the ordered command sequence a
+    /// replay must reproduce.
+    #[must_use]
+    pub fn edges(&self) -> Vec<Action> {
+        self.records
+            .iter()
+            .flat_map(InputFrame::edges)
+            .copied()
+            .collect()
+    }
+
+    /// Appends one tick's recorded commands.
+    ///
+    /// # Errors
+    ///
+    /// [`StreamError::NotAfterLast`] when `record` is not after the stream's
+    /// last tick, and [`StreamError::AlreadyRecorded`] when it repeats a tick
+    /// the stream already holds. A refused record changes nothing, so a stream
+    /// is never left half-appended.
+    pub fn record_tick(&mut self, record: InputFrame) -> Result<(), StreamError> {
+        let tick = record.frame_tick();
+        if let Some(last) = self.last_tick()
+            && tick <= last
+        {
+            return Err(if tick == last {
+                StreamError::AlreadyRecorded { tick }
+            } else {
+                StreamError::NotAfterLast {
+                    last,
+                    received: tick,
+                }
+            });
+        }
+        self.records.push(record);
+        Ok(())
+    }
+
+    /// A stable content fingerprint of the whole stream.
+    ///
+    /// FNV-1a over the tick numbers, the edge labels and the quantized axis
+    /// samples. Two streams that executed the same commands on the same ticks
+    /// have the same fingerprint whatever float noise existed below the
+    /// quantization step.
+    #[must_use]
+    pub fn fingerprint(&self) -> u64 {
+        /// FNV-1a 64-bit offset basis.
+        const OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+        /// FNV-1a 64-bit prime.
+        const PRIME: u64 = 0x0000_0100_0000_01b3;
+
+        let mut hash = OFFSET;
+        let mut mix = |bytes: &[u8]| {
+            for byte in bytes {
+                hash ^= u64::from(*byte);
+                hash = hash.wrapping_mul(PRIME);
+            }
+        };
+        for record in &self.records {
+            mix(&record.frame_tick().0.to_le_bytes());
+            mix(&[1]);
+            for edge in record.edges() {
+                mix(edge.label().as_bytes());
+                mix(&[0]);
+            }
+            mix(&[2]);
+            for axis in record.axes() {
+                mix(axis.command().label().as_bytes());
+                mix(&axis.quantized().to_le_bytes());
+            }
+            mix(&[3]);
+        }
+        hash
     }
 }
 
@@ -2876,5 +3097,120 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![Action::Flight(FlightCommand::Roll)]
         );
+    }
+
+    /// F22-C: the recorded command stream is a forward-moving, quantized record
+    /// of what the consumer executed, with a stable fingerprint and a split
+    /// between UI actions and flight content.
+    #[test]
+    fn accept_f22_c_command_stream_is_ascending_quantized_and_fingerprinted() {
+        let mut stream = CommandStream::new();
+        assert!(stream.is_empty());
+        assert_eq!(stream.first_tick(), None);
+        assert_eq!(stream.last_tick(), None);
+        assert_eq!(
+            CommandStream::new().fingerprint(),
+            stream.fingerprint(),
+            "an empty stream has a stable fingerprint"
+        );
+
+        // A tick's record is an ordinary frame: quantized axes and typed edges.
+        let mut first = InputFrame::new(Tick(10));
+        first.push_edge(Action::Flight(FlightCommand::FirePrimary));
+        first.set_axis(
+            AxisValue::from_unit(FlightCommand::Pitch, 0.5).expect("half scale is a valid sample"),
+        );
+        // A sample below the quantization step is the same command: the record
+        // compares exactly, so the float noise cannot change a replay.
+        let mut second = InputFrame::new(Tick(11));
+        second.set_axis(
+            AxisValue::from_unit(FlightCommand::Pitch, 0.5 + 1e-6)
+                .expect("a sample just above half scale is valid"),
+        );
+        stream
+            .record_tick(first)
+            .expect("the first record is accepted");
+        stream
+            .record_tick(second.clone())
+            .expect("the second record follows");
+        assert_eq!(stream.len(), 2);
+        assert_eq!(stream.first_tick(), Some(Tick(10)));
+        assert_eq!(stream.last_tick(), Some(Tick(11)));
+        assert_eq!(
+            stream.edges(),
+            vec![Action::Flight(FlightCommand::FirePrimary)]
+        );
+        assert_eq!(
+            stream
+                .record(Tick(11))
+                .map(InputFrame::axes)
+                .map(<[AxisValue]>::len),
+            Some(1)
+        );
+        assert!(stream.record(Tick(12)).is_none());
+        assert_eq!(
+            stream.records()[0].axes()[0].quantized(),
+            stream.records()[1].axes()[0].quantized(),
+            "two readings inside one quantization step are one command"
+        );
+
+        // The stream only moves forward, and a refused record changes nothing.
+        assert_eq!(
+            stream.record_tick(second),
+            Err(StreamError::AlreadyRecorded { tick: Tick(11) })
+        );
+        let stale = InputFrame::new(Tick(4));
+        assert_eq!(
+            stream.record_tick(stale),
+            Err(StreamError::NotAfterLast {
+                last: Tick(11),
+                received: Tick(4)
+            })
+        );
+        assert_eq!(stream.len(), 2, "a refused record is not half-applied");
+        assert_eq!(stream.last_tick(), Some(Tick(11)));
+
+        // The fingerprint is stable, covers the tick numbers as well as the
+        // commands, and changes when either changes.
+        let fingerprint = stream.fingerprint();
+        assert_eq!(stream.clone().fingerprint(), fingerprint);
+        let mut later = stream.clone();
+        let mut third = InputFrame::new(Tick(12));
+        third.push_edge(Action::Flight(FlightCommand::FirePrimary));
+        later.record_tick(third).expect("the next tick follows");
+        assert_ne!(later.fingerprint(), fingerprint, "a new tick is a change");
+        let mut moved = CommandStream::new();
+        let mut only_edges = InputFrame::new(Tick(11));
+        only_edges.push_edge(Action::Flight(FlightCommand::FirePrimary));
+        moved.record_tick(only_edges).expect("the first record");
+        assert_ne!(
+            moved.fingerprint(),
+            fingerprint,
+            "the same commands on a different tick are a different stream"
+        );
+
+        // The frame split: a UI action leaves the frame, the flight content
+        // stays, and an inert frame is one that asks for nothing.
+        let mut mixed = InputFrame::new(Tick(3));
+        mixed.push_edge(Action::Ui(UiAction::Confirm));
+        mixed.push_edge(Action::Flight(FlightCommand::Eject));
+        mixed.set_axis(AxisValue::from_quantized(FlightCommand::Yaw, 0).expect("zero is valid"));
+        assert!(!mixed.is_inert(), "an edge is input");
+        assert_eq!(mixed.take_ui_actions(), vec![UiAction::Confirm]);
+        assert_eq!(mixed.edges(), &[Action::Flight(FlightCommand::Eject)]);
+        assert!(!mixed.is_inert(), "the eject edge is still input");
+        assert!(
+            InputFrame::new(Tick(3)).is_inert(),
+            "an empty frame asks for nothing"
+        );
+        let mut neutral = InputFrame::new(Tick(3));
+        neutral.set_axis(AxisValue::from_quantized(FlightCommand::Yaw, 0).expect("zero is valid"));
+        assert!(
+            neutral.is_inert(),
+            "a neutral restatement is not input: {:?}",
+            neutral.axes()
+        );
+        neutral.set_axis(AxisValue::from_quantized(FlightCommand::Yaw, 1).expect("one is valid"));
+        assert!(!neutral.is_inert(), "one non-neutral sample is input");
     }
 }
