@@ -12,7 +12,7 @@
 //! analytic solution for the force path, a geometric bound for contacts, and
 //! the tick ledger for the schedule. The tolerances those runs are judged
 //! against ([`FROZEN_CONVERGENCE_BUDGETS`],
-//! [`CONTACT_FACE_TOLERANCE_M`], [`FROZEN_STABILITY_BUDGETS`]) were written
+//! [`CONTACT_FACE_TOLERANCE_M`], [`FROZEN_STABILITY_BUDGET`]) were written
 //! down *after* the measurements, from the table in
 //! `docs/findings/2026-09-30-f23-d-stability-high-speed-contact-and-convergence-evidence.md`.
 //!
@@ -64,6 +64,15 @@ pub const PROBE_RATES_HZ: [u32; 3] = [60, 120, 240];
 /// flight, chosen so the sweep brackets the "travel per tick far larger than
 /// the obstacle" regime the contract requires a synthetic test to reach.
 pub const PROBE_SPEEDS_M_S: [f32; 4] = [60.0, 120.0, 300.0, 600.0];
+
+/// The longest run any probe will simulate, in fixed ticks.
+///
+/// A declared bound, not a measurement: a probe is evidence about the schedule,
+/// so a scenario asking for more simulated time than this is refused by name
+/// instead of being run for hours and reported as a number. It is about 70
+/// simulated minutes at 240 Hz and 400× the longest declared scenario (the
+/// ten-second 240 Hz cruise).
+pub const MAX_PROBE_TICKS: u64 = 1_000_000;
 
 /// How a probe scenario was rejected before anything ran.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -289,21 +298,33 @@ impl ConvergenceScenario {
 
     /// The exact position at [`duration_s`](Self::duration_s), in meters.
     pub fn exact_position_m(&self) -> [f64; 3] {
-        let t = f64::from(self.duration_s);
+        self.exact_position_at(f64::from(self.duration_s))
+    }
+
+    /// The exact position `seconds` into the run, in meters.
+    ///
+    /// The probe compares against the time it *actually* simulated, which is the
+    /// requested duration rounded to the whole tick, so a scenario that does not
+    /// divide into whole ticks is not charged with the rounding.
+    pub fn exact_position_at(&self, seconds: f64) -> [f64; 3] {
         let acceleration = self.acceleration_m_s2();
         std::array::from_fn(|axis| {
             f64::from(self.initial_position_m[axis])
-                + f64::from(self.initial_velocity_m_s[axis]) * t
-                + 0.5 * acceleration[axis] * t * t
+                + f64::from(self.initial_velocity_m_s[axis]) * seconds
+                + 0.5 * acceleration[axis] * seconds * seconds
         })
     }
 
     /// The exact velocity at [`duration_s`](Self::duration_s), in m/s.
     pub fn exact_velocity_m_s(&self) -> [f64; 3] {
-        let t = f64::from(self.duration_s);
+        self.exact_velocity_at(f64::from(self.duration_s))
+    }
+
+    /// The exact velocity `seconds` into the run, in m/s.
+    pub fn exact_velocity_at(&self, seconds: f64) -> [f64; 3] {
         let acceleration = self.acceleration_m_s2();
         std::array::from_fn(|axis| {
-            f64::from(self.initial_velocity_m_s[axis]) + acceleration[axis] * t
+            f64::from(self.initial_velocity_m_s[axis]) + acceleration[axis] * seconds
         })
     }
 }
@@ -315,6 +336,12 @@ pub struct ConvergenceProbe {
     pub fixed_hz: u32,
     /// Fixed ticks the run crossed.
     pub ticks: u64,
+    /// The time the run actually simulated, in seconds: `ticks / fixed_hz`.
+    ///
+    /// Every comparison below is against this, not against the requested
+    /// [`ConvergenceScenario::duration_s`], so a scenario that does not divide
+    /// into whole ticks is not charged with the rounding as integrator error.
+    pub simulated_seconds: f64,
     /// The measured position after the last tick, in meters.
     pub final_position_m: [f64; 3],
     /// The measured velocity after the last tick, in m/s.
@@ -352,13 +379,7 @@ pub fn convergence_probe(
     scenario.validate()?;
     field("fixed_hz", fixed_hz, |hz| hz > 0).map_err(|_| ProbeError::Rate { hz: fixed_hz })?;
 
-    let ticks = u64::from(fixed_hz) * u64::from(f64_to_ticks(f64::from(scenario.duration_s)));
-    if ticks == 0 {
-        return Err(ProbeError::Field {
-            field: "duration_s",
-            reason: "is shorter than one tick at this rate",
-        });
-    }
+    let ticks = tick_count(scenario.duration_s, fixed_hz)?;
 
     let mut session = PhysicsSession::new(fixed_hz);
     let body = session
@@ -390,8 +411,11 @@ pub fn convergence_probe(
         .expect("a spawned body keeps its pose for the whole run");
     let final_position_m = pose.position_m.map(f64::from);
     let final_velocity_m_s = pose.linear_velocity_m_s.map(f64::from);
-    let exact_position = scenario.exact_position_m();
-    let exact_velocity = scenario.exact_velocity_m_s();
+    // The run compares against the time it actually simulated, so a duration
+    // that is not a whole number of ticks is not charged with the rounding.
+    let simulated_seconds = ticks as f64 / f64::from(fixed_hz);
+    let exact_position = scenario.exact_position_at(simulated_seconds);
+    let exact_velocity = scenario.exact_velocity_at(simulated_seconds);
     let acceleration = scenario.acceleration_m_s2();
     let accounting = TickAccounting::read(&session);
     // The first-order term of symplectic Euler scales with the *integration*
@@ -400,13 +424,13 @@ pub fn convergence_probe(
     // declared two substeps, exactly half of the single-substep values F23-D
     // first measured (0.3333/0.1667/0.0833 m).
     let dt = 1.0 / (f64::from(fixed_hz) * f64::from(accounting.substeps.max(1)));
-    let symplectic_m = f64::from(scenario.duration_s);
     let symplectic_prediction = std::array::from_fn(|axis| {
-        exact_position[axis] + 0.5 * acceleration[axis] * symplectic_m * dt
+        exact_position[axis] + 0.5 * acceleration[axis] * simulated_seconds * dt
     });
     Ok(ConvergenceProbe {
         fixed_hz,
         ticks,
+        simulated_seconds,
         final_position_m,
         final_velocity_m_s,
         position_error_m: max_abs_difference(&final_position_m, &exact_position),
@@ -482,7 +506,7 @@ impl ConvergenceEvidence {
 /// measured run rounded up with roughly 5% of headroom for the position error
 /// and 5× for the velocity error, which is f32 rounding noise at these
 /// step counts. They are declared tolerances for the *declared scenario*
-/// ([`ConvergenceScenario::constant_thust`]), not a general accuracy claim
+/// ([`ConvergenceScenario::constant_thrust`]), not a general accuracy claim
 /// about the flight model, and not a claim about the original game.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct ConvergenceBudget {
@@ -897,6 +921,11 @@ impl ContactProbe {
     }
 
     /// Whether the projectile left the obstacle completely behind it.
+    ///
+    /// For a *sensor* that is the required outcome. For a *solid* obstacle it is
+    /// a tunneling failure measured from the **end state** rather than from the
+    /// tick-sampled maximum: a crossing that passed through and kept going is
+    /// caught even if the sampling missed the deepest moment of the pass.
     pub fn cleared(&self) -> bool {
         self.final_x_m > self.cleared_x_m
     }
@@ -949,7 +978,7 @@ pub fn contact_probe(fixed_hz: u32, scenario: ContactScenario) -> Result<Contact
     let mut preflight_distance_m = None;
     let mut preflight_passed = None;
     let mut preflight_passed_distance_m = None;
-    let mut deepest_x_m = f64::MIN;
+    let mut deepest_x_m = f64::from(start_x_m);
     for tick in 0..scenario.observed_ticks {
         let frame = session.step(1).expect("the session is active");
         if first_report_tick.is_none() && !frame.reports.is_empty() {
@@ -1158,11 +1187,23 @@ impl ContactProbe {
                 penetration_m: self.penetration_past_face_m,
             });
         }
-        if self.solid && !self.first_report_tick.is_some() {
+        if self.solid && self.first_report_tick.is_none() {
             found.push(ContactViolation::Unreported {
                 fixed_hz: self.fixed_hz,
                 speed_m_s: self.speed_m_s,
                 start_travel_ticks: self.start_travel_ticks,
+            });
+        }
+        if self.solid && self.cleared() {
+            // The end state, not the sampled maximum: a solid obstacle that
+            // ends the run behind the projectile was passed through whatever
+            // the per-tick sampling saw.
+            found.push(ContactViolation::SolidEscaped {
+                fixed_hz: self.fixed_hz,
+                speed_m_s: self.speed_m_s,
+                start_travel_ticks: self.start_travel_ticks,
+                final_x_m: self.final_x_m,
+                cleared_x_m: self.cleared_x_m,
             });
         }
         if !self.solid
@@ -1261,6 +1302,23 @@ pub enum ContactViolation {
         /// The spawn distance, in ticks of travel.
         start_travel_ticks: f32,
     },
+    /// A solid crossing ended with the projectile behind the obstacle.
+    ///
+    /// The end-state twin of [`Tunnelled`](Self::Tunnelled): that one is the
+    /// deepest penetration the sampling ever saw, this one is where the body
+    /// actually finished.
+    SolidEscaped {
+        /// The measured rate.
+        fixed_hz: u32,
+        /// The projectile speed.
+        speed_m_s: f32,
+        /// The spawn distance, in ticks of travel.
+        start_travel_ticks: f32,
+        /// Where the projectile ended up.
+        final_x_m: f64,
+        /// The position at which the obstacle is fully behind it.
+        cleared_x_m: f64,
+    },
     /// A sensor overlap slowed the projectile down, i.e. behaved like an
     /// obstacle.
     SensorSlowed {
@@ -1334,6 +1392,17 @@ impl fmt::Display for ContactViolation {
                 f,
                 "{fixed_hz} Hz at {speed_m_s} m/s from {start_travel_ticks} ticks of travel \
                  crossed a solid obstacle with no contact report"
+            ),
+            Self::SolidEscaped {
+                fixed_hz,
+                speed_m_s,
+                start_travel_ticks,
+                final_x_m,
+                cleared_x_m,
+            } => write!(
+                f,
+                "{fixed_hz} Hz at {speed_m_s} m/s from {start_travel_ticks} ticks of travel \
+                 finished at {final_x_m:.4} m, behind the obstacle's far face at {cleared_x_m:.4} m"
             ),
             Self::SensorSlowed {
                 fixed_hz,
@@ -1694,13 +1763,7 @@ pub fn stability_probe(
     scenario.validate()?;
     field("fixed_hz", fixed_hz, |hz| hz > 0).map_err(|_| ProbeError::Rate { hz: fixed_hz })?;
 
-    let ticks = u64::from(fixed_hz) * u64::from(f64_to_ticks(f64::from(scenario.duration_s)));
-    if ticks == 0 {
-        return Err(ProbeError::Field {
-            field: "duration_s",
-            reason: "is shorter than one tick at this rate",
-        });
-    }
+    let ticks = tick_count(scenario.duration_s, fixed_hz)?;
 
     let mut session = PhysicsSession::builder()
         .fixed_hz(fixed_hz)
@@ -1774,19 +1837,48 @@ pub fn stability_probe(
     Ok(probe)
 }
 
-/// The peak-speed spread between the fastest and slowest probed rates.
+/// The spread between the highest and lowest peak speed in `probes`.
+///
+/// Order-independent: it compares the two extremes the slice actually contains,
+/// so a caller that collects its runs in any order measures the same spread
+/// rather than whatever its first and last entries happen to be.
 pub fn rate_spread_m_s(probes: &[StabilityProbe]) -> f64 {
-    let (Some(first), Some(last)) = (probes.first(), probes.last()) else {
+    let Some(first) = probes.first() else {
         return 0.0;
     };
-    (first.max_speed_m_s - last.max_speed_m_s).abs()
+    let mut lowest = first.max_speed_m_s;
+    let mut highest = first.max_speed_m_s;
+    for probe in probes {
+        lowest = lowest.min(probe.max_speed_m_s);
+        highest = highest.max(probe.max_speed_m_s);
+    }
+    highest - lowest
 }
 
-fn f64_to_ticks(seconds: f64) -> u32 {
-    // `duration_s * hz` is an integer by construction for every declared
-    // scenario; rounding to the nearest keeps a floating-point representation
-    // like 0.1 s × 240 Hz = 24.000000000000004 from losing a tick.
-    seconds.round() as u32
+/// The number of fixed ticks a run of `duration_s` simulated seconds crosses at
+/// `fixed_hz`, refusing a duration no probe run can cover.
+///
+/// `duration_s * hz` is rounded to the nearest whole tick: a duration that is
+/// not a whole number of ticks is simulated as the nearest one, and the caller
+/// compares against the time the run *actually* simulated. Rounding here is the
+/// only place it happens, which is why a rounding can never be mistaken for
+/// integrator error. The bound keeps the arithmetic total — an unbounded cast
+/// would silently saturate and ask for a run of billions of ticks.
+fn tick_count(duration_s: f32, fixed_hz: u32) -> Result<u64, ProbeError> {
+    let ticks = (f64::from(duration_s) * f64::from(fixed_hz)).round();
+    if ticks < 1.0 {
+        return Err(ProbeError::Field {
+            field: "duration_s",
+            reason: "is shorter than one tick at this rate",
+        });
+    }
+    if ticks > MAX_PROBE_TICKS as f64 {
+        return Err(ProbeError::Field {
+            field: "duration_s",
+            reason: "is longer than the probe's declared tick budget",
+        });
+    }
+    Ok(ticks as u64)
 }
 
 fn pose_is_finite(pose: &super::fixture::PhysicsSample) -> bool {

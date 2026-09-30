@@ -29,7 +29,7 @@ required).
   one substep through the plugin instead of overwriting the resource.
 - `crates/cs_app/src/physics/mod.rs` (wiring only): module declaration and
   re-exports.
-- `crates/cs_app/tests/physics/{main,evidence}.rs`: the eleven
+- `crates/cs_app/tests/physics/{main,evidence}.rs`: the thirteen
   `accept_f23_d_*` acceptance tests.
 - This file.
 
@@ -219,26 +219,78 @@ projectile. Speeds run 60–600 m/s, i.e. 0.25–10 m of travel per tick against
 a 2 cm obstacle: the regime the contract requires a synthetic test to reach
 ("choose `speed * dt` larger than the obstacle thickness").
 
-Removal/mutation checks, each applied, run, and reverted on this branch:
+Removal/mutation checks, each applied, run, and reverted on this branch. The
+first seven rows are the implementer's, the last four the reviewer's (the
+reviewer re-ran the first two, the substep count and the overlap, and got the
+same failures):
 
-| Mutation | Failing `accept_f23_d_*` tests (of 11) |
+| Mutation | Failing `accept_f23_d_*` tests (of 13) |
 | --- | --- |
 | `DECLARED_SUBSTEP_COUNT` back to `1` | 4: the convergence tolerances (position error 0.3333 / 0.1667 / 0.0833 m against the frozen 0.18 / 0.09 / 0.045 m), the baseline budget, the single-step comparison, and the contact sweep (8 tunneling crossings) |
-| `SPAWN_CONTACT_OVERLAP_M` set to `0.0` | 2: the spawn-in-the-hole test and the contact sweep — 9 of 12 in-hole spawns pass through the wall with no report |
+| `SPAWN_CONTACT_OVERLAP_M` set to `0.0` | 3: the spawn-in-the-hole test, the contact sweep — 9 of 12 in-hole spawns pass through the wall with no report — and the reviewer's sensor-before-wall test, which rests on the same declared overlap |
 | the preflight's into-obstacle velocity removal disabled | 1: the spawn-in-the-hole test (the projectile rebounds off the wall at 1–17 m/s instead of staying on the contact) |
 | the preflight's second (sensor) cast made to reject everything | 1: the trigger-inside-the-spawn-tick test — the crossing leaves no trace anywhere |
 | `apply_force_requests` removed from the adapter chain | 3: both convergence tests and the flight stability test (`driven` = 600 with `applied` = 0) |
 | `drive_flight_aircraft` unregistered | 1: the flight stability test (the driver's own tick counter reads 0 of the world's 600) |
 | `record_integration` no longer increments the ledger | 2: the flight stability test and the contact sweep (`ticks != integrations`) |
+| the preflight's sensor cast made conditional again (skipped when a solid obstacle stops the same tick) | 1: the reviewer's `..._a_spawn_records_a_sensor_it_crossed_before_a_solid_stops_it` — a body that crossed a trigger and then hit a wall in the same tick left no trace |
+| the convergence probe judging the run against the requested `duration_s` instead of the ticks it simulated | 1: the reviewer's `..._a_fractional_tick_duration_is_judged_on_the_time_it_simulated` — 0.59 m reported where 0.88 m is the measured first-order term |
+| `rate_spread_m_s` reading `probes.first()`/`probes.last()` instead of the extremes | 0 by construction (its one caller happens to pass ascending rates): fixed because the measurement was order-dependent, and a probe that measures the wrong pair silently is worse than no probe |
+| `deepest_x_m` seeded with `f64::MIN` instead of the spawn position | 0 by construction (a body that never reports a pose panics at the end of the run instead): fixed because a seed that reports "no penetration" when nothing was measured is the wrong direction to fail |
 
-Two of these rows are why the probes are shaped the way they are. The
-stability rules compare the driver's own counters with the adapter's ledger
+Two of the implementer's rows are why the probes are shaped the way they are.
+The stability rules compare the driver's own counters with the adapter's ledger
 (`DriverAbsent`, `RequestsNotApplied`) rather than trusting a single counter:
 with the driver unregistered, both of *its* counters read zero, which looks
 exactly like a run in which nothing needed flying. And the substep policy is
 checked from both sides — the product probe must not tunnel, and the
 single-step probe must — so weakening the declared count cannot make both
 halves pass at once.
+
+## What the review changed
+
+Recorded because a reviewer's fixes are evidence too. Four defects were found
+in the branch as submitted and fixed on it, all inside the owner paths:
+
+1. **A probe that could be charged with its own rounding.**
+   `convergence_probe` and `stability_probe` computed their tick count as
+   `fixed_hz * round(duration_s)` and then compared the run against
+   `duration_s` itself. For every *declared* scenario (2 s, 10 s) those are the
+   same instant, so the frozen numbers were never wrong; for any other duration
+   the run simulated a different number of seconds than the one it was judged
+   at. At 10.51 s and 60 Hz the run simulates 631 ticks = 10.5167 s, and
+   charging the 6.7 ms to the integrator makes the reported position error the
+   difference of two first-order terms (0.88 m − 1.47 m = 0.59 m) instead of the
+   0.88 m term itself — a 32% error in the number that is supposed to measure
+   the integrator. The run now compares against the time it actually simulated
+   (`ConvergenceProbe::simulated_seconds`), which is a public field so the
+   difference is visible, and the rounding happens in exactly one place
+   (`tick_count`).
+2. **An unbounded run length.** The same arithmetic cast to `u32` and
+   saturated, so a scenario asking for 10^9 seconds asked for 4.3 × 10^9 ticks
+   and hung instead of refusing. `tick_count` now refuses a run longer than
+   [`MAX_PROBE_TICKS`] by name.
+3. **A sensor crossing recorded only sometimes.** The preflight's second,
+   non-blocking cast ran only when no solid obstacle stopped the spawn, so a
+   projectile that crossed a trigger and was then stopped by a wall in the same
+   tick recorded nothing — even though the crossing is the gameplay fact the
+   field exists for. The cast now runs either way, from the same spawn
+   position, so `passed_distance_m` and the clamp's `distance_m` share one
+   frame of reference. This is the one production behaviour the review changed,
+   and `..._a_spawn_records_a_sensor_it_crossed_before_a_solid_stops_it` pins
+   it at 120 Hz with a trigger at `x = -0.10` and a wall at `x = +0.10`.
+4. **Two order-dependent measurements.** `rate_spread_m_s` compared the first
+   and last entries of the slice it was handed rather than the extremes, and
+   the contact probe seeded its penetration sampling with `f64::MIN` instead of
+   the spawn position. Neither could fail in the current callers, and both are
+   now measuring what their names say.
+
+The review also added a second, independent way to catch a tunnelling
+crossing: `ContactViolation::SolidEscaped` compares the *end state* against the
+obstacle's far face, where `Tunnelled` compares the deepest penetration the
+per-tick sampling ever saw. The substep-count mutation above fails both, which
+is the point — a sampler that misses the deepest moment of a pass can no longer
+hide it.
 
 ## Designed values, not original data
 
@@ -263,7 +315,11 @@ at most **checked**.
 
 Affected content: the swept layers' spawn path and the trigger rules.
 Resolving tasks: **F24-C** (equipment/trigger consumer), **F26**
-(calibration), and a follow-up task for the trigger-crossing decision.
+(calibration), **#415** (the trigger-crossing decision this stage declined to
+invent), **#416** (the substep policy in every world bootstrap), and **#401**
+for the swept-CCD/sensor interaction (which is a different failure of the same
+pair: a swept body being *held* by a sensor rather than passing through one
+unrecorded).
 
 1. **A trigger crossed entirely inside the spawn tick is not reported.** F23-C's
    acceptance criterion `accept_f23_c_preflight_never_stops_on_a_sensor`
@@ -276,10 +332,12 @@ Resolving tasks: **F24-C** (equipment/trigger consumer), **F26**
    (1 episode, first report on tick 2). The crossing is **recorded** either
    way: the preflight's second, non-blocking cast puts the sensor in
    `SpawnPreflightEvent::passed` with the distance to it (measured 0.04 m to
-   3.94 m across the matrix) and `SpawnPreflightLog::passed` counts them.
-   Whether gameplay consumes that field as a trigger crossing is a rule this
-   stage does not invent; it is F24-C's to decide, with F26 for the calibrated
-   values.
+   3.94 m across the matrix) and `SpawnPreflightLog::passed` counts them. That
+   cast runs whether or not a solid obstacle also stopped the same tick, since a
+   body that crossed a trigger and then hit a wall crossed the trigger. Whether
+   gameplay consumes that field as a trigger crossing is a rule this stage does
+   not invent; it is **#415** to decide, with **F24-C** as the consumer and
+   **F26** for the calibrated values.
 2. **The substep policy is a measured value, not a derived one.** It is
    sufficient for the probed envelope at the declared probe geometry; the
    threshold is a function of obstacle thickness and body size, so content
@@ -293,6 +351,17 @@ Resolving tasks: **F24-C** (equipment/trigger consumer), **F26**
    force ordering, projectile speed, substep count and contact semantics stay
    unknown (F16-D, F24-D, F26, and the owner-supplied
    `REF-OWNER-FIRST-CAPTURE`).
+5. **The declared substep policy is installed by the physics schedule, not by
+   every world bootstrap.** `PhysicsAdapterPlugin` inserts
+   `SubstepCount(DECLARED_SUBSTEP_COUNT)` and both the product session and the
+   physics harness go through it — but `crates/cs_app/src/world/fixture.rs:691`
+   (F18-A, outside this task's owner paths) calls the same plugin and then
+   overwrites the resource with `SubstepCount(1)`, which is a declared
+   measurement condition of the F18-A synthetic arch fixture. Any mission world
+   runtime built on that fixture would silently run one substep per tick and
+   reproduce regression 1 above. Affected content: the mission world runtime
+   once it exists. Resolving task: **#416**; the fixture's own F18-A findings
+   are the other place that value is declared.
 
 ## Sources
 

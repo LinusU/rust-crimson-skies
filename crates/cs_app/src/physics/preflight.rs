@@ -67,16 +67,19 @@
 //! crosses it and leaves at its fired speed with **zero** contact reports, at
 //! every probed speed and rate.
 //!
-//! A second, non-blocking cast answers that: when no solid obstacle stopped
-//! the spawn, the preflight casts again accepting only *sensor* overlaps and
-//! records the crossing in [`SpawnPreflightEvent::passed`] with the distance to
-//! it. Nothing about the spawn changes — the body still flies through at full
-//! speed, exactly as F23-C's criterion requires — but the crossing now leaves
-//! an authoritative record instead of no trace at all. Whether gameplay
-//! consumes that field (as a trigger crossing, or only as a diagnostic) is a
-//! rule F23-C's criterion does not decide, so this stage does not invent one:
-//! it is recorded as a named limitation for the task that owns the trigger
-//! rules (F24-C) and the calibration (F26), with the numbers above.
+//! A second, non-blocking cast answers that: the preflight always casts again
+//! accepting only *sensor* overlaps and records the crossing in
+//! [`SpawnPreflightEvent::passed`] with the distance to it, whether or not a
+//! solid obstacle also stopped the spawn (a body that crosses a trigger and is
+//! then stopped by a wall in the same tick crossed the trigger, and its
+//! distance is measured from the same spawn position as the clamp's). Nothing
+//! about the spawn changes — the body still flies through at full speed,
+//! exactly as F23-C's criterion requires — but the crossing now leaves an
+//! authoritative record instead of no trace at all. Whether gameplay consumes
+//! that field (as a trigger crossing, or only as a diagnostic) is a rule
+//! F23-C's criterion does not decide, so this stage does not invent one: it is
+//! recorded as a named limitation for the task that owns the trigger rules
+//! (F24-C) and the calibration (F26), with the numbers above.
 //!
 //! **Designed rule, not original data.** Whether the original clamped a
 //! spawn, refused it or let it tunnel is unknown; this is the declared fix
@@ -94,7 +97,7 @@ use bevy::{
     },
     time::{Fixed, Time},
 };
-use cs_sim::collision::{ContactKind, ShapeClass, classify_contact};
+use cs_sim::collision::{CollisionLayer, ContactKind, ShapeClass, classify_contact};
 
 use super::body::BodyLayer;
 
@@ -144,9 +147,12 @@ pub struct SpawnPreflightEvent {
     /// This is a record, not a correction. Nothing about the spawn changes — a
     /// trigger never stops a body (F23-C) — but F23-D measured that a trigger
     /// crossed entirely inside the spawn tick produces no contact event either,
-    /// so without this field the crossing would leave no trace at all.
+    /// so without this field the crossing would leave no trace at all. It is
+    /// recorded whether or not a solid obstacle also stopped the same tick.
     pub passed: Option<Entity>,
-    /// How far the body could have travelled before that collider, in meters.
+    /// How far the body could have travelled before that collider, in meters,
+    /// measured from the spawn position — the same reference as
+    /// [`distance_m`](Self::distance_m).
     pub passed_distance_m: Option<f32>,
 }
 
@@ -234,11 +240,31 @@ type FreshSweep<'w> = (
     &'w Position,
 );
 
+/// How the declared matrix classifies a cast hit, or `None` when the hit
+/// carries no declared layer.
+///
+/// Both preflight casts classify through this one function, so the solid cast
+/// and the sensor cast cannot drift apart in what they count as a hit.
+fn classify_hit(
+    mover: CollisionLayer,
+    hit_entity: Entity,
+    layers: &Query<&BodyLayer>,
+    sensors: &Query<(), With<Sensor>>,
+) -> Option<ContactKind> {
+    let layer = layers.get(hit_entity).ok()?.0;
+    let hit_shape = if sensors.contains(hit_entity) {
+        ShapeClass::Sensor
+    } else {
+        ShapeClass::Solid
+    };
+    Some(classify_contact(mover, layer, ShapeClass::Solid, hit_shape))
+}
+
 /// Resolves every [`SpawnPreflight`] marker against the current collider
 /// tree, before the tick integrates.
 ///
 /// For each fresh swept body it casts the body's own collider along one tick
-/// of linear travel. The cast's predicate accepts only a hit the declared
+/// of linear travel. The first cast's predicate accepts only a hit the declared
 /// matrix would resolve as a solid contact, so a sensor or a non-interacting
 /// collider never stops a spawn and the cast carries on to a later solid hit.
 /// A solid hit inside the tick moves the body to the contact point and ends the
@@ -246,6 +272,14 @@ type FreshSweep<'w> = (
 /// `Position`/`LinearVelocity` before the tick integrates is a teleport only in
 /// the bookkeeping sense: the body has not simulated yet, so no continuity is
 /// broken.
+///
+/// A second cast accepting only *sensor* overlaps runs either way and changes
+/// nothing about the spawn: it records, in [`SpawnPreflightEvent::passed`], a
+/// trigger the spawn crossed inside its own tick — the crossing the engine
+/// reports nothing for (see the module docs). It is not conditional on the
+/// first cast's answer, because a body that crosses a trigger and is then
+/// stopped by a wall in the same tick crossed the trigger, and its distance is
+/// measured from the same spawn position as the clamp's.
 fn resolve_spawn_preflights(
     time: Res<Time<Fixed>>,
     spatial: SpatialQuery,
@@ -291,16 +325,31 @@ fn resolve_spawn_preflights(
                 // matrix ignores, and every sensor, lets the cast pass on to a
                 // later solid hit (contract: sensor overlap is not damage by
                 // itself).
-                let Ok(hit_layer) = layers.get(hit_entity) else {
-                    return true;
-                };
-                let hit_shape = if sensors.contains(hit_entity) {
-                    ShapeClass::Sensor
-                } else {
-                    ShapeClass::Solid
-                };
-                classify_contact(mover, hit_layer.0, ShapeClass::Solid, hit_shape)
-                    == ContactKind::SolidContact
+                // A hit with no declared layer is taken as solid: the reporter
+                // counts it as unclassified rather than ignoring it.
+                classify_hit(mover, hit_entity, &layers, &sensors)
+                    .is_none_or(|kind| kind == ContactKind::SolidContact)
+            },
+        );
+        // The sensor record is gathered whether or not a solid obstacle stopped
+        // the spawn, and from the same spawn position, so `passed_distance_m`
+        // and the clamp's `distance_m` share one frame of reference. A body that
+        // crosses a trigger and is then stopped by a wall in the same tick
+        // crossed the trigger, so the record must not depend on the first
+        // cast's answer.
+        let passed = spatial.cast_shape_predicate(
+            collider,
+            position.0,
+            rotation.0,
+            direction,
+            &config,
+            &filter,
+            &|hit_entity| {
+                // The complement of the first cast: an interacting pair the
+                // declared matrix resolves as a reported overlap. A sensor never
+                // stops a spawn, so this cast only records.
+                classify_hit(mover, hit_entity, &layers, &sensors)
+                    .is_some_and(|kind| kind == ContactKind::SensorOverlap)
             },
         );
 
@@ -336,36 +385,11 @@ fn resolve_spawn_preflights(
                     distance_m: Some(hit.distance),
                     clamped: true,
                     stopped,
-                    passed: None,
-                    passed_distance_m: None,
+                    passed: passed.map(|crossed| crossed.entity),
+                    passed_distance_m: passed.map(|crossed| crossed.distance),
                 });
             }
             None => {
-                // No solid obstacle stopped the spawn, so the body is not on a
-                // collision course with anything. A *sensor* it did cross is
-                // still a gameplay fact, and the engine reports nothing at all
-                // for a crossing that happens entirely inside the spawn tick:
-                // the second cast records it here without touching the spawn.
-                let passed = spatial.cast_shape_predicate(
-                    collider,
-                    position.0,
-                    rotation.0,
-                    direction,
-                    &config,
-                    &filter,
-                    &|hit_entity| {
-                        let Ok(hit_layer) = layers.get(hit_entity) else {
-                            return false;
-                        };
-                        let hit_shape = if sensors.contains(hit_entity) {
-                            ShapeClass::Sensor
-                        } else {
-                            ShapeClass::Solid
-                        };
-                        classify_contact(mover, hit_layer.0, ShapeClass::Solid, hit_shape)
-                            == ContactKind::SensorOverlap
-                    },
-                );
                 log.record(SpawnPreflightEvent {
                     body: entity,
                     hit: None,

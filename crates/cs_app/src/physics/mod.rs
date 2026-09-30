@@ -67,11 +67,11 @@ pub use contacts::{ContactReport, ContactReports, PhysicsBodiesPlugin};
 pub use evidence::{
     CONTACT_FACE_TOLERANCE_M, ContactProbe, ContactScenario, ContactSweep, ContactViolation,
     ConvergenceBudget, ConvergenceEvidence, ConvergenceProbe, ConvergenceScenario,
-    ConvergenceViolation, FROZEN_CONVERGENCE_BUDGETS, FROZEN_STABILITY_BUDGET, PROBE_RATES_HZ,
-    PROBE_SPEEDS_M_S, ProbeError, SENSOR_MIN_SPEED_FRACTION, SPAWN_IN_HOLE_TRAVEL_TICKS,
-    StabilityBudget, StabilityProbe, StabilityScenario, StabilityViolation, TickAccounting,
-    TickViolation, contact_probe, contact_sweep, convergence_evidence, convergence_probe,
-    rate_spread_m_s, stability_probe,
+    ConvergenceViolation, FROZEN_CONVERGENCE_BUDGETS, FROZEN_STABILITY_BUDGET, MAX_PROBE_TICKS,
+    PROBE_RATES_HZ, PROBE_SPEEDS_M_S, ProbeError, SENSOR_MIN_SPEED_FRACTION,
+    SPAWN_IN_HOLE_TRAVEL_TICKS, StabilityBudget, StabilityProbe, StabilityScenario,
+    StabilityViolation, TickAccounting, TickViolation, contact_probe, contact_sweep,
+    convergence_evidence, convergence_probe, rate_spread_m_s, stability_probe,
 };
 pub use fixture::{
     FixtureBodySpec, PhysicsFixture, PhysicsFixtureBuilder, PhysicsFixtureError, PhysicsSample,

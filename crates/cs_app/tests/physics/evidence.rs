@@ -18,10 +18,11 @@
 //! Every value is newly authored synthetic fixture data.
 
 use cs_app::physics::{
-    BASELINE_FIXED_HZ, CONTACT_FACE_TOLERANCE_M, ContactScenario, DECLARED_SUBSTEP_COUNT,
-    FROZEN_CONVERGENCE_BUDGETS, FROZEN_STABILITY_BUDGET, PROBE_RATES_HZ, PROBE_SPEEDS_M_S,
-    ProbeError, SENSOR_MIN_SPEED_FRACTION, SPAWN_IN_HOLE_TRAVEL_TICKS, StabilityScenario,
-    contact_probe, contact_sweep, convergence_evidence, rate_spread_m_s, stability_probe,
+    BASELINE_FIXED_HZ, CONTACT_FACE_TOLERANCE_M, ContactScenario, ConvergenceScenario,
+    DECLARED_SUBSTEP_COUNT, FROZEN_CONVERGENCE_BUDGETS, FROZEN_STABILITY_BUDGET, MAX_PROBE_TICKS,
+    PROBE_RATES_HZ, PROBE_SPEEDS_M_S, ProbeError, SENSOR_MIN_SPEED_FRACTION,
+    SPAWN_IN_HOLE_TRAVEL_TICKS, StabilityScenario, contact_probe, contact_sweep,
+    convergence_evidence, convergence_probe, rate_spread_m_s, stability_probe,
 };
 
 /// Formats a failure list so a reviewer sees every defect, not just the first.
@@ -522,6 +523,181 @@ fn accept_f23_d_the_flight_peak_speed_agrees_across_rates() {
     }
 }
 
+/// A duration that is not a whole number of ticks is judged on the time the run
+/// actually simulated, not on the duration that was asked for.
+///
+/// 10.51 s at 60 Hz is 631 whole ticks, i.e. 10.5167 s: six milliseconds more
+/// than requested, which at the scenario's terminal 220 m/s is 1.47 m of
+/// travel. Charging that to the integrator would report the *difference* of the
+/// two first-order terms (0.88 m − 1.47 m = −0.59 m) as the position error
+/// instead of the term itself.
+///
+/// Observable failure if the comparison reverts to the requested duration: the
+/// measured error becomes 0.59 m rather than 0.88 m, and the ratio this test
+/// requires drops from 1.00 to 0.68.
+#[test]
+fn accept_f23_d_a_fractional_tick_duration_is_judged_on_the_time_it_simulated() {
+    let mut scenario = ConvergenceScenario::constant_thrust();
+    scenario.duration_s = 10.51;
+    let probe = convergence_probe(&scenario, 60).expect("the scenario is runnable");
+
+    assert_eq!(
+        probe.ticks, 631,
+        "60 Hz can only simulate whole ticks: 10.51 s is 630.6 of them"
+    );
+    assert!(
+        (probe.simulated_seconds - f64::from(scenario.duration_s)).abs() > 0.005,
+        "this scenario must not divide into whole ticks, or the test proves nothing: \
+         simulated {} s",
+        probe.simulated_seconds
+    );
+
+    // The first-order term of symplectic Euler at the time actually simulated.
+    let dt = 1.0 / (f64::from(probe.fixed_hz) * f64::from(probe.accounting.substeps));
+    let first_order_m = 0.5 * 20.0 * probe.simulated_seconds * dt;
+    assert!(
+        probe.position_error_m > 0.9 * first_order_m,
+        "the position error must be the first-order term for the simulated time \
+         ({first_order_m:.6} m), not the difference of two terms: measured {:.6} m",
+        probe.position_error_m
+    );
+    assert!(
+        probe.symplectic_error_m < 1.0e-2,
+        "and what is left must be f32 accumulation, not a time mismatch: {:.3e} m",
+        probe.symplectic_error_m
+    );
+}
+
+/// A spawn that crosses a trigger and is then stopped by a wall in the same
+/// tick still records the trigger crossing.
+///
+/// The spawn preflight's sensor cast is not conditional on the solid cast: a
+/// body that crossed a trigger crossed it, whether or not something solid
+/// stopped it on the same tick, and the record is the only trace that crossing
+/// leaves (the engine reports nothing for a crossing that fits inside the
+/// spawn tick). `passed_distance_m` and the clamp's `distance_m` are measured
+/// from the same spawn position, so the trigger reads closer than the wall.
+///
+/// Observable failure if the sensor cast is skipped when a solid obstacle
+/// stops the spawn: `passed` comes back `None` and the crossing leaves no
+/// trace at all, even though the body demonstrably flew through the trigger.
+#[test]
+fn accept_f23_d_a_spawn_records_a_sensor_it_crossed_before_a_solid_stops_it() {
+    use cs_app::physics::{BodyMode, BodySpec, PhysicsSession};
+    use cs_sim::collision::{CollisionLayer, ContactKind, ShapeClass};
+
+    // 120 Hz and 60 m/s: 0.5 m of travel in the spawn tick. The trigger sits at
+    // x = -0.10 and the wall at x = +0.10, so the projectile meets the trigger
+    // 0.24 m into the tick and the wall 0.44 m into it.
+    let travel_per_tick_m = 0.5_f32;
+    let mut session = PhysicsSession::new(BASELINE_FIXED_HZ);
+    let trigger = session
+        .spawn(&BodySpec {
+            layer: CollisionLayer::Trigger,
+            shape: ShapeClass::Sensor,
+            mode: BodyMode::Static,
+            mass_kg: 1.0,
+            half_extents_m: [0.01, 1.0, 1.0],
+            position_m: [-0.10, 0.0, 0.0],
+            linear_velocity_m_s: [0.0; 3],
+        })
+        .expect("the trigger is valid")
+        .entity;
+    let wall = session
+        .spawn(&BodySpec {
+            layer: CollisionLayer::StaticWorld,
+            shape: ShapeClass::Solid,
+            mode: BodyMode::Static,
+            mass_kg: 1.0,
+            half_extents_m: [0.01, 2.0, 2.0],
+            position_m: [0.10, 0.0, 0.0],
+            linear_velocity_m_s: [0.0; 3],
+        })
+        .expect("the wall is valid")
+        .entity;
+    let projectile = session
+        .spawn(&BodySpec {
+            layer: CollisionLayer::Projectile,
+            shape: ShapeClass::Solid,
+            mode: BodyMode::Dynamic,
+            mass_kg: 1.0,
+            half_extents_m: [0.05; 3],
+            position_m: [-0.40, 0.0, 0.0],
+            linear_velocity_m_s: [
+                travel_per_tick_m * f64::from(BASELINE_FIXED_HZ) as f32,
+                0.0,
+                0.0,
+            ],
+        })
+        .expect("the projectile is valid")
+        .entity;
+
+    let mut events = Vec::new();
+    let mut solid_reports = 0_usize;
+    for _ in 0..6 {
+        let frame = session.step(1).expect("the session is active");
+        for event in &frame.spawn_events {
+            if event.body == projectile {
+                events.push(*event);
+            }
+        }
+        for report in &frame.reports {
+            if report.bodies.contains(&projectile) && report.bodies.contains(&wall) {
+                assert_eq!(report.kind, ContactKind::SolidContact);
+                solid_reports += 1;
+            }
+        }
+    }
+
+    let event = events
+        .first()
+        .unwrap_or_else(|| panic!("the moving swept-layer spawn must preflight: {events:?}"));
+    assert!(event.clamped, "the wall stops the spawn: {event:?}");
+    assert!(
+        event.stopped,
+        "and stops its motion into the wall: {event:?}"
+    );
+    assert_eq!(
+        event.passed,
+        Some(trigger),
+        "the trigger the spawn crossed is recorded even though a solid obstacle \
+         stopped the same tick: {event:?}"
+    );
+    let passed = event
+        .passed_distance_m
+        .expect("a recorded crossing names its distance");
+    let clamped = event.distance_m.expect("a clamp names its distance");
+    assert!(
+        passed > 0.0 && passed < clamped,
+        "the trigger is met before the wall, measured from the same spawn \
+         position: trigger at {passed:.4} m, wall at {clamped:.4} m"
+    );
+    assert!(
+        clamped < travel_per_tick_m,
+        "both are inside the tick's travel of {travel_per_tick_m} m, or the \
+         scenario is not the one this test names: wall at {clamped:.4} m"
+    );
+    assert_eq!(
+        solid_reports, 1,
+        "the clamped spawn is reported against the wall exactly once"
+    );
+    let pose = session
+        .pose(projectile)
+        .expect("the body is still in the world");
+    // The wall's near face is at x = 0.09 and the projectile's half extent is
+    // 0.05, so resting on the face is x = 0.04; `CONTACT_FACE_TOLERANCE_M`
+    // absorbs the declared overlap the solver has not yet pushed out.
+    let face_rest_x = 0.09 - 0.05 + CONTACT_FACE_TOLERANCE_M as f32;
+    assert!(
+        pose.position_m[0] < face_rest_x,
+        "and it ends at rest against the wall's near face (x < {face_rest_x}): {pose:?}"
+    );
+    assert!(
+        pose.linear_velocity_m_s[0].abs() < 0.01,
+        "not rebounding off it: {pose:?}"
+    );
+}
+
 /// A probe refuses a scenario it cannot run instead of producing a number that
 /// looks like evidence.
 ///
@@ -530,7 +706,7 @@ fn accept_f23_d_the_flight_peak_speed_agrees_across_rates() {
 /// indistinguishable from a real one.
 #[test]
 fn accept_f23_d_a_probe_refuses_a_scenario_it_cannot_run() {
-    let mut scenario = cs_app::physics::ConvergenceScenario::constant_thrust();
+    let mut scenario = ConvergenceScenario::constant_thrust();
     scenario.mass_kg = 0.0;
     assert_eq!(
         convergence_evidence_run(scenario),
@@ -541,11 +717,33 @@ fn accept_f23_d_a_probe_refuses_a_scenario_it_cannot_run() {
         "a zero mass is not a runnable convergence scenario"
     );
 
-    let mut scenario = cs_app::physics::ConvergenceScenario::constant_thrust();
+    let mut scenario = ConvergenceScenario::constant_thrust();
     scenario.duration_s = f32::NAN;
     assert!(
         convergence_evidence_run(scenario).is_err(),
         "NaN is not a duration"
+    );
+
+    let mut scenario = ConvergenceScenario::constant_thrust();
+    scenario.duration_s = 0.001;
+    assert_eq!(
+        convergence_probe(&scenario, BASELINE_FIXED_HZ),
+        Err(ProbeError::Field {
+            field: "duration_s",
+            reason: "is shorter than one tick at this rate",
+        }),
+        "a run shorter than one tick is not a run"
+    );
+
+    let mut scenario = ConvergenceScenario::constant_thrust();
+    scenario.duration_s = 1.0e9;
+    assert_eq!(
+        convergence_probe(&scenario, BASELINE_FIXED_HZ),
+        Err(ProbeError::Field {
+            field: "duration_s",
+            reason: "is longer than the probe's declared tick budget",
+        }),
+        "a probe run is bounded by MAX_PROBE_TICKS ({MAX_PROBE_TICKS})"
     );
 
     let mut scenario = ContactScenario::solid_wall();
