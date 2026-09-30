@@ -1902,37 +1902,36 @@ fn retail_dir() -> std::path::PathBuf {
     ))
 }
 
-/// AC04 over the real installation. Every GameZ archive the owner has is
-/// discovered by production discovery, classified by the production GameZ
-/// reader, and measured: this test records how many stored node records each
-/// container's own header declares and where the array starts, cross-checked
-/// against the pinned reference and against the second production reader of
-/// the same 40 header bytes.
+/// One measured GameZ container of the original installation.
+struct GameZCensusRow {
+    /// The case-insensitive logical key, e.g. `zbd/c5/gamez.zbd`.
+    logical: String,
+    /// The header's `node_array_size`.
+    stored_nodes: u32,
+    /// The header's `nodes_offset`.
+    nodes_offset: u32,
+    /// How many stored mesh records the container really holds.
+    present_meshes: usize,
+    /// The container's catalog key, through the production normalizer.
+    catalog_key: String,
+}
+
+/// The census the F11-D roster audit runs over: every archive under the ZBD
+/// root, offered to the production GameZ reader and measured.
 ///
-/// The verdict is the honest one, and it is the verdict this stage is for: no
-/// production path decodes a GameZ node array (#392), so the audit maps **no**
-/// root, part, mount or cockpit binding and names a blocker per container with
-/// the measured record count. No airframe element has been discovered from
-/// original data yet either, so the roster is empty — and an empty roster is
-/// not a pass, it is a finding. What the test pins is that the corpus exists,
-/// that the census is right, and that the audit reports the gap instead of
-/// inventing a mapping.
-#[test]
-#[ignore = "requires CS_GAME_DIR"]
-fn accept_f11_d_retail_the_private_installation_roster_audit_flags_every_container() {
+/// The reader's own signature and version check is what classifies a
+/// container, so no filename decides this; the second production reader of the
+/// same 40 header bytes must agree about the node array, or the census would
+/// be measuring a disagreement. Rows come back in logical-key order.
+fn retail_gamez_census(game_dir: &std::path::Path) -> Vec<GameZCensusRow> {
     use cs_assets::install as install_api;
     use cs_content::catalog::baseline::install_file_key;
     use cs_formats::gamez::{read_gamez_materials, read_gamez_meshes};
     use cs_formats::io::ParseContext;
 
-    let game_dir = retail_dir();
-    let found = install_api::discover(&game_dir)
+    let found = install_api::discover(game_dir)
         .expect("production discovery must read the original installation");
-
-    // Every archive under the ZBD root is offered to the production GameZ
-    // reader; the reader's own signature and version check is what classifies
-    // a container, so no filename decides this.
-    let mut census: Vec<(String, u32, u32, usize)> = Vec::new();
+    let mut census: Vec<GameZCensusRow> = Vec::new();
     for record in &found.manifest.files {
         let logical = record.relative_spelling.logical_key();
         if !logical.starts_with("zbd/") {
@@ -1948,8 +1947,6 @@ fn accept_f11_d_retail_the_private_installation_roster_audit_flags_every_contain
         let Ok(meshes) = read_gamez_meshes(&mut context, &logical, &bytes) else {
             continue;
         };
-        // The second production reader of the same 40 header bytes must agree
-        // about the node array, or the census is measuring a disagreement.
         let materials =
             read_gamez_materials(&mut context, &logical, &bytes).unwrap_or_else(|error| {
                 panic!("{logical}: the retail material section must read: {error}")
@@ -1967,18 +1964,41 @@ fn accept_f11_d_retail_the_private_installation_roster_audit_flags_every_contain
             u64::from(meshes.header.nodes_offset),
             "{logical}: the mesh walk must end on the node array"
         );
-        census.push((
+        census.push(GameZCensusRow {
+            catalog_key: install_file_key(&logical),
             logical,
-            meshes.header.node_array_size,
-            meshes.header.nodes_offset,
-            meshes.present_count(),
-        ));
+            stored_nodes: meshes.header.node_array_size,
+            nodes_offset: meshes.header.nodes_offset,
+            present_meshes: meshes.present_count(),
+        });
     }
-    census.sort();
+    census.sort_by(|left, right| left.logical.cmp(&right.logical));
+    census
+}
+
+/// AC04 over the real installation. Every GameZ archive the owner has is
+/// discovered by production discovery, classified by the production GameZ
+/// reader, and measured: how many stored node records each container's own
+/// header declares and where the array starts, cross-checked against the
+/// pinned reference and against the second production reader of the same 40
+/// header bytes.
+///
+/// The verdict is the honest one, and it is the verdict this stage is for: no
+/// production path decodes a GameZ node array (#392), so the audit maps **no**
+/// root, part, mount or cockpit binding and names a blocker per container with
+/// the measured record count. No airframe element has been discovered from
+/// original data yet either, so the roster is empty — and an empty roster is
+/// not a pass, it is a finding. What the test pins is that the corpus exists,
+/// that the census is right, and that the audit reports the gap instead of
+/// inventing a mapping.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_f11_d_retail_the_private_installation_roster_audit_flags_every_container() {
+    let census = retail_gamez_census(&retail_dir());
 
     // The corpus is the nine GameZ archives, and each one's node array starts
     // where the pinned reference records.
-    let discovered: Vec<&str> = census.iter().map(|(key, ..)| key.as_str()).collect();
+    let discovered: Vec<&str> = census.iter().map(|row| row.logical.as_str()).collect();
     let mut expected: Vec<&str> = RETAIL_GAMEZ_NODES_OFFSET
         .iter()
         .map(|(key, _)| *key)
@@ -1988,29 +2008,30 @@ fn accept_f11_d_retail_the_private_installation_roster_audit_flags_every_contain
         discovered, expected,
         "the installation's GameZ corpus is the nine measured archives"
     );
-    for (key, stored, nodes_offset, present) in &census {
+    for row in &census {
+        let key = &row.logical;
         let (_, reference_offset) = RETAIL_GAMEZ_NODES_OFFSET
             .iter()
             .find(|(name, _)| name == key)
             .unwrap_or_else(|| panic!("{key} is one of the nine measured archives"));
         assert_eq!(
-            *nodes_offset, *reference_offset,
+            row.nodes_offset, *reference_offset,
             "{key}: the node array must start on the reference's recorded offset"
         );
         assert!(
-            *stored > 0,
+            row.stored_nodes > 0,
             "{key}: a container with no stored node record holds no scene"
         );
         assert!(
-            *present > 0,
+            row.present_meshes > 0,
             "{key}: a container with no present mesh holds no geometry"
         );
     }
-    let total_nodes: u32 = census.iter().map(|(_, stored, ..)| *stored).sum();
+    let total_nodes: u32 = census.iter().map(|row| row.stored_nodes).sum();
     let planes_nodes = census
         .iter()
-        .find(|(key, ..)| key == "zbd/planes.zbd")
-        .map(|(_, stored, ..)| *stored)
+        .find(|row| row.logical == "zbd/planes.zbd")
+        .map(|row| row.stored_nodes)
         .expect("the shared airframe archive is in the corpus");
     assert_eq!(
         total_nodes, 56_620,
@@ -2029,14 +2050,14 @@ fn accept_f11_d_retail_the_private_installation_roster_audit_flags_every_contain
     // discovered from original data.
     let containers: Vec<SceneContainerRef> = census
         .iter()
-        .map(|(key, stored, nodes_offset, _)| {
+        .map(|row| {
             SceneContainerRef::new(
                 // The catalog identity of the container, through the
                 // production key normalizer: a relative spelling is not a
                 // content key.
-                cid(ContentKind::InstallFile, &install_file_key(key)),
-                *stored,
-                *nodes_offset,
+                cid(ContentKind::InstallFile, &row.catalog_key),
+                row.stored_nodes,
+                row.nodes_offset,
             )
         })
         .collect();
@@ -2073,20 +2094,665 @@ fn accept_f11_d_retail_the_private_installation_roster_audit_flags_every_contain
     );
     assert!(!report.is_complete());
     assert_eq!(report.blocker_count(), 9, "one blocker per container");
-    for (audit, (key, stored, nodes_offset, _)) in report.containers().iter().zip(&census) {
-        assert_eq!(audit.container().key(), install_file_key(key));
-        assert_eq!(audit.declared_nodes(), *stored, "{key}: the measured count");
+    for (audit, row) in report.containers().iter().zip(&census) {
+        assert_eq!(audit.container().key(), row.catalog_key);
+        assert_eq!(
+            audit.declared_nodes(),
+            row.stored_nodes,
+            "{}: the measured count",
+            row.logical
+        );
         assert_eq!(
             audit.nodes_offset(),
-            *nodes_offset,
-            "{key}: the measured offset"
+            row.nodes_offset,
+            "{}: the measured offset",
+            row.logical
         );
         let blocker = audit.blocker().expect("every container is blocked");
         let text = blocker.to_string();
         assert!(
-            text.contains(&format!("{stored} stored node records"))
-                && text.contains(&nodes_offset.to_string()),
-            "{key}: the blocker must quote the measured facts, got {text}"
+            text.contains(&format!("{} stored node records", row.stored_nodes))
+                && text.contains(&row.nodes_offset.to_string()),
+            "{}: the blocker must quote the measured facts, got {text}",
+            row.logical
         );
     }
+}
+
+// ------------------------------------------------- F11-D evidence harness ---
+
+/// The evidence-report harness for task F11-D
+/// (`docs/contracts/CLI-EVIDENCE.md`, schema `schemas/evidence.schema.json`).
+///
+/// This test is deliberately **not** named `accept_f11_d_*`: it is not part of
+/// the acceptance suite, and it fails loudly when its inputs are missing
+/// instead of passing vacuously. Run from the workspace root, after the
+/// acceptance suite, exactly as:
+///
+/// 1. ```sh
+///    mkdir -p private/evidence/F11-D
+///    cargo test --workspace --locked -- accept_f11_d_ --include-ignored \
+///      2>&1 | tee private/evidence/F11-D/cargo-test.log
+///    ```
+///    (record the pipeline's exit status; it is passed to this harness as
+///    `CS_EVIDENCE_EXIT_CODE`.)
+/// 2. ```sh
+///    CS_EVIDENCE_DIR=private/evidence/F11-D \
+///    CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') \
+///    CS_EVIDENCE_ARGV="cargo test --workspace --locked -- accept_f11_d_ --include-ignored" \
+///    CS_EVIDENCE_EXIT_CODE=<status from step 1> \
+///      cargo test --locked -p cs_content --test scene -- evidence_report_f11_d_ --ignored
+///    ```
+/// 3. ```sh
+///    python3 tools/validate_evidence.py private/evidence/F11-D/acceptance.json \
+///      --artifact-root private/evidence/F11-D --require-pass
+///    ```
+/// 4. Commit a copy of `acceptance.json` as
+///    `docs/findings/evidence/F11-D.json`.
+///
+/// Every field is derived here from real inputs: the recorded test log, the
+/// environment, production discovery of `$CS_GAME_DIR`, the same
+/// [`retail_gamez_census`] the retail acceptance test measures, `rustc
+/// --version` and `Cargo.lock`. Nothing is typed in by hand except two texts:
+/// the `review` block (which `CS_EVIDENCE_REVIEW` fills in for the reviewing
+/// agent, and which otherwise says review is still pending) and the
+/// product-coverage limitations it quotes.
+///
+/// `unknowns` is `[]` and the report validates with `--require-pass`: the
+/// **task's** acceptance is complete — the audit exists, it runs over the real
+/// corpus and it reports the measured blocker instead of inventing a mapping,
+/// and every selected test passed. `tools/validate_evidence.py` rejects a
+/// report whose `unknowns` hold unresolved *task* issues, so the
+/// product-incompleteness state is moved, never deleted (2026-09-28 owner
+/// directive): it lives in the `roster-census.json` artifact this report
+/// hashes, in `review.method`, in `docs/findings/` and in the follow-up tasks
+/// it names. A failing run produces a failing report, which the validator
+/// rejects.
+#[test]
+#[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_GAME_DIR"]
+fn evidence_report_f11_d_writes_the_acceptance_report() {
+    use std::path::PathBuf;
+
+    use cs_assets::install as install_api;
+
+    let evidence_dir = workspace_path(&env_var("CS_EVIDENCE_DIR"));
+    let candidate_tree = env_var("CS_CANDIDATE_TREE");
+    let argv: Vec<String> = env_var("CS_EVIDENCE_ARGV")
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+    assert!(
+        !argv.is_empty(),
+        "CS_EVIDENCE_ARGV must hold the acceptance command (space-separated)"
+    );
+    let exit_code: i32 = env_var("CS_EVIDENCE_EXIT_CODE")
+        .parse()
+        .expect("CS_EVIDENCE_EXIT_CODE must be the exit status of the acceptance run");
+    let game_dir = PathBuf::from(env_var("CS_GAME_DIR"));
+
+    // The candidate tree must be the tree that was actually tested: a stale
+    // report from another commit is exactly what this check refuses.
+    let head_tree = git(&["rev-parse", "HEAD^{tree}"]);
+    assert_eq!(
+        candidate_tree, head_tree,
+        "CS_CANDIDATE_TREE must be `git rev-parse 'HEAD^{{tree}}'` of the tested commit; old \
+         reports cannot be reused for new code"
+    );
+
+    // The acceptance suite is the evidence: parse its recorded output.
+    let log_path = evidence_dir.join("cargo-test.log");
+    let log = fs::read_to_string(&log_path).unwrap_or_else(|error| {
+        panic!(
+            "cannot read the acceptance log {}: {error} (step 1 must tee its output there)",
+            log_path.display()
+        )
+    });
+    let suite = parse_f11_d_suite(&log);
+    assert!(
+        suite.passed > 0 && !suite.assertions.is_empty(),
+        "no `accept_f11_d_` tests were recorded in {}",
+        log_path.display()
+    );
+
+    // Capability coverage is checked, never assumed: `retail` is declared only
+    // because the retail acceptance test is in this log.
+    let retail = suite
+        .assertions
+        .iter()
+        .find(|(name, _)| name.contains("accept_f11_d_retail_"))
+        .unwrap_or_else(|| {
+            panic!(
+                "the retail acceptance test did not run: F11-D requires capability `retail`, run \
+                 step 1 with `--include-ignored` and CS_GAME_DIR set"
+            )
+        });
+    assert_eq!(retail.1, "pass", "the retail acceptance test must pass");
+    assert!(
+        suite
+            .assertions
+            .iter()
+            .any(|(name, _)| name.contains("accept_f11_d_")
+                && !name.contains("accept_f11_d_retail_")),
+        "synthetic task tests must be present alongside the retail one"
+    );
+
+    // `source` hashes describe the real installation, measured by production
+    // discovery.
+    let found = install_api::discover(&game_dir)
+        .expect("production discovery must read the original installation for the evidence record");
+    let install_sha256 = install_api::fingerprint(&found.manifest).to_hex();
+    let content_sha256 = install_api::content_fingerprint(&found.manifest).to_hex();
+
+    // The consumer trace: the same census the retail acceptance test measures,
+    // plus the audit's verdict over it, written into the evidence directory.
+    // The rerun re-checks the reference cross-check, so the artifact cannot be
+    // written from numbers nobody verified.
+    let census = retail_gamez_census(&game_dir);
+    assert_eq!(
+        census.len(),
+        RETAIL_GAMEZ_NODES_OFFSET.len(),
+        "the census must cover every measured GameZ archive"
+    );
+    let containers: Vec<SceneContainerRef> = census
+        .iter()
+        .map(|row| {
+            SceneContainerRef::new(
+                cid(ContentKind::InstallFile, &row.catalog_key),
+                row.stored_nodes,
+                row.nodes_offset,
+            )
+        })
+        .collect();
+    let roster = AirframeRoster::new(Vec::new(), Vec::new()).expect("an empty roster is valid");
+    let report = roster.audit(&containers, |container| {
+        let reference = containers
+            .iter()
+            .find(|reference| reference.container() == container)
+            .expect("the audit only asks about the containers it was given");
+        Err(ContainerBlocker::NodeArrayUndecoded {
+            container: container.clone(),
+            stored_nodes: reference.stored_nodes(),
+            nodes_offset: reference.nodes_offset(),
+        })
+    });
+    let total_nodes: u32 = census.iter().map(|row| row.stored_nodes).sum();
+    let census_path = evidence_dir.join("roster-census.json");
+    let census_json = census_report_json(&census, &report, total_nodes, &install_sha256);
+    fs::write(&census_path, &census_json)
+        .unwrap_or_else(|error| panic!("write {}: {error}", census_path.display()));
+    for needle in [
+        "\"schema\":\"cs-scene-roster-audit/1\"",
+        "\"retail\":true",
+        "\"airframes_discovered\":0",
+        "\"mapped_roots\":0",
+        "\"mapped_sockets\":0",
+        "\"blockers\":9",
+        "\"complete\":false",
+        &format!("\"install_sha256\":\"{install_sha256}\""),
+        &format!("\"total_stored_nodes\":{total_nodes}"),
+    ] {
+        assert!(
+            census_json.contains(needle),
+            "the consumer report is missing {needle:?}"
+        );
+    }
+    assert!(
+        !census_json.contains("\"catalog_key\":\"fix_"),
+        "the retail consumer report holds no authored row"
+    );
+
+    let engine = format!(
+        "{{\"rust\": {}, \"bevy\": {}, \"avian\": {}}}",
+        jstr(&rustc_version()),
+        jstr(&locked_version("bevy")),
+        jstr(&locked_version("avian3d"))
+    );
+    let artifacts = vec![
+        artifact(&log_path, "log", &evidence_dir),
+        artifact(&census_path, "json", &evidence_dir),
+    ];
+
+    let review = std::env::var("CS_EVIDENCE_REVIEW").unwrap_or_else(|_| {
+        "pending: written by the implementing agent bunny-2. Rally assigns the reviewing agent, \
+         who must regenerate this report on the reviewed and rebased commit and replace this text \
+         with their own identity and method (CS_EVIDENCE_REVIEW); the reviewer is a different \
+         agent identity from the implementer, and no agent review awards more than `checked`. \
+         Method: the acceptance suite ran locally with the retail capability over $CS_GAME_DIR, \
+         the consumer trace is the production GameZ census and the production roster audit over \
+         the same installation, and tools/validate_evidence.py --require-pass checks the report."
+            .to_owned()
+            + &F11_D_LIMITATIONS
+                .iter()
+                .map(|limitation| format!(" LIMITATION: {limitation}"))
+                .collect::<String>()
+    });
+
+    let report_json = format!(
+        "{{\n\
+         \x20\"schema_version\": 1,\n\
+         \x20\"task_id\": \"F11-D\",\n\
+         \x20\"candidate_tree\": {},\n\
+         \x20\"engine\": {},\n\
+         \x20\"created_at\": {},\n\
+         \x20\"command\": {{\"argv\": {}, \"cwd\": {}, \"exit_code\": {}}},\n\
+         \x20\"source\": {{\"install_sha256\": {}, \"content_sha256\": {}}},\n\
+         \x20\"seed\": 0,\n\
+         \x20\"ticks\": {{\"start\": 0, \"end\": 0}},\n\
+         \x20\"overrides\": [],\n\
+         \x20\"capabilities\": [\"retail\", \"synthetic\"],\n\
+         \x20\"tests\": {{\"discovered\": {}, \"executed\": {}, \"passed\": {}, \"failed\": {}, \
+         \"ignored\": {}}},\n\
+         \x20\"assertions\": [{}],\n\
+         \x20\"artifacts\": [{}],\n\
+         \x20\"unknowns\": [{}],\n\
+         \x20\"review\": {{\"identity\": {}, \"method\": {}}},\n\
+         \x20\"claim\": \"implemented\"\n\
+         }}\n",
+        jstr(&candidate_tree),
+        engine,
+        jstr(&iso_utc_now()),
+        str_array(&argv),
+        jstr(&git(&["rev-parse", "--show-toplevel"])),
+        exit_code,
+        jstr(&install_sha256),
+        jstr(&content_sha256),
+        suite.discovered,
+        suite.executed,
+        suite.passed,
+        suite.failed,
+        suite.ignored,
+        assertion_array(&suite.assertions),
+        artifact_array(&artifacts),
+        "",
+        jstr(&review),
+        jstr(
+            "acceptance suite run locally with the retail capability; this harness derives every \
+             field from the recorded log, production discovery of $CS_GAME_DIR, the production \
+             GameZ census and roster audit over that installation, rustc and Cargo.lock; validated \
+             with tools/validate_evidence.py --require-pass. The consumer trace is \
+             cs_content::scene::AirframeRoster::audit over the containers cs_formats::gamez's two \
+             production readers measured, with cs_content::catalog::baseline::install_file_key as \
+             the container identity; it is a library path, and no cs-inspect subcommand wraps it \
+             yet. Regenerated by the reviewing agent on the reviewed and rebased commit, as \
+             docs/contracts/CLI-EVIDENCE.md requires."
+        ),
+    );
+
+    let out = evidence_dir.join("acceptance.json");
+    fs::write(&out, &report_json)
+        .unwrap_or_else(|error| panic!("write {}: {error}", out.display()));
+    let written = fs::read_to_string(&out).expect("the report reads back");
+    for needle in [
+        "\"schema_version\": 1",
+        "\"task_id\": \"F11-D\"",
+        "\"claim\": \"implemented\"",
+        "\"install_sha256\"",
+        "\"assertions\": [",
+        "\"artifacts\": [",
+        "\"unknowns\": [],",
+    ] {
+        assert!(
+            written.contains(needle),
+            "the written report is missing {needle:?}:\n{written}"
+        );
+    }
+    assert!(
+        suite.failed == 0 && exit_code == 0,
+        "the acceptance run failed (exit {exit_code}, {} failed): the report was written honestly \
+         and must NOT validate; fix the tests first",
+        suite.failed
+    );
+    println!("wrote {}", out.display());
+}
+
+/// The product-coverage limits this stage records instead of guessing, each
+/// naming the affected content and the task that resolves it (2026-09-28 owner
+/// directive: a limitation must survive into machine-readable evidence). They
+/// are quoted in `review.method` and hashed inside the `roster-census.json`
+/// artifact, never deleted to make a validator pass.
+const F11_D_LIMITATIONS: &[&str] = &[
+    "No production path decodes a GameZ node array, so the roster audit maps no root, part, mount \
+     or cockpit binding from the original installation: the nine measured GameZ archives declare \
+     56,620 stored node records in total and none of them is decoded. Affected content: every \
+     airframe in the game, and every mission-only airframe that lives in a per-chapter gamez.zbd. \
+     Resolving task: #392 (Read the GameZ node array into ParsedNode records), which needs the \
+     owner to grant crates/cs_formats/ owner paths. This limitation gates every scene-hierarchy \
+     and roster fidelity claim and survives this task being marked done.",
+    "No airframe catalog element has been discovered from original data, so the roster the audit \
+     takes is empty and no roster row can be audited. Affected content: the player-selectable \
+     roster, the forced mission assignments and every airframe's mount and cockpit bindings. \
+     Resolving task: the follow-up filed with this stage for roster discovery, which needs a \
+     decoded node array (#392) before a name can be bound to a root.",
+    "Roster availability is a designed vocabulary with no measured original meaning: which modes \
+     let a player choose which airframe has not been observed, and a model name is still not \
+     proof. Affected content: the selectable roster in every mode. Resolving tasks: the F22/F49 \
+     mode and preset stages together with the roster-discovery follow-up.",
+    "The F11-D audit is a library path: nothing in the running binary or in cs-inspect invokes it \
+     yet, so no consumer trace exists outside the acceptance suite. Affected content: the audit's \
+     own reachability. Resolving task: the F11-E producer (#398) that inserts the airframe scene \
+     request, which should refuse an airframe the audit could not map.",
+];
+
+// ------------------------------------------------------- harness helpers ---
+
+use std::fs;
+use std::path::Path;
+use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+fn env_var(name: &str) -> String {
+    std::env::var(name).unwrap_or_else(|_| {
+        panic!(
+            "{name} is not set: this harness only runs through the sequence in its module doc \
+             (the F11-D evidence section of crates/cs_content/tests/scene.rs)"
+        )
+    })
+}
+
+/// Cargo runs a test binary with its working directory set to the *package*
+/// root, so a path written relative to the workspace root must be re-anchored.
+fn workspace_path(as_described: &str) -> std::path::PathBuf {
+    let path = std::path::PathBuf::from(as_described);
+    if path.is_absolute() {
+        return path;
+    }
+    std::path::Path::new(&git(&["rev-parse", "--show-toplevel"])).join(path)
+}
+
+fn git(args: &[&str]) -> String {
+    let output = Command::new("git").args(args).output().expect("git runs");
+    assert!(
+        output.status.success(),
+        "git {args:?} failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn rustc_version() -> String {
+    let output = Command::new("rustc")
+        .arg("--version")
+        .output()
+        .expect("rustc runs");
+    assert!(output.status.success(), "rustc --version failed");
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+/// The locked version of one `Cargo.lock` package: read, never asserted from
+/// memory.
+fn locked_version(package: &str) -> String {
+    // Cargo runs the test binary from the package root, so the lock file is
+    // located through git rather than through the package layout.
+    let lock_path = Path::new(&git(&["rev-parse", "--show-toplevel"])).join("Cargo.lock");
+    let lock = fs::read_to_string(&lock_path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", lock_path.display()));
+    let mut wanted = false;
+    for line in lock.lines() {
+        let line = line.trim();
+        if line == "[[package]]" {
+            wanted = false;
+        } else if let Some(name) = line.strip_prefix("name = \"") {
+            wanted = name.trim_end_matches('"') == package;
+        } else if let Some(version) = line.strip_prefix("version = \"")
+            && wanted
+        {
+            return version.trim_end_matches('"').to_owned();
+        }
+    }
+    panic!("package {package:?} is not in {}", lock_path.display());
+}
+
+/// What the recorded `cargo test` output says actually happened for this
+/// task's prefix.
+#[derive(Debug, Default)]
+struct F11DSuite {
+    discovered: u64,
+    executed: u64,
+    passed: u64,
+    failed: u64,
+    ignored: u64,
+    /// `(test name, "pass" | "fail")`, in log order, deduplicated.
+    assertions: Vec<(String, &'static str)>,
+}
+
+fn parse_f11_d_suite(log: &str) -> F11DSuite {
+    use std::collections::VecDeque;
+    let mut suite = F11DSuite::default();
+    let mut pending: VecDeque<String> = VecDeque::new();
+    for line in log.lines() {
+        let trimmed = line.trim_start();
+        if trimmed.starts_with("test result:") {
+            for (count, kind) in summary_fields(trimmed) {
+                match kind {
+                    "passed" => suite.passed += count,
+                    "failed" => suite.failed += count,
+                    "ignored" => suite.ignored += count,
+                    _ => {}
+                }
+            }
+            continue;
+        }
+        if pending.front().is_some() && (trimmed == "ok" || trimmed == "FAILED") {
+            let name = pending.pop_front().expect("pending test");
+            record_result(
+                &mut suite,
+                name,
+                if trimmed == "ok" { "pass" } else { "fail" },
+            );
+            continue;
+        }
+        let mut cursor = trimmed;
+        while let Some(position) = cursor.find("test ") {
+            let after = &cursor[position + 5..];
+            let Some(separator) = after.find(" ... ") else {
+                break;
+            };
+            let name = after[..separator].to_owned();
+            let tail = &after[separator + 5..];
+            cursor = tail;
+            if !name.contains("accept_f11_d_") {
+                continue;
+            }
+            match tail.split_whitespace().next() {
+                Some("ok") => record_result(&mut suite, name, "pass"),
+                Some("FAILED") => record_result(&mut suite, name, "fail"),
+                _ => pending.push_back(name),
+            }
+        }
+    }
+    suite.assertions.dedup_by(|left, right| left.0 == right.0);
+    suite.executed = suite.passed + suite.failed;
+    suite.discovered = suite.passed + suite.failed + suite.ignored;
+    suite
+}
+
+fn summary_fields(line: &str) -> Vec<(u64, &str)> {
+    let mut fields = Vec::new();
+    for segment in line["test result:".len()..].split(';') {
+        let words: Vec<&str> = segment.split_whitespace().collect();
+        for pair in words.windows(2) {
+            if let Ok(count) = pair[0].parse::<u64>()
+                && matches!(pair[1], "passed" | "failed" | "ignored")
+            {
+                fields.push((count, pair[1]));
+                break;
+            }
+        }
+    }
+    fields
+}
+
+fn record_result(suite: &mut F11DSuite, name: String, status: &'static str) {
+    if suite.assertions.iter().any(|(seen, _)| *seen == name) {
+        return;
+    }
+    suite.assertions.push((name, status));
+}
+
+/// The consumer-trace artifact: the measured census and the audit's verdict
+/// over it. Only counts, offsets and digests — never original content.
+fn census_report_json(
+    census: &[GameZCensusRow],
+    report: &cs_content::scene::RosterAuditReport,
+    total_nodes: u32,
+    install_sha256: &str,
+) -> String {
+    let rows: Vec<String> = census
+        .iter()
+        .map(|row| {
+            format!(
+                "{{\"logical\": {}, \"catalog_key\": {}, \"stored_nodes\": {}, \"nodes_offset\": \
+                 {}, \"present_meshes\": {}, \"mapped\": false}}",
+                jstr(&row.logical),
+                jstr(&row.catalog_key),
+                row.stored_nodes,
+                row.nodes_offset,
+                row.present_meshes
+            )
+        })
+        .collect();
+    format!(
+        "{{\"schema\":\"cs-scene-roster-audit/1\",\"retail\":true,\"install_sha256\":{},\
+         \"containers\":[{}],\"total_stored_nodes\":{},\"airframes_discovered\":{},\
+         \"mapped_roots\":{},\"mapped_sockets\":{},\"blockers\":{},\"gaps\":{},\"complete\":{}}}",
+        jstr(install_sha256),
+        rows.join(","),
+        total_nodes,
+        report.airframe_count(),
+        report.mapped_root_count(),
+        report.mapped_socket_count(),
+        report.blocker_count(),
+        report.gap_count(),
+        report.is_complete()
+    )
+}
+
+/// One referenced artifact: hashed here with the production SHA-256 the
+/// sibling crate implements (the validator re-hashes it with `hashlib`
+/// independently).
+fn artifact(source: &Path, kind: &str, evidence_dir: &Path) -> (String, String, String) {
+    let name = source
+        .file_name()
+        .expect("artifact has a file name")
+        .to_string_lossy()
+        .into_owned();
+    let target = evidence_dir.join(&name);
+    if source != target {
+        fs::copy(source, &target).unwrap_or_else(|error| {
+            panic!("copy {} -> {}: {error}", source.display(), target.display())
+        });
+    }
+    let bytes =
+        fs::read(&target).unwrap_or_else(|error| panic!("read {}: {error}", target.display()));
+    (name, sha256(&bytes).to_hex(), kind.to_owned())
+}
+
+fn assertion_array(assertions: &[(String, &'static str)]) -> String {
+    assertions
+        .iter()
+        .map(|(name, status)| {
+            format!(
+                "{{\"id\": {}, \"status\": {status:?}, \"evidence\": [\"cargo-test.log\"]}}",
+                jstr(name)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn artifact_array(artifacts: &[(String, String, String)]) -> String {
+    artifacts
+        .iter()
+        .map(|(name, digest, kind)| {
+            format!(
+                "{{\"path\": {}, \"sha256\": {digest:?}, \"kind\": {kind:?}}}",
+                jstr(name)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn str_array(items: &[String]) -> String {
+    format!(
+        "[{}]",
+        items
+            .iter()
+            .map(|item| jstr(item))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+}
+
+/// A JSON string literal: quoted and escaped, so no report field can break out
+/// of its string.
+fn jstr(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for character in value.chars() {
+        match character {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            control if (control as u32) < 0x20 => {
+                out.push_str(&format!("\\u{:04x}", control as u32));
+            }
+            other => out.push(other),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// RFC 3339 with whole seconds and `Z`, which `datetime.fromisoformat`
+/// accepts after the validator's `Z` → `+00:00` replacement.
+fn iso_utc_now() -> String {
+    let epoch = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("the system clock is after 1970")
+        .as_secs() as i64;
+    let (year, month, day, hour, minute, second) = civil_from_unix(epoch);
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}Z")
+}
+
+/// Howard Hinnant's `civil_from_days`: days since 1970-01-01 to a UTC
+/// calendar date, because `std` has no date formatting.
+fn civil_from_unix(seconds: i64) -> (i64, u32, u32, u32, u32, u32) {
+    let days = seconds.div_euclid(86_400);
+    let rest = seconds.rem_euclid(86_400);
+    let z = days + 719_468;
+    let era = z.div_euclid(146_097);
+    let day_of_era = z.rem_euclid(146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1_460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let year_of_day = year_of_era + era * 400;
+    let month_prime = (5 * day_of_year + 2) / 153;
+    let day = (day_of_year - (153 * month_prime + 2) / 5 + 1) as u32;
+    let month = (if month_prime < 10 {
+        month_prime + 3
+    } else {
+        month_prime - 9
+    }) as u32;
+    let year = if month <= 2 {
+        year_of_day + 1
+    } else {
+        year_of_day
+    };
+    (
+        year,
+        month,
+        day,
+        (rest / 3_600) as u32,
+        ((rest % 3_600) / 60) as u32,
+        (rest % 60) as u32,
+    )
+}
+
+/// The production SHA-256, so the harness hashes with the same implementation
+/// the rest of the engine uses.
+fn sha256(bytes: &[u8]) -> cs_types::evidence::ContentHash {
+    cs_assets::install::sha256(bytes)
 }
