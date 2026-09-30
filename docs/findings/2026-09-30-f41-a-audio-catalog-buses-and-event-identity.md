@@ -199,7 +199,7 @@ All four required checks, run from the repository root; exit codes as printed.
 ```
 cargo fmt --all -- --check                                             -> 0
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings -> 0
-cargo test --workspace --locked                                        -> 0 (146 "test result: ok", no failures)
+cargo test --workspace --locked                                        -> 0 (152 "test result: ok" after the rebase onto origin/main; 146 before it)
 cargo test --workspace --locked -- accept_f41_a_ --include-ignored     -> 0 (28 tests selected, all passed)
 ```
 
