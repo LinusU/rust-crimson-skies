@@ -221,11 +221,18 @@ pub fn upload_group(
         }
     }
 
-    // Rebuild the compacted vertex arrays in slot order. `slot_of` is only
-    // ever read, so its iteration order cannot leak into the buffers.
-    let mut slots: Vec<u32> = slot_of.values().copied().collect();
-    slots.sort_unstable();
-    let total = slots.len();
+    // Rebuild the compacted vertex arrays in slot order. `slot_of` maps a
+    // render vertex index to the slot it was handed, so invert it: slot `s`
+    // holds the vertex index whose values belong at array position `s`. Using
+    // the slot numbers themselves as vertex indices is wrong for any group
+    // whose render vertices are not exactly the first `total` in order — which
+    // is every group but a first-in-stored-order group 0 (measured in
+    // `accept_f18_b_every_material_group_of_a_stored_mesh_reaches_the_collider`).
+    let total = slot_of.len();
+    let mut slots: Vec<u32> = vec![0; total];
+    for (&vertex_index, &slot) in &slot_of {
+        slots[slot as usize] = vertex_index;
+    }
     let mut positions = Vec::with_capacity(total);
     let mut normals = Vec::with_capacity(total);
     let mut uvs = Vec::with_capacity(total);
