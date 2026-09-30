@@ -43,6 +43,7 @@ use cs_sim::collision::{CollisionLayer, ContactKind, ShapeClass, classify_contac
 
 use super::adapter::PhysicsTickLedger;
 use super::body::BodyLayer;
+use super::preflight;
 
 /// One classified contact start.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -80,6 +81,17 @@ impl ContactReports {
     /// The reports of the current tick. Cleared when the tick advances.
     pub fn reports(&self) -> &[ContactReport] {
         &self.reports
+    }
+
+    /// How many contact pairs are considered active right now.
+    ///
+    /// A pair leaves the set on its `CollisionEnd` or when either side no
+    /// longer carries a [`BodyLayer`] — Avian does not guarantee an end
+    /// event for a despawned collider, so the reporter prunes a pair whose
+    /// body is gone instead of retaining it until an end that never comes
+    /// (F23-C retention rule; F23-B limitation 2).
+    pub fn active_len(&self) -> usize {
+        self.active.len()
     }
 
     /// Reports recorded since the resource was built or cleared.
@@ -170,6 +182,13 @@ fn record_contact_reports(
     let tick = ledger.map_or(0, |ledger| ledger.ticks);
     reports.begin_tick(tick);
 
+    // Despawn retention: a pair whose body is gone (or whose `BodyLayer` was
+    // removed) leaves the active set — Avian does not promise a
+    // `CollisionEnd` for a collider that despawned mid-contact.
+    reports
+        .active
+        .retain(|pair| pair.iter().all(|entity| layers.contains(*entity)));
+
     for event in ends.read() {
         reports.end(pair_of(event.collider1, event.collider2));
     }
@@ -214,5 +233,8 @@ impl Plugin for PhysicsBodiesPlugin {
             FixedPostUpdate,
             record_contact_reports.after(PhysicsSystems::StepSimulation),
         );
+        // The spawn-side half of the bodies runtime: first-tick swept
+        // preflight for the CCD layers (F23-C).
+        preflight::install(app);
     }
 }
