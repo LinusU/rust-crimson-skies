@@ -1011,6 +1011,14 @@ fn roster_container_fixture() -> Vec<ParsedNode> {
     nodes.push(root);
     append(&mut nodes, &mut slot_of, 1, "cockpit", Some(0));
     append(&mut nodes, &mut slot_of, 2, "wing_l", Some(0));
+    // The wing carries an authored rotation and offset, so everything mounted
+    // under it has a local transform that differs from its composed world
+    // pose: a socket that copied the local transform would be caught.
+    nodes[slot_of[&2]].transform = AuthoredTransform {
+        rotation: [0.0, 0.0, 90.0],
+        translation: [200.0, 0.0, 0.0],
+        ..AuthoredTransform::IDENTITY
+    };
     append(&mut nodes, &mut slot_of, 3, "rocket", Some(0));
     append(&mut nodes, &mut slot_of, 4, "engine", Some(0));
     append(&mut nodes, &mut slot_of, 5, "camera", Some(0));
@@ -1022,6 +1030,11 @@ fn roster_container_fixture() -> Vec<ParsedNode> {
     nodes.push(beta);
     append(&mut nodes, &mut slot_of, 11, "cockpit_b", Some(10));
     append(&mut nodes, &mut slot_of, 12, "wing_b", Some(10));
+    nodes[slot_of[&12]].transform = AuthoredTransform {
+        rotation: [0.0, 0.0, -90.0],
+        translation: [-150.0, 0.0, 0.0],
+        ..AuthoredTransform::IDENTITY
+    };
     append(&mut nodes, &mut slot_of, 13, "gun_b", Some(12));
     append(&mut nodes, &mut slot_of, 8, "pod_b", Some(13));
     nodes
@@ -1334,6 +1347,12 @@ fn accept_f11_d_roster_audit_maps_every_root_part_mount_and_cockpit_binding() {
     let gun_node = scene
         .node(&node("fix_planes.alpha.wing_l.gun_l"))
         .expect("the gun node");
+    assert_ne!(
+        gun.pose(),
+        gun_node.local_transform(),
+        "the fixture mounts the gun under a rotated, offset wing, so a socket \
+         that copied the local transform would differ from the composed pose"
+    );
     assert_eq!(gun.pose(), gun_node.world_transform());
     assert_eq!(gun.pose(), gun_node.collision_transform());
     assert_eq!(gun.pose(), scene.socket(gun.node()).expect("socket").pose());
@@ -2421,12 +2440,13 @@ const F11_D_LIMITATIONS: &[&str] = &[
     "No airframe catalog element has been discovered from original data, so the roster the audit \
      takes is empty and no roster row can be audited. Affected content: the player-selectable \
      roster, the forced mission assignments and every airframe's mount and cockpit bindings. \
-     Resolving task: the follow-up filed with this stage for roster discovery, which needs a \
-     decoded node array (#392) before a name can be bound to a root.",
+     Resolving task: #399 (Discover the airframe roster and its selectability from original \
+     data), which depends on #392 and needs a decoded node array before a node name can be bound \
+     to an airframe element.",
     "Roster availability is a designed vocabulary with no measured original meaning: which modes \
      let a player choose which airframe has not been observed, and a model name is still not \
-     proof. Affected content: the selectable roster in every mode. Resolving tasks: the F22/F49 \
-     mode and preset stages together with the roster-discovery follow-up.",
+     proof. Affected content: the selectable roster in every mode. Resolving tasks: #399 together \
+     with the F22/F49 mode and preset stages.",
     "The F11-D audit is a library path: nothing in the running binary or in cs-inspect invokes it \
      yet, so no consumer trace exists outside the acceptance suite. Affected content: the audit's \
      own reachability. Resolving task: the F11-E producer (#398) that inserts the airframe scene \
