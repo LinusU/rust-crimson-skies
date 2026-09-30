@@ -6,6 +6,14 @@
 //! executes a fixed-tick headless synthetic smoke. Rendering, input, audio, UI
 //! and retail mission composition arrive with later F00+ tasks.
 //!
+//! [`asset_stack`] is the Bevy asset stack every headless world in this crate
+//! runs on and the one production path from a converted canonical mesh to a
+//! mesh-derived collider: Avian's default `collider-from-mesh` feature makes
+//! `PhysicsPlugins::default()` depend on `Assets<Mesh>` and
+//! `AssetEvent<Mesh>`, so [`asset_stack::headless_app`] is where the base
+//! plugin set is written down once and [`asset_stack::spawn_static_mesh_collider`]
+//! is where an uploaded [`bevy::mesh::Mesh`] becomes collision.
+//!
 //! [`origin`] is the world-origin frame of `specs/F16-coordinates-units-
 //! origin-management-and-clocks.md`: an f64 `WorldOrigin` per epoch, its f32
 //! local frame, the typed distinction between a rebase (world identity and
@@ -157,6 +165,7 @@
 
 pub mod airframe_visual;
 pub mod animation;
+pub mod asset_stack;
 pub mod assets;
 pub mod cli;
 pub mod damage;

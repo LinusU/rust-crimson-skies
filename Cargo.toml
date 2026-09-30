@@ -25,18 +25,24 @@ publish = false
 # The caret ranges cannot drift to a different minor; the exact patch is pinned
 # in Cargo.lock and every downstream gate runs with --locked.
 #
-# Avian's default `collider-from-mesh` feature is deliberately switched off
-# (everything else below is the default feature set verbatim): it registers
-# `ColliderCachePlugin::clear_unused_colliders` and
-# `init_collider_constructor_hierarchies`, which read `AssetEvent<Mesh>` and
-# `Assets<Mesh>` and therefore assume Bevy's asset stack. The F00-A synthetic
-# scene is asset-free and headless — it adds no `AssetPlugin`, so the first
-# `App::update` aborts with "Message not initialized" / "Resource does not
-# exist". Provisioning an empty `Assets<Mesh>` would only hide the coupling, so
-# mesh-derived colliders are re-enabled together with a real asset stack in the
-# rendering/asset tasks (recorded in docs/findings/).
+# The list below is Avian's default feature set, spelled out so a future
+# default cannot drift the pinned baseline.
+#
+# `collider-from-mesh` is in it, and it is only safe because
+# `cs_app::asset_stack` installs a *real* Bevy asset stack — `AssetPlugin`
+# plus `MeshPlugin`, which is where `init_asset::<Mesh>()` lives — in every
+# world that adds `PhysicsPlugins::default()`. The feature registers
+# `ColliderCachePlugin::clear_unused_colliders` (a
+# `MessageReader<AssetEvent<Mesh>>`) and
+# `init_collider_constructor_hierarchies` (a `Res<Assets<Mesh>>`); in a world
+# without the stack the first `App::update` aborts with "Message not
+# initialized" / "Resource does not exist". Do not switch the feature off to
+# dodge that, and do not satisfy the readers with a bare `Assets<Mesh>`: the
+# coupling is the contract, and a bare resource would hide it. The measurement
+# and its resolution are recorded in docs/findings/ (task #333).
 avian3d = { version = "0.7", default-features = false, features = [
     "3d",
+    "collider-from-mesh",
     "f32",
     "parry-f32",
     "debug-plugin",
