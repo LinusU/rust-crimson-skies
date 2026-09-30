@@ -25,6 +25,11 @@
 //!   stored triangle, and swept CCD sees it.
 //! * `SubstepCount` is *not* a fix: substeps subdivide the solver, not the
 //!   detection pipeline; measured at 2/4/8 substeps the probe still tunnels.
+//! * A nonzero `SpeculativeMargin` *would* stop the miss — the speculative
+//!   narrow phase has a `TriMesh` case — but only once the margin is large
+//!   enough to matter, and only by predicting contacts ahead of the body. It is
+//!   pinned here as a rejected alternative, so the cost the decision record
+//!   quotes stays checkable.
 //!
 //! Everything below runs the production composition: the
 //! `cs_app::asset_stack` headless world, the `cs_app::physics` fixed-rate
@@ -44,7 +49,7 @@
 use std::time::Duration;
 
 use avian3d::prelude::{
-    Collider, ColliderAabb, Gravity, Position, RigidBody, SubstepCount, SweptCcd,
+    Collider, ColliderAabb, Gravity, Position, RigidBody, SpeculativeMargin, SubstepCount, SweptCcd,
 };
 use bevy::asset::RenderAssetUsages;
 use bevy::math::Vec3;
@@ -66,8 +71,10 @@ const PROBE_Y_M: f64 = 1.5;
 const PROBE_Z_M: f64 = 1.5;
 const PROBE_HALF_M: f64 = 0.25;
 const TUNNELLING_SPEED_M_S: f64 = 400.0;
-/// The wall's half extents: 1 m thick on x, 4 m tall, 4 m deep — thin enough
-/// that one 3.33 m tick outruns it.
+/// The wall's thickness on `x`: 1 m — thin enough that one 3.33 m tick outruns
+/// it. Every arm of the 2x2 uses this thickness, so the shape arms differ in
+/// nothing but the shape and the placement arms differ in nothing but the
+/// placement, which is what makes the matrix discriminate at all.
 const WALL_THICKNESS_M: f64 = 1.0;
 
 /// The headless world composition the world fixtures run: the real asset
@@ -136,9 +143,11 @@ fn wall_trimesh_collider() -> Collider {
     Collider::trimesh(vertices, indices)
 }
 
-/// A static cuboid wall covering the same span, for the shape-comparison arm.
+/// A static cuboid wall spanning exactly what the trimesh fixture spans, for the
+/// shape-comparison arms: [`Collider::cuboid`] takes *half* extents, so this is
+/// the same 1 m thickness, 4 m tall and 4 m deep as [`wall_mesh`].
 fn wall_cuboid_collider() -> Collider {
-    Collider::cuboid(WALL_THICKNESS_M as f32, 4.0, 4.0)
+    Collider::cuboid(WALL_THICKNESS_M as f32 / 2.0, 4.0, 4.0)
 }
 
 /// The decided shipping layout, through the production helper world import
@@ -232,6 +241,18 @@ fn sweep<W>(substeps: u32, wall: impl FnOnce(&mut App) -> W, ticks: u64) -> (App
     (app, wall_e, probe_e)
 }
 
+/// Where the probe ended up, for the stopped/tunnelled arms to compare.
+///
+/// The assertions read `x` against the wall's span rather than against an
+/// exact position, and that is deliberate: Avian's swept CCD truncates the
+/// clamping tick's translation exactly — the probe lands on the wall's near
+/// face less its own half, `x = -0.7496` on the tick it is stopped — but it
+/// leaves the body's velocity alone, so from the next tick the discrete narrow
+/// phase resolves the remaining contact against one of this fixture's
+/// zero-thickness faces and the body creeps along it. Measured, `y` and `z`
+/// each rise about 0.05 m per tick afterwards, ending near `x = -0.92`. A
+/// property of the open two-quad wall mesh, not of the swept path, which is
+/// why "before the wall" and "past the wall" is what the arms assert.
 fn end_position(app: &App, entity: Entity) -> Vec3 {
     app.world()
         .get::<Position>(entity)
@@ -240,7 +261,9 @@ fn end_position(app: &App, entity: Entity) -> Vec3 {
 }
 
 /// The wall's measured span and the one-tick travel, asserted so the test
-/// cannot silently stop measuring a tunnel.
+/// cannot silently stop measuring a tunnel. Every arm's wall is
+/// [`WALL_THICKNESS_M`] thick, so this holds for the trimesh and the cuboid
+/// arms alike rather than only for the one the constant was written for.
 fn precondition(app: &App) {
     let dt = app
         .world()
@@ -441,9 +464,64 @@ fn accept_t420_substeps_do_not_make_a_child_node_collider_visible() {
     }
 }
 
+/// **The margin workaround really works, which is why it was rejected on cost
+/// and not on effect.** The same child-node trimesh that tunnels above is
+/// stopped when the probe is given a large `SpeculativeMargin`, because the
+/// speculative narrow phase *does* have a `TriMesh` case — it is the swept
+/// query that skips the pair, not the narrow phase.
+///
+/// Pinning a rejected alternative is the point: the decision record's cost
+/// ("it predicts contacts metres ahead, which is the globally inflated hitbox
+/// F23 non-negotiable behavior 3 forbids") is only checkable if the behaviour
+/// it rejects is measured. Measured here, the threshold is between 1 m and
+/// 2 m on this fixture — comparable to the 3.33 m a tick travels, i.e. a
+/// hitbox grown by metres, and not a small tolerance.
+///
+/// Observable failure: the probe tunnelling here means the engine no longer
+/// stops fast bodies on a predicted contact at all, so the recorded cost of the
+/// rejected alternative has to be re-measured.
+#[test]
+fn accept_t420_a_speculative_margin_stops_what_the_swept_query_skips() {
+    let mut app = t420_app(1);
+    let wall = spawn_static_mesh_collider(
+        &mut app,
+        wall_mesh(),
+        Transform::default(),
+        CollisionLayers::from(CollisionLayer::StaticWorld),
+    );
+    for _ in 0..6 {
+        app.update();
+    }
+    assert!(
+        is_attached(app.world(), &wall),
+        "the child-node collider must be attached to the static body"
+    );
+    let probe = spawn_swept_probe(&mut app, &tunnelling_probe()).expect("the probe spec is valid");
+    // Production zeroes the margin so a sweep is what the arms measure; this
+    // one arm deliberately reverses that to price the alternative.
+    app.world_mut()
+        .entity_mut(probe)
+        .insert(SpeculativeMargin(10.0));
+    for _ in 0..14 {
+        app.update();
+    }
+    let end = end_position(&app, probe);
+    assert!(
+        end.x < 0.0,
+        "a speculative margin large enough to cover a tick stops the probe at \
+         the wall the swept query skipped; it ended at {end:?}"
+    );
+}
+
 /// The probe really does carry [`SweptCcd`]: without this guard a fixture
 /// regression that dropped the component would read as "the limitation
 /// widened" and pass unnoticed.
+///
+/// It also carries a [`Collider`] on its own entity, which is the *other* half
+/// of the rule: `solve_swept_ccd` reads the same required `collider` field off
+/// the swept body, so a `SweptCcd` body whose colliders all live on children
+/// never sweeps at all. The static arms below would still measure correctly
+/// with a sweep-less probe, so nothing else here catches that.
 #[test]
 fn accept_t420_the_probe_is_a_swept_body() {
     let mut app = t420_app(1);
@@ -451,5 +529,11 @@ fn accept_t420_the_probe_is_a_swept_body() {
     assert!(
         app.world().get::<SweptCcd>(probe).is_some(),
         "the measured body must carry SweptCcd"
+    );
+    assert!(
+        app.world().get::<Collider>(probe).is_some(),
+        "and a collider on its own entity: the same query reads a Collider off \
+         both bodies, so a swept body without one never sweeps and every arm \
+         above would quietly measure a discrete overlap"
     );
 }

@@ -86,13 +86,17 @@ visible rather than by substituting.
 Everything else is unchanged, for measured reasons:
 
 * **`SpeculativeMargin::ZERO` stays on swept layers.** A nonzero margin
-  does stop the miss (measured: `SpeculativeMargin(10)` clamps the same
-  probe at x ≈ −0.76 against a child-node trimesh, because the speculative
-  narrow phase goes through parry's `contact_manifolds`, which *does* have
-  a `TriMesh` case). But it does so by predicting contacts metres ahead of
-  the body — the "globally inflated hitbox" F23 non-negotiable behavior 3
-  forbids, which is exactly why production bodies zero it
-  (`cs_app::physics::body`). Not the fix.
+  does stop the miss — the speculative narrow phase *does* have a `TriMesh`
+  case, and it is the swept query that skips the pair, not the narrow phase.
+  But it does so by predicting contacts ahead of the body, and the margin
+  needed to matter is not a small tolerance: measured on the fixture above,
+  a margin of 1 m still tunnels and the threshold is between 1 m and 2 m,
+  against a 3.33 m tick — a hitbox grown by metres, which is the "globally
+  inflated hitbox" F23 non-negotiable behavior 3 forbids and which is exactly
+  why production bodies zero it (`cs_app::physics::body`). Not the fix. Pinned
+  as a rejected alternative by
+  `accept_t420_a_speculative_margin_stops_what_the_swept_query_skips`, so the
+  cost recorded here stays checkable rather than remembered.
 * **`SubstepCount(1)` stays.** Measured at `SubstepCount(2)`, `(4)` and `(8)`:
   the probe still tunnels a child-node collider — substeps subdivide the
   solver, not the detection pipeline, so a skipped pair stays skipped at any
@@ -139,12 +143,21 @@ geometry is needed as long as any real collider sits on the root.
 * Task #401 is a sibling of this question, not a duplicate: the sensor stop
   happens through the same swept path the layout rule repairs, so a
   sensor on a child node is invisible to it too.
-* Fixture note, measured while reviewing: a discrete body that penetrates
-  *between* the two zero-thickness faces of an open trimesh slab is wedged
-  inside it rather than held at the near face — thin-shell contact
-  resolution, unrelated to the swept-CCD question, but worth knowing before
-  reusing the open-box wall mesh for discrete-path controls (the test file
-  comments carry the same note).
+* Fixture notes, measured while reviewing. Both are properties of this
+  open-box wall mesh — two zero-thickness quads with no thickness between them
+  — and neither is about swept CCD:
+  * A discrete body that penetrates *between* the two faces is wedged inside
+    the slab rather than held at the near face, which is why the discrete-path
+    control above uses the cuboid arm.
+  * The swept clamp itself is exact — the probe is placed at x = −0.7496 on
+    the clamping tick, the wall's near face less the probe's 0.25 m half — but
+    Avian's swept CCD only truncates the tick's translation and leaves the
+    body's velocity alone, so from the next tick the discrete narrow phase
+    resolves the remaining contact on a zero-thickness face and the body
+    creeps *along* it (y and z both rise ~0.05 m per tick, ending near
+    x = −0.92). This is why the assertions here are "stopped before the wall"
+    rather than an exact position, and why the x ≈ −0.75 quoted for the
+    clamping tick is not where the body sits 14 ticks later.
 
 ## What the F18-B records needed, and where the correction landed
 
@@ -170,11 +183,12 @@ before this decision record did** (`8fd3762`…`b443283`):
 What remains on this branch is the decision record itself (which both
 records above cite) and the `accept_t420_` measurement suite that pins the
 engine behaviour the rule is built on: the 2x2 placement matrix, the
-discrete-path control, the rejected substep fix and the fixture guards.
+discrete-path control, the two rejected fixes (substeps and a speculative
+margin) and the fixture guards.
 
 ## Measured evidence
 
-* `crates/cs_app/tests/accept_t420_mesh_ccd.rs` — 8 tests, all passing:
+* `crates/cs_app/tests/accept_t420_mesh_ccd.rs` — 9 tests, all passing:
   - `accept_t420_a_mesh_collider_on_a_child_node_is_invisible_to_swept_ccd`
     (child trimesh via production `spawn_static_mesh_collider`, asserted
     attached to the body: tunnels)
@@ -182,20 +196,29 @@ discrete-path control, the rejected substep fix and the fixture guards.
     (same wall, discrete 30 m/s probe: stopped — attached but invisible to
     swept CCD, not a missing collider)
   - `accept_t420_a_cuboid_on_a_child_node_is_ignored_the_same_way`
-    (child cuboid, asserted attached: tunnels — the attribution correction)
+    (child cuboid of the *same* 1 m span, asserted attached: tunnels — the
+    attribution correction)
   - `accept_t420_a_mesh_collider_on_the_body_entity_stops_the_swept_probe`
-    (decided layout: stopped, all 4 stored triangles in the collider)
+    (decided layout, through production
+    `spawn_static_mesh_collider_on_body`: stopped, all 4 stored triangles in
+    the collider)
   - `accept_t420_a_direct_trimesh_collider_on_the_body_also_stops_the_probe`
   - `accept_t420_a_cuboid_on_the_body_entity_stops_the_same_probe`
   - `accept_t420_substeps_do_not_make_a_child_node_collider_visible`
     (`SubstepCount(2)`, `(4)` and `(8)`: still tunnels)
-  - `accept_t420_the_probe_is_a_swept_body` (fixture guard)
+  - `accept_t420_a_speculative_margin_stops_what_the_swept_query_skips`
+    (the rejected margin alternative, pinned so its cost stays checkable)
+  - `accept_t420_the_probe_is_a_swept_body` (fixture guard: `SweptCcd` *and*
+    a `Collider` on the probe, the other half of the symmetric rule)
 * Direct parry 0.27 check (scratch crate, `parry3d = "=0.27.0"`):
   `cast_shapes`/`cast_shapes_nonlinear` cuboid-vs-trimesh →
   `Ok(Some(ShapeCastHit))`; `Err(Unsupported)` never occurs for trimesh.
-* Speculative-margin check (same harness, `SpeculativeMargin(10)`):
-  probe clamped at x ≈ −0.76 with a recorded contact — works, rejected on
-  spec grounds.
+* Speculative-margin sweep, measured on the fixture above: `SpeculativeMargin`
+  0 and 1 both tunnel (x ≈ 34.67), 2 stops the probe at x ≈ −1.04, and 3 m and
+  above all stop it at x ≈ −0.77. It works, and it is rejected on spec grounds.
+  The committed `accept_t420_a_speculative_margin_stops_what_the_swept_query_skips`
+  pins the working end of that sweep; the numbers above are the same
+  measurement, recorded rather than only asserted.
 * Version check: crates.io API — `avian3d` latest 0.7.0, `parry3d` latest
   0.31.1; `avian3d 0.7.0` dep `parry3d ^0.27`; parry 0.31.1
   `default_query_dispatcher.rs` has the same composite-path structure;
@@ -208,13 +231,14 @@ Commands run locally:
 cargo fmt --all -- --check                                        # exit 0
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings   # exit 0
 cargo test --workspace --locked                                   # exit 0
-cargo test --workspace --locked -- accept_t420_ --include-ignored # 8 run, 8 passed
+cargo test --workspace --locked -- accept_t420_ --include-ignored # 9 run, 9 passed
 ```
 
 ## Sources
 
 Pinned `avian3d-0.7.0`, `parry3d-0.27.0` sources in the local cargo
 registry; crates.io API for the published version sets; upstream
-`avianphysics/avian` `main` for the CCD rewrite status; the F18-A and F18-B
-findings and task notes on #86/#333. No original data was read and no
+`avianphysics/avian` `main` for the CCD rewrite status; the F18-A (#401) and
+F18-B (#86) findings and task notes, plus the F00-A #333 asset-stack record
+this branch's hierarchy arm depends on. No original data was read and no
 original behavior is claimed.
