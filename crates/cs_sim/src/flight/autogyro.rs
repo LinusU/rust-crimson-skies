@@ -1632,6 +1632,13 @@ impl ExceptionalControlLaw {
     /// whose drive had any engine coupling would need a different, declared and
     /// measured law here rather than a hidden term.
     ///
+    /// The speed is the **total** air-relative magnitude the shared boundary
+    /// reports, not its forward component. Whether the original rotor is driven
+    /// by forward flight alone, by the total relative airflow, or by a climb
+    /// rate as well is a measured question this project cannot answer, so the
+    /// choice is recorded as an unknown in the F25-B finding and this signature
+    /// is the seam a measured law would replace.
+    ///
     /// # Errors
     ///
     /// [`ProfileError::NonFinite`] for a non-finite airspeed and
@@ -1682,6 +1689,10 @@ impl ExceptionalControlLaw {
     /// airspeed with a rotor at rest every produced value is finite, the rotor
     /// lift and drag are exactly zero, and the only vertical force is gravity.
     ///
+    /// `dt_s` must be strictly positive here, where the shared boundary only
+    /// requires it to be non-negative: a zero-length tick has no rotor step to
+    /// take, and this law says so by name rather than integrating one anyway.
+    ///
     /// # Errors
     ///
     /// [`ExceptionalLawError`] for a rejected profile, environment, loadout,
@@ -1689,6 +1700,11 @@ impl ExceptionalControlLaw {
     /// tick the drive refused, or a produced tick this law's own check refused
     /// ([`ExceptionalLawError::NonFiniteOutput`],
     /// [`ExceptionalLawError::UnaccountedForce`]).
+    ///
+    /// **Every refusal leaves `rotor` exactly where it was.** The advance is
+    /// applied to a copy and committed only after the produced tick passes
+    /// [`ExceptionalTick::validate`], so a caller may retry a refused tick with
+    /// a newer tick without the rotor having been integrated twice.
     // The argument list is the contract's own vocabulary — environment, loadout,
     // damage, state, input, timestep — plus the tick and the rotor the
     // exceptional airframe additionally carries. Grouping them would hide which
@@ -1718,20 +1734,31 @@ impl ExceptionalControlLaw {
         // tick. A refused tick leaves `rotor` untouched.
         let airspeed_mps = base.instrument_state.airspeed_mps;
         let commanded_rotor_radps = self.commanded_rotor_radps(airspeed_mps)?;
-        rotor.advance_tick(
+        // The advance is applied to a *copy* and committed only once the tick
+        // this law produces has passed its own check. Advancing the caller's
+        // rotor first would leave it half-integrated whenever the produced-tick
+        // check refuses, so a caller that retried the same tick would integrate
+        // the rotor twice — the very thing the strictly-newer-tick rule exists
+        // to prevent.
+        let mut advanced = *rotor;
+        advanced.advance_tick(
             commanded_rotor_radps,
             self.profile.rotor_response_per_s,
             tick,
             dt_s,
         )?;
-        let rotor_radps = rotor.physical_speed_radps();
+        let rotor_radps = advanced.physical_speed_radps();
         let rotor_tip_speed_mps = self.rotor_tip_speed_mps(rotor_radps)?;
 
-        // Rotor forces. Lift acts along the shaft axis (body up) and is capped,
-        // so the rotor can never carry the whole weight on its own: the airframe
-        // still needs the wing, and therefore forward speed. Drag acts against
-        // the air-relative velocity and vanishes with it, which is the term that
-        // stops a spinning rotor from parking in mid-air.
+        // Rotor forces. Lift acts along the shaft axis (body up) and is capped
+        // by the profile's declared maximum, which bounds the rotor's share of
+        // the total but is **not** what keeps the airframe down: whether the cap
+        // sits above or below the weight is a property of the tuning's mass, not
+        // an invariant of the law. The structural reason a spinning rotor cannot
+        // hold the airframe up is the drive above — it has no engine input, and
+        // with no airspeed its command is zero, so a pre-spun rotor decays to
+        // rest. Drag acts against the air-relative velocity and vanishes with
+        // it, which is the term that spends the rotor's energy.
         let rotor_lift_n = (self.profile.rotor_lift_n_per_mps_tip * rotor_tip_speed_mps)
             .clamp(0.0, self.profile.rotor_lift_max_n);
         let rotor_drag_n =
@@ -1795,9 +1822,14 @@ impl ExceptionalControlLaw {
             instrument_state: base.instrument_state,
             accepted_boost_consumption: base.accepted_boost_consumption,
             diagnostics: FlightDiagnostics {
-                // `lift_n` and `drag_n` are the true totals for this airframe,
-                // so a shared consumer is never told the wing's lift alone; the
-                // per-source split is in `ExceptionalDiagnostics`.
+                // `lift_n` and `drag_n` are what a shared consumer must read, so
+                // they are the wing's term **plus** the rotor's: `drag_n` is
+                // exact, because the wing's drag and the rotor's both act
+                // against the air-relative velocity, while `lift_n` is the sum
+                // of two magnitudes (the wing's is perpendicular to the airflow,
+                // the rotor's along the shaft) and is therefore a gauge reading
+                // rather than the norm of a single vector. The per-source split
+                // that a probe needs is in `ExceptionalDiagnostics`.
                 lift_n: base.diagnostics.lift_n + rotor_lift_n,
                 drag_n: base.diagnostics.drag_n + rotor_drag_n,
                 // The authority is this law's, not the wing's: the shared
@@ -1827,9 +1859,12 @@ impl ExceptionalControlLaw {
                 rotor_support,
                 control_authority,
             },
-            rotor: *rotor,
+            rotor: advanced,
         };
         computed.validate()?;
+        // Committed only now: a tick this law refused leaves the caller's rotor
+        // exactly as it was.
+        *rotor = advanced;
         Ok(computed)
     }
 
@@ -1924,7 +1959,13 @@ impl ExceptionalDiagnostics {
         )
     }
 
-    /// The total torque as a body-space vector.
+    /// The control law's total torque as a body-space vector.
+    ///
+    /// This is what this law contributes about the airframe's own axes. The
+    /// declared bank/level assist is **not** in it: the assist is computed in
+    /// world space by the shared boundary and added to the rotated control
+    /// torque when the law produces `FlightOutput::world_torque_nm`, so a
+    /// consumer must not read this vector as the whole applied couple.
     #[must_use]
     pub fn body_torque_nm(&self) -> [f64; 3] {
         axis_torque_to_body(self.control_axis_torque_nm)
@@ -2950,6 +2991,168 @@ mod law_tests {
         );
     }
 
+    /// Both rotor forces are functions of the **air-relative** velocity, not of
+    /// the airframe's own velocity: a headwind raises the drive, the lift and the
+    /// drag, and the drag still opposes the relative airflow rather than the
+    /// ground track. A tailwind of the same magnitude lowers all three.
+    #[test]
+    fn accept_f25_b_rotor_forces_follow_the_air_relative_velocity_not_the_ground_track() {
+        let law = law();
+        let profile = law.profile().clone();
+        let speed = 6.0;
+        let state = level(speed, Some(0.6));
+        let input = stick(0.0, 0.0, 0.0, 0.6);
+        // The airframe flies along −Z. The contract's `v_air = v_world −
+        // wind_world` therefore makes a wind blowing along **+Z** — against the
+        // flight — the one that raises the air-relative speed, so that is the
+        // headwind here and its z component is positive.
+        let headwind = 4.0_f64;
+
+        // Each case settles its rotor on the command *its own* airflow declares,
+        // so the probe reads a settled law rather than a transient — otherwise
+        // the lift would be identical in all three and would prove nothing. The
+        // airspeeds stay well below the profile's lift cap, so the ordering is
+        // the cap-free one.
+        let sample = |wind_z: f64| {
+            let environment = FlightEnvironment {
+                wind_velocity_mps: [0.0, 0.0, wind_z],
+                ..FlightEnvironment::SEA_LEVEL
+            };
+            let air_velocity = [
+                state.linear_velocity_mps[0],
+                state.linear_velocity_mps[1],
+                state.linear_velocity_mps[2] - wind_z,
+            ];
+            let airspeed = dot(air_velocity, air_velocity).sqrt();
+            let commanded = law
+                .commanded_rotor_radps(airspeed)
+                .expect("a non-negative airspeed commands a finite rate");
+            let (mut rotor, tick) = prespun(commanded);
+            let computed = law
+                .compute(
+                    &environment,
+                    &LoadoutMass::EMPTY,
+                    &DamageState::PRISTINE,
+                    &state,
+                    &input,
+                    SYNTHETIC_TICK_DT_S,
+                    Tick(tick),
+                    &mut rotor,
+                )
+                .expect("a windy tick is still a legal tick");
+            assert!(
+                (computed.rotor.physical_speed_radps() - commanded).abs() < 1e-6,
+                "the rotor is settled on the air-relative command"
+            );
+            (computed, air_velocity)
+        };
+
+        let (into, into_air) = sample(headwind);
+        let (still, still_air) = sample(0.0);
+        let (tail, tail_air) = sample(-headwind);
+
+        // The reported airspeed is the relative one, and the drive follows it.
+        assert!((into.output.instrument_state.airspeed_mps - (speed + headwind)).abs() < 1e-9);
+        assert!((tail.output.instrument_state.airspeed_mps - (speed - headwind)).abs() < 1e-9);
+        assert!(
+            (into.diagnostics.commanded_rotor_radps
+                - profile.rotor_drive_radps_per_mps * (speed + headwind))
+                .abs()
+                < 1e-9,
+            "a headwind commands a faster rotor"
+        );
+        assert!(
+            tail.diagnostics.commanded_rotor_radps < still.diagnostics.commanded_rotor_radps
+                && still.diagnostics.commanded_rotor_radps < into.diagnostics.commanded_rotor_radps,
+            "the drive orders with the relative airflow"
+        );
+
+        // Lift is a function of the tip speed, so it rises into the wind, and in
+        // every case it is the profile's own capped function of that tip speed.
+        assert!(into.diagnostics.rotor_lift_n > still.diagnostics.rotor_lift_n);
+        assert!(still.diagnostics.rotor_lift_n > tail.diagnostics.rotor_lift_n);
+        for tick in [into, still, tail] {
+            let uncapped = profile.rotor_lift_n_per_mps_tip * tick.diagnostics.rotor_tip_speed_mps;
+            assert!(
+                (tick.diagnostics.rotor_lift_n - uncapped.min(profile.rotor_lift_max_n)).abs()
+                    < 1e-6,
+                "rotor lift is the profile's own capped function of the tip speed"
+            );
+        }
+
+        // Drag is a function of the tip speed *and* the relative airspeed, and it
+        // opposes the relative airflow. The airframe's own velocity is identical
+        // in all three cases, so only the wind can explain the difference — and a
+        // law that used the ground track would order these the other way round
+        // in the tailwind case, where the airframe is still moving forward but
+        // the air it is moving through is not.
+        assert!(into.diagnostics.rotor_drag_n > still.diagnostics.rotor_drag_n);
+        assert!(still.diagnostics.rotor_drag_n > tail.diagnostics.rotor_drag_n);
+        for (air_velocity, tick) in [(into_air, into), (still_air, still), (tail_air, tail)] {
+            assert!(
+                dot(tick.diagnostics.rotor_drag_force_n, air_velocity) < 0.0,
+                "the rotor drag must oppose the air-relative velocity {air_velocity:?}, got {:?}",
+                tick.diagnostics.rotor_drag_force_n
+            );
+        }
+
+        // A *cross*wind is what separates the two vectors: with the wind along
+        // the flight both the ground track and the relative airflow point the
+        // same way, so only a crosswind can tell a law that uses the air-relative
+        // velocity from one that uses the airframe's own. The rotor is pre-spun
+        // on the crosswind case's own command, so its rate is right before the
+        // single tick is evaluated.
+        let crosswind = [0.0, 6.0, 0.0];
+        let environment = FlightEnvironment {
+            wind_velocity_mps: crosswind,
+            ..FlightEnvironment::SEA_LEVEL
+        };
+        let cross_air = subtracted(state.linear_velocity_mps, crosswind);
+        let cross_airspeed = dot(cross_air, cross_air).sqrt();
+        let (mut cross_rotor, cross_tick) = prespun(
+            law.commanded_rotor_radps(cross_airspeed)
+                .expect("the crosswind airspeed is a legal command"),
+        );
+        let cross = law
+            .compute(
+                &environment,
+                &LoadoutMass::EMPTY,
+                &DamageState::PRISTINE,
+                &state,
+                &input,
+                SYNTHETIC_TICK_DT_S,
+                Tick(cross_tick),
+                &mut cross_rotor,
+            )
+            .expect("a crosswind tick is still a legal tick");
+        assert!(
+            (cross.output.instrument_state.airspeed_mps - cross_airspeed).abs() < 1e-9,
+            "the reported airspeed is the relative one, not the ground-track 6 m/s"
+        );
+        assert!(
+            cross.diagnostics.rotor_drag_n > 0.0,
+            "a crosswind still loads the rotor disc"
+        );
+        // The drag opposes the relative airflow, which is neither the ground
+        // track nor the wind: it is their difference.
+        assert!(
+            dot(cross.diagnostics.rotor_drag_force_n, cross_air) < 0.0,
+            "the rotor drag must oppose the air-relative velocity {cross_air:?}, got {:?}",
+            cross.diagnostics.rotor_drag_force_n
+        );
+        assert!(
+            dot(cross.diagnostics.rotor_drag_force_n, crosswind) > 0.0,
+            "a crosswind pushes the airframe downwind, so the drag is not against the wind"
+        );
+        assert!(
+            dot(
+                cross.diagnostics.rotor_drag_force_n,
+                state.linear_velocity_mps
+            ) < 0.0,
+            "the rotor drag still has a component against the forward ground track"
+        );
+    }
+
     /// AC02's engine-off half: with the engine stopped the rotor winds down to
     /// the airflow's command rather than to nothing, the thrust is exactly
     /// zero, and no value becomes non-finite — and the same airspeed with the
@@ -3500,6 +3703,50 @@ mod law_tests {
             (applied[2] - reaction).abs() < 1e-6,
             "the applied yaw torque is the rotor's reaction"
         );
+
+        // The yaw axis needs its own cross-law probe, because the roll-only case
+        // above leaves it at zero and therefore cannot tell a correct yaw sign
+        // from an inverted one. Here the stick and the body rate are on the yaw
+        // axis, so both laws command a real yaw torque and the *difference*
+        // between them must be exactly the rotor's declared reaction: same sign
+        // as a positive yaw command, and no more.
+        let yawing = FlightState {
+            angular_velocity_radps: [0.0, 0.2, 0.0],
+            ..level(speed, Some(0.8))
+        };
+        let yaw_only = stick(0.0, 0.0, 0.5, 0.0);
+        let (mut yaw_rotor, yaw_tick) = settled_rotor(&law, speed);
+        let yaw_exceptional = one_tick(&law, &yawing, &yaw_only, Tick(yaw_tick), &mut yaw_rotor);
+        let yaw_fixed = wing_model()
+            .compute(
+                &FlightEnvironment::SEA_LEVEL,
+                &LoadoutMass::EMPTY,
+                &DamageState::PRISTINE,
+                &yawing,
+                &yaw_only,
+                SYNTHETIC_TICK_DT_S,
+            )
+            .expect("the fixed-wing tick is legal");
+        assert!((yaw_exceptional.diagnostics.control_authority - 1.0).abs() < 1e-12);
+        assert!((yaw_fixed.diagnostics.control_authority - 1.0).abs() < 1e-12);
+        let yaw_body = yaw_exceptional.diagnostics.body_torque_nm();
+        let yaw_reference = into_body(yaw_fixed.world_torque_nm, yawing.orientation);
+        // Roll and pitch carry no rotor term here, so they must agree exactly.
+        assert!((yaw_body[0] - yaw_reference[0]).abs() < 1e-6);
+        assert!((yaw_body[2] - yaw_reference[2]).abs() < 1e-6);
+        let yaw_reaction = yaw_exceptional.diagnostics.rotor_yaw_torque_nm;
+        assert!(
+            yaw_reaction > 0.0 && yaw_reaction < max_torque[2],
+            "the probe is one where the reaction is real and the yaw axis does not saturate"
+        );
+        assert!(
+            (yaw_body[1] - yaw_reference[1] - yaw_reaction).abs() < 1e-6,
+            "a positive yaw command turns the same way under both laws, plus the rotor's reaction"
+        );
+        assert!(
+            yaw_reference[1] > 0.0,
+            "a positive yaw command is a positive torque about the body up axis"
+        );
     }
 
     /// AC02's minimum scenario from the producing side: a tick the law could
@@ -3575,5 +3822,182 @@ mod law_tests {
             phantom.validate(),
             Err(ExceptionalLawError::UnaccountedForce { .. })
         ));
+    }
+
+    /// The two declared bounds the *authority* law carries, and the lift cap it
+    /// cannot be removed from, are all reached by the applied values rather than
+    /// only being present in the profile: a stalled airframe loses authority in
+    /// proportion to the wing's stall factor, a damaged one in proportion to the
+    /// damage, and rotor lift saturates at the declared cap instead of growing
+    /// without limit.
+    #[test]
+    fn accept_f25_b_stall_damage_and_the_lift_cap_reach_the_applied_values() {
+        let law = law();
+        let profile = law.profile().clone();
+        let speed = 20.0;
+        let (rotor, next_tick) = settled_rotor(&law, speed);
+        let input = stick(0.0, 0.0, 0.5, 0.5);
+
+        // The declared band and the wing ramp are both saturated at this
+        // airspeed, so the authority is exactly `stall · damage`.
+        let fast = level(speed, Some(0.5));
+        let mut clean_rotor = rotor;
+        let clean = one_tick(&law, &fast, &input, Tick(next_tick), &mut clean_rotor);
+        assert!((clean.diagnostics.rotor_support - 1.0).abs() < 1e-12);
+        // The wing ramp is only half open at 20 m/s, so this airspeed is one
+        // where the rotor's band alone carries the authority: the product below
+        // is `stall · damage` with nothing else in it.
+        assert!((clean.diagnostics.wing_authority - 0.5).abs() < 1e-12);
+        assert!((clean.diagnostics.control_authority - 1.0).abs() < 1e-12);
+
+        // Damage scales the authority the law actually applied.
+        let wounded = DamageState {
+            control_authority: 0.4,
+            ..DamageState::PRISTINE
+        };
+        let mut damaged_rotor = rotor;
+        let damaged = law
+            .compute(
+                &FlightEnvironment::SEA_LEVEL,
+                &LoadoutMass::EMPTY,
+                &wounded,
+                &fast,
+                &input,
+                SYNTHETIC_TICK_DT_S,
+                Tick(next_tick),
+                &mut damaged_rotor,
+            )
+            .expect("a damaged tick is still a legal tick");
+        assert!((damaged.diagnostics.control_authority - 0.4).abs() < 1e-12);
+        let applied_damaged = damaged.diagnostics.rate_command_torque_nm[2].abs()
+            / clean.diagnostics.rate_command_torque_nm[2].abs();
+        assert!(
+            (applied_damaged - 0.4).abs() < 1e-9,
+            "the applied yaw rate command must fall with the damage, got {applied_damaged}"
+        );
+
+        // A stalled airframe loses authority in proportion to the wing's stall
+        // factor, which is the declared simplification the finding records: a
+        // spinning rotor is not treated as keeping authority in a stalled wing.
+        let stalled = FlightState {
+            linear_velocity_mps: [0.0, -speed * 0.7, -speed * 0.7],
+            ..level(speed, Some(0.5))
+        };
+        let mut stalled_rotor = rotor;
+        let stalled_tick = one_tick(&law, &stalled, &input, Tick(next_tick), &mut stalled_rotor);
+        let stall_scale = stalled_tick.output.instrument_state.stall_scale;
+        assert!(
+            stall_scale < 0.9,
+            "the probe is genuinely stalled, got a stall scale of {stall_scale}"
+        );
+        assert!(
+            (stalled_tick.diagnostics.control_authority - stall_scale).abs() < 1e-12,
+            "the authority must be the wing's stall factor times the damage, got {} against {stall_scale}",
+            stalled_tick.diagnostics.control_authority
+        );
+
+        // Rotor lift saturates at the declared cap. The profile's uncapped gain
+        // would give far more than the cap at this airspeed, so the bound is
+        // what the applied force shows.
+        let fast_speed = 45.0;
+        let (fast_rotor, fast_tick) = settled_rotor(&law, fast_speed);
+        let mut capped_rotor = fast_rotor;
+        let capped = one_tick(
+            &law,
+            &level(fast_speed, Some(1.0)),
+            &input,
+            Tick(fast_tick),
+            &mut capped_rotor,
+        );
+        let uncapped = profile.rotor_lift_n_per_mps_tip * capped.diagnostics.rotor_tip_speed_mps;
+        assert!(
+            uncapped > profile.rotor_lift_max_n,
+            "the probe is one where the cap actually binds, got {uncapped} N uncapped"
+        );
+        assert!((capped.diagnostics.rotor_lift_n - profile.rotor_lift_max_n).abs() < 1e-9);
+        // And the recorded force agrees with the capped magnitude, so the cap is
+        // a bound on the force and not only on the diagnostic.
+        let up_world = rotated(BODY_UP, Quaternion::IDENTITY);
+        for (axis, value) in capped.diagnostics.rotor_lift_force_n.iter().enumerate() {
+            assert!(
+                (value - capped.diagnostics.rotor_lift_n * up_world[axis]).abs() < 1e-9,
+                "the capped lift force must be the capped magnitude along the shaft axis"
+            );
+        }
+    }
+
+    /// A refused tick leaves the caller's rotor **exactly** where it was, for
+    /// every refusal path including the produced-tick check — the advance is
+    /// committed only after the tick validates, so a caller that retries cannot
+    /// integrate the rotor twice.
+    #[test]
+    fn accept_f25_b_a_refused_tick_leaves_the_caller_s_rotor_untouched() {
+        let law = law();
+        let state = level(20.0, Some(0.6));
+        let input = stick(0.0, 0.0, 0.4, 0.6);
+
+        // A refusal that happens before the advance: a stale tick.
+        let mut rotor = RotorDrive::stopped();
+        one_tick(&law, &state, &input, Tick(5), &mut rotor);
+        let after_first = rotor;
+        assert!(
+            law.compute(
+                &FlightEnvironment::SEA_LEVEL,
+                &LoadoutMass::EMPTY,
+                &DamageState::PRISTINE,
+                &state,
+                &input,
+                SYNTHETIC_TICK_DT_S,
+                Tick(5),
+                &mut rotor,
+            )
+            .is_err()
+        );
+        assert_eq!(
+            rotor, after_first,
+            "a stale-tick refusal must not move the rotor"
+        );
+
+        // A refusal that happens *after* the advance would be computed: the
+        // produced-tick check. Reaching it needs a profile whose declared fields
+        // are all finite and inside their bounds, so the profile boundary passes,
+        // but whose rotor drag overflows to infinity once multiplied by the tip
+        // and air speeds. Rotor lift cannot be used for this: it is clamped to a
+        // finite declared cap, so it saturates instead of overflowing.
+        let mut hot = synthetic_exceptional_profile();
+        hot.rotor_drag_n_per_tip_air = f64::MAX;
+        let hot_law = ExceptionalControlLaw::new(synthetic_exceptional_tuning(), hot)
+            .expect("the overflowing profile still passes its own boundary");
+        hot_law
+            .profile()
+            .validate()
+            .expect("and validates on its own");
+        // A fast enough pass that the drag term overflows on its first tick.
+        let fast_state = level(200.0, Some(0.6));
+        let mut hot_rotor = RotorDrive::stopped();
+        let refusal = hot_law.compute(
+            &FlightEnvironment::SEA_LEVEL,
+            &LoadoutMass::EMPTY,
+            &DamageState::PRISTINE,
+            &fast_state,
+            &input,
+            SYNTHETIC_TICK_DT_S,
+            Tick(1),
+            &mut hot_rotor,
+        );
+        let refusal = refusal.expect_err("an overflowing rotor drag must be refused");
+        assert!(
+            matches!(
+                refusal,
+                ExceptionalLawError::NonFiniteOutput { .. }
+                    | ExceptionalLawError::UnaccountedForce { .. }
+            ),
+            "the produced-tick check is what refuses it, got {refusal:?}"
+        );
+        assert_eq!(
+            hot_rotor,
+            RotorDrive::stopped(),
+            "a produced-tick refusal must not commit the rotor advance either"
+        );
     }
 }

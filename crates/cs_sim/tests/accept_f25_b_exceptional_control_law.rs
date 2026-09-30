@@ -293,8 +293,23 @@ fn accept_f25_b_no_unaccounted_force_and_no_unbounded_torque() {
                         computed.diagnostics.base_force_n, base.world_force_n,
                         "the exceptional law adds rotor terms to the shared boundary, it does not reimplement it"
                     );
-                    assert!(computed.output.diagnostics.lift_n >= computed.diagnostics.base.lift_n);
-                    assert!(computed.output.diagnostics.drag_n >= computed.diagnostics.base.drag_n);
+                    // The shared channel reports the wing's term plus the
+                    // rotor's, not the wing's alone, so a HUD, an AI or a probe
+                    // reading `FlightDiagnostics` is told the whole airframe.
+                    assert!(
+                        (computed.output.diagnostics.lift_n
+                            - (base.diagnostics.lift_n + computed.diagnostics.rotor_lift_n))
+                            .abs()
+                            < 1e-9,
+                        "the shared lift must be the wing's lift plus the rotor's"
+                    );
+                    assert!(
+                        (computed.output.diagnostics.drag_n
+                            - (base.diagnostics.drag_n + computed.diagnostics.rotor_drag_n))
+                            .abs()
+                            < 1e-9,
+                        "the shared drag must be the wing's drag plus the rotor's"
+                    );
                     // The torque is bounded per axis.
                     for (axis, limit) in max_torque.iter().enumerate() {
                         assert!(
