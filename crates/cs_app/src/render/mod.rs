@@ -99,7 +99,9 @@
 //!
 //! `MaterialGap` and `FrameSync::unmaterialed` are gone with it: no class can
 //! reach the consumer without a material, so the additive pass is placed like
-//! any other batch instead of being counted as a gap.
+//! any other batch instead of being counted as a gap. [`sync::FrameSync`]
+//! reports only what it did — spawned, reused, placed, released, withheld — so
+//! nothing is left in it that could only ever be zero.
 //!
 //! # Acceptance tests
 //!

@@ -134,14 +134,14 @@ fn state_of(
         .expect("the authored facts are established")
 }
 
-/// The additive class yields a drawable material, and its blend, depth write and
-/// cull face are the ones the render state already records.
+/// The additive class yields a drawable material, and its blend, depth write,
+/// cull face and pass are the ones the render state already records.
 ///
 /// This is the gap-closing assertion: F17-B refused an additive surface with
 /// `MaterialGap::AdditiveBlendState` because no `StandardMaterial` reaches
 /// `One`/`One`. The material now exists, and a second table of "what additive
-/// means" would be the failure mode this checks against — the material's blend
-/// must be *the state's* value.
+/// means" would be the failure mode this checks against — the material's
+/// decisions must be *the state's* values.
 #[test]
 fn accept_f17_c_additive_the_additive_class_yields_a_drawable_one_over_one_material() {
     let state = state_of(MaterialClass::Additive, Coverage::Opaque, false);
@@ -196,6 +196,27 @@ fn accept_f17_c_additive_the_additive_class_yields_a_drawable_one_over_one_mater
         additive.cull_face(),
         state.cull_face(),
         "and culls exactly the face the state recorded"
+    );
+    // The fourth copied decision: the pass the surface is queued in. It is not
+    // the blend — no `alpha_mode` reaches `One`/`One` — so the material carries
+    // the mode as a field and reads it back. A material that hard-coded
+    // `AlphaMode::Blend` here instead would be a second table of what an
+    // additive surface is, and a state that said anything else would be a
+    // decision nothing acted on.
+    assert_eq!(
+        additive.alpha_mode,
+        *state.alpha_mode(),
+        "the pass the material is queued in is the state's, copied — not a second table"
+    );
+    assert_eq!(
+        additive.alpha_mode,
+        AlphaMode::Blend,
+        "which for this class is the sorted transparent pass"
+    );
+    assert_eq!(
+        <AdditiveMaterial as Material>::alpha_mode(additive),
+        *state.alpha_mode(),
+        "and the trait method the engine reads is that same field"
     );
 
     // The two-sided decision still decides the cull face through this material
@@ -747,6 +768,7 @@ fn accept_f17_c_additive_the_additive_material_is_a_named_asset_the_ecs_can_hold
         .add(AdditiveMaterial {
             color: bevy::color::LinearRgba::WHITE,
             base_color_texture: None,
+            alpha_mode: AlphaMode::Blend,
             blend: ONE_OVER_ONE,
             depth_write: false,
             cull_face: Some(Face::Back),

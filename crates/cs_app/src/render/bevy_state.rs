@@ -58,10 +58,11 @@
 //! premultiplied-alpha pipeline. It gets a material of its own —
 //! [`AdditiveMaterial`](crate::render::additive::AdditiveMaterial) with
 //! [`ADDITIVE_FRAGMENT_SHADER`](crate::render::additive::ADDITIVE_FRAGMENT_SHADER),
-//! whose blend state is the one `ADDITIVE` above already records. There is
-//! still only *one* table of what an additive surface is: this module's. The
-//! material copies the recorded decisions and specializes its pipeline with
-//! them; it does not decide any of them.
+//! which carries *all four* of the decisions below: the blend, the depth
+//! write, the cull face, and the mode that puts the surface in the sorted
+//! transparent pass. There is still only *one* table of what an additive
+//! surface is: this module's. The material copies the recorded decisions and
+//! specializes its pipeline with them; it does not decide any of them.
 
 use std::fmt;
 
@@ -134,15 +135,22 @@ pub enum MaterialKind {
     /// reach its blend: its `alpha_mode` is the only blend input, and Bevy maps
     /// `AlphaMode::Add` onto the *premultiplied* alpha pipeline, which
     /// multiplies the source by its own alpha rather than adding it. The blend
-    /// is the [`ADDITIVE`] state below, not a mode.
+    /// is the `ADDITIVE` state below — a private table this module keeps to
+    /// itself — and not a mode.
     Additive,
 }
 
 impl MaterialKind {
-    /// Every kind, in class order. The additive class is the last one.
-    pub const ALL: [Self; 2] = [Self::Standard, Self::Additive];
-
-    /// Stable lowercase identifier, used in a frame's identity.
+    /// Stable lowercase identifier, the form the render enumerations report in.
+    ///
+    /// It is deliberately **not** in any frame or capture digest: the kind is a
+    /// function of the class, and the class is already inside the render-state
+    /// fingerprint both digests cover, so a byte here could only differ where the
+    /// state already differs. The *reported* kind — on a
+    /// `CapturedSurface` and an `InstanceBatch` — is the fact a comparison
+    /// reads, and
+    /// `accept_f17_c_additive_the_reported_material_kind_follows_the_state_class`
+    /// pins it to the class.
     pub const fn code(self) -> &'static str {
         match self {
             Self::Standard => "standard",
@@ -483,12 +491,17 @@ impl RenderState {
     /// [`AdditiveMaterial`], which takes it from
     /// [`RenderState::blend`](RenderState::blend) because no `alpha_mode`
     /// reaches `One`/`One`. Either way the decisions are this state's, copied
-    /// rather than re-decided.
+    /// rather than re-decided — all four of them, including the mode that puts
+    /// the additive surface in the sorted transparent pass.
     pub fn to_drawable_material(&self) -> DrawableMaterial {
         match self.class {
             MaterialClass::Additive => DrawableMaterial::Additive(AdditiveMaterial {
                 color: self.additive_color(),
                 base_color_texture: None,
+                // Not the blend — the pass. The material has no `alpha_mode` of
+                // its own to re-decide, so this is the one place that says
+                // which pass an additive surface is queued in.
+                alpha_mode: self.alpha_mode,
                 blend: self.blend,
                 depth_write: self.depth_write,
                 cull_face: self.cull_face,

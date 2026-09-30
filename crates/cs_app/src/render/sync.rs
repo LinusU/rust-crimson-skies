@@ -662,15 +662,18 @@ fn push_optional_hash(bytes: &mut Vec<u8>, hash: Option<ContentHash>) {
 /// Makes the ECS hold what `frame` names.
 ///
 /// The whole frame is prepared before a single entity is written, so a refusal
-/// — a foreign session, a profile nobody applied, a world with no image store,
+/// — a foreign session, a profile nobody applied, a world with no asset store,
 /// a submitted-draw list the frame was not built from — leaves the live
 /// entities exactly as they were and the caller can retry.
 ///
 /// What it writes per batch: one entity with the batch's [`Mesh3d`] and one
 /// [`MeshMaterial3d`] whose material is the batch's own, and one child entity
 /// per row ([`BatchInstancePlacement`]) at that row's own place, sharing the
-/// same mesh and material handles. A batch whose material gap is still open
-/// writes nothing and is counted in [`FrameSync::unmaterialed`].
+/// same mesh and material handles. Every class has a drawable material, so
+/// every batch is placed: the additive class with
+/// [`AdditiveMaterial`], every other class with a `StandardMaterial`, and the
+/// component's own type is the material, so one batch entity never carries
+/// both.
 ///
 /// # Errors
 ///
@@ -787,13 +790,6 @@ pub fn sync_frame(
     let mut live = BTreeMap::new();
 
     for (key, digest, batch, upload) in prepared {
-        // The material is a function of the batch key — the key carries the
-        // render state, and the render state carries the class, so it decides
-        // the material kind. A reused batch already holds the one this call
-        // would add; adding it again would leave an orphan in the store on
-        // every frame of a stable frame, which is a leak no test that only
-        // counts batches would see.
-        let base = upload.material().clone();
         let existing = reuse_batch(&mut previous, key, world, &mut report.released);
         let reused = existing.is_some();
         let (entity, mesh) = match existing {
@@ -826,9 +822,18 @@ pub fn sync_frame(
                     .add(source.image().clone()),
             ),
         };
-        let material = match stored_material(world, entity, base.kind()) {
+        // The material is a function of the batch key — the key carries the
+        // render state, and the render state carries the class, so it decides
+        // the material kind. A reused batch already holds the one this call
+        // would add; adding it again would leave an orphan in the store on
+        // every frame of a stable frame, which is a leak no test that only
+        // counts batches would see. The upload's material value is therefore
+        // *borrowed* here and only built by [`add_material`] in the branch that
+        // actually adds one: a frame that reuses every batch copies a handle per
+        // batch, not a whole `StandardMaterial` per batch.
+        let material = match stored_material(world, entity, upload.material().kind()) {
             Some(current) => current,
-            None => add_material(world, base, image.clone()),
+            None => add_material(world, upload.material(), image.clone()),
         };
         world.entity_mut(entity).insert(BatchDraw {
             key: digest,
@@ -876,21 +881,27 @@ enum BatchMaterial {
 /// types have a differently named field for it, and because the two are the
 /// only difference between the branches: everything else the caller already
 /// decided.
+///
+/// The value is cloned out of `material` here, in the one branch that needs an
+/// owned value to hand to a store, so a frame that reuses every batch does not
+/// pay for a material per batch.
 fn add_material(
     world: &mut World,
-    material: DrawableMaterial,
+    material: &DrawableMaterial,
     image: Option<Handle<Image>>,
 ) -> BatchMaterial {
     match material {
-        DrawableMaterial::Standard(mut standard) => {
+        DrawableMaterial::Standard(standard) => {
+            let mut standard = standard.as_ref().clone();
             standard.base_color_texture = image;
             BatchMaterial::Standard(
                 world
                     .resource_mut::<Assets<StandardMaterial>>()
-                    .add(*standard),
+                    .add(standard),
             )
         }
-        DrawableMaterial::Additive(mut additive) => {
+        DrawableMaterial::Additive(additive) => {
+            let mut additive = additive.clone();
             additive.base_color_texture = image;
             BatchMaterial::Additive(
                 world

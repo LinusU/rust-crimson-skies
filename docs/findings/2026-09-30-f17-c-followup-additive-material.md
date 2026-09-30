@@ -68,12 +68,14 @@ beats carrying ~350 unused bytes per submitted surface. Clippy's
 `large_enum_variant` is what surfaced the difference; the size ratio is the
 reason, not the lint.
 
-The additive material's blend, depth write and cull face are **copied from the
-`RenderState`**, not re-derived. `bevy_state::ADDITIVE` remains the only place
-the `One`/`One` value is written down, and
+The additive material's blend, depth write, cull face **and** pass are **copied
+from the `RenderState`**, not re-derived. `bevy_state::ADDITIVE` remains the only
+place the `One`/`One` value is written down, and
 `accept_f17_c_additive_the_additive_class_yields_a_drawable_one_over_one_material`
-asserts the material's blend equals `state.blend()` — a second table in the
-additive module would fail it.
+asserts each of the four equals `state.*` — a second table in the additive module
+would fail it. (The pass was the fourth: it began as a hard-coded
+`AlphaMode::Blend` in `additive.rs`, which left the state's `alpha_mode` for this
+class a decision nothing read. See the review section at the end.)
 
 ### The blend is written where wgpu 29 keeps it
 
@@ -90,18 +92,28 @@ blend would pass a value assertion and draw with the alpha blend.
 
 ### `alpha_mode` on this material is the pass, not the blend
 
-`AdditiveMaterial::alpha_mode()` returns `AlphaMode::Blend`, and the additive
-class's `RenderState::alpha_mode` does too (it was `Opaque` before, which had
-no effect while the class had no material). The reason: on a material that owns
-its blend state, the alpha mode's only remaining meaning is which render phase
-the surface is queued in. `AlphaMode::Blend` maps to
-`RenderPhaseType::Transparent` in the engine (bevy_pbr 0.19.1,
-`queue_material_meshes`), so an additive surface is depth-sorted against the
-translucency in front of it. `Opaque` would have put it in the binned opaque
-phase, where it is neither sorted nor mixed in the engine's order — and F17
-non-negotiable 1 preserves material ordering and 2 asks for translucent layers
-to be handled consistently. The blend is `AdditiveMaterialKey::blend`, and the
-specialization overwrites the mode's own blend.
+`AdditiveMaterial` carries the mode its surface's render state recorded (the
+state table gives the additive class `AlphaMode::Blend`) and
+`Material::alpha_mode` returns that field, read back. The reason it is not the
+blend: on a material that owns its blend state, the alpha mode's only remaining
+meaning is which render phase the surface is queued in, and an additive surface
+is translucent. `AlphaMode::Blend` maps to `RenderPhaseType::Transparent` in the
+engine (bevy_pbr 0.19.1, `queue_material_meshes` and the extraction that sets
+`MaterialProperties::render_phase_type`), so an additive surface is depth-sorted
+against the translucency in front of it. `Opaque` would have put it in the
+binned opaque phase, where it is neither sorted nor mixed in the engine's order
+— and F17 non-negotiable 1 preserves material ordering and 2 asks for
+translucent layers to be handled consistently. The blend is
+`AdditiveMaterialKey::blend`, and the specialization overwrites the mode's own
+blend.
+
+What the mode does *not* give this class is a pass of its own: the engine's
+transparent phase is one sorted phase, so an additive surface is sorted against
+the other translucency by its mesh centre rather than drawn after it. The plan's
+`RenderPhase::Additive` ordering is F17-A's decision and is unchanged; the
+mapping from that phase to the engine's single transparent phase is a
+`Designed` choice recorded in the assumptions table (row 10) and the limitation
+below.
 
 ### The consumer
 
@@ -147,6 +159,9 @@ the three bindings, the `MATERIAL_BIND_GROUP` placeholder, and the *absence* of
 a `vertex` function) and `..._the_shader_file_is_the_one_the_additive_material_uses`
 (the file is the only one in `assets/shaders/`, so there is no unconsumed shader
 beside it). A WGSL string in Rust, or a file no material loads, would fail both.
+The second test is a deliberately strict inventory: a second shader in that
+directory has to extend the test rather than appear beside an unconsumed one,
+which is the friction it is for.
 
 ## What the shader assumes, and each assumption's status
 
@@ -164,6 +179,7 @@ Every row is a `Designed` new-engine decision. None is a measurement of the
 | 7 | No shadow casting. | `Designed` | whether an additive surface casts a shadow in the original is unmeasured; an unlit contribution is not a lit surface. F19 owns shadows. |
 | 8 | The image is sampled with the *image's own* sampler (`Linear` magnification, no mips). | `Designed`, inherited | F17-B recorded the sampler's filters and refused mip generation; unchanged here. |
 | 9 | The additive surface is depth-*tested* but writes no depth. | `Designed`, and bounded by the state | "no depth write" is the render state's own recorded decision; the test is the engine's default (`GreaterEqual`) and is not a decision this stage makes. |
+| 10 | The additive surface is drawn in the engine's *one* sorted transparent phase, interleaved by depth with the other translucency — not in a pass of its own after all of it. | `Designed` | the material's `alpha_mode` is `Blend`, which is the only mode the engine maps to `RenderPhaseType::Transparent`; the engine has no additive phase, so `RenderPhase::Additive`'s "after all translucency" order is a *plan* order only. What the original did with a sprite that is both additive and among transparent surfaces was never measured, and this is the decision F17-D's `gpu` + `retail` evidence has to look at. |
 
 ## Recorded unknowns and limitations
 
@@ -172,6 +188,25 @@ Every row is a `Designed` new-engine decision. None is a measurement of the
   and that is all this stage checks. Whether the additive pass comes out
   additive, sorted and un-occluded is F17-D's `gpu` + `retail` evidence, and
   this stage is not a substitute for it.
+- **Nothing here parses the WGSL either.** The two shader tests read the file
+  and check its entry point, its three bindings and the `MATERIAL_BIND_GROUP`
+  placeholder, so the file cannot go missing or be renamed unnoticed. A
+  *syntactic* error inside it, or a binding the engine's generated layout does
+  not match, would still pass: the engine's preprocessor owns `#import` and
+  `#{...}`, so naga cannot read the file as it stands, and a first `App` is the
+  only thing that will actually compile it (see the next bullet). The bindings
+  were therefore checked by hand against `bevy_pbr::forward_io::VertexOutput`
+  and the `AsBindGroup` derive rather than by a compiler, and this is a known
+  gap rather than a claim that the file is known good.
+- **The shader is loaded from an asset root the app has to agree on.**
+  `ShaderRef::Path` resolves through the asset server against
+  `AssetPlugin::file_path` (default `assets`) joined onto bevy_asset's
+  `get_base_path()`: `$BEVY_ASSET_ROOT`, else `$CARGO_MANIFEST_DIR`, else the
+  executable's parent directory. Because the `cs` binary lives in `cs_app`, the
+  default finds `crates/cs_app/assets/` under `cargo run`/`cargo test`; a
+  release build, or a future binary in another crate, has to set one of those
+  itself. Nothing in this stage sets it, because there is no `App` to set it
+  from.
 - **The pipeline is never built here.** `AdditiveMaterialKey::apply` is checked
   against a hand-built `RenderPipelineDescriptor` in the state `AlphaMode::Blend`
   leaves it in, not against a descriptor the engine's `MeshPipeline` produced. No
@@ -315,8 +350,9 @@ crate's own `render` modules. `Cargo.lock` is unchanged. No protected path, no
 original datum and no binary file is involved.
 
 The new `crates/cs_app/assets/` directory is the crate's asset root, which
-Bevy's `AssetPlugin` resolves by default. It contains exactly one file, the
-shader, and a test asserts that.
+Bevy's `AssetPlugin` resolves by default (`assets` under `$BEVY_ASSET_ROOT`, else
+`$CARGO_MANIFEST_DIR`, else the executable's directory — see the limitation
+above). It contains exactly one file, the shader, and a test asserts that.
 
 ## Sources
 
@@ -343,3 +379,76 @@ specialize runs after the base pipeline's blend was written),
 `Clone + Hash + PartialEq + Send + Sync`), and wgpu-core's
 `finalize_entry_point_name` (a `None` entry point requires a single entry point
 for the stage) — all engine facts, not measurements of the original game.
+
+## Review (bunny-2, second pass)
+
+The same agent that implemented this stage reviewed it: the context was fresh
+(a new session with no history of the implementation) but the identity is the
+same, so this is **not** independent evidence. It is recorded here so the merge
+decision carries the fact rather than a fiction.
+
+Every engine claim above was re-checked against the 0.19.1 / 29.0.4 sources in
+the cargo registry rather than accepted, and one candidate finding was
+**discarded** because the source refuted it: in Bevy 0.19 tonemapping is a
+post-processing node, not per-material shader code, so the additive shader
+bypassing the PBR fragment chunks does not bypass `apply_presentation`'s
+`Tonemapping`. Nothing was recorded on that basis.
+
+Four fixes:
+
+1. **`AdditiveMaterial` now carries the pass instead of hard-coding it.**
+   `Material::alpha_mode` returned a literal `AlphaMode::Blend`, so the additive
+   class's own `RenderState::alpha_mode` — which this stage changed from
+   `Opaque` to `Blend` and the findings above explain — was a decision *nothing
+   read*: a class whose state said `Opaque` would still have been queued in the
+   transparent pass, silently. The mode is now a field copied from the state
+   (the fourth decision, beside blend, depth write and cull face) and
+   `Material::alpha_mode` returns the field, exactly as the `StandardMaterial`
+   path reads its own. Mutation-checked: making the additive arm of the state's
+   `alpha_mode` table fall through to `Opaque` now fails
+   `..._yields_a_drawable_one_over_one_material` **and**
+   `..._records_a_blend_no_alpha_mode_carries`; before this change it failed
+   nothing.
+2. **`sync_frame` no longer clones a material per batch per frame.** The refactor
+   took `upload.material().clone()` before the reuse check, so a stable frame —
+   every batch reused — paid a heap allocation of a whole `StandardMaterial` per
+   batch per frame that the previous code only paid when it added one. The
+   upload's material is now borrowed and cloned inside `add_material`, i.e. only
+   in the branch that adds a value to a store. Same behaviour, no per-frame
+   allocation on the steady-state path.
+3. **Three stale docs, one of them a broken link.** `sync_frame`'s doc still
+   claimed "a batch whose material gap is still open writes nothing and is
+   counted in `FrameSync::unmaterialed`" — a field this stage removed, so the
+   intra-doc link did not resolve (`cargo doc` reported it) and the sentence was
+   simply false; `render/mod.rs` linked the same removed field; and
+   `bevy_state.rs`'s `MaterialKind::Additive` doc linked the *private*
+   `ADDITIVE` constant. All three rewritten, and the sync doc now says which
+   material each class draws with. `cargo doc --no-deps -p cs_app` now emits 25
+   warnings, down from 27 on the branch head and all of them pre-existing on
+   `main`: nothing this stage documents produces one.
+4. **Two limitations recorded that the stage did not state**: that nothing
+   *parses* the WGSL (the engine's preprocessor owns `#import` and `#{...}`, so
+   naga cannot read the file as it stands, and a typo inside it would pass
+   every test here), and how the shader path is actually resolved
+   (`$BEVY_ASSET_ROOT` / `$CARGO_MANIFEST_DIR` / executable directory), which
+   only finds `crates/cs_app/assets/` by default because the `cs` binary lives in
+   this crate. Plus assumption row 10: the engine's transparent phase is one
+   sorted phase, so an additive surface is interleaved by depth with the other
+   translucency rather than drawn after it — the plan's `RenderPhase::Additive`
+   order is a plan order only, and that gap is F17-D's `gpu` + `retail` evidence
+   to look at.
+
+### Commands run by the review
+
+| Command | Exit |
+| --- | --- |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
+| `cargo test --workspace --locked` | 0 |
+| `cargo test --workspace --locked -- accept_f17_c_additive --include-ignored` | 0 (10 tests) |
+| `cargo doc --no-deps -p cs_app --locked` | 0 (25 warnings, all pre-existing on `main`) |
+
+Verdict: the stage meets its acceptance criteria, the earlier stages'
+assertions were updated without being weakened, and the four fixes above are the
+only changes the review made. What is still not claimed is unchanged: nothing in
+this stage is pixel-verified, and the assumptions table is all `Designed`.

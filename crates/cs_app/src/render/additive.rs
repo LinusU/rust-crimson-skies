@@ -18,13 +18,14 @@
 //! * [`AdditiveMaterial`] is a [`bevy::pbr::Material`], so the class has a
 //!   drawable material: an entity can carry `MeshMaterial3d<AdditiveMaterial>`
 //!   and the engine builds a pipeline for it.
-//! * Its blend, depth-write and cull decisions are **not re-derived here**.
-//!   They are copied from the [`RenderState`](crate::render::bevy_state::RenderState)
-//!   that already records them, carried in the material value, and written into
-//!   the pipeline by [`AdditiveMaterialKey::apply`], which is what
-//!   [`Material::specialize`] calls. The additive class's own state table stays
-//!   in `bevy_state`, so there is exactly one place that says what an additive
-//!   surface is.
+//! * Its blend, depth-write, cull and pass decisions are **not re-derived
+//!   here**. They are copied from the
+//!   [`RenderState`](crate::render::bevy_state::RenderState) that already
+//!   records them, carried in the material value, and written into the pipeline
+//!   by [`AdditiveMaterialKey::apply`], which is what [`Material::specialize`]
+//!   calls. The additive class's own state table stays in `bevy_state`, so there
+//!   is exactly one place that says what an additive surface is — including
+//!   which pass it is queued in.
 //! * The fragment shader is a real file in this crate's asset root,
 //!   [`ADDITIVE_FRAGMENT_SHADER`], loaded by the engine's asset server
 //!   (`ShaderRef::Path`). It is not a WGSL string in Rust, and it is not a file
@@ -34,17 +35,27 @@
 //!
 //! # `alpha_mode` on this material is the pass, not the blend
 //!
-//! [`Material::alpha_mode`] returns [`AlphaMode::Blend`] for one reason: on a
-//! material that owns its blend state, the alpha mode's only remaining meaning
-//! is which render phase the surface is queued in, and an additive surface is
-//! translucent — it must be sorted back-to-front and must not occlude what is
-//! behind it. `AlphaMode::Blend` is also what the base mesh pipeline would
-//! read as `BlendState::ALPHA_BLENDING`; [`AdditiveMaterialKey::apply`] then
-//! *replaces* that with the recorded `One`/`One`, so the mode is never the
-//! blend. The engine reads both facts (bevy_pbr 0.19.1: `alpha_mode()` picks
-//! `RenderPhaseType::Transparent`, and `specialize` runs after the base
-//! pipeline's blend was written), and the acceptance test asserts the
-//! specialized descriptor carries `One`/`One` and no depth write.
+//! [`Material::alpha_mode`] returns the material's own `alpha_mode` field, which
+//! is the mode the surface's render state recorded (`AlphaMode::Blend` for this
+//! class), for one reason: on a material that owns its blend state, the alpha
+//! mode's only remaining meaning is which render phase the surface is queued in,
+//! and an additive surface is translucent — it must be sorted back-to-front and
+//! must not occlude what is behind it. `AlphaMode::Blend` is also what the base
+//! mesh pipeline would read as `BlendState::ALPHA_BLENDING`;
+//! [`AdditiveMaterialKey::apply`] then *replaces* that with the recorded
+//! `One`/`One`, so the mode is never the blend. The engine reads both facts
+//! (bevy_pbr 0.19.1: `alpha_mode()` picks `RenderPhaseType::Transparent`, and
+//! `specialize` runs after the base pipeline's blend was written), and the
+//! acceptance test asserts the specialized descriptor carries `One`/`One` and no
+//! depth write.
+//!
+//! One consequence is recorded rather than fixed here: the engine's transparent
+//! phase is *one sorted phase*, so an additive surface is sorted against the
+//! other translucency by its mesh centre rather than drawn in a pass of its own.
+//! The plan's own `RenderPhase::Additive` ordering is F17-A's decision and is
+//! unaffected; whether the original drew additive surfaces after all
+//! translucency is unmeasured. See
+//! `docs/findings/2026-09-30-f17-c-followup-additive-material.md`.
 //!
 //! # Designed, not measured
 //!
@@ -179,6 +190,9 @@ pub struct AdditiveMaterial {
     #[texture(1)]
     #[sampler(2)]
     pub base_color_texture: Option<Handle<Image>>,
+    /// The mode the surface's render state recorded: the *pass* it is queued
+    /// in, copied rather than re-decided (see [`Material::alpha_mode`]).
+    pub alpha_mode: AlphaMode,
     /// The blend state the surface's render state recorded, `One`/`One` for
     /// this class.
     pub blend: BlendState,
@@ -242,8 +256,14 @@ impl Material for AdditiveMaterial {
     /// the module docs. An additive surface is translucent, so it belongs in
     /// the sorted transparent pass; the blend it draws with is
     /// [`AdditiveMaterialKey::blend`].
+    ///
+    /// This is the field [`AdditiveMaterial::alpha_mode`] holds, read back, so
+    /// the pass is the surface's recorded decision rather than a second one
+    /// written here. The `StandardMaterial` path reads its own `alpha_mode`
+    /// field the same way, and gets its blend from it; this material's blend
+    /// travels in the key instead.
     fn alpha_mode(&self) -> AlphaMode {
-        AlphaMode::Blend
+        self.alpha_mode
     }
 
     /// No depth prepass.
