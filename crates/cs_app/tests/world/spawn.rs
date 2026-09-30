@@ -239,7 +239,7 @@ fn accept_f18_a_every_collision_role_decides_what_is_spawned() {
 /// interacting and every contact test above goes quiet.
 #[test]
 fn accept_f18_a_spawned_bodies_carry_the_designed_collision_layers() {
-    let mut fixture = common::through_opening();
+    let fixture = common::through_opening();
     let probe = fixture.probe().expect("the probe was spawned");
     let expected_probe = cs_app::world::probe_layers();
     let expected_world = cs_app::world::static_world_layers();
