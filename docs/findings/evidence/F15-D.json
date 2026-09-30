@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "F15-D",
+ "candidate_tree": "fce1b9791ad1f79eda49797c04e1d263059dc8c3",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-09-30T03:27:14Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_f15_d_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/bunny-alpha-1", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail"],
+ "tests": {"discovered": 5, "executed": 5, "passed": 5, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_f15_d_retail_corrupt_cache_entry_is_rebuilt_and_never_changes_the_delivered_content", "status": "pass", "evidence": ["cargo-test.log", "cycle.json"]}, {"id": "accept_f15_d_retail_budget_eviction_never_changes_the_delivered_content", "status": "pass", "evidence": ["cargo-test.log", "cycle.json"]}, {"id": "accept_f15_d_retail_cache_never_serves_an_entry_under_another_identity", "status": "pass", "evidence": ["cargo-test.log", "cycle.json"]}, {"id": "accept_f15_d_retail_cold_and_warm_loads_deliver_equal_content_and_gameplay_state", "status": "pass", "evidence": ["cargo-test.log", "cycle.json"]}, {"id": "accept_f15_d_retail_restart_after_a_killed_cache_write_recovers_and_reproduces_the_same_state", "status": "pass", "evidence": ["cargo-test.log", "cycle.json"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "a1ff7e0e416329e048ced3bbd492ac5da7a2ac14e8e26b65fb8ffe1b4d58cfbb", "kind": "log"}, {"path": "cycle.json", "sha256": "df9f873ae364f1e6f3d973204bc95b5b209ed8d3a17772a04b037bb35909fff9", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "bunny-alpha-1 (implementing agent; the Rally reviewer regenerates this report on the rebased commit)", "method": "Acceptance suite run locally with the retail capability, cross-checked by re-measuring the cold/warm/restart cycle here through the production store, the production session and the production ZBD texture reader over the mounted original installation. Every field is derived from the recorded log, that independent re-measurement, production discovery of $CS_GAME_DIR, rustc and Cargo.lock; nothing is typed in by hand, and a failing run would produce a report the validator rejects. SCOPE OF THIS MEASUREMENT, so no reader mistakes it for a fidelity claim: (1) the measured closure is each world group's own texture archives (texture.zbd and its rtexture*.zbd tiers) resolved through the designed baseline mount, not a mission's full dependency closure — the mission closure, the script adapter's dynamic candidate sets and every non-texture content kind are outside this stage; (2) the derived asset is a project-defined canonical form (name, extent and decoded base-level texels of the first 8 textures of an archive), not an original-engine derived format, and which assets the original engine precomputes, with which options, is unmeasured. Both are limits of what was measured, not unresolved defects in it: `unknowns` is empty because nothing in F15-D's own scope is left unresolved. The claim is `implemented`, and it gates no fidelity or release statement. Validated with tools/validate_evidence.py --require-pass."},
+ "claim": "implemented"
+}
