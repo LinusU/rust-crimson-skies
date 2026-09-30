@@ -76,9 +76,21 @@
 //! `cs_app::environment`. No value here is derived from screen fog, and no
 //! default is invented for a state the caller passes in.
 //!
+//! [`ai`] is the F31-A navigation contract
+//! (`specs/F31-ai-navigation-routes-and-obstacle-avoidance.md`, stage
+//! `### F31-A`): the Bevy-free [`ai::navigation::RouteGraph`] with its stable
+//! node ids and authored sequences, the [`ai::navigation::ManeuverEnvelope`]
+//! that bounds every command, the monotonic [`ai::navigation::RouteProgress`],
+//! the swept arrival and [`ai::navigation::Blocker`] tests and
+//! [`ai::navigation::Navigator::decide`], a pure function of one typed tick
+//! that emits the same [`flight::FlightInput`] a player's controls produce.
+//! The provenance-carrying producer record is `cs_content::routes`; F31-B
+//! wires pursuit and avoidance into the integrated flight loop.
+//!
 //! [`cs_types`]: cs_types
 //! [`cs_script`]: cs_script
 
+pub mod ai;
 pub mod animated_object;
 pub mod collision;
 pub mod control;
