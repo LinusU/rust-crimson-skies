@@ -7,6 +7,15 @@
 //! assets, reads no installation and is never selected as a replacement for
 //! missing retail content (F00 non-negotiable behavior 2).
 //!
+//! "Loads no assets" is a statement about what the scene *puts into* its asset
+//! stack, not about whether a stack exists. It has to: Avian's default
+//! `collider-from-mesh` feature registers systems that read `Assets<Mesh>` and
+//! `AssetEvent<Mesh>` (see [`crate::asset_stack`]), so a world that adds
+//! `PhysicsPlugins::default()` without one aborts on the first update. The
+//! scene therefore runs on a real but empty asset stack — every such world is
+//! built through [`crate::asset_stack::headless_app`] — and
+//! [`SyntheticScene::mesh_asset_count`] is the check that keeps it empty.
+//!
 //! Determinism: [`TICK_HZ`] fixes both the manual frame delta and the fixed
 //! timestep to the same exactly representable duration, and the manual
 //! clock's baseline instant is seeded at build time, so every
@@ -16,11 +25,13 @@
 
 use core::{fmt, time::Duration};
 
-use avian3d::prelude::{Collider, LinearVelocity, PhysicsPlugins, Position, RigidBody};
+use avian3d::prelude::{Collider, LinearVelocity, Position, RigidBody};
 use bevy::{
     app::App,
+    asset::Assets,
     ecs::world::World,
-    prelude::{Entity, MinimalPlugins, Resource, Transform, TransformPlugin, Vec3},
+    mesh::Mesh,
+    prelude::{Entity, Resource, Transform, Vec3},
     time::{Fixed, Real, Time, TimeUpdateStrategy},
 };
 use cs_types::{
@@ -104,8 +115,7 @@ impl SyntheticSceneBuilder {
         let spec = self.spec;
         spec.validate().map_err(SyntheticSceneError::InvalidBody)?;
 
-        let mut app = App::new();
-        app.add_plugins((MinimalPlugins, TransformPlugin, PhysicsPlugins::default()));
+        let mut app = crate::asset_stack::headless_app();
 
         let frame = Duration::from_secs_f64(1.0 / TICK_HZ);
         app.insert_resource(TimeUpdateStrategy::ManualDuration(frame));
@@ -188,6 +198,19 @@ impl SyntheticScene {
     /// counter cannot drift from the world state.
     pub fn world(&self) -> &World {
         self.app.world()
+    }
+
+    /// How many Bevy mesh assets the scene's asset stack holds.
+    ///
+    /// The scene has to run on a real asset stack (see the module doc), so
+    /// "loads no assets" is a property of the stack's contents rather than of
+    /// its absence. It must stay `0`: a scene that quietly acquired a mesh
+    /// would be drawing geometry the F00 fixture does not describe, and F00
+    /// non-negotiable behavior 2 makes this scene a development stand-in that
+    /// never stands in for missing retail content.
+    #[must_use]
+    pub fn mesh_asset_count(&self) -> usize {
+        self.app.world().resource::<Assets<Mesh>>().len()
     }
 
     /// Advances the world by `ticks` simulation ticks, exactly one Avian

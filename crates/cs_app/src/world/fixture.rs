@@ -42,10 +42,10 @@ use std::time::Duration;
 
 use avian3d::prelude::{
     AngularVelocity, Collider, CollisionEventsEnabled, CollisionLayers as AvianCollisionLayers,
-    Gravity, LinearVelocity, Mass, PhysicsPlugins, Position, RigidBody, Rotation,
-    SpeculativeMargin, SubstepCount, SweptCcd,
+    Gravity, LinearVelocity, Mass, Position, RigidBody, Rotation, SpeculativeMargin, SubstepCount,
+    SweptCcd,
 };
-use bevy::prelude::{App, Entity, MinimalPlugins, Transform, TransformPlugin, Vec3};
+use bevy::prelude::{App, Entity, Transform, Vec3};
 use bevy::time::{Real, Time, TimeUpdateStrategy};
 use cs_content::scene::CanonicalTransform;
 use cs_content::world::{
@@ -682,8 +682,7 @@ impl WorldFixtureBuilder {
     pub fn build(self) -> Result<WorldFixture, WorldFixtureError> {
         let frame = Duration::from_secs_f64(1.0 / crate::physics::BASELINE_FIXED_HZ as f64);
 
-        let mut app = App::new();
-        app.add_plugins((MinimalPlugins, TransformPlugin, PhysicsPlugins::default()));
+        let mut app = crate::asset_stack::headless_app();
         app.add_plugins(crate::physics::PhysicsAdapterPlugin::new(
             crate::physics::BASELINE_FIXED_HZ,
         ));

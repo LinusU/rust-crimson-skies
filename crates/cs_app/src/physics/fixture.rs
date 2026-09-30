@@ -20,11 +20,11 @@ use core::time::Duration;
 use std::fmt;
 
 use avian3d::prelude::{
-    AngularVelocity, Collider, Gravity, LinearVelocity, Mass, PhysicsPlugins, Position, RigidBody,
-    Rotation, SubstepCount,
+    AngularVelocity, Collider, Gravity, LinearVelocity, Mass, Position, RigidBody, Rotation,
+    SubstepCount,
 };
 use bevy::{
-    prelude::{App, Entity, MinimalPlugins, Transform, TransformPlugin, Vec3, World},
+    prelude::{App, Entity, Transform, Vec3, World},
     time::{Real, Time, TimeUpdateStrategy},
 };
 
@@ -172,8 +172,7 @@ impl PhysicsFixtureBuilder {
         let fixed_hz = self.fixed_hz;
         let frame = Duration::from_secs_f64(1.0 / fixed_hz as f64);
 
-        let mut app = App::new();
-        app.add_plugins((MinimalPlugins, TransformPlugin, PhysicsPlugins::default()));
+        let mut app = crate::asset_stack::headless_app();
         app.add_plugins(PhysicsAdapterPlugin::new(fixed_hz));
         app.add_plugins(PhysicsBodiesPlugin);
         app.insert_resource(TimeUpdateStrategy::ManualDuration(frame));
