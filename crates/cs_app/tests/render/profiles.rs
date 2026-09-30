@@ -664,7 +664,8 @@ fn accept_f17_c_the_consumer_draws_one_entity_per_batch_with_every_row() {
 
     let submitted = fixture.submitted();
     let frame = fixture.batch(&RenderProfile::faithful());
-    let report = sync_frame(&mut world, &submitted, &frame, SESSION).expect("the frame syncs");
+    let report = sync_frame(&mut world, &submitted, &frame, SESSION, &fixture.runtime)
+        .expect("the frame syncs");
 
     // Four draws: two wing batches and two body batches, every one of them
     // spawnable — this scene has no additive class, and the additive selection
@@ -781,8 +782,8 @@ fn accept_f17_c_the_consumer_draws_one_entity_per_batch_with_every_row() {
     let meshes_before = world.resource::<Assets<Mesh>>().len();
     let placements_before = placed_entities(&world);
     for _ in 0..3 {
-        let repeat =
-            sync_frame(&mut world, &submitted, &frame, SESSION).expect("the frame resyncs");
+        let repeat = sync_frame(&mut world, &submitted, &frame, SESSION, &fixture.runtime)
+            .expect("the frame resyncs");
         assert_eq!(repeat.spawned, 0);
         assert_eq!(repeat.reused, 4);
         assert_eq!(repeat.released, 0);
@@ -827,7 +828,8 @@ fn accept_f17_c_the_consumer_draws_one_entity_per_batch_with_every_row() {
         TICK,
     )
     .expect("the repainted frame batches");
-    let swapped = sync_frame(&mut world, &submitted, &next, SESSION).expect("the next frame syncs");
+    let swapped = sync_frame(&mut world, &submitted, &next, SESSION, &fixture.runtime)
+        .expect("the next frame syncs");
     assert_eq!(
         swapped.reused, 1,
         "c's wing is the one draw that is genuinely unchanged"
@@ -887,7 +889,14 @@ fn accept_f17_c_a_moved_row_keeps_its_placement_and_takes_the_rows_new_place() {
     process_render_profile_request(&mut world);
 
     let before = fixture.batch(&profile);
-    sync_frame(&mut world, &fixture.submitted(), &before, SESSION).expect("the frame syncs");
+    sync_frame(
+        &mut world,
+        &fixture.submitted(),
+        &before,
+        SESSION,
+        &fixture.runtime,
+    )
+    .expect("the frame syncs");
     let body = batch_entity(&world, &before, RenderPhase::Opaque, PLANE_A);
     let placed_a = placement_of_instance(&world, body, PLANE_A);
     let placed_c = placement_of_instance(&world, body, PLANE_C);
@@ -934,7 +943,8 @@ fn accept_f17_c_a_moved_row_keeps_its_placement_and_takes_the_rows_new_place() {
         TICK,
     )
     .expect("the moved scene batches");
-    let report = sync_frame(&mut world, &submitted, &after, SESSION).expect("the frame syncs");
+    let report = sync_frame(&mut world, &submitted, &after, SESSION, &fixture.runtime)
+        .expect("the frame syncs");
     assert_eq!(report.reused, 4, "a moved row is the same draw");
     assert_eq!(report.spawned, 0);
     assert_eq!(report.placed, 5);
@@ -975,15 +985,28 @@ fn accept_f17_c_a_frame_under_an_unapplied_profile_is_refused_and_retries_after_
 
     let submitted = fixture.submitted();
     let faithful_frame = fixture.batch(&faithful);
-    sync_frame(&mut world, &submitted, &faithful_frame, SESSION).expect("the frame syncs");
+    sync_frame(
+        &mut world,
+        &submitted,
+        &faithful_frame,
+        SESSION,
+        &fixture.runtime,
+    )
+    .expect("the frame syncs");
     let live = batch_entities(&world);
     assert_eq!(live, 4);
 
     // A frame built under the enhanced profile, synced under the faithful one.
     let enhanced_frame = fixture.batch(&enhanced);
     assert_ne!(enhanced_frame.fingerprint(), faithful_frame.fingerprint());
-    let error = sync_frame(&mut world, &submitted, &enhanced_frame, SESSION)
-        .expect_err("the applied profile does not match the frame");
+    let error = sync_frame(
+        &mut world,
+        &submitted,
+        &enhanced_frame,
+        SESSION,
+        &fixture.runtime,
+    )
+    .expect_err("the applied profile does not match the frame");
     assert_eq!(error.code(), "profile_mismatch");
     assert_eq!(
         batch_entities(&world),
@@ -1000,15 +1023,27 @@ fn accept_f17_c_a_frame_under_an_unapplied_profile_is_refused_and_retries_after_
     );
 
     // A foreign session is refused too, and changes nothing.
-    let foreign = sync_frame(&mut world, &submitted, &faithful_frame, RenderSession(99))
-        .expect_err("another session is refused");
+    let foreign = sync_frame(
+        &mut world,
+        &submitted,
+        &faithful_frame,
+        RenderSession(99),
+        &fixture.runtime,
+    )
+    .expect_err("another session is refused");
     assert_eq!(foreign.code(), "foreign_session");
 
     // Retry: apply the enhanced profile, then the same frame syncs.
     world.insert_resource(RenderProfileRequest::set(SESSION, enhanced.clone()));
     process_render_profile_request(&mut world);
-    let retried = sync_frame(&mut world, &submitted, &enhanced_frame, SESSION)
-        .expect("the retry syncs the frame it was built for");
+    let retried = sync_frame(
+        &mut world,
+        &submitted,
+        &enhanced_frame,
+        SESSION,
+        &fixture.runtime,
+    )
+    .expect("the retry syncs the frame it was built for");
     assert_eq!(retried.reused, 4, "the geometry is the same either way");
     assert_eq!(
         batch_entities(&world),
@@ -1088,9 +1123,15 @@ fn accept_f17_c_a_frame_under_an_unapplied_profile_is_refused_and_retries_after_
     );
     // And with no session open there is nothing to sync under.
     assert_eq!(
-        sync_frame(&mut world, &submitted, &faithful_frame, SESSION)
-            .expect_err("no session is open")
-            .code(),
+        sync_frame(
+            &mut world,
+            &submitted,
+            &faithful_frame,
+            SESSION,
+            &fixture.runtime
+        )
+        .expect_err("no session is open")
+        .code(),
         "no_render_session"
     );
     let again = teardown(&mut world);
@@ -1113,14 +1154,14 @@ fn accept_f17_c_a_submitted_draw_list_the_frame_was_not_built_from_is_refused() 
     world.insert_resource(RenderProfileRequest::set(SESSION, profile.clone()));
     process_render_profile_request(&mut world);
     let good = fixture.submitted();
-    sync_frame(&mut world, &good, &frame, SESSION).expect("the frame syncs");
+    sync_frame(&mut world, &good, &frame, SESSION, &fixture.runtime).expect("the frame syncs");
     let live = batch_entities(&world);
     let placed = placed_draws(&world);
     assert_eq!((live, placed), (4, 5));
 
     // A list that is one outcome short: a row names an index that is not there.
     let short = &good[..good.len() - 1];
-    let error = sync_frame(&mut world, short, &frame, SESSION)
+    let error = sync_frame(&mut world, short, &frame, SESSION, &fixture.runtime)
         .expect_err("the frame's row is in no submitted draw");
     assert_eq!(error.code(), "no_submitted_draw");
     assert_eq!(
@@ -1150,6 +1191,7 @@ fn accept_f17_c_a_submitted_draw_list_the_frame_was_not_built_from_is_refused() 
         &fixture.submitted_against(&refused),
         &frame,
         SESSION,
+        &fixture.runtime,
     )
     .expect_err("the frame was not built from this list");
     assert_eq!(error.code(), "stale_submitted_draw");
@@ -1179,6 +1221,7 @@ fn accept_f17_c_a_submitted_draw_list_the_frame_was_not_built_from_is_refused() 
         &fixture.submitted_against(&moved),
         &frame,
         SESSION,
+        &fixture.runtime,
     )
     .expect_err("the upload at that index is another surface's");
     assert_eq!(error.code(), "stale_submitted_draw");
@@ -1201,7 +1244,8 @@ fn accept_f17_c_a_submitted_draw_list_the_frame_was_not_built_from_is_refused() 
 
     // The list the frame *was* built from still syncs, so every refusal above is
     // retryable.
-    let retried = sync_frame(&mut world, &good, &frame, SESSION).expect("the retry syncs");
+    let retried =
+        sync_frame(&mut world, &good, &frame, SESSION, &fixture.runtime).expect("the retry syncs");
     assert_eq!(retried.spawned, 0);
     assert_eq!(retried.reused, 4);
     assert_eq!(
@@ -1255,7 +1299,8 @@ fn accept_f17_c_the_applied_presentation_reaches_the_camera_light_and_window() {
         process_render_profile_request(&mut world);
         let submitted = fixture.submitted();
         let frame = fixture.batch(&profile);
-        let report = sync_frame(&mut world, &submitted, &frame, SESSION).expect("the frame syncs");
+        let report = sync_frame(&mut world, &submitted, &frame, SESSION, &fixture.runtime)
+            .expect("the frame syncs");
         assert_eq!(report.presentation.cameras, 1, "one camera was set");
         assert_eq!(report.presentation.lights, 1, "one light was set");
         assert_eq!(
@@ -1285,7 +1330,7 @@ fn accept_f17_c_the_applied_presentation_reaches_the_camera_light_and_window() {
     let submitted = fixture.submitted();
     let frame = fixture.batch(&faithful);
     assert_eq!(
-        sync_frame(&mut bare, &submitted, &frame, SESSION)
+        sync_frame(&mut bare, &submitted, &frame, SESSION, &fixture.runtime)
             .expect_err("no session is open")
             .code(),
         "no_render_session"
@@ -1294,7 +1339,7 @@ fn accept_f17_c_the_applied_presentation_reaches_the_camera_light_and_window() {
         SESSION, faithful, 1,
     ));
     assert_eq!(
-        sync_frame(&mut bare, &submitted, &frame, SESSION)
+        sync_frame(&mut bare, &submitted, &frame, SESSION, &fixture.runtime)
             .expect_err("the world has no asset store")
             .code(),
         "no_asset_store"

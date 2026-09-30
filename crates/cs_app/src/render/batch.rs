@@ -20,9 +20,11 @@
 //! * the **geometry**, **render state** and **image** digests F17-B's
 //!   adapters produced, so nothing merges across a different buffer, a
 //!   different blend/alpha/cull decision or a different texture;
-//! * the **committed livery** digest, read from the F09-C
+//! * the **committed livery variant**, read from the F09-C
 //!   [`crate::livery::ModelLivery`] the instance is bound to — two paints are
-//!   two variants, so two batches;
+//!   two variants, so two batches. The key keeps the variant itself, not just
+//!   its digest, so the consumer can resolve the composed image it binds
+//!   ([`crate::render::paint`]);
 //!
 //! and one rule that is stronger than a key: an instance whose paint is
 //! **not established** is never merged with anything, not even with another
@@ -65,6 +67,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use cs_assets::install::sha256;
+use cs_content::livery::LiveryVariantKey;
 use cs_content::scene::SceneNodeId;
 use cs_types::Tick;
 use cs_types::evidence::ContentHash;
@@ -93,16 +96,16 @@ use crate::scene::AirframeDamageState;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InstanceVisual {
     instance: ModelInstanceId,
-    livery: Option<ContentHash>,
+    variant: Option<LiveryVariantKey>,
     destroyed: BTreeSet<SceneNodeId>,
 }
 
 impl InstanceVisual {
-    /// An instance committed to a paint: its livery digest is established.
+    /// An instance committed to a paint: its livery variant is established.
     pub fn bound(instance: ModelInstanceId, livery: &ModelLivery) -> Self {
         Self {
             instance,
-            livery: Some(livery.key().digest()),
+            variant: Some(*livery.key()),
             destroyed: BTreeSet::new(),
         }
     }
@@ -112,7 +115,7 @@ impl InstanceVisual {
     pub fn unbound(instance: ModelInstanceId) -> Self {
         Self {
             instance,
-            livery: None,
+            variant: None,
             destroyed: BTreeSet::new(),
         }
     }
@@ -130,8 +133,15 @@ impl InstanceVisual {
 
     /// The committed paint's variant digest, `None` when the paint is not
     /// established.
-    pub const fn livery(&self) -> Option<ContentHash> {
-        self.livery
+    pub fn livery(&self) -> Option<ContentHash> {
+        self.variant.map(|variant| variant.digest())
+    }
+
+    /// The committed paint's variant key, `None` when the paint is not
+    /// established. The key is what the consumer resolves to composed bytes
+    /// (see [`crate::render::paint`]); the digest is only its identity.
+    pub const fn variant(&self) -> Option<LiveryVariantKey> {
+        self.variant
     }
 
     /// Whether this instance's `part` is recorded as destroyed.
@@ -250,7 +260,7 @@ pub struct BatchKey {
     geometry: ContentHash,
     state: ContentHash,
     image: Option<ContentHash>,
-    livery: Option<ContentHash>,
+    paint: Option<LiveryVariantKey>,
 }
 
 impl BatchKey {
@@ -275,11 +285,18 @@ impl BatchKey {
         self.image
     }
 
-    /// The committed paint every instance in this batch shares. `None` is an
-    /// unresolved paint, and such a batch holds exactly one item — see the
-    /// module docs.
-    pub const fn livery(&self) -> Option<ContentHash> {
-        self.livery
+    /// The digest of the committed paint every instance in this batch
+    /// shares. `None` is an unresolved paint, and such a batch holds exactly
+    /// one item — see the module docs.
+    pub fn livery(&self) -> Option<ContentHash> {
+        self.paint.map(|variant| variant.digest())
+    }
+
+    /// The committed paint every instance in this batch shares, as the
+    /// variant key the consumer resolves to composed bytes through
+    /// [`crate::render::paint::PaintSource`]. `None` is an unresolved paint.
+    pub const fn paint(&self) -> Option<LiveryVariantKey> {
+        self.paint
     }
 
     /// Whether `upload` is the surface this key was computed from.
@@ -648,8 +665,8 @@ pub fn batch_frame(
                 // for batching — there is no paint to keep apart — and both are
                 // reported rather than assumed.
                 let visual = visuals.get(instance);
-                let livery = visual.and_then(InstanceVisual::livery);
-                if livery.is_none() {
+                let paint = visual.and_then(InstanceVisual::variant);
+                if paint.is_none() {
                     limitations.push(BatchingLimitation::UnboundInstance {
                         item: item.clone(),
                         instance,
@@ -675,7 +692,7 @@ pub fn batch_frame(
                     geometry: upload.geometry().fingerprint(),
                     state: upload.state().fingerprint(),
                     image: upload.image().map(|image| image.fingerprint()),
-                    livery,
+                    paint,
                 };
                 let row = BatchInstance {
                     item_index: index,
@@ -688,7 +705,7 @@ pub fn batch_frame(
                 // A batch whose paint is not established holds one row and
                 // never merges: two unresolved paints may be different, so
                 // merging them would invent a match.
-                let mergeable = livery.is_some();
+                let mergeable = paint.is_some();
                 match open.as_mut() {
                     Some(batch)
                         if batch.key == key
@@ -776,7 +793,7 @@ fn frame_fingerprint(frame: &BatchedFrame) -> ContentHash {
         bytes.extend_from_slice(batch.key.geometry.as_bytes());
         bytes.extend_from_slice(batch.key.state.as_bytes());
         push_optional_hash(&mut bytes, batch.key.image);
-        push_optional_hash(&mut bytes, batch.key.livery);
+        push_optional_hash(&mut bytes, batch.key.livery());
         // `material_kind` is deliberately not digested: it is a function of the
         // class, and `batch.key.state` above digests the render state, which
         // digests the class. A separate byte here would be redundant rather than

@@ -62,6 +62,7 @@ use cs_app::render::profile::RenderProfile;
 use cs_app::render::sync::{
     BatchDraw, RenderProfileRequest, RenderSession, process_render_profile_request, sync_frame,
 };
+use cs_content::livery::LiveryVariantStore;
 use cs_types::Tick;
 use cs_types::evidence::ClaimStatus;
 
@@ -529,7 +530,11 @@ fn accept_f17_c_additive_an_additive_batch_is_spawned_with_its_own_material_and_
         RenderProfile::faithful(),
     ));
     process_render_profile_request(&mut world);
-    let report = sync_frame(&mut world, &submitted, &frame, SESSION).expect("the frame syncs");
+    // No aircraft here commits a paint, so the source never resolves a
+    // variant; an empty store is the honest answer.
+    let empty_paints = LiveryVariantStore::new();
+    let report = sync_frame(&mut world, &submitted, &frame, SESSION, &empty_paints)
+        .expect("the frame syncs");
 
     // Three draws: the additive sprite, the opaque ground and the masked
     // fence. Nothing is skipped for want of a material any more.
@@ -620,7 +625,8 @@ fn accept_f17_c_additive_an_additive_batch_is_spawned_with_its_own_material_and_
     // material per frame either.
     let materials_before = world.resource::<Assets<AdditiveMaterial>>().len();
     let images_before = world.resource::<Assets<Image>>().len();
-    let repeat = sync_frame(&mut world, &submitted, &frame, SESSION).expect("the frame resyncs");
+    let repeat = sync_frame(&mut world, &submitted, &frame, SESSION, &empty_paints)
+        .expect("the frame resyncs");
     assert_eq!(repeat.spawned, 0);
     assert_eq!(repeat.reused, 3);
     assert_eq!(repeat.placed, 3);
@@ -646,7 +652,7 @@ fn accept_f17_c_additive_an_additive_batch_is_spawned_with_its_own_material_and_
     ));
     process_render_profile_request(&mut bare);
     assert_eq!(
-        sync_frame(&mut bare, &submitted, &frame, SESSION)
+        sync_frame(&mut bare, &submitted, &frame, SESSION, &empty_paints)
             .expect_err("the additive store is required")
             .code(),
         "no_asset_store",

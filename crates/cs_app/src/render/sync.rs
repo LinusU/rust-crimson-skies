@@ -18,6 +18,9 @@
 //!   image bound ([`BatchDraw`]), and one child entity per row
 //!   ([`BatchInstancePlacement`]) so a batch of *n* aircraft is *n* placed
 //!   draws of one geometry rather than one draw of the first aircraft only.
+//!   The image a painted batch binds is the composed livery variant its key
+//!   carries — the paint in texels, resolved through
+//!   [`crate::render::paint`] — not the unpainted canonical image.
 //!
 //! # What the rules make structural
 //!
@@ -107,6 +110,7 @@ use crate::render::batch::{BatchInstance, BatchedFrame, InstanceBatch, Submitted
 use crate::render::bevy_state::{DrawableMaterial, MaterialKind};
 use crate::render::capture::SceneOutcome;
 use crate::render::material::RenderPhase;
+use crate::render::paint::{PaintSource, upload_paint};
 use crate::render::plan::DrawItemKey;
 use crate::render::profile::{
     Presentation, ProfileError, RenderProfile, bevy_tonemapping, msaa_for,
@@ -266,7 +270,10 @@ impl BatchDraw {
         self.phase
     }
 
-    /// The image every instance in this batch samples, when the batch has one.
+    /// The image every instance in this batch samples, when the batch has
+    /// one: the composed paint of the batch's variant when the paint is
+    /// established ([`crate::render::paint`]), the surface's canonical image
+    /// otherwise.
     pub fn image(&self) -> Option<&Handle<Image>> {
         self.image.as_ref()
     }
@@ -349,6 +356,9 @@ pub struct FrameSync {
     /// aircraft is drawn at its own place" a reported fact rather than an
     /// assumption.
     pub placed: usize,
+    /// Batches that bound a composed paint image: the per-instance paint
+    /// reached the bound texels, not just the batch key.
+    pub painted: usize,
     /// Draws the frame withheld, unchanged by the sync.
     pub withheld: usize,
     /// How far the applied presentation reached.
@@ -411,6 +421,17 @@ pub enum SyncError {
         /// is the right draw item with resources the batch key does not digest.
         why: &'static str,
     },
+    /// A batch's committed paint names a variant the paint source never
+    /// composed, so the painted texels do not exist to bind. The frame is
+    /// refused rather than drawn with the unpainted image, which would paint
+    /// the aircraft a paint it never chose — the failure AC03 exists to
+    /// prevent.
+    PaintNotComposed {
+        /// The batch resource key the missing variant belongs to.
+        batch: ContentHash,
+        /// The digest of the variant the batch key carries.
+        variant: ContentHash,
+    },
     /// No session state is present, so there is no profile to sync under.
     NoSession,
 }
@@ -425,6 +446,7 @@ impl SyncError {
             Self::Profile(error) => error.code(),
             Self::NoSubmittedDraw { .. } => "no_submitted_draw",
             Self::StaleSubmittedDraw { .. } => "stale_submitted_draw",
+            Self::PaintNotComposed { .. } => "paint_not_composed",
             Self::NoSession => "no_render_session",
         }
     }
@@ -455,6 +477,10 @@ impl fmt::Display for SyncError {
             Self::StaleSubmittedDraw { index, item, why } => write!(
                 f,
                 "submitted draw {index} ({item}) is not the one this frame was built from: {why}"
+            ),
+            Self::PaintNotComposed { batch, variant } => write!(
+                f,
+                "batch {batch} paints with variant {variant}, which the paint source never composed"
             ),
             Self::NoSession => write!(f, "no render session is open"),
         }
@@ -675,18 +701,27 @@ fn push_optional_hash(bytes: &mut Vec<u8>, hash: Option<ContentHash>) {
 /// component's own type is the material, so one batch entity never carries
 /// both.
 ///
+/// `paints` is where each batch's committed paint is resolved to composed
+/// bytes ([`PaintSource`]): a textured batch with an established paint binds
+/// the composed variant image in place of the surface's canonical one. A
+/// batch that samples no image binds nothing for its paint — a material with
+/// no texture slot has no texels to paint.
+///
 /// # Errors
 ///
-/// [`SyncError`] before anything is written, and [`SyncError::NoSubmittedDraw`]
+/// [`SyncError`] before anything is written, [`SyncError::NoSubmittedDraw`]
 /// or [`SyncError::StaleSubmittedDraw`] if a frame row names an index the
 /// submitted-draw list does not have, or an outcome that is not the one the
-/// frame was built from. Both are caller bugs and are refused rather than
-/// skipped.
+/// frame was built from (both caller bugs, refused rather than skipped), and
+/// [`SyncError::PaintNotComposed`] if a batch's committed paint names a
+/// variant the paint source never composed — never silently replaced with
+/// the unpainted image.
 pub fn sync_frame(
     world: &mut World,
     draws: &[SubmittedDraw<'_>],
     frame: &BatchedFrame,
     session: RenderSession,
+    paints: &dyn PaintSource,
 ) -> Result<FrameSync, SyncError> {
     let state = world
         .get_resource::<RenderSessionState>()
@@ -775,7 +810,24 @@ pub fn sync_frame(
                 why: stale_draw_codes::REFUSED,
             });
         };
-        prepared.push((*digest.as_bytes(), digest, batch, upload));
+        // The batch's paint, resolved before anything is written. The paint
+        // reaches the GPU in the texels of the composed variant
+        // (`crate::render::paint`): a variant the paint source has no bytes
+        // for is refused, never silently replaced with the unpainted image.
+        // A batch that samples no image has no texture slot for a paint.
+        let paint = match (batch.key().paint(), upload.image()) {
+            (Some(variant), Some(_)) => Some(upload_paint(
+                paints
+                    .variant(&variant)
+                    .ok_or(SyncError::PaintNotComposed {
+                        batch: digest,
+                        variant: variant.digest(),
+                    })?,
+                upload.state().address(),
+            )),
+            _ => None,
+        };
+        prepared.push((*digest.as_bytes(), digest, batch, upload, paint));
     }
 
     let stale = world
@@ -788,8 +840,15 @@ pub fn sync_frame(
         ..FrameSync::default()
     };
     let mut live = BTreeMap::new();
+    // One texture per paint upload, not one per batch: two batches that
+    // share a variant *and* addressing (different phases or non-consecutive
+    // items) bind the same texels, so they bind the same handle. The key is
+    // the upload's fingerprint — variant, extent, addressing and texels —
+    // not the variant alone: a paint sampled under two different address
+    // modes is two textures.
+    let mut paint_handles = BTreeMap::<[u8; 32], Handle<Image>>::new();
 
-    for (key, digest, batch, upload) in prepared {
+    for (key, digest, batch, upload, paint) in prepared {
         let existing = reuse_batch(&mut previous, key, world, &mut report.released);
         let reused = existing.is_some();
         let (entity, mesh) = match existing {
@@ -808,20 +867,37 @@ pub fn sync_frame(
             }
         };
         // The batch's own image, bound once: every row in this batch samples
-        // it, and a batch shared with another instance's paint could not exist
-        // because the image is part of the key. A reused batch keeps the handle
-        // it already has, so the store does not grow once per frame.
-        let image = match (upload.image(), reused) {
-            (None, _) => None,
-            (Some(_), true) => world
+        // it. A batch with an established paint binds the composed variant in
+        // place of the canonical image — the paint is in the texels now, not
+        // only in the key — and a batch shared with another instance's paint
+        // could not exist because the paint is part of the key. A reused
+        // batch keeps the handle it already has, so the store does not grow
+        // once per frame.
+        let image = match (&paint, upload.image(), reused) {
+            (Some(_), _, true) => world
                 .get::<BatchDraw>(entity)
                 .and_then(|draw| draw.image.clone()),
-            (Some(source), false) => Some(
+            (Some(paint), _, false) => Some(
+                paint_handles
+                    .entry(*paint.fingerprint().as_bytes())
+                    .or_insert_with(|| {
+                        world
+                            .resource_mut::<Assets<Image>>()
+                            .add(paint.image().clone())
+                    })
+                    .clone(),
+            ),
+            (None, Some(_), true) => world
+                .get::<BatchDraw>(entity)
+                .and_then(|draw| draw.image.clone()),
+            (None, Some(source), false) => Some(
                 world
                     .resource_mut::<Assets<Image>>()
                     .add(source.image().clone()),
             ),
+            (None, None, _) => None,
         };
+        report.painted += usize::from(paint.is_some());
         // The material is a function of the batch key — the key carries the
         // render state, and the render state carries the class, so it decides
         // the material kind. A reused batch already holds the one this call

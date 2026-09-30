@@ -65,6 +65,12 @@
 //!   damage state per instance (AC03): a different paint is a different
 //!   batch, an unresolved paint is never merged, and a destroyed part is
 //!   withheld with its reason instead of being drawn or silently dropped.
+//! * [`paint`] is how a per-instance paint reaches the GPU (the F17-C
+//!   follow-up, Rally #410): the original stores paints as mask planes and
+//!   composes them into a whole image per variant, so a textured batch with
+//!   an established paint binds the composed variant image in place of the
+//!   canonical one. Atlas and texture-array mechanisms have no evidence in
+//!   the observed data and are not implemented.
 //! * [`sync::process_render_profile_request`] is the profile producer's
 //!   hand-off and [`sync::sync_frame`] the ECS consumer that turns a batched
 //!   frame into entities — one per batch, one placed draw per row — binds each
@@ -120,6 +126,7 @@ pub mod bevy_state;
 pub mod capture;
 pub mod golden;
 pub mod material;
+pub mod paint;
 pub mod plan;
 pub mod profile;
 pub mod rgb565;

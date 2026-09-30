@@ -334,7 +334,7 @@ pub fn upload_image(
     })
 }
 
-const fn address_mode(mode: AddressMode) -> ImageAddressMode {
+pub(crate) const fn address_mode(mode: AddressMode) -> ImageAddressMode {
     match mode {
         AddressMode::Repeat => ImageAddressMode::Repeat,
         AddressMode::Clamp => ImageAddressMode::ClampToEdge,

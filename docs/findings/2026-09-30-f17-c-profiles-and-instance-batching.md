@@ -420,11 +420,10 @@ doc now lists all three.
 
 ### What the review did not change, and why
 
-* The per-instance paint still does not reach the texels. #410 owns that
-  decision and it needs F08's texture-catalog evidence; inventing an atlas, a
-  texture-array layer or a per-instance image handle here would have been a
-  guess. The batch key keeps two paints in two draws, which is the part this
-  stage can establish without evidence.
+* The per-instance paint still does not reach the texels. #410 owned that
+  decision — resolved in
+  `docs/findings/2026-09-30-f17-c-followup-per-instance-paint.md`: one image
+  per variant, bound per batch (`render::paint`).
 * `Msaa`/`Tonemapping`/`shadow_maps_enabled`/window resolution are applied at the
   *end* of `sync_frame`, so the first frame of a newly applied profile is
   presented under the previous one. That is a schedule-ordering question, and

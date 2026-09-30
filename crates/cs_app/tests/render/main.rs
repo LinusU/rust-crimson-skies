@@ -12,10 +12,11 @@
 //! translucent surfaces order back-to-front against one view; equal-depth
 //! ties are reported, not hidden; per-corner colors travel bit-exact.
 //!
-//! Every value in these files is authored here: newly authored synthetic
-//! content only. No original game data, no `CS_GAME_DIR` access, no
-//! original-behavior claim — the fixture proves the contract, never the
-//! original renderer. `CS_GAME_DIR` is not needed.
+//! Every fixture in these files is authored here: newly authored synthetic
+//! content only, proving the contract rather than the original renderer. The
+//! `accept_f17_c_paint_` follow-up adds one `#[ignore]`d retail test and its
+//! evidence harness, which read the original installation at `$CS_GAME_DIR`
+//! only when run locally with `--include-ignored`.
 
 mod adapters;
 mod additive_material;
@@ -23,4 +24,5 @@ mod classification;
 mod fixture;
 mod frame_capture;
 mod golden_scene;
+mod paint;
 mod profiles;
