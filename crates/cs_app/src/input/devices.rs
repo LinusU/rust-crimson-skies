@@ -49,7 +49,10 @@
 //! The module is deliberately ECS-free: it is plain typed state so a headless
 //! test can drive it exactly like the render loop, and so no game state hides
 //! in UI code (`docs/01-ARCHITECTURE.md`). F22-C wires it to the real platform
-//! sources, focus/UI state, replay and control ownership.
+//! sources, focus/UI state, replay and control ownership:
+//! [`DeviceAdapters::suppress`] is the release path a focus loss, a pause and
+//! a control handover use when no device was removed, and the `session` module
+//! is the loop that drives these adapters into `cs_sim::control`.
 
 use std::fmt;
 
@@ -252,6 +255,29 @@ pub struct DeviceLoss {
     /// was only known by its enumeration index, which is exactly the case a
     /// caller must not persist calibration against.
     pub stable_identity: Option<String>,
+}
+
+/// What releasing the session's holds released, without removing a device.
+///
+/// This is the record of a [`suppress`](DeviceAdapters::suppress): a focus
+/// loss, a pause, a control handover or a teardown released the edges the
+/// devices were holding and forgot the axes they were driving. An edge already
+/// delivered to a consumer stays delivered; what stops is any further command.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SuppressedHolds {
+    /// The edges that were being held and are now released.
+    pub released_edges: Vec<Action>,
+    /// The continuous commands the devices were driving. The next finished
+    /// frame states each of them neutral.
+    pub neutralized_axes: Vec<FlightCommand>,
+}
+
+impl SuppressedHolds {
+    /// Whether nothing was held and nothing was being driven.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.released_edges.is_empty() && self.neutralized_axes.is_empty()
+    }
 }
 
 /// One edge a device is holding down.
@@ -694,19 +720,36 @@ impl DeviceAdapters {
     /// deflection in `cs_sim::control::AxisState` forever, because the
     /// simulation only ever moves an axis a frame names.
     pub fn finish_frame(&mut self, frame: &mut InputFrame) {
-        let driven_now: Vec<FlightCommand> =
-            frame.axes().iter().map(|axis| axis.command()).collect();
-        for command in self.driven_last_frame.clone() {
-            if driven_now.contains(&command) {
-                continue;
-            }
+        for command in self.neutralize_unreported(frame) {
             // Only a continuous command ever reaches `driven_last_frame`, so
             // a neutral sample for it always exists.
             let neutral = AxisValue::from_quantized(command, 0)
                 .expect("a driven command is a continuous axis");
             frame.set_axis(neutral);
         }
+        self.driven_last_frame = frame.axes().iter().map(|axis| axis.command()).collect();
+    }
+
+    /// The commands the previous frame drove and this one does not, and
+    /// re-bases the record of what the last frame drove to this frame's axes.
+    ///
+    /// This is the part of [`finish_frame`](Self::finish_frame) that decides
+    /// *which* axes need a neutral sample. [`suppress`](Self::suppress) and a
+    /// caller that has no frame to close — a session whose window is not
+    /// focused, whose input path is closed, or whose controls are being torn
+    /// down — use it to state exactly the same neutrals without inventing a
+    /// second, different neutralization rule.
+    pub fn neutralize_unreported(&mut self, frame: &InputFrame) -> Vec<FlightCommand> {
+        let driven_now: Vec<FlightCommand> =
+            frame.axes().iter().map(|axis| axis.command()).collect();
+        let mut neutral = Vec::new();
+        for command in self.driven_last_frame.clone() {
+            if !driven_now.contains(&command) {
+                neutral.push(command);
+            }
+        }
         self.driven_last_frame = driven_now;
+        neutral
     }
 
     /// Forgets the axes a device was driving, before its new report is read: a
@@ -714,6 +757,47 @@ impl DeviceAdapters {
     /// driven.
     fn forget_driven_axes(&mut self, device: &DeviceId) {
         self.driven_axes.retain(|(driving, _)| driving != device);
+    }
+
+    /// Releases every hold and forgets every driven axis, without removing a
+    /// device (F22-C).
+    ///
+    /// A focus loss, a pause and a control handover are not removals: the
+    /// devices are still there, but the session can no longer trust what they
+    /// were holding, because nothing has told it the pilot let go. F22-B's
+    /// limit — "a device that stops reporting without a removal event keeps
+    /// its hold" — is closed here by the one owner that *does* know the input
+    /// state is untrustworthy: it drops the holds itself instead of waiting
+    /// for a report that may never come.
+    ///
+    /// The axes the devices were driving are forgotten, so the next
+    /// [`finish_frame`](Self::finish_frame) states them neutral; the devices
+    /// stay connected and their calibration and connection records are
+    /// untouched, so a focus gain re-establishes control from a fresh report.
+    /// It is not a [`DeviceLoss`]: nothing was lost, and a caller that told
+    /// the player their joystick disappeared would be lying.
+    pub fn suppress(&mut self) -> SuppressedHolds {
+        let released_edges = self.held_edges.iter().map(HeldEdge::action).collect();
+        let mut neutralized_axes: Vec<FlightCommand> = self
+            .driven_axes
+            .iter()
+            .map(|(_, command)| *command)
+            .collect();
+        for command in self.driven_last_frame.clone() {
+            if !neutralized_axes.contains(&command) {
+                neutralized_axes.push(command);
+            }
+        }
+        self.held_edges.clear();
+        self.driven_axes.clear();
+        // The record of what the last frame drove goes too, so a frame that is
+        // closed after the suppression does not try to neutralize an axis this
+        // call has already reported as neutral.
+        self.driven_last_frame.clear();
+        SuppressedHolds {
+            released_edges,
+            neutralized_axes,
+        }
     }
 
     /// Releases the holds this device's report did not re-establish.
@@ -2199,5 +2283,118 @@ mod tests {
             .expect("the device disconnects");
         assert!(!adapters.is_connected(&device));
         assert_eq!(adapters.losses().len(), 1, "the removal is reported");
+    }
+
+    /// F22-C: the release a focus loss, a pause and a control handover use when
+    /// nothing was removed. It drops the holds and forgets the driven axes
+    /// without touching the device set, the calibration or the report counter,
+    /// and it is not a `DeviceLoss` — nothing was lost.
+    #[test]
+    fn accept_f22_c_suppress_releases_holds_without_removing_a_device() {
+        let device = stick("joy.stick.test/0");
+        let keyboard = DeviceId::stable(DeviceClass::Keyboard, "kbd.test/0")
+            .expect("the test identity is valid");
+        let mut adapters = connected(&[device.clone(), keyboard.clone()]);
+        let mut frame = InputFrame::new(Tick(0));
+        // The trigger fires and the stick deflects roll.
+        adapters
+            .apply(
+                &DeviceEvent::JoystickFrame {
+                    device: device.clone(),
+                    buttons: vec![0],
+                    axes: vec![(0, 0.75)],
+                },
+                &map(),
+                InputContext::Flight,
+                &mut frame,
+            )
+            .expect("the report applies");
+        // The keyboard is down at the same time.
+        adapters
+            .apply(
+                &DeviceEvent::KeyboardFrame {
+                    device: keyboard,
+                    keys: vec![Key::S],
+                },
+                &map(),
+                InputContext::Flight,
+                &mut frame,
+            )
+            .expect("the report applies");
+        assert_eq!(adapters.held_edges().len(), 1, "the trigger is held");
+        assert_eq!(adapters.driven_axes().len(), 2, "two axes are driven");
+        let reports = adapters.reports();
+        let calibration = adapters.calibration().len();
+
+        let released = adapters.suppress();
+        assert_eq!(
+            released.released_edges,
+            vec![Action::Flight(FlightCommand::FirePrimary)]
+        );
+        let mut neutralized = released.neutralized_axes.clone();
+        neutralized.sort();
+        assert_eq!(
+            neutralized,
+            vec![FlightCommand::Pitch, FlightCommand::Roll],
+            "every axis any device was driving is named, including one whose last \\
+             finished frame is the only record of it"
+        );
+        assert!(!released.is_empty());
+        assert!(
+            adapters.held_edges().is_empty(),
+            "the held trigger is gone, so the next report presses again"
+        );
+        assert!(adapters.driven_axes().is_empty());
+        assert!(
+            adapters.losses().is_empty(),
+            "a suppression is not a device loss: the player was not told their \\
+             joystick disappeared"
+        );
+        assert!(adapters.is_connected(&device), "the stick is still there");
+        assert_eq!(adapters.connected_count(), 2);
+        assert_eq!(
+            adapters.calibration().len(),
+            calibration,
+            "and its calibration is untouched"
+        );
+        assert_eq!(
+            adapters.reports(),
+            reports,
+            "the report counter only counts reports that were read"
+        );
+
+        // A second suppression has nothing to release.
+        assert!(adapters.suppress().is_empty());
+
+        // The next finished frame states nothing neutral a second time, because
+        // the suppression already reported those axes.
+        let mut after = InputFrame::new(Tick(1));
+        adapters.finish_frame(&mut after);
+        assert!(
+            after.is_inert(),
+            "no axis is left to neutralize: {:?}",
+            after.axes()
+        );
+
+        // A fresh report re-establishes control from the device's own state.
+        let mut fresh = InputFrame::new(Tick(2));
+        adapters
+            .apply(
+                &DeviceEvent::JoystickFrame {
+                    device: device.clone(),
+                    buttons: vec![0],
+                    axes: vec![(0, 0.75)],
+                },
+                &map(),
+                InputContext::Flight,
+                &mut fresh,
+            )
+            .expect("the fresh report applies");
+        assert_eq!(
+            fresh.edges(),
+            &[Action::Flight(FlightCommand::FirePrimary)],
+            "the trigger fires again after the suppression, exactly once"
+        );
+        assert!(fresh.axis(FlightCommand::Roll).is_some());
     }
 }
