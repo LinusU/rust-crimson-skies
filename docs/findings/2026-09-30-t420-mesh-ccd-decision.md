@@ -118,18 +118,22 @@ geometry is needed as long as any real collider sits on the root.
 * A rigid body whose colliders **all** live on descendant entities remains
   invisible to swept CCD on the pinned engine — any shape, any speed above
   the discrete sampling rate. Known producers of that layout:
-  `ColliderConstructorHierarchy` colliders (the `TrimeshFromMesh` path
-  F18-B currently builds) and any multi-part body that puts *all* part
-  colliders on children (aircraft-part colliders, capital-ship subsystems —
-  the F11-C/F35 families must be checked when they land). Filed as a
-  follow-up: the layout rule has to become an enforced invariant or these
-  stay permanently swept-invisible until upstream releases the fix.
-* `cs_app::asset_stack::spawn_static_mesh_collider` itself produces the
-  child-node layout (its `MeshColliderNode` is body + mesh-node child). It
-  stays as-is here — its contract belongs to #333 and its callers decide
-  which layout they need — but the decided rule means world import must not
-  use the parent+child arrangement for swept-relevant geometry. The single-
-  entity form is a strict reduction of it.
+  `ColliderConstructorHierarchy` colliders and any multi-part body that puts
+  *all* part colliders on children (the F11-C aircraft-part and F35
+  capital-ship families, when they land — #424's
+  `accept_t424_a_multipart_body_needs_only_one_real_collider_on_its_root`
+  already pins that one real collider on the root keeps the whole body
+  swept-visible). #424 (`T420-FOLLOWUP-COLLIDER-ON-BODY-INVARIANT`, merged
+  at `b443283`) made the layout rule an enforced invariant:
+  `cs_app::asset_stack::undeclared_swept_invisible_bodies` audits every
+  production body-spawning path, so a new all-on-children body fails a test
+  rather than shipping silently.
+* `cs_app::asset_stack::spawn_static_mesh_collider` still produces the
+  child-node layout (its `MeshColliderNode` is body + mesh-node child) and
+  stays as the multi-node helper; world import uses the single-entity
+  `spawn_static_mesh_collider_on_body` instead. The audit above is what
+  stops a caller from reintroducing the arrangement for swept-relevant
+  geometry.
 * The `Sensor`/swept interaction measured by F18-A (task #401) is unchanged
   by this decision: it was measured with colliders on body entities.
 * Task #401 is a sibling of this question, not a duplicate: the sensor stop
@@ -142,27 +146,31 @@ geometry is needed as long as any real collider sits on the root.
   reusing the open-box wall mesh for discrete-path controls (the test file
   comments carry the same note).
 
-## What the F18-B records need when they land
+## What the F18-B records needed, and where the correction landed
 
-F18-B's branch (`rally/86-…`, in review when this was written) contains the
-two artifacts this task was asked to update; they do not exist on `main`
-yet. When it merges, `docs/findings/2026-09-30-f18-b-world-import-and-static-collision.md`
-and `crates/cs_app/tests/world/import.rs::accept_f18_b_a_tunnelling_body_misses_mesh_geometry_which_is_a_pinned_engine_limit`
-need:
+F18-B's branch (`rally/86-…`) was still in review when this was written, so
+the correction was recorded here and handed to its reviewer in a task note.
+F18-B merged at `cf27e3d` with the original attribution intact, and then
+**#424 (`T420-FOLLOWUP-COLLIDER-ON-BODY-INVARIANT`) landed the whole fix
+before this decision record did** (`8fd3762`…`b443283`):
 
-1. The attribution paragraph replaced with the corrected one above (the
-   collider-on-child-vs-body finding, with the cuboid-on-child measurement).
-2. `spawn_object`'s mesh path changed to the decided layout — one entity
-   `RigidBody::Static` + `Mesh3d` + `ColliderConstructor::TrimeshFromMesh`,
-   i.e. drop the parent body + child node split. The triangle-count and
-   fingerprint assertions are unaffected.
-3. The pinned test renamed/re-asserted: with the layout applied the probe
-   **is** stopped at x ≈ −0.75, so the test becomes the regression guard
-   ("a tunnelling body must not miss mesh geometry") — or it is kept
-   asserting the child-node limitation explicitly in the manner of the
-   `accept_t420_` arms here. The reviewer of #86 was given this correction
-   in a task note while the review was still open, so the fix may land
-   there first.
+1. `spawn_static_mesh_collider_on_body` builds the decided layout — one
+   entity `RigidBody::Static` + `Mesh3d` +
+   `ColliderConstructor::TrimeshFromMesh` — and `spawn_object`'s mesh path
+   uses it; the parent body + child node split is gone from world import.
+2. `swept_invisible_bodies` / `undeclared_swept_invisible_bodies` in
+   `cs_app::asset_stack` are the enforced audit: the collider-on-body rule
+   is now an invariant, checked by `accept_t424_collider_on_body.rs`, not a
+   paragraph somebody has to remember.
+3. The F18-B finding's engine-limitation section carries the corrected
+   cause, and the pinned test flipped to the regression guard
+   `import.rs::accept_f18_b_a_tunnelling_body_is_stopped_by_the_mesh_geometry_it_flys_at`
+   — the probe **is** stopped at the wall face now.
+
+What remains on this branch is the decision record itself (which both
+records above cite) and the `accept_t420_` measurement suite that pins the
+engine behaviour the rule is built on: the 2x2 placement matrix, the
+discrete-path control, the rejected substep fix and the fixture guards.
 
 ## Measured evidence
 
