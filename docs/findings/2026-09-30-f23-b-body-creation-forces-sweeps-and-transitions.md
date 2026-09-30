@@ -28,7 +28,8 @@ required).
 - `crates/cs_sim/src/collision.rs`: `CollisionLayer::emits_contact_reports`
   and `CollisionLayer::designed_partners` (the matrix row as a set).
 - `crates/cs_app/tests/physics/{main,common,bodies,sweeps,wake}.rs`: the
-  `accept_f23_b_*` acceptance tests.
+  `accept_f23_b_*` acceptance tests. (The review pass added
+  `crates/cs_app/tests/physics/reports.rs` — see below.)
 - This file.
 
 **One observable failure:** a projectile crosses a 2 cm wall at 1 m per tick
@@ -90,9 +91,17 @@ hand-over; the surviving tests assert the outcomes.
   collider (which the first draft of `spawn_body` did) produced zero events
   with no error. The production path now inserts every flag first and the
   collider last, and the AC02 tests are what caught it.
-* **Avian emits one event per side that carries the flag** and delivers it
-  through observers as well as the message stream, so the reporter keys on
-  the unordered pair: the second copy of a pair is counted as `suppressed`.
+* **The message stream carries one event per contact pair; the per-side
+  fan-out is observers only.** `NarrowPhase::update` writes a single
+  `CollisionStart`/`CollisionEnd` for the pair
+  (`avian3d-0.7.0/src/collision/narrow_phase/system_param.rs`), and only
+  `trigger_collision_events` — in `PhysicsStepSystems::Finalize`, the channel
+  this reporter does *not* read — duplicates it to one observer per side that
+  carries `CollisionEventsEnabled`. The reporter still keys on the unordered
+  pair and counts a repeat start of an active pair as `suppressed`, so a
+  second copy can never double-report; every measured run (AC02 wall and
+  trigger crossings, the reflected second crossing, the mis-bound pair) gave
+  `suppressed = 0`.
 * **A kinematic body integrates position from `LinearVelocity` but never its
   velocity** (`integrate_velocities` skips `flags.is_kinematic()`), and
   switching `RigidBody` kind preserves `Position`/`Rotation`/`LinearVelocity`
@@ -156,6 +165,53 @@ retention), **F23-D** (stability/convergence evidence).
    colliders and loadout-derived mass properties are F11/F24/F26 content.
 6. **Swept detection is opt-in per layer, not measured.** Which original
    objects needed continuous detection is unknown until F23-D.
+
+## Review pass (2026-09-30)
+
+Reviewed against `### F23-B`, `docs/contracts/FLIGHT-PHYSICS.md` and the agent
+contract. Implementer: mimo-1 (earlier session, submitted `496db86`).
+Reviewer: mimo-1, a fresh session with no context from the implementation —
+this is an independent code/test review of synthetic-only work, not original
+reference evidence and not human review. Only owner paths changed
+(`crates/cs_app/src/physics/`, `crates/cs_sim/src/collision.rs`,
+`crates/cs_app/tests/physics/`, `docs/findings/`); no protected path.
+
+What the review added:
+
+* **`crates/cs_app/tests/physics/reports.rs`** (new, wired in the test
+  `main.rs`): the reporter's two refusal paths had no coverage.
+  `accept_f23_b_an_event_from_an_unbound_body_is_counted_unclassified` strips
+  the `BodyLayer` marker from a trigger the projectile crosses and requires
+  `total = 0`, `unclassified = 1` — an event from a body outside
+  `spawn_body` must be counted, never guessed.
+  `accept_f23_b_a_pair_the_declared_matrix_forbids_is_counted_ignored`
+  force-binds two `Trigger` bodies wider than `designed_partners` (a pair the
+  declared matrix keeps apart, i.e. exactly the binding mistake the counter
+  exists for) and requires `total = 0`, `ignored = 1`.
+* **`accept_f23_b_a_later_crossing_of_the_same_pair_is_reported_again`**
+  (`sweeps.rs`): the same projectile is reflected back through the same
+  trigger, and the second crossing must be its own episode
+  (`total = 2`, `suppressed = 0`). "Exactly once" is per crossing, not once
+  ever; this is what a retained active-pair set would break.
+* **`PhysicsTickLedger` wake-counter docs** now say per *request*: two
+  requests aimed at the same sleeping body count twice and share one wake,
+  which is what the implementation does. The old wording ("sleeping bodies
+  woken") described a per-body count that was never implemented.
+
+Removal checks re-run on this branch (each applied, run, reverted):
+
+| Removed | Result |
+| --- | --- |
+| `SweptCcd` binding in `spawn_body` | 5 failures: the original 3 plus both new crossing tests |
+| `wake_requested_bodies` from the adapter chain | `accept_f23_b_force_wakes_a_sleeping_body_in_the_same_tick` fails, as recorded above |
+| `PhysicsBodiesPlugin` registration in the fixture | every reporter-driven test fails on the missing resource |
+| `CollisionEnd` handling in `record_contact_reports` | only `accept_f23_b_a_later_crossing_of_the_same_pair_is_reported_again` fails (`total = 1`, `suppressed = 1`) |
+| `unclassified` / `ignored` increments | only the two `reports.rs` tests fail |
+
+Not re-run here: the "event flag inserted after the collider" development
+mutation; its consequence (`total = 0`, `unclassified = 0`) is re-measured
+every time the AC02 tests pass, because `spawn_body` inserts the flags before
+the collider and both tests read that event stream.
 
 ## Evidence
 

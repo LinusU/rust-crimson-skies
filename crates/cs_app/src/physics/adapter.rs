@@ -165,8 +165,10 @@ impl ForceRequests {
 /// A request that reached no dynamic body is never silently lost:
 /// `dropped_requests` counts the ones this tick that were not applied (a
 /// despawned entity, a static or kinematic body, a disabled body), and
-/// `woken_requests` counts the sleeping bodies this tick that had to be woken
-/// before their request could apply.
+/// `woken_requests` counts the ones this tick whose target was asleep and
+/// therefore had to be woken before they could apply. The wake counters are
+/// per *request*: two requests for the same sleeping body count twice, and
+/// the single wake they share serves both.
 #[derive(Resource, Clone, Copy, Debug, Default, PartialEq)]
 pub struct PhysicsTickLedger {
     /// Fixed tick boundaries crossed.
@@ -183,9 +185,9 @@ pub struct PhysicsTickLedger {
     pub dropped_requests: u64,
     /// Requests that reached no dynamic body since the adapter was built.
     pub total_dropped_requests: u64,
-    /// Sleeping bodies woken during the most recent tick.
+    /// Requests whose target was sleeping during the most recent tick.
     pub woken_requests: u64,
-    /// Sleeping bodies woken since the adapter was built.
+    /// Requests whose target was sleeping since the adapter was built.
     pub total_woken_requests: u64,
 }
 
