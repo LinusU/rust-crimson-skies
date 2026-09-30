@@ -70,8 +70,8 @@ lowering function), so removing a layer fails to compile.
   being eligible before any consumer renders it (AC03's contract half).
 - **Crosshair.** `CrosshairQuery` carries the ray, the validated cone
   half-angle `[0, π]` and the producer-supplied `occluded` set; selection
-  picks the eligible unoccluded actor nearest the ray, distance then
-  actor id breaking angular ties.
+  picks the eligible unoccluded actor nearest the ray — the observer is
+  excluded — with distance then actor id breaking angular ties.
 - **Threats.** `record_attack` accepts only session-qualified
   `AttackEvent`s evidenced by the damage system's `HitEventId` between
   registered actors; `threats(victim, now)` reports one `ThreatCue` per
@@ -106,3 +106,40 @@ lowering function), so removing a layer fails to compile.
 No original-data verification, no runtime wiring into the app schedule,
 no HUD/spyglass/weapon consumer — F30-B/C/D own those. The task awards at
 most **checked** status.
+
+## Review notes (2026-09-30)
+
+Reviewer: Jakob - Devin SWE-2/devin-1 — the same agent name that
+implemented the task, but a **fresh session and context** (the review
+claim began with `git diff origin/main...HEAD`, not the implementation
+transcript). A same-name review is not independent original-reference
+evidence; it is recorded here per the review policy.
+
+Fixes made during review:
+
+1. **The observer is excluded under the crosshair.**
+   `TargetStore::under_crosshair` filtered on eligibility and occlusion
+   but not on the observer, unlike `ordered` which excludes it
+   explicitly. The observer was skipped only when it sat exactly on the
+   ray origin (`len_sq == 0`); from a chase origin behind the aircraft
+   the observer's own actor was the dead-centre, nearest pick — the
+   player could select themselves. The filter now drops `observer` like
+   `ordered` does.
+2. **Distance breaks angular ties before actor id.** The record above
+   documented "distance then actor id breaking angular ties" but the
+   implementation ranked `(cos, ActorId)` only — and the test could not
+   tell, because the nearer equal-angle target also had the lower
+   serial. The ranking is now `(cos desc, distance² asc, ActorId asc)`
+   and the test moves the higher-serial raider nearer than the wingman
+   to discriminate; plus a chase-origin case that fails without the
+   observer exclusion. Both live in
+   `accept_f30_a_crosshair_respects_cone_and_occlusion`.
+
+Sensitivity probes run by the reviewer (each reverted afterwards; no
+probe committed):
+
+1. Removing the observer-exclusion filter →
+   `accept_f30_a_crosshair_respects_cone_and_occlusion` failed with
+   `Some(actor 7:1)` (the observer) returned from the chase-origin query.
+2. Dropping the distance term from the angular tie-break → the same test
+   failed with `Some(actor 7:3)` winning over the nearer serial 9.

@@ -1007,9 +1007,10 @@ impl TargetStore {
         }
     }
 
-    /// The eligible, unoccluded actor nearest the query's ray direction
-    /// within its cone: maximize `cos(angle)`, tie-break on actor id, so
-    /// the pick is total and deterministic.
+    /// The eligible, unoccluded actor — never the observer — nearest the
+    /// query's ray direction within its cone: maximize `cos(angle)`, break
+    /// angular ties on ascending distance, then on actor id, so the pick
+    /// is total and deterministic.
     fn under_crosshair(
         &self,
         observer: ActorId,
@@ -1020,9 +1021,10 @@ impl TargetStore {
         }
         let cone_cos = query.cone.0.cos();
         let [dx, dy, dz] = query.direction.to_array();
-        let mut ranked: Vec<(f64, ActorId)> = self
+        let mut ranked: Vec<(f64, f64, ActorId)> = self
             .records
             .values()
+            .filter(|entry| entry.record.actor != observer)
             .filter(|entry| self.eligible(&entry.record.actor))
             .filter(|entry| !query.occluded.contains(&entry.record.actor))
             .filter_map(|entry| {
@@ -1037,11 +1039,15 @@ impl TargetStore {
                 }
                 let inv = 1.0 / len_sq.sqrt();
                 let cos = to[0] * inv * dx + to[1] * inv * dy + to[2] * inv * dz;
-                (cos >= cone_cos).then_some((cos, entry.record.actor))
+                (cos >= cone_cos).then_some((cos, len_sq, entry.record.actor))
             })
             .collect();
-        ranked.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
-        Ok(ranked.first().map(|(_, actor)| *actor))
+        ranked.sort_by(|a, b| {
+            b.0.total_cmp(&a.0)
+                .then(a.1.total_cmp(&b.1))
+                .then(a.2.cmp(&b.2))
+        });
+        Ok(ranked.first().map(|(_, _, actor)| *actor))
     }
 
     fn entry_mut(&mut self, actor: ActorId) -> Result<&mut TargetEntry, TargetError> {

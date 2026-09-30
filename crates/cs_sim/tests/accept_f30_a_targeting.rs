@@ -402,7 +402,7 @@ fn accept_f30_a_threat_cues_come_from_authoritative_attack_events() {
 /// then by distance — and reports nothing when nothing qualifies.
 #[test]
 fn accept_f30_a_crosshair_respects_cone_and_occlusion() {
-    let store = store(&ROSTER_ORDER);
+    let mut store = store(&ROSTER_ORDER);
     let mut selection = TargetSelection::new();
     let origin = WorldPosition::try_new([0.0, 0.0, 0.0]).expect("finite");
     let along_x = UnitVec3::try_new([1.0, 0.0, 0.0]).expect("unit");
@@ -416,10 +416,59 @@ fn accept_f30_a_crosshair_respects_cone_and_occlusion() {
         .apply(
             actor(1),
             &mut selection,
-            &SelectionRequest::UnderCrosshair(query),
+            &SelectionRequest::UnderCrosshair(query.clone()),
         )
         .expect("registered");
     assert_eq!(picked, Some(actor(3)));
+
+    // The angular tie-break is distance, then actor id: moving raider 9 —
+    // the higher serial — nearer than the wingman on the same ray makes
+    // it win. An actor-id-only tie-break would still pick serial 3.
+    store
+        .set_pose(
+            actor(9),
+            WorldPosition::try_new([40.0, 0.0, 0.0]).expect("finite"),
+        )
+        .expect("registered");
+    let picked = store
+        .apply(
+            actor(1),
+            &mut selection,
+            &SelectionRequest::UnderCrosshair(query),
+        )
+        .expect("registered");
+    assert_eq!(
+        picked,
+        Some(actor(9)),
+        "the nearer equal-angle target wins the tie"
+    );
+    store
+        .set_pose(
+            actor(9),
+            WorldPosition::try_new([100.0, 0.0, 0.0]).expect("finite"),
+        )
+        .expect("registered");
+
+    // The observer is never its own crosshair pick: from a chase origin
+    // behind the player, the observer is dead-centre and nearest, yet the
+    // wingman wins — the observer is excluded, not merely skipped when it
+    // sits exactly on the ray origin.
+    let chase_origin = WorldPosition::try_new([-50.0, 0.0, 0.0]).expect("finite");
+    let query =
+        cs_sim::targeting::CrosshairQuery::try_new(chase_origin, along_x, cone, BTreeSet::new())
+            .expect("valid query");
+    let picked = store
+        .apply(
+            actor(1),
+            &mut selection,
+            &SelectionRequest::UnderCrosshair(query),
+        )
+        .expect("registered");
+    assert_eq!(
+        picked,
+        Some(actor(3)),
+        "the observer cannot be selected under its own crosshair"
+    );
 
     // Occlude the wingman: the same ray now resolves to raider 9 — the
     // occlusion set is evidence the producer supplies, not a radius guess.
