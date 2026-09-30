@@ -63,20 +63,16 @@
 //!   blank frame and deleting the file on every refusal, so an artifact on disk
 //!   is evidence the geometry was drawn rather than a decoration.
 //!
-//! What is **not** claimed here: no traversal route or stunt opening has been
-//! located in original data yet (the GameZ node array is undecoded), and the
+//! What is **not** claimed here: original world data has been read and counted,
+//! but **no traversal route and no stunt opening has been located in it**, because
+//! the GameZ node array is undecoded and the stored vertex unit is unmeasured; the
+//! original's sector layout is not reproduced, no simplification policy for retail
+//! geometry exists yet, and the original's own streaming rule is unmeasured. The
 //! unknowns this feature met are recorded in
 //! `docs/findings/2026-09-30-f18-a-world-instances-sectors-and-collision-roles.md`,
 //! `docs/findings/2026-09-30-f18-b-world-import-and-static-collision.md`,
 //! `docs/findings/2026-09-30-f18-c-mission-overlays-and-visibility-streaming.md` and
 //! `docs/findings/2026-09-30-f18-d-world-group-audit-and-gpu-capture.md`.
-//! An earlier wording of this note: no sector
-//! layout of the original is reproduced, no simplification policy for retail
-//! geometry exists yet, and the original's own streaming rule is unmeasured. The
-//! unknowns this feature met are recorded in
-//! `docs/findings/2026-09-30-f18-a-world-instances-sectors-and-collision-roles.md`,
-//! `docs/findings/2026-09-30-f18-b-world-import-and-static-collision.md` and
-//! `docs/findings/2026-09-30-f18-c-mission-overlays-and-visibility-streaming.md`.
 
 pub mod affine;
 pub mod audit;
@@ -91,16 +87,9 @@ pub mod visibility;
 
 pub use affine::{AffinePlacement, AffinePlacementError, bake_shape, shear_residual};
 pub use audit::{
-<<<<<<< HEAD
-    GEOMETRY_CONTAINER_FILE, PRESENTABLE_PROBE_MESHES, REPRESENTATIVE_MESHES,
-    TEXTURE_ARCHIVE_FILE, SurveyedContainer, SurveyedWorldGroup, WorldGroupSurvey,
-    WorldGroupSurveyError, audit_survey, audit_world_groups, declared_rows, discovered_group_keys,
-    survey_world_groups,
-=======
     GEOMETRY_CONTAINER_FILE, PRESENTABLE_PROBE_MESHES, REPRESENTATIVE_MESHES, SurveyedContainer,
     SurveyedWorldGroup, TEXTURE_ARCHIVE_FILE, WorldGroupSurvey, WorldGroupSurveyError,
     audit_survey, audit_world_groups, declared_rows, discovered_group_keys, survey_world_groups,
->>>>>>> 1c57d2b (Measure the upload adapter's verdict per world representative mesh)
 };
 pub use contacts::{
     WorldColliderInstance, WorldContact, WorldContacts, WorldObjectBinding, WorldPlugin,
