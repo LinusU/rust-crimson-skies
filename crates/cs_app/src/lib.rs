@@ -187,16 +187,29 @@
 //! [`targeting::TargetableBinding`] ECS record tying an entity to its
 //! session-qualified targeting actor and rules subject.
 //!
-//! [`environment`] is the F19-A environment boundary
-//! (`specs/F19-sky-atmosphere-weather-and-visibility.md`, stage
-//! `### F19-A`): [`environment::SkyFrame`], the one record that centres a
-//! sky on the camera's **world** position while carrying the authored sky
-//! orientation and sun direction unchanged, so a world rebase cannot rotate
-//! or pop the sky (AC01); [`environment::EnvironmentClock`], which runs a
-//! definition's authored weather timeline on authoritative-gameplay time;
-//! and the synthetic [`environment::clear_sky_environment`] /
+//! [`environment`] is the F19-A/F19-B environment boundary
+//! (`specs/F19-sky-atmosphere-weather-and-visibility.md`, stages
+//! `### F19-A` and `### F19-B`): [`environment::SkyFrame`], the one record
+//! that centres a sky on the camera's **world** position while carrying the
+//! authored sky orientation and sun direction unchanged, so a world rebase
+//! cannot rotate or pop the sky (AC01);
+//! [`environment::EnvironmentClock`], which runs a definition's authored
+//! weather timeline on authoritative-gameplay time; and the synthetic
+//! [`environment::clear_sky_environment`] /
 //! [`environment::storm_environment`] fixtures the acceptance tests drive.
-//! No sky is rendered here — F19-B consumes these records.
+//! Stage `### F19-B` adds the *effects* of those records:
+//! [`environment::AuthoritativeWind`], the one wind field flight and
+//! projectiles read (`v_air = v_world - wind_world`, refused when the wind
+//! is unknown) together with [`environment::ProjectileMotion`], so a wind
+//! change moves aircraft airspeed and projectile-relative velocity
+//! consistently (AC02); [`environment::EnvironmentEffects`] and the
+//! [`environment::SkyEffect`] / [`environment::FogEffect`] /
+//! [`environment::LightEffect`] it gathers, which are what a frame may be
+//! drawn from — a missing sky texture stays a diagnostic, fog fades but never
+//! becomes a sight range, and an unknown sun or ambient produces no rig; and
+//! [`environment::CosmeticField`], the decorative precipitation drawn only
+//! from the run's cosmetic weather stream. No renderer draws a sky from these
+//! records yet: F19-C wires them into their real producer and consumer.
 
 pub mod airframe_visual;
 pub mod animation;
