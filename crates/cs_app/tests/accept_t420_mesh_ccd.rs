@@ -31,8 +31,9 @@
 //! adapter, `cs_app::world::spawn_swept_probe` (the same `SweptCcd` +
 //! `SpeculativeMargin::ZERO` body F18-A/B measure with), and
 //! `cs_app::asset_stack::spawn_static_mesh_collider` for the
-//! collider-on-child arm. The wall entities in the decided-layout arm are
-//! built the way `world/spawn` will build them; no original data is used.
+//! collider-on-child arm and `spawn_static_mesh_collider_on_body` — the
+//! helper `world/spawn` itself calls — for the decided-layout arm. No
+//! original data is used.
 //!
 //! Re-measure signal: when a released Avian makes `SweptCcdBodyQuery` not
 //! require `Collider` on the body entity (upstream `main` already rewrote
@@ -43,16 +44,16 @@
 use std::time::Duration;
 
 use avian3d::prelude::{
-    Collider, ColliderAabb, ColliderConstructor, Gravity, Position, RigidBody, SubstepCount,
-    SweptCcd,
+    Collider, ColliderAabb, Gravity, Position, RigidBody, SubstepCount, SweptCcd,
 };
 use bevy::asset::RenderAssetUsages;
 use bevy::math::Vec3;
 use bevy::mesh::{Indices, Mesh, PrimitiveTopology};
-use bevy::prelude::{App, Assets, ChildOf, Entity, Transform};
+use bevy::prelude::{App, ChildOf, Entity, Transform};
 use bevy::time::{Real, Time, TimeUpdateStrategy};
 use cs_app::asset_stack::{
     MeshColliderNode, headless_app, is_attached, spawn_static_mesh_collider,
+    spawn_static_mesh_collider_on_body,
 };
 use cs_app::physics::{BASELINE_FIXED_HZ, PhysicsAdapterPlugin};
 use cs_app::world::{ProbeSpec, spawn_discrete_probe, spawn_swept_probe, static_world_layers};
@@ -140,24 +141,16 @@ fn wall_cuboid_collider() -> Collider {
     Collider::cuboid(WALL_THICKNESS_M as f32, 4.0, 4.0)
 }
 
-/// The decided shipping layout: one entity is the static body *and* the
-/// mesh node, so the collider `TrimeshFromMesh` derives lands on the body
-/// itself and swept CCD sees it.
+/// The decided shipping layout, through the production helper world import
+/// uses: one entity is the static body *and* the mesh node, so the collider
+/// `TrimeshFromMesh` derives lands on the body itself and swept CCD sees it.
 fn wall_mesh_on_body(app: &mut App) -> Entity {
-    let handle = app
-        .world_mut()
-        .resource_mut::<Assets<Mesh>>()
-        .add(wall_mesh());
-    app.world_mut()
-        .spawn((
-            RigidBody::Static,
-            bevy::mesh::Mesh3d(handle),
-            ColliderConstructor::TrimeshFromMesh,
-            static_world_layers(),
-            Transform::from_xyz(0.0, 0.0, 0.0),
-            Position::new(Vec3::ZERO),
-        ))
-        .id()
+    spawn_static_mesh_collider_on_body(
+        app,
+        wall_mesh(),
+        Transform::from_xyz(0.0, 0.0, 0.0),
+        CollisionLayers::from(CollisionLayer::StaticWorld),
+    )
 }
 
 /// The same trimesh collider written directly on a static body entity.
