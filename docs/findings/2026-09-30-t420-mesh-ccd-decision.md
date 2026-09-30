@@ -135,6 +135,12 @@ geometry is needed as long as any real collider sits on the root.
 * Task #401 is a sibling of this question, not a duplicate: the sensor stop
   happens through the same swept path the layout rule repairs, so a
   sensor on a child node is invisible to it too.
+* Fixture note, measured while reviewing: a discrete body that penetrates
+  *between* the two zero-thickness faces of an open trimesh slab is wedged
+  inside it rather than held at the near face — thin-shell contact
+  resolution, unrelated to the swept-CCD question, but worth knowing before
+  reusing the open-box wall mesh for discrete-path controls (the test file
+  comments carry the same note).
 
 ## What the F18-B records need when they land
 
@@ -160,17 +166,21 @@ need:
 
 ## Measured evidence
 
-* `crates/cs_app/tests/accept_t420_mesh_ccd.rs` — 7 tests, all passing:
+* `crates/cs_app/tests/accept_t420_mesh_ccd.rs` — 8 tests, all passing:
   - `accept_t420_a_mesh_collider_on_a_child_node_is_invisible_to_swept_ccd`
-    (child trimesh via production `spawn_static_mesh_collider`: tunnels)
+    (child trimesh via production `spawn_static_mesh_collider`, asserted
+    attached to the body: tunnels)
+  - `accept_t420_a_child_node_collider_still_stops_a_discrete_body`
+    (same wall, discrete 30 m/s probe: stopped — attached but invisible to
+    swept CCD, not a missing collider)
   - `accept_t420_a_cuboid_on_a_child_node_is_ignored_the_same_way`
-    (child cuboid: tunnels — the attribution correction)
+    (child cuboid, asserted attached: tunnels — the attribution correction)
   - `accept_t420_a_mesh_collider_on_the_body_entity_stops_the_swept_probe`
     (decided layout: stopped, all 4 stored triangles in the collider)
   - `accept_t420_a_direct_trimesh_collider_on_the_body_also_stops_the_probe`
   - `accept_t420_a_cuboid_on_the_body_entity_stops_the_same_probe`
   - `accept_t420_substeps_do_not_make_a_child_node_collider_visible`
-    (`SubstepCount(8)`: still tunnels)
+    (`SubstepCount(2)`, `(4)` and `(8)`: still tunnels)
   - `accept_t420_the_probe_is_a_swept_body` (fixture guard)
 * Direct parry 0.27 check (scratch crate, `parry3d = "=0.27.0"`):
   `cast_shapes`/`cast_shapes_nonlinear` cuboid-vs-trimesh →
@@ -190,7 +200,7 @@ Commands run locally:
 cargo fmt --all -- --check                                        # exit 0
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings   # exit 0
 cargo test --workspace --locked                                   # exit 0
-cargo test --workspace --locked -- accept_t420_ --include-ignored # 7 run, 7 passed
+cargo test --workspace --locked -- accept_t420_ --include-ignored # 8 run, 8 passed
 ```
 
 ## Sources

@@ -51,9 +51,11 @@ use bevy::math::Vec3;
 use bevy::mesh::{Indices, Mesh, PrimitiveTopology};
 use bevy::prelude::{App, Assets, ChildOf, Entity, Transform};
 use bevy::time::{Real, Time, TimeUpdateStrategy};
-use cs_app::asset_stack::{headless_app, spawn_static_mesh_collider};
+use cs_app::asset_stack::{
+    MeshColliderNode, headless_app, is_attached, spawn_static_mesh_collider,
+};
 use cs_app::physics::{BASELINE_FIXED_HZ, PhysicsAdapterPlugin};
-use cs_app::world::{ProbeSpec, spawn_swept_probe, static_world_layers};
+use cs_app::world::{ProbeSpec, spawn_discrete_probe, spawn_swept_probe, static_world_layers};
 use cs_sim::collision::{CollisionLayer, CollisionLayers};
 
 /// The probe's start, size and flight line — the same numbers the F18-A/B
@@ -91,7 +93,9 @@ fn t420_app(substeps: u32) -> App {
 
 /// The wall mesh: an open box, `x ∈ [-0.5, 0.5]`, `y ∈ [0, 4]`,
 /// `z ∈ [-2, 2]` — two quads, four triangles, an open top and bottom so no
-/// convex substitution can fake it.
+/// convex substitution can fake it. Winding gives outward-pointing normals
+/// (−x on the near face): a discrete contact must push a body back out, not
+/// drag it into the slab.
 fn wall_mesh() -> Mesh {
     let mut mesh = Mesh::new(
         PrimitiveTopology::TriangleList,
@@ -110,7 +114,7 @@ fn wall_mesh() -> Mesh {
             [0.5, 0.0, 2.0],
         ],
     );
-    mesh.insert_indices(Indices::U32(vec![0, 1, 2, 0, 2, 3, 4, 6, 5, 4, 7, 6]));
+    mesh.insert_indices(Indices::U32(vec![0, 2, 1, 0, 3, 2, 4, 5, 6, 4, 6, 7]));
     mesh
 }
 
@@ -127,7 +131,7 @@ fn wall_trimesh_collider() -> Collider {
         Vec3::new(0.5, 4.0, 2.0),
         Vec3::new(0.5, 0.0, 2.0),
     ];
-    let indices = vec![[0, 1, 2], [0, 2, 3], [4, 6, 5], [4, 7, 6]];
+    let indices = vec![[0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7]];
     Collider::trimesh(vertices, indices)
 }
 
@@ -170,8 +174,11 @@ fn wall_trimesh_on_body(app: &mut App) -> Entity {
 }
 
 /// A static body whose only collider is a *cuboid* on a child node: the
-/// support-map control that isolates placement from shape.
-fn wall_cuboid_on_child(app: &mut App) -> Entity {
+/// support-map control that isolates placement from shape. Returned as a
+/// [`MeshColliderNode`] so the tests can assert the child collider is really
+/// attached to the body — a tunnel caused by an unattached collider would
+/// prove nothing about swept CCD.
+fn wall_cuboid_on_child(app: &mut App) -> MeshColliderNode {
     let body = app
         .world_mut()
         .spawn((
@@ -180,14 +187,16 @@ fn wall_cuboid_on_child(app: &mut App) -> Entity {
             Position::new(Vec3::ZERO),
         ))
         .id();
-    app.world_mut()
+    let node = app
+        .world_mut()
         .spawn((
             wall_cuboid_collider(),
             static_world_layers(),
             ChildOf(body),
             Transform::from_xyz(0.0, 2.0, 0.0),
         ))
-        .id()
+        .id();
+    MeshColliderNode { body, node }
 }
 
 /// A cuboid collider directly on a static body — the F18-A arch layout.
@@ -214,11 +223,7 @@ fn tunnelling_probe() -> ProbeSpec {
 
 /// Builds the app, places `wall`, lets the world settle, fires the swept
 /// probe and returns its final position after `ticks` fixed steps.
-fn sweep(
-    substeps: u32,
-    wall: impl FnOnce(&mut App) -> Entity,
-    ticks: u64,
-) -> (App, Entity, Entity) {
+fn sweep<W>(substeps: u32, wall: impl FnOnce(&mut App) -> W, ticks: u64) -> (App, W, Entity) {
     let mut app = t420_app(substeps);
     let wall_e = wall(&mut app);
     // Let the collider constructor derive and the broad phase register the
@@ -268,7 +273,7 @@ fn precondition(app: &App) {
 /// collider-hierarchy bodies — the re-measure signal, not a bug.
 #[test]
 fn accept_t420_a_mesh_collider_on_a_child_node_is_invisible_to_swept_ccd() {
-    let (app, _wall, probe) = sweep(
+    let (app, wall, probe) = sweep(
         1,
         |app| {
             spawn_static_mesh_collider(
@@ -277,11 +282,16 @@ fn accept_t420_a_mesh_collider_on_a_child_node_is_invisible_to_swept_ccd() {
                 Transform::default(),
                 CollisionLayers::from(CollisionLayer::StaticWorld),
             )
-            .node
         },
         14,
     );
     precondition(&app);
+    // The collider must exist and be attached to the body — otherwise the
+    // tunnel would measure a missing collider, not a swept-CCD skip.
+    assert!(
+        is_attached(app.world(), &wall),
+        "the child-node collider must be attached to the static body"
+    );
     let end = end_position(&app, probe);
     assert!(
         end.x > WALL_THICKNESS_M as f32,
@@ -291,14 +301,59 @@ fn accept_t420_a_mesh_collider_on_a_child_node_is_invisible_to_swept_ccd() {
     );
 }
 
+/// **Attached but invisible to the swept path only, not missing.** The same
+/// wall whose child-node collider the 400 m/s probe tunnels through stops a
+/// *discrete* body at 30 m/s — 0.25 m per tick, well inside the wall's 1 m
+/// thickness: the collider detects everything its sampling can reach and
+/// only the swept query skips it.
+///
+/// (The control uses the cuboid arm: a probe between this fixture's two
+/// zero-thickness trimesh faces is wedged inside the slab rather than held
+/// at its face, which is a thin-shell contact question, not this task's.)
+#[test]
+fn accept_t420_a_child_node_collider_still_stops_a_discrete_body() {
+    let mut app = t420_app(1);
+    let wall = wall_cuboid_on_child(&mut app);
+    for _ in 0..6 {
+        app.update();
+    }
+    assert!(
+        is_attached(app.world(), &wall),
+        "the child-node collider must be attached to the static body"
+    );
+    let probe = spawn_discrete_probe(
+        &mut app,
+        &ProbeSpec {
+            velocity_m_s: [30.0, 0.0, 0.0],
+            ..tunnelling_probe()
+        },
+    )
+    .expect("the probe spec is valid");
+    // 30 m/s at 120 Hz is 0.25 m per tick; the probe needs ~46 ticks to
+    // reach the wall from x = -12.
+    for _ in 0..60 {
+        app.update();
+    }
+    let end = end_position(&app, probe);
+    assert!(
+        end.x < 0.0,
+        "a discrete body is stopped by the child-node collider at the wall \
+         face; it ended at {end:?}"
+    );
+}
+
 /// **Placement, not shape.** A *cuboid* — a support map, the shape class the
 /// F18-B finding named as working — tunnels exactly like the trimesh when it
 /// lives on a child node. This is the measurement that proves the recorded
 /// "parry has no `TriMesh` case" attribution wrong.
 #[test]
 fn accept_t420_a_cuboid_on_a_child_node_is_ignored_the_same_way() {
-    let (app, _wall, probe) = sweep(1, wall_cuboid_on_child, 14);
+    let (app, wall, probe) = sweep(1, wall_cuboid_on_child, 14);
     precondition(&app);
+    assert!(
+        is_attached(app.world(), &wall),
+        "the child-node collider must be attached to the static body"
+    );
     let end = end_position(&app, probe);
     assert!(
         end.x > WALL_THICKNESS_M as f32,
@@ -372,19 +427,25 @@ fn accept_t420_a_cuboid_on_the_body_entity_stops_the_same_probe() {
     );
 }
 
-/// **Substeps are not the fix.** Measured: at `SubstepCount(8)` the probe
-/// still tunnels the child-node collider — substeps subdivide the solver,
-/// not detection, so a skipped pair stays skipped at any rate. This pins the
-/// "more substeps" alternative as measured-and-rejected.
+/// **Substeps are not the fix.** Measured: at `SubstepCount(2)`, `(4)` and
+/// `(8)` the probe still tunnels the child-node collider — substeps subdivide
+/// the solver, not detection, so a skipped pair stays skipped at any rate.
+/// This pins the "more substeps" alternative as measured-and-rejected.
 #[test]
 fn accept_t420_substeps_do_not_make_a_child_node_collider_visible() {
-    let (app, _wall, probe) = sweep(8, wall_cuboid_on_child, 14);
-    let end = end_position(&app, probe);
-    assert!(
-        end.x > WALL_THICKNESS_M as f32,
-        "even at 8 substeps a child-node collider is skipped by swept CCD; \
-         it ended at {end:?}"
-    );
+    for substeps in [2, 4, 8] {
+        let (app, wall, probe) = sweep(substeps, wall_cuboid_on_child, 14);
+        assert!(
+            is_attached(app.world(), &wall),
+            "the child-node collider must be attached to the static body"
+        );
+        let end = end_position(&app, probe);
+        assert!(
+            end.x > WALL_THICKNESS_M as f32,
+            "even at {substeps} substeps a child-node collider is skipped by \
+             swept CCD; it ended at {end:?}"
+        );
+    }
 }
 
 /// The probe really does carry [`SweptCcd`]: without this guard a fixture
