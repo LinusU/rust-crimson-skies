@@ -525,8 +525,10 @@ fn converter() -> ConverterVersion {
     }
 }
 
-/// Derives one archive's real derived bytes with the production ZBD
-/// texture reader, and reads them back through the production store.
+/// One pass of the cycle over every archive, through the production store
+/// with the same lookup-first decision the production driver makes: a
+/// verified entry is read, a miss is derived from the source and
+/// published.
 fn run(
     session: &ContentSession,
     archives: &[String],
@@ -540,32 +542,35 @@ fn run(
         let key = AssetKey::from_spelling("world", name, "default").expect("a valid asset key");
         let asset = session.resolve(&key).expect("the archive resolves");
         let span = asset.resolved().span.clone();
-        let source = session.read_all(&asset).expect("the archive reads");
-        let derived = derive(name, &source).expect("the real conversion runs");
-
         let cache_key = CacheKey::new(install, &[span], converter(), ConversionOptions::none())
             .expect("a key with an input");
-        let digest = store
-            .begin_write(&cache_key, derived.len() as u64)
-            .expect("the write begins");
-        let mut write = digest;
-        write.write_all(&derived).expect("the payload is staged");
-        write.seal().expect("the write is sealed");
-        store.commit(write).expect("the derived asset is published");
-        hits += 0;
 
-        // Read it back through the store: the warm read a later pass makes.
-        let read = store
+        let digest = match store
             .begin_read(&cache_key)
-            .expect("the entry is looked up");
-        match read {
+            .expect("the entry is looked up")
+        {
             cs_assets::cache::CacheLookup::Hit(pending) => {
-                let entry = pending.complete().expect("the entry verifies");
                 hits += 1;
-                payloads.push((name.clone(), sha256(entry.payload()).to_hex()));
+                // Only a verified entry becomes bytes: the payload is read
+                // back through `verify_entry` first.
+                let entry = pending.complete().expect("the entry verifies");
+                sha256(entry.payload()).to_hex()
             }
-            other => panic!("{name}: a just-published entry must read back: {other:?}"),
-        }
+            cs_assets::cache::CacheLookup::Miss => {
+                let source = session.read_all(&asset).expect("the archive reads");
+                let derived = derive(name, &source).expect("the real conversion runs");
+                let digest = sha256(&derived).to_hex();
+                let mut write = store
+                    .begin_write(&cache_key, derived.len() as u64)
+                    .expect("the write begins");
+                write.write_all(&derived).expect("the payload is staged");
+                write.seal().expect("the write is sealed");
+                store.commit(write).expect("the derived asset is published");
+                digest
+            }
+            other => panic!("{name}: a stored entry must be served or rebuilt, not {other:?}"),
+        };
+        payloads.push((name.clone(), digest));
     }
     // A closure hash over the measured per-item digests, so the three
     // passes can be compared with one value.
@@ -638,8 +643,11 @@ fn leave_an_interrupted_write(
     // its partial payload are left on disk, and `store` is dropped without
     // cleaning them up, exactly as a killed process would.
     let staging = write.staging().to_path_buf();
+    // `PendingStoreWrite`'s `Drop` removes the scratch directory; a killed
+    // process does not run it, so it is suppressed here to reproduce what
+    // the kill leaves behind.
     std::mem::forget(write);
-    std::mem::forget(store);
+    drop(store);
     fs::read_dir(&staging)
         .map(|entries| entries.count())
         .unwrap_or(0)
