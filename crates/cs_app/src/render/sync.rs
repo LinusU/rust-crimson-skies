@@ -14,8 +14,10 @@
 //!   [`RenderSessionState`] the frame path reads;
 //! * **the consumer** is [`sync_frame`], which takes a [`BatchedFrame`] and
 //!   its [`SubmittedDraw`]s and makes the ECS hold what it names: one entity
-//!   per batch carrying the batch's mesh, the batch's material with its image
-//!   bound, and the per-instance rows the batch keeps ([`BatchDraw`]).
+//!   per batch carrying the batch's mesh and the batch's material with its
+//!   image bound ([`BatchDraw`]), and one child entity per row
+//!   ([`BatchInstancePlacement`]) so a batch of *n* aircraft is *n* placed
+//!   draws of one geometry rather than one draw of the first aircraft only.
 //!
 //! # What the rules make structural
 //!
@@ -30,8 +32,10 @@
 //!    for a finished mission is never drawn after a switch.
 //! 3. **No stale geometry.** Entities are keyed by the batch's own resource
 //!    key: a batch that is still in the frame is reused, and every entity the
-//!    previous frame spawned and this one does not claim is despawned.
-//!    Reloading a frame a hundred times leaves the live entity count unchanged.
+//!    previous frame spawned and this one does not claim is despawned — with
+//!    the per-instance entities below it, which a recursive despawn takes with
+//!    it. Reloading a frame a hundred times leaves the live entity count
+//!    unchanged.
 //! 4. **Nothing is drawn from nothing.** A world with no image store is
 //!    refused ([`SyncError::NoImageStore`]) rather than drawn with unbound
 //!    textures, and a batch whose material gap is still open is *not* spawned:
@@ -51,6 +55,15 @@
 //! that reached no camera is a reportable fact, not a success. Nothing else in
 //! the world is touched: an enhancement cannot reach a material, a sort, a
 //! collider or a visibility rule (spec F17 non-negotiable 5).
+//!
+//! The apply happens at the *end* of [`sync_frame`], not in
+//! [`process_render_profile_request`], so it is counted with the frame it
+//! presented. The cost is an ordering assumption a caller must meet: a profile
+//! request served in the same frame as a sync reaches the renderer *after* that
+//! frame, so the first frame after a profile switch is still presented under the
+//! previous profile. There is no render app or schedule in the crate yet to
+//! order the two, and putting the apply in both places would give it two
+//! precedences with one of them untested.
 //!
 //! # The asset load identity is still open
 //!
@@ -73,12 +86,15 @@ use std::fmt;
 use bevy::asset::{Assets, Handle};
 use bevy::core_pipeline::tonemapping::Tonemapping as BevyTonemapping;
 use bevy::ecs::entity::Entity;
+use bevy::ecs::hierarchy::{ChildOf, Children};
 use bevy::ecs::prelude::{Component, Resource, World};
 use bevy::image::Image;
 use bevy::light::DirectionalLight;
+use bevy::math::Vec3;
 use bevy::mesh::{Mesh, Mesh3d};
 use bevy::pbr::{MeshMaterial3d, StandardMaterial};
 use bevy::render::view::Msaa;
+use bevy::transform::prelude::Transform;
 use bevy::window::{Window, WindowResolution};
 use cs_assets::install::sha256;
 use cs_types::evidence::ContentHash;
@@ -87,6 +103,7 @@ use crate::livery::ModelInstanceId;
 use crate::render::batch::{BatchInstance, BatchedFrame, InstanceBatch, SubmittedDraw};
 use crate::render::capture::SceneOutcome;
 use crate::render::material::RenderPhase;
+use crate::render::plan::DrawItemKey;
 use crate::render::profile::{
     Presentation, ProfileError, RenderProfile, bevy_tonemapping, msaa_for,
 };
@@ -268,6 +285,41 @@ impl BatchDraw {
 #[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
 struct BatchEntities(BTreeMap<[u8; 32], Entity>);
 
+/// Component: one row of a batch, placed in the world.
+///
+/// A batch is *one draw of one geometry*, so the *n* instances it covers are
+/// *n* entities that share the batch's mesh and material handles and differ in
+/// their place. This is where the per-instance state stops being bookkeeping:
+/// [`BatchDraw::instances`] says a batch covers three aircraft at three
+/// positions, and one child entity per row puts each of them at its own
+/// position. Without it a three-aircraft batch would draw a single quad at the
+/// origin — one aircraft wearing three identities, which is exactly the failure
+/// AC03 exists to prevent.
+///
+/// The row itself is carried, not inferred from the transform, so a consumer
+/// can ask which aircraft an entity draws without trusting a position.
+#[derive(Component, Clone, Debug, PartialEq)]
+pub struct BatchInstancePlacement {
+    row: BatchInstance,
+}
+
+impl BatchInstancePlacement {
+    /// The row this placement came from.
+    pub const fn row(&self) -> &BatchInstance {
+        &self.row
+    }
+
+    /// The model instance this entity draws for.
+    pub const fn instance(&self) -> ModelInstanceId {
+        self.row.instance()
+    }
+
+    /// Where the row places this instance, in meters.
+    pub const fn center_m(&self) -> [f32; 3] {
+        self.row.center_m()
+    }
+}
+
 /// How far the applied presentation reached.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PresentationReach {
@@ -288,6 +340,11 @@ pub struct FrameSync {
     pub reused: usize,
     /// Entities the previous frame spawned and this one does not claim.
     pub released: usize,
+    /// Per-instance entities the live batches carry. Equal to the frame's
+    /// instance count when every row is placed, which is what makes "each
+    /// aircraft is drawn at its own place" a reported fact rather than an
+    /// assumption.
+    pub placed: usize,
     /// Batches that have no drawable material, so nothing was spawned for
     /// them.
     pub unmaterialed: usize,
@@ -325,9 +382,9 @@ pub enum SyncError {
         frame: ContentHash,
     },
     /// The world has no asset store for one of the resources a batch needs, so
-    /// a mesh or image handle cannot be bound.
+    /// a mesh, image or material handle cannot be bound.
     NoAssetStore {
-        /// Which store is missing: `"image"` or `"mesh"`.
+        /// Which store is missing: `"Image"`, `"Mesh"` or `"StandardMaterial"`.
         kind: &'static str,
     },
     /// The applied profile's sample count is not one this world can express.
@@ -336,6 +393,21 @@ pub enum SyncError {
     NoSubmittedDraw {
         /// The index the row names.
         index: usize,
+    },
+    /// The submitted draw a frame row names is not the one the frame was built
+    /// from, so the list is stale with respect to the frame and the batch would
+    /// be bound to buffers the frame never recorded.
+    StaleSubmittedDraw {
+        /// Index into the submitted-draw list.
+        index: usize,
+        /// The draw item the row names.
+        item: DrawItemKey,
+        /// What the submitted draw turned out to be:
+        /// [`stale_draw_codes::REFUSED`] when the surface is not an upload at
+        /// all, [`stale_draw_codes::WRONG_ITEM`] when it is an upload of
+        /// another draw item, or [`stale_draw_codes::UPLOAD_MISMATCH`] when it
+        /// is the right draw item with resources the batch key does not digest.
+        why: &'static str,
     },
     /// No session state is present, so there is no profile to sync under.
     NoSession,
@@ -350,6 +422,7 @@ impl SyncError {
             Self::NoAssetStore { .. } => "no_asset_store",
             Self::Profile(error) => error.code(),
             Self::NoSubmittedDraw { .. } => "no_submitted_draw",
+            Self::StaleSubmittedDraw { .. } => "stale_submitted_draw",
             Self::NoSession => "no_render_session",
         }
     }
@@ -377,9 +450,27 @@ impl fmt::Display for SyncError {
             Self::NoSubmittedDraw { index } => {
                 write!(f, "the frame's row {index} is in no submitted draw")
             }
+            Self::StaleSubmittedDraw { index, item, why } => write!(
+                f,
+                "submitted draw {index} ({item}) is not the one this frame was built from: {why}"
+            ),
             Self::NoSession => write!(f, "no render session is open"),
         }
     }
+}
+
+/// The reason codes a [`SyncError::StaleSubmittedDraw`] carries.
+pub mod stale_draw_codes {
+    /// The submitted draw is a refusal, so it has no buffers to bind; the frame
+    /// was built from an upload.
+    pub const REFUSED: &str = "refused";
+    /// The submitted draw is an upload of a *different* draw item than the row
+    /// names, so the list pairs an item with another item's outcome.
+    pub const WRONG_ITEM: &str = "wrong_draw_item";
+    /// The submitted draw is an upload of the right draw item, but not of the
+    /// geometry, render state or image the batch key digests, so binding it
+    /// would draw the batch with another surface's resources.
+    pub const UPLOAD_MISMATCH: &str = "upload_mismatch";
 }
 
 impl std::error::Error for SyncError {}
@@ -399,10 +490,14 @@ pub enum ProfileEvent {
         /// Why it was refused.
         reason: SyncError,
     },
-    /// A teardown ended the session.
+    /// A teardown ended the session. `released` is what it actually took
+    /// with it, so a repeated teardown of a session that is already gone is
+    /// visible as a no-op rather than reported as a failure.
     TornDown {
         /// The session that ended.
         session: RenderSession,
+        /// What the teardown released.
+        released: RenderTeardown,
     },
 }
 
@@ -459,9 +554,11 @@ fn log_profile_event(world: &mut World, event: ProfileEvent) {
 /// nothing of the old one drawn. A `Set` for the session already open replaces
 /// only the profile, which is how a fidelity/enhanced switch is applied
 /// without a teardown, and the state records how many times a profile was
-/// applied. [`RenderProfileRequest::TearDown`] ends the session it names and
-/// refuses any other ([`SyncError::ForeignSession`]). Every outcome is appended
-/// to [`RenderProfileLog`], so a refusal is reported rather than swallowed.
+/// applied. [`RenderProfileRequest::TearDown`] ends the session it names,
+/// refuses any other ([`SyncError::ForeignSession`]) and is a reported no-op
+/// when nothing is open, because a session is not foreign to itself. Every
+/// outcome is appended to [`RenderProfileLog`], so a refusal is reported
+/// rather than swallowed.
 pub fn process_render_profile_request(world: &mut World) {
     let Some(request) = world.remove_resource::<RenderProfileRequest>() else {
         return;
@@ -471,25 +568,35 @@ pub fn process_render_profile_request(world: &mut World) {
     match request {
         RenderProfileRequest::TearDown { .. } => match open {
             Some(state) if state.session() == session => {
-                let _released = teardown(world);
-                log_profile_event(world, ProfileEvent::TornDown { session });
+                let released = teardown(world);
+                log_profile_event(world, ProfileEvent::TornDown { session, released });
             }
-            _ => log_profile_event(
+            Some(state) => log_profile_event(
                 world,
                 ProfileEvent::Refused {
                     reason: SyncError::ForeignSession {
-                        runtime: open.map_or(session, |state| state.session()),
+                        runtime: state.session(),
                         session,
                     },
                 },
             ),
+            // Nothing is open: the request is a second teardown, which releases
+            // nothing and is not a refusal.
+            None => {
+                let released = teardown(world);
+                log_profile_event(world, ProfileEvent::TornDown { session, released });
+            }
         },
         RenderProfileRequest::Set { profile, .. } => {
             let switches_session = open
                 .as_ref()
                 .is_some_and(|state| state.session() != session);
-            if switches_session {
-                let _released = teardown(world);
+            if switches_session || open.is_none() {
+                // Ends the previous session's work, or releases anything a
+                // dropped state left behind, so a `Set` never orphans a live
+                // batch entity by replacing the map it is tracked in.
+                teardown(world);
+                world.insert_resource(BatchEntities::default());
             }
             let applied = open
                 .as_ref()
@@ -498,9 +605,6 @@ pub fn process_render_profile_request(world: &mut World) {
             let state = RenderSessionState::new(session, profile, applied);
             let fingerprint = state.profile_fingerprint();
             world.insert_resource(state);
-            if open.is_none() || switches_session {
-                world.insert_resource(BatchEntities::default());
-            }
             log_profile_event(
                 world,
                 ProfileEvent::Applied {
@@ -556,14 +660,23 @@ fn push_optional_hash(bytes: &mut Vec<u8>, hash: Option<ContentHash>) {
 /// Makes the ECS hold what `frame` names.
 ///
 /// The whole frame is prepared before a single entity is written, so a refusal
-/// — a foreign session, a profile nobody applied, a world with no image store
-/// — leaves the live entities exactly as they were and the caller can retry.
+/// — a foreign session, a profile nobody applied, a world with no image store,
+/// a submitted-draw list the frame was not built from — leaves the live
+/// entities exactly as they were and the caller can retry.
+///
+/// What it writes per batch: one entity with the batch's [`Mesh3d`] and one
+/// [`MeshMaterial3d`] whose material is the batch's own, and one child entity
+/// per row ([`BatchInstancePlacement`]) at that row's own place, sharing the
+/// same mesh and material handles. A batch whose material gap is still open
+/// writes nothing and is counted in [`FrameSync::unmaterialed`].
 ///
 /// # Errors
 ///
 /// [`SyncError`] before anything is written, and [`SyncError::NoSubmittedDraw`]
-/// if a frame row names an index the submitted-draw list does not have, which
-/// is a caller bug and is refused rather than skipped.
+/// or [`SyncError::StaleSubmittedDraw`] if a frame row names an index the
+/// submitted-draw list does not have, or an outcome that is not the one the
+/// frame was built from. Both are caller bugs and are refused rather than
+/// skipped.
 pub fn sync_frame(
     world: &mut World,
     draws: &[SubmittedDraw<'_>],
@@ -600,24 +713,55 @@ pub fn sync_frame(
     }
 
     // Every row is resolved against the submitted-draw list before the first
-    // entity is written, so a stale list cannot spawn a half-frame.
+    // entity is written, so a stale list cannot spawn a half-frame. Each row
+    // must be the outcome the frame was built from, not merely an index that
+    // exists: a batch's buffers come from the row the batcher read, and a
+    // different upload at that index is a different surface's resources.
     let mut prepared = Vec::with_capacity(frame.batches().len());
     for batch in frame.batches() {
         for row in batch.instances() {
-            if row.item_index() >= draws.len() {
-                return Err(SyncError::NoSubmittedDraw {
-                    index: row.item_index(),
+            let index = row.item_index();
+            let Some(submitted) = draws.get(index) else {
+                return Err(SyncError::NoSubmittedDraw { index });
+            };
+            let SceneOutcome::Uploaded(upload) = submitted.outcome else {
+                return Err(SyncError::StaleSubmittedDraw {
+                    index,
+                    item: row.item().clone(),
+                    why: stale_draw_codes::REFUSED,
+                });
+            };
+            if submitted.outcome.key() != row.item() {
+                return Err(SyncError::StaleSubmittedDraw {
+                    index,
+                    item: row.item().clone(),
+                    why: stale_draw_codes::WRONG_ITEM,
+                });
+            }
+            if !batch.key().matches(upload) {
+                return Err(SyncError::StaleSubmittedDraw {
+                    index,
+                    item: row.item().clone(),
+                    why: stale_draw_codes::UPLOAD_MISMATCH,
                 });
             }
         }
         // One upload per batch: every row shares the batch's digests, so the
-        // first row's buffers are the batch's buffers.
+        // first row's buffers are the batch's buffers. Checked above, so this
+        // cannot be a refusal.
         let first = batch
             .instances()
             .first()
             .ok_or(SyncError::NoSubmittedDraw { index: 0 })?;
         let digest = batch_key(batch);
-        prepared.push((*digest.as_bytes(), digest, batch, draws[first.item_index()]));
+        let SceneOutcome::Uploaded(upload) = draws[first.item_index()].outcome else {
+            return Err(SyncError::StaleSubmittedDraw {
+                index: first.item_index(),
+                item: first.item().clone(),
+                why: stale_draw_codes::REFUSED,
+            });
+        };
+        prepared.push((*digest.as_bytes(), digest, batch, upload));
     }
 
     let stale = world
@@ -631,39 +775,30 @@ pub fn sync_frame(
     };
     let mut live = BTreeMap::new();
 
-    for (key, digest, batch, submitted) in prepared {
-        let SceneOutcome::Uploaded(upload) = submitted.outcome else {
-            // A refused surface is not a batch: the frame already reported it.
-            previous.remove(&key);
-            continue;
-        };
+    for (key, digest, batch, upload) in prepared {
         // No drawable material yet: the batch is reported, not faked with
-        // another class's blend, and no entity is left behind for it.
+        // another class's blend, and the entity a previous frame left for it is
+        // despawned rather than dropped from the map and left in the world.
         let Some(base) = upload.standard_material() else {
             report.unmaterialed += 1;
-            previous.remove(&key);
+            release(&mut previous, key, world, &mut report.released);
             continue;
         };
-        let mut material = base.clone();
-        let existing = previous.remove(&key).filter(|entity| {
-            world
-                .get_entity(*entity)
-                .is_ok_and(|found| found.contains::<BatchDraw>())
-        });
+        let existing = reuse_batch(&mut previous, key, world, &mut report.released);
         let reused = existing.is_some();
-        let entity = match existing {
-            Some(entity) => {
+        let (entity, mesh) = match existing {
+            Some(found) => {
                 report.reused += 1;
-                entity
+                found
             }
             None => {
                 let mesh = world
                     .resource_mut::<Assets<Mesh>>()
                     .add(upload.geometry().mesh().clone());
                 let entity = world.spawn_empty().id();
-                world.entity_mut(entity).insert(Mesh3d(mesh));
+                world.entity_mut(entity).insert(Mesh3d(mesh.clone()));
                 report.spawned += 1;
-                entity
+                (entity, mesh)
             }
         };
         // The batch's own image, bound once: every row in this batch samples
@@ -681,14 +816,26 @@ pub fn sync_frame(
                     .add(source.image().clone()),
             ),
         };
-        if let Some(handle) = image.clone() {
-            material.base_color_texture = Some(handle);
-        }
-        let handle = world
-            .resource_mut::<Assets<StandardMaterial>>()
-            .add(material);
+        // The material is a function of the batch key — the key carries the
+        // render state and the image digests it is built from — so a reused
+        // batch already holds the one this call would add. Adding it again
+        // would leave an orphan `StandardMaterial` in the store on every frame
+        // of a stable frame, which is a leak no test that only counts batches
+        // would see.
+        let material = match world.get::<MeshMaterial3d<StandardMaterial>>(entity) {
+            Some(current) => current.0.clone(),
+            None => {
+                let mut material = base.clone();
+                if let Some(handle) = image.clone() {
+                    material.base_color_texture = Some(handle);
+                }
+                world
+                    .resource_mut::<Assets<StandardMaterial>>()
+                    .add(material)
+            }
+        };
         world.entity_mut(entity).insert((
-            MeshMaterial3d::<StandardMaterial>(handle),
+            MeshMaterial3d::<StandardMaterial>(material.clone()),
             BatchDraw {
                 key: digest,
                 phase: batch.phase(),
@@ -696,20 +843,152 @@ pub fn sync_frame(
                 instances: batch.instances().to_vec(),
             },
         ));
+        // One placed entity per row. The batch key covers the rows, so a reused
+        // entity's placements are the same rows; they are only rebuilt when
+        // their count no longer matches, which catches placements removed behind
+        // this path's back.
+        report.placed += place_rows(world, entity, mesh, material, batch.instances());
         live.insert(key, entity);
     }
 
     // Everything the previous frame spawned and this frame does not claim is
     // released, so a reload leaves no stale geometry behind.
     for entity in previous.values() {
-        if world.get_entity(*entity).is_ok() {
-            report.released += 1;
-            world.entity_mut(*entity).despawn();
-        }
+        release_entity(*entity, world, &mut report.released);
     }
     world.insert_resource(BatchEntities(live));
     report.presentation = apply_presentation(world, presentation, msaa);
     Ok(report)
+}
+
+/// Despawns the entity the previous frame tracked under `key`, counting it.
+///
+/// A batch this frame does not draw must not leave the entity a previous frame
+/// spawned behind: dropping it from the tracking map instead would orphan it in
+/// the world with nothing left to release it.
+fn release(
+    previous: &mut BTreeMap<[u8; 32], Entity>,
+    key: [u8; 32],
+    world: &mut World,
+    released: &mut usize,
+) {
+    if let Some(entity) = previous.remove(&key)
+        && world.get_entity(entity).is_ok()
+    {
+        *released += 1;
+        world.entity_mut(entity).despawn();
+    }
+}
+
+/// The batch entity a previous frame tracked under `key`, if it can still serve
+/// as this draw, and the mesh handle it already holds.
+///
+/// The batch key is the draw's identity, so an entity found under it is the same
+/// draw. One that no longer carries the draw's components is not it: it is
+/// released and a fresh entity is spawned rather than repaired in place, and a
+/// key whose entity is already gone is simply dropped from the map.
+fn reuse_batch(
+    previous: &mut BTreeMap<[u8; 32], Entity>,
+    key: [u8; 32],
+    world: &mut World,
+    released: &mut usize,
+) -> Option<(Entity, Handle<Mesh>)> {
+    let entity = previous.remove(&key)?;
+    if world.get_entity(entity).is_err() {
+        return None;
+    }
+    let usable = world
+        .get_entity(entity)
+        .is_ok_and(|found| found.contains::<BatchDraw>() && found.contains::<Mesh3d>());
+    if !usable {
+        release_entity(entity, world, released);
+        return None;
+    }
+    let mesh = world
+        .get::<Mesh3d>(entity)
+        .expect("the entity carries a mesh")
+        .0
+        .clone();
+    Some((entity, mesh))
+}
+
+/// Despawns `entity` and its placements, counting it, if it is still alive.
+fn release_entity(entity: Entity, world: &mut World, released: &mut usize) {
+    if world.get_entity(entity).is_ok() {
+        *released += 1;
+        // Recursive: the per-instance entities go with the batch.
+        world.entity_mut(entity).despawn();
+    }
+}
+
+/// Puts one placed entity per row under `batch`, and returns how many rows are
+/// now placed.
+///
+/// Each placement carries the row it came from and a translation of the row's
+/// own `center_m`, so the *n* instances of a batch are *n* draws at *n* places
+/// of one geometry and one material.
+///
+/// Placements are reconciled by the row's draw-item index, not rebuilt. The
+/// batch key covers *which* instances a batch draws, not where they are, so a
+/// frame in which an aircraft moved reuses the entity — and that row's placement
+/// keeps its identity and takes the row's new place. Rebuilding all of them
+/// would respawn every draw of a moving scene once per tick; never touching them
+/// would leave a moved aircraft drawn where it used to be. A placement the frame
+/// no longer claims is despawned.
+fn place_rows(
+    world: &mut World,
+    batch: Entity,
+    mesh: Handle<Mesh>,
+    material: Handle<StandardMaterial>,
+    rows: &[BatchInstance],
+) -> usize {
+    // The placements this batch already has, by the draw item each one is.
+    let mut existing = BTreeMap::new();
+    for child in world
+        .get::<Children>(batch)
+        .into_iter()
+        .flatten()
+        .copied()
+        .filter(|child| {
+            world
+                .get_entity(*child)
+                .is_ok_and(|found| found.contains::<BatchInstancePlacement>())
+        })
+    {
+        if let Some(placement) = world.get::<BatchInstancePlacement>(child) {
+            existing.insert(placement.row().item_index(), child);
+        }
+    }
+    for row in rows {
+        // Two rows of one batch cannot share a draw-item index, so at most one
+        // placement is reused per row.
+        let placement = BatchInstancePlacement { row: row.clone() };
+        let transform = Transform::from_translation(Vec3::from(row.center_m()));
+        match existing.remove(&row.item_index()) {
+            Some(child) => {
+                world.entity_mut(child).insert((
+                    transform,
+                    Mesh3d(mesh.clone()),
+                    MeshMaterial3d::<StandardMaterial>(material.clone()),
+                    placement,
+                ));
+            }
+            None => {
+                world.spawn((
+                    ChildOf(batch),
+                    transform,
+                    Mesh3d(mesh.clone()),
+                    MeshMaterial3d::<StandardMaterial>(material.clone()),
+                    placement,
+                ));
+            }
+        }
+    }
+    // Whatever is left is a placement this frame does not claim.
+    for child in existing.into_values() {
+        world.entity_mut(child).despawn();
+    }
+    rows.len()
 }
 
 /// Applies `presentation` to the entities that own the decision.
@@ -758,16 +1037,17 @@ fn apply_presentation(
 
 /// Ends the render session: despawns every batch entity and drops the state.
 ///
+/// The despawn is recursive, so the per-instance entities under each batch go
+/// with it; a teardown that left them would strand geometry in the world with
+/// nothing tracking it, which is the one thing rule 3 above forbids.
+///
 /// A no-op when nothing is live, so a repeated teardown, a teardown after a
 /// refused request and a teardown at shutdown are all safe.
 pub fn teardown(world: &mut World) -> RenderTeardown {
     let mut report = RenderTeardown::default();
     if let Some(entities) = world.remove_resource::<BatchEntities>() {
         for entity in entities.0.values() {
-            if world.get_entity(*entity).is_ok() {
-                report.entities += 1;
-                world.entity_mut(*entity).despawn();
-            }
+            release_entity(*entity, world, &mut report.entities);
         }
     }
     report.sessions = world.remove_resource::<RenderSessionState>().is_some();

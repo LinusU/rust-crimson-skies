@@ -67,19 +67,20 @@
 //!   withheld with its reason instead of being drawn or silently dropped.
 //! * [`sync::process_render_profile_request`] is the profile producer's
 //!   hand-off and [`sync::sync_frame`] the ECS consumer that turns a batched
-//!   frame into entities, binds each batch's image, applies the presentation
-//!   to the camera, light and window that own it, releases what the frame no
-//!   longer claims, and refuses a frame whose profile nobody applied so the
-//!   caller can apply it and retry.
+//!   frame into entities — one per batch, one placed draw per row — binds each
+//!   batch's image, applies the presentation to the camera, light and window
+//!   that own it, releases what the frame no longer claims, and refuses a frame
+//!   whose profile nobody applied so the caller can apply it and retry.
 //!
 //! # Acceptance tests
 //!
 //! The `accept_f17_c_` selection in `crates/cs_app/tests/render/profiles.rs`
 //! covers the sheet's AC03 — two instances with different paint and damage
-//! staying visually independent after batching — plus the profile rules: every
-//! enhancement independently switchable, the two forbidden options refused, an
-//! enhanced profile refused as comparison evidence, no enhancement changing a
-//! draw decision, and the consumer's teardown, refusal and retry paths.
+//! staying visually independent after batching, and each drawn at its own place
+//! — plus the profile rules: every enhancement independently switchable, the two
+//! forbidden options refused, an enhanced profile refused as comparison
+//! evidence, no enhancement changing a draw decision, and the consumer's
+//! teardown, refusal and retry paths.
 
 pub mod batch;
 pub mod bevy_image;

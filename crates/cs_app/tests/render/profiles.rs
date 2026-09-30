@@ -25,12 +25,15 @@
 use bevy::asset::Assets;
 use bevy::core_pipeline::tonemapping::Tonemapping as BevyTonemapping;
 use bevy::ecs::entity::Entity;
+use bevy::ecs::hierarchy::ChildOf;
 use bevy::ecs::prelude::World;
 use bevy::image::Image;
 use bevy::light::DirectionalLight;
-use bevy::mesh::Mesh;
+use bevy::math::Vec3;
+use bevy::mesh::{Mesh, Mesh3d};
 use bevy::pbr::{MeshMaterial3d, StandardMaterial};
 use bevy::render::view::Msaa;
+use bevy::transform::prelude::Transform;
 use bevy::window::{Window, WindowResolution};
 
 use cs_app::livery::{LiveryRuntime, LiverySession, ModelInstanceId, PaintChoice};
@@ -49,8 +52,9 @@ use cs_app::render::profile::{
     bevy_tonemapping, msaa_for,
 };
 use cs_app::render::sync::{
-    BatchDraw, ProfileEvent, RenderProfileLog, RenderProfileRequest, RenderSession, SyncError,
-    batch_key, process_render_profile_request, sync_frame, teardown,
+    BatchDraw, BatchInstancePlacement, ProfileEvent, RenderProfileLog, RenderProfileRequest,
+    RenderSession, SyncError, batch_key, process_render_profile_request, stale_draw_codes,
+    sync_frame, teardown,
 };
 use cs_app::scene::AirframeDamageState;
 use cs_content::livery::LiveryPaint;
@@ -195,6 +199,8 @@ struct Fixture {
     /// The aircraft each submitted item draws for, in submission order.
     instances: Vec<ModelInstanceId>,
     outcomes: Vec<cs_app::render::capture::SceneOutcome>,
+    /// Which item sampled a stored image, in submission order.
+    textured: Vec<bool>,
     plan: DrawPlan,
     view: SceneView,
     visuals: InstanceVisuals,
@@ -252,7 +258,7 @@ fn fixture() -> Fixture {
     let specs = specs();
     let mut items = Vec::new();
     let mut instances = Vec::new();
-    let mut images = Vec::new();
+    let mut textured = Vec::new();
     let mut outcomes = Vec::new();
     let mut choices = Vec::new();
     for spec in &specs {
@@ -276,7 +282,7 @@ fn fixture() -> Fixture {
         }));
         items.push(item);
         instances.push(spec.instance);
-        images.push(image);
+        textured.push(spec.image);
         choices.push(spec.part);
     }
     let plan = DrawPlan::build(&items, &view);
@@ -323,6 +329,7 @@ fn fixture() -> Fixture {
         items,
         instances,
         outcomes,
+        textured,
         plan,
         view,
         visuals,
@@ -338,12 +345,34 @@ fn fixture() -> Fixture {
 impl Fixture {
     /// The scene in submission order, as the batcher and the consumer take it.
     fn submitted(&self) -> Vec<SubmittedDraw<'_>> {
-        self.items
+        self.submitted_against(&self.outcomes)
+    }
+
+    /// The scene in submission order, against a different list of outcomes.
+    ///
+    /// The item, the instance and the part are the fixture's own; only the
+    /// outcome changes, which is what makes a stale submitted-draw list a
+    /// *list* problem rather than a different scene.
+    fn submitted_against<'a>(
+        &'a self,
+        outcomes: &'a [cs_app::render::capture::SceneOutcome],
+    ) -> Vec<SubmittedDraw<'a>> {
+        self.submitted_for(&self.items, outcomes)
+    }
+
+    /// The submitted draws of a different set of items against a list of
+    /// outcomes: the same scene with one item's place changed.
+    fn submitted_for<'a>(
+        &'a self,
+        items: &'a [DrawItem],
+        outcomes: &'a [cs_app::render::capture::SceneOutcome],
+    ) -> Vec<SubmittedDraw<'a>> {
+        items
             .iter()
             .enumerate()
             .map(|(index, item)| SubmittedDraw {
                 item,
-                outcome: &self.outcomes[index],
+                outcome: &outcomes[index],
                 instance: self.instances[index],
                 part: match self.choices[index] {
                     PartChoice::Body => PartRef::Known(&self.parts.body),
@@ -352,6 +381,36 @@ impl Fixture {
                         PartRef::Unresolved("mesh_group_has_no_part_identity")
                     }
                 },
+            })
+            .collect()
+    }
+
+    /// The scene's own outcomes, rebuilt through `upload_surface`.
+    ///
+    /// Identical to the fixture's own list, and a starting point a test can
+    /// change: `Some((index, material))` uploads the item at `index` from a
+    /// quad of a different material group, so its draw item is unchanged and its
+    /// buffers are not.
+    fn outcomes_with(
+        &self,
+        swap: Option<(usize, u32)>,
+    ) -> Vec<cs_app::render::capture::SceneOutcome> {
+        self.items
+            .iter()
+            .enumerate()
+            .map(|(index, item)| {
+                let material = swap
+                    .filter(|(at, _)| *at == index)
+                    .map_or(0, |(_, material)| material);
+                let mesh = quad_mesh(QuadShape::full(), material);
+                let image = self.textured[index].then(|| decoded_image(ImageShape::rgba8_srgb()));
+                upload_surface(&SceneSurface {
+                    item,
+                    mesh: &mesh,
+                    group: 0,
+                    image: image.as_ref(),
+                    unknowns: &[],
+                })
             })
             .collect()
     }
@@ -590,8 +649,8 @@ fn accept_f17_c_two_instances_with_different_paint_and_damage_stay_independent_a
 }
 
 /// AC03 in the consumer: the two aircraft with the same paint are one entity
-/// carrying two rows, the third is a second entity, and the destroyed part
-/// spawned nothing.
+/// carrying two rows — and one placed draw per row, at each row's own place —
+/// the third is a second entity, and the destroyed part spawned nothing.
 #[test]
 fn accept_f17_c_the_consumer_draws_one_entity_per_batch_with_every_row() {
     let fixture = fixture();
@@ -613,6 +672,7 @@ fn accept_f17_c_the_consumer_draws_one_entity_per_batch_with_every_row() {
     assert_eq!(report.released, 0);
     assert_eq!(report.unmaterialed, 0);
     assert_eq!(report.withheld, 1);
+    assert_eq!(report.placed, 5, "one placed draw per row the frame draws");
     assert_eq!(batch_entities(&world), 4);
 
     let body = batch_entity(&world, &frame, RenderPhase::Opaque, PLANE_A);
@@ -628,6 +688,56 @@ fn accept_f17_c_the_consumer_draws_one_entity_per_batch_with_every_row() {
         material.base_color_texture.is_none(),
         "an untextured surface binds no texture"
     );
+
+    // The two rows are two *placed draws* of one geometry, each at its own
+    // place and naming its own aircraft. One entity for the pair is the batching;
+    // one quad at the origin would be one aircraft wearing two identities,
+    // which is the failure AC03 exists to prevent.
+    let placements_here = placements(&world, body);
+    assert_eq!(placements_here.len(), 2, "one placed draw per row");
+    assert_eq!(
+        placed_center(&world, body, PLANE_A),
+        Some([1.0, -1.0, -25.0])
+    );
+    assert_eq!(
+        placed_center(&world, body, PLANE_C),
+        Some([5.0, -1.0, -26.0]),
+        "the second aircraft is not drawn at the first one's place"
+    );
+    for child in &placements_here {
+        assert_eq!(
+            world
+                .get::<Mesh3d>(*child)
+                .expect("a placement draws a mesh"),
+            world
+                .get::<Mesh3d>(body)
+                .expect("the batch draws the same mesh"),
+            "both placements share the batch's one geometry"
+        );
+        assert_eq!(
+            world
+                .get::<MeshMaterial3d<StandardMaterial>>(*child)
+                .expect("a placement draws a material"),
+            world
+                .get::<MeshMaterial3d<StandardMaterial>>(body)
+                .expect("the batch draws the same material"),
+            "both placements share the batch's one material"
+        );
+    }
+    // Every placed draw in the world is accounted for by some batch, and the
+    // destroyed part is in none of them.
+    assert_eq!(placed_draws(&world), 5);
+    assert_eq!(
+        placed_center(&world, body, PLANE_B),
+        None,
+        "b is not drawn with a's and c's paint"
+    );
+    assert!(
+        !is_placed_in(&world, RenderPhase::Masked, PLANE_A),
+        "the destroyed part is in no placement"
+    );
+    assert!(is_placed_in(&world, RenderPhase::Masked, PLANE_C));
+    assert!(is_placed_in(&world, RenderPhase::Masked, PLANE_B));
 
     // A wing batch binds its own image handle, and it is not the other wing
     // batch's handle: the two aircraft with different paints are two draws.
@@ -661,17 +771,43 @@ fn accept_f17_c_the_consumer_draws_one_entity_per_batch_with_every_row() {
         "the destroyed part is in no batch"
     );
 
-    // The same frame again reuses every entity and grows nothing.
+    // The same frame again reuses every entity and grows nothing: not the image
+    // store, not the material store (one orphan per batch per frame is a leak
+    // only a store count sees), and not the placed draws — which keep their own
+    // identities rather than being torn down and rebuilt every frame.
     let images_before = world.resource::<Assets<Image>>().len();
-    let repeat = sync_frame(&mut world, &submitted, &frame, SESSION).expect("the frame resyncs");
-    assert_eq!(repeat.spawned, 0);
-    assert_eq!(repeat.reused, 4);
-    assert_eq!(repeat.released, 0);
+    let materials_before = world.resource::<Assets<StandardMaterial>>().len();
+    let meshes_before = world.resource::<Assets<Mesh>>().len();
+    let placements_before = placed_entities(&world);
+    for _ in 0..3 {
+        let repeat =
+            sync_frame(&mut world, &submitted, &frame, SESSION).expect("the frame resyncs");
+        assert_eq!(repeat.spawned, 0);
+        assert_eq!(repeat.reused, 4);
+        assert_eq!(repeat.released, 0);
+        assert_eq!(repeat.placed, 5);
+    }
     assert_eq!(batch_entities(&world), 4, "no duplicate geometry");
+    assert_eq!(placed_draws(&world), 5, "no duplicate placements");
+    assert_eq!(
+        placed_entities(&world),
+        placements_before,
+        "a re-synced frame keeps the placed draws it already had"
+    );
     assert_eq!(
         world.resource::<Assets<Image>>().len(),
         images_before,
         "a reused batch keeps its handle instead of growing the store"
+    );
+    assert_eq!(
+        world.resource::<Assets<StandardMaterial>>().len(),
+        materials_before,
+        "a reused batch keeps its material instead of orphaning one per frame"
+    );
+    assert_eq!(
+        world.resource::<Assets<Mesh>>().len(),
+        meshes_before,
+        "a reused batch keeps its mesh"
     );
 
     // A different frame releases what it does not claim: repainting `b` with
@@ -702,6 +838,14 @@ fn accept_f17_c_the_consumer_draws_one_entity_per_batch_with_every_row() {
         3,
         "no entity of the old frame is left"
     );
+    // `a`'s wing is still withheld in this frame, so five rows are placed, not
+    // six: the count follows the frame, not the scene.
+    assert_eq!(swapped.placed, 5, "every drawn row is placed again");
+    assert_eq!(
+        placed_draws(&world),
+        5,
+        "a released batch takes its placements with it"
+    );
     let merged = batch_entity(&world, &next, RenderPhase::Opaque, PLANE_B);
     assert_eq!(
         world
@@ -711,6 +855,106 @@ fn accept_f17_c_the_consumer_draws_one_entity_per_batch_with_every_row() {
             .len(),
         3,
         "all three aircraft are in the one draw their paint allows"
+    );
+    assert_eq!(placements(&world, merged).len(), 3, "and each is placed");
+    assert_eq!(
+        placed_center(&world, merged, PLANE_C),
+        Some([5.0, -1.0, -26.0]),
+        "c keeps its own place inside the merged draw"
+    );
+
+    // A teardown takes the placements with the batches: nothing of the frame is
+    // left in the world.
+    let released = teardown(&mut world);
+    assert_eq!(released.entities, 3);
+    assert!(released.sessions);
+    assert_eq!(batch_entities(&world), 0);
+    assert_eq!(placed_draws(&world), 0, "no stranded geometry");
+}
+
+/// A batch's identity is *which* instances it draws, not where they are: a
+/// frame in which an aircraft moved reuses the batch entity, and that
+/// aircraft's placed draw keeps its identity and takes the row's new place.
+/// Every other row in the same batch keeps its own place, because the batch
+/// only shares the geometry.
+#[test]
+fn accept_f17_c_a_moved_row_keeps_its_placement_and_takes_the_rows_new_place() {
+    let fixture = fixture();
+    let profile = RenderProfile::faithful();
+    let mut world = render_world();
+    world.insert_resource(RenderProfileRequest::set(SESSION, profile.clone()));
+    process_render_profile_request(&mut world);
+
+    let before = fixture.batch(&profile);
+    sync_frame(&mut world, &fixture.submitted(), &before, SESSION).expect("the frame syncs");
+    let body = batch_entity(&world, &before, RenderPhase::Opaque, PLANE_A);
+    let placed_a = placement_of_instance(&world, body, PLANE_A);
+    let placed_c = placement_of_instance(&world, body, PLANE_C);
+    assert_eq!(
+        placed_center(&world, body, PLANE_A),
+        Some([1.0, -1.0, -25.0])
+    );
+
+    // `c` moves. Its geometry, state and paint are unchanged, so the batch is
+    // the same draw; only the row's place differs.
+    let moved = [5.0, -1.0, -60.0];
+    let mut items = fixture.items.clone();
+    let index = (0..items.len())
+        .find(|index| items[*index].key().as_str() == "c.body")
+        .expect("c.body is a submitted draw");
+    items[index] = DrawItem::new(
+        items[index].key().clone(),
+        items[index].material().clone(),
+        moved,
+        None,
+    )
+    .expect("finite");
+    let outcomes = items
+        .iter()
+        .enumerate()
+        .map(|(position, item)| {
+            let mesh = quad_mesh(QuadShape::full(), 0);
+            let image = fixture.textured[position].then(|| decoded_image(ImageShape::rgba8_srgb()));
+            upload_surface(&SceneSurface {
+                item,
+                mesh: &mesh,
+                group: 0,
+                image: image.as_ref(),
+                unknowns: &[],
+            })
+        })
+        .collect::<Vec<_>>();
+    let submitted = fixture.submitted_for(&items, &outcomes);
+    let after = batch_frame(
+        &submitted,
+        &DrawPlan::build(&items, &fixture.view),
+        &fixture.visuals,
+        &profile,
+        TICK,
+    )
+    .expect("the moved scene batches");
+    let report = sync_frame(&mut world, &submitted, &after, SESSION).expect("the frame syncs");
+    assert_eq!(report.reused, 4, "a moved row is the same draw");
+    assert_eq!(report.spawned, 0);
+    assert_eq!(report.placed, 5);
+
+    let body_after = batch_entity(&world, &after, RenderPhase::Opaque, PLANE_A);
+    assert_eq!(body_after, body, "the same batch entity");
+    assert_eq!(
+        placed_of_instance(&world, body_after, PLANE_C),
+        Some(placed_c),
+        "c's placed draw keeps its identity"
+    );
+    assert_eq!(
+        placed_of_instance(&world, body_after, PLANE_A),
+        Some(placed_a),
+        "and so does a's: they share one draw"
+    );
+    assert_eq!(placed_center(&world, body_after, PLANE_C), Some(moved));
+    assert_eq!(
+        placed_center(&world, body_after, PLANE_A),
+        Some([1.0, -1.0, -25.0]),
+        "the aircraft that did not move did not move"
     );
 }
 
@@ -818,6 +1062,29 @@ fn accept_f17_c_a_frame_under_an_unapplied_profile_is_refused_and_retries_after_
         ["foreign_session"]
     );
     assert!(matches!(log.last(), Some(ProfileEvent::TornDown { .. })));
+    // A second teardown of the same session is a reported no-op, not a second
+    // refusal: a session is not foreign to itself, and reporting it as one
+    // would make an idempotent release look like an error.
+    world.insert_resource(RenderProfileRequest::tear_down(RenderSession(12)));
+    process_render_profile_request(&mut world);
+    let log = world
+        .get_resource::<RenderProfileLog>()
+        .expect("the log records the hand-off");
+    assert_eq!(
+        log.refusals().map(SyncError::code).collect::<Vec<_>>(),
+        ["foreign_session"],
+        "the repeated teardown refused nothing"
+    );
+    assert!(
+        matches!(
+            log.last(),
+            Some(ProfileEvent::TornDown {
+                session: RenderSession(12),
+                released,
+            }) if released.entities == 0 && !released.sessions
+        ),
+        "and it released nothing, which the log says",
+    );
     // And with no session open there is nothing to sync under.
     assert_eq!(
         sync_frame(&mut world, &submitted, &faithful_frame, SESSION)
@@ -828,6 +1095,118 @@ fn accept_f17_c_a_frame_under_an_unapplied_profile_is_refused_and_retries_after_
     let again = teardown(&mut world);
     assert_eq!(again.entities, 0);
     assert!(!again.sessions, "a second teardown releases nothing");
+}
+
+/// A frame row must be the submitted draw it was built from, not merely an
+/// index that exists: a batch's buffers come from the outcome the batcher read,
+/// so binding a different outcome at that index would draw a batch with
+/// another surface's geometry and report a success. Both the missing-index and
+/// the wrong-outcome case are refused before a single entity is written.
+#[test]
+fn accept_f17_c_a_submitted_draw_list_the_frame_was_not_built_from_is_refused() {
+    let fixture = fixture();
+    let profile = RenderProfile::faithful();
+    // The frame is built from the list the fixture produced.
+    let frame = fixture.batch(&profile);
+    let mut world = render_world();
+    world.insert_resource(RenderProfileRequest::set(SESSION, profile.clone()));
+    process_render_profile_request(&mut world);
+    let good = fixture.submitted();
+    sync_frame(&mut world, &good, &frame, SESSION).expect("the frame syncs");
+    let live = batch_entities(&world);
+    let placed = placed_draws(&world);
+    assert_eq!((live, placed), (4, 5));
+
+    // A list that is one outcome short: a row names an index that is not there.
+    let short = &good[..good.len() - 1];
+    let error = sync_frame(&mut world, short, &frame, SESSION)
+        .expect_err("the frame's row is in no submitted draw");
+    assert_eq!(error.code(), "no_submitted_draw");
+    assert_eq!(
+        (batch_entities(&world), placed_draws(&world)),
+        (live, placed)
+    );
+
+    // A list that is the right length but the wrong contents, in both shapes a
+    // caller can get wrong. `c.body` is the row: it shares a batch with `a`, so
+    // a bind that used the wrong surface there would draw half the batch with
+    // another surface's buffers.
+    let body = (0..fixture.items.len())
+        .find(|index| fixture.items[*index].key().as_str() == "c.body")
+        .expect("c.body is a submitted draw");
+
+    // (a) `c.body` is a refusal where the frame recorded an upload: the draw item
+    // is the right one and the outcome is not the one the frame was built from.
+    let mut refused = fixture.outcomes_with(None);
+    refused[body] = cs_app::render::capture::SceneOutcome::Refused(
+        cs_app::render::capture::SurfaceRefusal::new(
+            DrawItemKey::new("c.body").expect("a valid key"),
+            vec!["two_sided_unknown"],
+        ),
+    );
+    let error = sync_frame(
+        &mut world,
+        &fixture.submitted_against(&refused),
+        &frame,
+        SESSION,
+    )
+    .expect_err("the frame was not built from this list");
+    assert_eq!(error.code(), "stale_submitted_draw");
+    let SyncError::StaleSubmittedDraw {
+        index: refused_at,
+        item,
+        why,
+    } = &error
+    else {
+        panic!("the refusal names the row and why: {error}");
+    };
+    assert_eq!(*refused_at, body);
+    assert_eq!(item.as_str(), "c.body");
+    assert_eq!(*why, stale_draw_codes::REFUSED);
+    assert_eq!(
+        (batch_entities(&world), placed_draws(&world)),
+        (live, placed),
+        "the refusal touched the live frame nowhere"
+    );
+
+    // (b) `c.body` is an upload of a *different* quad: the same draw item at the
+    // same index with different buffers. Only the batch key can see it, and
+    // binding it would draw the shared body batch with the wrong geometry.
+    let moved = fixture.outcomes_with(Some((body, 1)));
+    let error = sync_frame(
+        &mut world,
+        &fixture.submitted_against(&moved),
+        &frame,
+        SESSION,
+    )
+    .expect_err("the upload at that index is another surface's");
+    assert_eq!(error.code(), "stale_submitted_draw");
+    let SyncError::StaleSubmittedDraw {
+        index: moved_at,
+        item,
+        why,
+    } = &error
+    else {
+        panic!("the refusal names the row and why: {error}");
+    };
+    assert_eq!(*moved_at, body);
+    assert_eq!(item.as_str(), "c.body");
+    assert_eq!(*why, stale_draw_codes::UPLOAD_MISMATCH);
+    assert_eq!(
+        (batch_entities(&world), placed_draws(&world)),
+        (live, placed),
+        "neither refusal touched the live frame"
+    );
+
+    // The list the frame *was* built from still syncs, so every refusal above is
+    // retryable.
+    let retried = sync_frame(&mut world, &good, &frame, SESSION).expect("the retry syncs");
+    assert_eq!(retried.spawned, 0);
+    assert_eq!(retried.reused, 4);
+    assert_eq!(
+        (batch_entities(&world), placed_draws(&world)),
+        (live, placed)
+    );
 }
 
 /// The applied presentation reaches the entities that own each decision, and a
@@ -1469,6 +1848,99 @@ fn batch_entities(world: &World) -> usize {
         .iter_entities()
         .filter(|entity| entity.contains::<BatchDraw>())
         .count()
+}
+
+/// The per-instance entities placed under a batch entity.
+fn placements(world: &World, batch: Entity) -> Vec<Entity> {
+    world
+        .iter_entities()
+        .filter(|entity| {
+            entity.get::<BatchInstancePlacement>().is_some()
+                && entity
+                    .get::<ChildOf>()
+                    .is_some_and(|parent| parent.parent() == batch)
+        })
+        .map(|entity| entity.id())
+        .collect()
+}
+
+/// How many placed draws the world holds in total.
+fn placed_draws(world: &World) -> usize {
+    world
+        .iter_entities()
+        .filter(|entity| entity.contains::<BatchInstancePlacement>())
+        .count()
+}
+
+/// The identities of the placed draws the world holds, in stable order.
+fn placed_entities(world: &World) -> Vec<u64> {
+    let mut found = world
+        .iter_entities()
+        .filter(|entity| entity.contains::<BatchInstancePlacement>())
+        .map(|entity| entity.id().to_bits())
+        .collect::<Vec<_>>();
+    found.sort_unstable();
+    found
+}
+
+/// Where `instance` is placed under `batch`, and whether it is placed there.
+///
+/// A placement that exists but sits somewhere other than its row's own place
+/// fails here rather than being reported: the row is the per-instance fact and
+/// the transform is what the renderer would use.
+fn placed_center(world: &World, batch: Entity, instance: ModelInstanceId) -> Option<[f32; 3]> {
+    placements(world, batch)
+        .into_iter()
+        .find(|child| {
+            world
+                .get::<BatchInstancePlacement>(*child)
+                .is_some_and(|placement| placement.instance() == instance)
+        })
+        .map(|child| {
+            let placement = world
+                .get::<BatchInstancePlacement>(child)
+                .expect("a placement carries its row");
+            let transform = world
+                .get::<Transform>(child)
+                .expect("a placement is placed");
+            assert_eq!(
+                transform.translation.to_array(),
+                Vec3::from(placement.center_m()).to_array(),
+                "the placement is at the row's own place"
+            );
+            placement.center_m()
+        })
+}
+
+/// Whether `instance` has a placed draw in `phase`.
+fn is_placed_in(world: &World, phase: RenderPhase, instance: ModelInstanceId) -> bool {
+    world.iter_entities().any(|entity| {
+        let Some(placement) = entity.get::<BatchInstancePlacement>() else {
+            return false;
+        };
+        if placement.instance() != instance {
+            return false;
+        }
+        entity
+            .get::<ChildOf>()
+            .and_then(|parent| world.get::<BatchDraw>(parent.parent()))
+            .is_some_and(|draw| draw.phase() == phase)
+    })
+}
+
+/// The placed draw of `instance` under `batch`, required to be there.
+fn placement_of_instance(world: &World, batch: Entity, instance: ModelInstanceId) -> Entity {
+    placed_of_instance(world, batch, instance)
+        .unwrap_or_else(|| panic!("no placed draw for {instance} under {batch}"))
+}
+
+/// The placed draw of `instance` under `batch`, when it has one.
+fn placed_of_instance(world: &World, batch: Entity, instance: ModelInstanceId) -> Option<Entity> {
+    placements(world, batch).into_iter().find(|child| {
+        world
+            .get::<BatchInstancePlacement>(*child)
+            .is_some_and(|placement| placement.instance() == instance)
+    })
 }
 
 /// The entity that draws the batch `instance` appears in.

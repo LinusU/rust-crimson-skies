@@ -69,7 +69,7 @@ use cs_types::Tick;
 use cs_types::evidence::ContentHash;
 
 use crate::livery::{LiveryError, LiveryRuntime, LiverySession, ModelInstanceId, ModelLivery};
-use crate::render::capture::{SceneOutcome, SurfaceRefusal, scene_codes};
+use crate::render::capture::{SceneOutcome, SurfaceRefusal, SurfaceUpload, scene_codes};
 use crate::render::material::RenderPhase;
 use crate::render::plan::{DrawItem, DrawItemKey, DrawPlan};
 use crate::render::profile::{ProfileParity, RenderProfile};
@@ -278,6 +278,23 @@ impl BatchKey {
     /// module docs.
     pub const fn livery(&self) -> Option<ContentHash> {
         self.livery
+    }
+
+    /// Whether `upload` is the surface this key was computed from.
+    ///
+    /// The three shared resources are what the key digests, so a consumer can
+    /// check in one call that the upload it is about to bind is the one the
+    /// batch recorded. A different surface's geometry, render state or image at
+    /// the same draw index is a stale submitted-draw list, not a batch to draw:
+    /// binding it would put one surface's buffers under another surface's
+    /// identity and report a success.
+    ///
+    /// The paint is not checked here: it comes from the instance record, not
+    /// from the surface upload.
+    pub fn matches(&self, upload: &SurfaceUpload) -> bool {
+        self.geometry == upload.geometry().fingerprint()
+            && self.state == upload.state().fingerprint()
+            && self.image == upload.image().map(|image| image.fingerprint())
     }
 }
 
