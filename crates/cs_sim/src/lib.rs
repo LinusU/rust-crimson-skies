@@ -30,6 +30,17 @@
 //! a solid contact in code. It creates no Avian body; the schedule adapter is
 //! `cs_app::physics` (F23-B/C create and drive the actual bodies).
 //!
+//! [`animated_object`] is the F20-A animation runtime
+//! (`specs/F20-object-animation-and-authored-destruction-states.md`, stage
+//! `### F20-A`): the tick-indexed channel records (transform, visibility,
+//! material, attachment), the gameplay/presentation event markers with their
+//! once-per-activation dedup, the [`animated_object::AnimatedObject`]
+//! fixed-tick evaluator whose per-node state keeps mesh and collider on the
+//! same evaluated pose, and the minimal synthetic door/propeller fixtures.
+//! The declared, provenance-carrying clip form is `cs_content::animation`;
+//! the conversion boundary and presentation interpolation are
+//! `cs_app::animation` (F20-B wires real tracks, F20-C stateful props).
+//!
 //! [`flight`] is the F24-A fixed-wing contract and equations
 //! (`specs/F24-fixed-wing-flight-engine-stall-and-arcade-assists.md`, stage
 //! `### F24-A`): the normalized [`flight::AirframeTuning`] schema, the
@@ -43,6 +54,7 @@
 //! [`cs_types`]: cs_types
 //! [`cs_script`]: cs_script
 
+pub mod animated_object;
 pub mod collision;
 pub mod control;
 pub mod flight;
