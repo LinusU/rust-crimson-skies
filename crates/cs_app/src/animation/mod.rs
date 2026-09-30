@@ -40,16 +40,31 @@
 //!
 //! The playback owns the animation state it applies; the records in this
 //! module remain the ECS outputs the consumers bind.
+//!
+//! Stage `### F20-C` adds [`attachment`], the consumer half: the record
+//! [`playback::NodeAnimatedAttachment`] becomes a real parent change —
+//! [`attachment::apply_attachment_transitions`] inserts or removes `ChildOf`
+//! with the authored pose policy, recomposes the world pose of the node's
+//! descendants and gives a detached node the world velocity its parent had
+//! at that tick, exactly once per change; and
+//! [`attachment::release_attachments_before_despawn`] releases an animated
+//! attachment before its parent goes away (non-negotiable behavior 4,
+//! AC03).
 
 use bevy::ecs::component::Component;
 use cs_types::content::ContentId;
 
 use crate::scene::SceneGeneration;
 
+pub mod attachment;
 pub mod lower;
 pub mod playback;
 pub mod presentation;
 
+pub use attachment::{
+    AppliedAttachment, AttachmentRecord, AttachmentRefusalReason, RefusedAttachment,
+    VelocitySkipReason, apply_attachment_transitions, release_attachments_before_despawn,
+};
 pub use playback::{
     AnimationLog, AnimationPlayError, AnimationPlayback, AnimationRefusal, BlockedTrack,
     NodeAnimatedAttachment, NodeAnimatedMaterial, NodeAnimatedPose, TrackKind, advance_animation,

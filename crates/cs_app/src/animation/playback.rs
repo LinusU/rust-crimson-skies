@@ -80,6 +80,7 @@ use cs_types::evidence::ClaimId;
 use crate::scene::SceneGeneration;
 
 use super::AnimatedNodeBinding;
+use super::attachment::AttachmentRecord;
 use super::lower::{LowerError, lower_clip};
 
 // --------------------------------------------------------------- tracks ---
@@ -222,7 +223,9 @@ pub enum AnimationRefusal {
 ///
 /// This is the consumer seam of this stage: marker events (gameplay and
 /// presentation), markers blocked by an unknown effect, tracks blocked by an
-/// unknown reference and the advances that were refused. It grows with the
+/// unknown reference and the advances that were refused — plus, since F20-C,
+/// the attachment transitions that were refused or could not inherit a
+/// velocity ([`AttachmentRecord`]). It grows with the
 /// number of *published entries* — never one per tick — and is meant to be
 /// drained by the layer that consumes them (the mission marker consumer is
 /// F20-C's wiring), so [`Self::drain`] is how that consumer takes its batch.
@@ -232,6 +235,7 @@ pub struct AnimationLog {
     blocked_markers: Vec<BlockedMarker>,
     blocked_tracks: Vec<BlockedTrack>,
     refused: Vec<AnimationRefusal>,
+    attachments: Vec<AttachmentRecord>,
 }
 
 impl AnimationLog {
@@ -265,6 +269,22 @@ impl AnimationLog {
         &self.refused
     }
 
+    /// The attachment transitions that were refused, and the detaches that
+    /// inherited no velocity (F20-C's consumer).
+    #[must_use]
+    pub fn attachments(&self) -> &[AttachmentRecord] {
+        &self.attachments
+    }
+
+    /// Appends what the attachment consumer published this tick.
+    ///
+    /// `pub(crate)`: the consumer is a sibling module of this record, and
+    /// the publications follow the same rule every other collection here
+    /// follows — one entry per transition, never one per frame.
+    pub(crate) fn push_attachments(&mut self, records: Vec<AttachmentRecord>) {
+        self.attachments.extend(records);
+    }
+
     /// How many entries the log holds.
     #[must_use]
     pub fn len(&self) -> usize {
@@ -272,6 +292,7 @@ impl AnimationLog {
             + self.blocked_markers.len()
             + self.blocked_tracks.len()
             + self.refused.len()
+            + self.attachments.len()
     }
 
     /// Whether nothing has been published since the last drain.
@@ -370,6 +391,25 @@ impl AnimationPlayback {
     #[must_use]
     pub fn generation(&self, clip: &ContentId) -> Option<SceneGeneration> {
         self.playing.get(clip).map(|playing| playing.generation)
+    }
+
+    /// Whether the live instance of `clip` has a channel on `node`.
+    ///
+    /// This is the "driven node" half of the verified binding, read the same
+    /// way the track application reads it (a node the clip drives is one it
+    /// has a channel on), so the F20-C attachment consumer can verify a
+    /// binding without reaching into the evaluator. A track that is not
+    /// playing drives nothing and returns `false`.
+    #[must_use]
+    pub fn drives(&self, clip: &ContentId, node: &ContentId) -> bool {
+        self.playing.get(clip).is_some_and(|playing| {
+            playing
+                .object
+                .clip()
+                .channels()
+                .iter()
+                .any(|channel| channel.target() == node)
+        })
     }
 
     /// The producer serial a playing instance stamps its event ids with.
@@ -692,6 +732,14 @@ pub fn advance_animation(world: &mut World, at: Tick) {
         log.refused.extend(refused);
         world.insert_resource(log);
     }
+
+    // 6. The attachment records the instances published become hierarchy
+    //    changes in the same tick: the parent change with its authored pose
+    //    policy, the descendant world poses behind it, and the velocity a
+    //    detach inherits from the parent it is leaving — applied once per
+    //    change, with every refusal and every missing velocity source
+    //    published once instead of guessed (F20-C, AC03).
+    super::attachment::apply_attachment_transitions(world);
 }
 
 /// Records one unknown track of a playing instance, the first time the

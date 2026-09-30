@@ -97,6 +97,15 @@
 //! clip, the live scene generation and a node the clip actually drives —
 //! while an unknown material or parent is blocked and reported instead of
 //! applied, and [`animation::stop_animation`] ends an instance.
+//! Stage `### F20-C` adds [`animation::attachment`], the consumer half of
+//! that record: [`animation::apply_attachment_transitions`] (run at the end
+//! of every fixed-tick advance) turns it into the parent change itself —
+//! `ChildOf` inserted or removed with the authored pose policy, the world
+//! pose of the node's descendants recomposed behind it, and the detached
+//! node given the world velocity its parent had at that tick, exactly once
+//! per change — while [`animation::release_attachments_before_despawn`]
+//! releases an animated attachment before its parent is despawned
+//! (non-negotiable behavior 4, AC03).
 //!
 //! [`physics`] is the F23-A Avian boundary
 //! (`specs/F23-avian-integration-collision-and-fixed-step-authority.md`,
