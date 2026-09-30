@@ -146,9 +146,9 @@ with a multi-minute `Cache Size:` restore is the **exact** hit: the save step's
 
 ## Confirmed on a later run
 
-CI run **36762497676**, the push of this finding's own branch, head `746bb8e`
-(both jobs green). It is a second, independent observation of the same
-mechanism, two commits past the `main` that carries #430:
+CI run **36762497676**, the push of this finding's own branch (both jobs
+green). It is a second, independent observation of the same mechanism, two
+commits past the `main` that carries #430:
 
 ```
 Run Swatinem/rust-cache@v2   Cache Size: ~2577 MB (2702354412 B)
@@ -181,6 +181,15 @@ Three things are now measured rather than inferred:
 What this run cannot show is the thing the task asks for: with the workflow
 unchanged there is no new key, so there is no smaller `Cache Size:` to read
 and no run that skips the 395. That is the whole of the remaining gap.
+
+The branch was then rebased onto the `main` that carries #434 and pushed again
+as `f31902f`; CI run **36765988179** (green) reports the identical key, the
+identical 2,702,354,412 B entry, `full match: true`, `Cache up-to-date.` and
+395 `Compiling` lines again. Three runs, one key, one entry, and the smaller
+tree still unstored. (The run above is identified by its run id rather than a
+head SHA: the rebase rewrote that commit to `7fd75ff` with the same tree, and
+the finding's author was the same agent for both — the run ids are what make
+the logs citable.)
 
 ## The correction to the line #438 suggests
 
@@ -295,7 +304,8 @@ carry and that the remaining rust-lld `SIGBUS` (#430, #439) is sensitive to.
 | `cargo test --workspace --locked` | 0 | 156 test binaries, 1,455 tests, 0 failed, 98 ignored |
 | `cargo test --workspace --locked -- accept_f00_c_ --include-ignored` | 0 | 16 selected, 16 passed |
 | `cargo test --workspace --locked -- accept_t430_ --include-ignored` | 0 | 6 selected, 6 passed |
-| CI run 36762497676 (push of this branch, head `746bb8e`) | 0 | `rust` and `pack` both green; cache lines quoted in "Confirmed on a later run" |
+| CI run 36762497676 (push of this branch) | 0 | `rust` and `pack` both green; cache lines quoted in "Confirmed on a later run" |
+| CI run 36765988179 (rebase onto #434, head `f31902f`) | 0 | `rust` and `pack` both green; same key, same entry, 395 `Compiling` lines again |
 
 **No task-prefix selection was run, and none is claimed.** Task #438 names no
 test prefix and adds no production code for one to exercise (see "Status"), and
