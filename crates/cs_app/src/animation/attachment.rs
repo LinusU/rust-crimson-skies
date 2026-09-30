@@ -63,11 +63,11 @@
 //! [`release_attachments_before_despawn`] is the rule non-negotiable
 //! behavior 4 states — "release attachments before despawning parents" — for
 //! the stage that despawns a parent (F20-C.02's teardown). It releases the
-//! children whose attachment this consumer or the clip manages, keeps their
-//! composed world pose by construction, and inherits the parent's velocity
-//! by the same rule an authored detach uses.
+//! animated attachments anywhere in the subtree that despawn takes, keeps
+//! their composed world pose by construction, and inherits the departing
+//! parent's velocity by the same rule an authored detach uses.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use avian3d::prelude::{AngularVelocity, LinearVelocity, Position};
 use bevy::ecs::component::Component;
@@ -150,6 +150,16 @@ pub enum AttachmentRefusalReason {
         /// How many entities the id resolved to.
         count: usize,
     },
+    /// The parent the record asked for *is* the node, or one of its own
+    /// descendants, so applying it would make the node its own ancestor.
+    ///
+    /// Cycles in an ownership/parent hierarchy are invalid
+    /// (`docs/contracts/IDENTITY-CONTENT.md`: *"cycles in ownership/parent
+    /// hierarchies are invalid"*), and the subtree walk behind every pose
+    /// recomposition loops over one forever — so the transition is refused
+    /// instead of creating it. The same reason covers an ancestor chain that
+    /// already loops: the hierarchy is already invalid and is not made worse.
+    CyclicParent,
     /// The node itself carries no composed world pose, so its pose policy
     /// cannot be honored.
     NodeWorldPoseMissing,
@@ -240,64 +250,81 @@ pub fn apply_attachment_transitions(world: &mut World) {
 /// despawning parents").
 ///
 /// The children released are the ones whose attachment this consumer
-/// manages: a child of `parent` carrying [`AppliedAttachment`] (the consumer
+/// manages: a child carrying [`AppliedAttachment`] (the consumer
 /// applied a transition for it) or [`NodeAnimatedAttachment`] (the clip
 /// records an attachment for it). Their [`ChildOf`] link is removed, their
-/// [`AppliedAttachment`] becomes a detach, and they inherit the parent's
-/// world velocity by exactly the rule an authored detach uses; the composed
-/// world pose of a released child is untouched by construction, so nothing
-/// jumps when its parent disappears. A child the animation never touched
-/// keeps its authored `ChildOf` and stays part of the parent's subtree —
-/// that link belongs to the scene graph, not to the animation.
+/// [`AppliedAttachment`] becomes a detach, and they inherit the velocity of
+/// the parent they were linked to by exactly the rule an authored detach
+/// uses; the composed world pose of a released child is untouched by
+/// construction, so nothing jumps when its parent disappears. A child the
+/// animation never touched keeps its authored `ChildOf` and stays part of
+/// the parent's subtree — that link belongs to the scene graph, not to the
+/// animation.
 ///
-/// Returns the entities that were released, in hierarchy order. Publishing
-/// an [`AttachmentRecord`] needs the release's animated identity, so only a
-/// child that still carries its [`AnimatedNodeBinding`] contributes one.
+/// The walk covers the **whole subtree** the despawn reaches, not one level:
+/// `despawn` is recursive over `Children` (measured below), so an animated
+/// attachment below a child the animation never touched would otherwise die
+/// with a parent it was never attached to. The walk stops at the children it
+/// releases — a released child survives together with its own subtree, so
+/// unparenting anything under it would only sever a link that was never in
+/// danger — and descends only through children that stay linked and will go
+/// with `parent`.
+///
+/// Returns the entities that were released, in hierarchy order (ancestors
+/// before descendants). Publishing an [`AttachmentRecord`] needs the
+/// release's animated identity, so only a released entity that still carries
+/// its [`AnimatedNodeBinding`] contributes one.
 ///
 /// The Bevy `despawn` behavior this rule exists for was measured on the
 /// pinned Bevy 0.19 rather than assumed; the measurement and its assertion
 /// live in `crates/cs_app/tests/accept_f20_c_01_attachment_hierarchy.rs`.
 pub fn release_attachments_before_despawn(world: &mut World, parent: Entity) -> Vec<Entity> {
-    let children: Vec<Entity> = {
-        let mut query = world.query_filtered::<(Entity, &ChildOf), ()>();
-        query
-            .iter(world)
-            .filter(|(_, child_of)| child_of.parent() == parent)
-            .map(|(entity, _)| entity)
-            .collect()
-    };
-
     let mut released = Vec::new();
     let mut records = Vec::new();
-    for child in children {
-        let managed = world.get::<AppliedAttachment>(child).is_some()
-            || world.get::<NodeAnimatedAttachment>(child).is_some();
-        if !managed || world.get::<ChildOf>(child).is_none() {
-            continue;
-        }
-        let Some(world_pose) = world.get::<NodeVisualTransform>(child).map(|pose| pose.0) else {
-            // Without a composed world pose there is no pose to preserve and
-            // no parent-relative pose to compute; the link is still released
-            // (a release must never leave a dangling `ChildOf` behind).
+
+    let mut pending = VecDeque::from([parent]);
+    while let Some(current) = pending.pop_front() {
+        let children: Vec<Entity> = {
+            let mut query = world.query_filtered::<(Entity, &ChildOf), ()>();
+            query
+                .iter(world)
+                .filter(|(_, child_of)| child_of.parent() == current)
+                .map(|(entity, _)| entity)
+                .collect()
+        };
+        for child in children {
+            let managed = world.get::<AppliedAttachment>(child).is_some()
+                || world.get::<NodeAnimatedAttachment>(child).is_some();
+            if !managed {
+                pending.push_back(child);
+                continue;
+            }
+            let Some(world_pose) = world.get::<NodeVisualTransform>(child).map(|pose| pose.0)
+            else {
+                // Without a composed world pose there is no pose to preserve
+                // and no parent-relative pose to compute; the link is still
+                // released (a release must never leave a dangling `ChildOf`
+                // behind), and its subtree stays with it.
+                world.entity_mut(child).remove::<ChildOf>();
+                mark_released(world, child);
+                released.push(child);
+                continue;
+            };
+            let skip = detached_velocity(world, child, world_pose, Some(current));
             world.entity_mut(child).remove::<ChildOf>();
             mark_released(world, child);
+            if let Some(binding) = world.get::<AnimatedNodeBinding>(child).cloned() {
+                records.extend(
+                    skip.iter()
+                        .map(|reason| AttachmentRecord::VelocityNotInherited {
+                            clip: binding.clip.clone(),
+                            node: binding.node.clone(),
+                            reason: *reason,
+                        }),
+                );
+            }
             released.push(child);
-            continue;
-        };
-        let skip = detached_velocity(world, child, world_pose, Some(parent));
-        world.entity_mut(child).remove::<ChildOf>();
-        mark_released(world, child);
-        if let Some(binding) = world.get::<AnimatedNodeBinding>(child).cloned() {
-            records.extend(
-                skip.iter()
-                    .map(|reason| AttachmentRecord::VelocityNotInherited {
-                        clip: binding.clip.clone(),
-                        node: binding.node.clone(),
-                        reason: *reason,
-                    }),
-            );
         }
-        released.push(child);
     }
 
     if !records.is_empty() {
@@ -505,6 +532,19 @@ fn apply_one(
         None => Entity::PLACEHOLDER,
     };
 
+    // A parent that is the node itself, or one of its own descendants, would
+    // make the node its own ancestor: refused before anything is written,
+    // never applied and left to loop in every subtree walk.
+    if wanted.is_some() && creates_cycle(world, parent_entity, entity) {
+        return refuse(
+            world,
+            entity,
+            binding,
+            desired,
+            AttachmentRefusalReason::CyclicParent,
+        );
+    }
+
     // The parent-relative pose is derived, never stored twice: the policy
     // that needs it validates the pose it reads before anything is written.
     let keep_local = desired.pose == PosePolicy::KeepLocalPose;
@@ -628,6 +668,24 @@ fn refuse(
         pose: desired.pose,
         reason,
     }]
+}
+
+/// Whether making `parent` the parent of `node` would close a loop: `parent`
+/// is `node` itself, `node` is one of `parent`'s ancestors, or `parent`'s own
+/// ancestor chain already contains a loop (that hierarchy is already invalid,
+/// and this walk must terminate on it either way).
+fn creates_cycle(world: &World, parent: Entity, node: Entity) -> bool {
+    let mut seen = HashSet::new();
+    let mut cursor = Some(parent);
+    while let Some(entity) = cursor {
+        if entity == node || !seen.insert(entity) {
+            return true;
+        }
+        cursor = world
+            .get::<ChildOf>(entity)
+            .map(|child_of| child_of.parent());
+    }
+    false
 }
 
 // ------------------------------------------------------------ the pose -----

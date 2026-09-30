@@ -41,8 +41,8 @@ use cs_app::animation::{
 };
 use cs_app::scene::{NodeVisualTransform, SceneGeneration, SceneNodeBinding};
 use cs_content::animation::{
-    SYNTHETIC_CARGO_BAY_NODE, SYNTHETIC_CARGO_DETACH_TICK, SYNTHETIC_CARGO_NODE,
-    declared_synthetic_cargo_clip,
+    SYNTHETIC_CARGO_ATTACH_TICK, SYNTHETIC_CARGO_BAY_NODE, SYNTHETIC_CARGO_DETACH_TICK,
+    SYNTHETIC_CARGO_NODE, declared_synthetic_cargo_clip,
 };
 use cs_sim::animated_object::{AttachmentState, PosePolicy};
 use cs_types::Tick;
@@ -700,4 +700,201 @@ fn accept_f20_c_01_attachments_are_released_before_a_parent_is_despawned() {
         published.is_empty(),
         "the release was clean: nothing refused, nothing unwritten: {published:?}"
     );
+}
+
+// ----------------------------------------------------------- hierarchy ------
+
+/// The despawn the release rule guards is **recursive**, so the release has
+/// to reach an animated attachment the despawn would take through a child
+/// the animation never touched: an unreleased grandchild goes with the doomed
+/// subtree, a released one survives it — while the unmanaged child between
+/// them still dies with its parent.
+#[test]
+fn accept_f20_c_01_release_reaches_an_animated_attachment_below_an_unmanaged_child() {
+    let declared = declared_synthetic_cargo_clip();
+    let clip = declared.id().clone();
+    let generation = SceneGeneration::default().next();
+
+    let mut world = World::new();
+    world.insert_resource(AnimationPlayback::new(11));
+
+    // The doomed node despawns a whole subtree. Its direct child is the bay,
+    // which the animation never touches (it is only the clip's attachment
+    // target); the cargo hangs below the bay, at depth two.
+    let doomed = spawn_node(&mut world, "synthetic.doomed.root", generation, Vec3::ZERO);
+    let bay = spawn_node(
+        &mut world,
+        SYNTHETIC_CARGO_BAY_NODE,
+        generation,
+        Vec3::new(0.0, 3.0, 0.0),
+    );
+    world
+        .entity_mut(bay)
+        .insert((ChildOf(doomed), LinearVelocity(Vec3::new(3.0, 0.0, 0.0))));
+    let cargo = spawn_node(
+        &mut world,
+        SYNTHETIC_CARGO_NODE,
+        generation,
+        Vec3::new(4.0, 3.0, 0.0),
+    );
+    world.entity_mut(cargo).insert((
+        AnimatedNodeBinding {
+            clip: clip.clone(),
+            node: node(SYNTHETIC_CARGO_NODE),
+            generation,
+        },
+        ChildOf(bay),
+        LinearVelocity(Vec3::ZERO),
+    ));
+    let carried_pose = pose(&world, cargo);
+
+    play_animation(&mut world, &declared, generation, Tick(0)).expect("the playback starts");
+    advance_animation(&mut world, Tick(SYNTHETIC_CARGO_ATTACH_TICK));
+    assert!(
+        world.get::<AppliedAttachment>(cargo).is_some(),
+        "the attach was applied while the clip played"
+    );
+
+    // --- the measurement: without the release, the grandchild dies too ----
+    let mut unreleased = World::new();
+    let root = spawn_node(
+        &mut unreleased,
+        "synthetic.doomed.root.unreleased",
+        SceneGeneration::default(),
+        Vec3::ZERO,
+    );
+    let unmanaged = spawn_node(
+        &mut unreleased,
+        "synthetic.doomed.mid.unreleased",
+        SceneGeneration::default(),
+        Vec3::ZERO,
+    );
+    let deep = spawn_node(
+        &mut unreleased,
+        "synthetic.doomed.deep.unreleased",
+        SceneGeneration::default(),
+        Vec3::ONE,
+    );
+    unreleased.entity_mut(unmanaged).insert(ChildOf(root));
+    unreleased.entity_mut(deep).insert(ChildOf(unmanaged));
+    unreleased.entity_mut(root).despawn();
+    assert!(
+        unreleased.get_entity(deep).is_err(),
+        "measured: a linked child below an unmanaged child is despawned \
+         recursively too, so an unreleased grandchild never survives"
+    );
+
+    // --- the rule --------------------------------------------------------
+    let released = release_attachments_before_despawn(&mut world, doomed);
+    assert_eq!(
+        released,
+        vec![cargo],
+        "the animated attachment below the unmanaged child is released"
+    );
+    assert!(
+        world.get::<ChildOf>(cargo).is_none(),
+        "its link is gone before the subtree is despawned"
+    );
+    assert_eq!(
+        world.get::<NodeVisualTransform>(cargo).map(|pose| pose.0),
+        Some(carried_pose),
+        "a released attachment keeps its composed world pose"
+    );
+    assert_eq!(
+        world
+            .get::<LinearVelocity>(cargo)
+            .map(|velocity| velocity.0),
+        Some(Vec3::new(3.0, 0.0, 0.0)),
+        "a deep release inherits the velocity of the parent it was linked to"
+    );
+
+    world.entity_mut(doomed).despawn();
+    assert!(
+        world.get_entity(bay).is_err(),
+        "the unmanaged child still dies with the doomed subtree"
+    );
+    assert!(
+        world.get_entity(cargo).is_ok(),
+        "the released attachment survives the recursive despawn"
+    );
+    let published = drain(&mut world);
+    assert!(
+        published.is_empty(),
+        "nothing was refused and nothing went unwritten: {published:?}"
+    );
+}
+
+/// Cycles in an ownership/parent hierarchy are invalid
+/// (`docs/contracts/IDENTITY-CONTENT.md`), so a parent id that resolves to a
+/// node inside the animated node's own subtree is refused instead of
+/// applied: no `ChildOf` is written, nothing half-reparents, and the refusal
+/// is published exactly once.
+#[test]
+fn accept_f20_c_01_a_parent_inside_the_nodes_own_subtree_is_refused() {
+    let declared = declared_synthetic_cargo_clip();
+    let clip = declared.id().clone();
+    let generation = SceneGeneration::default().next();
+
+    let mut world = World::new();
+    world.insert_resource(AnimationPlayback::new(12));
+
+    let cargo = spawn_node(&mut world, SYNTHETIC_CARGO_NODE, generation, Vec3::ZERO);
+    // The bay the clip attaches the cargo to is itself a child of the cargo:
+    // attaching would make the node its own ancestor and every subtree walk
+    // behind it loop forever.
+    let bay = spawn_node(
+        &mut world,
+        SYNTHETIC_CARGO_BAY_NODE,
+        generation,
+        Vec3::new(4.0, 0.0, 0.0),
+    );
+    world.entity_mut(bay).insert(ChildOf(cargo));
+    world.entity_mut(cargo).insert(AnimatedNodeBinding {
+        clip: clip.clone(),
+        node: node(SYNTHETIC_CARGO_NODE),
+        generation,
+    });
+
+    play_animation(&mut world, &declared, generation, Tick(0)).expect("the playback starts");
+    advance_animation(&mut world, Tick(SYNTHETIC_CARGO_ATTACH_TICK));
+
+    assert!(
+        world.get::<ChildOf>(cargo).is_none(),
+        "the cyclic link is never written"
+    );
+    assert_eq!(
+        world.get::<ChildOf>(bay),
+        Some(&ChildOf(cargo)),
+        "the existing hierarchy is untouched — nothing half-applies"
+    );
+    assert!(
+        world.get::<AppliedAttachment>(cargo).is_none(),
+        "nothing was applied"
+    );
+
+    let published = drain(&mut world);
+    assert_eq!(
+        published.attachments().len(),
+        1,
+        "the refusal is reported once: {published:?}"
+    );
+    assert_eq!(
+        published.attachments()[0],
+        AttachmentRecord::Refused {
+            clip: clip.clone(),
+            node: node(SYNTHETIC_CARGO_NODE),
+            parent: Some(node(SYNTHETIC_CARGO_BAY_NODE)),
+            pose: PosePolicy::KeepLocalPose,
+            reason: AttachmentRefusalReason::CyclicParent,
+        },
+        "the refusal names the parent it refused"
+    );
+
+    // The refusal is a state, not a frame: the next tick adds nothing.
+    advance_animation(&mut world, Tick(SYNTHETIC_CARGO_ATTACH_TICK + 1));
+    assert!(
+        drain(&mut world).is_empty(),
+        "the same refused state is not republished"
+    );
+    assert!(world.get::<ChildOf>(cargo).is_none());
 }

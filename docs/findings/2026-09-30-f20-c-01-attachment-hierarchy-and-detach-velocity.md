@@ -163,6 +163,8 @@ despawn.
 | `accept_f20_c_01_unresolved_parent_and_stale_binding_reparent_nothing_and_report_once` | a parent id that names no live entity of the binding's generation applies nothing and reports once (not once per tick); a binding whose generation the live instance does not serve applies nothing and reports once; both keep the `ChildOf` they had |
 | `accept_f20_c_01_the_same_advance_never_writes_the_transition_twice` | running the advance over the same tick again leaves the hierarchy and the inherited velocity untouched (the applied record, not a frame counter, decides) |
 | `accept_f20_c_01_attachments_are_released_before_a_parent_is_despawned` | the measured Bevy `despawn` behavior, plus `release_attachments_before_despawn`: released children keep their world pose and survive the parent's despawn |
+| `accept_f20_c_01_release_reaches_an_animated_attachment_below_an_unmanaged_child` (added in review) | the release walks the whole subtree the recursive despawn reaches: an animated attachment at depth two is released (and inherits the velocity of the parent it was linked to) while the unmanaged child between it and the doomed root still dies with the root — measured in the test itself |
+| `accept_f20_c_01_a_parent_inside_the_nodes_own_subtree_is_refused` (added in review) | a parent id resolving to a node inside the animated node's own subtree is refused (`CyclicParent`), writes no `ChildOf`, leaves the existing hierarchy untouched and publishes exactly one refusal |
 
 Mutation probes run locally (all reverted afterwards, verified by
 `grep -rn "MUTATION PROBE" crates/` returning nothing and the suite being
@@ -176,6 +178,44 @@ green again):
 | the inherited `LinearVelocity` computed but never written | `..._detaching_cargo_...` (`got [0, 0, 0], expected [10, 8, 0]`), `..._attachments_are_released_...` — 2 |
 | `recompose_descendants` skipped | `..._attaching_with_keep_local_pose_...` (`the descendant's composed world pose is recomposed behind the change`) — 1 |
 | the refusal publication swallowed in `refuse()` | `..._unresolved_parent_and_stale_binding_reparent_nothing_and_report_once` — 1 |
+| the `creates_cycle` check disabled in `apply_one` (review mutation probe) | `..._a_parent_inside_the_nodes_own_subtree_is_refused`: the test process **aborts with a stack overflow** (`recompose_descendants` recursing over the cycle that was just inserted) rather than merely failing — 1 |
+| the release walk limited to the direct children of `parent` (review mutation probe) | `..._release_reaches_an_animated_attachment_below_an_unmanaged_child` (`left: [], right: [cargo]`) — 1 |
+
+## Review fixes (2026-09-30, review pass)
+
+Two problems found in review of the original submission, fixed in the owner
+paths and pinned by the two tests marked "added in review" above. Both are
+**designed** decisions like the rest of this stage (still no original
+animation data, F13/F20-D unchanged).
+
+1. **A parent inside the node's own subtree was applied.** The consumer
+   resolved a parent id and inserted `ChildOf` without checking whether the
+   parent was the node itself or one of its descendants. That is exactly
+   what `docs/contracts/IDENTITY-CONTENT.md` declares invalid (*"cycles in
+   ownership/parent hierarchies are invalid"*), and it is not a cosmetic
+   violation: measured by disabling the new check, the resulting cycle makes
+   `recompose_descendants` recurse until the process dies with
+   `fatal runtime error: stack overflow`. Fix: `creates_cycle` walks the
+   parent's ancestor chain (with a visited set, so it also terminates on a
+   chain that already loops) before anything is written and publishes
+   `AttachmentRefusalReason::CyclicParent` — no `ChildOf`, no half-reparent,
+   one refusal per state.
+2. **The release before a despawn only covered one hierarchy level.** The
+   same measurement that motivates the rule (`despawn` is recursive over
+   `Children`) means an animated attachment below a child the animation
+   never touched was *still* despawned with its grandparent. The rule the
+   stage exists to implement therefore did not hold past depth 1. Fix:
+   `release_attachments_before_despawn` walks the whole subtree breadth
+   first, releasing every managed attachment it reaches and stopping the
+   descent at a node it released (a released child survives together with
+   its own subtree, so unparenting below it would sever a link that was
+   never in danger); the unmanaged nodes between the doomed root and a
+   released attachment still die with the root. The velocity a deep release
+   inherits comes from the parent the released node was actually linked to,
+   read before the link goes away.
+
+Neither fix changes an `accept_f20_a_*` / `accept_f20_b_*` assertion, and
+neither touches `crates/cs_app/src/scene.rs` or a protected path.
 
 ## Checks run
 
