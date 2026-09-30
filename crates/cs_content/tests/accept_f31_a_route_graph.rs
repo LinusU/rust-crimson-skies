@@ -192,6 +192,27 @@ fn accept_f31_a_trigger_volume_ids_are_stable_and_shapes_are_positive() {
         })
     );
 
+    // An infinite extent is not a finite positive shape, so an infinite box is
+    // refused exactly like a zero or negative one rather than being accepted.
+    let infinite_shape = TriggerShape::AxisAlignedBox {
+        half_extents_m: [f64::INFINITY, 1.0, 1.0],
+    };
+    assert!(!infinite_shape.is_valid());
+    let mut infinite = declared_synthetic_arch_route().nodes().to_vec();
+    infinite[2].trigger = Resolved::Known(Known::new(
+        Some(TriggerVolume {
+            id: id.clone(),
+            shape: infinite_shape,
+        }),
+        designed(),
+    ));
+    assert_eq!(
+        RouteDefinition::try_new(draft(infinite, Vec::new())),
+        Err(RouteError::NonPositiveTrigger {
+            node: "arch".to_owned()
+        })
+    );
+
     let mut duplicate = declared_synthetic_arch_route().nodes().to_vec();
     let volume = |id: &str| TriggerVolume {
         id: TriggerVolumeId::try_new(id).expect("valid volume id"),

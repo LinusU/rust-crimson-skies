@@ -291,6 +291,91 @@ fn accept_f31_a_blocked_step_holds_position_without_crossing() {
     );
 }
 
+/// When the direct step would clip a small blocker, the follower issues a
+/// bounded deviation inside one tick's yaw step rather than holding.
+#[test]
+fn accept_f31_a_blocked_direct_step_deviates_within_the_envelope() {
+    let route = single_node_route([0.0, 0.0, -1000.0], 5.0);
+    // A small sphere just ahead: the direct step sweeps through it, but a
+    // single bounded yaw step to either side clears it.
+    let small = Blocker::sphere([0.0, 0.0, -0.3], 0.004);
+    let blockers = [small];
+    let state = NavState {
+        position_m: [0.0, 0.0, 0.0],
+        heading_rad: 0.0, // forward -Z, straight at the sphere
+        speed_mps: 40.0,
+        climb_mps: 0.0,
+    };
+    let navigator = navigator();
+
+    assert!(
+        small.segment_intersects(state.position_m, [0.0, 0.0, -40.0 * DT_S]),
+        "the direct step must sweep through the blocker for this case to bite"
+    );
+
+    let decision = navigator
+        .decide(&NavigationRequest {
+            tick: Tick(0),
+            generation: 1,
+            state,
+            route: &route,
+            progress: RouteProgress::start(),
+            frame: ReferenceFrameSample::IDENTITY,
+            blockers: &blockers,
+            dt_s: DT_S,
+        })
+        .expect("valid request");
+
+    assert_eq!(decision.avoidance, AvoidanceState::Deviating);
+    assert_ne!(
+        decision.step.from_m, decision.step.to_m,
+        "a deviation still moves the aircraft"
+    );
+    assert!(
+        !small.segment_intersects(decision.step.from_m, decision.step.to_m),
+        "the committed deviation must clear the blocker"
+    );
+    let applied = wrap_pi(decision.step.heading_rad - state.heading_rad);
+    let max_step = synthetic_maneuver_envelope().max_yaw_rate_radps * DT_S;
+    assert!(
+        applied.abs() <= max_step + 1e-12,
+        "the deviation {applied} exceeds the envelope step {max_step}"
+    );
+}
+
+/// A completed route yields the `Arrived` state, a neutral command, no target
+/// and a held position, without reading past the last node.
+#[test]
+fn accept_f31_a_completed_route_reports_arrived_and_holds() {
+    let route = single_node_route([0.0, 0.0, -10.0], 2.0);
+    let navigator = navigator();
+    let state = NavState {
+        position_m: [0.0, 0.0, -10.0],
+        heading_rad: 0.0,
+        speed_mps: 40.0,
+        climb_mps: 0.0,
+    };
+
+    let decision = navigator
+        .decide(&NavigationRequest {
+            tick: Tick(9),
+            generation: 2,
+            state,
+            route: &route,
+            progress: RouteProgress::reached_nodes(1),
+            frame: ReferenceFrameSample::IDENTITY,
+            blockers: &[],
+            dt_s: DT_S,
+        })
+        .expect("valid request");
+
+    assert_eq!(decision.avoidance, AvoidanceState::Arrived);
+    assert_eq!(decision.target, None);
+    assert_eq!(decision.command, cs_sim::flight::FlightInput::NEUTRAL);
+    assert_eq!(decision.step.from_m, decision.step.to_m, "arrival holds");
+    assert!(decision.progress.is_complete(&route));
+}
+
 /// The same request with the blockers reordered produces the identical
 /// decision, because the follower's only dependence on them is `any`.
 #[test]

@@ -166,9 +166,9 @@ impl TriggerShape {
     pub fn is_valid(self) -> bool {
         match self {
             Self::Sphere { radius_m } => radius_m.is_finite() && radius_m > 0.0,
-            Self::AxisAlignedBox { half_extents_m } => {
-                half_extents_m.into_iter().all(|extent| extent > 0.0)
-            }
+            Self::AxisAlignedBox { half_extents_m } => half_extents_m
+                .into_iter()
+                .all(|extent| extent.is_finite() && extent > 0.0),
         }
     }
 }
@@ -402,7 +402,7 @@ impl RouteDefinition {
                     id: edge.to.as_str().to_owned(),
                 });
             };
-            if to != from + 1 {
+            if from.checked_add(1) != Some(to) {
                 return Err(RouteError::EdgeNotAdjacent {
                     from: edge.from.as_str().to_owned(),
                     to: edge.to.as_str().to_owned(),
@@ -875,5 +875,38 @@ mod tests {
         .expect("an unknown position is content, not an authoring error");
         assert_eq!(route.nodes()[2].position_m.clone().known(), None);
         assert!(!route.nodes()[2].position_m.is_known());
+    }
+
+    /// A node at the top of the sequence range must not overflow the adjacency
+    /// check: an edge from it is refused by name rather than panicking.
+    #[test]
+    fn accept_f31_a_route_refuses_edge_from_the_last_sequence_without_overflow() {
+        let designed = Provenance::designed(claim("f31a.overflow"));
+        let node = |id: &str, sequence: u32| RouteNode {
+            id: RouteNodeId::try_new(id).expect("fixture node id is valid"),
+            sequence,
+            mandatory: true,
+            position_m: Resolved::Known(Known::new([0.0, 0.0, 0.0], designed.clone())),
+            trigger: Resolved::Known(Known::new(None, designed.clone())),
+        };
+
+        // Sequences increase, so the top node is last; an edge from it can have
+        // no adjacent successor and must be refused instead of `u32::MAX + 1`.
+        let edge = RouteEdge {
+            from: RouteNodeId::try_new("top").expect("fixture node id is valid"),
+            to: RouteNodeId::try_new("lower").expect("fixture node id is valid"),
+        };
+        assert_eq!(
+            RouteDefinition::try_new(draft(
+                route_id("synthetic.overflow"),
+                vec![node("lower", 0), node("top", u32::MAX)],
+                vec![edge],
+                designed,
+            )),
+            Err(RouteError::EdgeNotAdjacent {
+                from: "top".to_owned(),
+                to: "lower".to_owned(),
+            })
+        );
     }
 }

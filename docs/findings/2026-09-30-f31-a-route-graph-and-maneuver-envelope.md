@@ -188,6 +188,45 @@ carrying the `accept_f31_a_` prefix. No test is `#[ignore]`d, so
 Synthetic fixtures and design only. No original-data, visual, audible or
 ordinary-play claim; this stage can award at most **checked**.
 
+## Review fixes
+
+Reviewed by `deepseek-1` (same agent identity and model as the implementer, in
+a fresh session — **not** an independent reviewer). Two contract bugs were
+found and fixed, each with a regression test that fails when the fix is
+removed, and two previously untested production branches were covered.
+
+1. `TriggerShape::is_valid` documented "finite and strictly positive" but its
+   `AxisAlignedBox` arm only tested `extent > 0.0`, so an infinite half-extent
+   passed as a valid trigger. It now requires every extent to be finite
+   (`crates/cs_content/src/routes.rs`).
+   `accept_f31_a_trigger_volume_ids_are_stable_and_shapes_are_positive` fails
+   (the infinite box is accepted instead of `NonPositiveTrigger`) when the
+   finiteness check is removed.
+2. The edge adjacency check used `from + 1`, which panics on overflow for an
+   edge from a node at `sequence = u32::MAX`. It now uses `checked_add`; the
+   new `accept_f31_a_route_refuses_edge_from_the_last_sequence_without_overflow`
+   panics "attempt to add with overflow" without the fix.
+
+Coverage added for two production branches that no test reached:
+`AvoidanceState::Deviating`
+(`accept_f31_a_blocked_direct_step_deviates_within_the_envelope`, which also
+asserts the deviation stays inside one tick's yaw step) and
+`AvoidanceState::Arrived`
+(`accept_f31_a_completed_route_reports_arrived_and_holds`).
+
+Re-run after review fixes (from the repository root):
+
+```
+cargo fmt --all -- --check                                             -> 0
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings -> 0
+cargo test --workspace --locked                                        -> 0 (140 "test result: ok", no failures)
+cargo test --workspace --locked -- accept_f31_a_ --include-ignored     -> 0 (29 tests selected, all passed)
+```
+
+The 29 selected tests are 5 unit + 11 integration in `cs_sim`, 4 unit + 4
+integration in `cs_content`, and 2 unit + 3 integration in `cs_inspect`. No
+test is `#[ignore]`d.
+
 ## Sources
 
 - `specs/F31-ai-navigation-routes-and-obstacle-avoidance.md` (`### F31-A`,
