@@ -72,14 +72,16 @@
 //! without being re-decided. An id that names no node of the live scene is
 //! reported as [`SceneEvent::UnknownDamage`] rather than ignored.
 //!
-//! The three systems have a required order, and a schedule that gets it
-//! wrong is wrong visibly rather than subtly:
+//! The three systems have a required order, and a schedule that gets it wrong
+//! is wrong by a frame rather than silently divergent:
 //! [`process_airframe_scene_request`] first (it publishes the
 //! [`LiveAirframeScene`] the other two read), then
 //! [`apply_airframe_damage`] (it writes the markers), then
 //! [`select_lod_presentation`] (it reads them). Damage that runs before the
 //! load in a frame is applied on the next one, and a distance that runs
-//! before the damage leaves that frame's presentation one verdict behind.
+//! before the damage leaves that frame's presentation one verdict behind — a
+//! late update, never a wrong one, because each pass recomputes its own
+//! verdict from the record it owns.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
@@ -903,8 +905,12 @@ pub enum SceneEvent {
     },
     /// Recorded damage named nodes that are not part of the live scene; they
     /// were not applied and are not silently dropped.
+    ///
+    /// Reported once per gap: the identity stays unresolvable until the scene
+    /// that can resolve it is live, and the pass does not repeat itself while
+    /// it is.
     UnknownDamage {
-        /// The unresolvable part identities, in the order recorded.
+        /// The unresolvable part identities, in stable-id order.
         ids: Vec<SceneNodeId>,
     },
 }
@@ -927,9 +933,10 @@ impl SceneEvent {
 ///
 /// This is the error-propagation channel: a refused load, a released scene, a
 /// socket whose role is unknown and damage that named no node are all visible
-/// here instead of being logged away or defaulted. It grows with the number of
-/// requests and is meant to be drained by a diagnostic surface, not to grow
-/// without bound in a long session.
+/// here instead of being logged away or defaulted. It grows with the number
+/// of *events* — one per served request, and one per gap in the recorded
+/// damage, never one per frame — and is meant to be drained by a diagnostic
+/// surface, not to grow without bound in a long session.
 #[derive(Resource, Clone, Debug, Default, PartialEq)]
 pub struct AirframeSceneLog {
     events: Vec<SceneEvent>,
@@ -1083,10 +1090,15 @@ pub fn process_airframe_scene_request(world: &mut World) {
 /// under it (AC02).
 ///
 /// A recorded part that is not a node of the live scene is reported as
-/// [`SceneEvent::UnknownDamage`]. With no live scene at all the pass is a
-/// no-op and the damage state is kept for the next load — a part cannot be
-/// damaged into a scene that does not exist yet, and the state must not be
-/// lost while one is loading.
+/// [`SceneEvent::UnknownDamage`] **once per gap**: the gap is a state that
+/// lasts as long as the identity stays unresolvable, so reporting it on every
+/// run would append one entry per frame and the log would repeat itself
+/// forever without saying anything new (the pass remembers what it has
+/// already reported in a private `ReportedDamage` resource). With no live
+/// scene the pass is a no-op, the damage state is kept for the next load — a
+/// part cannot be damaged into a scene that does not exist yet, and the state
+/// must not be lost while one is loading — and nothing stays "already
+/// reported", so the next load reports its own gaps.
 ///
 /// It is an exclusive system because it writes structural markers on the
 /// entity set the live record owns: the plan is computed from that record
@@ -1096,6 +1108,11 @@ pub fn apply_airframe_damage(world: &mut World) {
     // The plan is computed into owned locals first, so the world's borrow has
     // ended by the time a marker is written.
     let Some(plan) = damage_plan(world) else {
+        // Nothing is live, so nothing is unresolvable and nothing stays
+        // remembered as reported: the next load reports its own gaps again.
+        if world.get_resource::<ReportedDamage>().is_some() {
+            world.insert_resource(ReportedDamage::default());
+        }
         return;
     };
     for (entity, destroyed) in plan.markers {
@@ -1110,6 +1127,9 @@ pub fn apply_airframe_damage(world: &mut World) {
             world.entity_mut(entity).remove::<NodeDisabled>();
         }
     }
+    world.insert_resource(ReportedDamage {
+        unresolvable: plan.unresolvable,
+    });
     if !plan.unknown.is_empty() {
         log_scene_event(world, SceneEvent::UnknownDamage { ids: plan.unknown });
     }
@@ -1124,9 +1144,15 @@ pub fn apply_airframe_damage(world: &mut World) {
 fn damage_plan(world: &World) -> Option<DamagePlan> {
     let damage = world.get_resource::<AirframeDamageState>()?;
     let live = world.get_resource::<LiveAirframeScene>()?;
-    let unknown = damage
+    let reported = world.get_resource::<ReportedDamage>();
+    let unresolvable: BTreeSet<SceneNodeId> = damage
         .destroyed()
         .filter(|node| live.entity(node).is_none())
+        .cloned()
+        .collect();
+    let unknown = unresolvable
+        .iter()
+        .filter(|node| reported.is_none_or(|reported| !reported.unresolvable.contains(*node)))
         .cloned()
         .collect();
     let plan = live
@@ -1135,16 +1161,34 @@ fn damage_plan(world: &World) -> Option<DamagePlan> {
         .map(|(node, entity)| (entity, damage.is_destroyed(&node)))
         .collect();
     Some(DamagePlan {
+        unresolvable,
         unknown,
         markers: plan,
     })
 }
 
-/// One damage pass's work: the part identities that name no node, and the
+/// One damage pass's work: the recorded identities that name no node of the
+/// live scene, the subset of those not already reported, and the
 /// entity/`NodeDisabled` verdict every imported node must end up with.
 struct DamagePlan {
+    unresolvable: BTreeSet<SceneNodeId>,
     unknown: Vec<SceneNodeId>,
     markers: Vec<(Entity, bool)>,
+}
+
+/// Resource: the recorded part identities already reported as naming no node
+/// of the *current* live scene.
+///
+/// This is the `AirframeSceneLog`'s bookkeeping for a condition that lasts
+/// as long as the identity stays unresolvable: without it every frame the gap
+/// persists would append another `UnknownDamage` entry saying exactly the same
+/// thing. An identity is reported when it *becomes* unresolvable and reported
+/// again if it resolves and later stops resolving; the set is rebuilt from the
+/// current gaps on every pass, so a resolved identity is forgotten. It holds
+/// no damage of its own — [`AirframeDamageState`] is the record.
+#[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
+struct ReportedDamage {
+    unresolvable: BTreeSet<SceneNodeId>,
 }
 
 /// Appends one event to the log, creating the resource if it is absent.
@@ -1617,6 +1661,18 @@ mod tests {
             node_id("fix_planes.main"),
         )
         .expect("the main root reference is well formed")
+    }
+
+    /// The airframe visual of the fixture's second root, `beta`: a different
+    /// airframe in the same container, so loading it resolves a different set
+    /// of part identities than `main` does.
+    fn beta_visual() -> AirframeVisual {
+        AirframeVisual::new(
+            cid(ContentKind::Airframe, "beta"),
+            cid(ContentKind::InstallFile, "fix_planes"),
+            node_id("fix_planes.beta"),
+        )
+        .expect("the beta root reference is well formed")
     }
 
     /// A world with the viewer distance the LOD system needs, an empty
@@ -2930,5 +2986,202 @@ mod tests {
                 .expect("the state is kept")
                 .is_destroyed(&wing)
         );
+    }
+
+    /// A recorded part identity that names no node of the live scene is
+    /// reported **once per gap**, not once per frame: the log is the error
+    /// channel, and a condition that lasts a thousand frames must not say the
+    /// same thing a thousand times. The identity is reported again when it
+    /// becomes unresolvable once more, so nothing is ever lost.
+    #[test]
+    fn accept_f11_c_an_unresolvable_damage_id_is_reported_once_per_gap() {
+        let graph = Arc::new(build_bound_graph());
+        let main = main_visual();
+        let beta = beta_visual();
+        let (mut world, mut schedule) = scene_world();
+        // `beta_gun` is a real node of the container, but not of `main`'s
+        // subtree, so it names no node of the live scene.
+        let beta_gun = node_id("fix_planes.beta.beta_gun");
+
+        load(&mut world, &mut schedule, &main, &graph);
+        world
+            .get_resource_mut::<AirframeDamageState>()
+            .expect("the damage state is installed")
+            .destroy(beta_gun.clone());
+        let events = world.resource::<AirframeSceneLog>().len();
+        schedule.run(&mut world);
+        assert_eq!(
+            world.resource::<AirframeSceneLog>().last(),
+            Some(&SceneEvent::UnknownDamage {
+                ids: vec![beta_gun.clone()]
+            }),
+            "the gap is reported when it appears"
+        );
+        let reported = world.resource::<AirframeSceneLog>().len();
+        assert_eq!(reported, events + 1);
+
+        // The gap lasts: the identity is still recorded and still names no
+        // node. Ten more runs must add nothing at all.
+        for _ in 0..10 {
+            schedule.run(&mut world);
+        }
+        assert_eq!(
+            world.resource::<AirframeSceneLog>().len(),
+            reported,
+            "a gap that persists is not reported again every run"
+        );
+        assert_eq!(
+            world
+                .get_resource::<AirframeDamageState>()
+                .expect("the state is kept")
+                .destroyed()
+                .cloned()
+                .collect::<Vec<_>>(),
+            vec![beta_gun.clone()],
+            "the unresolvable identity is kept, not dropped"
+        );
+
+        // The scene goes away and the same one comes back: the identity is
+        // unresolvable again, so the gap is reported again rather than being
+        // swallowed by the first report. Nothing was live in between, so
+        // nothing was "already reported" any more either.
+        unload(&mut world, &mut schedule);
+        load(&mut world, &mut schedule, &main, &graph);
+        assert_eq!(
+            world
+                .resource::<AirframeSceneLog>()
+                .events()
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    SceneEvent::UnknownDamage { ids } if ids == &vec![beta_gun.clone()]
+                ))
+                .count(),
+            2,
+            "a gap that opens again after a teardown is reported again"
+        );
+
+        // Loading the airframe that owns the identity closes the gap for good:
+        // nothing is reported and the part really is disabled there.
+        load(&mut world, &mut schedule, &beta, &graph);
+        let live = world
+            .get_resource::<LiveAirframeScene>()
+            .expect("the beta load published a live scene")
+            .clone();
+        let beta_gun_entity = live.entity(&beta_gun).expect("beta_gun is imported");
+        assert!(
+            world.get::<NodeDisabled>(beta_gun_entity).is_some(),
+            "the recorded damage applies once the identity resolves"
+        );
+        assert!(
+            matches!(
+                world.resource::<AirframeSceneLog>().last(),
+                Some(SceneEvent::Loaded { .. })
+            ),
+            "a resolved identity is not a gap any more"
+        );
+
+        // And the gap is reported a third time when the scene it needs is gone
+        // again — an identity that resolved and then stopped resolving is not
+        // a gap the log has already said everything about.
+        unload(&mut world, &mut schedule);
+        load(&mut world, &mut schedule, &main, &graph);
+        assert_eq!(
+            world
+                .resource::<AirframeSceneLog>()
+                .events()
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    SceneEvent::UnknownDamage { ids } if ids == &vec![beta_gun.clone()]
+                ))
+                .count(),
+            3,
+            "a gap that opens again is reported again"
+        );
+        assert!(
+            world
+                .get_resource::<LiveAirframeScene>()
+                .expect("the main scene is live again")
+                .entity(&beta_gun)
+                .is_none(),
+            "the identity is a gap again: it is not part of main's subtree"
+        );
+    }
+
+    /// The request is served **once**: the resource is consumed, so a request
+    /// can neither be applied twice nor survive into a later run where it
+    /// would be stale. A schedule run with no new request does nothing at all.
+    #[test]
+    fn accept_f11_c_a_scene_request_is_served_once_and_never_replayed() {
+        let graph = Arc::new(build_bound_graph());
+        let visual = main_visual();
+        let (mut world, mut schedule) = scene_world();
+        let wing = node_id("fix_planes.main.wing");
+
+        world
+            .get_resource_mut::<AirframeDamageState>()
+            .expect("the damage state is installed")
+            .destroy(wing.clone());
+
+        // One request, one run: the scene is loaded and the request is gone.
+        world.insert_resource(AirframeSceneRequest::load(
+            visual.clone(),
+            Arc::clone(&graph),
+        ));
+        schedule.run(&mut world);
+        assert!(
+            world.get_resource::<AirframeSceneRequest>().is_none(),
+            "a served request is consumed, not stored as a wish"
+        );
+        let live = world
+            .get_resource::<LiveAirframeScene>()
+            .expect("the load published a live scene")
+            .clone();
+        assert_eq!(live.generation(), SceneGeneration(1));
+        let loaded = world.resource::<AirframeSceneLog>().len();
+        let entities = live_entities(&world);
+
+        // Any number of further runs with no new request changes nothing: the
+        // scene is not reloaded, the generation is not reused and the log does
+        // not grow. A request that survived would reload the airframe here and
+        // burn a second generation.
+        for _ in 0..10 {
+            schedule.run(&mut world);
+        }
+        assert_eq!(
+            world.get_resource::<LiveAirframeScene>(),
+            Some(&live),
+            "a replayed request would replace the live record"
+        );
+        assert_eq!(
+            world.resource::<SceneGenerations>().latest(),
+            SceneGeneration(1),
+            "a replayed request would consume another generation"
+        );
+        assert_eq!(
+            world.resource::<AirframeSceneLog>().len(),
+            loaded,
+            "a replayed request would report again"
+        );
+        assert_eq!(live_entities(&world), entities);
+
+        // The same holds for the teardown arm: consumed once, and a second
+        // run has nothing left to release.
+        world.insert_resource(AirframeSceneRequest::unload());
+        schedule.run(&mut world);
+        assert!(world.get_resource::<AirframeSceneRequest>().is_none());
+        assert_eq!(imported_count(&mut world), 0);
+        let released = world.resource::<AirframeSceneLog>().len();
+        assert_eq!(released, loaded + 1, "the unload reported one release");
+        for _ in 0..10 {
+            schedule.run(&mut world);
+        }
+        assert_eq!(
+            world.resource::<AirframeSceneLog>().len(),
+            released,
+            "a replayed teardown would release again"
+        );
+        assert_eq!(imported_count(&mut world), 0);
     }
 }

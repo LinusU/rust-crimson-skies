@@ -132,6 +132,8 @@ subtree size on every one of the hundred rounds.
 | `a_refused_load_propagates_its_error_and_leaves_the_running_scene_alone` (cs_app) | error propagation and retry: a refusal before anything is live spawns nothing; three refusals (`ForeignContainer`, `UnknownNode`, unrepresentable `Transform`) each report the verbatim error at their own consumed generation (3, 4, 5) and change neither the live record nor the entity set; the retry then loads the same airframe at generation 6 | the error is swallowed, the running scene is torn down by a failed load, the generation is reused, or the retry is impossible |
 | `sockets_are_bound_by_identity_and_survive_an_lod_transition` (cs_app) | the bound set is exactly the five evidenced sockets of the loaded subtree; the gun's role, collision role, zone, provenance, animation channel and mesh association are reachable by stable id; the socket pose equals the node's collision transform and the ECS affine; the pod with an unmeasured role gets no binding and stays unknown; the other root's gun is not imported or bound; across a 50 m → 150 m transition every socket's id, role, pose and generation are unchanged while the tail's band really swaps | sockets are bound by position, an unmeasured role is defaulted, another airframe's socket leaks in, or presentation writes identity/pose |
 | `damage_marks_and_repairs_the_bound_part_subtree` (cs_app) | the marker is the damage identity on the named part only (the gun is disabled through its ancestor, not by a marker), the subtree is `Disabled` through presentation, the pass is convergent (a second run changes nothing and reports nothing), an unknown part id is reported and kept, a repair clears the marker and restores presentation while the distance verdict (the far band stays `LodCulled`) returns, and with no live scene the pass is a no-op that keeps the state | the damage state is ignored, markers are never cleared, unknown ids are dropped, or damage is applied to nothing |
+| `a_scene_request_is_served_once_and_never_replayed` (cs_app) | the hand-off is consumed: after one insert and one run the request resource is gone, the load is applied exactly once, and ten further runs with no new request neither reload, reuse a generation, add a log entry nor change the entity count; the teardown arm is consumed the same way and a replay has nothing to release | the request is stored instead of consumed, applied twice, or replayed into a later run where it would be stale |
+| `an_unresolvable_damage_id_is_reported_once_per_gap` (cs_app) | a recorded identity that names no node of the live scene is reported once (`UnknownDamage`), ten further runs report nothing, the identity is kept, loading the airframe that owns it closes the gap (and the part is then really disabled), and after the scene goes away and comes back the same gap is reported again | a persistent gap is appended once per frame, is never reported, or is swallowed after the first report |
 
 **Sensitivity check (mutations applied and reverted while implementing, all
 in the same session).**
@@ -148,8 +150,76 @@ in the same session).**
 
 The tests are not vacuous.
 
+## Review corrections (2026-09-30, reviewer of #58)
+
+Reviewer: `bunny-2` (the same agent identity as the implementer, in a fresh
+session with no memory of the implementation; see the `complete_review` note
+— this is **not** independent evidence and is recorded as such).
+
+- **The log repeated itself once per frame.** `apply_airframe_damage` runs
+  every frame, and every recorded part identity that names no node of the
+  live scene was appended to `AirframeSceneLog` as a fresh
+  `SceneEvent::UnknownDamage` — so a gap that lasts a second appended sixty
+  copies of the same sentence, and the resource's own contract ("it grows
+  with the number of requests … not to grow without bound in a long
+  session") was false. This is reachable: the damage state outlives the
+  scene, so damage recorded for one airframe is unresolvable for as long as a
+  *different* airframe is live, and every frame said so again. Fixed in
+  review:
+  - `apply_airframe_damage` reports an unresolvable identity **once per gap**.
+    A new private resource `ReportedDamage` holds the gaps already reported
+    for the current live scene; it is rebuilt from the current gaps on every
+    pass, so a resolved identity is forgotten and reported again if it later
+    stops resolving, and with no live scene the set is cleared so the next
+    load reports its own gaps. `AirframeDamageState` stays the pure damage
+    record; `AirframeSceneLog` still grows with *events*, never with frames.
+  - New test `accept_f11_c_an_unresolvable_damage_id_is_reported_once_per_gap`
+    (the fixture's second root `beta` supplies a real identity that `main`'s
+    subtree does not hold, and loading `beta` closes the gap). With the
+    dedupe removed it fails on `a gap that persists is not reported again
+    every run` (mutation applied and reverted during review).
+- **"Served once" was only covered by accident.** The hand-off's central
+  promise — the request is consumed, so it can neither be applied twice nor
+  survive into a later run where it would be stale — had no test of its own;
+  it was only implied by two other tests that happened to run the schedule
+  again. Added
+  `accept_f11_c_a_scene_request_is_served_once_and_never_replayed`, which
+  asserts the resource is gone after one run, that ten further runs change
+  neither the live record, the generation, the log nor the entity count, and
+  that the teardown arm is consumed the same way. It fails with
+  `process_airframe_scene_request` reading the resource instead of removing
+  it (mutation applied and reverted during review).
+- **The module doc overstated the cost of a wrong system order.** It claimed
+  a schedule that does not chain the three systems "is wrong visibly rather
+  than subtly"; the truth is milder and now stated: a wrong order is a one
+  frame delay, never a wrong verdict, because each pass recomputes its own
+  verdict from the record it owns. No behavior changed with it.
+
+Sensitivity of the submitted tests was re-checked independently by the
+reviewer (mutations applied and reverted on the review branch): teardown that
+despawns nothing fails 4 of the 7 app tests; a load that stops releasing the
+superseded generation fails the reload and refusal tests; a socket pose taken
+from the node's *local* transform fails both socket tests; a damage pass that
+never writes a marker fails 3; a damage pass that never *clears* one fails
+the damage test; `process_airframe_scene_request` that does not consume the
+request fails 4.
+
 ## Unknowns and limitations (all recorded, none guessed)
 
+- **Recorded damage is not scoped to an airframe.** `AirframeDamageState` is
+  one session-wide resource keyed by part identity, and it outlives a scene on
+  purpose (a reload must not silently heal). So damage recorded for one
+  airframe is still recorded while a *different* airframe of the same session
+  is live: the identity then names no node of that scene and is reported once
+  per gap as `UnknownDamage` (see the review correction above) instead of
+  disabling anything, because a part id is qualified by its container and
+  root. Whether damage should be scoped to an airframe, cleared when the
+  session switches airframe or kept for the whole session is **not decided
+  here** — this stage only reflects what another engine records.
+  **Affected content:** every airframe's damage state across a mission or a
+  plane switch. **Resolving task:** F29 ("zones, armor and system
+  disablement") together with the session/bootstrap owner that arrives with
+  #398.
 - **The GameZ node-array reader still does not exist** (inherited from
   F11-B). **Affected content:** every original airframe and world hierarchy —
   nothing retail can be loaded through this path, so F11-D's roster audit
@@ -181,9 +251,12 @@ The tests are not vacuous.
   `NodePresentation`); whether the original shows fire, smoke, a detached wing
   or a scorch is unmeasured. **Resolving task:** F17 (drawable mapping) and
   F29 (system disablement).
-- **The log grows with the number of requests.** `AirframeSceneLog` is
-  append-only and is meant to be drained by a diagnostic surface; no draining
-  policy is implemented, because no consumer owns it yet.
+- **The log grows with the number of events, not with frames.** One entry per
+  served request, plus one per *gap* in the recorded damage (an unresolvable
+  identity is reported when it becomes unresolvable, not on every frame it
+  stays that way — see the review correction above). `AirframeSceneLog` is
+  still append-only and no draining policy is implemented, because no consumer
+  owns it yet.
 - **The request is served, but no production code inserts it yet.** The
   hand-off resource and its consumer exist and are exercised by the tests;
   the *producer* side — the mission/session bootstrap (`crates/cs_app/src/
