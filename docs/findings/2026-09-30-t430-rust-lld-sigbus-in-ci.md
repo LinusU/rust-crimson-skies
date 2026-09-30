@@ -338,13 +338,14 @@ cargo does not delete the previous profile's artifacts, and a
 `CARGO_PROFILE_DEV_DEBUG` in the environment overrides the manifest. Both are
 in the sections above, with the measurements and the limits of what they prove.
 
-Commands run by the review pass on its own head:
+Commands run by the review pass, on its head rebased onto the F19-B `main`
+that had landed in the meantime (`c5d5eb0` and the doc commit on top):
 
 | command | exit | result |
 |---|---|---|
 | `cargo fmt --all -- --check` | 0 | clean |
 | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 | clean |
-| `cargo test --workspace --locked` | 0 | 156 test binaries, 1,443 tests, 0 failed (13 ignored: the `CS_GAME_DIR` ones) |
+| `cargo test --workspace --locked` | 0 | 156 test binaries, 1,455 tests, 0 failed, 98 ignored |
 | `cargo test --workspace --locked -- accept_t430_ --include-ignored` | 0 | 6 selected, 6 passed |
 | `cargo run -p cs_xtask -- verify-ci-budget` | 0 | the gate accepts the committed manifest |
 | `CARGO_PROFILE_DEV_DEBUG=none cargo test -p cs_xtask --test accept_t430_ci_disk_budget` | 101 | the backtrace test fails, 6 others pass — its sensitivity check |
@@ -352,7 +353,7 @@ Commands run by the review pass on its own head:
 Two limits on what that table proves, stated rather than glossed:
 
 * The task's own selection is the `accept_t430_` prefix and it was run with
-  `--include-ignored`; the 13 ignored tests in the workspace are the
+  `--include-ignored`; the 98 ignored tests in the workspace are the
   `CS_GAME_DIR` ones, which this task does not touch and does not claim
   (capabilities used: ordinary build/test only, no `retail`), so they were
   left ignored in the workspace run.
