@@ -175,13 +175,11 @@ impl ResidentWorld {
         self.objects.contains_key(object)
     }
 
-    /// The mission-local overlays this load declared, keyed by trigger.
-    #[must_use]
-    pub const fn overlays(&self) -> &BTreeMap<WorldObjectId, MissionOverlay> {
-        &self.overlays
-    }
-
     /// The overlay whose trigger is `trigger`, when this load declares one.
+    ///
+    /// The single way to read a declared overlay: the record is a map keyed by
+    /// its own trigger, and there is one overlay per trigger by construction
+    /// ([`WorldInstance::with_mission_layer`] refuses a second).
     #[must_use]
     pub fn overlay_for(&self, trigger: &WorldObjectId) -> Option<&MissionOverlay> {
         self.overlays.get(trigger)
@@ -200,29 +198,15 @@ impl ResidentWorld {
     }
 
     /// The objects this load declares gameplay-required, in stable order.
+    ///
+    /// The whole declaration, and the only way to read it: which *sectors* a
+    /// required object holds is the streaming policy's own question and is
+    /// answered by [`super::visibility::retained_sectors`], which is the tested
+    /// path. A second spelling of that question here would be untested
+    /// arithmetic that could disagree with the policy.
     #[must_use]
     pub const fn required_objects(&self) -> &BTreeSet<WorldObjectId> {
         &self.required
-    }
-
-    /// Whether `object` is one a streaming policy must not take away.
-    #[must_use]
-    pub fn is_required(&self, object: &WorldObjectId) -> bool {
-        self.required.contains(object)
-    }
-
-    /// The sectors that hold an object gameplay requires, in stable order.
-    ///
-    /// An object that names no sector is resident by definition, so it names no
-    /// sector here either: the rule that protects it is the residency rule, not
-    /// this one.
-    #[must_use]
-    pub fn required_sectors(&self) -> BTreeSet<SectorId> {
-        self.required
-            .iter()
-            .filter_map(|object| self.definition.object(object))
-            .flat_map(|record| record.sectors().iter().cloned())
-            .collect()
     }
 
     /// Records that this load has applied the overlay fired by `trigger`.
@@ -705,6 +689,13 @@ pub fn load_sector(
     //    leaves the world as this call found it: [`rollback`] takes back exactly
     //    what this call spawned and leaves everything that was already present
     //    where it was.
+    //
+    //    An object joins `incoming` the moment its entities exist, **before** the
+    //    steps that can still fail. Everything after the spawn is a refusal that
+    //    has already created entities, so an object that was not yet in
+    //    `incoming` would survive its own abort: still live, and — for the two
+    //    steps that touch the record — still claimed by it, which is the one
+    //    outcome this module exists to prevent.
     let mut report = SpawnedWorld::of(definition.id());
     let mut incoming: Vec<SpawnedObject> = Vec::new();
     for record in &records {
@@ -713,6 +704,7 @@ pub fn load_sector(
             Ok(spawned) => spawned,
             Err(err) => return Err(rollback(app, &incoming, WorldLoadError::Spawn(err))),
         };
+        incoming.push(spawned.clone());
         if let Err(err) = stamp(app.world_mut(), &spawned, condition) {
             return Err(rollback(app, &incoming, err));
         }
@@ -732,7 +724,6 @@ pub fn load_sector(
         if let Err(err) = reapply_object(app.world_mut(), &spawned) {
             return Err(rollback(app, &incoming, WorldLoadError::Overlay(err)));
         }
-        incoming.push(spawned.clone());
         report.record(spawned);
     }
     {
