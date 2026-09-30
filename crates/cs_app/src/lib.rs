@@ -157,6 +157,15 @@
 //! blend a `StandardMaterial` cannot reach, which every class now has a
 //! drawable form of.
 //!
+//! [`audio`] is the F41-A audio boundary
+//! (`specs/F41-audio-music-radio-dialogue-and-spatial-mixing.md`, stage
+//! `### F41-A`): [`audio::lower_record`] and [`audio::lower_catalog`], which
+//! lower a declared `cs_content::audio::AudioAssetRecord` into the
+//! `cs_sim::audio_events::AudioAssetSpec` the router schedules, refusing an
+//! unknown bus, level or playback mode by claim instead of inventing one; and
+//! the generation-stamped [`audio::AudioEmitterBinding`] tying an entity to its
+//! session-qualified emitter, bus and asset.
+//!
 //! [`damage`] is the F29-A damage boundary
 //! (`specs/F29-damage-zones-armor-destruction-and-bailout.md`, stage
 //! `### F29-A`): [`damage::lower_graph`], which lowers a declared
@@ -193,6 +202,7 @@ pub mod airframe_visual;
 pub mod animation;
 pub mod asset_stack;
 pub mod assets;
+pub mod audio;
 pub mod cli;
 pub mod damage;
 pub mod environment;
