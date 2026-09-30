@@ -956,6 +956,33 @@ fn accept_f17_c_enhancements_change_no_draw_decision() {
         })
     );
     assert!(!presentation.is_fidelity());
+
+    // Two *different* enhanced profiles record different frames although the
+    // draw content is identical, so the profile the frame was built under is
+    // part of what a comparison sees — not only the faithful/improved verdict.
+    let other = RenderProfile::new([
+        Enhancement::Antialiasing { samples: 4 },
+        Enhancement::ToneMapping {
+            curve: cs_app::render::capture::Tonemap::Filmic,
+        },
+        Enhancement::ShadowMapping,
+        Enhancement::RenderResolution {
+            resolution: Resolution::new(1_920, 1_080).expect("positive"),
+        },
+    ])
+    .expect("every option is expressible");
+    let also_improved = fixture.batch(&other);
+    assert_eq!(also_improved.profile(), improved.profile());
+    assert_eq!(also_improved.batches(), improved.batches());
+    assert_ne!(
+        also_improved.fingerprint(),
+        improved.fingerprint(),
+        "the recorded profile is part of the frame's identity"
+    );
+    assert_ne!(
+        also_improved.profile_fingerprint(),
+        improved.profile_fingerprint()
+    );
 }
 
 /// An enhanced profile is refused as comparison evidence by the profile and,
@@ -1277,6 +1304,27 @@ fn accept_f17_c_unresolved_paint_and_part_identity_are_reported_not_assumed() {
         batch_key(batch_of(&frame, RenderPhase::Opaque, PLANE_A)),
         "an unresolved paint cannot share a draw with a resolved one"
     );
+
+    // Three unresolved paints in a row are still three draws: two unresolved
+    // paints may be different, so merging them would invent a match.
+    let mut all_unbound = fixture();
+    for instance in [PLANE_A, PLANE_B, PLANE_C] {
+        all_unbound.visuals.insert(InstanceVisual::unbound(instance));
+    }
+    // `a`'s wing is intact here, so the three wings are consecutive items with
+    // one geometry, one state and one image between them.
+    all_unbound.visuals.insert(
+        InstanceVisual::unbound(PLANE_A)
+            .with_damage(&AirframeDamageState::new()),
+    );
+    let frame = all_unbound.batch(&RenderProfile::faithful());
+    let wings = batches_of(&frame, RenderPhase::Masked);
+    assert_eq!(wings.len(), 3, "three unresolved paints, three draws");
+    assert!(
+        wings.iter().all(|batch| batch.len() == 1 && !batch.mergeable()),
+        "no two unresolved paints may share a draw"
+    );
+    assert_eq!(frame.instance_count(), 6, "nothing was withheld or dropped");
 
     // An unresolved part identity means the damage could not be checked, so the
     // item is drawn and the gap is named — an unestablished destruction is not
