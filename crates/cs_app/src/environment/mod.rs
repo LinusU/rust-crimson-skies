@@ -1,5 +1,5 @@
-//! Environment data, sky frame, weather clock and environment effects at the
-//! Bevy boundary (F19-A, F19-B).
+//! Environment data, sky frame, weather clock, environment effects and the
+//! mission session at the Bevy boundary (F19-A, F19-B, F19-C).
 //!
 //! Spec: `specs/F19-sky-atmosphere-weather-and-visibility.md`, stages
 //! `### F19-A` and `### F19-B`. Shared contract:
@@ -48,6 +48,10 @@
 //!   code in the same sense as [`crate::synthetic`] and
 //!   [`crate::world::fixture`].
 //!
+//! * [`session`] is F19-C: [`EnvironmentSession`] joins the clock to its
+//!   consumers — the wind flight and projectiles read, the sight range AI
+//!   reads, and the mission AI stream the weather seed never touches.
+//!
 //! Every module here is deliberately free of Bevy, ECS and asset types so the
 //! environment can be exercised headless. F19-C wires these records into
 //! their real producer and consumer; F19-D audits retail environments and
@@ -68,6 +72,7 @@ pub mod cosmetic;
 pub mod effects;
 pub mod fixture;
 pub mod frame;
+pub mod session;
 
 pub use air::{
     AuthoritativeWind, MAX_AIR_VELOCITY_MPS, ProjectileError, ProjectileMotion, WindUnavailable,
@@ -87,3 +92,4 @@ pub use fixture::{
     WIND_SHIFT_TICK, clear_sky_environment, storm_environment,
 };
 pub use frame::{SKY_CENTERING_TOLERANCE_M, SkyFrame, SkyFrameError};
+pub use session::{EnvironmentSession, RunSeeds, VisibilityUnavailable};

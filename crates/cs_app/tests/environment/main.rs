@@ -49,9 +49,8 @@
 //!   from the run's cosmetic weather stream and advected only by the
 //!   authoritative wind, with only authored precipitation drawn at all.
 //!
-//! Stage B's remaining sheet cases are not silently dropped: AC03 (weather
-//! seeds do not change mission AI RNG sequences) is F19-C's minimum scenario
-//! and needs the AI consumer that does not exist yet, and AC04 (the original
+//! Stage B's remaining sheet cases are not silently dropped: AC03 is F19-C's
+//! minimum scenario and lives in `session` (`accept_f19_c_`), and AC04 (the original
 //! environment states actually present in each world) needs `retail` + `gpu`
 //! in F19-D. Neither is claimed here.
 
@@ -61,4 +60,5 @@ mod common;
 mod cosmetic;
 mod effects;
 mod records;
+mod session;
 mod sky;
