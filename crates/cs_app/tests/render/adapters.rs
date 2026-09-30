@@ -325,9 +325,9 @@ fn accept_f17_b_image_upload_chooses_the_sampling_format_from_the_color_space() 
     assert_eq!(upload.mip_levels(), 1, "no mip level is generated");
     assert_eq!(upload.coverage(), CoveragePlane::Channel);
     assert_eq!(
-        upload.covered_texels(),
+        upload.translucent_texels(),
         2,
-        "two of the four texels are covered"
+        "two of the four texels are not fully opaque"
     );
     assert_eq!(
         texels(upload.image()),
@@ -406,7 +406,11 @@ fn accept_f17_b_image_upload_composes_a_separate_coverage_plane() {
         ],
         "the coverage plane lands in the alpha channel of the right texels"
     );
-    assert_eq!(upload.covered_texels(), 1);
+    assert_eq!(
+        upload.translucent_texels(),
+        1,
+        "only the one texel the plane clears is not fully opaque"
+    );
     assert_eq!(upload.format(), TextureFormat::Rgba8UnormSrgb);
 }
 

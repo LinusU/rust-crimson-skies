@@ -182,7 +182,7 @@ pub struct ImageUpload {
     coverage: CoveragePlane,
     alpha_test: AlphaTest,
     address: TextureAddress,
-    covered_texels: u32,
+    translucent_texels: u32,
     fingerprint: ContentHash,
 }
 
@@ -234,7 +234,7 @@ pub fn upload_image(
             .saturating_mul(usize::try_from(height).unwrap_or(0))
             .saturating_mul(4),
     );
-    let mut covered_texels = 0u32;
+    let mut translucent_texels = 0u32;
     for y in 0..height {
         for x in 0..width {
             // The decoder's texel length is the channel count of the decoded
@@ -253,7 +253,7 @@ pub fn upload_image(
                     .expect("a coverage plane has a byte at every texel of its extent"),
             };
             if alpha != u8::MAX {
-                covered_texels = covered_texels.saturating_add(1);
+                translucent_texels = translucent_texels.saturating_add(1);
             }
             data.extend_from_slice(&[texel[0], texel[1], texel[2], alpha]);
         }
@@ -293,7 +293,7 @@ pub fn upload_image(
         coverage,
         alpha_test,
         address,
-        covered_texels,
+        translucent_texels,
     );
     let fingerprint = image_fingerprint(&descriptor, &texture);
     Ok(ImageUpload {
@@ -305,7 +305,7 @@ pub fn upload_image(
         coverage,
         alpha_test,
         address,
-        covered_texels,
+        translucent_texels,
         fingerprint,
     })
 }
@@ -326,7 +326,7 @@ fn descriptor_bytes(
     coverage: CoveragePlane,
     alpha_test: AlphaTest,
     address: TextureAddress,
-    covered_texels: u32,
+    translucent_texels: u32,
 ) -> Vec<u8> {
     let mut bytes = Vec::new();
     bytes.extend_from_slice(b"cs/render/bevy_image/v1\0");
@@ -348,7 +348,7 @@ fn descriptor_bytes(
     bytes.push(b':');
     bytes.extend_from_slice(address.v.code().as_bytes());
     bytes.push(0);
-    bytes.extend_from_slice(&covered_texels.to_le_bytes());
+    bytes.extend_from_slice(&translucent_texels.to_le_bytes());
     bytes
 }
 
@@ -436,9 +436,14 @@ impl ImageUpload {
         self.address
     }
 
-    /// How many texels are not fully opaque after composition.
-    pub const fn covered_texels(&self) -> u32 {
-        self.covered_texels
+    /// How many texels are **not** fully opaque after composition — the texels
+    /// the declared coverage actually reaches. `0` for an image with no
+    /// coverage anywhere, and the whole image for one where every texel is
+    /// cut. The name is the point: a caller asking whether an image is fully
+    /// covered asks whether this is *less* than the texel count, not whether it
+    /// is `0`.
+    pub const fn translucent_texels(&self) -> u32 {
+        self.translucent_texels
     }
 
     /// Mip levels in the upload. Always `1`: this stage generates none.
