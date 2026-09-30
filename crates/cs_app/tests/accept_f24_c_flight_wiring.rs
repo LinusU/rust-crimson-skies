@@ -19,7 +19,7 @@ use avian3d::prelude::{AngularVelocity, LinearVelocity, Mass, Position, Rotation
 use bevy::prelude::{Entity, Vec3};
 use cs_app::physics::flight::{
     FlightEquipment, FlightEvidenceClass, FlightInstruments, FlightRefusalReason,
-    declared_flight_model,
+    FlightTuningError, declared_flight_model,
 };
 use cs_app::physics::{
     FixtureBodySpec, FlightAircraft, FlightAircraftError, FlightForcesPlugin, FlightSpawnSpec,
@@ -210,6 +210,30 @@ fn accept_f24_c_profile_and_field_errors_propagate() {
             .expect("improved is declared")
             .profile,
         IMPROVED_PROFILE
+    );
+}
+
+/// A fidelity record that enables assists is refused: the calibrated profile
+/// must fly with assist contributions of exactly zero (F24 non-negotiable
+/// behavior 5), so an assist set is not silently folded into it. The same
+/// assist set is accepted under the explicitly named improved profile.
+#[test]
+fn accept_f24_c_fidelity_profile_refuses_enabled_assists() {
+    let mut smuggled = declared_synthetic_airframe();
+    assert!(!smuggled.assists_enabled);
+    smuggled.assists_enabled = true;
+    match declared_flight_model(&smuggled, HandlingProfile::Fidelity) {
+        Err(FlightTuningError::FidelityAssistsEnabled { .. }) => {}
+        other => panic!("a fidelity record with assists must be refused, got {other:?}"),
+    }
+
+    let improved = declared_synthetic_improved_airframe();
+    assert!(improved.assists_enabled);
+    let improved_model = declared_flight_model(&improved, HandlingProfile::Improved)
+        .expect("the improved profile may enable assists");
+    assert!(
+        improved_model.tuning().assists.enabled,
+        "the improved profile's assist reaches the model"
     );
 }
 

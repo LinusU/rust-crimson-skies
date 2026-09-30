@@ -227,6 +227,17 @@ pub enum FlightTuningError {
         /// The unknown label.
         label: String,
     },
+    /// The record enables the assist set while naming the fidelity profile.
+    ///
+    /// F24 non-negotiable behavior 5 keeps original and modern handling
+    /// separate: the profile a calibrated reference trace is compared against
+    /// must fly with its assist contributions recorded as exactly zero, so an
+    /// assist set on the fidelity profile is refused rather than silently
+    /// folded into the calibrated model.
+    FidelityAssistsEnabled {
+        /// The profile the record names.
+        profile: String,
+    },
     /// The record names a model kind this build does not know.
     UnknownModelKind {
         /// The unknown label.
@@ -251,6 +262,10 @@ impl fmt::Display for FlightTuningError {
                 "the declared airframe names the {record} profile but {requested} was requested"
             ),
             Self::UnknownProfile { label } => write!(f, "{label} is not a known handling profile"),
+            Self::FidelityAssistsEnabled { profile } => write!(
+                f,
+                "the {profile} profile must not enable assists; only the improved profile may"
+            ),
             Self::UnknownModelKind { label } => write!(f, "{label} is not a known model kind"),
             Self::MissingField { name } => {
                 write!(f, "the declared airframe does not state the field {name}")
@@ -294,15 +309,18 @@ fn declared_field(
 /// value came from, and this function is the one place those values become the
 /// model input. It refuses a record that names a different profile than the
 /// caller requested (so an improved profile is never silently flown as the
-/// fidelity one), a record whose schema check fails, an unknown model kind,
-/// and a required missing/unknown field. The record's [`Origin`] travels into
-/// the tuning unchanged, so a synthetic record can never be reported as an
-/// original airframe.
+/// fidelity one), a fidelity record that enables the assist set (behavior 5:
+/// the calibrated profile flies with assist contributions of exactly zero), a
+/// record whose schema check fails, an unknown model kind, and a required
+/// missing/unknown field. The record's [`Origin`] travels into the tuning
+/// unchanged, so a synthetic record can never be reported as an original
+/// airframe.
 ///
-/// Boost equipment is optional: a record that leaves `boost.thrust_n` or
-/// `boost.consumption_per_s` explicitly unknown maps to
-/// [`BoostParameters::NONE`] — no boost equipment — instead of a fabricated
-/// zero-thrust boost.
+/// Boost equipment is optional: a record that leaves `boost.consumption_per_s`
+/// unknown maps to [`BoostParameters::NONE`] — no boost equipment — instead of
+/// a fabricated zero-thrust boost. A record that states a consumption but omits
+/// `boost.thrust_n` is refused by name rather than quietly dropping the
+/// declared consumption.
 ///
 /// # Errors
 ///
@@ -320,6 +338,17 @@ pub fn airframe_tuning_from_declared(
         return Err(FlightTuningError::ProfileMismatch {
             record: record.profile.clone(),
             requested: profile.label(),
+        });
+    }
+    // Profile separation (F24 non-negotiable behavior 5): the fidelity profile is
+    // the one a calibrated reference trace is compared against, so it must fly
+    // with assist contributions of exactly zero. Only the explicitly named
+    // improved profile may enable the declared assist set; a fidelity record that
+    // enables them is refused rather than silently folding assists into the
+    // calibrated model.
+    if profile == HandlingProfile::Fidelity && record.assists_enabled {
+        return Err(FlightTuningError::FidelityAssistsEnabled {
+            profile: record.profile.clone(),
         });
     }
     record.validate(&TuningSchema::fixed_wing())?;
