@@ -24,10 +24,17 @@
 //! opts the fast layers into swept detection with a bounded speculative
 //! margin, and switches control modes without a pose or velocity discontinuity.
 //! [`contacts`] classifies Avian's collision events back into that vocabulary
-//! and reports each contact episode once.
+//! and reports each contact episode once, pruning pairs whose body is gone.
+//! [`preflight`] closes the measured first-tick hole in Avian's swept
+//! detection: a fast body spawned inside one tick's travel of an obstacle is
+//! shape-cast ahead and clamped to the contact, not allowed to tunnel.
 //! [`fixture`] is the asset-free production harness an acceptance test drives;
 //! it spawns a known [`Mass`](avian3d::prelude::Mass) and adds the real
 //! adapters.
+//! [`session`] is the producer/consumer integration (F23-C): one session owns
+//! the world, gates every producer call and hands the consumer each frame's
+//! authoritative events — contact reports, spawn corrections and request
+//! counters — while presentation reads interpolated transforms.
 //!
 //! Collision layers are declared in `cs_sim::collision` (the engine-independent
 //! vocabulary); this module is the Avian-side execution of those declarations,
@@ -37,6 +44,8 @@ pub mod adapter;
 pub mod body;
 pub mod contacts;
 pub mod fixture;
+pub mod preflight;
+pub mod session;
 
 pub use adapter::{
     BASELINE_FIXED_HZ, ForceRequest, ForceRequestError, ForceRequests, PhysicsAdapterPlugin,
@@ -48,4 +57,8 @@ pub use body::{
 pub use contacts::{ContactReport, ContactReports, PhysicsBodiesPlugin};
 pub use fixture::{
     FixtureBodySpec, PhysicsFixture, PhysicsFixtureBuilder, PhysicsFixtureError, PhysicsSample,
+};
+pub use preflight::{SpawnPreflight, SpawnPreflightEvent, SpawnPreflightLog};
+pub use session::{
+    PhysicsSession, PhysicsSessionBuilder, PhysicsSessionError, SessionFrame, SpawnOutcome,
 };
