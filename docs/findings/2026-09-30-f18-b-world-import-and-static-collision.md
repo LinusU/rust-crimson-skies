@@ -175,10 +175,13 @@ Task #420's 2x2, on the same probe, speed and wall span:
   `Mesh3d` + `ColliderConstructor::TrimeshFromMesh`, so the derived collider
   lands on the body and swept CCD sees it
   (`cs_app::asset_stack::spawn_static_mesh_collider_on_body`, used by
-  `spawn_object`). Same uploaded mesh, every stored triangle — a strict
-  reduction of the old two-entity layout, not a different collider, so F18
-  non-negotiable behavior 1 is untouched. The 400 m/s probe is now clamped at
-  the arch's near face with the contact recorded.
+  `spawn_object`). Same uploaded mesh, every stored triangle and the same
+  honoured per-axis scale — a strict reduction of the old two-entity layout,
+  not a different collider, so F18 non-negotiable behavior 1 is untouched
+  (`accept_t424_the_body_layout_keeps_every_stored_triangle_and_the_authored_transform`
+  and `accept_t424_the_body_layout_honours_a_scaled_placement_without_simplifying_the_mesh`).
+  The 400 m/s probe is now clamped at the arch's near face with the contact
+  recorded.
 * **What is left over:** a body whose colliders *all* live on descendants is
   still invisible to a sweep on the pinned engine. That is now declared rather
   than accidental — `cs_app::asset_stack::SweptInvisible` on the body, and

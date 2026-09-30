@@ -87,6 +87,8 @@
 //!   caller's [`cs_sim::collision::CollisionLayers`], mapped by the one
 //!   conversion the workspace already owns.
 
+use std::collections::VecDeque;
+
 use avian3d::prelude::{
     Collider, ColliderConstructor, ColliderConstructorHierarchy, PhysicsPlugins, Position,
     RigidBody, RigidBodyColliders, Rotation,
@@ -220,8 +222,9 @@ pub struct SweptInvisible {
 pub struct SweptInvisibleBody {
     /// The body entity Avian's swept CCD skips.
     pub body: Entity,
-    /// Every descendant of `body` that carries a `Collider`, in query order.
-    /// Empty when the body has no collider at all.
+    /// Every descendant of `body` that carries a `Collider`, breadth first and,
+    /// within one level, in the order [`Children`] lists them. Empty when the
+    /// body has no collider at all.
     pub collider_holders: Vec<Entity>,
     /// The body's own declaration, when it made one.
     pub declared: Option<SweptInvisible>,
@@ -261,17 +264,23 @@ pub fn swept_invisible_bodies(world: &mut World) -> Vec<SweptInvisibleBody> {
 /// Every descendant of `root` that carries a [`Collider`], breadth first.
 ///
 /// Walks [`Children`] rather than a `Query` so the walk and the world borrow do
-/// not have to be held at once. A malformed hierarchy (a `Children` entry naming
-/// an entity that is already gone) is skipped rather than treated as a cycle:
-/// a body whose descendant vanished is swept-invisible, which is the fact the
-/// caller asked for, and panicking here would turn a report into a crash.
+/// not have to be held at once. The order is the one the report documents —
+/// breadth first, and within a level the order `Children` lists — because a
+/// report a reader acts on has to be the same report twice.
+///
+/// An entity already visited is skipped, which is what makes a cycle in a
+/// hand-built hierarchy terminate instead of hanging the audit; a `Children`
+/// entry naming an entity that is gone is skipped the same way. Either is a
+/// hierarchy this module never built, and a body whose colliders cannot be
+/// reached is swept-invisible, which is the fact the caller asked for —
+/// panicking here would turn a report into a crash.
 fn collider_descendants(world: &World, root: Entity) -> Vec<Entity> {
     let mut holders = Vec::new();
-    let mut pending: Vec<Entity> = world
-        .get::<Children>(root)
-        .map_or_else(Vec::new, |c| c.to_vec());
     let mut seen: Vec<Entity> = vec![root];
-    while let Some(entity) = pending.pop() {
+    let mut pending: VecDeque<Entity> = world
+        .get::<Children>(root)
+        .map_or_else(VecDeque::new, |children| children.iter().copied().collect());
+    while let Some(entity) = pending.pop_front() {
         if seen.contains(&entity) {
             continue;
         }
@@ -279,7 +288,9 @@ fn collider_descendants(world: &World, root: Entity) -> Vec<Entity> {
         if world.get::<Collider>(entity).is_some() {
             holders.push(entity);
         }
-        pending.extend(world.get::<Children>(entity).into_iter().flatten());
+        if let Some(children) = world.get::<Children>(entity) {
+            pending.extend(children.iter().copied());
+        }
     }
     holders
 }

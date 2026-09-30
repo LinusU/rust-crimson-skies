@@ -181,15 +181,25 @@ source was restored byte-identically. None of the probes is committed.
 
 | mutation | tests that failed |
 | --- | --- |
-| `spawn_mesh_collider` reverts to `spawn_static_mesh_collider` (parent body + child node) | `accept_t424_the_world_import_path_leaves_no_body_invisible_to_a_sweep`; `import::..._a_tunnelling_body_is_stopped_by_the_mesh_geometry_it_flys_at`, `..._a_mesh_collision_is_the_geometry_the_object_draws_and_keeps_its_opening` |
+| `spawn_mesh_collider` reverts to `spawn_static_mesh_collider` (parent body + child node) | `accept_t424_the_world_import_path_leaves_no_body_invisible_to_a_sweep`; `import::..._a_tunnelling_body_is_stopped_by_the_mesh_geometry_it_flys_at`, `import::..._a_mesh_collision_is_the_geometry_the_object_draws_and_keeps_its_opening` |
 | `swept_invisible_bodies` returns an empty list | `accept_t424_..._the_audit_reports_a_declared_exception_and_nothing_else`, `..._an_undeclared_child_node_collider_is_reported_rather_than_ignored` |
 | the hierarchy body stops carrying `SweptInvisible` | `accept_t424_..._the_audit_reports_a_declared_exception_and_nothing_else` |
 | `spawn_static_mesh_collider_on_body` degenerates to `ColliderConstructor::Cuboid` | `accept_t424_..._the_body_layout_derives_the_collider_onto_the_body_itself`, `..._keeps_every_stored_triangle_...`, `..._a_collider_on_the_body_is_what_a_swept_body_stops_against`; five `accept_f18_b_` tests |
+| the body-entity layout stops carrying the authored `Transform` (review fix) | `accept_t424_..._the_body_layout_honours_a_scaled_placement_without_simplifying_the_mesh` — and nothing else, which is why that test exists |
+| `collider_descendants` pops from the back, so it is depth first (review fix) | `accept_t424_..._the_audit_reports_every_collider_descendant_in_a_stable_order` |
 
-The last row is the load-bearing one: a "fix" that made world geometry
+The last row is the one worth noting: a "fix" that made world geometry
 sweep-visible by replacing the trimesh with a box would satisfy the sweep
 assertion and fail the triangle assertions. Geometry and layout are pinned
 separately, so neither can be traded for the other.
+
+The two review rows are gaps the reviewer found rather than a defect in the
+layout: the scale of a mesh object's placement was claimed in prose ("same
+every stored triangle, same layer membership, same `transform`") and pinned
+nowhere on the new layout, and the audit's report order was documented as
+breadth first while the walk was depth first. Both were measured, both failed
+under their mutation, and both are now properties of the suite rather than of a
+paragraph.
 
 ## Evidence
 
@@ -203,7 +213,9 @@ the pinned registry sources and then measured in-engine:
   `init_collider_constructors` inserts the collider on the constructor's own
   entity; `init_collider_constructor_hierarchies` iterates
   `children.iter_descendants` and never touches the root;
-* `crates/cs_app/tests/accept_t424_collider_on_body.rs` — 10 tests, all passing;
+* `parry3d-0.27.0/src/shape/shape.rs:1141` — `TriMesh::as_composite_shape` really
+  returns `Some(self)`, which is what makes the *old* F18-B attribution wrong;
+* `crates/cs_app/tests/accept_t424_collider_on_body.rs` — 12 tests, all passing;
 * the 2x2 and the F18-B flight path, measured through the production
   composition as above.
 
@@ -213,9 +225,58 @@ Commands run locally:
 cargo fmt --all -- --check                                                  # exit 0
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings   # exit 0
 cargo test --workspace --locked                                             # exit 0
-cargo test --workspace --locked -- accept_t424_ --include-ignored           # 10 run, 10 passed
+cargo test --workspace --locked -- accept_t424_ --include-ignored           # 12 run, 12 passed
 cargo test --workspace --locked -- accept_f18_ --include-ignored            # 33 run, 33 passed
 ```
+
+## Review findings (2026-09-30, reviewer `bunny-alpha-1`)
+
+**The implementer and the reviewer are the same agent identity**
+(`bunny-alpha-1`), in two different sessions; this review session started with
+no memory of the implementation and re-derived the engine claims from the
+pinned sources. It is still **not** independent evidence, and nothing in this
+record should be read as a second opinion on the layout decision itself. What
+was checked, and what it changed:
+
+* **The three engine claims were re-read in the pinned sources, not accepted.**
+  `SweptCcdBodyQuery`'s `collider: &'static Collider` field is read off the body
+  entity and the neighbour is resolved with `bodies.get_unchecked(entity2)`
+  (`avian3d-0.7.0/src/dynamics/ccd/mod.rs:503-513`, `575`);
+  `init_collider_constructors` inserts the derived collider on the constructor's
+  own entity (`backend.rs:264-315`) while `init_collider_constructor_hierarchies`
+  walks descendants only; and `TriMesh::as_composite_shape` does return
+  `Some(self)` (`parry3d-0.27.0/src/shape/shape.rs:1141-1143`), so the F18-B
+  attribution this task replaces was wrong about the library, not just about the
+  layout.
+* **A claim in prose that no test held: the scale.** "Same every stored
+  triangle, same layer membership, same `transform`" was asserted only for the
+  triangle count, and the world path really does hand a decomposed (possibly
+  non-uniform) scale to the new layout. Dropping the `Transform` from
+  `spawn_static_mesh_collider_on_body` passed all ten original tests and would
+  have silently collided at the wrong size — the exact trade F18 non-negotiable
+  behavior 1 forbids. `accept_t424_the_body_layout_honours_a_scaled_placement_without_simplifying_the_mesh`
+  now reads `shape_scaled()` (what the narrow phase collides against) and
+  requires every vertex to be an uploaded corner scaled per axis, identically
+  for both layouts.
+* **The audit's report order was documented as breadth first and implemented as
+  depth first**, and no test held either. The walk now uses a queue, and
+  `accept_t424_the_audit_reports_every_collider_descendant_in_a_stable_order`
+  pins a three-holder, two-level hierarchy, which is the case where the two
+  orders disagree.
+* **Checked and left alone, deliberately:** `SpawnedCollider::body` still
+  exists and now equals `entity` for a mesh object — a cuboid's presentation and
+  collider really are different entities, so a consumer asking "where is the
+  body" should not have to know the two coincide; and the audit
+  (`swept_invisible_bodies` / `undeclared_swept_invisible_bodies`) is production
+  API called only by tests. A per-frame Bevy system that reads it was considered
+  and not taken: the invariant belongs to a test that fails loudly, not to a
+  warning nobody reads in a release build, and the world already has a real
+  runtime cost.
+* **Overlap with #420 checked.** #420's branch adds only
+  `crates/cs_app/tests/accept_t420_mesh_ccd.rs` and its own decision record, so
+  the two branches cannot conflict textually; its measured 2x2 and this task's
+  re-measure agree row for row, and its "what the F18-B records need" list is
+  what this task implemented.
 
 ## Sources
 

@@ -42,6 +42,13 @@
 //!   [`SweptInvisible`], with a reason a reader can check. The audit reports
 //!   such a body as declared, not as a violation — and the test asserts the
 //!   declaration is really there, so the exception cannot be spread by accident.
+//! * The audit's *report* is pinned as well as the invariant: every descendant
+//!   holding a collider, breadth first, in the order the audit documents. A
+//!   report a reader has to act on has to be the same report twice.
+//! * The single-entity layout is a reduction of the two-entity one, not a
+//!   different collider: same every stored triangle, and the same honoured
+//!   per-axis scale. A layout fix that quietly collided at the wrong size, or
+//!   that sealed a mesh opening with a hull, would pass every other test here.
 //! * The two layouts really do differ in swept behaviour, measured through the
 //!   production composition: a body a 400 m/s sweep must stop is stopped on the
 //!   body layout and tunnels on the child layout. That is what makes the audit
@@ -559,6 +566,54 @@ fn accept_t424_an_undeclared_child_node_collider_is_reported_rather_than_ignored
     );
 }
 
+/// A body with **several** descendants holding colliders reports all of them,
+/// breadth first and within a level in `Children` order — the order the audit
+/// documents. One holder is the easy case; a multi-part layout is the one a
+/// reader has to act on, and a report whose order is unspecified is a report
+/// nobody can diff against the world they are looking at.
+#[test]
+fn accept_t424_the_audit_reports_every_collider_descendant_in_a_stable_order() {
+    let mut app = t424_app();
+    let body = app
+        .world_mut()
+        .spawn((RigidBody::Static, Transform::default(), Position::default()))
+        .id();
+    let mut part = |parent: Entity, y: f32| {
+        app.world_mut()
+            .spawn((
+                Collider::cuboid(0.5, 0.4, 0.4),
+                static_world_layers(),
+                ChildOf(parent),
+                Transform::from_xyz(0.0, y, 0.0),
+            ))
+            .id()
+    };
+    let first = part(body, 1.0);
+    let second = part(body, 2.0);
+    // A collider two levels down, so breadth first and depth first disagree:
+    // depth first would report it before `second`.
+    let grandchild = part(first, 0.5);
+    app.finish();
+    app.cleanup();
+    for _ in 0..6 {
+        app.update();
+    }
+
+    let undeclared = undeclared_swept_invisible_bodies(app.world_mut());
+    assert_eq!(
+        undeclared.len(),
+        1,
+        "the body is the one swept-invisible entity; the audit found {undeclared:?}"
+    );
+    assert_eq!(
+        undeclared[0].collider_holders,
+        vec![first, second, grandchild],
+        "every descendant holding a collider is reported, breadth first and in \
+         the order Children lists it, so the report names all three parts \
+         exactly once and in the order it documents"
+    );
+}
+
 /// The F18-B findings and the F00-A #333 contract both name
 /// `ColliderConstructorHierarchy`, and the *other* production path in the
 /// workspace that spawns bodies from a mesh is the presentation-only one: a
@@ -743,5 +798,96 @@ fn accept_t424_the_body_layout_keeps_every_stored_triangle_and_the_authored_tran
         transform.translation,
         "and the authored transform is applied once, to the body that owns the \
          collider"
+    );
+}
+
+/// **A scale is honoured on the body layout too, and by no substitution.** The
+/// world path spawns a mesh object from the instance's *decomposed* matrix, so a
+/// non-uniform scale reaches `spawn_static_mesh_collider_on_body` for real, and
+/// F18 non-negotiable behavior 1 says a scale may not become a simplification:
+/// `Collider::set_scale` falls back to a hull or a bounding box for a shape it
+/// cannot scale, which on an open mesh seals the opening.
+///
+/// The mechanism differs between the layouts — the hierarchy form is scaled
+/// through the `ColliderTransform` Avian derives from the body's `Transform`,
+/// the body form through the `Transform` of the collider's own entity — so
+/// "same every stored triangle, same transform" is a claim about two code
+/// paths, and this measures both against the same eight uploaded corners. A
+/// scale the collider quietly ignored still looks right in `shape()`, so this
+/// reads `shape_scaled()`, which is what the narrow phase collides against.
+///
+/// Observable failure: a vertex that is not an uploaded corner scaled per axis,
+/// a triangle count that is not the mesh's, or the two layouts disagreeing.
+#[test]
+fn accept_t424_the_body_layout_honours_a_scaled_placement_without_simplifying_the_mesh() {
+    /// Non-uniform, because a hull or a box substitution is most tempting there
+    /// and least likely to be caught by a comparison of triangle counts alone.
+    const SCALE: Vec3 = Vec3::new(2.0, 1.0, 0.5);
+    const TRIANGLES: usize = 4;
+
+    let mut app = t424_app();
+    let transform = Transform::from_xyz(1.0, 0.0, -3.0).with_scale(SCALE);
+    let on_body = spawn_static_mesh_collider_on_body(
+        &mut app,
+        wall_mesh(),
+        transform,
+        static_world_membership(),
+    );
+    let child =
+        spawn_static_mesh_collider(&mut app, wall_mesh(), transform, static_world_membership());
+    app.finish();
+    app.cleanup();
+    for _ in 0..6 {
+        app.update();
+    }
+
+    let world = app.world_mut();
+    // The uploaded corners both layouts were built from, once: a scaled vertex
+    // has to be one of these times the scale, or the collider is not the mesh.
+    let corners: Vec<Vec3> = match wall_mesh().attribute(Mesh::ATTRIBUTE_POSITION) {
+        Some(bevy::mesh::VertexAttributeValues::Float32x3(values)) => {
+            values.iter().copied().map(Vec3::from).collect()
+        }
+        _ => panic!("the wall stores a Float32x3 position attribute"),
+    };
+    let scaled_vertices = |entity: Entity, what: &str| {
+        let collider = world
+            .get::<Collider>(entity)
+            .unwrap_or_else(|| panic!("the {what} layout derived a collider"));
+        let scaled = collider.shape_scaled().as_trimesh().unwrap_or_else(|| {
+            panic!(
+                "scaling the {what} layout's collider must not substitute a \
+                 primitive for the trimesh: that is how a traversable opening is \
+                 sealed"
+            )
+        });
+        assert_eq!(
+            scaled.indices().len(),
+            TRIANGLES,
+            "the {what} layout's scaled collider keeps the {TRIANGLES} stored \
+             triangles, not the ones a convex hull of the same corners would have"
+        );
+        for (index, vertex) in scaled.vertices().iter().enumerate() {
+            assert!(
+                corners
+                    .iter()
+                    .any(|corner| (*corner * SCALE).abs_diff_eq(*vertex, 0.0)),
+                "the {what} layout's scaled collider vertex {index} is {vertex:?}, \
+                 which is not an uploaded corner scaled per axis by {SCALE:?}"
+            );
+        }
+        scaled
+            .vertices()
+            .iter()
+            .map(|vertex| vertex.to_array().map(f32::to_bits))
+            .collect::<Vec<[u32; 3]>>()
+    };
+
+    let from_body = scaled_vertices(on_body, "body-entity");
+    assert_eq!(
+        from_body,
+        scaled_vertices(child.node, "child-node"),
+        "both layouts scale the same upload the same way, so neither trades a \
+         real scale for a simpler shape on the way to being swept-eligible"
     );
 }
