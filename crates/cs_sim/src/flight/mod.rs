@@ -16,6 +16,12 @@
 //!   tick, so equal inputs produce equal forces at any render rate.
 //! * [`synthetic`] is the declared synthetic fixture and open-loop probe the
 //!   acceptance tests drive.
+//! * [`autogyro`] is F25-A's exceptional side: the shared
+//!   [`autogyro::FlightTelemetry`] interface HUD, AI and probes read, the
+//!   [`autogyro::RotorDrive`] a fixed tick advances together with the explicit
+//!   [`autogyro::RotorSpeedMapping`] its mesh is drawn at, and the
+//!   [`autogyro::ReferenceManeuverEnvelope`] an exceptional airframe must be
+//!   recorded on. It contributes no force law: that is F25-B's.
 //!
 //! The provenance-carrying, normalization-side schema that records where each
 //! tuning value came from lives in `cs_content::flight_tuning`; F24-C wires
@@ -31,10 +37,17 @@
 //! [`cs_types`]: cs_types
 //! [`cs_script`]: cs_script
 
+pub mod autogyro;
 pub mod model;
 pub mod synthetic;
 pub mod tuning;
 
+pub use autogyro::{
+    EnvelopeError, EnvelopeStatus, FlightTelemetry, ManeuverKind, ManeuverSpec, MappedVisualRate,
+    ReferenceManeuverEnvelope, RotorDrive, RotorSpeedMapping, RotorTelemetry, RotorVisualSample,
+    SYNTHETIC_TICK_DT_S, SharedTelemetry, TelemetryError, TelemetryFrame,
+    synthetic_exceptional_envelope, synthetic_rotor_drive, synthetic_rotor_mapping,
+};
 pub use model::{
     BODY_FORWARD, BODY_RIGHT, BODY_UP, EngineState, FlightDiagnostics, FlightEnvironment,
     FlightError, FlightInput, FlightInputError, FlightModel, FlightOutput, FlightState,
