@@ -111,6 +111,18 @@ impl DeviceIdentity {
             Self::EnumerationFallback(index) => format!("index:{index}"),
         }
     }
+
+    /// The stable identity text, or `None` for an enumeration fallback.
+    ///
+    /// The one accessor a persistence writer needs: `Some` is a real identity
+    /// that may key a saved record, `None` is an index that may not.
+    #[must_use]
+    pub fn stable_identity(&self) -> Option<&str> {
+        match self {
+            Self::Stable(identity) => Some(identity),
+            Self::EnumerationFallback(_) => None,
+        }
+    }
 }
 
 /// Why a stable [`DeviceIdentity`] was rejected.
@@ -204,6 +216,13 @@ impl DeviceId {
     /// Whether the identity is stable and may key a persisted calibration.
     pub const fn is_stable(&self) -> bool {
         self.identity.is_stable()
+    }
+
+    /// The stable identity text, or `None` when this device is only known by
+    /// its enumeration index.
+    #[must_use]
+    pub fn stable_identity(&self) -> Option<&str> {
+        self.identity.stable_identity()
     }
 
     /// A stable diagnostic spelling, `class:identity`.
@@ -1538,6 +1557,614 @@ impl ActionMap {
         ];
         Self::try_new(bindings).expect("the designed default action map is conflict-free")
     }
+
+    /// Every target bound to `source`, in insertion order.
+    ///
+    /// One source may legitimately be bound in two contexts, so a caller that
+    /// resolves through the context gate must filter
+    /// [`targets_for`](Self::targets_for) with [`InputContext::accepts`]
+    /// instead of taking the first entry.
+    pub fn targets_for(&self, source: BindingSource) -> impl Iterator<Item = BindingTarget> + '_ {
+        self.bindings
+            .iter()
+            .filter(move |binding| binding.source == source)
+            .map(|binding| binding.target)
+    }
+
+    /// Every binding whose source reads `channel`, in insertion order.
+    ///
+    /// A device adapter reports a *channel*; every binding on that channel (in
+    /// any direction, since [`BindingSource::JoystickAxis`] carries its own
+    /// `inverted` wiring flag) is driven by the same reading.
+    pub fn bindings_for_channel(&self, channel: AxisChannel) -> impl Iterator<Item = &Binding> {
+        self.bindings
+            .iter()
+            .filter(move |binding| AxisChannel::from_source(binding.source) == Some(channel))
+    }
+}
+
+/// One analog channel of a device, the key calibration is stored under.
+///
+/// Calibration is keyed by `(device, channel)` and not by binding, so moving a
+/// binding from one channel of a stick to another does not discard the
+/// player's calibration, and a channel no binding uses can still be
+/// calibrated. A [`Digital`](BindingSource::is_analog)-opposite source has no
+/// channel: only an analog source is calibrated.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum AxisChannel {
+    /// A mouse's motion or wheel axis. The channel is **relative**: a reading
+    /// describes the movement of one sample, not a position.
+    Mouse(MouseAxis),
+    /// A gamepad axis, including its unipolar triggers.
+    Gamepad(GamepadAxis),
+    /// A joystick or HOTAS raw axis index.
+    Joystick(u16),
+}
+
+impl AxisChannel {
+    /// The channel a binding source reads, or `None` for a digital source.
+    #[must_use]
+    pub const fn from_source(source: BindingSource) -> Option<Self> {
+        match source {
+            BindingSource::MouseAxis(axis) => Some(Self::Mouse(axis)),
+            BindingSource::GamepadAxis(axis) => Some(Self::Gamepad(axis)),
+            BindingSource::JoystickAxis { index, .. } => Some(Self::Joystick(index)),
+            BindingSource::Key(_)
+            | BindingSource::MouseButton(_)
+            | BindingSource::GamepadButton(_)
+            | BindingSource::JoystickButton(_) => None,
+        }
+    }
+
+    /// The stable diagnostic spelling.
+    #[must_use]
+    pub fn label(self) -> String {
+        match self {
+            Self::Mouse(axis) => format!("mouse.{}", axis.label()),
+            Self::Gamepad(axis) => format!("gamepad.{}", axis.label()),
+            Self::Joystick(index) => format!("joystick.{index}"),
+        }
+    }
+
+    /// The device class that reports this channel.
+    #[must_use]
+    pub const fn device_class(self) -> DeviceClass {
+        match self {
+            Self::Mouse(_) => DeviceClass::Mouse,
+            Self::Gamepad(_) => DeviceClass::Gamepad,
+            Self::Joystick(_) => DeviceClass::Joystick,
+        }
+    }
+
+    /// Whether the channel reports relative motion instead of a position.
+    ///
+    /// A relative channel is calibrated in the units of one sample, so a
+    /// deadzone is not a resting-jitter filter for it and a reading beyond
+    /// full deflection is saturation rather than a broken driver.
+    #[must_use]
+    pub const fn is_relative(self) -> bool {
+        matches!(self, Self::Mouse(_))
+    }
+}
+
+impl fmt::Display for AxisChannel {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.label())
+    }
+}
+
+/// The largest response exponent [`ResponseCurve::Power`] accepts.
+pub const MAX_RESPONSE_EXPONENT: f32 = 8.0;
+
+/// The shape applied to a calibrated axis reading.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ResponseCurve {
+    /// Proportional: the normalized deflection is passed through unchanged.
+    Linear,
+    /// `sign(x) * |x| ** exponent` over the normalized deflection. An exponent
+    /// below one makes the axis more sensitive near neutral, above one makes
+    /// it softer near neutral. The exponent must be finite and in
+    /// `(0, MAX_RESPONSE_EXPONENT]`.
+    Power(f32),
+}
+
+impl ResponseCurve {
+    /// The largest magnitude this curve can report for a normalized deflection
+    /// in `[-1, 1]`; the input magnitude itself.
+    #[must_use]
+    pub fn apply(self, magnitude: f32) -> f32 {
+        match self {
+            Self::Linear => magnitude,
+            Self::Power(exponent) => magnitude.powf(exponent),
+        }
+    }
+
+    /// Whether this curve changes the deflection it is given.
+    #[must_use]
+    pub const fn is_identity(self) -> bool {
+        matches!(self, Self::Linear | Self::Power(1.0))
+    }
+}
+
+/// Why an [`AxisCalibration`] or a calibrated reading was refused.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum CalibrationError {
+    /// A configured field was NaN or infinite.
+    NonFiniteField {
+        /// The field's name.
+        field: &'static str,
+    },
+    /// The deadzone fell outside `[0, 1)`. A deadzone of one would make the
+    /// axis unreachable.
+    DeadzoneOutOfRange {
+        /// The rejected deadzone.
+        deadzone: f32,
+    },
+    /// The saturation fell outside `(0, 1]`.
+    SaturationOutOfRange {
+        /// The rejected saturation.
+        saturation: f32,
+    },
+    /// The analog activation threshold fell outside `(0, 1]`.
+    ActivationOutOfRange {
+        /// The rejected threshold.
+        activation: f32,
+    },
+    /// The response exponent fell outside `(0, MAX_RESPONSE_EXPONENT]`.
+    ExponentOutOfRange {
+        /// The rejected exponent.
+        exponent: f32,
+    },
+    /// A raw reading was NaN or infinite.
+    NonFiniteReading {
+        /// The rejected reading.
+        value: f32,
+    },
+    /// A raw reading fell outside the normalized `[-1, 1]` range an absolute
+    /// channel reports. A reading is never clamped or repaired silently.
+    ReadingOutOfRange {
+        /// The rejected reading.
+        value: f32,
+    },
+}
+
+impl fmt::Display for CalibrationError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NonFiniteField { field } => write!(f, "the {field} must be finite"),
+            Self::DeadzoneOutOfRange { deadzone } => {
+                write!(f, "the deadzone {deadzone} is outside [0, 1)")
+            }
+            Self::SaturationOutOfRange { saturation } => {
+                write!(f, "the saturation {saturation} is outside (0, 1]")
+            }
+            Self::ActivationOutOfRange { activation } => {
+                write!(f, "the activation threshold {activation} is outside (0, 1]")
+            }
+            Self::ExponentOutOfRange { exponent } => write!(
+                f,
+                "the response exponent {exponent} is outside (0, {MAX_RESPONSE_EXPONENT}]"
+            ),
+            Self::NonFiniteReading { value } => {
+                write!(f, "the axis reading {value} must be finite")
+            }
+            Self::ReadingOutOfRange { value } => write!(
+                f,
+                "the axis reading {value} is outside the normalized [-1, 1] range"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for CalibrationError {}
+
+/// The player-facing calibration of one axis of one device.
+///
+/// Non-negotiable behavior 1 asks for deadzone, inversion, response curve,
+/// saturation and device identity. Four of the five are this record; device
+/// identity is the key it is stored under in a [`CalibrationStore`].
+///
+/// The stages are applied in a fixed order so a calibration is reproducible:
+///
+/// 1. **inversion** — the player's own preference, applied to the raw reading
+///    and distinct from a source's `inverted` wiring flag, which describes how
+///    the device is physically wired;
+/// 2. **deadzone** — a magnitude at or below the deadzone reads as exactly
+///    neutral, and the remaining travel is rescaled so full deflection still
+///    reads as full deflection;
+/// 3. **response curve** — the shape of the remaining travel;
+/// 4. **saturation** — the largest magnitude the calibrated axis may report.
+///    A stick whose end travel is 85% of nominal therefore reads `0.85` at
+///    full deflection instead of being stretched to `1.0`.
+///
+/// **Designed, not original.** Every field is a newly authored project
+/// default; the original game's stick, trigger and mouse shapes are unknown
+/// until F22-D measures them. [`AxisCalibration::designed_default`] is the
+/// neutral record that changes nothing, so an uncalibrated device is used
+/// exactly as it reports itself.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct AxisCalibration {
+    deadzone: f32,
+    inverted: bool,
+    response: ResponseCurve,
+    saturation: f32,
+    activation: f32,
+}
+
+impl AxisCalibration {
+    /// The neutral calibration: no deadzone, no inversion, proportional
+    /// response, full deflection and a mid-travel analog activation
+    /// threshold.
+    ///
+    /// The analog activation threshold is not one of the sheet's five listed
+    /// fields, but an analog source bound to an edge target (a trigger that
+    /// fires the guns) needs a declared crossing point; without it such a
+    /// binding could never be pressed or released, and an unplugged device
+    /// could leave the weapon firing (non-negotiable behavior 3).
+    #[must_use]
+    pub const fn designed_default() -> Self {
+        Self {
+            deadzone: 0.0,
+            inverted: false,
+            response: ResponseCurve::Linear,
+            saturation: 1.0,
+            activation: 0.5,
+        }
+    }
+
+    /// Builds a calibration, refusing every malformed field.
+    ///
+    /// # Errors
+    ///
+    /// [`CalibrationError`] naming the first field that is not finite or not in
+    /// its range. Nothing is clamped or repaired.
+    pub fn try_new(
+        deadzone: f32,
+        inverted: bool,
+        response: ResponseCurve,
+        saturation: f32,
+        activation: f32,
+    ) -> Result<Self, CalibrationError> {
+        for (field, value) in [
+            ("deadzone", deadzone),
+            ("saturation", saturation),
+            ("activation", activation),
+        ] {
+            if !value.is_finite() {
+                return Err(CalibrationError::NonFiniteField { field });
+            }
+        }
+        if !(0.0..1.0).contains(&deadzone) {
+            return Err(CalibrationError::DeadzoneOutOfRange { deadzone });
+        }
+        if !(0.0..=1.0).contains(&saturation) || saturation == 0.0 {
+            return Err(CalibrationError::SaturationOutOfRange { saturation });
+        }
+        if !(0.0..=1.0).contains(&activation) || activation == 0.0 {
+            return Err(CalibrationError::ActivationOutOfRange { activation });
+        }
+        if let ResponseCurve::Power(exponent) = response
+            && (!exponent.is_finite() || exponent <= 0.0 || exponent > MAX_RESPONSE_EXPONENT)
+        {
+            return Err(CalibrationError::ExponentOutOfRange { exponent });
+        }
+        Ok(Self {
+            deadzone,
+            inverted,
+            response,
+            saturation,
+            activation,
+        })
+    }
+
+    /// The ignored magnitude.
+    #[must_use]
+    pub const fn deadzone(self) -> f32 {
+        self.deadzone
+    }
+
+    /// Whether the reading is inverted by the player's preference.
+    #[must_use]
+    pub const fn inverted(self) -> bool {
+        self.inverted
+    }
+
+    /// The response shape.
+    #[must_use]
+    pub const fn response(self) -> ResponseCurve {
+        self.response
+    }
+
+    /// The largest magnitude this calibration can report.
+    #[must_use]
+    pub const fn saturation(self) -> f32 {
+        self.saturation
+    }
+
+    /// The calibrated magnitude at which an analog source bound to an edge
+    /// target counts as pressed.
+    #[must_use]
+    pub const fn activation(self) -> f32 {
+        self.activation
+    }
+
+    /// Whether this calibration leaves every reading it is given unchanged
+    /// (within the quantization of a floating-point comparison).
+    #[must_use]
+    pub fn is_identity(self) -> bool {
+        self.deadzone == 0.0
+            && !self.inverted
+            && self.response.is_identity()
+            && self.saturation == 1.0
+    }
+
+    /// Calibrates one raw reading.
+    ///
+    /// # Errors
+    ///
+    /// [`CalibrationError::NonFiniteReading`] for a NaN/infinite reading and
+    /// [`CalibrationError::ReadingOutOfRange`] outside `[-1, 1]`. A reading is
+    /// never clamped: saturation is this calibration's own declared limit, not
+    /// a silent repair of a driver that reports nonsense.
+    pub fn apply(self, raw: f32) -> Result<f32, CalibrationError> {
+        if !raw.is_finite() {
+            return Err(CalibrationError::NonFiniteReading { value: raw });
+        }
+        if !(-1.0..=1.0).contains(&raw) {
+            return Err(CalibrationError::ReadingOutOfRange { value: raw });
+        }
+        let signed = if self.inverted { -raw } else { raw };
+        let magnitude = signed.abs();
+        if magnitude <= self.deadzone {
+            return Ok(0.0);
+        }
+        let rescaled = (magnitude - self.deadzone) / (1.0 - self.deadzone);
+        let curved = self.response.apply(rescaled);
+        Ok(signed.signum() * curved.min(self.saturation))
+    }
+}
+
+/// One stored calibration record.
+#[derive(Clone, Debug, PartialEq)]
+struct CalibrationEntry {
+    device: DeviceId,
+    channel: AxisChannel,
+    calibration: AxisCalibration,
+}
+
+/// Why a [`CalibrationStore`] operation was refused.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CalibrationStoreError {
+    /// The provisional id is already a stable identity, so there is nothing
+    /// to promote away from.
+    ProvisionalIsStable {
+        /// The id that was offered as provisional.
+        device: DeviceId,
+    },
+    /// The target id is not a stable identity, so calibration must not be
+    /// moved onto an index (non-negotiable behavior 1).
+    TargetNotStable {
+        /// The id that was offered as stable.
+        device: DeviceId,
+    },
+    /// The two ids name different device classes, so they cannot be the same
+    /// physical device.
+    ClassMismatch {
+        /// The provisional id.
+        provisional: DeviceId,
+        /// The target id.
+        stable: DeviceId,
+    },
+    /// The stable identity already has its own calibration for that channel;
+    /// promoting would silently overwrite the player's settings.
+    AlreadyCalibrated {
+        /// The stable identity that is already calibrated.
+        device: DeviceId,
+        /// The channel that is already calibrated on it.
+        channel: AxisChannel,
+    },
+}
+
+impl fmt::Display for CalibrationStoreError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ProvisionalIsStable { device } => write!(
+                f,
+                "{device} is already a stable identity, so it has no provisional calibration"
+            ),
+            Self::TargetNotStable { device } => write!(
+                f,
+                "{device} is not a stable identity, so calibration must not be moved onto it"
+            ),
+            Self::ClassMismatch {
+                provisional,
+                stable,
+            } => write!(f, "{provisional} and {stable} are different device classes"),
+            Self::AlreadyCalibrated { device, channel } => {
+                write!(f, "{device} already has a calibration for {channel}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for CalibrationStoreError {}
+
+/// The per-device, per-channel calibration of a session.
+///
+/// Non-negotiable behavior 1: a device is keyed by its
+/// [`DeviceIdentity`], never by an enumeration index alone. A record stored
+/// under [`DeviceIdentity::EnumerationFallback`] works for the current
+/// session but is reported by [`unstable_devices`](Self::unstable_devices) so
+/// it is never persisted as if it were an identity, and
+/// [`promote`](Self::promote) moves it onto the stable identity as soon as the
+/// platform reports one.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CalibrationStore {
+    entries: Vec<CalibrationEntry>,
+}
+
+impl CalibrationStore {
+    /// An empty store: every device uses
+    /// [`AxisCalibration::designed_default`].
+    #[must_use]
+    pub const fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    /// Records the calibration of one channel of one device, replacing any
+    /// earlier record for the same pair.
+    pub fn set(&mut self, device: &DeviceId, channel: AxisChannel, calibration: AxisCalibration) {
+        if let Some(entry) = self
+            .entries
+            .iter_mut()
+            .find(|entry| entry.device == *device && entry.channel == channel)
+        {
+            entry.calibration = calibration;
+        } else {
+            self.entries.push(CalibrationEntry {
+                device: device.clone(),
+                channel,
+                calibration,
+            });
+        }
+    }
+
+    /// The recorded calibration of a channel, or `None` when the channel is
+    /// uncalibrated.
+    #[must_use]
+    pub fn get(&self, device: &DeviceId, channel: AxisChannel) -> Option<AxisCalibration> {
+        self.entries
+            .iter()
+            .find(|entry| entry.device == *device && entry.channel == channel)
+            .map(|entry| entry.calibration)
+    }
+
+    /// The calibration in force for a channel: the recorded one, or
+    /// [`AxisCalibration::designed_default`] when the channel is uncalibrated.
+    #[must_use]
+    pub fn calibration_or_default(
+        &self,
+        device: &DeviceId,
+        channel: AxisChannel,
+    ) -> AxisCalibration {
+        self.get(device, channel)
+            .unwrap_or_else(AxisCalibration::designed_default)
+    }
+
+    /// Drops one record, returning the calibration it held.
+    pub fn forget(&mut self, device: &DeviceId, channel: AxisChannel) -> Option<AxisCalibration> {
+        let index = self
+            .entries
+            .iter()
+            .position(|entry| entry.device == *device && entry.channel == channel)?;
+        Some(self.entries.remove(index).calibration)
+    }
+
+    /// Drops every record of a device, returning how many were dropped.
+    ///
+    /// The device adapter calls this when a device is removed, so a later
+    /// device that happens to enumerate at the same index does not inherit
+    /// another device's calibration.
+    pub fn forget_device(&mut self, device: &DeviceId) -> usize {
+        let before = self.entries.len();
+        self.entries.retain(|entry| entry.device != *device);
+        before - self.entries.len()
+    }
+
+    /// Moves every record of a provisional id onto a stable identity.
+    ///
+    /// This is how a device that first enumerated without an identity keeps its
+    /// calibration: the same physical stick is re-keyed onto the identity the
+    /// platform reports, and the record never has to be persisted against an
+    /// index.
+    ///
+    /// # Errors
+    ///
+    /// [`CalibrationStoreError`] when `provisional` is already stable, when
+    /// `stable` is not a stable identity, when the two are different device
+    /// classes, or when `stable` already has its own record for one of the
+    /// channels. Nothing is moved when the promotion is refused.
+    pub fn promote(
+        &mut self,
+        provisional: &DeviceId,
+        stable: &DeviceId,
+    ) -> Result<usize, CalibrationStoreError> {
+        if provisional.is_stable() {
+            return Err(CalibrationStoreError::ProvisionalIsStable {
+                device: provisional.clone(),
+            });
+        }
+        if !stable.is_stable() {
+            return Err(CalibrationStoreError::TargetNotStable {
+                device: stable.clone(),
+            });
+        }
+        if provisional.class() != stable.class() {
+            return Err(CalibrationStoreError::ClassMismatch {
+                provisional: provisional.clone(),
+                stable: stable.clone(),
+            });
+        }
+        let channels: Vec<AxisChannel> = self
+            .entries
+            .iter()
+            .filter(|entry| entry.device == *provisional)
+            .map(|entry| entry.channel)
+            .collect();
+        if let Some(channel) = channels
+            .iter()
+            .find(|channel| self.get(stable, **channel).is_some())
+        {
+            return Err(CalibrationStoreError::AlreadyCalibrated {
+                device: stable.clone(),
+                channel: *channel,
+            });
+        }
+        for entry in &mut self.entries {
+            if entry.device == *provisional {
+                entry.device = stable.clone();
+            }
+        }
+        Ok(channels.len())
+    }
+
+    /// The devices whose calibration is keyed by an enumeration index.
+    ///
+    /// A persistence writer must refuse these records (non-negotiable
+    /// behavior 1): an index is not an identity.
+    #[must_use]
+    pub fn unstable_devices(&self) -> Vec<&DeviceId> {
+        let mut devices: Vec<&DeviceId> = self
+            .entries
+            .iter()
+            .filter(|entry| !entry.device.is_stable())
+            .map(|entry| &entry.device)
+            .collect();
+        devices.sort();
+        devices.dedup();
+        devices
+    }
+
+    /// Every record, in insertion order.
+    pub fn entries(&self) -> impl Iterator<Item = (&DeviceId, AxisChannel, AxisCalibration)> {
+        self.entries
+            .iter()
+            .map(|entry| (&entry.device, entry.channel, entry.calibration))
+    }
+
+    /// How many records are stored.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether the store holds no record.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
 }
 
 #[cfg(test)]
@@ -1880,6 +2507,353 @@ mod tests {
         assert_eq!(
             claim_action("fire_primary"),
             Action::Flight(FlightCommand::FirePrimary)
+        );
+    }
+
+    /// The joystick of the calibration tests: one stable stick plus the
+    /// provisional id the same device has before the platform reports it.
+    fn test_joystick() -> DeviceId {
+        DeviceId::stable(DeviceClass::Joystick, "joy.stick.test/0")
+            .expect("the test identity is a valid stable identity")
+    }
+
+    /// A calibration with one field changed from
+    /// [`AxisCalibration::designed_default`].
+    fn calibration(deadzone: f32, inverted: bool, power: f32, saturation: f32) -> AxisCalibration {
+        AxisCalibration::try_new(
+            deadzone,
+            inverted,
+            ResponseCurve::Power(power),
+            saturation,
+            0.5,
+        )
+        .expect("the test calibration is in range")
+    }
+
+    /// Non-negotiable behavior 1, the four calibration stages: deadzone,
+    /// inversion, response curve and saturation, applied in the documented
+    /// order. An implementation that dropped any stage (or applied the
+    /// deadzone without rescaling the remaining travel) changes these values.
+    #[test]
+    fn accept_f22_b_axis_calibration_applies_deadzone_inversion_curve_and_saturation() {
+        let identity = AxisCalibration::designed_default();
+        assert!(identity.is_identity());
+        assert_eq!(
+            identity.activation(),
+            0.5,
+            "a designed mid-travel threshold"
+        );
+        for raw in [-1.0_f32, -0.5, 0.0, 0.25, 1.0] {
+            assert_eq!(
+                identity.apply(raw),
+                Ok(raw),
+                "the designed default changes nothing"
+            );
+        }
+
+        // Deadzone: at or below it reads exactly neutral, and the remaining
+        // travel is rescaled so full deflection still reads as full deflection.
+        let deadzone = calibration(0.25, false, 1.0, 1.0);
+        assert_eq!(
+            deadzone.apply(0.25),
+            Ok(0.0),
+            "the deadzone edge is neutral"
+        );
+        assert_eq!(deadzone.apply(-0.25), Ok(0.0));
+        assert_eq!(deadzone.apply(0.0), Ok(0.0));
+        assert_eq!(
+            deadzone.apply(0.1),
+            Ok(0.0),
+            "a reading inside the dead zone is exactly neutral, never the small \
+             reversed deflection the rescale would produce on its own"
+        );
+        assert_eq!(
+            deadzone.apply(-0.1),
+            Ok(0.0),
+            "a reading inside the dead zone is exactly neutral in both directions"
+        );
+        let half = deadzone.apply(0.625).expect("a valid reading");
+        assert!(
+            (half - 0.5).abs() < 1e-6,
+            "half of the travel past the deadzone reads as half scale, got {half}"
+        );
+        assert_eq!(deadzone.apply(1.0), Ok(1.0), "full travel is unaffected");
+
+        // Inversion is the player's preference and flips the sign only.
+        let inverted = calibration(0.0, true, 1.0, 1.0);
+        assert_eq!(inverted.apply(0.5), Ok(-0.5));
+        assert!(inverted.inverted());
+
+        // A power curve shapes the travel: 2.0 is softer near neutral, 0.5 is
+        // sharper.
+        let soft = calibration(0.0, false, 2.0, 1.0);
+        let sharp = calibration(0.0, false, 0.5, 1.0);
+        let soft_half = soft.apply(0.5).expect("a valid reading");
+        let sharp_half = sharp.apply(0.5).expect("a valid reading");
+        assert!(
+            soft_half < 0.5 && sharp_half > 0.5,
+            "the curve must change the reading, got soft={soft_half} sharp={sharp_half}"
+        );
+        assert_eq!(soft.apply(1.0), Ok(1.0), "a curve leaves the ends alone");
+
+        // Saturation is a declared ceiling, not a stretch: limited end travel
+        // reads as the limit instead of being normalized to full scale.
+        let limited = calibration(0.0, false, 1.0, 0.85);
+        assert_eq!(
+            limited.apply(1.0),
+            Ok(0.85),
+            "the stick keeps its 85% travel"
+        );
+        assert_eq!(limited.apply(-1.0), Ok(-0.85));
+        assert!(!limited.is_identity());
+        assert_eq!(limited.saturation(), 0.85);
+
+        // The stages compose in the documented order: inversion, then
+        // deadzone, then curve, then saturation.
+        let composed = AxisCalibration::try_new(0.2, true, ResponseCurve::Power(2.0), 0.5, 0.75)
+            .expect("the composed calibration is in range");
+        assert_eq!(
+            composed.apply(0.2),
+            Ok(0.0),
+            "the deadzone wins over the curve"
+        );
+        let curved = composed.apply(0.6).expect("a valid reading");
+        let expected = -0.5_f32.powf(2.0).min(0.5);
+        assert!(
+            (curved - expected).abs() < 1e-6,
+            "inversion then deadzone rescale then curve then saturation, got {curved}"
+        );
+    }
+
+    /// Malformed calibration fields and malformed readings are refused by
+    /// name, never clamped or repaired.
+    #[test]
+    fn accept_f22_b_axis_calibration_refuses_malformed_fields_and_readings() {
+        assert_eq!(
+            AxisCalibration::try_new(f32::NAN, false, ResponseCurve::Linear, 1.0, 0.5),
+            Err(CalibrationError::NonFiniteField { field: "deadzone" })
+        );
+        assert_eq!(
+            AxisCalibration::try_new(1.0, false, ResponseCurve::Linear, 1.0, 0.5),
+            Err(CalibrationError::DeadzoneOutOfRange { deadzone: 1.0 })
+        );
+        assert_eq!(
+            AxisCalibration::try_new(0.0, false, ResponseCurve::Linear, 0.0, 0.5),
+            Err(CalibrationError::SaturationOutOfRange { saturation: 0.0 })
+        );
+        assert_eq!(
+            AxisCalibration::try_new(0.0, false, ResponseCurve::Linear, f32::INFINITY, 0.5),
+            Err(CalibrationError::NonFiniteField {
+                field: "saturation"
+            })
+        );
+        assert_eq!(
+            AxisCalibration::try_new(0.0, false, ResponseCurve::Linear, 1.0, 0.0),
+            Err(CalibrationError::ActivationOutOfRange { activation: 0.0 })
+        );
+        assert_eq!(
+            AxisCalibration::try_new(0.0, false, ResponseCurve::Power(0.0), 1.0, 0.5),
+            Err(CalibrationError::ExponentOutOfRange { exponent: 0.0 })
+        );
+        assert_eq!(
+            AxisCalibration::try_new(
+                0.0,
+                false,
+                ResponseCurve::Power(MAX_RESPONSE_EXPONENT + 1.0),
+                1.0,
+                0.5
+            ),
+            Err(CalibrationError::ExponentOutOfRange {
+                exponent: MAX_RESPONSE_EXPONENT + 1.0
+            })
+        );
+
+        let identity = AxisCalibration::designed_default();
+        assert!(
+            matches!(
+                identity.apply(f32::NAN),
+                Err(CalibrationError::NonFiniteReading { value }) if value.is_nan()
+            ),
+            "a NaN reading is refused, never propagated into an axis value"
+        );
+        assert_eq!(
+            identity.apply(1.5),
+            Err(CalibrationError::ReadingOutOfRange { value: 1.5 })
+        );
+        assert!(
+            identity.apply(1.5).is_err(),
+            "a reading beyond full scale must not be silently saturated"
+        );
+    }
+
+    /// Non-negotiable behavior 1's device identity half: calibration is keyed
+    /// by the device, survives a change of enumeration index, and is never
+    /// persisted against an index. A store that keyed calibration by anything
+    /// other than the stable identity, or that lost it on a re-enumeration,
+    /// fails this test.
+    #[test]
+    fn accept_f22_b_calibration_is_keyed_by_device_identity_not_enumeration() {
+        let device = test_joystick();
+        let roll = AxisChannel::Joystick(0);
+        let other_index = DeviceId::enumeration_fallback(DeviceClass::Joystick, 0);
+        let later_index = DeviceId::enumeration_fallback(DeviceClass::Joystick, 7);
+        let deadzone = calibration(0.3, false, 1.0, 1.0);
+
+        let mut store = CalibrationStore::new();
+        assert!(store.is_empty());
+        assert_eq!(store.get(&device, roll), None);
+        assert_eq!(
+            store.calibration_or_default(&device, roll),
+            AxisCalibration::designed_default(),
+            "an uncalibrated channel is used exactly as it reports itself"
+        );
+
+        // The same physical stick, calibrated while it had no identity yet.
+        store.set(&other_index, roll, deadzone);
+        assert_eq!(store.get(&other_index, roll), Some(deadzone));
+        assert_eq!(store.len(), 1);
+        assert_eq!(
+            store.unstable_devices(),
+            vec![&other_index],
+            "an index-keyed record must be visible as persistable-unsafe"
+        );
+
+        // It enumerates at a different index this session: the index-keyed
+        // record is not what the player calibrated, so the new index starts
+        // from the default rather than inheriting it.
+        assert_eq!(store.get(&later_index, roll), None);
+        assert_eq!(
+            store.calibration_or_default(&later_index, roll),
+            AxisCalibration::designed_default()
+        );
+
+        // The platform reports the stable identity: the calibration moves onto
+        // it, and the record stops being persistable-unsafe.
+        let moved = store
+            .promote(&other_index, &device)
+            .expect("a provisional joystick promotes onto its stable identity");
+        assert_eq!(moved, 1);
+        assert_eq!(store.get(&device, roll), Some(deadzone));
+        assert_eq!(store.get(&other_index, roll), None);
+        assert!(
+            store.unstable_devices().is_empty(),
+            "nothing is keyed by an index any more"
+        );
+        assert_eq!(store.len(), 1, "promotion moves, it does not copy");
+
+        // Across a reboot the stick comes back at yet another index but with
+        // the same stable identity, so it keeps its calibration.
+        store.set(&later_index, roll, deadzone);
+        assert_eq!(
+            store.promote(&later_index, &device),
+            Err(CalibrationStoreError::AlreadyCalibrated {
+                device: device.clone(),
+                channel: roll,
+            }),
+            "promotion must not silently overwrite an existing record"
+        );
+        assert_eq!(
+            store.get(&later_index, roll),
+            Some(deadzone),
+            "atomic refusal"
+        );
+        assert_eq!(store.get(&device, roll), Some(deadzone), "atomic refusal");
+
+        // A refused promotion for a wrong class or a non-stable target is also
+        // refused by name.
+        let gamepad = DeviceId::stable(DeviceClass::Gamepad, "pad.test/0")
+            .expect("the test identity is valid");
+        assert_eq!(
+            store.promote(&later_index, &gamepad),
+            Err(CalibrationStoreError::ClassMismatch {
+                provisional: later_index.clone(),
+                stable: gamepad.clone(),
+            })
+        );
+        assert_eq!(
+            store.promote(&later_index, &later_index),
+            Err(CalibrationStoreError::TargetNotStable {
+                device: later_index.clone()
+            })
+        );
+        assert_eq!(
+            store.promote(&device, &device),
+            Err(CalibrationStoreError::ProvisionalIsStable {
+                device: device.clone()
+            })
+        );
+    }
+
+    /// The channel vocabulary is the calibration key, so it must cover every
+    /// analog source and refuse every digital one.
+    #[test]
+    fn accept_f22_b_axis_channels_cover_every_analog_source() {
+        assert_eq!(
+            AxisChannel::from_source(BindingSource::MouseAxis(MouseAxis::X)),
+            Some(AxisChannel::Mouse(MouseAxis::X))
+        );
+        assert_eq!(
+            AxisChannel::from_source(BindingSource::GamepadAxis(GamepadAxis::RightTrigger)),
+            Some(AxisChannel::Gamepad(GamepadAxis::RightTrigger))
+        );
+        assert_eq!(
+            AxisChannel::from_source(BindingSource::JoystickAxis {
+                index: 4,
+                inverted: true
+            }),
+            Some(AxisChannel::Joystick(4)),
+            "a source's inversion flag is a wiring fact and does not split the channel"
+        );
+        for source in [
+            BindingSource::Key(Key::W),
+            BindingSource::MouseButton(MouseButton::Left),
+            BindingSource::GamepadButton(GamepadButton::South),
+            BindingSource::JoystickButton(2),
+        ] {
+            assert_eq!(
+                AxisChannel::from_source(source),
+                None,
+                "a digital source has no calibration channel"
+            );
+        }
+        assert_eq!(
+            AxisChannel::Joystick(2).label(),
+            "joystick.2",
+            "labels are the vocabulary's own"
+        );
+        assert!(AxisChannel::Mouse(MouseAxis::X).is_relative());
+        assert!(!AxisChannel::Joystick(0).is_relative());
+        assert_eq!(
+            AxisChannel::Gamepad(GamepadAxis::LeftStickY).device_class(),
+            DeviceClass::Gamepad
+        );
+
+        // Every analog binding of the designed default map has a channel, and
+        // the map can be walked by channel.
+        let map = ActionMap::designed_default();
+        let mut channels: Vec<AxisChannel> = map
+            .bindings()
+            .iter()
+            .filter_map(|binding| AxisChannel::from_source(binding.source))
+            .collect();
+        let count = channels.len();
+        channels.sort();
+        channels.dedup();
+        assert!(
+            count > 4,
+            "the designed default binds several analog channels"
+        );
+        for channel in channels {
+            assert!(
+                map.bindings_for_channel(channel).next().is_some(),
+                "{channel} must be walkable from the map"
+            );
+        }
+        assert_eq!(
+            map.bindings_for_channel(AxisChannel::Joystick(0))
+                .map(|binding| binding.target.action())
+                .collect::<Vec<_>>(),
+            vec![Action::Flight(FlightCommand::Roll)]
         );
     }
 }

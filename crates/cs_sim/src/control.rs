@@ -173,6 +173,199 @@ struct PendingEdge {
     action: Action,
 }
 
+/// Why a [`ThrottleSteps`] value was refused.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum ThrottleError {
+    /// The step was NaN or infinite.
+    NonFiniteStep {
+        /// The rejected step.
+        step: f32,
+    },
+    /// The step was not a fraction: it must be greater than zero and at most
+    /// one, so a step can never jump the whole throttle range.
+    StepOutOfRange {
+        /// The rejected step.
+        step: f32,
+    },
+    /// A throttle position outside `[IDLE, FULL]` was requested. The
+    /// simulation's throttle is the flight model's own `0..=1` quantity
+    /// (`flight::FlightInput`), not the signed input axis, so a position is
+    /// validated rather than clamped behind the caller's back.
+    PositionOutOfRange {
+        /// The rejected position.
+        position: f32,
+    },
+}
+
+/// The keyboard throttle position and its step rules (F22-B).
+///
+/// Non-negotiable behavior 2: "keyboard throttle steps and direct settings do
+/// not depend on render FPS". That is a property of *where* a step is applied,
+/// not of a comment:
+///
+/// * a step is applied by [`apply_tick`](Self::apply_tick), which runs at the
+///   simulation's input boundary, and it moves the throttle by one step per
+///   executed [`FlightCommand::ThrottleStepUp`] /
+///   [`FlightCommand::ThrottleStepDown`] edge — never by a per-frame rate. A
+///   render frame that covered five ticks and delivered one press moves the
+///   throttle exactly as five frames that delivered the same press each do;
+/// * a direct setting ([`FlightCommand::ThrottleIdle`] /
+///   [`FlightCommand::ThrottleFull`]) is applied after the steps of its own
+///   tick, so one tick containing both a step and a direct setting ends at the
+///   direct setting whatever order the edges arrived in.
+///
+/// The position is the flight model's `[0, 1]` throttle, not the signed
+/// `FlightCommand::Throttle` axis; [`axis_value`](Self::axis_value) converts it
+/// for a caller that reports the canonical input axis.
+///
+/// **Designed, not original.** The step size is a newly authored project
+/// default ([`ThrottleSteps::DESIGNED_STEP`]); the original game's keyboard
+/// throttle step, its increment and whether it is a step at all are unknown
+/// until F22-D measures them.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ThrottleSteps {
+    position: f32,
+    step: f32,
+}
+
+impl ThrottleSteps {
+    /// The idle end of the throttle range.
+    pub const IDLE: f32 = 0.0;
+    /// The full end of the throttle range.
+    pub const FULL: f32 = 1.0;
+    /// The designed step, a twentieth of the range.
+    pub const DESIGNED_STEP: f32 = 0.05;
+
+    /// A throttle at [`IDLE`](Self::IDLE) with an explicit step.
+    ///
+    /// # Errors
+    ///
+    /// [`ThrottleError::NonFiniteStep`] and
+    /// [`ThrottleError::StepOutOfRange`] when the step is not a fraction.
+    pub fn new(step: f32) -> Result<Self, ThrottleError> {
+        if !step.is_finite() {
+            return Err(ThrottleError::NonFiniteStep { step });
+        }
+        if step <= 0.0 || step > Self::FULL {
+            return Err(ThrottleError::StepOutOfRange { step });
+        }
+        Ok(Self {
+            position: Self::IDLE,
+            step,
+        })
+    }
+
+    /// The designed starting throttle: idle with
+    /// [`DESIGNED_STEP`](Self::DESIGNED_STEP) per press.
+    #[must_use]
+    pub fn designed_default() -> Self {
+        Self {
+            position: Self::IDLE,
+            step: Self::DESIGNED_STEP,
+        }
+    }
+
+    /// The step one press moves the throttle by.
+    #[must_use]
+    pub const fn step(self) -> f32 {
+        self.step
+    }
+
+    /// The current throttle position in `[IDLE, FULL]`.
+    #[must_use]
+    pub const fn position(self) -> f32 {
+        self.position
+    }
+
+    /// The current throttle as the canonical `FlightCommand::Throttle` axis
+    /// value: `(position + 1) / 2` mapped back into `[-1, 1]`.
+    #[must_use]
+    pub fn axis_value(self) -> f32 {
+        self.position * 2.0 - 1.0
+    }
+
+    /// Sets the position directly, for a caller that owns an analog throttle.
+    ///
+    /// # Errors
+    ///
+    /// [`ThrottleError::PositionOutOfRange`] outside `[IDLE, FULL]`. The
+    /// position is never clamped silently.
+    pub fn set_position(&mut self, position: f32) -> Result<(), ThrottleError> {
+        if !position.is_finite() || !(Self::IDLE..=Self::FULL).contains(&position) {
+            return Err(ThrottleError::PositionOutOfRange { position });
+        }
+        self.position = position;
+        Ok(())
+    }
+
+    /// Applies the throttle edges one tick executed, and returns the change
+    /// each one made.
+    ///
+    /// The edges are the ones [`ControlBuffer::begin_tick`] returned for that
+    /// tick, in the order they executed. Every step moves the throttle by one
+    /// [`step`](Self::step) and saturates at the ends; a direct setting in the
+    /// same tick is applied after that tick's steps, so it wins over them in
+    /// whatever order the edges arrived.
+    pub fn apply_tick(&mut self, edges: &[Action]) -> Vec<ThrottleChange> {
+        let mut changes = Vec::new();
+        let mut direct: Option<(FlightCommand, f32)> = None;
+        for edge in edges {
+            match edge {
+                Action::Flight(FlightCommand::ThrottleStepUp) => {
+                    changes.push(self.step_by(self.step, FlightCommand::ThrottleStepUp));
+                }
+                Action::Flight(FlightCommand::ThrottleStepDown) => {
+                    changes.push(self.step_by(-self.step, FlightCommand::ThrottleStepDown));
+                }
+                Action::Flight(FlightCommand::ThrottleIdle) => {
+                    direct = Some((FlightCommand::ThrottleIdle, Self::IDLE));
+                }
+                Action::Flight(FlightCommand::ThrottleFull) => {
+                    direct = Some((FlightCommand::ThrottleFull, Self::FULL));
+                }
+                _ => {}
+            }
+        }
+        if let Some((cause, position)) = direct {
+            let from = self.position;
+            self.position = position;
+            changes.push(ThrottleChange {
+                cause,
+                from,
+                to: position,
+            });
+        }
+        changes
+    }
+
+    /// Moves the throttle by `delta`, saturating at the ends, and reports the
+    /// change. A step refused by an end still produces a change record with
+    /// `from == to`, so a trace shows the press that did nothing.
+    fn step_by(&mut self, delta: f32, cause: FlightCommand) -> ThrottleChange {
+        let from = self.position;
+        let to = (self.position + delta).clamp(Self::IDLE, Self::FULL);
+        self.position = to;
+        ThrottleChange { cause, from, to }
+    }
+}
+
+impl Default for ThrottleSteps {
+    fn default() -> Self {
+        Self::designed_default()
+    }
+}
+
+/// One throttle change a tick's edges produced.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ThrottleChange {
+    /// The edge that caused it.
+    pub cause: FlightCommand,
+    /// The position before the change.
+    pub from: f32,
+    /// The position after the change.
+    pub to: f32,
+}
+
 /// The simulation's inbound control buffer.
 ///
 /// [`apply_frame`](Self::apply_frame) folds one render frame into the buffer;
@@ -671,5 +864,168 @@ mod tests {
             mouse.resolve(&map, BindingSource::MouseButton(MouseButton::Left)),
             Some(fire_primary())
         );
+    }
+
+    fn step_up() -> Action {
+        Action::Flight(FlightCommand::ThrottleStepUp)
+    }
+
+    fn step_down() -> Action {
+        Action::Flight(FlightCommand::ThrottleStepDown)
+    }
+
+    /// Ticks the frame-rate traces below run for.
+    const THROTTLE_TICKS: u64 = 60;
+
+    /// Replays one keyboard-throttle trace over [`THROTTLE_TICKS`] ticks,
+    /// `ticks_per_frame` ticks per render frame, with one `ThrottleStepUp` in
+    /// every `press_period`-th frame, and returns the final position and the
+    /// number of throttle changes.
+    ///
+    /// The production path is the whole one: an [`InputFrame`] per render
+    /// frame, folded into a [`ControlBuffer`], drained once per fixed tick and
+    /// handed to [`ThrottleSteps`].
+    fn throttle_run(ticks_per_frame: u64, press_period: u64) -> (f32, usize) {
+        let mut buffer = ControlBuffer::new();
+        let mut steps = ThrottleSteps::designed_default();
+        let mut changes = 0;
+        let mut tick = Tick(0);
+        let mut frame_index = 0_u64;
+        while tick.0 < THROTTLE_TICKS {
+            let mut frame = InputFrame::new(tick);
+            if frame_index.is_multiple_of(press_period) {
+                frame.push_edge(step_up());
+            }
+            buffer.apply_frame(&frame).expect("the frame applies");
+            for _ in 0..ticks_per_frame {
+                changes += steps.apply_tick(&buffer.begin_tick(tick)).len();
+                tick = Tick(tick.0 + 1);
+            }
+            frame_index += 1;
+        }
+        (steps.position(), changes)
+    }
+
+    /// Non-negotiable behavior 2: a throttle step is applied where a press is
+    /// executed, at the input boundary, so the same input trace produces the
+    /// same throttle however the render frames are grouped. A per-frame
+    /// increment, or a step per frame instead of per press, would give the
+    /// coarser and the finer run different results.
+    #[test]
+    fn accept_f22_b_keyboard_throttle_steps_ignore_render_frame_grouping() {
+        // Twelve presses over 60 ticks, delivered as 12 frames of 5 ticks (a
+        // 12 FPS render loop at 60 Hz) and as 60 frames of 1 tick with a press
+        // in every fifth frame (a 60 FPS render loop at 60 Hz).
+        let coarse = throttle_run(5, 1);
+        let fine = throttle_run(1, 5);
+        assert_eq!(coarse, fine, "the frame grouping must not matter");
+        assert_eq!(
+            coarse.1, 12,
+            "twelve presses are twelve changes, whatever the frames looked like"
+        );
+        assert!(
+            (coarse.0 - ThrottleSteps::DESIGNED_STEP * 12.0).abs() < 1e-6,
+            "twelve presses move the throttle twelve steps, got {}",
+            coarse.0
+        );
+
+        // A run that presses in every frame is a different trace and must give
+        // a different result, so the agreement above is not vacuous.
+        let every_frame = throttle_run(1, 1);
+        assert_eq!(every_frame.1, 60, "sixty presses are sixty changes");
+        assert_eq!(
+            every_frame.0,
+            ThrottleSteps::FULL,
+            "the throttle saturates at the full end"
+        );
+
+        // The changes are reported, and a step refused by an end is visible as
+        // a change that moved nothing.
+        let mut steps = ThrottleSteps::designed_default();
+        let changes = steps.apply_tick(&[step_up(), step_up()]);
+        assert_eq!(changes.len(), 2);
+        assert_eq!(changes[0].cause, FlightCommand::ThrottleStepUp);
+        assert_eq!(changes[0].from, 0.0);
+        assert!((changes[0].to - ThrottleSteps::DESIGNED_STEP).abs() < 1e-6);
+        let down = steps.apply_tick(&[step_down(), step_down(), step_down()]);
+        assert!(
+            (down[0].to - ThrottleSteps::DESIGNED_STEP).abs() < 1e-6,
+            "the first step down moves the throttle back one step, got {}",
+            down[0].to
+        );
+        assert_eq!(
+            *down.last().expect("the trace is not empty"),
+            ThrottleChange {
+                cause: FlightCommand::ThrottleStepDown,
+                from: 0.0,
+                to: 0.0,
+            },
+            "idle cannot go lower, and the refused step is still reported"
+        );
+
+        // A direct setting wins over the steps of its own tick, in any order.
+        for edges in [
+            vec![Action::Flight(FlightCommand::ThrottleIdle), step_up()],
+            vec![step_up(), Action::Flight(FlightCommand::ThrottleIdle)],
+        ] {
+            let mut steps = ThrottleSteps::designed_default();
+            steps
+                .set_position(0.5)
+                .expect("half throttle is a valid position");
+            steps.apply_tick(&edges);
+            assert_eq!(
+                steps.position(),
+                ThrottleSteps::IDLE,
+                "a direct setting overrides the same tick's steps"
+            );
+        }
+        let mut full = ThrottleSteps::designed_default();
+        full.apply_tick(&[Action::Flight(FlightCommand::ThrottleFull)]);
+        assert_eq!(full.position(), ThrottleSteps::FULL);
+        assert!(
+            (full.axis_value() - 1.0).abs() < 1e-6,
+            "the full end maps to +1 on the canonical axis"
+        );
+        assert!(
+            (ThrottleSteps::designed_default().axis_value() + 1.0).abs() < 1e-6,
+            "the idle end maps to -1 on the canonical axis"
+        );
+    }
+
+    /// The throttle's own errors are named, and a position is never clamped
+    /// behind the caller's back.
+    #[test]
+    fn accept_f22_b_keyboard_throttle_refuses_malformed_steps_and_positions() {
+        assert!(
+            matches!(
+                ThrottleSteps::new(f32::NAN),
+                Err(ThrottleError::NonFiniteStep { step }) if step.is_nan()
+            ),
+            "a NaN step is refused by name"
+        );
+        assert_eq!(
+            ThrottleSteps::new(0.0),
+            Err(ThrottleError::StepOutOfRange { step: 0.0 })
+        );
+        assert_eq!(
+            ThrottleSteps::new(1.5),
+            Err(ThrottleError::StepOutOfRange { step: 1.5 })
+        );
+        assert!(
+            ThrottleSteps::new(1.0).is_ok(),
+            "a full-range step is valid"
+        );
+
+        let mut steps = ThrottleSteps::designed_default();
+        assert_eq!(
+            steps.set_position(1.5),
+            Err(ThrottleError::PositionOutOfRange { position: 1.5 })
+        );
+        assert_eq!(
+            steps.position(),
+            ThrottleSteps::IDLE,
+            "a refused position changes nothing"
+        );
+        assert_eq!(steps.step(), ThrottleSteps::DESIGNED_STEP);
     }
 }

@@ -1,24 +1,41 @@
-//! Local input binding state and per-frame input collection (F22-A).
+//! Local input binding state, per-frame input collection and the device
+//! adapters (F22-A, F22-B).
 //!
-//! Spec: `specs/F22-input-bindings-devices-and-control-ownership.md`, stage
-//! `### F22-A`. Shared contract: `docs/contracts/UI-NETWORK.md` ("Network
-//! ownership table": a client owns only local input requests; "UI transition
-//! discipline": a UI action requests a domain transaction).
+//! Spec: `specs/F22-input-bindings-devices-and-control-ownership.md`, stages
+//! `### F22-A` and `### F22-B`. Shared contract: `docs/contracts/UI-NETWORK.md`
+//! ("Network ownership table": a client owns only local input requests; "UI
+//! transition discipline": a UI action requests a domain transaction).
 //!
 //! This is the application-side boundary between a device adapter and the
-//! simulation. [`InputBindings`] holds the active `cs_types::input::ActionMap`
-//! and the current `InputContext`; [`InputCollector`] accumulates one render
-//! frame of resolved input into a single ticked `cs_types::input::InputFrame`
-//! that `cs_sim::control::ControlBuffer` consumes. F22-B feeds real
-//! keyboard, mouse, gamepad and joystick readings into `InputBindings`; F22-C
-//! drives the context from focus and UI state and replays the frames.
+//! simulation:
+//!
+//! * [`InputBindings`] holds the active `cs_types::input::ActionMap` and the
+//!   current `InputContext`.
+//! * [`devices::DeviceAdapters`] is the F22-B producer: it turns one
+//!   [`devices::DeviceEvent`] per device into calibrated edges and axes, keyed
+//!   by [`cs_types::input::DeviceId`] identity.
+//! * [`InputCollector`] owns both, stamps the render frame with the
+//!   simulation tick it is meant for, and hands one
+//!   `cs_types::input::InputFrame` to `cs_sim::control::ControlBuffer`.
+//!
+//! The context lives here and is passed *into* the adapters, so a menu, a text
+//! field and a cinematic can never disagree with the simulation about which
+//! devices are producing actions right now (non-negotiable behavior 5).
 //!
 //! The module is deliberately asset- and ECS-free: it is plain typed state so
-//! it can be driven by a headless test exactly like the render loop, and so no
-//! game state hides in UI code (`docs/01-ARCHITECTURE.md`).
+//! a headless test can drive it exactly like the render loop, and so no game
+//! state hides in UI code (`docs/01-ARCHITECTURE.md`). F22-C wires it to the
+//! real platform sources, focus and UI state, replay and control ownership.
 
 use cs_types::Tick;
-use cs_types::input::{Action, ActionMap, BindingSource, InputContext, InputFrame};
+use cs_types::input::{Action, ActionMap, BindingSource, DeviceId, InputContext, InputFrame};
+
+pub mod devices;
+
+pub use devices::{
+    AdapterError, DESIGNED_DEAD_ZONE, DeviceAdapters, DeviceEvent, DeviceLoss, HeldEdge,
+    designed_axis_calibration, normalize_gamepad_axis,
+};
 
 /// The active action map and input context of one local session.
 ///
@@ -74,22 +91,32 @@ impl InputBindings {
 /// One render frame's resolved input, ready to hand to the simulation.
 ///
 /// An edge-triggered flight command or a UI action observed this frame is
-/// appended as an edge; a continuous axis target is reported by the caller
-/// through the device's analog reading (F22-B), not guessed from a key press.
+/// appended as an edge; a continuous axis target is reported through the
+/// device's analog reading or its held digital source, never guessed from a
+/// press.
 #[derive(Clone, Debug, PartialEq)]
 pub struct InputCollector {
     bindings: InputBindings,
+    devices: DeviceAdapters,
     frame: InputFrame,
 }
 
 impl InputCollector {
-    /// A collector whose current frame is stamped for `frame_tick`.
+    /// A collector whose current frame is stamped for `frame_tick`, with no
+    /// device connected.
     #[must_use]
-    pub const fn new(map: ActionMap, frame_tick: Tick) -> Self {
+    pub fn new(map: ActionMap, frame_tick: Tick) -> Self {
         Self {
             bindings: InputBindings::new(map),
+            devices: DeviceAdapters::new(),
             frame: InputFrame::new(frame_tick),
         }
+    }
+
+    /// A collector with the designed default action map.
+    #[must_use]
+    pub fn designed_default(frame_tick: Tick) -> Self {
+        Self::new(ActionMap::designed_default(), frame_tick)
     }
 
     /// The session's bindings and context.
@@ -103,7 +130,21 @@ impl InputCollector {
         &mut self.bindings
     }
 
-    /// Switches the input context.
+    /// The session's device adapters, their calibration and the losses they
+    /// reported.
+    #[must_use]
+    pub const fn devices(&self) -> &DeviceAdapters {
+        &self.devices
+    }
+
+    /// Mutable access to the session's device adapters, for the settings path
+    /// that calibrates a device or reports a loss.
+    pub fn devices_mut(&mut self) -> &mut DeviceAdapters {
+        &mut self.devices
+    }
+
+    /// Switches the input context. The adapters are handed the context on
+    /// every event, so this one switch governs the whole input path.
     pub fn set_context(&mut self, context: InputContext) {
         self.bindings.set_context(context);
     }
@@ -117,8 +158,9 @@ impl InputCollector {
     ///
     /// A source that resolves to an edge-triggered command appends that edge
     /// and returns it; a source that resolves to a continuous axis returns
-    /// `None` here (its analog value arrives through F22-B's calibration), as
-    /// does a source the context does not accept.
+    /// `None` here (its value arrives through the device adapters, which know
+    /// the analog reading or the held digital source), as does a source the
+    /// context does not accept.
     pub fn observe_edge(&mut self, source: BindingSource) -> Option<Action> {
         let action = self.bindings.resolve(source)?;
         match action {
@@ -130,6 +172,75 @@ impl InputCollector {
         }
     }
 
+    /// Applies one device event to the current frame (F22-B).
+    ///
+    /// This is the production path a Bevy system calls from a
+    /// `MessageReader<DeviceEvent>`. A [`DeviceEvent::Connected`] or
+    /// [`DeviceEvent::Removed`] event changes the session's device set rather
+    /// than the frame; a removal is reported through
+    /// [`take_device_losses`](Self::take_device_losses).
+    ///
+    /// # Errors
+    ///
+    /// [`AdapterError`] when the event is stale, names a device the session
+    /// does not have, disagrees with its class, or reports a reading the
+    /// device's calibration refuses. A refused event changes nothing.
+    pub fn observe_device(&mut self, event: &DeviceEvent) -> Result<(), AdapterError> {
+        let context = self.bindings.context();
+        let tick = self.frame.frame_tick();
+        let mut frame = std::mem::replace(&mut self.frame, InputFrame::new(tick));
+        let result = self
+            .devices
+            .apply(event, self.bindings.map(), context, &mut frame);
+        if result.is_err() {
+            // The event was refused, so it must leave no partial state behind.
+            frame = InputFrame::new(tick);
+        }
+        self.frame = frame;
+        result
+    }
+
+    /// Registers a device with the session's adapters.
+    ///
+    /// # Errors
+    ///
+    /// [`AdapterError::AlreadyConnected`] when the session already has it.
+    pub fn connect_device(&mut self, device: DeviceId) -> Result<(), AdapterError> {
+        self.devices.connect(device)
+    }
+
+    /// Removes a device, releasing what it held and reporting the loss.
+    ///
+    /// # Errors
+    ///
+    /// [`AdapterError::NotConnected`] when the session never had the device.
+    pub fn disconnect_device(&mut self, device: &DeviceId) -> Result<(), AdapterError> {
+        self.devices.disconnect(device)
+    }
+
+    /// Adopts the stable identity the platform revealed for a device that was
+    /// only known by its enumeration index, re-keying its calibration, its
+    /// holds and its connected record. See
+    /// [`DeviceAdapters::adopt_identity`](DeviceAdapters::adopt_identity).
+    ///
+    /// # Errors
+    ///
+    /// [`AdapterError`] when the provisional device is not connected, the
+    /// stable one already is, or the identities disagree.
+    pub fn adopt_device_identity(
+        &mut self,
+        provisional: &DeviceId,
+        stable: DeviceId,
+    ) -> Result<usize, AdapterError> {
+        self.devices.adopt_identity(provisional, stable)
+    }
+
+    /// The device losses reported since the last call, so a caller handles
+    /// each exactly once.
+    pub fn take_device_losses(&mut self) -> Vec<DeviceLoss> {
+        self.devices.take_losses()
+    }
+
     /// The frame collected so far.
     #[must_use]
     pub const fn frame(&self) -> &InputFrame {
@@ -138,16 +249,23 @@ impl InputCollector {
 
     /// Takes the collected frame and starts a fresh empty one at the same
     /// tick.
+    ///
+    /// The frame is closed first: every continuous axis the previous frame
+    /// drove and this one does not is written as exactly neutral, so a
+    /// released key or a removed device cannot leave a stale deflection in the
+    /// simulation's `AxisState`.
     pub fn take_frame(&mut self) -> InputFrame {
         let tick = self.frame.frame_tick();
-        std::mem::replace(&mut self.frame, InputFrame::new(tick))
+        let mut frame = std::mem::replace(&mut self.frame, InputFrame::new(tick));
+        self.devices.finish_frame(&mut frame);
+        frame
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cs_types::input::{FlightCommand, Key, UiAction};
+    use cs_types::input::{AxisValue, FlightCommand, Key};
 
     /// The collector turns one key press into one frame edge in flight
     /// context, and the same press into nothing in text entry. A continuous
@@ -183,12 +301,153 @@ mod tests {
         collector.set_context(InputContext::UiNavigation);
         assert_eq!(
             collector.observe_edge(BindingSource::Key(Key::ArrowUp)),
-            Some(Action::Ui(UiAction::NavigateUp))
+            Some(Action::Ui(cs_types::input::UiAction::NavigateUp))
         );
 
         // A new frame tick replaces the old frame contents.
         collector.begin_frame(Tick(8));
         assert_eq!(collector.frame().frame_tick(), Tick(8));
         assert!(collector.frame().is_empty());
+    }
+
+    /// The device path and the manual edge path are the same frame, and the
+    /// collector's context governs the device path exactly as it governs the
+    /// manual one.
+    #[test]
+    fn accept_f22_b_collector_routes_device_events_through_the_context() {
+        let keyboard = DeviceId::stable(cs_types::input::DeviceClass::Keyboard, "kbd/0")
+            .expect("the test identity is valid");
+        let mut collector = InputCollector::designed_default(Tick(1));
+        collector
+            .connect_device(keyboard.clone())
+            .expect("the keyboard connects");
+
+        let press = DeviceEvent::KeyboardFrame {
+            device: keyboard.clone(),
+            keys: vec![Key::Space, Key::W],
+        };
+        collector.observe_device(&press).expect("the frame applies");
+        let frame = collector.take_frame();
+        assert_eq!(
+            frame.edges(),
+            &[Action::Flight(FlightCommand::FirePrimary)],
+            "the device path produces the same edge the manual path does"
+        );
+        let pitch = frame
+            .axis(FlightCommand::Pitch)
+            .expect("the held key drives pitch");
+        assert!((pitch.as_unit() + 1.0).abs() < 1e-3, "full negative pitch");
+
+        // A refused event leaves the frame untouched.
+        let orphan = DeviceEvent::KeyboardFrame {
+            device: DeviceId::stable(cs_types::input::DeviceClass::Keyboard, "kbd/9")
+                .expect("the test identity is valid"),
+            keys: vec![Key::Space],
+        };
+        assert!(collector.observe_device(&orphan).is_err());
+        assert!(
+            collector.frame().is_empty(),
+            "a refused event contributes nothing to the frame"
+        );
+
+        // Text entry closes the whole path, devices included.
+        collector.set_context(InputContext::TextEntry);
+        collector.observe_device(&press).expect("the frame applies");
+        let frame = collector.take_frame();
+        assert!(
+            frame.edges().is_empty(),
+            "text entry must not also fire weapons, got {:?}",
+            frame.edges()
+        );
+        assert!(
+            frame
+                .axis(FlightCommand::Pitch)
+                .is_none_or(|pitch| pitch.quantized() == 0),
+            "text entry also stops the flight axes, got {:?}",
+            frame.axes()
+        );
+        assert!(collector.take_device_losses().is_empty());
+
+        // Removing a device the session does not have is refused by name, and
+        // the loss of the registered one is reported exactly once.
+        let stranger = DeviceId::stable(cs_types::input::DeviceClass::Keyboard, "kbd/9")
+            .expect("the test identity is valid");
+        assert_eq!(
+            collector.disconnect_device(&stranger),
+            Err(AdapterError::NotConnected {
+                device: stranger.clone()
+            })
+        );
+        collector
+            .observe_device(&DeviceEvent::Removed {
+                device: keyboard.clone(),
+            })
+            .expect("the removal applies");
+        let losses = collector.take_device_losses();
+        assert_eq!(losses.len(), 1);
+        assert_eq!(losses[0].device, keyboard);
+        assert!(collector.take_device_losses().is_empty());
+    }
+
+    /// Two consecutive frames of a held key: one edge, and the axis stays
+    /// driven until the release frame neutralizes it. A frame that observed no
+    /// device at all neutralizes too, so a caller that stops polling loses
+    /// control input instead of leaving it stuck.
+    #[test]
+    fn accept_f22_b_collector_keeps_a_held_axis_until_it_is_neutralized() {
+        let keyboard = DeviceId::stable(cs_types::input::DeviceClass::Keyboard, "kbd/0")
+            .expect("the test identity is valid");
+        let mut collector = InputCollector::designed_default(Tick(1));
+        collector
+            .connect_device(keyboard.clone())
+            .expect("the keyboard connects");
+        let press = DeviceEvent::KeyboardFrame {
+            device: keyboard.clone(),
+            keys: vec![Key::S],
+        };
+        let release = DeviceEvent::KeyboardFrame {
+            device: keyboard.clone(),
+            keys: vec![],
+        };
+        let full_positive_pitch = AxisValue::from_unit(FlightCommand::Pitch, 1.0)
+            .expect("full scale")
+            .quantized();
+
+        collector.begin_frame(Tick(1));
+        collector.observe_device(&press).expect("applies");
+        let held = collector.take_frame();
+        assert_eq!(
+            held.axis(FlightCommand::Pitch).map(AxisValue::quantized),
+            Some(full_positive_pitch)
+        );
+
+        collector.begin_frame(Tick(2));
+        let quiet = collector.take_frame();
+        assert_eq!(
+            quiet.axis(FlightCommand::Pitch).map(AxisValue::quantized),
+            Some(0),
+            "a frame that observed no device neutralizes the axis rather than \\
+             freezing the last deflection"
+        );
+
+        collector.begin_frame(Tick(3));
+        collector.observe_device(&press).expect("applies");
+        let still = collector.take_frame();
+        assert_eq!(
+            still.axis(FlightCommand::Pitch).map(AxisValue::quantized),
+            Some(full_positive_pitch),
+            "the axis is driven again while the key is down"
+        );
+
+        collector.begin_frame(Tick(4));
+        collector.observe_device(&release).expect("applies");
+        let released = collector.take_frame();
+        assert_eq!(
+            released
+                .axis(FlightCommand::Pitch)
+                .map(AxisValue::quantized),
+            Some(0),
+            "the release frame states the axis as exactly neutral"
+        );
     }
 }
