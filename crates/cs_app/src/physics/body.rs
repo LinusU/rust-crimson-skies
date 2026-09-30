@@ -45,7 +45,7 @@ use std::fmt;
 use avian3d::prelude::{
     AngularVelocity, Collider, CollisionEventsEnabled, CollisionLayers as AvianCollisionLayers,
     LinearVelocity, Mass, Position, RigidBody, Rotation, Sensor, Sleeping, SpeculativeMargin,
-    SweptCcd,
+    SweptCcd, TransformInterpolation,
 };
 use bevy::prelude::{Component, Entity, Transform, Vec3, World};
 use cs_sim::collision::{CollisionLayer, ShapeClass};
@@ -96,9 +96,14 @@ pub struct BodySpec {
     pub shape: ShapeClass,
     /// How the body is simulated.
     pub mode: BodyMode,
-    /// Total mass in kilograms. Used (and required to be positive) only for
-    /// [`BodyMode::Dynamic`]; static and kinematic bodies are not accelerated
-    /// by forces, so the field is validated as finite but otherwise unused.
+    /// Total mass in kilograms. Required to be positive for
+    /// [`BodyMode::Dynamic`]; a static or kinematic body is not accelerated
+    /// by forces, so the field is validated as finite but not required.
+    /// When a non-dynamic spec does carry a positive mass it is still bound
+    /// to the body, so a later [`set_body_mode`] release to
+    /// [`BodyMode::Dynamic`] integrates with the declared mass rather than
+    /// a collider-density default — a kinematic spec that means to be
+    /// released should declare its mass.
     pub mass_kg: f32,
     /// Half of each collider dimension in meters. Strictly positive.
     pub half_extents_m: [f32; 3],
@@ -242,6 +247,22 @@ pub fn spawn_body(world: &mut World, spec: &BodySpec) -> Result<Entity, BodyErro
     if layer.requires_continuous_detection() {
         entity.insert((SweptCcd::default(), SpeculativeMargin::ZERO));
     }
+    if spec.mode.is_simulated() {
+        // Presentation eases the render transform between fixed ticks
+        // (F23-C): an integrated body interpolates, a static one never moves
+        // and has nothing to ease.
+        entity.insert(TransformInterpolation);
+    }
+
+    if spec.mass_kg > 0.0 {
+        // Avian recomputes `ComputedMass` when the collider arrives, so the
+        // explicit mass must already be on the entity or the body's first
+        // tick integrates with the default unit mass (measured through the
+        // F23-C session path: a force on a spawned 20 kg body accelerated
+        // it like a 1 kg one). The declared mass is bound for every mode —
+        // not only dynamic — so a kinematic release keeps it.
+        entity.insert(Mass(spec.mass_kg));
+    }
 
     entity.insert(Collider::cuboid(
         half[0] * 2.0,
@@ -249,24 +270,28 @@ pub fn spawn_body(world: &mut World, spec: &BodySpec) -> Result<Entity, BodyErro
         half[2] * 2.0,
     ));
 
-    if spec.mode == BodyMode::Dynamic {
-        entity.insert(Mass(spec.mass_kg));
-    }
-
     Ok(entity.id())
 }
 
-/// A mode transition on something that is not a body.
+/// A mode transition that cannot be honoured.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BodyTransitionError {
     /// The entity does not exist or carries no [`RigidBody`].
     NotABody,
+    /// The transition is to [`BodyMode::Dynamic`] but the entity carries no
+    /// declared [`Mass`]: releasing a body to the integrator without one
+    /// would silently integrate the collider-density default
+    /// (non-negotiable behavior 4), so the transition is refused.
+    MissingDynamicMass,
 }
 
 impl fmt::Display for BodyTransitionError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NotABody => f.write_str("entity is not a rigid body"),
+            Self::MissingDynamicMass => {
+                f.write_str("a dynamic release needs a declared mass; the body carries none")
+            }
         }
     }
 }
@@ -275,11 +300,13 @@ impl std::error::Error for BodyTransitionError {}
 
 /// Switches a live body to `mode`, preserving pose and velocity.
 ///
-/// The transition writes nothing but the [`RigidBody`] kind and clears sleep:
-/// `Position`, `Rotation`, `LinearVelocity` and `AngularVelocity` are left
-/// exactly as they are, so a kinematic → dynamic release continues from the
-/// pose and velocity the scripted trajectory had, with no discontinuity
-/// (spec non-negotiable behavior 1; the end-to-end AC03 scenario is F23-C's).
+/// The transition writes nothing dynamic but the [`RigidBody`] kind, clears
+/// sleep and keeps [`TransformInterpolation`] in step with whether the body
+/// is integrated: `Position`, `Rotation`, `LinearVelocity` and
+/// `AngularVelocity` are left exactly as they are, so a kinematic → dynamic
+/// release continues from the pose and velocity the scripted trajectory
+/// had, with no discontinuity (spec non-negotiable behavior 1; the
+/// end-to-end AC03 scenario is F23-C's).
 ///
 /// Returns the mode that was already in effect when nothing changes.
 pub fn set_body_mode(
@@ -296,11 +323,26 @@ pub fn set_body_mode(
         return Ok(mode);
     }
 
+    if mode == BodyMode::Dynamic {
+        let mass = world.get::<Mass>(entity).map(|mass| mass.0);
+        match mass {
+            Some(mass) if mass > 0.0 => {}
+            _ => return Err(BodyTransitionError::MissingDynamicMass),
+        }
+    }
+
     let mut target = world.entity_mut(entity);
     target.insert(RigidBody::from(mode));
     // A mode change is a deliberate gameplay event: the body must be
     // simulated in its new mode, not left asleep in the old one. Avian's
     // observers rebuild or drop the solver body at the next command flush.
     target.remove::<Sleeping>();
+    // Render interpolation tracks whether the body is integrated: a body
+    // entering simulation eases its transform, a parked one does not.
+    if mode.is_simulated() {
+        target.insert(TransformInterpolation);
+    } else {
+        target.remove::<TransformInterpolation>();
+    }
     Ok(mode)
 }
