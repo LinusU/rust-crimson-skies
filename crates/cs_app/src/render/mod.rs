@@ -56,3 +56,4 @@ pub mod capture;
 pub mod golden;
 pub mod material;
 pub mod plan;
+pub mod rgb565;
