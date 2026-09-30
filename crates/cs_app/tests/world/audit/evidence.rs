@@ -263,7 +263,7 @@ fn census_json(report: &WorldGroupAuditReport) -> String {
                   \"declared_faces\":{},\"drawn_triangles\":{},\"missing_faces\":{},\
                   \"texture_names\":{},\"bound_texture_names\":{},\
                   \"multi_material_group_polygons\":{},\"placement\":{},\"vertex_scale_to_m\":{},\
-                  \"representative\":[{}],\"routes\":{}}}",
+                  \"refused_representatives\":{},\"representative\":[{}],\"routes\":{}}}",
                 jstr(census.container_key()),
                 jstr(census.container_sha256()),
                 census.mesh_slots(),
@@ -279,6 +279,7 @@ fn census_json(report: &WorldGroupAuditReport) -> String {
                     Some(scale) => scale.to_string(),
                     None => "null".to_owned(),
                 },
+                census.refused_representatives(),
                 census
                     .representative()
                     .iter()
@@ -286,7 +287,7 @@ fn census_json(report: &WorldGroupAuditReport) -> String {
                         format!(
                             "{{\"mesh_index\":{},\"triangles\":{},\"vertices\":{},\
                               \"material_groups\":{},\"stored_min\":[{},{},{}],\
-                              \"stored_max\":[{},{},{}],\"fingerprint\":{}}}",
+                              \"stored_max\":[{},{},{}],\"fingerprint\":{},\"upload\":{}}}",
                             mesh.mesh_index,
                             mesh.triangles,
                             mesh.vertices,
@@ -298,6 +299,7 @@ fn census_json(report: &WorldGroupAuditReport) -> String {
                             mesh.stored_max[1],
                             mesh.stored_max[2],
                             jstr(&mesh.fingerprint.to_hex()),
+                            upload_json(&mesh.upload),
                         )
                     })
                     .collect::<Vec<_>>()
@@ -343,6 +345,27 @@ fn census_json(report: &WorldGroupAuditReport) -> String {
         report.drawn_triangle_count(),
         rows,
     )
+}
+
+/// The upload adapter's verdict for one representative mesh.
+fn upload_json(verdict: &cs_content::world::UploadVerdict) -> String {
+    match verdict {
+        cs_content::world::UploadVerdict::Uploaded {
+            groups,
+            vertices,
+            triangles,
+        } => format!(
+            "{{\"state\":\"uploaded\",\"groups\":{groups},\"vertices\":{vertices},\
+              \"triangles\":{triangles}}}"
+        ),
+        cs_content::world::UploadVerdict::Refused {
+            material_group,
+            reason,
+        } => format!(
+            "{{\"state\":\"refused\",\"material_group\":{material_group},\"reason\":{}}}",
+            jstr(reason)
+        ),
+    }
 }
 
 /// The placement fact, in the survey's own two words.
