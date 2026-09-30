@@ -36,7 +36,9 @@
 //! * [`bevy_image::upload_image`] turns one
 //!   `cs_formats::texture::DecodedImage` into a Bevy texture whose format
 //!   is chosen from the stored color space, so the GPU corrects the stored
-//!   values exactly once (spec F17 non-negotiable 3).
+//!   values exactly once (spec F17 non-negotiable 3). A 16-bit packed image
+//!   is widened to 8-bit channels and its coverage is composed on the CPU
+//!   first, both by the decided policy in [`rgb565`].
 //! * [`bevy_state::render_state`] reads the render state out of a
 //!   [`material::ClassifiedMaterial`] and refuses the two facts nothing
 //!   measured (two-sidedness, addressing).

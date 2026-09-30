@@ -45,20 +45,33 @@ stored word (`cs_formats::texture::PixelFormat::Rgb565`), widening an
 class-to-phase map, a new-engine design decision over a *format*
 property.
 
-**Why it needs no original-run evidence to be usable.** Three
+**Why it needs no original-run evidence to be usable.** Two
 reasons, in order of weight:
 
-1. It is a property of the *format*, not of the game. `R5G6B5` is a
-   Direct3D 7/8 hardware format; "sample it as 8 bits per channel" has
-   one standard answer. There is no per-content choice, no tuning table
-   and no variant to look up, so there is nothing an original run could
-   disambiguate *case by case*.
+1. It is a property of the *format*, not of the game. Given the 5/6/5
+   layout, "widen five bits to eight" is a channel-width operation with
+   no per-content choice, no tuning table and no variant to look up, so
+   there is nothing an original run could disambiguate *case by case*.
 2. It is the only candidate besides the fixed-point scale that reaches
    both endpoints exactly. `Rule::reaches_white` is the edge: 31 → 255
    and 63 → 255, or the rule cannot represent a full-scale channel.
-3. F17-B's rule is that an *unestablished* fact becomes a refusal. This
-   fact is established — as a format definition — so refusing it was
-   over-cautious, and the refusal covered 100% of the texture set.
+
+**What is deliberately not leaned on (review pass).** The first draft
+of this document argued the choice with "`R5G6B5` is a Direct3D 7/8
+hardware format; 'sample it as 8 bits per channel' has one standard
+answer", and the module doc said replication is "what the `D3DFMT_R5G6B5`
+hardware format means on a 2000-era card". **That is an unrecorded
+compatibility assumption stated as fact, and the review removed it.**
+Direct3D does not specify how a card widens five bits to eight, so the
+format's name is evidence for *neither* rule; and "some loader in the
+original widened it" is not evidence either. The claim now rests only on
+the two reasons above plus the bound below, and the module doc names the
+unmeasured source explicitly so a later reader cannot mistake it for
+support.
+
+**F17-B's rule is that an *unestablished* fact becomes a refusal.** This
+fact is established — as a format definition — so refusing it was
+over-cautious, and the refusal covered 100% of the texture set.
 
 **What stays unmeasured, and how far it can move.** Whether the
 original uploaded the words and let the card expand, or expanded them in
@@ -225,15 +238,31 @@ consumer can group by them.
 | `KeyPlaneAbsent` | `coverage_key_plane_absent` | the image does not store the plane the key names (a bug, not content) |
 | `TexelOutOfBounds` | `texel_out_of_bounds` | the coordinate is outside the image |
 | `NotRgb565` | `not_rgb565` | the image stores no 16-bit word |
+| `TexelCountOverflow` | `texel_count_overflow` | the image has more texels than this build can address; added by the review pass, see below |
 | `ExpansionPolicyError(Unknown \| Contradicted)` | — | a refusal is not an expansion, so it cannot be built as a policy |
 
 One behaviour change worth naming: the adapter used to `expect` the alpha
 channel and the coverage plane to be there, and would have panicked on an
 image that did not carry the plane its `AlphaSource` named. It now goes
-through `coverage_byte`, which reports `KeyPlaneAbsent` instead. The
-descriptor normally prevents that pairing, so this is defence in depth
-rather than a fixed crash, but the adapter no longer has a panic path in
-that loop.
+through `coverage_byte`, which reports `KeyPlaneAbsent` instead. Those
+two `expect` calls are gone; the one on the texel itself is not, because
+a texel is the decoder's own invariant rather than a presentation fact,
+and the loop still has that single panic path. The descriptor normally
+prevents the mismatched pairing in the first place, so this is defence in
+depth rather than a fixed crash.
+
+**`cs_content` still reports the expansion as unknown, and that is
+correct.** `cs_content::textures::presentation_unknowns` still puts
+`PresentationUnknown::Rgb565Expansion` on every 565-backed row, and
+`cs_content` is not this task's owner. Leaving it is right, not an
+oversight: the variant means "how a stored 565 word becomes 8-bit
+channels **on the original renderer**", which is exactly the fact this
+task decided *not* to claim. The two records are about different
+subjects — `cs_content` states what is known of the original, the policy
+states what this engine will do. The render path does not consult
+`TextureUpload::unknowns()` at all (`capture::upload_surface` takes a
+`&DecodedImage`), so the adapter refusal this task removed was the only
+gate in front of a 565 row; the other three are still in front of it.
 
 ## Files and the one observable failure (listed before editing)
 
@@ -301,7 +330,7 @@ census is `#[ignore]`d and fails loudly (exit 101) without it.
 | the remaining policy refusals | `..._an_absent_key_plane_and_an_out_of_range_texel_stay_refusals` |
 | **a 565 image uploads, widened, and the widening is in its identity** | `render::adapters::..._a_565_image_uploads_widened_by_the_decided_expansion` |
 | **both keys reach the alpha channel and the texel keeps its colour** | `render::adapters::..._both_coverage_keys_reach_the_alpha_channel` |
-| **the adapter still refuses a key plane the image lacks** | `render::adapters::..._a_key_plane_the_image_lacks_is_still_refused` |
+| **an unreadable key plane keeps the policy's own reason code** | `render::adapters::..._an_unreadable_key_plane_keeps_the_policy_s_own_code` |
 | affected retail content quantified | `..._retail_565_rows_and_coverage_keys_are_counted` (ignored, `retail`) |
 
 The expected channel values are **tables written into the test file**,
@@ -392,6 +421,65 @@ that a test pins them.
   to this decision.
 - **No mip levels, no stretch, no filtering.** `PresentationUnknown::Stretch`
   is on every row and is untouched.
+
+## Review pass (2026-09-30, same agent, not independent)
+
+The implementer of this branch reviewed it. That is **not** independent
+evidence and is recorded as such; see the `complete_review` notes. What
+the pass found and fixed, so the next reader does not have to re-derive it:
+
+1. **An unrecorded compatibility assumption, stated as fact.** The
+   `D3DFMT_R5G6B5` argument above. Removed from the module doc, from
+   `Rule::Replication`'s doc and from this document, and replaced with an
+   explicit statement of what is *not* evidence. Nothing about the
+   decision changed; its justification got narrower and honest.
+2. **A misnamed test that did not test what it said.**
+   `render::adapters::..._a_key_plane_the_image_lacks_is_still_refused`
+   claimed to provoke a refusal, carried a comment saying it "forces the
+   mismatch the descriptor normally prevents", and then uploaded a
+   well-formed RGBA8 image and asserted on the result — the local was even
+   named `error` while holding an `ImageUpload`. It is replaced by
+   `..._an_unreadable_key_plane_keeps_the_policy_s_own_code`, which calls
+   the policy exactly as the adapter calls it, asserts the refusal the
+   adapter would return, and states *why* the refusal cannot be provoked
+   through `upload_image` at all: `ImageDescriptor::new` rejects every
+   pairing the policy would have to refuse, and `DecodedImage`'s planes
+   are private. Probe: making `ImageAdapterError::code()` collapse
+   `Rgb565Policy(_)` to one generic string fails exactly that test.
+3. **A test assertion that could pass on a defaulted input.**
+   `..._a_coverage_key_does_not_depend_on_the_expansion_rule` closed with
+   `unwrap_or(CoverageSource::Opaque)` and two `unwrap_or_default()`s. A
+   source that degraded to `Opaque` would have made "no alpha moved" a
+   statement about an image with no coverage at all. All three are now
+   `expect`s, with a comment saying why.
+4. **A wrong reason code.** `expand_image` reported a texel-count
+   overflow as `NotRgb565`, i.e. "this image stores no 16-bit texel
+   word", which is a different fact. There is now a
+   `TexelCountOverflow { texels }` variant with its own code
+   `texel_count_overflow`, and the distinct-code assertions in both test
+   files cover it. **Honest limit: the mapping itself is unreachable on a
+   64-bit target** — a `u32 × u32` extent always fits a 64-bit `usize` —
+   so no test can pin which variant a 32-bit build returns. What the
+   tests pin is the observable contract: the code exists, is distinct, and
+   names the size. The mapping was a wrong answer to a question nothing
+   can currently ask.
+5. **Two false statements in this document**, both now corrected: the
+   "the adapter no longer has a panic path in that loop" claim (the texel
+   `expect` remains) and the `expand_image` doc's "exactly as the adapter
+   writes them into its texel buffer", which implied the adapter called it
+   — it does not, and the reason (the adapter composes 8-bit images in
+   the same loop and counts translucent texels as it goes) is now stated.
+6. **A missing sentence in the crate's render doc paragraph**, which
+   described `bevy_image::upload_image` without mentioning that a 565
+   image is widened and its coverage composed on the CPU.
+
+Nothing else was changed: the decision, the census, the mutation table
+and the fourteen tests stand. Re-verified by the reviewer: the retail
+census reproduces every number in the table above (166,547,780 texels,
+31,679 distinct words, 6,009,498 saturated, 128,851,813 disagreeing with
+truncation, 39,459,393 disagreeing with the fixed-point scale by 1/255,
+303,063 keyed texels over 137 rows, 1,506 of 6,125 palettes with a
+duplicate word, 862,331 palette entries disagreeing).
 
 ## What is *not* claimed
 

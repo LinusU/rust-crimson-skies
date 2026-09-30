@@ -12,6 +12,12 @@
 //! palette, so the refusal covers the whole texture set. This module is the
 //! decision.
 //!
+//! [`cs_content::textures::PresentationUnknown::Rgb565Expansion`] stays on
+//! every such row, and that is deliberate: it asks what the **original
+//! renderer** did, which is the fact this module decides *not* to claim.
+//! The content layer states what is known of the original; this module
+//! states what this engine will do.
+//!
 //! # Decision 1: the expansion is [`ClaimStatus::Designed`], not an
 //! # F17-D evidence gate
 //!
@@ -20,10 +26,8 @@
 //! 15..=11, six green at 10..=5, five blue at 4..=0). Given that layout,
 //! "widen an *n*-bit unsigned channel to eight bits" has one standard
 //! answer and no content-dependent choice in it: **bit replication**,
-//! `(level << (8 - n)) | (level >> n)`. It is what the `D3DFMT_R5G6B5`
-//! hardware format means on a 2000-era card, what a 16-to-8 bit unpack
-//! means in every image container of the era, and it is the only candidate
-//! besides the fixed-point scale that reaches both endpoints exactly
+//! `(level << (8 - n)) | (level >> n)`. It is the only candidate besides
+//! the fixed-point scale that reaches both endpoints exactly
 //! ([`Rule::reaches_white`]).
 //!
 //! This is the same kind of claim as F17-A's class-to-phase map: a
@@ -31,6 +35,18 @@
 //! behaviour asserted and no measurement needed before it can be used. It
 //! is `Designed`, never `VerifiedOriginal`, and this module never claims to
 //! know what the original loader emitted.
+//!
+//! ## What is deliberately *not* leaned on
+//!
+//! `D3DFMT_R5G6B5` is a hardware format the original could sample
+//! directly, and the Direct3D documentation does **not** specify how a
+//! card widens five bits to eight, so the format's name is not evidence
+//! for any particular widening — including this one. Nor is "some loader
+//! in the original widened it" evidence, and the existence of a 16-to-8
+//! unpack in an image container of the era is a coincidence, not a
+//! measurement. The claim above rests on the design argument and on the
+//! bound below. Naming the unmeasured source here is what keeps the
+//! residual an unknown instead of a disguised assumption.
 //!
 //! ## What stays unmeasured, and how far it can move
 //!
@@ -121,8 +137,9 @@ const OPAQUE: u8 = u8::MAX;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum Rule {
     /// Bit replication, `(level << (8 - n)) | (level >> n)`. The decided
-    /// rule: exact at both endpoints, monotone, and the meaning of the
-    /// `D3DFMT_R5G6B5` hardware format.
+    /// rule: exact at both endpoints, monotone, and the standard widening
+    /// of a packed channel. Deliberately *not* claimed to be what the
+    /// original's card or loader did; see the module docs.
     Replication,
     /// Fixed-point scale, `level * 255 / (2^n - 1)` rounded to nearest.
     /// Also exact at both endpoints; differs from replication by at most
@@ -342,6 +359,12 @@ impl ExpansionPolicy {
 
     /// A policy that widens by `rule` and claims `status`.
     ///
+    /// Only [`Self::DECIDED`] is this project's answer. The other
+    /// combinations exist so a candidate can be *compared* against the
+    /// decided rule over the whole domain ([`Rule::max_channel_deviation`]),
+    /// and a caller that widens with one of them has made its own claim
+    /// about its own content, not this project's.
+    ///
     /// # Errors
     ///
     /// [`ExpansionPolicyError`] when `status` is [`ClaimStatus::Unknown`] or
@@ -474,6 +497,15 @@ pub enum Rgb565PolicyError {
         /// The layout the image actually stores.
         format: DecodedFormat,
     },
+    /// The image is larger than this build can address: its texel count
+    /// does not fit in a `usize`. Named separately from
+    /// [`Self::NotRgb565`] so a consumer grouping by reason code is never
+    /// told the image stores no 16-bit word when the real problem is its
+    /// size.
+    TexelCountOverflow {
+        /// The texel count that did not fit.
+        texels: u64,
+    },
 }
 
 impl Rgb565PolicyError {
@@ -484,6 +516,7 @@ impl Rgb565PolicyError {
             Self::KeyPlaneAbsent { .. } => "coverage_key_plane_absent",
             Self::TexelOutOfBounds { .. } => "texel_out_of_bounds",
             Self::NotRgb565 { .. } => "not_rgb565",
+            Self::TexelCountOverflow { .. } => "texel_count_overflow",
         }
     }
 }
@@ -503,6 +536,12 @@ impl fmt::Display for Rgb565PolicyError {
             }
             Self::NotRgb565 { format } => {
                 write!(f, "a {format:?} image stores no 16-bit texel word")
+            }
+            Self::TexelCountOverflow { texels } => {
+                write!(
+                    f,
+                    "{texels} texels do not fit in this build's address space"
+                )
             }
         }
     }
@@ -610,25 +649,29 @@ pub fn expand_texel(
     Ok([red, green, blue, alpha])
 }
 
-/// The four channels of a whole image, row-major from the top-left, exactly
-/// as the adapter writes them into its texel buffer.
+/// The four channels of a whole image, row-major from the top-left — the
+/// same composition [`expand_texel`] performs, one texel at a time and in
+/// the same order the canonical orientation defines.
+///
+/// The adapter does not call this: it composes 8-bit images in the same
+/// loop and counts its translucent texels as it goes, so it needs the
+/// channels one at a time. This is the whole-image form of the same
+/// policy, for a caller that has an image and nothing else to do.
 ///
 /// # Errors
 ///
-/// The first [`Rgb565PolicyError`] any texel reports; the same
-/// [`Rgb565PolicyError::NotRgb565`] for a non-565 image.
+/// The first [`Rgb565PolicyError`] any texel reports, plus
+/// [`Rgb565PolicyError::TexelCountOverflow`] when the image is larger than
+/// this build can address.
 pub fn expand_image(
     image: &DecodedImage,
     source: CoverageSource,
     policy: &ExpansionPolicy,
 ) -> Result<Vec<[u8; 4]>, Rgb565PolicyError> {
     let extent = image.extent();
+    let texels = u64::from(extent.width) * u64::from(extent.height);
     let count =
-        usize::try_from(u64::from(extent.width) * u64::from(extent.height)).map_err(|_| {
-            Rgb565PolicyError::NotRgb565 {
-                format: image.format(),
-            }
-        })?;
+        usize::try_from(texels).map_err(|_| Rgb565PolicyError::TexelCountOverflow { texels })?;
     let mut out = Vec::with_capacity(count);
     for y in 0..extent.height {
         for x in 0..extent.width {

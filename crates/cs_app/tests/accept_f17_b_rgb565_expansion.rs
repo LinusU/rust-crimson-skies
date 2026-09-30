@@ -646,14 +646,18 @@ fn accept_f17_b_rgb565_a_coverage_key_does_not_depend_on_the_expansion_rule() {
     }
     // And the halves really are separable: on the truncation rule the
     // colors of a keyed image differ from the decided ones while no single
-    // alpha moves.
+    // alpha moves. Every step here is an `expect`, not a default: a source
+    // that silently degraded to `Opaque` would make "no alpha moved" a
+    // statement about an image with no coverage at all.
     let (descriptor, image) = direct_565(AlphaSource::StoredValueKey { value: 0x0000 });
-    let source =
-        CoverageSource::from_source(descriptor.alpha_source()).unwrap_or(CoverageSource::Opaque);
+    let source = CoverageSource::from_source(descriptor.alpha_source())
+        .expect("a stored word key names a plane");
     let truncating = ExpansionPolicy::new(Rule::Truncation, ClaimStatus::Designed)
         .expect("designed is an asserting status");
-    let decided = expand_texel(&image, source, &ExpansionPolicy::DECIDED, 0, 0).unwrap_or_default();
-    let truncated = expand_texel(&image, source, &truncating, 0, 0).unwrap_or_default();
+    let decided = expand_texel(&image, source, &ExpansionPolicy::DECIDED, 0, 0)
+        .expect("the keyed texel resolves under the decided rule");
+    let truncated = expand_texel(&image, source, &truncating, 0, 0)
+        .expect("the keyed texel resolves under truncation");
     assert_ne!(
         decided[..3],
         truncated[..3],
@@ -727,11 +731,13 @@ fn accept_f17_b_rgb565_an_absent_key_plane_and_an_out_of_range_texel_stay_refusa
             "{source}"
         );
     }
-    // Distinct, stable reason codes: a consumer groups by these.
+    // Distinct, stable reason codes: a consumer groups by these. Each
+    // sample is a pairing the code really produces, so the list cannot
+    // grow a duplicate that only a fabricated variant would have shown.
     let codes = [
         Rgb565PolicyError::CoverageSourceUnknown.code(),
         Rgb565PolicyError::KeyPlaneAbsent {
-            source: CoverageSource::Opaque,
+            source: CoverageSource::StoredPlane,
             format: DecodedFormat::Rgb565,
         }
         .code(),
@@ -740,12 +746,20 @@ fn accept_f17_b_rgb565_an_absent_key_plane_and_an_out_of_range_texel_stay_refusa
             format: DecodedFormat::Rgb8,
         }
         .code(),
+        Rgb565PolicyError::TexelCountOverflow { texels: u64::MAX }.code(),
     ];
     let unique: std::collections::BTreeSet<&str> = codes.iter().copied().collect();
     assert_eq!(
         unique.len(),
         codes.len(),
         "every refusal has its own code: {codes:?}"
+    );
+    // The overflow is named for its own reason and never borrows
+    // `not_rgb565`, so a caller told the image is too large is not also told
+    // the image stores no 16-bit word.
+    assert_eq!(
+        Rgb565PolicyError::TexelCountOverflow { texels: 12 }.to_string(),
+        "12 texels do not fit in this build's address space"
     );
 }
 

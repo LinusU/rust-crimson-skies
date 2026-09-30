@@ -22,7 +22,9 @@ use cs_app::render::material::{
     MaterialFacts, TextureAddress, classify,
 };
 use cs_app::render::plan::{DrawItem, DrawItemKey};
-use cs_app::render::rgb565::{CoverageSource, Rgb565PolicyError, Rule};
+use cs_app::render::rgb565::{
+    CoverageSource, ExpansionPolicy, Rgb565PolicyError, Rule, expand_texel,
+};
 use cs_formats::texture::{AlphaSource, AlphaTest, ColorSpace, DecodedFormat, PixelFormat};
 use cs_types::evidence::ClaimStatus;
 
@@ -716,24 +718,62 @@ fn accept_f17_b_rgb565_both_coverage_keys_reach_the_alpha_channel() {
     );
 }
 
-/// A coverage plane the image does not carry is still a refusal, with the
-/// policy's own reason code rather than a silently transparent texel.
+/// A coverage plane the image does not carry stays a refusal, and the
+/// adapter reports the policy's own reason code for it rather than a
+/// generic one or a silently default texel.
+///
+/// The refusal cannot be provoked *through* `upload_image`:
+/// `ImageDescriptor::new` rejects every pairing the policy would have to
+/// refuse — `Channel` without a stored alpha channel, `StoredValueKey`
+/// without 16-bit words, `PaletteKey` naming an entry the palette lacks —
+/// and `DecodedImage`'s planes are private, so no caller can hand the
+/// adapter an image that contradicts its own `AlphaSource`. Saying that
+/// is the point of this test rather than papering over it: what is pinned
+/// is the wiring, so the policy half is called exactly as the adapter
+/// calls it and the adapter half is the code a capture would print.
 #[test]
-fn accept_f17_b_rgb565_a_key_plane_the_image_lacks_is_still_refused() {
-    // A stored-word key on an image that stores 8-bit channels: the
-    // descriptor would refuse that pairing, so this is the adapter refusing
-    // an inconsistency rather than a content fact.
-    let image = decoded_image(super::fixture::ImageShape::rgba8_srgb());
-    // Force the mismatch the descriptor normally prevents.
-    let error = upload_image(&image, Some(REPEAT)).expect("the well-formed image uploads");
-    assert_eq!(error.coverage(), CoveragePlane::Channel);
-    // The codes the policy can still produce are distinct, so a consumer can
-    // group them without reading the Display text.
+fn accept_f17_b_rgb565_an_unreadable_key_plane_keeps_the_policy_s_own_code() {
+    // A direct 565 image stores no index plane, so a palette key has
+    // nothing to read. This is the refusal `upload_image` returns for it.
+    let image = decoded_image(super::fixture::ImageShape {
+        format: PixelFormat::Rgb565,
+        alpha_source: AlphaSource::Opaque,
+        alpha_test: AlphaTest::Disabled,
+        color_space: ColorSpace::Srgb,
+    });
+    assert!(
+        image.indices().is_none(),
+        "a direct 565 image stores no index plane"
+    );
+    let source = CoverageSource::PaletteIndex { key: 1 };
+    let policy_error = expand_texel(&image, source, &ExpansionPolicy::DECIDED, 0, 0)
+        .expect_err("a key plane the image does not carry is a refusal, not a default texel");
+    assert_eq!(
+        policy_error,
+        Rgb565PolicyError::KeyPlaneAbsent {
+            source,
+            format: DecodedFormat::Rgb565,
+        }
+    );
+    // The adapter forwards that error unchanged, so a capture groups it
+    // under the policy's own code.
+    assert_eq!(
+        ImageAdapterError::Rgb565Policy(policy_error).code(),
+        "coverage_key_plane_absent",
+        "the adapter reports the policy's code unchanged"
+    );
+    assert_eq!(
+        ImageAdapterError::Rgb565Policy(Rgb565PolicyError::TexelOutOfBounds { x: 3, y: 0 }).code(),
+        "texel_out_of_bounds"
+    );
+    // Every code the policy can still produce is distinct, each from a
+    // pairing the code really produces, so a consumer can group them
+    // without reading the Display text.
     let codes = [
         Rgb565PolicyError::CoverageSourceUnknown.code(),
         Rgb565PolicyError::KeyPlaneAbsent {
-            source: CoverageSource::Opaque,
-            format: DecodedFormat::Rgb8,
+            source: CoverageSource::PaletteIndex { key: 1 },
+            format: DecodedFormat::Rgb565,
         }
         .code(),
         Rgb565PolicyError::TexelOutOfBounds { x: 0, y: 0 }.code(),
@@ -741,17 +781,13 @@ fn accept_f17_b_rgb565_a_key_plane_the_image_lacks_is_still_refused() {
             format: DecodedFormat::Rgb8,
         }
         .code(),
+        Rgb565PolicyError::TexelCountOverflow { texels: 0 }.code(),
     ];
     let unique: std::collections::BTreeSet<&str> = codes.iter().copied().collect();
     assert_eq!(
         unique.len(),
         codes.len(),
         "every policy refusal has its own code: {codes:?}"
-    );
-    assert_eq!(
-        ImageAdapterError::Rgb565Policy(Rgb565PolicyError::TexelOutOfBounds { x: 3, y: 0 }).code(),
-        "texel_out_of_bounds",
-        "the adapter reports the policy's code unchanged"
     );
 }
 
