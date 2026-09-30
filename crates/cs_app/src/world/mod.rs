@@ -44,10 +44,12 @@ pub use contacts::{
     WorldVisual, record_world_contacts,
 };
 pub use fixture::{
-    OBJECT_GROUND, OBJECT_LEG_LEFT, OBJECT_LEG_RIGHT, OBJECT_LINTEL, OBJECT_UNEVIDENCED_ROLE,
+    NON_COLLIDING_HALF_M, NON_COLLIDING_POS_M, OBJECT_GROUND, OBJECT_LEG_LEFT, OBJECT_LEG_RIGHT,
+    OBJECT_LINTEL, OBJECT_NON_COLLIDING, OBJECT_SENSOR, OBJECT_UNEVIDENCED_ROLE,
     OBJECT_UNEVIDENCED_SHAPE, OBJECT_WATER, ProbeError, ProbeSpec, SECTOR_APPROACH, SECTOR_ARCH,
-    SECTOR_BEYOND, WORLD_KEY, WorldFixture, WorldFixtureBuilder, WorldFixtureError, arch_world,
-    object_set, probe_layers, spawn_swept_probe, static_world_layers,
+    SECTOR_BEYOND, SENSOR_HALF_M, SENSOR_POS_M, WORLD_KEY, WorldFixture, WorldFixtureBuilder,
+    WorldFixtureError, arch_world, object_set, probe_layers, spawn_discrete_probe,
+    spawn_swept_probe, static_world_layers,
 };
 pub use spawn::{
     INSTANCE_TRANSFORM_TOLERANCE, InstanceTransform, SkipReason, SkippedInstance, SpawnedCollider,

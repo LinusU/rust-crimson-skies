@@ -104,6 +104,25 @@ pub const WATER_POS_M: [f64; 3] = [0.0, 0.05, -16.0];
 /// tell a rotation bug from correct placement.
 pub const WATER_ROTATION_RAD: f64 = std::f64::consts::FRAC_PI_6;
 
+/// Half extents of the sensor volume. It is deliberately long along the
+/// flight axis (`x`): at 400 m/s the probe moves 3.33 m per tick, so a
+/// volume the probe could step out of between two samples would need a sweep
+/// to be noticed at all, and this fixture wants the *role* measured, not the
+/// sweep again.
+pub const SENSOR_HALF_M: [f64; 3] = [4.0, 0.75, 0.75];
+
+/// The sensor volume's centre: above the ground slab, off the arch's own
+/// flight line, inside the `beyond` sector.
+pub const SENSOR_POS_M: [f64; 3] = [10.0, 1.5, -4.0];
+
+/// Half extents of the non-colliding banner. It has no collider, so the box
+/// exists only as the record's own claim of size.
+pub const NON_COLLIDING_HALF_M: [f64; 3] = [1.5, 1.0, 0.1];
+
+/// The banner's centre, inside the `approach` sector and clear of every
+/// probe path.
+pub const NON_COLLIDING_POS_M: [f64; 3] = [-15.0, 6.0, -4.0];
+
 // ---------------------------------------------------------------- identity ---
 
 /// The synthetic world's id key.
@@ -127,6 +146,12 @@ pub const OBJECT_LINTEL: &str = "arch.lintel";
 pub const OBJECT_GROUND: &str = "terrain.ground";
 /// The rotated water patch; it belongs to no sector, so it is resident.
 pub const OBJECT_WATER: &str = "water.patch";
+/// An object with the explicit [`WorldCollisionRole::None`]: presented, and
+/// never given a collider.
+pub const OBJECT_NON_COLLIDING: &str = "banner.non_colliding";
+/// A trigger volume with the explicit [`WorldCollisionRole::Sensor`]: it
+/// reports an overlap and never blocks motion.
+pub const OBJECT_SENSOR: &str = "trigger.sensor";
 /// An object whose collision role the evidence never resolved.
 pub const OBJECT_UNEVIDENCED_ROLE: &str = "sign.unevidenced_role";
 /// An object with a solid role but an unresolved collision shape.
@@ -219,11 +244,14 @@ fn solid_box(
 
 /// Builds the synthetic arch world.
 ///
-/// Seven object instances across three sectors, plus one resident water
-/// patch: three solid arch parts that define the traversable opening, a
-/// ground slab spanning every sector, a rotated water patch that belongs to
-/// no sector, and two objects that carry an **explicit unknown** so the
-/// unresolved paths are exercised by the same fixture the happy paths are.
+/// Nine object instances: three arch parts that define the traversable
+/// opening, a ground slab spanning two sectors, a resident water patch with
+/// no sector, an explicit non-colliding banner, an explicit sensor volume,
+/// and two objects that carry an **explicit unknown** so the unresolved
+/// paths are exercised by the same fixture the happy paths are. All three
+/// [`WorldCollisionRole`] values therefore occur in one record:
+/// `None` (the banner), `Solid` (the arch parts, ground and water) and
+/// `Sensor` (the trigger volume).
 ///
 /// # Errors
 ///
@@ -296,6 +324,31 @@ pub fn arch_world() -> Result<WorldDefinition, WorldError> {
             water_surface,
             vec![],
         ),
+        // The explicit `None` role: presented, and never given a collider.
+        // (`solid_box` would be wrong here: it hardcodes `Solid`.)
+        WorldObjectInstance::try_new(
+            object(OBJECT_NON_COLLIDING),
+            mesh(OBJECT_NON_COLLIDING),
+            translated(NON_COLLIDING_POS_M),
+            known(WorldCollisionRole::None, "fixture.collision-role.none"),
+            cuboid(NON_COLLIDING_HALF_M),
+            ground_surface.clone(),
+            vec![approach.clone()],
+            fixture_provenance("banner.non_colliding.record"),
+        )
+        .expect("the fixture sector lists contain no duplicates"),
+        // The explicit `Sensor` role: reports an overlap, never blocks.
+        WorldObjectInstance::try_new(
+            object(OBJECT_SENSOR),
+            mesh(OBJECT_SENSOR),
+            translated(SENSOR_POS_M),
+            known(WorldCollisionRole::Sensor, "fixture.collision-role.sensor"),
+            cuboid(SENSOR_HALF_M),
+            ground_surface.clone(),
+            vec![beyond.clone()],
+            fixture_provenance("trigger.sensor.record"),
+        )
+        .expect("the fixture sector lists contain no duplicates"),
         // The collision role itself is unevidenced: the record carries the
         // unknown, and the spawn reports it instead of choosing a side.
         WorldObjectInstance::try_new(
@@ -460,6 +513,37 @@ impl ProbeSpec {
 ///
 /// [`ProbeError`] when the spec is invalid; nothing is spawned then.
 pub fn spawn_swept_probe(app: &mut App, spec: &ProbeSpec) -> Result<Entity, ProbeError> {
+    spawn_probe(app, spec, true)
+}
+
+/// Spawns the same body **without** [`SweptCcd`]: it is detected only where
+/// a discrete sample actually overlaps another collider.
+///
+/// This is the body the sensor role is measured with, because of a measured
+/// property of the pinned engine: Avian's swept CCD has no sensor filter —
+/// `solve_swept_ccd` stops a body at the first time of impact against *any*
+/// collider its swept path reaches, [`Sensor`] included — so a **swept**
+/// body crossing a trigger volume is held at that volume's near face for the
+/// crossing frame (measured here: 2.416 m of a 400 m/s probe's travel, which
+/// is exactly the distance from its previous sample to the sensor face).
+/// Sensors have no contact response of their own, so a body that is not
+/// swept proves the role's own claim — *reports an overlap and never blocks
+/// motion* — undisturbed. The swept/sensor interaction is recorded in
+/// `docs/findings/2026-09-30-f18-a-world-instances-sectors-and-collision-roles.md`
+/// and is a limitation for F18-B/C trigger volumes, not a claim about the
+/// original.
+///
+/// [`SpeculativeMargin::ZERO`] is kept on this body too, so the *discrete
+/// overlap* is what is measured, never a predicted contact.
+///
+/// # Errors
+///
+/// [`ProbeError`] when the spec is invalid; nothing is spawned then.
+pub fn spawn_discrete_probe(app: &mut App, spec: &ProbeSpec) -> Result<Entity, ProbeError> {
+    spawn_probe(app, spec, false)
+}
+
+fn spawn_probe(app: &mut App, spec: &ProbeSpec, swept: bool) -> Result<Entity, ProbeError> {
     spec.validate()?;
     let position = Vec3::new(
         spec.position_m[0] as f32,
@@ -471,27 +555,27 @@ pub fn spawn_swept_probe(app: &mut App, spec: &ProbeSpec) -> Result<Entity, Prob
         spec.velocity_m_s[1] as f32,
         spec.velocity_m_s[2] as f32,
     );
-    Ok(app
-        .world_mut()
-        .spawn((
-            RigidBody::Dynamic,
-            Collider::cuboid(
-                (spec.half_extents_m[0] * 2.0) as f32,
-                (spec.half_extents_m[1] * 2.0) as f32,
-                (spec.half_extents_m[2] * 2.0) as f32,
-            ),
-            Mass(spec.mass_kg as f32),
-            Transform::from_translation(position),
-            Position(position),
-            Rotation::default(),
-            LinearVelocity(velocity),
-            AngularVelocity(Vec3::ZERO),
-            SweptCcd::default(),
-            SpeculativeMargin::ZERO,
-            CollisionEventsEnabled,
-            avian_layers(CollisionLayers::from(CollisionLayer::Aircraft)),
-        ))
-        .id())
+    let mut entity = app.world_mut().spawn((
+        RigidBody::Dynamic,
+        Collider::cuboid(
+            (spec.half_extents_m[0] * 2.0) as f32,
+            (spec.half_extents_m[1] * 2.0) as f32,
+            (spec.half_extents_m[2] * 2.0) as f32,
+        ),
+        Mass(spec.mass_kg as f32),
+        Transform::from_translation(position),
+        Position(position),
+        Rotation::default(),
+        LinearVelocity(velocity),
+        AngularVelocity(Vec3::ZERO),
+        SpeculativeMargin::ZERO,
+        CollisionEventsEnabled,
+        avian_layers(CollisionLayers::from(CollisionLayer::Aircraft)),
+    ));
+    if swept {
+        entity.insert(SweptCcd::default());
+    }
+    Ok(entity.id())
 }
 
 /// The layer set a spawned probe carries; exported so a test can assert the
@@ -555,6 +639,7 @@ impl From<ProbeError> for WorldFixtureError {
 pub struct WorldFixtureBuilder {
     definition: WorldDefinition,
     probe: Option<ProbeSpec>,
+    discrete_probe: bool,
 }
 
 impl WorldFixtureBuilder {
@@ -564,6 +649,7 @@ impl WorldFixtureBuilder {
         Self {
             definition,
             probe: None,
+            discrete_probe: false,
         }
     }
 
@@ -571,6 +657,17 @@ impl WorldFixtureBuilder {
     #[must_use]
     pub const fn probe(mut self, spec: ProbeSpec) -> Self {
         self.probe = Some(spec);
+        self.discrete_probe = false;
+        self
+    }
+
+    /// Also spawn a probe with **no** continuous detection
+    /// ([`spawn_discrete_probe`]): detection by discrete overlap only. This
+    /// is the body a sensor volume must be measured with.
+    #[must_use]
+    pub const fn probe_discrete(mut self, spec: ProbeSpec) -> Self {
+        self.probe = Some(spec);
+        self.discrete_probe = true;
         self
     }
 
@@ -604,7 +701,11 @@ impl WorldFixtureBuilder {
 
         let spawned = super::spawn_world(&mut app, &self.definition)?;
         let probe = match self.probe {
-            Some(spec) => Some(spawn_swept_probe(&mut app, &spec)?),
+            Some(spec) => Some(if self.discrete_probe {
+                spawn_discrete_probe(&mut app, &spec)?
+            } else {
+                spawn_swept_probe(&mut app, &spec)?
+            }),
             None => None,
         };
 

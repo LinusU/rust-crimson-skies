@@ -19,8 +19,12 @@
 //! from both sides — a probe through the opening must not touch anything
 //! (no phantom wall), and a probe aimed at a leg must be stopped by it (no
 //! ghost opening) — plus a record-level check that the visual entity, the
-//! collider entity and the authored instance agree.
+//! collider entity and the authored instance agree. `sweep` owns that
+//! geometry, `spawn` owns the spawn boundary (what it refuses as a whole,
+//! and what each declared collision role produces) and `records` owns the
+//! typed contract in `cs_content::world`.
 
 mod common;
 mod records;
+mod spawn;
 mod sweep;

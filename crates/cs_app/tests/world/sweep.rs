@@ -167,8 +167,8 @@ fn accept_f18_a_visual_and_collision_instances_agree_with_the_authored_record() 
     let definition = fixture.definition().clone();
     assert_eq!(
         spawned.colliders().len(),
-        5,
-        "five instances carry a built collider: three arch parts, ground and water"
+        6,
+        "six instances carry a built collider: three arch parts, ground, water and the sensor"
     );
     assert!(
         !spawned.skipped().is_empty(),
@@ -361,9 +361,10 @@ fn accept_f18_a_unresolved_instances_are_reported_instead_of_guessed() {
         "every gap must be listed with the reason it is a gap"
     );
 
-    assert!(
-        spawned.non_colliding().is_empty(),
-        "no instance declares the explicit `None` role in this fixture"
+    assert_eq!(
+        spawned.non_colliding().to_vec(),
+        vec![WorldObjectId::new("banner.non_colliding").expect("the id is valid")],
+        "the explicit `None` role is reported as a deliberate answer, not as a skip"
     );
 
     assert_eq!(definition.unresolved_collision().len(), 1);
