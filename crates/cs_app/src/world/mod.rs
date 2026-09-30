@@ -52,7 +52,25 @@
 //!   harness the acceptance tests fly through. It is production bootstrap code
 //!   in the same sense as [`crate::synthetic`] and [`crate::physics::fixture`].
 //!
-//! What is **not** claimed here: no original world data was read, no sector
+//! * [`audit`] is the F18-D evidence instrument: it discovers every world group
+//!   an installation declares, reads each group's own geometry container through
+//!   the production GameZ readers, and hands
+//!   [`cs_content::world::WorldGroupAudit`] one measured census per group. What
+//!   it cannot establish — the world placement and the stored vertex unit — is
+//!   reported as the blocker it is, not filled in.
+//! * [`gpu_capture`] is the F18-D `gpu` half: it draws one group's **real**
+//!   stored mesh on the real renderer, offscreen, and writes a PNG — refusing a
+//!   blank frame and deleting the file on every refusal, so an artifact on disk
+//!   is evidence the geometry was drawn rather than a decoration.
+//!
+//! What is **not** claimed here: no traversal route or stunt opening has been
+//! located in original data yet (the GameZ node array is undecoded), and the
+//! unknowns this feature met are recorded in
+//! `docs/findings/2026-09-30-f18-a-world-instances-sectors-and-collision-roles.md`,
+//! `docs/findings/2026-09-30-f18-b-world-import-and-static-collision.md`,
+//! `docs/findings/2026-09-30-f18-c-mission-overlays-and-visibility-streaming.md` and
+//! `docs/findings/2026-09-30-f18-d-world-group-audit-and-gpu-capture.md`.
+//! An earlier wording of this note: no sector
 //! layout of the original is reproduced, no simplification policy for retail
 //! geometry exists yet, and the original's own streaming rule is unmeasured. The
 //! unknowns this feature met are recorded in
@@ -61,8 +79,10 @@
 //! `docs/findings/2026-09-30-f18-c-mission-overlays-and-visibility-streaming.md`.
 
 pub mod affine;
+pub mod audit;
 pub mod contacts;
 pub mod fixture;
+pub mod gpu_capture;
 pub mod meshes;
 pub mod overlays;
 pub mod residency;
@@ -70,6 +90,12 @@ pub mod spawn;
 pub mod visibility;
 
 pub use affine::{AffinePlacement, AffinePlacementError, bake_shape, shear_residual};
+pub use audit::{
+    GEOMETRY_CONTAINER_FILE, PRESENTABLE_PROBE_MESHES, REPRESENTATIVE_MESHES,
+    TEXTURE_ARCHIVE_FILE, SurveyedContainer, SurveyedWorldGroup, WorldGroupSurvey,
+    WorldGroupSurveyError, audit_survey, audit_world_groups, declared_rows, discovered_group_keys,
+    survey_world_groups,
+};
 pub use contacts::{
     WorldColliderInstance, WorldContact, WorldContacts, WorldObjectBinding, WorldPlugin,
     WorldVisual, record_world_contacts,
@@ -91,6 +117,10 @@ pub use fixture::{
     door_overlay, fixture_provenance, harbor_meshes, harbor_world, mesh_reference, object_set,
     probe_layers, spawn_discrete_probe, spawn_swept_probe, static_world_layers, world_app,
     world_instance,
+};
+pub use gpu_capture::{
+    CAPTURE_HEIGHT, CAPTURE_WIDTH, CaptureRequest, FRAMING_DISTANCE_FACTOR, GpuCapture,
+    GpuCaptureError, capture_world_mesh,
 };
 pub use meshes::{WorldMesh, WorldMeshBuildError, WorldMeshGroup, WorldMeshes};
 pub use overlays::{

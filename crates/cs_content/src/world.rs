@@ -1872,6 +1872,1156 @@ impl MissionOverlay {
     }
 }
 
+// ------------------------------------------------- the world-group audit ---
+
+/// The five opening classes the sheet's deliverable names, as an explicit
+/// vocabulary.
+///
+/// `specs/F18-world-geometry-terrain-water-and-traversable-interiors.md` says
+/// "Preserve tunnels, arches, building openings, hangars and stunt passages".
+/// This enum is those five nouns and nothing else. It is a **declared list to
+/// look for**, never a classifier: no code in this workspace may decide that a
+/// mesh is a tunnel, because a tunnel is a property of *placed* geometry
+/// between two spaces, and placement is not decoded (see
+/// [`TraversalBlocker::PlacementUndecoded`]). A class is either located by an
+/// audit that had the facts, or it is [`StuntOpeningVerdict::Unlocated`] with
+/// the blocker that stopped it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum OpeningClass {
+    /// A passage through solid ground.
+    Tunnel,
+    /// A spanned opening.
+    Arch,
+    /// A doorway or window in a building shell.
+    BuildingOpening,
+    /// An aircraft hangar: an opening large enough to enter.
+    Hangar,
+    /// A stunt passage: an opening a flown route is meant to thread.
+    StuntPassage,
+}
+
+impl OpeningClass {
+    /// Every class, in the order the sheet names them. A report that iterates
+    /// this list visits every class the deliverable names, so a class added
+    /// here cannot be silently skipped by a report that forgot it.
+    pub const ALL: [Self; 5] = [
+        Self::Tunnel,
+        Self::Arch,
+        Self::BuildingOpening,
+        Self::Hangar,
+        Self::StuntPassage,
+    ];
+
+    /// Stable lowercase identifier.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Tunnel => "tunnel",
+            Self::Arch => "arch",
+            Self::BuildingOpening => "building_opening",
+            Self::Hangar => "hangar",
+            Self::StuntPassage => "stunt_passage",
+        }
+    }
+}
+
+impl fmt::Display for OpeningClass {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.code())
+    }
+}
+
+/// One world group the installation declares: the identity the audit uses, the
+/// directory it was discovered in, and the two containers the group holds.
+///
+/// The two container spellings are **measured inputs**, never conventions: a
+/// caller states the keys its session actually resolved, so a group whose
+/// geometry archive has another name in the original is describable without
+/// this module guessing a layout.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct WorldGroupRef {
+    world: WorldId,
+    directory: String,
+    geometry_container: String,
+    texture_archive: String,
+    missions: Vec<String>,
+}
+
+impl WorldGroupRef {
+    /// Builds one group row, refusing a blank mission label and a repeated one.
+    ///
+    /// An **empty** mission list is accepted and is not an error: production
+    /// discovery reports a world group as a *directory* under the installation's
+    /// `zbd` root, so a group the campaign walk does not mention is still a
+    /// discovered group whose geometry exists, and dropping it — or inventing a
+    /// mission to satisfy a rule — would be exactly the silent hole this record
+    /// exists to prevent. [`Self::has_missions`] reports the empty case.
+    ///
+    /// # Errors
+    ///
+    /// [`WorldAuditError::BlankMissionLabel`] when a mission label is empty or
+    /// only whitespace, and [`WorldAuditError::DuplicateMission`] when one label
+    /// is repeated.
+    pub fn new(
+        world: WorldId,
+        directory: impl Into<String>,
+        geometry_container: impl Into<String>,
+        texture_archive: impl Into<String>,
+        mut missions: Vec<String>,
+    ) -> Result<Self, WorldAuditError> {
+        for (index, mission) in missions.iter().enumerate() {
+            if mission.trim().is_empty() {
+                return Err(WorldAuditError::BlankMissionLabel {
+                    world: world.key().to_owned(),
+                    index,
+                });
+            }
+        }
+        missions.sort();
+        for pair in missions.windows(2) {
+            if pair[0] == pair[1] {
+                return Err(WorldAuditError::DuplicateMission {
+                    world: world.key().to_owned(),
+                    mission: pair[0].clone(),
+                });
+            }
+        }
+        Ok(Self {
+            world,
+            directory: directory.into(),
+            geometry_container: geometry_container.into(),
+            texture_archive: texture_archive.into(),
+            missions,
+        })
+    }
+
+    /// The group's stable identity.
+    #[must_use]
+    pub const fn world(&self) -> &WorldId {
+        &self.world
+    }
+
+    /// The directory the installation spells the group with, e.g. `ZBD/c1c`.
+    #[must_use]
+    pub fn directory(&self) -> &str {
+        &self.directory
+    }
+
+    /// The logical key of the container holding the group's stored geometry.
+    #[must_use]
+    pub fn geometry_container(&self) -> &str {
+        &self.geometry_container
+    }
+
+    /// The logical key of the texture archive the group's materials resolve
+    /// against.
+    #[must_use]
+    pub fn texture_archive(&self) -> &str {
+        &self.texture_archive
+    }
+
+    /// The mission directories that live in this group, sorted. Empty when the
+    /// campaign walk declares none in it, which is a fact about the
+    /// installation and not a reason to skip the group.
+    #[must_use]
+    pub fn missions(&self) -> &[String] {
+        &self.missions
+    }
+
+    /// Whether the campaign declares a mission in this group.
+    #[must_use]
+    pub fn has_missions(&self) -> bool {
+        !self.missions.is_empty()
+    }
+}
+
+/// What the survey established about where the group's stored meshes sit.
+///
+/// This is the single fact the traversal and opening audits turn on, so it is
+/// a value with two honest variants rather than a boolean: "nobody decoded the
+/// placement" and "the placement is decoded, and here is how many placed
+/// objects there are" are different worlds, and a report must not be able to
+/// confuse them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PlacementSource {
+    /// No production path decoded the container's node array, so no stored mesh
+    /// has a position, orientation or scale in world space.
+    ///
+    /// The numbers are the container header's own: how many stored node records
+    /// it declares and where the array starts. They are quoted so a reader can
+    /// see how much is waiting behind the missing step.
+    Undecoded {
+        /// The header's `node_array_size`: stored node records in the container.
+        stored_node_records: u32,
+        /// The header's `nodes_offset`: where the node array starts.
+        nodes_offset: u32,
+    },
+    /// The placement was decoded: `placed_objects` meshes carry a transform.
+    Decoded {
+        /// How many stored meshes a node placed.
+        placed_objects: usize,
+    },
+}
+
+impl PlacementSource {
+    /// How many stored node records the container's placement section declares,
+    /// or `None` once it has been decoded (the array is no longer waiting).
+    #[must_use]
+    pub const fn stored_node_records(&self) -> Option<u32> {
+        match self {
+            Self::Undecoded {
+                stored_node_records, ..
+            } => Some(*stored_node_records),
+            Self::Decoded { .. } => None,
+        }
+    }
+
+    /// Whether a placement transform is available for the group's meshes.
+    #[must_use]
+    pub const fn is_decoded(&self) -> bool {
+        matches!(self, Self::Decoded { .. })
+    }
+}
+
+/// One measured mesh of a world group, chosen by the audit's declared rule.
+///
+/// The bounds are in the container's **stored units**, which are not metres
+/// and whose scale is unmeasured: `cs_content::mesh` applies no scale to
+/// stored positions and nothing in the workspace has established the original's
+/// world-vertex unit. A consumer must not read a number here as a length.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RepresentativeGeometry {
+    /// The mesh's array index in the container.
+    pub mesh_index: u32,
+    /// Triangles the mesh draws, degenerate ones included.
+    pub triangles: usize,
+    /// Render vertices the upload holds.
+    pub vertices: usize,
+    /// Distinct stored material groups the mesh's polygons carry.
+    pub material_groups: usize,
+    /// Lowest stored corner over every axis, in stored units.
+    pub stored_min: [f64; 3],
+    /// Highest stored corner over every axis, in stored units.
+    pub stored_max: [f64; 3],
+    /// SHA-256 over exactly the stored span the reader walked for this mesh, so
+    /// two groups' representatives can be compared without a byte being copied.
+    pub fingerprint: ContentHash,
+}
+
+impl RepresentativeGeometry {
+    /// The stored extent of this mesh along one axis, in stored units.
+    #[must_use]
+    pub fn stored_extent(&self, axis: usize) -> f64 {
+        self.stored_max[axis] - self.stored_min[axis]
+    }
+
+    /// The largest stored extent over the three axes, in stored units. The
+    /// capture camera's framing distance is derived from this, so the value is
+    /// a documented part of the render contract rather than a private choice.
+    #[must_use]
+    pub fn stored_radius(&self) -> f64 {
+        (0..3)
+            .map(|axis| self.stored_extent(axis))
+            .fold(0.0_f64, f64::max)
+    }
+}
+
+/// The counted numbers one survey read out of a world group's container.
+///
+/// Split from [`WorldGroupCensus`] so the assembly reads as the two things it
+/// is: counts, and the facts that decide whether a route can be stated at all.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GroupFacts {
+    /// The container the counts came from.
+    pub container_key: String,
+    /// SHA-256 of the whole container file, from production discovery.
+    pub container_sha256: String,
+    /// Array slots the container has, absent stubs included.
+    pub mesh_slots: usize,
+    /// Slots that stored a mesh.
+    pub present_meshes: usize,
+    /// `polygon_count` summed over the present stored mesh records.
+    pub declared_faces: u64,
+    /// Triangles the group's stored faces draw, degenerate ones excluded.
+    pub drawn_triangles: u64,
+    /// Stored faces that reach no drawable triangle.
+    pub missing_faces: u64,
+    /// Distinct stored texture names the group's material records name.
+    pub texture_names: usize,
+    /// Of those, the ones bound to exactly one stored origin.
+    pub bound_texture_names: usize,
+    /// Stored polygons that carry more than one material group.
+    pub multi_material_group_polygons: usize,
+}
+
+impl GroupFacts {
+    /// Whether the container stored at least one mesh. A group whose geometry
+    /// container stores none has no geometry to visit, and the survey reports
+    /// that as [`WorldGroupBlocker::NoGeometry`] rather than as a census of
+    /// zeroes.
+    #[must_use]
+    pub const fn has_geometry(&self) -> bool {
+        self.present_meshes > 0
+    }
+}
+
+/// What one survey established about one world group.
+///
+/// A census is **measured**: every number in it came from reading the group's
+/// own container, and the two fields that decide the traversal verdict
+/// ([`Self::placement`] and [`Self::routes`]) say what the survey did and did
+/// not establish rather than asserting a fact about the original.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorldGroupCensus {
+    world: WorldId,
+    container_key: String,
+    container_sha256: String,
+    mesh_slots: usize,
+    present_meshes: usize,
+    declared_faces: u64,
+    drawn_triangles: u64,
+    missing_faces: u64,
+    texture_names: usize,
+    bound_texture_names: usize,
+    multi_material_group_polygons: usize,
+    placement: PlacementSource,
+    vertex_scale_to_m: Option<f64>,
+    representative: Vec<RepresentativeGeometry>,
+    routes: Vec<TraversalRoute>,
+    openings: Vec<StuntOpening>,
+}
+
+impl WorldGroupCensus {
+    /// Assembles one measured census from the counts a survey read and the facts
+    /// it established.
+    ///
+    /// `routes` and `openings` are **not** checked here: a census that claims a
+    /// route while the facts it needs are missing is a real state, and the
+    /// audit's job is to name it ([`WorldAuditGap::RouteWithoutFacts`]) rather
+    /// than to make it unconstructible.
+    ///
+    /// # Errors
+    ///
+    /// [`WorldAuditError::NonFiniteVertexScale`] when a scale is NaN or
+    /// infinite, and [`WorldAuditError::NonFiniteStoredCorner`] when a
+    /// representative mesh carries a stored corner no render vertex can hold.
+    /// Both are values a reader would otherwise compare and find silently wrong.
+    pub fn new(
+        world: WorldId,
+        facts: GroupFacts,
+        placement: PlacementSource,
+        vertex_scale_to_m: Option<f64>,
+        representative: Vec<RepresentativeGeometry>,
+        routes: Vec<TraversalRoute>,
+        openings: Vec<StuntOpening>,
+    ) -> Result<Self, WorldAuditError> {
+        if let Some(scale) = vertex_scale_to_m
+            && !scale.is_finite()
+        {
+            return Err(WorldAuditError::NonFiniteVertexScale {
+                world: world.key().to_owned(),
+                scale,
+            });
+        }
+        for mesh in &representative {
+            for (axis, corner) in mesh
+                .stored_min
+                .iter()
+                .chain(mesh.stored_max.iter())
+                .enumerate()
+            {
+                if !corner.is_finite() {
+                    return Err(WorldAuditError::NonFiniteStoredCorner {
+                        world: world.key().to_owned(),
+                        mesh_index: mesh.mesh_index,
+                        axis,
+                    });
+                }
+            }
+        }
+        Ok(Self {
+            world,
+            container_key: facts.container_key,
+            container_sha256: facts.container_sha256,
+            mesh_slots: facts.mesh_slots,
+            present_meshes: facts.present_meshes,
+            declared_faces: facts.declared_faces,
+            drawn_triangles: facts.drawn_triangles,
+            missing_faces: facts.missing_faces,
+            texture_names: facts.texture_names,
+            bound_texture_names: facts.bound_texture_names,
+            multi_material_group_polygons: facts.multi_material_group_polygons,
+            placement,
+            vertex_scale_to_m,
+            representative,
+            routes,
+            openings,
+        })
+    }
+
+    /// The group's identity this census is about.
+    #[must_use]
+    pub const fn world(&self) -> &WorldId {
+        &self.world
+    }
+
+    /// The container the geometry was read from.
+    #[must_use]
+    pub fn container_key(&self) -> &str {
+        &self.container_key
+    }
+
+    /// SHA-256 of the whole container file, from production discovery.
+    #[must_use]
+    pub fn container_sha256(&self) -> &str {
+        &self.container_sha256
+    }
+
+    /// Array slots the container has, absent stubs included.
+    #[must_use]
+    pub const fn mesh_slots(&self) -> usize {
+        self.mesh_slots
+    }
+
+    /// Slots that stored a mesh.
+    #[must_use]
+    pub const fn present_meshes(&self) -> usize {
+        self.present_meshes
+    }
+
+    /// `polygon_count` summed over the present stored mesh records.
+    #[must_use]
+    pub const fn declared_faces(&self) -> u64 {
+        self.declared_faces
+    }
+
+    /// Triangles the group's stored faces draw, degenerate ones excluded.
+    #[must_use]
+    pub const fn drawn_triangles(&self) -> u64 {
+        self.drawn_triangles
+    }
+
+    /// Stored faces that reach no drawable triangle.
+    #[must_use]
+    pub const fn missing_faces(&self) -> u64 {
+        self.missing_faces
+    }
+
+    /// Distinct stored texture names the group's material records name.
+    #[must_use]
+    pub const fn texture_names(&self) -> usize {
+        self.texture_names
+    }
+
+    /// Of those, the ones the audit bound to exactly one stored origin.
+    #[must_use]
+    pub const fn bound_texture_names(&self) -> usize {
+        self.bound_texture_names
+    }
+
+    /// Stored polygons that carry more than one material group.
+    #[must_use]
+    pub const fn multi_material_group_polygons(&self) -> usize {
+        self.multi_material_group_polygons
+    }
+
+    /// What the survey established about the group's placement.
+    #[must_use]
+    pub const fn placement(&self) -> PlacementSource {
+        self.placement
+    }
+
+    /// The factor from the container's stored vertex units to canonical metres,
+    /// or `None` while it is unmeasured.
+    #[must_use]
+    pub const fn vertex_scale_to_m(&self) -> Option<f64> {
+        self.vertex_scale_to_m
+    }
+
+    /// The meshes the audit chose as this group's representative geometry, in
+    /// the order it chose them.
+    #[must_use]
+    pub fn representative(&self) -> &[RepresentativeGeometry] {
+        &self.representative
+    }
+
+    /// The traversal routes the survey established. Empty whenever
+    /// [`Self::placement`] is undecoded or [`Self::vertex_scale_to_m`] is
+    /// `None`; the audit refuses that combination rather than reading it.
+    #[must_use]
+    pub fn routes(&self) -> &[TraversalRoute] {
+        &self.routes
+    }
+
+    /// The stunt-critical openings the survey located. Same rule as
+    /// [`Self::routes`].
+    #[must_use]
+    pub fn openings(&self) -> &[StuntOpening] {
+        &self.openings
+    }
+}
+
+/// One route through a world group, between two authored points.
+///
+/// The route is a **value the survey produced**, not a graph this module
+/// searches for: how a route is found, and whether the original game routes an
+/// aircraft at all, is unmeasured. What the audit can honestly check is the
+/// bookkeeping — a route needs a placement, a unit scale and at least one
+/// opening, and none of those is invented here.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TraversalRoute {
+    /// The route's stable key inside the group.
+    pub route: String,
+    /// Where the route starts, in canonical metres.
+    pub from_m: [f64; 3],
+    /// Where the route ends, in canonical metres.
+    pub to_m: [f64; 3],
+    /// The narrowest clearance the survey measured along it, in canonical
+    /// metres, or `None` when nothing measured one.
+    pub clearance_m: Option<f64>,
+    /// The openings the route threads, as `(class, mesh index)` pairs.
+    pub openings: Vec<(OpeningClass, u32)>,
+}
+
+/// One located stunt-critical opening of a world group.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StuntOpening {
+    /// Which class of opening this is.
+    pub class: OpeningClass,
+    /// The stored mesh that carries the opening's geometry.
+    pub mesh_index: u32,
+    /// The opening's narrowest measured extent, in canonical metres, or `None`
+    /// when nothing measured one.
+    pub clearance_m: Option<f64>,
+}
+
+/// Why a traversal route or a stunt-critical opening could not be stated.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TraversalBlocker {
+    /// The group's stored meshes have no position, orientation or scale in
+    /// world space, so no opening can be located and no route can be measured.
+    ///
+    /// The numbers are the container header's own.
+    PlacementUndecoded {
+        /// The group awaiting a placement.
+        world: WorldId,
+        /// The header's `node_array_size`.
+        stored_node_records: u32,
+        /// The header's `nodes_offset`.
+        nodes_offset: u32,
+    },
+    /// The container's stored vertex unit is unmeasured, so even a decoded
+    /// placement yields no length: a clearance in metres cannot be computed
+    /// from a stored extent.
+    VertexScaleUnmeasured {
+        /// The group awaiting a measured scale.
+        world: WorldId,
+        /// The largest stored extent the survey did measure, in stored units,
+        /// so the missing factor has a magnitude to be missing from.
+        largest_stored_extent: f64,
+    },
+}
+
+impl TraversalBlocker {
+    /// The group this blocker is about.
+    #[must_use]
+    pub const fn world(&self) -> &WorldId {
+        match self {
+            Self::PlacementUndecoded { world, .. } | Self::VertexScaleUnmeasured { world, .. } => {
+                world
+            }
+        }
+    }
+}
+
+impl fmt::Display for TraversalBlocker {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::PlacementUndecoded {
+                world,
+                stored_node_records,
+                nodes_offset,
+            } => write!(
+                f,
+                "{world} declares {stored_node_records} stored node records at offset \
+                 {nodes_offset}, and none of them is decoded: no stored mesh has a position, \
+                 so no opening can be located and no traversal route can be measured"
+            ),
+            Self::VertexScaleUnmeasured {
+                world,
+                largest_stored_extent,
+            } => write!(
+                f,
+                "{world} stores a largest measured extent of {largest_stored_extent} in \
+                 unmeasured vertex units, and no stored-unit-to-meter scale has been \
+                 established, so no clearance can be stated in metres"
+            ),
+        }
+    }
+}
+
+/// What the audit found for one world's opening classes.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StuntOpeningAudit {
+    world: WorldId,
+    located: Vec<StuntOpening>,
+    unlocated: Vec<OpeningClass>,
+}
+
+impl StuntOpeningAudit {
+    /// The group this audit is about.
+    #[must_use]
+    pub const fn world(&self) -> &WorldId {
+        &self.world
+    }
+
+    /// The openings that were located, in the order the census listed them.
+    #[must_use]
+    pub fn located(&self) -> &[StuntOpening] {
+        &self.located
+    }
+
+    /// The classes nothing located, in [`OpeningClass::ALL`] order.
+    #[must_use]
+    pub fn unlocated(&self) -> &[OpeningClass] {
+        &self.unlocated
+    }
+
+    /// Whether every class the sheet names was located.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.unlocated.is_empty() && !self.located.is_empty()
+    }
+}
+
+/// One group's verdict inside a [`WorldGroupAuditReport`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorldGroupVerdict {
+    group: WorldGroupRef,
+    census: Option<WorldGroupCensus>,
+    blocker: Option<WorldGroupBlocker>,
+    openings: Vec<StuntOpeningAudit>,
+    traversal_blockers: Vec<TraversalBlocker>,
+    gaps: Vec<WorldAuditGap>,
+}
+
+impl WorldGroupVerdict {
+    /// The group this verdict is about.
+    #[must_use]
+    pub const fn group(&self) -> &WorldGroupRef {
+        &self.group
+    }
+
+    /// The measured census, or `None` when the survey could not produce one.
+    #[must_use]
+    pub const fn census(&self) -> Option<&WorldGroupCensus> {
+        self.census.as_ref()
+    }
+
+    /// Why no census exists.
+    #[must_use]
+    pub const fn blocker(&self) -> Option<&WorldGroupBlocker> {
+        self.blocker.as_ref()
+    }
+
+    /// The traversal verdict for each of the sheet's opening classes.
+    #[must_use]
+    pub fn openings(&self) -> &[StuntOpeningAudit] {
+        &self.openings
+    }
+
+    /// What stopped the traversal routes, one entry per missing fact.
+    #[must_use]
+    pub fn traversal_blockers(&self) -> &[TraversalBlocker] {
+        &self.traversal_blockers
+    }
+
+    /// The shortfalls found inside a census the audit *could* read.
+    #[must_use]
+    pub fn gaps(&self) -> &[WorldAuditGap] {
+        &self.gaps
+    }
+
+    /// Whether the traversal routes were measured.
+    #[must_use]
+    pub fn routes_measured(&self) -> bool {
+        self.traversal_blockers.is_empty()
+    }
+
+    /// The routes, empty while [`Self::routes_measured`] is false.
+    #[must_use]
+    pub fn routes(&self) -> &[TraversalRoute] {
+        self.census
+            .as_ref()
+            .map_or(&[][..], |census| census.routes())
+    }
+
+    /// Whether the geometry side of this group was read at all.
+    #[must_use]
+    pub fn is_visited(&self) -> bool {
+        self.census.is_some()
+    }
+}
+
+/// Why one world group could not be surveyed at all.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum WorldGroupBlocker {
+    /// The group's geometry container could not be read.
+    GeometryUnreadable {
+        /// The group that could not be surveyed.
+        world: WorldId,
+        /// The container key that failed.
+        container: String,
+        /// The reader's own message, verbatim.
+        reason: String,
+    },
+    /// The group's geometry container holds no stored mesh at all.
+    NoGeometry {
+        /// The empty group.
+        world: WorldId,
+        /// Array slots the container has, absent stubs included.
+        slots: usize,
+    },
+}
+
+impl WorldGroupBlocker {
+    /// The group this blocker is about.
+    #[must_use]
+    pub const fn world(&self) -> &WorldId {
+        match self {
+            Self::GeometryUnreadable { world, .. } | Self::NoGeometry { world, .. } => world,
+        }
+    }
+}
+
+impl fmt::Display for WorldGroupBlocker {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::GeometryUnreadable {
+                world,
+                container,
+                reason,
+            } => write!(f, "{world}: {container} could not be read: {reason}"),
+            Self::NoGeometry { world, slots } => write!(
+                f,
+                "{world}: its geometry container has {slots} mesh slots and stores no mesh in \
+                 any of them"
+            ),
+        }
+    }
+}
+
+/// A shortfall the audit found inside a census it *could* read.
+///
+/// Each variant names the affected content and the missing fact, so a gap can
+/// be filed as a follow-up rather than discovered later as a hole in a claim.
+#[derive(Clone, Debug, PartialEq)]
+pub enum WorldAuditGap {
+    /// The census claims routes or openings while the placement or the unit
+    /// scale it needs is missing. A route is not a smaller claim than a
+    /// placement: without one it is a number with no referent.
+    RouteWithoutFacts {
+        /// The group whose census contradicts itself.
+        world: WorldId,
+        /// How many routes the census listed.
+        routes: usize,
+        /// How many openings the census located.
+        openings: usize,
+    },
+    /// The placement and the unit scale are both established, and the group
+    /// still states no route. A group that measured cleanly and reported
+    /// nothing has been measured for the wrong thing.
+    NoRouteMeasured {
+        /// The group that produced no route.
+        world: WorldId,
+        /// How many placed objects the placement source reported.
+        placed_objects: usize,
+    },
+    /// The census names a group its row does not declare, so the measured
+    /// numbers belong to some other installation's world.
+    CensusGroupMismatch {
+        /// The group the row declared.
+        declared: WorldId,
+        /// The group the census is about.
+        measured: WorldId,
+    },
+    /// An opening of a class outside [`OpeningClass::ALL`], so a report could
+    /// hold a class no reader of the sheet knows about.
+    UnknownOpeningClass {
+        /// The group the census is about.
+        world: WorldId,
+        /// The class code that is not in the vocabulary.
+        code: String,
+    },
+}
+
+impl fmt::Display for WorldAuditGap {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RouteWithoutFacts {
+                world,
+                routes,
+                openings,
+            } => write!(
+                f,
+                "{world} states {routes} traversal routes and {openings} located openings while \
+                 the facts they need are missing: a route without a placement has no referent"
+            ),
+            Self::NoRouteMeasured { world, placed_objects } => write!(
+                f,
+                "{world} placed {placed_objects} objects and measured the unit scale, and still \
+                 states no traversal route"
+            ),
+            Self::CensusGroupMismatch { declared, measured } => write!(
+                f,
+                "the audit row declares {declared} but the census is about {measured}"
+            ),
+            Self::UnknownOpeningClass { world, code } => {
+                write!(f, "{world} located an opening of unknown class {code:?}")
+            }
+        }
+    }
+}
+
+/// Why a [`WorldGroupAudit`] was refused at construction.
+#[derive(Clone, Debug, PartialEq)]
+pub enum WorldAuditError {
+    /// Two rows declare the same world group.
+    DuplicateGroup {
+        /// The repeated group.
+        world: String,
+    },
+    /// A mission label is empty or only whitespace.
+    BlankMissionLabel {
+        /// The group the label was given for.
+        world: String,
+        /// Its position in the supplied list.
+        index: usize,
+    },
+    /// One mission is named twice in the same group row.
+    DuplicateMission {
+        /// The group that names it twice.
+        world: String,
+        /// The repeated mission.
+        mission: String,
+    },
+    /// A declared stored-unit-to-meter scale is NaN or infinite.
+    NonFiniteVertexScale {
+        /// The group the scale was declared for.
+        world: String,
+        /// The offending value.
+        scale: f64,
+    },
+    /// A representative mesh carries a stored corner that is NaN or infinite.
+    NonFiniteStoredCorner {
+        /// The group the mesh came from.
+        world: String,
+        /// The mesh's array index.
+        mesh_index: u32,
+        /// Which axis of the bound the offending corner is on.
+        axis: usize,
+    },
+}
+
+impl fmt::Display for WorldAuditError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DuplicateGroup { world } => {
+                write!(f, "two audit rows declare the world group {world:?}")
+            }
+            Self::BlankMissionLabel { world, index } => {
+                write!(f, "world group {world:?} has a blank mission label at index {index}")
+            }
+            Self::DuplicateMission { world, mission } => {
+                write!(f, "world group {world:?} declares mission {mission:?} twice")
+            }
+            Self::NonFiniteVertexScale { world, scale } => write!(
+                f,
+                "world group {world:?} declares a stored-unit-to-meter scale of {scale}, which is \
+                 not a length"
+            ),
+            Self::NonFiniteStoredCorner {
+                world,
+                mesh_index,
+                axis,
+            } => write!(
+                f,
+                "world group {world:?} mesh {mesh_index} has a non-finite stored corner on axis \
+                 {axis}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for WorldAuditError {}
+
+/// The declared world-group audit: which groups exist, and what a survey of
+/// each one established.
+///
+/// The **declared** half and the **measured** half are separate on purpose.
+/// [`Self::audit`] takes the declared rows and a `survey_of` seam, so a caller
+/// that can measure a group hands over a
+/// [`WorldGroupCensus`] and a caller that cannot hands over a
+/// [`WorldGroupBlocker`] carrying the measured facts. "Blocked" and "measured"
+/// are then the same verdict with a different input rather than two different
+/// reports, so the stage that supplies the missing half changes no audit code.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WorldGroupAudit {
+    groups: Vec<WorldGroupRef>,
+}
+
+impl WorldGroupAudit {
+    /// Collects the declared group rows, refusing contradictions.
+    ///
+    /// # Errors
+    ///
+    /// [`WorldAuditError::DuplicateGroup`] when two rows declare the same world
+    /// group, which would make one group's census count twice.
+    pub fn new(groups: Vec<WorldGroupRef>) -> Result<Self, WorldAuditError> {
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        for group in &groups {
+            if !seen.insert(group.world().key().to_owned()) {
+                return Err(WorldAuditError::DuplicateGroup {
+                    world: group.world().key().to_owned(),
+                });
+            }
+        }
+        Ok(Self { groups })
+    }
+
+    /// The declared rows, in supplied order.
+    #[must_use]
+    pub fn groups(&self) -> &[WorldGroupRef] {
+        &self.groups
+    }
+
+    /// Visits every declared group, taking each one's measurement from
+    /// `survey_of`.
+    ///
+    /// `survey_of` is asked **once per group**, for the row the group names, and
+    /// the report it produces is used for that group only: a census about
+    /// another group is [`WorldAuditGap::CensusGroupMismatch`], never quietly
+    /// filed under the row that was asked. A survey that names a group no row
+    /// declares is asked for nothing and appears nowhere.
+    pub fn audit<F>(&self, mut survey_of: F) -> WorldGroupAuditReport
+    where
+        F: FnMut(&WorldGroupRef) -> Result<WorldGroupCensus, WorldGroupBlocker>,
+    {
+        let groups = self
+            .groups
+            .iter()
+            .map(|group| {
+                match survey_of(group) {
+                    Ok(census) => census_verdict(group, census),
+                    Err(blocker) => WorldGroupVerdict {
+                        group: group.clone(),
+                        census: None,
+                        blocker: Some(blocker),
+                        openings: Vec::new(),
+                        traversal_blockers: Vec::new(),
+                        gaps: Vec::new(),
+                    },
+                }
+            })
+            .collect();
+        WorldGroupAuditReport { groups }
+    }
+}
+
+/// Turns one measured census into one group's verdict.
+fn census_verdict(group: &WorldGroupRef, census: WorldGroupCensus) -> WorldGroupVerdict {
+    let mut gaps = Vec::new();
+    if census.world() != group.world() {
+        gaps.push(WorldAuditGap::CensusGroupMismatch {
+            declared: group.world().clone(),
+            measured: census.world().clone(),
+        });
+    }
+
+    // The two facts a route needs, in the order they are checked. Both are
+    // recorded even when both are missing, because a report that names one cause
+    // and hides the other is a report a reader has to re-run to complete.
+    let mut traversal_blockers = Vec::new();
+    if let PlacementSource::Undecoded {
+        stored_node_records,
+        nodes_offset,
+    } = census.placement()
+    {
+        traversal_blockers.push(TraversalBlocker::PlacementUndecoded {
+            world: group.world().clone(),
+            stored_node_records,
+            nodes_offset,
+        });
+    }
+    if census.vertex_scale_to_m().is_none() {
+        let largest = census
+            .representative()
+            .iter()
+            .map(RepresentativeGeometry::stored_radius)
+            .fold(0.0_f64, f64::max);
+        traversal_blockers.push(TraversalBlocker::VertexScaleUnmeasured {
+            world: group.world().clone(),
+            largest_stored_extent: largest,
+        });
+    }
+
+    let facts_established = traversal_blockers.is_empty();
+    if !facts_established && !(census.routes().is_empty() && census.openings().is_empty()) {
+        gaps.push(WorldAuditGap::RouteWithoutFacts {
+            world: group.world().clone(),
+            routes: census.routes().len(),
+            openings: census.openings().len(),
+        });
+    }
+    if facts_established && census.routes().is_empty() {
+        gaps.push(WorldAuditGap::NoRouteMeasured {
+            world: group.world().clone(),
+            placed_objects: match census.placement() {
+                PlacementSource::Decoded { placed_objects } => placed_objects,
+                PlacementSource::Undecoded { .. } => 0,
+            },
+        });
+    }
+
+    // The opening audit visits every class the sheet names, whether or not
+    // anything located it, so a report can always be asked "was a hangar
+    // looked for?" and get an answer.
+    let openings = OpeningClass::ALL
+        .iter()
+        .map(|class| {
+            let located: Vec<StuntOpening> = census
+                .openings()
+                .iter()
+                .filter(|opening| opening.class == *class)
+                .cloned()
+                .collect();
+            for opening in &located {
+                if !OpeningClass::ALL.contains(&opening.class) {
+                    gaps.push(WorldAuditGap::UnknownOpeningClass {
+                        world: group.world().clone(),
+                        code: opening.class.code().to_owned(),
+                    });
+                }
+            }
+            let unlocated = if located.is_empty() {
+                vec![*class]
+            } else {
+                Vec::new()
+            };
+            StuntOpeningAudit {
+                world: group.world().clone(),
+                located,
+                unlocated,
+            }
+        })
+        .collect();
+
+    WorldGroupVerdict {
+        group: group.clone(),
+        census: Some(census),
+        blocker: None,
+        openings,
+        traversal_blockers,
+        gaps,
+    }
+}
+
+/// Every group's verdict: the F18-D acceptance scenario's report.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WorldGroupAuditReport {
+    groups: Vec<WorldGroupVerdict>,
+}
+
+impl WorldGroupAuditReport {
+    /// Every declared group, in declared order.
+    #[must_use]
+    pub fn groups(&self) -> &[WorldGroupVerdict] {
+        &self.groups
+    }
+
+    /// The groups whose geometry was read.
+    pub fn visited(&self) -> impl Iterator<Item = &WorldGroupVerdict> + '_ {
+        self.groups.iter().filter(|audit| audit.is_visited())
+    }
+
+    /// The groups whose geometry could not be read.
+    pub fn blocked(&self) -> impl Iterator<Item = &WorldGroupVerdict> + '_ {
+        self.groups.iter().filter(|audit| !audit.is_visited())
+    }
+
+    /// The groups whose traversal routes were measured.
+    pub fn routed(&self) -> impl Iterator<Item = &WorldGroupVerdict> + '_ {
+        self.groups
+            .iter()
+            .filter(|audit| audit.routes_measured() && !audit.routes().is_empty())
+    }
+
+    /// How many blockers the report holds: one per unreadable group plus every
+    /// missing traversal fact and every gap.
+    #[must_use]
+    pub fn blocker_count(&self) -> usize {
+        self.groups
+            .iter()
+            .filter(|audit| audit.blocker.is_some())
+            .count()
+            + self
+                .groups
+                .iter()
+                .map(|audit| audit.traversal_blockers().len())
+                .sum::<usize>()
+            + self.gap_count()
+    }
+
+    /// How many gaps the report holds.
+    #[must_use]
+    pub fn gap_count(&self) -> usize {
+        self.groups.iter().map(|audit| audit.gaps().len()).sum()
+    }
+
+    /// The total number of stored meshes read across every visited group.
+    #[must_use]
+    pub fn present_mesh_count(&self) -> u64 {
+        self.visited()
+            .filter_map(|audit| audit.census())
+            .map(|census| census.present_meshes() as u64)
+            .sum()
+    }
+
+    /// The total number of drawable triangles read across every visited group.
+    #[must_use]
+    pub fn drawn_triangle_count(&self) -> u64 {
+        self.visited()
+            .filter_map(|audit| audit.census())
+            .map(|census| census.drawn_triangles())
+            .sum()
+    }
+
+    /// Whether the audit is complete: every group visited, every route
+    /// measured, every opening class located and nothing missing anywhere.
+    ///
+    /// Deliberately strict. An audit of no group read nothing and is **not** a
+    /// pass, so an empty report is incomplete; so is a report whose traversal
+    /// verdicts are all blocked, which is the honest result over an
+    /// installation whose world placement is not decoded.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        !self.groups.is_empty()
+            && self.visited().count() == self.groups.len()
+            && self.routed().count() == self.groups.len()
+            && self
+                .groups
+                .iter()
+                .all(|audit| audit.openings().iter().all(StuntOpeningAudit::is_complete))
+            && self.blocker_count() == 0
+    }
+
+    /// Whether the audit looked at no group at all.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.groups.is_empty()
+    }
+}
+
 // ------------------------------------------------------------------- tests ---
 
 #[cfg(test)]

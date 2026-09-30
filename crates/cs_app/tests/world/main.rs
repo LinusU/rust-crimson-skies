@@ -38,6 +38,13 @@
 //! unloading and reloading its sector, and a second mission loads its own
 //! population and damage with nothing left over.
 //!
+//! **F18-D** (`accept_f18_d_`) is the evidence stage over the original
+//! installation: `audit` owns AC04 — every discovered world group visited, its
+//! representative geometry compared, and the traversal routes and stunt
+//! openings reported as the blocker they are while the world placement is
+//! undecoded — plus the real offscreen GPU capture that shows each group's
+//! stored geometry is drawable as stored.
+//!
 //! **F18-C** (`accept_f18_c_`) is the mission layer on top of that transaction:
 //! `overlays` owns AC03 — a body reaching a trigger volume opens an authored
 //! door, and both the drawn and the collided half of the door move, once — and
@@ -46,6 +53,7 @@
 //! a sector that went comes back with the condition and the applied overlay its
 //! load already held.
 
+mod audit;
 mod common;
 mod import;
 mod overlays;
