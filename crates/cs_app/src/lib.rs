@@ -35,7 +35,16 @@
 //! [`scene::select_lod_presentation`], which recomputes only
 //! [`scene::NodePresentation`] from the supplied [`scene::LodDistance`] and
 //! the [`scene::NodeDisabled`] markers, so a destroyed node and everything
-//! under it stay disabled across an LOD transition (AC02).
+//! under it stay disabled across an LOD transition (AC02). Stage `### F11-C`
+//! wires both into the running app: the [`scene::AirframeSceneRequest`]
+//! producer hand-off served by [`scene::process_airframe_scene_request`]
+//! (load, reload with generation ownership, teardown, and a refusal reported
+//! in the [`scene::AirframeSceneLog`] instead of being swallowed), the
+//! evidence-backed [`scene::PartBinding`]s a load binds from
+//! `cs_content::scene::PartSocket`, and [`scene::apply_airframe_damage`],
+//! which reflects the recorded [`scene::AirframeDamageState`] onto the
+//! [`scene::NodeDisabled`] markers, so loading and unloading the same
+//! airframe a hundred times leaves the live entity count unchanged (AC03).
 //!
 //! [`input`] is the F22-A application boundary
 //! (`specs/F22-input-bindings-devices-and-control-ownership.md`,
