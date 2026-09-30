@@ -52,14 +52,14 @@ use super::contacts::{WorldColliderInstance, WorldObjectBinding, WorldPlugin, Wo
 /// fixture can move.
 pub const INSTANCE_TRANSFORM_TOLERANCE: f32 = 1e-4;
 
-/// Why an object instance could not be spawned.
+/// Why an object instance's collider was not built, although its visual was.
+///
+/// An authored matrix that no runtime transform can hold is *not* one of
+/// these: [`spawn_world`] refuses that definition outright (see
+/// [`WorldSpawnError::UnrepresentableTransform`]) before any entity exists,
+/// so it never reaches the report.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SkipReason {
-    /// The authored matrix cannot be decomposed into the translation,
-    /// rotation and scale a runtime entity is built from (a shear, or a
-    /// mirror no quaternion can hold). **No collider is invented** for it:
-    /// guessing a placement is exactly how a traversable opening gets closed.
-    UnrepresentableTransform,
     /// The record's collision role is an explicit unknown.
     UnknownCollisionRole,
     /// The record's collision shape is an explicit unknown.
@@ -73,7 +73,6 @@ impl SkipReason {
     #[must_use]
     pub const fn label(self) -> &'static str {
         match self {
-            Self::UnrepresentableTransform => "unrepresentable_transform",
             Self::UnknownCollisionRole => "unknown_collision_role",
             Self::UnknownCollisionShape => "unknown_collision_shape",
             Self::MeshColliderDeferred => "mesh_collider_deferred",
@@ -167,8 +166,11 @@ impl SpawnedWorld {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum WorldSpawnError {
     /// An object's authored matrix cannot be represented as a runtime
-    /// transform at all; the whole build stops, because a world missing one
-    /// object's identity is worse than a world that fails loudly.
+    /// transform at all. The refusal happens **before the first entity is
+    /// spawned**: a world that failed halfway would carry some objects and
+    /// not others while the caller holds no [`SpawnedWorld`] to ask which,
+    /// so nothing is spawned and nothing is approximated (guessing a
+    /// placement is exactly how a traversable opening gets closed).
     UnrepresentableTransform {
         /// The object whose transform was refused.
         object: WorldObjectId,
@@ -246,8 +248,9 @@ pub fn canonical_matrix(transform: &CanonicalTransform) -> Mat4 {
 /// [`WorldSpawnError::UnrepresentableTransform`] when rebuilding from the
 /// decomposition does not land back on the authored matrix within
 /// [`INSTANCE_TRANSFORM_TOLERANCE`] — a shear, a mirror or a degenerate
-/// scale. The caller must report the instance as skipped rather than spawn a
-/// collider at an approximate pose.
+/// scale. [`spawn_world`] runs this over every instance *before* spawning
+/// anything, so such a definition is refused whole rather than built at an
+/// approximate pose.
 pub fn instance_transform(
     object: &WorldObjectInstance,
 ) -> Result<InstanceTransform, WorldSpawnError> {
@@ -290,16 +293,28 @@ pub fn avian_layers(membership: CollisionLayers) -> AvianCollisionLayers {
 /// called, so a caller cannot accidentally run a world whose contacts are
 /// never read.
 ///
+/// Every instance's authored matrix is decomposed **before** the first
+/// entity exists, so a refusal leaves the app exactly as it was.
+///
 /// # Errors
 ///
 /// [`WorldSpawnError::UnrepresentableTransform`] naming the object whose
-/// authored matrix has no runtime form. Every other gap — an unknown role, an
-/// unknown shape, a mesh collider deferred to F18-B — is *not* an error: it
-/// is reported in [`SpawnedWorld::skipped`] so the gap stays visible.
+/// authored matrix has no runtime form, with nothing spawned. Every other
+/// gap — an unknown role, an unknown shape, a mesh collider deferred to
+/// F18-B — is *not* an error: it is reported in [`SpawnedWorld::skipped`] so
+/// the gap stays visible.
 pub fn spawn_world(
     app: &mut App,
     definition: &WorldDefinition,
 ) -> Result<SpawnedWorld, WorldSpawnError> {
+    // Refuse the whole definition before anything changes — no plugin, no
+    // entity; see `WorldSpawnError`.
+    let transforms: Vec<InstanceTransform> = definition
+        .objects()
+        .iter()
+        .map(instance_transform)
+        .collect::<Result<_, WorldSpawnError>>()?;
+
     if !app.is_plugin_added::<WorldPlugin>() {
         app.add_plugins(WorldPlugin);
     }
@@ -310,8 +325,7 @@ pub fn spawn_world(
         ..SpawnedWorld::default()
     };
 
-    for object in definition.objects() {
-        let instance = instance_transform(object)?;
+    for (object, instance) in definition.objects().iter().zip(transforms) {
         let transform = Transform {
             translation: instance.translation,
             rotation: instance.rotation,
