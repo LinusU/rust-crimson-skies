@@ -150,8 +150,13 @@ the job — shrinks with it.
   `debug = 2`, which is the state CI crashed in;
 * `debug` in `profile.dev`, `profile.test`, `profile.bench` and their
   `package."*"` / `package.<name>` tables must not be a full-DWARF level
-  (`2`, `"full"`), because those overrides would undo the setting for exactly
-  the crates CI links.
+  (`2`, `true`, `"full"`), because those overrides would undo the setting for
+  exactly the crates CI links. `true` is cargo's boolean spelling of the same
+  setting, not a reduced one: the same scratch crate built with `debug = true`
+  and with `debug = 2` produced a byte-identical 555,480-byte binary, so it is
+  rejected with `2`. A trailing comment is stripped before the level is read,
+  so `debug = 2 # full type information` cannot smuggle the level past the
+  gate.
 
 The gate follows `crates/cs_app/tests/accept_t336_eh_frame_unwind_table.rs`,
 which guards `[profile.dev.package."*"] opt-level = 3` the same way: a
@@ -177,6 +182,54 @@ of headroom for the largest write of the job instead of 1.9 GiB — an
 estimate from the local ratio, **not** a measurement: the runner's own
 `target/` size was not measured (the probe's `du` used the relative
 `CARGO_TARGET_DIR` CI exports and found no `target/debug`).
+
+### The cache key does not follow the profile, so the saving is not collected yet
+
+Added in review. `Swatinem/rust-cache` keys on the toolchain and `Cargo.lock`,
+not on `Cargo.toml`, so the post-job step of a run on the fix reports
+`Cache up-to-date` and the *pre-fix* full-DWARF tree stays in the cache. Run
+36750916306 shows the whole sequence: `Cache Size: ~2577 MB
+(2702354412 B)`, `Cache restored successfully`, then 395 crates recompiled
+into the same `target/`, then `Cache up-to-date`.
+
+What cargo does with the artifacts of the profile it just replaced was
+measured on a scratch crate, same machine, same flags, no `cargo clean`
+between the two builds:
+
+| step | `target/debug/deps/` | `du -sk target` |
+|---|---|---|
+| `[profile.dev] debug = 2` | `libscratch430-43b14ecffeb4fd14.rlib` (315,840 B) | 2,160 KB |
+| then `debug = "line-tables-only"` | that rlib **plus** `libscratch430-6c560f4a94786fe5.rlib` (192,616 B) | 3,056 KB |
+
+Cargo does not delete the previous profile's artifacts: the unit's metadata
+hash changes, so the rebuild writes new files and leaves the old ones. So
+today a CI run on this branch carries the restored full-DWARF tree *and*
+builds the line-tables-only tree on top of it, and the 4.8 GiB of headroom in
+the paragraph above is not what the job actually has. The green runs show it
+fits on the runners that ran them, not that it buys headroom on a tight one.
+
+This is an inference from a measured retention behaviour, not a measurement of
+a runner's peak: nothing in a run that passes reports its own disk high-water
+mark, and the probe commit that could have measured it is not on this branch.
+What is measured is the retention above and the cache messages quoted. The
+consequence for the owner is that the cache-key line in "Left to the owner" is
+a prerequisite for this fix paying off, not only a speed-up: with it, the
+first run after the change stores the smaller tree and every later run starts
+from it.
+
+### `CARGO_PROFILE_DEV_DEBUG` overrides the manifest, and is set in some shells
+
+Also added in review, because it makes a local check of this fix meaningless
+if it is left in place. Cargo reads `CARGO_PROFILE_*` from the environment
+*before* the manifest, so a shell that exports
+`CARGO_PROFILE_DEV_DEBUG=line-tables-only` makes the committed
+`[profile.dev] debug` line inert for every local build — `cargo build -v`
+prints `debuginfo=line-tables-only` for the workspace's own crate, taken from
+the environment, whichever value the manifest states. The A/B numbers in
+"Measured effect" were taken with the variable unset
+(`env -u CARGO_PROFILE_DEV_DEBUG`), and the `accept_t430_` gate is unaffected
+either way because it reads the manifest text. CI is unaffected: the failing
+job exports no `CARGO_PROFILE_*` at all.
 
 ## Commands run
 
@@ -208,7 +261,8 @@ was failing:
   `test crates/cs_app/src/livery.rs - livery (line 49) ... ok`
   (`merged doctests compilation took 2.03s` in 36739807340, `1.85s` in
   36747597757 — the same link that died after 3.03s in the failing runs);
-* the five `accept_t430_` tests pass there;
+* the five `accept_t430_` tests that existed at that head pass there; the
+  review pass adds a sixth, so a run on a later head carries six;
 * the restored cache was the **old** one (`Cache Size: ~2577 MB`) and the
   post-job step reported `Cache up-to-date`, so these runs started from the
   full-DWARF tree — the harder direction, not the easier one.
@@ -222,16 +276,25 @@ and every later run restores the *older, larger* tree and recompiles those
 395 crates. The `cargo test` step went from ~7 min to ~19 min in run
 36739807340. The owner can make the cache follow the profile with
 `shared-key: ${{ hashFiles('**/Cargo.toml') }}` on the cache step; that is a
-`.github/` change and was not made here.
+`.github/` change and was not made here. What that costs in *disk* is measured
+in "The cache key does not follow the profile" below, and it is the reason the
+same change is a prerequisite rather than only a speed-up.
 
 ## Left to the owner
 
 These need `.github/` and were deliberately not done here:
 
 * the cache key above, so a profile change does not leave every run
-  recompiling the graph;
+  recompiling the graph — and, until it lands, so that the footprint saving
+  this branch makes is actually collected (see "The cache key does not follow
+  the profile");
 * `debug = "none"` (or `[profile.test] debug = false`) for another ~31% of
-  the object bytes, at the cost of `file:line` in test failure output;
+  the object bytes, at the cost of `file:line` in test failure output. The
+  review pass made that cost enforced rather than merely documented:
+  `accept_t430_a_panic_backtrace_names_the_file_and_line` reads the backtrace
+  a real panic produces, and it fails under `CARGO_PROFILE_DEV_DEBUG=none`
+  (measured), so taking this option means deleting or amending that test
+  deliberately.
 * a `df -h` step, or a step that clears `/home/runner/work/_temp` before
   `cargo test`, if the image's own disk usage is the bigger term — the
   ~142 GB that is already there is not this repository's;
@@ -241,3 +304,47 @@ These need `.github/` and were deliberately not done here:
   measurement above says 15.4 GB of 16.4 GB was available;
 * retrying the job on the SIGBUS. That hides the symptom and is not
   recommended while the disk headroom is this thin.
+
+## Review pass
+
+Reviewer: `bunny-alpha-1` — the same agent instance that implemented the
+change, with no independent review. It is recorded as a checked branch, not as
+independent evidence about the original game (AGENTS.md, "Reviewing").
+
+Two problems were found in the delivered work and fixed here rather than sent
+back:
+
+1. **The gate accepted the full-DWARF spelling `debug = true`.** Cargo maps
+   `true` to `2`, and the two produce a byte-identical binary (measured on a
+   scratch crate, 555,480 B each), so a manifest edited to `debug = true` would
+   have restored the exact footprint this task exists to remove while
+   `verify-ci-budget` and every `accept_t430_` test still passed. `true` is now
+   in `budget::FULL_DWARF_LEVELS`, with test cases for it, for the quoted
+   `"2"`, and for a level followed by a trailing comment — the comment is
+   stripped before the level is read, which the first version of the scanner
+   did not do, so `debug = 2 # ...` was accepted too.
+2. **The `file:line` claim was only asserted as a manifest string.** The new
+   `accept_t430_a_panic_backtrace_names_the_file_and_line` runs the panicking
+   helper in a child process with `RUST_BACKTRACE=1` and requires a backtrace
+   *frame* to name a source file and line, reading only the text after
+   `stack backtrace:` so the panic header's own compile-time location cannot
+   stand in for it. It passes on the committed profile and fails under
+   `CARGO_PROFILE_DEV_DEBUG=none` (measured: 6 of 7 pass, this one fails, with
+   frames that carry names but no locations), which is what makes the
+   `debug = "line-tables-only"` choice and its 2.85 GiB worth something.
+
+The review also measured two facts the change depends on and had not recorded:
+cargo does not delete the previous profile's artifacts, and a
+`CARGO_PROFILE_DEV_DEBUG` in the environment overrides the manifest. Both are
+in the sections above, with the measurements and the limits of what they prove.
+
+Commands run by the review pass on its own head, all with
+`env -u CARGO_PROFILE_DEV_DEBUG`:
+
+| command | exit | result |
+|---|---|---|
+| `cargo fmt --all -- --check` | 0 | clean |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 | clean |
+| `cargo test --workspace --locked` | 0 | REVIEW_WORKSPACE_TEST_RESULT |
+| `cargo test --workspace --locked -- accept_t430_ --include-ignored` | 0 | REVIEW_SELECTION_RESULT |
+| `CARGO_PROFILE_DEV_DEBUG=none cargo test -p cs_xtask --test accept_t430_ci_disk_budget` | 101 | the backtrace test fails, 6 others pass — its sensitivity check |

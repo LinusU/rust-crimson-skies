@@ -51,7 +51,15 @@ pub const MANIFEST_PATH: &str = "Cargo.toml";
 pub const CI_PROFILES: [&str; 3] = ["dev", "test", "bench"];
 
 /// The `debug` levels that emit full type and variable DWARF.
-pub const FULL_DWARF_LEVELS: [&str; 3] = ["2", "\"full\"", "\"full-dwarf\""];
+///
+/// `true` is cargo's boolean spelling of the same setting, not a reduced one:
+/// a scratch crate built once with `debug = true` and once with `debug = 2`
+/// produced a byte-identical binary (555,480 B each, macOS aarch64, rustc
+/// 1.98.1), so a manifest that states `debug = true` is the full-DWARF state
+/// this gate exists to reject. `"full-dwarf"` is not a level cargo accepts; it
+/// is listed so a manifest carrying clang's spelling of `2` is still refused
+/// rather than passed as something unknown.
+pub const FULL_DWARF_LEVELS: [&str; 4] = ["2", "true", "\"full\"", "\"full-dwarf\""];
 
 /// The workspace manifest must exist and keep CI's build footprint small.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -112,8 +120,11 @@ impl std::error::Error for BudgetError {}
 pub fn ci_profile_debugs(manifest: &str) -> Vec<(&str, &str)> {
     let mut stated = Vec::new();
     let mut inside: Option<&str> = None;
-    for line in manifest.lines() {
-        let line = line.trim();
+    for raw in manifest.lines() {
+        // A trailing comment must not decide the outcome: `[profile.dev] #
+        // set in #430` is still `[profile.dev]`, and `debug = 2 # full type
+        // info` is still `debug = 2`.
+        let line = strip_comment(raw.trim());
         if let Some(rest) = line.strip_prefix('[') {
             let header = rest.trim_end_matches(']').trim();
             inside = header
@@ -136,6 +147,15 @@ pub fn ci_profile_debugs(manifest: &str) -> Vec<(&str, &str)> {
     stated
 }
 
+/// Drops a trailing TOML comment from an already-trimmed line, and the
+/// whitespace that surrounded it. `debug` values are levels and paths, none of
+/// which can contain a `#`, so the first one starts the comment.
+fn strip_comment(line: &str) -> &str {
+    line.split_once('#')
+        .map_or(line, |(head, _)| head)
+        .trim_end()
+}
+
 /// The `debug` value stated by exactly `[profile.<profile>]`, if it states one.
 pub fn profile_debug<'a>(manifest: &'a str, profile: &str) -> Option<&'a str> {
     let header = format!("profile.{profile}");
@@ -147,7 +167,7 @@ pub fn profile_debug<'a>(manifest: &'a str, profile: &str) -> Option<&'a str> {
 
 /// Whether `value` (as written in a manifest) is a full-DWARF `debug` level.
 pub fn is_full_dwarf(value: &str) -> bool {
-    let value = value.trim().trim_matches('"');
+    let value = value.trim().trim_matches('"').trim();
     FULL_DWARF_LEVELS
         .iter()
         .any(|level| level.trim_matches('"') == value)
