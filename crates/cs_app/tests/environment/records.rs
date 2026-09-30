@@ -75,9 +75,21 @@ fn accept_f19_a_missing_sky_texture_is_a_diagnostic_and_a_generated_sky_needs_th
 
     // Generated art declares the profile it belongs to, and only the
     // synthetic/developer label may use it.
-    let generated = SkyArt::generated(EnvironmentProfile::SyntheticDeveloper);
+    let generated = SkyArt::generated(EnvironmentProfile::SyntheticDeveloper)
+        .expect("the synthetic/developer label may generate a sky");
     assert!(generated.allows_generated_sky(EnvironmentProfile::SyntheticDeveloper));
     assert!(!generated.allows_generated_sky(EnvironmentProfile::Retail));
+
+    // The convenience constructor refuses a retail profile outright, so no
+    // SkyArt value can exist whose fallback was stamped with a profile that
+    // may not generate one — the same invariant `try_new` enforces above,
+    // reachable from either constructor.
+    match SkyArt::generated(EnvironmentProfile::Retail) {
+        Err(SkyArtError::NonSyntheticGeneratedSky {
+            found: EnvironmentProfile::Retail,
+        }) => {}
+        other => panic!("a retail generated sky must be refused, got {other:?}"),
+    }
 
     // The sky record refuses a generated fallback that names the retail
     // profile outright. The texture must be *missing* for this branch to be
@@ -129,14 +141,16 @@ fn accept_f19_a_missing_sky_texture_is_a_diagnostic_and_a_generated_sky_needs_th
     assert!(matches!(
         common::definition(
             EnvironmentProfile::Retail,
-            SkyArt::generated(EnvironmentProfile::SyntheticDeveloper),
+            SkyArt::generated(EnvironmentProfile::SyntheticDeveloper)
+                .expect("the synthetic/developer label may generate a sky"),
             lighting_without_values(),
         ),
         Err(EnvironmentError::GeneratedSkyInRetailProfile)
     ));
     let allowed = common::definition(
         EnvironmentProfile::SyntheticDeveloper,
-        SkyArt::generated(EnvironmentProfile::SyntheticDeveloper),
+        SkyArt::generated(EnvironmentProfile::SyntheticDeveloper)
+            .expect("the synthetic/developer label may generate a sky"),
         lighting_without_values(),
     )
     .expect("the synthetic/developer profile may generate a sky");
@@ -348,7 +362,8 @@ fn accept_f19_a_invalid_environment_values_are_refused_at_construction() {
 }
 
 /// The record fingerprint says what a definition *says*: equal content
-/// hashes equal, a changed value changes it, and provenance is left out.
+/// hashes equal, a changed value changes it, and neither provenance nor
+/// origin is part of it.
 #[test]
 fn accept_f19_a_environment_record_fingerprint_tracks_the_said_content() {
     let first = common::clear();
@@ -399,6 +414,30 @@ fn accept_f19_a_environment_record_fingerprint_tracks_the_said_content() {
         other_claim.record_fingerprint(),
         "the claim id of a known value is not part of what the record says"
     );
+
+    // Where a record came from is not what it says either: the same content
+    // under a *different* origin fingerprints identically, exactly as
+    // `WorldDefinition::record_fingerprint` behaves.
+    let designed = common::definition_with_origin(
+        Origin::Designed,
+        EnvironmentProfile::Retail,
+        common::authored_sky(),
+        sun_lighting([1.0, 0.0, 0.0], "f19a.test.fingerprint.sun"),
+        common::default_orientation(),
+    )
+    .expect("the definition is valid");
+    assert_eq!(designed.origin(), &Origin::Designed);
+    assert_ne!(
+        designed.origin(),
+        east.origin(),
+        "the two records really do claim different origins"
+    );
+    assert_eq!(
+        east.record_fingerprint(),
+        designed.record_fingerprint(),
+        "the origin a record came from is not part of what it says"
+    );
+
     assert_eq!(first.origin(), &Origin::SyntheticFixture);
 }
 

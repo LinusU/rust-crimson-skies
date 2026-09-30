@@ -102,7 +102,7 @@ pub const COSMETIC_WEATHER_DOMAIN: u64 = 0x434F_534D_4557_4541; // "COSMWEA"
 /// Why an environment key was rejected.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum EnvironmentKeyError {
-    /// The key was empty or only separators.
+    /// The key was empty.
     Empty,
     /// The key exceeded [`MAX_ENVIRONMENT_KEY_LEN`] bytes.
     TooLong {
@@ -391,17 +391,27 @@ impl SkyArt {
 
     /// Sky art for a run that is explicitly labeled synthetic/developer: no
     /// texture, and a generated fallback stamped with that profile.
-    #[must_use]
-    pub fn generated(profile: EnvironmentProfile) -> Self {
-        Self {
-            texture: Resolved::Unknown {
+    ///
+    /// The record is assembled through [`SkyArt::try_new`], so this
+    /// constructor cannot build a value `try_new` would have refused: the
+    /// profile is validated here for the same reason it is validated there,
+    /// and no caller can reach a generated fallback stamped with a profile
+    /// that may not generate one (F19 non-negotiable behavior 5).
+    ///
+    /// # Errors
+    ///
+    /// [`SkyArtError::NonSyntheticGeneratedSky`] when `profile` is not
+    /// [`EnvironmentProfile::SyntheticDeveloper`].
+    pub fn generated(profile: EnvironmentProfile) -> Result<Self, SkyArtError> {
+        Self::try_new(
+            Resolved::Unknown {
                 claim_id: ClaimId::new("f19a.sky.generated")
                     .expect("the constant claim id is valid"),
                 reason: "no authored sky texture; the run is labeled synthetic/developer"
                     .to_owned(),
             },
-            fallback: SkyFallback::Generated { profile },
-        }
+            SkyFallback::Generated { profile },
+        )
     }
 
     /// The authored texture, or the explicit unknown its evidence left.
@@ -1462,7 +1472,6 @@ impl EnvironmentDefinition {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(b"cs/content/environment/record/v1\0");
         push_text(&mut bytes, self.id.as_str());
-        push_text(&mut bytes, self.origin.label());
         push_text(&mut bytes, self.profile.label());
 
         push_resolved(&mut bytes, self.sky.texture(), |bytes, id| {

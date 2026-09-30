@@ -103,9 +103,33 @@ pub fn definition_with(
     lighting: LightingDefinition,
     orientation: Resolved<SkyOrientation>,
 ) -> Result<EnvironmentDefinition, EnvironmentError> {
+    definition_with_origin(
+        Origin::SyntheticFixture,
+        profile,
+        sky,
+        lighting,
+        orientation,
+    )
+}
+
+/// [`definition_with`] with an explicit [`Origin`], so a test can hold the
+/// content fixed and vary only where the record claims to come from (which
+/// the record fingerprint must ignore).
+///
+/// # Errors
+///
+/// [`EnvironmentError`] when the profile and the sky disagree (a generated
+/// sky under the retail profile).
+pub fn definition_with_origin(
+    origin: Origin,
+    profile: EnvironmentProfile,
+    sky: SkyArt,
+    lighting: LightingDefinition,
+    orientation: Resolved<SkyOrientation>,
+) -> Result<EnvironmentDefinition, EnvironmentError> {
     EnvironmentDefinition::try_new(
         EnvironmentId::new("fixture.test").expect("the test environment key is valid"),
-        Origin::SyntheticFixture,
+        origin,
         profile,
         sky,
         orientation,
