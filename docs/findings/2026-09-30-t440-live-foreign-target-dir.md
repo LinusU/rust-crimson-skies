@@ -74,8 +74,9 @@ reported first, so #433's verdicts and messages are unchanged.
 ## What a foreign *live* record looks like on this workspace today
 
 Nothing outside the worktree is recorded today, so the hazard is latent here.
-On this checkout (`target/debug/deps`, 1155 `.d` files) six carry a
-`CARGO_MANIFEST_DIR` line, and all six name a crate of this checkout:
+On this checkout (`target/debug/deps`, 1157 `.d` files when re-measured during
+review) 82 carry a `CARGO_MANIFEST_DIR` line, and they name six distinct
+values, all six of them a crate of this checkout:
 
 ```
 /…/deepseek-1/crates/cs_app

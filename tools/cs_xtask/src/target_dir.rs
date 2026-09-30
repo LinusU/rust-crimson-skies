@@ -176,8 +176,8 @@ directory: delete {} and let the next build recreate it, e.g. cargo clean \
     }
 }
 
-/// How many paths a [`TargetDirError::Stale`] message names before it counts
-/// the rest.
+/// How many paths a [`TargetDirError::Stale`] or [`TargetDirError::Foreign`]
+/// message names before it counts the rest.
 const PATHS_SHOWN: usize = 5;
 
 /// Renders up to [`PATHS_SHOWN`] paths, then counts the rest, so a message
