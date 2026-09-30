@@ -74,6 +74,16 @@
 //! `accept_f17_b_rgb565_a_coverage_key_does_not_depend_on_the_expansion_rule`
 //! holds every non-opaque source against every rule.
 //!
+//! The honest limit of that argument: it is an independence, not a
+//! difference. Every rule [`Rule::ALL`] enumerates happens to be injective
+//! ([`Rule::is_injective`], checked over the whole domain), so today
+//! "compare the stored word" and "compare the expanded color" are the
+//! *same function* and no test could tell them apart. The stored-value
+//! compare is kept anyway, because injectivity is not something the
+//! format guarantees to a rule written later — a non-injective widening
+//! would make the two orders disagree, and the stored value is the one
+//! F08 says the key is stated in terms of.
+//!
 //! The key also stays exact where a color-first order would lose it. A
 //! 565 palette may hold two entries with the same word, and then
 //! `index == key` is *not* `color == palette[key]`; the index plane is
@@ -168,6 +178,44 @@ impl Rule {
         self.expand5(31) == u8::MAX && self.expand6(63) == u8::MAX
     }
 
+    /// Whether the rule maps two different levels to the same channel
+    /// value, checked over all 32 and all 64 levels.
+    ///
+    /// This is *not* a property the format guarantees for every rule that
+    /// could ever be written, so [`coverage_byte`] still compares the
+    /// stored value and never an expanded one. It is recorded because it
+    /// decides what a test can and cannot observe: while every enumerated
+    /// rule is injective, "compare the stored word" and "compare the
+    /// expanded color" are the same function, so no test can tell them
+    /// apart and a claim that one of them was pinned would be false. If a
+    /// non-injective rule is ever added, the two orders start to differ and
+    /// the stored-value compare becomes the one that is right.
+    pub const fn is_injective(self) -> bool {
+        let mut level = 0u32;
+        while level < 32 {
+            let mut other = level + 1;
+            while other < 32 {
+                if self.expand5(level as u8) == self.expand5(other as u8) {
+                    return false;
+                }
+                other += 1;
+            }
+            level += 1;
+        }
+        level = 0;
+        while level < 64 {
+            let mut other = level + 1;
+            while other < 64 {
+                if self.expand6(level as u8) == self.expand6(other as u8) {
+                    return false;
+                }
+                other += 1;
+            }
+            level += 1;
+        }
+        true
+    }
+
     /// The largest absolute per-channel difference between `self` and
     /// `other`, over every 5-bit and every 6-bit level.
     ///
@@ -177,9 +225,9 @@ impl Rule {
         let mut worst = 0u8;
         let mut level = 0u32;
         while level < 32 {
-            let a = self.expand5(level as u8);
-            let b = other.expand5(level as u8);
-            let gap = if a > b { a - b } else { b - a };
+            let gap = self
+                .expand5(level as u8)
+                .abs_diff(other.expand5(level as u8));
             if gap > worst {
                 worst = gap;
             }
@@ -187,9 +235,9 @@ impl Rule {
         }
         level = 0;
         while level < 64 {
-            let a = self.expand6(level as u8);
-            let b = other.expand6(level as u8);
-            let gap = if a > b { a - b } else { b - a };
+            let gap = self
+                .expand6(level as u8)
+                .abs_diff(other.expand6(level as u8));
             if gap > worst {
                 worst = gap;
             }
@@ -551,11 +599,9 @@ pub fn expand_texel(
     y: u32,
 ) -> Result<[u8; 4], Rgb565PolicyError> {
     inside(image, x, y)?;
-    let word = image
-        .texel565(x, y)
-        .ok_or(Rgb565PolicyError::NotRgb565 {
-            format: image.format(),
-        })?;
+    let word = image.texel565(x, y).ok_or(Rgb565PolicyError::NotRgb565 {
+        format: image.format(),
+    })?;
     let alpha = coverage_byte(image, source, x, y)?;
     let [red, green, blue] = policy.expand(word);
     Ok([red, green, blue, alpha])
@@ -574,9 +620,11 @@ pub fn expand_image(
     policy: &ExpansionPolicy,
 ) -> Result<Vec<[u8; 4]>, Rgb565PolicyError> {
     let extent = image.extent();
-    let count = usize::try_from(u64::from(extent.width) * u64::from(extent.height))
-        .map_err(|_| Rgb565PolicyError::NotRgb565 {
-            format: image.format(),
+    let count =
+        usize::try_from(u64::from(extent.width) * u64::from(extent.height)).map_err(|_| {
+            Rgb565PolicyError::NotRgb565 {
+                format: image.format(),
+            }
         })?;
     let mut out = Vec::with_capacity(count);
     for y in 0..extent.height {

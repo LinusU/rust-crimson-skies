@@ -32,13 +32,13 @@
 //! counts — it asserts no original expansion is reproduced.
 
 use cs_app::render::rgb565::{
-    coverage_byte, expand, expand_image, expand_texel, fields, CoverageSource, ExpansionPolicy,
-    Rgb565PolicyError, Rule,
+    CoverageSource, ExpansionPolicy, Rgb565PolicyError, Rule, coverage_byte, expand, expand_image,
+    expand_texel, expand5, expand6, fields, stores_texel_words,
 };
 use cs_formats::io::AllocationBudget;
 use cs_formats::texture::{
-    decode_base_level, AlphaSource, AlphaTest, ColorSpace, DecodedFormat, DecodedImage,
-    DescriptorParts, Extent, ImageDescriptor, Palette, PixelFormat, RowOrder,
+    AlphaSource, AlphaTest, ColorSpace, DecodedFormat, DecodedImage, DescriptorParts, Extent,
+    ImageDescriptor, Palette, PixelFormat, RowOrder, decode_base_level,
 };
 use cs_types::evidence::ClaimStatus;
 
@@ -57,10 +57,10 @@ const REPLICATION_5: [u8; 32] = [
 
 /// The decided 6-bit widening, written out level by level.
 const REPLICATION_6: [u8; 64] = [
-    0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60, 65, 69, 73, 77, 81, 85, 89, 93, 97,
-    101, 105, 109, 113, 117, 121, 125, 130, 134, 138, 142, 146, 150, 154, 158, 162, 166, 170, 174,
-    178, 182, 186, 190, 195, 199, 203, 207, 211, 215, 219, 223, 227, 231, 235, 239, 243, 247, 251,
-    255,
+    0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60, 65, 69, 73, 77, 81, 85, 89, 93,
+    97, 101, 105, 109, 113, 117, 121, 125, 130, 134, 138, 142, 146, 150, 154, 158, 162, 166, 170,
+    174, 178, 182, 186, 190, 195, 199, 203, 207, 211, 215, 219, 223, 227, 231, 235, 239, 243, 247,
+    251, 255,
 ];
 
 fn descriptor(
@@ -109,12 +109,7 @@ fn word_bytes(words: &[u16]) -> Vec<u8> {
 }
 
 fn direct_565(alpha_source: AlphaSource) -> (ImageDescriptor, DecodedImage) {
-    let d = descriptor(
-        Extent::new(3, 2),
-        PixelFormat::Rgb565,
-        None,
-        alpha_source,
-    );
+    let d = descriptor(Extent::new(3, 2), PixelFormat::Rgb565, None, alpha_source);
     let image = decode(&d, &word_bytes(&words_565()));
     (d, image)
 }
@@ -171,18 +166,26 @@ fn accept_f17_b_rgb565_every_channel_level_widens_to_the_decided_value() {
     // The decided free functions and the decided policy must agree, and the
     // policy is the thing an adapter actually calls.
     for level in 0u8..32 {
-        assert_eq!(cs_app::render::rgb565::expand5(level), REPLICATION_5[level as usize]);
+        assert_eq!(expand5(level), REPLICATION_5[level as usize]);
     }
     for level in 0u8..64 {
-        assert_eq!(cs_app::render::rgb565::expand6(level), REPLICATION_6[level as usize]);
+        assert_eq!(expand6(level), REPLICATION_6[level as usize]);
     }
     let policy = ExpansionPolicy::DECIDED;
     assert_eq!(policy.rule(), Rule::Replication);
     for level in 0u8..32 {
-        assert_eq!(policy.expand((u16::from(level) << 11) | 0x0000)[0], REPLICATION_5[level as usize]);
+        assert_eq!(
+            policy.expand(u16::from(level) << 11)[0],
+            REPLICATION_5[level as usize],
+            "the red channel of word {level:04X}"
+        );
     }
     for level in 0u8..64 {
-        assert_eq!(policy.expand((u16::from(level) << 5) | 0x0000)[1], REPLICATION_6[level as usize]);
+        assert_eq!(
+            policy.expand(u16::from(level) << 5)[1],
+            REPLICATION_6[level as usize],
+            "the green channel of word {level:04X}"
+        );
     }
 }
 
@@ -193,15 +196,34 @@ fn accept_f17_b_rgb565_every_one_of_the_65_536_stored_words_expands() {
     // established 5/6/5 layout.
     for word in 0u16..=u16::MAX {
         let (red, green, blue) = fields(word);
-        assert_eq!(usize::from(red) < 32 && usize::from(green) < 64, true, "{word:04X}");
-        assert_eq!(expand(word)[0], REPLICATION_5[usize::from(red)], "red of {word:04X}");
-        assert_eq!(expand(word)[1], REPLICATION_6[usize::from(green)], "green of {word:04X}");
-        assert_eq!(expand(word)[2], REPLICATION_5[usize::from(blue)], "blue of {word:04X}");
+        assert!(
+            usize::from(red) < 32 && usize::from(green) < 64 && usize::from(blue) < 32,
+            "{word:04X} does not split into a 5/6/5 layout"
+        );
+        assert_eq!(
+            expand(word)[0],
+            REPLICATION_5[usize::from(red)],
+            "red of {word:04X}"
+        );
+        assert_eq!(
+            expand(word)[1],
+            REPLICATION_6[usize::from(green)],
+            "green of {word:04X}"
+        );
+        assert_eq!(
+            expand(word)[2],
+            REPLICATION_5[usize::from(blue)],
+            "blue of {word:04X}"
+        );
     }
     // Endpoints exact, and the widening is monotone in the level, so no
     // stored word can invert order.
     assert_eq!(expand(0x0000), [0, 0, 0], "black stays black");
-    assert_eq!(expand(u16::MAX), [255, 255, 255], "white reaches full scale");
+    assert_eq!(
+        expand(u16::MAX),
+        [255, 255, 255],
+        "white reaches full scale"
+    );
     assert_eq!(expand(0xF800), [255, 0, 0]);
     assert_eq!(expand(0x07E0), [0, 255, 0]);
     assert_eq!(expand(0x001F), [0, 0, 255]);
@@ -216,6 +238,35 @@ fn accept_f17_b_rgb565_every_one_of_the_65_536_stored_words_expands() {
             REPLICATION_6[level] > REPLICATION_6[level - 1],
             "6-bit level {level} is not above its predecessor"
         );
+    }
+    // A level wider than the channel is masked, not shifted into the next
+    // channel: `33` is level `1`, not a different colour. The stored word
+    // cannot carry such a level, so nothing else would notice.
+    for wide in 32u8..=255 {
+        assert_eq!(
+            expand5(wide),
+            REPLICATION_5[u16::from(wide & 0x1F) as usize]
+        );
+    }
+    for wide in 64u8..=255 {
+        assert_eq!(
+            expand6(wide),
+            REPLICATION_6[u16::from(wide & 0x3F) as usize]
+        );
+    }
+    assert_eq!(
+        expand5(u8::MAX),
+        expand5(31),
+        "255 masks down to the top level"
+    );
+    assert_eq!(
+        expand6(u8::MAX),
+        expand6(63),
+        "255 masks down to the top level"
+    );
+    for rule in Rule::ALL {
+        assert_eq!(rule.expand5(33), rule.expand5(1), "{rule}");
+        assert_eq!(rule.expand6(65), rule.expand6(1), "{rule}");
     }
 }
 
@@ -238,25 +289,65 @@ fn accept_f17_b_rgb565_an_image_expands_texel_by_texel_through_the_policy() {
         let [r, g, b] = expand(word);
         expected.push([r, g, b, u8::MAX]);
         assert_eq!(
-            expand_texel(&image, CoverageSource::Opaque, &ExpansionPolicy::DECIDED, x, y),
+            expand_texel(
+                &image,
+                CoverageSource::Opaque,
+                &ExpansionPolicy::DECIDED,
+                x,
+                y
+            ),
             Ok([r, g, b, u8::MAX]),
             "texel ({x}, {y})"
         );
     }
-    assert_eq!(whole, expected, "row-major from the top-left, as the adapter writes them");
+    assert_eq!(
+        whole, expected,
+        "row-major from the top-left, as the adapter writes them"
+    );
 
     // An 8-bit image has no 16-bit word to widen: that is a refusal, not
     // a silent three-channel pass-through.
     let rgb8 = decode(
-        &descriptor(Extent::new(2, 1), PixelFormat::Rgb8, None, AlphaSource::Opaque),
+        &descriptor(
+            Extent::new(2, 1),
+            PixelFormat::Rgb8,
+            None,
+            AlphaSource::Opaque,
+        ),
         &[1, 2, 3, 4, 5, 6],
     );
     assert_eq!(
-        expand_texel(&rgb8, CoverageSource::Opaque, &ExpansionPolicy::DECIDED, 0, 0),
+        expand_texel(
+            &rgb8,
+            CoverageSource::Opaque,
+            &ExpansionPolicy::DECIDED,
+            0,
+            0
+        ),
         Err(Rgb565PolicyError::NotRgb565 {
             format: DecodedFormat::Rgb8
         })
     );
+    // The alpha comes from the source it was handed, not from a source the
+    // adapter supplies itself: a keyed texel must be transparent here.
+    let (_, keyed) = direct_565(AlphaSource::StoredValueKey { value: 0x0000 });
+    let source =
+        CoverageSource::from_source(keyed.alpha_source()).expect("a stored word key names a plane");
+    assert_eq!(source, CoverageSource::StoredWord { key: 0x0000 });
+    assert_eq!(
+        expand_texel(&keyed, source, &ExpansionPolicy::DECIDED, 1, 0),
+        Ok([0, 0, 0, 0]),
+        "the caller handed the key and it reached the alpha channel"
+    );
+    assert_eq!(
+        expand_image(&keyed, source, &ExpansionPolicy::DECIDED).map(|t| t[1][3]),
+        Ok(0)
+    );
+    // Which decoded layouts the policy applies to, over the whole closed
+    // set: the two that store 16-bit words and neither of the others.
+    assert!(stores_texel_words(DecodedFormat::Rgb565));
+    assert!(!stores_texel_words(DecodedFormat::Rgb8));
+    assert!(!stores_texel_words(DecodedFormat::Rgba8));
 }
 
 #[test]
@@ -316,12 +407,54 @@ fn accept_f17_b_rgb565_the_deviation_between_rules_is_computed_and_bounded() {
     // Truncation is the outlier, and it is bounded too: it cannot represent
     // white at all, which is the edge that rules it out.
     assert_eq!(Rule::Replication.max_channel_deviation(Rule::Truncation), 7);
-    assert_eq!(Rule::FixedPointScale.max_channel_deviation(Rule::Truncation), 7);
+    assert_eq!(
+        Rule::FixedPointScale.max_channel_deviation(Rule::Truncation),
+        7
+    );
     assert!(Rule::Replication.reaches_white());
     assert!(Rule::FixedPointScale.reaches_white());
     assert!(!Rule::Truncation.reaches_white());
     assert_eq!(Rule::Truncation.expand(u16::MAX), [248, 252, 248]);
-    assert_eq!(Rule::ALL.len(), 3, "the enumerated set is closed, so a bound cannot miss one");
+    assert_eq!(
+        Rule::ALL.len(),
+        3,
+        "the enumerated set is closed, so a bound cannot miss one"
+    );
+    // Every enumerated rule is injective, which is the honest limit of the
+    // stored-value coverage compare: while that holds, comparing the
+    // expanded color would be the same function, so no test can pin the
+    // choice. Brute-force it here so the property is checked rather than
+    // assumed, and so a future non-injective rule is caught here.
+    for rule in Rule::ALL {
+        for level in 0u8..32 {
+            for other in 0u8..32 {
+                if level == other {
+                    continue;
+                }
+                assert_ne!(
+                    rule.expand5(level),
+                    rule.expand5(other),
+                    "{rule} maps 5-bit level {other} onto level {level}"
+                );
+            }
+        }
+        for level in 0u8..64 {
+            for other in 0u8..64 {
+                if level == other {
+                    continue;
+                }
+                assert_ne!(
+                    rule.expand6(level),
+                    rule.expand6(other),
+                    "{rule} maps 6-bit level {other} onto level {level}"
+                );
+            }
+        }
+        assert!(
+            rule.is_injective(),
+            "{rule} is injective over the whole domain"
+        );
+    }
 }
 
 // --- Decision 2: the coverage keys ----------------------------------------
@@ -373,12 +506,16 @@ fn accept_f17_b_rgb565_every_alpha_source_projects_to_the_plane_its_key_lives_in
 fn accept_f17_b_rgb565_a_stored_word_key_marks_exactly_the_texels_storing_the_key() {
     // The retail key: a direct 565 word of 0x0000 is transparent.
     let (_, image) = direct_565(AlphaSource::StoredValueKey { value: 0x0000 });
-    let source = CoverageSource::from_source(image.alpha_source())
-        .expect("a stored word key names a plane");
+    let source =
+        CoverageSource::from_source(image.alpha_source()).expect("a stored word key names a plane");
     assert_eq!(source, CoverageSource::StoredWord { key: 0x0000 });
 
     // Only (1, 0) stores 0x0000; the other five texels are opaque.
-    assert_eq!(coverage_byte(&image, source, 1, 0), Ok(0), "the keyed texel");
+    assert_eq!(
+        coverage_byte(&image, source, 1, 0),
+        Ok(0),
+        "the keyed texel"
+    );
     for (x, y) in [(0u32, 0u32), (2, 0), (0, 1), (1, 1), (2, 1)] {
         assert_eq!(
             coverage_byte(&image, source, x, y),
@@ -394,9 +531,16 @@ fn accept_f17_b_rgb565_a_stored_word_key_marks_exactly_the_texels_storing_the_ke
     }
     // F08 non-negotiable #1: the key is metadata, never baked. The texel
     // still stores its own word after the coverage byte is composed.
-    assert_eq!(image.texel565(1, 0), Some(0x0000), "the transparent texel keeps its word");
+    assert_eq!(
+        image.texel565(1, 0),
+        Some(0x0000),
+        "the transparent texel keeps its word"
+    );
     assert_eq!(image.texel(1, 0), Some(&[0x00, 0x00][..]));
-    assert_eq!(expand_texel(&image, source, &ExpansionPolicy::DECIDED, 1, 0), Ok([0, 0, 0, 0]));
+    assert_eq!(
+        expand_texel(&image, source, &ExpansionPolicy::DECIDED, 1, 0),
+        Ok([0, 0, 0, 0])
+    );
     // and the composed byte is visible next to it.
     assert_eq!(
         expand_texel(&image, source, &ExpansionPolicy::DECIDED, 0, 0),
@@ -407,35 +551,58 @@ fn accept_f17_b_rgb565_a_stored_word_key_marks_exactly_the_texels_storing_the_ke
 
 #[test]
 fn accept_f17_b_rgb565_a_palette_index_key_survives_a_duplicate_palette_entry() {
-    // Key palette index 0. Entry 4 holds the same 565 word, so a resolve
+    // Key palette index 4. Entry 0 holds the same 565 word, so a resolve
     // first order would clear both or neither.
-    let (_, image) = indexed_565(AlphaSource::PaletteKey { index: 0 });
-    assert_eq!(image.format(), DecodedFormat::Rgb565, "a 565 palette decodes to 565 words");
-    let source = CoverageSource::from_source(image.alpha_source())
-        .expect("a palette key names a plane");
-    assert_eq!(source, CoverageSource::PaletteIndex { key: 0 });
+    let (_, image) = indexed_565(AlphaSource::PaletteKey { index: 4 });
+    assert_eq!(
+        image.format(),
+        DecodedFormat::Rgb565,
+        "a 565 palette decodes to 565 words"
+    );
+    let source =
+        CoverageSource::from_source(image.alpha_source()).expect("a palette key names a plane");
+    assert_eq!(source, CoverageSource::PaletteIndex { key: 4 });
 
-    // (1, 0) stores index 0 -> transparent.
-    assert_eq!(image.index(1, 0), Some(0));
-    assert_eq!(coverage_byte(&image, source, 1, 0), Ok(0));
-    // (0, 1) stores index 4, whose word is identical -> still opaque.
+    // (0, 1) stores index 4 -> transparent.
     assert_eq!(image.index(0, 1), Some(4));
-    assert_eq!(image.texel565(0, 1), image.texel565(1, 0), "the two entries share a word");
-    assert_eq!(coverage_byte(&image, source, 0, 1), Ok(u8::MAX), "a shared color is not a shared key");
+    assert_eq!(coverage_byte(&image, source, 0, 1), Ok(0));
+    // (1, 0) stores index 0, whose word is identical -> still opaque.
+    assert_eq!(image.index(1, 0), Some(0));
+    assert_eq!(
+        image.texel565(1, 0),
+        image.texel565(0, 1),
+        "the two entries share a word"
+    );
+    assert_eq!(
+        coverage_byte(&image, source, 1, 0),
+        Ok(u8::MAX),
+        "a shared color is not a shared key"
+    );
     for (x, y) in [(0u32, 0u32), (2, 0), (1, 1), (2, 1)] {
-        assert_eq!(coverage_byte(&image, source, x, y), Ok(u8::MAX), "texel ({x}, {y})");
+        assert_eq!(
+            coverage_byte(&image, source, x, y),
+            Ok(u8::MAX),
+            "texel ({x}, {y})"
+        );
     }
     // Keying the other half of the duplicate pair swaps exactly those two.
-    let other = CoverageSource::PaletteIndex { key: 4 };
-    assert_eq!(coverage_byte(&image, other, 0, 1), Ok(0));
-    assert_eq!(coverage_byte(&image, other, 1, 0), Ok(u8::MAX));
+    let other = CoverageSource::PaletteIndex { key: 0 };
+    assert_eq!(coverage_byte(&image, other, 1, 0), Ok(0));
+    assert_eq!(coverage_byte(&image, other, 0, 1), Ok(u8::MAX));
     // A valid palette entry the image never uses leaves it fully opaque.
     let unused = CoverageSource::PaletteIndex { key: 3 };
     assert_eq!(coverage_byte(&image, unused, 1, 0), Ok(u8::MAX));
     assert_eq!(coverage_byte(&image, unused, 0, 1), Ok(u8::MAX));
     // The keyed texel keeps its stored word, and the composition reports it.
-    assert_eq!(expand_texel(&image, source, &ExpansionPolicy::DECIDED, 1, 0), Ok([255, 0, 0, 0]));
-    assert_eq!(image.index(1, 0), Some(0), "the index plane survives the composition");
+    assert_eq!(
+        expand_texel(&image, source, &ExpansionPolicy::DECIDED, 0, 1),
+        Ok([255, 0, 0, 0])
+    );
+    assert_eq!(
+        image.index(0, 1),
+        Some(4),
+        "the index plane survives the composition"
+    );
 }
 
 #[test]
@@ -444,12 +611,18 @@ fn accept_f17_b_rgb565_a_coverage_key_does_not_depend_on_the_expansion_rule() {
     // rows: coverage is compared on the *stored* value, so no rule can
     // change an alpha. Held for every rule and every keyed source.
     let keyed = [
-        ("stored word key", direct_565(AlphaSource::StoredValueKey { value: 0x0000 })),
-        ("palette index key", indexed_565(AlphaSource::PaletteKey { index: 0 })),
+        (
+            "stored word key",
+            direct_565(AlphaSource::StoredValueKey { value: 0x0000 }),
+        ),
+        (
+            "palette index key",
+            indexed_565(AlphaSource::PaletteKey { index: 4 }),
+        ),
     ];
     for (label, (descriptor, image)) in keyed {
-        let source = CoverageSource::from_source(descriptor.alpha_source())
-            .expect("a key names a plane");
+        let source =
+            CoverageSource::from_source(descriptor.alpha_source()).expect("a key names a plane");
         let extent = image.extent();
         for rule in Rule::ALL {
             let policy = ExpansionPolicy::new(rule, ClaimStatus::Designed)
@@ -475,12 +648,17 @@ fn accept_f17_b_rgb565_a_coverage_key_does_not_depend_on_the_expansion_rule() {
     // colors of a keyed image differ from the decided ones while no single
     // alpha moves.
     let (descriptor, image) = direct_565(AlphaSource::StoredValueKey { value: 0x0000 });
-    let source = CoverageSource::from_source(descriptor.alpha_source()).unwrap_or(CoverageSource::Opaque);
+    let source =
+        CoverageSource::from_source(descriptor.alpha_source()).unwrap_or(CoverageSource::Opaque);
     let truncating = ExpansionPolicy::new(Rule::Truncation, ClaimStatus::Designed)
         .expect("designed is an asserting status");
     let decided = expand_texel(&image, source, &ExpansionPolicy::DECIDED, 0, 0).unwrap_or_default();
     let truncated = expand_texel(&image, source, &truncating, 0, 0).unwrap_or_default();
-    assert_ne!(decided[..3], truncated[..3], "truncation really does change the color");
+    assert_ne!(
+        decided[..3],
+        truncated[..3],
+        "truncation really does change the color"
+    );
     assert_eq!(decided[3], truncated[3], "and never the coverage");
 }
 
@@ -499,7 +677,12 @@ fn accept_f17_b_rgb565_an_absent_key_plane_and_an_out_of_range_texel_stay_refusa
     );
     // A stored word key on an 8-bit image: the word is not stored.
     let rgb8 = decode(
-        &descriptor(Extent::new(2, 1), PixelFormat::Rgb8, None, AlphaSource::Opaque),
+        &descriptor(
+            Extent::new(2, 1),
+            PixelFormat::Rgb8,
+            None,
+            AlphaSource::Opaque,
+        ),
         &[1, 2, 3, 4, 5, 6],
     );
     assert_eq!(
@@ -559,7 +742,11 @@ fn accept_f17_b_rgb565_an_absent_key_plane_and_an_out_of_range_texel_stay_refusa
         .code(),
     ];
     let unique: std::collections::BTreeSet<&str> = codes.iter().copied().collect();
-    assert_eq!(unique.len(), codes.len(), "every refusal has its own code: {codes:?}");
+    assert_eq!(
+        unique.len(),
+        codes.len(),
+        "every refusal has its own code: {codes:?}"
+    );
 }
 
 // --- The retail census: what the decision covers ---------------------------
@@ -580,7 +767,11 @@ fn accept_f17_b_rgb565_retail_565_rows_and_coverage_keys_are_counted() {
         let dir = std::env::var_os("CS_GAME_DIR")
             .expect("CS_GAME_DIR must point at the original installation for this test");
         let dir = PathBuf::from(dir);
-        assert!(dir.is_dir(), "CS_GAME_DIR {} is not a directory", dir.display());
+        assert!(
+            dir.is_dir(),
+            "CS_GAME_DIR {} is not a directory",
+            dir.display()
+        );
         dir
     }
 
@@ -617,6 +808,7 @@ fn accept_f17_b_rgb565_retail_565_rows_and_coverage_keys_are_counted() {
 
     // (is a 565 palette, alpha source) -> how many textures.
     let mut rows: BTreeMap<(bool, &'static str), usize> = BTreeMap::new();
+    let mut other_gates: BTreeMap<(&'static str, &'static str), usize> = BTreeMap::new();
     let mut words: BTreeMap<u16, u64> = BTreeMap::new();
     let mut words_in_palette: BTreeMap<u16, u64> = BTreeMap::new();
     let mut duplicate_palette_entries = 0usize;
@@ -629,7 +821,11 @@ fn accept_f17_b_rgb565_retail_565_rows_and_coverage_keys_are_counted() {
     let mut keyed_rows = 0u64;
     let mut scale_disagreeing = 0u64;
     for path in &archives {
-        let container = path.strip_prefix(&dir).unwrap_or(path).display().to_string();
+        let container = path
+            .strip_prefix(&dir)
+            .unwrap_or(path)
+            .display()
+            .to_string();
         let bytes = std::fs::read(path).unwrap_or_else(|error| panic!("{container}: {error}"));
         let mut budget = AllocationBudget::with_defaults(&container);
         let package = cs_formats::texture::read_zbd_textures(&container, &bytes, &mut budget)
@@ -649,6 +845,23 @@ fn accept_f17_b_rgb565_retail_565_rows_and_coverage_keys_are_counted() {
             let source = descriptor.alpha_source();
             let indexed = descriptor.palette().is_some();
             *rows.entry((indexed, label(&source))).or_default() += 1;
+            // The two gates this task does *not* own, counted so "the
+            // expansion is necessary but not sufficient" is a measured
+            // statement about every row and not a generalisation.
+            *other_gates
+                .entry((
+                    match descriptor.color_space() {
+                        ColorSpace::Srgb => "srgb",
+                        ColorSpace::Linear => "linear",
+                        ColorSpace::Unknown => "unknown",
+                    },
+                    match descriptor.alpha_test() {
+                        AlphaTest::Disabled => "disabled",
+                        AlphaTest::Unknown => "unknown",
+                        AlphaTest::Threshold(_) => "threshold",
+                    },
+                ))
+                .or_default() += 1;
             assert!(
                 !matches!(source, AlphaSource::PaletteKey { .. }),
                 "{}: the installation stores no palette-keyed row",
@@ -657,8 +870,8 @@ fn accept_f17_b_rgb565_retail_565_rows_and_coverage_keys_are_counted() {
 
             if let Some(Palette::Rgb565(entries)) = descriptor.palette() {
                 assert!(
-                    entries.iter().all(|word| *word <= u16::MAX),
-                    "{}: every palette entry is a stored word",
+                    !entries.is_empty(),
+                    "{}: a local palette is not empty",
                     texture.label()
                 );
                 palettes += 1;
@@ -680,9 +893,8 @@ fn accept_f17_b_rgb565_retail_565_rows_and_coverage_keys_are_counted() {
                 // The decoded layout is what a 565 row resolves to; the
                 // reader decides it and this test only checks the claim.
                 match (descriptor.format(), descriptor.palette()) {
-                    (PixelFormat::Rgb565, _) | (PixelFormat::Indexed8, Some(Palette::Rgb565(_))) => {
-                        DecodedFormat::Rgb565
-                    }
+                    (PixelFormat::Rgb565, _)
+                    | (PixelFormat::Indexed8, Some(Palette::Rgb565(_))) => DecodedFormat::Rgb565,
                     _ => DecodedFormat::Rgb8,
                 },
             ) {
@@ -692,6 +904,20 @@ fn accept_f17_b_rgb565_retail_565_rows_and_coverage_keys_are_counted() {
             let image = texture
                 .decode(&mut AllocationBudget::with_defaults(texture.label()))
                 .unwrap_or_else(|error| panic!("{}: {error}", texture.label()));
+            // A 565 palette resolves to 565 words, so the descriptor above
+            // and the decoded layout below must agree for every row: this
+            // is why one decision covers the direct and the indexed rows.
+            assert_eq!(
+                image.format(),
+                DecodedFormat::Rgb565,
+                "{}: a 565-backed row decodes to 16-bit words",
+                texture.label()
+            );
+            assert!(
+                cs_app::render::rgb565::stores_texel_words(image.format()),
+                "{}: the decided policy applies to this layout",
+                texture.label()
+            );
             let key = match source {
                 AlphaSource::StoredValueKey { value } => Some(value),
                 _ => None,
@@ -727,9 +953,15 @@ fn accept_f17_b_rgb565_retail_565_rows_and_coverage_keys_are_counted() {
 
     // Every ZBD texture is 565-backed, directly or through a 565 palette:
     // this is why the expansion refusal covered the whole texture set.
-    assert_eq!(packed, 37_004, "every package texture stores 16-bit texel words");
+    assert_eq!(
+        packed, 37_004,
+        "every package texture stores 16-bit texel words"
+    );
     let total: usize = rows.values().sum();
-    assert_eq!(total, 37_004, "every package texture is counted in exactly one row");
+    assert_eq!(
+        total, 37_004,
+        "every package texture is counted in exactly one row"
+    );
     assert_eq!(
         rows,
         BTreeMap::from([
@@ -748,6 +980,13 @@ fn accept_f17_b_rgb565_retail_565_rows_and_coverage_keys_are_counted() {
     // never uses, so its refusal costs no retail content today.
     assert_eq!(rows.get(&(true, "palette_index_key")), None);
     assert_eq!(rows.get(&(false, "palette_index_key")), None);
+    // Every package row is separately gated on an unestablished color space
+    // and an unestablished alpha test, which are not this task's facts.
+    assert_eq!(
+        other_gates,
+        BTreeMap::from([(("unknown", "unknown"), 37_004)]),
+        "so deciding the expansion unblocks no row on its own"
+    );
 
     assert!(texels > 0, "the installation stores texels");
     assert!(
@@ -762,16 +1001,17 @@ fn accept_f17_b_rgb565_retail_565_rows_and_coverage_keys_are_counted() {
         let bound = rule.max_channel_deviation(replication.rule());
         assert!(bound <= 7, "{rule} is within 7/255 of the decided rule");
     }
-    assert_eq!(Rule::Replication.max_channel_deviation(Rule::FixedPointScale), 1);
+    assert_eq!(
+        Rule::Replication.max_channel_deviation(Rule::FixedPointScale),
+        1
+    );
     assert_eq!(replication.expand(u16::MAX), [255, 255, 255]);
     assert_eq!(Rule::Truncation.expand(u16::MAX), [248, 252, 248]);
 
     // How many texels sit at a level where the candidate rules disagree,
     // and how many stored words the installation actually uses. Recorded so
     // the residual unknown is quantified rather than asserted.
-    let disjoint = usize::from(
-        Rule::Replication.max_channel_deviation(Rule::Truncation) > 0,
-    );
+    let disjoint = usize::from(Rule::Replication.max_channel_deviation(Rule::Truncation) > 0);
     assert_eq!(disjoint, 1, "the rules do differ somewhere in the domain");
     let mut disagreeing = 0u64;
     for (word, count) in &words {
@@ -795,7 +1035,10 @@ fn accept_f17_b_rgb565_retail_565_rows_and_coverage_keys_are_counted() {
          {palette_disagreeing} palette entries differ between the two rules",
         words.len()
     );
-    assert!(duplicate_palette_entries > 0, "at least one retail palette holds a duplicate word");
+    assert!(
+        duplicate_palette_entries > 0,
+        "at least one retail palette holds a duplicate word"
+    );
     assert!(
         shared_index_max >= 2,
         "so a resolve-first order provably loses a key in real content"
