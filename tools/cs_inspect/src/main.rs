@@ -34,8 +34,10 @@
 //! and — F14-D — read the complete private baseline inventory of an
 //! installation selected by `--cs-path`/`CS_GAME_DIR`, so the coverage
 //! denominator comes from the original data instead of a filtered list.
-//! The remaining subcommand from `docs/contracts/CLI-EVIDENCE.md`
-//! (`handling`) arrives with later tasks.
+//! The `handling` command (F26-A) renders the declared handling probe and
+//! reference-envelope schema of `cs_sim::probes` from its synthetic fixture;
+//! it reads no installation and makes no original-fidelity claim, and retail
+//! handling probing arrives with F26-C/D.
 //! Until then the binary refuses invalid input with a nonzero exit code and
 //! a diagnostic naming the missing command — a failure is never returned as success.
 
@@ -209,9 +211,17 @@ COMMANDS
         per-mission binding stages and F14-D use; the report makes no
         readiness or playability claim.
 
-    handling
-        Not implemented in this workspace stage; it is documented in
-        docs/contracts/CLI-EVIDENCE.md.
+    handling [--out <file>]
+        Render the declared handling probe and reference-envelope schema
+        (F26-A) as a JSON report: the ten probe maneuvers with the quantity and
+        unit each bounds, and the declared synthetic envelope's recorded input,
+        initial state, difficulty, loadout, timing uncertainty, tolerance and
+        held-out entry, plus the two comparison outcomes (a covering candidate
+        passes; a tuned acceleration curve whose held-out turn radius is
+        outside the envelope does not). It reads no installation, flies no
+        probe and makes no original-fidelity claim, so it is never retail-
+        ready. Retail handling probing arrives with F26-C/D. Exits 0 when the
+        report is produced, 2 on invalid input, 1 on a runtime failure.
 
     routes [--out <file>]
         Render the declared route-graph contract (F31-A) as a JSON report:
@@ -268,12 +278,13 @@ fn main() -> ExitCode {
         Some("closure") => cs_inspect::catalog::closure_command(&args[1..]),
         Some("campaign") => cs_inspect::campaign::campaign_command(&args[1..]),
         Some("routes") => cs_inspect::routes::routes_command(&args[1..]),
+        Some("handling") => cs_inspect::handling::handling_command(&args[1..]),
         Some(command) => {
             eprintln!(
                 "cs-inspect: unsupported command {command:?}; this workspace stage implements \
                  only `inventory`, `audit`, `resolve`, `rof`, `zbd-audit`, `interp`, \
-                 `texture-audit`, `config`, `scripts`, `catalog`, `closure`, `campaign` and \
-                 `routes`"
+                 `texture-audit`, `config`, `scripts`, `catalog`, `closure`, `campaign`, \
+                 `routes` and `handling`"
             );
             ExitCode::from(EXIT_INVALID_INPUT)
         }

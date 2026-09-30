@@ -11,6 +11,7 @@ autobins = false
 cs_assets.workspace = true
 cs_content.workspace = true
 cs_formats.workspace = true
+cs_sim.workspace = true
 cs_types.workspace = true
 # DEFLATE/zlib for reading the pinned reference extraction (ZIP of PNGs) in
 # the F08-D `texture-audit`; the same package `cs_formats` already uses, so

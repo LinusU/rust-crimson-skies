@@ -2494,6 +2494,7 @@ dependencies = [
  "cs_assets",
  "cs_content",
  "cs_formats",
+ "cs_sim",
  "cs_types",
  "miniz_oxide 0.9.1",
 ]

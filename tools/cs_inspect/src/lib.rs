@@ -56,11 +56,18 @@
 //! position and resolved trigger volume, plus the declared edges — from the
 //! authored synthetic fixture, which names its synthetic source and is never
 //! retail-ready.
+//! [`handling`] is the F26-A `handling` command: the declared handling probe
+//! and reference-envelope schema of `cs_sim::probes` rendered as a read-only
+//! JSON report — the probe vocabulary, and the envelope's recorded input,
+//! initial state, difficulty, loadout, timing uncertainty, units, tolerance
+//! and held-out entry — plus the two comparison outcomes AC01 turns on. It
+//! reads no installation, flies no probe and makes no original-fidelity claim.
 
 pub mod campaign;
 pub mod catalog;
 pub mod config;
 pub mod evidence;
+pub mod handling;
 pub mod install;
 pub mod interp;
 pub mod reference_capture;
