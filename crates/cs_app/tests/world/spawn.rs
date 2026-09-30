@@ -45,22 +45,47 @@ fn object(key: &str) -> cs_content::world::WorldObjectId {
     cs_content::world::WorldObjectId::new(key).expect("the test object key is valid")
 }
 
-/// A one-object world whose single instance carries a **shear**: a linear
+/// A two-object world whose *second* instance carries a **shear**: a linear
 /// map no translation/rotation/scale triple can rebuild, and therefore one
 /// [`spawn_world`] must refuse instead of approximating.
+///
+/// The first instance is perfectly representable on purpose: a build that
+/// spawned as it walked would leave that one behind after failing on the
+/// second, which is exactly what the refusal must not do.
 fn sheared_world() -> WorldDefinition {
     let sheared = CanonicalTransform::try_new(
         [[1.0, 0.5, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
         [1.0, 2.0, 3.0],
     )
     .expect("the shear is finite");
-    let instance = WorldObjectInstance::try_new(
-        object("sheared.panel"),
+    let mesh_id = || {
         known(
-            ContentId::from_source(ContentKind::Mesh, "synthetic.sheared_panel")
+            ContentId::from_source(ContentKind::Mesh, "synthetic.panel")
                 .expect("the mesh id is valid"),
             "mesh",
+        )
+    };
+    let valid = WorldObjectInstance::try_new(
+        object("good.panel"),
+        mesh_id(),
+        CanonicalTransform::try_new(
+            [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]],
+            [4.0, 0.0, 0.0],
+        )
+        .expect("the translation is finite"),
+        known(WorldCollisionRole::Solid, "collision"),
+        known(
+            WorldCollisionShape::cuboid([1.0, 1.0, 1.0]).expect("the box is valid"),
+            "shape",
         ),
+        known(SurfaceRole::Ground, "surface"),
+        vec![SectorId::new("only").expect("the sector key is valid")],
+        provenance("good.panel"),
+    )
+    .expect("the sector list has no duplicates");
+    let broken = WorldObjectInstance::try_new(
+        object("sheared.panel"),
+        mesh_id(),
         sheared,
         known(WorldCollisionRole::Solid, "collision"),
         known(
@@ -81,10 +106,10 @@ fn sheared_world() -> WorldDefinition {
             SectorId::new("only").expect("the sector key is valid"),
             Aabb::try_new([0.0, 0.0, 0.0], [10.0, 10.0, 10.0]).expect("the bounds are valid"),
         )],
-        vec![instance],
+        vec![valid, broken],
         provenance("definition"),
     )
-    .expect("the definition is structurally valid: one sector, one object")
+    .expect("the definition is structurally valid: one sector, two objects")
 }
 
 /// **AC01's precondition, on the refusal side:** a matrix the runtime cannot
@@ -96,10 +121,11 @@ fn sheared_world() -> WorldDefinition {
 #[test]
 fn accept_f18_a_spawn_refuses_a_matrix_no_runtime_transform_can_hold_before_spawning_anything() {
     let definition = sheared_world();
-    // The record itself is legal; only its placement has no runtime form.
+    // The record itself is legal; only the second placement has no runtime
+    // form, and the first one is perfectly spawnable.
     assert_eq!(
         definition.objects().len(),
-        1,
+        2,
         "the refusal must be about the transform, not the record structure"
     );
 
