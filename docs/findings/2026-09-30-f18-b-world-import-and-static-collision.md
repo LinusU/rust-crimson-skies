@@ -108,10 +108,15 @@ fixed rate, gravity zero. Probe: 0.5 m box. "Swept" = `SweptCcd` with
   including the first load's authored damage. After `unload_world` the
   residency resource is gone and a new load starts from nothing, so a narrower
   second mission neither inherits the first's objects nor its conditions.
-* **A missing upload is reported, never faked.** `strip.absent_mesh` is
-  presented, appears in `SpawnedWorld::skipped()` as
+* **A missing upload is reported, never faked, and the two ways of missing one
+  are different reasons.** `strip.absent_mesh` names a mesh the source does not
+  hold: it is presented, appears in `SpawnedWorld::skipped()` as
   `SkipReason::MeshUnavailable`, has no `Collider`, and takes no other object's
-  collision with it.
+  collision with it. A `FromMesh` object whose mesh *reference* is an explicit
+  unknown is a different fact — a content gap, the same class as an unknown role
+  or shape, which a retail import fills with evidence — and is reported as
+  `SkipReason::UnknownMesh`. Collapsing the two would make "we did not load it"
+  look like "we do not know what it is".
 
 ## The engine limitation this stage found and did not paper over
 
@@ -203,6 +208,7 @@ unmutated.
 | a second load merges into the resident one | `..._a_second_load_over_a_resident_world_is_refused_rather_than_merged` |
 | damage reaches the entities but not the record | `..._a_damaged_object_survives_a_sector_unload_and_reload` |
 | a contact drops its surface rule | `..._a_contact_names_the_surface_rule...`, `..._water_collision_is_the_authored_patch...` |
+| an unknown mesh reference is reported as a missing upload | `..._an_object_whose_mesh_is_missing_is_reported_and_never_faked` |
 
 The record-level additions (`WorldObjectCondition::initial_condition`,
 `DamagedObjectNotActivated`) are covered by the residency and import tests that

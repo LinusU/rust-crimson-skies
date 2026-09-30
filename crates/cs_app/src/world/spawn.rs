@@ -79,12 +79,19 @@ pub enum SkipReason {
     UnknownCollisionRole,
     /// The record's collision shape is an explicit unknown.
     UnknownCollisionShape,
-    /// The record declares a mesh-derived collider, but no upload is
-    /// registered for the mesh reference it names.
+    /// The record's mesh reference is an explicit unknown, so there is nothing
+    /// to resolve.
     ///
-    /// The alternative would be to invent geometry — a box around the object's
-    /// bounds, a hull of nothing — which is how a solid object becomes
-    /// passable. This stage reports the gap instead.
+    /// A *content* gap: the evidence never named which mesh this object draws
+    /// or collides with, which is the same class of fact as an unknown role or
+    /// shape. A retail import fills it with evidence; this stage cannot.
+    UnknownMesh,
+    /// The record names a mesh, but no upload is registered for that reference.
+    ///
+    /// A *load* gap: the record is complete and this source simply does not hold
+    /// the geometry. The alternative would be to invent geometry — a box around
+    /// the object's bounds, a hull of nothing — which is how a solid object
+    /// becomes passable. This stage reports the gap instead.
     MeshUnavailable,
 }
 
@@ -95,6 +102,7 @@ impl SkipReason {
         match self {
             Self::UnknownCollisionRole => "unknown_collision_role",
             Self::UnknownCollisionShape => "unknown_collision_shape",
+            Self::UnknownMesh => "unknown_mesh",
             Self::MeshUnavailable => "mesh_unavailable",
         }
     }
@@ -494,7 +502,7 @@ fn resolve_upload<'a>(
         return Ok(None);
     }
     let Resolved::Known(known) = object.mesh() else {
-        return Err(SkipReason::MeshUnavailable);
+        return Err(SkipReason::UnknownMesh);
     };
     meshes
         .get(&known.value)
@@ -617,18 +625,19 @@ pub fn spawn_object(
             })
         }
         WorldCollisionShape::FromMesh => {
-            // A `FromMesh` object whose upload this source does not hold is
-            // presented and reported; no geometry is invented for it, so it
-            // cannot silently become passable.
+            // A `FromMesh` object with no upload to build from is presented and
+            // reported under the reason the reference itself failed: an
+            // unevidenced reference is a content gap, a reference this source
+            // does not hold is a load gap, and the two must not look alike.
+            // No geometry is invented either way, so it cannot silently become
+            // passable.
             let Some(upload) = resolved else {
-                return Ok(gap(
-                    app,
-                    object,
-                    &instance,
-                    binding(),
-                    None,
-                    SkipReason::MeshUnavailable,
-                ));
+                let reason = upload
+                    .as_ref()
+                    .err()
+                    .copied()
+                    .unwrap_or(SkipReason::UnknownMesh);
+                return Ok(gap(app, object, &instance, binding(), None, reason));
             };
             let (visual, body) = spawn_mesh_collider(app, transform, upload, role, binding());
             Ok(SpawnedObject {

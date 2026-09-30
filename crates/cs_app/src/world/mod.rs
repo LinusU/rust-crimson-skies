@@ -57,9 +57,9 @@ pub use fixture::{
     OBJECT_LINTEL, OBJECT_NON_COLLIDING, OBJECT_SENSOR, OBJECT_UNEVIDENCED_ROLE,
     OBJECT_UNEVIDENCED_SHAPE, OBJECT_WATER, ProbeError, ProbeSpec, SECTOR_APPROACH, SECTOR_ARCH,
     SECTOR_BEYOND, SENSOR_HALF_M, SENSOR_POS_M, WORLD_KEY, WorldFixture, WorldFixtureBuilder,
-    WorldFixtureError, arch_world, harbor_meshes, harbor_world, mesh_reference, object_set,
-    probe_layers, spawn_discrete_probe, spawn_swept_probe, static_world_layers, world_app,
-    world_instance,
+    WorldFixtureError, arch_world, fixture_provenance, harbor_meshes, harbor_world, mesh_reference,
+    object_set, probe_layers, spawn_discrete_probe, spawn_swept_probe, static_world_layers,
+    world_app, world_instance,
 };
 pub use meshes::{WorldMesh, WorldMeshes};
 pub use residency::{

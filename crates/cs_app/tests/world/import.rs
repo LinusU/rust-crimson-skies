@@ -37,16 +37,18 @@ use bevy::prelude::{App, Quat, Vec3, With};
 use bevy::time::{Fixed, Time};
 use cs_app::world::{
     HARBOR_HANGAR_HULL_TRIANGLES, HARBOR_HANGAR_TRIANGLES, HARBOR_OBJECT_ABSENT,
-    HARBOR_OBJECT_BANNER, HARBOR_OBJECT_HANGAR, HARBOR_OBJECT_SENSOR, HARBOR_OBJECT_WATER,
-    HARBOR_SENSOR_HALF_M, HARBOR_SENSOR_POS_M, HARBOR_WATER_OFF_AXIS_Z_M, HARBOR_WATER_POS_M,
-    MESH_SETTLE_UPDATES, ProbeSpec, SkipReason, SpawnedWorld, WorldContacts, WorldFixture,
-    WorldVisual, harbor_meshes, harbor_world, load_world, probe_layers, spawn_discrete_probe,
-    spawn_swept_probe, static_world_layers, unload_world, world_app, world_instance,
+    HARBOR_OBJECT_BANNER, HARBOR_OBJECT_GROUND, HARBOR_OBJECT_HANGAR, HARBOR_OBJECT_SENSOR,
+    HARBOR_OBJECT_WATER, HARBOR_SENSOR_HALF_M, HARBOR_SENSOR_POS_M, HARBOR_WATER_OFF_AXIS_Z_M,
+    HARBOR_WATER_POS_M, MESH_SETTLE_UPDATES, ProbeSpec, SkipReason, SpawnedWorld, WorldContacts,
+    WorldFixture, WorldVisual, fixture_provenance, harbor_meshes, harbor_world, load_world,
+    probe_layers, spawn_discrete_probe, spawn_swept_probe, static_world_layers, unload_world,
+    world_app, world_instance,
 };
 use cs_content::world::{
     SurfaceRole, WorldCollisionRole, WorldCollisionShape, WorldDefinition, WorldInstance,
-    WorldObjectId,
+    WorldObjectId, WorldObjectInstance,
 };
+use cs_types::content::Resolved;
 
 /// The probe's box half extents, in meters.
 const PROBE_HALF_M: f64 = 0.25;
@@ -82,6 +84,17 @@ const TICKS: u64 = 80;
 /// limitation test.
 const TUNNELLING_SPEED_M_S: f64 = 400.0;
 
+/// Every object of the harbor world, in definition order: the population a
+/// mission load record activates.
+const HARBOR_POPULATION: [&str; 6] = [
+    HARBOR_OBJECT_HANGAR,
+    HARBOR_OBJECT_SENSOR,
+    HARBOR_OBJECT_BANNER,
+    HARBOR_OBJECT_WATER,
+    HARBOR_OBJECT_GROUND,
+    HARBOR_OBJECT_ABSENT,
+];
+
 /// The harbor world, built by production code.
 fn harbor() -> WorldDefinition {
     harbor_world().expect("the synthetic harbor world is well formed")
@@ -90,20 +103,8 @@ fn harbor() -> WorldDefinition {
 /// A mission load record for `definition`: every authored object, no variant
 /// named, nothing damaged.
 fn mission(definition: &WorldDefinition) -> WorldInstance {
-    world_instance(
-        definition,
-        None,
-        &[
-            HARBOR_OBJECT_HANGAR,
-            HARBOR_OBJECT_SENSOR,
-            HARBOR_OBJECT_BANNER,
-            HARBOR_OBJECT_WATER,
-            cs_app::world::HARBOR_OBJECT_GROUND,
-            HARBOR_OBJECT_ABSENT,
-        ],
-        &[],
-    )
-    .expect("the fixture load record is valid")
+    world_instance(definition, None, &HARBOR_POPULATION, &[])
+        .expect("the fixture load record is valid")
 }
 
 fn object(key: &str) -> WorldObjectId {
@@ -727,6 +728,72 @@ fn accept_f18_b_an_object_whose_mesh_is_missing_is_reported_and_never_faked() {
         report.collider_for(&object(HARBOR_OBJECT_HANGAR)).is_some(),
         "one missing upload must not take the other objects' collision with it"
     );
+
+    // The two ways a `FromMesh` object can have no upload are different facts
+    // and must be reported differently: the record names a mesh this source does
+    // not hold (a load gap), versus the evidence never named a mesh at all (a
+    // content gap, the same class as an unknown role or shape).
+    let definition = harbor();
+    let unevidenced = WorldObjectInstance::try_new(
+        WorldObjectId::new("sign.unevidenced_mesh").expect("the key is valid"),
+        Resolved::Unknown {
+            claim_id: cs_types::evidence::ClaimId::new("mesh.unmeasured")
+                .expect("the claim id is valid"),
+            reason: "no evidence has named which mesh this instance uses".to_owned(),
+        },
+        cs_content::scene::CanonicalTransform::IDENTITY,
+        Resolved::Known(cs_types::content::Known::new(
+            cs_content::world::WorldCollisionRole::Solid,
+            fixture_provenance("role.solid"),
+        )),
+        Resolved::Known(cs_types::content::Known::new(
+            WorldCollisionShape::FromMesh,
+            fixture_provenance("shape.from_mesh"),
+        )),
+        Resolved::Known(cs_types::content::Known::new(
+            SurfaceRole::Ground,
+            fixture_provenance("surface.ground"),
+        )),
+        Vec::new(),
+        fixture_provenance("sign.record"),
+    )
+    .expect("no duplicate sectors");
+    let with_unknown_mesh = WorldDefinition::try_new(
+        definition.id().clone(),
+        definition.origin().clone(),
+        definition.boundary().clone(),
+        definition.sectors().to_vec(),
+        definition
+            .objects()
+            .iter()
+            .cloned()
+            .chain(std::iter::once(unevidenced))
+            .collect(),
+        fixture_provenance("harbor_plus_sign"),
+    )
+    .expect("the added object is structurally valid");
+    let mut population: Vec<&str> = HARBOR_POPULATION.to_vec();
+    population.push("sign.unevidenced_mesh");
+    let instance = world_instance(&with_unknown_mesh, None, &population, &[])
+        .expect("the load record is valid");
+    let mut app = world_app();
+    let report = load_world(&mut app, &with_unknown_mesh, &instance, &harbor_meshes())
+        .expect("the world with an unevidenced mesh reference still loads");
+    let sign = report
+        .object(&object("sign.unevidenced_mesh"))
+        .expect("the sign is reported as presented");
+    assert_eq!(
+        sign.skipped,
+        Some(SkipReason::UnknownMesh),
+        "an unevidenced mesh reference is a content gap and must not be reported \
+         as a missing upload: no evidence named a mesh at all"
+    );
+    assert_eq!(
+        report.skipped_count(),
+        2,
+        "the two gaps are distinct records, not one reason used twice: {:?}",
+        report.skipped()
+    );
 }
 
 /// A contact names the gameplay surface rule its object was authored with, so a
@@ -883,14 +950,7 @@ fn accept_f18_b_every_entity_of_a_mesh_object_carries_its_condition() {
     let instance = world_instance(
         &definition,
         Some("synthetic.harbor_world.mission_07"),
-        &[
-            HARBOR_OBJECT_HANGAR,
-            HARBOR_OBJECT_SENSOR,
-            HARBOR_OBJECT_BANNER,
-            HARBOR_OBJECT_WATER,
-            cs_app::world::HARBOR_OBJECT_GROUND,
-            HARBOR_OBJECT_ABSENT,
-        ],
+        &HARBOR_POPULATION,
         &[HARBOR_OBJECT_HANGAR],
     )
     .expect("the fixture load record is valid");

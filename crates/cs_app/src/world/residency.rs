@@ -479,26 +479,19 @@ pub fn unload_sector(app: &mut App, sector: &SectorId) -> Result<SectorLoad, Wor
             .filter(|candidate| *candidate != sector)
             .cloned()
             .collect();
-        let outgoing: Vec<WorldObjectId> = resident
-            .objects
-            .keys()
-            .filter(|object| {
-                resident
-                    .definition
-                    .object(object)
-                    .is_some_and(|record| !present_in(&still_loaded, record.sectors()))
-            })
-            .cloned()
-            .collect();
-        for object in &outgoing {
-            let spawned = resident
-                .objects
-                .get(object)
-                .expect("the outgoing set came from the residency's own objects");
-            for entity in spawned.entities() {
-                world
-                    .get_entity(entity)
-                    .map_err(|reason| vanished(object, entity, &reason))?;
+        let mut outgoing = Vec::new();
+        for (object, spawned) in &resident.objects {
+            if resident
+                .definition
+                .object(object)
+                .is_some_and(|record| !present_in(&still_loaded, record.sectors()))
+            {
+                for entity in spawned.entities() {
+                    world
+                        .get_entity(entity)
+                        .map_err(|reason| vanished(object, entity, &reason))?;
+                }
+                outgoing.push(object.clone());
             }
         }
         outgoing
