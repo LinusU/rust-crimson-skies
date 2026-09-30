@@ -334,8 +334,8 @@ pub enum DamageEventKind {
         kind: LifecycleKind,
     },
     /// The single scoring event of a destruction: one kill awarded under
-    /// the graph's declared [`AttributionRule`]. Emitted at most once per
-    /// actor per session.
+    /// the victim's own declared [`AttributionRule`]. Emitted at most once
+    /// per actor per session.
     KillAwarded {
         /// The destroyed actor.
         victim: ActorId,

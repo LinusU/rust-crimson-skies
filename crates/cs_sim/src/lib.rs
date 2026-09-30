@@ -39,7 +39,7 @@
 //! [`damage::HitEvent`] input and ordered [`damage::DamageEvent`] output
 //! vocabulary, the five distinct [`damage::LifecycleKind`]s, and the
 //! per-session [`damage::DamageResolver`] whose declared hit ordering and
-//! simultaneous-lethal attribution award a single kill per destruction.
+//! per-actor declared attribution award a single kill per destruction.
 //! The declared, provenance-carrying schema is `cs_content::damage`; the
 //! lowering boundary and ECS bindings are `cs_app::damage`; armor-driven
 //! disablement is F29-B and visual/scoring wiring is F29-C.

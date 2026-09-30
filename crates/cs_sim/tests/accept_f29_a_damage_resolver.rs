@@ -68,9 +68,9 @@ fn hit(
 }
 
 fn resolver(policy: DamagePolicy, target: ActorId) -> DamageResolver {
-    let mut resolver = DamageResolver::new(SESSION, RESOLVER_PRODUCER, policy);
+    let mut resolver = DamageResolver::new(SESSION, RESOLVER_PRODUCER);
     resolver
-        .register_actor(target, synthetic_airframe_graph())
+        .register_actor(target, synthetic_airframe_graph(), policy)
         .expect("the synthetic actor registers");
     resolver
 }
@@ -590,14 +590,14 @@ fn accept_f29_a_foreign_sessions_and_ticks_are_refused() {
         serial: 1,
     };
     assert_eq!(
-        resolver.register_actor(foreign_actor, synthetic_airframe_graph()),
+        resolver.register_actor(foreign_actor, synthetic_airframe_graph(), first_lethal()),
         Err(DamageError::ForeignSession {
             expected: SESSION,
             found: SESSION + 1,
         })
     );
     assert_eq!(
-        resolver.register_actor(target, synthetic_airframe_graph()),
+        resolver.register_actor(target, synthetic_airframe_graph(), first_lethal()),
         Err(DamageError::DuplicateActor { actor: target })
     );
 }
@@ -660,6 +660,17 @@ fn accept_f29_a_unknown_targets_and_nodes_are_refused_visibly() {
             },
         ]
     );
+    assert_eq!(
+        resolver.part_state(&target, &key("tailplane")),
+        None,
+        "a node outside the graph reports no state — distinct from an \
+         unresolved pool's `PartState::Unknown`"
+    );
+    assert_eq!(
+        resolver.part_state(&actor(99), &key(SYNTHETIC_HULL_NODE)),
+        None,
+        "an unregistered actor reports no state"
+    );
 }
 
 /// Two hits sharing one identity make ordering ambiguous; the batch is
@@ -704,8 +715,10 @@ fn accept_f29_a_unknown_integrity_blocks_the_hit_visibly() {
         .expect("graph with an unknown pool still validates");
 
     let target = actor(1);
-    let mut resolver = DamageResolver::new(SESSION, RESOLVER_PRODUCER, first_lethal());
-    resolver.register_actor(target, graph).expect("registers");
+    let mut resolver = DamageResolver::new(SESSION, RESOLVER_PRODUCER);
+    resolver
+        .register_actor(target, graph, first_lethal())
+        .expect("registers");
 
     let resolution = resolver
         .resolve(
@@ -934,4 +947,211 @@ fn accept_f29_a_synthetic_graph_declares_distinct_parts() {
         }
         Resolved::Unknown { .. } => panic!("the fixture's pools are all known"),
     }
+}
+
+/// "The same identity discipline but their own rules": two actors in one
+/// session resolve side by side under *their own* declared attribution —
+/// the aircraft under `FirstLethalHit`, the ship under `GreatestDamage`.
+/// A single session-wide rule could not express this.
+#[test]
+fn accept_f29_a_actors_resolve_under_their_own_declared_rules() {
+    let aircraft = actor(1);
+    let ship = actor(2);
+    let attacker_a = actor(10);
+    let attacker_b = actor(11);
+    let attacker_c = actor(12);
+    let ship_policy = DamagePolicy {
+        attribution: AttributionRule::GreatestDamage,
+    };
+
+    let mut resolver = DamageResolver::new(SESSION, RESOLVER_PRODUCER);
+    resolver
+        .register_actor(aircraft, synthetic_airframe_graph(), first_lethal())
+        .expect("aircraft registers");
+    resolver
+        .register_actor(ship, synthetic_airframe_graph(), ship_policy)
+        .expect("ship registers");
+    assert_eq!(resolver.policy(&aircraft), Some(first_lethal()));
+    assert_eq!(resolver.policy(&ship), Some(ship_policy));
+
+    let aircraft_blow = hit(
+        2,
+        0,
+        Some(attacker_a),
+        aircraft,
+        "hull",
+        DamageChannel::Internal,
+        50.0,
+        5,
+    );
+    let ship_blow = hit(
+        7,
+        0,
+        Some(attacker_b),
+        ship,
+        "hull",
+        DamageChannel::Internal,
+        45.0,
+        5,
+    );
+    let hits = [
+        aircraft_blow.clone(),
+        // attacker_c contributes 15 + 10 + 20 = 45 to the ship — more
+        // than attacker_b's 40, but attacker_b struck the killing blow.
+        hit(
+            5,
+            0,
+            Some(attacker_c),
+            ship,
+            "engine_1",
+            DamageChannel::Internal,
+            20.0,
+            5,
+        ),
+        hit(
+            5,
+            1,
+            Some(attacker_c),
+            ship,
+            "gun_mount_1",
+            DamageChannel::Internal,
+            20.0,
+            5,
+        ),
+        hit(
+            5,
+            2,
+            Some(attacker_c),
+            ship,
+            "nose_armor",
+            DamageChannel::Internal,
+            30.0,
+            5,
+        ),
+        // A second lethal hit on the aircraft by another attacker.
+        hit(
+            6,
+            0,
+            Some(attacker_b),
+            aircraft,
+            "hull",
+            DamageChannel::Internal,
+            50.0,
+            5,
+        ),
+        ship_blow.clone(),
+    ];
+    let resolution = resolver.resolve(Tick(5), &hits).expect("valid batch");
+
+    let destructions: Vec<_> = event_kinds(&resolution)
+        .into_iter()
+        .filter(|kind| {
+            matches!(
+                kind,
+                DamageEventKind::Lifecycle {
+                    kind: LifecycleKind::Destroyed,
+                    ..
+                }
+            )
+        })
+        .collect();
+    assert_eq!(
+        destructions,
+        vec![
+            &DamageEventKind::Lifecycle {
+                actor: aircraft,
+                kind: LifecycleKind::Destroyed,
+            },
+            &DamageEventKind::Lifecycle {
+                actor: ship,
+                kind: LifecycleKind::Destroyed,
+            },
+        ],
+        "each victim emits exactly one destruction, in actor order"
+    );
+
+    let awards: Vec<_> = event_kinds(&resolution)
+        .into_iter()
+        .filter_map(|kind| match kind {
+            DamageEventKind::KillAwarded {
+                victim,
+                credited,
+                rule,
+                blow,
+            } => Some((*victim, *credited, *rule, *blow)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        awards,
+        vec![
+            (
+                aircraft,
+                Some(attacker_a),
+                AttributionRule::FirstLethalHit,
+                aircraft_blow.id,
+            ),
+            (
+                ship,
+                Some(attacker_c),
+                AttributionRule::GreatestDamage,
+                ship_blow.id,
+            ),
+        ],
+        "each victim's award is computed under its own declared rule"
+    );
+}
+
+/// A record closed by a terminal transition records nothing again: a
+/// despawned actor still takes part damage from a later hit batch — the
+/// hit lands — but no `Destroyed` lifecycle and no kill award can be
+/// emitted for it.
+#[test]
+fn accept_f29_a_terminal_record_emits_no_destruction_or_award() {
+    let target = actor(1);
+    let mut resolver = resolver(first_lethal(), target);
+    resolver
+        .record_lifecycle(target, LifecycleKind::Despawned, Tick(5))
+        .expect("despawn records");
+
+    let resolution = resolver
+        .resolve(
+            Tick(6),
+            &[hit(
+                1,
+                0,
+                Some(actor(2)),
+                target,
+                "hull",
+                DamageChannel::Internal,
+                50.0,
+                6,
+            )],
+        )
+        .expect("valid batch");
+    let kinds = event_kinds(&resolution);
+    assert!(
+        kinds.iter().any(|kind| matches!(
+            kind,
+            DamageEventKind::HitApplied { node, .. } if node == &key(SYNTHETIC_HULL_NODE)
+        )),
+        "the hit still lands and applies part damage"
+    );
+    for kind in &kinds {
+        assert!(
+            !matches!(
+                kind,
+                DamageEventKind::Lifecycle { .. } | DamageEventKind::KillAwarded { .. }
+            ),
+            "a closed record emits no lifecycle or scoring event: {kind:?}"
+        );
+    }
+    assert_eq!(
+        resolver.part_state(&target, &key(SYNTHETIC_HULL_NODE)),
+        Some(PartState::Destroyed)
+    );
+    assert!(
+        !resolver.is_destroyed(&target),
+        "no destruction was recorded for the despawned actor"
+    );
 }

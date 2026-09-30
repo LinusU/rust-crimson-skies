@@ -14,7 +14,8 @@ build/test only (no `CS_GAME_DIR` read, no evidence report required).
   `HitEvent` input with `HitEventId`, the ordered `DamageEvent` output with
   `DamageEventId`, the five `LifecycleKind`s, the `AttributionRule`
   vocabulary, `DamagePolicy`, `DamageError`, the per-session
-  `DamageResolver`, and the `synthetic_airframe_graph` fixture.
+  `DamageResolver` (each actor registering its own graph's declared
+  policy), and the `synthetic_airframe_graph` fixture.
 - `crates/cs_content/src/damage.rs` (new): the declared,
   provenance-carrying schema — `DeclaredDamageGraph`/`DeclaredDamageNode`
   with `Origin`, per-node `Resolved` integrity pools and
@@ -27,7 +28,7 @@ build/test only (no `CS_GAME_DIR` read, no evidence report required).
   plus the generation-stamped `DamageActorBinding` ECS record.
 - `crates/cs_sim/src/lib.rs`, `crates/cs_content/src/lib.rs`,
   `crates/cs_app/src/lib.rs` (wiring only): module declarations and docs.
-- `crates/cs_sim/tests/accept_f29_a_damage_resolver.rs` (14 tests),
+- `crates/cs_sim/tests/accept_f29_a_damage_resolver.rs` (16 tests),
   `crates/cs_content/tests/accept_f29_a_damage_schema.rs` (6 tests),
   `crates/cs_app/tests/accept_f29_a_damage_boundary.rs` (5 tests): the
   `accept_f29_a_*` acceptance tests.
@@ -72,13 +73,19 @@ layer fails to compile.
 - **Simultaneous lethals.** The first hit in resolved order that depletes
   a `lethal` node is the recorded *blow*. After the batch, each newly
   destroyed actor emits one `Lifecycle{Destroyed}` and one `KillAwarded`
-  computed under the graph's declared `AttributionRule`:
-  `FirstLethalHit` credits the blow's attacker; `GreatestDamage` credits
-  the attacker whose hits applied the most damage to the victim this tick
-  (tie → earliest contributing hit → lower actor id). An attackerless
-  (world) blow credits `None`. An actor already `Destroyed` can take
-  further part damage but emits no second destruction or award — on the
-  same tick or any later one (AC01 + non-negotiable 2).
+  computed under *that actor's own* declared `AttributionRule` — the
+  policy registers with the actor
+  (`DamageResolver::register_actor(actor, graph, policy)`), so an
+  aircraft, a world object and a capital ship keep their own rules in one
+  session. `FirstLethalHit` credits the blow's attacker;
+  `GreatestDamage` credits the attacker whose hits applied the most
+  damage to the victim this tick (tie → earliest contributing hit →
+  lower actor id). An attackerless (world) blow credits `None`. An actor
+  already `Destroyed` can take further part damage but emits no second
+  destruction or award — on the same tick or any later one (AC01 +
+  non-negotiable 2). A record closed by a terminal transition is the same
+  kind of once-only boundary: hits still apply part damage, but no
+  lifecycle or scoring event is recorded for the closed actor again.
 - **Lifecycle separation.** `LifecycleKind` is five distinct transitions —
   `Destroyed`, `PilotBailout`, `OwnershipCaptured`, `Despawned`,
   `MissionRemoved` (non-negotiable 3). Damage emits only `Destroyed`; the
@@ -92,8 +99,9 @@ layer fails to compile.
   mutated old one (non-negotiable 5; STATE-TRANSACTIONS generations).
 - **Boundary.** `lower_graph` maps the declared record field-wise and
   carries every `Resolved::Unknown` through verbatim; `lower_policy`
-  refuses an unknown `lethal_attribution` with its claim, so no session
-  resolves kills under an unstated rule.
+  produces the `DamagePolicy` the actor registers under and refuses an
+  unknown `lethal_attribution` with its claim, so no session resolves
+  kills under an unstated rule.
 
 ## Designed vocabulary, not original data
 
@@ -143,6 +151,52 @@ project design** (`Origin::Designed`/`Origin::SyntheticFixture`,
    `flight::DamageState` scales flight authority; the resolver's part
    states are the producer side. F29-B decides how part destruction maps
    onto the flight authorities; no mapping is assumed here.
+
+## Review notes (2026-09-30)
+
+Reviewer: Jakob - Devin SWE-2/devin-1 — the same agent name that
+implemented the task, but a **fresh session and context** (the review
+claim began with `git diff origin/main...HEAD`, not the implementation
+transcript). A same-name review is not independent original-reference
+evidence; it is recorded here per the review policy.
+
+Fixes made during review:
+
+1. **Per-actor `DamagePolicy`.** The implementer's resolver held one
+   session-wide policy, so two actors whose graphs declare different
+   attribution rules could not coexist — contradicting the deliverable's
+   "the same identity discipline but their own rules". `register_actor`
+   now takes the actor's `DamagePolicy` (`register_actor(actor, graph,
+   policy)`) and the terminal pass resolves each victim under its own
+   rule. `DamageResolver::new` lost its policy argument and
+   `DamageResolver::policy(actor)` reports a registration's rules.
+   Covered by the new
+   `accept_f29_a_actors_resolve_under_their_own_declared_rules`.
+2. **Closed records record nothing again.** `resolve`'s terminal pass
+   never checked `state.terminal`, so a `Despawned`/`MissionRemoved`
+   actor taking a lethal hit still emitted `Lifecycle{Destroyed}` and a
+   `KillAwarded` — defeating the closed-record guarantee
+   `record_lifecycle` enforces. Part damage still applies; lifecycle and
+   scoring are suppressed. Covered by the new
+   `accept_f29_a_terminal_record_emits_no_destruction_or_award`.
+3. **`part_state` honours its `None` contract.** The doc promised `None`
+   "when the actor or node is unknown" but a node outside the graph
+   returned `Some(PartState::Unknown)`, conflating "no such node" with
+   "unresolved pool". It now returns `None` for an unknown node or actor
+   and `Some(PartState::Unknown)` only for a real unresolved pool;
+   asserted inside
+   `accept_f29_a_unknown_targets_and_nodes_are_refused_visibly`.
+
+Sensitivity probes run by the reviewer (each reverted afterwards; no
+probe committed):
+
+1. Removing the new terminal check →
+   `accept_f29_a_terminal_record_emits_no_destruction_or_award` failed
+   with `Lifecycle{Destroyed}` emitted for the despawned actor.
+2. Disabling the `sort_by_key` hit ordering →
+   `accept_f29_a_two_same_tick_lethal_hits_award_a_single_kill` and
+   `accept_f29_a_resolution_is_deterministic_under_input_shuffle` both
+   failed (the reversed-input batch credited the wrong attacker).
 
 ## Evidence
 

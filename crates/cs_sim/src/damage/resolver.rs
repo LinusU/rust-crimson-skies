@@ -23,9 +23,10 @@
 //!   first lethal node depletes, the resolution remembers the blow and
 //!   every attacker's contribution. After the batch, each newly destroyed
 //!   actor emits exactly one [`DamageEventKind::Lifecycle`] destruction and
-//!   exactly one [`DamageEventKind::KillAwarded`] computed under the
-//!   graph's declared [`AttributionRule`] — two same-tick lethal hits award
-//!   a single kill (AC01).
+//!   exactly one [`DamageEventKind::KillAwarded`] computed under that
+//!   actor's own declared [`AttributionRule`] — two same-tick lethal hits
+//!   award a single kill (AC01), and actors of different subject kinds
+//!   resolve side by side under their own declared rules.
 //! * **Lifecycle separation.** Death is one [`LifecycleKind`] of five; the
 //!   others (bailout, capture, despawn, mission removal) are recorded
 //!   through [`DamageResolver::record_lifecycle`] by the systems that own
@@ -49,11 +50,14 @@ use super::events::{
 };
 use super::graph::{DamageChannel, DamageGraph, DamageNodeKey, PartState};
 
-/// The declared rules a resolution runs under.
+/// The declared rules one actor's resolution runs under.
 ///
 /// `attribution` is the graph's declared simultaneous-lethal policy — the
-/// "declared attribution rule" of AC01. It is data the schema carries, so
-/// a session never resolves kills under an unstated convention.
+/// "declared attribution rule" of AC01. It is data the schema carries per
+/// graph, so it registers with the actor (`register_actor`): an aircraft, a
+/// world object and a capital ship share the identity discipline but resolve
+/// under their own declared rules, and no actor resolves kills under an
+/// unstated convention.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DamagePolicy {
     /// Which attacker a same-tick multiple-lethal resolution credits.
@@ -148,6 +152,9 @@ impl std::error::Error for DamageError {}
 #[derive(Clone, Debug)]
 struct ActorDamage {
     graph: DamageGraph,
+    /// The declared rules this actor resolves under — its own graph's
+    /// rules, never an ambient session convention.
+    policy: DamagePolicy,
     /// Remaining integrity of every *known* pool. Unresolved pools are
     /// absent — their state is `PartState::Unknown`, asserted nowhere else.
     remaining: BTreeMap<DamageNodeKey, f64>,
@@ -159,7 +166,7 @@ struct ActorDamage {
 }
 
 impl ActorDamage {
-    fn new(graph: &DamageGraph) -> Self {
+    fn new(graph: &DamageGraph, policy: DamagePolicy) -> Self {
         let remaining = graph
             .nodes()
             .filter_map(|node| match node.integrity() {
@@ -169,6 +176,7 @@ impl ActorDamage {
             .collect();
         Self {
             graph: graph.clone(),
+            policy,
             remaining,
             lifecycle: BTreeSet::new(),
             terminal: None,
@@ -228,25 +236,23 @@ struct VictimScratch {
 pub struct DamageResolver {
     session: u64,
     producer: u32,
-    policy: DamagePolicy,
     actors: BTreeMap<ActorId, ActorDamage>,
     sequence: u32,
 }
 
 impl DamageResolver {
     /// A resolver for session `session`, stamping events with producer
-    /// serial `producer` under `policy`.
+    /// serial `producer`.
     ///
     /// A restart or aircraft swap is a *new* resolver: prior part damage,
     /// lifecycle records and deferred events never carry into the next
     /// generation (F29 non-negotiable behavior 5;
     /// `STATE-TRANSACTIONS` session generations).
     #[must_use]
-    pub fn new(session: u64, producer: u32, policy: DamagePolicy) -> Self {
+    pub fn new(session: u64, producer: u32) -> Self {
         Self {
             session,
             producer,
-            policy,
             actors: BTreeMap::new(),
             sequence: 0,
         }
@@ -264,13 +270,14 @@ impl DamageResolver {
         self.producer
     }
 
-    /// The declared rules this resolver runs under.
-    #[must_use]
-    pub const fn policy(&self) -> DamagePolicy {
-        self.policy
-    }
-
-    /// Registers an actor and its damage graph for this session.
+    /// Registers an actor, its damage graph and the declared rules that
+    /// graph resolves under for this session.
+    ///
+    /// `policy` is the actor's own declared rules — what
+    /// `cs_content::damage::GraphRules` declares and the boundary lowers —
+    /// so actors of different subject kinds resolve side by side under
+    /// *their own* rules (F29 deliverable: "the same identity discipline
+    /// but their own rules"), never under a session-wide convention.
     ///
     /// # Errors
     ///
@@ -281,6 +288,7 @@ impl DamageResolver {
         &mut self,
         actor: ActorId,
         graph: DamageGraph,
+        policy: DamagePolicy,
     ) -> Result<(), DamageError> {
         if actor.session != self.session {
             return Err(DamageError::ForeignSession {
@@ -291,15 +299,25 @@ impl DamageResolver {
         if self.actors.contains_key(&actor) {
             return Err(DamageError::DuplicateActor { actor });
         }
-        self.actors.insert(actor, ActorDamage::new(&graph));
+        self.actors.insert(actor, ActorDamage::new(&graph, policy));
         Ok(())
+    }
+
+    /// The declared rules a registered actor resolves under; `None` when
+    /// the actor is unknown.
+    #[must_use]
+    pub fn policy(&self, actor: &ActorId) -> Option<DamagePolicy> {
+        self.actors.get(actor).map(|state| state.policy)
     }
 
     /// The observable state of one of an actor's nodes; `None` when the
     /// actor or node is unknown.
     #[must_use]
     pub fn part_state(&self, actor: &ActorId, node: &DamageNodeKey) -> Option<PartState> {
-        self.actors.get(actor).map(|state| state.part_state(node))
+        self.actors
+            .get(actor)
+            .filter(|state| state.graph.node(node).is_some())
+            .map(|state| state.part_state(node))
     }
 
     /// A node's remaining integrity; `None` when the actor or node is
@@ -375,11 +393,14 @@ impl DamageResolver {
     /// node pools along the `overflow` chain, emits a record per hop and
     /// contributes to its attacker's tally. Once the batch is applied,
     /// every actor whose first lethal node depleted emits one destruction
-    /// and one kill award under the declared [`AttributionRule`] — a single
-    /// kill no matter how many hits were lethal (AC01).
+    /// and one kill award under *its own* declared [`AttributionRule`] — a
+    /// single kill no matter how many hits were lethal (AC01).
     ///
     /// Hits that land afterward still apply part damage — a wreck can take
     /// further hits — but can never emit a second destruction or award.
+    /// The same holds for a record closed by a terminal transition: the
+    /// part damage lands, but a despawned or mission-removed actor records
+    /// no lifecycle or scoring event again.
     ///
     /// # Errors
     ///
@@ -433,14 +454,20 @@ impl DamageResolver {
                 .actors
                 .get_mut(&victim)
                 .expect("a resolved victim is registered");
+            // A record closed by a terminal transition records nothing
+            // again — no destruction and no award, though the hits above
+            // still applied their part damage.
+            if state.terminal.is_some() {
+                continue;
+            }
             if state.lifecycle.insert(LifecycleKind::Destroyed) {
                 kinds.push(DamageEventKind::Lifecycle {
                     actor: victim,
                     kind: LifecycleKind::Destroyed,
                 });
             }
-            let credited = match self.policy.attribution {
-                AttributionRule::FirstLethalHit => self.blow_attacker(&blow, hits),
+            let credited = match state.policy.attribution {
+                AttributionRule::FirstLethalHit => Self::blow_attacker(&blow, hits),
                 AttributionRule::GreatestDamage => scratch
                     .contributions
                     .iter()
@@ -459,7 +486,7 @@ impl DamageResolver {
             kinds.push(DamageEventKind::KillAwarded {
                 victim,
                 credited,
-                rule: self.policy.attribution,
+                rule: state.policy.attribution,
                 blow,
             });
         }
@@ -475,7 +502,7 @@ impl DamageResolver {
     }
 
     /// The attacker of the hit `blow` names, looked up in the batch.
-    fn blow_attacker(&self, blow: &HitEventId, hits: &[HitEvent]) -> Option<ActorId> {
+    fn blow_attacker(blow: &HitEventId, hits: &[HitEvent]) -> Option<ActorId> {
         hits.iter()
             .find(|hit| &hit.id == blow)
             .and_then(|hit| hit.attacker)

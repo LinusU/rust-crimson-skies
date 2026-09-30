@@ -164,8 +164,10 @@ fn accept_f29_a_lowered_graph_resolves_a_single_kill() {
     let policy = lower_policy(&declared).expect("policy lowers");
 
     let target = actor(1);
-    let mut resolver = DamageResolver::new(SESSION, 1, policy);
-    resolver.register_actor(target, graph).expect("registers");
+    let mut resolver = DamageResolver::new(SESSION, 1);
+    resolver
+        .register_actor(target, graph, policy)
+        .expect("registers");
 
     let hit = |producer: u32, attacker: ActorId| {
         HitEvent::try_new(

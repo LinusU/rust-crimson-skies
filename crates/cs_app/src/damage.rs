@@ -14,10 +14,10 @@
 //!   carried through so a hit routed at an unresolved integrity still
 //!   blocks visibly instead of being repaired at the boundary;
 //! * [`lower_policy`] — the declared-rules boundary: the graph's
-//!   [`cs_content::damage::AttributionRule`] becomes the resolver's
-//!   [`cs_sim::damage::DamagePolicy`]. An `Unknown` attribution **refuses**
-//!   rather than guessing: no session resolves kills under an unstated
-//!   rule;
+//!   [`cs_content::damage::AttributionRule`] becomes the
+//!   [`cs_sim::damage::DamagePolicy`] the actor registers under. An
+//!   `Unknown` attribution **refuses** rather than guessing: no session
+//!   resolves kills under an unstated rule;
 //! * [`DamageActorBinding`] — the ECS record tying an entity to its
 //!   session-qualified [`cs_sim::damage::ActorId`] and damage-graph
 //!   subject, generation-stamped like
@@ -108,7 +108,9 @@ pub fn lower_graph(graph: &DeclaredDamageGraph) -> Result<DamageGraph, DamageLow
     DamageGraph::try_new(graph.subject().clone(), nodes).map_err(DamageLowerError::Graph)
 }
 
-/// Lowers the declared rules into the resolver's policy.
+/// Lowers the declared rules into the [`DamagePolicy`] the actor registers
+/// under — its own graph's rules, so different subject kinds resolve side
+/// by side under their own.
 ///
 /// An unknown `lethal_attribution` is refused with its claim — a session
 /// may not resolve kills under a guessed rule.

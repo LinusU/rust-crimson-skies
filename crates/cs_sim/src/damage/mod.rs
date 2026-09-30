@@ -19,7 +19,8 @@
 //!   the five distinct [`LifecycleKind`]s and the declared
 //!   [`AttributionRule`].
 //! * [`resolver`] is the per-session [`DamageResolver`]: session-qualified
-//!   actor registration, the deterministic same-tick ordering, the
+//!   actor registration — each actor with its own graph's declared
+//!   [`AttributionRule`] — the deterministic same-tick ordering, the
 //!   simultaneous-lethal policy that awards one kill (AC01), and the
 //!   once-per-kind lifecycle ledger that keeps death, bailout, capture,
 //!   despawn and mission removal separate.
