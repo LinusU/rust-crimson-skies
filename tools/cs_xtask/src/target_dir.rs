@@ -23,14 +23,40 @@
 //! every checkout under it. Anything else is a directory every worktree can
 //! compute identically, which is exactly the reported defect.
 //!
-//! [`verify_workspace`] is the gate: the `accept_t383_` tests run it
-//! against this very checkout as part of `cargo test --workspace`, so an
-//! agent whose environment still exports a shared directory gets a loud
-//! failure naming the fix instead of silently trusting foreign binaries.
+//! Being private is necessary but not sufficient (task #433). Cargo keys an
+//! artifact by package id and metadata fingerprint, *not* by source path, so
+//! a directory that is private by name can still serve a checkout that no
+//! longer exists: build `wt-a` and an identical `survivor` from one tree,
+//! point both at `survivor/target`, then delete `wt-a`. Cargo calls the
+//! artifacts fresh — same content, same fingerprint — so `survivor` keeps
+//! running `wt-a`'s binary, with `wt-a`'s `env!("CARGO_MANIFEST_DIR")`
+//! compiled into it and now naming a path that is gone. That is how
+//! `cs_formats`' own `pe_resources` test came to read
+//! `…/bunny-alpha-1-rev98/crates/cs_formats/src/pe_resources.rs` after
+//! `bunny-alpha-1-rev98` was removed.
+//!
+//! Cargo leaves the evidence behind: for every unit whose crate read
+//! `CARGO_MANIFEST_DIR`, its `.d` dep-info file carries an
+//! `# env-dep:CARGO_MANIFEST_DIR=<absolute path>` line naming the checkout
+//! that produced it. [`recorded_manifest_dirs`] reads those lines and
+//! [`removed_manifest_dirs`] keeps the ones that are no longer a directory on
+//! disk, which a crate's manifest directory can only be if its checkout is
+//! gone. That is positive evidence, so it needs no guesswork about cargo's
+//! hashing: a target directory with no such record — a fresh one, or one
+//! built only from this checkout — passes.
+//!
+//! [`verify_workspace`] is the gate: the `accept_t383_` and `accept_t433_`
+//! tests run it against this very checkout as part of `cargo test
+//! --workspace`, so an agent whose environment still exports a shared
+//! directory, or whose private directory still serves a removed worktree,
+//! gets a loud failure naming the fix instead of silently trusting foreign
+//! binaries.
 
+use std::collections::BTreeSet;
 use std::env;
 use std::ffi::OsStr;
 use std::fmt;
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -48,6 +74,13 @@ pub enum TargetDirError {
     Shared {
         workspace_root: PathBuf,
         target_dir: PathBuf,
+    },
+    /// The effective directory is private to this worktree, but it still
+    /// holds artifacts a checkout that no longer exists produced.
+    Stale {
+        workspace_root: PathBuf,
+        target_dir: PathBuf,
+        removed: Vec<PathBuf>,
     },
 }
 
@@ -78,7 +111,46 @@ e.g. export CARGO_TARGET_DIR=\"$PWD/target\".",
                 target_dir.display(),
                 workspace_root.display()
             ),
+            Self::Stale {
+                workspace_root,
+                target_dir,
+                removed,
+            } => write!(
+                f,
+                "the cargo target directory {} is private to worktree {}, but it \
+still holds artifacts whose recorded CARGO_MANIFEST_DIR names {}: that \
+checkout is gone, and cargo still calls those artifacts fresh because it \
+keys them by fingerprint rather than by source path, so `cargo test` can run \
+a binary that reads a path outside this worktree (task #433). The directory \
+name cannot express this, so delete {} and let the next build recreate it, \
+e.g. cargo clean --target-dir {}.",
+                target_dir.display(),
+                workspace_root.display(),
+                paths(removed),
+                target_dir.display(),
+                target_dir.display()
+            ),
         }
+    }
+}
+
+/// How many paths a [`TargetDirError::Stale`] message names before it counts
+/// the rest.
+const PATHS_SHOWN: usize = 5;
+
+/// Renders up to [`PATHS_SHOWN`] paths, then counts the rest, so a message
+/// about a hundred dead worktrees stays readable.
+fn paths(values: &[PathBuf]) -> String {
+    let shown = values
+        .iter()
+        .take(PATHS_SHOWN)
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    if values.len() > PATHS_SHOWN {
+        format!("{shown} and {} more", values.len() - PATHS_SHOWN)
+    } else {
+        shown
     }
 }
 
@@ -169,8 +241,9 @@ pub fn is_per_worktree(workspace_root: &Path, target_dir: &Path) -> bool {
 }
 
 /// The whole gate: resolve the effective directory through Cargo, then
-/// require it to be private to `workspace_root`. The `Ok` payload is the
-/// directory itself, so callers can print what was verified.
+/// require it to be private to `workspace_root` and free of artifacts a
+/// removed checkout left behind. The `Ok` payload is the directory itself, so
+/// callers can print what was verified.
 pub fn verify_workspace(workspace_root: &Path) -> Result<PathBuf, TargetDirError> {
     let target_dir = effective_target_dir(workspace_root)?;
     require_per_worktree(workspace_root, target_dir)
@@ -189,19 +262,125 @@ pub fn verify_workspace_with_env(
 }
 
 /// [`is_per_worktree`] as a verdict: `Err(Shared)` when the effective
-/// directory could be written by other checkouts too.
+/// directory could be written by other checkouts too, then `Err(Stale)`
+/// when it is private but still serves a checkout that is gone (task #433).
+/// Order matters: a directory another live worktree could write to is the
+/// #383 defect whatever it contains, and that is the message an agent in the
+/// shared layout needs first.
 fn require_per_worktree(
     workspace_root: &Path,
     target_dir: PathBuf,
 ) -> Result<PathBuf, TargetDirError> {
-    if is_per_worktree(workspace_root, &target_dir) {
-        Ok(target_dir)
-    } else {
-        Err(TargetDirError::Shared {
+    if !is_per_worktree(workspace_root, &target_dir) {
+        return Err(TargetDirError::Shared {
             workspace_root: workspace_root.to_path_buf(),
             target_dir,
+        });
+    }
+    require_live(workspace_root, target_dir)
+}
+
+/// [`require_per_worktree`]'s second question: does the directory still hold
+/// only artifacts this checkout could have built?
+fn require_live(workspace_root: &Path, target_dir: PathBuf) -> Result<PathBuf, TargetDirError> {
+    let removed: Vec<PathBuf> = removed_manifest_dirs(&target_dir).into_iter().collect();
+    if removed.is_empty() {
+        Ok(target_dir)
+    } else {
+        Err(TargetDirError::Stale {
+            workspace_root: workspace_root.to_path_buf(),
+            target_dir,
+            removed,
         })
     }
+}
+
+/// Cargo's marker for an environment variable a unit read while compiling,
+/// as it appears in a `.d` dep-info file.
+const ENV_DEP_MARKER: &str = "# env-dep:";
+/// The environment variable whose value is an absolute path into the checkout
+/// that produced the artifact — the one record of a removed worktree that
+/// survives in a target directory.
+pub const MANIFEST_DIR_VAR: &str = "CARGO_MANIFEST_DIR";
+
+/// Every `CARGO_MANIFEST_DIR` cargo recorded in `target_dir`'s dep-info files.
+///
+/// Cargo writes the value verbatim, unescaped, so a path with spaces in it
+/// survives intact. Files that cannot be read are skipped: the gate reports
+/// only directories it actually saw recorded, never a guess about one it
+/// could not open.
+pub fn recorded_manifest_dirs(target_dir: &Path) -> BTreeSet<PathBuf> {
+    let mut recorded = BTreeSet::new();
+    for dep_info in dep_info_files(target_dir) {
+        let Ok(bytes) = fs::read(&dep_info) else {
+            continue;
+        };
+        if let Some(value) = env_dep_value(&String::from_utf8_lossy(&bytes), MANIFEST_DIR_VAR) {
+            recorded.insert(PathBuf::from(value));
+        }
+    }
+    recorded
+}
+
+/// The [`recorded_manifest_dirs`] that are no longer a directory on disk.
+///
+/// A crate's manifest directory is a directory for as long as its checkout
+/// is there, so a recorded value that is not one is positive evidence that
+/// the worktree this target directory once served has been removed — the
+/// case cargo cannot see, because its artifact filenames and fingerprints
+/// are a function of content, not of where the content lives.
+pub fn removed_manifest_dirs(target_dir: &Path) -> BTreeSet<PathBuf> {
+    recorded_manifest_dirs(target_dir)
+        .into_iter()
+        .filter(|dir| !dir.is_dir())
+        .collect()
+}
+
+/// The value of `# env-dep:<name>=<value>` in one dep-info file, or `None`
+/// when the file records nothing about `name`.
+///
+/// The marker has to start the line: a dependency called `env-dep` appears
+/// later on the same line as its artifact, and must not be mistaken for one.
+pub fn env_dep_value<'a>(dep_info: &'a str, name: &str) -> Option<&'a str> {
+    let prefix = format!("{ENV_DEP_MARKER}{name}=");
+    dep_info.lines().find_map(|line| {
+        let value = line.trim_start().strip_prefix(prefix.as_str())?;
+        Some(value.strip_suffix('\r').unwrap_or(value))
+    })
+}
+
+/// The dep-info files in `target_dir`: `<profile>/deps/*.d`, where cargo
+/// writes one per compiled unit, plus the `<profile>/*.d` copies it uplifts
+/// next to the final artifacts. A target directory that does not exist yet,
+/// or one whose layout this cargo version does not use, simply has none.
+fn dep_info_files(target_dir: &Path) -> Vec<PathBuf> {
+    let Ok(profiles) = fs::read_dir(target_dir) else {
+        return Vec::new();
+    };
+    let mut files = Vec::new();
+    for profile in profiles.flatten() {
+        if !is_directory(&profile) {
+            continue;
+        }
+        let profile_path = profile.path();
+        for directory in [profile_path.join("deps"), profile_path] {
+            let Ok(entries) = fs::read_dir(&directory) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let is_dep_info = entry.file_name().to_string_lossy().ends_with(".d");
+                if is_dep_info && !is_directory(&entry) {
+                    files.push(entry.path());
+                }
+            }
+        }
+    }
+    files
+}
+
+/// Whether `entry` is a directory that can be listed.
+fn is_directory(entry: &fs::DirEntry) -> bool {
+    entry.file_type().map(|kind| kind.is_dir()).unwrap_or(false)
 }
 
 /// Extracts the `target_directory` string from `cargo metadata` JSON.

@@ -18,7 +18,8 @@
 //!   that exhausts it (task #430).
 //! * [`target_dir`] requires the effective `CARGO_TARGET_DIR` to be private
 //!   to this worktree, so concurrent agent builds cannot reuse each other's
-//!   artifacts (task #383).
+//!   artifacts (task #383), and requires it to hold no artifact a worktree
+//!   that has since been removed produced (task #433).
 //!
 //! The `cs_xtask` binary exposes `test-select`, `verify-ci`,
 //! `verify-bootstrap`, `verify-ci-budget` and `verify-target-dir`; packaging
