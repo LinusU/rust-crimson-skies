@@ -19,7 +19,10 @@ only — no `CS_GAME_DIR` read, no evidence report required, nothing
   reference meets an upload).
 * `crates/cs_app/src/world/spawn.rs` (edited): `spawn_object` is now the unit
   both the whole-world spawn and the sector load use; a `FromMesh` object is
-  presented **and** collided by one node holding one `Mesh3d` handle;
+  presented **and** collided by one node holding one `Mesh3d` handle — and
+  since task #424 that node is *also* the static rigid body, so the derived
+  collider lands on the body rather than a child of it (see "The engine
+  limitation" below);
   `SkipReason::MeshUnavailable` replaces the F18-A `MeshColliderDeferred`;
   `SpawnedWorld` is now a list of `SpawnedObject` with per-object accessors.
 * `crates/cs_app/src/world/residency.rs` (new): `load_world`, `load_sector`,
@@ -119,43 +122,91 @@ fixed rate, gravity zero. Probe: 0.5 m box. "Swept" = `SweptCcd` with
   `SkipReason::UnknownMesh`. Collapsing the two would make "we did not load it"
   look like "we do not know what it is".
 
-## The engine limitation this stage found and did not paper over
+## The engine limitation this stage found — and its corrected attribution
 
-**Avian's swept CCD does not stop a body against a `TrimeshFromMesh` collider,
-while it does against a cuboid.** Measured on the same probe, same speed, same
-fixture geometry:
+**This section originally recorded a gap that does not exist, and attributed it
+to the wrong library.** The gap was real; the cause was not. Corrected by task
+#420's measurement and closed by task #424's layout change. Both the
+correction and the fix are below, because the wrong attribution was itself a
+trap: it said the engine could not sweep against *any* triangle mesh, which
+would have ruled out the fix that actually works.
 
-| body | arch wall | result |
+**What was measured.** A body whose tick outruns a mesh-derived wall passed
+through it, while the same body was stopped by a cuboid of the same thickness:
+
+| body | arch wall | result (as first recorded) |
 | --- | --- | --- |
 | swept, 400 m/s | `objective.hangar` (trimesh) | passes through, no contact |
 | swept, 400 m/s | `arch.leg_right` (cuboid, F18-A world) | clamped at the wall, contact recorded |
 | discrete, 30 m/s | `objective.hangar` (trimesh) | stopped, contact recorded |
 | swept, 30 m/s | `objective.hangar` (trimesh) | stopped, contact recorded |
 
-Cause, read in the pinned sources: Avian's swept CCD asks parry for a shape
-cast (`avian3d-0.7.0/src/dynamics/ccd/mod.rs::compute_ccd_toi`, ~line 690) and
-parry's `DefaultQueryDispatcher::cast_shapes`
-(`parry3d-0.27.0/src/query/default_query_dispatcher.rs:437-541`) has cases for
-ball, half-space, heightfield, support-map, composite and voxels — and **none
-for `TriMesh`**, so the call returns `Err(Unsupported)` and no time of impact is
-ever produced. A cuboid is a support map, which is why F18-A's 400 m/s arch test
-clamps at `x = -0.7497`.
+**The attribution was wrong.** This stage concluded that parry's
+`DefaultQueryDispatcher::cast_shapes` had no `TriMesh` case, so a cast against
+a trimesh returned `Err(Unsupported)`. It does not:
+`TriMesh::as_composite_shape()` returns `Some(self)`
+(`parry3d-0.27.0/src/shape/shape.rs:1141`), so `cast_shapes` and
+`cast_shapes_nonlinear` both route a trimesh through the composite branch and
+do produce times of impact. Verified by direct parry 0.27 calls *and* in-engine
+by task #420.
 
-* Affected content: every world object whose collision is mesh-derived and thin
-  relative to one tick, at any body speed above the discrete sampling rate —
-  i.e. the whole of retail world geometry once F18-D imports it, and the F23
-  aircraft bodies that carry `SweptCcd`. This is a **hard gap for the retail
-  world**, not a fixture artifact.
-* Resolving task: filed by this stage as a follow-up (see "Follow-ups" below).
-  It is not solvable inside `cs_app` on the pinned pair: neither a different
-  `ColliderConstructor` nor more substeps is a decision this stage may take
-  silently, and inventing geometry for the miss is exactly what F18
-  non-negotiable behavior 1 forbids.
-* Pinned by `import::accept_f18_b_a_tunnelling_body_misses_mesh_geometry_which_is_a_pinned_engine_limit`,
-  which asserts the *current* behaviour and its precondition (a tick longer than
-  probe-plus-wall) and compares it with the cuboid path in the same test. It is
-  expected to fail when the pinned engine learns to cast against a triangle
-  mesh; that failure is the signal to re-measure the limitation, not a bug.
+**The real cause is the collider's placement, not its shape.** Avian's
+`solve_swept_ccd` resolves each contact-graph neighbour through
+`SweptCcdBodyQuery` (`avian3d-0.7.0/src/dynamics/ccd/mod.rs`), whose
+`collider: &'static Collider` field is read off the **body** entity. The layout
+this stage built — a `RigidBody` parent with the `Mesh3d` on a child node, which
+is what `ColliderConstructorHierarchy` produces — leaves the body with no
+collider, the query fails, and the pair is skipped without a cast ever being
+attempted. The decisive measurement is the *cuboid* on a child node, which
+tunnels identically: a support map is no more special to the sweep than a
+trimesh is to parry.
+
+Task #420's 2x2, on the same probe, speed and wall span:
+
+| collider | placement | 400 m/s probe |
+| --- | --- | --- |
+| trimesh | on the body entity | **stopped at the wall's near face** |
+| trimesh | on a child node | tunnelled, no contact |
+| cuboid | on a child node | tunnelled, no contact |
+| cuboid | on the body entity | **stopped at the wall's near face** |
+
+* **Resolved (task #424):** the rule is a layout rule, and it is now an
+  invariant. A mesh object is **one** entity carrying `RigidBody::Static` +
+  `Mesh3d` + `ColliderConstructor::TrimeshFromMesh`, so the derived collider
+  lands on the body and swept CCD sees it
+  (`cs_app::asset_stack::spawn_static_mesh_collider_on_body`, used by
+  `spawn_object`). Same uploaded mesh, every stored triangle — a strict
+  reduction of the old two-entity layout, not a different collider, so F18
+  non-negotiable behavior 1 is untouched. The 400 m/s probe is now clamped at
+  the arch's near face with the contact recorded.
+* **What is left over:** a body whose colliders *all* live on descendants is
+  still invisible to a sweep on the pinned engine. That is now declared rather
+  than accidental — `cs_app::asset_stack::SweptInvisible` on the body, and
+  `swept_invisible_bodies` / `undeclared_swept_invisible_bodies` report every
+  body that fails the rule so no future path can reintroduce it unnoticed.
+  A multi-part body (aircraft-part colliders, capital-ship subsystems) needs
+  only one real collider on its root; no dummy geometry.
+* **Alternatives measured and rejected, with costs:** a nonzero
+  `SpeculativeMargin` does stop the miss (parry's speculative narrow phase
+  *does* have a `TriMesh` case) but by predicting contacts metres ahead — the
+  globally-inflated hitbox F23 non-negotiable behavior 3 forbids;
+  `SubstepCount(2/4/8)` does not (substeps subdivide the solver, not the
+  detection pipeline, so a skipped pair stays skipped at N times the cost); a
+  speed cap is unenforceable and unverifiable against unimported geometry; and
+  there is no pin to bump — avian3d 0.7.0 *is* the newest release, and
+  parry3d 0.31.1 is both unselectable (avian pins `^0.27`) and irrelevant, the
+  defect being avian-side.
+* **Pinned by** `import::accept_f18_b_a_tunnelling_body_is_stopped_by_the_mesh_geometry_it_flys_at`,
+  which asserts the probe *is* stopped and reports a contact, and by
+  `crates/cs_app/tests/accept_t424_collider_on_body.rs`, which re-measures both
+  layouts through the production composition so the rule is a measurement
+  rather than a claim. Upstream avian `main` has already rewritten swept CCD to
+  iterate `RigidBodyColliders` and so no longer has this requirement, but it is
+  unreleased; when a release containing it lands, the child-layout arm fails and
+  that failure is the signal to re-measure and re-decide the rule, not a bug.
+  The decision record is
+  `docs/findings/2026-09-30-t420-mesh-ccd-decision.md`; the invariant is
+  `docs/findings/2026-09-30-t424-collider-on-body-invariant.md`.
 
 The F18-A measured interaction between swept CCD and *sensor* volumes
 (task #401) is unchanged and still applies to mesh-derived trigger volumes.
@@ -215,6 +266,23 @@ The record-level additions (`WorldObjectCondition::initial_condition`,
 `DamagedObjectNotActivated`) are covered by the residency and import tests that
 call them; the fourteen F18-A tests are the F18-A matrix, unchanged.
 
+### Task #424 added three more rows
+
+The collider-on-body layout changed what three of these assertions *claim*, so
+they were corrected rather than deleted, and the new invariant was probed
+separately. Each mutation was applied, run and restored.
+
+| mutation | tests that failed |
+| --- | --- |
+| `spawn_mesh_collider` goes back to the parent-body + child-node layout | `import::..._a_tunnelling_body_is_stopped_by_the_mesh_geometry_it_flys_at`, `import::..._a_mesh_collision_is_the_geometry_the_object_draws_and_keeps_its_opening` |
+| the body-entity constructor silently degenerates to a cuboid proxy | the two above plus `..._a_mesh_role_solid_stops_a_body_and_sensor_only_reports_one`, `..._a_swept_body_flies_through_the_mesh_opening_and_is_stopped_by_its_leg`, `..._a_contact_names_the_surface_rule_...` |
+| `swept_invisible_bodies` returns an empty list | `accept_t424::..._the_audit_reports_a_declared_exception_and_nothing_else`, `..._an_undeclared_child_node_collider_is_reported_rather_than_ignored` |
+| the hierarchy body stops declaring itself `SweptInvisible` | `accept_t424::..._the_audit_reports_a_declared_exception_and_nothing_else` |
+
+The second row is the one worth noting: a "fix" that made bodies swept-visible
+by replacing the mesh collider with a box would have passed the sweep test and
+failed the triangle assertions. Both the layout and the geometry are pinned.
+
 ## Review findings (2026-09-30, reviewer `bunny-alpha-1`)
 
 The implementer and the reviewer are the same agent, so this is **not**
@@ -261,12 +329,15 @@ independent evidence. What was checked, and what it changed:
   has role `None` and no collider, and the fourth is the *cuboid* ground slab.
   The count is now derived from the objects themselves, so a substitution cannot
   pass on a number.
-* **Verified rather than taken on trust:** parry 0.27.0's
-  `DefaultQueryDispatcher::cast_shapes` (`default_query_dispatcher.rs:437-541`)
-  really has no `TriMesh` case and really returns `Err(Unsupported)`, and
-  Avian's `compute_ccd_toi` (`avian3d-0.7.0/src/dynamics/ccd/mod.rs:692-705`)
-  really folds that into `None`. The pinned limitation the flight tests measure
-  is the engine's, not a fixture artifact.
+* **Verified rather than taken on trust:** `SweptCcdBodyQuery`'s
+  `collider: &'static Collider` field is real and is read off the body entity
+  (`avian3d-0.7.0/src/dynamics/ccd/mod.rs`), and
+  `init_collider_constructor_hierarchies` really iterates
+  `children.iter_descendants` and never touches the hierarchy root. The
+  limitation the flight tests measured was the engine's, not a fixture artifact
+  — it was only the *attribution* that was wrong, and task #420's 2x2
+  (including a cuboid on a child node, which tunnelled identically) is what
+  separated the two.
 
 
 ## Designed vocabulary, not original data
@@ -276,6 +347,11 @@ component, the residency rule and its refusals, the harbor world and its
 geometry, the mesh source map, the "one node presents and collides a mesh
 object" entity layout, and the choice to perform **no** simplification. None of
 it is claimed to be the original's vocabulary or behaviour.
+
+The **collider-on-body rule** (task #424) is likewise a designed rule, not an
+original one: it is this engine's requirement, on this pinned pair, and the
+upstream fix for it is unreleased. It constrains our entity layout and claims
+nothing about how the 2000 game arranged its collision.
 
 Unknown, and not guessed:
 
