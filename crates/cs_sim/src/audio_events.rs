@@ -317,7 +317,8 @@ impl OneShotEvent {
 pub struct LoopBinding {
     /// The emitter the loop plays on.
     pub emitter: AudioEmitterId,
-    /// The bind event's identity (also the dedup key of the start action).
+    /// The bind event's identity; when a later binding replaces this loop the
+    /// router reports this id as the stopped loop's id.
     pub id: AudioEventId,
     /// The audio asset to loop.
     pub asset: ContentId,
