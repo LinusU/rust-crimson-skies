@@ -161,6 +161,16 @@
 //! [`damage::DamageActorBinding`] ECS record tying an entity to its
 //! session-qualified actor and damage-graph subject.
 //!
+//! [`targeting`] is the F30-A targeting boundary
+//! (`specs/F30-targeting-classification-aim-assistance-and-threat-cues.md`,
+//! stage `### F30-A`): [`targeting::lower_rules`], which lowers a declared
+//! `cs_content::target_rules::DeclaredTargetRules` into the
+//! `cs_sim::targeting::TargetPolicy` and `AllegianceTable` a session opens
+//! with — refusing every `Resolved::Unknown` rather than guessing a
+//! relation, window or assistance flag — and the generation-stamped
+//! [`targeting::TargetableBinding`] ECS record tying an entity to its
+//! session-qualified targeting actor and rules subject.
+//!
 //! [`environment`] is the F19-A environment boundary
 //! (`specs/F19-sky-atmosphere-weather-and-visibility.md`, stage
 //! `### F19-A`): [`environment::SkyFrame`], the one record that centres a
@@ -188,4 +198,5 @@ pub mod render;
 pub mod run;
 pub mod scene;
 pub mod synthetic;
+pub mod targeting;
 pub mod world;
