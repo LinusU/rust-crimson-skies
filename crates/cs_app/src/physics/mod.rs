@@ -31,6 +31,13 @@
 //! [`fixture`] is the asset-free production harness an acceptance test drives;
 //! it spawns a known [`Mass`](avian3d::prelude::Mass) and adds the real
 //! adapters.
+//! [`flight`] is the F24-B fixed-wing production path
+//! (`specs/F24-fixed-wing-flight-engine-stall-and-arcade-assists.md`): the
+//! [`flight::FlightAircraft`] record one flying body carries, the
+//! [`flight::spawn_flight_body`] entry point that binds the declared mass and
+//! inertia from the tuning, and the [`flight::FlightForcesPlugin`] that turns
+//! each fixed tick's authoritative pose and velocities into exactly one
+//! [`ForceRequest`] per aircraft through [`FlightModel`](cs_sim::flight::FlightModel).
 //! [`session`] is the producer/consumer integration (F23-C): one session owns
 //! the world, gates every producer call and hands the consumer each frame's
 //! authoritative events — contact reports, spawn corrections and request
@@ -44,6 +51,7 @@ pub mod adapter;
 pub mod body;
 pub mod contacts;
 pub mod fixture;
+pub mod flight;
 pub mod preflight;
 pub mod session;
 
@@ -57,6 +65,10 @@ pub use body::{
 pub use contacts::{ContactReport, ContactReports, PhysicsBodiesPlugin};
 pub use fixture::{
     FixtureBodySpec, PhysicsFixture, PhysicsFixtureBuilder, PhysicsFixtureError, PhysicsSample,
+};
+pub use flight::{
+    FlightAircraft, FlightAircraftError, FlightForcesPlugin, FlightRefusal, FlightRefusalReason,
+    FlightSpawnError, FlightSpawnSpec, FlightTickReport, spawn_flight_body,
 };
 pub use preflight::{SpawnPreflight, SpawnPreflightEvent, SpawnPreflightLog};
 pub use session::{
