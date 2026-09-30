@@ -733,8 +733,10 @@ fn accept_f17_b_rgb565_both_coverage_keys_reach_the_alpha_channel() {
 /// calls it and the adapter half is the code a capture would print.
 #[test]
 fn accept_f17_b_rgb565_an_unreadable_key_plane_keeps_the_policy_s_own_code() {
-    // A direct 565 image stores no index plane, so a palette key has
-    // nothing to read. This is the refusal `upload_image` returns for it.
+    // A direct 565 image stores no index plane, so a palette key would have
+    // nothing to read. This image's own source is `Opaque`, so the adapter
+    // uploads it; the pairing below is the one it refuses on, and this is
+    // the error it would carry out.
     let image = decoded_image(super::fixture::ImageShape {
         format: PixelFormat::Rgb565,
         alpha_source: AlphaSource::Opaque,
