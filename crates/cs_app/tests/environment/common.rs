@@ -1,16 +1,24 @@
-//! Shared fixtures for the F19-A acceptance tests.
+//! Shared fixtures for the F19-A and F19-B acceptance tests.
 //!
 //! Every value is authored here: synthetic identities, directions, winds and
 //! claim ids. Nothing is read from `CS_GAME_DIR`, and nothing claims to be
 //! an original environment.
+//!
+//! The F19-A part owns the two production environment fixtures and the
+//! builders the record tests vary. The F19-B part adds only what the effect
+//! tests need on top: the cosmetic seed, and states assembled from the
+//! production [`EnvironmentState`] constructor so a test can hold the wind,
+//! the precipitation or the visibility at a chosen resolution without
+//! authoring a whole definition.
 
 use std::time::Duration;
 
 use cs_app::environment::{STORM_RATE_HZ, clear_sky_environment, storm_environment};
 use cs_content::environment::{
-    EnvironmentDefinition, EnvironmentError, EnvironmentId, EnvironmentProfile, EnvironmentState,
-    EnvironmentTimeline, FogDefinition, LightingDefinition, PrecipitationDefinition,
-    PrecipitationKind, SkyArt, SkyFallback, SkyOrientation, WindField,
+    CosmeticWeatherSeed, EnvironmentDefinition, EnvironmentError, EnvironmentId,
+    EnvironmentProfile, EnvironmentState, EnvironmentTimeline, FogDefinition, GameplayVisibility,
+    LightingDefinition, PrecipitationDefinition, PrecipitationKind, SkyArt, SkyFallback,
+    SkyOrientation, WindField,
 };
 use cs_sim::time::TickRate;
 use cs_types::content::{ContentId, ContentKind, Known, Origin, Provenance, Resolved};
@@ -188,4 +196,59 @@ pub fn authored_sky() -> SkyArt {
         SkyFallback::Diagnostic,
     )
     .expect("the test sky texture is an image id")
+}
+
+// ------------------------------------------------------------- F19-B part ---
+
+/// The run seed the F19-B cosmetic tests draw decorative particles from.
+///
+/// Authored test data, chosen once so a decorative field is reproducible.
+/// It is a *cosmetic* stream seed: the tests that use it never hand it to
+/// anything that reads gameplay randomness.
+pub const COSMETIC_ROOT_SEED: u64 = 0x0F19_B005_E000_0001;
+
+/// The cosmetic weather seed the F19-B tests pass to the decoration path.
+#[must_use]
+pub fn cosmetic_seed() -> CosmeticWeatherSeed {
+    CosmeticWeatherSeed::new(COSMETIC_ROOT_SEED)
+}
+
+/// An [`EnvironmentState`] assembled through the production constructor from
+/// three independently resolved fields, so a test can hold any one of them at
+/// a chosen resolution without authoring a whole definition.
+#[must_use]
+pub fn state(
+    wind: Resolved<WindField>,
+    precipitation: Resolved<PrecipitationKind>,
+    visibility: Resolved<GameplayVisibility>,
+) -> EnvironmentState {
+    EnvironmentState::new(
+        wind,
+        PrecipitationDefinition::new(precipitation),
+        visibility,
+    )
+}
+
+/// A known wind velocity, as by test design.
+#[must_use]
+pub fn known_wind(velocity_m_s: [f64; 3], claim_id: &str) -> Resolved<WindField> {
+    known(
+        WindField::try_new(velocity_m_s).expect("the test wind is finite"),
+        claim_id,
+    )
+}
+
+/// A known gameplay visibility range, as by test design.
+#[must_use]
+pub fn known_visibility(range_m: f64, claim_id: &str) -> Resolved<GameplayVisibility> {
+    known(
+        GameplayVisibility::try_new(range_m).expect("the test sight range is representable"),
+        claim_id,
+    )
+}
+
+/// A known precipitation kind, as by test design.
+#[must_use]
+pub fn known_precipitation(kind: PrecipitationKind, claim_id: &str) -> Resolved<PrecipitationKind> {
+    known(kind, claim_id)
 }
