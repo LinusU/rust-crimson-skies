@@ -18,13 +18,13 @@
 //! drain uses — and shape-casts the collider over exactly one tick of its
 //! velocity, before the body has moved:
 //!
-//! * if the closest *solid* hit lands inside the tick's travel, the body's
-//!   `Position` and `Transform` are moved to the contact point and the
-//!   velocity component that carries it *into* the obstacle is removed
-//!   (F23-D: a clamp alone is not a fix — see below). Sensor overlaps do not
-//!   stop a spawn: the cast keeps the first hit the declared matrix calls a
-//!   solid contact, which is the "apply damage once / sensor is not damage"
-//!   boundary enforced at spawn, not after the fact;
+//! * a **solid** hit inside the tick's travel moves the body's `Position` and
+//!   `Transform` to the contact point and removes the velocity component that
+//!   carries it *into* the obstacle (F23-D: a clamp alone is not a fix — see
+//!   below). Sensor overlaps do not stop a spawn: the cast keeps the first hit
+//!   the declared matrix calls a solid contact, which is the "apply damage
+//!   once / sensor is not damage" boundary enforced at spawn, not after the
+//!   fact;
 //! * either way the correction is an [`SpawnPreflightEvent`] in
 //!   [`SpawnPreflightLog`], the same authoritative-event channel the contact
 //!   reports drain through, so a clamped spawn is a recorded gameplay fact
@@ -54,6 +54,29 @@
 //! (AC02: exactly once, one tick later than an in-flight hit). The tangential
 //! velocity is untouched, so a projectile that only grazes the wall keeps
 //! sliding along it.
+//!
+//! # The one case this repair does not close (recorded, not guessed)
+//!
+//! The same hole has a face a clamp cannot reach: a *sensor* crossed entirely
+//! within the spawn tick. A trigger must not stop or delay a body — F23-C's
+//! acceptance criterion `accept_f23_c_preflight_never_stops_on_a_sensor` pins
+//! that a projectile whose first tick only crosses a sensor keeps flying — and
+//! a body that keeps its velocity leaves a 2 cm trigger within the very tick it
+//! is invisible to the broad phase, so there is no overlap event to report.
+//! Measured at 120 Hz: a projectile spawned 0.4 ticks short of a 2 cm trigger
+//! crosses it and leaves at its fired speed with **zero** contact reports, at
+//! every probed speed and rate.
+//!
+//! A second, non-blocking cast answers that: when no solid obstacle stopped
+//! the spawn, the preflight casts again accepting only *sensor* overlaps and
+//! records the crossing in [`SpawnPreflightEvent::passed`] with the distance to
+//! it. Nothing about the spawn changes — the body still flies through at full
+//! speed, exactly as F23-C's criterion requires — but the crossing now leaves
+//! an authoritative record instead of no trace at all. Whether gameplay
+//! consumes that field (as a trigger crossing, or only as a diagnostic) is a
+//! rule F23-C's criterion does not decide, so this stage does not invent one:
+//! it is recorded as a named limitation for the task that owns the trigger
+//! rules (F24-C) and the calibration (F26), with the numbers above.
 //!
 //! **Designed rule, not original data.** Whether the original clamped a
 //! spawn, refused it or let it tunnel is unknown; this is the declared fix
@@ -115,6 +138,16 @@ pub struct SpawnPreflightEvent {
     /// removed with the clamp. F23-D measured that a clamp without it still
     /// tunnels: the tick the clamp lands in carries the body through.
     pub stopped: bool,
+    /// A collider a *second* cast found inside the tick's travel that the solid
+    /// cast deliberately stepped over: a sensor the spawn crossed.
+    ///
+    /// This is a record, not a correction. Nothing about the spawn changes — a
+    /// trigger never stops a body (F23-C) — but F23-D measured that a trigger
+    /// crossed entirely inside the spawn tick produces no contact event either,
+    /// so without this field the crossing would leave no trace at all.
+    pub passed: Option<Entity>,
+    /// How far the body could have travelled before that collider, in meters.
+    pub passed_distance_m: Option<f32>,
 }
 
 /// The recorded preflight events of a running world.
@@ -132,6 +165,8 @@ pub struct SpawnPreflightLog {
     clamped: u64,
     /// Preflights that also stopped a spawn's motion into an obstacle.
     stopped: u64,
+    /// Preflights whose cast passed over a sensor the spawn crossed.
+    passed: u64,
 }
 
 impl SpawnPreflightLog {
@@ -155,6 +190,11 @@ impl SpawnPreflightLog {
         self.stopped
     }
 
+    /// Preflights whose cast passed over a sensor the spawn crossed.
+    pub fn passed(&self) -> u64 {
+        self.passed
+    }
+
     /// Takes every recorded event, leaving the counters.
     pub fn take(&mut self) -> Vec<SpawnPreflightEvent> {
         core::mem::take(&mut self.events)
@@ -166,6 +206,7 @@ impl SpawnPreflightLog {
         self.total = 0;
         self.clamped = 0;
         self.stopped = 0;
+        self.passed = 0;
     }
 
     fn record(&mut self, event: SpawnPreflightEvent) {
@@ -175,6 +216,9 @@ impl SpawnPreflightLog {
         }
         if event.stopped {
             self.stopped += 1;
+        }
+        if event.passed.is_some() {
+            self.passed += 1;
         }
         self.events.push(event);
     }
@@ -195,12 +239,13 @@ type FreshSweep<'w> = (
 ///
 /// For each fresh swept body it casts the body's own collider along one tick
 /// of linear travel. The cast's predicate accepts only a hit the declared
-/// matrix would resolve as a solid contact, so the closest sensor or
-/// non-interacting collider never stops a spawn. A solid hit inside the
-/// tick moves the body to the contact point and ends the velocity component
-/// that carries it into the obstacle — writing `Position`/`LinearVelocity`
-/// before the tick integrates is a teleport only in the bookkeeping sense:
-/// the body has not simulated yet, so no continuity is broken.
+/// matrix would resolve as a solid contact, so a sensor or a non-interacting
+/// collider never stops a spawn and the cast carries on to a later solid hit.
+/// A solid hit inside the tick moves the body to the contact point and ends the
+/// velocity component that carries it into the obstacle — writing
+/// `Position`/`LinearVelocity` before the tick integrates is a teleport only in
+/// the bookkeeping sense: the body has not simulated yet, so no continuity is
+/// broken.
 fn resolve_spawn_preflights(
     time: Res<Time<Fixed>>,
     spatial: SpatialQuery,
@@ -223,6 +268,8 @@ fn resolve_spawn_preflights(
                 distance_m: None,
                 clamped: false,
                 stopped: false,
+                passed: None,
+                passed_distance_m: None,
             });
             continue;
         }
@@ -241,9 +288,9 @@ fn resolve_spawn_preflights(
             &filter,
             &|hit_entity| {
                 // Only a solid contact may stop a spawn: an overlap the
-                // matrix ignores, and every sensor, lets the cast pass on to
-                // a later solid hit (contract: sensor overlap is not damage
-                // by itself).
+                // matrix ignores, and every sensor, lets the cast pass on to a
+                // later solid hit (contract: sensor overlap is not damage by
+                // itself).
                 let Ok(hit_layer) = layers.get(hit_entity) else {
                     return true;
                 };
@@ -289,15 +336,44 @@ fn resolve_spawn_preflights(
                     distance_m: Some(hit.distance),
                     clamped: true,
                     stopped,
+                    passed: None,
+                    passed_distance_m: None,
                 });
             }
             None => {
+                // No solid obstacle stopped the spawn, so the body is not on a
+                // collision course with anything. A *sensor* it did cross is
+                // still a gameplay fact, and the engine reports nothing at all
+                // for a crossing that happens entirely inside the spawn tick:
+                // the second cast records it here without touching the spawn.
+                let passed = spatial.cast_shape_predicate(
+                    collider,
+                    position.0,
+                    rotation.0,
+                    direction,
+                    &config,
+                    &filter,
+                    &|hit_entity| {
+                        let Ok(hit_layer) = layers.get(hit_entity) else {
+                            return false;
+                        };
+                        let hit_shape = if sensors.contains(hit_entity) {
+                            ShapeClass::Sensor
+                        } else {
+                            ShapeClass::Solid
+                        };
+                        classify_contact(mover, hit_layer.0, ShapeClass::Solid, hit_shape)
+                            == ContactKind::SensorOverlap
+                    },
+                );
                 log.record(SpawnPreflightEvent {
                     body: entity,
                     hit: None,
                     distance_m: Some(travel),
                     clamped: false,
                     stopped: false,
+                    passed: passed.map(|crossed| crossed.entity),
+                    passed_distance_m: passed.map(|crossed| crossed.distance),
                 });
             }
         }
@@ -306,10 +382,11 @@ fn resolve_spawn_preflights(
 
 /// Installs the spawn-preflight channel.
 ///
-/// The system is registered by [`PhysicsBodiesPlugin`](crate::physics::PhysicsBodiesPlugin);
-/// this module owns the resource and the system, the plugin owns the
-/// schedule slot — the same `FixedPostUpdate`, before
-/// `PhysicsSystems::Prepare`, where the force drain already runs.
+/// The system is registered by
+/// [`PhysicsBodiesPlugin`](crate::physics::PhysicsBodiesPlugin); this module
+/// owns the resource and the system, the plugin owns the schedule slot — the
+/// same `FixedPostUpdate`, before `PhysicsSystems::Prepare`, where the force
+/// drain already runs.
 pub(crate) fn install(app: &mut App) {
     app.init_resource::<SpawnPreflightLog>();
     app.add_systems(

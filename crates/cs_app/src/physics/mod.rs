@@ -50,19 +50,29 @@
 pub mod adapter;
 pub mod body;
 pub mod contacts;
+pub mod evidence;
 pub mod fixture;
 pub mod flight;
 pub mod preflight;
 pub mod session;
 
 pub use adapter::{
-    BASELINE_FIXED_HZ, ForceRequest, ForceRequestError, ForceRequests, PhysicsAdapterPlugin,
-    PhysicsTickLedger,
+    BASELINE_FIXED_HZ, DECLARED_SUBSTEP_COUNT, ForceRequest, ForceRequestError, ForceRequests,
+    PhysicsAdapterPlugin, PhysicsTickLedger,
 };
 pub use body::{
     BodyError, BodyLayer, BodyMode, BodySpec, BodyTransitionError, set_body_mode, spawn_body,
 };
 pub use contacts::{ContactReport, ContactReports, PhysicsBodiesPlugin};
+pub use evidence::{
+    CONTACT_FACE_TOLERANCE_M, ContactProbe, ContactScenario, ContactSweep, ContactViolation,
+    ConvergenceBudget, ConvergenceEvidence, ConvergenceProbe, ConvergenceScenario,
+    ConvergenceViolation, FROZEN_CONVERGENCE_BUDGETS, FROZEN_STABILITY_BUDGET, PROBE_RATES_HZ,
+    PROBE_SPEEDS_M_S, ProbeError, SENSOR_MIN_SPEED_FRACTION, SPAWN_IN_HOLE_TRAVEL_TICKS,
+    StabilityBudget, StabilityProbe, StabilityScenario, StabilityViolation, TickAccounting,
+    TickViolation, contact_probe, contact_sweep, convergence_evidence, convergence_probe,
+    rate_spread_m_s, stability_probe,
+};
 pub use fixture::{
     FixtureBodySpec, PhysicsFixture, PhysicsFixtureBuilder, PhysicsFixtureError, PhysicsSample,
 };
@@ -70,7 +80,9 @@ pub use flight::{
     FlightAircraft, FlightAircraftError, FlightForcesPlugin, FlightRefusal, FlightRefusalReason,
     FlightSpawnError, FlightSpawnSpec, FlightTickReport, spawn_flight_body,
 };
-pub use preflight::{SpawnPreflight, SpawnPreflightEvent, SpawnPreflightLog};
+pub use preflight::{
+    SPAWN_CONTACT_OVERLAP_M, SpawnPreflight, SpawnPreflightEvent, SpawnPreflightLog,
+};
 pub use session::{
     PhysicsSession, PhysicsSessionBuilder, PhysicsSessionError, SessionFrame, SpawnOutcome,
 };
