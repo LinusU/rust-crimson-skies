@@ -11,9 +11,26 @@
 //!
 //! This is the typed record only; the spawn path that attaches it to entities
 //! is F11-C's.
+//!
+//! # F25-A: rotor visuals
+//!
+//! An exceptional airframe's rotors are declared here as
+//! [`RotorVisualBinding`]s: the scene node that spins, plus the **explicit**
+//! [`RotorSpeedMapping`] from the authoritative physical rotor rate to the rate
+//! the mesh is drawn at (F25 non-negotiable behavior 3: "Physical and visual
+//! rotor speeds may differ but require an explicit mapping"). The binding is
+//! content-addressed like everything else here — a rotor node must live in the
+//! same container as the airframe's own root, or the binding is refused — and
+//! it carries no time of its own: [`RotorVisualBinding::sample`] takes `&self`
+//! and derives the drawn phase from the drive's physical rate plus the render
+//! frame time, so a render frame can never reach the simulation.
+//! [`RotorSpeedMapping`], [`RotorDrive`] and [`RotorVisualSample`] are the
+//! `cs_sim` numeric types F25-A defines; mapping the roster's `Resolved` rotor
+//! ratio into one is F25-C's.
 
 use bevy::ecs::component::Component;
-use cs_content::scene::{SceneError, SceneRootRef};
+use cs_content::scene::{SceneError, SceneNodeId, SceneRootRef};
+use cs_sim::flight::{RotorDrive, RotorSpeedMapping, RotorVisualSample, TelemetryError};
 use cs_types::content::{ContentId, ContentKind};
 
 /// Component: the canonical scene root an airframe's visual subtree hangs
@@ -26,6 +43,7 @@ use cs_types::content::{ContentId, ContentKind};
 pub struct AirframeVisual {
     airframe: ContentId,
     root: SceneRootRef,
+    rotors: Vec<RotorVisualBinding>,
 }
 
 /// Why an [`AirframeVisual`] was refused.
@@ -38,6 +56,22 @@ pub enum AirframeVisualError {
     },
     /// The root reference failed its own contract.
     Root(SceneError),
+    /// A rotor node does not live in the airframe's own container, so the
+    /// binding would point at another tree's node.
+    RotorNodeOutsideContainer {
+        /// The container the airframe's root lives in.
+        container: String,
+        /// The refused rotor node's key.
+        node: String,
+    },
+    /// The same rotor node was bound twice, which would make the drawn phase
+    /// depend on which binding a consumer reached first.
+    DuplicateRotorNode {
+        /// The repeated node's key.
+        node: String,
+    },
+    /// Deriving a rotor's visual sample was refused by the numeric boundary.
+    RotorVisual(TelemetryError),
 }
 
 impl core::fmt::Display for AirframeVisualError {
@@ -50,6 +84,14 @@ impl core::fmt::Display for AirframeVisualError {
                 )
             }
             Self::Root(error) => write!(f, "invalid scene root reference: {error}"),
+            Self::RotorNodeOutsideContainer { container, node } => write!(
+                f,
+                "the rotor node {node} does not live in the airframe container {container}"
+            ),
+            Self::DuplicateRotorNode { node } => {
+                write!(f, "the rotor node {node} is bound more than once")
+            }
+            Self::RotorVisual(error) => write!(f, "invalid rotor visual sample: {error}"),
         }
     }
 }
@@ -57,9 +99,73 @@ impl core::fmt::Display for AirframeVisualError {
 impl std::error::Error for AirframeVisualError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
-            Self::AirframeKind { .. } => None,
+            Self::AirframeKind { .. }
+            | Self::RotorNodeOutsideContainer { .. }
+            | Self::DuplicateRotorNode { .. } => None,
             Self::Root(error) => Some(error),
+            Self::RotorVisual(error) => Some(error),
         }
+    }
+}
+
+impl From<TelemetryError> for AirframeVisualError {
+    fn from(error: TelemetryError) -> Self {
+        Self::RotorVisual(error)
+    }
+}
+
+/// One rotor's visual binding: the node that spins and the explicit mapping
+/// from the authoritative physical rate to the rate it is drawn at.
+///
+/// The binding is pure presentation. It holds no elapsed time, no accumulator
+/// and no `&mut self` mutator, so rotor *animation* cannot become the source of
+/// physics dt (F25 non-negotiable behavior 3): the physical rate comes from
+/// [`RotorDrive`], which only a fixed simulation tick advances, and
+/// [`RotorVisualBinding::sample`] derives the drawn phase from it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RotorVisualBinding {
+    node: SceneNodeId,
+    mapping: RotorSpeedMapping,
+}
+
+impl RotorVisualBinding {
+    /// Binds one rotor node to its declared visual/physical mapping.
+    #[must_use]
+    pub const fn new(node: SceneNodeId, mapping: RotorSpeedMapping) -> Self {
+        Self { node, mapping }
+    }
+
+    /// The scene node this binding spins.
+    #[must_use]
+    pub const fn node(&self) -> &SceneNodeId {
+        &self.node
+    }
+
+    /// The declared physical-to-visual mapping.
+    #[must_use]
+    pub const fn mapping(&self) -> &RotorSpeedMapping {
+        &self.mapping
+    }
+
+    /// Derives this rotor's drawn phase for one render frame.
+    ///
+    /// `render_dt_s` is the *render* frame time and reaches the picture only:
+    /// the authoritative rate reported back comes from `rotor` and is identical
+    /// however many times this is called per simulation tick.
+    ///
+    /// # Errors
+    ///
+    /// [`AirframeVisualError::RotorVisual`] for a non-finite or non-positive
+    /// `render_dt_s`, or a non-finite `previous` phase.
+    pub fn sample(
+        &self,
+        rotor: &RotorDrive,
+        previous: RotorVisualSample,
+        render_dt_s: f64,
+    ) -> Result<RotorVisualSample, AirframeVisualError> {
+        rotor
+            .visual_sample(Some(&self.mapping), previous, render_dt_s)
+            .map_err(AirframeVisualError::from)
     }
 }
 
@@ -82,7 +188,11 @@ impl AirframeVisual {
             });
         }
         let root = SceneRootRef::new(container, root).map_err(AirframeVisualError::Root)?;
-        Ok(Self { airframe, root })
+        Ok(Self {
+            airframe,
+            root,
+            rotors: Vec::new(),
+        })
     }
 
     /// The airframe element this visual serves.
@@ -96,12 +206,60 @@ impl AirframeVisual {
     pub fn root(&self) -> &SceneRootRef {
         &self.root
     }
+
+    /// Binds one rotor node to this airframe's visual.
+    ///
+    /// The node is checked against the airframe's own container by content id —
+    /// never by hierarchy position — so a rotor can only be drawn on a node of
+    /// the tree this visual anchors.
+    ///
+    /// # Errors
+    ///
+    /// [`AirframeVisualError::RotorNodeOutsideContainer`] when the node does not
+    /// live in this airframe's container, and
+    /// [`AirframeVisualError::DuplicateRotorNode`] when that node is already
+    /// bound.
+    pub fn bind_rotor(&mut self, binding: RotorVisualBinding) -> Result<(), AirframeVisualError> {
+        let container = self.root.container().key();
+        let prefix = format!("{container}.");
+        let node = binding.node.key();
+        if !node.starts_with(&prefix) {
+            return Err(AirframeVisualError::RotorNodeOutsideContainer {
+                container: container.to_owned(),
+                node: node.to_owned(),
+            });
+        }
+        if self
+            .rotors
+            .iter()
+            .any(|existing| existing.node == binding.node)
+        {
+            return Err(AirframeVisualError::DuplicateRotorNode {
+                node: node.to_owned(),
+            });
+        }
+        self.rotors.push(binding);
+        Ok(())
+    }
+
+    /// Every rotor this airframe's visual binds, in binding order.
+    #[must_use]
+    pub fn rotors(&self) -> &[RotorVisualBinding] {
+        &self.rotors
+    }
+
+    /// The binding for `node`, or `None` when this airframe has no such rotor.
+    #[must_use]
+    pub fn rotor(&self, node: &SceneNodeId) -> Option<&RotorVisualBinding> {
+        self.rotors.iter().find(|binding| &binding.node == node)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cs_content::scene::SceneNodeId;
+    use cs_sim::flight::{SYNTHETIC_TICK_DT_S, synthetic_rotor_drive, synthetic_rotor_mapping};
+    use cs_types::Tick;
 
     fn cid(kind: ContentKind, key: &str) -> ContentId {
         ContentId::from_source(kind, key).expect("test id is valid")
@@ -155,5 +313,97 @@ mod tests {
                 }
             ))
         );
+    }
+
+    /// A rotor binds by content id inside the airframe's own container: a node
+    /// from another tree is refused, a repeated node is refused, and sampling the
+    /// visual cannot move the authoritative rotor rate however many render
+    /// frames a simulation tick contains.
+    #[test]
+    fn accept_f25_a_rotor_visual_binds_by_id_and_cannot_drive_physics() {
+        let planes = cid(ContentKind::InstallFile, "planes");
+        let root = SceneNodeId::from_content_id(cid(ContentKind::SceneNode, "planes.corsair"))
+            .expect("scene node id");
+        let rotor_node =
+            SceneNodeId::from_content_id(cid(ContentKind::SceneNode, "planes.corsair.rotor_main"))
+                .expect("scene node id");
+
+        let mut visual =
+            AirframeVisual::new(cid(ContentKind::Airframe, "corsair"), planes.clone(), root)
+                .expect("valid airframe visual");
+        assert!(visual.rotors().is_empty());
+
+        let mapping = synthetic_rotor_mapping();
+        let binding = RotorVisualBinding::new(rotor_node.clone(), mapping.clone());
+        assert_eq!(binding.node(), &rotor_node);
+        assert_eq!(binding.mapping(), &mapping);
+        visual
+            .bind_rotor(binding.clone())
+            .expect("a rotor under the airframe's own container binds");
+        assert_eq!(visual.rotors(), std::slice::from_ref(&binding));
+        assert!(visual.rotor(&rotor_node).is_some());
+
+        // The same node twice would make the drawn phase depend on lookup order.
+        assert_eq!(
+            visual.bind_rotor(binding.clone()),
+            Err(AirframeVisualError::DuplicateRotorNode {
+                node: "planes.corsair.rotor_main".to_owned()
+            })
+        );
+
+        // A rotor in another container is not this airframe's rotor.
+        let foreign =
+            SceneNodeId::from_content_id(cid(ContentKind::SceneNode, "gamez.corsair.rotor"))
+                .expect("scene node id");
+        assert_eq!(
+            visual.bind_rotor(RotorVisualBinding::new(foreign, mapping.clone())),
+            Err(AirframeVisualError::RotorNodeOutsideContainer {
+                container: "planes".to_owned(),
+                node: "gamez.corsair.rotor".to_owned()
+            })
+        );
+
+        // Drawing the rotor at one frame per tick and at many frames per tick
+        // leaves the simulation identical.
+        let draw = |frames_per_tick: u32| {
+            let mut drive = synthetic_rotor_drive();
+            let mut sample = RotorVisualSample::at_rest();
+            let frame_dt = SYNTHETIC_TICK_DT_S / f64::from(frames_per_tick);
+            for tick in 1..=120u64 {
+                drive
+                    .advance_tick(40.0, 48.0, Tick(tick), SYNTHETIC_TICK_DT_S)
+                    .expect("each tick is newer than the last");
+                for _ in 0..frames_per_tick {
+                    sample = binding
+                        .sample(&drive, sample, frame_dt)
+                        .expect("the drawn sample is finite");
+                }
+            }
+            (drive, sample)
+        };
+        let (slow_drive, slow) = draw(1);
+        let (fast_drive, fast) = draw(60);
+        assert_eq!(
+            slow_drive.physical_speed_radps(),
+            fast_drive.physical_speed_radps()
+        );
+        assert!(slow.phase_rad >= 0.0);
+        assert!((slow.phase_rad - fast.phase_rad).abs() < 1e-9);
+        assert_eq!(
+            slow.visual_speed_radps(),
+            Some(slow.physical_speed_radps * 1.5),
+            "the declared mapping drives the drawn rate"
+        );
+
+        // A render frame time that is not positive cannot reach the picture.
+        assert!(matches!(
+            binding.sample(&slow_drive, slow, 0.0),
+            Err(AirframeVisualError::RotorVisual(
+                TelemetryError::NonPositive {
+                    field: "rotor_visual.render_dt_s"
+                }
+            ))
+        ));
+        let _ = planes;
     }
 }
