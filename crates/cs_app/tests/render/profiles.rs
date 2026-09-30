@@ -558,6 +558,35 @@ fn accept_f17_c_two_instances_with_different_paint_and_damage_stay_independent_a
         .bind(&fixture.runtime, fixture.session, PLANE_A, &fixture.intact)
         .expect("the open session binds");
     assert_eq!(foreign.len(), 1);
+
+    // The reason a part is not drawn is part of what the frame records: the
+    // same five draws are a different frame when the sixth is withheld because
+    // the adapters refused it rather than because the part is destroyed.
+    let mut refused = fixture;
+    refused.outcomes[1] = cs_app::render::capture::SceneOutcome::Refused(
+        cs_app::render::capture::SurfaceRefusal::new(
+            DrawItemKey::new("a.wing").expect("valid"),
+            vec!["two_sided_unknown"],
+        ),
+    );
+    let refused_frame = refused.batch(&RenderProfile::faithful());
+    assert_eq!(
+        refused_frame.batches(),
+        frame.batches(),
+        "the same five draws"
+    );
+    assert_eq!(refused_frame.withheld().len(), 1);
+    assert_eq!(refused_frame.withheld()[0].item().as_str(), "a.wing");
+    assert_eq!(
+        refused_frame.withheld()[0].reasons(),
+        [withheld_codes::REFUSED, "two_sided_unknown"],
+        "an adapter refusal is reported as a refusal, with its own reason"
+    );
+    assert_ne!(
+        refused_frame.fingerprint(),
+        frame.fingerprint(),
+        "why a draw is missing is part of the frame's identity"
+    );
 }
 
 /// AC03 in the consumer: the two aircraft with the same paint are one entity
