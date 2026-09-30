@@ -22,6 +22,8 @@
 //! * a mesh with an opening in it keeps that opening: nothing here convex-hulls
 //!   or decomposition-substitutes a shape, which is F18 non-negotiable
 //!   behavior 1's requirement not to close a traversable opening;
+//! * a scale on the placement is honoured exactly, without a trimesh quietly
+//!   becoming a hull, so a scale cannot become a simplification;
 //! * the F00 `SYNTHETIC` scene still runs on that stack and still loads
 //!   nothing, so "asset-free" is a property of the stack's contents and not
 //!   something the fix quietly abandoned.
@@ -35,6 +37,7 @@ use bevy::ecs::message::Messages;
 use bevy::mesh::{Mesh, Mesh3d, VertexAttributeValues};
 use bevy::prelude::{Real, Transform, Vec3};
 use bevy::time::{Fixed, Time, TimeUpdateStrategy};
+use bevy::world_serialization::WorldInstanceSpawner;
 use cs_app::asset_stack::{headless_app, is_attached, spawn_static_mesh_collider};
 use cs_app::render::bevy_mesh::upload_group;
 use cs_app::synthetic::SyntheticScene;
@@ -182,6 +185,14 @@ fn ticked_app() -> App {
 /// the assertions below fail; with the feature off, `ColliderCachePlugin`
 /// stops existing and this file stops compiling — which is why the plugin is
 /// named rather than described in a comment.
+///
+/// `WorldInstanceSpawner` is named for the opposite reason to the other three.
+/// The two above are read as unconditional system parameters, so their absence
+/// panics on the first update. This one is a *run condition* Avian gates
+/// `init_collider_constructor_hierarchies` on, so its absence is silent: the
+/// system is skipped, no collider is derived, and the only symptom is a mesh
+/// that never grows collision. Asserting the resource turns that into a named
+/// failure at the cause instead of a baffling one two tests away.
 #[test]
 fn accept_t333_a_headless_world_runs_the_asset_stack_collider_from_mesh_reads() {
     let app = ticked_app();
@@ -207,6 +218,13 @@ fn accept_t333_a_headless_world_runs_the_asset_stack_collider_from_mesh_reads() 
             .contains_resource::<Messages<AssetEvent<Mesh>>>(),
         "AssetEvent<Mesh> must be a real message: ColliderCachePlugin's \
          clear_unused_colliders takes a MessageReader<AssetEvent<Mesh>>"
+    );
+    assert!(
+        app.world().contains_resource::<WorldInstanceSpawner>(),
+        "WorldSerializationPlugin must have run: Avian's \
+         init_collider_constructor_hierarchies is gated on \
+         If<Res<WorldInstanceSpawner>>, so without this resource it is skipped \
+         silently and a ColliderConstructorHierarchy derives nothing at all"
     );
 }
 
@@ -327,6 +345,74 @@ fn accept_t333_a_mesh_with_an_opening_keeps_it_in_the_derived_collider() {
         "the derived collider must keep the {triangles} stored triangles, not \
          the {HULL_TRIANGLES} a convex hull of the same corners would have"
     );
+}
+
+/// A scale on the placement is honoured exactly, and never by substituting a
+/// simpler shape for the mesh.
+///
+/// The derived collider lands on the mesh *node*, a child of the body, so
+/// Avian places it with a `ColliderTransform` whose scale it copies from the
+/// body's `Transform` and then calls `Collider::set_scale`, which scales the
+/// trimesh's own vertices. Observable failure if that degraded: the shape would
+/// stop being a `TriMesh` — a convex hull or a bounding box is exactly what a
+/// collider falls back to for a shape it cannot scale — and a mesh with an
+/// opening in it would be sealed, which is F18 non-negotiable behavior 1
+/// forbids. The fixture is therefore the *open* box, whose eight corners a
+/// convex hull would close: 12 triangles where the mesh stores 10. A
+/// non-uniform scale is used because that is the case a hull substitution
+/// would be most tempting for.
+#[test]
+fn accept_t333_a_scaled_placement_scales_the_derived_collider_without_simplifying_it() {
+    const OPEN_FACES: usize = BOX_FACES.len() - 1;
+    const SCALE: Vec3 = Vec3::new(2.0, 1.0, 0.5);
+
+    let (mesh, triangles) = uploaded_box(OPEN_FACES);
+    assert_eq!(triangles, 10, "the open fixture really is missing one face");
+
+    let mut app = ticked_app();
+    let node = spawn_static_mesh_collider(
+        &mut app,
+        mesh,
+        Transform::from_translation(Vec3::new(2.0, 0.0, 0.0)).with_scale(SCALE),
+        CollisionLayers::from(CollisionLayer::StaticWorld),
+    );
+    for _ in 0..SETTLE_UPDATES {
+        app.update();
+    }
+
+    let collider = app
+        .world()
+        .get::<Collider>(node.node)
+        .expect("a scaled placement still derives a collider");
+    // `shape_scaled()` is the shape that is actually collided against, not the
+    // unscaled `shape()` the other tests here read: a scale the collider
+    // quietly ignored would look correct in `shape()` and still collide at the
+    // wrong size.
+    let scaled = collider.shape_scaled().as_trimesh().expect(
+        "scaling a mesh collider must not substitute a primitive for the \
+         trimesh: that is how a traversable opening gets sealed",
+    );
+    assert_eq!(
+        scaled.indices().len(),
+        triangles,
+        "the scaled collider must keep the {triangles} stored triangles, not the \
+         {} a convex hull of the same corners would have",
+        BOX_FACES.len() * 2
+    );
+
+    // Every derived vertex is the uploaded position scaled per axis: eight
+    // corners, not the interior points a hull or a box approximation would
+    // introduce, and not the unscaled positions.
+    for vertex in scaled.vertices() {
+        let is_scaled_corner = BOX_POSITIONS
+            .iter()
+            .any(|position| (Vec3::from_array(*position) * SCALE).abs_diff_eq(*vertex, 0.0));
+        assert!(
+            is_scaled_corner,
+            "scaled collider vertex {vertex:?} is not an uploaded corner scaled \
+             per axis by {SCALE:?}"
+        );
+    }
 }
 
 /// The F00 `SYNTHETIC` scene still runs on the asset stack the feature

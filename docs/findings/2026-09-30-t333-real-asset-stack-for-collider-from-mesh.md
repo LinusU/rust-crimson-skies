@@ -26,9 +26,11 @@ it did not predict.
    merged into `main` on 2026-09-30 (`38ec594`, `PhysicsSession`) with its own
    `MinimalPlugins + TransformPlugin + PhysicsPlugins::default()` tuple. After
    this branch rebased onto it, all nine `accept_f23_c_*` tests failed with
-   `Encountered a panic in system` on the first update. A new `cs_app` world
-   that spells the tuple out is now a build-time-of-the-test failure, not a
-   review finding. `PhysicsSession::app` was switched to `headless_app()` too.
+   `Encountered a panic in system` on the first update. A `cs_app` world that
+   spells the tuple out still compiles — the failure is at its first
+   `App::update`, not at build time — but it is now one test run away instead
+   of something a reviewer has to notice. `PhysicsSession::app` was switched to
+   `headless_app()` too.
 3. Removing `WorldSerializationPlugin` from the stack does not panic. Avian's
    pinned feature set includes `bevy_scene`, which makes
    `init_collider_constructor_hierarchies` take
@@ -67,10 +69,9 @@ both before and after 60 ticks.
 
 `spawn_static_mesh_collider` uploads the mesh, spawns a `RigidBody::Static`
 root carrying `ColliderConstructorHierarchy::new(TrimeshFromMesh)` plus the
-caller's `Transform`/`Position`/`Rotation`, and spawns a child holding
-`Mesh3d(handle)`. Measured through `accept_t333_` on a closed unit box built
-through the production path (`RawMesh` → `RenderMesh::build` →
-`upload_group` → asset stack):
+caller's placement, and spawns a child holding `Mesh3d(handle)`. Measured
+through `accept_t333_` on a closed unit box built through the production path
+(`RawMesh` → `RenderMesh::build` → `upload_group` → asset stack):
 
 | quantity | value |
 |---|---|
@@ -91,6 +92,55 @@ closing a traversable opening through simplification. Which simplification an
 *original* mesh may get is still F18-B's decision, and nothing in
 `asset_stack` pre-empts it.
 
+### Scale is honoured exactly, and never by simplifying (review 2026-09-30)
+
+`spawn_static_mesh_collider` passes the caller's `Transform` to the body whole.
+That was worth checking rather than assuming, because a `TriMesh` looks like a
+shape Avian cannot scale and a reviewer could easily "fix" it by refusing the
+scale. Measured, it does not need fixing: the derived collider lands on the mesh
+*node*, a child of the body, so `ColliderOf`'s insert hook reparents the node's
+`GlobalTransform` into the body's frame into a `ColliderTransform` — scale
+included — and `update_collider_scale` then calls `Collider::set_scale`, which
+goes through `scale_shape`'s `TypedShape::TriMesh` arm to parry's
+`TriMesh::scaled`.
+
+| caller's scale | `Collider::scale()` | `Collider::shape_scaled()` | vertices |
+|---|---|---|---|
+| `Vec3::splat(2.0)` | `(2, 2, 2)` | `TriMesh` | each uploaded position × 2 |
+| `Vec3::new(2.0, 1.0, 0.5)` | `(2, 1, 0.5)` | `TriMesh` | each uploaded position scaled per axis |
+
+Neither case substitutes a convex hull or a bounding box, which is the risk a
+scalable-looking path usually carries: a hull of the closed box's eight corners
+has the same 12 triangles and the same eight vertices as the box itself, so a
+hull substitution is only visible on the *open* box, whose 10 stored triangles a
+hull would fill to 12 — sealing a traversable opening that F18 non-negotiable
+behavior 1 forbids sealing. The new test therefore uses the open box, and
+pinned by
+`accept_t333_a_scaled_placement_scales_the_derived_collider_without_
+simplifying_it`, which reads `shape_scaled()` — the shape actually collided
+against — rather than `shape()`, so a scale the collider quietly ignored would
+fail instead of looking right. This is a property of the pinned engine, not a
+decision made in `asset_stack`, so it is a thing to watch, not to rely on
+silently.
+
+One detail the review turned up on the way: `Collider`'s insert hook reads the
+entity's `GlobalTransform` scale and falls back to `Vec3::ZERO` when the entity
+has none, so a mesh node is briefly scaled to zero until Avian's scale pass
+corrects it from `ColliderTransform`. It is corrected within the same frame's
+physics step, and every test here settles four updates before reading anything,
+so nothing observes it; it is recorded because it is the kind of intermediate
+state a shorter settle time would expose.
+
+### The silent dependency is now named in a test (review 2026-09-30)
+
+Point 3 above is the failure mode with no symptom, so it is asserted directly:
+`accept_t333_a_headless_world_runs_the_asset_stack_collider_from_mesh_reads`
+now also requires `Res<WorldInstanceSpawner>` to exist. Before that, dropping
+`WorldSerializationPlugin` was caught only by its *consequence* — two tests
+failing with "a ColliderConstructorHierarchy over a Mesh3d must produce a
+Collider", a message that points at the wrong thing. It is still caught either
+way, but now at the cause and by name.
+
 ## Sensitivity
 
 Measured on this branch by mutating the production code and re-running
@@ -100,6 +150,9 @@ Measured on this branch by mutating the production code and re-running
 |---|---|
 | `spawn_static_mesh_collider` also inserts a hard-coded `Collider::cuboid(1,1,1)` on the node | 2 of 4 fail: `as_trimesh()` is `None` |
 | `headless_app()` stops adding `AssetStackPlugin` | 4 of 4 fail: first `update` aborts with "Requested resource ... does not exist" (the F00-A symptom, reproduced) |
+| `AssetStackPlugin` drops `WorldSerializationPlugin` | 2 of 4 fail as first written, 4 of 5 after review added the `WorldInstanceSpawner` assertion: the new assertion fails *first* and names the missing resource, the rest fail on their missing collider |
+| `TrimeshFromMesh` becomes `ConvexHullFromMesh` | 3 of 5 fail: the two "no simplification" tests and the scaled one all reject the hull, which is how F18 non-negotiable behavior 1 is checked (measured by the reviewer) |
+| `spawn_static_mesh_collider` drops the caller's scale instead of passing the transform through | 1 of 5 fails: the scaled shape's vertices are unscaled, so a caller placing a mesh at a scale would collide at the wrong size (measured by the reviewer) |
 | rebasing onto `main` (which had gained `PhysicsSession`'s own plugin tuple) without switching it to `headless_app()` | 9 of 33 `accept_f23_c_*` tests fail with `Encountered a panic in system` on the first update |
 | feature list drops `collider-from-mesh` | the test file does not compile: `ColliderCachePlugin` is `#[cfg]`-gated on the feature, so the coupling is checked by the compiler |
 

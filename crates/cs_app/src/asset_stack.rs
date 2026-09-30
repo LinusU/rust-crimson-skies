@@ -175,6 +175,17 @@ pub struct MeshColliderNode {
 /// ([`avian_layers`]), so a mesh collider and a hand-built one can never
 /// disagree about who interacts with whom.
 ///
+/// `transform`'s scale is honoured exactly, and does not degrade the shape. The
+/// derived collider lands on the mesh *node*, a child of the body, so Avian
+/// places it with a `ColliderTransform` whose scale it copies from the body's
+/// `Transform`; `Collider::set_scale` then scales the trimesh's vertices
+/// through parry's `TriMesh::scaled`. Measured here for both a uniform and a
+/// non-uniform scale: `Collider::shape_scaled()` is still a `TriMesh` with the
+/// per-axis scaled positions, never a convex hull or a bounding box. That
+/// matters under F18 non-negotiable behavior 1 — a scale must not become a
+/// simplification — and it is a property of the engine, not a decision made
+/// here, so a change in it is a change to watch rather than to rely on.
+///
 /// # Panics
 ///
 /// If `app` was not built by [`headless_app`] (or otherwise given
