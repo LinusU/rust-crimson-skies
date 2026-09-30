@@ -24,10 +24,11 @@ reference envelopes is not dropped, it is F24-D's separate capability-gated job.
   AC03 maneuver classes with their (designed, not original) bounds.
 - `crates/cs_app/src/physics/flight.rs`: the production wiring —
   `airframe_tuning_from_declared`/`declared_flight_model` (content record +
-  profile → the model), the `FlightEquipment` producer component and its
-  atomic, idempotent binding in the driver, and the `FlightInstruments`
-  consumer component plus `FlightEvidenceClass` and the
-  `publish_flight_instruments` system.
+  profile → the model, refusing a profile mismatch, an unknown profile/model
+  kind, a required missing/unknown field, and a fidelity record that enables
+  assists), the `FlightEquipment` producer component and its atomic, idempotent
+  binding in the driver, and the `FlightInstruments` consumer component plus
+  `FlightEvidenceClass` and the `publish_flight_instruments` system.
 - `crates/cs_content/tests/accept_f24_c_flight_profiles.rs`,
   `crates/cs_app/tests/accept_f24_c_flight_wiring.rs`: the `accept_f24_c_*`
   acceptance tests, driving production code only.
@@ -47,11 +48,14 @@ below confirms all four fail when `drive_flight_aircraft` is unregistered.
 one place a `cs_content` record becomes the numeric `cs_sim` tuning. It refuses,
 by name: a record whose profile text does not match the requested
 `HandlingProfile` (`ProfileMismatch`, so an improved record is never silently
-flown as fidelity), an unknown profile/model-kind label, a schema failure, a
-required missing/unknown field (`MissingField` — never read as zero) and a
-tuning that fails the model's own validation. The record's `Origin` travels into
-the tuning unchanged, so a synthetic record cannot be reported as an original
-airframe. `declared_flight_model` is the thin constructor on top.
+flown as fidelity), a fidelity record that enables the assist set
+(`FidelityAssistsEnabled` — behavior 5 keeps the calibrated profile's assist
+contributions exactly zero; only the improved profile may enable them), an
+unknown profile/model-kind label, a schema failure, a required missing/unknown
+field (`MissingField` — never read as zero) and a tuning that fails the model's
+own validation. The record's `Origin` travels into the tuning unchanged, so a
+synthetic record cannot be reported as an original airframe.
+`declared_flight_model` is the thin constructor on top.
 
 **Equipment (loadout + damage + boost).** `FlightEquipment` is the producer
 record: loadout mass, damage state and boost reserve as one component.
@@ -113,6 +117,10 @@ tree was restored. No probe was committed.
    integration tests failed, including all four maneuver traces.
 6. `declared_synthetic_airframe_for(IMPROVED_PROFILE)` returned the fidelity
    record → the `cs_content` profile tests failed.
+7. (Review) the `FidelityAssistsEnabled` refusal in
+   `airframe_tuning_from_declared` was bypassed → the new
+   `accept_f24_c_fidelity_profile_refuses_enabled_assists` failed, so a
+   fidelity record can no longer smuggle in the assist set.
 
 ## Commands run
 
@@ -121,16 +129,20 @@ All four required checks, run from the repository root; exit codes as printed.
 ```
 cargo fmt --all -- --check                                             -> 0
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings -> 0
-cargo test --workspace --locked                                        -> 0 (1180 passed, 0 failed, 96 ignored across 134 suites)
-cargo test --workspace --locked -- accept_f24_c_ --include-ignored     -> 0 (17 tests selected, all passed)
+cargo test --workspace --locked                                        -> 0 (1197 passed, 0 failed, 98 ignored)
+cargo test --workspace --locked -- accept_f24_c_ --include-ignored     -> 0 (18 tests selected, all passed)
 ```
 
-The 17 selected tests are 12 integration tests in
+The 18 selected tests are 13 integration tests in
 `crates/cs_app/tests/accept_f24_c_flight_wiring.rs`, 2 integration tests in
 `crates/cs_content/tests/accept_f24_c_flight_profiles.rs`, 2 unit tests in
 `cs_content::flight_tuning::tests` and 1 unit test in
 `cs_sim::flight::synthetic::tests`. No test is `#[ignore]`d, so
-`--include-ignored` selects the same set.
+`--include-ignored` selects the same set. The numbers are the reviewer's re-run
+on the rebased branch after the `FidelityAssistsEnabled` fix (the implementer's
+initial run had 1190 workspace passes and 17 selected tests before that test
+was added; the workspace totals also include other tasks merged into main
+since).
 
 ## Designed wiring, not original data
 
@@ -178,6 +190,17 @@ Affected content: the whole F24 flight path. Resolving tasks: **F24-D**, **F25**
 ## Session notes
 
 Implementer: `DeepSeek V4.1 Flash` (DeepSeek, this session) on branch
-`rally/95-connect-loadouts-damage-instruments-and`. Independent reviewer: not yet
-assigned. No production work needed a fix during the probes; the equipment
-idempotence was a design fix found while writing the reserve-drain test.
+`rally/95-connect-loadouts-damage-instruments-and`. No production work needed a
+fix during the implementer's probes; the equipment idempotence was a design fix
+found while writing the reserve-drain test.
+
+Reviewer: `deepseek-1` (DeepSeek V4.1 Flash) in a fresh session/context, but the
+**same agent label and model** as the implementer. Per the owner directive a
+different agent instance/model is preferred for format/mission-semantics and
+fidelity review; this review is therefore *not* independent by identity, only by
+fresh context. The reviewer re-ran all four required checks (green), reproduced
+the equipment-binding mutation probe (3 tests fail), and fixed one gap: the
+`FidelityAssistsEnabled` refusal now enforces the documented profile/assist
+separation at the selection boundary, with its own test and mutation probe
+(probe 7). No original-data, visual or audible claim is made. This stage awards
+at most **checked**.
