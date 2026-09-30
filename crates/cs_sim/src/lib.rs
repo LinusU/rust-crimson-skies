@@ -53,6 +53,17 @@
 //! provenance-carrying tuning schema is `cs_content::flight_tuning`; the
 //! Avian wiring, instruments and profile selection are F24-B/F24-C.
 //!
+//! [`visibility`] is the environment's time domain
+//! (`specs/F19-sky-atmosphere-weather-and-visibility.md`, stage `### F19-A`):
+//! [`visibility::ENVIRONMENT_TIME_DOMAIN`] puts authored weather changes on
+//! authoritative-gameplay time, [`visibility::environment_clock_policy`]
+//! states that pause freezes them and that no local authority may inject
+//! ticks, and [`visibility::VisibilityTimeline`] installs an event's state
+//! only on the whole tick the clock committed — the record it runs is
+//! `cs_content::environment::EnvironmentTimeline`, wired in
+//! `cs_app::environment`. No value here is derived from screen fog, and no
+//! default is invented for a state the caller passes in.
+//!
 //! [`cs_types`]: cs_types
 //! [`cs_script`]: cs_script
 
@@ -61,3 +72,4 @@ pub mod collision;
 pub mod control;
 pub mod flight;
 pub mod time;
+pub mod visibility;
