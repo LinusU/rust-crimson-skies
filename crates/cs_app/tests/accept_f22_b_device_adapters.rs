@@ -402,6 +402,87 @@ fn accept_f22_b_refused_device_events_change_nothing_while_firing() {
     );
 }
 
+/// A report that is refused half way through must be refused **whole**. The
+/// report below names the stick's fire button and then an axis reading no
+/// calibration accepts, and the buttons of a report are applied before its
+/// axes — so an implementation that validated lazily pushed the fire edge,
+/// established the hold, and then dropped the edge when the caller discarded
+/// the frame: the pilot's press was swallowed and the gun stayed silent until
+/// the trigger was released and pressed again. The same refusal must not
+/// discard what another device already delivered in the same render frame.
+#[test]
+fn accept_f22_b_a_refused_report_neither_swallows_a_press_nor_drops_a_devices_frame() {
+    let mut session = Session::new();
+
+    // The keyboard reports a good press in this render frame.
+    session.collector.begin_frame(session.tick);
+    session
+        .collector
+        .observe_device(&DeviceEvent::KeyboardFrame {
+            device: keyboard(),
+            keys: vec![Key::Space],
+        })
+        .expect("the good report applies");
+
+    // The stick then reports a reading the calibration refuses.
+    assert_eq!(
+        session
+            .collector
+            .observe_device(&DeviceEvent::JoystickFrame {
+                device: stick(),
+                buttons: vec![0],
+                axes: vec![(1, 1.5)],
+            }),
+        Err(AdapterError::ReadingRejected {
+            device: stick(),
+            channel: AxisChannel::Joystick(1),
+            error: cs_types::input::CalibrationError::ReadingOutOfRange { value: 1.5 },
+        })
+    );
+    assert!(
+        session
+            .collector
+            .devices()
+            .held_edges()
+            .iter()
+            .all(|held| held.device() != &stick()),
+        "a refused report must not leave the stick holding a press that would \
+         silence its next real one"
+    );
+
+    // The keyboard's press is still in the frame, and it is delivered once.
+    let frame = session.collector.take_frame();
+    assert_eq!(
+        frame.edges(),
+        &[Action::Flight(FlightCommand::FirePrimary)],
+        "a refused report must not discard the frame another device already filled"
+    );
+    session
+        .controls
+        .apply_frame(&frame)
+        .expect("the surviving frame applies");
+    assert_eq!(
+        session.tick_boundary(),
+        vec![Action::Flight(FlightCommand::FirePrimary)],
+        "the surviving press is delivered exactly once"
+    );
+
+    // The stick's own press was not swallowed by the report that refused it.
+    let edges = session.frame(&[stick_firing()], 1);
+    assert_eq!(
+        edges,
+        vec![Action::Flight(FlightCommand::FirePrimary)],
+        "the refused report did not swallow the stick's press"
+    );
+    assert!(
+        session
+            .axis(FlightCommand::Roll)
+            .is_some_and(|roll| roll > 0.5),
+        "and the stick still flies the aircraft, got {:?}",
+        session.axis(FlightCommand::Roll)
+    );
+}
+
 /// Non-negotiable behavior 1 reaches the simulation: the stick's dead zone,
 // curve, saturation and identity are all applied before the axis reaches
 /// `AxisState`, and a stick that re-enumerates at another index keeps its

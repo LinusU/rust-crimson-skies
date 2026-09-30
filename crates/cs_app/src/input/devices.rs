@@ -287,14 +287,36 @@ impl HeldEdge {
     }
 }
 
+/// One analog reading of a report, after the channel's calibration.
+///
+/// The reading is calibrated in a pass of its own
+/// ([`DeviceAdapters::calibrated_readings`]) **before** any part of the report
+/// is applied, so a report that carries a reading no calibration accepts is
+/// refused whole instead of half-applied.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct CalibratedReading {
+    /// The channel the reading came from.
+    channel: AxisChannel,
+    /// The calibrated deflection, in `[-1, 1]`.
+    value: f32,
+    /// Whether the reading counts as pressed for an edge target on this
+    /// channel. The threshold is
+    /// [`AxisCalibration::activation`](cs_types::input::AxisCalibration::activation),
+    /// measured from the channel's resting end
+    /// ([`AxisChannel::is_unipolar`](cs_types::input::AxisChannel::is_unipolar)).
+    active: bool,
+}
+
 /// How a device's state changed relative to the previous frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Reading {
     /// A digital source is down.
     Pressed,
-    /// A calibrated analog reading, with the activation threshold that decides
-    /// whether an analog source counts as pressed for an edge target.
-    Analog { value: f32, activation: f32 },
+    /// A calibrated analog reading, with the decision whether an analog source
+    /// counts as pressed for an edge target. The decision is made once per
+    /// channel, in [`DeviceAdapters::calibrate`], because it depends on which
+    /// end of the channel is its resting end.
+    Analog { value: f32, active: bool },
 }
 
 /// The session's device adapters: which devices exist, what their axes read
@@ -541,7 +563,13 @@ impl DeviceAdapters {
     /// [`AdapterError::ReadingRejected`] for a reading no calibration accepts,
     /// and [`AdapterError::AxisNotContinuous`] /
     /// [`AdapterError::AxisValue`] for a value that is not a valid axis sample.
-    /// A refused event changes nothing.
+    ///
+    /// A refused event changes **nothing**: not the frame, not the holds, not
+    /// the axes the device was driving and not the report counter. Every
+    /// reading the report carries is calibrated before any of it is applied
+    /// ([`calibrated_readings`](Self::calibrated_readings)), and the input the
+    /// frame already collected from other devices is left alone, so a bad
+    /// report cannot swallow a press or drop another device's command.
     pub fn apply(
         &mut self,
         event: &DeviceEvent,
@@ -568,6 +596,10 @@ impl DeviceAdapters {
                 device: device.clone(),
             });
         }
+        // The whole report is calibrated before any of it is applied, so a
+        // reading the calibration refuses cannot leave the buttons this same
+        // report pressed half-applied.
+        let readings = self.calibrated_readings(event)?;
         // The report is level-triggered: what this device drove is re-stated
         // from scratch, and a hold the report does not re-establish is released
         // once the report has been read.
@@ -590,10 +622,7 @@ impl DeviceAdapters {
                 Ok(())
             }
             DeviceEvent::MouseFrame {
-                device,
-                buttons,
-                motion_x,
-                motion_y,
+                device, buttons, ..
             } => {
                 for button in buttons {
                     self.apply_source(
@@ -605,25 +634,10 @@ impl DeviceAdapters {
                         frame,
                     )?;
                 }
-                for (axis, motion) in [(MouseAxis::X, *motion_x), (MouseAxis::Y, *motion_y)] {
-                    if motion == 0.0 {
-                        continue;
-                    }
-                    self.apply_channel(
-                        device,
-                        AxisChannel::Mouse(axis),
-                        motion,
-                        map,
-                        context,
-                        frame,
-                    )?;
-                }
                 Ok(())
             }
             DeviceEvent::GamepadFrame {
-                device,
-                buttons,
-                axes,
+                device, buttons, ..
             } => {
                 for button in buttons {
                     self.apply_source(
@@ -635,17 +649,10 @@ impl DeviceAdapters {
                         frame,
                     )?;
                 }
-                for (axis, raw) in axes {
-                    let channel = AxisChannel::Gamepad(*axis);
-                    let signed = normalize_gamepad_axis(*axis, *raw);
-                    self.apply_channel(device, channel, signed, map, context, frame)?;
-                }
                 Ok(())
             }
             DeviceEvent::JoystickFrame {
-                device,
-                buttons,
-                axes,
+                device, buttons, ..
             } => {
                 for index in buttons {
                     self.apply_source(
@@ -657,21 +664,23 @@ impl DeviceAdapters {
                         frame,
                     )?;
                 }
-                for (index, raw) in axes {
-                    self.apply_channel(
-                        device,
-                        AxisChannel::Joystick(*index),
-                        *raw,
-                        map,
-                        context,
-                        frame,
-                    )?;
-                }
                 Ok(())
             }
             // Handled above.
             DeviceEvent::Connected { .. } | DeviceEvent::Removed { .. } => Ok(()),
         };
+        // The remaining refusals can only come from a target the action map
+        // itself would have refused at construction (`try_new` rejects an axis
+        // target that names an edge, a non-finite or zero scale, and a
+        // same-context conflict), and from a sample that is already in `[-1, 1]`
+        // after the clamp in `apply_target`. They are still propagated rather
+        // than swallowed.
+        let result = result.and_then(|()| {
+            for reading in &readings {
+                self.apply_calibrated(device, reading, map, context, frame)?;
+            }
+            Ok(())
+        });
         if result.is_ok() {
             self.release_unreported(device, report);
         }
@@ -732,69 +741,134 @@ impl DeviceAdapters {
         Ok(())
     }
 
-    /// Applies one analog channel reading to every binding of that channel.
+    /// Calibrates every analog reading a report carries, before any part of the
+    /// report is applied.
     ///
-    /// The reading is calibrated once per device and channel, then each binding
-    /// applies its own scale and, for a source that is physically wired
-    /// backwards ([`BindingSource::JoystickAxis`]'s `inverted` flag), its own
-    /// inversion. A source's wiring inversion and the player's calibration
-    /// inversion are different facts and are applied in that order, so the two
-    /// compose instead of cancelling by accident.
-    fn apply_channel(
-        &mut self,
+    /// This pass is what makes a refused report change nothing. A report may
+    /// name any number of buttons and axes, and only a reading can be refused,
+    /// so calibrating them all first means the refusal happens before the
+    /// buttons the same report pressed were applied — no swallowed press, no
+    /// half-established hold, no forgotten axis and no counted report.
+    ///
+    /// An unbound channel is calibrated too: a driver that reports nonsense is
+    /// a real fault whether or not a binding happens to read the channel.
+    fn calibrated_readings(
+        &self,
+        event: &DeviceEvent,
+    ) -> Result<Vec<CalibratedReading>, AdapterError> {
+        let device = event.device();
+        let mut readings = Vec::new();
+        match event {
+            DeviceEvent::MouseFrame {
+                motion_x, motion_y, ..
+            } => {
+                for (axis, motion) in [(MouseAxis::X, *motion_x), (MouseAxis::Y, *motion_y)] {
+                    // A relative channel that did not move is not a drive at
+                    // all, so a stopped mouse reads as nothing rather than as
+                    // a deflection of zero.
+                    if motion == 0.0 {
+                        continue;
+                    }
+                    readings.push(self.calibrate(device, AxisChannel::Mouse(axis), motion)?);
+                }
+            }
+            DeviceEvent::GamepadFrame { axes, .. } => {
+                for (axis, raw) in axes {
+                    readings.push(self.calibrate(
+                        device,
+                        AxisChannel::Gamepad(*axis),
+                        normalize_gamepad_axis(*axis, *raw),
+                    )?);
+                }
+            }
+            DeviceEvent::JoystickFrame { axes, .. } => {
+                for (index, raw) in axes {
+                    readings.push(self.calibrate(device, AxisChannel::Joystick(*index), *raw)?);
+                }
+            }
+            DeviceEvent::Connected { .. }
+            | DeviceEvent::Removed { .. }
+            | DeviceEvent::KeyboardFrame { .. } => {}
+        }
+        Ok(readings)
+    }
+
+    /// Calibrates one raw reading of one channel of one device.
+    ///
+    /// The reading's own calibration decides whether it counts as pressed for
+    /// an edge target, and the channel decides from which end it is measured: a
+    /// one-directional channel rests at the axis **minimum**
+    /// ([`normalize_gamepad_axis`] maps a trigger's `[0, 1]` into `[-1, 1]`),
+    /// so an untriggered trigger reads `-1.0`, whose magnitude would clear any
+    /// threshold and leave a trigger bound to a weapon firing from the moment
+    /// it is touched. The threshold is therefore measured from the channel's
+    /// resting end: the pull of a trigger, the deflection of a stick.
+    fn calibrate(
+        &self,
         device: &DeviceId,
         channel: AxisChannel,
         raw: f32,
-        map: &ActionMap,
-        context: InputContext,
-        frame: &mut InputFrame,
-    ) -> Result<(), AdapterError> {
-        let bindings: Vec<(BindingTarget, bool)> = map
-            .bindings_for_channel(channel)
-            .map(|binding| {
-                let wired_inverted = matches!(
-                    binding.source,
-                    BindingSource::JoystickAxis { inverted: true, .. }
-                );
-                (binding.target, wired_inverted)
-            })
-            .collect();
-        if bindings.is_empty() {
-            // An uncalibrated, unbound channel costs nothing, but a reading
-            // that is not a number is still refused: a driver that reports
-            // nonsense is a real fault.
-            let calibration = self.calibration.calibration_or_default(device, channel);
-            return calibration.apply(raw).map(|_| ()).map_err(|error| {
-                AdapterError::ReadingRejected {
-                    device: device.clone(),
-                    channel,
-                    error,
-                }
-            });
-        }
+    ) -> Result<CalibratedReading, AdapterError> {
         let calibration = self.calibration.calibration_or_default(device, channel);
-        let calibrated = calibration
+        let value = calibration
             .apply(raw)
             .map_err(|error| AdapterError::ReadingRejected {
                 device: device.clone(),
                 channel,
                 error,
             })?;
-        for (target, wired_inverted) in bindings {
+        let activation = calibration.activation();
+        let active = if channel.is_unipolar() {
+            let pull = (value + 1.0) * 0.5;
+            pull >= activation
+        } else {
+            value.abs() >= activation
+        };
+        Ok(CalibratedReading {
+            channel,
+            value,
+            active,
+        })
+    }
+
+    /// Applies one already calibrated channel reading to every binding of that
+    /// channel.
+    ///
+    /// The reading was calibrated once per device and channel by
+    /// [`calibrate`](Self::calibrate); each binding then applies its own scale
+    /// and, for a source that is physically wired backwards
+    /// ([`BindingSource::JoystickAxis`]'s `inverted` flag), its own inversion. A
+    /// source's wiring inversion and the player's calibration inversion are
+    /// different facts and are applied in that order, so the two compose
+    /// instead of cancelling by accident.
+    fn apply_calibrated(
+        &mut self,
+        device: &DeviceId,
+        reading: &CalibratedReading,
+        map: &ActionMap,
+        context: InputContext,
+        frame: &mut InputFrame,
+    ) -> Result<(), AdapterError> {
+        for binding in map.bindings_for_channel(reading.channel) {
+            let wired_inverted = matches!(
+                binding.source,
+                BindingSource::JoystickAxis { inverted: true, .. }
+            );
+            let target = binding.target;
             if !context.accepts(target.action()) {
                 continue;
             }
             let value = if wired_inverted {
-                -calibrated
+                -reading.value
             } else {
-                calibrated
+                reading.value
             };
             self.apply_target(
                 device,
                 target,
                 Reading::Analog {
                     value,
-                    activation: calibration.activation(),
+                    active: reading.active,
                 },
                 frame,
             )?;
@@ -839,10 +913,11 @@ impl DeviceAdapters {
                 // An analog source bound to an edge needs a declared crossing
                 // point, which is what the calibration's activation threshold
                 // is for: without it a trigger could never fire and could
-                // never stop.
+                // never stop. `active` was decided once for the channel, from
+                // that channel's resting end.
                 let active = match reading {
                     Reading::Pressed => true,
-                    Reading::Analog { value, activation } => value.abs() >= activation,
+                    Reading::Analog { active, .. } => active,
                 };
                 if !active {
                     return Ok(());
@@ -1865,6 +1940,230 @@ mod tests {
             .expect("a good frame applies");
         assert_eq!(frame.edges().len(), 1);
         assert!(adapters.held_edges().len() <= 1);
+    }
+
+    /// A gamepad trigger is one-directional: the platform reports `[0, 1]` and
+    /// the canonical pipeline maps rest to the axis **minimum**, so an
+    /// untouched trigger reads `-1.0`. A trigger bound to a weapon — the
+    /// natural face-button replacement on a pad — must not fire from the moment
+    /// it is touched: the activation threshold is measured from the trigger's
+    /// resting end (its pull), not from the middle of the signed axis. A
+    /// magnitude test would see `|-1.0|` clear every threshold and hold the
+    /// guns on forever.
+    #[test]
+    fn accept_f22_b_a_resting_trigger_does_not_fire_an_edge_binding() {
+        let trigger_map = ActionMap::try_new(vec![cs_types::input::Binding {
+            source: BindingSource::GamepadAxis(GamepadAxis::RightTrigger),
+            target: BindingTarget::Command(FlightCommand::FirePrimary),
+        }])
+        .expect("one binding is well formed");
+        let device = DeviceId::stable(DeviceClass::Gamepad, "pad.test/0")
+            .expect("the test identity is valid");
+        assert!(
+            AxisChannel::Gamepad(GamepadAxis::RightTrigger).is_unipolar(),
+            "a trigger rests at the axis minimum, not at its middle"
+        );
+        assert!(!AxisChannel::Joystick(0).is_unipolar());
+        let mut adapters = connected_one(&device);
+
+        // Untouched: the platform's rest reads as the axis minimum.
+        let mut rest = InputFrame::new(Tick(1));
+        adapters
+            .apply(
+                &DeviceEvent::GamepadFrame {
+                    device: device.clone(),
+                    buttons: vec![],
+                    axes: vec![(GamepadAxis::RightTrigger, 0.0)],
+                },
+                &trigger_map,
+                InputContext::Flight,
+                &mut rest,
+            )
+            .expect("the rest report applies");
+        assert!(
+            rest.edges().is_empty(),
+            "an untouched trigger must not fire, got {:?}",
+            rest.edges()
+        );
+        assert!(adapters.held_edges().is_empty(), "and holds nothing");
+
+        // Half pulled: past the designed 0.5 activation, measured as the pull.
+        let mut pulled = InputFrame::new(Tick(2));
+        adapters
+            .apply(
+                &DeviceEvent::GamepadFrame {
+                    device: device.clone(),
+                    buttons: vec![],
+                    axes: vec![(GamepadAxis::RightTrigger, 0.5)],
+                },
+                &trigger_map,
+                InputContext::Flight,
+                &mut pulled,
+            )
+            .expect("the pulled report applies");
+        assert_eq!(
+            pulled.edges(),
+            &[Action::Flight(FlightCommand::FirePrimary)],
+            "a half-pulled trigger crosses the threshold and fires"
+        );
+
+        // Released: the hold is dropped, so the trigger can fire again.
+        let mut released = InputFrame::new(Tick(3));
+        adapters
+            .apply(
+                &DeviceEvent::GamepadFrame {
+                    device: device.clone(),
+                    buttons: vec![],
+                    axes: vec![(GamepadAxis::RightTrigger, 0.0)],
+                },
+                &trigger_map,
+                InputContext::Flight,
+                &mut released,
+            )
+            .expect("the release report applies");
+        assert!(adapters.held_edges().is_empty(), "the trigger released");
+
+        let mut again = InputFrame::new(Tick(4));
+        adapters
+            .apply(
+                &DeviceEvent::GamepadFrame {
+                    device,
+                    buttons: vec![],
+                    axes: vec![(GamepadAxis::RightTrigger, 1.0)],
+                },
+                &trigger_map,
+                InputContext::Flight,
+                &mut again,
+            )
+            .expect("the report applies");
+        assert_eq!(
+            again.edges(),
+            &[Action::Flight(FlightCommand::FirePrimary)],
+            "a re-pulled trigger fires again"
+        );
+    }
+
+    /// A report that is refused half way through changes nothing. The report
+    /// below names the fire button **and** a reading no calibration accepts,
+    /// and the buttons are applied before the axes — so an implementation that
+    /// validated lazily dropped the edge from the frame while keeping the hold
+    /// it had established: the press was swallowed and the gun would stay
+    /// silent until the trigger was released and pressed again. The device's
+    /// driven axes and the report counter must survive the refusal too, or a
+    /// later loss would under-report what the device was driving.
+    #[test]
+    fn accept_f22_b_a_refused_report_leaves_no_partial_state() {
+        let device = stick("joy.stick.test/0");
+        let mut adapters = connected_one(&device);
+
+        // A good report first, so the device is holding and driving something.
+        let mut frame = InputFrame::new(Tick(1));
+        adapters
+            .apply(
+                &DeviceEvent::JoystickFrame {
+                    device: device.clone(),
+                    buttons: vec![0],
+                    axes: vec![(0, 0.5)],
+                },
+                &map(),
+                InputContext::Flight,
+                &mut frame,
+            )
+            .expect("the good report applies");
+        adapters.finish_frame(&mut frame);
+        assert_eq!(adapters.reports(), 1);
+        assert_eq!(adapters.held_edges().len(), 1);
+        assert_eq!(adapters.driven_axes().len(), 1);
+
+        // Now a report whose axis reading is refused.
+        let mut frame = InputFrame::new(Tick(2));
+        assert!(matches!(
+            adapters.apply(
+                &DeviceEvent::JoystickFrame {
+                    device: device.clone(),
+                    buttons: vec![0],
+                    axes: vec![(0, f32::NAN)],
+                },
+                &map(),
+                InputContext::Flight,
+                &mut frame,
+            ),
+            Err(AdapterError::ReadingRejected {
+                channel: AxisChannel::Joystick(0),
+                ..
+            })
+        ));
+        assert!(frame.is_empty(), "a refused report contributes nothing");
+        assert_eq!(adapters.reports(), 1, "a refused report is not a report");
+        assert_eq!(
+            adapters.driven_axes().len(),
+            1,
+            "a refused report does not forget the axis the device was driving"
+        );
+        assert_eq!(
+            adapters.held_edges().len(),
+            1,
+            "a refused report neither adds nor releases a hold"
+        );
+
+        // The axis the device drives is still reported as driven when it is
+        // removed, and the very next good report is not a second press.
+        adapters.disconnect(&device).expect("the stick disconnects");
+        assert_eq!(
+            adapters.take_losses()[0].neutralized_axes,
+            vec![FlightCommand::Roll],
+            "the loss still names the axis the device was driving"
+        );
+    }
+
+    /// The half-way refusal above on a device that was **not** already holding
+    /// the button: the press must not be swallowed. A good report afterwards is
+    /// still a first press, so the gun fires exactly once.
+    #[test]
+    fn accept_f22_b_a_refused_report_does_not_swallow_the_press_it_named() {
+        let device = stick("joy.stick.test/0");
+        let mut adapters = connected_one(&device);
+
+        let mut frame = InputFrame::new(Tick(1));
+        assert!(
+            adapters
+                .apply(
+                    &DeviceEvent::JoystickFrame {
+                        device: device.clone(),
+                        buttons: vec![0],
+                        axes: vec![(1, 1.5)],
+                    },
+                    &map(),
+                    InputContext::Flight,
+                    &mut frame,
+                )
+                .is_err(),
+            "the out-of-range reading is refused"
+        );
+        assert!(frame.is_empty(), "the refused press produced no edge");
+        assert!(
+            adapters.held_edges().is_empty(),
+            "and left no hold that would silence the next real press"
+        );
+
+        let mut frame = InputFrame::new(Tick(2));
+        adapters
+            .apply(
+                &DeviceEvent::JoystickFrame {
+                    device,
+                    buttons: vec![0],
+                    axes: vec![],
+                },
+                &map(),
+                InputContext::Flight,
+                &mut frame,
+            )
+            .expect("the good report applies");
+        assert_eq!(
+            frame.edges(),
+            &[Action::Flight(FlightCommand::FirePrimary)],
+            "the pilot's press is not swallowed by the refused report before it"
+        );
     }
 
     /// A connect or remove event is the device-set half of the same stream, so

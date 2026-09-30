@@ -151,33 +151,86 @@ are project defaults, not measurements.
 
 Task-test prefix `accept_f22_b_`. The selection
 `cargo test --workspace --locked -- accept_f22_b_ --include-ignored` discovers
-and runs **27** tests, all passing:
+and runs **32** tests, all passing:
 
 - `cs_types::input` (4): the four calibration stages in order and their
   composition; malformed fields and readings refused by name; calibration keyed
   by device identity, surviving a change of enumeration index, with
   `unstable_devices` and every refused `promote`; the axis-channel vocabulary
   and the map walk by channel.
-- `cs_app::input::devices` (13): AC02 at the adapter level; an index-only device
+- `cs_app::input::devices` (16): AC02 at the adapter level; an index-only device
   reporting no stable identity; identity adoption keeping calibration, holds and
   axes, and every refused adoption named; level-triggered edges and axes; the
   context gate over all four contexts; every device family reaching the frame;
   a source's wiring inversion composing with the player's calibration
-  inversion; an analog source bound to an edge; the strongest deflection winning
-  whatever the event order; every malformed event refused by name; connect and
-  remove driving the device set.
-- `cs_app::input` (2): the collector routing device events through the context,
-  and a held axis staying driven until it is explicitly neutralized.
+  inversion; an analog source bound to an edge; a resting trigger not firing an
+  edge binding; the strongest deflection winning whatever the event order; every
+  malformed event refused by name; a refused report leaving no partial state and
+  not swallowing the press it named; connect and remove driving the device set.
+- `cs_app::input` (3): the collector routing device events through the context,
+  a refused event keeping the input other devices delivered, and a held axis
+  staying driven until it is explicitly neutralized.
 - `cs_sim::control` (2): the throttle's tick-driven steps across 12/30/60-FPS
   frame groupings, and its malformed steps and positions refused by name.
-- `crates/cs_app/tests/accept_f22_b_device_adapters.rs` (7): AC02 end to end
+- `crates/cs_app/tests/accept_f22_b_device_adapters.rs` (8): AC02 end to end
   (fire, unplug, no further fire, axes neutral, loss reported once, replug
-  works); refused events changing nothing while firing; calibrated axes reaching
-  `AxisState` by device identity; the identical throttle at 12/30/60 render FPS;
-  text entry silencing every device; every device family reaching
+  works); refused events changing nothing while firing; a refused report neither
+  swallowing a press nor dropping another device's frame; calibrated axes
+  reaching `AxisState` by device identity; the identical throttle at 12/30/60
+  render FPS; text entry silencing every device; every device family reaching
   `ControlBuffer`; the designed calibration and channel vocabulary.
 
 No test needs the original installation, so none is `#[ignore]`d.
+
+## Review (2026-09-30, same branch, reviewer fixed the branch)
+
+Reviewed by `bunny-alpha-1`, the agent that also implemented this stage. This
+is therefore **not** independent review and is not original-reference evidence;
+F22-D remains the stage that measures anything. Two real defects were found and
+fixed on the branch, each with a regression test that was run against the
+pre-fix behavior and observed to fail:
+
+1. **A refused device report was applied half way.** `DeviceAdapters::apply`
+   applied a report's buttons before calibrating its axes and returned the
+   refusal afterwards, so a report that named the fire button and one bad
+   reading established the hold and pushed the edge, and the caller then got an
+   error. The `InputCollector` made it worse: it "undid" the event by replacing
+   the whole frame with an empty one, so the edge was dropped while the hold
+   stayed — the pilot's press was silently swallowed and the gun stayed silent
+   until the trigger was released and pressed again — and every *other* device's
+   input collected in the same render frame was discarded with it. The report
+   counter and the device's driven axes were also mutated by the refused report,
+   so a later `DeviceLoss` under-reported what the device was driving.
+   Fixed by calibrating the whole report in a pass of its own
+   (`calibrated_readings`) before any of it is applied, and by no longer
+   replacing the frame in `InputCollector::observe_device`. Tests:
+   `accept_f22_b_a_refused_report_leaves_no_partial_state`,
+   `accept_f22_b_a_refused_report_does_not_swallow_the_press_it_named`,
+   `accept_f22_b_a_refused_event_keeps_the_input_other_devices_delivered`,
+   `accept_f22_b_a_refused_report_neither_swallows_a_press_nor_drops_a_devices_frame`
+   (all four failed on the pre-fix code).
+2. **A gamepad trigger bound to an edge fired from rest.** The activation
+   threshold was compared against the calibrated **magnitude**, but
+   `normalize_gamepad_axis` maps a trigger's `[0, 1]` into `[-1, 1]`, so an
+   untouched trigger reads `-1.0` and `|-1.0|` clears any threshold. A trigger
+   bound to a weapon — the natural replacement for a face button — therefore
+   held the guns on from the moment the device was touched, with no press, and
+   nothing in the stage's tests bound a trigger to an edge. The decision is now
+   made once per channel in `calibrate` and measured from the channel's resting
+   end: the *pull* of a one-directional channel, the *deflection* of a
+   two-directional one, which is what `AxisChannel::is_unipolar` declares. Test:
+   `accept_f22_b_a_resting_trigger_does_not_fire_an_edge_binding` (fails on the
+   pre-fix magnitude test, with the gun firing on an untouched trigger).
+
+One further limit is now disclosed rather than fixed, because the answer is a
+design decision F22-C owns: **a device that stops reporting without a removal
+event keeps its hold.** `release_unreported` can only release what a later
+report from the same device fails to re-establish, and continuous axes *are*
+neutralized by `finish_frame` when nothing drives them, but a held edge waits
+for the device's next report or for its removal. A consumer that polls
+`held_edges()` for a sustained trigger must therefore also own a policy for a
+device that has gone quiet; the sheet's non-negotiable 3 (a *removed* device
+cannot leave weapons firing) is covered and tested.
 
 ## Checks
 
@@ -208,6 +261,14 @@ mutation was reverted. Every one is caught.
 | `ThrottleSteps::apply_tick` ignores a step edge | `accept_f22_b_keyboard_throttle_steps_ignore_render_frame_grouping` |
 | a direct throttle setting loses to its own tick's step | `accept_f22_b_keyboard_throttle_steps_ignore_render_frame_grouping` |
 | `release_unreported` never releases | `..._analog_source_bound_to_an_edge_...`, `..._reports_are_level_triggered_...` (2) |
+| the analog activation threshold is measured from the middle of the signed axis (the pre-review behavior) | `accept_f22_b_a_resting_trigger_does_not_fire_an_edge_binding` |
+| a report is validated lazily instead of before it is applied (the pre-review behavior) | `accept_f22_b_a_refused_report_does_not_swallow_the_press_it_named`, `accept_f22_b_a_refused_report_leaves_no_partial_state` (2) |
+| `observe_device` replaces the frame when an event is refused (the pre-review behavior) | `accept_f22_b_a_refused_event_keeps_the_input_other_devices_delivered`, `accept_f22_b_a_refused_report_neither_swallows_a_press_nor_drops_a_devices_frame` (2) |
+
+The three rows marked *pre-review* were the review's own mutations: each was
+applied to the reviewed branch, the new test was run and observed to fail, and
+the mutation was reverted. They are listed with the implementer's table because
+they are the same kind of evidence.
 
 The dead-zone mutation was **not** caught by the first version of the
 calibration test: with the dead zone applied only through the rescale, a

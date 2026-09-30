@@ -184,20 +184,13 @@ impl InputCollector {
     ///
     /// [`AdapterError`] when the event is stale, names a device the session
     /// does not have, disagrees with its class, or reports a reading the
-    /// device's calibration refuses. A refused event changes nothing.
+    /// device's calibration refuses. A refused event changes nothing — the
+    /// adapters calibrate a whole report before applying any of it, and the
+    /// input this frame already collected from the other devices is kept.
     pub fn observe_device(&mut self, event: &DeviceEvent) -> Result<(), AdapterError> {
         let context = self.bindings.context();
-        let tick = self.frame.frame_tick();
-        let mut frame = std::mem::replace(&mut self.frame, InputFrame::new(tick));
-        let result = self
-            .devices
-            .apply(event, self.bindings.map(), context, &mut frame);
-        if result.is_err() {
-            // The event was refused, so it must leave no partial state behind.
-            frame = InputFrame::new(tick);
-        }
-        self.frame = frame;
-        result
+        self.devices
+            .apply(event, self.bindings.map(), context, &mut self.frame)
     }
 
     /// Registers a device with the session's adapters.
@@ -387,6 +380,55 @@ mod tests {
         assert_eq!(losses.len(), 1);
         assert_eq!(losses[0].device, keyboard);
         assert!(collector.take_device_losses().is_empty());
+    }
+
+    /// A refused event is refused **whole**: it contributes nothing to the
+    /// frame, and it does not throw away what the other devices already
+    /// contributed in the same render frame. Discarding the whole frame on an
+    /// error would silently drop a fire command from a perfectly good report,
+    /// which is worse than the fault that was reported.
+    #[test]
+    fn accept_f22_b_a_refused_event_keeps_the_input_other_devices_delivered() {
+        let keyboard = DeviceId::stable(cs_types::input::DeviceClass::Keyboard, "kbd/0")
+            .expect("the test identity is valid");
+        let stick = DeviceId::stable(cs_types::input::DeviceClass::Joystick, "joy/0")
+            .expect("the test identity is valid");
+        let mut collector = InputCollector::designed_default(Tick(3));
+        collector
+            .connect_device(keyboard.clone())
+            .expect("the keyboard connects");
+        collector
+            .connect_device(stick.clone())
+            .expect("the stick connects");
+        collector.begin_frame(Tick(3));
+
+        // The keyboard reports a good press first.
+        collector
+            .observe_device(&DeviceEvent::KeyboardFrame {
+                device: keyboard,
+                keys: vec![Key::Space],
+            })
+            .expect("the good report applies");
+        assert_eq!(collector.frame().edges().len(), 1);
+
+        // The stick then reports a reading no calibration accepts.
+        assert!(
+            collector
+                .observe_device(&DeviceEvent::JoystickFrame {
+                    device: stick,
+                    buttons: vec![],
+                    axes: vec![(0, f32::NAN)],
+                })
+                .is_err(),
+            "the bad reading is refused"
+        );
+        let frame = collector.take_frame();
+        assert_eq!(
+            frame.edges(),
+            &[Action::Flight(FlightCommand::FirePrimary)],
+            "the keyboard's press survives the refused report"
+        );
+        assert_eq!(frame.frame_tick(), Tick(3), "and the frame keeps its tick");
     }
 
     /// Two consecutive frames of a held key: one edge, and the axis stays

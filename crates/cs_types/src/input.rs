@@ -1645,6 +1645,27 @@ impl AxisChannel {
     pub const fn is_relative(self) -> bool {
         matches!(self, Self::Mouse(_))
     }
+
+    /// Whether the channel is one-directional, resting at the axis **minimum**
+    /// rather than at its middle.
+    ///
+    /// A gamepad trigger is a lever, not a stick: the platform reports it in
+    /// `[0, 1]` with rest at `0`, and
+    /// `cs_app::input::normalize_gamepad_axis` maps that into the canonical
+    /// signed `[-1, 1]` pipeline, so an untriggered trigger reads `-1.0`. A
+    /// threshold measured from the axis *middle* would therefore be cleared by
+    /// an untouched trigger, and a trigger bound to a weapon would fire from
+    /// the moment the device was touched. Anything measured from a channel's
+    /// rest — an analog activation threshold, a "did the pilot pull it"
+    /// decision — must be measured from the resting end of a one-directional
+    /// channel and from the middle of a two-directional one.
+    #[must_use]
+    pub const fn is_unipolar(self) -> bool {
+        matches!(
+            self,
+            Self::Gamepad(GamepadAxis::LeftTrigger | GamepadAxis::RightTrigger)
+        )
+    }
 }
 
 impl fmt::Display for AxisChannel {
