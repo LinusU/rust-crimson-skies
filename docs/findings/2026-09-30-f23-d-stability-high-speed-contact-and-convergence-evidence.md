@@ -292,6 +292,14 @@ per-tick sampling ever saw. The substep-count mutation above fails both, which
 is the point — a sampler that misses the deepest moment of a pass can no longer
 hide it.
 
+Every table above was re-measured by the review on the rebased branch and
+reproduced exactly: position errors `0.166668 / 0.083336 / 0.041668 m`, velocity
+errors `8.774e-5 / 1.755e-4 / 3.510e-4 m/s`, cruise peaks `123.3994 / 123.3972 /
+123.3959 m/s` with the altitude bands as tabulated, and the spawn-tick trigger
+row (0 episodes everywhere except 240 Hz at 60 m/s, which reports once on tick
+2) with recorded distances from 0.04 m to 3.94 m. The numbers in this file are
+therefore measurements, not a transcription.
+
 ## Designed values, not original data
 
 Every number above is a measurement of **this** project on the pinned pair
