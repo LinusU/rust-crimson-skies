@@ -35,7 +35,8 @@ only — no `CS_GAME_DIR` read, no evidence report required, nothing
 * `crates/cs_app/src/world/mod.rs`, `crates/cs_app/src/lib.rs` (wiring and
   module docs only).
 * `crates/cs_app/tests/world/{main,import,residency}.rs` (new/edited): the
-  seventeen `accept_f18_b_*` acceptance tests.
+  acceptance tests, `accept_f18_b_*` (nineteen after review; seventeen when the
+  stage was first handed over).
 * This file.
 
 **One observable failure:** the objective is damaged, its sector is unloaded,
@@ -213,6 +214,60 @@ unmutated.
 The record-level additions (`WorldObjectCondition::initial_condition`,
 `DamagedObjectNotActivated`) are covered by the residency and import tests that
 call them; the fourteen F18-A tests are the F18-A matrix, unchanged.
+
+## Review findings (2026-09-30, reviewer `bunny-alpha-1`)
+
+The implementer and the reviewer are the same agent, so this is **not**
+independent evidence. What was checked, and what it changed:
+
+* **A hole in the mutation matrix: the despawn half of the transaction was
+  untested.** Every residency assertion read the *record*, which is a claim
+  about the world rather than the world itself. Replacing `despawn_all` with a
+  no-op passed all seventeen tests: an unload could have despawned nothing, and
+  nothing in the suite would have said so. `residency::
+  accept_f18_b_an_unload_really_despawns_the_objects_entities_and_a_reload_restores_them`
+  now reads the Bevy world itself (through the binding every entity an object
+  owns carries) and fails on that mutation.
+* **A mesh object's body carried no binding.** `WorldObjectBinding` documents
+  itself as cloned "onto every entity the object owns", and the report, the
+  despawn and the condition stamp all treat the body as owned — but only the
+  node carried the binding, so a query starting at a body could not name its
+  object. The body now carries the same binding, and deliberately no
+  `WorldColliderInstance`: a contact must still resolve to the one entity that
+  has the collider. Removing the body's binding fails the test above.
+* **`load_sector`'s abort path destroyed objects it had not spawned.** It
+  despawned *every* present object while leaving the residency record claiming
+  they were present, which is the corrupt state this module exists to prevent.
+  `rollback` now takes back exactly what the call spawned (entities and record
+  entries) and leaves everything already present alone. The path is unreachable
+  after the up-front transform check, so no test can reach it; the fix is
+  because the code contradicted its own documentation.
+* **`damage_object` changed the record before it could still fail.** The module
+  claims every call "decides everything before it changes anything"; this one
+  inserted the condition and only then discovered a vanished entity. It now
+  checks the population and every entity first, so a refusal leaves the
+  condition exactly as it was.
+* **A non-colliding object with no geometry was reported nowhere.** A record
+  whose role is `None` declines no collider, so `skipped` was empty, and a
+  banner whose mesh nobody supplied was presented as a bare marker that draws
+  nothing while the report claimed the world was complete.
+  `SpawnedObject::presentation_gap` / `SpawnedWorld::presentation_gaps` report
+  that half of the same gap, once per object, and
+  `import::accept_f18_b_a_non_colliding_object_with_no_geometry_is_reported_as_a_presentation_gap`
+  pins it.
+* **A test message named the wrong colliders.**
+  `..._every_mesh_collider_carries_the_designed_static_world_layers` counted four
+  colliders and attributed them to "hangar, sensor, banner, water" — the banner
+  has role `None` and no collider, and the fourth is the *cuboid* ground slab.
+  The count is now derived from the objects themselves, so a substitution cannot
+  pass on a number.
+* **Verified rather than taken on trust:** parry 0.27.0's
+  `DefaultQueryDispatcher::cast_shapes` (`default_query_dispatcher.rs:437-541`)
+  really has no `TriMesh` case and really returns `Err(Unsupported)`, and
+  Avian's `compute_ccd_toi` (`avian3d-0.7.0/src/dynamics/ccd/mod.rs:692-705`)
+  really folds that into `None`. The pinned limitation the flight tests measure
+  is the engine's, not a fixture artifact.
+
 
 ## Designed vocabulary, not original data
 

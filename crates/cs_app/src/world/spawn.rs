@@ -67,12 +67,19 @@ use super::meshes::WorldMeshes;
 /// fixture can move.
 pub const INSTANCE_TRANSFORM_TOLERANCE: f32 = 1e-4;
 
-/// Why an object instance's collider was not built, although it was presented.
+/// Why the geometry an object instance names could not be used, although the
+/// object was presented.
 ///
-/// An authored matrix that no runtime transform can hold is *not* one of
-/// these: [`spawn_world`] refuses that definition outright (see
+/// An authored matrix that no runtime transform can hold is *not* one of these:
+/// [`spawn_world`] refuses that definition outright (see
 /// [`WorldSpawnError::UnrepresentableTransform`]) before any entity exists,
 /// so it never reaches the report.
+///
+/// A mesh reason can surface twice over in one report, for two different
+/// objects: a colliding object reports it in
+/// [`SpawnedObject::skipped`] and a non-colliding one in
+/// [`SpawnedObject::presentation_gap`]. An object never reports both, so a
+/// consumer reads one reason per object rather than two that must be merged.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SkipReason {
     /// The record's collision role is an explicit unknown.
@@ -180,6 +187,17 @@ pub struct SpawnedObject {
     pub non_colliding: bool,
     /// Why no collider was built, when the record asked for one.
     pub skipped: Option<SkipReason>,
+    /// Why the object presents no geometry, when its record asked for no
+    /// collider at all (role [`WorldCollisionRole::None`]).
+    ///
+    /// A role-`None` object asked for no collision, so nothing was *skipped* —
+    /// but its presentation is still built from the mesh its own record names,
+    /// and a gap there is a gap: without this field a banner whose upload nobody
+    /// supplied would be presented as a bare marker that draws nothing, and the
+    /// report would claim the world is complete. Only set when
+    /// [`SpawnedObject::skipped`] is `None`, so one object never reports the
+    /// same missing upload twice.
+    pub presentation_gap: Option<SkipReason>,
 }
 
 impl SpawnedObject {
@@ -285,6 +303,35 @@ impl SpawnedWorld {
         self.objects
             .iter()
             .filter(|spawned| spawned.skipped.is_some())
+            .count()
+    }
+
+    /// Every instance that presents no geometry because no upload answers its own
+    /// mesh reference, and which asked for no collider in the first place.
+    ///
+    /// These objects are *not* in [`SpawnedWorld::skipped`]: a role-`None` record
+    /// wanted nothing a body could reach, so no collision was declined. What is
+    /// missing is what it would have drawn, which is a gap a consumer has to be
+    /// able to see before it presents a world it believes is complete.
+    #[must_use]
+    pub fn presentation_gaps(&self) -> Vec<SkippedInstance> {
+        self.objects
+            .iter()
+            .filter_map(|spawned| {
+                spawned.presentation_gap.map(|reason| SkippedInstance {
+                    object: spawned.object.clone(),
+                    reason,
+                })
+            })
+            .collect()
+    }
+
+    /// How many instances present no geometry.
+    #[must_use]
+    pub fn presentation_gap_count(&self) -> usize {
+        self.objects
+            .iter()
+            .filter(|spawned| spawned.presentation_gap.is_some())
             .count()
     }
 
@@ -571,6 +618,9 @@ pub fn spawn_object(
             mesh: resolved.map(ResolvedUpload::reference),
             non_colliding: true,
             skipped: None,
+            // Nothing was declined, but what this object would have drawn may be
+            // missing: that is a gap of its own, and it is reported here.
+            presentation_gap: upload.as_ref().err().copied(),
         });
     }
     let Some(shape) = object.known_shape() else {
@@ -622,6 +672,7 @@ pub fn spawn_object(
                 mesh: resolved.map(ResolvedUpload::reference),
                 non_colliding: false,
                 skipped: None,
+                presentation_gap: None,
             })
         }
         WorldCollisionShape::FromMesh => {
@@ -652,6 +703,7 @@ pub fn spawn_object(
                 mesh: Some(upload.reference()),
                 non_colliding: false,
                 skipped: None,
+                presentation_gap: None,
             })
         }
     }
@@ -662,7 +714,9 @@ pub fn spawn_object(
 /// The object keeps its identity and, when its own reference resolved, its
 /// geometry: a presented object with a reported gap is a visible hole a
 /// consumer can refuse, while a missing object is a world that quietly does not
-/// contain what the record said.
+/// contain what the record said. The reason is reported once, as a skip: an
+/// object whose collider was declined does not also report a presentation gap,
+/// even when the very same missing upload is why it draws nothing.
 fn gap(
     app: &mut App,
     object: &WorldObjectInstance,
@@ -678,6 +732,7 @@ fn gap(
         mesh: upload.map(ResolvedUpload::reference),
         non_colliding: false,
         skipped: Some(reason),
+        presentation_gap: None,
     }
 }
 
@@ -753,7 +808,8 @@ fn spawn_mesh_presentation(
 /// The *body* carries the authored transform and is the placement authority: a
 /// collider attached to it follows the body's pose, while the node's own
 /// transform stays identity in body-local space. That is why the report's
-/// `body` and `entity` are two entities here and one for a cuboid.
+/// `body` and `entity` are two entities here and one for a cuboid, and why both
+/// carry the object's binding: they are one object.
 fn spawn_mesh_collider(
     app: &mut App,
     transform: Transform,
@@ -774,13 +830,20 @@ fn spawn_mesh_collider(
     visual.insert((
         WorldVisual,
         WorldColliderInstance::new(role),
-        binding,
+        binding.clone(),
         Transform::default(),
         CollisionEventsEnabled,
     ));
     if role == WorldCollisionRole::Sensor {
         visual.insert(Sensor);
     }
+    // The body is an entity this object owns: the report names it, an unload
+    // despawns it and the load stamps its condition. It carries the same
+    // binding, so a query that starts at a body — a mission trigger, an overlay
+    // drawn at the object's pose — can name the object it belongs to instead of
+    // guessing. It deliberately carries no `WorldColliderInstance`: the collider
+    // is on the node, and a contact must resolve to the one entity that has it.
+    app.world_mut().entity_mut(node.body).insert(binding);
     (node.node, node.body)
 }
 
@@ -797,15 +860,16 @@ fn spawn_mesh_collider(
 /// exists, so a refusal leaves the app exactly as it was. An object whose mesh
 /// reference resolves to an upload in `meshes` is presented *and* collided from
 /// that one upload; anything this source cannot build is reported in
-/// [`SpawnedWorld::skipped`].
+/// [`SpawnedWorld::skipped`] or, for an object that asked for no collider at
+/// all, in [`SpawnedWorld::presentation_gaps`].
 ///
 /// # Errors
 ///
 /// [`WorldSpawnError::UnrepresentableTransform`] naming the object whose
 /// authored matrix has no runtime form, with nothing spawned. Every other gap
 /// — an unknown role, an unknown shape, a mesh this source does not hold — is
-/// *not* an error: it is reported in [`SpawnedWorld::skipped`] so the gap stays
-/// visible.
+/// *not* an error: it is reported next to the objects that *were* built, so the
+/// gap stays visible.
 pub fn spawn_world(
     app: &mut App,
     definition: &WorldDefinition,

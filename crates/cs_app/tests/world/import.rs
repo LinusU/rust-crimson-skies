@@ -33,7 +33,7 @@ use avian3d::prelude::{
 };
 use bevy::asset::Assets;
 use bevy::mesh::{Mesh, Mesh3d, VertexAttributeValues};
-use bevy::prelude::{App, Quat, Vec3, With};
+use bevy::prelude::{App, Entity, Quat, Vec3, With};
 use bevy::time::{Fixed, Time};
 use cs_app::world::{
     HARBOR_HANGAR_HULL_TRIANGLES, HARBOR_HANGAR_TRIANGLES, HARBOR_OBJECT_ABSENT,
@@ -41,8 +41,8 @@ use cs_app::world::{
     HARBOR_OBJECT_WATER, HARBOR_SENSOR_HALF_M, HARBOR_SENSOR_POS_M, HARBOR_WATER_OFF_AXIS_Z_M,
     HARBOR_WATER_POS_M, MESH_SETTLE_UPDATES, ProbeSpec, SkipReason, SpawnedWorld, WorldContacts,
     WorldFixture, WorldVisual, fixture_provenance, harbor_meshes, harbor_world, load_world,
-    probe_layers, spawn_discrete_probe, spawn_swept_probe, static_world_layers, unload_world,
-    world_app, world_instance,
+    mesh_reference, probe_layers, spawn_discrete_probe, spawn_swept_probe, static_world_layers,
+    unload_world, world_app, world_instance,
 };
 use cs_content::world::{
     SurfaceRole, WorldCollisionRole, WorldCollisionShape, WorldDefinition, WorldInstance,
@@ -796,6 +796,114 @@ fn accept_f18_b_an_object_whose_mesh_is_missing_is_reported_and_never_faked() {
     );
 }
 
+/// **A missing upload is a gap whether or not the object collides.** A record
+/// whose role is `None` asked for no collider, so nothing was *skipped* — but the
+/// geometry it would have drawn is still the geometry its own record names, and a
+/// banner that draws nothing must be named as a gap rather than presented as a
+/// world that is complete.
+///
+/// This is the one report path the missing-mesh test above cannot reach, because
+/// every object it exercises asks for collision.
+///
+/// Observable failure if the presentation half were ignored: the banner would be
+/// presented as a bare marker with no `Mesh3d`, `skipped()` would stay empty, and
+/// a consumer checking `skipped()` alone would draw a world with a hole in it.
+#[test]
+fn accept_f18_b_a_non_colliding_object_with_no_geometry_is_reported_as_a_presentation_gap() {
+    let base = harbor();
+    let banner = WorldObjectInstance::try_new(
+        WorldObjectId::new("banner.absent_mesh").expect("the key is valid"),
+        mesh_reference("banner.absent_mesh"),
+        cs_content::scene::CanonicalTransform::IDENTITY,
+        Resolved::Known(cs_types::content::Known::new(
+            WorldCollisionRole::None,
+            fixture_provenance("role.none"),
+        )),
+        Resolved::Known(cs_types::content::Known::new(
+            WorldCollisionShape::FromMesh,
+            fixture_provenance("shape.from_mesh"),
+        )),
+        Resolved::Known(cs_types::content::Known::new(
+            SurfaceRole::Ground,
+            fixture_provenance("surface.ground"),
+        )),
+        Vec::new(),
+        fixture_provenance("banner_absent.record"),
+    )
+    .expect("no duplicate sectors");
+    let definition = WorldDefinition::try_new(
+        base.id().clone(),
+        base.origin().clone(),
+        base.boundary().clone(),
+        base.sectors().to_vec(),
+        base.objects()
+            .iter()
+            .cloned()
+            .chain(std::iter::once(banner))
+            .collect(),
+        fixture_provenance("harbor_plus_absent_banner"),
+    )
+    .expect("the added object is structurally valid");
+    let mut population: Vec<&str> = HARBOR_POPULATION.to_vec();
+    population.push("banner.absent_mesh");
+    let instance =
+        world_instance(&definition, None, &population, &[]).expect("the load record is valid");
+    let meshes = harbor_meshes();
+    let reference = definition
+        .object(&object("banner.absent_mesh"))
+        .expect("the fixture declares the object")
+        .mesh()
+        .clone()
+        .known()
+        .expect("the mesh reference is known");
+    assert!(
+        meshes.get(&reference).is_none(),
+        "the source must really not hold this mesh, or this test proves nothing"
+    );
+
+    let mut app = world_app();
+    let report =
+        load_world(&mut app, &definition, &instance, &meshes).expect("the world still loads");
+    let spawned = report
+        .object(&object("banner.absent_mesh"))
+        .expect("the object is reported as presented");
+    assert_eq!(
+        spawned.skipped, None,
+        "role `None` declined no collision, so nothing was skipped — reporting a \
+         skip here would claim a collider the record never asked for"
+    );
+    assert_eq!(
+        spawned.presentation_gap,
+        Some(SkipReason::MeshUnavailable),
+        "but the geometry it would have drawn is missing, and that is reported"
+    );
+    assert_eq!(
+        report.presentation_gap_count(),
+        1,
+        "exactly one object presents nothing: {:?}",
+        report.presentation_gaps()
+    );
+    assert_eq!(
+        report.presentation_gaps()[0].object,
+        object("banner.absent_mesh"),
+        "and it is named by its own authored id"
+    );
+    assert!(
+        app.world().get::<Mesh3d>(spawned.visual).is_none(),
+        "there is no geometry to draw, which is why the gap is reported"
+    );
+    assert!(
+        app.world().get::<Collider>(spawned.visual).is_none(),
+        "and still nothing a body can reach, whatever the record's role was"
+    );
+    assert_eq!(
+        report.skipped_count(),
+        1,
+        "the colliding object's own gap is still reported separately: {:?}",
+        report.skipped()
+    );
+}
+
 /// A contact names the gameplay surface rule its object was authored with, so a
 /// consumer can tell a water hit from a landing without re-reading the world
 /// record.
@@ -843,29 +951,55 @@ fn accept_f18_b_a_contact_names_the_surface_rule_its_object_was_authored_with() 
     );
 }
 
-/// Every mesh collider carries the static-world layer set and the probe carries
-/// the aircraft one, so the two interact: the same designed matrix the cuboid
-/// path uses, now also on the mesh path.
+/// Every world collider — the three mesh-derived ones and the cuboid — carries
+/// the static-world layer set, and the probe carries the aircraft one, so the
+/// two interact: the same designed matrix on both collision paths.
 ///
-/// Observable failure if the mesh collider were built with another membership:
-/// the layers stop matching the designed sets, or the two sides stop
-/// interacting and every contact in this file goes quiet.
+/// The count is checked *by name*, because a count alone cannot tell which
+/// object a collider belongs to: the harbor world builds colliders for the
+/// hangar, the trigger volume, the water patch and the ground slab, and none for
+/// the banner (role `None`) or the object whose mesh nobody supplied.
+///
+/// Observable failure if a world collider were built with another membership: the
+/// layers stop matching the designed sets, or the two sides stop interacting and
+/// every contact in this file goes quiet.
 #[test]
 fn accept_f18_b_every_mesh_collider_carries_the_designed_static_world_layers() {
     let (mut app, _, _, _) = loaded();
     let expected = static_world_layers();
     let mut query = app
         .world_mut()
-        .query_filtered::<&AvianCollisionLayers, With<cs_app::world::WorldColliderInstance>>();
-    let layers: Vec<AvianCollisionLayers> = query.iter(app.world()).copied().collect();
+        .query_filtered::<(Entity, &AvianCollisionLayers), With<cs_app::world::WorldColliderInstance>>();
+    let colliders: Vec<(Entity, AvianCollisionLayers)> =
+        query.iter(app.world()).map(|(e, l)| (e, *l)).collect();
+    let mut owners: Vec<WorldObjectId> = colliders
+        .iter()
+        .map(|(entity, _)| {
+            app.world()
+                .get::<cs_app::world::WorldObjectBinding>(*entity)
+                .expect("every world collider entity carries its object's binding")
+                .object()
+                .clone()
+        })
+        .collect();
+    owners.sort();
+    let mut expected_owners: Vec<WorldObjectId> = [
+        HARBOR_OBJECT_HANGAR,
+        HARBOR_OBJECT_SENSOR,
+        HARBOR_OBJECT_WATER,
+        HARBOR_OBJECT_GROUND,
+    ]
+    .iter()
+    .map(|key| object(key))
+    .collect();
+    expected_owners.sort();
     assert_eq!(
-        layers.len(),
-        4,
-        "the harbor world has four mesh-derived colliders (hangar, sensor, \
-         banner, water), saw {}",
-        layers.len()
+        owners, expected_owners,
+        "the harbor world collides the hangar, the trigger volume, the water \
+         patch and the cuboid ground slab — and nothing else: role `None` draws \
+         without a collider, and an object with no geometry gets none"
     );
-    for layer in &layers {
+    for (_, layer) in &colliders {
         assert_eq!(
             *layer, expected,
             "a world collider must carry the static-world set"

@@ -21,8 +21,10 @@
 //!   `Mesh3d` handle, which Avian derives a `TrimeshFromMesh` collider from —
 //!   no hull, no bounding box, no decimation, so a traversable opening cannot
 //!   be closed by a simplification this stage never made. Every instance it
-//!   cannot build honestly is listed in [`spawn::SpawnedWorld::skipped`] with a
-//!   reason instead of being filled in with a guess.
+//!   cannot build honestly is listed in [`spawn::SpawnedWorld::skipped`] (or, for
+//!   an object that asked for no collider but has no geometry to draw, in
+//!   [`spawn::SpawnedWorld::presentation_gaps`]) with a reason instead of being
+//!   filled in with a guess.
 //! * [`residency`] is the load transaction: one world at a time, one sector in
 //!   and out at a time, and the per-object condition that survives both
 //!   (acceptance scenario AC02). It carries no streaming *policy* — that is

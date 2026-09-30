@@ -21,13 +21,13 @@
 //!   and authored damage are established by a load that starts from nothing, and
 //!   loading over a resident world is refused rather than merged.
 
-use bevy::prelude::{App, Entity};
+use bevy::prelude::{App, Entity, With};
 use cs_app::world::{
     HARBOR_OBJECT_ABSENT, HARBOR_OBJECT_BANNER, HARBOR_OBJECT_GROUND, HARBOR_OBJECT_HANGAR,
     HARBOR_OBJECT_SENSOR, HARBOR_OBJECT_WATER, HARBOR_SECTOR_YARD, MESH_SETTLE_UPDATES,
-    ObjectCondition, SpawnedWorld, WorldLoadError, WorldResidency, condition_of, damage_object,
-    harbor_meshes, harbor_world, load_sector, load_world, residency, unload_sector, unload_world,
-    world_app, world_instance,
+    ObjectCondition, SpawnedWorld, WorldLoadError, WorldObjectBinding, WorldResidency,
+    condition_of, damage_object, harbor_meshes, harbor_world, load_sector, load_world, residency,
+    unload_sector, unload_world, world_app, world_instance,
 };
 use cs_content::world::{
     SectorId, WorldDefinition, WorldError, WorldInstance, WorldObjectCondition, WorldObjectId,
@@ -77,6 +77,26 @@ fn present(app: &App) -> Vec<WorldObjectId> {
         .into_iter()
         .cloned()
         .collect()
+}
+
+/// Every entity the Bevy world currently holds for `object`, in query order.
+///
+/// The residency record is a *claim* about the world; this is the world itself,
+/// read through the binding every entity an object owns carries. A despawn that
+/// despawns nothing, or a reload that appends, shows up here and nowhere else.
+fn entities_of(app: &mut App, object: &WorldObjectId) -> Vec<Entity> {
+    let world = app.world_mut();
+    let mut query = world.query_filtered::<Entity, With<WorldObjectBinding>>();
+    let mut entities: Vec<Entity> = query
+        .iter(world)
+        .filter(|entity| {
+            world
+                .get::<WorldObjectBinding>(*entity)
+                .is_some_and(|binding| binding.object() == object)
+        })
+        .collect();
+    entities.sort_unstable();
+    entities
 }
 
 /// The headless world with the harbor world loaded and settled.
@@ -209,6 +229,91 @@ fn accept_f18_b_a_damaged_object_survives_a_sector_unload_and_reload() {
                 .iter()
                 .all(|c| *c == WorldObjectCondition::Damaged),
         "every entity of the reloaded objective reports it damaged, saw {conditions:?}"
+    );
+}
+
+/// **The residency record and the Bevy world are the same fact, not two.** An
+/// unload really takes the object's entities out of the world — every one of
+/// them, the body and the node the derived collider hangs from — and a reload
+/// brings the object back under the same id with the same number of entities, so
+/// nothing accumulates and nothing is left behind.
+///
+/// The other residency tests read the *record*; this one reads the world. A
+/// despawn that despawns nothing passes every record-level assertion, because
+/// the record is a claim about the world rather than the world itself, so this
+/// is where the two can only agree if the transaction really moves geometry.
+///
+/// Observable failure if the unload left entities behind, if a reload appended a
+/// second copy, or if the despawn took entities another object still needed: the
+/// entity count would not return to its starting value, or the ground slab —
+/// which stays resident — would lose the entity it keeps.
+#[test]
+fn accept_f18_b_an_unload_really_despawns_the_objects_entities_and_a_reload_restores_them() {
+    let definition = harbor();
+    let instance = mission(&definition, None, &population(), &[]);
+    let (mut app, _) = loaded(&definition, &instance);
+    let hangar = object(HARBOR_OBJECT_HANGAR);
+    let sensor = object(HARBOR_OBJECT_SENSOR);
+    let ground = object(HARBOR_OBJECT_GROUND);
+    let yard = sector(HARBOR_SECTOR_YARD);
+
+    let hangar_before = entities_of(&mut app, &hangar);
+    assert!(
+        hangar_before.len() >= 2,
+        "a mesh object owns a body and a node, so the unload has two entities to \
+         take; saw {hangar_before:?}"
+    );
+    let ground_before = entities_of(&mut app, &ground);
+    assert_eq!(
+        ground_before.len(),
+        2,
+        "a cuboid object owns a presentation entity and a collider entity, and \
+         both belong to it; saw {ground_before:?}"
+    );
+
+    for _ in 0..2 {
+        unload_sector(&mut app, &yard).expect("the yard unloads");
+        for object in [&hangar, &sensor] {
+            assert!(
+                entities_of(&mut app, object).is_empty(),
+                "unloading the yard must leave no entity behind for `{object}`: \
+                 saw {:?}",
+                entities_of(&mut app, object)
+            );
+        }
+        assert_eq!(
+            entities_of(&mut app, &ground),
+            ground_before,
+            "the ground belongs to the approach sector too, so its entity must \
+             survive the yard's unload untouched"
+        );
+
+        load_sector(&mut app, &yard, &harbor_meshes()).expect("the yard reloads");
+        assert_eq!(
+            entities_of(&mut app, &hangar).len(),
+            hangar_before.len(),
+            "a reload rebuilds the object, it does not append a second copy"
+        );
+        assert_eq!(
+            entities_of(&mut app, &ground),
+            ground_before,
+            "and an object that never left is not rebuilt on top of itself"
+        );
+    }
+
+    // The whole world can also be taken away: every activated object's entities
+    // go, and nothing of the run is left in the world to inherit.
+    let present_before: Vec<WorldObjectId> = population().iter().map(|key| object(key)).collect();
+    unload_world(&mut app).expect("the harbor world is loaded");
+    for object in &present_before {
+        assert!(
+            entities_of(&mut app, object).is_empty(),
+            "unloading the world must take `{object}`'s entities with it"
+        );
+    }
+    assert!(
+        residency(app.world()).is_none(),
+        "and forget the load record, so the next load starts from nothing"
     );
 }
 

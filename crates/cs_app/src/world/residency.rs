@@ -333,29 +333,44 @@ pub fn condition_of(world: &World, object: &WorldObjectId) -> Option<WorldObject
 ///
 /// # Errors
 ///
-/// [`WorldLoadError::NoResidentWorld`] when nothing is loaded, and
+/// [`WorldLoadError::NoResidentWorld`] when nothing is loaded,
 /// [`WorldLoadError::ObjectNotLoaded`] when the object is not part of this
 /// load's population — a condition for an object the load never activates would
-/// name a state nothing could show.
+/// name a state nothing could show — and [`WorldLoadError::VanishedEntity`] when
+/// a present object has lost an entity somewhere else. The whole call is decided
+/// before anything changes, so a refusal leaves the condition exactly as it was
+/// rather than half applied.
 pub fn damage_object(app: &mut App, object: &WorldObjectId) -> Result<(), WorldLoadError> {
     let world = app.world_mut();
-    {
-        let Some(mut residency) = world.get_resource_mut::<WorldResidency>() else {
-            return Err(WorldLoadError::NoResidentWorld);
-        };
-        if !residency.resident.population.contains(object) {
+    // 1. Decide. The population, and every entity the stamp below would touch,
+    //    are checked while nothing has changed yet.
+    let entities = {
+        let resident = resident(world)?;
+        if !resident.population.contains(object) {
             return Err(WorldLoadError::ObjectNotLoaded {
                 object: object.clone(),
             });
         }
+        let entities = entities_of(world, object);
+        for entity in &entities {
+            world
+                .get_entity(*entity)
+                .map_err(|reason| vanished(object, *entity, &reason))?;
+        }
+        entities
+    };
+    // 2. Change. The record first, then the components, so a query and the
+    //    resource cannot disagree about the same object.
+    {
+        let Some(mut residency) = world.get_resource_mut::<WorldResidency>() else {
+            return Err(WorldLoadError::NoResidentWorld);
+        };
         residency
             .resident
             .conditions
             .insert(object.clone(), WorldObjectCondition::Damaged);
     }
-    // Keep the component in step with the resource for every entity that is
-    // present now, so a query and the resource can never disagree.
-    for entity in entities_of(world, object) {
+    for entity in entities {
         stamp_condition(world, object, entity, WorldObjectCondition::Damaged)?;
     }
     Ok(())
@@ -580,52 +595,45 @@ pub fn load_sector(
 
     // 2. Spawn. Each object is stamped with the condition the load already holds
     //    and entered in the record before the next one starts, so an abort
-    //    leaves a consistent (if empty) world rather than entities nobody owns.
+    //    leaves the world as this call found it: [`rollback`] takes back exactly
+    //    what this call spawned and leaves everything that was already present
+    //    where it was.
     let mut report = SpawnedWorld::of(definition.id());
-    let mut spawned_ids = Vec::new();
+    let mut incoming: Vec<SpawnedObject> = Vec::new();
     for record in &records {
         let condition = resident(app.world())?.condition(record.id());
         let spawned = match spawn_object(app, &definition, record, meshes) {
             Ok(spawned) => spawned,
-            Err(err) => {
-                let world = app.world_mut();
-                let present: Vec<SpawnedObject> = resident(world)
-                    .map(|resident| resident.objects.values().cloned().collect())
-                    .unwrap_or_default();
-                despawn_all(world, &present);
-                return Err(WorldLoadError::Spawn(err));
-            }
+            Err(err) => return Err(rollback(app, &incoming, WorldLoadError::Spawn(err))),
         };
         if let Err(err) = stamp(app.world_mut(), &spawned, condition) {
-            let world = app.world_mut();
-            let present: Vec<SpawnedObject> = resident(world)
-                .map(|resident| resident.objects.values().cloned().collect())
-                .unwrap_or_default();
-            despawn_all(world, &present);
-            return Err(err);
+            return Err(rollback(app, &incoming, err));
         }
-        spawned_ids.push(spawned.object.clone());
         {
             let Some(mut residency) = app.world_mut().get_resource_mut::<WorldResidency>() else {
-                return Err(WorldLoadError::NoResidentWorld);
+                return Err(rollback(app, &incoming, WorldLoadError::NoResidentWorld));
             };
             residency
                 .resident
                 .objects
                 .insert(spawned.object.clone(), spawned.clone());
         }
+        incoming.push(spawned.clone());
         report.record(spawned);
     }
     {
         let Some(mut residency) = app.world_mut().get_resource_mut::<WorldResidency>() else {
-            return Err(WorldLoadError::NoResidentWorld);
+            return Err(rollback(app, &incoming, WorldLoadError::NoResidentWorld));
         };
         residency.resident.loaded.insert(sector.clone());
     }
 
     Ok(SectorLoad {
         sector: Some(sector.clone()),
-        spawned: spawned_ids,
+        spawned: incoming
+            .iter()
+            .map(|spawned| spawned.object.clone())
+            .collect(),
         despawned: Vec::new(),
         report,
     })
@@ -737,6 +745,26 @@ fn despawn_all<'a>(world: &mut World, spawned: impl IntoIterator<Item = &'a Spaw
             }
         }
     }
+}
+
+/// Takes back exactly what one aborted [`load_sector`] spawned, and leaves
+/// everything that was already present exactly where it was.
+///
+/// The objects this call did *not* spawn belong to the load that put them there;
+/// despawning them would leave a record claiming objects the world no longer
+/// holds, which is the one outcome this module exists to prevent. Each of this
+/// call's own spawns is despawned **and** removed from the record, so the
+/// residency still describes the world when the call returns, and the sector
+/// stays unloaded.
+fn rollback(app: &mut App, incoming: &[SpawnedObject], error: WorldLoadError) -> WorldLoadError {
+    let world = app.world_mut();
+    despawn_all(world, incoming.iter());
+    if let Some(mut residency) = world.get_resource_mut::<WorldResidency>() {
+        for spawned in incoming {
+            residency.resident.objects.remove(&spawned.object);
+        }
+    }
+    error
 }
 
 /// The one named error a vanished entity produces.
