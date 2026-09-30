@@ -110,6 +110,20 @@ was restored. No probe was committed.
    gravity`, `throttle_spools_then_accelerates`,
    `roll_command_produces_a_bounded_body_rate`.
 
+### Reviewer re-run (mimo-1, 2026-09-30)
+
+The reviewer repeated probe 1 independently by gating `FlightForcesPlugin::build`
+on an environment variable (restored afterwards, nothing committed):
+**12 of the 16 selected tests failed** (exit 101) — every integration test
+except the two spawn-boundary ones, including
+`missing_body_is_refused_by_name_...`, which is the refusal-path test added
+during review. The 4 survivors are the two constructor-boundary tests and the
+two unit tests, which do not touch the driver. The reviewer also added
+`accept_f24_b_missing_body_is_refused_by_name_without_stopping_the_others`:
+`FlightRefusalReason::MissingBody` was documented but had no test, so an
+entity carrying `FlightAircraft` without a `RigidBody` was a documented-but-
+unproven refusal path.
+
 ## Commands run
 
 All four required checks, run from the repository root; exit codes as printed.
@@ -117,11 +131,11 @@ All four required checks, run from the repository root; exit codes as printed.
 ```
 cargo fmt --all -- --check                                             -> 0
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings -> 0
-cargo test --workspace --locked                                        -> 0 (131 "test result: ok", no failures)
-cargo test --workspace --locked -- accept_f24_b_ --include-ignored     -> 0 (15 tests selected, all passed)
+cargo test --workspace --locked                                        -> 0 (131 "test result: ok", 1156 passed, no failures)
+cargo test --workspace --locked -- accept_f24_b_ --include-ignored     -> 0 (16 tests selected, all passed)
 ```
 
-The 15 selected tests are 13 integration tests in `crates/cs_app/tests/
+The 16 selected tests are 14 integration tests in `crates/cs_app/tests/
 flight/main.rs` plus 2 unit tests in `physics::flight::tests`. No test is
 `#[ignore]`d, so `--include-ignored` selects the same set.
 
@@ -185,6 +199,11 @@ Affected content: the whole F24 flight path. Resolving tasks: **F24-C**,
 
 ## Session notes
 
-Implementer: `Jakob - Devin SWE-2/devin-1` (SWE-2). A stray `request_work`
-call under a different `agentName` briefly claimed task #410; it was released
-immediately with `save_checkpoint`, no work done on it.
+Implementer: `Jakob - Devin SWE-2/devin-1` (SWE-2). Reviewer: `mimo-1`
+(MiMo, a different agent instance with a fresh context — the independence
+policy for format/mission semantics and fidelity claims). The reviewer read
+the spec stage, the `FLIGHT-PHYSICS` contract, the driver, the tests and this
+record, re-ran every check, re-ran a mutation probe and added the missing
+`MissingBody` refusal test; no production code needed a fix. A stray
+`request_work` call under a different `agentName` briefly claimed task #410;
+it was released immediately with `save_checkpoint`, no work done on it.
