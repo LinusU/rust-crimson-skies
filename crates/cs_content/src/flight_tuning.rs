@@ -33,11 +33,28 @@
 //! reference traces. The one declared airframe carries
 //! [`Origin::SyntheticFixture`] and is a bootstrap projection of
 //! `cs_sim::flight::synthetic::synthetic_fixed_wing`; F24-C is the stage that
-//! asserts the two agree and wires the record into the model. No value here
-//! is an extracted original coefficient.
+//! asserts the two agree and wires the record into the model. F24-C also adds
+//! the optional, explicitly named improved record and
+//! [`declared_synthetic_airframe_for`], the profile producer a caller selects
+//! from: an unknown profile label is refused with `None` rather than falling
+//! back to the fidelity record. No value here is an extracted original
+//! coefficient.
 
-use cs_types::content::{Origin, PermittedRange, Provenance, RangeError, Resolved, ResolvedError};
+use cs_types::content::{
+    Known, Origin, PermittedRange, Provenance, RangeError, Resolved, ResolvedError,
+};
 use cs_types::evidence::ClaimId;
+
+/// The label of the fidelity handling profile: the declared profile a
+/// calibrated probe compares against.
+pub const FIDELITY_PROFILE: &str = "fidelity";
+
+/// The label of the optional improved-handling profile.
+///
+/// F24 non-negotiable behavior 5: an improved profile is explicitly named and
+/// is never silently the fidelity profile a reference trace is compared
+/// against.
+pub const IMPROVED_PROFILE: &str = "improved";
 
 /// One declared tuning field's contract: its stable name, its unit, the
 /// inclusive range a consumer may accept and whether a complete record must
@@ -418,6 +435,14 @@ pub struct DeclaredAirframeTuning {
     pub model_kind: String,
     /// The named handling profile (`fidelity`, `improved`).
     pub profile: String,
+    /// Whether the declared assist set may contribute this tick.
+    ///
+    /// This is record identity, not one of the numeric tuning fields: F24
+    /// non-negotiable behavior 5 requires the fidelity profile to fly with its
+    /// assist contributions recorded as exactly zero, so only an explicitly
+    /// named improved record may set this. The field names the assist set's
+    /// numeric gains and limits; the boolean only decides whether they act.
+    pub assists_enabled: bool,
     /// Where the record came from.
     pub origin: Origin,
     /// The claim the record backs.
@@ -577,13 +602,85 @@ pub fn declared_synthetic_airframe() -> DeclaredAirframeTuning {
     DeclaredAirframeTuning {
         id: "fixture.synthetic-fixed-wing".to_owned(),
         model_kind: "fixed_wing".to_owned(),
-        profile: "fidelity".to_owned(),
+        profile: FIDELITY_PROFILE.to_owned(),
+        assists_enabled: false,
         origin: Origin::SyntheticFixture,
         provenance: Provenance::designed(
             ClaimId::new("f24a.tuning.synthetic-fixed-wing")
                 .expect("the declared claim id is valid"),
         ),
         values,
+    }
+}
+
+/// The declared synthetic improved-handling airframe: the same synthetic
+/// fixture data with the optional improved profile named explicitly.
+///
+/// It exists so F24-C can prove profile selection reaches the production
+/// flight model instead of being a label nothing reads. The values differ only
+/// in controller response and the bank/level assist, which is what "improved
+/// handling" means for this designed model; the mass, engine, drag and lift
+/// curves stay the synthetic airframe's, and nothing here is an original
+/// coefficient (`F24` "Research boundary").
+#[must_use]
+pub fn declared_synthetic_improved_airframe() -> DeclaredAirframeTuning {
+    let mut record = declared_synthetic_airframe();
+    record.id = "fixture.synthetic-fixed-wing.improved".to_owned();
+    record.profile = IMPROVED_PROFILE.to_owned();
+    // The improved profile may use the declared bank/level assist; the fidelity
+    // profile must not.
+    record.assists_enabled = true;
+    record.provenance = Provenance::designed(
+        ClaimId::new("f24a.tuning.synthetic-fixed-wing.improved")
+            .expect("the declared claim id is valid"),
+    );
+    // A more responsive, more damped controller plus the declared assist. These
+    // are newly authored design values, not measurements.
+    set_known(&mut record, "angular.rate_gain_per_s", 6.0);
+    set_known(&mut record, "angular.rate_damping_per_s", 2.0);
+    set_known(&mut record, "assists.bank_level_gain_nm_per_rad", 8_000.0);
+    record
+}
+
+/// The declared synthetic airframe that `profile` names, or `None` for a
+/// profile label the synthetic producer does not declare.
+///
+/// The explicit `None` is the point: an unknown or misspelled profile is
+/// refused by the caller rather than falling back to the fidelity record
+/// (F24 non-negotiable behavior 5).
+#[must_use]
+pub fn declared_synthetic_airframe_for(profile: &str) -> Option<DeclaredAirframeTuning> {
+    match profile {
+        FIDELITY_PROFILE => Some(declared_synthetic_airframe()),
+        IMPROVED_PROFILE => Some(declared_synthetic_improved_airframe()),
+        _ => None,
+    }
+}
+
+/// Replaces (or adds) one known value of a declared record, keeping the
+/// field's existing provenance when it already has one.
+fn set_known(record: &mut DeclaredAirframeTuning, field: &str, value: f64) {
+    let provenance = record
+        .values
+        .iter()
+        .find(|declared| declared.field == field)
+        .and_then(|declared| declared.value.provenance().cloned())
+        .unwrap_or_else(|| {
+            Provenance::designed(
+                ClaimId::new("f24a.tuning.synthetic-fixed-wing.improved")
+                    .expect("the declared claim id is valid"),
+            )
+        });
+    if let Some(existing) = record
+        .values
+        .iter_mut()
+        .find(|declared| declared.field == field)
+    {
+        existing.value = Resolved::Known(Known::new(value, provenance));
+    } else {
+        record
+            .values
+            .push(DeclaredTuningValue::known(field, value, provenance));
     }
 }
 
@@ -810,5 +907,70 @@ mod tests {
             record.validate(&schema),
             Err(DeclaredTuningError::EmptyProfile)
         );
+    }
+
+    /// F24-C: profile selection is explicit and never falls back to fidelity.
+    /// The fidelity and improved records are distinct, both validate, and an
+    /// unknown label is refused instead of silently selecting the fidelity
+    /// record (F24 non-negotiable behavior 5).
+    #[test]
+    fn accept_f24_c_profile_selection_is_explicit_and_never_a_fallback() {
+        let schema = TuningSchema::fixed_wing();
+
+        let fidelity = declared_synthetic_airframe_for(FIDELITY_PROFILE)
+            .expect("the fidelity profile is declared");
+        assert_eq!(fidelity.profile, FIDELITY_PROFILE);
+        assert!(!fidelity.assists_enabled);
+        assert_eq!(fidelity.validate(&schema), Ok(()));
+
+        let improved = declared_synthetic_airframe_for(IMPROVED_PROFILE)
+            .expect("the improved profile is declared");
+        assert_eq!(improved.profile, IMPROVED_PROFILE);
+        assert!(improved.assists_enabled);
+        assert_eq!(improved.validate(&schema), Ok(()));
+
+        assert_ne!(
+            fidelity, improved,
+            "the named profiles must be different records"
+        );
+        assert_ne!(
+            fidelity.known_value("angular.rate_gain_per_s"),
+            improved.known_value("angular.rate_gain_per_s"),
+            "the improved profile changes the controller, not only its label"
+        );
+        assert_eq!(
+            declared_synthetic_airframe_for("autogyro"),
+            None,
+            "an undeclared profile is refused, never the fidelity fallback"
+        );
+    }
+
+    /// F24-C: the improved record keeps the synthetic airframe's fixtures
+    /// (mass, engine, area) and changes only the controller and assist, so a
+    /// profile swap can never smuggle in different airframe data.
+    #[test]
+    fn accept_f24_c_improved_profile_changes_only_handling() {
+        let schema = TuningSchema::fixed_wing();
+        let fidelity = declared_synthetic_airframe();
+        let improved = declared_synthetic_improved_airframe();
+
+        for field in [
+            "mass.mass_kg",
+            "mass.inertia_kg_m2[0]",
+            "engine.max_thrust_n",
+            "drag.zero_lift_coefficient",
+            "lift.lift_slope_per_rad",
+            "reference_area_m2",
+        ] {
+            assert_eq!(
+                fidelity.known_value(field),
+                improved.known_value(field),
+                "{field} must not change between profiles"
+            );
+        }
+        assert_eq!(improved.validate(&schema), Ok(()));
+        assert_eq!(improved.origin, Origin::SyntheticFixture);
+        assert!(!improved.origin.is_original());
+        assert_eq!(improved.values.len(), schema.len(), "every field is stated");
     }
 }
