@@ -338,13 +338,29 @@ cargo does not delete the previous profile's artifacts, and a
 `CARGO_PROFILE_DEV_DEBUG` in the environment overrides the manifest. Both are
 in the sections above, with the measurements and the limits of what they prove.
 
-Commands run by the review pass on its own head, all with
-`env -u CARGO_PROFILE_DEV_DEBUG`:
+Commands run by the review pass on its own head:
 
 | command | exit | result |
 |---|---|---|
 | `cargo fmt --all -- --check` | 0 | clean |
 | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 | clean |
-| `cargo test --workspace --locked` | 0 | REVIEW_WORKSPACE_TEST_RESULT |
-| `cargo test --workspace --locked -- accept_t430_ --include-ignored` | 0 | REVIEW_SELECTION_RESULT |
+| `cargo test --workspace --locked` | 0 | 156 test binaries, 1,443 tests, 0 failed (13 ignored: the `CS_GAME_DIR` ones) |
+| `cargo test --workspace --locked -- accept_t430_ --include-ignored` | 0 | 6 selected, 6 passed |
+| `cargo run -p cs_xtask -- verify-ci-budget` | 0 | the gate accepts the committed manifest |
 | `CARGO_PROFILE_DEV_DEBUG=none cargo test -p cs_xtask --test accept_t430_ci_disk_budget` | 101 | the backtrace test fails, 6 others pass — its sensitivity check |
+
+Two limits on what that table proves, stated rather than glossed:
+
+* The task's own selection is the `accept_t430_` prefix and it was run with
+  `--include-ignored`; the 13 ignored tests in the workspace are the
+  `CS_GAME_DIR` ones, which this task does not touch and does not claim
+  (capabilities used: ordinary build/test only, no `retail`), so they were
+  left ignored in the workspace run.
+* The suite ran in the shell's own environment, which already exports
+  `CARGO_PROFILE_DEV_DEBUG=line-tables-only` — the same value the committed
+  manifest line states, so the artifacts under test are the manifest's, but
+  cargo did not read that line to get them. That cargo honours the manifest
+  when the variable is *absent* was measured on the same scratch crate as the
+  `debug = true` binary above, instead of paying another 400-crate rebuild
+  here; CI, which exports no `CARGO_PROFILE_*` at all, exercises the manifest
+  path on every push.
