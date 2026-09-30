@@ -26,8 +26,8 @@ declaration carries that status.
 - `crates/cs_app/src/render/mod.rs`: module doc and the four `pub mod` lines
   (F17-A's own contract untouched).
 - Tests (`crates/cs_app/tests/render/`, selected by `accept_f17_b_`):
-  `fixture.rs` (synthetic canonical inputs), `adapters.rs` (7 tests),
-  `frame_capture.rs` (4 tests), plus the `main.rs` module lines.
+  `fixture.rs` (synthetic canonical inputs), `adapters.rs` (9 tests),
+  `frame_capture.rs` (5 tests), plus the `main.rs` module lines.
 
 **One observable failure:** a texture whose stored values are already linear
 uploaded as an sRGB texture is corrected a second time by the GPU, and every
@@ -96,15 +96,18 @@ screenshot matrix with the `gpu` capability.
 
 ## Recorded unknowns and limitations
 
-- **Additive surfaces have no drawable material.** `StandardMaterial::alpha_mode`
-  is `Opaque`/`Mask`/`Blend` only, so `RenderState::to_standard_material`
-  returns `MaterialGap::AdditiveBlendState` for the additive class. The
-  *state* is complete (blend `One`/`One`, no depth write) and the capture
-  records the gap, so the additive pass is neither dropped nor faked with
-  `Blend`. The material with its own blend state — and the shader in
-  `crates/cs_app/assets/shaders/` — is F17-C's wiring. `assets/shaders/` is
-  still empty, deliberately: a shader with no render app and no material type
-  to load it would be an unconsumed file.
+- **Additive surfaces have no drawable material.** A `StandardMaterial` cannot
+  reach a blend state of `One`/`One`: its `alpha_mode` is the only blend
+  input, and Bevy 0.19 maps `AlphaMode::Add` onto the *premultiplied* alpha
+  pipeline (`alpha_mode_pipeline_key` in `bevy_pbr::material`), which
+  multiplies the source by its own alpha instead of adding it. So
+  `RenderState::to_standard_material` returns `MaterialGap::AdditiveBlendState`
+  for the additive class. The *state* is complete (blend `One`/`One`, no depth
+  write) and the capture records the gap, so the additive pass is neither
+  dropped nor faked with `Blend`. The material with its own blend state — and
+  the shader in `crates/cs_app/assets/shaders/` — is F17-C's wiring.
+  `assets/shaders/` is still empty, deliberately: a shader with no render app
+  and no material type to load it would be an unconsumed file.
 - **`Mesh::ATTRIBUTE_COLOR` is a four-component attribute and the IR stores
   three.** The fourth is the declared constant `1.0`, recorded on
   `GroupReport::colors` and covered by `MeshPresentationUnknown::VertexColor`.
@@ -180,6 +183,66 @@ test that names the behavior:
 | the coverage/image agreement check removed | `accept_f17_b_surface_upload_refuses_a_missing_or_contradicting_image` |
 | the render state dropped from the capture digest | `accept_f17_b_capture_depends_on_the_tick_the_camera_and_the_geometry` |
 
+## Review pass (bunny-2, 2026-09-30, branch head 7436a5e)
+
+Reviewer: bunny-2, the same agent that implemented this stage, in a fresh
+session with no memory of the implementation. It is **not independent
+evidence**; see the review notes on the task. What the pass changed:
+
+1. **A blended surface's drawable material did not blend.**
+   `render_state` gave the `Blended` class `AlphaMode::Opaque`, while the same
+   state records `BlendState::ALPHA_BLENDING` and no depth write, and
+   `to_standard_material`'s own doc claimed the blend decision was set on the
+   material. A `StandardMaterial` takes its blend from `alpha_mode`, and in
+   Bevy 0.19 `AlphaMode::Blend` is what selects
+   `BlendState::ALPHA_BLENDING` and the non-depth-writing pipeline, so the
+   state now says `Blend` for that class and the two agree. The golden scene's
+   two panes and the sprite's own capture depend on this.
+2. **A declared constant opacity never reached the material.**
+   `Coverage::Uniform(alpha)` is the whole coverage of a surface that carries
+   no image — the golden `glass_far` pane — and in a PBR material coverage *is*
+   the base color's alpha, which the blend factor and the mask both read. The
+   material now carries `Color::srgba(1.0, 1.0, 1.0, alpha / 255)` for the two
+   classes that consume coverage (`Masked`, `Blended`); no tint is declared
+   anywhere, so the color channels stay the identity multiplier. Bevy passes an
+   `Srgba` alpha through unchanged, so the stored byte is not encoding-shifted.
+   Without this the state recorded an opacity the draw call ignored.
+3. **`ImageUpload::covered_texels` counted the opposite of its name** — the
+   texels that are *not* fully opaque. Renamed to `translucent_texels` and
+   documented, because a caller asking whether an image is fully covered would
+   have read it exactly backwards.
+4. **The additive gap reason was wrong.** "`alpha_mode` is `Opaque`/`Mask`/
+   `Blend` only" is not why additive cannot be expressed; the real reason (and
+   the one recorded now) is that Bevy maps `AlphaMode::Add` onto the
+   premultiplied pipeline.
+5. **A wrong claim about the mask rule.** The comment said Bevy keeps a texel
+   "above the cutoff" and discards it "at or below"; Bevy 0.19 tests
+   `color.a >= alpha_cutoff` and keeps the texel (fully opaque), discarding
+   only below it. The boundary case is exactly what `AlphaTest::Threshold(0x80)`
+   on a stored `0x80` byte exercises, so the comment now states the engine's
+   rule rather than a paraphrase of it.
+6. **Three comments that described something else:** the capture's refusals are
+   ordered by draw item key, not "in submission order"; a refused surface is
+   not "next to the pass it would have drawn in" (its phase is present but
+   empty); and `SurfaceRefusal::reasons` also carries the
+   coverage/image-agreement codes, not only the three adapters' own.
+7. **The findings doc itself** miscounted its own tests (7 + 4 for 14) and
+   still described the crate-level `render` doc paragraph as unchanged.
+
+Test sensitivity, re-verified by the reviewer (each mutation applied, the
+`accept_f17_b_` selection run, the change reverted):
+
+| Mutation | Failing test |
+| --- | --- |
+| `Blended` mapped back to `AlphaMode::Opaque` | `accept_f17_b_render_state_differs_per_class_and_refuses_unmeasured_facts` |
+| the uniform-coverage base color removed | `accept_f17_b_render_state_differs_per_class_and_refuses_unmeasured_facts` |
+| the image digest dropped from the capture | both capture tests (the identity and the dependency one) |
+| `ColorSpace::Linear` uploaded as `Rgba8UnormSrgb` | `accept_f17_b_image_upload_chooses_the_sampling_format_from_the_color_space` |
+| the tick dropped from the capture digest | `accept_f17_b_capture_depends_on_the_tick_the_camera_and_the_geometry` |
+
+The implementer's eight mutations were not re-run one by one; the two above
+that overlap were.
+
 ## Commands run
 
 From the repository root on branch
@@ -190,13 +253,14 @@ From the repository root on branch
 | `cargo fmt --all -- --check` | 0 |
 | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
 | `cargo test --workspace --locked` | 0 |
-| `cargo test --workspace --locked -- accept_f17_b_ --include-ignored` | 0 (14 tests: 7 adapters, 4 frame capture, plus 16 F17-A tests filtered out) |
+| `cargo test --workspace --locked -- accept_f17_b_ --include-ignored` | 0 (14 tests: 9 adapters, 5 frame capture; the 16 F17-A tests in the same binary are filtered out) |
 
 ## Wiring edits (outside owner paths, logic-free)
 
-- `crates/cs_app/src/lib.rs`: no change. The four new modules are declared in
-  `crates/cs_app/src/render/mod.rs`, which is inside the owner path
-  `crates/cs_app/src/render/`.
+- `crates/cs_app/src/lib.rs`: the crate-level `render` paragraph only, which
+  still described the module as the F17-A contract and pointed the adapters at
+  "F17-B/C". It now names the F17-B adapters and the capture and leaves the
+  profiles to F17-C. Doc comment, no logic (AGENTS.md rule 1).
 - `crates/cs_app/Cargo.toml`: no change. The adapters use only the crate's
   existing dependencies (`bevy` for `Mesh`/`Image`/`BlendState`/
   `StandardMaterial`, `cs_content` for `RenderMesh`/`RenderGroup`/
