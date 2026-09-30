@@ -2,7 +2,7 @@
 //! reference-envelope schema as a read-only inspection report (F26-A).
 //!
 //! ```text
-//! cs-inspect handling [--out <file>]
+//! cs-inspect handling [--audit] [--out <file>]
 //! ```
 //!
 //! The report renders the production schema of [`cs_sim::probes`] — the probe
@@ -19,6 +19,15 @@
 //! `supports_original_fidelity` is false by construction. Running headless
 //! probes against real reference traces is F26-B/F26-D.
 //!
+//! `--audit` (F26-C) instead renders the roster-wide audit: every airframe row
+//! flown through the production [`cs_sim::probes::ProbeRunner`] and compared
+//! with its envelope, with per-maneuver deviations and the assist profile. A row
+//! without a reference envelope or tuning, or with an unmeasurable maneuver, is
+//! reported `unavailable`, never `pass`. The exit code is 0 whenever the report
+//! was produced: an unavailable or failing row is report content, not a tool
+//! failure. The roster is the declared synthetic one until retail airframe
+//! tunings and envelopes exist.
+//!
 //! ```text
 //! exit 0  the report was produced
 //! exit 2  invalid input (unknown flag, missing value)
@@ -30,15 +39,21 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 
 use cs_sim::probes::{
-    EnvelopeEntry, HandlingAssessment, ProbeInitialState, ProbeInputStep, ProbeKind,
-    ReferenceEnvelope, TimingUncertainty, VerdictStatus, synthetic_covering_assessment,
-    synthetic_out_of_envelope_assessment, synthetic_reference_envelope,
+    AirframeAudit, AuditStatus, EnvelopeEntry, HandlingAssessment, ProbeInitialState,
+    ProbeInputStep, ProbeKind, ReferenceEnvelope, TimingUncertainty, VerdictStatus, audit_roster,
+    synthetic_audit_roster, synthetic_covering_assessment, synthetic_out_of_envelope_assessment,
+    synthetic_reference_envelope,
 };
+
+use cs_types::content::Origin;
 
 use crate::catalog::{json_string, report_run, write_atomic};
 
 /// The report schema version this consumer writes.
 pub const HANDLING_REPORT_VERSION: &str = "cs-inspect-handling/v1";
+
+/// The report schema version `--audit` writes.
+pub const HANDLING_AUDIT_REPORT_VERSION: &str = "cs-inspect-handling-audit/v1";
 
 /// The `source` label of the declared synthetic handling report; it can never
 /// be `installation`.
@@ -49,6 +64,8 @@ pub const SYNTHETIC_HANDLING_SOURCE_LABEL: &str = "synthetic-fixture";
 struct HandlingArgs {
     /// The `--out` report path; `None` writes the report to stdout.
     out: Option<PathBuf>,
+    /// Render the roster audit instead of the schema report.
+    audit: bool,
 }
 
 /// Everything one `handling` run produced.
@@ -64,6 +81,21 @@ pub struct HandlingRun {
     pub diagnostics: Vec<String>,
     /// The counts the report declares, when it was produced.
     pub summary: Option<HandlingSummary>,
+    /// The counts the `--audit` report declares, when it was produced.
+    pub audit: Option<AuditSummary>,
+}
+
+/// The counts one `handling --audit` report declares.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AuditSummary {
+    /// How many airframe rows were audited.
+    pub rows: usize,
+    /// Rows that passed.
+    pub pass: usize,
+    /// Rows with an out-of-envelope entry.
+    pub fail: usize,
+    /// Rows that could not be assessed.
+    pub unavailable: usize,
 }
 
 /// The counts one `handling` report declares.
@@ -89,6 +121,7 @@ impl HandlingRun {
             out: None,
             diagnostics: vec![message],
             summary: None,
+            audit: None,
         }
     }
 }
@@ -98,10 +131,14 @@ fn parse_handling_args(args: &[String]) -> Result<HandlingArgs, String> {
     let mut cursor = args.iter();
     while let Some(arg) = cursor.next() {
         let flag = arg.as_str();
+        if flag == "--audit" {
+            parsed.audit = true;
+            continue;
+        }
         if flag != "--out" {
             return Err(format!(
-                "cs-inspect handling: unsupported argument {flag:?}; expected --out <file> \
-                 (retail handling probing arrives with F26-C/D)"
+                "cs-inspect handling: unsupported argument {flag:?}; expected --audit or \
+                 --out <file> (retail handling probing arrives with F26-D)"
             ));
         }
         let Some(value) = cursor.next() else {
@@ -136,12 +173,16 @@ pub fn handling_command_result(args: &[String]) -> HandlingRun {
         Err(message) => return HandlingRun::failed(2, message),
     };
 
-    let (report, summary) = match build_handling_report() {
-        Ok(report) => {
-            let summary = report.summary;
-            (report.report, summary)
+    let (report, summary, audit) = if parsed.audit {
+        match build_audit_report() {
+            Ok(rendered) => (rendered.report, None, Some(rendered.summary)),
+            Err(message) => return HandlingRun::failed(1, message),
         }
-        Err(message) => return HandlingRun::failed(1, message),
+    } else {
+        match build_handling_report() {
+            Ok(rendered) => (rendered.report, Some(rendered.summary), None),
+            Err(message) => return HandlingRun::failed(1, message),
+        }
     };
 
     match parsed.out {
@@ -151,7 +192,8 @@ pub fn handling_command_result(args: &[String]) -> HandlingRun {
                 report: Some(report),
                 out: Some(out),
                 diagnostics: Vec::new(),
-                summary: Some(summary),
+                summary,
+                audit,
             },
             Err(error) => HandlingRun {
                 exit_code: 1,
@@ -161,7 +203,8 @@ pub fn handling_command_result(args: &[String]) -> HandlingRun {
                     "cs-inspect handling: cannot write report to {}: {error}",
                     out.display()
                 )],
-                summary: Some(summary),
+                summary,
+                audit,
             },
         },
         None => HandlingRun {
@@ -169,7 +212,8 @@ pub fn handling_command_result(args: &[String]) -> HandlingRun {
             report: Some(report),
             out: None,
             diagnostics: Vec::new(),
-            summary: Some(summary),
+            summary,
+            audit,
         },
     }
 }
@@ -208,6 +252,121 @@ fn build_handling_report() -> Result<HandlingReport, String> {
     };
     let report = render_handling_report(&envelope, &covering, &out_of_envelope);
     Ok(HandlingReport { report, summary })
+}
+
+/// The rendered audit report and its declared counts.
+struct AuditReport {
+    report: String,
+    summary: AuditSummary,
+}
+
+/// Renders the roster audit over the declared synthetic roster.
+///
+/// # Errors
+///
+/// The `String` diagnostic when the roster is refused (empty or duplicated),
+/// which would be a defect in the declared roster.
+fn build_audit_report() -> Result<AuditReport, String> {
+    let audit = audit_roster(&synthetic_audit_roster())
+        .map_err(|error| format!("the declared synthetic roster is invalid: {error}"))?;
+    let summary = AuditSummary {
+        rows: audit.airframes.len(),
+        pass: audit.count(&AuditStatus::Pass),
+        fail: audit.count(&AuditStatus::Fail),
+        unavailable: audit.count(&AuditStatus::Unavailable),
+    };
+    let airframes = audit
+        .airframes
+        .iter()
+        .map(render_airframe_audit)
+        .collect::<Vec<_>>()
+        .join(",");
+    let report = format!(
+        "{{\"schema\":{},\"source\":{},\"retail\":false,\"rows\":{},\"pass\":{},\
+         \"fail\":{},\"unavailable\":{},\"all_pass\":{},\"supports_original_fidelity\":{},\
+         \"airframes\":[{}],\"note\":{}}}",
+        json_string(HANDLING_AUDIT_REPORT_VERSION),
+        json_string(SYNTHETIC_HANDLING_SOURCE_LABEL),
+        summary.rows,
+        summary.pass,
+        summary.fail,
+        summary.unavailable,
+        audit.all_pass(),
+        audit.supports_original_fidelity_claim(),
+        airframes,
+        json_string(
+            "declared synthetic roster: no retail airframe tuning or reference envelope exists \
+             yet, so no original-fidelity claim is made; unavailable is not pass"
+        ),
+    );
+    Ok(AuditReport { report, summary })
+}
+
+fn render_airframe_audit(audit: &AirframeAudit) -> String {
+    let origin = |origin: &Option<Origin>| match origin {
+        Some(origin) => json_string(origin.label()),
+        None => "null".to_owned(),
+    };
+    let assists = match audit.assists {
+        Some(assists) => format!(
+            "{{\"enabled\":{},\"bank_level_gain_nm_per_rad\":{},\"provenance\":{}}}",
+            assists.enabled,
+            render_f64(assists.bank_level_gain_nm_per_rad),
+            origin(&audit.tuning_origin),
+        ),
+        None => "null".to_owned(),
+    };
+    let unavailable = audit
+        .unavailable
+        .iter()
+        .map(|reason| json_string(&reason.to_string()))
+        .collect::<Vec<_>>()
+        .join(",");
+    let deviations = audit
+        .deviations
+        .iter()
+        .map(|row| {
+            let optional = |value: Option<f64>| value.map_or("null".to_owned(), render_f64);
+            let status = match row.status {
+                VerdictStatus::WithinEnvelope => "within_envelope",
+                VerdictStatus::OutOfEnvelope { .. } => "out_of_envelope",
+                VerdictStatus::NoMeasurement => "no_measurement",
+            };
+            format!(
+                "{{\"maneuver\":{},\"quantity\":{},\"unit\":{},\"held_out\":{},\
+                 \"reference\":{},\"tolerance\":{},\"measured\":{},\"deviation\":{},\
+                 \"status\":{}}}",
+                json_string(row.maneuver.label()),
+                json_string(row.quantity.label()),
+                json_string(row.unit),
+                row.held_out,
+                render_f64(row.reference),
+                render_f64(row.tolerance),
+                optional(row.measured),
+                optional(row.deviation),
+                json_string(status),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let hash = audit
+        .combined_hash
+        .map_or("null".to_owned(), |hash| format!("\"{hash:016x}\""));
+    format!(
+        "{{\"airframe\":{},\"configuration\":{},\"status\":{},\"tuning_origin\":{},\
+         \"envelope_origin\":{},\"assists\":{},\"combined_hash\":{},\
+         \"supports_original_fidelity\":{},\"unavailable\":[{}],\"deviations\":[{}]}}",
+        json_string(&audit.airframe_id),
+        json_string(&audit.configuration),
+        json_string(audit.status.label()),
+        origin(&audit.tuning_origin),
+        origin(&audit.envelope_origin),
+        assists,
+        hash,
+        audit.supports_original_fidelity,
+        unavailable,
+        deviations,
+    )
 }
 
 /// Renders one handling report.
@@ -464,5 +623,33 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    /// F26-C: the audit report keeps pass, fail and unavailable apart and
+    /// never reads a row without a reference envelope as a pass.
+    #[test]
+    fn accept_f26_c_audit_report_reports_missing_reference_as_unavailable() {
+        let run = handling_command_result(&["--audit".to_owned()]);
+        assert_eq!(run.exit_code, 0, "{:?}", run.diagnostics);
+        let summary = run.audit.expect("the audit counts are declared");
+        assert_eq!(summary.rows, 3);
+        assert_eq!(summary.pass, 0);
+        assert_eq!(summary.fail, 1, "the authored references are not met");
+        assert_eq!(summary.unavailable, 2);
+
+        let report = run.report.expect("the audit report is produced");
+        assert!(report.contains(&format!("\"schema\":\"{HANDLING_AUDIT_REPORT_VERSION}\"")));
+        assert!(report.contains("\"all_pass\":false"));
+        assert!(report.contains("\"supports_original_fidelity\":false"));
+        assert!(report.contains(
+            "\"airframe\":\"fixture.synthetic-no-reference\",\"configuration\":\"stock\",\
+             \"status\":\"unavailable\""
+        ));
+        assert!(report.contains("no reference envelope"));
+        assert!(report.contains("\"status\":\"no_measurement\""));
+        assert!(report.contains("\"deviation\":"));
+
+        let again = handling_command_result(&["--audit".to_owned()]);
+        assert_eq!(Some(report), again.report, "the audit is byte-stable");
     }
 }
