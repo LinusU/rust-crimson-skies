@@ -637,6 +637,73 @@ fn accept_f18_c_a_sector_streamed_back_in_without_geometry_is_a_reported_gap() {
     );
 }
 
+/// **A required sector that something outside the policy unloaded is restored,
+/// not left as a record with nothing behind it.**
+///
+/// Rule 1 holds a required sector in **both** directions. The obvious half is
+/// "the pass never unloads it"; the half that is easy to get wrong is what
+/// happens when the sector is gone for some other reason — a teardown, another
+/// subsystem's pass, a caller's explicit
+/// [`unload_sector`](cs_app::world::unload_sector). The pass is stated as
+/// "residency should match the held set", and the held set contains every
+/// required sector, so the next pass puts it back.
+///
+/// This matters because the two remaining options are both worse. Leaving it
+/// unloaded means a gameplay-required object is neither simulated nor
+/// summarized *in the world* — the record still names it, and nothing is there
+/// — which is the state F18 non-negotiable behavior 3 exists to prevent, and it
+/// is a state a caller cannot see from the return value, because the pass would
+/// have reported a clean no-op.
+///
+/// Observable failure: the yard stays unloaded after a pass, or the pass reports
+/// it as loaded while its objects are still gone.
+#[test]
+fn accept_f18_c_a_required_sector_unloaded_outside_the_policy_comes_back() {
+    let (mut app, _report) = loaded(&[DEPOT_OBJECT_DOOR]);
+    unload_sector(&mut app, &sector(DEPOT_SECTOR_YARD)).expect("the yard is loaded");
+    assert!(
+        entities_of(&mut app, &object(DEPOT_OBJECT_DOOR)).is_empty(),
+        "the panel's entities are gone, so the record is the only thing that still \
+         names it"
+    );
+    assert!(
+        !loaded_sectors(&app).contains(&DEPOT_SECTOR_YARD.to_owned()),
+        "and the sector is not resident"
+    );
+
+    let update = update_visibility(&mut app, &FAR_WEST, &meshes()).expect("the pass runs");
+    assert_eq!(
+        update.retained,
+        vec![sector(DEPOT_SECTOR_YARD)],
+        "the yard is out of the focus's range and is held anyway: {update:?}"
+    );
+    assert_eq!(
+        update.loaded,
+        vec![sector(DEPOT_SECTOR_YARD)],
+        "and a pass that finds it missing loads it again, because the held set is \
+         what residency is made to match: {update:?}"
+    );
+    assert_eq!(
+        update.unloaded,
+        vec![sector(DEPOT_SECTOR_ANNEX)],
+        "while the sector nothing needs still goes: {update:?}"
+    );
+    let panel = entities_of(&mut app, &object(DEPOT_OBJECT_DOOR));
+    assert_eq!(
+        panel.len(),
+        2,
+        "and the panel gameplay requires is live again, one entity per half: {panel:?}"
+    );
+    assert!(
+        residency(app.world())
+            .expect("a world is loaded")
+            .resident()
+            .is_present(&object(DEPOT_OBJECT_HANGAR)),
+        "with the rest of its sector"
+    );
+    let _ = VisibilityUpdate::default();
+}
+
 /// **A pass that is asked twice for the same focus changes nothing the second
 /// time.**
 ///

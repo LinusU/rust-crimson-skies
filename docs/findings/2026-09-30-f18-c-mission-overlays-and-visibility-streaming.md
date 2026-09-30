@@ -27,7 +27,8 @@ Date: 2026-09-30. Task: F18-C "Add mission overlays and safe visibility/streamin
 * `crates/cs_app/src/world/mod.rs` (module declarations and re-exports only).
 * `crates/cs_app/tests/world/{overlays,visibility}.rs` (new) and
   `crates/cs_app/tests/world/main.rs` (module declarations and docs only): the
-  seventeen `accept_f18_c_*` acceptance tests.
+  `accept_f18_c_*` acceptance tests (seventeen as implemented, eighteen after
+  review — see the review section at the end).
 * This file.
 
 **One observable failure:** a body reaches the trigger volume, the door opens,
@@ -91,8 +92,10 @@ A radius policy, because that is the smallest honest answer: a sector's own
 Two rules make it **safe**:
 
 1. **A gameplay-required object is never streamed away.** The load declares it
-   and every sector holding one is held whatever the focus does. That is
-   non-negotiable behavior 3's *still simulated* half.
+   and every sector holding one is held whatever the focus does — in both
+   directions: a pass that finds such a sector missing loads it again, because
+   an absent required object is neither simulated nor summarized in the world.
+   That is non-negotiable behavior 3's *still simulated* half.
 2. **Everything that does stream away is summarized, not forgotten.** Its objects
    keep their condition and the overlays the load already applied in the
    residency record, and the sector load re-applies both to the fresh entities.
@@ -273,6 +276,18 @@ F06/F07 measure the original's own trigger and objective semantics.
   the collider moves, is despawned, or is untouched). Affected content: a door
   that opens while something rests against it. Resolving task: **#428**, in the
   same physics path as F23's contact work; not an overlay defect.
+* **The streaming policy is asked about one focus, so a sector an actor other
+  than the focus is inside of may be streamed away** — and the ground in it goes
+  with it. The player is not affected when the focus *is* the player (a focus
+  inside a box is a containment, so the player's own sector is always held), but
+  an AI aircraft (F31), a mission's scripted mover, or the player when the focus
+  is a camera that leads it, are in a sector this pass may unload with no
+  protection but the load's own `required` declaration. Affected content: every
+  non-player mover, in every world — `cs_app::world::update_visibility` takes one
+  [`VisibilityRequest`](../../crates/cs_app/src/world/visibility.rs) and holds one
+  sector set, and nothing in the record says where the actors are. Resolving task:
+  **#429**. This is a limitation of the *policy's inputs*, not of the residency
+  transaction, which is correct about what a load means.
 * **The visibility policy is a radius, and the original's rule is unmeasured.**
   Whether the 2000 PC original streamed by distance at all, by a mission-authored
   mask, or by neither is unknown, and this stage does not guess. Affected
@@ -305,8 +320,70 @@ cargo test --workspace --locked -- accept_f18_c_ --include-ignored
 #   17 tests run, 17 passed (crates/cs_app/tests/world)
 ```
 
-The seventeen acceptance tests are listed with their failure sensitivity in the
-mutation matrix above.
+The seventeen acceptance tests are listed with their failure sensitivity in
+the mutation matrix above.
+
+## Review (bunny-2, fresh context, 2026-09-30)
+
+Checked against `### F18-C`, `AGENTS.md` and the mutation matrix. The two
+mutations most load-bearing for this stage were re-run independently — dropping
+Avian's `Position` write, and dropping the sector load's overlay re-application
+— and each failed exactly the tests the matrix names. The two unclaimed cases in
+the matrix were confirmed by reading the producer and the consumer rather than
+by re-running all nineteen.
+
+Three things were changed on review, all inside the owner paths:
+
+* **`load_sector`'s abort order.** An object joined the rollback list only
+  *after* its condition stamp, its record insert and the overlay re-application
+  — the three steps that can still fail. A failure at either of the last two
+  therefore returned `Err` while the record already claimed the object present
+  and its entities were still live, which is the one outcome `residency`'s own
+  `rollback` contract exists to prevent. (The pre-existing `stamp` step carried
+  the narrower version of the same hole: the entities leaked and the record did
+  not mention them, so a retry would have spawned the object a second time.) An
+  object now joins the list the moment its entities exist, so every refusal
+  takes back exactly what this call spawned. No successful path changes: the list
+  is read only by `rollback` and by the returned `SectorLoad::spawned`. The
+  branch is still unreachable, as the section above says; the point is that the
+  invariant no longer rests on its unreachability.
+* **Four untested public accessors removed** —
+  `ResidentWorld::{overlays, is_required, required_sectors}` and
+  `WorldInstance::is_required`. None had a caller or a test, and
+  `required_sectors` was a second, untested spelling of
+  `visibility::retained_sectors`, which is the tested path. The record's
+  readable surface is now exactly what is used: `overlay_for`, `is_applied`,
+  `applied_overlays` and `required_objects`.
+* **The occupied-sector limitation is now actually recorded.** The module
+  documentation of `visibility` claimed that the hazard of streaming the sector
+  a mover occupies "is recorded as a limitation"; nothing recorded it. It is in
+  the list above with its affected content and its resolving task (**#429**,
+  `F18-E`), and the module documentation now says which actors it can reach —
+  the player is not one of them while the focus *is* the player, and claiming
+  otherwise would have replaced one inaccuracy with another.
+* **Rule 1 held a required sector in one direction only, and said so.** The
+  module documentation stated that rule 1 is "a *hold*, not a force-load" and
+  that a caller wanting a required sector back "asks for it with
+  `load_sector`". The pass is written as *residency matches the held set* and
+  the held set contains every required sector, so the next pass **did** load it
+  again — the documentation described a weaker policy than the code, and a
+  caller reading it would have believed a required sector could sit empty while
+  the pass reported a clean no-op. The code is the right way round (a required
+  object that is absent is neither simulated nor summarized *in the world*, only
+  in the record), so the documentation now states the two-directional hold, and
+  `visibility::accept_f18_c_a_required_sector_unloaded_outside_the_policy_comes_back`
+  (new, eighteenth `accept_f18_c_` test) pins it: a sector the *policy* never
+  empties is restored when something else does, and the annex still goes in the
+  same pass. That test is the **only** thing pinning this direction: mutating
+  the pass so it loads from the focus's held set alone (still never unloading a
+  required sector) leaves the other seventeen green and fails this one.
+
+One test comment was corrected rather than a test changed:
+`..._a_missions_own_request...` described the producer's `role != Sensor`
+filter as producing a *traced refusal* if it were removed. It does not: the
+consumer skips an undeclared trigger silently, which is what M4 says and what
+`queue_overlay_triggers` already documents. The comment now states the same
+thing as the module documentation instead of a stronger and wrong version.
 
 ## Sources
 

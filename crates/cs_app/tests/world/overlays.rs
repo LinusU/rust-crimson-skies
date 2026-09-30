@@ -667,8 +667,9 @@ fn accept_f18_c_the_applied_overlay_is_the_loads_own_and_a_new_load_starts_shut(
 /// [`request_overlay`]'s hand-off, so there is one place that applies an effect
 /// and one trace that says what it did.
 ///
-/// The test also pins that the consumer is *not* reached by ordinary world
-/// geometry: a body that reaches a solid panel is not a trigger.
+/// The test also pins what a mission *sees* when a body reaches ordinary solid
+/// world geometry: no overlay is applied and nothing is traced, because a solid
+/// object is not a trigger and the load declares no overlay behind one.
 #[test]
 fn accept_f18_c_a_missions_own_request_reaches_the_same_consumer() {
     let (mut app, report) = loaded(true);
@@ -694,10 +695,19 @@ fn accept_f18_c_a_missions_own_request_reaches_the_same_consumer() {
     // A body that hits **solid** world geometry is not a trigger. The hangar's
     // own leg is solid and is in the way of a body flying at `z = 1.5`, one
     // metre beside the tunnel's centreline, so this is a real contact with a
-    // real world object — the case the producer's role filter exists for. A
-    // producer that accepted every world object would ask for an overlay behind
-    // the hangar's leg, and the consumer would apply it (or, for a load that
-    // declares none, refuse and report a mission that misconfigured itself).
+    // real world object.
+    //
+    // What it does **not** pin is the producer's own `role != Sensor` filter,
+    // and the assertion must not pretend otherwise: the consumer independently
+    // requires the load to *declare* an overlay for whatever it is handed, and a
+    // load that declared one behind a solid trigger is refused at the door
+    // (`WorldError::OverlayTriggerNotASensor`), so no reachable load lets the
+    // two halves disagree — a producer that forwarded this contact would have its
+    // request skipped for want of a declared overlay, and the count below would
+    // be the same. The filter is the record's own claim about whether a body can
+    // *enter* a volume, the consumer's filter is a different question, and both
+    // are stated in `overlays::queue_overlay_triggers`; what is pinned here is
+    // the outcome a mission sees, not which of the two checks produced it.
     spawn_discrete_probe(&mut app, &probe_at_z(PROBE_START_X_M, 1.5)).expect("valid probe");
     step(&mut app, TICKS);
     let log = contacts(&app);
