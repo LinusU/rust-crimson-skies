@@ -284,11 +284,19 @@ fn accept_f23_d_a_single_solver_step_tunnels_where_the_declared_policy_does_not(
 }
 
 /// The spawn inside the first-tick hole is caught by the production preflight:
-/// clamped onto the contact, stopped there, and reported once.
+/// clamped onto the contact, held there, and reported once.
 ///
-/// Observable failure if the swept spawn response is removed: the clamp lands
-/// but the tick carries the projectile through the wall, and the crossing is
-/// reported **zero** times — a bullet that silently passes through an aircraft.
+/// Two parts of the swept spawn response carry this, and each one has its own
+/// observable failure (both measured, both recorded in the finding):
+///
+/// * the declared `SPAWN_CONTACT_OVERLAP_M` on the clamp. The swept layers run
+///   with `SpeculativeMargin::ZERO`, so a body stopped exactly at the time of
+///   impact only *touches* and generates no contact: with the overlap removed,
+///   9 of the 12 probed rate/speed combinations sail through the wall
+///   (`x = +2.9` to `+29.9`) and report nothing at all;
+/// * the removal of the velocity component pointing into the obstacle, which
+///   leaves the projectile at rest on the contact from the following tick
+///   instead of rebounding off it at 1–17 m/s.
 #[test]
 fn accept_f23_d_a_spawn_inside_the_first_tick_hole_is_stopped_and_reported() {
     for fixed_hz in PROBE_RATES_HZ {
@@ -315,6 +323,10 @@ fn accept_f23_d_a_spawn_inside_the_first_tick_hole_is_stopped_and_reported() {
             assert!(
                 !probe.tunnelled(),
                 "a clamped spawn must never pass the obstacle: {probe:?}"
+            );
+            assert!(
+                probe.final_speed_m_s < 0.01,
+                "a clamped spawn ends at rest on the contact, not rebounding off it: {probe:?}"
             );
         }
     }

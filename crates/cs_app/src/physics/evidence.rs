@@ -1467,6 +1467,28 @@ pub enum StabilityViolation {
         /// Aircraft-ticks skipped because the body was not dynamic.
         parked: u64,
     },
+    /// The driver did not run on every fixed tick of the probe.
+    ///
+    /// Its own counter is what catches a driver that was never registered at
+    /// all: with no systems in the schedule both its counters read zero, which
+    /// would otherwise look like a run in which nothing needed flying.
+    DriverAbsent {
+        /// Fixed ticks the world ran.
+        ticks: u64,
+        /// Fixed ticks the driver counted.
+        driver_ticks: u64,
+    },
+    /// A force request the driver produced never reached the integrator.
+    ///
+    /// `applied` is the adapter's ledger, `driven` is the driver's own count:
+    /// they must agree, or a request was produced and then lost — the failure
+    /// mode of an adapter whose drain is unregistered.
+    RequestsNotApplied {
+        /// Requests the driver produced.
+        driven: u64,
+        /// Requests the adapter applied.
+        applied: u64,
+    },
     /// The flight driver refused a tick, or parked the aircraft.
     DriverRefused {
         /// How many ticks were refused.
@@ -1511,6 +1533,17 @@ impl fmt::Display for StabilityViolation {
             } => write!(
                 f,
                 "the flight driver ran {ticks} ticks, drove {driven} and parked {parked}"
+            ),
+            Self::DriverAbsent {
+                ticks,
+                driver_ticks,
+            } => write!(
+                f,
+                "the flight driver counted {driver_ticks} of the world's {ticks} fixed ticks"
+            ),
+            Self::RequestsNotApplied { driven, applied } => write!(
+                f,
+                "the driver produced {driven} force requests and the adapter applied {applied}"
             ),
             Self::DriverRefused { refused, last } => match last {
                 Some(refusal) => write!(
@@ -1595,11 +1628,23 @@ impl StabilityBudget {
         for violation in &probe.accounting.violations(probe.ticks) {
             found.push(StabilityViolation::Schedule(*violation));
         }
+        if probe.driver.ticks != probe.ticks {
+            found.push(StabilityViolation::DriverAbsent {
+                ticks: probe.ticks,
+                driver_ticks: probe.driver.ticks,
+            });
+        }
         if probe.driver.driven != probe.driver.ticks || probe.driver.parked != 0 {
             found.push(StabilityViolation::DriverSkipped {
                 ticks: probe.driver.ticks,
                 driven: probe.driver.driven,
                 parked: probe.driver.parked,
+            });
+        }
+        if probe.driver.driven != probe.accounting.applied_requests {
+            found.push(StabilityViolation::RequestsNotApplied {
+                driven: probe.driver.driven,
+                applied: probe.accounting.applied_requests,
             });
         }
         if probe.driver.refused != 0 {
