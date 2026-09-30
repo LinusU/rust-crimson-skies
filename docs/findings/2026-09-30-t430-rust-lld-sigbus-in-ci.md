@@ -28,9 +28,9 @@ error: doctest failed, to rerun pass `-p cs_app --doc`
 | run | branch | when | outcome |
 |---|---|---|---|
 | 36728255759 | rally/417 | 2026-09-30 14:55 | `cargo test` failed at this link |
-| 36729946195 | rally/420 | 2026-09-30 14:33, 14:55 | `cargo test` failed at this link |
-| 36725414616 | rally/420 | 2026-09-30 14:08, 14:21 | `cargo test` failed at this link |
-| 36723571849, 36728255759 | rally/417 | 2026-09-30 | `cargo test` failed at this link |
+| 36729946195 | rally/420 | 2026-09-30 14:33 and 14:55 | `cargo test` failed at this link |
+| 36725414616 | rally/420 | 2026-09-30 14:08 and 14:21 | `cargo test` failed at this link |
+| 36723571849 | rally/417 | 2026-09-30 14:0x | `cargo test` failed at this link |
 | 36728100091 | main | 2026-09-30 14:18 | passed, same restored cache |
 | 36722210693 | rally/420 | 2026-09-30 13:31 | passed, same tree |
 
@@ -67,56 +67,63 @@ MemTotal: 16373452 kB / MemAvailable: 15375080 kB
   artifacts are not this task's lever (and the fix does not set it).
 
 `SIGBUS` on Linux is a fault on a mapped region the file no longer backs. The
-linker rustc invokes here is rust-lld (`cc … -fuse-ld=lld`, and the failure
-was inside its writer threads), and lld writes its output through a
-memory-mapped buffer it has already `ftruncate`d to the final size: when the
-filesystem cannot back those pages the store faults, the kernel reports
-`Bus error`, `collect2` prints exactly the line above, and `cargo test`
-aborts at 101. That is the signature of running out of disk during the
-largest write of the job, and the measured 1.91 GiB is what was left for it.
-In the failing run the link died about three seconds in ("all doctests ran in
-6.62s; merged doctests compilation took 3.59s"), i.e. while the output file
-was being filled, not after a slow grind.
+linker rustc invokes here is rust-lld (`cc … -fuse-ld=lld` in the failing
+log), and lld writes its output through a memory-mapped buffer it has
+already `ftruncate`d to the final size: when the filesystem cannot back
+those pages the store faults, the kernel reports `Bus error`, `collect2`
+prints exactly the line above, and `cargo test` aborts at 101. That is the
+signature of running out of disk during the largest write of the job, and the
+measured 1.91 GiB is what was left for it. In run 36728255759 the doctest
+harness reported the failure after 3.03 s with "all doctests ran in 6.62s;
+merged doctests compilation took 3.59s" — the link did not run to
+completion, it died while the output file was being filled.
+
+**Reported, not reproduced:** the task report names
+`llvm::parallelFor` inside rust-lld as the faulting frame. The CI log carries
+only the `collect2` line above (no core dump is uploaded), so the frame is
+taken from the report, not measured here. It does not change the
+explanation: every mapped page lld touches in that phase is either an input
+rlib that is already on disk or the output file it cannot extend.
 
 **Unknown, recorded as unknown:** what fills the other ~142 GB of the runner
-disk. It is not this repository's build tree — the tree is ~10 GB (§
-"Measured locally") — so it belongs to the image and the host, and nothing in
+disk. It is not this repository's build tree — the build tree is measured
+below at a few GB — so it belongs to the image and the host, and nothing in
 this repository can change it. That is why the fix below buys headroom
-instead of reclaiming the disk, and why the owner's own options (§"Left to
-the owner") are still worth considering.
+instead of reclaiming the disk, and why the owner's own options
+(§"Left to the owner") are still worth considering.
 
 ## Why full DWARF is what spends the budget
 
-Measured locally on this workspace (macOS aarch64, `target/debug` before this
-change: `du -sk` = 10,164,944 KB, of which 2,456 MB rlibs, 1,122 MB rmeta,
-6,123 MB test binaries and objects). Those rlibs carry **full** DWARF — they
-contain `__debug_ranges`/`__debug_abbrev`, which a `line-tables-only` build
-does not emit (see the three-way comparison below):
+CI exports no `CARGO_PROFILE_*` override, so the profile it builds under is
+rustc's default: `debug = 2`, full type, variable and name DWARF for every
+one of the ~400 objects in the Bevy/Avian graph. A dependency rlib from that
+build, `libbevy_math` (Bevy 0.19.1, 1.69 MB of `__text`), by section:
 
-`libbevy_pbr-fa72f9e38f1c2949.rlib`, 169.5 MB, by section:
-
-| section | MB | what it is |
+| section | full DWARF | `"line-tables-only"` |
 |---|---|---|
-| `__debug_str` | 77.9 | type, variable and function **names** |
-| `__debug_info` | 13.3 | type and variable DIEs |
-| `__apple_names` | 10.2 | name accelerator |
-| `__debug_ranges` | 6.6 | variable location lists |
-| `__debug_line` | 4.9 | the **line program** |
-| `__text` | 7.1 | the code itself |
+| `__debug_str` (names) | 10.25 MB | 8.53 MB |
+| `__debug_info` (type/variable DIEs) | 8.14 MB | 2.32 MB |
+| `__debug_loc` (expression locations) | 5.05 MB | — |
+| `__debug_ranges` | 1.55 MB | 1.22 MB |
+| `__debug_line` (the line program) | 1.11 MB | 1.04 MB |
+| `__apple_types`/`__apple_names` | 2.65 MB | 2.01 MB |
+| `__text` (the code) | 1.69 MB | 1.69 MB |
+| **rlib on disk** | **52,750,600 B** | **38,114,840 B** (−27.7%) |
 
-So 61% of that rlib is DWARF, and 98% of the DWARF is type/variable/name
-data that only a debugger uses. Three-way build of the same crate
-(`libcs_formats`, clean `CARGO_TARGET_DIR` per case, macOS):
+The same A/B for a workspace crate (`libcs_formats`, clean
+`CARGO_TARGET_DIR` per case): 17,044,456 B with `debug = 2`,
+12,115,056 B with `"line-tables-only"`, 8,327,248 B with `debug = false`.
 
-| `[profile.dev] debug` | rlib bytes | `__text` | `__debug_str` | `__debug_info` |
-|---|---|---|---|---|
-| unset / `2` (rustc default) | 17,044,456 | 1.05 MB | 3.82 MB | 2.35 MB |
-| `"line-tables-only"` | 12,115,056 | 0.90 MB | 2.31 MB | 0.35 MB |
-| `false` | 8,327,248 | 0.90 MB | — | — |
-
-`line-tables-only` keeps the line program (so a panic backtrace still prints
-`file:line`) and drops the rest; `false` would also throw the line program
-away, which is not worth trading for the extra few megabytes.
+So `"line-tables-only"` is a 28% cut of the object bytes, not the 90% a
+first reading of the section table suggests: the line program and much of
+`__debug_str` survive, because the line table still names files and the
+surviving DIEs still reference names. What it drops is `__debug_loc`, the
+bulk of `__debug_info` and `__apple_types` — exactly the part only a
+debugger's expression evaluation needs, and exactly the part a
+`cargo test` run never reads. `debug = false` would cut a further 31% but
+also throw away the line program, so a panic in a failing test would print
+an address instead of `file:line`. That trade is the owner's to make; the
+change below takes only the part that costs no debuggability.
 
 ## The change
 
@@ -152,13 +159,32 @@ profile setting that keeps a CI job alive has to be checked by something that
 runs in `cargo test --workspace`, because the workflow that would otherwise
 notice is the one that cannot be edited from here.
 
+## Measured effect
+
+Same machine, same command sequence (`cargo fmt --all -- --check`,
+`cargo clippy --workspace --all-targets --all-features --locked -- -D
+warnings`, `cargo test --workspace --locked`), `cargo clean` first, macOS
+aarch64:
+
+| `[profile.dev] debug` | `du -sk target` afterwards |
+|---|---|
+| unset / `2` — what CI builds | 12,782,944 KB (12.19 GiB) |
+| `"line-tables-only"` — this change | 9,790,708 KB (9.34 GiB) |
+
+−2.85 GiB, −23.4%, and the linked binaries shrink with the rlibs. Applied to
+the runner's measured 1.91 GiB of free space that would be roughly 4.8 GiB
+of headroom for the largest write of the job instead of 1.9 GiB — an
+estimate from the local ratio, **not** a measurement: the runner's own
+`target/` size was not measured (the probe's `du` used the relative
+`CARGO_TARGET_DIR` CI exports and found no `target/debug`).
+
 ## Commands run
 
 | command | exit | result |
 |---|---|---|
 | `cargo fmt --all -- --check` | 0 | clean |
 | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 | clean |
-| `cargo test --workspace --locked` | 0 | all tests pass |
+| `cargo test --workspace --locked` | 0 | all tests pass (312 test binaries green) |
 | `cargo test --workspace --locked -- accept_t430_ --include-ignored` | 0 | 5 selected, 5 passed |
 | `cargo run -p cs_xtask -- verify-ci-budget` | 0 | pass with the fix, exit 1 with `debug = 2` |
 
@@ -170,18 +196,45 @@ and `accept_t430_the_workspace_keeps_backtrace_line_numbers` fail and
 ## CI verification
 
 CI runs on every push, and the acceptance criterion for this task is repeated
-green runs. The runs of this branch are listed in the handover summary; each
-one is a `cargo test` step that had to link the merged `cs_app` doctest.
+green runs. Run **36739807340** (push, head `de07a45`) is green on
+`ubuntu24`, including the step that was failing:
+
+* the `cargo test` step recompiled **395 crates** (`bevy_pbr`, `bevy_render`,
+  `wgpu`, `naga`, …), so the failing link really did run against
+  `line-tables-only` rlibs instead of the cached full-DWARF ones;
+* the merged doctest linked and passed: `Doc-tests cs_app` →
+  `test crates/cs_app/src/livery.rs - livery (line 49) ... ok`,
+  `merged doctests compilation took 2.03s`;
+* the five `accept_t430_` tests pass there;
+* the restored cache was the **old** one (`Cache Size: ~2577 MB`) and the
+  post-job step reported `Cache up-to-date`, so this run started from the
+  full-DWARF tree — the harder direction, not the easier one.
+
+The runs are listed in the handover summary; every one of them is a
+`cargo test` step that had to link the merged `cs_app` doctest.
+
+**Cost, stated plainly:** `Swatinem/rust-cache`'s key covers the toolchain
+and `Cargo.lock`, not the profile, so the post-job step does not re-upload
+and every later run restores the *older, larger* tree and recompiles those
+395 crates. The `cargo test` step went from ~7 min to ~19 min in run
+36739807340. The owner can make the cache follow the profile with
+`shared-key: ${{ hashFiles('**/Cargo.toml') }}` on the cache step; that is a
+`.github/` change and was not made here.
 
 ## Left to the owner
 
 These need `.github/` and were deliberately not done here:
 
-* a `df -h` (or `cargo clean`-equivalent) step, or a step that removes
-  `/home/runner/work/_temp` before `cargo test`, if the image's own disk
-  pressure is the bigger term;
+* the cache key above, so a profile change does not leave every run
+  recompiling the graph;
+* `debug = "none"` (or `[profile.test] debug = false`) for another ~31% of
+  the object bytes, at the cost of `file:line` in test failure output;
+* a `df -h` step, or a step that clears `/home/runner/work/_temp` before
+  `cargo test`, if the image's own disk usage is the bigger term — the
+  ~142 GB that is already there is not this repository's;
 * `-C link-arg=-Wl,--threads=1` (or another `RUSTFLAGS`) for the linux
   target, which trades link time for a smaller linker footprint — note it
-  helps only if memory, not disk, is the binding constraint;
+  helps only if memory, not disk, is the binding constraint, and the
+  measurement above says 15.4 GB of 16.4 GB was available;
 * retrying the job on the SIGBUS. That hides the symptom and is not
   recommended while the disk headroom is this thin.
