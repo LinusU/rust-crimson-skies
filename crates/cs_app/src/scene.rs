@@ -366,23 +366,10 @@ pub fn import_airframe(
         });
     }
 
-    // Collect the subtree's ids, then let the graph's root-first preorder
-    // decide the spawn order so a parent always exists before its child.
-    let mut included: HashSet<SceneNodeId> = HashSet::new();
-    let mut pending = vec![root_id.clone()];
-    while let Some(id) = pending.pop() {
-        if !included.insert(id.clone()) {
-            continue;
-        }
-        if let Some(node) = graph.node(&id) {
-            pending.extend(node.children().iter().rev().cloned());
-        }
-    }
-    let subtree: Vec<&SceneNode> = graph
-        .nodes()
-        .iter()
-        .filter(|node| included.contains(node.id()))
-        .collect();
+    // `SceneGraph::subtree` is the one production definition of "the nodes
+    // under this root": it walks by stable id and returns the graph's own
+    // root-first preorder, so a parent is always spawned before its child.
+    let subtree = graph.subtree(root_id);
     spawn_nodes(world, &subtree, generation)
 }
 

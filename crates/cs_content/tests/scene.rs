@@ -13,9 +13,11 @@
 
 use cs_content::coordinates::SourceAdapter;
 use cs_content::scene::{
-    AnimationBinding, AuthoredTransform, BindingMap, CollisionRole, LodChoice, LodCoverage,
-    LodInfo, LodSelectError, MeshBinding, NodeKind, ParsedNode, ParsedNodeKind, PartRole,
-    SceneError, SceneGraph, SceneNodeId, SceneRootRef, SemanticBinding, select_lod_variant,
+    AirframeBlocker, AirframeRoster, AnimationBinding, AuditGap, AuthoredTransform, BindingMap,
+    CollisionRole, ContainerBlocker, ContainerOutcome, ForcedMissionAssignment, LodChoice,
+    LodCoverage, LodInfo, LodSelectError, MeshBinding, NodeKind, ParsedNode, ParsedNodeKind,
+    PartRole, RosterAvailability, RosterEntry, RosterError, SceneContainerRef, SceneError,
+    SceneGraph, SceneNodeId, SceneRootRef, SemanticBinding, select_lod_variant,
 };
 use cs_types::content::{ContentId, ContentKind, Known, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
@@ -967,4 +969,901 @@ fn accept_f11_c_sockets_carry_roles_poses_and_provenance() {
 
     // A rule that names no node is still reported.
     assert_eq!(scene.unmatched_bindings(), &["main.absent".to_owned()]);
+}
+
+// ------------------------------------------------------------- F11-D (AC04) ---
+
+/// Appends a node with the given stored slot and, when it has one, links it
+/// into its parent's child list. The stored slot is deliberately not the
+/// vector position, so a fixture that skips slots still wires correctly.
+fn append(
+    nodes: &mut Vec<ParsedNode>,
+    slot_of: &mut std::collections::BTreeMap<u32, usize>,
+    index: u32,
+    name: &str,
+    parent: Option<u32>,
+) {
+    let mut node = ParsedNode::new(index, name, ParsedNodeKind::Object3d);
+    node.parent = parent;
+    if let Some(parent) = parent {
+        let &position = slot_of
+            .get(&parent)
+            .expect("the parent is already in the fixture");
+        nodes[position].children.push(index);
+    }
+    slot_of.insert(index, nodes.len());
+    nodes.push(node);
+}
+
+/// The AC04 fixture's airframe container: two roots. `alpha` is the fully
+/// evidenced airframe — a cockpit, a control surface, a gun, a rocket mount,
+/// an engine, a camera anchor and a damage zone. `beta` is the mission-only
+/// shape: a cockpit, a control surface, a gun, and one bound node whose role
+/// nobody evidenced.
+///
+/// Thirteen stored records, so a container that declares thirteen converts
+/// cleanly and one that declares another number does not.
+fn roster_container_fixture() -> Vec<ParsedNode> {
+    let mut nodes: Vec<ParsedNode> = Vec::new();
+    let mut slot_of = std::collections::BTreeMap::new();
+    let root = ParsedNode::new(0, "alpha", ParsedNodeKind::World);
+    slot_of.insert(0, 0);
+    nodes.push(root);
+    append(&mut nodes, &mut slot_of, 1, "cockpit", Some(0));
+    append(&mut nodes, &mut slot_of, 2, "wing_l", Some(0));
+    append(&mut nodes, &mut slot_of, 3, "rocket", Some(0));
+    append(&mut nodes, &mut slot_of, 4, "engine", Some(0));
+    append(&mut nodes, &mut slot_of, 5, "camera", Some(0));
+    append(&mut nodes, &mut slot_of, 6, "hull", Some(0));
+    append(&mut nodes, &mut slot_of, 7, "gun_l", Some(2));
+    nodes[slot_of[&7]].zone_id = 42;
+    let beta = ParsedNode::new(10, "beta", ParsedNodeKind::World);
+    slot_of.insert(10, nodes.len());
+    nodes.push(beta);
+    append(&mut nodes, &mut slot_of, 11, "cockpit_b", Some(10));
+    append(&mut nodes, &mut slot_of, 12, "wing_b", Some(10));
+    append(&mut nodes, &mut slot_of, 13, "gun_b", Some(12));
+    append(&mut nodes, &mut slot_of, 8, "pod_b", Some(13));
+    nodes
+}
+
+/// The AC04 fixture's binding rules: every role the sheet names, on
+/// `alpha` and `beta` in turn, plus `alpha.pod` whose role and collision role
+/// are explicit unknowns, plus `alpha.absent`, a rule that matches no node at
+/// all and is therefore reported.
+fn roster_bindings() -> BindingMap {
+    let role = |path: &str, role: PartRole, id: &str| SemanticBinding {
+        path: path.to_owned(),
+        role: known(role),
+        collision: known(CollisionRole::Collider),
+        animation: if role == PartRole::Gun {
+            vec![AnimationBinding {
+                channel: known(cid(ContentKind::AnimationTrack, "recoil")),
+            }]
+        } else {
+            Vec::new()
+        },
+        provenance: designed(id),
+    };
+    BindingMap::new(vec![
+        role(
+            "alpha.cockpit",
+            PartRole::Cockpit,
+            "f11d.test.alpha-cockpit",
+        ),
+        role(
+            "alpha.wing_l",
+            PartRole::ControlSurface,
+            "f11d.test.alpha-wing",
+        ),
+        role("alpha.wing_l.gun_l", PartRole::Gun, "f11d.test.alpha-gun"),
+        role(
+            "alpha.rocket",
+            PartRole::RocketMount,
+            "f11d.test.alpha-rocket",
+        ),
+        role("alpha.engine", PartRole::Engine, "f11d.test.alpha-engine"),
+        role(
+            "alpha.camera",
+            PartRole::CameraAnchor,
+            "f11d.test.alpha-camera",
+        ),
+        role("alpha.hull", PartRole::DamageZone, "f11d.test.alpha-hull"),
+        SemanticBinding {
+            path: "beta.wing_b.gun_b.pod_b".to_owned(),
+            role: unmeasured(
+                "f11d.test.pod-role-unmeasured",
+                "no evidence named the pod's gameplay role",
+            ),
+            collision: unmeasured(
+                "f11d.test.pod-collision-unmeasured",
+                "no evidence named the pod's collision role",
+            ),
+            animation: Vec::new(),
+            provenance: designed("f11d.test.pod-rule"),
+        },
+        role(
+            "beta.cockpit_b",
+            PartRole::Cockpit,
+            "f11d.test.beta-cockpit",
+        ),
+        role(
+            "beta.wing_b",
+            PartRole::ControlSurface,
+            "f11d.test.beta-wing",
+        ),
+        role("beta.wing_b.gun_b", PartRole::Gun, "f11d.test.beta-gun"),
+        SemanticBinding {
+            path: "alpha.absent".to_owned(),
+            role: known(PartRole::Engine),
+            collision: known(CollisionRole::None),
+            animation: Vec::new(),
+            provenance: designed("f11d.test.absent-rule"),
+        },
+    ])
+    .expect("the roster fixture rules name distinct paths")
+}
+
+/// The two containers the AC04 audit is asked about: the airframe container,
+/// which converts, and a mission container whose node array no production
+/// path decodes yet.
+fn roster_containers() -> (ContentId, Vec<SceneContainerRef>) {
+    let planes = cid(ContentKind::InstallFile, "fix_planes");
+    let mission = cid(ContentKind::InstallFile, "fix_missions");
+    let refs = vec![
+        SceneContainerRef::new(planes.clone(), 13, 4_096),
+        SceneContainerRef::new(mission.clone(), 733, 9_216),
+    ];
+    (planes, refs)
+}
+
+/// AC04's minimum scenario. The audit maps every root it can reach — both
+/// airframe roots, every part, both gun mounts and the cockpit binding — with
+/// each socket's role, collision role, zone, animation channels, provenance
+/// and the node's one composed pose, and it names a typed blocker for the
+/// airframes it cannot reach instead of reporting a pass.
+#[test]
+fn accept_f11_d_roster_audit_maps_every_root_part_mount_and_cockpit_binding() {
+    let (planes, containers) = roster_containers();
+    let mission_container = cid(ContentKind::InstallFile, "fix_missions");
+    let scene = SceneGraph::build(
+        &planes,
+        &roster_container_fixture(),
+        &fixture_adapter(),
+        &roster_bindings(),
+    )
+    .expect("the roster fixture converts");
+    let node = |path: &str| {
+        SceneNodeId::from_content_id(cid(ContentKind::SceneNode, path)).expect("scene node id")
+    };
+    let root_of = |container: &ContentId, name: &str| {
+        let key = format!("{}.{name}", container.key());
+        SceneRootRef::new(
+            container.clone(),
+            SceneNodeId::from_content_id(cid(ContentKind::SceneNode, &key)).expect("scene node id"),
+        )
+        .expect("the reference names a root of its own container")
+    };
+
+    let alpha = cid(ContentKind::Airframe, "alpha");
+    let beta = cid(ContentKind::Airframe, "beta");
+    let ghost = cid(ContentKind::Airframe, "ghost");
+    let orphan = cid(ContentKind::Airframe, "orphan");
+    let wrong = cid(ContentKind::Airframe, "wrong");
+    let mission = cid(ContentKind::Mission, "m07");
+
+    let roster = AirframeRoster::new(
+        vec![
+            RosterEntry::new(alpha.clone(), designed("f11d.test.alpha-row"))
+                .expect("an airframe row")
+                .with_root(root_of(&planes, "alpha"))
+                .with_availability(known(RosterAvailability::Selectable))
+                .requiring(PartRole::Cockpit)
+                .expect("cockpit is not required twice")
+                .requiring(PartRole::Gun)
+                .expect("gun is not required twice")
+                .requiring(PartRole::Engine)
+                .expect("engine is not required twice")
+                .requiring(PartRole::DamageZone)
+                .expect("damage zone is not required twice"),
+            RosterEntry::new(beta.clone(), designed("f11d.test.beta-row"))
+                .expect("an airframe row")
+                .with_root(root_of(&planes, "beta"))
+                .requiring(PartRole::Cockpit)
+                .expect("cockpit is not required twice"),
+            RosterEntry::new(ghost.clone(), designed("f11d.test.ghost-row"))
+                .expect("an airframe row")
+                .with_root(root_of(&mission_container, "shrike")),
+            RosterEntry::new(orphan.clone(), designed("f11d.test.orphan-row"))
+                .expect("an airframe row"),
+            RosterEntry::new(wrong.clone(), designed("f11d.test.wrong-row"))
+                .expect("an airframe row")
+                .with_root(root_of(&planes, "nowhere")),
+        ],
+        vec![
+            ForcedMissionAssignment::new(mission.clone(), beta.clone(), designed("f11d.test.m07"))
+                .expect("a forced assignment"),
+            ForcedMissionAssignment::new(
+                cid(ContentKind::Mission, "m09"),
+                beta.clone(),
+                designed("f11d.test.m09"),
+            )
+            .expect("a forced assignment"),
+        ],
+    )
+    .expect("the roster is internally consistent");
+
+    let report = roster.audit(&containers, |container| {
+        if *container == planes {
+            Ok(&scene)
+        } else {
+            Err(ContainerBlocker::NodeArrayUndecoded {
+                container: container.clone(),
+                stored_nodes: 733,
+                nodes_offset: 9_216,
+            })
+        }
+    });
+
+    // The container census: what each container's own header declared, kept
+    // beside the verdict, so a blocked container still reports its size.
+    assert_eq!(report.container_count(), 2);
+    assert_eq!(report.airframe_count(), 5);
+    let audited_planes = &report.containers()[0];
+    assert_eq!(audited_planes.container(), &planes);
+    assert_eq!(audited_planes.declared_nodes(), 13);
+    assert_eq!(audited_planes.nodes_offset(), 4_096);
+    assert!(audited_planes.is_mapped());
+    assert!(matches!(
+        audited_planes.outcome(),
+        ContainerOutcome::Mapped(_)
+    ));
+    let mapping = audited_planes
+        .mapping()
+        .expect("the planes container converted");
+    assert_eq!(mapping.node_count(), 13, "every stored record is a node");
+    assert_eq!(mapping.roots().len(), 2, "alpha and beta");
+    assert_eq!(
+        mapping.airframes(),
+        &[alpha.clone(), beta.clone(), wrong.clone()],
+        "the container knows which discovered airframes live in it"
+    );
+    // The rule that matched nothing is a container shortfall, and nobody
+    // silently dropped it.
+    assert_eq!(
+        audited_planes.gaps().cloned().collect::<Vec<AuditGap>>(),
+        vec![AuditGap::UnmatchedRule {
+            path: "alpha.absent".to_owned()
+        }]
+    );
+
+    // The blocked container keeps its measured facts and says what is missing,
+    // in numbers rather than in prose.
+    let audited_missions = &report.containers()[1];
+    assert!(!audited_missions.is_mapped());
+    assert!(matches!(
+        audited_missions.outcome(),
+        ContainerOutcome::Blocked(_)
+    ));
+    assert_eq!(audited_missions.declared_nodes(), 733);
+    assert_eq!(audited_missions.nodes_offset(), 9_216);
+    assert_eq!(
+        audited_missions.blocker(),
+        Some(&ContainerBlocker::NodeArrayUndecoded {
+            container: mission_container.clone(),
+            stored_nodes: 733,
+            nodes_offset: 9_216,
+        })
+    );
+    let blocker_text = audited_missions.blocker().expect("a blocker").to_string();
+    assert!(
+        blocker_text.contains("733 stored node records") && blocker_text.contains("9216"),
+        "the blocker quotes the measured record count and offset: {blocker_text}"
+    );
+
+    // The mapping arm: both reachable roots, every part, both gun mounts and
+    // the cockpit binding, each by stable id and in stable-id order.
+    assert_eq!(report.mapped_root_count(), 2);
+    assert_eq!(
+        report.mapped_socket_count(),
+        10,
+        "seven on alpha, three on beta"
+    );
+    let alpha_audit = report
+        .airframes()
+        .iter()
+        .find(|audit| audit.airframe() == &alpha)
+        .expect("alpha was audited");
+    let alpha_map = alpha_audit.mapping().expect("alpha mapped");
+    assert_eq!(alpha_map.root(), &node("fix_planes.alpha"));
+    assert_eq!(alpha_map.container(), &planes);
+    assert_eq!(
+        alpha_map.node_count(),
+        8,
+        "alpha's own subtree, not the container's"
+    );
+    assert_eq!(
+        alpha_map
+            .sockets()
+            .map(|socket| socket.node().key().to_owned())
+            .collect::<Vec<_>>(),
+        vec![
+            "fix_planes.alpha.camera".to_owned(),
+            "fix_planes.alpha.cockpit".to_owned(),
+            "fix_planes.alpha.engine".to_owned(),
+            "fix_planes.alpha.hull".to_owned(),
+            "fix_planes.alpha.rocket".to_owned(),
+            "fix_planes.alpha.wing_l".to_owned(),
+            "fix_planes.alpha.wing_l.gun_l".to_owned(),
+        ],
+        "alpha's seven evidenced sockets, and nothing from the other root"
+    );
+    for (role, count) in [
+        (PartRole::Cockpit, 1),
+        (PartRole::ControlSurface, 1),
+        (PartRole::Gun, 1),
+        (PartRole::RocketMount, 1),
+        (PartRole::Engine, 1),
+        (PartRole::CameraAnchor, 1),
+        (PartRole::DamageZone, 1),
+    ] {
+        assert_eq!(
+            alpha_map.count_of(role),
+            count,
+            "alpha binds exactly {count} {} socket(s)",
+            role.label()
+        );
+    }
+
+    // A mapped socket carries the whole binding: the rule's provenance, the
+    // stored zone, the bound animation channel — and the node's one composed
+    // pose, so the mount point in the report is the pose the scene uses.
+    let gun = alpha_map
+        .sockets_of_role(PartRole::Gun)
+        .next()
+        .expect("alpha's gun");
+    assert_eq!(gun.node(), &node("fix_planes.alpha.wing_l.gun_l"));
+    assert_eq!(gun.collision(), CollisionRole::Collider);
+    assert_eq!(
+        gun.zone_id(),
+        42,
+        "the stored zone rides through the report"
+    );
+    assert_eq!(gun.animation_channels(), 1);
+    assert_eq!(gun.provenance(), &designed("f11d.test.alpha-gun"));
+    let gun_node = scene
+        .node(&node("fix_planes.alpha.wing_l.gun_l"))
+        .expect("the gun node");
+    assert_eq!(gun.pose(), gun_node.world_transform());
+    assert_eq!(gun.pose(), gun_node.collision_transform());
+    assert_eq!(gun.pose(), scene.socket(gun.node()).expect("socket").pose());
+
+    let cockpit = alpha_map
+        .sockets_of_role(PartRole::Cockpit)
+        .next()
+        .expect("alpha's cockpit binding");
+    assert_eq!(cockpit.node(), &node("fix_planes.alpha.cockpit"));
+    assert_eq!(
+        cockpit.provenance(),
+        &designed("f11d.test.alpha-cockpit"),
+        "the cockpit binding keeps its own rule's provenance"
+    );
+
+    // alpha is the one airframe the audit can call complete: every declared
+    // role is bound, its availability is evidenced and nothing is missing.
+    assert!(alpha_audit.is_complete());
+    assert!(alpha_audit.is_proven_selectable());
+    assert_eq!(
+        alpha_audit.gaps().count(),
+        0,
+        "a complete airframe has no gaps: {:?}",
+        alpha_audit.gaps().collect::<Vec<_>>()
+    );
+    assert_eq!(alpha_audit.forced_missions(), &[] as &[ContentId]);
+
+    // A mission-only type: the audit mapped its root, and it still refuses to
+    // call it selectable because the forced assignments say nothing about the
+    // roster (F11 non-negotiable behavior 3).
+    let beta_audit = report
+        .airframes()
+        .iter()
+        .find(|audit| audit.airframe() == &beta)
+        .expect("beta was audited");
+    let beta_map = beta_audit.mapping().expect("beta mapped");
+    assert_eq!(beta_map.node_count(), 5, "beta's own subtree");
+    assert_eq!(beta_map.count_of(PartRole::Cockpit), 1);
+    assert_eq!(beta_map.count_of(PartRole::Gun), 1);
+    assert_eq!(beta_map.count_of(PartRole::Engine), 0);
+    assert!(
+        !beta_audit.is_proven_selectable(),
+        "a forced mission assignment is not proof of selectability"
+    );
+    assert_eq!(
+        beta_audit.availability(),
+        &RosterEntry::undiscovered_availability(),
+        "the availability stayed the explicit unknown it was declared as"
+    );
+    assert_eq!(
+        beta_audit.forced_missions().len(),
+        2,
+        "both missions that force beta are recorded"
+    );
+    assert_eq!(&beta_audit.forced_missions()[0], &mission);
+    assert_eq!(
+        beta_audit.gaps().cloned().collect::<Vec<AuditGap>>(),
+        vec![
+            AuditGap::AvailabilityUndiscovered {
+                airframe: beta.clone()
+            },
+            AuditGap::ForcedAssignmentOnly {
+                airframe: beta.clone(),
+                missions: 2
+            },
+            AuditGap::UnknownRole {
+                node: node("fix_planes.beta.wing_b.gun_b.pod_b"),
+                claim_id: claim("f11d.test.pod-role-unmeasured"),
+                reason: "no evidence named the pod's gameplay role".to_owned()
+            }
+        ],
+        "beta's roster availability is undiscovered, the missions are the only \
+         evidence of it, and its pod's role was never evidenced"
+    );
+    assert!(
+        !beta_map
+            .sockets()
+            .any(|socket| socket.node().key().ends_with("pod_b")),
+        "an unmeasured role is a gap, never a mapped socket"
+    );
+    assert!(
+        !beta_audit.is_complete(),
+        "a mapped airframe with undiscovered roster availability is not complete"
+    );
+
+    // The airframe in the undecodable mission container inherits exactly that
+    // blocker, carrying the container's own measured numbers.
+    let ghost_audit = report
+        .airframes()
+        .iter()
+        .find(|audit| audit.airframe() == &ghost)
+        .expect("ghost was audited");
+    assert!(ghost_audit.mapping().is_none());
+    assert!(!ghost_audit.is_proven_selectable());
+    assert_eq!(
+        ghost_audit
+            .blockers()
+            .cloned()
+            .collect::<Vec<AirframeBlocker>>(),
+        vec![AirframeBlocker::ContainerUndecoded {
+            airframe: ghost.clone(),
+            blocker: ContainerBlocker::NodeArrayUndecoded {
+                container: mission_container,
+                stored_nodes: 733,
+                nodes_offset: 9_216,
+            },
+        }]
+    );
+    assert!(
+        ghost_audit
+            .first_blocker()
+            .expect("a blocker")
+            .to_string()
+            .contains("733 stored node records"),
+        "the airframe blocker repeats the measured record count"
+    );
+
+    // An airframe with no discovered root, and one pointing at a root the
+    // converted container does not hold: both are blockers, and neither falls
+    // back to "the first root".
+    let orphan_audit = report
+        .airframes()
+        .iter()
+        .find(|audit| audit.airframe() == &orphan)
+        .expect("orphan was audited");
+    assert_eq!(
+        orphan_audit
+            .blockers()
+            .cloned()
+            .collect::<Vec<AirframeBlocker>>(),
+        vec![AirframeBlocker::RootUndiscovered {
+            airframe: orphan.clone()
+        }]
+    );
+    let wrong_audit = report
+        .airframes()
+        .iter()
+        .find(|audit| audit.airframe() == &wrong)
+        .expect("wrong was audited");
+    assert_eq!(
+        wrong_audit
+            .blockers()
+            .cloned()
+            .collect::<Vec<AirframeBlocker>>(),
+        vec![AirframeBlocker::RootMissing {
+            airframe: wrong.clone(),
+            root: node("fix_planes.nowhere"),
+        }]
+    );
+
+    // The report as a whole is not a pass, and its totals reconcile.
+    assert!(!report.is_complete());
+    assert!(!report.is_empty());
+    assert_eq!(
+        report.blocker_count(),
+        4,
+        "one container blocker and three airframe blockers"
+    );
+    assert_eq!(
+        report.gap_count(),
+        7,
+        "one container rule and six airframe gaps"
+    );
+    assert_eq!(report.mapped_containers().count(), 1);
+    assert_eq!(report.blocked_containers().count(), 1);
+    assert_eq!(report.mapped_airframes().count(), 2);
+    assert_eq!(report.blocked_airframes().count(), 3);
+
+    // The roster itself keeps the two discoveries apart, and offers them by
+    // either direction.
+    assert_eq!(roster.entries().len(), 5);
+    assert_eq!(roster.assignments().len(), 2);
+    assert_eq!(
+        roster.missions_forcing(&beta).cloned().collect::<Vec<_>>(),
+        vec![mission.clone(), cid(ContentKind::Mission, "m09")]
+    );
+    assert_eq!(
+        roster
+            .airframes_forced_in(&mission)
+            .cloned()
+            .collect::<Vec<_>>(),
+        vec![beta.clone()]
+    );
+    assert!(roster.entry(&alpha).is_some());
+    assert!(
+        roster
+            .entry(&cid(ContentKind::Airframe, "absent"))
+            .is_none()
+    );
+}
+
+/// The shortfall fixture: a container whose header declares more stored node
+/// records than any reader has decoded, a root that carries a socket whose
+/// gameplay role is evidenced but whose collision role is not, and a
+/// container the audit was never asked to cover.
+fn partial_container_fixture() -> Vec<ParsedNode> {
+    let mut nodes: Vec<ParsedNode> = Vec::new();
+    let mut slot_of = std::collections::BTreeMap::new();
+    let root = ParsedNode::new(0, "solo", ParsedNodeKind::World);
+    slot_of.insert(0, 0);
+    nodes.push(root);
+    append(&mut nodes, &mut slot_of, 1, "odd", Some(0));
+    append(&mut nodes, &mut slot_of, 2, "spare", Some(0));
+    nodes
+}
+
+fn partial_bindings() -> BindingMap {
+    BindingMap::new(vec![SemanticBinding {
+        path: "solo.odd".to_owned(),
+        role: known(PartRole::Engine),
+        collision: unmeasured(
+            "f11d.test.odd-collision-unmeasured",
+            "the gameplay role is evidenced but nothing named the collision role",
+        ),
+        animation: Vec::new(),
+        provenance: designed("f11d.test.odd-rule"),
+    }])
+    .expect("the shortfall fixture rules name distinct paths")
+}
+
+/// Every shortfall the audit can find, one at a time, and each of them blocks
+/// `is_complete`: a container whose header declares far more node records than
+/// were decoded, a rule that bound nothing, a socket with no established
+/// role, a required role nothing bound, a root in a container the audit never
+/// covered, and a container whose conversion was refused outright.
+#[test]
+fn accept_f11_d_roster_audit_reports_each_shortfall_instead_of_a_pass() {
+    let partial = cid(ContentKind::InstallFile, "fix_partial");
+    let uncovered = cid(ContentKind::InstallFile, "fix_uncovered");
+    let refused = cid(ContentKind::InstallFile, "fix_refused");
+    let scene = SceneGraph::build(
+        &partial,
+        &partial_container_fixture(),
+        &fixture_adapter(),
+        &partial_bindings(),
+    )
+    .expect("the shortfall fixture converts");
+    let node = |path: &str| {
+        SceneNodeId::from_content_id(cid(ContentKind::SceneNode, path)).expect("scene node id")
+    };
+    let root_of = |container: &ContentId, name: &str| {
+        SceneRootRef::new(
+            container.clone(),
+            SceneNodeId::from_content_id(cid(
+                ContentKind::SceneNode,
+                &format!("{}.{name}", container.key()),
+            ))
+            .expect("scene node id"),
+        )
+        .expect("the reference names a root of its own container")
+    };
+
+    // The header claims 99 stored node records; three were decoded. A partial
+    // decode must not read as a complete mapping.
+    let containers = vec![
+        SceneContainerRef::new(partial.clone(), 99, 2_048),
+        SceneContainerRef::new(refused.clone(), 12, 4_096),
+    ];
+    let short = cid(ContentKind::Airframe, "short");
+    let outside = cid(ContentKind::Airframe, "outside");
+    let denied = cid(ContentKind::Airframe, "denied");
+    let roster = AirframeRoster::new(
+        vec![
+            RosterEntry::new(short.clone(), designed("f11d.test.short-row"))
+                .expect("an airframe row")
+                .with_root(root_of(&partial, "solo"))
+                .with_availability(known(RosterAvailability::Selectable))
+                .requiring(PartRole::Cockpit)
+                .expect("cockpit is not required twice")
+                .requiring(PartRole::Gun)
+                .expect("gun is not required twice"),
+            RosterEntry::new(outside.clone(), designed("f11d.test.outside-row"))
+                .expect("an airframe row")
+                .with_root(root_of(&uncovered, "ghost"))
+                .with_availability(known(RosterAvailability::MissionOnly)),
+            RosterEntry::new(denied.clone(), designed("f11d.test.denied-row"))
+                .expect("an airframe row")
+                .with_root(root_of(&refused, "wreck")),
+        ],
+        Vec::new(),
+    )
+    .expect("the roster is internally consistent");
+
+    let report = roster.audit(&containers, |container| match container.key() {
+        "fix_partial" => Ok(&scene),
+        _ => Err(ContainerBlocker::SceneRefused {
+            container: container.clone(),
+            reason: "the node array reader is not implemented".to_owned(),
+        }),
+    });
+
+    // The container-level shortfalls: the declared record count the decode did
+    // not reach, and the rule that bound nothing.
+    let audited = &report.containers()[0];
+    assert!(audited.is_mapped());
+    assert_eq!(
+        audited.gaps().cloned().collect::<Vec<AuditGap>>(),
+        vec![AuditGap::NodeCountMismatch {
+            container: partial.clone(),
+            declared: 99,
+            decoded: 3
+        }]
+    );
+    assert!(
+        audited
+            .gaps()
+            .any(|gap| matches!(gap, AuditGap::NodeCountMismatch { .. })),
+        "a partial decode is reported, never rounded up to a pass"
+    );
+    // The refused container keeps its own blocker, quoted verbatim.
+    let refused_audit = &report.containers()[1];
+    assert!(!refused_audit.is_mapped());
+    assert_eq!(
+        refused_audit.blocker(),
+        Some(&ContainerBlocker::SceneRefused {
+            container: refused.clone(),
+            reason: "the node array reader is not implemented".to_owned()
+        })
+    );
+
+    // The airframe that did map still reports both its socket with no
+    // established role and its two required roles nothing bound.
+    let short_audit = report
+        .airframes()
+        .iter()
+        .find(|audit| audit.airframe() == &short)
+        .expect("short was audited");
+    let short_map = short_audit.mapping().expect("short mapped");
+    assert_eq!(short_map.node_count(), 3);
+    assert_eq!(
+        short_map.len(),
+        0,
+        "the one bound node has no established role"
+    );
+    assert_eq!(
+        short_audit.gaps().cloned().collect::<Vec<AuditGap>>(),
+        vec![
+            AuditGap::UnknownRole {
+                node: node("fix_partial.solo.odd"),
+                claim_id: claim("f11d.test.odd-collision-unmeasured"),
+                reason: "the gameplay role is evidenced but nothing named the \
+                         collision role"
+                    .to_owned()
+            },
+            AuditGap::MissingRole {
+                root: node("fix_partial.solo"),
+                role: PartRole::Cockpit
+            },
+            AuditGap::MissingRole {
+                root: node("fix_partial.solo"),
+                role: PartRole::Gun
+            }
+        ],
+        "an unevidenced role, then each required role nothing bound"
+    );
+    assert!(!short_audit.is_complete());
+
+    // An airframe in a container the audit was not asked about is a blocker,
+    // not a silent omission.
+    let outside_audit = report
+        .airframes()
+        .iter()
+        .find(|audit| audit.airframe() == &outside)
+        .expect("outside was audited");
+    assert!(outside_audit.mapping().is_none());
+    assert_eq!(
+        outside_audit
+            .blockers()
+            .cloned()
+            .collect::<Vec<AirframeBlocker>>(),
+        vec![AirframeBlocker::ContainerNotAudited {
+            airframe: outside.clone(),
+            container: uncovered.clone()
+        }]
+    );
+    assert!(
+        !outside_audit.is_proven_selectable(),
+        "a mission-only availability is not selectable"
+    );
+
+    // An airframe in a refused container inherits the refusal, with its own id.
+    let denied_audit = report
+        .airframes()
+        .iter()
+        .find(|audit| audit.airframe() == &denied)
+        .expect("denied was audited");
+    assert_eq!(
+        denied_audit
+            .blockers()
+            .cloned()
+            .collect::<Vec<AirframeBlocker>>(),
+        vec![AirframeBlocker::ContainerUndecoded {
+            airframe: denied.clone(),
+            blocker: ContainerBlocker::SceneRefused {
+                container: refused.clone(),
+                reason: "the node array reader is not implemented".to_owned()
+            }
+        }]
+    );
+
+    // Nothing about the report is a pass.
+    assert_eq!(report.container_count(), 2);
+    assert_eq!(report.airframe_count(), 3);
+    assert_eq!(report.mapped_root_count(), 1);
+    assert_eq!(report.mapped_socket_count(), 0);
+    assert_eq!(report.blocker_count(), 3, "one container and two airframes");
+    assert_eq!(
+        report.gap_count(),
+        5,
+        "one container gap, three under `short` and the undiscovered roster \
+         availability of the refused `denied`"
+    );
+    assert!(!report.is_complete());
+}
+
+/// The roster is validated as one set, and a contradiction is refused at
+/// construction rather than resolved by the audit: a non-airframe row, the
+/// same airframe twice, a required role declared twice, an assignment naming
+/// something that is not a mission, the same assignment twice, and — the
+/// important one — a mission forcing an airframe no row audits, which would
+/// otherwise make a roster with a hole look complete.
+#[test]
+fn accept_f11_d_roster_records_refuse_contradictions() {
+    let alpha = cid(ContentKind::Airframe, "alpha");
+    let other = cid(ContentKind::Airframe, "other");
+    let mission = cid(ContentKind::Mission, "m01");
+    let row = |airframe: ContentId| {
+        RosterEntry::new(airframe, designed("f11d.test.row")).expect("an airframe row")
+    };
+    let assignment = |mission: ContentId, airframe: ContentId| {
+        ForcedMissionAssignment::new(mission, airframe, designed("f11d.test.assignment"))
+            .expect("a forced assignment")
+    };
+
+    // A row must audit an airframe.
+    assert_eq!(
+        RosterEntry::new(
+            cid(ContentKind::Mesh, "fix_planes.1"),
+            designed("f11d.test.row")
+        ),
+        Err(RosterError::AirframeKind {
+            kind: ContentKind::Mesh
+        })
+    );
+    // An assignment must name a mission and an airframe.
+    assert_eq!(
+        ForcedMissionAssignment::new(
+            cid(ContentKind::World, "c1"),
+            alpha.clone(),
+            designed("f11d.test.assignment")
+        ),
+        Err(RosterError::MissionKind {
+            kind: ContentKind::World
+        })
+    );
+    assert_eq!(
+        ForcedMissionAssignment::new(
+            mission.clone(),
+            cid(ContentKind::SceneNode, "fix_planes.alpha"),
+            designed("f11d.test.assignment")
+        ),
+        Err(RosterError::AirframeKind {
+            kind: ContentKind::SceneNode
+        })
+    );
+    // A required role may not be declared twice.
+    assert_eq!(
+        row(alpha.clone())
+            .requiring(PartRole::Gun)
+            .expect("gun is required once")
+            .requiring(PartRole::Gun)
+            .err(),
+        Some(RosterError::DuplicateRequiredRole {
+            role: PartRole::Gun
+        })
+    );
+    // The same airframe may not be audited twice.
+    assert_eq!(
+        AirframeRoster::new(vec![row(alpha.clone()), row(alpha.clone())], Vec::new()).err(),
+        Some(RosterError::DuplicateAirframe {
+            airframe: alpha.clone()
+        })
+    );
+    // The same mission may not force the same airframe twice, but two
+    // missions forcing one airframe is the normal case.
+    assert_eq!(
+        AirframeRoster::new(
+            vec![row(alpha.clone()), row(other.clone())],
+            vec![
+                assignment(mission.clone(), alpha.clone()),
+                assignment(mission.clone(), alpha.clone())
+            ]
+        )
+        .err(),
+        Some(RosterError::DuplicateAssignment {
+            mission: mission.clone(),
+            airframe: alpha.clone()
+        })
+    );
+    assert!(
+        AirframeRoster::new(
+            vec![row(alpha.clone())],
+            vec![assignment(mission.clone(), alpha.clone())]
+        )
+        .is_ok()
+    );
+    // A mission that forces a plane the roster does not audit is a discovery
+    // gap and is refused, not folded into the roster.
+    assert_eq!(
+        AirframeRoster::new(
+            vec![row(alpha.clone())],
+            vec![assignment(mission.clone(), other.clone())]
+        )
+        .err(),
+        Some(RosterError::UnknownAirframe { airframe: other })
+    );
+
+    // An empty roster audits nothing, and nothing audited is never a pass.
+    let empty = AirframeRoster::new(Vec::new(), Vec::new()).expect("an empty roster is valid");
+    let report = empty.audit(&[], |_| {
+        Err(ContainerBlocker::SceneRefused {
+            container: cid(ContentKind::InstallFile, "fix_planes"),
+            reason: "unused".to_owned(),
+        })
+    });
+    assert!(report.is_empty());
+    assert!(
+        !report.is_complete(),
+        "an audit that looked at nothing must not read as a pass"
+    );
+    assert_eq!(report.container_count(), 0);
+    assert_eq!(report.airframe_count(), 0);
 }

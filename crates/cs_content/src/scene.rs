@@ -76,6 +76,27 @@
 //! variant is drawn (F11 non-negotiable behavior 4). The rule is designed
 //! engine contract; the original's selection behaviour is unmeasured.
 //!
+//! # Roster audit (F11-D)
+//!
+//! [`AirframeRoster::audit`] is the evidence stage's instrument: it takes the
+//! declared roster (one [`RosterEntry`] per discovered airframe, each with the
+//! root it references and the roles it is declared to carry) plus the set of
+//! discovered [`SceneContainerRef`]s, and maps every root, part, mount and
+//! cockpit binding it can reach — or names the blocker that stopped it.
+//!
+//! Three properties make the verdict worth having. A root is reached by
+//! [`SceneRootRef`], never by array position, and a socket is reached by its
+//! stable [`SceneNodeId`], so a mapping cannot silently attach to a
+//! neighbouring airframe. A container whose node array has not been decoded
+//! contributes a typed [`ContainerBlocker`] carrying the *measured* stored
+//! record count and offset, and every airframe in it inherits that blocker —
+//! the audit reports "nothing is mapped and here is the exact missing step"
+//! instead of an empty pass. And roster availability is discovered
+//! separately from forced mission assignments: a [`ForcedMissionAssignment`]
+//! never promotes an airframe to [`RosterAvailability::Selectable`], so a
+//! mission-only type stays mission-only and an undiscovered roster stays
+//! unknown (F11 non-negotiable behavior 3).
+//!
 //! # What is measured and what is designed
 //!
 //! The input record mirrors the pinned mech3ax v0.6.0 node layout
@@ -1269,6 +1290,33 @@ impl SceneGraph {
         }
     }
 
+    /// Every node of the subtree under `root`, in the graph's own root-first
+    /// preorder.
+    ///
+    /// The set is walked by stable id from the root's children, so a subtree is
+    /// the authored one and never "everything from an index onwards"; the order
+    /// is the graph's, which keeps a parent ahead of its children. The one
+    /// production definition of "the nodes under this root" lives here, so an
+    /// importer and the roster audit cannot disagree about which nodes belong
+    /// to an airframe.
+    #[must_use]
+    pub fn subtree(&self, root: &SceneNodeId) -> Vec<&SceneNode> {
+        let mut included: HashSet<SceneNodeId> = HashSet::new();
+        let mut pending = vec![root.clone()];
+        while let Some(id) = pending.pop() {
+            if !included.insert(id.clone()) {
+                continue;
+            }
+            if let Some(node) = self.node(&id) {
+                pending.extend(node.children().iter().rev().cloned());
+            }
+        }
+        self.nodes
+            .iter()
+            .filter(|node| included.contains(node.id()))
+            .collect()
+    }
+
     /// The authored paths of the binding rules that matched no node. A rule
     /// that lands nowhere is reported, never silently dropped.
     #[must_use]
@@ -1687,7 +1735,1307 @@ fn gap_distance(variant: LodInfo, target: f64) -> f64 {
     }
 }
 
+// ------------------------------------------------------------ roster audit ---
+
+/// The claim id this stage uses when it refuses to state that an airframe is
+/// player-selectable anywhere (F11 non-negotiable behavior 3).
+const AVAILABILITY_UNDISCOVERED: &str = "f11d.roster-availability-undiscovered";
+
+/// What the evidence establishes about player-selectability.
+///
+/// The vocabulary is designed engine contract. Nothing here claims the
+/// original's roster rules: a mode's own selection list is unmeasured, so a
+/// value only exists when some discovery recorded it, with its provenance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RosterAvailability {
+    /// Discovered as selectable by a player in at least one mode.
+    Selectable,
+    /// Discovered only as an airframe a mission forces into play; **not**
+    /// proven selectable in any mode.
+    MissionOnly,
+}
+
+/// A mission that forces one airframe into play — the discovery that is
+/// recorded **separately** from roster availability.
+///
+/// An assignment says "this mission puts this airframe in the air"; it never
+/// says a player may choose it, and [`AirframeRoster::audit`] never promotes
+/// one into [`RosterAvailability::Selectable`]. Keeping the two apart is what
+/// makes a mission-only type identifiable at all (F11 non-negotiable
+/// behavior 3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ForcedMissionAssignment {
+    mission: ContentId,
+    airframe: ContentId,
+    provenance: Provenance,
+}
+
+impl ForcedMissionAssignment {
+    /// Records that `mission` forces `airframe` into play.
+    ///
+    /// # Errors
+    ///
+    /// [`RosterError::MissionKind`] when `mission` is not a `mission` id and
+    /// [`RosterError::AirframeKind`] when `airframe` is not an `airframe` id.
+    pub fn new(
+        mission: ContentId,
+        airframe: ContentId,
+        provenance: Provenance,
+    ) -> Result<Self, RosterError> {
+        if mission.kind() != ContentKind::Mission {
+            return Err(RosterError::MissionKind {
+                kind: mission.kind(),
+            });
+        }
+        if airframe.kind() != ContentKind::Airframe {
+            return Err(RosterError::AirframeKind {
+                kind: airframe.kind(),
+            });
+        }
+        Ok(Self {
+            mission,
+            airframe,
+            provenance,
+        })
+    }
+
+    /// The mission that forces the airframe.
+    #[must_use]
+    pub fn mission(&self) -> &ContentId {
+        &self.mission
+    }
+
+    /// The forced airframe.
+    #[must_use]
+    pub fn airframe(&self) -> &ContentId {
+        &self.airframe
+    }
+
+    /// Where this assignment was discovered.
+    #[must_use]
+    pub fn provenance(&self) -> &Provenance {
+        &self.provenance
+    }
+}
+
+/// One discovered airframe: the catalog element, the root its visual
+/// references, what is known about its roster availability, and the gameplay
+/// roles it is **declared** to carry.
+///
+/// `required_roles` is declared, not inferred: the audit checks that each
+/// declared role really is bound to a node, and says nothing about a role
+/// nobody claimed. An empty list therefore audits "this root's bindings", not
+/// "this root is complete" — the difference is a finding, not a pass.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RosterEntry {
+    airframe: ContentId,
+    root: Option<SceneRootRef>,
+    availability: Resolved<RosterAvailability>,
+    required_roles: Vec<PartRole>,
+    provenance: Provenance,
+}
+
+impl RosterEntry {
+    /// An airframe whose root, availability and required roles are all still
+    /// to be discovered.
+    ///
+    /// # Errors
+    ///
+    /// [`RosterError::AirframeKind`] when `airframe` is not an `airframe` id.
+    pub fn new(airframe: ContentId, provenance: Provenance) -> Result<Self, RosterError> {
+        if airframe.kind() != ContentKind::Airframe {
+            return Err(RosterError::AirframeKind {
+                kind: airframe.kind(),
+            });
+        }
+        Ok(Self {
+            airframe,
+            root: None,
+            availability: Self::undiscovered_availability(),
+            required_roles: Vec::new(),
+            provenance,
+        })
+    }
+
+    /// The standing explicit unknown for roster availability: a model name is
+    /// not proof that a plane is selectable in any mode (F11 non-negotiable
+    /// behavior 3), and an unevidenced roster is `Unknown` rather than empty.
+    #[must_use]
+    pub fn undiscovered_availability() -> Resolved<RosterAvailability> {
+        Resolved::unknown(
+            ClaimId::new(AVAILABILITY_UNDISCOVERED).expect("the claim id is valid"),
+            "roster availability is a separate discovery from a forced mission \
+             assignment; nothing has established it for this airframe",
+        )
+        .expect("the reason is not empty")
+    }
+
+    /// Records the root this airframe's visual references.
+    #[must_use]
+    pub fn with_root(mut self, root: SceneRootRef) -> Self {
+        self.root = Some(root);
+        self
+    }
+
+    /// Records what the evidence established about roster availability.
+    #[must_use]
+    pub fn with_availability(mut self, availability: Resolved<RosterAvailability>) -> Self {
+        self.availability = availability;
+        self
+    }
+
+    /// Declares that this airframe must bind `role` to a node.
+    ///
+    /// # Errors
+    ///
+    /// [`RosterError::DuplicateRequiredRole`] when the role is already
+    /// declared — a repeated requirement is an authoring error, not a second
+    /// required mount.
+    pub fn requiring(mut self, role: PartRole) -> Result<Self, RosterError> {
+        if self.required_roles.contains(&role) {
+            return Err(RosterError::DuplicateRequiredRole { role });
+        }
+        self.required_roles.push(role);
+        Ok(self)
+    }
+
+    /// The airframe element this row audits.
+    #[must_use]
+    pub fn airframe(&self) -> &ContentId {
+        &self.airframe
+    }
+
+    /// The checked root reference, when one has been discovered.
+    #[must_use]
+    pub fn root(&self) -> Option<&SceneRootRef> {
+        self.root.as_ref()
+    }
+
+    /// What the evidence established about roster availability, or the
+    /// explicit unknown that says nothing has.
+    #[must_use]
+    pub fn availability(&self) -> &Resolved<RosterAvailability> {
+        &self.availability
+    }
+
+    /// The roles this airframe is declared to bind, in declaration order.
+    #[must_use]
+    pub fn required_roles(&self) -> &[PartRole] {
+        &self.required_roles
+    }
+
+    /// Where this row was discovered.
+    #[must_use]
+    pub fn provenance(&self) -> &Provenance {
+        &self.provenance
+    }
+}
+
+/// One discovered scene container the roster audit covers, with the node
+/// array facts its own header declares.
+///
+/// `stored_nodes` is the container header's `node_array_size` and
+/// `nodes_offset` the byte offset the node array starts at — the two measured
+/// words that say how much scene data exists and where. They travel with the
+/// container so a blocker can quote them, and so a converted graph can be
+/// checked against the number of records the container claims to hold.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SceneContainerRef {
+    container: ContentId,
+    stored_nodes: u32,
+    nodes_offset: u32,
+}
+
+impl SceneContainerRef {
+    /// Names a container and the node array its header declares.
+    #[must_use]
+    pub fn new(container: ContentId, stored_nodes: u32, nodes_offset: u32) -> Self {
+        Self {
+            container,
+            stored_nodes,
+            nodes_offset,
+        }
+    }
+
+    /// The container's catalog id.
+    #[must_use]
+    pub fn container(&self) -> &ContentId {
+        &self.container
+    }
+
+    /// The header's `node_array_size`: stored node records in this container.
+    #[must_use]
+    pub fn stored_nodes(&self) -> u32 {
+        self.stored_nodes
+    }
+
+    /// The header's `nodes_offset`: where the node array starts.
+    #[must_use]
+    pub fn nodes_offset(&self) -> u32 {
+        self.nodes_offset
+    }
+}
+
+/// Why a container's scene could not be handed to the audit at all.
+///
+/// The variants carry the *measured* facts, not a message: a container whose
+/// node array is undecoded reports how many stored node records and at what
+/// offset, so the missing step is a number someone can act on.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ContainerBlocker {
+    /// The node array has not been decoded, so no root, part, mount or
+    /// cockpit binding inside it exists yet.
+    NodeArrayUndecoded {
+        /// The container that still holds it.
+        container: ContentId,
+        /// The header's `node_array_size`.
+        stored_nodes: u32,
+        /// The header's `nodes_offset`.
+        nodes_offset: u32,
+    },
+    /// The container's conversion was refused.
+    SceneRefused {
+        /// The container that was refused.
+        container: ContentId,
+        /// The refusal, verbatim.
+        reason: String,
+    },
+}
+
+impl ContainerBlocker {
+    /// The container this blocker is about.
+    #[must_use]
+    pub fn container(&self) -> &ContentId {
+        match self {
+            Self::NodeArrayUndecoded { container, .. } | Self::SceneRefused { container, .. } => {
+                container
+            }
+        }
+    }
+}
+
+impl fmt::Display for ContainerBlocker {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NodeArrayUndecoded {
+                container,
+                stored_nodes,
+                nodes_offset,
+            } => write!(
+                f,
+                "{container} declares {stored_nodes} stored node records at offset \
+                 {nodes_offset}, and its node array is not decoded: no root, part, mount \
+                 or cockpit binding can be mapped from it"
+            ),
+            Self::SceneRefused { container, reason } => {
+                write!(f, "{container} could not be converted: {reason}")
+            }
+        }
+    }
+}
+
+/// Why one airframe could not be mapped, whatever the container holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AirframeBlocker {
+    /// No root reference has been discovered for this airframe, so there is
+    /// nothing to walk. A model name is not a root.
+    RootUndiscovered {
+        /// The airframe awaiting a root.
+        airframe: ContentId,
+    },
+    /// The container holding the root could not be converted.
+    ContainerUndecoded {
+        /// The airframe inside it.
+        airframe: ContentId,
+        /// The container's own blocker, carried verbatim.
+        blocker: ContainerBlocker,
+    },
+    /// The referenced root is not in the converted container.
+    RootMissing {
+        /// The airframe that referenced it.
+        airframe: ContentId,
+        /// The missing root.
+        root: SceneNodeId,
+    },
+    /// The referenced root's container is not among the audited containers, so
+    /// the audit never looked at it.
+    ContainerNotAudited {
+        /// The airframe inside it.
+        airframe: ContentId,
+        /// The container the audit was not asked to cover.
+        container: ContentId,
+    },
+}
+
+impl AirframeBlocker {
+    /// The airframe this blocker is about.
+    #[must_use]
+    pub fn airframe(&self) -> &ContentId {
+        match self {
+            Self::RootUndiscovered { airframe }
+            | Self::ContainerUndecoded { airframe, .. }
+            | Self::RootMissing { airframe, .. }
+            | Self::ContainerNotAudited { airframe, .. } => airframe,
+        }
+    }
+}
+
+impl fmt::Display for AirframeBlocker {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::RootUndiscovered { airframe } => {
+                write!(f, "{airframe} has no discovered scene root")
+            }
+            Self::ContainerUndecoded { airframe, blocker } => {
+                write!(f, "{airframe} is blocked: {blocker}")
+            }
+            Self::RootMissing { airframe, root } => {
+                write!(
+                    f,
+                    "{airframe} references root {root}, which the container does not hold"
+                )
+            }
+            Self::ContainerNotAudited {
+                airframe,
+                container,
+            } => write!(
+                f,
+                "{airframe} lives in {container}, which this audit did not cover"
+            ),
+        }
+    }
+}
+
+/// A shortfall the audit found inside an airframe it *could* walk.
+///
+/// A gap is not a blocker: the mapping happened, and this is what is missing
+/// from it. Each variant names the affected content so it can be filed.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AuditGap {
+    /// A bound node's gameplay role is an explicit unknown, so a consumer
+    /// holding that socket must refuse it.
+    UnknownRole {
+        /// The bound node.
+        node: SceneNodeId,
+        /// The claim that records the unknown.
+        claim_id: ClaimId,
+        /// Why it is unknown.
+        reason: String,
+    },
+    /// A binding rule matched no node of the container.
+    UnmatchedRule {
+        /// The authored path that named nothing.
+        path: String,
+    },
+    /// A role the airframe is declared to carry is bound to nothing.
+    MissingRole {
+        /// The root whose subtree was audited.
+        root: SceneNodeId,
+        /// The role nothing bound.
+        role: PartRole,
+    },
+    /// Roster availability was never discovered for this airframe.
+    AvailabilityUndiscovered {
+        /// The airframe.
+        airframe: ContentId,
+    },
+    /// Forced mission assignments are the **only** evidence this airframe
+    /// exists; nothing established where a player may select it.
+    ForcedAssignmentOnly {
+        /// The airframe.
+        airframe: ContentId,
+        /// How many missions force it.
+        missions: usize,
+    },
+    /// The converted graph holds a different number of nodes than the
+    /// container's header declares, so the node array was only partly decoded.
+    NodeCountMismatch {
+        /// The container.
+        container: ContentId,
+        /// The header's `node_array_size`.
+        declared: u32,
+        /// How many nodes the converted graph really holds.
+        decoded: usize,
+    },
+}
+
+impl fmt::Display for AuditGap {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownRole {
+                node,
+                claim_id,
+                reason,
+            } => write!(
+                f,
+                "{node} has no established gameplay role ({claim_id}): {reason}"
+            ),
+            Self::UnmatchedRule { path } => {
+                write!(f, "the binding rule for {path:?} matched no node")
+            }
+            Self::MissingRole { root, role } => {
+                write!(f, "no node under {root} is bound as {}", role.label())
+            }
+            Self::AvailabilityUndiscovered { airframe } => {
+                write!(f, "{airframe} has no discovered roster availability")
+            }
+            Self::ForcedAssignmentOnly { airframe, missions } => write!(
+                f,
+                "{airframe} is only evidenced as forced by {missions} mission(s); its roster \
+                 availability is still unknown"
+            ),
+            Self::NodeCountMismatch {
+                container,
+                declared,
+                decoded,
+            } => write!(
+                f,
+                "{container} declares {declared} stored node records but the converted graph \
+                 holds {decoded}"
+            ),
+        }
+    }
+}
+
+/// One socket the audit mapped: which node, which role, its collision role,
+/// stored zone, bound animation channels, the pose the node's own composed
+/// transform holds, and the provenance of the rule that bound it.
+///
+/// `pose` is a copy of the node's one composed [`CanonicalTransform`] — the
+/// same value the render and collision paths use — so a mount point read out
+/// of an audit report cannot drift from the scene it describes (F11
+/// non-negotiable behavior 4).
+#[derive(Clone, Debug, PartialEq)]
+pub struct MappedSocket {
+    node: SceneNodeId,
+    role: PartRole,
+    collision: CollisionRole,
+    pose: CanonicalTransform,
+    zone_id: u32,
+    animation_channels: usize,
+    provenance: Provenance,
+}
+
+impl MappedSocket {
+    /// The bound node.
+    #[must_use]
+    pub fn node(&self) -> &SceneNodeId {
+        &self.node
+    }
+
+    /// The established gameplay role.
+    #[must_use]
+    pub const fn role(&self) -> PartRole {
+        self.role
+    }
+
+    /// The established collision role.
+    #[must_use]
+    pub const fn collision(&self) -> CollisionRole {
+        self.collision
+    }
+
+    /// The node's one composed pose, shared with the render and collision
+    /// paths.
+    #[must_use]
+    pub const fn pose(&self) -> &CanonicalTransform {
+        &self.pose
+    }
+
+    /// The bound node's stored zone id, uninterpreted.
+    #[must_use]
+    pub const fn zone_id(&self) -> u32 {
+        self.zone_id
+    }
+
+    /// How many animation channels the rule bound to the node.
+    #[must_use]
+    pub const fn animation_channels(&self) -> usize {
+        self.animation_channels
+    }
+
+    /// The provenance of the rule that produced this mapping.
+    #[must_use]
+    pub fn provenance(&self) -> &Provenance {
+        &self.provenance
+    }
+}
+
+/// What the audit mapped for one airframe's root.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AirframeMapping {
+    root: SceneNodeId,
+    container: ContentId,
+    node_count: usize,
+    sockets: Vec<MappedSocket>,
+}
+
+impl AirframeMapping {
+    /// The audited root.
+    #[must_use]
+    pub fn root(&self) -> &SceneNodeId {
+        &self.root
+    }
+
+    /// The container the root lives in.
+    #[must_use]
+    pub fn container(&self) -> &ContentId {
+        &self.container
+    }
+
+    /// How many nodes the mapped subtree holds.
+    #[must_use]
+    pub const fn node_count(&self) -> usize {
+        self.node_count
+    }
+
+    /// Every mapped socket, in stable-id order.
+    pub fn sockets(&self) -> impl Iterator<Item = &MappedSocket> + '_ {
+        self.sockets.iter()
+    }
+
+    /// The sockets that serve one role, in stable-id order.
+    pub fn sockets_of_role(&self, role: PartRole) -> impl Iterator<Item = &MappedSocket> + '_ {
+        self.sockets
+            .iter()
+            .filter(move |socket| socket.role == role)
+    }
+
+    /// How many sockets serve one role.
+    #[must_use]
+    pub fn count_of(&self, role: PartRole) -> usize {
+        self.sockets_of_role(role).count()
+    }
+
+    /// How many sockets were mapped.
+    #[must_use]
+    pub const fn len(&self) -> usize {
+        self.sockets.len()
+    }
+
+    /// Whether nothing was mapped.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.sockets.is_empty()
+    }
+}
+
+/// One audited airframe: its declared row, what the audit mapped and what it
+/// could not.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AirframeAudit {
+    airframe: ContentId,
+    root: Option<SceneRootRef>,
+    availability: Resolved<RosterAvailability>,
+    forced_missions: Vec<ContentId>,
+    mapping: Option<AirframeMapping>,
+    blockers: Vec<AirframeBlocker>,
+    gaps: Vec<AuditGap>,
+}
+
+impl AirframeAudit {
+    /// The audited airframe.
+    #[must_use]
+    pub fn airframe(&self) -> &ContentId {
+        &self.airframe
+    }
+
+    /// The declared root reference, when the roster row carried one.
+    #[must_use]
+    pub fn root(&self) -> Option<&SceneRootRef> {
+        self.root.as_ref()
+    }
+
+    /// What the evidence established about roster availability. A forced
+    /// mission assignment never changes it.
+    #[must_use]
+    pub fn availability(&self) -> &Resolved<RosterAvailability> {
+        &self.availability
+    }
+
+    /// Whether the evidence proved this airframe selectable in some mode.
+    #[must_use]
+    pub fn is_proven_selectable(&self) -> bool {
+        matches!(
+            &self.availability,
+            Resolved::Known(known) if known.value == RosterAvailability::Selectable
+        )
+    }
+
+    /// The missions that force this airframe into play, in roster order.
+    #[must_use]
+    pub fn forced_missions(&self) -> &[ContentId] {
+        &self.forced_missions
+    }
+
+    /// What the audit mapped, when it could.
+    #[must_use]
+    pub fn mapping(&self) -> Option<&AirframeMapping> {
+        self.mapping.as_ref()
+    }
+
+    /// Why the airframe could not be mapped.
+    pub fn blockers(&self) -> impl Iterator<Item = &AirframeBlocker> + '_ {
+        self.blockers.iter()
+    }
+
+    /// The first blocker, which is the one that stopped the mapping.
+    #[must_use]
+    pub fn first_blocker(&self) -> Option<&AirframeBlocker> {
+        self.blockers.first()
+    }
+
+    /// The shortfalls found inside the mapping.
+    pub fn gaps(&self) -> impl Iterator<Item = &AuditGap> + '_ {
+        self.gaps.iter()
+    }
+
+    /// The first gap, for a report that names one reason.
+    #[must_use]
+    pub fn first_gap(&self) -> Option<&AuditGap> {
+        self.gaps.first()
+    }
+
+    /// Whether this airframe was fully mapped with nothing missing.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.mapping.is_some() && self.blockers.is_empty() && self.gaps.is_empty()
+    }
+}
+
+/// What the audit mapped for one container.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ContainerMapping {
+    container: ContentId,
+    roots: Vec<SceneNodeId>,
+    node_count: usize,
+    airframes: Vec<ContentId>,
+}
+
+impl ContainerMapping {
+    /// The container.
+    #[must_use]
+    pub fn container(&self) -> &ContentId {
+        &self.container
+    }
+
+    /// The container's roots, in stored order.
+    #[must_use]
+    pub fn roots(&self) -> &[SceneNodeId] {
+        &self.roots
+    }
+
+    /// How many nodes the converted graph holds.
+    #[must_use]
+    pub const fn node_count(&self) -> usize {
+        self.node_count
+    }
+
+    /// The airframes whose discovered root lives in this container.
+    #[must_use]
+    pub fn airframes(&self) -> &[ContentId] {
+        &self.airframes
+    }
+}
+
+/// How one audited container turned out.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ContainerOutcome {
+    /// The container was converted and mapped.
+    Mapped(ContainerMapping),
+    /// The container could not be converted.
+    Blocked(ContainerBlocker),
+}
+
+/// One audited container: either the mapping it produced or the blocker that
+/// stopped it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ContainerAudit {
+    container: ContentId,
+    declared_nodes: u32,
+    nodes_offset: u32,
+    outcome: ContainerOutcome,
+    gaps: Vec<AuditGap>,
+}
+
+impl ContainerAudit {
+    /// The audited container.
+    #[must_use]
+    pub fn container(&self) -> &ContentId {
+        &self.container
+    }
+
+    /// The header's `node_array_size` for this container.
+    #[must_use]
+    pub const fn declared_nodes(&self) -> u32 {
+        self.declared_nodes
+    }
+
+    /// The header's `nodes_offset` for this container.
+    #[must_use]
+    pub const fn nodes_offset(&self) -> u32 {
+        self.nodes_offset
+    }
+
+    /// The container's outcome.
+    #[must_use]
+    pub fn outcome(&self) -> &ContainerOutcome {
+        &self.outcome
+    }
+
+    /// The mapping, when there is one.
+    #[must_use]
+    pub fn mapping(&self) -> Option<&ContainerMapping> {
+        match &self.outcome {
+            ContainerOutcome::Mapped(mapping) => Some(mapping),
+            ContainerOutcome::Blocked(_) => None,
+        }
+    }
+
+    /// The blocker, when there is one.
+    #[must_use]
+    pub fn blocker(&self) -> Option<&ContainerBlocker> {
+        match &self.outcome {
+            ContainerOutcome::Mapped(_) => None,
+            ContainerOutcome::Blocked(blocker) => Some(blocker),
+        }
+    }
+
+    /// Whether the container was converted.
+    #[must_use]
+    pub fn is_mapped(&self) -> bool {
+        matches!(self.outcome, ContainerOutcome::Mapped(_))
+    }
+
+    /// The shortfalls found inside the container.
+    pub fn gaps(&self) -> impl Iterator<Item = &AuditGap> + '_ {
+        self.gaps.iter()
+    }
+}
+
+/// The whole verdict: every audited container and every audited airframe, in
+/// the order they were given.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RosterAuditReport {
+    containers: Vec<ContainerAudit>,
+    airframes: Vec<AirframeAudit>,
+}
+
+impl RosterAuditReport {
+    /// Every audited container, in the order the audit was given them.
+    #[must_use]
+    pub fn containers(&self) -> &[ContainerAudit] {
+        &self.containers
+    }
+
+    /// Every audited airframe, in roster order.
+    #[must_use]
+    pub fn airframes(&self) -> &[AirframeAudit] {
+        &self.airframes
+    }
+
+    /// The containers that were converted.
+    pub fn mapped_containers(&self) -> impl Iterator<Item = &ContainerAudit> + '_ {
+        self.containers.iter().filter(|audit| audit.is_mapped())
+    }
+
+    /// The containers that could not be converted.
+    pub fn blocked_containers(&self) -> impl Iterator<Item = &ContainerAudit> + '_ {
+        self.containers.iter().filter(|audit| !audit.is_mapped())
+    }
+
+    /// The airframes that were mapped.
+    pub fn mapped_airframes(&self) -> impl Iterator<Item = &AirframeAudit> + '_ {
+        self.airframes
+            .iter()
+            .filter(|audit| audit.mapping.is_some())
+    }
+
+    /// The airframes that could not be mapped.
+    pub fn blocked_airframes(&self) -> impl Iterator<Item = &AirframeAudit> + '_ {
+        self.airframes
+            .iter()
+            .filter(|audit| audit.mapping.is_none())
+    }
+
+    /// How many containers were audited.
+    #[must_use]
+    pub fn container_count(&self) -> usize {
+        self.containers.len()
+    }
+
+    /// How many airframes were audited.
+    #[must_use]
+    pub fn airframe_count(&self) -> usize {
+        self.airframes.len()
+    }
+
+    /// How many roots were reached and mapped.
+    #[must_use]
+    pub fn mapped_root_count(&self) -> usize {
+        self.airframes
+            .iter()
+            .filter_map(|audit| audit.mapping())
+            .count()
+    }
+
+    /// How many sockets were mapped across every audited airframe.
+    #[must_use]
+    pub fn mapped_socket_count(&self) -> usize {
+        self.airframes
+            .iter()
+            .filter_map(|audit| audit.mapping())
+            .map(AirframeMapping::len)
+            .sum()
+    }
+
+    /// How many blockers the report holds, over containers and airframes.
+    #[must_use]
+    pub fn blocker_count(&self) -> usize {
+        self.containers
+            .iter()
+            .filter(|audit| audit.blocker().is_some())
+            .count()
+            + self
+                .airframes
+                .iter()
+                .map(|audit| audit.blockers().count())
+                .sum::<usize>()
+    }
+
+    /// How many gaps the report holds, over containers and airframes.
+    #[must_use]
+    pub fn gap_count(&self) -> usize {
+        self.containers
+            .iter()
+            .map(|audit| audit.gaps().count())
+            .sum::<usize>()
+            + self
+                .airframes
+                .iter()
+                .map(|audit| audit.gaps().count())
+                .sum::<usize>()
+    }
+
+    /// Whether the audit mapped every discovered root with nothing missing.
+    ///
+    /// This is deliberately strict: an audit of no container and no airframe
+    /// mapped nothing and is **not** a pass, so an empty report is
+    /// incomplete. Neither is a report with a blocker or a gap.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        !self.containers.is_empty()
+            && !self.airframes.is_empty()
+            && self.blocker_count() == 0
+            && self.gap_count() == 0
+    }
+
+    /// Whether the audit looked at nothing at all.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.containers.is_empty() && self.airframes.is_empty()
+    }
+}
+
+/// The claim and reason behind a socket the audit refuses to map, or `None`
+/// when both of its roles are established.
+///
+/// The gameplay role's own unknown wins when it is unknown; otherwise it is
+/// the collision role's. The reported claim is always the *unresolved* one, so
+/// a gap never points a reader at the rule that did resolve.
+fn unresolved_socket_claim(socket: &PartSocket) -> Option<(ClaimId, String)> {
+    match (socket.role(), socket.collision()) {
+        (Resolved::Unknown { claim_id, reason }, _)
+        | (_, Resolved::Unknown { claim_id, reason }) => Some((claim_id.clone(), reason.clone())),
+        (Resolved::Known(_), Resolved::Known(_)) => None,
+    }
+}
+
+/// The declared roster: every discovered airframe and every forced mission
+/// assignment, validated as one set.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AirframeRoster {
+    entries: Vec<RosterEntry>,
+    assignments: Vec<ForcedMissionAssignment>,
+}
+
+impl AirframeRoster {
+    /// Collects the roster, refusing contradictions.
+    ///
+    /// # Errors
+    ///
+    /// [`RosterError::DuplicateAirframe`] when two rows audit the same
+    /// airframe, [`RosterError::DuplicateAssignment`] when one mission
+    /// forces the same airframe twice, and
+    /// [`RosterError::UnknownAirframe`] when an assignment names an airframe
+    /// no row audits — a forced plane that is missing from the roster is a
+    /// discovery gap, and hiding it behind an assignment would make the
+    /// roster look complete.
+    pub fn new(
+        entries: Vec<RosterEntry>,
+        assignments: Vec<ForcedMissionAssignment>,
+    ) -> Result<Self, RosterError> {
+        let mut known: HashSet<ContentId> = HashSet::new();
+        for entry in &entries {
+            if !known.insert(entry.airframe.clone()) {
+                return Err(RosterError::DuplicateAirframe {
+                    airframe: entry.airframe.clone(),
+                });
+            }
+        }
+        let mut seen: HashSet<(ContentId, ContentId)> = HashSet::new();
+        for assignment in &assignments {
+            if !known.contains(&assignment.airframe) {
+                return Err(RosterError::UnknownAirframe {
+                    airframe: assignment.airframe.clone(),
+                });
+            }
+            if !seen.insert((assignment.mission.clone(), assignment.airframe.clone())) {
+                return Err(RosterError::DuplicateAssignment {
+                    mission: assignment.mission.clone(),
+                    airframe: assignment.airframe.clone(),
+                });
+            }
+        }
+        Ok(Self {
+            entries,
+            assignments,
+        })
+    }
+
+    /// The roster rows, in supplied order.
+    #[must_use]
+    pub fn entries(&self) -> &[RosterEntry] {
+        &self.entries
+    }
+
+    /// The forced mission assignments, in supplied order.
+    #[must_use]
+    pub fn assignments(&self) -> &[ForcedMissionAssignment] {
+        &self.assignments
+    }
+
+    /// The row auditing this airframe.
+    #[must_use]
+    pub fn entry(&self, airframe: &ContentId) -> Option<&RosterEntry> {
+        self.entries
+            .iter()
+            .find(|entry| &entry.airframe == airframe)
+    }
+
+    /// The missions that force one airframe into play, in roster order.
+    pub fn missions_forcing<'a>(
+        &'a self,
+        airframe: &'a ContentId,
+    ) -> impl Iterator<Item = &'a ContentId> + 'a {
+        self.assignments
+            .iter()
+            .filter(move |assignment| &assignment.airframe == airframe)
+            .map(|assignment| &assignment.mission)
+    }
+
+    /// The airframes one mission forces into play, in roster order.
+    pub fn airframes_forced_in<'a>(
+        &'a self,
+        mission: &'a ContentId,
+    ) -> impl Iterator<Item = &'a ContentId> + 'a {
+        self.assignments
+            .iter()
+            .filter(move |assignment| &assignment.mission == mission)
+            .map(|assignment| &assignment.airframe)
+    }
+
+    /// Audits the roster against the discovered containers.
+    ///
+    /// `graph_of` hands the audit the converted graph of one container, or the
+    /// typed reason it cannot. The closure is the seam between this contract
+    /// and the format layer: today no production path decodes a GameZ node
+    /// array, so a retail caller answers
+    /// [`ContainerBlocker::NodeArrayUndecoded`] with the measured
+    /// `node_array_size` and `nodes_offset`; when a reader exists it hands
+    /// over the converted graph instead and the same audit maps it. Nothing
+    /// else changes, which is what keeps "blocked" and "mapped" the same
+    /// verdict with a different input rather than two different reports.
+    ///
+    /// The verdict is per airframe and per container, and both are kept: a
+    /// container can be converted while one of its airframes still has no
+    /// root, and a blocked container blocks every airframe inside it.
+    pub fn audit<'g, G>(&self, containers: &[SceneContainerRef], graph_of: G) -> RosterAuditReport
+    where
+        G: Fn(&ContentId) -> Result<&'g SceneGraph, ContainerBlocker>,
+    {
+        let mut audits: Vec<ContainerAudit> = Vec::with_capacity(containers.len());
+        for reference in containers {
+            let mut gaps = Vec::new();
+            let outcome = match graph_of(&reference.container) {
+                Ok(graph) => {
+                    // The header declares how many node records the container
+                    // holds; a converted graph that disagrees decoded only
+                    // part of them, and a partial decode must not read as a
+                    // complete mapping.
+                    if graph.len() != reference.stored_nodes() as usize {
+                        gaps.push(AuditGap::NodeCountMismatch {
+                            container: reference.container.clone(),
+                            declared: reference.stored_nodes(),
+                            decoded: graph.len(),
+                        });
+                    }
+                    // A rule that bound no node of the container is a
+                    // container-level shortfall: it belongs to no single
+                    // root, so no airframe may claim it mapped cleanly.
+                    gaps.extend(
+                        graph
+                            .unmatched_bindings()
+                            .iter()
+                            .map(|path| AuditGap::UnmatchedRule { path: path.clone() }),
+                    );
+                    ContainerOutcome::Mapped(ContainerMapping {
+                        container: reference.container.clone(),
+                        roots: graph.roots().to_vec(),
+                        node_count: graph.len(),
+                        airframes: self
+                            .entries
+                            .iter()
+                            .filter(|entry| {
+                                entry
+                                    .root()
+                                    .is_some_and(|root| root.container() == &reference.container)
+                            })
+                            .map(|entry| entry.airframe.clone())
+                            .collect(),
+                    })
+                }
+                Err(blocker) => ContainerOutcome::Blocked(blocker),
+            };
+            audits.push(ContainerAudit {
+                container: reference.container.clone(),
+                declared_nodes: reference.stored_nodes(),
+                nodes_offset: reference.nodes_offset(),
+                outcome,
+                gaps,
+            });
+        }
+
+        let mut airframes = Vec::with_capacity(self.entries.len());
+        for entry in &self.entries {
+            airframes.push(self.audit_entry(entry, &audits, &graph_of));
+        }
+        RosterAuditReport {
+            containers: audits,
+            airframes,
+        }
+    }
+
+    /// Audits one roster row against the already-audited containers.
+    fn audit_entry<'g, G>(
+        &self,
+        entry: &RosterEntry,
+        containers: &[ContainerAudit],
+        graph_of: &G,
+    ) -> AirframeAudit
+    where
+        G: Fn(&ContentId) -> Result<&'g SceneGraph, ContainerBlocker>,
+    {
+        let mut gaps = Vec::new();
+        let mut blockers = Vec::new();
+        let forced_missions: Vec<ContentId> =
+            self.missions_forcing(&entry.airframe).cloned().collect();
+
+        if !entry.availability().is_known() {
+            gaps.push(AuditGap::AvailabilityUndiscovered {
+                airframe: entry.airframe.clone(),
+            });
+            if !forced_missions.is_empty() {
+                gaps.push(AuditGap::ForcedAssignmentOnly {
+                    airframe: entry.airframe.clone(),
+                    missions: forced_missions.len(),
+                });
+            }
+        }
+
+        let mapping = match entry.root() {
+            None => {
+                blockers.push(AirframeBlocker::RootUndiscovered {
+                    airframe: entry.airframe.clone(),
+                });
+                None
+            }
+            Some(root) => match containers
+                .iter()
+                .find(|audit| audit.container() == root.container())
+            {
+                None => {
+                    blockers.push(AirframeBlocker::ContainerNotAudited {
+                        airframe: entry.airframe.clone(),
+                        container: root.container().clone(),
+                    });
+                    None
+                }
+                Some(container) => match container.blocker() {
+                    Some(blocker) => {
+                        blockers.push(AirframeBlocker::ContainerUndecoded {
+                            airframe: entry.airframe.clone(),
+                            blocker: blocker.clone(),
+                        });
+                        None
+                    }
+                    None => {
+                        // The container converted, so the graph is in hand.
+                        // A root that is not in it is a wrong reference, not a
+                        // fallback to "the first root".
+                        let graph = graph_of(root.container()).expect(
+                            "an audited container with no blocker was produced from a graph",
+                        );
+                        if graph.node(root.root()).is_none() {
+                            blockers.push(AirframeBlocker::RootMissing {
+                                airframe: entry.airframe.clone(),
+                                root: root.root().clone(),
+                            });
+                            None
+                        } else {
+                            let subtree = graph.subtree(root.root());
+                            let mut sockets: Vec<MappedSocket> = Vec::new();
+                            let mut unknown: Vec<AuditGap> = Vec::new();
+                            for node in &subtree {
+                                let Some(socket) = graph.socket(node.id()) else {
+                                    continue;
+                                };
+                                match (socket.known_role(), socket.collision()) {
+                                    (Some(role), Resolved::Known(collision)) => {
+                                        sockets.push(MappedSocket {
+                                            node: node.id().clone(),
+                                            role,
+                                            collision: collision.value,
+                                            pose: *socket.pose(),
+                                            zone_id: socket.zone_id(),
+                                            animation_channels: socket.animation().len(),
+                                            provenance: socket.provenance().clone(),
+                                        });
+                                    }
+                                    _ => {
+                                        let (claim_id, reason) = unresolved_socket_claim(socket)
+                                            .expect(
+                                                "a socket with an unresolved role carries its \
+                                                 claim",
+                                            );
+                                        unknown.push(AuditGap::UnknownRole {
+                                            node: node.id().clone(),
+                                            claim_id,
+                                            reason,
+                                        });
+                                    }
+                                }
+                            }
+                            // Stable-id order, the graph's own socket-table
+                            // order: the report does not depend on how the
+                            // subtree happened to be walked.
+                            sockets.sort_by(|left, right| left.node.cmp(&right.node));
+                            gaps.extend(unknown);
+                            for role in entry.required_roles() {
+                                if !sockets.iter().any(|socket| socket.role == *role) {
+                                    gaps.push(AuditGap::MissingRole {
+                                        root: root.root().clone(),
+                                        role: *role,
+                                    });
+                                }
+                            }
+                            Some(AirframeMapping {
+                                root: root.root().clone(),
+                                container: root.container().clone(),
+                                node_count: subtree.len(),
+                                sockets,
+                            })
+                        }
+                    }
+                },
+            },
+        };
+
+        AirframeAudit {
+            airframe: entry.airframe.clone(),
+            root: entry.root().cloned(),
+            availability: entry.availability().clone(),
+            forced_missions,
+            mapping,
+            blockers,
+            gaps,
+        }
+    }
+}
+
 // ---------------------------------------------------------------- errors ---
+
+/// Why a roster record was refused.
+///
+/// Every variant is an authoring contradiction — two rows claiming one
+/// airframe, a required role declared twice, a forced plane that is not in
+/// the roster — refused at construction rather than resolved by the audit.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RosterError {
+    /// The id named something other than an airframe.
+    AirframeKind {
+        /// The kind the id actually names.
+        kind: ContentKind,
+    },
+    /// The id named something other than a campaign mission.
+    MissionKind {
+        /// The kind the id actually names.
+        kind: ContentKind,
+    },
+    /// Two roster rows audit the same airframe.
+    DuplicateAirframe {
+        /// The repeated airframe.
+        airframe: ContentId,
+    },
+    /// One mission forces the same airframe twice.
+    DuplicateAssignment {
+        /// The mission.
+        mission: ContentId,
+        /// The airframe it forces.
+        airframe: ContentId,
+    },
+    /// A forced mission assignment names an airframe no roster row audits.
+    UnknownAirframe {
+        /// The missing airframe.
+        airframe: ContentId,
+    },
+    /// A role is declared required twice for one airframe.
+    DuplicateRequiredRole {
+        /// The repeated role.
+        role: PartRole,
+    },
+}
+
+impl fmt::Display for RosterError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AirframeKind { kind } => {
+                write!(f, "a roster row must audit an airframe, got {kind}")
+            }
+            Self::MissionKind { kind } => {
+                write!(
+                    f,
+                    "a forced mission assignment must name a mission, got {kind}"
+                )
+            }
+            Self::DuplicateAirframe { airframe } => {
+                write!(f, "the roster audits {airframe} twice")
+            }
+            Self::DuplicateAssignment { mission, airframe } => {
+                write!(f, "{mission} forcing {airframe} is recorded twice")
+            }
+            Self::UnknownAirframe { airframe } => write!(
+                f,
+                "{airframe} is forced by a mission but no roster row audits it"
+            ),
+            Self::DuplicateRequiredRole { role } => {
+                write!(f, "the role {} is required twice", role.label())
+            }
+        }
+    }
+}
+
+impl std::error::Error for RosterError {}
 
 /// Why a scene conversion or a scene contract record was refused.
 #[derive(Clone, Debug, PartialEq)]
