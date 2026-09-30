@@ -733,10 +733,13 @@ fn entities_of(world: &mut World, object: &WorldObjectId) -> Vec<Entity> {
 
 /// Despawns several objects' entities.
 ///
-/// A mesh object's collider lives on a child node of its body, and Bevy takes
-/// the descendants with it, so every entity the spawn reported is named here and
-/// a missing one is skipped rather than turned into a failure: by the time this
-/// runs the caller has already established that the load owns these entities.
+/// Every entity the spawn reported is named here and a missing one is skipped
+/// rather than turned into a failure: by the time this runs the caller has
+/// already established that the load owns these entities. The list is the
+/// report's own ([`SpawnedObject::entities`]), so it follows the entity layout
+/// — a mesh object is one entity because its body *is* its collider node (the
+/// collider-on-body rule, see [`crate::asset_stack`]), and a cuboid object is a
+/// presentation entity plus a collider entity.
 fn despawn_all<'a>(world: &mut World, spawned: impl IntoIterator<Item = &'a SpawnedObject>) {
     for object in spawned {
         for entity in object.entities() {

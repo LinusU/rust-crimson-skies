@@ -20,7 +20,10 @@
 //!   `FromMesh` object is presented and collided by **one** node holding one
 //!   `Mesh3d` handle, which Avian derives a `TrimeshFromMesh` collider from —
 //!   no hull, no bounding box, no decimation, so a traversable opening cannot
-//!   be closed by a simplification this stage never made. Every instance it
+//!   be closed by a simplification this stage never made. That node is also the
+//!   static rigid body, so the derived collider lands on the body entity itself
+//!   and the object is visible to swept CCD (the collider-on-body rule in
+//!   [`crate::asset_stack`], tasks #420/#424). Every instance it
 //!   cannot build honestly is listed in [`spawn::SpawnedWorld::skipped`] (or, for
 //!   an object that asked for no collider but has no geometry to draw, in
 //!   [`spawn::SpawnedWorld::presentation_gaps`]) with a reason instead of being

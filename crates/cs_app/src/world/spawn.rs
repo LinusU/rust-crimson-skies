@@ -24,6 +24,16 @@
 //! [`SpawnedWorld`] reports every instance whose collision could **not** be
 //! built instead of silently presenting geometry it never collided with.
 //!
+//! **Every body this module spawns carries a `Collider` on its own entity**,
+//! which is what makes it visible to Avian's swept CCD: the collider-on-body
+//! rule is stated, measured and enforced in [`crate::asset_stack`]. The mesh
+//! path is therefore one entity — static body, `Mesh3d` and
+//! `ColliderConstructor::TrimeshFromMesh` together — and a cuboid is a second
+//! entity beside the presentation. A body whose colliders all lived on children
+//! would be skipped by `SweptCcdBodyQuery` and every swept body would pass
+//! through the world's geometry, which is the measured failure task #420
+//! recorded and task #424 turned into an invariant.
+
 //! What this stage deliberately does *not* do, and where it goes:
 //!
 //! * the **simplification policy** for real geometry is a decision, not a
@@ -158,13 +168,17 @@ pub struct SpawnedCollider {
     /// The object the collider was built from.
     pub object: WorldObjectId,
     /// The entity that holds the [`Collider`] a narrow phase resolves against.
-    /// For a mesh-derived object this is the node Avian derived it onto, which
-    /// is also the entity that presents the object.
+    /// For a mesh-derived object this is also the entity that presents the
+    /// object, and the collider does not exist until Avian's
+    /// `init_collider_constructors` has run.
     pub entity: Entity,
-    /// The static rigid body the collider hangs from. For a hand-built collider
-    /// this is `entity` itself; for a mesh-derived one it is the node's parent,
-    /// because a collider that is not attached to a body collides with nothing
-    /// however convincing its shape.
+    /// The static rigid body the collider hangs from. For a hand-built cuboid
+    /// and for a mesh-derived object alike this is `entity` itself: a collider
+    /// that is not attached to a body collides with nothing, and a body that
+    /// carries no collider of its own is skipped by Avian's swept CCD
+    /// (`crate::asset_stack`, the collider-on-body rule). It is reported
+    /// separately because a consumer asking *where is the body* must not have
+    /// to know that the two happen to be one entity.
     pub body: Entity,
     /// The role the record declared for it.
     pub role: WorldCollisionRole,
@@ -690,14 +704,14 @@ pub fn spawn_object(
                     .unwrap_or(SkipReason::UnknownMesh);
                 return Ok(gap(app, object, &instance, binding(), None, reason));
             };
-            let (visual, body) = spawn_mesh_collider(app, transform, upload, role, binding());
+            let entity = spawn_mesh_collider(app, transform, upload, role, binding());
             Ok(SpawnedObject {
                 object: object.id().clone(),
-                visual,
+                visual: entity,
                 collider: Some(SpawnedCollider {
                     object: object.id().clone(),
-                    entity: visual,
-                    body,
+                    entity,
+                    body: entity,
                     role,
                 }),
                 mesh: Some(upload.reference()),
@@ -805,46 +819,48 @@ fn spawn_mesh_presentation(
 /// `ColliderConstructor::TrimeshFromMesh` — the constructor that keeps every
 /// stored triangle, so nothing here can close a traversable opening.
 ///
-/// The *body* carries the authored transform and is the placement authority: a
-/// collider attached to it follows the body's pose, while the node's own
-/// transform stays identity in body-local space. That is why the report's
-/// `body` and `entity` are two entities here and one for a cuboid, and why both
-/// carry the object's binding: they are one object.
+/// **That node is also the rigid body.** The entity carries
+/// [`RigidBody::Static`], the [`Mesh3d`] and the constructor together, so the
+/// derived [`Collider`] lands on the body entity itself rather than on a child
+/// of it. This is the collider-on-body rule
+/// ([`crate::asset_stack`]): Avian's `solve_swept_ccd` resolves a body through
+/// `SweptCcdBodyQuery`, whose `collider: &'static Collider` field is read off
+/// the body entity, so a body whose colliders live on descendants is skipped
+/// and a swept body passes straight through it. Measured here: against this
+/// layout the production 400 m/s swept probe is clamped at the arch's near
+/// face, where the parent-body-plus-child-node layout tunnelled with an empty
+/// contact log (`docs/findings/2026-09-30-t420-mesh-ccd-decision.md`).
+///
+/// So the report's `body` and `entity` are the *same* entity for a mesh object
+/// and still two for a cuboid (whose presentation is its own entity), and one
+/// entity carries the binding, the presentation and the collider because they
+/// are one object. No separate body entity is spawned, so nothing is left to
+/// despawn on unload and nothing to stamp.
 fn spawn_mesh_collider(
     app: &mut App,
     transform: Transform,
     upload: ResolvedUpload<'_>,
     role: WorldCollisionRole,
     binding: WorldObjectBinding,
-) -> (Entity, Entity) {
-    let node = crate::asset_stack::spawn_static_mesh_collider(
+) -> Entity {
+    let entity = crate::asset_stack::spawn_static_mesh_collider_on_body(
         app,
         upload.upload.mesh().clone(),
         transform,
         static_world_membership(),
     );
-    // The `Sensor` marker and the event opt-in belong to the collider, which
-    // Avian only creates on a later update; both are read from the collider
-    // entity itself, so marking the node now is enough.
-    let mut visual = app.world_mut().entity_mut(node.node);
-    visual.insert((
+    // The `Sensor` marker and the event opt-in are read from the collider's own
+    // entity, and the derived collider lands there, so marking it now is enough.
+    app.world_mut().entity_mut(entity).insert((
         WorldVisual,
         WorldColliderInstance::new(role),
-        binding.clone(),
-        Transform::default(),
+        binding,
         CollisionEventsEnabled,
     ));
     if role == WorldCollisionRole::Sensor {
-        visual.insert(Sensor);
+        app.world_mut().entity_mut(entity).insert(Sensor);
     }
-    // The body is an entity this object owns: the report names it, an unload
-    // despawns it and the load stamps its condition. It carries the same
-    // binding, so a query that starts at a body — a mission trigger, an overlay
-    // drawn at the object's pose — can name the object it belongs to instead of
-    // guessing. It deliberately carries no `WorldColliderInstance`: the collider
-    // is on the node, and a contact must resolve to the one entity that has it.
-    app.world_mut().entity_mut(node.body).insert(binding);
-    (node.node, node.body)
+    entity
 }
 
 /// Spawns every instance of `definition` into `app`.
