@@ -56,11 +56,9 @@
 use core::time::Duration;
 use std::fmt;
 
-use avian3d::prelude::{
-    AngularVelocity, Gravity, LinearVelocity, PhysicsPlugins, Position, SubstepCount,
-};
+use avian3d::prelude::{AngularVelocity, Gravity, LinearVelocity, Position, SubstepCount};
 use bevy::{
-    prelude::{App, Entity, MinimalPlugins, Transform, TransformPlugin, Vec3, World},
+    prelude::{App, Entity, Transform, Vec3, World},
     time::{Real, Time, TimeUpdateStrategy},
 };
 
@@ -194,8 +192,10 @@ impl PhysicsSessionBuilder {
     }
 
     fn app(fixed_hz: u32, gravity: Vec3) -> App {
-        let mut app = App::new();
-        app.add_plugins((MinimalPlugins, TransformPlugin, PhysicsPlugins::default()));
+        // `PhysicsPlugins::default()` needs Bevy's asset stack under Avian's
+        // pinned feature set, so the session builds its world through the one
+        // shared headless composition rather than spelling the tuple out.
+        let mut app = crate::asset_stack::headless_app();
         app.add_plugins(PhysicsAdapterPlugin::new(fixed_hz));
         app.add_plugins(PhysicsBodiesPlugin);
         app.insert_resource(SubstepCount(1));

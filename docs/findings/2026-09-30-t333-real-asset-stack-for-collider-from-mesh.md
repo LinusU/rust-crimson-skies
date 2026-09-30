@@ -17,11 +17,19 @@ it did not predict.
    set, so **every** headless world in the crate needed the stack, not only the
    ones that wanted a mesh collider. `synthetic::SyntheticSceneBuilder`,
    `physics::fixture::PhysicsFixtureBuilder` and `world::fixture::
-   WorldFixtureBuilder` each spelled their own plugin tuple; they now all build
+   WorldFixtureBuilder` each spelled its own plugin tuple; they now all build
    through `asset_stack::headless_app()`, which is the single place the base
    set is written down. A fourth caller spelling the tuple by hand is how the
    feature would be broken again.
-2. Removing `WorldSerializationPlugin` from the stack does not panic. Avian's
+2. That fourth caller turned up immediately, and it is the reason the
+   structural fix above matters more than the finding below predicted. F23-C
+   merged into `main` on 2026-09-30 (`38ec594`, `PhysicsSession`) with its own
+   `MinimalPlugins + TransformPlugin + PhysicsPlugins::default()` tuple. After
+   this branch rebased onto it, all nine `accept_f23_c_*` tests failed with
+   `Encountered a panic in system` on the first update. A new `cs_app` world
+   that spells the tuple out is now a build-time-of-the-test failure, not a
+   review finding. `PhysicsSession::app` was switched to `headless_app()` too.
+3. Removing `WorldSerializationPlugin` from the stack does not panic. Avian's
    pinned feature set includes `bevy_scene`, which makes
    `init_collider_constructor_hierarchies` take
    `If<Res<WorldInstanceSpawner>>` so it can wait for a scene instance to
@@ -92,6 +100,7 @@ Measured on this branch by mutating the production code and re-running
 |---|---|
 | `spawn_static_mesh_collider` also inserts a hard-coded `Collider::cuboid(1,1,1)` on the node | 2 of 4 fail: `as_trimesh()` is `None` |
 | `headless_app()` stops adding `AssetStackPlugin` | 4 of 4 fail: first `update` aborts with "Requested resource ... does not exist" (the F00-A symptom, reproduced) |
+| rebasing onto `main` (which had gained `PhysicsSession`'s own plugin tuple) without switching it to `headless_app()` | 9 of 33 `accept_f23_c_*` tests fail with `Encountered a panic in system` on the first update |
 | feature list drops `collider-from-mesh` | the test file does not compile: `ColliderCachePlugin` is `#[cfg]`-gated on the feature, so the coupling is checked by the compiler |
 
 ## What this does not establish
