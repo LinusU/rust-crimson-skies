@@ -71,15 +71,22 @@
 //! fixture. It is the only place the pinned Avian force accumulator is driven;
 //! body creation, sweeps and kinematic transitions are F23-B.
 //!
-//! [`loading`] is the F15-A load-transaction contract
-//! (`specs/F15-asynchronous-asset-loading-and-private-cache.md`, stage
-//! `### F15-A`): the cancellable `Requested → Loading → Validating →
-//! Ready|Failed` transaction, session/serial-stamped IO tickets whose late
-//! completions are discarded, and the versioned [`loading::ReadyBundle`]
-//! handoff that spawns its entities only under the world's expected load
-//! identity. [`assets`] is the same stage's conversion boundary: the typed
-//! `CanonicalAsset` input and `ConvertedAsset` output records that keep
-//! canonical-to-Bevy conversion inside this crate.
+//! [`loading`] is the F15 load pipeline
+//! (`specs/F15-asynchronous-asset-loading-and-private-cache.md`): the
+//! F15-A cancellable `Requested → Loading → Validating → Ready|Failed`
+//! transaction with session/serial-stamped IO tickets whose late
+//! completions are discarded; the F15-B [`loading::LoadDriver`] that runs
+//! each item's bounded read — a verified private-cache hit, or a source
+//! read, conversion and atomic publish — and re-verifies cached payloads
+//! before `Ready`; and the F15-C wiring: the [`loading::LoadIo`] producer
+//! seam and [`loading::SessionIo`] content-session producer, the
+//! [`loading::LoadingScreen`] render-model, the [`loading::LoadingSession`]
+//! pump/cancel/retry/invalidate lifecycle and the [`loading::ExpectedLoad`]
+//! handoff that spawns a [`loading::ReadyBundle`]'s entities only in the
+//! world that announced exactly that load. [`assets`] is the conversion
+//! boundary those stages share: the typed `CanonicalAsset` input and
+//! `ConvertedAsset` output records that keep canonical-to-Bevy conversion
+//! inside this crate.
 //!
 //! [`render`] is the F17-A rendering contract
 //! (`specs/F17-rendering-material-fidelity-and-scalable-presentation.md`,

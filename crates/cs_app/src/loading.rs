@@ -38,27 +38,56 @@
 //! re-verifies every cache-delivered payload through
 //! [`LoadTransaction::reject_validation`] before the transaction may go
 //! `Ready`. What it deliberately does not do: run a schedule, spawn scene
-//! entities or draw UI. F15-C wires the UI, the cancellation surface and
-//! the simulation handoff; F15-D runs the cold/warm comparison on real
+//! entities or draw UI. F15-D runs the cold/warm comparison on real
 //! content.
+//!
+//! F15-C is the wiring stage: it connects the implemented path to its
+//! actual producer and consumer and gives the `Loading` state of
+//! `docs/01-ARCHITECTURE.md`'s application lifecycle an owner:
+//!
+//! * [`LoadIo`] is the producer seam — how a source is read and how a
+//!   canonical payload becomes the derived form — and [`SessionIo`] is
+//!   the real producer: every item resolved and read through its
+//!   [`ContentSession`], the bounded [`cs_assets::vfs::PendingRead`]
+//!   observing the load's own cancel switch, a refused resolution named
+//!   as a missing-dependency [`SourceFault`] rather than a generic IO
+//!   fault (error propagation of non-negotiable behavior 5).
+//! * [`LoadingSession`] owns one in-flight load: [`LoadingSession::pump`]
+//!   runs one bounded step per call so a screen can draw
+//!   [`LoadingScreen`] between steps, [`LoadingSession::cancel`] and
+//!   [`LoadingSession::cancel_handle`] are the UI's cancel surface,
+//!   [`LoadingSession::retry`] replays a failed load as a fresh
+//!   transaction with a new serial, [`LoadingSession::invalidate_source`]
+//!   is AC03's per-input granularity at the session boundary, and
+//!   [`LoadingSession::close`] is the teardown that hands the private
+//!   store to the next load.
+//! * [`ExpectedLoad`] and [`LoadingSession::deliver`] are the simulation
+//!   handoff: the world records which load it is waiting for, and the
+//!   bundle attaches only to that world, only when the transaction is
+//!   `Ready` — never mid-tick and never to a world expecting nothing or
+//!   expecting another load.
 //!
 //! What the original engine did is not asserted anywhere here: the load
 //! pipeline, the cache and its format are new-engine design.
 
+use std::cell::{Cell, RefCell};
 use std::fmt;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use bevy::ecs::component::Component;
 use bevy::ecs::entity::Entity;
+use bevy::ecs::resource::Resource;
 use bevy::ecs::world::World;
 
 use cs_assets::cache::bound::BudgetExceeded;
-use cs_assets::cache::key::CacheKey;
+use cs_assets::cache::key::{CacheKey, SourceSpanHash};
 use cs_assets::cache::store::{
-    CACHE_IO_CHUNK, CacheLookup, CacheReadError, CacheStore, StoreError,
+    CACHE_IO_CHUNK, CacheLookup, CacheReadError, CacheStore, InvalidationReport, StoreError,
 };
 use cs_assets::install::{Sha256, sha256};
-use cs_assets::vfs::{ReadCancel, ReadError, ReadProgress, SessionGeneration};
+use cs_assets::vfs::{
+    ContentSession, ReadCancel, ReadError, ReadProgress, ResolveError, SessionGeneration,
+};
 use cs_types::asset_id::{AssetKey, MissionScope, WorldGroup};
 use cs_types::content::ContentId;
 use cs_types::evidence::ContentHash;
@@ -1043,6 +1072,14 @@ pub enum HandoffError {
         /// The load the world expects.
         expected: LoadIdentity,
     },
+    /// The world holds no [`ExpectedLoad`]: it is not waiting for any
+    /// bundle, so nothing attaches. A world that forgot to announce its
+    /// load is surfaced, not silently handed entities it was not
+    /// expecting.
+    Unannounced {
+        /// The load the bundle belongs to.
+        bundle: LoadIdentity,
+    },
 }
 
 impl fmt::Display for HandoffError {
@@ -1057,6 +1094,10 @@ impl fmt::Display for HandoffError {
                 f,
                 "bundle {bundle} cannot attach to a world expecting {expected}: \
                  the load that produced it has been replaced"
+            ),
+            Self::Unannounced { bundle } => write!(
+                f,
+                "bundle {bundle} cannot attach: the world is not waiting for a load"
             ),
         }
     }
@@ -1476,6 +1517,13 @@ impl LoadDriver {
         &self.store
     }
 
+    /// The store, mutably — for the between-loads operations the cache
+    /// owns: invalidation, discard, recovery. A store op never settles an
+    /// item; the transaction's record is still the only verdict.
+    pub const fn store_mut(&mut self) -> &mut CacheStore {
+        &mut self.store
+    }
+
     /// Splits the driver back into the transaction it drives and the store
     /// it was reading, so a caller can hand the ready transaction to the
     /// simulation boundary and keep the store for the next load.
@@ -1518,6 +1566,12 @@ impl LoadDriver {
     /// the canonical bytes into the derived form. Both are only called on
     /// the path that needs them, so a warm load touches neither.
     ///
+    /// A refused source is a [`SourceFault`], not just a read error: the
+    /// producer's own code and recovery path reach the transaction's
+    /// failure record, so a key nothing resolves is a named
+    /// `MissingDependency` and a read that may be retried says `Retry`
+    /// (error propagation of non-negotiable behavior 5).
+    ///
     /// The item is settled through the transaction in every case, so the
     /// load's own state machine — not this method — decides whether a
     /// critical failure ends it, and it is also what refuses a second read
@@ -1532,7 +1586,7 @@ impl LoadDriver {
         &mut self,
         index: usize,
         progress: &mut dyn FnMut(StepProgress),
-        read_source: impl FnOnce() -> Result<Vec<u8>, ReadError>,
+        read_source: impl FnOnce() -> Result<Vec<u8>, SourceFault>,
         convert: impl FnOnce(&CanonicalPayload) -> Result<Vec<u8>, ConversionError>,
     ) -> Result<ItemRead, DriverError> {
         let ticket =
@@ -1613,10 +1667,10 @@ impl LoadDriver {
         report(StepProgress::idle(snapshot));
         let canonical = match read_source() {
             Ok(bytes) => CanonicalPayload::new(item.content.kind(), bytes),
-            Err(error) => {
+            Err(fault) => {
                 return Ok(self.settle_failure(
                     ticket,
-                    self.failure(index, "source_read", error.to_string(), RecoveryPath::Retry),
+                    self.failure(index, fault.code, fault.detail, fault.recovery),
                 ));
             }
         };
@@ -1877,5 +1931,582 @@ fn uncached_from_store(error: &StoreError) -> UncachedReason {
     UncachedReason::Store {
         code: error.code(),
         detail: error.to_string(),
+    }
+}
+
+// --- F15-C: the producer seam, the loading UI model, and the handoff ----
+
+/// Why an item's source could not be delivered: the producer's own
+/// verdict, carrying the failure code and the recovery path the load
+/// records (non-negotiable behavior 5 — the named missing dependency and
+/// its recovery, never a bar stalled at a guessed percent).
+///
+/// [`LoadDriver::load_item`] settles the item with exactly this record.
+/// Producers reach it through `From` of the lower layers' refusals: a VFS
+/// [`ResolveError`] names its dependency (`not_found`, `ambiguous`,
+/// `unmeasured_order`) with the recovery a missing or blocked dependency
+/// admits, and a [`ReadError`] is the retryable source-IO class — except
+/// a cancelled read, which reports itself, and a read stamped by a
+/// replaced session, which retrying cannot heal.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SourceFault {
+    /// A stable lowercase code for the failure class (`source_read`,
+    /// `not_found`, `ambiguous`, `unmeasured_order`, `read_cancelled`,
+    /// `foreign_session`).
+    pub code: &'static str,
+    /// What happened, in words — the lower layer's own message.
+    pub detail: String,
+    /// What the load can do about it.
+    pub recovery: RecoveryPath,
+}
+
+impl SourceFault {
+    /// Names a source failure class, its reason and its recovery path.
+    pub fn new(code: &'static str, detail: impl Into<String>, recovery: RecoveryPath) -> Self {
+        Self {
+            code,
+            detail: detail.into(),
+            recovery,
+        }
+    }
+}
+
+impl From<ReadError> for SourceFault {
+    fn from(error: ReadError) -> Self {
+        let (code, recovery) = match &error {
+            ReadError::Cancelled { .. } => ("read_cancelled", RecoveryPath::Retry),
+            ReadError::ForeignSession { .. } => ("foreign_session", RecoveryPath::Abort),
+            _ => ("source_read", RecoveryPath::Retry),
+        };
+        Self::new(code, error.to_string(), recovery)
+    }
+}
+
+impl From<ResolveError> for SourceFault {
+    fn from(error: ResolveError) -> Self {
+        let (code, recovery) = match &error {
+            ResolveError::NotFound { .. } => ("not_found", RecoveryPath::MissingDependency),
+            ResolveError::Ambiguous { .. } => ("ambiguous", RecoveryPath::MissingDependency),
+            ResolveError::UnmeasuredOrder { .. } => ("unmeasured_order", RecoveryPath::Abort),
+        };
+        Self::new(code, error.to_string(), recovery)
+    }
+}
+
+/// The producer seam of a load (F15-C): where an item's source bytes
+/// come from and which converter turns them into the derived form.
+///
+/// [`LoadDriver`] owns the cache half of every item — the lookup, the
+/// bounded verified read, the atomic publish and the integrity
+/// re-verification — and deliberately does not know how a source is read
+/// or how a canonical payload is converted. This trait is the injection
+/// point the actual producer implements: [`SessionIo`] for reads through
+/// a content session, a fixture for a test.
+///
+/// Each method names the item by index *and* by record so an
+/// implementation may keep per-item state without matching on key
+/// identity — two items may spell the same key.
+pub trait LoadIo {
+    /// Reads item `index`'s canonical source bytes.
+    ///
+    /// `cancel` is the load's own switch — the same one
+    /// [`LoadDriver::cancel`] throws — and a source that reads in steps
+    /// must observe it at each boundary; `progress` reports the source
+    /// read's own chunk progress for the loading screen. Returning a
+    /// [`SourceFault`] settles the item as a recorded failure carrying
+    /// the fault's code and recovery.
+    fn read_source(
+        &mut self,
+        index: usize,
+        item: &LoadItem,
+        cancel: &ReadCancel,
+        progress: &mut dyn FnMut(ReadProgress),
+    ) -> Result<Vec<u8>, SourceFault>;
+
+    /// Converts item `index`'s canonical payload into its derived bytes.
+    ///
+    /// Called only after `read_source` produced them and only on the
+    /// rebuild path — a warm load never converts. A refusal settles the
+    /// item as a `conversion` failure with `Abort` recovery.
+    fn convert(
+        &mut self,
+        index: usize,
+        item: &LoadItem,
+        payload: &CanonicalPayload,
+    ) -> Result<Vec<u8>, ConversionError>;
+}
+
+/// The production [`LoadIo`] (F15-C): the actual producer a world load
+/// reads through — its [`ContentSession`].
+///
+/// Every item is resolved *inside the read*, in the session the request
+/// belongs to, so a session that has been replaced answers
+/// `ForeignSession` rather than serving bytes a newer session would have
+/// resolved differently; a key nothing answers becomes a named
+/// missing-dependency [`SourceFault`], never a default file. The source
+/// read itself is the VFS's bounded [`cs_assets::vfs::PendingRead`]: its
+/// chunk boundary observes the load's own cancel switch, and the
+/// delivered bytes pass the session's generation check before they reach
+/// the converter.
+///
+/// The converter dispatch stays caller-supplied: which converter a
+/// content kind maps to is the format and adapter stages' business
+/// (F08+/F17-B), not this wiring's.
+pub struct SessionIo<'a> {
+    session: &'a ContentSession,
+    convert: ConvertDispatch<'a>,
+}
+
+/// The per-item converter a [`SessionIo`] dispatches to: the canonical
+/// payload in, the derived bytes out — supplied per load, since which
+/// converter a content kind maps to is the format stages' business.
+type ConvertDispatch<'a> =
+    Box<dyn FnMut(&LoadItem, &CanonicalPayload) -> Result<Vec<u8>, ConversionError> + 'a>;
+
+impl<'a> SessionIo<'a> {
+    /// Binds the producer to `session` with `convert` as the per-item
+    /// converter dispatch.
+    pub fn new(
+        session: &'a ContentSession,
+        convert: impl FnMut(&LoadItem, &CanonicalPayload) -> Result<Vec<u8>, ConversionError> + 'a,
+    ) -> Self {
+        Self {
+            session,
+            convert: Box::new(convert),
+        }
+    }
+
+    /// The session every read resolves through.
+    pub fn session(&self) -> &ContentSession {
+        self.session
+    }
+}
+
+impl LoadIo for SessionIo<'_> {
+    fn read_source(
+        &mut self,
+        _index: usize,
+        item: &LoadItem,
+        cancel: &ReadCancel,
+        progress: &mut dyn FnMut(ReadProgress),
+    ) -> Result<Vec<u8>, SourceFault> {
+        let asset = self.session.resolve(&item.key).map_err(SourceFault::from)?;
+        let pending = self.session.begin_read(&asset).map_err(SourceFault::from)?;
+        let inner = pending.cancel_handle();
+        let completed = pending
+            .complete_with(|step| {
+                // The load's own switch reaches the bounded source read,
+                // and the read's own chunk progress reaches the screen.
+                if cancel.is_cancelled() {
+                    inner.cancel();
+                }
+                progress(step);
+            })
+            .map_err(SourceFault::from)?;
+        self.session.accept(completed).map_err(SourceFault::from)
+    }
+
+    fn convert(
+        &mut self,
+        _index: usize,
+        item: &LoadItem,
+        payload: &CanonicalPayload,
+    ) -> Result<Vec<u8>, ConversionError> {
+        (self.convert)(item, payload)
+    }
+}
+
+/// Resource: which load the world is waiting to receive (F15-C).
+///
+/// [`LoadingSession::announce`] writes it when the world switches into
+/// its loading state; [`LoadingSession::deliver`] reads and consumes it.
+/// It exists so the *world's own record* decides which bundle may
+/// attach: a session reaching a world that announced nothing — or that
+/// announced another, newer load — attaches nothing, and stale entities
+/// never spawn (non-negotiable behavior 2).
+#[derive(Resource, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExpectedLoad(pub LoadIdentity);
+
+/// The render-model of the loading UI (F15-C): what a screen draws
+/// between two pumps — never a guessed percentage (non-negotiable
+/// behavior 5).
+///
+/// `progress` is measured in the items' declared work units; `io` is the
+/// bounded step's own byte progress as of the last pump; `failures`
+/// names every missing dependency with its recovery path, so a broken
+/// load shows what to fix instead of a bar stopped at 99 percent.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoadingScreen {
+    /// The load being shown.
+    pub identity: LoadIdentity,
+    /// What the load builds.
+    pub target: LoadTarget,
+    /// Where the transaction is.
+    pub state: LoadState,
+    /// Settled work units over the closure's total.
+    pub progress: LoadProgress,
+    /// The bounded step's chunk progress, as of the last pump.
+    pub io: ReadProgress,
+    /// The item the load is (or was most recently) reading.
+    pub item: Option<AssetKey>,
+    /// Every failure on the record, in order.
+    pub failures: Vec<LoadFailure>,
+    /// Whether `cancel` would still do anything (the load is live).
+    pub cancellable: bool,
+}
+
+impl fmt::Display for LoadingScreen {
+    /// One line for a log or a headless UI: the load, its state, its
+    /// measured progress, the item it last read and every failure.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} ({}): {} — {}/{} work units, {}/{} items ready",
+            self.identity,
+            self.target,
+            self.state.label(),
+            self.progress.completed_units,
+            self.progress.total_units,
+            self.progress.items_ready,
+            self.progress.items_total,
+        )?;
+        if self.progress.items_failed > 0 {
+            write!(f, ", {} failed", self.progress.items_failed)?;
+        }
+        if let Some(item) = &self.item {
+            write!(f, ", last read {item}")?;
+        }
+        for failure in &self.failures {
+            write!(f, "\n  {failure}")?;
+        }
+        Ok(())
+    }
+}
+
+/// Why a load could not be retried.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RetryError {
+    /// The load is not `Failed`: only a failed load retries. A cancelled
+    /// load belongs to a session a switch may already have replaced, so
+    /// re-entering it is a new request, not a retry; a `Ready` load has
+    /// nothing to retry.
+    NotFailed {
+        /// The state the transaction is in.
+        state: LoadState,
+    },
+}
+
+impl fmt::Display for RetryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotFailed { state } => {
+                write!(
+                    f,
+                    "only a failed load retries; this load is {}",
+                    state.label()
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for RetryError {}
+
+/// The wired load (F15-C): one transaction, its driver, the progress
+/// model the loading screen reads, and the cancellation, retry,
+/// invalidation and handoff surfaces — the `Loading` state of
+/// `docs/01-ARCHITECTURE.md`'s application lifecycle, without the
+/// renderer.
+///
+/// * [`LoadingSession::begin`] starts the load; [`LoadingSession::pump`]
+///   runs one bounded step — the next unsettled item's read through its
+///   [`LoadIo`] producer — so a UI loop can draw
+///   [`LoadingSession::screen`] between steps. [`LoadingSession::run`] is
+///   the headless equivalent for the CLI and tests.
+/// * [`LoadingSession::cancel`] is the UI's cancel button and the world
+///   switch's teardown in one: the driver's switch and the transaction's
+///   tickets are flagged, the bounded step in flight stops at its next
+///   chunk boundary and late completions are discarded by identity alone.
+/// * [`LoadingSession::retry`] replays a `Failed` load as a fresh
+///   transaction — a new serial on the same request and the same store —
+///   so nothing the failed attempt produced can land in the retry, while
+///   entries it published still serve a warm re-read.
+/// * [`LoadingSession::invalidate_source`] is AC03's per-input
+///   granularity wired at the session: the producer calls it when a
+///   source it previously resolved changed, and only the derived assets
+///   built on that span are rebuilt by the next load.
+/// * [`LoadingSession::announce`] writes the [`ExpectedLoad`] the world
+///   is waiting for; [`LoadingSession::deliver`] is the simulation
+///   handoff — the only place a [`ReadyBundle`] reaches a world —
+///   attaching only when the transaction is `Ready` and the world is
+///   still expecting exactly this load, at the boundary the caller picks.
+#[derive(Debug)]
+pub struct LoadingSession {
+    driver: LoadDriver,
+    /// The next unsettled item the pump runs.
+    next: usize,
+    /// The item the load is (or was most recently) reading, for the screen.
+    item_in_flight: Option<usize>,
+    /// The last measured bounded-step progress, for the screen.
+    io_progress: ReadProgress,
+}
+
+impl LoadingSession {
+    /// Declares `request` as a new load over `store`, transaction state
+    /// `Requested`. [`Self::begin`] starts the reads.
+    pub fn new(request: LoadRequest, store: CacheStore) -> Self {
+        Self {
+            driver: LoadDriver::new(LoadTransaction::issue(request), store),
+            next: 0,
+            item_in_flight: None,
+            io_progress: ReadProgress { read: 0, total: 0 },
+        }
+    }
+
+    /// The load's identity: session generation plus transaction serial.
+    pub fn identity(&self) -> LoadIdentity {
+        self.driver.transaction().identity()
+    }
+
+    /// What the load builds.
+    pub fn target(&self) -> &LoadTarget {
+        self.driver.transaction().target()
+    }
+
+    /// The transaction's state.
+    pub fn state(&self) -> LoadState {
+        self.driver.transaction().state()
+    }
+
+    /// The failures on the record so far, in arrival order — each naming
+    /// its dependency and its recovery path.
+    pub fn failures(&self) -> &[LoadFailure] {
+        self.driver.transaction().failures()
+    }
+
+    /// The driver running this load, for inspection that does not run
+    /// IO — its transaction record and its store's usage.
+    pub const fn driver(&self) -> &LoadDriver {
+        &self.driver
+    }
+
+    /// The cancel switch, cloneable onto any thread: the UI's button and
+    /// a world switch throw it; every bounded step observes it.
+    pub fn cancel_handle(&self) -> ReadCancel {
+        self.driver.cancel_handle()
+    }
+
+    /// Announces this load to `world`: the [`ExpectedLoad`] resource the
+    /// controlled handoff checks against. A world that never announced
+    /// this load — or announced a different one — refuses it in
+    /// [`Self::deliver`].
+    pub fn announce(&self, world: &mut World) {
+        world.insert_resource(ExpectedLoad(self.identity()));
+    }
+
+    /// `Requested -> Loading`. An empty closure reaches `Validating` in
+    /// the same step; the first [`Self::pump`] then validates it.
+    ///
+    /// # Errors
+    /// [`TransitionError`] when the transaction is not `Requested`.
+    pub fn begin(&mut self) -> Result<(), TransitionError> {
+        self.driver.transaction_mut().begin()
+    }
+
+    /// Runs one bounded step of the load: the next unsettled item's read
+    /// through `io`, or the validation gate once every item has settled.
+    ///
+    /// The return says what the step produced: `Some(read)` is the item
+    /// it just settled — including a recorded [`ItemRead::Failed`] — and
+    /// `None` means there is nothing left to pump: the load either
+    /// reached a terminal state or this call just validated it. A
+    /// screen draws [`Self::screen`] between calls; each call moves the
+    /// load exactly one item (or the validation) forward, so the work a
+    /// frame spends stays bounded.
+    ///
+    /// # Errors
+    /// [`DriverError::Transition`] when the load was never begun, and
+    /// [`DriverError::Integrity`], [`DriverError::Store`] or
+    /// [`DriverError::NotAccepted`] from the driver itself.
+    pub fn pump(&mut self, io: &mut dyn LoadIo) -> Result<Option<ItemRead>, DriverError> {
+        match self.state() {
+            LoadState::Requested => {
+                return Err(DriverError::Transition(TransitionError {
+                    from: LoadState::Requested,
+                    to: LoadState::Loading,
+                }));
+            }
+            LoadState::Loading => {}
+            LoadState::Validating => return self.driver.validate_delivered().map(|()| None),
+            // Ready, Failed or Cancelled: the record is terminal and
+            // there is nothing left to pump.
+            _ => return Ok(None),
+        }
+        if self.next >= self.driver.transaction().items().len() {
+            // `accept` advances a fully settled load itself; reaching this
+            // branch would mean the pump's record disagrees with the
+            // transaction's, so let the validation gate say so rather
+            // than stopping silently.
+            return self.driver.validate_delivered().map(|()| None);
+        }
+        let index = self.next;
+        self.next += 1;
+        self.item_in_flight = Some(index);
+        let item = self.driver.transaction().items()[index].clone();
+        let cancel = self.driver.cancel_handle();
+        // `load_item` holds its two closures at once while it decides
+        // which path the item takes, and each needs the producer mutably.
+        // They never overlap in time — the source read finishes before
+        // the conversion runs — so a `RefCell` reborrows the one `io`
+        // between them; `step_io` is shared the same way between the
+        // step reporter and the source read's own chunk progress.
+        let io = RefCell::new(io);
+        let step_io = Cell::new(ReadProgress { read: 0, total: 0 });
+        let mut progress = |step: StepProgress| step_io.set(step.io);
+        let mut io_step = |step: ReadProgress| step_io.set(step);
+        let read = self.driver.load_item(
+            index,
+            &mut progress,
+            || {
+                io.borrow_mut()
+                    .read_source(index, &item, &cancel, &mut io_step)
+            },
+            |payload| io.borrow_mut().convert(index, &item, payload),
+        );
+        self.io_progress = step_io.get();
+        read.map(Some)
+    }
+
+    /// Drives the load to its terminal state: [`Self::begin`] when it has
+    /// not begun, then [`Self::pump`] until nothing is left — the
+    /// headless path; a windowed loop begins once and pumps per frame
+    /// instead.
+    ///
+    /// # Errors
+    /// As [`Self::pump`].
+    pub fn run(&mut self, io: &mut dyn LoadIo) -> Result<(), DriverError> {
+        if self.state() == LoadState::Requested {
+            self.begin().map_err(DriverError::Transition)?;
+        }
+        while self.pump(io)?.is_some() {}
+        Ok(())
+    }
+
+    /// The snapshot the loading screen draws: measured work units, the
+    /// bounded step's chunk progress, the item in flight and every
+    /// failure with its recovery path.
+    pub fn screen(&self) -> LoadingScreen {
+        let transaction = self.driver.transaction();
+        LoadingScreen {
+            identity: transaction.identity(),
+            target: transaction.target().clone(),
+            state: transaction.state(),
+            progress: transaction.progress(),
+            io: self.io_progress,
+            item: self
+                .item_in_flight
+                .map(|index| transaction.items()[index].key.clone()),
+            failures: transaction.failures().to_vec(),
+            cancellable: !transaction.state().is_terminal(),
+        }
+    }
+
+    /// Cancels the load — the UI's cancel and a switch-away's teardown:
+    /// the driver's switch is thrown, so the bounded step in flight stops
+    /// at its next chunk boundary, and the transaction's outstanding
+    /// tickets are flagged, so a late completion is discarded.
+    ///
+    /// # Errors
+    /// [`TransitionError`] when the transaction is already terminal.
+    pub fn cancel(&mut self) -> Result<CancelReport, TransitionError> {
+        self.driver.cancel()
+    }
+
+    /// Retries a failed load: the same request and the same store under a
+    /// fresh transaction — a new [`LoadSerial`] — so no completion or
+    /// bundle of the failed attempt can land in the retry, while the
+    /// entries it already published still serve a warm re-read.
+    ///
+    /// The content-session generation is the request's own: this is the
+    /// `RecoveryPath::Retry` of a read inside one session, not a mission
+    /// retry — `docs/contracts/STATE-TRANSACTIONS.md`'s retry is a new
+    /// session generation, and therefore a new request and a new
+    /// `LoadingSession`.
+    ///
+    /// # Errors
+    /// [`RetryError::NotFailed`] unless the load reached `Failed`.
+    pub fn retry(self) -> Result<Self, RetryError> {
+        let state = self.state();
+        if state != LoadState::Failed {
+            return Err(RetryError::NotFailed { state });
+        }
+        let (transaction, store) = self.driver.into_parts();
+        Ok(Self::new(
+            LoadRequest {
+                session: transaction.identity().session,
+                target: transaction.target().clone(),
+                items: transaction.items().to_vec(),
+            },
+            store,
+        ))
+    }
+
+    /// Drops every cached entry derived from `input` and reports what
+    /// fell (spec F15 AC03's granularity wired at the session): the
+    /// producer calls this when a source it previously resolved changed —
+    /// the *old* span hash is what the stale entries record — and only
+    /// the derived assets built on that input are rebuilt by the next
+    /// load.
+    ///
+    /// Between loads is the intended moment; mid-load the removal affects
+    /// only lookups not yet made — an in-flight read of a dropped entry
+    /// faults and rebuilds, which stays consistent, just slower.
+    ///
+    /// # Errors
+    /// [`StoreError`] when the store's own bookkeeping fails.
+    pub fn invalidate_source(
+        &mut self,
+        input: SourceSpanHash,
+    ) -> Result<InvalidationReport, StoreError> {
+        self.driver.store_mut().invalidate_source(input)
+    }
+
+    /// The controlled handoff (non-negotiable behavior 4): the world
+    /// receives the versioned ready bundle only here, only when the
+    /// transaction is `Ready` and only when the world announced *this*
+    /// load through [`Self::announce`] — never mid-tick, and never a
+    /// bundle of a load the world is not waiting for. A successful
+    /// delivery consumes the world's expectation, so the same bundle
+    /// cannot attach twice.
+    ///
+    /// # Errors
+    /// [`HandoffError::NotReady`] unless the transaction is `Ready`,
+    /// [`HandoffError::Unannounced`] when the world expects no load, and
+    /// [`HandoffError::Foreign`] when it expects another.
+    pub fn deliver(&self, world: &mut World) -> Result<Vec<Entity>, HandoffError> {
+        let bundle = self.driver.transaction().ready_bundle()?;
+        let Some(expected) = world
+            .get_resource::<ExpectedLoad>()
+            .map(|expected| expected.0)
+        else {
+            return Err(HandoffError::Unannounced {
+                bundle: self.identity(),
+            });
+        };
+        let entities = bundle.attach(world, expected)?;
+        world.remove_resource::<ExpectedLoad>();
+        Ok(entities)
+    }
+
+    /// Tears the session down: a still-live load is cancelled first — its
+    /// reads detach at their next chunk boundary — then the driver is
+    /// split and the store handed back. The private cache outlives every
+    /// load.
+    pub fn close(mut self) -> CacheStore {
+        if !self.state().is_terminal() {
+            let _ = self.driver.cancel();
+        }
+        let (_transaction, store) = self.driver.into_parts();
+        store
     }
 }

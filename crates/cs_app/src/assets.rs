@@ -101,6 +101,15 @@ pub enum ConversionError {
         /// The key digest the consumer needs.
         expected: ContentHash,
     },
+    /// The converter refused the canonical payload: its decoder rejected
+    /// the bytes, or the composition budget did not admit the output.
+    /// `detail` carries the converter's own reason, and the load records
+    /// it as a `conversion` failure with `Abort` recovery — a payload the
+    /// converter cannot produce is not retried as a transient fault.
+    Failed {
+        /// Why, in the converter's own words.
+        detail: String,
+    },
 }
 
 impl fmt::Display for ConversionError {
@@ -114,6 +123,7 @@ impl fmt::Display for ConversionError {
                 "the asset was converted under key {produced_under}, not the \
                  requested {expected}: the cached derivation is stale"
             ),
+            Self::Failed { detail } => write!(f, "the conversion failed: {detail}"),
         }
     }
 }
