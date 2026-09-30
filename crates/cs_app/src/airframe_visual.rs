@@ -29,8 +29,17 @@
 //! ratio into one is F25-C's.
 
 use bevy::ecs::component::Component;
+use cs_content::airframe_roles::{
+    AirframeRole, AirframeRoles, ForcedAssignment, LaunchAssignmentError, OwnedLoadout,
+    ResolvedLaunch,
+};
 use cs_content::scene::{SceneError, SceneNodeId, SceneRootRef};
-use cs_sim::flight::{RotorDrive, RotorSpeedMapping, RotorVisualSample, TelemetryError};
+use cs_sim::flight::{
+    AirframeTuning, DamageState, DamageStateError, ExceptionalControlLaw, ExceptionalLawError,
+    ExceptionalProfile, ExceptionalTick, FlightEnvironment, FlightInput, FlightState, LoadoutMass,
+    RotorDrive, RotorSpeedMapping, RotorVisualSample, TelemetryError, TelemetryFrame,
+};
+use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind};
 
 /// Component: the canonical scene root an airframe's visual subtree hangs
@@ -276,6 +285,308 @@ impl AirframeVisual {
     #[must_use]
     pub fn rotor(&self, node: &SceneNodeId) -> Option<&RotorVisualBinding> {
         self.rotors.iter().find(|binding| &binding.node == node)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// F25-C: mission-only aircraft session
+// ---------------------------------------------------------------------------
+
+/// Why a [`MissionAircraftSession`] refused to launch, fly, take damage or
+/// unload.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MissionSessionError {
+    /// The launch resolution was refused; the garage plane is never substituted.
+    Launch(LaunchAssignmentError),
+    /// The resolved role is not exceptional, so this law cannot fly it.
+    NotExceptional {
+        /// The airframe that was resolved.
+        airframe: ContentId,
+        /// The role's declared model-kind label.
+        model_kind: String,
+    },
+    /// The supplied profile belongs to a different airframe than the launch
+    /// resolved, so the wrong handling would be flown.
+    ProfileAirframeMismatch {
+        /// The airframe the launch resolved.
+        launched: ContentId,
+        /// The airframe the profile declares.
+        profile: ContentId,
+    },
+    /// The role's rotor ratio is known but not a legal mapping.
+    RotorMapping(TelemetryError),
+    /// The law refused its construction or a tick; the rotor is untouched.
+    Law(ExceptionalLawError),
+    /// The damage record failed its own boundary.
+    Damage(DamageStateError),
+    /// The shared telemetry frame was refused.
+    Telemetry(TelemetryError),
+    /// The session was already unloaded, so nothing may fly, damage or unload
+    /// it again.
+    Unloaded {
+        /// The airframe the dead session had launched.
+        airframe: ContentId,
+    },
+}
+
+impl core::fmt::Display for MissionSessionError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Launch(error) => write!(f, "launch refused: {error}"),
+            Self::NotExceptional {
+                airframe,
+                model_kind,
+            } => write!(
+                f,
+                "the airframe {airframe} declares the {model_kind} model, not the exceptional one"
+            ),
+            Self::ProfileAirframeMismatch { launched, profile } => write!(
+                f,
+                "the profile describes {profile} but the session launched {launched}"
+            ),
+            Self::RotorMapping(error) => write!(f, "invalid rotor mapping: {error}"),
+            Self::Law(error) => write!(f, "{error}"),
+            Self::Damage(error) => write!(f, "{error}"),
+            Self::Telemetry(error) => write!(f, "{error}"),
+            Self::Unloaded { airframe } => {
+                write!(f, "the session for {airframe} was already unloaded")
+            }
+        }
+    }
+}
+
+impl std::error::Error for MissionSessionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Launch(error) => Some(error),
+            Self::RotorMapping(error) | Self::Telemetry(error) => Some(error),
+            Self::Law(error) => Some(error),
+            Self::Damage(error) => Some(error),
+            Self::NotExceptional { .. }
+            | Self::ProfileAirframeMismatch { .. }
+            | Self::Unloaded { .. } => None,
+        }
+    }
+}
+
+impl From<LaunchAssignmentError> for MissionSessionError {
+    fn from(error: LaunchAssignmentError) -> Self {
+        Self::Launch(error)
+    }
+}
+
+impl From<ExceptionalLawError> for MissionSessionError {
+    fn from(error: ExceptionalLawError) -> Self {
+        Self::Law(error)
+    }
+}
+
+/// The explicit rotor mapping a role declares, or `None` when the role states
+/// the ratio as an unknown (no ratio is then assumed).
+///
+/// # Errors
+///
+/// [`MissionSessionError::RotorMapping`] for a known ratio that is not finite
+/// and positive.
+pub fn rotor_mapping_from_role(
+    role: &AirframeRole,
+) -> Result<Option<RotorSpeedMapping>, MissionSessionError> {
+    let Some(rotor) = &role.rotor else {
+        return Ok(None);
+    };
+    let Some(ratio) = rotor.visual_radps_per_physical_radps.clone().known() else {
+        return Ok(None);
+    };
+    RotorSpeedMapping::new(ratio, role.origin.clone())
+        .map(Some)
+        .map_err(MissionSessionError::RotorMapping)
+}
+
+/// One launched exceptional aircraft, owned by the session that launched it.
+///
+/// It is the runtime consumer of F25-A's roles: the airframe comes from
+/// [`AirframeRoles::resolve_launch`] (so a forced assignment beats the garage
+/// plane and nothing falls back to it), the control law is F25-B's, and the
+/// session never reads or writes a shop list, so a
+/// [`cs_content::airframe_roles::Availability::MissionOnly`] aircraft is controlled, damaged and unloaded
+/// without being registered anywhere. The player's [`OwnedLoadout`] is only
+/// borrowed while resolving. The session holds no pose: the physics owner
+/// passes the state in each tick.
+#[derive(Clone, Debug)]
+pub struct MissionAircraftSession {
+    launch: ResolvedLaunch,
+    law: ExceptionalControlLaw,
+    mapping: Option<RotorSpeedMapping>,
+    rotor: RotorDrive,
+    damage: DamageState,
+    loadout: LoadoutMass,
+    unloaded: bool,
+}
+
+impl MissionAircraftSession {
+    /// Resolves the launch and builds the session.
+    ///
+    /// Nothing is held after a refusal, so a caller may retry with a corrected
+    /// assignment.
+    ///
+    /// # Errors
+    ///
+    /// [`MissionSessionError::Launch`] for any refusal of
+    /// [`AirframeRoles::resolve_launch`], [`MissionSessionError::NotExceptional`]
+    /// for a non-exceptional role, [`MissionSessionError::ProfileAirframeMismatch`]
+    /// for a profile of another airframe, [`MissionSessionError::RotorMapping`]
+    /// and [`MissionSessionError::Law`] from the boundaries they name.
+    pub fn launch(
+        roles: &AirframeRoles,
+        owned: &OwnedLoadout,
+        forced: Option<&ForcedAssignment>,
+        tuning: AirframeTuning,
+        profile: ExceptionalProfile,
+    ) -> Result<Self, MissionSessionError> {
+        let launch = roles.resolve_launch(owned, forced)?;
+        let role =
+            roles
+                .role(&launch.airframe)
+                .ok_or_else(|| LaunchAssignmentError::UnknownAirframe {
+                    airframe: launch.airframe.clone(),
+                })?;
+        if !role.is_exceptional() {
+            return Err(MissionSessionError::NotExceptional {
+                airframe: launch.airframe.clone(),
+                model_kind: role.model_kind.clone(),
+            });
+        }
+        if profile.airframe_id != launch.airframe {
+            return Err(MissionSessionError::ProfileAirframeMismatch {
+                launched: launch.airframe.clone(),
+                profile: profile.airframe_id.clone(),
+            });
+        }
+        let mapping = rotor_mapping_from_role(role)?;
+        let law = ExceptionalControlLaw::new(tuning, profile)?;
+        Ok(Self {
+            launch,
+            law,
+            mapping,
+            rotor: RotorDrive::stopped(),
+            damage: DamageState::PRISTINE,
+            loadout: LoadoutMass::EMPTY,
+            unloaded: false,
+        })
+    }
+
+    /// The resolved launch: which airframe, and whether it was forced.
+    #[must_use]
+    pub const fn launch_record(&self) -> &ResolvedLaunch {
+        &self.launch
+    }
+
+    /// The authoritative rotor drive.
+    #[must_use]
+    pub const fn rotor(&self) -> &RotorDrive {
+        &self.rotor
+    }
+
+    /// The rotor mapping the role declared, if any.
+    #[must_use]
+    pub const fn rotor_mapping(&self) -> Option<&RotorSpeedMapping> {
+        self.mapping.as_ref()
+    }
+
+    /// The current damage record.
+    #[must_use]
+    pub const fn damage(&self) -> &DamageState {
+        &self.damage
+    }
+
+    /// Whether the session has been unloaded.
+    #[must_use]
+    pub const fn is_unloaded(&self) -> bool {
+        self.unloaded
+    }
+
+    fn live(&self) -> Result<(), MissionSessionError> {
+        if self.unloaded {
+            Err(MissionSessionError::Unloaded {
+                airframe: self.launch.airframe.clone(),
+            })
+        } else {
+            Ok(())
+        }
+    }
+
+    /// Flies one fixed tick from the pose the physics owner holds.
+    ///
+    /// A refused tick leaves the rotor and damage exactly as they were.
+    ///
+    /// # Errors
+    ///
+    /// [`MissionSessionError::Unloaded`] after [`Self::unload`], otherwise
+    /// [`MissionSessionError::Law`].
+    pub fn fly(
+        &mut self,
+        environment: &FlightEnvironment,
+        state: &FlightState,
+        input: &FlightInput,
+        dt_s: f64,
+        tick: Tick,
+    ) -> Result<ExceptionalTick, MissionSessionError> {
+        self.live()?;
+        Ok(self.law.compute(
+            environment,
+            &self.loadout,
+            &self.damage,
+            state,
+            input,
+            dt_s,
+            tick,
+            &mut self.rotor,
+        )?)
+    }
+
+    /// The shared telemetry frame of a produced tick, through the mapping the
+    /// role declared.
+    ///
+    /// # Errors
+    ///
+    /// [`MissionSessionError::Unloaded`] or [`MissionSessionError::Telemetry`].
+    pub fn telemetry(
+        &self,
+        produced: &ExceptionalTick,
+        state: &FlightState,
+        tick: Tick,
+    ) -> Result<TelemetryFrame, MissionSessionError> {
+        self.live()?;
+        produced
+            .telemetry(state, tick, self.mapping.as_ref())
+            .map_err(MissionSessionError::Telemetry)
+    }
+
+    /// Replaces the damage record; later ticks fly with it.
+    ///
+    /// # Errors
+    ///
+    /// [`MissionSessionError::Unloaded`] or [`MissionSessionError::Damage`]
+    /// (the previous record is kept).
+    pub fn apply_damage(&mut self, damage: DamageState) -> Result<(), MissionSessionError> {
+        self.live()?;
+        damage.validate().map_err(MissionSessionError::Damage)?;
+        self.damage = damage;
+        Ok(())
+    }
+
+    /// Unloads the aircraft. The session keeps nothing the player owns: the
+    /// returned record says whether the launch may touch the owned loadout
+    /// (never, for a forced mission-only launch).
+    ///
+    /// # Errors
+    ///
+    /// [`MissionSessionError::Unloaded`] when already unloaded.
+    pub fn unload(&mut self) -> Result<ResolvedLaunch, MissionSessionError> {
+        self.live()?;
+        self.unloaded = true;
+        self.rotor = RotorDrive::stopped();
+        Ok(self.launch.clone())
     }
 }
 
