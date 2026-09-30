@@ -5,14 +5,19 @@
 //! authored project type design; nothing in this file is derived from
 //! original game data.
 //!
-//! [`input`] is the F22-A command schema and action map
-//! (`specs/F22-input-bindings-devices-and-control-ownership.md`): the typed
-//! [`input::FlightCommand`] and [`input::UiAction`] vocabulary, physical
-//! [`input::BindingSource`]s, the [`input::ActionMap`] that resolves them per
-//! [`input::InputContext`], and the quantized [`input::InputFrame`] whose
+//! [`input`] is the F22-A/F22-B command schema, action map and axis
+//! calibration (`specs/F22-input-bindings-devices-and-control-ownership.md`):
+//! the typed [`input::FlightCommand`] and [`input::UiAction`] vocabulary,
+//! physical [`input::BindingSource`]s, the [`input::ActionMap`] that resolves
+//! them per [`input::InputContext`], the quantized [`input::InputFrame`] whose
 //! continuous axes and one-shot edges the simulation buffers separately
-//! (`cs_sim::control`). Its labels and designed default map are engine
-//! design, not measurements of the original game.
+//! (`cs_sim::control`), and the F22-B calibration schema: the
+//! [`input::AxisChannel`] a record is keyed by, the [`input::AxisCalibration`]
+//! stages (dead zone, inversion, response curve, saturation, analog
+//! activation) and the [`input::CalibrationStore`] that keys them by
+//! [`input::DeviceId`] identity rather than by an enumeration index. Its
+//! labels, dead zone, curves and designed default map are engine design, not
+//! measurements of the original game.
 
 use std::fmt;
 

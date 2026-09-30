@@ -13,14 +13,16 @@
 //! land with the F13+ tasks and consume these clocks instead of inventing
 //! their own timers.
 //!
-//! [`control`] is the F22-A command schema's simulation consumer
-//! (`specs/F22-input-bindings-devices-and-control-ownership.md`, stage
-//! `### F22-A`): the [`control::ControlBuffer`] that keeps continuous axes
-//! and one-shot edges separate and delivers a one-frame key edge exactly once
-//! across every physics substep, plus the [`control::ControlGate`] that
-//! enforces exactly one control authority and gates local input by
-//! `cs_types::input::InputContext`. The device adapters and calibration are
-//! F22-B; focus, replay and full ownership wiring are F22-C.
+//! [`control`] is the F22-A/F22-B command schema's simulation consumer
+//! (`specs/F22-input-bindings-devices-and-control-ownership.md`): the
+//! [`control::ControlBuffer`] that keeps continuous axes and one-shot edges
+//! separate and delivers a one-frame key edge exactly once across every
+//! physics substep, the [`control::ControlGate`] that enforces exactly one
+//! control authority and gates local input by `cs_types::input::InputContext`,
+//! and the F22-B [`control::ThrottleSteps`], whose steps and direct settings
+//! are applied at the input boundary so they never depend on the render frame
+//! rate. The device adapters and calibration are `cs_app::input::devices`;
+//! focus, replay and full ownership wiring are F22-C.
 //!
 //! [`collision`] is the F23-A collision vocabulary
 //! (`specs/F23-avian-integration-collision-and-fixed-step-authority.md`,

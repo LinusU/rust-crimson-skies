@@ -46,13 +46,18 @@
 //! [`scene::NodeDisabled`] markers, so loading and unloading the same
 //! airframe a hundred times leaves the live entity count unchanged (AC03).
 //!
-//! [`input`] is the F22-A application boundary
-//! (`specs/F22-input-bindings-devices-and-control-ownership.md`,
-//! `### F22-A`): the active action map and input context
-//! ([`input::InputBindings`]) and the per-render-frame collector
-//! ([`input::InputCollector`]) that resolves physical sources into the
-//! ticked `cs_types::input::InputFrame` the simulation buffers. The device
-//! adapters and axis calibration are F22-B.
+//! [`input`] is the F22-A/F22-B application boundary
+//! (`specs/F22-input-bindings-devices-and-control-ownership.md`):
+//! the active action map and input context ([`input::InputBindings`]) and the
+//! per-render-frame collector ([`input::InputCollector`]) that resolves
+//! physical sources into the ticked `cs_types::input::InputFrame` the
+//! simulation buffers, plus the stage's device adapters
+//! ([`input::DeviceAdapters`], [`input::DeviceEvent`]): one event per device
+//! per render frame, calibrated per [`cs_types::input::DeviceId`] identity and
+//! [`cs_types::input::AxisChannel`], with device removal releasing the held
+//! buttons, neutralizing the axes the device drove and reporting a
+//! [`input::DeviceLoss`]. Wiring the adapters to the real platform sources is
+//! F22-C.
 //!
 //! [`animation`] is the F20-A application boundary
 //! (`specs/F20-object-animation-and-authored-destruction-states.md`, stage
