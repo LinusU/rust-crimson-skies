@@ -27,7 +27,7 @@ required.
 * `crates/cs_app/src/world/mod.rs` (new): module docs and re-exports.
 * `crates/cs_app/src/lib.rs`, `crates/cs_content/src/lib.rs` (wiring only):
   module declarations and docs.
-* `crates/cs_app/tests/world/{main,common,sweep,records}.rs` (new): the nine
+* `crates/cs_app/tests/world/{main,common,sweep,records,spawn}.rs` (new): the thirteen
   `accept_f18_a_*` acceptance tests.
 * This file.
 
@@ -63,6 +63,12 @@ mission's variant, object population and initial damage, with
 `validate_against` refusing an id the definition does not declare and refusing
 a check against a different definition. Nothing about a load lives outside
 that struct, so "leftovers from the last run" has nowhere to live.
+
+`WorldDefinition::record_fingerprint` is the canonical digest of what a
+definition *says* — world id, declared boundary, sectors and objects, each
+hashed in id order — returned as a `ContentHash` like every other fingerprint
+in the workspace, so it can be pinned later without depending on an
+implementation-defined hash.
 
 `WorldBoundary` carries floor/ceiling/lateral limits that are all optional;
 `WorldBoundary::default()` declares **no rule at all**, because behavior 4
@@ -105,11 +111,26 @@ flight height `y = 1.5`, arch legs 1 m thick along `x`.
 * **Rotation is honoured.** The water patch authored at 4×0.1×4 m rotated 30°
   about `+y` lands with a broad-phase half-width of 5.469 m versus the
   reference 5.464 m, and the collider's own box is still 4×0.1×4 m.
+* **A swept body is stopped by a sensor volume; a non-swept one is not.**
+  Measured on the trigger volume (`trigger.sensor`, 8 m along the flight
+  axis, x ∈ [6, 14]): with `SweptCcd` on the probe, the probe ends at
+  `x = 19.0835` instead of `21.5` — a loss of 2.416 m, which is exactly the
+  distance from its previous sample (`x = 4.8333`) to the sensor's near face
+  (`x = 5.75` including the probe's half extent). Reading
+  `avian3d-0.7.0/src/dynamics/ccd/mod.rs::solve_swept_ccd` explains it: the
+  swept query stops a body at the first time of impact against **any**
+  collider its path reaches, with no `Sensor` filter. The same probe spawned
+  *without* `SweptCcd` (`spawn_discrete_probe`) crosses the volume with
+  drift < 0.01 m, unchanged velocity, and a `CollisionStart` naming
+  `trigger.sensor`. Sensors have no contact response of their own — it is the
+  CCD that holds the body — so the role's "never blocks motion" is measured
+  with a non-swept body, and the swept/sensor interaction is a recorded
+  limitation (below), not a property of the role.
 
 ## Test sensitivity (mutation matrix)
 
 Every mutation below was applied, the selector run, and the source restored.
-All nine tests pass unmutated.
+All thirteen tests pass unmutated.
 
 | mutation | tests that failed |
 | --- | --- |
@@ -118,8 +139,13 @@ All nine tests pass unmutated.
 | offset every collider by `+0.6 m` in `x` | `..._visual_and_collision_instances_agree...`, `..._water_is_a_bounded_patch...` |
 | `WorldContacts::record` never appends | `..._a_probe_aimed_at_an_arch_leg_is_stopped_by_it` |
 | default an unknown collision role to `Solid` | `..._unresolved_instances_are_reported_instead_of_guessed` |
+| spawn as it walks instead of refusing first (review mutation) | `..._spawn_refuses_a_matrix_no_runtime_transform_can_hold_before_spawning_anything` |
+| never insert the Avian `Sensor` marker (review mutation) | `..._every_collision_role_decides_what_is_spawned`, `..._a_sensor_reports_the_probe_and_never_blocks_it` |
+| give role `None` a collider anyway (review mutation) | `..._unresolved_instances_are_reported_instead_of_guessed`, `..._every_collision_role_decides_what_is_spawned`, `..._visual_and_collision_instances_agree...` |
+| hash the record in supplied order instead of id order (review mutation) | `..._record_fingerprint_is_order_independent_and_tracks_the_record` |
+| drop the boundary from the fingerprint (review mutation) | `..._record_fingerprint_is_order_independent_and_tracks_the_record` |
 
-The two record-level tests
+The four record-level tests
 (`..._world_definition_refuses_duplicate_ids_and_dangling_sector_refs`,
 `..._each_world_instance_states_its_variant_population_and_damage`,
 `..._sector_membership_and_residency_are_explicit_records`,
@@ -129,7 +155,7 @@ The two record-level tests
 ## Designed vocabulary, not original data
 
 Every id, key grammar, sector, role name, role value, boundary field,
-`WorldInstance` field, the seven fixture objects and the arch's dimensions are
+`WorldInstance` field, the nine fixture objects and the arch's dimensions are
 **newly authored engine contract** or **synthetic fixture content**
 (`Origin::SyntheticFixture`). The following are **unknown** and are not
 guessed here:
@@ -168,11 +194,24 @@ guessed here:
   static collision is **F18-B**, which the owner ruling of 2026-09-28 also
   gates on Avian collider-from-mesh over a real asset stack (#333).
 * An authored matrix that cannot be decomposed into translation, rotation and
-  scale (a shear, or a mirror no quaternion holds) produces **no collider and
-  no visual**: `spawn_world` stops with
-  `WorldSpawnError::UnrepresentableTransform` rather than approximating a
-  pose. Mesh colliders, which can follow the render path's full affine, are
-  **F18-B**'s answer to this for real geometry.
+  scale (a shear, or a mirror no quaternion holds) is refused **before the
+  first entity exists**: `spawn_world` returns
+  `WorldSpawnError::UnrepresentableTransform` with the app untouched, rather
+  than approximating a pose or leaving a half-built world the caller has no
+  `SpawnedWorld` to ask about. Affected content: any retail object whose
+  authored matrix is sheared or mirrored, discovered by **F18-B** when it
+  imports real geometry; `spawn_discrete`/mesh colliders, which can follow the
+  render path's full affine, are **F18-B**'s answer to this for real geometry.
+* **Swept CCD stops a body at a sensor volume** (measured above). Affected
+  content: every world object with `WorldCollisionRole::Sensor` —
+  `trigger.sensor` in this fixture, and any retail trigger or objective volume
+  **F18-B** imports or **F18-C** binds to mission overlays — when the body
+  reaching it carries `SweptCcd` (F23's aircraft probe/airframes). Resolving
+  task: **#401** (filed by this review, after F18-B); **F18-B** decides how a
+  real trigger volume is spawned or how the CCD is configured around it,
+  **F18-C** verifies the chosen configuration still fires overlays. Until
+  #401 is done, no "a sensor volume never blocks a swept body" fidelity claim
+  is made.
 * `WorldContacts` records only pairs with **exactly one** world collider: an
   actor touching world geometry. Two static world objects resting against each
   other is authoring, not gameplay, and is deliberately not logged.
@@ -182,6 +221,43 @@ guessed here:
   and **F18-C** (overlays, streaming) own those.
 * No retail world group was visited: **AC04** needs `gpu` + `retail`
   (**F18-D**). Nothing in this stage is `verified_original`.
+
+## What the review changed (2026-09-30, second session)
+
+The reviewer read the whole branch against `specs/F18-...md` and fixed four
+problems rather than handing them back:
+
+1. **`spawn_world` built the world as it walked.** An unrepresentable matrix
+   returned an error *after* the objects before it had already been spawned,
+   so the caller was left with a half-built app and no `SpawnedWorld` to ask
+   what it got — contradicting the function's own "the whole build stops"
+   contract. It now decomposes every instance first and refuses before the
+   plugin or any entity exists. `SkipReason::UnrepresentableTransform`,
+   which that error path made unreachable, was removed rather than left
+   documenting a skip that never happens.
+2. **Two of the three declared collision roles had no test.** The fixture
+   carried only `Solid` and explicit unknowns, so "always spawn a collider"
+   and "never mark a sensor" both passed the whole suite. The arch world now
+   also carries `banner.non_colliding` (role `None`) and `trigger.sensor`
+   (role `Sensor`), and `tests/world/spawn.rs` asserts what each role
+   produces. Because Avian's swept CCD holds a body at a sensor's face
+   (measured above), a `spawn_discrete_probe` (same body, no `SweptCcd`,
+   same `SpeculativeMargin::ZERO`) is what proves "reports an overlap and
+   never blocks motion".
+3. **`record_fingerprint` contradicted its own documentation.** It hashed in
+   supplied order while promising insertion-order independence, and used
+   `DefaultHasher`, whose output is explicitly unspecified across Rust
+   releases — unusable for a fingerprint a later stage would pin (as F17
+   pins its golden fingerprints). It now builds a canonical byte encoding
+   (version tag, id order, boundary included) and returns `sha256` as a
+   `ContentHash`.
+4. **The refusal test initially passed even against the broken build**: with
+   only one object there was nothing to leave half-spawned. It now puts a
+   valid object *before* the sheared one, which is what makes mutation 6
+   below fail.
+
+The first mutation matrix (five rows) is unchanged; the five review
+mutations were applied, run and reverted the same way.
 
 ## Evidence
 
@@ -193,11 +269,11 @@ cargo fmt --all -- --check                                        # exit 0
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings   # exit 0
 cargo test --workspace --locked                                   # exit 0
 cargo test --workspace --locked -- accept_f18_a_ --include-ignored
-#   9 tests run, 9 passed (crates/cs_app/tests/world)
+#   13 tests run, 13 passed (crates/cs_app/tests/world)
 ```
 
-The nine acceptance tests are listed with their failure sensitivity in the
-mutation matrix above.
+The thirteen acceptance tests are listed with their failure sensitivity in
+the mutation matrix above.
 
 ## Sources
 
