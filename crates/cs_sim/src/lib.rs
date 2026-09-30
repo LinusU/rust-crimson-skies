@@ -75,6 +75,17 @@
 //! provenance-carrying tuning schema is `cs_content::flight_tuning`; the
 //! Avian wiring, instruments and profile selection are F24-B/F24-C.
 //!
+//! [`probes`] is the F26-A handling telemetry and reference-envelope schema
+//! (`specs/F26-handling-probes-and-original-behavior-calibration.md`, stage
+//! `### F26-A`): the closed [`probes::ProbeKind`]/[`probes::ProbeQuantity`]
+//! vocabulary, the provenance-carrying [`probes::ReferenceEnvelope`] with its
+//! recorded input, initial state, difficulty, loadout, timing uncertainty and
+//! units, and [`probes::compare`], the holdout rule that refuses a candidate
+//! whose held-out maneuver is outside the envelope. At least one entry must be
+//! held out of the fit, and a synthetic envelope can never support an
+//! original-fidelity claim. The headless probes that produce a real candidate
+//! are F26-B; the roster-wide deviation report is F26-C.
+//!
 //! [`targeting`] is the F30-A targeting contract
 //! (`specs/F30-targeting-classification-aim-assistance-and-threat-cues.md`,
 //! stage `### F30-A`): the per-session [`targeting::TargetStore`] owning
@@ -119,6 +130,7 @@ pub mod collision;
 pub mod control;
 pub mod damage;
 pub mod flight;
+pub mod probes;
 pub mod targeting;
 pub mod time;
 pub mod visibility;
