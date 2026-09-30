@@ -1867,3 +1867,226 @@ fn accept_f11_d_roster_records_refuse_contradictions() {
     assert_eq!(report.container_count(), 0);
     assert_eq!(report.airframe_count(), 0);
 }
+
+// --------------------------------------------------- F11-D retail (AC04) ---
+
+/// The nine GameZ archives of the original installation, with the
+/// `nodes_offset` the pinned mech3ax v0.6.0 reference records for each.
+///
+/// These are the reference's own numbers, not this test's output, so a reader
+/// or a census that mis-walks a container cannot pass by agreeing with
+/// itself. The `node_array_size` column is *not* pinned here: the reference
+/// records it per container, but no independent copy of those numbers exists
+/// in this repository, so the retail test only asserts the ones it can check
+/// two ways (the mesh reader and the material reader reading the same 40
+/// header bytes) and that the count is non-zero.
+const RETAIL_GAMEZ_NODES_OFFSET: [(&str, u32); 9] = [
+    ("zbd/planes.zbd", 4_881_228),
+    ("zbd/c1/gamez.zbd", 4_326_296),
+    ("zbd/c1b/gamez.zbd", 1_924_148),
+    ("zbd/c1c/gamez.zbd", 1_964_684),
+    ("zbd/c2/gamez.zbd", 3_111_828),
+    ("zbd/c2b/gamez.zbd", 1_658_700),
+    ("zbd/c3/gamez.zbd", 3_661_748),
+    ("zbd/c4/gamez.zbd", 5_107_144),
+    ("zbd/c5/gamez.zbd", 5_259_292),
+];
+
+/// The read-only original installation, or a loud failure when the `retail`
+/// capability is missing. Never a silent skip: a test that cannot prove
+/// anything must fail, not pass.
+fn retail_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from(std::env::var("CS_GAME_DIR").expect(
+        "CS_GAME_DIR must point at the original installation: this test audits the private \
+         airframe roster against real container bytes and cannot pass without them",
+    ))
+}
+
+/// AC04 over the real installation. Every GameZ archive the owner has is
+/// discovered by production discovery, classified by the production GameZ
+/// reader, and measured: this test records how many stored node records each
+/// container's own header declares and where the array starts, cross-checked
+/// against the pinned reference and against the second production reader of
+/// the same 40 header bytes.
+///
+/// The verdict is the honest one, and it is the verdict this stage is for: no
+/// production path decodes a GameZ node array (#392), so the audit maps **no**
+/// root, part, mount or cockpit binding and names a blocker per container with
+/// the measured record count. No airframe element has been discovered from
+/// original data yet either, so the roster is empty — and an empty roster is
+/// not a pass, it is a finding. What the test pins is that the corpus exists,
+/// that the census is right, and that the audit reports the gap instead of
+/// inventing a mapping.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_f11_d_retail_the_private_installation_roster_audit_flags_every_container() {
+    use cs_assets::install as install_api;
+    use cs_content::catalog::baseline::install_file_key;
+    use cs_formats::gamez::{read_gamez_materials, read_gamez_meshes};
+    use cs_formats::io::ParseContext;
+
+    let game_dir = retail_dir();
+    let found = install_api::discover(&game_dir)
+        .expect("production discovery must read the original installation");
+
+    // Every archive under the ZBD root is offered to the production GameZ
+    // reader; the reader's own signature and version check is what classifies
+    // a container, so no filename decides this.
+    let mut census: Vec<(String, u32, u32, usize)> = Vec::new();
+    for record in &found.manifest.files {
+        let logical = record.relative_spelling.logical_key();
+        if !logical.starts_with("zbd/") {
+            continue;
+        }
+        let path = found
+            .manifest
+            .host_root
+            .join(record.relative_spelling.as_str());
+        let bytes = std::fs::read(&path)
+            .unwrap_or_else(|error| panic!("{logical}: the installation must hold it: {error}"));
+        let mut context = ParseContext::with_defaults(logical.clone());
+        let Ok(meshes) = read_gamez_meshes(&mut context, &logical, &bytes) else {
+            continue;
+        };
+        // The second production reader of the same 40 header bytes must agree
+        // about the node array, or the census is measuring a disagreement.
+        let materials =
+            read_gamez_materials(&mut context, &logical, &bytes).unwrap_or_else(|error| {
+                panic!("{logical}: the retail material section must read: {error}")
+            });
+        assert_eq!(
+            (
+                materials.header.node_array_size,
+                materials.header.nodes_offset
+            ),
+            (meshes.header.node_array_size, meshes.header.nodes_offset),
+            "{logical}: the two readers disagree about the node array"
+        );
+        assert_eq!(
+            meshes.data_end,
+            u64::from(meshes.header.nodes_offset),
+            "{logical}: the mesh walk must end on the node array"
+        );
+        census.push((
+            logical,
+            meshes.header.node_array_size,
+            meshes.header.nodes_offset,
+            meshes.present_count(),
+        ));
+    }
+    census.sort();
+
+    // The corpus is the nine GameZ archives, and each one's node array starts
+    // where the pinned reference records.
+    let discovered: Vec<&str> = census.iter().map(|(key, ..)| key.as_str()).collect();
+    let mut expected: Vec<&str> = RETAIL_GAMEZ_NODES_OFFSET
+        .iter()
+        .map(|(key, _)| *key)
+        .collect();
+    expected.sort_unstable();
+    assert_eq!(
+        discovered, expected,
+        "the installation's GameZ corpus is the nine measured archives"
+    );
+    for (key, stored, nodes_offset, present) in &census {
+        let (_, reference_offset) = RETAIL_GAMEZ_NODES_OFFSET
+            .iter()
+            .find(|(name, _)| name == key)
+            .unwrap_or_else(|| panic!("{key} is one of the nine measured archives"));
+        assert_eq!(
+            *nodes_offset, *reference_offset,
+            "{key}: the node array must start on the reference's recorded offset"
+        );
+        assert!(
+            *stored > 0,
+            "{key}: a container with no stored node record holds no scene"
+        );
+        assert!(
+            *present > 0,
+            "{key}: a container with no present mesh holds no geometry"
+        );
+    }
+    let total_nodes: u32 = census.iter().map(|(_, stored, ..)| *stored).sum();
+    let planes_nodes = census
+        .iter()
+        .find(|(key, ..)| key == "zbd/planes.zbd")
+        .map(|(_, stored, ..)| *stored)
+        .expect("the shared airframe archive is in the corpus");
+    assert_eq!(
+        total_nodes, 56_620,
+        "the corpus declares 56,620 stored node records in total"
+    );
+    assert!(
+        total_nodes > planes_nodes * 10,
+        "the per-chapter mission archives hold far more scene records than the shared airframe \
+         archive ({total_nodes} against {planes_nodes}), so mission-only airframes live in the \
+         same undecoded section as the shared roster"
+    );
+
+    // The audit, over the real census. No production path decodes a node array
+    // yet, so the graph source answers the measured blocker for every
+    // container; the roster is empty because no airframe element has been
+    // discovered from original data.
+    let containers: Vec<SceneContainerRef> = census
+        .iter()
+        .map(|(key, stored, nodes_offset, _)| {
+            SceneContainerRef::new(
+                // The catalog identity of the container, through the
+                // production key normalizer: a relative spelling is not a
+                // content key.
+                cid(ContentKind::InstallFile, &install_file_key(key)),
+                *stored,
+                *nodes_offset,
+            )
+        })
+        .collect();
+    let roster = AirframeRoster::new(Vec::new(), Vec::new()).expect("an empty roster is valid");
+    let report = roster.audit(&containers, |container| {
+        let reference = containers
+            .iter()
+            .find(|reference| reference.container() == container)
+            .expect("the audit only asks about the containers it was given");
+        Err(ContainerBlocker::NodeArrayUndecoded {
+            container: container.clone(),
+            stored_nodes: reference.stored_nodes(),
+            nodes_offset: reference.nodes_offset(),
+        })
+    });
+
+    assert_eq!(
+        report.container_count(),
+        9,
+        "every discovered container audited"
+    );
+    assert_eq!(report.mapped_containers().count(), 0);
+    assert_eq!(report.blocked_containers().count(), 9);
+    assert_eq!(report.mapped_root_count(), 0, "no root could be mapped");
+    assert_eq!(report.mapped_socket_count(), 0, "no mount or cockpit bound");
+    assert_eq!(
+        report.airframe_count(),
+        0,
+        "no airframe element is discovered yet"
+    );
+    assert!(
+        report.is_empty() || !report.is_complete(),
+        "an audit that mapped nothing is never a pass"
+    );
+    assert!(!report.is_complete());
+    assert_eq!(report.blocker_count(), 9, "one blocker per container");
+    for (audit, (key, stored, nodes_offset, _)) in report.containers().iter().zip(&census) {
+        assert_eq!(audit.container().key(), install_file_key(key));
+        assert_eq!(audit.declared_nodes(), *stored, "{key}: the measured count");
+        assert_eq!(
+            audit.nodes_offset(),
+            *nodes_offset,
+            "{key}: the measured offset"
+        );
+        let blocker = audit.blocker().expect("every container is blocked");
+        let text = blocker.to_string();
+        assert!(
+            text.contains(&format!("{stored} stored node records"))
+                && text.contains(&nodes_offset.to_string()),
+            "{key}: the blocker must quote the measured facts, got {text}"
+        );
+    }
+}
