@@ -212,12 +212,28 @@
 //! [`environment::CosmeticField`], the decorative precipitation drawn only
 //! from the run's cosmetic weather stream. No renderer draws a sky from these
 //! records yet: F19-C wires them into their real producer and consumer.
+//!
+//! [`camera`] is the F21-A camera boundary
+//! (`specs/F21-cameras-cockpit-views-and-spyglass.md`, stage `### F21-A`):
+//! [`camera::lower_projection`], which lowers a declared
+//! `cs_content::cameras::ProjectionPolicy` into the
+//! [`camera::LoweredProjection`] a renderer consumes — normalizing the
+//! authored field of view to the vertical axis at its reference aspect,
+//! refusing every `Resolved::Unknown` and refusing a stretch framing rule —
+//! and the framing math that reports the vertical and horizontal field of
+//! view at any aspect and the normalized viewport coordinate of a
+//! world-space point; [`camera::CameraPose`] and [`camera::CameraBasis`],
+//! the read-only copy of the authoritative pose and its derived axes; and
+//! [`camera::lower_camera_modes`], which lowers a declared
+//! `cs_content::cameras::DeclaredCameraModes` set into the
+//! [`camera::LoweredCameraModes`] a session's camera path consumes.
 
 pub mod airframe_visual;
 pub mod animation;
 pub mod asset_stack;
 pub mod assets;
 pub mod audio;
+pub mod camera;
 pub mod cli;
 pub mod damage;
 pub mod environment;
