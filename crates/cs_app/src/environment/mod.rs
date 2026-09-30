@@ -27,9 +27,10 @@
 //!   velocity through that same field. An unknown wind is refused, never
 //!   replaced by still air (AC02). The conversion itself is owned by
 //!   `cs_sim::environment`, next to the flight models that apply it, and
-//!   re-exported here as [`air_relative_velocity_m_s`] and
-//!   [`world_velocity_from_air_m_s`] (task #434 `F19-WIND-CONVERSION-OWNER`),
-//!   so there is one implementation on both sides of the dependency.
+//!   re-exported here as [`air_relative_velocity_m_s`],
+//!   [`world_velocity_from_air_m_s`] and [`airspeed_m_s`] (task #434
+//!   `F19-WIND-CONVERSION-OWNER`), so there is one implementation on both
+//!   sides of the dependency.
 //! * [`effects`] owns what a frame may be *drawn* from: [`SkyEffect`]
 //!   (authored texture, missing-texture diagnostic, or a generated sky only
 //!   under an explicitly labeled synthetic/developer run), [`FogEffect`]
@@ -70,7 +71,7 @@ pub mod frame;
 
 pub use air::{
     AuthoritativeWind, MAX_AIR_VELOCITY_MPS, ProjectileError, ProjectileMotion, WindUnavailable,
-    air_relative_velocity_m_s, world_velocity_from_air_m_s,
+    air_relative_velocity_m_s, airspeed_m_s, world_velocity_from_air_m_s,
 };
 pub use clock::EnvironmentClock;
 pub use cosmetic::{

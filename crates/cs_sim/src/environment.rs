@@ -10,9 +10,10 @@
 //!
 //! F19-B recorded the seam it could not close from where it sat
 //! (`docs/findings/2026-09-30-f19-b-sky-fog-light-and-weather-effects.md`,
-//! "An architectural seam this stage ran into"): the crate graph runs
-//! `cs_app -> cs_sim` and never the reverse, so the code that *applies* a wind
-//! — [`flight::FlightEnvironment::wind_velocity_mps`] and the subtraction in
+//! "The seam this stage ran into: the wind conversion lived above the
+//! simulation"): the crate graph runs `cs_app -> cs_sim` and never the reverse,
+//! so the code that *applies* a wind —
+//! [`flight::FlightEnvironment::wind_velocity_mps`] and the subtraction in
 //! [`flight::FlightModel::compute`] — could not call the conversion that lived
 //! above it in `cs_app::environment::air`. Every new consumer of a wind inside
 //! the simulation would then have had to carry its own copy of the subtraction,
@@ -92,10 +93,10 @@ pub const fn world_velocity_from_air_m_s(
 /// The airspeed of a body moving at `world_velocity_m_s` through air moving at
 /// `wind_velocity_m_s`: `|v_air|`.
 ///
-/// This is the number
-/// [`flight::FlightOutput`](crate::flight::FlightOutput)'s instrument reports,
-/// so a caller that wants to compare a measurement with the field it was
-/// measured in asks for this function rather than computing a norm of its own.
+/// This is the number the instrument in
+/// [`flight::FlightOutput`](crate::flight::FlightOutput) reports, so a caller
+/// that wants to compare a measurement with the field it was measured in asks
+/// for this function rather than computing a norm of its own.
 #[must_use]
 pub fn airspeed_m_s(world_velocity_m_s: [f64; 3], wind_velocity_m_s: [f64; 3]) -> f64 {
     let air = air_relative_velocity_m_s(world_velocity_m_s, wind_velocity_m_s);
@@ -192,12 +193,20 @@ mod tests {
         );
     }
 
-    /// A zero wind is a real field, not an absence: the conversion is defined
-    /// for it and leaves the world velocity alone. What it is *not* is a
-    /// substitute for a wind nobody measured — that refusal lives where the
-    /// content record is read, in `cs_app::environment::air`.
+    /// A zero wind is a real measured field, not an absence: the conversion is
+    /// defined for it and leaves the world velocity alone.
+    ///
+    /// What a zero wind is *not* — a substitute for a wind nobody measured — is
+    /// not testable from here, because the refusal lives where the content
+    /// record is read: `AuthoritativeWind::from_state` in
+    /// `cs_app::environment::air` refuses to build a wind at all while
+    /// `cs_content::environment::EnvironmentState::wind` is an explicit
+    /// unknown, and `accept_f19_b_an_unknown_wind_is_refused_and_never_becomes_still_air`
+    /// in `crates/cs_app/tests/environment/air.rs` pins that. Nothing in this
+    /// module supplies a default, so there is no still-air fallback left for a
+    /// caller to reach by accident.
     #[test]
-    fn accept_f19_b_a_zero_wind_converts_but_is_never_substituted_for_an_unknown_one() {
+    fn accept_f19_b_a_measured_still_air_field_is_a_real_field_the_conversion_accepts() {
         let world = [12.0, -4.0, -55.0];
         assert_eq!(
             air_relative_velocity_m_s(world, [0.0; 3]),

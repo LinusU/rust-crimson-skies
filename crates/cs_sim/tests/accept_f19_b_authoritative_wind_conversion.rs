@@ -18,9 +18,18 @@
 //!   consumer inside `cs_sim` reaches it through;
 //! * the real [`FlightModel`] and the real [`ExceptionalControlLaw`], whose
 //!   reported airspeed must equal
-//!   [`cs_sim::environment::airspeed_m_s`] of the same world velocity and wind
-//!   — so neither consumer can hold a private copy of the subtraction and
-//!   still pass.
+//!   [`cs_sim::environment::airspeed_m_s`] of the same world velocity and wind,
+//!   and whose airspeed must move the way the convention says when the wind
+//!   changes — so no consumer can hold a *different* conversion (a flipped
+//!   sign, a different field, a per-axis shortcut) and still pass.
+//!
+//! What these tests cannot decide is *where* the conversion lives: a consumer
+//! that inlined a correct private copy of the subtraction would produce the
+//! same numbers. That the workspace has one implementation is a structural
+//! property — the models delegate through
+//! [`FlightEnvironment::air_relative_velocity_m_s`] and
+//! `cs_app::environment::air` re-exports the functions — so it is checked by
+//! reading those call sites and by review, not by an assertion here.
 //!
 //! The projectile record itself (`cs_app::environment::air::ProjectileMotion`)
 //! is above this crate and is pinned by the F19-B acceptance tests there; what

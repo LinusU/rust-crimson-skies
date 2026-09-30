@@ -54,7 +54,7 @@
 //! moved it down; the three functions are re-exported above and every method
 //! below delegates, so there is one implementation and both sides of the
 //! dependency call it. The reasoning is recorded in
-//! `docs/findings/2026-09-30-f19-wind-conversion-owner-434.md`.
+//! `docs/findings/2026-09-30-f19-wind-conversion-ownership.md`.
 
 use std::fmt;
 
@@ -65,10 +65,13 @@ use cs_types::evidence::ClaimId;
 
 // The conversion itself is owned by `cs_sim::environment` (task #434
 // `F19-WIND-CONVERSION-OWNER`), because the crate that *applies* a wind is
-// `cs_sim` and `cs_app -> cs_sim` is one-way. Re-exported here so a consumer
-// that already imports this module reaches the one implementation without
-// learning a second path to it; the methods below delegate to it.
-pub use cs_sim::environment::{air_relative_velocity_m_s, world_velocity_from_air_m_s};
+// `cs_sim` and `cs_app -> cs_sim` is one-way. Re-exported here — all three
+// functions, so the module that reads the wind record does not also become the
+// only place that knows the `cs_sim::environment` path — and every method
+// below delegates to them.
+pub use cs_sim::environment::{
+    air_relative_velocity_m_s, airspeed_m_s, world_velocity_from_air_m_s,
+};
 
 /// The largest velocity component, in m/s, [`AuthoritativeWind::try_new`] and
 /// [`ProjectileMotion::try_new`] accept.
@@ -244,13 +247,13 @@ impl AuthoritativeWind {
     /// The air-relative speed of a world velocity: the aircraft's true
     /// airspeed, and the same number a projectile reads off its own velocity.
     ///
-    /// This is `|v_air|`, computed by the simulation's own
-    /// [`airspeed_m_s`](cs_sim::environment::airspeed_m_s). It is the magnitude
-    /// the flight model computes as its `InstrumentState::airspeed_mps`, so the
-    /// effect and the model can be compared in one assertion.
+    /// This is `|v_air|`, computed by the simulation's own [`airspeed_m_s`].
+    /// It is the magnitude the flight model computes as its
+    /// `InstrumentState::airspeed_mps`, so the effect and the model can be
+    /// compared in one assertion.
     #[must_use]
     pub fn airspeed_m_s(&self, world_velocity_m_s: [f64; 3]) -> f64 {
-        cs_sim::environment::airspeed_m_s(world_velocity_m_s, self.velocity_m_s)
+        airspeed_m_s(world_velocity_m_s, self.velocity_m_s)
     }
 
     /// The velocity of `target` as seen from `origin`, both given as **world**

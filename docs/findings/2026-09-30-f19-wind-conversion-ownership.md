@@ -2,8 +2,9 @@
 
 Task: #434, opened from
 `docs/findings/2026-09-30-f19-b-sky-fog-light-and-weather-effects.md`, section
-"An architectural seam this stage ran into: the wind conversion lives above the
-simulation". Spec: `specs/F19-sky-atmosphere-weather-and-visibility.md`,
+"The seam this stage ran into: the wind conversion lived above the simulation"
+(as it read when #434 was filed; this task rewrote that section in the past
+tense). Spec: `specs/F19-sky-atmosphere-weather-and-visibility.md`,
 non-negotiable behavior 2 and acceptance case AC02; shared contract
 `docs/contracts/FLIGHT-PHYSICS.md`, "Coordinate convention"
 (`v_air = v_world - wind_world`); crate ownership `docs/01-ARCHITECTURE.md`.
@@ -20,7 +21,7 @@ choice constrains F27-B.
   inside `cs_sim` is meant to call.
 * `FlightModel::compute` and the exceptional `autogyro` law convert through it,
   so the code that *applies* a wind no longer has a private subtraction.
-* `cs_app::environment::air` re-exports the two conversion functions and
+* `cs_app::environment::air` re-exports all three functions and
   `AuthoritativeWind::air_relative` / `::world_velocity` / `::airspeed_m_s`
   delegate to them. `AuthoritativeWind` and `ProjectileMotion` stay in
   `cs_app`, and so does the unknown-wind refusal.
@@ -69,11 +70,20 @@ three unit tests in `cs_sim/src/environment.rs` compare the airspeed the real
 `airspeed_m_s` of the same world velocity and wind, over still air, a headwind,
 a tailwind, a crosswind and the timeline gust, plus the AC02 regression (a wind
 change moves aircraft airspeed and a projectile's world velocity by the wind's
-own difference). Reverting the conversion's sign in `air_relative_velocity_m_s`
-fails two of the three integration tests and both conversion unit tests. The
-existing F19-B acceptance tests in `crates/cs_app/tests/environment/air.rs` were
+own difference). The reviewer measured the sensitivity on this branch: flipping
+the sign in `air_relative_velocity_m_s` fails **all three** new integration
+tests, **two of the three** unit tests (the third is the still-air case, which
+a sign cannot change) and the two F19-B tests in `crates/cs_app/tests/environment/air.rs`
+that pin the conversion end to end. The existing F19-B acceptance tests were
 left untouched and still pass, which is the AC02 regression the task required
 to keep passing.
+
+What the tests deliberately do **not** decide is where the conversion lives: a
+consumer that inlined a correct private copy of the subtraction would produce
+the same numbers and pass. "One implementation" is therefore a structural claim,
+verified by reading the call sites (both flight models go through
+`FlightEnvironment::air_relative_velocity_m_s`; `cs_app::environment::air`
+re-exports and delegates) and by review, not by an assertion in this file.
 
 ## What is not claimed
 
