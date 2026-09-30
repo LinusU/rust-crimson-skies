@@ -32,6 +32,18 @@
 //! a solid contact in code. It creates no Avian body; the schedule adapter is
 //! `cs_app::physics` (F23-B/C create and drive the actual bodies).
 //!
+//! [`damage`] is the F29-A damage contract
+//! (`specs/F29-damage-zones-armor-destruction-and-bailout.md`, stage
+//! `### F29-A`): the per-actor [`damage::DamageGraph`] of armor zones,
+//! internal structure, engines and weapon mounts, the immutable
+//! [`damage::HitEvent`] input and ordered [`damage::DamageEvent`] output
+//! vocabulary, the five distinct [`damage::LifecycleKind`]s, and the
+//! per-session [`damage::DamageResolver`] whose declared hit ordering and
+//! simultaneous-lethal attribution award a single kill per destruction.
+//! The declared, provenance-carrying schema is `cs_content::damage`; the
+//! lowering boundary and ECS bindings are `cs_app::damage`; armor-driven
+//! disablement is F29-B and visual/scoring wiring is F29-C.
+//!
 //! [`animated_object`] is the F20-A animation runtime
 //! (`specs/F20-object-animation-and-authored-destruction-states.md`, stage
 //! `### F20-A`): the tick-indexed channel records (transform, visibility,
@@ -70,6 +82,7 @@
 pub mod animated_object;
 pub mod collision;
 pub mod control;
+pub mod damage;
 pub mod flight;
 pub mod time;
 pub mod visibility;

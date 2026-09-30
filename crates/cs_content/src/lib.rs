@@ -139,6 +139,18 @@
 //! `cs_sim`. No sky is rendered and no file is opened here; F19-B builds the
 //! sky/fog/light and weather effects from these records.
 //!
+//! [`damage`] is the F29-A declared damage schema
+//! (`specs/F29-damage-zones-armor-destruction-and-bailout.md`, stage
+//! `### F29-A`): the provenance-carrying [`damage::DeclaredDamageGraph`]
+//! of armor zones, internal structure, engines and weapon mounts with
+//! [`Resolved`] integrity pools, [`scene::SceneNodeId`] part bindings, per-subject
+//! declared rules (aircraft, world object and capital ship share the
+//! identity discipline but keep their own rules) and the lethal
+//! [`damage::AttributionRule`] a session resolves kills under — every value
+//! known with provenance or an explicit unknown, never a silent default.
+//! Its runtime counterpart is `cs_sim::damage`; the conversion boundary is
+//! `cs_app::damage`.
+//!
 //! [`flight_tuning`] is the F24-A provenance-carrying tuning schema
 //! (`specs/F24-fixed-wing-flight-engine-stall-and-arcade-assists.md`, stage
 //! `### F24-A`): every numeric field the `cs_sim::flight` equations consume,
@@ -165,6 +177,7 @@ pub mod campaign_bindings;
 pub mod catalog;
 pub mod config;
 pub mod coordinates;
+pub mod damage;
 pub mod environment;
 pub mod flight_tuning;
 pub mod livery;

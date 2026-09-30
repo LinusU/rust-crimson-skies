@@ -133,6 +133,17 @@
 //! blend a `StandardMaterial` cannot reach, which every class now has a
 //! drawable form of.
 //!
+//! [`damage`] is the F29-A damage boundary
+//! (`specs/F29-damage-zones-armor-destruction-and-bailout.md`, stage
+//! `### F29-A`): [`damage::lower_graph`], which lowers a declared
+//! `cs_content::damage::DeclaredDamageGraph` into the
+//! `cs_sim::damage::DamageGraph` the session resolver registers with every
+//! `Resolved::Unknown` carried through; [`damage::lower_policy`], which
+//! lowers the graph's declared lethal-attribution rule and refuses an
+//! unknown one outright; and the generation-stamped
+//! [`damage::DamageActorBinding`] ECS record tying an entity to its
+//! session-qualified actor and damage-graph subject.
+//!
 //! [`environment`] is the F19-A environment boundary
 //! (`specs/F19-sky-atmosphere-weather-and-visibility.md`, stage
 //! `### F19-A`): [`environment::SkyFrame`], the one record that centres a
@@ -148,6 +159,7 @@ pub mod airframe_visual;
 pub mod animation;
 pub mod assets;
 pub mod cli;
+pub mod damage;
 pub mod environment;
 pub mod input;
 pub mod livery;
