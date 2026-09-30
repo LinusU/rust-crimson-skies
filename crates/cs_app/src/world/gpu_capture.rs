@@ -99,15 +99,25 @@ pub const FRAMING_DISTANCE_FACTOR: f64 = 2.75;
 /// The capture camera's near plane, as a fraction of its framing distance, and
 /// the far plane as a multiple of it.
 ///
-/// Declared because the default is wrong for this corpus, and measurably so: the
-/// retail world's stored geometry sits **thousands of stored units** from the
-/// origin — `ZBD/C1B` mesh 277 spans `-8157..-7230` — while Bevy's default
-/// perspective projection has a far plane of `1000` units. A capture that left
-/// the default clipped the entire mesh away and came back with a uniform frame,
-/// which is the failure the uniform-frame refusal then reported. The planes are
-/// therefore derived from the framing distance: near a hundredth of it, far four
-/// times it, which is wide enough for the whole bounding sphere and narrow enough
-/// to keep the depth buffer useful.
+/// Declared from two measured facts, and one of them is a fact about the *pinned
+/// pair* rather than about the corpus, so it is stated as such:
+///
+/// * The retail world's stored geometry sits **thousands of stored units** from
+///   the origin — `ZBD/C1B` mesh 277 spans `-8157.86 .. -7230.46` in `x` — while
+///   Bevy 0.19.1's `PerspectiveProjection::default()` has a far plane of
+///   `1000.0` and a near plane of `0.1`. A capture that framed that mesh and
+///   then left the defaults would be asking for a frustum that does not contain
+///   its subject, so the planes are derived from the framing distance instead:
+///   near a hundredth of it, far four times it.
+/// * **What was measured:** reverting these two values to
+///   `PerspectiveProjection::default()` did **not** make any of the eight
+///   captures fail on this pinned pair (`bevy_render` with wgpu on Metal). The
+///   uniform frames this stage found and fixed were caused by the *view
+///   direction* alone, not by the clip planes — see
+///   [`CAPTURE_VIEW_DIRECTION`]. The derived planes are therefore kept as the
+///   defensible choice for a corpus this far from the origin, and the reason the
+///   default did not bite here is **not established**, which is why this sentence
+///   says so rather than claiming the derivation was load-bearing.
 pub const NEAR_PLANE_FRACTION: f64 = 0.01;
 
 /// The far plane, as a multiple of the framing distance. See
@@ -381,6 +391,18 @@ struct FrameFacts {
 /// uniform frame, or a read/write failure.
 pub fn capture_world_mesh(request: &CaptureRequest<'_>) -> Result<GpuCapture, GpuCaptureError> {
     let uploads = upload_all(request)?;
+    // A mesh whose every stored corner is the same point has no bounds, so
+    // there is no frame to put it in and the camera's framing distance would be
+    // zero. Checked **before** the app is built, so the refusal costs nothing
+    // and no PNG is left behind.
+    let (min, max) = stored_bounds(request.render);
+    let extent = (0..3).map(|axis| max[axis] - min[axis]);
+    if !extent.clone().any(|side| side > 0.0) {
+        return Err(GpuCaptureError::DegenerateBounds {
+            group: request.group.to_owned(),
+            mesh_index: request.mesh_index,
+        });
+    }
 
     let mut app = App::new();
     app.init_resource::<CapturedFrame>();
@@ -405,19 +427,33 @@ pub fn capture_world_mesh(request: &CaptureRequest<'_>) -> Result<GpuCapture, Gp
     let target = spawn_scene(&mut app, &uploads, request);
     drive_capture(&mut app, target, request)?;
 
+    // Every refusal from here on **removes the PNG the renderer already wrote**.
+    // The screenshot observer saves the frame the moment it arrives, before this
+    // function has looked at it, so without the removal a uniform frame would
+    // leave a file on disk that reads exactly like a good capture: same name,
+    // same path, nothing in it that says the geometry was never drawn. That is
+    // not hypothetical — this stage's own uniform-frame test failed exactly
+    // there.
     let facts = {
         let recorded = app.world().resource::<CapturedFrame>();
-        let guard = recorded
-            .0
-            .lock()
-            .map_err(|_| GpuCaptureError::NoScreenshotCaptured {
+        let guard = recorded.0.lock().map_err(|_| {
+            discard_capture(request.png);
+            GpuCaptureError::NoScreenshotCaptured {
                 updates: MAX_CAPTURE_UPDATES,
-            })?;
-        guard.ok_or(GpuCaptureError::NoScreenshotCaptured {
-            updates: MAX_CAPTURE_UPDATES,
-        })?
+            }
+        })?;
+        match *guard {
+            Some(facts) => facts,
+            None => {
+                discard_capture(request.png);
+                return Err(GpuCaptureError::NoScreenshotCaptured {
+                    updates: MAX_CAPTURE_UPDATES,
+                });
+            }
+        }
     };
     if facts.distinct_luminance <= 1 {
+        discard_capture(request.png);
         return Err(GpuCaptureError::UniformFrame {
             group: request.group.to_owned(),
             mesh_index: request.mesh_index,
@@ -701,6 +737,14 @@ fn drive_capture(
     Err(GpuCaptureError::NoScreenshotCaptured {
         updates: MAX_CAPTURE_UPDATES,
     })
+}
+
+/// Removes a capture the renderer already wrote, so no refusal leaves a file.
+///
+/// A missing file is not an error to report: the point is that there is nothing
+/// left, and a `remove_file` that finds nothing has achieved that.
+fn discard_capture(png: &Path) {
+    let _ = std::fs::remove_file(png);
 }
 
 /// The measured facts of one frame: its size, how many distinct luminance

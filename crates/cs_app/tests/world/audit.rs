@@ -365,6 +365,36 @@ fn accept_f18_d_an_unlocated_opening_or_route_is_reported_instead_of_assumed() {
         "a report that caught the contradiction is still not a pass: the group has no route"
     );
 
+    // The same contradiction with only one of the two halves claimed: a route
+    // with no located opening is just as unsupported as a route with one, so the
+    // gap check must fire on either.
+    let route_only = WorldGroupAudit::new(vec![synthetic_group("c5")]).expect("one group");
+    let report = route_only.audit(|_| {
+        Ok(synthetic_census(
+            "c5",
+            5,
+            undecoded,
+            None,
+            vec![TraversalRoute {
+                route: "half".to_owned(),
+                from_m: [0.0; 3],
+                to_m: [1.0; 3],
+                clearance_m: None,
+                openings: Vec::new(),
+            }],
+            Vec::new(),
+        ))
+    });
+    assert_eq!(
+        report.groups()[0].gaps(),
+        &[cs_content::world::WorldAuditGap::RouteWithoutFacts {
+            world: WorldId::from_key("c5").expect("a valid world key"),
+            routes: 1,
+            openings: 0,
+        }],
+        "a route with no placement is unsupported whether or not an opening was claimed too"
+    );
+
     // A census whose facts are all established and which still states no route.
     let clean = WorldGroupAudit::new(vec![synthetic_group("c2")]).expect("one group");
     let report = clean.audit(|_| {
@@ -398,6 +428,31 @@ fn accept_f18_d_an_unlocated_opening_or_route_is_reported_instead_of_assumed() {
             measured: WorldId::from_key("c4").expect("a valid world key"),
         }],
         "the measured numbers belong to c4 and must not be counted under c3"
+    );
+
+    // Completeness needs *every* group visited, on its own: one group whose
+    // geometry could not be read keeps the report from a pass even when every
+    // other clause would hold, so an audit that only compared its own groups to
+    // each other and never to the declared set cannot pass.
+    let partly_read = WorldGroupAudit::new(vec![synthetic_group("c1"), synthetic_group("c2")])
+        .expect("two groups");
+    let report = partly_read.audit(|row| {
+        if row.world().key() == "c1" {
+            Ok(decoded_census("c1"))
+        } else {
+            Err(cs_content::world::WorldGroupBlocker::GeometryUnreadable {
+                world: row.world().clone(),
+                container: row.geometry_container().to_owned(),
+                reason: "authored".to_owned(),
+            })
+        }
+    });
+    assert_eq!(report.visited().count(), 1, "one of the two groups read");
+    assert!(
+        !report.is_complete(),
+        "a report that could not read one of its two declared groups is not a pass, however \
+         complete the group it did read is: {:?}",
+        report.groups()[0]
     );
 
     // An empty audit of nothing is never a pass.
@@ -638,6 +693,7 @@ fn accept_f18_d_a_capture_that_drew_nothing_is_refused_rather_than_written() {
     // names the group and the index rather than writing an empty PNG.
     let empty = empty_mesh();
     let png = evidence_dir().join("gpu-capture-empty.png");
+    let _ = std::fs::remove_file(&png);
     let refused = capture_world_mesh(&CaptureRequest {
         group: "fixture",
         mesh_index: 7,
@@ -656,6 +712,120 @@ fn accept_f18_d_a_capture_that_drew_nothing_is_refused_rather_than_written() {
         !png.exists(),
         "a refused capture must leave no file that could be read as evidence"
     );
+
+    // A mesh whose every stored corner is one point has no bounds, so there is
+    // no frame to put it in. Checked before the app is built, so the refusal
+    // costs nothing and writes nothing.
+    let point = one_point_mesh();
+    let png = evidence_dir().join("gpu-capture-point.png");
+    let _ = std::fs::remove_file(&png);
+    let refused = capture_world_mesh(&CaptureRequest {
+        group: "fixture",
+        mesh_index: 9,
+        render: &point,
+        unknowns: &[],
+        png: &png,
+    });
+    assert!(
+        matches!(
+            refused,
+            Err(cs_app::world::GpuCaptureError::DegenerateBounds { mesh_index: 9, .. })
+        ),
+        "a mesh with no extent is refused by name, got {refused:?}"
+    );
+    assert!(!png.exists(), "a refused capture must leave no file");
+
+    // A mesh that uploads and yet draws nothing: three stored corners on the
+    // same position index. The upload adapter skips a degenerate stored step —
+    // correctly, it has no area — so the frame comes back as the background, and
+    // that is exactly what `UniformFrame` exists to report. Without this case
+    // the uniform-frame gate is unreachable from a test and would be untested
+    // production code.
+    let degenerate = degenerate_only_mesh();
+    let png = evidence_dir().join("gpu-capture-degenerate.png");
+    let _ = std::fs::remove_file(&png);
+    let refused = capture_world_mesh(&CaptureRequest {
+        group: "fixture",
+        mesh_index: 11,
+        render: &degenerate,
+        unknowns: &[],
+        png: &png,
+    });
+    match refused {
+        Err(cs_app::world::GpuCaptureError::UniformFrame {
+            distinct_luminance,
+            covered_pixels,
+            total_pixels,
+            ..
+        }) => {
+            assert_eq!(distinct_luminance, 1, "the frame is the background alone");
+            assert_eq!(covered_pixels, 0, "nothing reached the frame");
+            assert_eq!(
+                total_pixels,
+                (cs_app::world::CAPTURE_WIDTH * cs_app::world::CAPTURE_HEIGHT) as usize,
+                "the frame is the declared capture size"
+            );
+        }
+        other => panic!("a frame that drew nothing is refused by name, got {other:?}"),
+    }
+    assert!(
+        !png.exists(),
+        "a refused capture must leave no file that could be read as evidence"
+    );
+}
+
+/// A stored mesh with **one** stored position and a triangle whose three corners
+/// all name it: the mesh uploads (it holds a drawable triangle) and every
+/// rendered vertex is the same point, so it has no extent on any axis.
+fn one_point_mesh() -> RenderMesh {
+    RenderMesh::build(&RawMesh {
+        positions: vec![[4.0, 4.0, 4.0]],
+        normals: Vec::new(),
+        polygons: vec![RawPolygon {
+            kind: PrimitiveKind::Polygon,
+            raw_flags: 0,
+            material: 0,
+            corners: (0..3)
+                .map(|_| RawCorner {
+                    position: 0,
+                    normal: None,
+                    uv: Some([0.0, 0.0]),
+                    color: None,
+                })
+                .collect(),
+        }],
+    })
+    .expect("a three-corner outline on one position is valid stored data")
+}
+
+/// A stored mesh with **two** positions and a triangle whose corners name them
+/// as `0, 0, 1`: the stored step is degenerate (two equal position indices), so
+/// the render mesh keeps it, the upload adapter skips it, and the buffer that
+/// reaches the GPU is empty — a frame that can only come back as the background.
+///
+/// Two positions, not one, so the mesh *has* an extent: this case has to get past
+/// the bounds check to reach the uniform-frame one, or the two refusals would be
+/// indistinguishable.
+fn degenerate_only_mesh() -> RenderMesh {
+    RenderMesh::build(&RawMesh {
+        positions: vec![[0.0, 0.0, 0.0], [0.0, 0.0, 6.0]],
+        normals: Vec::new(),
+        polygons: vec![RawPolygon {
+            kind: PrimitiveKind::Polygon,
+            raw_flags: 0,
+            material: 0,
+            corners: [0, 0, 1]
+                .into_iter()
+                .map(|position| RawCorner {
+                    position,
+                    normal: None,
+                    uv: Some([0.0, 0.0]),
+                    color: None,
+                })
+                .collect(),
+        }],
+    })
+    .expect("a triangle with two equal stored positions is valid stored data")
 }
 
 /// A synthetic mesh with a real opening in it: two legs and a lintel, as the
