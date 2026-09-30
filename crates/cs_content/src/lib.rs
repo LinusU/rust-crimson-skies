@@ -159,6 +159,17 @@
 //! silent zero. It carries no original coefficient; F24-C maps the record
 //! into the model and F24-D calibrates it against reference traces.
 //!
+//! [`target_rules`] is the F30-A declared targeting schema
+//! (`specs/F30-targeting-classification-aim-assistance-and-threat-cues.md`,
+//! stage `### F30-A`): the provenance-carrying
+//! [`target_rules::DeclaredTargetRules`] of a subject's faction set,
+//! directed [`target_rules::DeclaredRelation`]s and the
+//! [`target_rules::TargetRuleSet`] policy knobs — threat window, crosshair
+//! cone and the separate lead-indicator/aim-assistance options — each
+//! [`Resolved`] known with provenance or an explicit unknown, never a
+//! silent default. Its runtime counterpart is `cs_sim::targeting`; the
+//! conversion boundary is `cs_app::targeting`.
+//!
 //! [`animation`] is the F20-A declared animation IR
 //! (`specs/F20-object-animation-and-authored-destruction-states.md`, stage
 //! `### F20-A`): the provenance-carrying [`animation::AnimationClip`] record
@@ -196,5 +207,6 @@ pub mod loading;
 pub mod mesh;
 pub mod routes;
 pub mod scene;
+pub mod target_rules;
 pub mod textures;
 pub mod world;
