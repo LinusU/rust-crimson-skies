@@ -144,6 +144,15 @@ recreate it, e.g. cargo clean --target-dir /…/bunny-alpha-1/target.
   read the variable, so it has no absolute path of this checkout compiled into
   it; `OUT_DIR` is inside the target directory and `file!()` is relative to the
   crate. Reusing them is not what broke anything here.
+* **A recorded path under `$CARGO_HOME` that cargo's own cache pruned.** A
+  registry crate that reads `CARGO_MANIFEST_DIR` records
+  `/…/.cargo/registry/src/…`, and `cargo cache --autoclean` or a hand-removed
+  `registry/src` takes that directory away. That is cargo's cache lifecycle, not
+  a removed worktree, and the gate reports the two the same way; the advice it
+  gives (`cargo clean --target-dir`) is then only expensive, not wrong. No
+  dependency in this workspace's graph records such a path today — every
+  recorded value above is a crate of this worktree — so this is a known
+  limitation of the rule, not something observed here.
 * **Deleting anything.** The gate reports; `cargo clean --target-dir` and
   removing a worktree directory belong to whoever owns the machine.
 

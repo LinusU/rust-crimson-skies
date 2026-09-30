@@ -37,7 +37,9 @@ to the checkout.** Leave it unset — Cargo then uses the worktree-local
 `CARGO_TARGET_DIR` shared between checkouts lets concurrent builds reuse
 each other's artifacts, so a `cargo test` result is no longer evidence
 about the tree it ran in. `cargo run -p cs_xtask -- verify-target-dir`
-reports the directory cargo will really use and fails when it is shared.
+reports the directory cargo will really use and fails when it is shared or
+when it still holds artifacts a checkout that has since been removed
+produced (task #433).
 
 [`opencode.json`](opencode.json) configures the `rally` MCP server for opencode from `RALLY_AGENT_TOKEN`.
 

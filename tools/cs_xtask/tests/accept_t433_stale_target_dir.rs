@@ -402,13 +402,21 @@ the fix, got: {stderr:?}"
 }
 
 /// The live gate: *this* checkout's own target directory must satisfy both
-/// rules, and everything it records must be this checkout's own crates. If a
-/// removed worktree's artifacts are still in there, `cargo test --workspace`
-/// fails here instead of reporting results about a tree that is gone.
+/// rules, and every directory it records must still be there. If a removed
+/// worktree's artifacts are still in there, `cargo test --workspace` fails here
+/// instead of reporting results about a tree that is gone.
+///
+/// The assertion is deliberately about the directory being *gone* and not about
+/// it belonging to this worktree: a recorded path that exists but sits outside
+/// this checkout is not what the gate can judge, because any registry crate
+/// that reads the variable records `$CARGO_HOME/registry/src/…`. Asserting
+/// "belongs to this worktree" here would fail `cargo test --workspace` for an
+/// ordinary dependency, with a message blaming this tree. See
+/// `docs/findings/2026-09-30-t433-cargo-reuses-artifacts-of-a-removed-worktree.md`.
 #[test]
 fn accept_t433_this_worktrees_target_dir_holds_no_removed_worktree() {
-    let root = workspace_root();
-    let dir = target_dir::verify_workspace(&root).unwrap_or_else(|error| panic!("{error}"));
+    let dir =
+        target_dir::verify_workspace(&workspace_root()).unwrap_or_else(|error| panic!("{error}"));
 
     let recorded = target_dir::recorded_manifest_dirs(&dir);
     assert!(
@@ -420,16 +428,18 @@ checkout proves nothing: {}",
     );
     for manifest_dir in &recorded {
         assert!(
-            manifest_dir.starts_with(&root),
-            "{} records {} which belongs to no crate of this worktree",
-            dir.display(),
-            manifest_dir.display()
-        );
-        assert!(
             manifest_dir.is_dir(),
-            "{} records {}, which is not a directory any more (task #433)",
+            "{} records {}, which is not a directory any more (task #433): the \
+artifacts in there were compiled from a checkout that is gone, so delete \
+{} with cargo clean --target-dir",
             dir.display(),
-            manifest_dir.display()
+            manifest_dir.display(),
+            dir.display()
         );
     }
+    assert!(
+        target_dir::removed_manifest_dirs(&dir).is_empty(),
+        "the gate passed, so nothing it recorded may be gone: {}",
+        dir.display()
+    );
 }
