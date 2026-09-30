@@ -17,5 +17,8 @@
 //! original-behavior claim — the fixture proves the contract, never the
 //! original renderer. `CS_GAME_DIR` is not needed.
 
+mod adapters;
 mod classification;
+mod fixture;
+mod frame_capture;
 mod golden_scene;

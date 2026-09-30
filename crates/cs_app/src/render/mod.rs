@@ -1,10 +1,10 @@
-//! Rendering: material classification, the ordered draw plan and the
-//! golden synthetic render-test scene
+//! Rendering: material classification, the ordered draw plan, the golden
+//! synthetic render-test scene and the canonical-to-Bevy adapters
 //! (`specs/F17-rendering-material-fidelity-and-scalable-presentation.md`,
-//! stage `### F17-A`; shared contract
+//! stages `### F17-A` and `### F17-B`; shared contract
 //! `docs/contracts/IDENTITY-CONTENT.md`).
 //!
-//! This stage fixes the typed contract and its fixture, not a runtime:
+//! F17-A fixed the Bevy-free contract:
 //!
 //! * [`material`] is the classification boundary. A surface's render
 //!   class — [`material::MaterialClass`] opaque, masked, blended, additive
@@ -25,10 +25,34 @@
 //!   per-corner-colored quad, submitted scrambled so only a correct plan
 //!   orders them.
 //!
-//! Nothing here touches Bevy's render world: the Bevy mesh/image adapters
-//! are F17-B, the faithful/enhanced profiles F17-C. The module is
-//! deliberately Bevy-free data, so the contract tests run headless.
+//! F17-B adds the production path, the only place in the workspace where a
+//! canonical IR becomes a Bevy asset — which is what makes spec F15's "only
+//! `cs_app` converts canonical assets into Bevy assets" structural rather
+//! than a promise:
+//!
+//! * [`bevy_mesh::upload_group`] turns one `cs_content::mesh::RenderGroup`
+//!   into compacted Bevy vertex/index buffers, bit-exact, with no attribute
+//!   fabricated and no triangle dropped.
+//! * [`bevy_image::upload_image`] turns one
+//!   `cs_formats::texture::DecodedImage` into a Bevy texture whose format
+//!   is chosen from the stored color space, so the GPU corrects the stored
+//!   values exactly once (spec F17 non-negotiable 3).
+//! * [`bevy_state::render_state`] reads the render state out of a
+//!   [`material::ClassifiedMaterial`] and refuses the two facts nothing
+//!   measured (two-sidedness, addressing).
+//! * [`capture::capture`] records one tick's frame — settings, camera, tick,
+//!   every surface's digests in draw order, every refusal with its reason —
+//!   so the same camera and tick captured twice can be compared (AC02)
+//!   without a GPU.
+//!
+//! Every adapter refuses rather than defaults: an unestablished fact becomes
+//! a reason code on a refusal the capture reports, never a value invented
+//! here. The faithful and enhanced profiles are F17-C.
 
+pub mod bevy_image;
+pub mod bevy_mesh;
+pub mod bevy_state;
+pub mod capture;
 pub mod golden;
 pub mod material;
 pub mod plan;
