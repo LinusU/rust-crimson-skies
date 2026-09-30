@@ -644,6 +644,41 @@ fn accept_f17_c_the_consumer_draws_one_entity_per_batch_with_every_row() {
         images_before,
         "a reused batch keeps its handle instead of growing the store"
     );
+
+    // A different frame releases what it does not claim: repainting `b` with
+    // the red variant collapses the two body draws into one and gives `b` wings
+    // of the red paint, so every batch of the previous frame is gone.
+    let mut repainted = fixture.visuals.clone();
+    repainted.insert(InstanceVisual::bound(
+        PLANE_B,
+        fixture.runtime.livery(PLANE_A).expect("a is bound"),
+    ));
+    let next = batch_frame(
+        &submitted,
+        &fixture.plan,
+        &repainted,
+        &RenderProfile::faithful(),
+        TICK,
+    )
+    .expect("the repainted frame batches");
+    let swapped = sync_frame(&mut world, &submitted, &next, SESSION).expect("the next frame syncs");
+    assert_eq!(
+        swapped.reused, 1,
+        "c's wing is the one draw that is genuinely unchanged"
+    );
+    assert_eq!(swapped.released, 3, "every stale draw is despawned");
+    assert_eq!(swapped.spawned, 2, "b's red wing and the merged body draw");
+    assert_eq!(batch_entities(&world), 3, "no entity of the old frame is left");
+    let merged = batch_entity(&world, &next, RenderPhase::Opaque, PLANE_B);
+    assert_eq!(
+        world
+            .get::<BatchDraw>(merged)
+            .expect("the merged draw exists")
+            .instances()
+            .len(),
+        3,
+        "all three aircraft are in the one draw their paint allows"
+    );
 }
 
 /// A frame built under a profile nobody applied is refused before anything is
