@@ -133,6 +133,44 @@ declined to run, i.e. the restore was an **exact** hit on the same key. That is
 the same conclusion the #430 finding reached, but it is now read off the
 action's control flow rather than inferred from the outcome.
 
+## Confirmed on a later run
+
+CI run **36762497676**, the push of this finding's own branch, head `746bb8e`
+(both jobs green). It is a second, independent observation of the same
+mechanism, on a branch three commits past #430 and after #430 reached `main`:
+
+```
+Run Swatinem/rust-cache@v2   Cache Size: ~2577 MB (2702354412 B)
+Run Swatinem/rust-cache@v2   Cache restored successfully
+Run Swatinem/rust-cache@v2   Restored from cache key "v0-rust-rust-Linux-x64-516c6f62-2429d581" full match: true.
+Post Run Swatinem/rust-cache@v2   Cache up-to-date.
+```
+
+Three things are now measured rather than inferred:
+
+* **`full match: true` and `Cache up-to-date.` are the same event.** The restore
+  step's `saveState()` is not called on an exact match, so the save step's
+  guard fires. The control flow read from `save.ts`/`restore.ts` above is
+  exactly what the log does.
+* **The key is unchanged and has no manifest component.** Read left to right
+  it is `v0-rust` (prefix-key) + `rust` (`GITHUB_JOB`, no `key` input) +
+  `Linux-x64` + `516c6f62` (environment hash) + `2429d581` (lock hash) — the
+  construction in `config.ts`, with nothing between the prefix and the job
+  name. That gap is exactly where the `key:` line below would insert one, so
+  the first row of the log-reading table is a thing the owner can read, not a
+  hope.
+* **The saving is still uncollected, and it still costs a full rebuild.** The
+  entry is the same 2,702,354,412 B as in run 36750916306 — the pre-#430
+  full-DWARF tree is still the one in the cache, so the line-tables-only tree
+  #430 built has still never been stored. The `cargo test` step emitted
+  **395** `Compiling` lines (`bevy_pbr v0.19.1`, `wgpu v29.0.4`,
+  `naga v29.0.4`, `avian3d v0.7.0` among them) and ran **18m24s**
+  (19:03:18 → 19:21:42). The 395 is the same count #430 reported, re-measured.
+
+What this run cannot show is the thing the task asks for: with the workflow
+unchanged there is no new key, so there is no smaller `Cache Size:` to read
+and no run that skips the 395. That is the whole of the remaining gap.
+
 ## The correction to the line #438 suggests
 
 `shared-key` and `key` are not interchangeable, and for this change `key` is
@@ -180,7 +218,7 @@ the first run after the edit is the measurement.
 
 | what to read | expected after the edit | what it proves |
 |---|---|---|
-| `Cache Configuration` group in the restore step, `.. Prefix:` | the extra component is between `v0-rust` and the job name | the workflow's `key` reached the action's prefix; a miss here means the expression did not evaluate |
+| `Cache Configuration` group in the restore step, `.. Prefix:` | today it reads `v0-rust-rust-Linux-x64-…` (measured above); after the edit the manifest hash sits between `v0-rust` and the job name `rust` | the workflow's `key` reached the action's prefix; a miss here means the expression did not evaluate |
 | restore step, first line after `... Restoring cache ...` | `No cache found.` — a miss, not `Restored from cache key "…" full match: true` | the new key is genuinely new |
 | the `cargo test` step | a full build of the Bevy/Avian graph, no restored `target/` | expected: the fix costs exactly one such run |
 | save step, the new `Cache Size:` | a new entry stored, *not* `Cache up-to-date.` | the smaller tree is now what the cache holds |
@@ -212,19 +250,22 @@ carry and that the remaining rust-lld `SIGBUS` (#430, #439) is sensitive to.
 
 ## Limits of what this finding proves
 
-* The mechanism, the `shared-key`/`key` difference, and the hashed-file set are
-  **read from the action's source**, not observed in a run. The `v2` branch
-  moves; what `@v2` resolved to on the #430 run date cannot be proven from
-  here, and the finding does not claim it.
+* The mechanism and the `shared-key`/`key` difference are **read from the
+  action's source**; what `@v2` resolved to on the #430 run date cannot be
+  proven from here, and the finding does not claim it. What the source
+  predicts is confirmed by run 36762497676 above.
 * The two local measurements (cargo ignoring a non-root profile; the
   `cargo metadata` package list) are macOS/rustc 1.98.1 on this machine. The
-  CI runner's own member list is the same committed workspace, but it was not
-  re-measured on a runner.
-* The "395 crates recompiled" and `Cache Size: ~2577 MB` numbers are quoted
-  from the #430 finding's reading of run 36750916306. They were not
-  re-measured here; nothing about the cache was touched.
-* No CI run was made for this finding: with `.github/` protected, there is
-  nothing in it to run.
+  CI runner's own member list is the same committed workspace; run
+  36762497676 confirms the key it builds, not the member list, on the runner.
+* The 395 crates and the ~19-minute `cargo test` step were re-measured on run
+  36762497676 (395 lines, 18m24s); the 2,577 MB entry is that run's own
+  `Cache Size:` line. The `du -sk target` ratio behind the size estimate is
+  still the #430 finding's local macOS measurement and is *not* a measurement
+  of any runner's peak or of any entry's composition.
+* No CI run was made *for the fix*, because with `.github/` protected there is
+  nothing in it to run. The expected-after-the-edit column of the log-reading
+  table is a prediction from the action's source, not an observation.
 
 ## Commands run
 
@@ -233,15 +274,28 @@ carry and that the remaining rust-lld `SIGBUS` (#430, #439) is sensitive to.
 | `cargo metadata --all-features --format-version 1 --no-deps` | 0 | 10 packages, root manifest not among them |
 | `cargo build -p member -v` in four scratch workspaces under `target/` | 0 | cargo's "profiles for the non root package will be ignored" warning in all four; a member-only `opt-level = 3` never reached rustc, the same setting at the root did |
 | web fetch of `Swatinem/rust-cache` `action.yml`, `CHANGELOG.md`, `src/config.ts`, `src/workspace.ts`, `src/restore.ts`, `src/save.ts` on ref `v2` | 0 | the key construction, the hashed-file set and the `Cache up-to-date.` condition quoted above |
+| `cargo fmt --all -- --check` | 0 | clean |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 | clean |
+| `cargo test --workspace --locked` | 0 | 156 test binaries, 1,455 tests, 0 failed, 98 ignored |
+| `cargo test --workspace --locked -- accept_f00_c_ --include-ignored` | 0 | 16 selected, 16 passed |
+| `cargo test --workspace --locked -- accept_t430_ --include-ignored` | 0 | 6 selected, 6 passed |
+| CI run 36762497676 (push of this branch, head `746bb8e`) | 0 | `rust` and `pack` both green; cache lines quoted in "Confirmed on a later run" |
 
-No `cargo test` run: this finding changes no Rust code and adds no test, and the
-task it belongs to has no agent-implementable surface (see "Status").
+**No task-prefix selection was run, and none is claimed.** Task #438 names no
+test prefix and adds no production code for one to exercise (see "Status"), and
+the owner directive forbids inventing a Rust shim to manufacture a prefix. The
+two selections in the table are the ones the task's own acceptance criteria
+name (`accept_f00_c_*`, the CI-gate guard) and the ones that guard what #430
+left in the manifest (`accept_t430_*`). The `accept_f00_c_*` run is reported
+for completeness, not as evidence that a gate survived a workflow edit: no
+workflow was edited.
 
 ## Sources
 
 `https://github.com/Swatinem/rust-cache` at ref `v2`, read 2026-09-30:
 `action.yml`, `CHANGELOG.md`, `src/config.ts`, `src/workspace.ts`,
 `src/restore.ts`, `src/save.ts`. Run 36750916306 and the `du -sk target`
-A/B, both via `docs/findings/2026-09-30-t430-rust-lld-sigbus-in-ci.md`. Local
-`cargo metadata` and the scratch-workspace `cargo build -v` runs above. No
-original game data was read; `CS_GAME_DIR` was not used.
+A/B, both via `docs/findings/2026-09-30-t430-rust-lld-sigbus-in-ci.md`; run
+36762497676 read from this repository's own CI. Local `cargo metadata` and the
+scratch-workspace `cargo build -v` runs above. No original game data was read;
+`CS_GAME_DIR` was not used.
