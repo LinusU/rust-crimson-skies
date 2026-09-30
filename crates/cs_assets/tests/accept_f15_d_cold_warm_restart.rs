@@ -15,9 +15,11 @@
 //!   [`SessionBuilder::mount_installation`] makes per world group), so every
 //!   byte is a resolved [`SourceSpan`] of the real installation;
 //! * the conversion is the **real** ZBD texture reader
-//!   ([`read_zbd_textures`]) and the real [`ZbdTexture::decode`] base level,
-//!   so each cached entry is a genuine derived image decoded from original
-//!   data — not a byte pass-through of a fixture;
+//!   ([`cs_formats::read_zbd_textures`]) and the real base-level decode, in
+//!   the one canonical form [`common::derive_texture_base_levels`] defines —
+//!   which the evidence harness uses too, so its independent cycle measures
+//!   these same bytes — so each cached entry is a genuine derived image
+//!   decoded from original data, not a byte pass-through of a fixture;
 //! * the consumer is the real [`LoadingSession`] over a real [`CacheStore`],
 //!   delivering through the controlled [`ExpectedLoad`] handoff into a real
 //!   [`World`].
@@ -38,7 +40,10 @@
 //! requires the *same* delivered content to come out:
 //!
 //! * a real killed child process leaving a half-written scratch entry,
-//!   recovered on the next open (this stage's `restart`);
+//!   recovered on the next open (this stage's `restart`). The child reports
+//!   its write only once the partial payload is on disk, and the parent
+//!   measures the surviving scratch bytes, so "the kill landed inside the
+//!   write" is an observation rather than an assumption;
 //! * a corrupted committed payload, refused by integrity validation and
 //!   rebuilt (F15 non-negotiable behavior 3);
 //! * entries planted under a foreign installation hash, a foreign source
@@ -52,12 +57,14 @@
 //!
 //! Every test removes the implementation and fails: `CacheStore::begin_read`
 //! or `verify_entry` gone and the warm pass is not a cache hit (or serves
-//! corrupt bytes), `commit` gone and nothing is warm at all, the
-//! [`ReadyBundle::closure_hash`]/`LoadedItemBinding` fields gone and the
-//! comparisons do not compile. Nothing here reads a recorded expectation
-//! and repeats it: the expected values are the cold pass's own measured
-//! output, and the retail inputs are hashed at run time from the mounted
-//! installation.
+//! corrupt bytes), `commit` gone and nothing is warm at all, `sweep_staging`
+//! a no-op and the interrupted write is never recovered, a cache key that
+//! ignores an identity component and a planted entry is served, the
+//! [`cs_app::loading::ReadyBundle::closure_hash`] /
+//! [`cs_app::loading::LoadedItemBinding`] fields gone and the comparisons do
+//! not compile. Nothing here reads a recorded expectation and repeats it:
+//! the expected values are the cold pass's own measured output, and the
+//! retail inputs are hashed at run time from the mounted installation.
 //!
 //! Retail tests are `#[ignore = "requires CS_GAME_DIR"]` because CI has no
 //! original data; they fail loudly (never vacuously) when the variable is
@@ -81,11 +88,9 @@ use cs_app::loading::{
 };
 use cs_assets::cache::{
     CacheBudget, CacheDirectory, CacheKey, CacheStore, ConversionOptions, ConverterVersion,
-    DecoderId, IrVersion,
 };
 use cs_assets::install::{self, Discovery};
 use cs_assets::vfs::{ContentSession, MountBuilder, SessionBuilder};
-use cs_formats::{AllocationBudget, read_zbd_textures};
 use cs_types::asset_id::{
     AssetKey, MountId, MountNamespace, PrecedenceClass, ResolveContext, SourceSpan, WorldGroup,
 };
@@ -126,14 +131,6 @@ fn install_hash() -> ContentHash {
 fn content_hash() -> ContentHash {
     install::content_fingerprint(&discovery().manifest)
 }
-
-/// How many base levels of each real texture archive the derived asset
-/// covers. Bounded on purpose: the closure is the *world's own* texture
-/// archives, and a prefix of each is enough to make every entry a real
-/// decoded image while keeping one load's IO in the range a frame budget
-/// can absorb. Recorded in
-/// `docs/findings/2026-09-30-t64-f15-d-cold-warm-restart.md`.
-const DERIVED_TEXTURES_PER_ARCHIVE: usize = 8;
 
 // ------------------------------------------------------------- the world ---
 
@@ -229,50 +226,25 @@ fn is_texture_archive(spelling: &str) -> bool {
 // ------------------------------------------------------- the conversion ---
 
 /// The converter identity the derived texture entries are stored under.
-/// Bumping either version is what must invalidate them.
-fn texture_converter() -> ConverterVersion {
-    ConverterVersion {
-        decoder: DecoderId::new("zbd-texture-base-level").expect("a valid decoder id"),
-        decoder_version: 1,
-        ir: IrVersion(1),
-    }
+/// Bumping either version is what must invalidate them. One definition,
+/// shared with the evidence harness (`common::derived_texture_converter`),
+/// so its independent cycle runs under the identity this suite used.
+fn texture_converter() -> cs_assets::cache::ConverterVersion {
+    common::derived_texture_converter()
 }
 
 /// The real conversion: the production ZBD texture reader parses the
-/// archive and the real [`cs_formats::ZbdTexture::decode`] produces each
-/// base level. The derived form is those decoded base levels in archive
-/// order, each preceded by its own name and extent, so a cache entry is
-/// original image data decoded by the engine — not the source bytes
-/// renamed.
+/// archive and the real base-level decode produces each base level, in the
+/// one canonical form `common::derive_texture_base_levels` defines. The
+/// derived form is those decoded base levels in archive order, each
+/// preceded by its own name and extent, so a cache entry is original image
+/// data decoded by the engine — not the source bytes renamed.
 fn convert_texture_archive(
     item: &LoadItem,
     payload: &CanonicalPayload,
 ) -> Result<Vec<u8>, ConversionError> {
-    let label = item.key.path().as_str().to_owned();
-    let mut budget = AllocationBudget::with_defaults(label.clone());
-    let package = read_zbd_textures(&label, payload.bytes(), &mut budget).map_err(|error| {
-        ConversionError::Failed {
-            detail: format!("{label}: {error}"),
-        }
-    })?;
-    let mut derived = Vec::new();
-    for texture in package.textures().iter().take(DERIVED_TEXTURES_PER_ARCHIVE) {
-        let mut level = AllocationBudget::with_defaults(label.clone());
-        let image = texture
-            .decode(&mut level)
-            .map_err(|error| ConversionError::Failed {
-                detail: format!("{label}#{}: {error}", texture.entry_index()),
-            })?;
-        let extent = image.extent();
-        let name = texture.name().as_bytes();
-        let _ = derived.try_reserve(12 + name.len() + image.texels().len());
-        derived.extend_from_slice(&(name.len() as u32).to_le_bytes());
-        derived.extend_from_slice(name);
-        derived.extend_from_slice(&extent.width.to_le_bytes());
-        derived.extend_from_slice(&extent.height.to_le_bytes());
-        derived.extend_from_slice(image.texels());
-    }
-    Ok(derived)
+    common::derive_texture_base_levels(item.key.path().as_str(), payload.bytes())
+        .map_err(|detail| ConversionError::Failed { detail })
 }
 
 // ------------------------------------------------------------ load items ---
@@ -501,6 +473,13 @@ impl Sandbox {
     fn cache_root(&self) -> PathBuf {
         self.root.clone()
     }
+
+    /// The fixture tree's root, one level above the cache root. The restart
+    /// scenario's readiness marker lives here rather than in the store, so
+    /// the store never sees a file it did not write itself.
+    fn tree_root(&self) -> PathBuf {
+        self._tree.root().to_path_buf()
+    }
 }
 
 /// Spec F15 **AC04** on the original installation, for every world group
@@ -637,22 +616,50 @@ fn accept_f15_d_retail_restart_after_a_killed_cache_write_recovers_and_reproduce
     // interruption at all.
     let reference = run_load(world, open_store(&cache_root, 64, 8 << 20));
     assert_eq!(reference.usage_entries, closure(world).len() as u64);
+    let interrupted_key = closure(world)[0]
+        .derived
+        .clone()
+        .expect("a real member has a derived key");
+    // The length the reference published for that key, read straight off
+    // disk: opening a store here would sweep the interrupted write this
+    // scenario is about to measure.
+    let published_bytes = published_payload_bytes(&cache_root, &interrupted_key);
 
-    // A second, larger world load is started in a child process and that
-    // child is killed while a cache write is in flight. The child's
-    // scratch directory and its partial payload survive the kill because
-    // nothing had a chance to clean them up.
-    let killed = kill_a_child_during_a_cache_write(&cache_root);
+    // A second world load is started in a child process and that child is
+    // killed while a cache write is in flight. The child reports its write
+    // only once the partial payload is on disk, so the kill lands inside
+    // the write rather than before it, and the scratch directory and its
+    // partial payload survive because nothing had a chance to clean them up.
+    let killed = kill_a_child_during_a_cache_write(
+        &cache_root,
+        &sandbox.tree_root().join("child-write-in-flight"),
+        &interrupted_key,
+        published_bytes,
+    );
     assert!(
         killed.scratch_before_kill > 0,
         "the child was killed with {} scratch write(s) in flight, so the \
          recovery below is measured against a real interruption",
         killed.scratch_before_kill
     );
-    assert!(
-        !killed.signal.is_empty(),
-        "the child was terminated by signal {} rather than exiting cleanly",
+    #[cfg(unix)]
+    assert_eq!(
+        killed.signal,
+        Some(SIGKILL),
+        "the child must die of SIGKILL without unwinding, so the debris on disk is what a \
+         kill during a cache write leaves; it died of {:?}",
         killed.signal
+    );
+    assert!(
+        killed.staged_bytes > 0,
+        "the interrupted write left no payload bytes on disk, so nothing partial survived"
+    );
+    assert!(
+        killed.staged_bytes < published_bytes,
+        "the interrupted write staged {} bytes of the {} the reference published, so it was \
+         a partial payload and not a complete one",
+        killed.staged_bytes,
+        published_bytes
     );
 
     // The next open: the store sweeps the interrupted write, holds no
@@ -965,15 +972,28 @@ fn accept_f15_d_retail_budget_eviction_never_changes_the_delivered_content() {
 /// The environment the parent hands the child so the child knows which
 /// private store to write into and that it is the child.
 const CHILD_STORE_VAR: &str = "CS_F15_D_CHILD_STORE";
+/// The out-of-band path the child uses to report that its partial payload is
+/// staged and its write is in flight. It deliberately lives outside the
+/// cache root: the store must never see a file it did not write itself.
+const CHILD_READY_VAR: &str = "CS_F15_D_CHILD_READY";
 /// The test the parent re-runs in the child.
 const CHILD_TEST: &str = "f15_d_child_killed_mid_cache_write_is_not_an_acceptance_test";
+/// Unix's signal number for `SIGKILL`, which is what
+/// [`std::process::Child::kill`] sends: no unwinding, no destructors, no
+/// flush, so what the child leaves on disk is what a kill leaves.
+#[cfg(unix)]
+const SIGKILL: i32 = 9;
 
 /// What the parent observed about the child it killed.
 struct Killed {
     /// How many scratch write directories the child held when it died.
     scratch_before_kill: usize,
-    /// The signal the child was terminated by, or empty if it exited.
-    signal: String,
+    /// The signal the child really died of, read from its exit status, so
+    /// "the kill landed" is measured rather than assumed.
+    signal: Option<i32>,
+    /// Payload bytes the interrupted write left staged in the store's
+    /// scratch area, counted off the files themselves.
+    staged_bytes: u64,
 }
 
 /// Counts the scratch directories of an interrupted write under `root`.
@@ -987,16 +1007,55 @@ fn staging_dirs(cache_root: &Path) -> usize {
         .unwrap_or(0)
 }
 
+/// The payload bytes an interrupted write left staged in the scratch area.
+///
+/// Counted off the files on disk, so "a partial payload survived the kill"
+/// is an observation of this run rather than an assumption about one.
+fn scratch_payload_bytes(cache_root: &Path) -> u64 {
+    let Ok(scratch) = fs::read_dir(cache_root.join(cs_assets::cache::STAGING_DIR)) else {
+        return 0;
+    };
+    scratch
+        .filter_map(Result::ok)
+        .map(|entry| entry.path().join(cs_assets::cache::PAYLOAD_FILE))
+        .filter_map(|payload| fs::metadata(payload).ok())
+        .filter(|metadata| metadata.is_file())
+        .map(|metadata| metadata.len())
+        .sum()
+}
+
+/// The length of the payload the published entry of `key` holds, read
+/// straight off disk. Opening a store would sweep the interrupted write, so
+/// the parent never opens one to find this out.
+fn published_payload_bytes(cache_root: &Path, key: &CacheKey) -> u64 {
+    let digest = key.digest().to_hex();
+    fs::metadata(
+        cache_root
+            .join(cs_assets::cache::ENTRIES_DIR)
+            .join(&digest)
+            .join(cs_assets::cache::PAYLOAD_FILE),
+    )
+    .unwrap_or_else(|error| panic!("the reference entry {digest} is published: {error}"))
+    .len()
+}
+
 /// Runs a real cache write in a child process and kills that child while
 /// the write is in flight.
 ///
 /// The child is this same test binary, re-run on [`CHILD_TEST`] with the
-/// store's path in the environment. It drives the production
-/// [`CacheStore::begin_write`]/`write_all` path against the real derived
-/// payload of the real installation and then terminates itself without
-/// unwinding, so its scratch directory and partial payload are left
-/// exactly as a `kill` during a cache write would leave them.
-fn kill_a_child_during_a_cache_write(cache_root: &Path) -> Killed {
+/// store's path and a readiness marker in the environment. It drives the
+/// production [`CacheStore::begin_write`]/`write_all` path against the real
+/// derived payload of the real installation, writes only part of that
+/// payload, and only then reports its write through `ready` — so the kill
+/// this scenario performs lands *inside* the write, after real bytes reached
+/// the disk, and the parent never has to assume where in the write it hit.
+fn kill_a_child_during_a_cache_write(
+    cache_root: &Path,
+    ready: &Path,
+    interrupted_key: &CacheKey,
+    published_bytes: u64,
+) -> Killed {
+    let _ = fs::remove_file(ready);
     let executable = std::env::current_exe().expect("this test binary's own path");
     let mut child = Command::new(executable)
         .arg("--ignored")
@@ -1004,6 +1063,7 @@ fn kill_a_child_during_a_cache_write(cache_root: &Path) -> Killed {
         .arg(CHILD_TEST)
         .arg("--nocapture")
         .env(CHILD_STORE_VAR, cache_root)
+        .env(CHILD_READY_VAR, ready)
         .env("CS_GAME_DIR", game_dir())
         // The child's own harness output is not this test's evidence; the
         // parent reports what it measured about the kill itself.
@@ -1012,41 +1072,37 @@ fn kill_a_child_during_a_cache_write(cache_root: &Path) -> Killed {
         .spawn()
         .expect("the child test binary starts");
 
-    // Wait for the child to be holding a write in flight. The child holds
-    // its scratch directory from `begin_write` until it dies, so its
-    // appearance is the signal that the write is under way.
+    // Wait for the child to report a write in flight. The marker only
+    // appears once the child's partial payload is on disk and its scratch
+    // directory exists, so seeing it means the write is genuinely under
+    // way rather than merely about to be.
     //
     // The window is generous because the child is a fresh process: it
     // discovers and hashes the whole installation itself before it derives
     // anything, which is tens of seconds of real IO.
     let deadline = Instant::now() + std::time::Duration::from_secs(600);
-    let mut scratch_before_kill = 0;
-    while Instant::now() < deadline {
-        scratch_before_kill = staging_dirs(cache_root);
-        if scratch_before_kill > 0 {
-            break;
-        }
+    while Instant::now() < deadline && !ready.exists() {
         std::thread::sleep(std::time::Duration::from_millis(50));
     }
+    let scratch_before_kill = staging_dirs(cache_root);
 
     // SIGKILL: no unwinding, no destructors, no flush.
+    let _ = child.kill();
+    let status = child.wait().expect("the killed child is reaped");
     #[cfg(unix)]
     let signal = {
-        let _ = Command::new("kill")
-            .arg("-KILL")
-            .arg(child.id().to_string())
-            .status();
-        String::from("KILL")
+        use std::os::unix::process::ExitStatusExt as _;
+        status.signal()
     };
     #[cfg(not(unix))]
-    let signal = {
-        let _ = child.kill();
-        String::from("kill")
-    };
-    let status = child.wait().expect("the killed child is reaped");
+    let signal: Option<i32> = None;
     assert!(
         !status.success(),
         "the child was expected to die, not to exit successfully: {status}"
+    );
+    assert!(
+        ready.exists(),
+        "the child never reported a cache write in flight, so nothing was interrupted"
     );
     assert!(
         scratch_before_kill > 0,
@@ -1059,9 +1115,17 @@ fn kill_a_child_during_a_cache_write(cache_root: &Path) -> Killed {
         scratch_before_kill,
         "the kill left the interrupted write on disk"
     );
+    let staged_bytes = scratch_payload_bytes(cache_root);
+    assert!(
+        staged_bytes < published_bytes,
+        "the interrupted write staged {staged_bytes} bytes, which is not fewer than the \
+         {published_bytes} the reference entry of {} published, so it was not a partial payload",
+        interrupted_key.digest().to_hex()
+    );
     Killed {
         scratch_before_kill,
         signal,
+        staged_bytes,
     }
 }
 
@@ -1079,16 +1143,20 @@ fn kill_a_child_during_a_cache_write(cache_root: &Path) -> Killed {
 #[test]
 #[ignore = "child process of accept_f15_d_retail_restart_after_a_killed_cache_write_recovers_and_reproduces_the_same_state; run through it"]
 fn f15_d_child_killed_mid_cache_write_is_not_an_acceptance_test() {
-    let Some(store_path) = std::env::var_os(CHILD_STORE_VAR) else {
+    let (Some(store_path), Some(ready)) = (
+        std::env::var_os(CHILD_STORE_VAR),
+        std::env::var_os(CHILD_READY_VAR),
+    ) else {
         println!(
             "{CHILD_TEST}: not running as the child of the restart scenario \
-             ({CHILD_STORE_VAR} is unset), so there is no cache write to \
-             interrupt. Run accept_f15_d_retail_restart_after_a_killed_cache_write_\
+             ({CHILD_STORE_VAR} or {CHILD_READY_VAR} is unset), so there is no cache \
+             write to interrupt. Run accept_f15_d_retail_restart_after_a_killed_cache_write_\
              recovers_and_reproduces_the_same_state, which starts and kills it."
         );
         return;
     };
     let store_path = PathBuf::from(store_path);
+    let ready = PathBuf::from(ready);
     let world = &worlds()[0];
     let item = closure(world)[0].clone();
     let key = item
@@ -1118,12 +1186,18 @@ fn f15_d_child_killed_mid_cache_write_is_not_an_acceptance_test() {
     // A partial write: the bytes on disk do not match the declared length
     // and the record still says `Writing`, so this is exactly the
     // "partially written entry" the next open has to refuse.
+    let staged = payload.len() / 2;
     write
-        .write_all(&payload[..payload.len() / 2])
+        .write_all(&payload[..staged])
         .expect("the child stages part of the payload");
-    // Hold the write in flight so the parent's kill lands inside it
-    // rather than after it. The store is never sealed and never committed,
-    // so nothing the child staged is ever servable.
+    // Report the write only now, once the partial payload is on disk and the
+    // scratch directory exists, so the parent's kill lands inside the write
+    // rather than anywhere near it. The marker is outside the store, so the
+    // store never sees a file it did not write.
+    fs::write(&ready, format!("{}\n", staged)).expect("the readiness marker is written");
+    // Hold the write in flight so the kill lands while it is unfinished.
+    // The store is never sealed and never committed, so nothing the child
+    // staged is ever servable.
     let deadline = Instant::now() + std::time::Duration::from_secs(60);
     while Instant::now() < deadline {
         std::thread::sleep(std::time::Duration::from_millis(5));

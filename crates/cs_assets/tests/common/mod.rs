@@ -1,4 +1,4 @@
-//! Shared fixture helpers for the F02-B and F15-A acceptance tests.
+//! Shared fixture helpers for the F02-B, F15-A and F15-D acceptance tests.
 //!
 //! Every tree built here is newly authored fixture data written under the
 //! system temporary directory: it proves nothing about retail
@@ -6,6 +6,12 @@
 //! when the test finishes (including on panic). The F15-A helpers likewise
 //! build only synthetic identities: fixed digests, spelled spans and
 //! contexts that name no original file.
+//!
+//! The F15-D helpers are different in kind: they define the **derived form**
+//! and the **converter identity** the retail cycle measures, and they are
+//! shared by the acceptance suite and by its evidence harness so the two
+//! cannot drift apart and the report's `cycle.json` describes the same bytes
+//! the suite measured.
 #![allow(dead_code)] // each test binary compiles this module and uses a subset
 
 use std::fs;
@@ -13,6 +19,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use cs_assets::cache::{ConverterVersion, DecoderId, IrVersion};
 use cs_types::asset_id::{AssetKey, ResolveContext, SourceSpan, WorldGroup};
 use cs_types::content::{ContentId, ContentKind};
 use cs_types::evidence::ContentHash;
@@ -121,4 +128,65 @@ pub fn synthetic_key(namespace: &str, path: &str) -> AssetKey {
 /// A synthetic content id of `kind` keyed by `name`.
 pub fn synthetic_content(kind: ContentKind, name: &str) -> ContentId {
     ContentId::from_source(kind, name).expect("the fixture content id is valid")
+}
+
+// --- F15-D the measured derived form --------------------------------------
+
+/// The decoder name F15-D stores its derived texture entries under. Bumping
+/// any component of [`derived_texture_converter`] is what must invalidate
+/// them, which is exactly what the planted-identity scenario measures.
+pub const DERIVED_TEXTURE_DECODER: &str = "zbd-texture-base-level";
+/// The base-level decode version.
+pub const DERIVED_TEXTURE_DECODER_VERSION: u32 = 1;
+/// The canonical-form (IR) version.
+pub const DERIVED_TEXTURE_IR_VERSION: u32 = 1;
+
+/// How many base levels of one archive the derived asset covers. A
+/// project-chosen bound, not an original one: it keeps one load's IO inside
+/// a frame budget while still exercising every real span of a world.
+pub const DERIVED_TEXTURES_PER_ARCHIVE: usize = 8;
+
+/// The converter identity the derived texture entries are stored under.
+///
+/// Shared by the acceptance suite and the evidence harness: two copies of a
+/// decoder version could drift, and a report whose re-measured cycle ran
+/// under a different identity than the suite would describe a closure
+/// nothing else measured.
+pub fn derived_texture_converter() -> ConverterVersion {
+    ConverterVersion {
+        decoder: DecoderId::new(DERIVED_TEXTURE_DECODER).expect("a valid decoder id"),
+        decoder_version: DERIVED_TEXTURE_DECODER_VERSION,
+        ir: IrVersion(DERIVED_TEXTURE_IR_VERSION),
+    }
+}
+
+/// The derived asset F15-D measures: the first [`DERIVED_TEXTURES_PER_ARCHIVE`]
+/// base levels of each texture in a ZBD texture archive, canonicalized as
+/// name length, name, extent and decoded texels, in archive order.
+///
+/// The production reader parses the archive and the production base-level
+/// decode produces every texel, so a cache entry is original image data
+/// decoded by the engine rather than the source bytes renamed. One
+/// definition, shared by the acceptance suite and its evidence harness, so
+/// the harness's independent cycle measures the same bytes.
+pub fn derive_texture_base_levels(label: &str, source: &[u8]) -> Result<Vec<u8>, String> {
+    let mut budget = cs_formats::AllocationBudget::with_defaults(label.to_owned());
+    let package = cs_formats::read_zbd_textures(label, source, &mut budget)
+        .map_err(|error| format!("{label}: {error}"))?;
+    let mut derived = Vec::new();
+    for texture in package.textures().iter().take(DERIVED_TEXTURES_PER_ARCHIVE) {
+        let mut level = cs_formats::AllocationBudget::with_defaults(label.to_owned());
+        let image = texture
+            .decode(&mut level)
+            .map_err(|error| format!("{label}#{}: {error}", texture.entry_index()))?;
+        let extent = image.extent();
+        let name = texture.name().as_bytes();
+        let _ = derived.try_reserve(12 + name.len() + image.texels().len());
+        derived.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        derived.extend_from_slice(name);
+        derived.extend_from_slice(&extent.width.to_le_bytes());
+        derived.extend_from_slice(&extent.height.to_le_bytes());
+        derived.extend_from_slice(image.texels());
+    }
+    Ok(derived)
 }

@@ -34,6 +34,15 @@
 //! (`cycle.json`), `rustc --version` and `Cargo.lock`. Nothing is typed in by
 //! hand, and the report describes the actual execution — a failing run
 //! produces a failing report, which the validator rejects.
+//!
+//! The cycle deliberately uses the **production store** rather than
+//! `LoadingSession`, so it is a second, independent observation of the same
+//! claim rather than a replay of the suite. What it must share with the
+//! suite is the thing it measures: the derived form and the converter
+//! identity come from `common`, the same definitions the acceptance suite
+//! uses, so the two can never drift into measuring different bytes.
+
+mod common;
 
 use std::collections::VecDeque;
 use std::fs;
@@ -41,25 +50,16 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use cs_assets::cache::{
-    CacheBudget, CacheDirectory, CacheKey, CacheStore, ConversionOptions, ConverterVersion,
-    DecoderId, IrVersion,
-};
+use cs_assets::cache::{CacheBudget, CacheDirectory, CacheKey, CacheStore, ConversionOptions};
 use cs_assets::install::{self, Discovery, content_fingerprint, discover, fingerprint, sha256};
 use cs_assets::vfs::{ContentSession, MountBuilder, SessionBuilder};
 use cs_types::asset_id::{
     AssetKey, MountId, MountNamespace, PrecedenceClass, ResolveContext, WorldGroup,
 };
 
-/// The decoder identity the acceptance suite keys its derived entries
-/// under. It is repeated here on purpose: if the two ever disagree, the
-/// cycle measured below no longer describes the suite that ran, and the
-/// report says so instead of claiming coverage it does not have.
-const CONVERTER: (&str, u32, u32) = ("zbd-texture-base-level", 1, 1);
-
-/// How many base levels of each archive the derived asset covers; the same
-/// bound the acceptance suite uses.
-const DERIVED_TEXTURES_PER_ARCHIVE: usize = 8;
+/// How many base levels of each archive the derived asset covers: the bound
+/// [`common::DERIVED_TEXTURES_PER_ARCHIVE`] the acceptance suite uses.
+const DERIVED_TEXTURES_PER_ARCHIVE: usize = common::DERIVED_TEXTURES_PER_ARCHIVE;
 
 #[test]
 #[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_EVIDENCE_REVIEWER, CS_GAME_DIR"]
@@ -487,9 +487,9 @@ impl ColdWarmRestart {
                 .collect::<Vec<_>>()
                 .join(", "),
             DERIVED_TEXTURES_PER_ARCHIVE,
-            jstr(CONVERTER.0),
-            CONVERTER.1,
-            CONVERTER.2,
+            jstr(common::DERIVED_TEXTURE_DECODER),
+            common::DERIVED_TEXTURE_DECODER_VERSION,
+            common::DERIVED_TEXTURE_IR_VERSION,
             jstr(&self.cold_closure_hash),
             self.cold_entries,
             self.cold_hits,
@@ -517,12 +517,8 @@ struct Pass {
     recovery_swept: usize,
 }
 
-fn converter() -> ConverterVersion {
-    ConverterVersion {
-        decoder: DecoderId::new(CONVERTER.0).expect("a valid decoder id"),
-        decoder_version: CONVERTER.1,
-        ir: IrVersion(CONVERTER.2),
-    }
+fn converter() -> cs_assets::cache::ConverterVersion {
+    common::derived_texture_converter()
 }
 
 /// One pass of the cycle over every archive, through the production store
@@ -591,23 +587,11 @@ fn run(
 }
 
 /// The real conversion: the production ZBD texture reader and the real
-/// base-level decode, canonicalized as name, extent and texels.
+/// base-level decode, in the one canonical form
+/// [`common::derive_texture_base_levels`] defines — the same bytes the
+/// acceptance suite stores, not a parallel derivation of its own.
 fn derive(name: &str, source: &[u8]) -> Result<Vec<u8>, String> {
-    let mut budget = cs_formats::AllocationBudget::with_defaults(name.to_owned());
-    let package = cs_formats::read_zbd_textures(name, source, &mut budget)
-        .map_err(|error| format!("{name}: {error}"))?;
-    let mut derived = Vec::new();
-    for texture in package.textures().iter().take(DERIVED_TEXTURES_PER_ARCHIVE) {
-        let mut level = cs_formats::AllocationBudget::with_defaults(name.to_owned());
-        let image = texture
-            .decode(&mut level)
-            .map_err(|error| format!("{name}: {error}"))?;
-        derived.extend_from_slice(texture.name().as_bytes());
-        derived.extend_from_slice(&image.extent().width.to_le_bytes());
-        derived.extend_from_slice(&image.extent().height.to_le_bytes());
-        derived.extend_from_slice(image.texels());
-    }
-    Ok(derived)
+    common::derive_texture_base_levels(name, source)
 }
 
 /// Writes a real entry into the store's scratch area and leaves it there,

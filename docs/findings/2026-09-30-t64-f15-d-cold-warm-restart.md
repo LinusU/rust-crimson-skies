@@ -20,6 +20,11 @@ made or needed.
   prefix so the acceptance selection never discovers it.
 - `crates/cs_assets/tests/evidence_report_f15_d.rs` (new): the evidence
   harness.
+- `crates/cs_assets/tests/common/mod.rs`: the derived form
+  (`derive_texture_base_levels`), the per-archive bound
+  (`DERIVED_TEXTURES_PER_ARCHIVE`) and the converter identity
+  (`derived_texture_converter`). One definition, used by both the acceptance
+  suite and the evidence harness — see "Review fixes" below.
 - `docs/findings/evidence/F15-D.json`: the validated evidence report.
 - `crates/cs_assets/src/cache/mod.rs`: re-exports the store's own
   `ENTRIES_DIR` and `STAGING_DIR`. No logic change; a caller needs the scratch
@@ -29,6 +34,40 @@ made or needed.
 - No production behaviour changed. Nothing needed repair: every failure this
   stage hunted for turned out to be in the first draft of the tests, not in
   the loading path. That is recorded below rather than claimed as a success.
+
+## Review fixes
+
+Recorded here because a reader of the evidence should know what the merge
+reviewer changed, and because two of them make the claims of this stage
+*stronger* rather than merely tidier.
+
+1. **The derived form is now one definition, not two.** The acceptance suite
+   serialized each base level as `name length ‖ name ‖ width ‖ height ‖
+   texels`; the harness's independent cycle serialized it as `name ‖ width ‖
+   height ‖ texels`. Both were genuine decodes, but they were different byte
+   forms, so `cycle.json` measured a slightly different asset from the one the
+   suite cached while presenting itself as a re-measurement of it. Both now
+   call `common::derive_texture_base_levels`, which is also where the
+   converter identity and the per-archive bound live, so the two cannot drift
+   apart again.
+2. **The kill is measured, not asserted.** The parent used to assert
+   `!killed.signal.is_empty()`, where `signal` was the hardcoded string
+   `"KILL"` it had just handed to the `kill` binary — an assertion that
+   could not fail, and that would also have passed had the child died of
+   something else entirely (a `kill` that did not land leaves the child to
+   `abort()` after its hold window, which is still a non-zero status). It now
+   uses `Child::kill` (SIGKILL on unix, no external binary) and asserts
+   `status.signal() == Some(9)`, read back from the child's exit status.
+3. **The interrupted write is proven partial.** The parent used to wait for
+   the child's scratch *directory* to appear, which `begin_write` creates
+   before a single payload byte is staged, so the kill could in principle land
+   on an empty scratch area while the comments claimed a partial payload. The
+   child now stages half the payload and only then writes a readiness marker
+   **outside the cache root** (the store must never see a file it did not
+   write), the parent waits for that marker, and then counts the payload bytes
+   the interrupted write left on disk and requires `0 < staged < published`.
+   The published length is read straight off the reference entry's file,
+   because opening a store would sweep the very write being measured.
 
 ## The measured installation
 
@@ -72,9 +111,11 @@ installation is measured rather than assumed.
 ### The derived asset is a real decode, not a copy
 
 `read_zbd_textures` (the production ZBD texture reader) parses the archive and
-`ZbdTexture::decode` (the production base-level decode) decodes each texture.
-The derived form is the first **8** textures of the archive, each serialized as
-its name, extent and decoded texels, in archive order.
+the production base-level decode decodes each texture. The derived form is the
+first **8** textures of the archive, each serialized as its name length, name,
+extent and decoded texels, in archive order — one definition,
+`common::derive_texture_base_levels`, which the evidence harness's cycle also
+calls, so `cycle.json` measures these same bytes.
 
 Two things follow, and both matter:
 
@@ -121,12 +162,14 @@ still require the reference content:
 
 1. **`…restart_after_a_killed_cache_write…`** — a **real child process** is
    started on the same test binary, derives real bytes from the real
-   installation, opens a real store write, and is then terminated with
-   `SIGKILL` while the write is in flight. The parent waits until the child's
-   scratch directory actually exists, so the interruption is observed rather
-   than assumed, asserts the scratch survived the kill, and requires the next
-   open to sweep exactly one interrupted write and then deliver the reference
-   content. This is the stage's `restart`, on real content.
+   installation, opens a real store write, stages half of them, and is then
+   killed with `SIGKILL` while the write is in flight. The parent waits for the
+   child's out-of-band readiness marker, so the kill lands after real bytes
+   reached the disk; it then asserts the child really died of signal 9 and
+   measures the surviving scratch: strictly more than nothing, strictly fewer
+   bytes than the reference entry published. The next open must sweep exactly
+   one interrupted write and deliver the reference content. This is the
+   stage's `restart`, on real content.
 2. **`…corrupt_cache_entry_is_rebuilt…`** — one published payload has a byte
    flipped behind the store's back. The entry stays committed and its declared
    length still matches, so only `verify_entry`'s digest comparison can catch
@@ -149,14 +192,17 @@ still require the reference content:
 
 ## Sensitivity
 
-The implementation was mutated three times and the suite failed each time
-(then restored; the working tree is clean):
+The implementation was mutated four times and the suite failed each time
+(then restored; the working tree is clean). The first three were the
+implementer's; the fourth was added by the merge reviewer, who re-ran the
+other three independently and got the same failures.
 
 | Mutation | Caught by |
 | --- | --- |
 | `CacheStore::commit` never performs the publishing `fs::rename` | `…cold_and_warm…`: 6 swept staging directories where 0 were expected |
 | `CacheStore::sweep_staging` made a no-op | `…restart_after_a_killed_cache_write…`: 0 swept where 1 was expected |
 | `verify_entry` skips the payload digest comparison | `…corrupt_cache_entry…`: 0 refusals where exactly 1 was expected |
+| `CacheKey::compute_digest` drops the decoder version | `…cache_never_serves_an_entry_under_another_identity…`: the planted key became identical to the real one |
 
 ## What this stage does **not** establish
 
