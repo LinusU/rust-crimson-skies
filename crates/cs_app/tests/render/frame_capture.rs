@@ -289,6 +289,43 @@ fn accept_f17_b_capture_depends_on_the_tick_the_camera_and_the_geometry() {
         "a different vertex buffer is a different frame"
     );
 
+    // The same surface with a different *image*: same geometry, same state,
+    // one stored color space changed, so only the image digest can tell the
+    // two frames apart.
+    let mut inputs = scene_inputs(&scene);
+    inputs.images[3] = Some(decoded_image(ImageShape {
+        format: PixelFormat::Rgba8,
+        alpha_source: AlphaSource::Channel,
+        alpha_test: AlphaTest::Threshold(0x80),
+        color_space: ColorSpace::Linear,
+    }));
+    let relit = capture(
+        &upload_scene(&scene, &inputs),
+        &plan,
+        scene.view(),
+        &projection,
+        TICK,
+        &settings,
+    )
+    .expect("the scene with a linear image captures");
+    let image_of = |frame: &cs_app::render::capture::FrameCapture| {
+        frame
+            .surfaces()
+            .find(|surface| surface.key().as_str() == "fence")
+            .expect("the fence is captured")
+            .image()
+    };
+    assert_ne!(
+        image_of(&base),
+        image_of(&relit),
+        "the image the surface samples is part of its identity"
+    );
+    assert_ne!(
+        base.fingerprint(),
+        relit.fingerprint(),
+        "a different image is a different frame"
+    );
+
     // One declared render fact changed: the same geometry drawn two-sided
     // instead of one-sided is a different frame even though not one buffer
     // moved.
