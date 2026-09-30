@@ -284,8 +284,11 @@ pub const fn fields(word: u16) -> (u8, u8, u8) {
 
 /// The decided widening of a whole stored word.
 ///
-/// The function the renderer adapter calls; [`ExpansionPolicy::expand`]
-/// calls it with the policy's rule.
+/// This is [`Rule::Replication`] applied to a word, and nothing else: it is
+/// the free-function spelling of [`ExpansionPolicy::DECIDED`], which the
+/// adapter should use instead so the evidence status travels with the
+/// bytes. A caller holding some *other* [`ExpansionPolicy`] must call
+/// [`ExpansionPolicy::expand`]; using this would silently ignore it.
 pub const fn expand(word: u16) -> [u8; 3] {
     Rule::Replication.expand(word)
 }
