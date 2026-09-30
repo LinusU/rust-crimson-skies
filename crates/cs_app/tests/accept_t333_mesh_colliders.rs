@@ -29,6 +29,7 @@
 use std::time::Duration;
 
 use avian3d::prelude::{Collider, ColliderCachePlugin, RigidBodyColliders};
+use bevy::app::App;
 use bevy::asset::{AssetEvent, AssetServer, Assets};
 use bevy::ecs::message::Messages;
 use bevy::mesh::{Mesh, Mesh3d, VertexAttributeValues};
@@ -158,7 +159,7 @@ fn collider_triangles(collider: &Collider) -> usize {
 /// Builds a headless world and prepares it to be driven by whole fixed ticks,
 /// the same way every other `cs_app` fixture does, so nothing in this file
 /// depends on wall time.
-fn ticked_app() -> bevy::app::App {
+fn ticked_app() -> App {
     let mut app = headless_app();
     app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(
         1.0 / 64.0,
