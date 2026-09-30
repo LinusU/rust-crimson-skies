@@ -1,5 +1,5 @@
 //! The declared animation IR: channels and event markers with provenance
-//! (F20-A).
+//! (F20-A), plus the declared fixtures the F20-B playback is driven with.
 //!
 //! Spec: `specs/F20-object-animation-and-authored-destruction-states.md`,
 //! stage `### F20-A`. Shared contract: `docs/contracts/IDENTITY-CONTENT.md`.
@@ -45,7 +45,7 @@
 use std::collections::HashSet;
 use std::fmt;
 
-use cs_types::content::{ContentId, ContentKind, Origin, Provenance, Resolved};
+use cs_types::content::{ContentId, ContentKind, Known, Origin, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
 use cs_types::space::{Quaternion, SpaceError};
 
@@ -684,4 +684,203 @@ pub fn declared_synthetic_door_clip() -> AnimationClip {
         designed(),
     )
     .expect("the declared synthetic door fixture is valid")
+}
+
+// --------------------------------------------------- propeller fixture ----
+
+/// The rotor node the synthetic propeller drives (`scene_node` kind).
+pub const SYNTHETIC_PROPELLER_NODE: &str = "synthetic.plane.prop";
+/// The duration of the synthetic propeller clip, in ticks.
+pub const SYNTHETIC_PROPELLER_DURATION: u64 = 4;
+/// The clip tick of the presentation marker (fires once per loop pass).
+pub const SYNTHETIC_PROPELLER_PRESENTATION_TICK: u64 = 0;
+/// The clip tick of the one-shot gameplay marker (fires once per
+/// activation, whichever pass reaches it).
+pub const SYNTHETIC_PROPELLER_GAMEPLAY_TICK: u64 = 1;
+/// The stable key of the presentation marker.
+pub const SYNTHETIC_PROPELLER_PRESENTATION_MARKER: &str = "blade_pass";
+/// The stable key of the one-shot gameplay marker.
+pub const SYNTHETIC_PROPELLER_GAMEPLAY_MARKER: &str = "engine_started";
+
+/// The declared twin of `cs_sim::animated_object::synthetic_propeller_clip`:
+/// a looping transform track over the rotor node, one presentation marker
+/// and one one-shot gameplay marker.
+///
+/// This is the fixture F20-B's minimum acceptance scenario (AC02) drives
+/// through the production path — declared record →
+/// `cs_app::animation::lower::lower_clip` → playback — so the scenario is
+/// exercised from content form rather than from a runtime-only clip. Lowering
+/// it must produce exactly the runtime fixture the evaluator was tested
+/// against; the acceptance test asserts that equality.
+///
+/// Newly authored development content under [`Origin::SyntheticFixture`];
+/// every id lives under the `synthetic` key so it can never be mistaken for
+/// retail content.
+#[must_use]
+pub fn declared_synthetic_propeller_clip() -> AnimationClip {
+    let rotor = SceneNodeId::from_content_id(
+        ContentId::from_source(ContentKind::SceneNode, SYNTHETIC_PROPELLER_NODE)
+            .expect("fixture id is valid"),
+    )
+    .expect("fixture id names a scene node");
+    let turn = |quarter: u8| {
+        TransformSample::try_new(
+            Quaternion::from_axis_angle(
+                cs_types::space::UnitVec3::FORWARD,
+                cs_types::space::Radians(f64::from(quarter) * std::f64::consts::FRAC_PI_2),
+            )
+            .expect("a quarter turn is unit length"),
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+        )
+        .expect("the fixture pose is finite")
+    };
+    // The claim id and every value match the F20-A runtime fixture: they
+    // describe the same designed clip, so lowering must be lossless.
+    let designed = || {
+        Provenance::designed(ClaimId::new("f20a.synthetic-propeller").expect("claim id is valid"))
+    };
+    AnimationClip::try_new(
+        ContentId::from_source(ContentKind::AnimationTrack, "synthetic.propeller")
+            .expect("fixture id is valid"),
+        Origin::SyntheticFixture,
+        SYNTHETIC_PROPELLER_DURATION,
+        LoopMode::Loop,
+        vec![AnimationChannel::Transform(TransformChannel {
+            target: rotor,
+            interpolation: Interpolation::Step,
+            keys: (0..SYNTHETIC_PROPELLER_DURATION)
+                .map(|tick| TransformKey {
+                    tick,
+                    pose: turn(tick as u8),
+                })
+                .collect(),
+        })],
+        vec![
+            EventMarker {
+                tick: SYNTHETIC_PROPELLER_PRESENTATION_TICK,
+                key: SYNTHETIC_PROPELLER_PRESENTATION_MARKER.to_owned(),
+                effect: Resolved::Known(Known::new(
+                    MarkerEffect::Presentation {
+                        cue: "synthetic.plane.blade_pass".to_owned(),
+                    },
+                    designed(),
+                )),
+            },
+            EventMarker {
+                tick: SYNTHETIC_PROPELLER_GAMEPLAY_TICK,
+                key: SYNTHETIC_PROPELLER_GAMEPLAY_MARKER.to_owned(),
+                effect: Resolved::Known(Known::new(
+                    MarkerEffect::Gameplay {
+                        cue: "synthetic.plane.engine_started".to_owned(),
+                    },
+                    designed(),
+                )),
+            },
+        ],
+        designed(),
+    )
+    .expect("the declared synthetic propeller fixture is valid")
+}
+
+// ----------------------------------------------------- cargo fixture ------
+
+/// The cargo node the synthetic cargo clip drives (`scene_node` kind).
+pub const SYNTHETIC_CARGO_NODE: &str = "synthetic.cargo";
+/// The cargo bay node the cargo is attached to (`scene_node` kind).
+pub const SYNTHETIC_CARGO_BAY_NODE: &str = "synthetic.cargo.bay";
+/// The duration of the synthetic cargo clip, in ticks.
+pub const SYNTHETIC_CARGO_DURATION: u64 = 10;
+/// The clip tick the material track's first key lands at.
+pub const SYNTHETIC_CARGO_MATERIAL_TICK: u64 = 0;
+/// The clip tick the material track swaps the material at.
+pub const SYNTHETIC_CARGO_SCORCH_TICK: u64 = 4;
+/// The clip tick the attachment track attaches the cargo at.
+pub const SYNTHETIC_CARGO_ATTACH_TICK: u64 = 0;
+/// The clip tick the attachment track detaches the cargo at.
+pub const SYNTHETIC_CARGO_DETACH_TICK: u64 = 6;
+/// The key of the material the cargo starts with (`material` kind).
+pub const SYNTHETIC_CARGO_MATERIAL: &str = "synthetic.cargo.canvas";
+/// The key of the material the material track swaps in (`material` kind).
+pub const SYNTHETIC_CARGO_SCORCHED_MATERIAL: &str = "synthetic.cargo.scorched";
+
+/// The declared fixture that carries the two `Resolved` track kinds this
+/// stage applies: a material track and an attachment track on one node.
+///
+/// The material track swaps a known `material` id at
+/// [`SYNTHETIC_CARGO_SCORCH_TICK`]; the attachment track attaches the cargo
+/// under the bay with [`PosePolicy::KeepLocalPose`] and later detaches it
+/// with [`PosePolicy::KeepWorldPose`]. Both references are known — the
+/// *unknown* variants the blocking rule covers are assembled by the
+/// acceptance test from the same public record types, because an unknown is
+/// a state of the evidence, not a fixture of the content pipeline.
+///
+/// Newly authored development content under [`Origin::SyntheticFixture`].
+#[must_use]
+pub fn declared_synthetic_cargo_clip() -> AnimationClip {
+    let cargo = SceneNodeId::from_content_id(
+        ContentId::from_source(ContentKind::SceneNode, SYNTHETIC_CARGO_NODE)
+            .expect("fixture id is valid"),
+    )
+    .expect("fixture id names a scene node");
+    let bay = SceneNodeId::from_content_id(
+        ContentId::from_source(ContentKind::SceneNode, SYNTHETIC_CARGO_BAY_NODE)
+            .expect("fixture id is valid"),
+    )
+    .expect("fixture id names a scene node");
+    let material = |key: &str| {
+        Resolved::Known(Known::new(
+            ContentId::from_source(ContentKind::Material, key).expect("fixture id is valid"),
+            Provenance::designed(ClaimId::new("f20b.synthetic-cargo").expect("claim id is valid")),
+        ))
+    };
+    AnimationClip::try_new(
+        ContentId::from_source(ContentKind::AnimationTrack, "synthetic.cargo")
+            .expect("fixture id is valid"),
+        Origin::SyntheticFixture,
+        SYNTHETIC_CARGO_DURATION,
+        LoopMode::Once,
+        vec![
+            AnimationChannel::Material(MaterialChannel {
+                target: cargo.clone(),
+                keys: vec![
+                    MaterialKey {
+                        tick: SYNTHETIC_CARGO_MATERIAL_TICK,
+                        material: material(SYNTHETIC_CARGO_MATERIAL),
+                    },
+                    MaterialKey {
+                        tick: SYNTHETIC_CARGO_SCORCH_TICK,
+                        material: material(SYNTHETIC_CARGO_SCORCHED_MATERIAL),
+                    },
+                ],
+            }),
+            AnimationChannel::Attachment(AttachmentChannel {
+                target: cargo,
+                keys: vec![
+                    AttachmentKey {
+                        tick: SYNTHETIC_CARGO_ATTACH_TICK,
+                        op: AttachmentOp::Attach {
+                            parent: Box::new(Resolved::Known(Known::new(
+                                bay,
+                                Provenance::designed(
+                                    ClaimId::new("f20b.synthetic-cargo")
+                                        .expect("claim id is valid"),
+                                ),
+                            ))),
+                            pose: PosePolicy::KeepLocalPose,
+                        },
+                    },
+                    AttachmentKey {
+                        tick: SYNTHETIC_CARGO_DETACH_TICK,
+                        op: AttachmentOp::Detach {
+                            pose: PosePolicy::KeepWorldPose,
+                        },
+                    },
+                ],
+            }),
+        ],
+        Vec::new(),
+        Provenance::designed(ClaimId::new("f20b.synthetic-cargo").expect("claim id is valid")),
+    )
+    .expect("the declared synthetic cargo fixture is valid")
 }
