@@ -52,6 +52,19 @@
 //! unbound, not silently bound; a rule that matches no node is reported in
 //! [`SceneGraph::unmatched_bindings`] rather than dropped.
 //!
+//! # Part sockets (F11-C)
+//!
+//! [`PartSocket`] is the typed record a runtime consumer binds to: the bound
+//! node, its [`Resolved<PartRole>`] and [`Resolved<CollisionRole>`], its
+//! stored zone id, its animation channels, the provenance of the rule — and
+//! the node's **one composed** [`CanonicalTransform`] copied in as the mount
+//! pose. A socket is derived from the binding, so it can never disagree with
+//! the node it names, and it is addressed by [`SceneGraph::socket`] (stable id)
+//! or [`SceneGraph::sockets_of_role`], never by array position. A rule whose
+//! role is an explicit unknown still yields a socket and is listed by
+//! [`SceneGraph::unresolved_sockets`], so the runtime consumer can refuse it
+//! visibly instead of defaulting a role.
+//!
 //! # LOD selection (F11-B)
 //!
 //! [`select_lod_variant`] is the presentation rule: among the `Lod` siblings
@@ -679,6 +692,88 @@ impl BindingMap {
     }
 }
 
+// ------------------------------------------------------------- part sockets ---
+
+/// One semantic socket (F11 deliverable): a bound node together with the
+/// gameplay role, collision role, pose and zone a runtime consumer binds to.
+///
+/// A socket is what a weapon mount, a camera anchor, a damage zone or an
+/// engine consumer addresses. It holds **no transform of its own to edit**:
+/// `pose` is the node's one composed [`CanonicalTransform`] — the same value
+/// [`SceneNode::collision_transform`] returns — copied at build time so a
+/// consumer can read the mount point without walking the hierarchy, and
+/// copied so that it can never become a second, diverging pose owner (F11
+/// non-negotiable behavior 4; `IDENTITY-CONTENT`: one pose owner).
+///
+/// The role stays [`Resolved`]: a rule whose role the evidence could not
+/// resolve still produces a socket, carrying an explicit unknown with its
+/// claim and reason, and is listed by [`SceneGraph::unresolved_sockets`]. It is
+/// never given a default role.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PartSocket {
+    node: SceneNodeId,
+    role: Resolved<PartRole>,
+    collision: Resolved<CollisionRole>,
+    pose: CanonicalTransform,
+    zone_id: u32,
+    animation: Vec<AnimationBinding>,
+    provenance: Provenance,
+}
+
+impl PartSocket {
+    /// The bound node this socket is mounted on.
+    #[must_use]
+    pub fn node(&self) -> &SceneNodeId {
+        &self.node
+    }
+
+    /// The gameplay role, or the explicit unknown the evidence left.
+    #[must_use]
+    pub fn role(&self) -> &Resolved<PartRole> {
+        &self.role
+    }
+
+    /// The known role, or `None` when the evidence left it unknown.
+    #[must_use]
+    pub fn known_role(&self) -> Option<PartRole> {
+        match &self.role {
+            Resolved::Known(known) => Some(known.value),
+            Resolved::Unknown { .. } => None,
+        }
+    }
+
+    /// The collision role, or the explicit unknown the evidence left.
+    #[must_use]
+    pub fn collision(&self) -> &Resolved<CollisionRole> {
+        &self.collision
+    }
+
+    /// The mount pose: the node's one composed canonical transform, the same
+    /// value the render and collision paths use.
+    #[must_use]
+    pub fn pose(&self) -> &CanonicalTransform {
+        &self.pose
+    }
+
+    /// The bound node's stored zone id, uninterpreted.
+    #[must_use]
+    pub fn zone_id(&self) -> u32 {
+        self.zone_id
+    }
+
+    /// The animation channels bound to the node.
+    #[must_use]
+    pub fn animation(&self) -> &[AnimationBinding] {
+        &self.animation
+    }
+
+    /// The provenance of the mapping rule that produced this socket.
+    #[must_use]
+    pub fn provenance(&self) -> &Provenance {
+        &self.provenance
+    }
+}
+
 /// One canonical scene node: a stable [`SceneNodeId`], its authored parent
 /// and children, the authored transform preserved beside the canonical
 /// local and world transforms, the mesh association, LOD state, and whatever
@@ -842,12 +937,13 @@ impl SceneNode {
 /// in stored order. The authored hierarchy is preserved — a [`SceneNode`]
 /// keeps its local transform and its parent/children ids — so nothing about
 /// the conversion is irreversible.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SceneGraph {
     container: ContentId,
     nodes: Vec<SceneNode>,
     roots: Vec<SceneNodeId>,
     by_id: BTreeMap<SceneNodeId, usize>,
+    sockets: BTreeMap<SceneNodeId, PartSocket>,
     unmatched_bindings: Vec<String>,
 }
 
@@ -1071,11 +1167,34 @@ impl SceneGraph {
             .filter(|&&position| nodes[position].parent.is_none())
             .map(|&position| ids[position].clone())
             .collect();
+        // One socket per bound node, keyed by the node's stable id so a
+        // consumer reaches a mount by identity and never by position. The
+        // pose is the node's own composed transform, so a socket cannot hold
+        // a second, divergent pose.
+        let mut sockets: BTreeMap<SceneNodeId, PartSocket> = BTreeMap::new();
+        for node in &built {
+            let Some(binding) = &node.binding else {
+                continue;
+            };
+            sockets.insert(
+                node.id.clone(),
+                PartSocket {
+                    node: node.id.clone(),
+                    role: binding.role.clone(),
+                    collision: binding.collision.clone(),
+                    pose: node.world,
+                    zone_id: node.zone_id,
+                    animation: binding.animation.clone(),
+                    provenance: binding.provenance.clone(),
+                },
+            );
+        }
         Ok(Self {
             container: container.clone(),
             nodes: built,
             roots,
             by_id,
+            sockets,
             unmatched_bindings,
         })
     }
@@ -1155,6 +1274,40 @@ impl SceneGraph {
     #[must_use]
     pub fn unmatched_bindings(&self) -> &[String] {
         &self.unmatched_bindings
+    }
+
+    /// Every semantic socket in the container, ordered by stable id (which is
+    /// the authored name-path, so the order is authored and deterministic).
+    ///
+    /// Sockets of a role the evidence left unknown are included: they are
+    /// listed by [`Self::unresolved_sockets`] and never given a default role.
+    pub fn sockets(&self) -> impl Iterator<Item = &PartSocket> + '_ {
+        self.sockets.values()
+    }
+
+    /// The socket mounted on this node, when a rule bound it.
+    #[must_use]
+    pub fn socket(&self, node: &SceneNodeId) -> Option<&PartSocket> {
+        self.sockets.get(node)
+    }
+
+    /// The sockets that serve one gameplay role, in stable-id order.
+    pub fn sockets_of_role(&self, role: PartRole) -> impl Iterator<Item = &PartSocket> + '_ {
+        self.sockets
+            .values()
+            .filter(move |socket| socket.known_role() == Some(role))
+    }
+
+    /// The sockets whose role the evidence left explicitly unknown, in
+    /// stable-id order.
+    ///
+    /// A runtime consumer that needs a role must refuse these rather than
+    /// assume one: the claim id and reason ride along in
+    /// [`PartSocket::role`].
+    pub fn unresolved_sockets(&self) -> impl Iterator<Item = &PartSocket> + '_ {
+        self.sockets
+            .values()
+            .filter(|socket| !socket.role().is_known())
     }
 }
 

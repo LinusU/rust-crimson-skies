@@ -778,3 +778,193 @@ fn accept_f11_b_lod_selection_rule_refuses_unusable_input() {
         );
     }
 }
+
+/// An explicit unknown for a value the evidence could not resolve.
+fn unmeasured<T>(id: &str, reason: &str) -> Resolved<T> {
+    Resolved::unknown(claim(id), reason).expect("the unknown carries a reason")
+}
+
+/// F11-C's socket table over AC01's own mirrored hierarchy: the same
+/// `nested_mirror_fixture`, so the gun socket's pose is the *mirrored* world
+/// transform the render and collision paths already agree on, plus one
+/// socket whose role was never evidenced (`main.wing.gun.tip`) and one rule
+/// that names no node at all (`main.absent`).
+fn socket_bindings() -> BindingMap {
+    BindingMap::new(vec![
+        SemanticBinding {
+            path: "main.wing".to_owned(),
+            role: known(PartRole::ControlSurface),
+            collision: known(CollisionRole::None),
+            animation: Vec::new(),
+            provenance: designed("f11c.test.wing-rule"),
+        },
+        SemanticBinding {
+            animation: vec![AnimationBinding {
+                channel: known(cid(ContentKind::AnimationTrack, "recoil")),
+            }],
+            ..SemanticBinding {
+                path: "main.wing.gun".to_owned(),
+                role: known(PartRole::Gun),
+                collision: known(CollisionRole::Collider),
+                animation: Vec::new(),
+                provenance: designed("f11c.test.gun-rule"),
+            }
+        },
+        SemanticBinding {
+            path: "main.wing.gun.tip".to_owned(),
+            role: unmeasured(
+                "f11c.test.tip-role-unmeasured",
+                "no evidence named the tip's gameplay role",
+            ),
+            collision: unmeasured(
+                "f11c.test.tip-collision-unmeasured",
+                "no evidence named the tip's collision role",
+            ),
+            animation: Vec::new(),
+            provenance: designed("f11c.test.tip-rule"),
+        },
+        SemanticBinding {
+            path: "main.absent".to_owned(),
+            role: known(PartRole::Cockpit),
+            collision: known(CollisionRole::None),
+            animation: Vec::new(),
+            provenance: designed("f11c.test.absent-rule"),
+        },
+    ])
+    .expect("the socket fixture rules name distinct paths")
+}
+
+/// F11-C: the semantic sockets a runtime consumer binds to. One socket per
+/// bound node, in stable-id order; the role, collision role, zone, animation
+/// channels and provenance come from the rule; the pose is the node's one
+/// composed transform (the mirrored one AC01 checks), so a mount point can
+/// never drift from collision; a node no rule named is not a socket; a rule
+/// whose role is an explicit unknown still yields a socket that is listed as
+/// unresolved and is not given a default role; and a rule that names no node
+/// is reported rather than dropped.
+#[test]
+fn accept_f11_c_sockets_carry_roles_poses_and_provenance() {
+    let container = cid(ContentKind::InstallFile, "fix_planes");
+    let scene = SceneGraph::build(
+        &container,
+        &nested_mirror_fixture(),
+        &fixture_adapter(),
+        &socket_bindings(),
+    )
+    .expect("the socket fixture converts");
+
+    let node = |path: &str| {
+        SceneNodeId::from_content_id(cid(ContentKind::SceneNode, path)).expect("scene node id")
+    };
+
+    // Every bound node is a socket exactly once, ordered by stable id.
+    let sockets: Vec<String> = scene
+        .sockets()
+        .map(|socket| socket.node().key().to_owned())
+        .collect();
+    assert_eq!(
+        sockets,
+        vec![
+            "fix_planes.main.wing".to_owned(),
+            "fix_planes.main.wing.gun".to_owned(),
+            "fix_planes.main.wing.gun.tip".to_owned(),
+        ],
+        "one socket per bound node, in stable-id order"
+    );
+
+    // The gun socket: an evidenced role with its own provenance, the stored
+    // zone, the bound animation channel — and the node's one composed pose.
+    let gun = scene
+        .socket(&node("fix_planes.main.wing.gun"))
+        .expect("the rule bound main.wing.gun");
+    assert_eq!(gun.known_role(), Some(PartRole::Gun));
+    assert_eq!(gun.role(), &known(PartRole::Gun));
+    assert_eq!(gun.collision(), &known(CollisionRole::Collider));
+    assert_eq!(gun.zone_id(), 255, "the fixture node carries no zone");
+    assert_eq!(gun.animation().len(), 1);
+    assert_eq!(
+        gun.animation()[0].channel,
+        known(cid(ContentKind::AnimationTrack, "recoil"))
+    );
+    assert_eq!(gun.provenance(), &designed("f11c.test.gun-rule"));
+
+    // The pose is the node's single composed transform — the same value the
+    // render path draws and collision evaluates, mirror included.
+    let gun_node = scene
+        .node(&node("fix_planes.main.wing.gun"))
+        .expect("the gun node");
+    assert_eq!(gun.pose(), gun_node.world_transform());
+    assert_eq!(gun.pose(), gun_node.visual_transform());
+    assert_eq!(gun.pose(), gun_node.collision_transform());
+    close3(
+        gun.pose().linear(),
+        [[0.0, 0.0, -1.0], [0.0, 1.0, 0.0], [-1.0, 0.0, 0.0]],
+        "the socket keeps the mirrored composed linear map",
+    );
+    close(
+        gun.pose().translation(),
+        [0.0, 0.0, -2.5],
+        "the socket keeps the composed translation",
+    );
+    assert!(
+        gun.pose().mirrored(),
+        "a mirrored mount stays mirrored in the socket record"
+    );
+
+    // Lookup by role, and by identity.
+    assert_eq!(
+        scene
+            .sockets_of_role(PartRole::ControlSurface)
+            .map(|socket| socket.node().key().to_owned())
+            .collect::<Vec<_>>(),
+        vec!["fix_planes.main.wing".to_owned()]
+    );
+    assert_eq!(
+        scene
+            .sockets_of_role(PartRole::Gun)
+            .map(|socket| socket.node().key().to_owned())
+            .collect::<Vec<_>>(),
+        vec!["fix_planes.main.wing.gun".to_owned()]
+    );
+    assert_eq!(scene.sockets_of_role(PartRole::Cockpit).count(), 0);
+    assert!(
+        scene.socket(&node("fix_planes.main")).is_none(),
+        "a node no rule named is not a socket"
+    );
+
+    // The unmeasured role is reported, never defaulted: the socket exists and
+    // says what it does not know.
+    let unresolved: Vec<String> = scene
+        .unresolved_sockets()
+        .map(|socket| socket.node().key().to_owned())
+        .collect();
+    assert_eq!(unresolved, vec!["fix_planes.main.wing.gun.tip".to_owned()]);
+    let tip = scene
+        .socket(&node("fix_planes.main.wing.gun.tip"))
+        .expect("the rule bound main.wing.gun.tip");
+    assert_eq!(tip.known_role(), None);
+    match tip.role() {
+        Resolved::Unknown { claim_id, reason } => {
+            assert_eq!(claim_id, &claim("f11c.test.tip-role-unmeasured"));
+            assert!(!reason.is_empty());
+        }
+        Resolved::Known(known) => panic!("the tip's role {known:?} was invented"),
+    }
+    assert!(
+        !scene
+            .sockets_of_role(PartRole::DamageZone)
+            .any(|socket| socket.node() == tip.node()),
+        "an unmeasured role is in no role's list"
+    );
+    assert_eq!(
+        scene
+            .node(&node("fix_planes.main.wing.gun.tip"))
+            .expect("the tip node")
+            .world_transform(),
+        tip.pose(),
+        "even an unresolved socket keeps the node's pose"
+    );
+
+    // A rule that names no node is still reported.
+    assert_eq!(scene.unmatched_bindings(), &["main.absent".to_owned()]);
+}
