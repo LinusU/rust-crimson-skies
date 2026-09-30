@@ -719,6 +719,65 @@ fn accept_f15_c_missing_dependency_names_the_failure_and_recovery() {
     let _store = load.close();
 }
 
+/// A converter refusing a canonical payload is its own failure class: the
+/// member resolves and reads fine, but the wired conversion answers
+/// `ConversionError::Failed` — recorded as `conversion` with `Abort`
+/// recovery, never disguised as a retryable read fault, and a
+/// gameplay-critical refusal fails the load before it can go interactive.
+#[test]
+fn accept_f15_c_conversion_failure_is_named_and_aborts() {
+    let fixture = Fixture::new("f15-c-conversion");
+    // Two bytes are shorter than the BM header: the member mounts and
+    // reads, but `read_bm` refuses it, so the failure lands in the
+    // conversion arm, not the source read.
+    fs::write(
+        fixture
+            .install_root
+            .join("zbd")
+            .join("c1")
+            .join("broken.bm"),
+        [0u8; 2],
+    )
+    .expect("the broken livery is written");
+    let session = fixture.session();
+    let mut load = LoadingSession::new(
+        request(
+            &session,
+            vec![member_item(
+                &session,
+                "broken.bm",
+                "broken-livery",
+                Criticality::GameplayCritical,
+            )],
+        ),
+        fixture.store(),
+    );
+    let mut io = SessionIo::new(&session, convert_member);
+    load.run(&mut io)
+        .expect("the load runs to its recorded failure");
+    assert_eq!(load.state(), LoadState::Failed);
+    let failures = load.failures();
+    assert_eq!(failures.len(), 1);
+    assert_eq!(failures[0].code, "conversion");
+    assert_eq!(failures[0].recovery, RecoveryPath::Abort);
+    assert_eq!(
+        failures[0].key,
+        synthetic_key("world", "broken.bm"),
+        "the failure names the item the converter refused"
+    );
+    let screen = format!("{}", load.screen());
+    assert!(screen.contains("conversion"), "{screen}");
+    assert!(screen.contains("abort"), "{screen}");
+    assert!(!load.driver().transaction().is_world_interactive());
+    assert!(matches!(
+        load.deliver(&mut World::new()),
+        Err(HandoffError::NotReady {
+            state: LoadState::Failed
+        })
+    ));
+    let _store = load.close();
+}
+
 /// The simulation handoff attaches only to the world that announced the
 /// load, only once, and only when the load is ready: an unannounced world,
 /// a world expecting a different load and a repeat delivery are all

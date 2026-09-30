@@ -26,7 +26,7 @@ construction and every fixture is synthetic.
 - `crates/cs_app/src/assets.rs`: `ConversionError::Failed` — a converter
   refusing the canonical payload is its own failure class (`Abort`
   recovery), not a stale-key misreport.
-- `crates/cs_assets/tests/accept_f15_c_load_session.rs` (new): six
+- `crates/cs_assets/tests/accept_f15_c_load_session.rs` (new): seven
   `accept_f15_c_*` tests.
 - `crates/cs_assets/tests/accept_f15_b_load_driver.rs`: the `read_source`
   closure signature change, propagated (the two fault closures now wrap
@@ -181,9 +181,15 @@ All from the repository root on branch
 | `cargo test --workspace --locked` | 0 |
 | `cargo test --workspace --locked -- accept_f15_c_ --include-ignored` | 0 |
 
-The acceptance selection ran six tests in
+The acceptance selection ran seven tests in
 `tests/accept_f15_c_load_session.rs`; all passed, and the mutations above
-show the file fails when the wiring is removed.
+show the file fails when the wiring is removed. Review added the seventh
+(`accept_f15_c_conversion_failure_is_named_and_aborts`): the
+`ConversionError::Failed` arm — a converter refusing a canonical payload,
+recorded as `conversion`/`Abort` — was new behavior in this stage with no
+test reaching it; a two-byte `broken.bm` member resolves and reads but is
+refused by `read_bm`, so the test drives the refusal through `SessionIo`
+and the production `load_item` conversion arm.
 
 ## Wiring edits (outside owner paths, logic-free)
 
