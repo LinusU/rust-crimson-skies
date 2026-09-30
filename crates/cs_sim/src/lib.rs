@@ -65,6 +65,18 @@
 //! provenance-carrying tuning schema is `cs_content::flight_tuning`; the
 //! Avian wiring, instruments and profile selection are F24-B/F24-C.
 //!
+//! [`targeting`] is the F30-A targeting contract
+//! (`specs/F30-targeting-classification-aim-assistance-and-threat-cues.md`,
+//! stage `### F30-A`): the per-session [`targeting::TargetStore`] owning
+//! the target roster, the directed [`targeting::AllegianceTable`] and the
+//! authoritative-attack threat ledger; the typed [`targeting::TargetRecord`]
+//! input, the [`targeting::SelectionRequest`] vocabulary and the read-only
+//! [`targeting::TargetInfo`] snapshot HUD and spyglass consume; and the
+//! total `(distance, ActorId)` ordering that makes equal-distance cycling
+//! deterministic. The declared schema is `cs_content::target_rules`; the
+//! conversion boundary and ECS bindings are `cs_app::targeting`; original
+//! selection actions are F30-B and verification is F30-D.
+//!
 //! [`visibility`] is the environment's time domain
 //! (`specs/F19-sky-atmosphere-weather-and-visibility.md`, stage `### F19-A`):
 //! [`visibility::ENVIRONMENT_TIME_DOMAIN`] puts authored weather changes on
@@ -96,5 +108,6 @@ pub mod collision;
 pub mod control;
 pub mod damage;
 pub mod flight;
+pub mod targeting;
 pub mod time;
 pub mod visibility;
