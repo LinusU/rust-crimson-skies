@@ -20,7 +20,11 @@ build/test only (no `CS_GAME_DIR` read, no evidence report required).
     `playback::AnimationLog`;
   - `release_attachments_before_despawn(world, parent)`: the release rule
     non-negotiable behavior 4 asks for, for whoever despawns a parent
-    (teardown wiring is F20-C.02's).
+    (teardown wiring is F20-C.02's);
+  - `creates_cycle`, `spin_term`, `reference_point`: the two guards that
+    refuse a hierarchy cycle before anything is written, and that measure the
+    `ω × r` term only where there is a spin to measure it with (both were
+    added in review; see the two review sections below).
 - `crates/cs_app/src/animation/playback.rs` (extended): the
   `AnimationLog::attachments` collection plus `push_attachments`, the
   `AnimationPlayback::drives` query the consumer verifies with, and the one
@@ -113,12 +117,19 @@ claimed. F20-D keeps the original-family validation gate.
      (physics' authority for a body's location) and otherwise its
      `NodeVisualTransform` translation;
    - `v_inherited = v_source + ω × r`, with `r` from the source's reference
-     point to the node's, and `ω_inherited = ω_spin`.
+     point to the node's, and `ω_inherited = ω_spin`;
+   - the `ω × r` term is measured **only where there is a spin**: with
+     `ω = 0` it is exactly zero for every `r`, so no reference point is
+     consulted and the linear source is inherited whole. A real spin needs
+     both ends of `r` and reports which one is missing
+     (`NoReferencePoint` for the source, `NoNodeReferencePoint` for the
+     detaching node).
    The values are written **only onto components the entity already
    carries** — a decorative node never gains a velocity component it was
-   never simulated with. Nothing is invented: a chain with no velocity
-   component, an unknown reference point or a detach from a node that was
-   already a root reparents and preserves the pose anyway and publishes one
+   never simulated with, which is not a missing inheritance and so is not
+   reported. Nothing is invented: a chain with no velocity component, an
+   unmeasurable `r` or a detach from a node that was already a root
+   reparents and preserves the pose anyway and publishes one
    `VelocityNotInherited` record saying why; a chain that carries only an
    angular source contributes the rotation alone and says so
    (`NoLinearSource`), because `ω × r` without a linear reference point
@@ -126,12 +137,13 @@ claimed. F20-D keeps the original-family validation gate.
    ancestor spins: overwriting it with a zero would *be* an invention.
 6. **Release before despawn.** `release_attachments_before_despawn` detaches
    the children whose animated attachment this consumer applied (world pose
-   preserved by construction — the world affine is simply not touched),
-   updates their applied record, and inherits the parent's velocity by the
-   same rule as an authored detach. An entity the animation never touched
-   keeps its authored `ChildOf` and stays part of the parent's subtree. The
-   Bevy behavior this rule exists for was **measured**, not assumed — see
-   "The Bevy despawn measurement" below.
+   preserved by construction — the world affine is simply not touched, so a
+   released child needs no composed pose of its own), updates their applied
+   record, and inherits the parent's velocity by the same rule as an authored
+   detach. An entity the animation never touched keeps its authored `ChildOf`
+   and stays part of the parent's subtree. The Bevy behavior this rule exists
+   for was **measured**, not assumed — see "The Bevy despawn measurement"
+   below.
 
 ## The Bevy despawn measurement (rule 6)
 
@@ -165,6 +177,7 @@ despawn.
 | `accept_f20_c_01_attachments_are_released_before_a_parent_is_despawned` | the measured Bevy `despawn` behavior, plus `release_attachments_before_despawn`: released children keep their world pose and survive the parent's despawn |
 | `accept_f20_c_01_release_reaches_an_animated_attachment_below_an_unmanaged_child` (added in review) | the release walks the whole subtree the recursive despawn reaches: an animated attachment at depth two is released (and inherits the velocity of the parent it was linked to) while the unmanaged child between it and the doomed root still dies with the root — measured in the test itself |
 | `accept_f20_c_01_a_parent_inside_the_nodes_own_subtree_is_refused` (added in review) | a parent id resolving to a node inside the animated node's own subtree is refused (`CyclicParent`), writes no `ChildOf`, leaves the existing hierarchy untouched and publishes exactly one refusal |
+| `accept_f20_c_01_an_unmeasurable_spin_term_still_inherits_the_linear_source` (added in review) | a chain that does not spin inherits its linear source whole however unmeasurable `r` is, and the node's own spin is never overwritten with a zero; a spinning chain whose detaching node has no location of its own inherits nothing, publishes one `NoNodeReferencePoint` saying which end of the offset is missing, and still survives the despawn without a composed pose |
 
 Mutation probes run locally (all reverted afterwards, verified by
 `grep -rn "MUTATION PROBE" crates/` returning nothing and the suite being
@@ -180,6 +193,9 @@ green again):
 | the refusal publication swallowed in `refuse()` | `..._unresolved_parent_and_stale_binding_reparent_nothing_and_report_once` — 1 |
 | the `creates_cycle` check disabled in `apply_one` (review mutation probe) | `..._a_parent_inside_the_nodes_own_subtree_is_refused`: the test process **aborts with a stack overflow** (`recompose_descendants` recursing over the cycle that was just inserted) rather than merely failing — 1 |
 | the release walk limited to the direct children of `parent` (review mutation probe) | `..._release_reaches_an_animated_attachment_below_an_unmanaged_child` (`left: [], right: [cargo]`) — 1 |
+| the `ω × r` term measured even when the chain does not spin (review mutation probe) | `..._an_unmeasurable_spin_term_still_inherits_the_linear_source` — 1 |
+| the unmeasurable-spin-term refusal swallowed instead of published (review mutation probe) | `..._an_unmeasurable_spin_term_still_inherits_the_linear_source` — 1 |
+| the node's own spin overwritten with zero when no ancestor spins (review mutation probe) | `..._an_unmeasurable_spin_term_still_inherits_the_linear_source` — 1 |
 
 ## Review fixes (2026-09-30, review pass)
 
@@ -217,21 +233,95 @@ animation data, F13/F20-D unchanged).
 Neither fix changes an `accept_f20_a_*` / `accept_f20_b_*` assertion, and
 neither touches `crates/cs_app/src/scene.rs` or a protected path.
 
+## Review fixes, second pass (2026-09-30)
+
+One further defect in the inherited-velocity rule, found in review of the
+first review pass and fixed here. It is a **designed** decision like the rest
+of this stage (no original animation data, F13/F20-D unchanged).
+
+3. **A detach could refuse an inheritance it was able to compute exactly,
+   and a release could pass in silence.** `detached_velocity` asked for the
+   two reference points of `r` *before* it knew whether `r` was needed: with
+   `ω = 0` the term `ω × r` is exactly `0` for every `r`, so a chain that does
+   not spin was refused (`NoReferencePoint`) instead of inheriting its linear
+   source, which is the one value that *was* exactly known. Two consequences,
+   both measured before the fix:
+
+   - an authored detach under a source with no reference point of its own
+     (a hull that is not a scene node) and no spin anywhere kept
+     `LinearVelocity(Vec3::ZERO)` and published `NoReferencePoint`, although
+     `v_inherited = v_source` was exactly computable;
+   - `release_attachments_before_despawn` branched on the released child's
+     composed world pose. A managed child without one was unparented and
+     marked released, inherited **nothing**, and published **nothing at all**
+     — a hierarchy change plus a missing inheritance, silently, which is
+     exactly what the module's own rule ("report every case where nothing
+     could be inherited") and the task's error-propagation requirement
+     forbid.
+
+   Fix: the `ω × r` term is computed by `spin_term`, which returns exactly
+   zero for a chain that does not spin — no reference point is consulted and
+   nothing is reported — and otherwise requires both ends of `r` and reports
+   which one is missing (`NoReferencePoint` for the source,
+   `NoNodeReferencePoint` for the detaching node, a new variant). The node's
+   own reference point is read inside `detached_velocity` (`Position`, else
+   its composed pose) instead of being passed in, so the release no longer
+   needs a composed pose at all: the branch that released silently is gone,
+   and a pose-less managed child now either inherits everything measurable or
+   publishes why. The release is also one code path now, not two.
+   Pinned by `accept_f20_c_01_an_unmeasurable_spin_term_still_inherits_the_linear_source`
+   (three probes, above; the third one also pins that the node's own spin is
+   never zeroed, which nothing asserted before).
+
+   Also recorded here, because the cycle guard of the first review pass raised
+   it: the two remaining hierarchy walks cannot loop on a pre-existing cycle.
+   Both walk *down* from a node (`recompose_descendants` and the release walk
+   follow `ChildOf` children), and a `ChildOf` cycle is closed — every node in
+   it has its parent inside it — so no downward walk from outside can reach
+   one. The `creates_cycle` guard is therefore the only place a cycle can be
+   created, and it refuses before anything is written. This was verified
+   against the pinned Bevy 0.19.1 rather than assumed: re-inserting the same
+   `ChildOf` does not duplicate the entry in the parent's `Children`
+   (the `on_discard` hook removes the source before `on_insert` re-adds it),
+   so a same-parent attach is not a second hierarchy link.
+
 ## Checks run
 
 - `cargo fmt --all -- --check` — exit 0.
 - `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
   — exit 0.
-- `cargo test --workspace --locked` — exit 0 (141 test binaries/suites ok,
-  no failures; the 7 `accept_f20_b_*` and the `accept_f20_a_*` tests are
+- `cargo test --workspace --locked` — exit 0 (167 test binaries/suites ok,
+  1546 tests passed, 0 failed, 104 retail tests skipped as they need
+  `CS_GAME_DIR`; the 7 `accept_f20_b_*` and the `accept_f20_a_*` tests are
   unchanged and still pass — no F20-B assertion was touched).
 - `cargo test --workspace --locked -- accept_f20_c_01_ --include-ignored`
-  — exit 0, **5 tests matched** in
+  — exit 0, **8 tests matched** in
   `crates/cs_app/tests/accept_f20_c_01_attachment_hierarchy.rs`, all
-  passing.
+  passing. (The implementer's run matched 5; the first review pass raised it
+  to 7 with the two tests marked "added in review", the second to 8 with the
+  one the velocity fix added.)
+
+Both review passes re-ran the four commands above on the tree they pushed;
+the last run is the one above (after the second pass's fix). The rebase onto
+the then-current `origin/main`, the commit SHA and the CI run are recorded in
+the task's handover notes.
 
 ## Unknowns and follow-ups
 
+- **The consumer is not on a schedule yet.** `apply_attachment_transitions`
+  runs at the end of `advance_animation`, and nothing calls
+  `advance_animation` from a Bevy schedule in this crate, so no in-game tick
+  reaches the attachment consumer until F20-C.02 places the advance
+  (`#418`). That is the stage's own split, not a gap in the consumer, but it
+  does mean nothing in this slice is reachable from a running session yet.
+- **A release is only safe in the same step as the despawn.** A release marks
+  the applied record, so the clip's own detach finds it and does not inherit
+  twice. An *attach* record, though, is not marked by a release: if a
+  released child still carries an `Attach` record naming a parent that is
+  still alive and the advance runs again before the despawn, the consumer
+  re-attaches it and the despawn then takes it with the parent. F20-C.02's
+  teardown must therefore release and despawn in one step (or stop the
+  instance first); the release cannot make that safe by itself.
 - The original animation container layouts (`mis_anim.zbd`, `cam_anim.zbd`)
   are still undecoded (F13), and this stage reads no original data: every
   record, fixture value and rule above is **designed**, and no original
@@ -242,7 +332,17 @@ neither touches `crates/cs_app/src/scene.rs` or a protected path.
   who owns that sync, is not decided here.
 - Instance identity on `AnimatedNodeBinding`, schedule placement and
   teardown of the applied components are F20-C.02 (`#418`); the release rule
-  above is the one this slice hands to that teardown.
+  above is the one this slice hands to that teardown, together with the two
+  ordering requirements just listed.
+- `AnimatedObject` publishes its node states in a `BTreeMap` keyed by node id,
+  so the set of driven nodes is itself ordered; which order a
+  `Query` iteration yields the *entities* in is Bevy's, not ours. When one
+  tick both a parent and its child transition, which of the two poses the
+  child's `ω × r` is measured against therefore depends on that iteration
+  order. Nothing observable depends on it today (no fixture authors a nested
+  attachment, and the fixed-tick pass is single-threaded and deterministic
+  for one world state), so it is recorded here rather than fixed; a fixed
+  parent-before-child order belongs to whoever owns the schedule.
 
 ## Evidence
 

@@ -46,7 +46,8 @@ use cs_content::animation::{
 };
 use cs_sim::animated_object::{AttachmentState, PosePolicy};
 use cs_types::Tick;
-use cs_types::content::{ContentId, ContentKind};
+use cs_types::content::{ContentId, ContentKind, Known, Provenance, Resolved};
+use cs_types::evidence::ClaimId;
 
 /// Tolerance for one f32 affine composition over this fixture's small
 /// integer offsets: the composed translations here round to well under
@@ -821,6 +822,148 @@ fn accept_f20_c_01_release_reaches_an_animated_attachment_below_an_unmanaged_chi
     assert!(
         published.is_empty(),
         "nothing was refused and nothing went unwritten: {published:?}"
+    );
+}
+
+/// The `ω × r` term is measured only where there is a spin. A chain that does
+/// not spin contributes exactly zero however unmeasurable the offset between
+/// the two reference points is, so the linear source alone is inherited — and
+/// the node's own spin is left alone rather than zeroed. A chain that *does*
+/// spin while the detaching node has no location of its own inherits nothing
+/// and says exactly why, once, instead of being released silently.
+#[test]
+fn accept_f20_c_01_an_unmeasurable_spin_term_still_inherits_the_linear_source() {
+    let declared = declared_synthetic_cargo_clip();
+    let clip = declared.id().clone();
+    let generation = SceneGeneration::default().next();
+
+    // --- an authored detach under a source with no reference point --------
+    let mut world = World::new();
+    world.insert_resource(AnimationPlayback::new(13));
+    // The hull the bay hangs from: it carries a world linear velocity but no
+    // composed scene pose and no Avian `Position`, so the offset `r` from it
+    // to the cargo cannot be measured — and nothing in the chain spins.
+    let hull = world.spawn(LinearVelocity(Vec3::new(5.0, 0.0, 0.0))).id();
+    let bay = spawn_node(&mut world, SYNTHETIC_CARGO_BAY_NODE, generation, Vec3::ZERO);
+    world.entity_mut(bay).insert(ChildOf(hull));
+    let cargo = spawn_node(
+        &mut world,
+        SYNTHETIC_CARGO_NODE,
+        generation,
+        Vec3::new(4.0, 0.0, 0.0),
+    );
+    world.entity_mut(cargo).insert((
+        AnimatedNodeBinding {
+            clip: clip.clone(),
+            node: node(SYNTHETIC_CARGO_NODE),
+            generation,
+        },
+        LinearVelocity(Vec3::ZERO),
+        // A spin the node already has. No ancestor of it spins, so the detach
+        // must leave it exactly as it is: writing a zero over it would itself
+        // be an invention.
+        AngularVelocity(Vec3::new(0.0, 1.0, 0.0)),
+    ));
+
+    play_animation(&mut world, &declared, generation, Tick(0)).expect("the playback starts");
+    advance_animation(&mut world, Tick(SYNTHETIC_CARGO_ATTACH_TICK));
+    assert_eq!(
+        world.get::<ChildOf>(cargo),
+        Some(&ChildOf(bay)),
+        "the attach at tick {} applied, so the detach below has a chain to walk \
+         and nothing below is proven vacuously",
+        SYNTHETIC_CARGO_ATTACH_TICK
+    );
+    for at in (SYNTHETIC_CARGO_ATTACH_TICK + 1)..SYNTHETIC_CARGO_DETACH_TICK {
+        advance_animation(&mut world, Tick(at));
+    }
+    advance_animation(&mut world, Tick(SYNTHETIC_CARGO_DETACH_TICK));
+    assert!(world.get::<ChildOf>(cargo).is_none(), "the cargo detached");
+    assert_eq!(
+        world
+            .get::<LinearVelocity>(cargo)
+            .map(|velocity| velocity.0),
+        Some(Vec3::new(5.0, 0.0, 0.0)),
+        "ω is zero, so ω × r is exactly zero: the linear source is inherited \
+         whole and the unmeasurable offset costs nothing"
+    );
+    assert_eq!(
+        world
+            .get::<AngularVelocity>(cargo)
+            .map(|velocity| velocity.0),
+        Some(Vec3::new(0.0, 1.0, 0.0)),
+        "the node's own spin is never overwritten with a zero"
+    );
+    assert!(
+        drain(&mut world).is_empty(),
+        "nothing was refused and nothing went unwritten: the linear source was \
+         measurable after all"
+    );
+
+    // --- a release of a node that has no composed pose at all -------------
+    let declared = declared_synthetic_cargo_clip();
+    let clip = declared.id().clone();
+    let mut world = World::new();
+    world.insert_resource(AnimationPlayback::new(14));
+    // A moving, spinning parent of a managed attachment that has neither a
+    // composed pose nor an Avian `Position`: the parent's reference point is
+    // known, the child's is not, so `r` has a missing end.
+    let parent = world
+        .spawn((
+            Position(Vec3::ZERO),
+            LinearVelocity(Vec3::new(3.0, 0.0, 0.0)),
+            AngularVelocity(Vec3::new(0.0, 0.0, 2.0)),
+        ))
+        .id();
+    let child = world
+        .spawn((
+            ChildOf(parent),
+            AnimatedNodeBinding {
+                clip: clip.clone(),
+                node: node(SYNTHETIC_CARGO_NODE),
+                generation,
+            },
+            NodeAnimatedAttachment(AttachmentState {
+                parent: Some(Resolved::Known(Known::new(
+                    node(SYNTHETIC_CARGO_BAY_NODE),
+                    Provenance::designed(ClaimId::new("f20c01.review").expect("claim id")),
+                ))),
+                pose: PosePolicy::KeepLocalPose,
+            }),
+            LinearVelocity(Vec3::ZERO),
+        ))
+        .id();
+
+    let released = release_attachments_before_despawn(&mut world, parent);
+    assert_eq!(released, vec![child], "the managed attachment is released");
+    assert!(world.get::<ChildOf>(child).is_none());
+    assert_eq!(
+        world
+            .get::<LinearVelocity>(child)
+            .map(|velocity| velocity.0),
+        Some(Vec3::ZERO),
+        "the chain spins and the node has no location, so nothing is invented"
+    );
+    let published = drain(&mut world);
+    assert_eq!(
+        published.attachments().len(),
+        1,
+        "the release reports the missing measurement once, it does not pass \
+         in silence: {published:?}"
+    );
+    assert_eq!(
+        published.attachments()[0],
+        AttachmentRecord::VelocityNotInherited {
+            clip: clip.clone(),
+            node: node(SYNTHETIC_CARGO_NODE),
+            reason: VelocitySkipReason::NoNodeReferencePoint,
+        },
+        "the record names which end of the offset could not be measured"
+    );
+    world.entity_mut(parent).despawn();
+    assert!(
+        world.get_entity(child).is_ok(),
+        "a released attachment survives the despawn even with no pose of its own"
     );
 }
 

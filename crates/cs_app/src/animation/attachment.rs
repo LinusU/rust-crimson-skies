@@ -27,8 +27,10 @@
 //! * A **detach** inherits the world velocity the parent had at that tick —
 //!   `v + ω × r` linearly, the parent's `ω` angularly — written only onto
 //!   velocity components the entity already carries, and **exactly once per
-//!   detach**. Which ancestor the values come from, and what happens when
-//!   none carries any, is written down in
+//!   detach**. The `ω × r` term is only measured when the chain really spins
+//!   (it is exactly zero otherwise, however unmeasurable the offset is).
+//!   Which ancestor the values come from, and what happens when none carries
+//!   any, is written down in
 //!   `docs/findings/2026-09-30-f20-c-01-attachment-hierarchy-and-detach-velocity.md`
 //!   and implemented in the velocity step below: nothing is ever invented.
 //!
@@ -189,6 +191,10 @@ pub enum VelocitySkipReason {
     /// The linear source carries no world position, so the offset `r` from
     /// its reference point to the node cannot be measured.
     NoReferencePoint,
+    /// The detaching node itself carries no world position, so the other end
+    /// of the offset `r` cannot be measured. Only the `ω × r` term needs it:
+    /// a chain that does not spin still inherits its linear source exactly.
+    NoNodeReferencePoint,
 }
 
 /// One attachment publication: a transition that changed nothing, or a
@@ -299,18 +305,12 @@ pub fn release_attachments_before_despawn(world: &mut World, parent: Entity) -> 
                 pending.push_back(child);
                 continue;
             }
-            let Some(world_pose) = world.get::<NodeVisualTransform>(child).map(|pose| pose.0)
-            else {
-                // Without a composed world pose there is no pose to preserve
-                // and no parent-relative pose to compute; the link is still
-                // released (a release must never leave a dangling `ChildOf`
-                // behind), and its subtree stays with it.
-                world.entity_mut(child).remove::<ChildOf>();
-                mark_released(world, child);
-                released.push(child);
-                continue;
-            };
-            let skip = detached_velocity(world, child, world_pose, Some(current));
+            // The velocity is read from the chain the link is about to leave,
+            // so before the link goes away — and it never needs the child's
+            // composed world pose (the release does not move it), so a child
+            // without one is released the same way and says so if its
+            // velocity could not be measured.
+            let skip = detached_velocity(world, child, Some(current));
             world.entity_mut(child).remove::<ChildOf>();
             mark_released(world, child);
             if let Some(binding) = world.get::<AnimatedNodeBinding>(child).cloned() {
@@ -604,7 +604,7 @@ fn apply_one(
             // Detach: the inherited velocity must be read from the parent
             // being left *before* the link goes away, because that chain is
             // where the velocity lives.
-            for reason in detached_velocity(world, entity, child_world, old_parent) {
+            for reason in detached_velocity(world, entity, old_parent) {
                 records.push(AttachmentRecord::VelocityNotInherited {
                     clip: binding.clip.clone(),
                     node: binding.node.clone(),
@@ -746,7 +746,8 @@ fn recompose_descendants(world: &mut World, parent: Entity, old: Affine3A, new: 
 /// Inherits the world velocity of the parent being left, at that tick.
 ///
 /// Writes nothing that is not there to write, and reports every case where
-/// nothing could be inherited. The source is named, never assumed:
+/// an inheritance the node could have taken was not measurable. The source is
+/// named, never assumed:
 ///
 /// * the **linear source** is the nearest ancestor (the parent first) that
 ///   carries an avian [`LinearVelocity`];
@@ -755,19 +756,26 @@ fn recompose_descendants(world: &mut World, parent: Entity, old: Affine3A, new: 
 /// * a body's **reference point** is its avian [`Position`] when it has one
 ///   (physics' authority for a body's location) and otherwise its composed
 ///   [`NodeVisualTransform`] translation;
-/// * `v_inherited = v_source + ω × r` with `r` measured from the source's
+/// * `v_inherited = v_source + ω × r`, with `r` measured from the source's
 ///   reference point to the node's, and `ω_inherited = ω_spin`.
 ///
 /// The results land **only** on components the entity already carries: a
-/// node that was never simulated gains no velocity, and a chain with no
-/// velocity component is reported instead of filled with zeros — including
-/// the node's own angular velocity, which is left alone when no ancestor
-/// spins, because zeroing a spin the node already had would itself be an
-/// invention.
+/// node that was never simulated gains no velocity, which is not a missing
+/// inheritance and is therefore not reported. Nothing is invented: a chain
+/// with no velocity component, an unmeasurable `r` or a detach from a node
+/// that was already a root reparented and preserved the pose anyway and
+/// publishes one `VelocityNotInherited` record saying why; a chain that
+/// carries only an angular source contributes the rotation alone and says so
+/// (`NoLinearSource`), because `ω × r` without a linear reference point
+/// would be a guess. The node's own angular velocity is left alone when no
+/// ancestor spins: overwriting it with a zero would *be* an invention.
+///
+/// The node's own reference point is read here rather than handed in, so a
+/// caller that has no composed pose for it (a release, which never moves one)
+/// still inherits everything that is measurable.
 fn detached_velocity(
     world: &mut World,
     node: Entity,
-    node_world: GlobalTransform,
     parent: Option<Entity>,
 ) -> Vec<VelocitySkipReason> {
     let Some(parent) = parent else {
@@ -804,18 +812,16 @@ fn detached_velocity(
     if world.get::<LinearVelocity>(node).is_some() {
         match linear {
             None => skipped.push(VelocitySkipReason::NoLinearSource),
-            Some((source_velocity, source)) => match reference_point(world, source) {
-                None => skipped.push(VelocitySkipReason::NoReferencePoint),
-                Some(source_point) => {
-                    let node_point = world
-                        .get::<Position>(node)
-                        .map(|position| position.0)
-                        .unwrap_or_else(|| Vec3::from(node_world.affine().translation));
-                    let offset = node_point - source_point;
-                    let inherited = source_velocity + spin.unwrap_or(Vec3::ZERO).cross(offset);
-                    world.entity_mut(node).insert(LinearVelocity(inherited));
+            Some((source_velocity, source)) => {
+                match spin_term(world, source, node, spin.unwrap_or(Vec3::ZERO)) {
+                    Ok(term) => {
+                        world
+                            .entity_mut(node)
+                            .insert(LinearVelocity(source_velocity + term));
+                    }
+                    Err(reason) => skipped.push(reason),
                 }
-            },
+            }
         }
     }
     if world.get::<AngularVelocity>(node).is_some()
@@ -824,6 +830,27 @@ fn detached_velocity(
         world.entity_mut(node).insert(AngularVelocity(spin));
     }
     skipped
+}
+
+/// The `ω × r` term of the inheritance, or why it cannot be measured.
+///
+/// A chain that does not spin contributes **exactly** zero, however
+/// unmeasurable the offset is: `ω × r = 0` for every `r`, so the linear
+/// source alone is inherited and nothing is reported. Only a spin that is
+/// really there needs the two reference points, and when either is missing
+/// the term is refused instead of guessed.
+fn spin_term(
+    world: &World,
+    source: Entity,
+    node: Entity,
+    spin: Vec3,
+) -> Result<Vec3, VelocitySkipReason> {
+    if spin == Vec3::ZERO {
+        return Ok(Vec3::ZERO);
+    }
+    let from = reference_point(world, source).ok_or(VelocitySkipReason::NoReferencePoint)?;
+    let to = reference_point(world, node).ok_or(VelocitySkipReason::NoNodeReferencePoint)?;
+    Ok(spin.cross(to - from))
 }
 
 /// The world point a body's linear velocity is expressed at: its Avian
