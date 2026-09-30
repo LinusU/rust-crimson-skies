@@ -11,7 +11,7 @@
 //!   report — three different outcomes from three declared roles;
 //! * a sensor reports the body that reached it and does not stop it.
 
-use avian3d::prelude::{RigidBody, Sensor};
+use avian3d::prelude::{CollisionLayers as AvianCollisionLayers, RigidBody, Sensor};
 use bevy::prelude::{App, Time, Vec3, World};
 use bevy::time::Fixed;
 use cs_app::world::{
@@ -224,6 +224,56 @@ fn accept_f18_a_every_collision_role_decides_what_is_spawned() {
     assert!(
         spawned.visual_for(&leg).is_some(),
         "a solid object is presented as well as collided with"
+    );
+}
+
+/// **The layer mapping is one derivation, not two opinions:** the probe and
+/// the world colliders are spawned with exactly the layer sets the engine
+/// declares, and those two sets interact — which is what lets
+/// [`cs_app::world::contacts`] see a contact at all, and what keeps
+/// static-vs-static authoring out of the log (it is filtered by "exactly one
+/// world collider", not by silence).
+///
+/// Observable failure if `avian_layers` derived the Avian filter wrongly: the
+/// spawned components stop matching the designed sets, or the two sides stop
+/// interacting and every contact test above goes quiet.
+#[test]
+fn accept_f18_a_spawned_bodies_carry_the_designed_collision_layers() {
+    let mut fixture = common::through_opening();
+    let probe = fixture.probe().expect("the probe was spawned");
+    let expected_probe = cs_app::world::probe_layers();
+    let expected_world = cs_app::world::static_world_layers();
+
+    let probe_layers = *fixture
+        .world()
+        .get::<AvianCollisionLayers>(probe)
+        .expect("the probe carries collision layers");
+    assert_eq!(
+        probe_layers, expected_probe,
+        "the probe must be spawned with the aircraft membership and filter"
+    );
+
+    let spawned = fixture.spawned().clone();
+    assert!(!spawned.colliders().is_empty(), "the fixture has colliders");
+    for collider in spawned.colliders() {
+        let layers = *fixture
+            .world()
+            .get::<AvianCollisionLayers>(collider.entity)
+            .expect("every world collider carries collision layers");
+        assert_eq!(
+            layers, expected_world,
+            "object `{}` must be spawned with the static-world membership and filter",
+            collider.object
+        );
+    }
+
+    assert!(
+        expected_probe.interacts_with(expected_world),
+        "the aircraft filter must include the static world: designed_collides_with(Aircraft, StaticWorld)"
+    );
+    assert!(
+        expected_world.interacts_with(expected_probe),
+        "the static-world filter must include aircraft"
     );
 }
 
