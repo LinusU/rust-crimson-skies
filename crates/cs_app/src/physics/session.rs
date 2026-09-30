@@ -436,7 +436,10 @@ impl PhysicsSession {
     /// Advances the world by exactly `ticks` fixed steps — the convenience
     /// shape of [`pump_frame`](Self::pump_frame) for a whole-tick frame.
     pub fn step(&mut self, ticks: u64) -> Result<SessionFrame, PhysicsSessionError> {
-        self.pump_frame(self.timestep() * u32::try_from(ticks).unwrap_or(u32::MAX))
+        self.pump_frame(
+            self.timestep()
+                .saturating_mul(u32::try_from(ticks).unwrap_or(u32::MAX)),
+        )
     }
 
     /// Tears the session down: drops the world. Every operation returns
