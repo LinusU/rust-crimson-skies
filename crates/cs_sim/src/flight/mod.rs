@@ -40,7 +40,10 @@ pub use model::{
     FlightError, FlightInput, FlightInputError, FlightModel, FlightOutput, FlightState,
     InstrumentState,
 };
-pub use synthetic::{SyntheticCase, SyntheticProbe, synthetic_cases, synthetic_fixed_wing};
+pub use synthetic::{
+    SyntheticCase, SyntheticEnvelope, SyntheticEnvelopeError, SyntheticManeuver, SyntheticProbe,
+    synthetic_cases, synthetic_fixed_wing, synthetic_trace_envelope, synthetic_trace_envelopes,
+};
 pub use tuning::{
     AIRSPEED_EPSILON_MPS, AirframeTuning, AirframeTuningError, AngularResponse, AssistProfile,
     BoostParameters, DamageState, DamageStateError, DragParameters, EngineCurve, HandlingProfile,
