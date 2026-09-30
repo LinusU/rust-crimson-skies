@@ -105,16 +105,23 @@
 //! fixture. It is the only place the pinned Avian force accumulator is driven;
 //! body creation, sweeps and kinematic transitions are F23-B.
 //!
-//! [`world`] is the F18-A world boundary
+//! [`world`] is the F18 world boundary
 //! (`specs/F18-world-geometry-terrain-water-and-traversable-interiors.md`,
-//! `### F18-A`): [`world::spawn_world`] turns a validated
-//! `cs_content::world::WorldDefinition` into a visual entity and a collider
-//! entity built from *one* authored transform and one
-//! [`world::WorldObjectBinding`], [`world::WorldContacts`] records which
-//! authored object an actor reached, and [`world::arch_world`] is the
-//! synthetic arch the acceptance tests sweep a body through at high speed.
-//! Mesh-derived collision, mission overlays and streaming are F18-B/C; this
-//! stage owns the typed contract and the fixture only.
+//! stages `### F18-A` and `### F18-B`): [`world::spawn_world`] turns a
+//! validated `cs_content::world::WorldDefinition` into a presented entity and a
+//! collider built from *one* authored transform and one
+//! [`world::WorldObjectBinding`] — for `WorldCollisionShape::FromMesh` from
+//! *one* uploaded asset handle, whose `TrimeshFromMesh` collider keeps every
+//! stored triangle — [`world::WorldContacts`] records which authored object, in
+//! which sector, under which surface rule an actor reached,
+//! [`world::load_world`] and its sector calls are the one-world-at-a-time load
+//! transaction whose per-object condition survives an unload, and
+//! [`world::arch_world`] / [`world::harbor_world`] are the synthetic arch the
+//! acceptance tests sweep a body through and the mesh-authored harbor world
+//! they stream. Mission overlays and visibility-driven streaming are F18-C; the
+//! simplification policy for retail geometry and the original's own unit scale
+//! are unmeasured (see
+//! `docs/findings/2026-09-30-f18-b-world-import-and-static-collision.md`).
 //!
 //! [`loading`] is the F15 load pipeline
 //! (`specs/F15-asynchronous-asset-loading-and-private-cache.md`): the
