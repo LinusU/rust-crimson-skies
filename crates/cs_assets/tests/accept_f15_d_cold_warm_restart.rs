@@ -816,7 +816,7 @@ fn accept_f15_d_retail_cache_never_serves_an_entry_under_another_identity() {
             .derived
             .clone()
             .expect("a real member has a derived key");
-        let span = span_of(&world.session, &item.key.path().as_str().to_owned());
+        let span = span_of(&world.session, item.key.path().as_str());
         // A payload that is plainly not the real derived image: if it were
         // ever served, the delivered digest would differ from the
         // reference.
@@ -827,7 +827,7 @@ fn accept_f15_d_retail_cache_never_serves_an_entry_under_another_identity() {
         let other_install_hash = ContentHash::from_bytes([0x5A; 32]);
         let other_install = CacheKey::new(
             other_install_hash,
-            &[span.clone()],
+            std::slice::from_ref(&span),
             texture_converter(),
             ConversionOptions::none(),
         )
