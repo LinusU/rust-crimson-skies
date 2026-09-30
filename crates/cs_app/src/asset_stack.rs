@@ -29,39 +29,75 @@
 //!   world through it instead of repeating the plugin tuple, because a fourth
 //!   caller that spelled the tuple out by hand is how the feature would be
 //!   silently broken again.
-//! * [`spawn_static_mesh_collider`] turns one uploaded [`Mesh`] into a static
-//!   collider Avian derives from it: the mesh is added to the asset stack, a
-//!   `ColliderConstructorHierarchy` asks for a trimesh, and a child entity
-//!   holds the `Mesh3d` the constructor reads. This is the capability F18-B's
-//!   world import needs and the F00-A finding recorded as missing; it is *not*
-//!   F18-B itself, which owns the geometry, the simplification policy and the
-//!   per-role collision mapping.
+//! * [`spawn_static_mesh_collider_on_body`] turns one uploaded [`Mesh`] into a
+//!   static collider Avian derives from it, with the derived `Collider` landing
+//!   on the body entity itself. This is the capability F18-B's world import
+//!   needs and the F00-A finding recorded as missing; it is *not* F18-B itself,
+//!   which owns the geometry, the simplification policy and the per-role
+//!   collision mapping.
+//! * [`spawn_static_mesh_collider`] is the *other* shape of the same
+//!   conversion: a body plus a child mesh node, with the collider on the child.
+//!   It is kept for the layouts that need a collider on a descendant, and it
+//!   declares the body [`SweptInvisible`] rather than pretending otherwise.
+//!
+//! # The collider-on-body rule
+//!
+//! **A rigid body that swept bodies must stop against — or that sweeps itself
+//! — carries at least one [`Collider`] on its own entity.** On the pinned pair
+//! this is not a style preference, it is how Avian finds the body at all:
+//! `solve_swept_ccd` resolves every contact-graph neighbour through
+//! `SweptCcdBodyQuery` (`avian3d-0.7.0/src/dynamics/ccd/mod.rs`), whose
+//! `collider: &'static Collider` field is read off the **body** entity. A body
+//! whose colliders all live on descendants fails that query, and the pair is
+//! skipped without a cast ever being attempted — swept bodies pass straight
+//! through it, and a `SweptCcd` body in that position never sweeps at all.
+//! Shape is irrelevant: a cuboid on a child node tunnels exactly like a
+//! trimesh. Measured 2x2 on the production 400 m/s probe against a 1 m wall:
+//! trimesh on the body stopped, trimesh on a child tunnelled, cuboid on a
+//! child tunnelled, cuboid on the body stopped. The discriminant is *where the
+//! `Collider` component sits*, never the shape it holds. Upstream avian `main`
+//! has rewritten swept CCD to iterate `RigidBodyColliders` and so no longer has
+//! this requirement, but that rewrite is unreleased; task #420 recorded the
+//! decision and the measurement, and task #424 made it an invariant.
+//!
+//! A body with colliders on children is *not* lost for this: the query only
+//! checks the body entity, so a multi-part body stays fully swept-eligible as
+//! soon as the root also carries one real collider. No dummy geometry is
+//! needed.
+//!
+//! The rule is machine-checkable, not just prose:
+//! [`swept_invisible_bodies`] reports every body that fails it and
+//! [`undeclared_swept_invisible_bodies`] reports the ones that did not declare
+//! it, so a body-spawning path that regresses is caught by a test rather than
+//! by a 400 m/s body quietly flying through a wall.
 //!
 //! What this module deliberately does not do:
 //!
 //! * **It loads nothing.** No asset is read from disk, from an installation or
 //!   from a Bevy asset path: canonical content is converted in-process and
-//!   handed to [`spawn_static_mesh_collider`] as a `Mesh`. A world built here
-//!   may hold assets, but it never *loads* any, which is what keeps the F00
-//!   `SYNTHETIC` scene asset-free in the sense F00 non-negotiable behavior 2
+//!   handed to [`spawn_static_mesh_collider_on_body`] as a `Mesh`. A world built
+//!   here may hold assets, but it never *loads* any, which is what keeps the
+//!   F00 `SYNTHETIC` scene asset-free in the sense F00 non-negotiable behavior 2
 //!   means (see [`crate::synthetic`]).
-//! * **It picks no geometry.** [`spawn_static_mesh_collider`] takes the mesh
-//!   and the transform it is given. Whether an original mesh is simplified, and
-//!   how, is F18-B's decision under F18 non-negotiable behavior 1; nothing
+//! * **It picks no geometry.** [`spawn_static_mesh_collider_on_body`] takes the
+//!   mesh and the transform it is given. Whether an original mesh is simplified,
+//!   and how, is F18-B's decision under F18 non-negotiable behavior 1; nothing
 //!   here may pre-empt it by, say, convex-hulling a shape.
 //! * **It invents no collision semantics.** The layer membership is the
 //!   caller's [`cs_sim::collision::CollisionLayers`], mapped by the one
 //!   conversion the workspace already owns.
 
 use avian3d::prelude::{
-    ColliderConstructor, ColliderConstructorHierarchy, PhysicsPlugins, Position, RigidBody,
-    RigidBodyColliders, Rotation,
+    Collider, ColliderConstructor, ColliderConstructorHierarchy, PhysicsPlugins, Position,
+    RigidBody, RigidBodyColliders, Rotation,
 };
 use bevy::app::{App, Plugin};
 use bevy::asset::{AssetPlugin, Assets, Handle};
 use bevy::ecs::world::World;
 use bevy::mesh::{Mesh, Mesh3d, MeshPlugin};
-use bevy::prelude::{ChildOf, Entity, MinimalPlugins, Transform, TransformPlugin};
+use bevy::prelude::{
+    ChildOf, Children, Component, Entity, MinimalPlugins, Transform, TransformPlugin,
+};
 use bevy::tasks::IoTaskPool;
 use bevy::world_serialization::WorldSerializationPlugin;
 use cs_sim::collision::CollisionLayers;
@@ -145,6 +181,11 @@ pub fn headless_app() -> App {
 
 /// The two entities one mesh-derived collider spans: the static rigid body
 /// that owns it and the node whose [`Mesh3d`] it was derived from.
+///
+/// This is the *hierarchy* layout. For anything a swept body must stop against,
+/// use [`spawn_static_mesh_collider_on_body`] instead: see "The collider-on-body
+/// rule" in the module docs, and [`SweptInvisible`] for how the body that
+/// [`spawn_static_mesh_collider`] returns declares what it is.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MeshColliderNode {
     /// The static rigid body the derived collider is attached to.
@@ -154,6 +195,109 @@ pub struct MeshColliderNode {
     /// `init_collider_constructor_hierarchies` has run, so a caller that
     /// spawns this inside `Startup` must let a frame pass before reading it.
     pub node: Entity,
+}
+
+/// Why a body declares itself invisible to Avian's swept CCD.
+///
+/// The reason travels with the body rather than living only in a task note, so
+/// [`undeclared_swept_invisible_bodies`] can tell a deliberate layout from a
+/// regression: a body-spawning path that quietly moves its colliders onto
+/// children is reported, and a body that says why is not.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SweptInvisible {
+    /// Why this body's colliders live on other entities and the body is
+    /// therefore skipped by `SweptCcdBodyQuery`.
+    ///
+    /// A sentence naming the caller and the layout, not a category: this is the
+    /// evidence a reader needs to decide whether the body may be swept against
+    /// or sweeps itself, and "mesh" alone would not say it.
+    pub reason: &'static str,
+}
+
+/// A rigid body that carries no [`Collider`] of its own, and the entities
+/// holding its colliders instead.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SweptInvisibleBody {
+    /// The body entity Avian's swept CCD skips.
+    pub body: Entity,
+    /// Every descendant of `body` that carries a `Collider`, in query order.
+    /// Empty when the body has no collider at all.
+    pub collider_holders: Vec<Entity>,
+    /// The body's own declaration, when it made one.
+    pub declared: Option<SweptInvisible>,
+}
+
+/// Every rigid body in `world` that carries no [`Collider`] on its own entity.
+///
+/// This is the collider-on-body rule as a query rather than as a paragraph: each
+/// entry is a body Avian's `SweptCcdBodyQuery` cannot resolve, so a swept body
+/// passes through it and a `SweptCcd` body in that position never sweeps.
+///
+/// A body only counts as swept-invisible once the world has been updated at
+/// least once: Avian derives a mesh collider in an `Update` system, so before the
+/// first update *every* mesh body looks like it has no collider.
+#[must_use]
+pub fn swept_invisible_bodies(world: &mut World) -> Vec<SweptInvisibleBody> {
+    let bodies: Vec<(Entity, Option<SweptInvisible>)> = {
+        let mut query = world.query::<(Entity, &RigidBody)>();
+        query
+            .iter(world)
+            .map(|(entity, _)| (entity, world.get::<SweptInvisible>(entity).copied()))
+            .filter(|(entity, _)| world.get::<Collider>(*entity).is_none())
+            .collect()
+    };
+
+    let mut found = Vec::with_capacity(bodies.len());
+    for (body, declared) in bodies {
+        found.push(SweptInvisibleBody {
+            body,
+            collider_holders: collider_descendants(world, body),
+            declared,
+        });
+    }
+    found
+}
+
+/// Every descendant of `root` that carries a [`Collider`], breadth first.
+///
+/// Walks [`Children`] rather than a `Query` so the walk and the world borrow do
+/// not have to be held at once. A malformed hierarchy (a `Children` entry naming
+/// an entity that is already gone) is skipped rather than treated as a cycle:
+/// a body whose descendant vanished is swept-invisible, which is the fact the
+/// caller asked for, and panicking here would turn a report into a crash.
+fn collider_descendants(world: &World, root: Entity) -> Vec<Entity> {
+    let mut holders = Vec::new();
+    let mut pending: Vec<Entity> = world
+        .get::<Children>(root)
+        .map_or_else(Vec::new, |c| c.to_vec());
+    let mut seen: Vec<Entity> = vec![root];
+    while let Some(entity) = pending.pop() {
+        if seen.contains(&entity) {
+            continue;
+        }
+        seen.push(entity);
+        if world.get::<Collider>(entity).is_some() {
+            holders.push(entity);
+        }
+        pending.extend(world.get::<Children>(entity).into_iter().flatten());
+    }
+    holders
+}
+
+/// The swept-invisible bodies that did **not** declare themselves: the actual
+/// violations of the collider-on-body rule.
+///
+/// An empty result is the invariant every production body-spawning path must
+/// hold. A non-empty one names a body no caller ever justified, which is the
+/// failure mode this exists to catch — a collider quietly moved onto a child
+/// node is invisible in review and in the contact log, and only shows up as a
+/// body moving faster than geometry can be sampled.
+#[must_use]
+pub fn undeclared_swept_invisible_bodies(world: &mut World) -> Vec<SweptInvisibleBody> {
+    swept_invisible_bodies(world)
+        .into_iter()
+        .filter(|body| body.declared.is_none())
+        .collect()
 }
 
 /// Adds `mesh` to the world's asset stack and asks Avian to derive a static
@@ -186,6 +330,18 @@ pub struct MeshColliderNode {
 /// simplification — and it is a property of the engine, not a decision made
 /// here, so a change in it is a change to watch rather than to rely on.
 ///
+/// **This layout is deliberately swept-invisible, and says so on the body.** A
+/// collider on a child node is what the collider-on-body rule forbids, so the
+/// returned body carries a [`SweptInvisible`] declaring it. A body in this
+/// layout is skipped by `SweptCcdBodyQuery`: swept bodies pass through it at
+/// any speed above the discrete sampling rate, and a `SweptCcd` body in that
+/// position never sweeps. This is kept — with its contract, its name and its
+/// `is_attached` check — because it is the layout F00-A task #333 pinned and
+/// because `ColliderConstructorHierarchy` per-descendant constructors have no
+/// single-entity equivalent; it is *not* the layout world geometry uses, which
+/// is [`spawn_static_mesh_collider_on_body`]. Task #424 made that split
+/// explicit after task #420 measured the two layouts against each other.
+///
 /// # Panics
 ///
 /// If `app` was not built by [`headless_app`] (or otherwise given
@@ -211,12 +367,80 @@ pub fn spawn_static_mesh_collider(
             transform,
             Position(transform.translation),
             Rotation(transform.rotation),
+            SweptInvisible {
+                reason: "spawn_static_mesh_collider builds the collider-on-a-child-node \
+                         layout: ColliderConstructorHierarchy derives only onto descendants, \
+                         so this body is skipped by Avian's SweptCcdBodyQuery. A body a \
+                         swept body must stop against needs spawn_static_mesh_collider_on_body.",
+            },
         ))
         .id();
 
     let node = app.world_mut().spawn((Mesh3d(handle), ChildOf(body))).id();
 
     MeshColliderNode { body, node }
+}
+
+/// Adds `mesh` to the world's asset stack and derives a static collider from it
+/// onto **one** entity, which is at the same time the static rigid body, the
+/// mesh node and the collider.
+///
+/// This is the layout the collider-on-body rule asks for, and the one world
+/// geometry uses (`crate::world::spawn`). Compared with
+/// [`spawn_static_mesh_collider`] it is a strict reduction of the same thing:
+/// same upload, same `ColliderConstructor::TrimeshFromMesh`, same every stored
+/// triangle, same layer membership, same `transform` — one entity instead of a
+/// body and a child. Nothing about the geometry changes; only where the
+/// `Collider` component lands does.
+///
+/// The difference is that Avian's `init_collider_constructors` inserts the
+/// derived collider **on the entity that holds the `ColliderConstructor`**, and
+/// that entity is the body, so `SweptCcdBodyQuery` can resolve the body and a
+/// swept body is stopped by the mesh instead of passing through it. Measured:
+/// the production 400 m/s `SweptCcd` probe (3.33 m of travel per tick against
+/// a 1 m wall) is clamped at the wall's near face with all four stored triangles
+/// in the collider, where the child-node layout tunnels with an empty contact
+/// log. See "The collider-on-body rule" in the module docs and
+/// `docs/findings/2026-09-30-t420-mesh-ccd-decision.md`.
+///
+/// The entity returned is the presentation *and* the collider *and* the body,
+/// so a caller that presents a world object from this mesh may put its own
+/// components on it, but must not also spawn a second rigid body for the same
+/// geometry: the collider would then be attached to whichever body Avian's
+/// collider hook finds first.
+///
+/// # Panics
+///
+/// If `app` was not built by [`headless_app`] (or otherwise given
+/// [`AssetStackPlugin`]), because there is then no `Assets<Mesh>` to add to.
+#[must_use]
+pub fn spawn_static_mesh_collider_on_body(
+    app: &mut App,
+    mesh: Mesh,
+    transform: Transform,
+    membership: CollisionLayers,
+) -> Entity {
+    let handle: Handle<Mesh> = app.world_mut().resource_mut::<Assets<Mesh>>().add(mesh);
+
+    // `ColliderConstructor::TrimeshFromMesh` needs the `Mesh3d` it derives from
+    // on the *same* entity, which is why the body, the presentation and the
+    // constructor are one entity here rather than a body with a child node.
+    //
+    // The layers go on the entity rather than through
+    // `ColliderConstructorHierarchy::with_default_layers`, which the hierarchy
+    // form has and this one does not: the derived `Collider` lands here, so the
+    // `CollisionLayers` component beside it is the membership Avian reads.
+    app.world_mut()
+        .spawn((
+            RigidBody::Static,
+            Mesh3d(handle),
+            ColliderConstructor::TrimeshFromMesh,
+            avian_layers(membership),
+            transform,
+            Position(transform.translation),
+            Rotation(transform.rotation),
+        ))
+        .id()
 }
 
 /// Whether the collider Avian derived for `node` is attached to the body it
