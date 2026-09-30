@@ -76,6 +76,7 @@ const SYNTHETIC_TESTS: &[&str] = &[
     "accept_f18_d_the_audit_visits_every_group_and_compares_its_representative_geometry",
     "accept_f18_d_an_unlocated_opening_or_route_is_reported_instead_of_assumed",
     "accept_f18_d_world_group_records_refuse_contradictions_and_impossible_values",
+    "accept_f18_d_a_refused_upload_names_the_material_group_the_adapter_refused",
 ];
 
 /// The derived world-group census, written beside the report and referenced by
@@ -414,30 +415,41 @@ fn capture_artifacts(evidence_dir: &Path) -> Vec<(String, String, String)> {
 fn review_identity() -> String {
     String::from(
         "implementer: opencode Space Bunny Free (opencode/bunny-2, Rally #88, session of \
-         2026-09-30). Reviewer: not yet assigned — a Rally review of this branch has to be run \
-         by another agent, and the owner directive of 2026-09-28 asks for a different agent \
-         instance or model for evidence, format and mission semantics. This report was written by \
-         the implementer, so it is not independent evidence of anything and no agent review \
-         replaces the owner's human approval",
+         2026-09-30). Reviewer: opencode Space Bunny Alpha (opencode/bunny-alpha-2, Rally #88 \
+         review claim, session of 2026-09-30), a different agent instance with fresh context: \
+         it read the spec, the shared contract and the whole diff without the implementer's \
+         session history, and wrote none of the implementation it reviewed. The review found and \
+         fixed four defects, recorded in docs/findings/2026-09-30-f18-d-world-group-audit-and-gpu-capture.md: \
+         every refused upload was attributed to material group 0 because the group was scraped out \
+         of the adapter's Display instead of read from its typed error; the container bytes were \
+         read through a lowercased path that only resolves on a case-insensitive filesystem; an \
+         `UnknownOpeningClass` gap check that could not fire; and a tautological \
+         `refused_representatives()` assertion. This report was regenerated on the reviewed tree \
+         after those fixes. Neither agent review is independent original-reference evidence and \
+         neither replaces the owner's human approval",
     )
 }
 
 fn review_method() -> String {
     String::from(
         "the acceptance suite re-run locally with the retail capability and a real GPU adapter, \
-         one `accept_f18_d_*` test at a time as well as together; this harness derives every field \
-         from the recorded log, production discovery of $CS_GAME_DIR, and the production \
-         world-group survey and audit run over that installation \
+         every `accept_f18_d_*` test alone with `--exact` as well as together; this harness \
+         derives every field from the recorded log, production discovery of $CS_GAME_DIR, and the \
+         production world-group survey and audit run over that installation \
          (`cs_app::world::audit::{survey_world_groups, audit_world_groups}`) with the GPU captures \
          the retail test wrote on the real adapter (`cs_app::world::gpu_capture::capture_world_mesh`); \
-         validated with tools/validate_evidence.py --require-pass. The report's `unknowns` are this \
-         task's own blockers and are empty because the acceptance run passed; the product \
-         incompleteness the audit measured — the undecoded GameZ node array, the unmeasured stored \
-         vertex unit and the five unlocatable opening classes — is the audit's asserted verdict and \
-         is written out in docs/findings/2026-09-30-f18-d-world-group-audit-and-gpu-capture.md, not \
-         dropped. `claim` is `implemented` only. `candidate_tree` is the tree of the commit the \
-         suite ran on: the only later delta is this report's own copy under \
-         docs/findings/evidence/, whose bytes are that file",
+         validated with tools/validate_evidence.py --require-pass. The reviewer additionally \
+         re-measured the corpus independently: the refused material groups through the production \
+         `cs_app::world::upload_verdict`, and the drawn geometry per world group, which is how the \
+         shared mesh behind the three byte-identical captures was identified. The report's \
+         `unknowns` are this task's own blockers and are empty because the acceptance run passed; \
+         the product incompleteness the audit measured — the undecoded GameZ node array, the \
+         unmeasured stored vertex unit and the five unlocatable opening classes — is the audit's \
+         asserted verdict and is written out in \
+         docs/findings/2026-09-30-f18-d-world-group-audit-and-gpu-capture.md, not dropped. `claim` \
+         is `implemented` only. `candidate_tree` is the tree of the commit the suite ran on: the \
+         only later delta is this report's own copy under docs/findings/evidence/, whose bytes are \
+         that file",
     )
 }
 
