@@ -281,8 +281,8 @@ pub fn synthetic_trace_envelopes() -> Vec<SyntheticEnvelope> {
         envelope(
             "turn.heading_change_rad",
             SyntheticManeuver::SustainedTurn,
-            2.0,
-            4.2,
+            1.0,
+            3.0,
         ),
         envelope(
             "stall.minimum_stall_scale",

@@ -639,6 +639,7 @@ pub fn declared_synthetic_improved_airframe() -> DeclaredAirframeTuning {
     set_known(&mut record, "angular.rate_gain_per_s", 6.0);
     set_known(&mut record, "angular.rate_damping_per_s", 2.0);
     set_known(&mut record, "assists.bank_level_gain_nm_per_rad", 8_000.0);
+    set_known(&mut record, "assists.bank_level_max_torque_nm", 5_000.0);
     record
 }
 

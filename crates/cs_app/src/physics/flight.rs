@@ -507,6 +507,7 @@ pub struct FlightAircraft {
     command: FlightInput,
     last_output: Option<FlightOutput>,
     last_output_tick: Option<u64>,
+    last_equipment: Option<FlightEquipment>,
 }
 
 impl FlightAircraft {
@@ -542,6 +543,7 @@ impl FlightAircraft {
             command: FlightInput::NEUTRAL,
             last_output: None,
             last_output_tick: None,
+            last_equipment: None,
         })
     }
 
@@ -674,6 +676,12 @@ impl FlightAircraft {
     /// validated first, and only a fully valid record replaces the aircraft's
     /// loadout, damage and reserve.
     ///
+    /// Binding is idempotent: a record identical to the last one bound is a
+    /// no-op. That is what keeps the boost reserve a *draining* quantity — a
+    /// mission that keeps declaring the same equipment does not silently refill
+    /// a reserve the ticks consumed. A producer that grants or changes a
+    /// reserve writes a different record.
+    ///
     /// # Errors
     ///
     /// [`FlightAircraftError`] naming the first rejected equipment field;
@@ -682,10 +690,14 @@ impl FlightAircraft {
         &mut self,
         equipment: &FlightEquipment,
     ) -> Result<(), FlightAircraftError> {
+        if self.last_equipment.as_ref() == Some(equipment) {
+            return Ok(());
+        }
         equipment.validate()?;
         self.set_loadout(equipment.loadout)?;
         self.set_damage(equipment.damage)?;
         self.set_boost_capacity(equipment.boost_capacity_units)?;
+        self.last_equipment = Some(*equipment);
         Ok(())
     }
 
@@ -1123,11 +1135,11 @@ fn drive_flight_aircraft(
         // record before the equations run, and a rejected one refuses the whole
         // tick rather than flying a half-bound loadout/damage/reserve. The
         // record stays on the entity, so the next tick retries it.
-        if let Some(equipment) = equipment {
-            if let Err(error) = aircraft.bind_equipment(equipment) {
-                refuse(&mut report, entity, FlightRefusalReason::Equipment(error));
-                continue;
-            }
+        if let Some(equipment) = equipment
+            && let Err(error) = aircraft.bind_equipment(equipment)
+        {
+            refuse(&mut report, entity, FlightRefusalReason::Equipment(error));
+            continue;
         }
         if gravity_conflict {
             refuse(
