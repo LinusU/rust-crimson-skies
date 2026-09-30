@@ -14,10 +14,14 @@ use cs_app::render::capture::{
     Tonemap, capture, scene_codes, upload_surface,
 };
 use cs_app::render::golden::golden_scene;
-use cs_app::render::material::RenderPhase;
-use cs_app::render::plan::{DrawItemKey, DrawPlan, SceneView, SortingLimitation};
+use cs_app::render::material::{
+    AddressMode, Coverage, DeclaredClass, MaterialClass, MaterialFacts, RenderPhase,
+    TextureAddress, classify,
+};
+use cs_app::render::plan::{DrawItem, DrawItemKey, DrawPlan, SceneView, SortingLimitation};
 use cs_formats::texture::{AlphaSource, AlphaTest, ColorSpace, PixelFormat};
 use cs_types::Tick;
+use cs_types::evidence::ClaimStatus;
 
 use super::fixture::{
     ImageShape, MESH_UNKNOWNS, QUAD_COLORS, QuadShape, decoded_image, quad_mesh,
@@ -66,8 +70,12 @@ fn upload_scene(
     scene: &cs_app::render::golden::GoldenScene,
     inputs: &SceneInputs,
 ) -> Vec<SceneOutcome> {
-    scene
-        .items()
+    upload_items(scene.items(), inputs)
+}
+
+/// Uploads `items` against `inputs`, in submission order.
+fn upload_items(items: &[DrawItem], inputs: &SceneInputs) -> Vec<SceneOutcome> {
+    items
         .iter()
         .enumerate()
         .map(|(index, item)| {
@@ -279,6 +287,55 @@ fn accept_f17_b_capture_depends_on_the_tick_the_camera_and_the_geometry() {
         base.fingerprint(),
         changed.fingerprint(),
         "a different vertex buffer is a different frame"
+    );
+
+    // One declared render fact changed: the same geometry drawn two-sided
+    // instead of one-sided is a different frame even though not one buffer
+    // moved.
+    let mut items = scene.items().to_vec();
+    let fence = items
+        .iter()
+        .position(|item| item.key().as_str() == "fence")
+        .expect("the fence is in the scene");
+    let one_sided = classify(&MaterialFacts {
+        declared: Some(
+            DeclaredClass::new(MaterialClass::Masked, ClaimStatus::Designed)
+                .expect("Designed asserts a class"),
+        ),
+        coverage: Coverage::Texture(AlphaSource::Channel),
+        alpha_test: AlphaTest::Threshold(0x80),
+        two_sided: Some(false),
+        addressing: Some(TextureAddress {
+            u: AddressMode::Repeat,
+            v: AddressMode::Repeat,
+        }),
+        vertex_colors: false,
+        unknown_flag_bits: 0,
+    })
+    .classified()
+    .expect("the one-sided fence classifies")
+    .clone();
+    items[fence] = DrawItem::new(
+        DrawItemKey::new("fence").expect("authored key"),
+        one_sided,
+        scene.items()[fence].center_m(),
+        None,
+    )
+    .expect("finite geometry");
+    let restated_plan = DrawPlan::build(&items, scene.view());
+    let restated = capture(
+        &upload_items(&items, &scene_inputs(&scene)),
+        &restated_plan,
+        scene.view(),
+        &projection,
+        TICK,
+        &settings,
+    )
+    .expect("the restated scene captures");
+    assert_ne!(
+        base.fingerprint(),
+        restated.fingerprint(),
+        "a different render state is a different frame"
     );
 }
 
