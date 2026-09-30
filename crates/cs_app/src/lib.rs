@@ -76,6 +76,17 @@
 //! fixture. It is the only place the pinned Avian force accumulator is driven;
 //! body creation, sweeps and kinematic transitions are F23-B.
 //!
+//! [`world`] is the F18-A world boundary
+//! (`specs/F18-world-geometry-terrain-water-and-traversable-interiors.md`,
+//! `### F18-A`): [`world::spawn_world`] turns a validated
+//! `cs_content::world::WorldDefinition` into a visual entity and a collider
+//! entity built from *one* authored transform and one
+//! [`world::WorldObjectBinding`], [`world::WorldContacts`] records which
+//! authored object an actor reached, and [`world::arch_world`] is the
+//! synthetic arch the acceptance tests sweep a body through at high speed.
+//! Mesh-derived collision, mission overlays and streaming are F18-B/C; this
+//! stage owns the typed contract and the fixture only.
+//!
 //! [`loading`] is the F15 load pipeline
 //! (`specs/F15-asynchronous-asset-loading-and-private-cache.md`): the
 //! F15-A cancellable `Requested → Loading → Validating → Ready|Failed`
@@ -114,3 +125,4 @@ pub mod render;
 pub mod run;
 pub mod scene;
 pub mod synthetic;
+pub mod world;
