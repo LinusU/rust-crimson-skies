@@ -1,7 +1,7 @@
-//! The synthetic world fixtures and the swept probe (F18-A, F18-B).
+//! The synthetic world fixtures and the swept probe (F18-A, F18-B, F18-C).
 //!
 //! Spec: `specs/F18-world-geometry-terrain-water-and-traversable-interiors.md`,
-//! stages `### F18-A` and `### F18-B`.
+//! stages `### F18-A`, `### F18-B` and `### F18-C`.
 //!
 //! Like [`crate::synthetic`] and [`crate::physics::fixture`], this is
 //! **production bootstrap code**, not a test-only reimplementation: it authors
@@ -42,6 +42,16 @@
 //! belongs to two sectors, and one object whose mesh this source deliberately
 //! does not hold.
 //!
+//! # The depot world
+//!
+//! [`depot_world`] is the F18-C fixture: the same arch, with a **door panel**
+//! that fills its opening, a **sensor volume** in front of the panel to be an
+//! overlay's trigger, and a third sector in the east that holds nothing
+//! gameplay needs. The panel is a cuboid, so its visual and its collider are
+//! two entities and an overlay that moved one and not the other is visible;
+//! the east sector is what a visibility pass is allowed to stream away, next to
+//! a sector it is not.
+//!
 //! # Units
 //!
 //! A stored mesh's vertex positions are in **stored** units
@@ -71,9 +81,9 @@ use bevy::time::{Real, Time, TimeUpdateStrategy};
 use cs_content::mesh::{MeshPresentationUnknown, RenderMesh};
 use cs_content::scene::CanonicalTransform;
 use cs_content::world::{
-    Aabb, Sector, SectorId, SurfaceRole, WorldBoundary, WorldCollisionRole, WorldCollisionShape,
-    WorldDefinition, WorldError, WorldId, WorldInstance, WorldObjectId, WorldObjectInstance,
-    WorldPopulation,
+    Aabb, MissionOverlay, OverlayEffect, Sector, SectorId, SurfaceRole, WorldBoundary,
+    WorldCollisionRole, WorldCollisionShape, WorldDefinition, WorldError, WorldId, WorldInstance,
+    WorldObjectId, WorldObjectInstance, WorldPopulation,
 };
 use cs_formats::gamez::{PrimitiveKind, RawCorner, RawMesh, RawPolygon};
 use cs_types::content::{ContentId, ContentKind, Known, Origin, Provenance, Resolved};
@@ -846,7 +856,267 @@ pub fn world_instance(
     )
 }
 
-// -------------------------------------------------------------------- probe ---
+// ------------------------------------------------------ depot (F18-C) ---
+
+/// The depot world's id key.
+pub const DEPOT_WORLD_KEY: &str = "synthetic.depot_world";
+
+/// The approach to the depot, west of the hangar face.
+pub const DEPOT_SECTOR_APPROACH: &str = "approach";
+/// The hangar face itself: the shell and the door panel.
+pub const DEPOT_SECTOR_YARD: &str = "yard";
+/// A sector far east of everything else, holding nothing gameplay needs: the
+/// one a visibility pass is allowed to stream away.
+pub const DEPOT_SECTOR_ANNEX: &str = "annex";
+
+/// The hangar shell: the same stored arch the harbor world uses, so the door is
+/// a hole in *this* world too and not only in a drawing.
+pub const DEPOT_OBJECT_HANGAR: &str = "depot.hangar";
+/// The door panel that shuts the shell's opening.
+pub const DEPOT_OBJECT_DOOR: &str = "depot.door";
+/// The trigger volume in front of the panel: the overlay's own trigger.
+pub const DEPOT_OBJECT_TRIGGER: &str = "trigger.depot";
+/// The depot's ground slab, in the approach and the yard.
+pub const DEPOT_OBJECT_GROUND: &str = "terrain.depot";
+/// A crate in the annex, high above the depot's flight line.
+pub const DEPOT_OBJECT_CRATE: &str = "depot.crate";
+
+/// Half extents of the door panel, which is *exactly* the shell's opening: 1 m
+/// thick along the flight axis, 3 m tall and 2 m wide. A panel with these half
+/// extents fills the tunnel, so the passage is shut until the panel moves.
+pub const DEPOT_DOOR_HALF_M: [f64; 3] = [0.5, 1.5, 1.0];
+/// The panel's centre, which is the opening's own centre.
+pub const DEPOT_DOOR_POS_M: [f64; 3] = [0.0, 1.5, 0.0];
+/// The displacement the door overlay applies: far enough in `+z` to clear the
+/// opening's width, so the tunnel the shell describes is flyable afterwards.
+pub const DEPOT_DOOR_OPEN_OFFSET_M: [f64; 3] = [0.0, 0.0, 2.0];
+/// Half extents of the trigger volume: as wide and as tall as the opening, so a
+/// body on the tunnel's centreline is inside it, and 1 m thick along the flight
+/// axis so the crossing is unambiguous.
+pub const DEPOT_TRIGGER_HALF_M: [f64; 3] = [0.5, 1.5, 1.5];
+/// The trigger's centre, four metres in front of the panel's face.
+pub const DEPOT_TRIGGER_POS_M: [f64; 3] = [-4.0, 1.5, 0.0];
+/// The depot ground slab's half sizes and centre, as the harbor's.
+pub const DEPOT_GROUND_HALF_M: [f64; 3] = [20.0, 0.5, 15.0];
+/// The depot ground slab's centre: its top face is `y = 0`.
+pub const DEPOT_GROUND_POS_M: [f64; 3] = [0.0, -0.5, 0.0];
+/// The annex crate's half sizes, and the height that keeps it clear of the
+/// depot's flight line — a streaming test that also hit the crate would not be
+/// about streaming.
+pub const DEPOT_CRATE_HALF_M: [f64; 3] = [1.0, 1.0, 1.0];
+/// The crate's centre, high above the ground in the annex sector.
+pub const DEPOT_CRATE_POS_M: [f64; 3] = [30.0, 6.0, 0.0];
+
+/// Builds the depot world: the F18-C fixture for mission overlays and for
+/// visibility-driven streaming.
+///
+/// | object | role | shape | surface | sectors |
+/// | --- | --- | --- | --- | --- |
+/// | `depot.hangar` | `Solid` | `FromMesh` (36 triangles) | `Ground` | `yard` |
+/// | `depot.door` | `Solid` | `Cuboid` | `Ground` | `yard` |
+/// | `trigger.depot` | `Sensor` | `Cuboid` | `Ground` | `approach` |
+/// | `terrain.depot` | `Solid` | `Cuboid` | `Ground` | `approach`, `yard` |
+/// | `depot.crate` | `Solid` | `Cuboid` | `Ground` | `annex` |
+///
+/// The shell's opening is shut by a panel that *is* the opening's own box, so
+/// "the door opened" is a claim about geometry: with the panel in place the
+/// tunnel is not flyable, and after the overlay's displacement it is. The
+/// trigger is a sensor volume in front of the panel, which is the shape an
+/// overlay's trigger must have ([`MissionOverlay`] refuses any other role). The
+/// annex is a third sector with nothing gameplay needs in it, so a visibility
+/// pass has both a sector it may stream away and one it may not.
+///
+/// The door is a **cuboid** on purpose: a cuboid object is a presentation
+/// entity and a collider entity, so an overlay that moved the drawn geometry
+/// and left the collision behind is visible here rather than being impossible
+/// by construction the way a one-entity mesh object would make it.
+///
+/// # Errors
+///
+/// Never for this fixture, like [`arch_world`] and [`harbor_world`]: its ids,
+/// transforms and shapes are constants validated on the path here.
+pub fn depot_world() -> Result<WorldDefinition, WorldError> {
+    let approach = sector(DEPOT_SECTOR_APPROACH);
+    let yard = sector(DEPOT_SECTOR_YARD);
+    let annex = sector(DEPOT_SECTOR_ANNEX);
+
+    let sectors = vec![
+        Sector::new(
+            approach.clone(),
+            Aabb::try_new([-40.0, -2.0, -6.0], [-1.0, 12.0, 6.0])
+                .expect("the depot approach bounds are well formed"),
+        ),
+        Sector::new(
+            yard.clone(),
+            Aabb::try_new([-1.0, -2.0, -6.0], [14.0, 12.0, 6.0])
+                .expect("the depot yard bounds are well formed"),
+        ),
+        Sector::new(
+            annex.clone(),
+            Aabb::try_new([20.0, -2.0, -6.0], [40.0, 12.0, 6.0])
+                .expect("the depot annex bounds are well formed"),
+        ),
+    ];
+
+    let ground_surface = known(SurfaceRole::Ground, "depot.surface.ground");
+    let solid = known(WorldCollisionRole::Solid, "depot.collision-role.solid");
+    let sensor = known(WorldCollisionRole::Sensor, "depot.collision-role.sensor");
+    let from_mesh = known(
+        WorldCollisionShape::FromMesh,
+        "depot.collision-shape.from-mesh",
+    );
+
+    let objects = vec![
+        // The shell, as one stored mesh with a tunnel through it.
+        WorldObjectInstance::try_new(
+            object(DEPOT_OBJECT_HANGAR),
+            mesh(DEPOT_OBJECT_HANGAR),
+            translated([0.0, 0.0, 0.0]),
+            solid.clone(),
+            from_mesh,
+            ground_surface.clone(),
+            vec![yard.clone()],
+            fixture_provenance("depot.hangar.record"),
+        )
+        .expect("the fixture sector lists contain no duplicates"),
+        // The panel that shuts that tunnel, a cuboid so its visual and its
+        // collider are two entities.
+        solid_box(
+            DEPOT_OBJECT_DOOR,
+            translated(DEPOT_DOOR_POS_M),
+            DEPOT_DOOR_HALF_M,
+            ground_surface.clone(),
+            vec![yard.clone()],
+        ),
+        // The overlay's trigger: a sensor volume on the panel's own flight line.
+        WorldObjectInstance::try_new(
+            object(DEPOT_OBJECT_TRIGGER),
+            mesh(DEPOT_OBJECT_TRIGGER),
+            translated(DEPOT_TRIGGER_POS_M),
+            sensor,
+            cuboid(DEPOT_TRIGGER_HALF_M),
+            ground_surface.clone(),
+            vec![approach.clone()],
+            fixture_provenance("depot.trigger.record"),
+        )
+        .expect("the fixture sector lists contain no duplicates"),
+        // The ground spans the approach and the yard, so it survives either one
+        // streaming away — the F18-B membership rule, in a third world.
+        solid_box(
+            DEPOT_OBJECT_GROUND,
+            translated(DEPOT_GROUND_POS_M),
+            DEPOT_GROUND_HALF_M,
+            ground_surface.clone(),
+            vec![approach.clone(), yard],
+        ),
+        // The annex crate, in a sector no load record requires.
+        solid_box(
+            DEPOT_OBJECT_CRATE,
+            translated(DEPOT_CRATE_POS_M),
+            DEPOT_CRATE_HALF_M,
+            ground_surface,
+            vec![annex],
+        ),
+    ];
+
+    let boundary = known(
+        WorldBoundary::try_new(Some(-50.0), Some(500.0), None)
+            .expect("the depot boundary is well formed"),
+        "depot.boundary",
+    );
+
+    WorldDefinition::try_new(
+        WorldId::from_key(DEPOT_WORLD_KEY).expect("the depot world key is valid"),
+        Origin::SyntheticFixture,
+        boundary,
+        sectors,
+        objects,
+        fixture_provenance("depot_world.record"),
+    )
+}
+
+/// The mesh source the depot world is loaded with: the hangar shell's upload.
+///
+/// The panel, the trigger, the ground and the crate are cuboids and need no
+/// upload. That is deliberate: the panel is the object whose render and
+/// collision halves are separate entities, and it is a cuboid, so "both
+/// consumers updated" cannot be satisfied here by a one-entity object moving by
+/// construction.
+#[must_use]
+pub fn depot_meshes() -> WorldMeshes {
+    let mut meshes = WorldMeshes::new();
+    let reference = mesh(DEPOT_OBJECT_HANGAR)
+        .known()
+        .expect("the fixture mesh references are known");
+    meshes.insert(reference, upload(hangar_shell_mesh()));
+    meshes
+}
+
+/// The depot's door overlay: crossing [`DEPOT_OBJECT_TRIGGER`] displaces
+/// [`DEPOT_OBJECT_DOOR`] by [`DEPOT_DOOR_OPEN_OFFSET_M`].
+///
+/// A *designed* record, not an imported one: which volumes the 2000 PC original
+/// used as triggers, and what opening a door does to its geometry, is
+/// unmeasured. What is measured here is what this one does.
+#[must_use]
+pub fn door_overlay() -> MissionOverlay {
+    MissionOverlay::try_new(
+        object(DEPOT_OBJECT_TRIGGER),
+        OverlayEffect::Displace {
+            target: object(DEPOT_OBJECT_DOOR),
+            offset_m: DEPOT_DOOR_OPEN_OFFSET_M,
+        },
+        fixture_provenance("depot.door_overlay"),
+    )
+    .expect("the depot door overlay's offset is finite")
+}
+
+/// A mission load record for the depot world.
+///
+/// `open_door` is what makes the same authored world two different missions:
+/// with the overlay the tunnel becomes flyable, without it the panel *is* the
+/// opening and nothing gets through (F18 non-negotiable behavior 5). `required`
+/// is the set of objects gameplay cannot lose to streaming (F18
+/// non-negotiable behavior 3), which the visibility policy holds in place.
+///
+/// # Errors
+///
+/// [`WorldError`] from the load record's own validation, including the overlay
+/// refusals [`WorldInstance::validate_against`] makes for a trigger that is not
+/// a sensor or an object the population never activates.
+pub fn depot_mission(
+    definition: &WorldDefinition,
+    open_door: bool,
+    required: &[&str],
+) -> Result<WorldInstance, WorldError> {
+    let overlays = if open_door {
+        vec![door_overlay()]
+    } else {
+        Vec::new()
+    };
+    world_instance(
+        definition,
+        Some("synthetic.depot_world.mission_01"),
+        &depot_population(),
+        &[],
+    )?
+    .with_mission_layer(overlays, object_set(required))
+}
+
+/// Every object the depot world declares, in definition order: the population a
+/// depot mission load record activates.
+#[must_use]
+pub fn depot_population() -> Vec<&'static str> {
+    vec![
+        DEPOT_OBJECT_HANGAR,
+        DEPOT_OBJECT_DOOR,
+        DEPOT_OBJECT_TRIGGER,
+        DEPOT_OBJECT_GROUND,
+        DEPOT_OBJECT_CRATE,
+    ]
+}
+
+// ------------------------------------------------------------------- probe ---
 
 /// Why a swept probe could not be spawned.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -1065,10 +1335,12 @@ pub fn world_app() -> App {
 
     let mut app = crate::asset_stack::headless_app();
     app.add_plugins((
-        // The world contact log belongs to the composition that runs a world:
-        // a load happens after `App::finish`, where `add_plugins` would panic,
-        // so the recorder is installed here or not at all.
+        // The world contact log and the mission-overlay pass belong to the
+        // composition that runs a world: a load happens after `App::finish`,
+        // where `add_plugins` would panic, so they are installed here or not at
+        // all.
         super::contacts::WorldPlugin,
+        super::overlays::WorldOverlayPlugin,
         crate::physics::PhysicsAdapterPlugin::new(crate::physics::BASELINE_FIXED_HZ),
     ));
     app.insert_resource(TimeUpdateStrategy::ManualDuration(frame));

@@ -1,9 +1,9 @@
 //! One world's residency: which sectors are loaded, and the state that outlives
-//! their entities (F18-B).
+//! their entities (F18-B, F18-C).
 //!
 //! Spec: `specs/F18-world-geometry-terrain-water-and-traversable-interiors.md`,
-//! stage `### F18-B`, acceptance scenario **AC02** — *unload and reload a sector
-//! containing a damaged objective; state persists correctly.*
+//! stages `### F18-B` and `### F18-C`, acceptance scenario **AC02** — *unload and
+//! reload a sector containing a damaged objective; state persists correctly.*
 //!
 //! # What this layer is, and what it is not
 //!
@@ -15,10 +15,12 @@
 //! spawned, despawned or refused.
 //!
 //! It is **not** the streaming *policy*: nothing here decides which sector
-//! *should* be resident from a camera, a mission overlay or a trigger, and
-//! nothing here hides or fades anything. That is F18-C, and the separation is
-//! deliberate — this layer only has to be right about *what a load means*, so a
-//! policy on top of it cannot quietly redefine it.
+//! *should* be resident from a camera, a mission overlay or a trigger. That is
+//! [`super::visibility`], and the separation is deliberate — this layer only has
+//! to be right about *what a load means*, so a policy on top of it cannot
+//! quietly redefine it. What this layer *does* own is the record a policy reads
+//! and cannot rebuild: the load's per-object conditions and, since F18-C, the
+//! overlays it has already applied.
 //!
 //! # Why the condition lives here and not on an entity
 //!
@@ -44,19 +46,22 @@
 //! authored damage can only be established by a load that starts from nothing,
 //! so the previous run has nowhere to survive. An object's condition, by
 //! contrast, is the *load's* memory and deliberately does not outlive its own
-//! unload — the next load seeds it from its own initial damage.
+//! unload — the next load seeds it from its own initial damage. The same is
+//! true of the applied overlays: they belong to this load, and the next load
+//! gets a world whose door is shut again.
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use bevy::prelude::{App, Component, Entity, Resource, World};
 use cs_content::world::{
-    SectorId, WorldDefinition, WorldError, WorldId, WorldInstance, WorldObjectCondition,
-    WorldObjectId,
+    MissionOverlay, SectorId, WorldDefinition, WorldError, WorldId, WorldInstance,
+    WorldObjectCondition, WorldObjectId,
 };
 use cs_types::content::Resolved;
 
 use super::contacts::WorldObjectBinding;
 use super::meshes::WorldMeshes;
+use super::overlays::reapply_object;
 use super::spawn::{
     SpawnedObject, SpawnedWorld, WorldSpawnError, instance_transforms, spawn_object,
 };
@@ -100,6 +105,19 @@ pub struct ResidentWorld {
     loaded: BTreeSet<SectorId>,
     conditions: BTreeMap<WorldObjectId, WorldObjectCondition>,
     objects: BTreeMap<WorldObjectId, SpawnedObject>,
+    /// The mission-local overlays this load declared, keyed by their trigger
+    /// object. The load's own copy, so a load that starts from nothing starts
+    /// with no overlay state at all (F18 non-negotiable behavior 5).
+    overlays: BTreeMap<WorldObjectId, MissionOverlay>,
+    /// The triggers whose overlay this load has already applied, in stable
+    /// order. This is what makes "once" a property of the load rather than of
+    /// the frame: a second crossing of the same volume is not a second
+    /// displacement.
+    applied: BTreeSet<WorldObjectId>,
+    /// The objects this load declares gameplay-required, in stable order: the
+    /// ones a streaming policy must not take away (F18 non-negotiable
+    /// behavior 3).
+    required: BTreeSet<WorldObjectId>,
 }
 
 impl ResidentWorld {
@@ -156,6 +174,67 @@ impl ResidentWorld {
     pub fn is_present(&self, object: &WorldObjectId) -> bool {
         self.objects.contains_key(object)
     }
+
+    /// The mission-local overlays this load declared, keyed by trigger.
+    #[must_use]
+    pub const fn overlays(&self) -> &BTreeMap<WorldObjectId, MissionOverlay> {
+        &self.overlays
+    }
+
+    /// The overlay whose trigger is `trigger`, when this load declares one.
+    #[must_use]
+    pub fn overlay_for(&self, trigger: &WorldObjectId) -> Option<&MissionOverlay> {
+        self.overlays.get(trigger)
+    }
+
+    /// Whether this load has already applied the overlay fired by `trigger`.
+    #[must_use]
+    pub fn is_applied(&self, trigger: &WorldObjectId) -> bool {
+        self.applied.contains(trigger)
+    }
+
+    /// The triggers whose overlay this load has applied, in stable order.
+    #[must_use]
+    pub const fn applied_overlays(&self) -> &BTreeSet<WorldObjectId> {
+        &self.applied
+    }
+
+    /// The objects this load declares gameplay-required, in stable order.
+    #[must_use]
+    pub const fn required_objects(&self) -> &BTreeSet<WorldObjectId> {
+        &self.required
+    }
+
+    /// Whether `object` is one a streaming policy must not take away.
+    #[must_use]
+    pub fn is_required(&self, object: &WorldObjectId) -> bool {
+        self.required.contains(object)
+    }
+
+    /// The sectors that hold an object gameplay requires, in stable order.
+    ///
+    /// An object that names no sector is resident by definition, so it names no
+    /// sector here either: the rule that protects it is the residency rule, not
+    /// this one.
+    #[must_use]
+    pub fn required_sectors(&self) -> BTreeSet<SectorId> {
+        self.required
+            .iter()
+            .filter_map(|object| self.definition.object(object))
+            .flat_map(|record| record.sectors().iter().cloned())
+            .collect()
+    }
+
+    /// Records that this load has applied the overlay fired by `trigger`.
+    ///
+    /// Crate-private on purpose: only [`super::overlays::apply_overlay`] may
+    /// mark an overlay applied, and only after it has moved the entities. A
+    /// public setter would let a caller record an application that never
+    /// happened, which is the one lie this record must not tell — "once" is
+    /// only meaningful while it is written on the same step as the movement.
+    pub(crate) fn mark_applied(&mut self, trigger: WorldObjectId) {
+        self.applied.insert(trigger);
+    }
 }
 
 /// The one world a Bevy world has loaded, and its residency.
@@ -175,6 +254,16 @@ impl WorldResidency {
     pub const fn resident(&self) -> &ResidentWorld {
         &self.resident
     }
+
+    /// The loaded world, mutably.
+    ///
+    /// Crate-private, like [`ResidentWorld::mark_applied`]: the only state a
+    /// caller outside this module may change is the load's own per-object
+    /// condition, and that goes through [`damage_object`] so that every change
+    /// is stamped onto the entities a query can see.
+    pub(crate) fn resident_mut(&mut self) -> &mut ResidentWorld {
+        &mut self.resident
+    }
 }
 
 /// Why a load, unload or state change was refused.
@@ -187,6 +276,11 @@ pub enum WorldLoadError {
     Instance(WorldError),
     /// An object's authored matrix no runtime transform can hold.
     Spawn(WorldSpawnError),
+    /// A mission overlay could not be re-applied to a freshly spawned object,
+    /// which means the load's own record and the world disagree about what is
+    /// there. Handled rather than swallowed: the sector load is rolled back so
+    /// the residency still describes the world.
+    Overlay(super::overlays::OverlayError),
     /// A world is already loaded in this Bevy world. Loading a second one over
     /// it is how the last run's population and damage survive into this one, so
     /// it is refused by name instead of merged.
@@ -237,6 +331,9 @@ impl std::fmt::Display for WorldLoadError {
         match self {
             Self::Instance(err) => write!(f, "the load record is not valid: {err}"),
             Self::Spawn(err) => write!(f, "could not spawn the world: {err}"),
+            Self::Overlay(err) => {
+                write!(f, "could not re-apply the load's mission overlays: {err}")
+            }
             Self::WorldAlreadyResident {
                 resident,
                 requested,
@@ -438,6 +535,16 @@ pub fn load_world(
             .map(|object| (object.id().clone(), instance.initial_condition(object.id())))
             .collect(),
         objects: BTreeMap::new(),
+        // A load starts with nothing applied, and nothing left over from the
+        // last run: the previous run's record is gone with the world, so this
+        // mission's door starts shut (F18 non-negotiable behavior 5).
+        overlays: instance
+            .overlays()
+            .iter()
+            .map(|overlay| (overlay.trigger().clone(), overlay.clone()))
+            .collect(),
+        applied: BTreeSet::new(),
+        required: instance.required_objects().clone(),
     };
 
     let mut report = SpawnedWorld::of(definition.id());
@@ -617,6 +724,13 @@ pub fn load_sector(
                 .resident
                 .objects
                 .insert(spawned.object.clone(), spawned.clone());
+        }
+        // The load's memory is the condition *and* the effect it has already
+        // applied: a door that opened before its sector streamed out is still
+        // open when the sector comes back, beside the damaged objective that is
+        // still damaged. AC02's rule, applied to an overlay.
+        if let Err(err) = reapply_object(app.world_mut(), &spawned) {
+            return Err(rollback(app, &incoming, WorldLoadError::Overlay(err)));
         }
         incoming.push(spawned.clone());
         report.record(spawned);

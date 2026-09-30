@@ -1,15 +1,18 @@
-//! World instances, sectors and collision roles (F18-A, F18-B).
+//! World instances, sectors, collision roles and mission overlays
+//! (F18-A, F18-B, F18-C).
 //!
 //! Spec: `specs/F18-world-geometry-terrain-water-and-traversable-interiors.md`,
-//! stage `### F18-A`. Shared contract: `docs/contracts/IDENTITY-CONTENT.md`.
+//! stages `### F18-A`, `### F18-B` and `### F18-C`. Shared contract:
+//! `docs/contracts/IDENTITY-CONTENT.md`.
 //!
 //! This module is the **typed input/output contract** of the world feature —
 //! nothing here builds a collider, opens a file or touches Bevy (`cs_content`
 //! must never depend on Bevy or Avian). Stage F18-A declares what a world
 //! importer produces and what the runtime consumes; stage F18-B implements the
 //! importer and the static-collision generation against these records (adding
-//! the condition vocabulary the load owns), and F18-C adds mission overlays and
-//! streaming policy.
+//! the condition vocabulary the load owns); stage F18-C adds the mission-local
+//! overlay layer ([`MissionOverlay`], [`OverlayEffect`]) and the load's
+//! declaration of which objects gameplay requires.
 //!
 //! # The records
 //!
@@ -49,6 +52,19 @@
 //!   a statement about *state* as well as identity: a condition belongs to the
 //!   load, never to a spawned entity, so unloading a sector cannot lose it and
 //!   reloading it cannot invent a fresh one.
+//! * [`MissionOverlay`] is one **mission-local** change a load carries: a
+//!   trigger object, and the [`OverlayEffect`] crossing it applies to a target
+//!   object. It is the record acceptance scenario AC03 ("open an authored door
+//!   and verify both render and collision update once") is written against: the
+//!   trigger is a [`WorldCollisionRole::Sensor`] volume, the effect is
+//!   *designed* vocabulary, and the load — not the engine — decides that the
+//!   effect has already been applied.
+//! * [`WorldInstance::required_objects`] is the load's declaration of which
+//!   objects gameplay cannot lose to streaming. It is the other half of F18
+//!   non-negotiable behavior 3: an object outside render visibility is either
+//!   still simulated (its sector is held) or correctly summarized (its state
+//!   lives in the load, which is where the condition and the applied overlays
+//!   are kept).
 //!
 //! # Known is known, unknown is unknown
 //!
@@ -63,14 +79,17 @@
 //!
 //! The id grammar, [`Aabb`], [`Sector`], [`WorldCollisionRole`],
 //! [`WorldCollisionShape`], [`SurfaceRole`], [`WorldBoundary`],
-//! [`WorldDefinition`] and [`WorldInstance`] are **newly authored engine
-//! contract**. Which surface classes the 2000 PC original distinguishes,
-//! whether it stores world geometry per sector at all, how it identifies an
-//! object instance and what its boundary/ceiling rules are are **unknown**
-//! until an evidence stage measures them; nothing in this module claims to
-//! reproduce the original. The designed-vs-measured split and the unknowns
-//! this stage met are recorded in
-//! `docs/findings/2026-09-30-f18-a-world-instances-sectors-and-collision-roles.md`.
+//! [`WorldDefinition`], [`WorldInstance`], [`OverlayEffect`] and
+//! [`MissionOverlay`] are **newly authored engine contract**. Which surface
+//! classes the 2000 PC original distinguishes, whether it stores world
+//! geometry per sector at all, how it identifies an object instance, what
+//! changes a mission makes to a world object and what its boundary/ceiling
+//! rules are are **unknown** until an evidence stage measures them; nothing in
+//! this module claims to reproduce the original. The designed-vs-measured
+//! split and the unknowns the F18 stages met are recorded in
+//! `docs/findings/2026-09-30-f18-a-world-instances-sectors-and-collision-roles.md`,
+//! `docs/findings/2026-09-30-f18-b-world-import-and-static-collision.md` and
+//! `docs/findings/2026-09-30-f18-c-mission-overlays-and-visibility-streaming.md`.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -995,6 +1014,55 @@ pub enum WorldError {
     /// A load instance declared an empty explicit population, which would
     /// load nothing while looking configured.
     EmptyPopulation,
+    /// Two mission overlays share one trigger object.
+    ///
+    /// The trigger is the overlay's only identity — a load that declared two
+    /// effects for the same volume would have to pick one silently, and the
+    /// order it picked in would be the whole behaviour.
+    DuplicateOverlayTrigger {
+        /// The object two overlays were declared for.
+        object: WorldObjectId,
+    },
+    /// A mission overlay's displacement was NaN or infinite.
+    ///
+    /// A non-finite offset is not a displacement: it is a value no runtime
+    /// transform can hold, and applying it would move the target nowhere or
+    /// everywhere.
+    NonFiniteOverlayOffset {
+        /// The overlay's target object.
+        object: WorldObjectId,
+        /// The axis that was not finite.
+        axis: usize,
+    },
+    /// A mission overlay's trigger object is not a trigger.
+    ///
+    /// An overlay fires on an *overlap with a sensor volume*. A trigger whose
+    /// record is solid is a wall the body is stopped by and never enters; a
+    /// trigger whose role is an explicit unknown is a content gap. Either way
+    /// the overlay could not fire as declared, and a load that declared one
+    /// anyway would look configured while doing nothing.
+    OverlayTriggerNotASensor {
+        /// The object the overlay was declared for.
+        object: WorldObjectId,
+    },
+    /// A mission overlay's trigger role is an explicit unknown, so it cannot
+    /// be established that the trigger can be entered at all.
+    OverlayTriggerRoleUnknown {
+        /// The object whose role was never resolved.
+        object: WorldObjectId,
+    },
+    /// A mission overlay names a trigger or target the load's population never
+    /// activates, or a required object the population never activates.
+    ///
+    /// The object is never spawned by that load, so the overlay could never
+    /// fire, the effect could never be seen, and the "gameplay-required"
+    /// declaration would name a state nothing could show.
+    InactiveLoadObject {
+        /// The object that is never activated.
+        object: WorldObjectId,
+        /// What the object was named as.
+        context: &'static str,
+    },
 }
 
 impl fmt::Display for WorldError {
@@ -1021,6 +1089,27 @@ impl fmt::Display for WorldError {
             Self::EmptyPopulation => {
                 write!(f, "an explicit world population must not be empty")
             }
+            Self::DuplicateOverlayTrigger { object } => {
+                write!(f, "two mission overlays share the trigger `{object}`")
+            }
+            Self::NonFiniteOverlayOffset { object, axis } => write!(
+                f,
+                "the mission overlay that displaces `{object}` has a non-finite offset on axis {axis}"
+            ),
+            Self::OverlayTriggerNotASensor { object } => write!(
+                f,
+                "mission overlay trigger `{object}` is not a sensor volume, so an \
+                 overlap with it can never fire the overlay"
+            ),
+            Self::OverlayTriggerRoleUnknown { object } => write!(
+                f,
+                "mission overlay trigger `{object}` has an unresolved collision role, so it \
+                 cannot be established that a body can enter it"
+            ),
+            Self::InactiveLoadObject { object, context } => write!(
+                f,
+                "the load names `{object}` in {context}, but its population never activates it"
+            ),
         }
     }
 }
@@ -1411,6 +1500,8 @@ pub struct WorldInstance {
     variant: Resolved<WorldId>,
     population: WorldPopulation,
     initially_damaged: BTreeSet<WorldObjectId>,
+    overlays: Vec<MissionOverlay>,
+    required_objects: BTreeSet<WorldObjectId>,
     provenance: Provenance,
 }
 
@@ -1438,8 +1529,76 @@ impl WorldInstance {
             variant,
             population,
             initially_damaged,
+            overlays: Vec::new(),
+            required_objects: BTreeSet::new(),
             provenance,
         })
+    }
+
+    /// Adds this mission's **overlay layer**: the triggers that change the
+    /// world, and the objects gameplay cannot lose to streaming.
+    ///
+    /// The two belong together because they are the two halves of one rule (F18
+    /// non-negotiable behavior 3): an object gameplay needs must either stay
+    /// simulated while it is out of render visibility — which is what naming it
+    /// required holds for — or be correctly summarized when its sector is
+    /// streamed away, which is the load keeping the effect it already applied.
+    ///
+    /// A load with no overlays and no required objects is not a degraded load:
+    /// it is a world that never changes and never streams, which is exactly
+    /// what F18-A's and F18-B's fixtures declare.
+    ///
+    /// # Errors
+    ///
+    /// [`WorldError::DuplicateOverlayTrigger`] when two overlays share a
+    /// trigger, and [`WorldError::NonFiniteOverlayOffset`] when a displacement
+    /// is not finite. Whether the objects exist, are activated and — for a
+    /// trigger — are sensors is checked by
+    /// [`WorldInstance::validate_against`], which is the only place the
+    /// definition is available.
+    pub fn with_mission_layer(
+        mut self,
+        overlays: Vec<MissionOverlay>,
+        required_objects: BTreeSet<WorldObjectId>,
+    ) -> Result<Self, WorldError> {
+        let mut triggers = BTreeSet::new();
+        for overlay in &overlays {
+            if !triggers.insert(overlay.trigger().clone()) {
+                return Err(WorldError::DuplicateOverlayTrigger {
+                    object: overlay.trigger().clone(),
+                });
+            }
+        }
+        self.overlays = overlays;
+        self.required_objects = required_objects;
+        Ok(self)
+    }
+
+    /// The mission-local overlays this load declares, in declaration order.
+    #[must_use]
+    pub fn overlays(&self) -> &[MissionOverlay] {
+        &self.overlays
+    }
+
+    /// The overlay whose trigger is `trigger`, when this load declares one.
+    #[must_use]
+    pub fn overlay_for(&self, trigger: &WorldObjectId) -> Option<&MissionOverlay> {
+        self.overlays
+            .iter()
+            .find(|overlay| overlay.trigger() == trigger)
+    }
+
+    /// The objects gameplay requires, in stable order: the load declares these
+    /// as ones streaming must not take away.
+    #[must_use]
+    pub const fn required_objects(&self) -> &BTreeSet<WorldObjectId> {
+        &self.required_objects
+    }
+
+    /// Whether `object` is one gameplay cannot lose to streaming.
+    #[must_use]
+    pub fn is_required(&self, object: &WorldObjectId) -> bool {
+        self.required_objects.contains(object)
     }
 
     /// The definition this load reads from.
@@ -1503,10 +1662,20 @@ impl WorldInstance {
     /// # Errors
     ///
     /// [`WorldError::DefinitionMismatch`] when the load record names a
-    /// different world, or [`WorldError::UnknownInstanceObject`] when a
-    /// member of the population or of the initial-damage set is not an
-    /// object of `definition`. The name says which collection failed, so a
-    /// typo is reported instead of silently loading a different set.
+    /// different world, [`WorldError::UnknownInstanceObject`] when a member of
+    /// the population, of the initial-damage set, of the overlay layer or of
+    /// the required set is not an object of `definition`,
+    /// [`WorldError::DamagedObjectNotActivated`] when the load starts an object
+    /// damaged that its population never activates,
+    /// [`WorldError::InactiveLoadObject`] when an overlay's trigger, an
+    /// overlay's target or a required object is outside the population,
+    /// [`WorldError::OverlayTriggerRoleUnknown`] when a trigger's collision
+    /// role is an explicit unknown, and
+    /// [`WorldError::OverlayTriggerNotASensor`] when a trigger's role is
+    /// resolved to anything but a sensor. The name says which collection
+    /// failed, so a typo is reported instead of silently loading a different
+    /// set, and an overlay that could never fire is refused at the door
+    /// instead of loading as a configuration that does nothing.
     pub fn validate_against(&self, definition: &WorldDefinition) -> Result<(), WorldError> {
         if definition.id() != &self.definition {
             return Err(WorldError::DefinitionMismatch {
@@ -1542,7 +1711,168 @@ impl WorldInstance {
                 });
             }
         }
+        for object in &self.required_objects {
+            check(object, "the required object set")?;
+            if !self.activates(object) {
+                return Err(WorldError::InactiveLoadObject {
+                    object: object.clone(),
+                    context: "the required object set",
+                });
+            }
+        }
+        for overlay in &self.overlays {
+            let trigger = overlay.trigger();
+            check(trigger, "a mission overlay's trigger")?;
+            let effect_target = overlay.effect().target();
+            check(effect_target, "a mission overlay's effect target")?;
+            for (object, context) in [
+                (trigger, "a mission overlay's trigger"),
+                (effect_target, "a mission overlay's effect target"),
+            ] {
+                if !self.activates(object) {
+                    return Err(WorldError::InactiveLoadObject {
+                        object: object.clone(),
+                        context,
+                    });
+                }
+            }
+            match definition.object(trigger) {
+                Some(record) => match record.collision() {
+                    Resolved::Known(known) if known.value == WorldCollisionRole::Sensor => {}
+                    Resolved::Known(_) => {
+                        return Err(WorldError::OverlayTriggerNotASensor {
+                            object: trigger.clone(),
+                        });
+                    }
+                    Resolved::Unknown { .. } => {
+                        return Err(WorldError::OverlayTriggerRoleUnknown {
+                            object: trigger.clone(),
+                        });
+                    }
+                },
+                // Unreachable: `check` above refused an undeclared object.
+                None => {
+                    return Err(WorldError::UnknownInstanceObject {
+                        object: trigger.clone(),
+                        context: "a mission overlay's trigger",
+                    });
+                }
+            }
+        }
         Ok(())
+    }
+}
+
+// ----------------------------------------------------------- mission overlay ---
+
+/// What one mission-local overlay does to an authored object.
+///
+/// **Designed vocabulary.** The 2000 PC original's mission scripts name
+/// objectives and triggers, and this repository's `cs_content::script` and
+/// `missions/` sheets are where their *semantics* are measured (F06/F07
+/// opcode classes, and the mission sheets themselves). Which changes a world
+/// object undergoes, and how they are authored, is **unmeasured**; this
+/// vocabulary is the smallest one the spec's own acceptance scenario needs —
+/// acceptance scenario AC03 is *open an authored door*, and a door that moves
+/// is the one change that lets both consumers be checked against each other:
+/// the drawn geometry and the collision geometry are the same object, so
+/// moving one without the other is visible.
+#[derive(Clone, Debug, PartialEq)]
+pub enum OverlayEffect {
+    /// The target object's geometry is displaced by this translation, in
+    /// canonical meters, **once**.
+    ///
+    /// "Once" is a property of the load, not of this value: the load records
+    /// that it applied the effect, so a second crossing of the same trigger is
+    /// not a second displacement. Which object the displacement belongs to —
+    /// a door panel, a drawbridge, a cargo hatch — is the record's business
+    /// and is not claimed to be the original's.
+    Displace {
+        /// The object whose geometry moves.
+        target: WorldObjectId,
+        /// The displacement, in canonical meters.
+        offset_m: [f64; 3],
+    },
+}
+
+impl OverlayEffect {
+    /// The object this effect moves.
+    #[must_use]
+    pub const fn target(&self) -> &WorldObjectId {
+        match self {
+            Self::Displace { target, .. } => target,
+        }
+    }
+}
+
+/// One mission-local overlay: a trigger object, and the effect an actor
+/// reaching it applies.
+///
+/// The trigger is an ordinary authored object — an instance of the same
+/// [`WorldDefinition`] the rest of the world is built from — whose collision
+/// role is [`WorldCollisionRole::Sensor`]. It is *not* a special "trigger"
+/// kind, because the spec's own non-negotiable behavior 3 requires gameplay
+/// state to survive streaming for ordinary world objects, and an overlay whose
+/// trigger lived outside that machinery would be exactly the unstreamable
+/// exception it forbids. [`WorldInstance::validate_against`] refuses an overlay
+/// whose trigger is not a sensor, so the trigger's role is part of what the
+/// load guarantees rather than a convention.
+///
+/// The *applier* is the runtime's business ([`cs_app::world`]), not this
+/// module's: a record states what crossing a volume does, and the engine
+/// decides how a body reaching it is noticed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MissionOverlay {
+    trigger: WorldObjectId,
+    effect: OverlayEffect,
+    provenance: Provenance,
+}
+
+impl MissionOverlay {
+    /// Builds an overlay from a trigger and an effect.
+    ///
+    /// # Errors
+    ///
+    /// [`WorldError::NonFiniteOverlayOffset`] when a displacement is NaN or
+    /// infinite — a value no runtime transform can hold, and a displacement
+    /// that is not one.
+    pub fn try_new(
+        trigger: WorldObjectId,
+        effect: OverlayEffect,
+        provenance: Provenance,
+    ) -> Result<Self, WorldError> {
+        let OverlayEffect::Displace { target, offset_m } = &effect;
+        for (axis, offset) in offset_m.iter().enumerate() {
+            if !offset.is_finite() {
+                return Err(WorldError::NonFiniteOverlayOffset {
+                    object: target.clone(),
+                    axis,
+                });
+            }
+        }
+        Ok(Self {
+            trigger,
+            effect,
+            provenance,
+        })
+    }
+
+    /// The object whose overlap fires this overlay.
+    #[must_use]
+    pub const fn trigger(&self) -> &WorldObjectId {
+        &self.trigger
+    }
+
+    /// What this overlay does when it fires.
+    #[must_use]
+    pub const fn effect(&self) -> &OverlayEffect {
+        &self.effect
+    }
+
+    /// The provenance of the overlay record itself.
+    #[must_use]
+    pub const fn provenance(&self) -> &Provenance {
+        &self.provenance
     }
 }
 

@@ -1,19 +1,21 @@
-//! F18-A and F18-B acceptance tests: world instances, sectors, collision roles,
-//! world import and static collision generation.
+//! F18-A, F18-B and F18-C acceptance tests: world instances, sectors, collision
+//! roles, world import, static collision generation, mission overlays and
+//! streaming.
 //!
 //! Spec: `specs/F18-world-geometry-terrain-water-and-traversable-interiors.md`,
-//! stages `### F18-A` and `### F18-B`. Task test prefixes: `accept_f18_a_` and
-//! `accept_f18_b_`.
+//! stages `### F18-A`, `### F18-B` and `### F18-C`. Task test prefixes:
+//! `accept_f18_a_`, `accept_f18_b_` and `accept_f18_c_`.
 //!
 //! These tests drive production code only: `cs_content::world` owns the
 //! records, `cs_app::world::spawn_world` is the one conversion into Bevy/Avian,
 //! `cs_app::world::load_world` and its sector calls are the load transaction,
 //! `cs_app::world::WorldContacts` is the contact log, and the synthetic
 //! fixtures (`arch_world` for the cuboid records, `harbor_world` for the
-//! mesh-authored ones) are the same functions the runtime will call. No test
-//! carries its own world builder or its own collision path.
+//! mesh-authored ones, `depot_world` for the door and the sectors a mission
+//! overlay and a streaming pass act on) are the same functions the runtime will
+//! call. No test carries its own world builder or its own collision path.
 //!
-//! No original data and no `CS_GAME_DIR` access: both fixtures are authored
+//! No original data and no `CS_GAME_DIR` access: all three fixtures are authored
 //! development content (`Origin::SyntheticFixture`) and prove the interface and
 //! the collision contract, never the original game.
 //!
@@ -30,10 +32,20 @@
 //! geometry reported — and `residency` owns AC02: a damaged objective survives
 //! unloading and reloading its sector, and a second mission loads its own
 //! population and damage with nothing left over.
+//!
+//! **F18-C** (`accept_f18_c_`) is the mission layer on top of that transaction:
+//! `overlays` owns AC03 — a body reaching a trigger volume opens an authored
+//! door, and both the drawn and the collided half of the door move, once — and
+//! the records and refusals around it; `visibility` owns the streaming policy:
+//! a sector a gameplay-required object is in is held whatever the focus does, and
+//! a sector that went comes back with the condition and the applied overlay its
+//! load already held.
 
 mod common;
 mod import;
+mod overlays;
 mod records;
 mod residency;
 mod spawn;
 mod sweep;
+mod visibility;
