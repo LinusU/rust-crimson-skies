@@ -248,6 +248,13 @@ pub enum LegacyLayoutError {
         /// The field name that overlaps.
         field: String,
     },
+    /// A declared record size is below the end of the last declared slot.
+    RecordSizeTooSmall {
+        /// The smallest size the declaration needs.
+        declared: usize,
+        /// The size that was asked for.
+        requested: usize,
+    },
     /// A declared slot overlaps the magic.
     SlotOverlapsMagic {
         /// The field name.
@@ -278,6 +285,14 @@ impl fmt::Display for LegacyLayoutError {
             Self::OverlappingSlots { field } => {
                 write!(f, "field {field:?} overlaps another slot")
             }
+            Self::RecordSizeTooSmall {
+                declared,
+                requested,
+            } => write!(
+                f,
+                "a record size of {requested} is below the {declared} bytes the \
+                 declared record fields need"
+            ),
             Self::SlotOverlapsMagic { field } => {
                 write!(f, "field {field:?} overlaps the leading magic")
             }
@@ -303,6 +318,7 @@ pub struct LegacyLayout {
     supported_version_major: u32,
     record_count_field: String,
     record: Vec<LegacySlot>,
+    record_size: usize,
     id_refs: Vec<LegacyIdSlot>,
     trailing: TrailingPolicy,
 }
@@ -334,9 +350,36 @@ impl LegacyLayout {
             supported_version_major,
             record_count_field: record_count_field.into(),
             record,
+            record_size: 0,
             id_refs,
             trailing,
         }
+    }
+
+    /// Declares the fixed size of one record.
+    ///
+    /// A record may be wider than its last declared slot — a measured layout
+    /// knows the record's real stride even when it has not accounted for every
+    /// field in it. The difference is **retained** per record in
+    /// [`LegacyRecord::undeclared`] rather than skipped, which is what lets the
+    /// import layer report such a record as unresolved instead of silently
+    /// short. Without this call the record size is exactly the end of the last
+    /// declared slot.
+    ///
+    /// # Errors
+    ///
+    /// [`LegacyLayoutError::RecordSizeTooSmall`] when `record_size` is below
+    /// the end of the last declared slot, which would mean reading the next
+    /// record's bytes as this one's fields.
+    pub fn with_record_size(mut self, record_size: usize) -> Result<Self, LegacyLayoutError> {
+        if record_size < self.record_bytes() {
+            return Err(LegacyLayoutError::RecordSizeTooSmall {
+                declared: self.record_bytes(),
+                requested: record_size,
+            });
+        }
+        self.record_size = record_size;
+        Ok(self)
     }
 
     /// The layout's label, used as the reader's container provenance.
@@ -399,6 +442,12 @@ impl LegacyLayout {
     /// [`Self::validate`] refuses.
     pub fn record_bytes(&self) -> usize {
         self.record.iter().map(LegacySlot::end).max().unwrap_or(0)
+    }
+
+    /// The size of one record in the table, which is the end of the last
+    /// declared slot unless [`Self::with_record_size`] declared a wider stride.
+    pub fn record_size(&self) -> usize {
+        self.record_size.max(self.record_bytes())
     }
 
     /// Checks the declaration's own rules.
@@ -950,7 +999,7 @@ pub fn read_legacy_profile(
 
     // The record table's extent is booked against an independent F03 budget
     // and checked against the document before a single record is reserved.
-    let declared_record_bytes = layout.record_bytes() as u64;
+    let declared_record_bytes = layout.record_size() as u64;
     let mut budget = AllocationBudget::new(layout.id(), limits.max_bytes);
     let table_end = budget.reserve_extent(
         "record_table",
@@ -977,7 +1026,7 @@ pub fn read_legacy_profile(
         )
     })?;
     let mut records = Vec::with_capacity(capacity);
-    let declared_end = declared_record_bytes;
+    let declared_end = layout.record_bytes() as u64;
     for index in 0..record_count {
         let base = header_bytes + index * declared_record_bytes;
         let mut fields = Vec::with_capacity(layout.record_slots().len());

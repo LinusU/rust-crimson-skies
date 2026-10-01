@@ -393,8 +393,7 @@ impl LegacyIdMap {
             });
         }
         self.bindings.push(binding);
-        self.bindings
-            .sort_by_key(|row| (row.class, row.raw));
+        self.bindings.sort_by_key(|row| (row.class, row.raw));
         Ok(())
     }
 

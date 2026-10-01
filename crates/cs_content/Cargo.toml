@@ -10,3 +10,9 @@ publish.workspace = true
 cs_assets.workspace = true
 cs_formats.workspace = true
 cs_types.workspace = true
+
+[dev-dependencies]
+# The F64-A acceptance test compares the source fingerprint `legacy_import`
+# retains against the SHA-256 of the same bytes, so the assertion uses the
+# production hashing path rather than a copy of it.
+cs_assets.workspace = true
