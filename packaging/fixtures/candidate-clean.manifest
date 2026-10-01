@@ -1,0 +1,19 @@
+# Synthetic candidate release manifest (F61-A fixture).
+#
+# Newly authored text for this repository: no original game content, no
+# extracted member, no build artifact. The sizes are plausible, not measured;
+# nothing here is a claim about what a real release weighs.
+version: 0.1.0
+member crimson-skies 12582912
+member LICENSE 1073
+member THIRD-PARTY-NOTICES.md 4096
+member REFERENCE-TOOLS.md 1536
+member NOTICE.md 2048
+member COMPATIBILITY.md 1024
+member README.md 2048
+member docs/installation.md 3072
+member docs/troubleshooting.md 2048
+# A source hash manifest: digests naming original content, none of the
+# content itself (F61 non-negotiable 1).
+member content-sha256.txt.sha256 8192
+member SHA256SUMS 8192
