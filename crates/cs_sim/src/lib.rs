@@ -142,6 +142,19 @@
 //! `cs_content::pilots`; the conversion boundary and ECS binding are
 //! `cs_app::roster`; the assignment rules and mission wiring are F33-B/C.
 //!
+//! [`interaction`] is the F36-A docking/pickup/boarding/plane-swap contract
+//! (`specs/F36-docking-passenger-pickups-boarding-and-plane-swaps.md`, stage
+//! `### F36-A`): the four [`interaction::InteractionKind`]s that share
+//! infrastructure but keep distinct effects, the explicit
+//! [`interaction::InteractionState`] chain, the stable
+//! [`interaction::InteractionId`] binding initiator, target, authorization
+//! and session, the swept [`interaction::evaluate_eligibility`] whose closest
+//! approach over relative motion replaces a single radius test, and
+//! [`interaction::InteractionTransaction`] with its declared per-transition
+//! [`interaction::TransferPolicy`]. The declared schema is
+//! `cs_content::interaction`; the lowering boundary is `cs_app::interaction`;
+//! the moving-frame runtime and consumer wiring are F36-B/C.
+//!
 //! [`environment`] owns the air-relative velocity conversion and nothing else
 //! (`specs/F19-sky-atmosphere-weather-and-visibility.md`, non-negotiable
 //! behavior 2; task #434 `F19-WIND-CONVERSION-OWNER`):
@@ -241,6 +254,7 @@ pub mod control;
 pub mod damage;
 pub mod environment;
 pub mod flight;
+pub mod interaction;
 pub mod mission;
 pub mod objectives;
 pub mod probes;
