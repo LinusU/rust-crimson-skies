@@ -33,7 +33,8 @@ share an anchor. Two additions whose sheet ids fall between the same pair of
 neighbouring paragraphs can still share a line and conflict, but that residual
 case is narrow; the old append-at-the-end rule made it universal. The rule
 applies to any crate-level `//!` block that carries per-stage paragraphs, and
-the tests below enforce it for `cs_content` and `cs_formats`.
+the tests below enforce it for `cs_content`, `cs_formats`, `cs_app` and
+`cs_sim`.
 
 ## Why feature-sheet order
 
@@ -46,7 +47,9 @@ cannot drift the way an append position does.
 
 ## Enforcement
 
-`crates/cs_content/tests/accept_doclib_conflict.rs` and
-`crates/cs_formats/tests/accept_doclib_conflict.rs` read each crate's real
+`crates/cs_content/tests/accept_doclib_conflict.rs`,
+`crates/cs_formats/tests/accept_doclib_conflict.rs`,
+`crates/cs_app/tests/accept_doclib_conflict.rs` and
+`crates/cs_sim/tests/accept_doclib_conflict.rs` read each crate's real
 `src/lib.rs` and fail, with this file's path in the message, when a paragraph is
 inserted out of order or when the `pub mod` list stops being alphabetical.
