@@ -32,7 +32,13 @@ format is exactly the kind of fabricated finding AGENTS rule 4 forbids. Option
 about the original.
 
 **This makes no original-data claim.** Whether the original route encoding
-expresses a loop at all remains unknown and is F31-D's to measure with `retail`.
+expresses a loop at all remains unknown. It was still unknown when this branch
+was rebased: F31-D (#128) landed on `main` on 2026-10-01 and measured the
+**carrier** — all 53 mission directories of the owner's installation carry the
+observed `aiv.zrd` control member — while recording the route encoding itself as
+`"state":"unmeasured"` and filing the decode as **#455** (`F31-ROUTE-ENCODING`).
+So the resolving task for limitation 2 below is **#455**, not F31-D, and option
+(b) was still unavailable at review time.
 
 ## The designed behavior
 
@@ -114,12 +120,14 @@ the fix.
    flying the route.
 2. **The original route encoding remains unmeasured.** No original route is
    parsed; whether the original expressed loop, patrol or end termination at all
-   is unknown. Resolving task: **F31-D** (needs `retail`).
+   is unknown. F31-D measured the `aiv.zrd` carrier only and recorded the
+   encoding itself as unmeasured. Resolving task: **#455** (`F31-ROUTE-ENCODING`,
+   needs `retail`), which depends on F13-D (#52).
 3. **The declared edges do not carry the wrap.** `cs_content` still requires
    edges to connect adjacent sequences, so a loop's last-to-first edge is
    *implied* by `RouteTermination::Loop` rather than authored. If an original
    record authors that edge explicitly, the content validator would refuse it as
-   `EdgeNotAdjacent`. Unknown until F13/F31-D measure a real record; recorded
+   `EdgeNotAdjacent`. Unknown until **#455** measures a real record; recorded
    here rather than guessed at.
 
 ## Mutation probes (tests fail when the behavior is removed)
@@ -156,23 +164,34 @@ as described.
 
 ## Commands run
 
-Exit codes as printed on the final tree, by the implementer and again by the
-review after the `is_complete` fix:
+Exit codes as printed by the implementer and again by the review, on the tree
+rebased onto `main` (which by then carried F31-D, hence 1793 rather than the
+1785 the pre-rebase tree had):
 
 ```
 cargo fmt --all -- --check                                                -> 0
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings -> 0
-cargo test --workspace --locked                                           -> 0 (1785 passed, 0 failed, 104 ignored)
+cargo test --workspace --locked                                           -> 0 (1793 passed, 0 failed, 106 ignored)
 cargo test --workspace --locked -- accept_t447_ --include-ignored         -> 0 (9 tests selected, all passed)
-cargo test --workspace --locked -- accept_f31_ --include-ignored          -> 0 (54 tests selected, all passed)
+cargo test --workspace --locked -- accept_f31_ --include-ignored          -> 0 (63 tests selected, all passed)
 ```
+
+The review additionally ran the whole ignored suite on this machine
+(`CS_GAME_DIR` set, `CS_CAPABILITIES=retail,gpu,audio`): 1859 passed, 30 failed.
+All 30 are pre-existing environment failures unrelated to this task — 28
+`evidence_report_*` harnesses that require `CS_EVIDENCE_DIR`, the F18-D GPU
+capture (no writable screenshot target), and two pinned-reference retail tests
+whose extracted references (`private/f08d-reference`, `private/f09d-reference`)
+are not present in this checkout. None of them touches routes or navigation, and
+CI does not run ignored tests.
 
 ## Evidence
 
 Synthetic fixtures and project design only. No original-data, visual, audible
 or ordinary-play claim; this stage can award at most **checked**. No evidence
 report is produced because #447 needs no capability beyond plain build/test and
-makes no fidelity claim. F31-D owns retail route-coverage evidence.
+makes no fidelity claim. F31-D owns the retail *carrier*-coverage evidence
+(`docs/findings/evidence/F31-D.json`); **#455** owns the route decode.
 
 Two prior-stage test files were touched, for compilation only:
 `crates/cs_sim/tests/accept_f31_a_navigation.rs` and
@@ -192,4 +211,7 @@ cover changed.
 - `docs/findings/2026-10-01-f31-c-original-routes-and-moving-frames.md`
   (limitation 3: loop termination refused, not followed — resolved by this task),
   `docs/findings/2026-09-29-f13-c-signature-probes-and-reachability.md`
-  (F13 recovers no route layout).
+  (F13 recovers no route layout),
+  `docs/findings/2026-10-01-f31-d-route-coverage-in-every-mission-type.md`
+  (F31-D measured the `aiv.zrd` carrier and recorded the route encoding as
+  unmeasured, filed as #455).

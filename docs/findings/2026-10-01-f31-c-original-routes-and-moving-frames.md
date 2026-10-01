@@ -142,7 +142,9 @@ Affected content: the whole F31 navigation path. Resolving tasks: **#446**,
    `RouteGraph`, plus `laps` and a monotonic cross-lap node count on
    `RouteProgress`), `project_route` carries the declared termination across and
    no longer reports an unsupported termination. Whether the *original* encoding
-   expresses a loop is still unknown and stays with F31-D. See
+   expresses a loop is still unknown; F31-D measured the `aiv.zrd` carrier only
+   and recorded the route encoding as unmeasured, so it stays with **#455**
+   (`F31-ROUTE-ENCODING`). See
    `docs/findings/2026-10-01-f447-loop-route-termination.md`.
 4. **The authored string node key is dropped at the boundary.** The runtime
    `RouteNodeId` is a `u64` equal to the authored `sequence`; the authored string

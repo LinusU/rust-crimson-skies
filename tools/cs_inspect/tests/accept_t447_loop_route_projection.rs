@@ -12,7 +12,8 @@
 //! silently followed once) makes one of them fail.
 //!
 //! Whether the original 2000 route encoding expresses a loop at all is
-//! **unmeasured** (F13; F31-D owns retail route coverage). These tests pin the
+//! **unmeasured** (F13; F31-D measured only the `aiv.zrd` carrier, and the
+//! decode is filed as #455 `F31-ROUTE-ENCODING`). These tests pin the
 //! declared-content -> runtime contract, not an original-data claim.
 //!
 //! Every value here is newly authored synthetic fixture data, never original

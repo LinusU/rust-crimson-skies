@@ -350,10 +350,12 @@ pub enum AnchorKind {
 /// What a route does after its last node.
 ///
 /// Whether the original 2000 route encoding expresses a loop at all is
-/// **unmeasured**: F13 recovers no route layout and F31-D owns retail route
-/// coverage. Declaring the variant here is a project design choice so a record
-/// that says `Loop` is followed as a loop rather than refused or silently
-/// followed as an end; it is not a claim about original content.
+/// **unmeasured**: F13 recovers no route layout, and F31-D measured only that
+/// every mission directory carries the `aiv.zrd` control member, not what is
+/// inside it; the route decode is filed as **#455** (`F31-ROUTE-ENCODING`).
+/// Declaring the variant here is a project design choice so a record that says
+/// `Loop` is followed as a loop rather than refused or silently followed as an
+/// end; it is not a claim about original content.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RouteTermination {
     /// The route ends at its last node.

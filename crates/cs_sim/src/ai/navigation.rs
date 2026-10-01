@@ -138,9 +138,11 @@ impl fmt::Display for RouteNodeId {
 /// `cs_content::routes::RouteTermination` so the producer's declared
 /// termination survives projection instead of being refused (F31-C). Whether
 /// the original 2000 route encoding expresses a loop at all is **unmeasured**:
-/// F13 recovers no route layout, and F31-D owns retail route coverage. This
-/// enum is therefore project design — it lets a declared record be followed
-/// honestly, and it never asserts that the original authored one.
+/// F13 recovers no route layout, and F31-D measured only that every mission
+/// directory carries the `aiv.zrd` control member, not what is inside it; the
+/// route decode is filed as **#455** (`F31-ROUTE-ENCODING`). This enum is
+/// therefore project design — it lets a declared record be followed honestly,
+/// and it never asserts that the original authored one.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum RouteTermination {
     /// The route ends at its last node: progress runs off the end and the
@@ -2365,7 +2367,8 @@ pub fn synthetic_pursuit_tie_blocker() -> Blocker {
 /// last node's tighter one and not against an invented wrap-edge radius.
 ///
 /// All positions and radii are newly authored project design: the original
-/// route encoding is unmeasured (F13) and F31-D owns retail route coverage.
+/// route encoding is unmeasured (F13; F31-D measured only the `aiv.zrd`
+/// carrier), and the decode is filed as **#455** (`F31-ROUTE-ENCODING`).
 #[must_use]
 pub fn synthetic_loop_route() -> RouteGraph {
     RouteGraph {
