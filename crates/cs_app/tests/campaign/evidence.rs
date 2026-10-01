@@ -404,8 +404,11 @@ fn evidence_report_m02_a_writes_the_acceptance_report() {
         artifact_array(&artifacts),
         jstr(
             "implementer: bunny-alpha-2 (Rally #261, session of 2026-10-01T04:31Z); reviewer: \
-             not yet assigned at hand-over. Same-agent review would not be independent \
-             original-reference evidence, and no agent review replaces the owner's human approval"
+             bunny-alpha-2 again, on the same Rally review claim (2026-10-01T05:25Z). Same agent \
+             identity, so this is NOT independent review and is not independent original-reference \
+             evidence; the reviewer's context was fresh (a new session that re-read the tree, the \
+             installation and the task history) but a fresh context does not make a reviewer \
+             independent. No agent review replaces the owner's human approval"
         ),
         jstr(
             "acceptance suite re-run locally with the retail capability; this harness derives every \
@@ -416,9 +419,15 @@ fn evidence_report_m02_a_writes_the_acceptance_report() {
              `SourceContext::join_agreement` + `campaign_position_for`, whose contradiction arm no \
              retail installation produces and which is therefore proved on authored values in the \
              synthetic test; claim is implemented only; validated with \
-             tools/validate_evidence.py --require-pass. `candidate_tree` is the tree of the commit \
-             the suite ran on: the only later delta is this report's own copy under \
-             docs/findings/evidence/, whose bytes are this file"
+             tools/validate_evidence.py --require-pass. The reviewer regenerated this report on the \
+             corrected, rebased commit: `campaign_position_for` now refuses through \
+             `JoinAgreement::establishes()` instead of re-reading `agreement.state`, and \
+             `accept_m02_a_the_join_is_corroborated_by_the_long_name_rows` additionally asserts \
+             that every listed row block is exactly as long as the campaign, which it did not \
+             before. The reviewer also re-applied all seven mutations; two rows of \
+             docs/findings/2026-10-01-m02-a-source-binding.md were wrong and are corrected there. \
+             `candidate_tree` is the tree of the commit this run tested: the only later delta is \
+             this report's own copy under docs/findings/evidence/, whose bytes are this file"
         ),
     );
 
