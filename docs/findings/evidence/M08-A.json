@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "M08-A",
+ "candidate_tree": "e7003e77e5e442d773d1426c7340b621604ffc2c",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-10-01T23:44:42Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_m08_a_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/agent-2", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 9, "executed": 9, "passed": 9, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_m08_a_a_title_block_must_be_exactly_the_campaign_length", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m08_a_a_contradicted_corroboration_establishes_no_position", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m08_a_the_campaign_keeps_everything_else_unresolved_and_unready", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m08_a_the_committed_record_is_what_the_installation_derives", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m08_a_the_position_is_interior_to_the_second_chapter_and_its_region_group", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m08_a_the_original_name_is_confirmed_against_the_local_strings", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m08_a_the_world_group_holds_several_missions_and_not_the_whole_chapter", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m08_a_the_join_is_corroborated_by_the_long_name_rows", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m08_a_source_derived_binding_has_no_unresolved_critical_dependencies", "status": "pass", "evidence": ["cargo-test.log"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "578476aaf39790ad76a3d9b0cba502002e554bc8d17b3960ad690252b019b926", "kind": "log"}, {"path": "m08-binding.json", "sha256": "8ee4a9d61f23df527d739a9fc0297fc759f5859b46b1cfeda6328d3368970220", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "implementer: claude-1 (Rally #279, Claude Sonnet 5.5, session of 2026-10-01T23:16Z); reviewer: none yet. The implementer's own run is not independent review, is not independent original-reference evidence, and no agent review replaces the owner's human approval", "method": "acceptance suite run locally with the retail capability by the implementer; this harness derives every field from the recorded log, production discovery of $CS_GAME_DIR and the binding `SourceContext::read` + `SourceContext::bind` derive from it (all five critical dependencies resolved; checklist entries still unknown are recorded in missions/bindings/M08.json, not dropped). No production code changed at M08-A: the join, its corroboration and the guard are M02-A's, and this stage exercises them at the eighth campaign position, the third mission of chapter 2, strictly inside the layout's chapter group and the localized long names' second region group; claim is implemented only; validated with tools/validate_evidence.py --require-pass. `candidate_tree` is the tree of the commit the suite ran on: the only later delta is this report's own copy under docs/findings/evidence/, whose bytes are this file"},
+ "claim": "implemented"
+}
