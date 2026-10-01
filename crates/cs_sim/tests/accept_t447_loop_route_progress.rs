@@ -224,29 +224,85 @@ fn accept_t447_loop_wrap_edge_uses_the_first_nodes_own_arrival_radius() {
     )
     .expect("the loop follow request is valid");
 
-    // Find the tick the follower arrives at node 0 after at least one wrap and
-    // confirm it was an ordinary swept arrival: the segment it committed came
-    // within node 0's own radius, from a position on the previous leg rather
-    // than from node 0 itself.
-    let wrap_arrival = outcome.decisions.iter().position(|decision| {
-        decision.decision.progress.laps() > 0 && decision.decision.progress.next_index() == 0
-    });
-    let wrap_arrival =
-        wrap_arrival.expect("the run contains a decision whose target re-armed to node 0");
-    let step = &outcome.decisions[wrap_arrival].decision.step;
-    let node0 = route.nodes[0].position_m;
-    let distance = ((step.from_m[0] - node0[0]).powi(2)
-        + (step.from_m[1] - node0[1]).powi(2)
-        + (step.from_m[2] - node0[2]).powi(2))
+    // The wrap edge is the ordinary last-to-first edge, so re-arriving at node 0
+    // after a wrap is the same swept test as arriving at any other node: the
+    // committed segment crosses node 0's *own* authored radius.
+    //
+    // This discriminates which radius the wrap edge is tested against. A wrap
+    // tested against node 1's or node 2's tighter radius (6-8 m) would not fire
+    // until the follower was already well inside it; a wrap that invented its
+    // own volume, or one that teleported onto the node, would fire from far
+    // away or without flying the leg at all.
+    let mut arrivals = Vec::new();
+    let mut previous_reached = 0;
+    for decision in &outcome.decisions {
+        let progress = decision.decision.progress;
+        let arrived_at_node_0 = decision.decision.target == Some(RouteNodeId(0))
+            && progress.reached() > previous_reached;
+        if arrived_at_node_0 && progress.laps() > 0 {
+            let step = &decision.decision.step;
+            let distance_from = ((step.from_m[0] * step.from_m[0])
+                + (step.from_m[1] * step.from_m[1])
+                + (step.from_m[2] * step.from_m[2]))
+                .sqrt();
+            let distance_to = ((step.to_m[0] * step.to_m[0])
+                + (step.to_m[1] * step.to_m[1])
+                + (step.to_m[2] * step.to_m[2]))
+                .sqrt();
+            arrivals.push((distance_from, distance_to));
+        }
+        previous_reached = progress.reached();
+    }
+    assert!(
+        arrivals.len() >= 2,
+        "node 0 must be arrived at again on later laps, got {} arrivals",
+        arrivals.len()
+    );
+    for (distance_from, distance_to) in &arrivals {
+        // The arrival fired because *this* segment entered node 0's radius.
+        assert!(
+            *distance_to < node0_radius,
+            "arrival at node 0 after a wrap must be a swept crossing of node 0's \
+             own {node0_radius} m radius, but the committed segment ended \
+             {distance_to} m out"
+        );
+        // ...and it fired on this tick, so the step began just outside the
+        // radius. The slack is one tick of travel, and is still far below the
+        // ~177 m the follower is from node 0 on the wrap leg.
+        assert!(
+            *distance_from > node0_radius - 1.0 && *distance_from < node0_radius + 2.0,
+            "arrival at node 0 must fire on the first tick whose swept segment \
+             crosses node 0's own {node0_radius} m radius, so the step must start \
+             just outside it (within one tick of travel); it started \
+             {distance_from} m out"
+        );
+        assert!(
+            *distance_from > 0.5,
+            "the wrap edge must be flown in from off-node, not assumed on arrival; \
+             the step started {distance_from} m out"
+        );
+    }
+
+    // The wrap itself is a real leg: the decision that re-armed the target to
+    // node 0 was taken at the last node the follower reached, not at node 0 and
+    // not somewhere in between.
+    let wrap = outcome
+        .decisions
+        .iter()
+        .find(|decision| {
+            decision.decision.progress.laps() > 0 && decision.decision.progress.next_index() == 0
+        })
+        .expect("the run contains a decision whose target re-armed to node 0");
+    let corner = route.nodes[route.node_count() - 1].position_m;
+    let wrap_step = &wrap.decision.step;
+    let distance_from_corner = ((wrap_step.from_m[0] - corner[0]).powi(2)
+        + (wrap_step.from_m[1] - corner[1]).powi(2)
+        + (wrap_step.from_m[2] - corner[2]).powi(2))
     .sqrt();
     assert!(
-        distance > node0_radius,
-        "the wrap edge must be flown in from off-node, not assumed on arrival; \
-         started {distance} m from node 0"
-    );
-    assert!(
-        distance < 400.0,
-        "the wrap edge must be a real leg, not a teleport; started {distance} m from node 0"
+        distance_from_corner < 20.0,
+        "the wrap must be recorded at the last node the follower reached, not \
+         elsewhere; it was {distance_from_corner} m from the last node"
     );
 }
 

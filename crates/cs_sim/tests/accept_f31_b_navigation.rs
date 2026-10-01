@@ -26,10 +26,10 @@ use cs_sim::ai::navigation::{
     AvoidanceState, Blocker, NavState, NavigationCadence, NavigationError, NavigationSet,
     Navigator, PursuitDecision, PursuitRequest, ReferenceFrameSample, RouteFrame, RouteGraph,
     RouteNode, RouteNodeId, RouteProgress, RouteTermination, SYNTHETIC_PURSUIT_SEED,
-    SYNTHETIC_PURSUIT_SESSION, heading_from_direction, synthetic_arch_blockers, synthetic_arch_route,
-    synthetic_arch_start, synthetic_maneuver_envelope, synthetic_pursuit_actor,
-    synthetic_pursuit_route, synthetic_pursuit_set, synthetic_pursuit_start,
-    synthetic_pursuit_tie_blocker, tie_break_draw,
+    SYNTHETIC_PURSUIT_SESSION, heading_from_direction, synthetic_arch_blockers,
+    synthetic_arch_route, synthetic_arch_start, synthetic_maneuver_envelope,
+    synthetic_pursuit_actor, synthetic_pursuit_route, synthetic_pursuit_set,
+    synthetic_pursuit_start, synthetic_pursuit_tie_blocker, tie_break_draw,
 };
 use cs_sim::damage::ActorId;
 use cs_types::Tick;
