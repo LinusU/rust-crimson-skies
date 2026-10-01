@@ -253,6 +253,17 @@ owner's review. What it did: re-derived the AC01 numbers by hand from
    now states that it is target *selection* only — what an `Evade` or
    `Retreat` assignment does about the target it is given is F32-B's.
 
+### Review commands run (all exit 0)
+
+- `cargo fmt --all -- --check`
+- `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
+- `cargo test --workspace --locked` — 1815 passed on the review branch
+  before the rebase, 1823 after rebasing onto the current `origin/main`
+  (the 8 extra tests come from `main`, not from this branch)
+- `cargo test --workspace --locked -- accept_f32_a_ --include-ignored` —
+  39 tests (32 in `cs_sim`'s `ai` target, 7 in `cs_content`'s lib), all
+  passing
+
 ### Review sensitivity probes (run and reverted; none committed)
 
 1. Formation/assignment mismatch check disabled → 1 failure
