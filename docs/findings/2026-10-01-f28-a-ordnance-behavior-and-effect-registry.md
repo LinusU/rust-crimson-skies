@@ -22,9 +22,9 @@ evidence report required).
   `TargetObservation`, `StatusEffectLedger`, `NitroLedger`/`NitroTick`, and
   the synthetic fixture (`synthetic_registry`, `synthetic_proximity_flak`,
   `synthetic_*`, `SYNTHETIC_*`).
-- `crates/cs_sim/src/weapons/mod.rs`, `crates/cs_sim/src/lib.rs`,
-  `crates/cs_content/src/lib.rs`, `crates/cs_app/src/lib.rs` (wiring only):
-  the module declarations and the flat re-export/doc-comment lists. No logic.
+- `crates/cs_sim/src/weapons/mod.rs`, `crates/cs_content/src/lib.rs`,
+  `crates/cs_app/src/lib.rs` (wiring only): the module declarations and the
+  flat re-export/doc-comment lists. No logic.
 - `crates/cs_content/src/ordnance.rs` (new): the declared,
   provenance-carrying schema — `DeclaredOrdnance`, `DeclaredOrdnanceDetails`
   (`DeclaredProjectile` / `DeclaredNitro`), `DeclaredOrdnanceFamily`,
@@ -141,7 +141,7 @@ endpoint test, or dropping the arming gate, makes one of the two fail.
   multiplier and the refusal — and **no** pose, velocity or duration field.
   No method on `NitroLedger` takes a `std::time::Duration`: capacity is
   converted through the declared `TickRate` only. A caller cannot express a
-  render-frame-scaled burn burn. Consumption covers *every elapsed tick*, so
+  render-frame-scaled burn. Consumption covers *every elapsed tick*, so
   ten ticks walked and ten ticks jumped reach the same capacity; recovery
   applies only to an idle tick, so a held control does not drift upward.
   A refused activation consumes **nothing**
@@ -179,11 +179,11 @@ endpoint test, or dropping the arming gate, makes one of the two fail.
   `cs_app::ordnance` maps them variant-wise. `WeaponDamage` and
   `DamageNodeKey` are the two *shared* records, as they are for F27.
 - **Every load-bearing declared value is a `Resolved`,** and the boundary
-  refuses each unknown **by field name** with its claim and reason — 16 named
-  refusal paths in the two boundary tests (10 projectile fields, 6 nitro
-  fields, 2 equipment options and the inner fixed-burn tick). Repairing an
-  unknown into a plausible number is what F14 non-negotiable behavior 3
-  forbids, and the tests pin it.
+  refuses each unknown **by field name** with its claim and reason — 16
+  table-driven refusal paths in the two boundary tests (10 projectile fields,
+  6 nitro fields) plus the inner fixed-burn tick and the two equipment
+  options. Repairing an unknown into a plausible number is what F14
+  non-negotiable behavior 3 forbids, and the tests pin it.
 
 ## Designed vocabulary, not original data
 
@@ -246,8 +246,9 @@ the catalogue audit is F28-D.
 
 ## Test sensitivity
 
-Fifteen distinct mutation probes were run against the implementation, each
-breaking at least one named test:
+Sixteen distinct mutation probes were run against the implementation as
+submitted, each breaking at least one named test (the review pass added three
+more; see "Review record" below):
 
 | Removed or broken | Test that fails |
 | --- | --- |
@@ -289,3 +290,81 @@ stage: the F24-A tuning record's boost parameters are a *design* record with
 its own thrust and consumption terms, and connecting the two is a design
 decision F28-B/F28-C should make explicitly rather than one this stage should
 make silently.
+## Review record (added by the review pass)
+
+**Reviewer:** `bunny-alpha-1`, the same agent instance that implemented the
+stage, in a session with no memory of the implementation. This review is
+therefore **not independent evidence** (AGENTS.md, "Reviewing"); nothing here
+is raised above `checked`, and the owner's own review is still outstanding.
+
+Five defects were found and fixed, all inside the owner paths. Each is
+pinned by a named `accept_f28_a_*` test that fails against the pre-review
+code: the mutation was re-applied and re-run to confirm, not assumed.
+
+1. **A held control interrupted an accepted fixed nitro burn, and paid out
+   recovery while it did.** `NitroLedger::request` computed
+   `active = (burn_running || requested) && refused.is_none()`, so on any tick
+   of a `FixedTicks` burn where the control was still held the burn was
+   refused (`BurnAlreadyRunning`) and therefore *inactive*. Because recovery
+   is idle-only, those ticks then **regenerated** capacity at
+   `recovery_per_s` while the pilot was boosting — with these numbers, more
+   than was being spent. `NitroActivationRule::FixedTicks` promises "each
+   accepted activation runs for this many whole ticks", so `active` is now
+   `burn_running || (requested && refused.is_none())`: the refusal is about
+   starting *another* activation, never about the one already accepted.
+   Pinned by `accept_f28_a_a_fixed_nitro_burn_lasts_exactly_its_declared_ticks`
+   and `accept_f28_a_a_running_fixed_nitro_burn_never_recovers_capacity`. The
+   pre-review fixed-burn test asserted only the refusal, never the running
+   burn's activity, so the defect was invisible to it; both halves are now
+   asserted.
+2. **A targeted item launched with no target reported a fabricated cause and
+   the wrong behavior.** `GuidanceTracker::hold` was `&self`, and its
+   `(lost: None, target: None)` arm returned
+   `Lost { reason: Despawned, behavior: Coast }`, built from
+   `GuidanceRule::Unguided.lost_target().unwrap_or(Coast)` — a value that is
+   always `Coast` — for a rule that could have declared `Disarm` or
+   `Detonate`. It also re-announced that loss on every tick, which is exactly
+   what the module promises never happens. `hold` is now `&mut self` and
+   routes the case through `lose` once, and the cause is a new
+   `LostTargetReason::Unassigned`: an item that never had a target did not
+   lose one. `GuidanceSet::session_tick` no longer turns a target-less
+   tracker into a `Despawned` loss either. Pinned by
+   `accept_f28_a_a_targeted_item_launched_without_a_target_reports_one_unassigned_loss`.
+3. **`GuidanceError` had no producer.** The type was exported but nothing
+   could return it, so `GuidanceSet` could only answer `Option` and an
+   unregistered item was silently *skipped* — the failure mode
+   `OrdnanceRegistry::require` exists to prevent. `GuidanceSet::require` now
+   mirrors it, pinned by
+   `accept_f28_a_guidance_refuses_an_unregistered_item_rather_than_skipping_it`.
+4. **The declared schema reported a corrupt damage amount as a corrupt status
+   strength**, without saying which channel: `armor_damage` and
+   `internal_damage` raised `NonFiniteStatusStrength` /
+   `NegativeStatusStrength`. `OrdnanceSchemaError` now carries
+   `NonFiniteDamage { field }` and `NegativeDamage { field, damage }`.
+5. **`validate_nitro` named no field at all**, reporting `field: "nitro"` for
+   all four numbers ("the declared nitro nitro is unusable") even though the
+   variant documents `field` as the corrupt field. It now names
+   `capacity_units`, `consumption_per_s`, `recovery_per_s` or
+   `extra_thrust_n`. Pinned by
+   `accept_f28_a_a_corrupt_declared_field_is_named_in_its_refusal`.
+
+Three documentation defects in this file were also corrected: the probe count
+said "fifteen" over a sixteen-row table, the refusal-path arithmetic summed
+to 19 under a heading of 16, and `crates/cs_sim/src/lib.rs` was listed as
+wiring although it was not touched. `fuse_decision`'s doc now states the
+`impacts` ordering it assumes (`Ballistics::sweep`'s ascending time of
+impact) and the one consequence of the arming/proximity/lifetime order F28-B
+needs to know: an expired proximity item still detonates on an in-range path,
+and reports `OutOfRange` rather than `Expired` when paths are presented but
+none is in range. Which rule the original used is unmeasured, so the behavior
+was documented, not changed.
+
+## Still open for F28-B (unchanged by the review)
+
+- Whether an item whose lifetime has run out may still trigger its proximity
+  fuse on a path inside the declared radius. The order in `fuse_decision`
+  answers "yes", and that answer is **unmeasured**.
+- The original's fuse trigger *shape* (sphere, shaped zone, directional
+  sensor). Only the radius is declared and only the radius lowers.
+- Whether a fixed nitro burn should be interruptible, and whether capacity
+  carries across a mission.
