@@ -24,10 +24,10 @@ use cs_sim::weapons::{
     AmmunitionId, Ballistics, FireDenialReason, FireError, FireEvent, FireIntent, FireIntentId,
     FireResolver, FriendlyFireRule, GunBank, GunBankError, GunDefinition, GunDefinitionError,
     GunMountKind, GunRate, GunStateError, InheritanceRule, IntentRefusal, MountTransform,
-    MountTransformError, ProjectileId, ProjectileSegment, SYNTHETIC_STARTING_ROUNDS,
-    SYNTHETIC_TICKS_BETWEEN_SHOTS, SelfHitRule, SpreadCone, SweepTarget, SweepTargetError,
-    WeaponDamage, WeaponRules, WeaponState, synthetic_ammunition, synthetic_gun_definition,
-    synthetic_mount,
+    MountTransformError, ProjectileId, ProjectileSegment, SYNTHETIC_CALIBER,
+    SYNTHETIC_STARTING_ROUNDS, SYNTHETIC_TICKS_BETWEEN_SHOTS, SelfHitRule, SpreadCone, SweepTarget,
+    SweepTargetError, WeaponDamage, WeaponRules, WeaponState, synthetic_ammunition,
+    synthetic_gun_definition, synthetic_mount,
 };
 use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind};
@@ -349,6 +349,40 @@ fn accept_f27_a_one_projectile_applies_a_hit_at_most_once() {
         "duplicated candidate entries cannot re-apply a hit either"
     );
     assert_eq!(ballistics.len(), 1);
+
+    // The *first* sweep a fresh ledger sees is the case the earlier filter
+    // could not cover: the duplicate candidates are present before anything
+    // has been applied, so the ledger filter has nothing to reject them by.
+    // Two collision features reporting one contact must still be one hit.
+    let mut fresh = Ballistics::new();
+    let duplicated = fresh.sweep(&segment, &[target, target, target]);
+    assert_eq!(
+        duplicated.len(),
+        1,
+        "several collision features reporting one contact in a single sweep apply one hit"
+    );
+    assert_eq!(fresh.len(), 1, "the ledger records that one application");
+    assert!(
+        fresh.sweep(&segment, &[target, target]).is_empty(),
+        "and the same contact is still refused afterwards"
+    );
+    assert_eq!(fresh.len(), 1);
+
+    // Two *different* actors behind the same projectile stay two hits: the
+    // once-only rule is per `(projectile, actor)`, not per projectile.
+    let neighbour =
+        SweepTarget::try_new(actor(3), [0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [2.0, 2.0, 0.25])
+            .expect("valid target");
+    let mut multi = Ballistics::new();
+    let two = multi.sweep(
+        &segment,
+        &[thin_target(actor(2), [2.0, 2.0, 0.25]), neighbour],
+    );
+    assert_eq!(
+        two.len(),
+        2,
+        "one projectile crossing two distinct actors is two hits"
+    );
 }
 
 /// The declared interaction rules filter the sweep's candidate list: the
@@ -495,6 +529,103 @@ fn accept_f27_a_an_accepted_event_consumes_a_round_and_starts_the_cooldown() {
     let gun = synthetic_gun_definition();
     assert_eq!(event.sound, *gun.sound());
     assert_eq!(event.effect, *gun.effect());
+}
+
+/// A gun built on `mount`, so two actors can each carry one on their own
+/// damage-node key.
+fn gun_on(mount: &DamageNodeKey, kind: GunMountKind) -> GunDefinition {
+    GunDefinition::try_new(
+        mount.clone(),
+        kind,
+        SYNTHETIC_CALIBER,
+        synthetic_ammunition(),
+        GunRate::try_new(1).expect("a valid rate"),
+        600.0,
+        60,
+        SpreadCone::try_new(0.01).expect("a valid spread"),
+        WeaponDamage::try_new(4.0, 2.0).expect("valid damage"),
+        InheritanceRule::Full,
+        synthetic_gun_definition().effect().clone(),
+        synthetic_gun_definition().sound().clone(),
+    )
+    .expect("the test gun is valid")
+}
+
+/// The event id is the firing actor's own serial at full width, and two
+/// actors firing on the same tick get distinct event ids. `ActorId` serials
+/// are never recycled inside a session, so narrowing the producer serial
+/// would let two actors collide on one id.
+#[test]
+fn accept_f27_a_event_ids_name_the_firing_actor_without_narrowing_its_serial() {
+    // Two serials that differ *only* above `u32::MAX`: narrowing the producer
+    // would truncate both to the same value and give both events one id.
+    let narrow = actor(1);
+    let wide = actor(1u64 + (1u64 << 32));
+
+    let narrow_gun = gun_on(&synthetic_mount(), GunMountKind::Nose);
+    let wide_mount = key("wide_actor_mount");
+    let wide_gun = gun_on(&wide_mount, GunMountKind::WingLeft);
+
+    let arm = |gun: &GunDefinition| {
+        WeaponState::try_new(
+            std::slice::from_ref(gun),
+            GunBank::try_new([gun.mount().clone()]).expect("a valid bank"),
+            SYNTHETIC_STARTING_ROUNDS,
+        )
+        .expect("a valid state")
+    };
+
+    let mut resolver = FireResolver::new(SESSION, Tick(0));
+    resolver
+        .register(narrow, vec![narrow_gun.clone()], arm(&narrow_gun))
+        .expect("the narrow actor registers");
+    resolver
+        .register(wide, vec![wide_gun.clone()], arm(&wide_gun))
+        .expect("the wide actor registers");
+
+    let transforms = BTreeMap::from([
+        (narrow_gun.mount().clone(), transform([0.0; 3], [0.0; 3])),
+        (wide_mount, transform([1.0, 0.0, 0.0], [0.0; 3])),
+    ]);
+
+    // Both fire on the same tick as the first shot their own arsenal takes,
+    // so both events land at `(SESSION, Tick(0), ..., 0)` and the producer
+    // field is the only thing that can tell them apart.
+    // Both intents are the *first* shot of the tick's own wire producer, so
+    // both events land on `(SESSION, Tick(0), producer, 0)`: the firing
+    // actor's own serial is the only field left that can separate them.
+    let shoot = |resolver: &mut FireResolver, shooter: ActorId, producer: u32| {
+        resolver
+            .resolve(
+                &FireIntent {
+                    id: FireIntentId {
+                        session: SESSION,
+                        tick: Tick(0),
+                        producer,
+                        sequence: 0,
+                    },
+                    shooter,
+                },
+                &transforms,
+            )
+            .expect("the intent resolves")
+            .accepted
+            .swap_remove(0)
+    };
+
+    let narrow_event = shoot(&mut resolver, narrow, 1);
+    let wide_event = shoot(&mut resolver, wide, 2);
+
+    assert_eq!(
+        narrow_event.shooter, narrow,
+        "the event names the actor that fired"
+    );
+    assert_eq!(wide_event.shooter, wide);
+    assert_ne!(
+        narrow_event.id, wide_event.id,
+        "two actors firing on the same tick must not share one event id, even when their serials \
+         differ only above u32::MAX"
+    );
 }
 
 /// AC02's semantic half at this stage: a disabled mount emits neither a
@@ -658,6 +789,126 @@ fn accept_f27_a_cooldown_expires_exactly_after_the_declared_ticks() {
             .len()
             == 1,
         "the gun fires again on the first tick its cooldown has elapsed"
+    );
+}
+
+/// Skipping over ticks must not change the outcome: the resolver's tick moves
+/// forward, every cooldown that was counting decrements once per elapsed tick,
+/// and the gun fires on the tick the caller asks for. A jump of many ticks
+/// reaches the same state as walking them one at a time.
+#[test]
+fn accept_f27_a_skipping_over_ticks_reaches_the_same_state_as_walking_them() {
+    let mut resolver = resolver();
+    let mount = synthetic_mount();
+    let transforms = transforms_for(&mount, [0.0, 0.0, 0.0]);
+
+    resolver
+        .resolve(&intent(0, 0), &transforms)
+        .expect("the first shot resolves");
+    assert_eq!(
+        resolver
+            .state(&actor(1))
+            .expect("registered")
+            .cooldown_ticks(&mount),
+        u64::from(SYNTHETIC_TICKS_BETWEEN_SHOTS)
+    );
+
+    // A tick-by-tick walk to the same point is the reference behavior.
+    let mut stepwise = resolver.clone();
+    for tick in 1..=u64::from(SYNTHETIC_TICKS_BETWEEN_SHOTS) {
+        stepwise.advance_to(Tick(tick));
+    }
+
+    // One advance across the whole gap.
+    let gap = u64::from(SYNTHETIC_TICKS_BETWEEN_SHOTS);
+    resolver.advance_to(Tick(gap));
+
+    assert_eq!(resolver.tick(), stepwise.tick());
+    assert_eq!(
+        resolver
+            .state(&actor(1))
+            .expect("registered")
+            .cooldown_ticks(&mount),
+        stepwise
+            .state(&actor(1))
+            .expect("registered")
+            .cooldown_ticks(&mount),
+        "skipping idle ticks leaves the same cooldown as walking them"
+    );
+    assert_eq!(
+        resolver
+            .state(&actor(1))
+            .expect("registered")
+            .ammunition(&mount),
+        stepwise
+            .state(&actor(1))
+            .expect("registered")
+            .ammunition(&mount),
+        "skipping idle ticks consumes nothing"
+    );
+    assert_eq!(
+        resolver
+            .state(&actor(1))
+            .expect("registered")
+            .cooldown_ticks(&mount),
+        0,
+        "a cooldown that outlives the gap has expired by the end of it"
+    );
+
+    // And the gun fires on that tick exactly as it would have.
+    assert_eq!(
+        resolver
+            .resolve(&intent(gap, 0), &transforms)
+            .expect("resolves")
+            .accepted
+            .len(),
+        1,
+        "the gun fires on the first tick its cooldown has elapsed"
+    );
+
+    // A further jump, this time with nothing cooling, changes no state and
+    // still moves the resolver forward so an intent at the new tick resolves.
+    let rounds = resolver
+        .state(&actor(1))
+        .expect("registered")
+        .ammunition(&mount);
+    let far = gap + 1_000;
+    resolver.advance_to(Tick(far));
+    assert_eq!(resolver.tick(), Tick(far));
+    assert_eq!(
+        resolver
+            .state(&actor(1))
+            .expect("registered")
+            .ammunition(&mount),
+        rounds,
+        "ticking an idle gun forward changes no ammunition"
+    );
+    assert!(
+        resolver
+            .resolve(&intent(far, 0), &transforms)
+            .expect("resolves")
+            .accepted
+            .len()
+            == 1,
+        "the gun fires immediately after a long idle gap"
+    );
+
+    // Time never runs backwards: a re-entered schedule step at or before the
+    // current tick must not rewind the resolver or double-decrement.
+    let cooldown_before = resolver
+        .state(&actor(1))
+        .expect("registered")
+        .cooldown_ticks(&mount);
+    resolver.advance_to(Tick(far));
+    resolver.advance_to(Tick(far - 1));
+    assert_eq!(resolver.tick(), Tick(far), "time does not run backwards");
+    assert_eq!(
+        resolver
+            .state(&actor(1))
+            .expect("registered")
+            .cooldown_ticks(&mount),
+        cooldown_before,
+        "a re-entered tick does not decrement a cooldown twice"
     );
 }
 

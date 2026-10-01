@@ -1086,6 +1086,13 @@ impl fmt::Display for FireIntentId {
 
 /// The identity of one accepted [`FireEvent`]: the same `EventId` shape,
 /// stamped by the resolver.
+///
+/// Unlike [`FireIntentId`], whose `producer` is a wire-level system serial,
+/// the event's `producer` is the firing actor's own [`ActorId::serial`] and
+/// therefore keeps its full width: `ActorId` serials are never recycled
+/// inside a session (`docs/01-ARCHITECTURE.md`), so narrowing it to a `u32`
+/// could give two actors the same producer serial and make two distinct shots
+/// share one event id.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct FireEventId {
     /// The session generation the event was produced in.
@@ -1093,9 +1100,11 @@ pub struct FireEventId {
     /// The simulation tick the shot belongs to.
     pub tick: Tick,
     /// The firing actor's serial within the session.
-    pub producer: u32,
-    /// The event's sequence within the resolver.
-    pub sequence: u32,
+    pub producer: u64,
+    /// The event's sequence within the shooting actor's own arsenal: how many
+    /// shots that actor had already accepted, at full width so a long session
+    /// cannot wrap it onto an id already used.
+    pub sequence: u64,
 }
 
 /// The identity of one projectile: a session-qualified, never-recycled
@@ -1253,7 +1262,9 @@ pub struct ProjectileSpawn {
 /// no ammo drain from a denied input or duplicate network packet").
 #[derive(Clone, Debug, PartialEq)]
 pub struct FireEvent {
-    /// The event's stable identity and ordering key.
+    /// The event's stable identity and ordering key. Its `producer` is the
+    /// firing actor's own [`ActorId::serial`] at full width, so two actors
+    /// that both fire on one tick never share an id.
     pub id: FireEventId,
     /// The intent this shot answers.
     pub intent: FireIntentId,
@@ -1517,7 +1528,11 @@ impl std::error::Error for FireError {}
 struct ActorArsenal {
     definitions: BTreeMap<DamageNodeKey, GunDefinition>,
     state: WeaponState,
-    next_event_sequence: u32,
+    /// How many shots this actor has already accepted. It is the event
+    /// sequence's low half — the firing actor's own serial is the high half —
+    /// so it is `u64` for the same reason: a long session must not wrap the
+    /// counter and reissue an id it already used.
+    next_event_sequence: u64,
 }
 
 /// One session generation's authority over fire intents and weapon state.
@@ -1570,6 +1585,12 @@ impl FireResolver {
     /// Time never runs backwards: a `tick` at or before the current one is
     /// ignored, so a re-entered schedule step cannot double-decrement or
     /// rewind a cooldown.
+    ///
+    /// Every elapsed tick is visited, because a cooldown that is still
+    /// counting must decrement once per tick: a caller that skips ticks must
+    /// reach the same state as one that walks them. A caller seeking across a
+    /// very long gap should clamp the seek rather than rely on this being
+    /// cheap — F27-B owns the cadence schedule that drives it.
     pub fn advance_to(&mut self, tick: Tick) {
         if tick <= self.tick {
             return;
@@ -1819,7 +1840,7 @@ fn fire_one_mount(
         id: FireEventId {
             session,
             tick,
-            producer: shooter.serial as u32,
+            producer: shooter.serial,
             sequence: arsenal.next_event_sequence,
         },
         intent,
@@ -1995,8 +2016,9 @@ pub struct SweptHit {
 ///
 /// The ledger keyed by `(ProjectileId, ActorId)` is what enforces "one
 /// projectile applies a hit at most once" (non-negotiable 3): several
-/// collision features reporting the same contact, or the same segment swept
-/// twice, still yield one hit.
+/// collision features reporting the same contact — whether they arrive as
+/// repeated candidates in one sweep or as a second sweep of the same segment
+/// — still yield one hit.
 #[derive(Clone, Debug, Default)]
 pub struct Ballistics {
     applied: BTreeSet<(ProjectileId, ActorId)>,
@@ -2016,7 +2038,14 @@ impl Ballistics {
     /// geometry. Eligibility — allegiance, self-hit exclusion, layer rules —
     /// belongs to the query that assembles the candidate list, which is
     /// F27-C's wiring. What the sweep owns is the segment-vs-box test, the
-    /// deterministic ordering and the once-per-projectile guarantee.
+    /// deterministic ordering and the once-per-`(projectile, actor)`
+    /// guarantee.
+    ///
+    /// A candidate list may name the same actor more than once: several
+    /// collision features reporting one contact is a documented case
+    /// (`FLIGHT-PHYSICS`, "Apply damage once even if several collision
+    /// features report the same hit"). Duplicates are collapsed to the
+    /// earliest time of impact rather than each producing a hit.
     pub fn sweep(&mut self, segment: &ProjectileSegment, targets: &[SweepTarget]) -> Vec<SweptHit> {
         let mut candidates: Vec<(f64, ActorId)> = targets
             .iter()
@@ -2028,17 +2057,26 @@ impl Ballistics {
         // Ascending time of impact, actor id as the stable tie-breaker: a
         // total order that does not depend on the caller's target order.
         candidates.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
-        candidates
-            .into_iter()
-            .map(|(time_of_impact, actor)| {
-                self.applied.insert((segment.projectile, actor));
-                SweptHit {
-                    projectile: segment.projectile,
-                    target: actor,
-                    time_of_impact,
-                }
-            })
-            .collect()
+        let mut hits = Vec::with_capacity(candidates.len());
+        // One entry in `reported` per actor this call has already emitted, so
+        // a candidate list that names the same actor twice — several collision
+        // features reporting one contact in the *same* sweep, which the
+        // ledger filter above cannot see because nothing has been applied yet
+        // — still yields one hit. Ordering decides which: the first, i.e. the
+        // earliest time of impact.
+        let mut reported: BTreeSet<ActorId> = BTreeSet::new();
+        for (time_of_impact, actor) in candidates {
+            if !reported.insert(actor) {
+                continue;
+            }
+            self.applied.insert((segment.projectile, actor));
+            hits.push(SweptHit {
+                projectile: segment.projectile,
+                target: actor,
+                time_of_impact,
+            });
+        }
+        hits
     }
 
     /// Whether this projectile has already applied a hit on this actor.

@@ -12,8 +12,9 @@ evidence report required).
   flat re-exports of the weapon contract. Not in the sheet's owner-path
   list (`crates/cs_sim/src/weapons/guns.rs`), which names only the leaf; a
   Rust subdirectory module needs its parent file, exactly as
-  `crates/cs_sim/src/damage/mod.rs` does for F29-A. **No logic** — three
-  `pub` lines and doc comments.
+  `crates/cs_sim/src/damage/mod.rs` does for F29-A. **No logic** — a
+  `pub mod guns;` declaration, one `pub use` re-export list and doc
+  comments.
 - `crates/cs_sim/src/weapons/guns.rs` (new): the runtime contract —
   `FireIntentId`/`FireEventId`/`ProjectileId`, `AmmunitionId`,
   `GunDefinition`, `GunRate`, `WeaponDamage`, `SpreadCone`,
@@ -30,7 +31,7 @@ evidence report required).
   the `declared_synthetic_gun` / `declared_synthetic_ammunition` fixtures.
 - `crates/cs_app/src/weapons.rs` (new): `lower_gun`, `lower_ammunition`,
   `lower_rules`, `WeaponLowerError` and the generation-stamped
-  `WeaponActorBinding` ECS record.
+  `WeaponActorBinding` and `MountPoseBinding` ECS records.
 - `crates/cs_sim/src/lib.rs`, `crates/cs_content/src/lib.rs`,
   `crates/cs_app/src/lib.rs` (wiring only): module declarations and docs.
 - `crates/cs_sim/tests/accept_f27_a_guns.rs`,
@@ -54,18 +55,21 @@ fail.
 ## Semantics defined at this stage
 
 - **Mount identity is the F29 weapon-mount damage node.** A gun's `mount`
-  is a `DamageNodeKey`, and `WeaponState::disabled` holds the same keys, so
-  the "disabled mount" that stops a gun firing is literally the
-  `DamageEventKind::SystemDisabled { system: Weapon }` node F29-A already
-  emits. No third copy of the key grammar is introduced, and no gun can be
-  silenced by an unrelated node.
+  is a `DamageNodeKey`, and `WeaponState`'s disabled-mount set holds the
+  same keys, so the "disabled mount" that stops a gun firing is literally
+  the `DamageEventKind::SystemDisabled { system: Weapon }` node F29-A
+  already emits. No third copy of the key grammar is introduced, and no gun
+  can be silenced by an unrelated node.
 - **Ammunition identity is a catalog id, never an enum.** Non-negotiable 1
   names slug, armor-piercing, dum-dum and explosive as *discovery leads*
   and forbids an unverified multiplier table, so `AmmunitionId` is a
-  `ContentId` in the `ammo` namespace and `DeclaredAmmunition` carries
-  **no damage numbers at all** — damage lives on the gun definition's
-  declared per-channel amounts, authored per gun+ammunition pair by the
-  importer. A closed ammunition enum would have been a fabrication.
+  `ContentId` in the `ammo` namespace. A `DeclaredAmmunition` records the
+  type's *own* declared per-channel amounts and interaction rules — what
+  F27-D's audit reads — while the runtime `GunDefinition` carries the
+  damage of the gun-and-type pairing as fired. Neither side derives one
+  from the other through a multiplier table, which is the thing non-
+  negotiable 1 forbids. A closed ammunition enum would have been a
+  fabrication.
 - **Caliber is a validated free string, not an enum.** The original caliber
   vocabulary is unmeasured; an invented closed set would be a fabrication,
   so an empty caliber is refused and a non-empty one is kept verbatim.
@@ -74,8 +78,8 @@ fail.
   hierarchy/damage state; nothing in this stage has a center-screen origin,
   a fixed muzzle offset or a default transform
   (non-negotiable 2). The world velocity a spawn uses is the explicit
-  composition `muzzle_world_velocity_mps`, and which rule composes it is
-  declared (`InheritanceRule`), not assumed.
+  composition `MountTransform::world_velocity_mps`, and which rule composes
+  it is declared (`InheritanceRule`), not assumed.
 - **Fire intents are resolved once, by the session's authority.**
   `FireResolver` holds one `WeaponState` per registered actor, a cooldown
   ledger in ticks, a per-mount ammunition count and the set of disabled
@@ -98,11 +102,34 @@ fail.
   branch tests `d == 0.0` exactly rather than introducing a numerical
   epsilon, so no singularity tolerance is invented; a near-zero axis yields
   enormous `t` values that the slab min/max rejects correctly.
-- **One projectile applies a hit at most once.** The ledger is keyed by
-  `(ProjectileId, ActorId)`, so several collision features reporting the
-  same contact, or a second sweep of the same segment, apply one hit.
+- **One projectile applies a hit at most once per actor.** The ledger is
+  keyed by `(ProjectileId, ActorId)`, so several collision features reporting
+  the same contact, or a second sweep of the same segment, apply one hit.
   Non-negotiable 3 and `FLIGHT-PHYSICS`: "Apply damage once even if several
   collision features report the same hit."
+  The per-call duplicate case is handled separately, because the ledger
+  filter alone cannot see it: a candidate list that names one actor several
+  times has nothing applied yet for the ledger to reject against. `sweep`
+  therefore collapses same-actor candidates *after* the time-of-impact
+  ordering, keeping the earliest, so duplicated features produce one hit
+  whichever way the contact is reported. (Reviewer fix: the pre-existing
+  test only re-swept an already-applied contact, which the ledger filter
+  covered, so a fresh ledger with duplicated candidates returned two hits.)
+  Two *distinct* actors behind one projectile remain two hits — the rule is
+  per `(projectile, actor)`, not per projectile.
+- **Fire event ids carry the firing actor's own serial at full width.**
+  `FireEventId { session, tick, producer, sequence }` stamps `producer` with
+  the shooter's `ActorId::serial` as a `u64`, and `sequence` counts that
+  actor's accepted shots as a `u64` too. `ActorId` serials are never
+  recycled inside a session, so narrowing either half could give two actors —
+  or two shots — one id. (Reviewer fix: the branch narrowed the serial with
+  `as u32`; two actors whose serials differ only above `u32::MAX` produced
+  the same event id.)
+- **`advance_to` visits every elapsed tick.** A cooldown counts ticks, so a
+  jump of many ticks decrements once per elapsed tick and reaches the same
+  state as walking them; a caller seeking across a very long gap should clamp
+  the seek rather than rely on the walk being cheap. F27-B owns the cadence
+  schedule that drives it.
 - **Self-hit and friendly fire are declared, load-bearing rules.**
   `WeaponRules { self_hit: SelfHitRule, friendly_fire: FriendlyFireRule }`
   filter the sweep's candidate set through the F30-A

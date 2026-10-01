@@ -975,11 +975,18 @@ pub struct DeclaredLoadout {
 impl DeclaredLoadout {
     /// Assembles a declared loadout.
     ///
+    /// The record ties guns and ammunition types together but cannot check
+    /// *which* type a given gun is loaded with: a gun entry is a bare
+    /// `weapon` id, and the declared gun's own [`Resolved<AmmunitionId>`]
+    /// field is what names its ammunition. F27-D's audit therefore walks
+    /// [`DeclaredLoadout::pairings`] — every gun with every declared type —
+    /// rather than a per-gun default this record does not state.
+    ///
     /// # Errors
     ///
     /// [`LoadoutSchemaError`] when the subject is not a `loadout` id, when
     /// no gun is declared, when a gun or ammunition id is duplicated, or
-    /// when an ammunition id the guns reference is not declared.
+    /// when a gun entry is not a `weapon` id.
     pub fn try_new(
         subject: ContentId,
         origin: Origin,
