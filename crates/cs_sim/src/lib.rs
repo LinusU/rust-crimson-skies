@@ -138,6 +138,12 @@
 //! out of a `cs_content` environment state stays in `cs_app`, because
 //! `cs_content` is not a dependency this crate may take.
 //!
+//! [`objectives`] is the F39-A objective/trigger/spawn vocabulary
+//! (`specs/F39-objectives-triggers-timers-spawn-groups-and-dialogue-cues.md`,
+//! stage `### F39-A`): the seven objective states, swept entry/exit triggers
+//! that never sweep a teleport, per-category actor counters and the
+//! per-session idempotency ledger for spawns and cues. The runtime is F39-B.
+//!
 //! [`cs_types`]: cs_types
 //! [`cs_script`]: cs_script
 
@@ -150,6 +156,7 @@ pub mod damage;
 pub mod environment;
 pub mod flight;
 pub mod mission;
+pub mod objectives;
 pub mod probes;
 pub mod targeting;
 pub mod time;
