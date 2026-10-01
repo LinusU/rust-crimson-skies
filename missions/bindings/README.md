@@ -54,6 +54,14 @@ directory is original game data — no assets, scripts or extracted bytes.
   mission number identifies the mission — only the campaign position does (see
   `docs/findings/2026-10-01-m04-a-source-binding.md`). Same five resolved
   critical dependencies, same unverified status.
+- `M06.json` — the M06 binding output (stage M06-A), generated and pinned the
+  same way by `accept_m06_a_the_committed_record_is_what_the_installation_derives`.
+  No production code changed for it either: M06 is the sixth campaign position,
+  the first mission of chapter 2, and the first position the earlier binding
+  stages did not cover. Its world group, `world/c2`, is shared with four
+  campaign missions and chapter 2's fifth mission lives in the separate `c2b`
+  directory (see `docs/findings/2026-10-01-m06-a-source-binding.md`). Same five
+  resolved critical dependencies, same unverified status.
 
 The typed records those missions fill in — the seven required content
 categories, one unresolved dependency row per required subsystem, coverage
@@ -62,9 +70,9 @@ totals and closure reports — live in
 
 ## What is not here yet
 
-- `M05.json` … `M24.json` — the per-mission binding outputs of M05-A …
-  M24-A, created from original data the same way. Every one of them starts
-  unresolved.
+- `M05.json`, `M07.json` … `M24.json` — the per-mission binding
+  outputs of the remaining M05-A, M07-A … M24-A work orders, created from
+  original data the same way. Every one of them starts unresolved.
 
 Readiness, coverage and closure are reported, never awarded: synthetic
 fixtures prove the schema and its validation only (F50 owner ruling,
