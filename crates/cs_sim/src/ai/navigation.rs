@@ -31,6 +31,18 @@
 //!   same decision regardless of ECS entity order (spec non-negotiable
 //!   behavior 5).
 //!
+//! Stage **F31-B** adds the stateful production path on top of that contract:
+//! [`NavigationSet`] owns one [`PursuitState`] per actor (its remembered
+//! [`RouteProgress`], the side its last bounded deviation committed to, and a
+//! stall counter), so a displaced or repeatedly blocked follower keeps
+//! pursuing the next authored marker instead of restarting; and it derives a
+//! per-actor tie-break stream from the mission seed and the stable
+//! session-qualified [`ActorId`], so the local decision sequence is a pure
+//! function of `(actor, its own ticks)` and never of the order the ECS
+//! presented the actors in (spec non-negotiable behaviors 2 and 5, acceptance
+//! case AC02). [`NavigationSet::decide_all`] additionally emits its decisions
+//! in ascending actor-id order.
+//!
 //! Arrival is a **swept** condition: a step is tested as the segment it sweeps
 //! through, so a fast aircraft cannot pass a waypoint between ticks and miss
 //! it, and a stationary position being exactly equal to a node is not what
@@ -54,10 +66,13 @@
 //! [`cs_types`]: cs_types
 //! [`cs_script`]: cs_script
 
+use std::collections::BTreeMap;
 use std::fmt;
 
 use cs_types::Tick;
+use cs_types::random::SplitMix64;
 
+use crate::damage::ActorId;
 use crate::flight::FlightInput;
 
 /// Positions within this distance are treated as equal for heading selection,
@@ -74,10 +89,11 @@ pub const CLIMB_APPROACH_S: f64 = 2.0;
 /// blocked, in multiples of one tick's maximum yaw step.
 pub const AVOIDANCE_CANDIDATE_STEPS: u32 = 8;
 
-/// The domain constant a future F31 behavior tie-break would use
-/// (`docs/contracts/CLI-EVIDENCE.md`, `--seed`). Behaviour decisions are
-/// deterministic functions of the request; this stream is reserved for a
-/// declared tie-break so cosmetic randomness can never move the route.
+/// The domain constant the F31 behavior tie-break uses
+/// (`docs/contracts/CLI-EVIDENCE.md`, `--seed`). F31-B subdivides this domain
+/// per actor and per tick, so the tie-break a follower sees is a pure function
+/// of `(mission seed, actor, tick)`; cosmetic randomness can never move the
+/// route (spec non-negotiable behavior 5).
 pub const AI_NAVIGATION_DOMAIN: u64 = 0x4149_4E41_565F_4631; // "AINA V_F1"
 
 // -------------------------------------------------------------- route ------
@@ -885,6 +901,24 @@ pub enum NavigationError {
         /// The underlying error.
         source: BlockerError,
     },
+    /// A request named an actor of another session generation, or carried a
+    /// command generation the set does not own.
+    ForeignSession {
+        /// The set's session generation.
+        expected: u64,
+        /// The generation the request carried.
+        found: u64,
+    },
+    /// A request named an actor the set does not own.
+    UnknownActor {
+        /// The actor that was named.
+        actor: ActorId,
+    },
+    /// An actor was registered, or presented for one tick, more than once.
+    DuplicateActor {
+        /// The actor that was repeated.
+        actor: ActorId,
+    },
 }
 
 impl fmt::Display for NavigationError {
@@ -898,6 +932,16 @@ impl fmt::Display for NavigationError {
             Self::Route(error) => write!(f, "navigation route: {error}"),
             Self::Blocker { index, source } => {
                 write!(f, "navigation blocker {index}: {source}")
+            }
+            Self::ForeignSession { expected, found } => write!(
+                f,
+                "navigation request belongs to generation {found}, but this set owns {expected}"
+            ),
+            Self::UnknownActor { actor } => {
+                write!(f, "navigation has no pursuit state for {actor}")
+            }
+            Self::DuplicateActor { actor } => {
+                write!(f, "{actor} was presented to navigation more than once")
             }
         }
     }
@@ -966,6 +1010,28 @@ impl Navigator {
         &self,
         request: &NavigationRequest<'_>,
     ) -> Result<NavigationDecision, NavigationError> {
+        self.decide_with_tie_break(request, 0.0)
+    }
+
+    /// Produces one tick's bounded decision, breaking an exactly tied bounded
+    /// deviation with `tie_break`.
+    ///
+    /// `tie_break` is a value in `[0, 1)`. When the direct step would cross a
+    /// blocker and the two symmetric bounded deviations clear it equally well,
+    /// a draw below `0.5` prefers the positive (nose-left) side and a draw at
+    /// or above `0.5` the negative one. It is read only at that exact tie, so
+    /// a caller that does not want a seeded tie-break uses [`Self::decide`],
+    /// which is `decide_with_tie_break(request, 0.0)`.
+    ///
+    /// # Errors
+    ///
+    /// [`NavigationError`] when the request, the route or a blocker is
+    /// malformed. Nothing is clamped or repaired.
+    pub fn decide_with_tie_break(
+        &self,
+        request: &NavigationRequest<'_>,
+        tie_break: f64,
+    ) -> Result<NavigationDecision, NavigationError> {
         self.validate_request(request)?;
         let route = request.route;
         let state = request.state;
@@ -1023,7 +1089,7 @@ impl Navigator {
         let (step, avoidance) = if clears(request, &desired) {
             (desired, AvoidanceState::OnRoute)
         } else {
-            match self.deviate(request, yaw_step, max_yaw_step, speed, climb) {
+            match self.deviate(request, yaw_step, max_yaw_step, speed, climb, tie_break) {
                 Some(step) => (step, AvoidanceState::Deviating),
                 None => (
                     stationary_step(state.position_m, state.heading_rad),
@@ -1092,9 +1158,10 @@ impl Navigator {
         max_yaw_step: f64,
         speed: f64,
         climb: f64,
+        tie_break: f64,
     ) -> Option<RouteStep> {
         for multiplier in 1..=AVOIDANCE_CANDIDATE_STEPS {
-            for sign in [1.0, -1.0] {
+            for sign in tie_break_signs(tie_break) {
                 let candidate = (yaw_step + sign * f64::from(multiplier) * max_yaw_step)
                     .clamp(-max_yaw_step, max_yaw_step);
                 if (candidate - yaw_step).abs() <= f64::EPSILON {
@@ -1225,6 +1292,17 @@ fn stationary_step(position_m: [f64; 3], heading_rad: f64) -> RouteStep {
         heading_rad,
         speed_mps: 0.0,
         climb_mps: 0.0,
+    }
+}
+
+/// The swept deviation signs to try, preferred side first. A draw below
+/// `0.5` prefers the positive (nose-left) side; this is the one place the
+/// seeded tie-break reaches the decision.
+fn tie_break_signs(tie_break: f64) -> [f64; 2] {
+    if tie_break < 0.5 {
+        [1.0, -1.0]
+    } else {
+        [-1.0, 1.0]
     }
 }
 
@@ -1360,6 +1438,437 @@ fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
 }
 
+// ------------------------------------------------------------ pursuit ------
+
+/// The side a bounded deviation committed to, from the aircraft's own frame:
+/// `Left` is a positive heading change (nose-left about canonical `+Y`),
+/// `Right` a negative one.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum DeviationSide {
+    /// Nose-left, the positive yaw direction.
+    Left,
+    /// Nose-right, the negative yaw direction.
+    Right,
+}
+
+impl DeviationSide {
+    /// The sign of the yaw step this side applies.
+    #[must_use]
+    pub const fn sign(self) -> f64 {
+        match self {
+            Self::Left => 1.0,
+            Self::Right => -1.0,
+        }
+    }
+
+    /// The side a signed yaw step chose; `0.0` counts as `Left`.
+    #[must_use]
+    fn of_yaw_step(yaw_step: f64) -> Self {
+        if yaw_step < 0.0 {
+            Self::Right
+        } else {
+            Self::Left
+        }
+    }
+}
+
+/// One actor's persistent navigation state (F31-B).
+///
+/// The state is the memory the F31-A follower deliberately did not carry:
+/// the monotonic [`RouteProgress`] the actor has reached, the side its last
+/// bounded deviation committed to, and how many consecutive decision ticks it
+/// made no headway. It is data only — the update rules live in
+/// [`NavigationSet::decide`], so a caller cannot rewind progress or forge a
+/// deviation side.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PursuitState {
+    progress: RouteProgress,
+    deviation: Option<DeviationSide>,
+    stalled_ticks: u32,
+}
+
+impl PursuitState {
+    /// The state of an actor that has not yet reached any node.
+    #[must_use]
+    pub const fn start() -> Self {
+        Self {
+            progress: RouteProgress::start(),
+            deviation: None,
+            stalled_ticks: 0,
+        }
+    }
+
+    /// The state of an actor resuming a route whose first `reached` nodes are
+    /// already occupied (for example the spawn point).
+    #[must_use]
+    pub const fn resuming(reached: usize) -> Self {
+        Self {
+            progress: RouteProgress::reached_nodes(reached),
+            deviation: None,
+            stalled_ticks: 0,
+        }
+    }
+
+    /// The progress the actor has reached.
+    #[must_use]
+    pub const fn progress(self) -> RouteProgress {
+        self.progress
+    }
+
+    /// The side of the actor's current bounded deviation, if it is deviating.
+    #[must_use]
+    pub const fn deviation(self) -> Option<DeviationSide> {
+        self.deviation
+    }
+
+    /// How many consecutive decision ticks the actor made no headway. It is a
+    /// bounded counter used for diagnostics and for a caller (a mission, a
+    /// debug overlay) to notice a wedged follower — never a teleport trigger
+    /// (spec non-negotiable behavior 4).
+    #[must_use]
+    pub const fn stalled_ticks(self) -> u32 {
+        self.stalled_ticks
+    }
+
+    /// Whether every node of `route` has been reached.
+    #[must_use]
+    pub const fn is_complete(self, route: &RouteGraph) -> bool {
+        self.progress.is_complete(route)
+    }
+}
+
+/// One actor's typed navigation input for one tick (F31-B).
+///
+/// It is [`NavigationRequest`] minus `progress`: [`NavigationSet`] owns the
+/// actor's progress, so a caller cannot reset it on an origin shift and a
+/// replay re-enters at exactly the stored node.
+#[derive(Clone, Copy, Debug)]
+pub struct PursuitRequest<'a> {
+    /// The session-qualified actor this decision belongs to.
+    pub actor: ActorId,
+    /// The simulation tick this decision belongs to.
+    pub tick: Tick,
+    /// The actor generation this command belongs to; it must equal the set's
+    /// session, so a command never crosses a generation boundary.
+    pub generation: u64,
+    /// The aircraft's current state.
+    pub state: NavState,
+    /// The route being followed.
+    pub route: &'a RouteGraph,
+    /// The sampled pose of the route's frame.
+    pub frame: ReferenceFrameSample,
+    /// The world blockers to avoid.
+    pub blockers: &'a [Blocker],
+    /// The fixed simulation step, in seconds.
+    pub dt_s: f64,
+}
+
+/// One actor's decision and the persistent state it left behind (F31-B).
+#[derive(Clone, Debug, PartialEq)]
+pub struct PursuitDecision {
+    /// The actor this decision belongs to.
+    pub actor: ActorId,
+    /// The bounded navigation decision, identical in shape to the F31-A one.
+    pub decision: NavigationDecision,
+    /// The actor's persistent pursuit state after this decision.
+    pub state: PursuitState,
+}
+
+impl PursuitDecision {
+    /// The side of this decision's bounded deviation, if it deviated.
+    #[must_use]
+    pub const fn deviation(&self) -> Option<DeviationSide> {
+        self.state.deviation()
+    }
+}
+
+/// The per-session navigation authority (F31-B).
+///
+/// One set owns one [`PursuitState`] per registered actor for one session
+/// generation, mirroring [`crate::targeting::TargetStore`]'s session
+/// confinement. Actors are keyed by their stable session-qualified
+/// [`ActorId`], so:
+///
+/// * the set never iterates in ECS order — [`Self::decide_all`] sorts by actor
+///   id and [`Self::decide`] touches exactly the actor named; and
+/// * the seeded tie-break an actor sees is derived from the mission seed, the
+///   actor id and the tick (see [`Self::tie_break`]), never from a shared
+///   stream advanced in roster order.
+///
+/// Together those make each actor's local decision sequence a function of its
+/// own ticks alone, so reordering the ECS entities that present the actors
+/// cannot change a single decision (acceptance case AC02).
+#[derive(Clone, Debug)]
+pub struct NavigationSet {
+    session: u64,
+    mission_seed: u64,
+    navigator: Navigator,
+    actors: BTreeMap<ActorId, PursuitState>,
+}
+
+impl NavigationSet {
+    /// A set for session `session` whose tie-breaks derive from `mission_seed`.
+    #[must_use]
+    pub fn new(session: u64, mission_seed: u64, navigator: Navigator) -> Self {
+        Self {
+            session,
+            mission_seed,
+            navigator,
+            actors: BTreeMap::new(),
+        }
+    }
+
+    /// The session generation this set owns.
+    #[must_use]
+    pub const fn session(&self) -> u64 {
+        self.session
+    }
+
+    /// The mission seed the per-actor tie-breaks derive from.
+    #[must_use]
+    pub const fn mission_seed(&self) -> u64 {
+        self.mission_seed
+    }
+
+    /// The navigator every actor in the set is bounded by.
+    #[must_use]
+    pub const fn navigator(&self) -> &Navigator {
+        &self.navigator
+    }
+
+    /// The number of registered actors.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.actors.len()
+    }
+
+    /// Whether no actor is registered.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.actors.is_empty()
+    }
+
+    /// Registers `actor` with fresh pursuit state.
+    ///
+    /// # Errors
+    ///
+    /// [`NavigationError::ForeignSession`] when the actor belongs to another
+    /// session, [`NavigationError::DuplicateActor`] when it is already
+    /// registered.
+    pub fn register(&mut self, actor: ActorId) -> Result<(), NavigationError> {
+        self.check_session(actor.session)?;
+        if self.actors.contains_key(&actor) {
+            return Err(NavigationError::DuplicateActor { actor });
+        }
+        self.actors.insert(actor, PursuitState::start());
+        Ok(())
+    }
+
+    /// Registers `actor` resuming a route whose first `reached` nodes are
+    /// already occupied (the spawn point is not a marker).
+    ///
+    /// # Errors
+    ///
+    /// The same as [`Self::register`].
+    pub fn register_resuming(
+        &mut self,
+        actor: ActorId,
+        reached: usize,
+    ) -> Result<(), NavigationError> {
+        self.check_session(actor.session)?;
+        if self.actors.contains_key(&actor) {
+            return Err(NavigationError::DuplicateActor { actor });
+        }
+        self.actors.insert(actor, PursuitState::resuming(reached));
+        Ok(())
+    }
+
+    /// Removes `actor` and its pursuit state; `false` when it was not
+    /// registered. A removed actor restarts at the route's first node if it is
+    /// registered again.
+    pub fn unregister(&mut self, actor: ActorId) -> bool {
+        self.actors.remove(&actor).is_some()
+    }
+
+    /// Whether `actor` is registered.
+    #[must_use]
+    pub fn contains(&self, actor: ActorId) -> bool {
+        self.actors.contains_key(&actor)
+    }
+
+    /// One actor's current pursuit state.
+    #[must_use]
+    pub fn state(&self, actor: ActorId) -> Option<PursuitState> {
+        self.actors.get(&actor).copied()
+    }
+
+    /// Every registered actor, in ascending stable id order.
+    pub fn actors(&self) -> impl Iterator<Item = ActorId> + '_ {
+        self.actors.keys().copied()
+    }
+
+    /// The seeded tie-break draw for `actor` at `tick`, in `[0, 1)`.
+    ///
+    /// It is a pure function of `(mission seed, actor id, tick)` — see
+    /// [`tie_break_draw`] — so it never depends on the roster's size or
+    /// iteration order, and a replayed tick sees the same draw. The
+    /// acceptance tests read it to show that two actors are given independent
+    /// streams from one mission seed.
+    #[must_use]
+    pub fn tie_break(&self, actor: ActorId, tick: Tick) -> f64 {
+        tie_break_draw(self.mission_seed, actor, tick)
+    }
+
+    /// Evaluates one actor's request, updating its stored pursuit state.
+    ///
+    /// # Errors
+    ///
+    /// [`NavigationError::ForeignSession`] when the actor or command
+    /// generation is not the set's, [`NavigationError::UnknownActor`] when the
+    /// actor was never registered, and every error [`Navigator::decide`] can
+    /// raise.
+    pub fn decide(
+        &mut self,
+        request: &PursuitRequest<'_>,
+    ) -> Result<PursuitDecision, NavigationError> {
+        self.check_session(request.actor.session)?;
+        self.check_session(request.generation)?;
+        let mut state =
+            self.actors
+                .get(&request.actor)
+                .copied()
+                .ok_or(NavigationError::UnknownActor {
+                    actor: request.actor,
+                })?;
+
+        // The remembered side of a contiguous deviation biases the tie-break
+        // so the follower does not flip-flop between two clearing sides; the
+        // seed decides only the first side of a fresh deviation.
+        let tie_break = match state.deviation() {
+            Some(side) => {
+                if side == DeviationSide::Left {
+                    0.0
+                } else {
+                    1.0
+                }
+            }
+            None => self.tie_break(request.actor, request.tick),
+        };
+
+        let navigation = NavigationRequest {
+            tick: request.tick,
+            generation: request.generation,
+            state: request.state,
+            route: request.route,
+            progress: state.progress(),
+            frame: request.frame,
+            blockers: request.blockers,
+            dt_s: request.dt_s,
+        };
+        let decision = self
+            .navigator
+            .decide_with_tie_break(&navigation, tie_break)?;
+
+        Self::update_state(&mut state, request.state, &decision);
+        self.actors.insert(request.actor, state);
+        Ok(PursuitDecision {
+            actor: request.actor,
+            decision,
+            state,
+        })
+    }
+
+    /// Evaluates every request for one tick and returns the decisions in
+    /// ascending actor-id order.
+    ///
+    /// The input order is deliberately ignored: the requests are sorted by
+    /// their stable actor id before any decision runs, so the same roster
+    /// presented in a different ECS order produces the same output. An actor
+    /// named twice in one call is refused rather than stepped twice.
+    ///
+    /// # Errors
+    ///
+    /// [`NavigationError::DuplicateActor`] when an actor appears more than
+    /// once, and every error [`Self::decide`] can raise.
+    pub fn decide_all(
+        &mut self,
+        requests: &[PursuitRequest<'_>],
+    ) -> Result<Vec<PursuitDecision>, NavigationError> {
+        let mut ordered: Vec<&PursuitRequest<'_>> = requests.iter().collect();
+        ordered.sort_by_key(|request| request.actor);
+        if let Some(pair) = ordered
+            .windows(2)
+            .find(|pair| pair[0].actor == pair[1].actor)
+        {
+            return Err(NavigationError::DuplicateActor {
+                actor: pair[0].actor,
+            });
+        }
+        ordered
+            .into_iter()
+            .map(|request| self.decide(request))
+            .collect()
+    }
+
+    /// The state transition of one decision: adopt the (monotonic) progress,
+    /// remember the side of a deviation, forget it once the route is clear,
+    /// and count consecutive no-headway ticks.
+    fn update_state(state: &mut PursuitState, before: NavState, decision: &NavigationDecision) {
+        state.progress = decision.progress;
+        let moved = distance_xz(before.position_m, decision.step.to_m) > 0.0;
+        if moved || matches!(decision.avoidance, AvoidanceState::Arrived) {
+            state.stalled_ticks = 0;
+        } else {
+            state.stalled_ticks = state.stalled_ticks.saturating_add(1);
+        }
+        match decision.avoidance {
+            AvoidanceState::Deviating => {
+                let yaw = wrap_pi(decision.step.heading_rad - before.heading_rad);
+                state.deviation = Some(DeviationSide::of_yaw_step(yaw));
+            }
+            AvoidanceState::OnRoute | AvoidanceState::Arrived => state.deviation = None,
+            // A blocked hold keeps the last committed side so a follower that
+            // clears the blocker on the same side keeps going that way.
+            AvoidanceState::Blocked => {}
+        }
+    }
+
+    fn check_session(&self, generation: u64) -> Result<(), NavigationError> {
+        if generation != self.session {
+            return Err(NavigationError::ForeignSession {
+                expected: self.session,
+                found: generation,
+            });
+        }
+        Ok(())
+    }
+}
+
+/// The seeded tie-break draw for `(mission_seed, actor, tick)`, in `[0, 1)`.
+///
+/// It is the domain-separated mission AI stream
+/// ([`AI_NAVIGATION_DOMAIN`], `docs/contracts/CLI-EVIDENCE.md` `--seed`)
+/// subdivided by a stable mix of the actor id and the tick, so two actors —
+/// or two ticks of one actor — draw from independent streams, and no value
+/// moves when the roster or the ECS order changes.
+#[must_use]
+pub fn tie_break_draw(mission_seed: u64, actor: ActorId, tick: Tick) -> f64 {
+    let domain = AI_NAVIGATION_DOMAIN
+        ^ actor_stream_domain(actor)
+        ^ tick.0.wrapping_mul(0xD1B5_4A32_D192_ED03);
+    SplitMix64::for_domain(mission_seed, domain).unit_f64()
+}
+
+/// A stable, dependency-free mix of an actor's session and serial into a
+/// domain offset. It is a domain label, not an identity: two distinct actors
+/// that ever collide would merely share a tie-break stream, never a state.
+fn actor_stream_domain(actor: ActorId) -> u64 {
+    let mut value = actor.serial ^ actor.session.rotate_left(32);
+    value = (value ^ (value >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    value ^ (value >> 31)
+}
+
 // ------------------------------------------------------------- fixture -----
 
 /// The designed clearance of the synthetic arch route, in meters.
@@ -1463,6 +1972,105 @@ pub fn synthetic_arch_start() -> NavState {
         speed_mps: SYNTHETIC_ARCH_START_SPEED_MPS,
         climb_mps: 0.0,
     }
+}
+
+// ------------------------------------------------ F31-B pursuit fixture ---
+
+/// The designed fixed step of the F31-B pursuit fixture, in seconds.
+pub const SYNTHETIC_PURSUIT_DT_S: f64 = 1.0 / 60.0;
+
+/// The mission seed the F31-B synthetic fixture's tie-breaks derive from.
+/// Newly authored fixture data, not a measured original seed.
+pub const SYNTHETIC_PURSUIT_SEED: u64 = 0x4633_3142_5055_5253; // "F31B PURS"
+
+/// The session generation the F31-B synthetic fixture's actors belong to.
+pub const SYNTHETIC_PURSUIT_SESSION: u64 = 7;
+
+/// The stable actor id of the `serial`-th F31-B fixture actor.
+#[must_use]
+pub const fn synthetic_pursuit_actor(serial: u64) -> ActorId {
+    ActorId {
+        session: SYNTHETIC_PURSUIT_SESSION,
+        serial,
+    }
+}
+
+/// The straight synthetic pursuit route: from the spawn node at the origin
+/// along `-Z` to a mandatory marker 120 m ahead and two more beyond.
+#[must_use]
+pub fn synthetic_pursuit_route() -> RouteGraph {
+    RouteGraph {
+        frame: RouteFrame::World,
+        clearance_m: 0.0,
+        nodes: vec![
+            RouteNode {
+                id: RouteNodeId(0),
+                sequence: 0,
+                mandatory: false,
+                position_m: [0.0, 0.0, 0.0],
+                arrival_radius_m: 2.0,
+            },
+            RouteNode {
+                id: RouteNodeId(1),
+                sequence: 1,
+                mandatory: true,
+                position_m: [0.0, 0.0, -120.0],
+                arrival_radius_m: 6.0,
+            },
+            RouteNode {
+                id: RouteNodeId(2),
+                sequence: 2,
+                mandatory: true,
+                position_m: [0.0, 0.0, -260.0],
+                arrival_radius_m: 6.0,
+            },
+            RouteNode {
+                id: RouteNodeId(3),
+                sequence: 3,
+                mandatory: true,
+                position_m: [0.0, 0.0, -400.0],
+                arrival_radius_m: 8.0,
+            },
+        ],
+    }
+}
+
+/// A small sphere centred exactly on the pursuit route's first leg, close
+/// enough that one bounded yaw step clears it symmetrically: the direct step
+/// sweeps through it, and both bounded deviations clear it equally, so the
+/// seeded tie-break is the only thing that chooses a side.
+#[must_use]
+pub fn synthetic_pursuit_tie_blocker() -> Blocker {
+    Blocker::sphere([0.0, 0.0, -0.3], 0.004)
+}
+
+/// The aircraft state the F31-B pursuit fixture starts from: on the spawn
+/// node at cruise speed, pointed straight down the first leg.
+#[must_use]
+pub fn synthetic_pursuit_start() -> NavState {
+    NavState {
+        position_m: [0.0, 0.0, 0.0],
+        heading_rad: 0.0,
+        speed_mps: SYNTHETIC_ARCH_START_SPEED_MPS,
+        climb_mps: 0.0,
+    }
+}
+
+/// A set of `count` fixture actors, each resuming past the spawn node (which
+/// is not a marker), under the designer's synthetic envelope and seed.
+#[must_use]
+pub fn synthetic_pursuit_set(count: u64) -> NavigationSet {
+    let navigator = Navigator::new(
+        synthetic_maneuver_envelope(),
+        NavigationCadence::designed_default(),
+    )
+    .expect("the synthetic envelope and cadence are valid");
+    let mut set = NavigationSet::new(SYNTHETIC_PURSUIT_SESSION, SYNTHETIC_PURSUIT_SEED, navigator);
+    for serial in 1..=count {
+        set.register_resuming(synthetic_pursuit_actor(serial), 1)
+            .expect("fresh fixture actors register");
+    }
+    set
 }
 
 /// The result of one synthetic arch traversal.
@@ -1760,6 +2368,160 @@ mod tests {
                 source: BlockerError::NonFinite {
                     field: "center_m[0]",
                 },
+            })
+        );
+    }
+
+    /// The explicit tie-break reaches the decision: at the symmetric tie the
+    /// low draw turns nose-left and the high draw nose-right, both bounded by
+    /// the envelope's per-tick yaw step.
+    #[test]
+    fn accept_f31_b_explicit_tie_break_chooses_the_requested_deviation_side() {
+        let navigator = Navigator::new(
+            synthetic_maneuver_envelope(),
+            NavigationCadence::designed_default(),
+        )
+        .expect("valid navigator");
+        let route = synthetic_pursuit_route();
+        let blockers = [synthetic_pursuit_tie_blocker()];
+        let state = synthetic_pursuit_start();
+        let decide = |tie_break: f64| {
+            navigator
+                .decide_with_tie_break(
+                    &NavigationRequest {
+                        tick: Tick(0),
+                        generation: 1,
+                        state,
+                        route: &route,
+                        progress: RouteProgress::reached_nodes(1),
+                        frame: ReferenceFrameSample::IDENTITY,
+                        blockers: &blockers,
+                        dt_s: SYNTHETIC_PURSUIT_DT_S,
+                    },
+                    tie_break,
+                )
+                .expect("valid request")
+        };
+
+        let left = decide(0.0);
+        let right = decide(1.0);
+        assert_eq!(left.avoidance, AvoidanceState::Deviating);
+        assert_eq!(right.avoidance, AvoidanceState::Deviating);
+        let left_yaw = wrap_pi(left.step.heading_rad - state.heading_rad);
+        let right_yaw = wrap_pi(right.step.heading_rad - state.heading_rad);
+        assert!(
+            left_yaw > 0.0,
+            "draw 0.0 must prefer nose-left, got {left_yaw}"
+        );
+        assert!(
+            right_yaw < 0.0,
+            "draw 1.0 must prefer nose-right, got {right_yaw}"
+        );
+        let max_step = synthetic_maneuver_envelope().max_yaw_rate_radps * SYNTHETIC_PURSUIT_DT_S;
+        assert!(left_yaw.abs() <= max_step + 1e-12);
+        assert!(right_yaw.abs() <= max_step + 1e-12);
+        assert!(
+            blockers
+                .iter()
+                .all(|blocker| !blocker.segment_intersects(left.step.from_m, left.step.to_m))
+        );
+    }
+
+    /// The seeded tie-break is a pure function of `(mission seed, actor,
+    /// tick)`: a different actor or a different root seed partitions it, and
+    /// every draw is a unit value.
+    #[test]
+    fn accept_f31_b_seeded_tie_break_is_per_actor_and_seed_deterministic() {
+        let set = synthetic_pursuit_set(3);
+        let first = synthetic_pursuit_actor(1);
+        let second = synthetic_pursuit_actor(2);
+
+        for tick in 0..64 {
+            assert_eq!(
+                set.tie_break(first, Tick(tick)),
+                tie_break_draw(SYNTHETIC_PURSUIT_SEED, first, Tick(tick)),
+                "the set must not alter the documented draw"
+            );
+        }
+
+        let from_first: Vec<f64> = (0..64)
+            .map(|tick| set.tie_break(first, Tick(tick)))
+            .collect();
+        let from_second: Vec<f64> = (0..64)
+            .map(|tick| set.tie_break(second, Tick(tick)))
+            .collect();
+        assert_ne!(
+            from_first, from_second,
+            "actor ids must subdivide the stream"
+        );
+
+        let other = NavigationSet::new(
+            SYNTHETIC_PURSUIT_SESSION,
+            SYNTHETIC_PURSUIT_SEED ^ 0xDEAD_BEEF,
+            *set.navigator(),
+        );
+        let from_other: Vec<f64> = (0..64)
+            .map(|tick| other.tie_break(first, Tick(tick)))
+            .collect();
+        assert_ne!(
+            from_first, from_other,
+            "the mission seed must move the stream"
+        );
+        assert!(from_first.iter().all(|draw| (0.0..1.0).contains(draw)));
+    }
+
+    /// The set refuses a foreign session, a duplicate registration and a
+    /// request for an actor it does not own.
+    #[test]
+    fn accept_f31_b_set_refuses_foreign_unknown_and_duplicate_actors() {
+        let mut set = synthetic_pursuit_set(1);
+        let actor = synthetic_pursuit_actor(1);
+        assert_eq!(
+            set.register(actor),
+            Err(NavigationError::DuplicateActor { actor })
+        );
+
+        let foreign = ActorId {
+            session: SYNTHETIC_PURSUIT_SESSION + 1,
+            serial: 9,
+        };
+        assert_eq!(
+            set.register(foreign),
+            Err(NavigationError::ForeignSession {
+                expected: SYNTHETIC_PURSUIT_SESSION,
+                found: SYNTHETIC_PURSUIT_SESSION + 1,
+            })
+        );
+
+        let route = synthetic_pursuit_route();
+        let unknown = ActorId {
+            session: SYNTHETIC_PURSUIT_SESSION,
+            serial: 42,
+        };
+        let request = PursuitRequest {
+            actor: unknown,
+            tick: Tick(0),
+            generation: SYNTHETIC_PURSUIT_SESSION,
+            state: synthetic_pursuit_start(),
+            route: &route,
+            frame: ReferenceFrameSample::IDENTITY,
+            blockers: &[],
+            dt_s: SYNTHETIC_PURSUIT_DT_S,
+        };
+        assert_eq!(
+            set.decide(&request),
+            Err(NavigationError::UnknownActor { actor: unknown })
+        );
+
+        let stale = PursuitRequest {
+            generation: SYNTHETIC_PURSUIT_SESSION + 1,
+            ..request
+        };
+        assert_eq!(
+            set.decide(&stale),
+            Err(NavigationError::ForeignSession {
+                expected: SYNTHETIC_PURSUIT_SESSION,
+                found: SYNTHETIC_PURSUIT_SESSION + 1,
             })
         );
     }

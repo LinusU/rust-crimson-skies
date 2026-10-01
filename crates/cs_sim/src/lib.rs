@@ -114,16 +114,21 @@
 //! `cs_app::environment`. No value here is derived from screen fog, and no
 //! default is invented for a state the caller passes in.
 //!
-//! [`ai`] is the F31-A navigation contract
-//! (`specs/F31-ai-navigation-routes-and-obstacle-avoidance.md`, stage
-//! `### F31-A`): the Bevy-free [`ai::navigation::RouteGraph`] with its stable
-//! node ids and authored sequences, the [`ai::navigation::ManeuverEnvelope`]
-//! that bounds every command, the monotonic [`ai::navigation::RouteProgress`],
-//! the swept arrival and [`ai::navigation::Blocker`] tests and
-//! [`ai::navigation::Navigator::decide`], a pure function of one typed tick
-//! that emits the same [`flight::FlightInput`] a player's controls produce.
-//! The provenance-carrying producer record is `cs_content::routes`; F31-B
-//! wires pursuit and avoidance into the integrated flight loop.
+//! [`ai`] is the F31-A/F31-B navigation contract
+//! (`specs/F31-ai-navigation-routes-and-obstacle-avoidance.md`, stages
+//! `### F31-A`/`### F31-B`): the Bevy-free [`ai::navigation::RouteGraph`] with
+//! its stable node ids and authored sequences, the
+//! [`ai::navigation::ManeuverEnvelope`] that bounds every command, the
+//! monotonic [`ai::navigation::RouteProgress`], the swept arrival and
+//! [`ai::navigation::Blocker`] tests and [`ai::navigation::Navigator::decide`],
+//! a pure function of one typed tick that emits the same
+//! [`flight::FlightInput`] a player's controls produce; and the stateful
+//! [`ai::navigation::NavigationSet`], which owns one
+//! [`ai::navigation::PursuitState`] per actor and derives each actor's
+//! tie-break from the mission seed, so reordering the ECS entities that
+//! present the actors cannot change a local decision sequence. The
+//! provenance-carrying producer record is `cs_content::routes`; F31-C wires
+//! the set into the ECS and the original routes.
 //!
 //! [`environment`] owns the air-relative velocity conversion and nothing else
 //! (`specs/F19-sky-atmosphere-weather-and-visibility.md`, non-negotiable
