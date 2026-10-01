@@ -329,9 +329,7 @@ impl CampaignState {
         if outcome.outcome == Outcome::Succeeded && outcome.score > prior_best {
             plan.best_score_raised = true;
         }
-        if progresses
-            && let Some(edge) = graph.transition(&node_key, outcome.outcome)
-        {
+        if progresses && let Some(edge) = graph.transition(&node_key, outcome.outcome) {
             plan.progress_to = Some(edge.to.clone());
             // First outcome of this kind only: a replayed node cannot
             // re-pay, and a defeat cannot burn the victory grant.
