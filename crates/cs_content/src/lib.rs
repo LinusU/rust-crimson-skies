@@ -4,6 +4,9 @@
 //! [`cs_formats`] and, where a normalization needs the filesystem,
 //! [`cs_assets`]. It must never depend on Bevy or Avian.
 //!
+//! The stage paragraphs below stay in ascending feature-sheet order; the
+//! insertion rule and its rationale are `docs/architecture/crate-module-docs.md`.
+//!
 //! [`loading`] is the F07-C work: the loading-plan adapter
 //! (`specs/F07-interp-loading-script-container.md`, `### F07-C`). It reads a
 //! container `cs_formats::decode_interp` validated, classifies its lines with
@@ -25,57 +28,6 @@
 //! variant and the composed RGB8 image (stage F09-B), plus the
 //! session-scoped [`livery::LiveryVariantStore`] that caches those variants
 //! keyed by every input that distinguishes them (stage F09-C).
-//!
-//! [`config`] holds lossless configuration documents with provenance and
-//! key accounting (`specs/F12-text-configuration-strings-and-pe-
-//! resources.md`, stage F12-A), the typed, checked conversion of a
-//! declared field into a tuning constant (stage F12-B) and the F12-C
-//! consumers: a value becomes one only against a [`config::FieldSpec`] that
-//! declares its width, signedness and approved range — a negative,
-//! overflowing or non-finite value never does — [`config::resolve_tunings`]
-//! resolves a list of declared fields against a document, and
-//! [`config::StringCatalog`] resolves localizable string ids and languages
-//! through the PE resource reader.
-//!
-//! [`catalog`] holds the canonical content catalog and its declared
-//! launchable baseline (`specs/F14-canonical-content-catalog-and-dependency-
-//! closure.md`, stages F14-A/F14-B): stable-id elements in canonical order,
-//! duplicate identities refused, and the unsupported-mission count that
-//! keeps an unavailable mission in the denominator. F14-B adds the
-//! [`catalog::normalize`] quantity normalizer (canonical units, approved
-//! ranges and explicit refusals) and the [`catalog::closure`] transitive
-//! dependency walk (per-edge provenance, propagated unsupported
-//! dependencies, orphaned references, ownership cycles and a deterministic
-//! hash and JSON report). Its F14-D stage adds
-//! [`catalog::baseline`]: the complete private baseline inventory read from
-//! the original installation — one row per inventoried file, one row per
-//! campaign mission program and one declared launchable row per campaign
-//! mission directory, so the coverage denominator comes from the
-//! installation instead of a filtered list of supported rows.
-//!
-//! [`campaign_bindings`] holds the engine-independent mission binding and
-//! campaign coverage records (`specs/F50-per-mission-compatibility-and-
-//! full-campaign-closure.md`, stage F50-A): the seven required content
-//! categories the F50 owner ruling preserves, one explicit unresolved
-//! dependency row per required subsystem, the frozen campaign denominator
-//! read from `missions/bindings/campaign-inventory.tsv`, and the coverage
-//! totals plus closure reports that keep a missing, unknown or unsupported
-//! child counted instead of ready. Its M01-A stage adds the first
-//! source-derived binding: `SourceContext` reads the original installation's
-//! fingerprint, campaign directory layout and localized string table, and
-//! `SourceBinding` resolves the five critical dependencies of the mission
-//! sheets' data-binding checklist while keeping every unbound checklist
-//! entry in its `unknowns`. It claims no gameplay success and no
-//! `verified_original` state; running missions stays with the runtime stages.
-//!
-//! [`coordinates`] holds source coordinate conventions and their adapters
-//! into canonical space (`specs/F16-coordinates-units-origin-management-and-
-//! clocks.md`, stage F16-A): one validated declaration per source, and every
-//! position, direction, normal, rotation, winding, distance and angle
-//! conversion derived from it, so a format maps into the canonical
-//! convention exactly once. The declared sources are designed declarations
-//! with `Origin`/`Provenance`; which convention an original file uses is
-//! unmeasured (F16-D) and is never asserted here.
 //!
 //! [`mesh`] is the F10-C render mesh
 //! (`specs/F10-gamez-mesh-topology-and-material-records.md`,
@@ -112,6 +64,42 @@
 //! preserves nested transforms and negative scale, and the evidence-backed
 //! [`scene::BindingMap`] semantic-binding records.
 //!
+//! [`config`] holds lossless configuration documents with provenance and
+//! key accounting (`specs/F12-text-configuration-strings-and-pe-
+//! resources.md`, stage F12-A), the typed, checked conversion of a
+//! declared field into a tuning constant (stage F12-B) and the F12-C
+//! consumers: a value becomes one only against a [`config::FieldSpec`] that
+//! declares its width, signedness and approved range — a negative,
+//! overflowing or non-finite value never does — [`config::resolve_tunings`]
+//! resolves a list of declared fields against a document, and
+//! [`config::StringCatalog`] resolves localizable string ids and languages
+//! through the PE resource reader.
+//!
+//! [`catalog`] holds the canonical content catalog and its declared
+//! launchable baseline (`specs/F14-canonical-content-catalog-and-dependency-
+//! closure.md`, stages F14-A/F14-B): stable-id elements in canonical order,
+//! duplicate identities refused, and the unsupported-mission count that
+//! keeps an unavailable mission in the denominator. F14-B adds the
+//! [`catalog::normalize`] quantity normalizer (canonical units, approved
+//! ranges and explicit refusals) and the [`catalog::closure`] transitive
+//! dependency walk (per-edge provenance, propagated unsupported
+//! dependencies, orphaned references, ownership cycles and a deterministic
+//! hash and JSON report). Its F14-D stage adds
+//! [`catalog::baseline`]: the complete private baseline inventory read from
+//! the original installation — one row per inventoried file, one row per
+//! campaign mission program and one declared launchable row per campaign
+//! mission directory, so the coverage denominator comes from the
+//! installation instead of a filtered list of supported rows.
+//!
+//! [`coordinates`] holds source coordinate conventions and their adapters
+//! into canonical space (`specs/F16-coordinates-units-origin-management-and-
+//! clocks.md`, stage F16-A): one validated declaration per source, and every
+//! position, direction, normal, rotation, winding, distance and angle
+//! conversion derived from it, so a format maps into the canonical
+//! convention exactly once. The declared sources are designed declarations
+//! with `Origin`/`Provenance`; which convention an original file uses is
+//! unmeasured (F16-D) and is never asserted here.
+//!
 //! [`world`] is the F18-A world contract
 //! (`specs/F18-world-geometry-terrain-water-and-traversable-interiors.md`,
 //! `### F18-A`): one authored [`world::WorldDefinition`] holding its sectors,
@@ -139,37 +127,14 @@
 //! `cs_sim`. No sky is rendered and no file is opened here; F19-B builds the
 //! sky/fog/light and weather effects from these records.
 //!
-//! [`damage`] is the F29-A declared damage schema
-//! (`specs/F29-damage-zones-armor-destruction-and-bailout.md`, stage
-//! `### F29-A`): the provenance-carrying [`damage::DeclaredDamageGraph`]
-//! of armor zones, internal structure, engines and weapon mounts with
-//! [`Resolved`] integrity pools, [`scene::SceneNodeId`] part bindings, per-subject
-//! declared rules (aircraft, world object and capital ship share the
-//! identity discipline but keep their own rules) and the lethal
-//! [`damage::AttributionRule`] a session resolves kills under — every value
-//! known with provenance or an explicit unknown, never a silent default.
-//! Its runtime counterpart is `cs_sim::damage`; the conversion boundary is
-//! `cs_app::damage`.
-//!
-//! [`capital`] is the F35-A declared capital-ship schema
-//! (`specs/F35-zeppelins-capital-ships-subsystems-and-launch-bays.md`, stage
-//! `### F35-A`): the provenance-carrying [`capital::DeclaredCapitalShip`]
-//! with its authored trajectory, engines, gas/structural sections, turrets,
-//! weapon bays, launch bays with socket transforms, docking anchors, cargo
-//! and ownership. Identity is the [`capital::CapitalSubsystemKey`]; the
-//! shared [`capital::DeclaredSubsystem`] list pairs each part's kind with
-//! the behavior its destruction changes, and every load-bearing value is a
-//! [`Resolved`], so an unmeasured thrust, socket or owner stays an explicit
-//! unknown. Its runtime counterpart is `cs_sim::capital`; the lowering
-//! boundary is `cs_app::capital`.
-//!
-//! [`flight_tuning`] is the F24-A provenance-carrying tuning schema
-//! (`specs/F24-fixed-wing-flight-engine-stall-and-arcade-assists.md`, stage
-//! `### F24-A`): every numeric field the `cs_sim::flight` equations consume,
-//! with its unit and approved range, and a declared synthetic airframe whose
-//! values are each known with provenance or an explicit unknown — never a
-//! silent zero. It carries no original coefficient; F24-C maps the record
-//! into the model and F24-D calibrates it against reference traces.
+//! [`animation`] is the F20-A declared animation IR
+//! (`specs/F20-object-animation-and-authored-destruction-states.md`, stage
+//! `### F20-A`): the provenance-carrying [`animation::AnimationClip`] record
+//! with its transform, visibility, material and attachment channels and the
+//! [`animation::EventMarker`]s whose unknown effects block rather than skip
+//! gameplay transitions. Its runtime counterpart is
+//! `cs_sim::animated_object`; the conversion boundary is
+//! `cs_app::animation`.
 //!
 //! [`cameras`] is the F21-A declared camera contract
 //! (`specs/F21-cameras-cockpit-views-and-spyglass.md`, stage `### F21-A`):
@@ -184,16 +149,24 @@
 //! Its runtime counterpart (the lowered projection and the framing math) is
 //! `cs_app::camera`.
 //!
-//! [`target_rules`] is the F30-A declared targeting schema
-//! (`specs/F30-targeting-classification-aim-assistance-and-threat-cues.md`,
-//! stage `### F30-A`): the provenance-carrying
-//! [`target_rules::DeclaredTargetRules`] of a subject's faction set,
-//! directed [`target_rules::DeclaredRelation`]s and the
-//! [`target_rules::TargetRuleSet`] policy knobs — threat window, crosshair
-//! cone and the separate lead-indicator/aim-assistance options — each
-//! [`Resolved`] known with provenance or an explicit unknown, never a
-//! silent default. Its runtime counterpart is `cs_sim::targeting`; the
-//! conversion boundary is `cs_app::targeting`.
+//! [`flight_tuning`] is the F24-A provenance-carrying tuning schema
+//! (`specs/F24-fixed-wing-flight-engine-stall-and-arcade-assists.md`, stage
+//! `### F24-A`): every numeric field the `cs_sim::flight` equations consume,
+//! with its unit and approved range, and a declared synthetic airframe whose
+//! values are each known with provenance or an explicit unknown — never a
+//! silent zero. It carries no original coefficient; F24-C maps the record
+//! into the model and F24-D calibrates it against reference traces.
+//!
+//! [`airframe_roles`] is the F25-A role record
+//! (`specs/F25-hoplite-autogyro-and-exceptional-flight-configurations.md`,
+//! stage `### F25-A`): what one airframe *is* — its control-law label, its
+//! roster presence versus ordinary menu availability, and its explicit
+//! controllability, launch and weapon constraints — plus the pure
+//! [`airframe_roles::AirframeRoles::resolve_launch`] that decides which
+//! airframe a session launches, so a mission's forced assignment overrides the
+//! player's hangar selection for that session without writing to the owned
+//! loadout. Its declared roster is synthetic and its rotor mapping is an
+//! explicit unknown; F25-C wires it into the runtime launch path.
 //!
 //! [`weapons`] is the F27-A declared weapon schema
 //! (`specs/F27-guns-ammunition-hardpoints-and-ballistic-hits.md`, stage
@@ -227,53 +200,29 @@
 //! import both read, so an unsupported component cannot reach a session by
 //! way of an import. Its runtime counterpart is `cs_sim::weapons::ordnance`;
 //! the conversion boundary is `cs_app::ordnance`.
-
-//! [`construction`] is the F44-A construction record
-//! (`specs/F44-aircraft-construction-budgets-loadouts-and-paint-editor.md`,
-//! stage `### F44-A`): the [`construction::AircraftBlueprint`] input every
-//! construction path shares, the per-airframe
-//! [`construction::ConstructionRules`] limit profile, the
-//! [`construction::PriceBook`] of declared component masses and prices, and the
-//! **exact integer** budget arithmetic — [`construction::WeightUnits`] game
-//! weight units and [`construction::MoneyMinor`] minor currency, with no float
-//! anywhere — that returns a [`construction::BlueprintAssessment`] whose
-//! verdicts compare integers only. Non-negotiable 1's observed four gun
-//! positions and eight rocket hardpoints are per-profile `Resolved` data rather
-//! than constants, and an unmeasured price, limit or gun-position cost is a
-//! named refusal instead of a loadout that quietly fits. The validator's
-//! constraint rules, the transactional purchase/sell draft and the preview are
-//! F44-B's and F44-C's.
 //!
-//! [`airframe_roles`] is the F25-A role record
-//! (`specs/F25-hoplite-autogyro-and-exceptional-flight-configurations.md`,
-//! stage `### F25-A`): what one airframe *is* — its control-law label, its
-//! roster presence versus ordinary menu availability, and its explicit
-//! controllability, launch and weapon constraints — plus the pure
-//! [`airframe_roles::AirframeRoles::resolve_launch`] that decides which
-//! airframe a session launches, so a mission's forced assignment overrides the
-//! player's hangar selection for that session without writing to the owned
-//! loadout. Its declared roster is synthetic and its rotor mapping is an
-//! explicit unknown; F25-C wires it into the runtime launch path.
+//! [`damage`] is the F29-A declared damage schema
+//! (`specs/F29-damage-zones-armor-destruction-and-bailout.md`, stage
+//! `### F29-A`): the provenance-carrying [`damage::DeclaredDamageGraph`]
+//! of armor zones, internal structure, engines and weapon mounts with
+//! [`Resolved`] integrity pools, [`scene::SceneNodeId`] part bindings, per-subject
+//! declared rules (aircraft, world object and capital ship share the
+//! identity discipline but keep their own rules) and the lethal
+//! [`damage::AttributionRule`] a session resolves kills under — every value
+//! known with provenance or an explicit unknown, never a silent default.
+//! Its runtime counterpart is `cs_sim::damage`; the conversion boundary is
+//! `cs_app::damage`.
 //!
-//! [`audio`] is the F41-A declared audio catalog
-//! (`specs/F41-audio-music-radio-dialogue-and-spatial-mixing.md`, stage
-//! `### F41-A`): the provenance-carrying [`audio::AudioAssetRecord`] binding an
-//! audio id to its [`audio::AudioPlayback`] metadata (one of the seven
-//! [`audio::AudioBus`]es, a validated [`audio::AudioLevel`] and a
-//! [`audio::PlaybackMode`]) and to a [`audio::DecodedPcm`] reference, with the
-//! [`audio::AudioCatalog`] that refuses a duplicate id. Its runtime counterpart
-//! is `cs_sim::audio_events`; the conversion boundary is `cs_app::audio`. The
-//! original audio pipeline is undecoded, so every value here is designed or an
-//! explicit unknown, never an original measurement.
-//!
-//! [`animation`] is the F20-A declared animation IR
-//! (`specs/F20-object-animation-and-authored-destruction-states.md`, stage
-//! `### F20-A`): the provenance-carrying [`animation::AnimationClip`] record
-//! with its transform, visibility, material and attachment channels and the
-//! [`animation::EventMarker`]s whose unknown effects block rather than skip
-//! gameplay transitions. Its runtime counterpart is
-//! `cs_sim::animated_object`; the conversion boundary is
-//! `cs_app::animation`.
+//! [`target_rules`] is the F30-A declared targeting schema
+//! (`specs/F30-targeting-classification-aim-assistance-and-threat-cues.md`,
+//! stage `### F30-A`): the provenance-carrying
+//! [`target_rules::DeclaredTargetRules`] of a subject's faction set,
+//! directed [`target_rules::DeclaredRelation`]s and the
+//! [`target_rules::TargetRuleSet`] policy knobs — threat window, crosshair
+//! cone and the separate lead-indicator/aim-assistance options — each
+//! [`Resolved`] known with provenance or an explicit unknown, never a
+//! silent default. Its runtime counterpart is `cs_sim::targeting`; the
+//! conversion boundary is `cs_app::targeting`.
 //!
 //! [`routes`] is the F31-A declared route graph
 //! (`specs/F31-ai-navigation-routes-and-obstacle-avoidance.md`, stage
@@ -285,39 +234,6 @@
 //! Its runtime counterpart is `cs_sim::ai::navigation`; the conversion
 //! boundary is F31-C. The original route encoding is undecoded, so every value
 //! here is designed or an explicit unknown, never an original route.
-//!
-//! [`localization`] is the F51-A declared localization contract
-//! (`specs/F51-localization-fonts-text-layout-and-original-media-ids.md`,
-//! stage `### F51-A`): the opaque, validated [`localization::LocaleId`] and
-//! the *explicit* [`localization::LocaleChain`] a resolution walks (never a
-//! defaulted language list, because the original supported locales are
-//! unmeasured), a [`localization::TextCatalog`] of locale-bound rows keyed by
-//! the locale-independent [`localization::TextId`] that reports which locale
-//! and which chain depth answered — and names every locale it tried when none
-//! did — the declared control-markup grammar
-//! ([`localization::MarkupGrammar`] and [`localization::parse_markup`]) that
-//! keeps a refused control as literal text plus a [`localization::MarkupIssue`]
-//! instead of interpreting a resource string as executable markup, and the font
-//! provenance ([`localization::FontFace`], [`localization::FontSource`]) that
-//! can only hold an original private font or a licensed fallback with verified
-//! permission, plus the [`localization::GlyphCoverage`] that *counts* the
-//! characters a font cannot render. Its application boundary is
-//! `cs_app::text`.
-//!
-//! [`replay`] is the F59-A replay, capture and evidence schema
-//! (`specs/F59-replays-captures-probes-and-acceptance-evidence.md`, stage
-//! `### F59-A`): the [`replay::ReplayRecord`] that carries the engine, content
-//! and rules digests, the initial state, the recorded command stream, the
-//! seeds, the tick rate and the pinned authored choices; the
-//! [`replay::StateEnvelope`] of promised per-tick state hashes with the
-//! comparison AC01 asks for; the [`replay::CompatibilityVerdict`] that rejects
-//! a cross-build replay (or records it as explicitly best-effort) and refuses a
-//! replay whose content changed (AC02); the [`replay::CaptureRecord`] that
-//! pins the exact camera, tick, render configuration and build hash (AC03); and
-//! the [`replay::EvidenceBundle`] whose capability table turns a missing device
-//! into a blocked claim rather than a silent pass (AC04). It simulates,
-//! renders and opens nothing: the capture path is `cs_app::capture` (F59-B) and
-//! the commands are `cs-inspect`/`cs_xtask` (F59-C).
 //!
 //! [`ai`] is the F32-A declared combat-AI contract
 //! (`specs/F32-ai-combat-formations-aces-and-difficulty.md`, stage
@@ -346,6 +262,18 @@
 //! Its runtime counterpart is `cs_sim::allies`; the conversion boundary is
 //! `cs_app::roster`.
 //!
+//! [`capital`] is the F35-A declared capital-ship schema
+//! (`specs/F35-zeppelins-capital-ships-subsystems-and-launch-bays.md`, stage
+//! `### F35-A`): the provenance-carrying [`capital::DeclaredCapitalShip`]
+//! with its authored trajectory, engines, gas/structural sections, turrets,
+//! weapon bays, launch bays with socket transforms, docking anchors, cargo
+//! and ownership. Identity is the [`capital::CapitalSubsystemKey`]; the
+//! shared [`capital::DeclaredSubsystem`] list pairs each part's kind with
+//! the behavior its destruction changes, and every load-bearing value is a
+//! [`Resolved`], so an unmeasured thrust, socket or owner stays an explicit
+//! unknown. Its runtime counterpart is `cs_sim::capital`; the lowering
+//! boundary is `cs_app::capital`.
+//!
 //! [`interaction`] is the F36-A declared docking/pickup/boarding/plane-swap
 //! schema (`specs/F36-docking-passenger-pickups-boarding-and-plane-swaps.md`,
 //! stage `### F36-A`): the provenance-carrying [`interaction::DeclaredInteraction`]
@@ -354,6 +282,89 @@
 //! [`interaction::DeclaredTransferPolicy`], every load-bearing value a
 //! [`cs_types::content::Resolved`]. Its runtime counterpart is
 //! `cs_sim::interaction`; the conversion boundary is `cs_app::interaction`.
+//!
+//! [`cinematics`] is the F40-A declared cutscene/video schema
+//! (`specs/F40-cutscenes-video-scripted-cameras-and-transitions.md`, stage
+//! `### F40-A`): the provenance-carrying [`cinematics::DeclaredCinematic`]
+//! keeping its [`cinematics::DeclaredPresentation`] (prerendered video or
+//! in-engine camera track) apart from its [`cinematics::DeclaredAction`]
+//! semantic actions, every load-bearing value a
+//! [`cs_types::content::Resolved`]. Its runtime counterpart is
+//! `cs_sim::cinematic_state`; the conversion boundary is `cs_app::cinematics`.
+//!
+//! [`audio`] is the F41-A declared audio catalog
+//! (`specs/F41-audio-music-radio-dialogue-and-spatial-mixing.md`, stage
+//! `### F41-A`): the provenance-carrying [`audio::AudioAssetRecord`] binding an
+//! audio id to its [`audio::AudioPlayback`] metadata (one of the seven
+//! [`audio::AudioBus`]es, a validated [`audio::AudioLevel`] and a
+//! [`audio::PlaybackMode`]) and to a [`audio::DecodedPcm`] reference, with the
+//! [`audio::AudioCatalog`] that refuses a duplicate id. Its runtime counterpart
+//! is `cs_sim::audio_events`; the conversion boundary is `cs_app::audio`. The
+//! original audio pipeline is undecoded, so every value here is designed or an
+//! explicit unknown, never an original measurement.
+//!
+//! [`construction`] is the F44-A construction record
+//! (`specs/F44-aircraft-construction-budgets-loadouts-and-paint-editor.md`,
+//! stage `### F44-A`): the [`construction::AircraftBlueprint`] input every
+//! construction path shares, the per-airframe
+//! [`construction::ConstructionRules`] limit profile, the
+//! [`construction::PriceBook`] of declared component masses and prices, and the
+//! **exact integer** budget arithmetic — [`construction::WeightUnits`] game
+//! weight units and [`construction::MoneyMinor`] minor currency, with no float
+//! anywhere — that returns a [`construction::BlueprintAssessment`] whose
+//! verdicts compare integers only. Non-negotiable 1's observed four gun
+//! positions and eight rocket hardpoints are per-profile `Resolved` data rather
+//! than constants, and an unmeasured price, limit or gun-position cost is a
+//! named refusal instead of a loadout that quietly fits. The validator's
+//! constraint rules, the transactional purchase/sell draft and the preview are
+//! F44-B's and F44-C's.
+//!
+//! [`ui_layout`] is the F45-A authored-screen layout
+//! (`specs/F45-main-menu-pandora-cabin-briefing-and-flight-check.md`, stage
+//! `### F45-A`): a validated [`ui_layout::ScreenLayout`] of logical hotspots and
+//! the integer [`ui_layout::AspectFit`] that maps image and hotspots with one
+//! scale and offset. The state table that consumes it is
+//! `cs_app::ui::front_end`.
+//!
+//! [`hud`] is the F46-A display-unit policy (`specs/F46-hud-instruments-mission-map-and-pause.md`,
+//! stage `### F46-A`): a [`hud::HudPolicy`] naming each gauge's unit, the speed
+//! it reads, the altitude datum and the low-altitude thresholds, every choice
+//! tagged designed or original-verified. The instrument projection that uses it
+//! is `cs_app::ui::hud`.
+//!
+//! [`campaign_bindings`] holds the engine-independent mission binding and
+//! campaign coverage records (`specs/F50-per-mission-compatibility-and-
+//! full-campaign-closure.md`, stage F50-A): the seven required content
+//! categories the F50 owner ruling preserves, one explicit unresolved
+//! dependency row per required subsystem, the frozen campaign denominator
+//! read from `missions/bindings/campaign-inventory.tsv`, and the coverage
+//! totals plus closure reports that keep a missing, unknown or unsupported
+//! child counted instead of ready. Its M01-A stage adds the first
+//! source-derived binding: `SourceContext` reads the original installation's
+//! fingerprint, campaign directory layout and localized string table, and
+//! `SourceBinding` resolves the five critical dependencies of the mission
+//! sheets' data-binding checklist while keeping every unbound checklist
+//! entry in its `unknowns`. It claims no gameplay success and no
+//! `verified_original` state; running missions stays with the runtime stages.
+//!
+//! [`localization`] is the F51-A declared localization contract
+//! (`specs/F51-localization-fonts-text-layout-and-original-media-ids.md`,
+//! stage `### F51-A`): the opaque, validated [`localization::LocaleId`] and
+//! the *explicit* [`localization::LocaleChain`] a resolution walks (never a
+//! defaulted language list, because the original supported locales are
+//! unmeasured), a [`localization::TextCatalog`] of locale-bound rows keyed by
+//! the locale-independent [`localization::TextId`] that reports which locale
+//! and which chain depth answered — and names every locale it tried when none
+//! did — the declared control-markup grammar
+//! ([`localization::MarkupGrammar`] and [`localization::parse_markup`]) that
+//! keeps a refused control as literal text plus a [`localization::MarkupIssue`]
+//! instead of interpreting a resource string as executable markup, and the font
+//! provenance ([`localization::FontFace`], [`localization::FontSource`]) that
+//! can only hold an original private font or a licensed fallback with verified
+//! permission, plus the [`localization::GlyphCoverage`] that *counts* the
+//! characters a font cannot render. Its application boundary is
+//! `cs_app::text`.
+//!
 //! [`mods`] is the F53-A mod manifest and mount-plan contract
 //! (`specs/F53-mod-mounts-custom-content-and-compatibility-signatures.md`,
 //! stage `### F53-A`): the typed [`mods::ModManifest`] an F53-B manifest
@@ -370,27 +381,20 @@
 //! archive, reads no byte and mounts nothing: F53-B is the mount, F53-C the
 //! selection UI and export tooling, F53-D the reproducibility evidence.
 //!
-//! [`cinematics`] is the F40-A declared cutscene/video schema
-//! (`specs/F40-cutscenes-video-scripted-cameras-and-transitions.md`, stage
-//! `### F40-A`): the provenance-carrying [`cinematics::DeclaredCinematic`]
-//! keeping its [`cinematics::DeclaredPresentation`] (prerendered video or
-//! in-engine camera track) apart from its [`cinematics::DeclaredAction`]
-//! semantic actions, every load-bearing value a
-//! [`cs_types::content::Resolved`]. Its runtime counterpart is
-//! `cs_sim::cinematic_state`; the conversion boundary is `cs_app::cinematics`.
-//!
-//! [`ui_layout`] is the F45-A authored-screen layout
-//! (`specs/F45-main-menu-pandora-cabin-briefing-and-flight-check.md`, stage
-//! `### F45-A`): a validated [`ui_layout::ScreenLayout`] of logical hotspots and
-//! the integer [`ui_layout::AspectFit`] that maps image and hotspots with one
-//! scale and offset. The state table that consumes it is
-//! `cs_app::ui::front_end`.
-//!
-//! [`hud`] is the F46-A display-unit policy (`specs/F46-hud-instruments-mission-map-and-pause.md`,
-//! stage `### F46-A`): a [`hud::HudPolicy`] naming each gauge's unit, the speed
-//! it reads, the altitude datum and the low-altitude thresholds, every choice
-//! tagged designed or original-verified. The instrument projection that uses it
-//! is `cs_app::ui::hud`.
+//! [`replay`] is the F59-A replay, capture and evidence schema
+//! (`specs/F59-replays-captures-probes-and-acceptance-evidence.md`, stage
+//! `### F59-A`): the [`replay::ReplayRecord`] that carries the engine, content
+//! and rules digests, the initial state, the recorded command stream, the
+//! seeds, the tick rate and the pinned authored choices; the
+//! [`replay::StateEnvelope`] of promised per-tick state hashes with the
+//! comparison AC01 asks for; the [`replay::CompatibilityVerdict`] that rejects
+//! a cross-build replay (or records it as explicitly best-effort) and refuses a
+//! replay whose content changed (AC02); the [`replay::CaptureRecord`] that
+//! pins the exact camera, tick, render configuration and build hash (AC03); and
+//! the [`replay::EvidenceBundle`] whose capability table turns a missing device
+//! into a blocked claim rather than a silent pass (AC04). It simulates,
+//! renders and opens nothing: the capture path is `cs_app::capture` (F59-B) and
+//! the commands are `cs-inspect`/`cs_xtask` (F59-C).
 //!
 //! [`legacy_import`] is the F64-A legacy-import contract
 //! (`specs/F64-legacy-custom-aircraft-and-optional-save-import.md`, stage

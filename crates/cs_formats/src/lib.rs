@@ -1,5 +1,8 @@
 //! Byte-level parsers, raw records and parse diagnostics.
 //!
+//! The stage paragraphs below stay in ascending feature-sheet order; the
+//! insertion rule and its rationale are `docs/architecture/crate-module-docs.md`.
+//!
 //! This stage provides the checked reader, the structured errors, the
 //! bounded-allocation / recursion utilities and the contextual-error
 //! entrypoint every later parser builds on (`specs/F03-bounded-binary-
@@ -10,6 +13,11 @@
 //! dependency: [`cs_types`]. This crate must never depend on Bevy or Avian,
 //! and parsing must stay independent of renderer, window, network, game state
 //! and asset-directory enumeration.
+//!
+//! The ROF reader spans both F05 stages of `specs/F05-rof-directory-trees-
+//! and-compressed-members.md`: [`rof`] defines the raw block (F05-A,
+//! [`read_directory`]) and follows the tree and reads members through a
+//! bounded zlib decoder (F05-B, [`read_tree`] and [`read_member`]).
 //!
 //! On top of those primitives sits the ZBD family inventory and its
 //! two-key dispatch (`specs/F06-zbd-families-reader-archives-and-
@@ -51,6 +59,11 @@
 //! `specs/F12-text-configuration-strings-and-pe-resources.md` (stage F12-A,
 //! [`text`]).
 //!
+//! The inventory of candidate script containers and its disassembly-neutral
+//! evidence schema:
+//! `specs/F13-mission-language-discovery-and-compatibility-closure.md`
+//! (stage F13-A, [`script_raw`]).
+//!
 //! The legacy-import surface inventory and the declared-layout reader its
 //! measurements will plug into:
 //! `specs/F64-legacy-custom-aircraft-and-optional-save-import.md` (stage
@@ -58,16 +71,6 @@
 //! `Unknown` and the one shipped layout is `Designed` fixture data: no legacy
 //! original file was opened, so nothing here may be read as a measurement of
 //! the original profile, save or custom-aircraft formats.
-//!
-//! The inventory of candidate script containers and its disassembly-neutral
-//! evidence schema:
-//! `specs/F13-mission-language-discovery-and-compatibility-closure.md`
-//! (stage F13-A, [`script_raw`]).
-//!
-//! The ROF reader spans both F05 stages of `specs/F05-rof-directory-trees-
-//! and-compressed-members.md`: [`rof`] defines the raw block (F05-A,
-//! [`read_directory`]) and follows the tree and reads members through a
-//! bounded zlib decoder (F05-B, [`read_tree`] and [`read_member`]).
 //!
 //! The fixtures exercised below are newly authored synthetic bytes; nothing
 //! here is derived from original game data.
