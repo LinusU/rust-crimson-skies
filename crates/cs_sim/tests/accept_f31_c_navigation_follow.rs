@@ -22,7 +22,6 @@ use cs_sim::ai::navigation::{
     synthetic_pursuit_route, synthetic_pursuit_set,
 };
 use cs_sim::damage::ActorId;
-use cs_types::Tick;
 
 fn actor(serial: u64) -> ActorId {
     synthetic_pursuit_actor(serial)
