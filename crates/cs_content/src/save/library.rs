@@ -33,11 +33,12 @@ use std::path::{Path, PathBuf};
 use cs_types::profile::{ProfileDocument, ProfileId, ProfileKind, RegistryError, Revision};
 
 use super::fs::{
-    DirStorage, LoadedRegistry, REGISTRY_PREFIX, Registry, SlotError, commit_registry,
-    load_registry, profile_slot, recover_profile, registry_slot,
+    DirStorage, LoadedRegistry, REGISTRY_PREFIX, Registry, SlotError, SlotPath, classify_slot,
+    commit_registry, load_registry, profile_slot, recover_profile, registry_slot,
 };
 use super::store::{
-    CommitError, PROFILE_PREFIX, RecoverError, RecoveryWarning, SaveFile, commit, recover,
+    CommitError, PROFILE_PREFIX, RecoverError, RecoveryWarning, SaveFile, StorageError, commit,
+    recover,
 };
 
 /// The directory name of one profile's slot.
@@ -114,7 +115,7 @@ fn observed_ids(base: &Path) -> Result<Vec<ProfileId>, LibraryError> {
 /// write is worse than one it does not claim. The id it names still raises the
 /// high-water mark, so a link is never a way to have an id issued again.
 fn is_slot_directory(path: &Path) -> bool {
-    std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir())
+    matches!(classify_slot(path), Ok(SlotPath::Directory))
 }
 
 /// Whether `path` holds any of the three files of a save slot.
@@ -145,6 +146,13 @@ pub enum LibraryError {
         stored: ProfileKind,
         offered: ProfileKind,
     },
+    /// The slot read holds a profile other than the one that was asked for.
+    /// Reported rather than adopted, so an id never comes to mean another
+    /// pilot's state on the way in.
+    ProfileMismatch {
+        requested: ProfileId,
+        stored: ProfileId,
+    },
 }
 
 impl fmt::Display for LibraryError {
@@ -163,6 +171,10 @@ impl fmt::Display for LibraryError {
                 "profile {id} is a {} profile, not {}",
                 stored.label(),
                 offered.label()
+            ),
+            Self::ProfileMismatch { requested, stored } => write!(
+                f,
+                "the slot for profile {requested} holds profile {stored}'s save"
             ),
         }
     }
@@ -538,15 +550,58 @@ impl ProfileLibrary {
     }
 
     /// Reads one profile's newest whole revision and every diagnostic.
+    ///
+    /// A slot that exists but is not a plain directory — a symbolic link, a
+    /// regular file — is refused rather than followed, so what this population
+    /// shows comes from inside its own directory (non-negotiable 4). The write
+    /// path refuses such a path too (`DirStorage::create`), so following it here
+    /// would let a planted link make the library *read* a save it could never
+    /// write over — including another population's.
+    ///
+    /// A revision that names *another* profile is refused too
+    /// ([`LibraryError::ProfileMismatch`]), so a hostile slot cannot make
+    /// [`LoadedProfile::id`] and the document it carries disagree.
     pub fn load(&self, id: ProfileId) -> Result<LoadedProfile, LibraryError> {
+        match classify_slot(&self.slot_dir(id))? {
+            SlotPath::Directory => {}
+            // An unwritten slot is not an error: it is a profile with nothing
+            // stored yet, which is what `create` produces before its first write.
+            SlotPath::Absent => {
+                return Ok(LoadedProfile {
+                    id,
+                    document: None,
+                    source: None,
+                    warnings: Vec::new(),
+                });
+            }
+            SlotPath::NotADirectory(path) => {
+                return Err(LibraryError::Slot(SlotError::NotADirectory(path)));
+            }
+        }
         let found = recover_profile(&self.slot_dir(id))?;
         Ok(match found {
-            Some((recovery, warnings)) => LoadedProfile {
-                id,
-                document: Some(recovery.document),
-                source: Some(recovery.source),
-                warnings,
-            },
+            Some((recovery, warnings)) => {
+                // The slot that was asked for must be the slot that was read.
+                // Recovery refuses a slot holding *two* different profiles
+                // (`RecoverError::ProfileMismatch`); this is the other half: a
+                // slot that holds exactly one profile, but not the one whose id
+                // was asked for. Reporting that document under the requested id
+                // would hand a caller another pilot's campaign, records and
+                // settings, and the write path would then refuse every commit of
+                // it — a pilot whose state can be seen but never saved.
+                if recovery.document.profile_id != id {
+                    return Err(LibraryError::ProfileMismatch {
+                        requested: id,
+                        stored: recovery.document.profile_id,
+                    });
+                }
+                LoadedProfile {
+                    id,
+                    document: Some(recovery.document),
+                    source: Some(recovery.source),
+                    warnings,
+                }
+            }
             None => LoadedProfile {
                 id,
                 document: None,
@@ -618,7 +673,18 @@ impl ProfileLibrary {
 
     /// The typed recovery diagnostics of one profile's slot, for a caller that
     /// keeps the structured form as well as the text in [`LoadedProfile`].
+    ///
+    /// Applies the same rule as [`ProfileLibrary::load`]: a slot path that is
+    /// not a plain directory is refused rather than followed, so this cannot be
+    /// used to read through a planted link.
     pub fn slot_warnings(&self, id: ProfileId) -> Result<Vec<RecoveryWarning>, LibraryError> {
+        match classify_slot(&self.slot_dir(id))? {
+            SlotPath::Directory => {}
+            SlotPath::Absent => return Ok(Vec::new()),
+            SlotPath::NotADirectory(path) => {
+                return Err(LibraryError::Slot(SlotError::NotADirectory(path)));
+            }
+        }
         Ok(recover(&profile_slot(&self.slot_dir(id)))?
             .map_or_else(Vec::new, |found| found.warnings))
     }
@@ -670,6 +736,17 @@ fn retire_slot(from: &Path, to: &Path) -> Result<(), LibraryError> {
 
 /// Reads a profile slot without opening a library, for a caller that has a
 /// path and nothing else.
+///
+/// A slot path that exists but is not a plain directory is refused rather than
+/// followed, so this cannot be pointed at a symbolic link to read a save from
+/// outside the population.
 pub fn load_profile_slot(directory: &Path) -> Result<Option<ProfileDocument>, RecoverError> {
+    if let SlotPath::NotADirectory(path) = classify_slot(directory)
+        .map_err(|error| RecoverError::Storage(StorageError::from(error)))?
+    {
+        return Err(RecoverError::Storage(StorageError::from(
+            SlotError::NotADirectory(path),
+        )));
+    }
     Ok(recover(&profile_slot(directory))?.map(|found| found.document))
 }
