@@ -541,3 +541,132 @@ fn accept_f31_b_origin_shift_does_not_reset_progress_or_fire_arrival() {
         );
     }
 }
+
+/// Parent AC04's moving-waypoint half: a route in a moving frame whose origin
+/// jumps between ticks neither resets the progress the set owns nor fires a
+/// false arrival, and the follower re-targets the next mandatory marker at its
+/// new world pose.
+#[test]
+fn accept_f31_b_moving_waypoint_does_not_reset_progress_or_fire_false_arrival() {
+    let route = RouteGraph {
+        frame: RouteFrame::Moving { anchor: 7 },
+        clearance_m: 0.0,
+        nodes: vec![
+            RouteNode {
+                id: RouteNodeId(0),
+                sequence: 0,
+                mandatory: true,
+                position_m: [0.0, 0.0, -40.0],
+                arrival_radius_m: 4.0,
+            },
+            RouteNode {
+                id: RouteNodeId(1),
+                sequence: 1,
+                mandatory: true,
+                position_m: [0.0, 0.0, -120.0],
+                arrival_radius_m: 4.0,
+            },
+        ],
+    };
+    let actor = actor(1);
+    let mut set = NavigationSet::new(
+        SYNTHETIC_PURSUIT_SESSION,
+        SYNTHETIC_PURSUIT_SEED,
+        navigator(),
+    );
+    set.register(actor).expect("the actor registers");
+    let mut state = synthetic_pursuit_start();
+    let mut frame = ReferenceFrameSample::IDENTITY;
+
+    let step =
+        |set: &mut NavigationSet, tick: u64, state: &mut NavState, frame: ReferenceFrameSample| {
+            let decision = set
+                .decide(&PursuitRequest {
+                    actor,
+                    tick: Tick(tick),
+                    generation: SYNTHETIC_PURSUIT_SESSION,
+                    state: *state,
+                    route: &route,
+                    frame,
+                    blockers: &[],
+                    dt_s: DT_S,
+                })
+                .expect("valid request");
+            *state = NavState {
+                position_m: decision.decision.step.to_m,
+                heading_rad: decision.decision.step.heading_rad,
+                speed_mps: decision.decision.step.speed_mps,
+                climb_mps: decision.decision.step.climb_mps,
+            };
+            decision
+        };
+
+    // A frame origin that leaves the aircraft exactly at the node's *local*
+    // position must not be mistaken for an arrival at the node's world pose.
+    let mut local_state = synthetic_pursuit_start();
+    local_state.position_m = [0.0, 0.0, -40.0];
+    let displaced = step(
+        &mut set,
+        0,
+        &mut local_state,
+        ReferenceFrameSample {
+            origin_m: [1000.0, 0.0, 0.0],
+            yaw_rad: 0.0,
+        },
+    );
+    assert_ne!(
+        displaced.decision.avoidance,
+        AvoidanceState::Arrived,
+        "a displaced frame must not report arrival at the node's local position"
+    );
+    assert_eq!(displaced.decision.progress.reached(), 0);
+    assert_eq!(displaced.decision.target, Some(RouteNodeId(0)));
+
+    // Fly to the first mandatory marker at its initial world pose.
+    let mut tick = 0;
+    while set.state(actor).expect("registered").progress().reached() == 0 {
+        step(&mut set, tick, &mut state, frame);
+        tick += 1;
+        assert!(tick < 2000, "the first marker must be reachable");
+    }
+    assert_eq!(
+        set.state(actor).expect("registered").progress().reached(),
+        1
+    );
+
+    // The moving waypoint's frame jumps 200 m down the route between ticks.
+    frame = ReferenceFrameSample {
+        origin_m: [0.0, 0.0, -200.0],
+        yaw_rad: 0.0,
+    };
+    let jumped = step(&mut set, tick, &mut state, frame);
+    assert_eq!(
+        jumped.decision.progress.reached(),
+        1,
+        "a moving waypoint must not reset the set's progress"
+    );
+    assert_ne!(
+        jumped.decision.avoidance,
+        AvoidanceState::Arrived,
+        "a moving waypoint must not fire a false arrival"
+    );
+    assert_eq!(
+        jumped.decision.target,
+        Some(RouteNodeId(1)),
+        "the follower targets the next mandatory marker at its new pose"
+    );
+
+    // It can still reach the marker at its new world pose.
+    for _ in 0..4000 {
+        let decision = step(&mut set, tick, &mut state, frame);
+        tick += 1;
+        if decision.decision.progress.reached() >= 2 {
+            break;
+        }
+    }
+    assert_eq!(
+        set.state(actor).expect("registered").progress().reached(),
+        2,
+        "the follower reaches the moved mandatory marker"
+    );
+}

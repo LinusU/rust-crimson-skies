@@ -152,19 +152,50 @@ All four required checks, run from the repository root; exit codes as printed.
 cargo fmt --all -- --check                                              -> 0
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings -> 0
 cargo test --workspace --locked                                         -> 0 (163 "test result: ok", no failures)
-cargo test --workspace --locked -- accept_f31_b_ --include-ignored      -> 0 (11 tests selected, all passed)
+cargo test --workspace --locked -- accept_f31_b_ --include-ignored      -> 0 (12 tests selected, all passed)
 ```
 
-The 11 selected tests are 3 unit tests in `cs_sim`
-(`ai::navigation::tests::accept_f31_b_*`) plus 8 integration tests in
+The 12 selected tests are 3 unit tests in `cs_sim`
+(`ai::navigation::tests::accept_f31_b_*`) plus 9 integration tests in
 `crates/cs_sim/tests/accept_f31_b_navigation.rs`. No test is `#[ignore]`d, so
-`--include-ignored` selects the same set.
+`--include-ignored` selects the same set. (The counts above are the re-run after
+the review fix; the submitted commit had 11.)
 
 ## Evidence
 
 Synthetic fixtures and design only. No original-data, visual, audible or
 ordinary-play claim; this stage can award at most **checked**. F31-D owns
 retail route-coverage evidence.
+
+## Review fixes
+
+Reviewed by `deepseek-1` (same agent identity and model as the implementer, in
+a fresh session and a separate review claim — **not** an independent reviewer;
+this stage makes no original-reference claim, so the review is not offered as
+original evidence). Re-ran all four checks on the submitted commit
+`edf2b61` and reproduced three mutation probes (the seeded tie-break forced to
+one side, `decide_all`'s sort removed, and `world_position` made to ignore the
+frame origin); each made the expected test fail and the tree was restored.
+
+One gap was found and fixed:
+
+1. **AC04's moving-waypoint half was untested.** The submitted
+   `accept_f31_b_origin_shift_does_not_reset_progress_or_fire_arrival` covers
+   only a rigid origin shift (state and frame translated together). The
+   acceptance criterion is "A **moving waypoint** and origin shift do not reset
+   progress or trigger false arrival", and no test moved the frame between
+   ticks. Added
+   `accept_f31_b_moving_waypoint_does_not_reset_progress_or_fire_false_arrival`,
+   which (a) places the aircraft exactly at a node's authored *local* position
+   under a displaced frame and requires no arrival, then (b) flies to the first
+   marker, jumps the moving frame 200 m down the route between ticks, and
+   requires that the set-owned progress is neither reset nor falsely advanced
+   and that the follower re-targets the next mandatory marker at its new world
+   pose. It fails when `ReferenceFrameSample::world_position` stops applying the
+   frame origin (the displaced frame is then read as an arrival).
+
+No production-code defect was found; the stateful set, the per-actor seeded
+draw and the hysteresis all behaved as documented.
 
 ## Sources
 
