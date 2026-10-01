@@ -5,8 +5,9 @@ short crate introduction and the trailing link-definition list, that block
 carries one paragraph per feature stage ("module-doc paragraph"). Several stage
 branches add such a paragraph at once, and while they all appended at the same
 anchor (immediately above the link definitions) every one of them conflicted
-with every other. This is the rule that gives each paragraph its own insertion
-point.
+with every other. This is the rule that gives each paragraph a position
+determined by the sheet it documents, instead of every branch racing for the
+same anchor.
 
 ## The rule
 
@@ -25,9 +26,14 @@ paragraph.**
 - A stage that extends an existing module's paragraph edits that paragraph in
   place. It does not add a second paragraph for a sheet that already has one.
 
-The sheet ids are fixed when the specs are written (F00–F64), so two branches
-for different stages compute different insertion points instead of racing for
-the same line. The order holds in every crate's `src/lib.rs`.
+The sheet ids are fixed when the specs are written (F00–F64), so a new
+paragraph's position does not depend on how many paragraphs happen to sit at the
+end of the block already. Additions with well-separated sheet ids no longer
+share an anchor. Two additions whose sheet ids fall between the same pair of
+neighbouring paragraphs can still share a line and conflict, but that residual
+case is narrow; the old append-at-the-end rule made it universal. The rule
+applies to any crate-level `//!` block that carries per-stage paragraphs, and
+the tests below enforce it for `cs_content` and `cs_formats`.
 
 ## Why feature-sheet order
 
