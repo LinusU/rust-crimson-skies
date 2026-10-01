@@ -198,6 +198,15 @@
 //! cannot switch coherently under a guessed owner; and the generation-stamped
 //! [`capital::CapitalActorBinding`] ECS record.
 //!
+//! [`interaction`] is the F36-A interaction boundary
+//! (`specs/F36-docking-passenger-pickups-boarding-and-plane-swaps.md`, stage
+//! `### F36-A`): [`interaction::lower_interaction`], which lowers a declared
+//! `cs_content::interaction::DeclaredInteraction` into the
+//! `cs_sim::interaction` kind, authorization, swept eligibility envelope and
+//! transfer policy; the boundary refuses an unknown authorization or an
+//! unknown eligibility field rather than inventing a value; and the
+//! generation-stamped [`interaction::InteractionActorBinding`] ECS record.
+//!
 //! [`targeting`] is the F30-A targeting boundary
 //! (`specs/F30-targeting-classification-aim-assistance-and-threat-cues.md`,
 //! stage `### F30-A`): [`targeting::lower_rules`], which lowers a declared
@@ -330,6 +339,7 @@ pub mod cli;
 pub mod damage;
 pub mod environment;
 pub mod input;
+pub mod interaction;
 pub mod livery;
 pub mod loading;
 pub mod ordnance;
