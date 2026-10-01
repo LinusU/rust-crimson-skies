@@ -12,12 +12,14 @@
 
 use bevy::math::Rect;
 pub use cs_app::text::layout::{LayoutRequest, RequiredControl};
+use cs_content::config::StringRow;
 use cs_content::localization::{
     LocaleChain, LocaleId, LocalizedText, MarkupDocument, MarkupGrammar, TextId, parse_markup,
     synthetic_markup_grammar,
 };
+use cs_types::asset_id::SourceSpan;
 use cs_types::content::{ContentId, ContentKind, Origin, Provenance};
-use cs_types::evidence::ClaimId;
+use cs_types::evidence::{ClaimId, ContentHash};
 
 /// The panel the AC01 scenario lays text out in: 640x480 with a 40px button row
 /// along the bottom edge.
@@ -64,6 +66,43 @@ pub fn row(key: &str, locale_label: &str, text: &str) -> LocalizedText {
 /// A `ui_resource` content id for a required control.
 pub fn control_id(key: &str) -> ContentId {
     ContentId::from_source(ContentKind::UiResource, key).expect("the control id is valid")
+}
+
+/// A synthetic PE string row exactly as F12 hands one out: a resource id, the
+/// third-level language id, a code page and the text (or `None` when the units
+/// did not decode).
+///
+/// The span names an authored `strings.dll`; the bytes are never read, because
+/// [`cs_content::localization::ResourceDecode`] consumes rows rather than
+/// opening a file. No original byte or string is reproduced.
+pub fn resource_row(id: u32, language: u32, text: Option<&str>) -> StringRow {
+    let span = SourceSpan::new(
+        ContentHash::from_bytes([7; 32]),
+        "strings.dll",
+        None,
+        0,
+        16,
+        None,
+    )
+    .expect("the fixture span is valid");
+    StringRow {
+        id,
+        language,
+        code_page: 1252,
+        code_units: Vec::new(),
+        text: text.map(str::to_owned),
+        span,
+    }
+}
+
+/// A validated caller-declared language map.
+pub fn language_map(entries: &[(u32, &str)]) -> cs_content::localization::LanguageMap {
+    cs_content::localization::LanguageMap::new(
+        entries
+            .iter()
+            .map(|(language, label)| (*language, locale(label))),
+    )
+    .expect("the fixture language map is valid")
 }
 
 /// The synthetic screen's required controls: `Ok` and `Cancel` in the bottom

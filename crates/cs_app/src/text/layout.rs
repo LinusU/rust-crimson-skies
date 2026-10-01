@@ -289,6 +289,39 @@ impl LayoutDiagnostic {
     }
 }
 
+impl std::fmt::Display for LayoutDiagnostic {
+    /// A one-line, human-readable rendering, so a screen can show every
+    /// diagnostic rather than only count it.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Markup {
+                code,
+                offset,
+                detail,
+            } => match offset {
+                Some(offset) => write!(f, "{code}: {detail} at byte {offset}"),
+                None => write!(f, "{code}: {detail}"),
+            },
+            Self::MissingGlyph {
+                ch,
+                line,
+                occurrences,
+            } => write!(
+                f,
+                "missing_glyph: the font has no glyph for '{ch}' on line {line} ({occurrences} occurrence(s))"
+            ),
+            Self::UnresolvedSubstitution { id, line } => match line {
+                Some(line) => write!(f, "unresolved_substitution: {{{id}}} on line {line}"),
+                None => write!(f, "unresolved_substitution: {{{id}}}"),
+            },
+            Self::BrokenWord { line } => write!(
+                f,
+                "broken_word: a token wider than the viewport was broken at line {line}"
+            ),
+        }
+    }
+}
+
 /// The result of laying one localized string out in one panel.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TextLayout {

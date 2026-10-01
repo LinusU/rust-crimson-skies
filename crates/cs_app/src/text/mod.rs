@@ -1,8 +1,9 @@
-//! The text application boundary: measurement, markup-aware wrapping and the
-//! fit-or-scroll decision (F51-A).
+//! The text application boundary: measurement, markup-aware wrapping, the
+//! fit-or-scroll decision and the screen text pipeline (F51-A, F51-B).
 //!
 //! Spec: `specs/F51-localization-fonts-text-layout-and-original-media-ids.md`,
-//! stage `### F51-A`. Shared contract: `docs/contracts/UI-NETWORK.md`.
+//! stages `### F51-A` and `### F51-B`. Shared contract:
+//! `docs/contracts/UI-NETWORK.md`.
 //!
 //! This is where the declared localization contract
 //! ([`cs_content::localization`]) meets a screen. It is deliberately **not** a
@@ -10,15 +11,27 @@
 //!
 //! * [`metrics::TextMetrics`] is the *typed measurement input* — advance
 //!   widths, line height, ascent and the font's declared glyph coverage at a
-//!   pixel size. F51-B supplies the real numbers by parsing the original font;
-//!   [`metrics::synthetic_monospace`] is a declared monospace stand-in for
-//!   development, never a measurement of the original.
+//!   pixel size. The original font format is still unmeasured, so the numbers
+//!   stay a caller-supplied input and [`metrics::synthetic_monospace`] is a
+//!   declared monospace stand-in for development, never a measurement of the
+//!   original. A decode that fills this seam from an original font belongs to
+//!   the retail-capable F51-D audit once that format is known.
 //! * [`layout::layout_text`] is the whole of AC01 at this stage: it lays a
 //!   validated [`MarkupDocument`] out inside a panel, keeps the text inside
 //!   the panel's largest **free band** — the horizontal band the panel's
 //!   required controls do not occupy — and reports whether the result fits or
 //!   has to scroll. Nothing here draws anything, and no game state lives in
 //!   this module.
+//! * [`screen::layout_localized_text`] (F51-B) is the one production call a
+//!   screen makes: it resolves a [`TextId`] through a [`LocaleChain`], parses
+//!   the resolved row's text with the declared grammar, lays the parsed
+//!   document out and returns a [`screen::ScreenText`]. Every refused control,
+//!   absent glyph and unresolved substitution is a [`layout::LayoutDiagnostic`]
+//!   a screen can show, and a miss is a named error rather than an empty box.
+//!
+//! [`MarkupDocument`]: cs_content::localization::MarkupDocument
+//! [`TextId`]: cs_content::localization::TextId
+//! [`LocaleChain`]: cs_content::localization::LocaleChain
 //!
 //! # Why the free band, not the panel
 //!
@@ -43,12 +56,14 @@
 
 pub mod layout;
 pub mod metrics;
+pub mod screen;
 
 pub use layout::{
     ControlIdError, LaidOutLine, LayoutDiagnostic, LayoutError, LayoutRequest, RequiredControl,
     TextFit, TextLayout, layout_text,
 };
 pub use metrics::{TextMetrics, TextMetricsError, synthetic_monospace};
+pub use screen::{ScreenText, ScreenTextError, ScreenTextRequest, layout_localized_text};
 
 /// The substitution values a screen supplies for a localized string.
 ///

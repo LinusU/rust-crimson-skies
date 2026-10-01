@@ -34,20 +34,33 @@
 //! [`GlyphCoverage::missing_in`] rather than silently dropped (F51
 //! non-negotiable behavior 3).
 //!
+//! # Decoding the F12 resource rows (F51-B)
+//!
+//! [`ResourceDecode`] bridges the F12 PE string catalog
+//! ([`crate::config::StringRow`], `(id, language, text)`) into a
+//! [`TextCatalog`]. The mapping from a resource language id to a [`LocaleId`]
+//! is the caller's [`LanguageMap`] — never a built-in language table — because
+//! the original supported-locale list is unmeasured; a row whose language is
+//! not declared is reported, not guessed. A row whose code units did not decode
+//! (`StringRow::text == None`) and a duplicate `(id, locale)` pair are likewise
+//! reported instead of being replaced or silently chosen between.
+//!
 //! # What this stage does not do
 //!
-//! No font is parsed, no glyph is rasterized, no string is loaded from the
-//! owner's installation, and the F12 PE string catalog is deliberately not
-//! bridged in: mapping a `StringRow.language` to a [`LocaleId`] needs the
-//! language ids the retail images carry, which is F51-B's measurement. This
-//! crate therefore never depends on `cs_formats` through this module and stays
-//! Bevy-free.
+//! No font is parsed and no glyph is rasterized. The real control-markup
+//! delimiters and the original font format are still unmeasured, so the grammar
+//! stays caller-declared and the font metrics stay a caller-supplied input;
+//! those measurements belong to the retail-capable F51-D audit. This module
+//! stays Bevy-free and never opens an original file: it turns already-read F12
+//! rows into typed localization rows.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use cs_types::asset_id::SourceSpan;
 use cs_types::content::{ContentId, ContentIdError, ContentKind, Origin, Provenance};
+
+use crate::config::StringRow;
 
 // --------------------------------------------------------------- locale ---
 
@@ -255,6 +268,124 @@ impl LocaleChain {
     }
 }
 
+// --------------------------------------------------------- language ids ---
+
+/// Maximum number of language-id mappings one [`LanguageMap`] may hold.
+///
+/// A designed bound, not an original measurement: a map larger than this is a
+/// content-authoring or reading error (a corrupted language table) and is
+/// refused rather than silently truncated.
+pub const MAX_LANGUAGE_MAP_LEN: usize = 64;
+
+/// Why a [`LanguageMap`] was refused.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LanguageMapError {
+    /// The map declared no language at all, so no resource row could ever be
+    /// decoded.
+    Empty,
+    /// The map held more than [`MAX_LANGUAGE_MAP_LEN`] mappings.
+    TooLong {
+        /// How many mappings were supplied.
+        len: usize,
+    },
+    /// One resource language id was mapped twice, so a row's locale would
+    /// depend on iteration order.
+    DuplicateLanguage {
+        /// The repeated resource language id.
+        language: u32,
+    },
+}
+
+impl fmt::Display for LanguageMapError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => {
+                f.write_str("a language map must declare at least one resource language")
+            }
+            Self::TooLong { len } => write!(
+                f,
+                "language map holds {len} languages, max is {MAX_LANGUAGE_MAP_LEN}"
+            ),
+            Self::DuplicateLanguage { language } => {
+                write!(f, "resource language {language} is mapped more than once")
+            }
+        }
+    }
+}
+
+impl std::error::Error for LanguageMapError {}
+
+/// The caller-declared map from an original resource language id to a
+/// [`LocaleId`].
+///
+/// F12 yields `StringRow.language` as the raw third-level language id the image
+/// stored (§ the PE resource tree); turning that number into a locale is a
+/// *content* decision this crate must not guess, because the original
+/// supported-locale list is unmeasured. The map is therefore supplied by the
+/// caller — the same discipline as the caller-declared [`MarkupGrammar`] — and a
+/// resource row whose language id is absent is reported by
+/// [`ResourceDecode::unmapped_languages`] rather than dropped silently.
+///
+/// Several language ids may map to one locale (a locale shipped under more than
+/// one id), but one id may map to only one locale.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LanguageMap {
+    locales: BTreeMap<u32, LocaleId>,
+}
+
+impl LanguageMap {
+    /// Validates and assembles a map from resource language ids to locales.
+    ///
+    /// # Errors
+    ///
+    /// [`LanguageMapError::Empty`], [`LanguageMapError::TooLong`] or
+    /// [`LanguageMapError::DuplicateLanguage`].
+    pub fn new(
+        entries: impl IntoIterator<Item = (u32, LocaleId)>,
+    ) -> Result<Self, LanguageMapError> {
+        let mut locales: BTreeMap<u32, LocaleId> = BTreeMap::new();
+        for (language, locale) in entries {
+            if locales.contains_key(&language) {
+                return Err(LanguageMapError::DuplicateLanguage { language });
+            }
+            locales.insert(language, locale);
+        }
+        if locales.is_empty() {
+            return Err(LanguageMapError::Empty);
+        }
+        if locales.len() > MAX_LANGUAGE_MAP_LEN {
+            return Err(LanguageMapError::TooLong { len: locales.len() });
+        }
+        Ok(Self { locales })
+    }
+
+    /// The locale a resource language id maps to, if the caller declared it.
+    #[must_use]
+    pub fn locale(&self, language: u32) -> Option<&LocaleId> {
+        self.locales.get(&language)
+    }
+
+    /// The declared resource language ids, in ascending order.
+    pub fn languages(&self) -> impl Iterator<Item = u32> + '_ {
+        self.locales.keys().copied()
+    }
+
+    /// How many language ids the map declares.
+    #[must_use]
+    #[allow(clippy::len_without_is_empty)]
+    pub fn len(&self) -> usize {
+        self.locales.len()
+    }
+
+    /// Whether the map declares no language. Always `false` for a map built by
+    /// [`LanguageMap::new`], which refuses the empty map; present so a
+    /// `Default`-built value cannot be mistaken for a usable map.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.locales.is_empty()
+    }
+}
+
 // ------------------------------------------------------------- string id ---
 
 /// Why a [`TextId`] was refused.
@@ -333,6 +464,21 @@ impl TextId {
             return Err(TextIdError::NotAStringResource { kind: id.kind() });
         }
         Ok(Self(id))
+    }
+
+    /// The id of a PE string-table unit, from the numeric id F12 read.
+    ///
+    /// `StringRow::id` is `(block - 1) * 16 + index`
+    /// (`cs_formats::string_id`) and is the identity a localized installation
+    /// keeps while its display text changes (spec F12 AC04), so it is exactly
+    /// the semantic key a [`TextId`] needs. The key is spelled in decimal
+    /// (`string_resource/<id>`): stable, locale-free and impossible to confuse
+    /// with a mission or a network value.
+    ///
+    /// This cannot fail: a decimal `u32` is always a valid id key.
+    #[must_use]
+    pub fn from_resource_id(id: u32) -> Self {
+        Self::new(&id.to_string()).expect("a decimal resource id is a valid string key")
     }
 
     /// The underlying content id.
@@ -706,6 +852,176 @@ impl LocaleAudit {
     #[must_use]
     pub fn coverage_percent(&self) -> u32 {
         (self.coverage() * 100.0).round() as u32
+    }
+}
+
+// ------------------------------------------------------- resource decode ---
+
+/// The typed result of decoding F12's PE string rows into a [`TextCatalog`],
+/// with everything that could not become a row named instead of hidden.
+///
+/// F12 ([`crate::config::StringCatalog`]) answers "which strings does this
+/// image carry, in which language, with which code units". F51 answers "which
+/// string answers this id in this locale". This type is the bridge: each row
+/// whose language the caller's [`LanguageMap`] declares **and** whose code
+/// units decoded becomes a [`LocalizedText`] under the id
+/// [`TextId::from_resource_id`] builds. Nothing else is invented:
+///
+/// * a row in a language the map does not declare is left out and its language
+///   recorded in [`ResourceDecode::unmapped_languages`];
+/// * a row whose units did not decode (`StringRow::text` is `None`) is left out
+///   and its id recorded in [`ResourceDecode::undecodable_ids`];
+/// * a duplicate `(id, locale)` pair is a contradiction, so **neither** copy is
+///   kept and the pair is recorded in [`ResourceDecode::duplicates`] — matching
+///   F12's own refusal to choose between two strings that share an id.
+#[derive(Clone, Debug, Default)]
+pub struct ResourceDecode {
+    catalog: TextCatalog,
+    rows: usize,
+    unmapped_languages: Vec<u32>,
+    undecodable_ids: Vec<u32>,
+    duplicates: Vec<(u32, LocaleId)>,
+}
+
+impl ResourceDecode {
+    /// Decodes `rows` into a catalog using the caller's language map.
+    ///
+    /// `origin` and `provenance` describe where the rows came from and are
+    /// attached to every decoded row; a caller reading the owner's installation
+    /// passes an [`Origin::Installation`] span and an evidence provenance, and a
+    /// synthetic test passes [`Origin::SyntheticFixture`] and a designed one.
+    /// This function copies what it is given and asserts no evidence itself.
+    #[must_use]
+    pub fn decode(
+        rows: &[StringRow],
+        locales: &LanguageMap,
+        origin: Origin,
+        provenance: Provenance,
+    ) -> Self {
+        // Pass one: map each row to its `(id, locale)` key and count collisions
+        // so a duplicated key can be excluded as a pair rather than resolved by
+        // whichever copy was seen first.
+        let mut keys: Vec<Option<(TextId, LocaleId)>> = Vec::with_capacity(rows.len());
+        let mut counts: BTreeMap<(TextId, LocaleId), usize> = BTreeMap::new();
+        let mut unmapped: BTreeSet<u32> = BTreeSet::new();
+        let mut undecodable: BTreeSet<u32> = BTreeSet::new();
+        for row in rows {
+            let Some(locale) = locales.locale(row.language) else {
+                unmapped.insert(row.language);
+                keys.push(None);
+                continue;
+            };
+            if row.text.is_none() {
+                undecodable.insert(row.id);
+                keys.push(None);
+                continue;
+            }
+            let key = (TextId::from_resource_id(row.id), locale.clone());
+            *counts.entry(key.clone()).or_insert(0) += 1;
+            keys.push(Some(key));
+        }
+        let duplicate_keys: BTreeSet<(TextId, LocaleId)> = counts
+            .iter()
+            .filter(|(_, count)| **count > 1)
+            .map(|(key, _)| key.clone())
+            .collect();
+
+        // Pass two: keep exactly the rows with a unique key.
+        let mut catalog = TextCatalog::new();
+        for (row, key) in rows.iter().zip(&keys) {
+            let Some(key) = key else {
+                continue;
+            };
+            if duplicate_keys.contains(key) {
+                continue;
+            }
+            let text = row
+                .text
+                .clone()
+                .expect("an undecodable row got no key and is not inserted");
+            catalog
+                .insert(LocalizedText::new(
+                    key.0.clone(),
+                    key.1.clone(),
+                    text,
+                    origin.clone(),
+                    provenance.clone(),
+                ))
+                .expect("a unique (id, locale) key is inserted exactly once");
+        }
+
+        let mut duplicates: Vec<(u32, LocaleId)> = duplicate_keys
+            .iter()
+            .map(|(id, locale)| {
+                let resource_id = id
+                    .as_content_id()
+                    .key()
+                    .parse::<u32>()
+                    .expect("a decoded id is a decimal resource id");
+                (resource_id, locale.clone())
+            })
+            .collect();
+        duplicates.sort();
+
+        Self {
+            catalog,
+            rows: rows.len(),
+            unmapped_languages: unmapped.into_iter().collect(),
+            undecodable_ids: undecodable.into_iter().collect(),
+            duplicates,
+        }
+    }
+
+    /// The catalog the decoded rows form.
+    #[must_use]
+    pub fn catalog(&self) -> &TextCatalog {
+        &self.catalog
+    }
+
+    /// Consumes the decode and returns the catalog.
+    #[must_use]
+    pub fn into_catalog(self) -> TextCatalog {
+        self.catalog
+    }
+
+    /// How many resource rows were handed in.
+    #[must_use]
+    pub fn rows(&self) -> usize {
+        self.rows
+    }
+
+    /// How many rows became localized rows.
+    #[must_use]
+    pub fn decoded(&self) -> usize {
+        self.catalog.len()
+    }
+
+    /// The distinct resource language ids no [`LanguageMap`] entry declared,
+    /// in ascending order.
+    #[must_use]
+    pub fn unmapped_languages(&self) -> &[u32] {
+        &self.unmapped_languages
+    }
+
+    /// The distinct resource ids whose code units did not decode, in ascending
+    /// order.
+    #[must_use]
+    pub fn undecodable_ids(&self) -> &[u32] {
+        &self.undecodable_ids
+    }
+
+    /// The duplicate `(resource id, locale)` pairs, both copies, sorted.
+    #[must_use]
+    pub fn duplicates(&self) -> &[(u32, LocaleId)] {
+        &self.duplicates
+    }
+
+    /// Whether every handed-in row became a unique localized row.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.unmapped_languages.is_empty()
+            && self.undecodable_ids.is_empty()
+            && self.duplicates.is_empty()
     }
 }
 
