@@ -379,6 +379,13 @@
 //! [`cs_types::content::Resolved`]. Its runtime counterpart is
 //! `cs_sim::cinematic_state`; the conversion boundary is `cs_app::cinematics`.
 //!
+//! [`ui_layout`] is the F45-A authored-screen layout
+//! (`specs/F45-main-menu-pandora-cabin-briefing-and-flight-check.md`, stage
+//! `### F45-A`): a validated [`ui_layout::ScreenLayout`] of logical hotspots and
+//! the integer [`ui_layout::AspectFit`] that maps image and hotspots with one
+//! scale and offset. The state table that consumes it is
+//! `cs_app::ui::front_end`.
+//!
 //! [`cs_types`]: cs_types
 //! [`cs_formats`]: cs_formats
 //! [`cs_assets`]: cs_assets
@@ -414,5 +421,6 @@ pub mod scene;
 pub mod stunts;
 pub mod target_rules;
 pub mod textures;
+pub mod ui_layout;
 pub mod weapons;
 pub mod world;
