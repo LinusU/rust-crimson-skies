@@ -23,7 +23,7 @@
 
 use cs_app::ui::instant_action::{
     CustomDimension, LowerError, ScenarioSelection, VictoryCondition, custom_dimensions,
-    lower_custom, lower_preset, preset_rows, resolve_custom, wingmate_slot,
+    lower_custom, lower_preset, preset_rows, report_problems, resolve_custom, wingmate_slot,
 };
 use cs_content::ai::DifficultyTier;
 use cs_content::instant_action::{
@@ -31,6 +31,7 @@ use cs_content::instant_action::{
     ScenarioSide, TieOutcome, VictoryRules, synthetic_actor, synthetic_custom_request,
     synthetic_instant_action_catalog, synthetic_player_faction,
 };
+use cs_content::pilots::DeclaredSurvivability;
 use cs_types::content::{ContentId, ContentKind, Known, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
 
@@ -515,6 +516,229 @@ fn accept_f49_a_an_unknown_world_value_keeps_its_claim_and_reason() {
     assert_eq!(reason, "the original preset's world is unmeasured");
 }
 
+/// A preset whose roster carries an unmeasured **airframe**, **loadout** or
+/// **survivability** refuses at the per-actor lowering, naming the actor's side
+/// and slot and keeping the unknown's own claim and reason.
+///
+/// A preset is not re-validated against the custom option table, so this is the
+/// only path that reaches `lower_actor`'s per-actor refusals: the custom path
+/// refuses the same values earlier, in catalog validation. Without this test
+/// those three refusals have no coverage and an unmeasured plane could be
+/// substituted for a default one unnoticed.
+#[test]
+fn accept_f49_a_an_unmeasured_preset_actor_field_refuses_at_the_actor_it_belongs_to() {
+    let cases = [
+        UnmeasuredField::Airframe,
+        UnmeasuredField::Loadout,
+        UnmeasuredField::Survivability,
+    ];
+
+    for case in cases {
+        let roster = cs_content::instant_action::ScenarioRoster::try_new(vec![
+            synthetic_actor(
+                ScenarioSide::Player,
+                0,
+                "synthetic.fixture_ia_interceptor",
+                "synthetic.fixture_ia_light_guns",
+            ),
+            case.actor(ScenarioSide::Enemy, 0),
+        ])
+        .expect("the roster is structurally valid");
+
+        let rules = VictoryRules::try_new(
+            VictoryCondition::EliminateEnemies,
+            RespawnBudget::None,
+            None,
+            TieOutcome::Draw,
+        )
+        .expect("the rules are valid");
+        let parameters = cs_content::instant_action::ScenarioParameters::new(
+            known(
+                cs_content::world::WorldId::from_key("synthetic.fixture_ia_coastal")
+                    .expect("world key is valid"),
+            ),
+            known(
+                cs_content::environment::EnvironmentId::new("synthetic.fixture_ia_day_clear")
+                    .expect("environment key is valid"),
+            ),
+            roster,
+            cs_content::instant_action::synthetic_difficulty(DifficultyTier::Standard),
+            rules,
+            cs_content::instant_action::ScenarioSeed::new(5),
+        );
+        let preset = cs_content::instant_action::InstantActionPreset::try_new(
+            id(
+                ContentKind::IaPreset,
+                "synthetic.fixture_ia_unmeasured_actor",
+            ),
+            id(
+                ContentKind::IaScenario,
+                "synthetic.fixture_ia_scenario_unmeasured_actor",
+            ),
+            known("synthetic fixture unmeasured actor".to_owned()),
+            parameters,
+            cs_types::content::Origin::SyntheticFixture,
+            Provenance::designed(ClaimId::new("f49a.test").expect("claim is valid")),
+        )
+        .expect("a preset may carry an unmeasured actor field");
+
+        let catalog = cs_content::instant_action::InstantActionCatalog::try_new(
+            vec![preset],
+            cs_content::instant_action::synthetic_scenario_options(),
+            Provenance::designed(ClaimId::new("f49a.test").expect("claim is valid")),
+        )
+        .expect("the catalog builds");
+
+        let error = lower_preset(
+            &catalog,
+            &id(
+                ContentKind::IaPreset,
+                "synthetic.fixture_ia_unmeasured_actor",
+            ),
+        )
+        .expect_err("an unmeasured actor field refuses");
+
+        let LowerError::UnknownValue {
+            field,
+            claim_id,
+            reason,
+        } = &error
+        else {
+            panic!("expected an unknown-value refusal for the {case:?}, got {error}");
+        };
+        assert_eq!(
+            field,
+            case.expected_field(),
+            "the refusal must name the field"
+        );
+        assert_eq!(
+            claim_id.as_str(),
+            "f49a.test-open",
+            "the {case:?} refusal must keep the unknown's own claim"
+        );
+        assert_eq!(reason, case.reason());
+    }
+}
+
+/// One actor field left deliberately unmeasured, with the refusal it must
+/// produce.
+#[derive(Clone, Copy, Debug)]
+enum UnmeasuredField {
+    Airframe,
+    Loadout,
+    Survivability,
+}
+
+impl UnmeasuredField {
+    /// The reason the field is unknown, which the refusal must keep verbatim.
+    fn reason(self) -> &'static str {
+        match self {
+            Self::Airframe => "the original plane is unmeasured",
+            Self::Loadout => "the original ordnance is unmeasured",
+            Self::Survivability => "the original survivability is unmeasured",
+        }
+    }
+
+    /// The `LowerError::UnknownValue` field label the refusal must carry.
+    fn expected_field(self) -> &'static str {
+        match self {
+            Self::Airframe => "enemy slot 0 airframe",
+            Self::Loadout => "enemy slot 0 loadout",
+            Self::Survivability => "enemy slot 0 survivability",
+        }
+    }
+
+    /// One actor with exactly this field unknown and the other two known.
+    fn actor(self, side: ScenarioSide, slot: u32) -> ScenarioActorSpec {
+        let reason = self.reason();
+        let open = || {
+            Resolved::<ContentId>::unknown(
+                ClaimId::new("f49a.test-open").expect("claim is valid"),
+                reason,
+            )
+            .expect("the reason is non-empty")
+        };
+        let (airframe, loadout, survivability) = match self {
+            Self::Airframe => (
+                open(),
+                known(id(ContentKind::Loadout, "synthetic.fixture_ia_light_guns")),
+                known(DeclaredSurvivability::Mortal),
+            ),
+            Self::Loadout => (
+                known(id(
+                    ContentKind::Airframe,
+                    "synthetic.fixture_ia_interceptor",
+                )),
+                open(),
+                known(DeclaredSurvivability::Mortal),
+            ),
+            Self::Survivability => (
+                known(id(
+                    ContentKind::Airframe,
+                    "synthetic.fixture_ia_interceptor",
+                )),
+                known(id(ContentKind::Loadout, "synthetic.fixture_ia_light_guns")),
+                Resolved::unknown(
+                    ClaimId::new("f49a.test-open").expect("claim is valid"),
+                    reason,
+                )
+                .expect("the reason is non-empty"),
+            ),
+        };
+        actor_with(side, slot, airframe, loadout, survivability)
+    }
+}
+
+/// A loadout id in the roster's `faction` field is refused by the schema, so
+/// the boundary's `FactionId` construction can never be handed a non-faction:
+/// the refusal happens before a roster exists, not during lowering.
+#[test]
+fn accept_f49_a_a_non_faction_actor_faction_is_refused_by_the_schema() {
+    assert!(
+        ScenarioActorSpec::try_new(
+            ScenarioSide::Enemy,
+            RosterSlot(0),
+            id(ContentKind::Loadout, "synthetic.fixture_ia_light_guns"),
+            known(id(
+                ContentKind::Airframe,
+                "synthetic.fixture_ia_interceptor"
+            )),
+            known(id(ContentKind::Loadout, "synthetic.fixture_ia_light_guns")),
+            None,
+            known(DeclaredSurvivability::Mortal),
+            Provenance::designed(ClaimId::new("f49a.test").expect("claim is valid")),
+        )
+        .is_err(),
+        "a loadout id must not pass as a faction"
+    );
+}
+
+/// Builds one actor from fully explicit fields, so a test can leave exactly one
+/// of them unmeasured.
+fn actor_with(
+    side: ScenarioSide,
+    slot: u32,
+    airframe: Resolved<ContentId>,
+    loadout: Resolved<ContentId>,
+    survivability: Resolved<DeclaredSurvivability>,
+) -> ScenarioActorSpec {
+    ScenarioActorSpec::try_new(
+        side,
+        RosterSlot(slot),
+        if side == ScenarioSide::Enemy {
+            cs_content::instant_action::synthetic_opposition_faction()
+        } else {
+            synthetic_player_faction()
+        },
+        airframe,
+        loadout,
+        Some(id(ContentKind::Pilot, "synthetic.fixture_pilot")),
+        survivability,
+        Provenance::designed(ClaimId::new("f49a.test").expect("claim is valid")),
+    )
+    .expect("the actor is structurally valid")
+}
+
 /// A preset the catalog does not hold is refused by id, not by falling back to
 /// some other preset.
 #[test]
@@ -864,6 +1088,80 @@ fn accept_f49_a_the_fixture_catalog_does_not_claim_original_coverage() {
             preset.id()
         );
     }
+}
+
+/// A screen that only reports gets the whole problem list from one error, so
+/// AC04's "every problem at once" holds without the screen re-validating.
+#[test]
+fn accept_f49_a_a_reporting_screen_reads_every_problem_from_one_error() {
+    let catalog = synthetic_instant_action_catalog();
+    let draft = CustomScenarioDraft::new()
+        .with_subject(id(
+            ContentKind::IaScenario,
+            "synthetic.fixture_ia_scenario_reporting",
+        ))
+        .with_world(known(
+            cs_content::world::WorldId::from_key("synthetic.fixture_ia_absent_world")
+                .expect("world key is valid"),
+        ))
+        .with_environment(known(
+            cs_content::environment::EnvironmentId::new("synthetic.fixture_ia_absent_env")
+                .expect("environment key is valid"),
+        ))
+        .with_roster(vec![synthetic_actor(
+            ScenarioSide::Player,
+            0,
+            "synthetic.fixture_ia_interceptor",
+            "synthetic.fixture_ia_light_guns",
+        )])
+        .with_difficulty(cs_content::instant_action::synthetic_difficulty(
+            DifficultyTier::Elite,
+        ))
+        .with_rules(
+            VictoryRules::try_new(
+                VictoryCondition::EliminateEnemies,
+                RespawnBudget::None,
+                None,
+                TieOutcome::Draw,
+            )
+            .expect("the rules are valid"),
+        )
+        .with_seed(cs_content::instant_action::ScenarioSeed::new(11))
+        .with_players(1)
+        .with_provenance(Provenance::designed(
+            ClaimId::new("f49a.test").expect("claim is valid"),
+        ));
+
+    let error = lower_custom(&catalog, draft).expect_err("the scenario must be refused");
+    let reported = report_problems(&error);
+    assert!(
+        reported.len() >= 5,
+        "one error must carry every problem, got {}",
+        reported.len()
+    );
+    // The reported entries are the very problems validation produced, not a
+    // re-derived or truncated copy.
+    let LowerError::Invalid { problems } = &error else {
+        panic!("expected a validation refusal, got {error}");
+    };
+    assert_eq!(
+        reported.len(),
+        problems.problems().len(),
+        "the report must not drop or invent problems"
+    );
+    for problem in reported {
+        assert!(!problem.dimension().is_empty());
+        assert!(!problem.detail().is_empty());
+    }
+
+    // A refusal that is not a validation problem reports nothing rather than
+    // pretending it has none — the caller still sees the error itself.
+    assert!(
+        report_problems(&LowerError::UnknownPreset {
+            preset: id(ContentKind::IaPreset, "synthetic.fixture_ia_absent"),
+        })
+        .is_empty()
+    );
 }
 
 /// The known value a test needs, panicking with the field name when the value

@@ -492,7 +492,7 @@ fn synthetic_boundary_claim() -> ClaimId {
 
 /// Lowers one declared actor into its runtime identity records.
 fn lower_actor(actor: &ScenarioActorSpec) -> Result<LoweredScenarioActor, LowerError> {
-    let label = format!("{} slot {} airframe", actor.side(), actor.slot());
+    let label = format!("{} slot {} airframe", actor.side(), actor.slot().index());
 
     let faction =
         FactionId::try_new(actor.faction().clone()).map_err(|error| LowerError::Identity {
@@ -507,7 +507,7 @@ fn lower_actor(actor: &ScenarioActorSpec) -> Result<LoweredScenarioActor, LowerE
             }
         })?;
     let loadout = require_known_at(
-        &format!("{} slot {} loadout", actor.side(), actor.slot()),
+        &format!("{} slot {} loadout", actor.side(), actor.slot().index()),
         actor.loadout(),
     )?;
     let pilot = match actor.pilot() {
@@ -531,7 +531,11 @@ fn lower_actor(actor: &ScenarioActorSpec) -> Result<LoweredScenarioActor, LowerE
         },
         Resolved::Unknown { claim_id, reason } => {
             return Err(LowerError::UnknownValue {
-                field: format!("{} slot {} survivability", actor.side(), actor.slot()),
+                field: format!(
+                    "{} slot {} survivability",
+                    actor.side(),
+                    actor.slot().index()
+                ),
                 claim_id: claim_id.clone(),
                 reason: reason.clone(),
             });
@@ -550,10 +554,11 @@ fn lower_actor(actor: &ScenarioActorSpec) -> Result<LoweredScenarioActor, LowerE
 
 /// The wingmate slot an ally actor occupies in the runtime roster.
 ///
-/// An ally that is not slot 0 of its side cannot be lowered into a
-/// [`WingmateAssignment`] at all, because the runtime store numbers wingmates
-/// by assignment. Reporting it here, rather than dropping the ally, is what
-/// keeps "every declared actor is spawned" true.
+/// Only an [`ScenarioSide::Ally`] actor occupies one: the player and the
+/// enemies are not wingmates, so they report `None` rather than colliding with
+/// the ally numbering. The slot index is the declared one, so this reports
+/// whether an ally can be placed at all instead of silently dropping it —
+/// building the [`WingmateAssignment`] itself is F49-B's spawn work.
 #[must_use]
 pub fn wingmate_slot(actor: &LoweredScenarioActor) -> Option<WingmateSlot> {
     (actor.side == ScenarioSide::Ally).then(|| WingmateSlot(actor.slot.index()))

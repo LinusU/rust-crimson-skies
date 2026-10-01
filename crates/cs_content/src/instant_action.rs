@@ -373,19 +373,6 @@ impl ScenarioRoster {
     pub fn is_empty(&self) -> bool {
         self.actors.is_empty()
     }
-
-    /// The declared actors on `side` that fly for `faction`.
-    #[must_use]
-    pub fn actors_of_faction(
-        &self,
-        side: ScenarioSide,
-        faction: &ContentId,
-    ) -> Vec<&ScenarioActorSpec> {
-        self.actors
-            .iter()
-            .filter(|a| a.side == side && &a.faction == faction)
-            .collect()
-    }
 }
 
 // ------------------------------------------------------------------ rules ---
@@ -1087,7 +1074,8 @@ impl ScenarioProblemCode {
     #[must_use]
     pub const fn dimension(self) -> &'static str {
         match self {
-            Self::UnsupportedWorld | Self::UnmeasuredActorField => "world",
+            Self::UnsupportedWorld => "world",
+            Self::UnmeasuredActorField => "roster",
             Self::UnsupportedEnvironment => "environment",
             Self::UnsupportedAirframe | Self::UnsupportedLoadout => "roster",
             Self::UnmeasuredSurvivability => "roster",
@@ -1725,7 +1713,7 @@ impl InstantActionCatalog {
                             format!(
                                 "{} slot {} is not a plane this catalog offers",
                                 actor.side(),
-                                actor.slot()
+                                actor.slot().index()
                             ),
                         ));
                     }
@@ -1746,7 +1734,7 @@ impl InstantActionCatalog {
                             format!(
                                 "{} slot {} carries ordnance this catalog does not support",
                                 actor.side(),
-                                actor.slot()
+                                actor.slot().index()
                             ),
                         ));
                     }
@@ -1767,7 +1755,7 @@ impl InstantActionCatalog {
                     format!(
                         "{} slot {} does not name a faction",
                         actor.side(),
-                        actor.slot()
+                        actor.slot().index()
                     ),
                 ));
             } else if !self.options.factions().contains(actor.faction()) {
@@ -1777,7 +1765,7 @@ impl InstantActionCatalog {
                     format!(
                         "{} slot {} names a faction a custom scenario cannot spawn",
                         actor.side(),
-                        actor.slot()
+                        actor.slot().index()
                     ),
                 ));
             }
@@ -1820,9 +1808,9 @@ impl InstantActionCatalog {
                         format!(
                             "{} slot {} fights its own faction at {} slot {}",
                             ours.side(),
-                            ours.slot(),
+                            ours.slot().index(),
                             theirs.side(),
-                            theirs.slot()
+                            theirs.slot().index()
                         ),
                     ));
                     continue;
@@ -1868,6 +1856,12 @@ impl InstantActionCatalog {
     }
 
     /// Refuses a victory condition the declared roster can never satisfy.
+    ///
+    /// Only `needs_enemies` is checked: a condition that has no enemy to act on
+    /// can never complete. A condition that *can* end is never refused for
+    /// having a thin roster — a one-on-one `last_side_standing` is a valid,
+    /// winnable scenario, and refusing it would be validation inventing a rule
+    /// the sheet does not state.
     fn check_victory_feasibility(&self, parameters: &ScenarioParameters) -> Vec<ScenarioProblem> {
         let rules = parameters.rules();
         if !self
@@ -1888,17 +1882,6 @@ impl InstantActionCatalog {
                 ScenarioProblemCode::ConditionUnsatisfiable,
                 format!(
                     "victory condition {} can never complete without an enemy actor",
-                    rules.condition()
-                ),
-            ));
-        }
-        if rules.condition() == VictoryCondition::LastSideStanding
-            && parameters.roster().actors_on(ScenarioSide::Ally).is_empty()
-        {
-            found.push(ScenarioProblem::new(
-                ScenarioProblemCode::ConditionUnsatisfiable,
-                format!(
-                    "victory condition {} has only one side to stand on",
                     rules.condition()
                 ),
             ));
@@ -2229,15 +2212,6 @@ pub fn require_known<T: Clone>(
             reason: reason.clone(),
         }),
     }
-}
-
-/// Whether this record was authored for the original installation.
-///
-/// A convenience for the readiness reports: only
-/// [`Origin::Installation`](cs_types::content::Origin::Installation) counts.
-#[must_use]
-pub fn is_original(origin: &Origin) -> bool {
-    origin.is_original()
 }
 
 // ------------------------------------------------------- synthetic fixture ---
@@ -2681,6 +2655,31 @@ mod tests {
             .with_difficulty(synthetic_difficulty(DifficultyTier::Standard))
             .with_rules(rules)
             .with_seed(ScenarioSeed::new(11))
+            .with_players(1)
+            .with_provenance(synthetic_provenance())
+            .resolve()
+            .expect("the probe request is structurally valid")
+    }
+
+    /// A structurally valid request over an arbitrary roster and rule set, so a
+    /// test can vary one of them and keep everything else fixed.
+    fn custom_request_with_rules(
+        roster: &[ScenarioActorSpec],
+        rules: VictoryRules,
+    ) -> CustomScenarioRequest {
+        CustomScenarioDraft::new()
+            .with_subject(id(
+                ContentKind::IaScenario,
+                "synthetic.fixture_ia_scenario_rule_probe",
+            ))
+            .with_world(fixture_known(fixture_world(SYNTHETIC_IA_WORLD_COAST)))
+            .with_environment(fixture_known(fixture_environment(
+                SYNTHETIC_IA_ENV_DAY_CLEAR,
+            )))
+            .with_roster(roster.to_vec())
+            .with_difficulty(synthetic_difficulty(DifficultyTier::Standard))
+            .with_rules(rules)
+            .with_seed(ScenarioSeed::new(13))
             .with_players(1)
             .with_provenance(synthetic_provenance())
             .resolve()
@@ -3155,7 +3154,6 @@ mod tests {
             "unmeasured_actor_field",
             "unsupported_loadout",
             "impossible_faction",
-            "condition_unsatisfiable",
         ] {
             assert!(
                 codes.contains(&expected),
@@ -3178,8 +3176,10 @@ mod tests {
                     || problem.claim_id().is_some()
                     || problem.detail().contains("range")
                     || problem.detail().contains("is not offered")
-                    || problem.detail().contains("never complete")
-                    || problem.detail().contains("only one side"),
+                    || problem.detail().contains("cannot spawn")
+                    || problem.detail().contains("no enemy actor")
+                    || problem.detail().contains("no player actor")
+                    || problem.detail().contains("never complete"),
                 "{problem} must name what to change or which claim is open"
             );
         }
@@ -3209,14 +3209,6 @@ mod tests {
         );
         assert!(unmeasured[0].claim_id().is_some());
 
-        // LastSideStanding with no ally has only one side to stand on.
-        assert!(
-            problems
-                .with_code(ScenarioProblemCode::ConditionUnsatisfiable)
-                .iter()
-                .any(|problem| problem.detail().contains("only one side"))
-        );
-
         // A roster with no enemy actor at all names the missing side, and the
         // roster-level refusal is independent of which side is absent.
         let no_enemies = custom_request_with_roster(&[synthetic_actor(
@@ -3242,6 +3234,243 @@ mod tests {
         );
 
         assert!(catalog.require_valid_custom(&request).is_err());
+    }
+
+    /// AC02's sibling refusal, F49 non-negotiable 2: a roster whose declared
+    /// relations make it impossible to fight is refused, naming why.
+    ///
+    /// Each shape is a distinct way a scenario can never end:
+    ///
+    /// * the same faction on both sides — it would shoot at itself,
+    /// * a relation declared **Friendly** toward the enemy — nothing to shoot,
+    /// * a relation declared **Neutral** toward the enemy — same.
+    ///
+    /// An *undeclared* pair is **not** refused: it cannot prove impossibility,
+    /// and refusing it would mean assuming a hostility the data never states.
+    #[test]
+    fn accept_f49_a_an_unfoughtable_roster_is_refused_for_its_declared_reason() {
+        let catalog = synthetic_instant_action_catalog();
+        let player_side = synthetic_player_faction();
+        let opposition = synthetic_opposition_faction();
+        let traders = fixture_faction("synthetic.fixture_ia_traders");
+
+        // An actor on a chosen faction, so only the *relations* differ between
+        // the cases below.
+        let roster_with = |enemy_faction: ContentId| {
+            vec![
+                ScenarioActorSpec::try_new(
+                    ScenarioSide::Player,
+                    RosterSlot(0),
+                    player_side.clone(),
+                    fixture_known(fixture_id(
+                        ContentKind::Airframe,
+                        SYNTHETIC_IA_AIRFRAME_INTERCEPTOR,
+                    )),
+                    fixture_known(fixture_id(ContentKind::Loadout, SYNTHETIC_IA_LOADOUT_LIGHT)),
+                    None,
+                    fixture_known(DeclaredSurvivability::Mortal),
+                    synthetic_provenance(),
+                )
+                .expect("the player actor is structurally valid"),
+                ScenarioActorSpec::try_new(
+                    ScenarioSide::Enemy,
+                    RosterSlot(0),
+                    enemy_faction,
+                    fixture_known(fixture_id(
+                        ContentKind::Airframe,
+                        SYNTHETIC_IA_AIRFRAME_INTERCEPTOR,
+                    )),
+                    fixture_known(fixture_id(ContentKind::Loadout, SYNTHETIC_IA_LOADOUT_LIGHT)),
+                    None,
+                    fixture_known(DeclaredSurvivability::Mortal),
+                    synthetic_provenance(),
+                )
+                .expect("the enemy actor is structurally valid"),
+            ]
+        };
+
+        // The player faction is declared Hostile toward the opposition, so this
+        // is the baseline that must pass.
+        let fightable = custom_request_with_roster(&roster_with(opposition.clone()));
+        assert!(
+            catalog.validate_custom(&fightable).is_empty(),
+            "hostile factions must be fightable"
+        );
+
+        // The same faction on both sides.
+        let self_fighting = catalog.validate_custom(&custom_request_with_roster(&roster_with(
+            player_side.clone(),
+        )));
+        assert!(
+            self_fighting
+                .with_code(ScenarioProblemCode::ImpossibleFaction)
+                .iter()
+                .any(|problem| problem.detail().contains("fights its own faction")),
+            "one faction on both sides must be refused: {self_fighting}"
+        );
+
+        // The fixture declares the player faction Neutral toward the traders,
+        // so a trader on the enemy side gives both sides no target.
+        let neutral =
+            catalog.validate_custom(&custom_request_with_roster(&roster_with(traders.clone())));
+        assert!(
+            neutral
+                .with_code(ScenarioProblemCode::ImpossibleFaction)
+                .iter()
+                .any(|problem| problem.detail().contains("declared neutral")),
+            "a declared-neutral enemy must be refused: {neutral}"
+        );
+
+        // A faction declared Friendly toward the player's is refused for the
+        // distinct reason, so the two allegiances cannot be confused. The
+        // fixture table declares no friendly pair, so this one is built here.
+        let allies = fixture_faction("synthetic.fixture_ia_allied");
+        let friendly_options = ScenarioOptions::try_new(
+            synthetic_scenario_options().worlds().to_vec(),
+            synthetic_scenario_options().environments().to_vec(),
+            vec![player_side.clone(), opposition.clone(), allies.clone()],
+            synthetic_scenario_options().airframes().to_vec(),
+            synthetic_scenario_options().loadouts().to_vec(),
+            vec![DifficultyTier::Standard],
+            vec![VictoryCondition::EliminateEnemies],
+            vec![
+                fixture_relation(&player_side, &opposition, DeclaredAllegiance::Hostile),
+                fixture_relation(&opposition, &player_side, DeclaredAllegiance::Hostile),
+                fixture_relation(&player_side, &allies, DeclaredAllegiance::Friendly),
+                fixture_relation(&allies, &player_side, DeclaredAllegiance::Friendly),
+            ],
+            SYNTHETIC_IA_MAX_PLAYERS,
+        )
+        .expect("a table declaring a friendly pair is valid");
+        let friendly_catalog = InstantActionCatalog::try_new(
+            vec![synthetic_dogfight_preset()],
+            friendly_options,
+            synthetic_provenance(),
+        )
+        .expect("the friendly catalog builds");
+        let friendly = friendly_catalog
+            .validate_custom(&custom_request_with_roster(&roster_with(allies.clone())));
+        assert!(
+            friendly
+                .with_code(ScenarioProblemCode::ImpossibleFaction)
+                .iter()
+                .any(|problem| problem.detail().contains("declared friendly")),
+            "a declared-friendly enemy must be refused: {friendly}"
+        );
+
+        // A faction the option table declares no relation with at all is not
+        // refused: an undeclared pair cannot prove impossibility.
+        let undeclared = fixture_faction("synthetic.fixture_ia_relationless");
+        let undeclared_options = ScenarioOptions::try_new(
+            synthetic_scenario_options().worlds().to_vec(),
+            synthetic_scenario_options().environments().to_vec(),
+            vec![
+                player_side.clone(),
+                opposition.clone(),
+                traders.clone(),
+                undeclared.clone(),
+            ],
+            synthetic_scenario_options().airframes().to_vec(),
+            synthetic_scenario_options().loadouts().to_vec(),
+            vec![DifficultyTier::Standard],
+            vec![VictoryCondition::EliminateEnemies],
+            Vec::new(),
+            SYNTHETIC_IA_MAX_PLAYERS,
+        )
+        .expect("a table with no declared relations is valid");
+        let sparse = InstantActionCatalog::try_new(
+            vec![synthetic_dogfight_preset()],
+            undeclared_options,
+            synthetic_provenance(),
+        )
+        .expect("the sparse catalog builds");
+        let undeclared_problems = sparse.validate_custom(&custom_request_with_roster(
+            &roster_with(undeclared.clone()),
+        ));
+        assert!(
+            !undeclared_problems
+                .with_code(ScenarioProblemCode::ImpossibleFaction)
+                .iter()
+                .any(|problem| problem.detail().contains("declared")),
+            "an undeclared relation must not be guessed into a refusal: {undeclared_problems}"
+        );
+    }
+
+    /// Validation refuses what is *impossible*, not what is merely small: a
+    /// one-on-one is a valid, winnable scenario under every enemy-requiring
+    /// condition, so a thin roster must not be refused for its size.
+    ///
+    /// This pins the boundary from both sides: a one-on-one passes, and adding
+    /// an ally changes nothing about the verdict. Only a roster with no enemy
+    /// at all is unsatisfiable, because then nothing can be shot at.
+    #[test]
+    fn accept_f49_a_a_one_on_one_is_valid_and_only_a_missing_enemy_is_unsatisfiable() {
+        let catalog = synthetic_instant_action_catalog();
+
+        for condition in [
+            VictoryCondition::EliminateEnemies,
+            VictoryCondition::LastSideStanding,
+            VictoryCondition::SurviveToDeadline,
+        ] {
+            let rules = VictoryRules::try_new(
+                condition,
+                RespawnBudget::None,
+                condition.needs_deadline().then_some(1_800),
+                TieOutcome::Draw,
+            )
+            .expect("the fixture rules are valid");
+            let request = custom_request_with_rules(
+                &[
+                    synthetic_actor(
+                        ScenarioSide::Player,
+                        0,
+                        SYNTHETIC_IA_AIRFRAME_INTERCEPTOR,
+                        SYNTHETIC_IA_LOADOUT_LIGHT,
+                    ),
+                    synthetic_actor(
+                        ScenarioSide::Enemy,
+                        0,
+                        SYNTHETIC_IA_AIRFRAME_INTERCEPTOR,
+                        SYNTHETIC_IA_LOADOUT_LIGHT,
+                    ),
+                ],
+                rules,
+            );
+            let problems = catalog.validate_custom(&request);
+            assert!(
+                problems.is_empty(),
+                "a one-on-one is a winnable {condition} scenario: {problems}"
+            );
+
+            // Adding a wingmate must not change the verdict either.
+            let with_ally = custom_request_with_rules(
+                &[
+                    synthetic_actor(
+                        ScenarioSide::Player,
+                        0,
+                        SYNTHETIC_IA_AIRFRAME_INTERCEPTOR,
+                        SYNTHETIC_IA_LOADOUT_LIGHT,
+                    ),
+                    synthetic_actor(
+                        ScenarioSide::Enemy,
+                        0,
+                        SYNTHETIC_IA_AIRFRAME_INTERCEPTOR,
+                        SYNTHETIC_IA_LOADOUT_LIGHT,
+                    ),
+                    synthetic_actor(
+                        ScenarioSide::Ally,
+                        0,
+                        SYNTHETIC_IA_AIRFRAME_HEAVY,
+                        SYNTHETIC_IA_LOADOUT_HEAVY,
+                    ),
+                ],
+                rules,
+            );
+            assert!(
+                catalog.validate_custom(&with_ally).is_empty(),
+                "an ally must not change whether {condition} is satisfiable"
+            );
+        }
     }
 
     /// The valid fixture request produces no problem, so AC02's baseline is a

@@ -49,7 +49,12 @@ respawn budget.
   directed relation from `cs_content::target_rules`. Relabeling a side can never
   relabel a faction, and validation refuses a roster whose declared relations
   make it impossible to fight (same faction on both sides, or a friendly/neutral
-  declared relation between the player's and the enemy's faction).
+  declared relation between the player's and the enemy's faction). An
+  *undeclared* pair is not refused: it cannot prove impossibility, and refusing
+  it would mean assuming a hostility the data never states.
+- **Validation refuses what is impossible, not what is small.** A one-on-one is
+  a valid, winnable scenario under every enemy-requiring condition, so only a
+  roster with no enemy at all is `condition_unsatisfiable`.
 - **All problems, once.** `validate_custom` returns a sorted `ScenarioProblems`
   list rather than the first failure, and each problem names its dimension, the
   selection to replace (or the open claim for an unknown) and a detail. AC04's
@@ -129,3 +134,62 @@ evidence stage's work.
 
 No retail data was read for this task: F49-A's required capability is ordinary
 build/test only, and every value here is synthetic.
+
+## Review corrections (reviewer pass)
+
+The reviewer fixed four defects and closed three coverage holes. Each defect was
+confirmed by mutation testing — the mutation was applied, the suite was run, and
+a named `accept_f49_a_*` test failed; without the fix the same mutation passed.
+
+- **`ScenarioProblemCode::UnmeasuredActorField` reported the wrong dimension.**
+  `dimension()` mapped it to `"world"`, so a screen following the documented
+  "highlight this field" contract would have highlighted the world control for
+  an unmeasured *airframe* or *loadout*. It now maps to `"roster"`. The
+  catalogue's own `check_roster` passed `"roster"` explicitly, so the wrong
+  mapping only ever reached a caller using `code.dimension()` directly — which is
+  exactly what a screen does.
+- **An over-strict victory rule refused valid scenarios.**
+  `check_victory_feasibility` refused `last_side_standing` whenever the roster
+  declared no ally, on the reasoning that such a roster "has only one side to
+  stand on". That is false: a player against enemies is two sides, and the
+  condition is winnable. The rule would have refused ordinary one-on-one
+  scenarios, which the sheet requires validation to *allow*. Only
+  `needs_enemies` is now checked, so only a genuinely impossible condition is
+  refused. `accept_f49_a_a_one_on_one_is_valid_and_only_a_missing_enemy_is_unsatisfiable`
+  pins both sides of that boundary.
+- **Slot labels were garbled in user-facing messages.** `RosterSlot`'s `Display`
+  already renders `"roster slot 0"`, and it was interpolated into
+  `"{} slot {} airframe"`, producing `"enemy slot roster slot 0 airframe"` in
+  every roster problem detail and in every `LowerError::UnknownValue` field
+  label. All call sites now use `slot().index()`.
+- **Three unused public helpers removed** (`is_original`, `actors_of_faction`):
+  they had no caller, and `is_original` merely re-wrapped
+  `Origin::is_original`, offering a second way to ask the same question.
+
+Coverage holes closed (all three were confirmed uncovered by disabling the
+behavior and watching the suite stay green):
+
+- **`lower_actor`'s per-actor unknown refusals had no test at all.** The airframe,
+  loadout and survivability refusals in the lowering boundary were unreachable
+  from any test: the custom path refuses the same values earlier in catalog
+  validation, and no preset in the fixture carried an unmeasured actor field.
+  Substituting a fixed default plane for an unmeasured one therefore broke
+  nothing.
+  `accept_f49_a_an_unmeasured_preset_actor_field_refuses_at_the_actor_it_belongs_to`
+  builds a preset for each field and now catches a defaulted plane, a defaulted
+  loadout and a survivability silently mapped to `Mortal`.
+- **All three impossible-faction branches had no test**, despite being the
+  headline content of F49 non-negotiable 2. Disabling the same-faction check or
+  the neutral check left the suite green.
+  `accept_f49_a_an_unfoughtable_roster_is_refused_for_its_declared_reason` now
+  covers same-faction, declared-friendly and declared-neutral, pins that a
+  hostile pair is *not* refused, and pins that an undeclared relation is not
+  guessed into a refusal.
+- **`report_problems` had no caller and no test.**
+  `accept_f49_a_a_reporting_screen_reads_every_problem_from_one_error` covers
+  the reporting path AC04 depends on and that a screen will call.
+
+The reviewer also re-verified the pre-existing claims rather than taking them on
+trust: ignoring the declared seed, truncating the problem list to the first
+entry, defaulting an unknown survivability, and substituting a default plane
+each fail a named test.
