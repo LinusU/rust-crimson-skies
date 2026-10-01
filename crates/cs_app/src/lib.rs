@@ -337,6 +337,7 @@ pub mod campaign;
 pub mod capital;
 pub mod cli;
 pub mod damage;
+pub mod diagnostics;
 pub mod environment;
 pub mod input;
 pub mod interaction;
