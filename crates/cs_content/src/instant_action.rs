@@ -194,6 +194,7 @@ impl ScenarioActorSpec {
     /// validation, which reports every problem at once), and
     /// [`ScenarioSchemaError::PilotKindMismatch`] when `pilot` is set and is
     /// not a `pilot` id.
+    #[allow(clippy::too_many_arguments)]
     pub fn try_new(
         side: ScenarioSide,
         slot: RosterSlot,
@@ -317,7 +318,7 @@ impl ScenarioRoster {
                 max: MAX_SCENARIO_ACTORS,
             });
         }
-        actors.sort_by(|a, b| (a.side, a.slot).cmp(&(b.side, b.slot)));
+        actors.sort_by_key(|actor| (actor.side, actor.slot));
         for pair in actors.windows(2) {
             if (pair[0].side, pair[0].slot) == (pair[1].side, pair[1].slot) {
                 return Err(ScenarioSchemaError::DuplicateSlot {
@@ -1309,6 +1310,9 @@ impl ScenarioOptions {
     /// [`ScenarioSchemaError::UnknownDifficultyTier`] /
     /// [`ScenarioSchemaError::UnknownVictoryCondition`] for a tier or condition
     /// outside the closed vocabulary.
+    // Each argument is one declared option list; grouping them into a struct
+    // would hide which list is empty or mis-namespaced at the call site.
+    #[allow(clippy::too_many_arguments)]
     pub fn try_new(
         mut worlds: Vec<WorldId>,
         mut environments: Vec<EnvironmentId>,
@@ -1536,11 +1540,13 @@ impl InstantActionCatalog {
             if let Some(first) = scenarios.insert(preset.scenario().clone(), preset.id().clone())
                 && first != *preset.id()
             {
-                return Err(ScenarioSchemaError::DuplicateScenario {
-                    scenario: preset.scenario().clone(),
-                    first: first.clone(),
-                    second: preset.id().clone(),
-                });
+                return Err(ScenarioSchemaError::DuplicateScenario(Box::new(
+                    DuplicateScenarioClaim {
+                        scenario: preset.scenario().clone(),
+                        first: first.clone(),
+                        second: preset.id().clone(),
+                    },
+                )));
             }
         }
         Ok(Self {
@@ -1903,6 +1909,17 @@ impl InstantActionCatalog {
 
 // ------------------------------------------------------------------ errors ---
 
+/// The two preset ids that claimed one scenario id.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DuplicateScenarioClaim {
+    /// The shared scenario id.
+    pub scenario: ContentId,
+    /// The first preset that claimed it.
+    pub first: ContentId,
+    /// The second preset that claimed it.
+    pub second: ContentId,
+}
+
 /// Why a declared Instant Action record was rejected.
 #[derive(Clone, Debug, PartialEq)]
 pub enum ScenarioSchemaError {
@@ -2051,14 +2068,11 @@ pub enum ScenarioSchemaError {
         id: ContentId,
     },
     /// Two presets launch the same `ia_scenario` id.
-    DuplicateScenario {
-        /// The shared scenario id.
-        scenario: ContentId,
-        /// The first preset that claimed it.
-        first: ContentId,
-        /// The second preset that claimed it.
-        second: ContentId,
-    },
+    ///
+    /// Boxed because it carries three ids and is otherwise the largest variant
+    /// by a wide margin; an unboxed one would make every `Result` in this
+    /// module carry its size (clippy's `result_large_err`).
+    DuplicateScenario(Box<DuplicateScenarioClaim>),
     /// The catalog's seat limit is zero or above [`MAX_SCENARIO_PLAYERS`].
     InvalidPlayerLimit {
         /// The declared limit.
@@ -2179,13 +2193,10 @@ impl fmt::Display for ScenarioSchemaError {
             Self::DuplicatePreset { id } => {
                 write!(f, "preset {id} is declared more than once")
             }
-            Self::DuplicateScenario {
-                scenario,
-                first,
-                second,
-            } => write!(
+            Self::DuplicateScenario(claim) => write!(
                 f,
-                "scenario {scenario} is launched by both preset {first} and preset {second}"
+                "scenario {} is launched by both preset {} and preset {}",
+                claim.scenario, claim.first, claim.second
             ),
             Self::InvalidPlayerLimit { max, ceiling } => {
                 write!(f, "the catalog's seat limit {max} is outside 1..={ceiling}")
@@ -2976,14 +2987,14 @@ mod tests {
         .expect_err("two presets launching one scenario is refused");
         assert_eq!(
             duplicate_scenario,
-            ScenarioSchemaError::DuplicateScenario {
+            ScenarioSchemaError::DuplicateScenario(Box::new(DuplicateScenarioClaim {
                 scenario: fixture_id(
                     ContentKind::IaScenario,
                     "synthetic.fixture_ia_scenario_dogfight"
                 ),
                 first: fixture_id(ContentKind::IaPreset, "synthetic.fixture_ia_dogfight"),
                 second: fixture_id(ContentKind::IaPreset, "synthetic.fixture_ia_dogfight_alias"),
-            }
+            }))
         );
     }
 

@@ -406,9 +406,22 @@ pub mod targeting;
 pub mod text;
 pub mod ui {
     //! Screens and their state machines.
+    //!
+    //! [`instant_action`] is the F49-A Instant Action selection and
+    //! scenario-lowering boundary
+    //! (`specs/F49-instant-action-presets-and-custom-scenarios.md`, stage
+    //! `### F49-A`): a [`instant_action::ScenarioSelection`] naming content ids
+    //! only, lowered through the declared
+    //! `cs_content::instant_action` schema into the
+    //! [`instant_action::LoweredScenario`] a session spawns from. Every
+    //! `Resolved::Unknown` refuses there rather than becoming a default, and
+    //! the type has no campaign cash, ownership or objective field, so an
+    //! Instant Action run cannot write campaign progression (F49
+    //! non-negotiable 3).
 
     pub mod front_end;
     pub mod hud;
+    pub mod instant_action;
     pub mod lobby;
     pub mod scrapbook;
 }
