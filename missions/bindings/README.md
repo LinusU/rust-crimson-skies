@@ -54,11 +54,23 @@ directory is original game data — no assets, scripts or extracted bytes.
   mission number identifies the mission — only the campaign position does (see
   `docs/findings/2026-10-01-m04-a-source-binding.md`). Same five resolved
   critical dependencies, same unverified status.
+- `M05.json` — the M05 binding output (stage M05-A), generated and pinned the
+  same way by `accept_m05_a_the_committed_record_is_what_the_installation_derives`.
+  M05 is the first work order whose declared discovery title the installation
+  does not spell the way its bare short-name row does: `The Union Jack's
+  Revenge` is carried only as the title part of the region-prefixed long name
+  of campaign position 4, while the short name of that same position reads
+  `Union Jack's Revenge`. Production code therefore confirms a title in either
+  of two observed display forms — verbatim, which wins whenever a row offers
+  it, or as the tail of a region-prefixed long name — always by exact
+  comparison, and it records the second spelling in `unknowns` instead of
+  choosing between the two. `docs/findings/2026-10-01-m05-a-source-binding.md`
+  records what that does and does not establish.
 - `M06.json` — the M06 binding output (stage M06-A), generated and pinned the
   same way by `accept_m06_a_the_committed_record_is_what_the_installation_derives`.
-  No production code changed for it either: M06 is the sixth campaign position,
-  the first mission of chapter 2, and the first position the earlier binding
-  stages did not cover. Its world group, `world/c2`, is shared with four
+  No production code changed for it either: M06 is the sixth campaign position
+  and the first mission of chapter 2, so it is the first binding stage to cross
+  out of chapter 1. Its world group, `world/c2`, is shared with four
   campaign missions and chapter 2's fifth mission lives in the separate `c2b`
   directory (see `docs/findings/2026-10-01-m06-a-source-binding.md`). Same five
   resolved critical dependencies, same unverified status.
@@ -70,9 +82,13 @@ totals and closure reports — live in
 
 ## What is not here yet
 
-- `M05.json`, `M07.json` … `M24.json` — the per-mission binding
-  outputs of the remaining M05-A, M07-A … M24-A work orders, created from
-  original data the same way. Every one of them starts unresolved.
+- `M07.json` … `M24.json` — the per-mission binding outputs of M07-A …
+  M24-A, created from original data the same way. Every one of them starts
+  unresolved.
+- Titles the installation spells differently again — M09, M11, M14, M15, M20,
+  M22 and M23 — match neither display form and stay `Uncarried`. Which retail
+  mission they name is not established here; see
+  `docs/findings/2026-10-01-m05-a-source-binding.md`.
 
 Readiness, coverage and closure are reported, never awarded: synthetic
 fixtures prove the schema and its validation only (F50 owner ruling,

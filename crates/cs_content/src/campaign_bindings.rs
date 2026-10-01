@@ -94,6 +94,27 @@
 //! contradiction no retail installation produces — is reachable without an
 //! installation and each refusal names its own cause instead of leaving an
 //! identity blank.
+//!
+//! ## How a localized row carries a discovery title
+//!
+//! The work-order titles in `missions/README.md` are *discovery labels* from a
+//! public guide, and the installation does not always spell a mission the way
+//! the guide does. The campaign-length mission-name rows come in two observed
+//! display forms ([`TitleForm`]): a bare short name, and a long name prefixed
+//! with a region and a `" - "` separator. A title is therefore confirmed by
+//! [`SourceContext::confirm_title`] in exactly one of two ways — verbatim, or
+//! as the title part of a region-prefixed long name — and the verbatim form
+//! wins whenever it is available, so a mission the guide spells correctly is
+//! bound to the row that carries it exactly. No fuzzy comparison happens at
+//! either end: the tail must equal the title byte for byte, and the region
+//! prefix is dropped without ever being compared with or interpreted as
+//! anything.
+//!
+//! Where the two forms disagree about the same mission — the short name of
+//! campaign position 4 omits the leading article its long name and the
+//! declared title carry — the binding does not choose between them. It records
+//! the second spelling in [`SourceBinding::unknowns`] as measured, with the
+//! rows it read, and keeps `verified` false.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -2258,10 +2279,17 @@ impl SourceContext {
     ///
     /// `discovery_title` is the work-order title from the declared
     /// inventory; it is *confirmed* against the local strings rather than
-    /// assumed to match. A title the local strings do not carry, or carry
-    /// more than once, leaves [`CriticalDependency::TitleString`]
-    /// unresolved — which in turn leaves the mission, world and program
-    /// unresolved, because there is no campaign position to read them from.
+    /// assumed to match. The confirmation is [`SourceContext::confirm_title`]:
+    /// a row carries the title verbatim or as the title part of a
+    /// region-prefixed long name, byte for byte, and the verbatim form wins
+    /// whenever any row offers it. A title the local strings carry in neither
+    /// form, or carry more than once, leaves
+    /// [`CriticalDependency::TitleString`] unresolved — which in turn leaves
+    /// the mission, world and program unresolved, because there is no campaign
+    /// position to read them from. When the confirmation came through the
+    /// long-name form and the installation spells the same campaign position
+    /// differently in another campaign-length block, that second spelling is
+    /// recorded in [`SourceBinding::unknowns`] rather than reconciled.
     ///
     /// # Errors
     ///
@@ -2277,25 +2305,18 @@ impl SourceContext {
 
         // --- title string: confirm the discovery title against the local
         // strings, exactly once, and keep the block span it was read from.
-        let matches: Vec<&StringRow> = self
-            .strings
-            .rows()
-            .iter()
-            .filter(|row| {
-                row.text
-                    .as_deref()
-                    .is_some_and(|text| strip_font_tag(text) == discovery_title)
-            })
-            .collect();
-        let title_row = match matches.as_slice() {
-            [only] => Some(*only),
-            _ => None,
-        };
-        let title_reason = if matches.is_empty() {
-            "no local string equals the discovery title"
-        } else {
-            "several local strings equal the discovery title"
-        };
+        // Verbatim and region-prefixed long-name rows are two display forms of
+        // one fact (see `SourceContext::confirm_title`); the record keeps the
+        // row, not the form, and only the form decides which refusal applies.
+        let confirmation = self.confirm_title(discovery_title);
+        let title_row = confirmation.confirmed().map(|(row_id, _)| {
+            self.strings
+                .rows()
+                .iter()
+                .find(|row| row.id == row_id)
+                .expect("a confirmed row is one of the table's rows")
+        });
+        let title_reason = confirmation.refusal();
 
         let mut title_source = None;
         if let Some(row) = title_row {
@@ -2395,7 +2416,10 @@ impl SourceContext {
                         )
                         .map_err(map_provenance)?,
                     ),
-                    None => DependencyState::unresolved(id.claim(&label)?, title_reason)?,
+                    None => DependencyState::unresolved(
+                        id.claim(&label)?,
+                        title_reason.expect("an unconfirmed title refuses with its own reason"),
+                    )?,
                 },
                 CriticalDependency::MissionId => match &catalog_id {
                     Some(_) => DependencyState::resolved(
@@ -2461,10 +2485,39 @@ impl SourceContext {
             dependencies.push(SourceDependency { id, state });
         }
 
-        let unknowns = SOURCE_BINDING_UNKNOWNS
+        let mut unknowns: Vec<String> = SOURCE_BINDING_UNKNOWNS
             .iter()
             .map(|entry| (*entry).to_owned())
             .collect();
+        // A title confirmed through the long-name form means the installation
+        // carries this mission's name in two display forms, and they may
+        // disagree: the bare short name of this campaign position can omit a
+        // word the long name and the declared title carry. That difference is
+        // measured, recorded and *not* reconciled — the record must not read as
+        // if the original program had settled which spelling is the mission's.
+        if let (Some(TitleForm::RegionPrefixedLongName), Some(position)) =
+            (confirmation.confirmed().map(|(_, form)| form), position)
+        {
+            let row_id = confirmation
+                .confirmed()
+                .map(|(row_id, _)| row_id)
+                .expect("a form was confirmed");
+            let differing: Vec<String> = self
+                .other_spellings(position, row_id)
+                .into_iter()
+                .filter(|(_, display)| display != discovery_title)
+                .map(|(id, display)| format!("row {id} reads {display:?}"))
+                .collect();
+            if !differing.is_empty() {
+                unknowns.push(format!(
+                    "title spelling: the declared title is carried only by the region-prefixed \
+                     long-name row {row_id}, while the same campaign position is spelled \
+                     differently elsewhere in the same installation ({}) — the difference is \
+                     recorded, not reconciled",
+                    differing.join(", ")
+                ));
+            }
+        }
 
         Ok(SourceBinding {
             label,
@@ -2542,6 +2595,47 @@ impl SourceContext {
             .collect()
     }
 
+    /// Confirms one discovery title against the localized table.
+    ///
+    /// Two steps, and the order matters: a row whose display text *is* the
+    /// title confirms it verbatim ([`TitleForm::Verbatim`]), and only when no
+    /// row does is a region-prefixed long name consulted
+    /// ([`TitleForm::RegionPrefixedLongName`]). A mission the guide spells
+    /// exactly therefore keeps binding to the row that carries it exactly, and
+    /// the long-name form is the fallback for the missions the guide spells
+    /// with a word the bare short name omits — never a fuzzy comparison, and
+    /// never a row that carries the title in a second form as well.
+    pub fn confirm_title(&self, discovery_title: &str) -> TitleConfirmation {
+        let carrying = |form: TitleForm| {
+            self.strings
+                .rows()
+                .iter()
+                .filter_map(|row| {
+                    let display = strip_font_tag(row.text.as_deref()?);
+                    (title_form(display, discovery_title) == Some(form)).then_some(row.id)
+                })
+                .collect::<Vec<_>>()
+        };
+        let verbatim = carrying(TitleForm::Verbatim);
+        match verbatim.as_slice() {
+            [only] => TitleConfirmation::Confirmed {
+                row_id: *only,
+                form: TitleForm::Verbatim,
+            },
+            // A verbatim row exists and it is not unique: the title names no
+            // single row, and no long-name row may rescue it.
+            [_, ..] => TitleConfirmation::Ambiguous,
+            [] => match carrying(TitleForm::RegionPrefixedLongName).as_slice() {
+                [only] => TitleConfirmation::Confirmed {
+                    row_id: *only,
+                    form: TitleForm::RegionPrefixedLongName,
+                },
+                [] => TitleConfirmation::Uncarried,
+                [_, ..] => TitleConfirmation::Ambiguous,
+            },
+        }
+    }
+
     /// What the localized table says about the campaign order the directory
     /// layout declares, and whether the two agree.
     ///
@@ -2570,6 +2664,33 @@ impl SourceContext {
             grouped,
             state,
         }
+    }
+
+    /// The other localized spellings the installation carries for one campaign
+    /// position: the display text of the row at the same offset of every
+    /// campaign-length row block *other* than `confirmed`'s.
+    ///
+    /// This is how a binding reports that the two display forms disagree about
+    /// one mission — the bare short name omitting a word its long name carries.
+    /// The texts are returned so the record can name what it read; they are
+    /// not a substitute for the confirmed row, which stays the one the title
+    /// was confirmed in.
+    pub fn other_spellings(&self, position: usize, confirmed: u32) -> Vec<(u32, String)> {
+        self.campaign_title_blocks()
+            .into_iter()
+            .filter(|block| !block.contains(confirmed))
+            .filter_map(|block| {
+                let id = block
+                    .first_id()
+                    .checked_add(u32::try_from(position).ok()?)?;
+                if !block.contains(id) {
+                    return None;
+                }
+                let row = self.strings.rows().iter().find(|row| row.id == id)?;
+                let display = strip_font_tag(row.text.as_deref()?).to_owned();
+                Some((id, display))
+            })
+            .collect()
     }
 
     /// How many consecutive rows of `block` share a region prefix, when every
@@ -2641,6 +2762,100 @@ pub fn campaign_position_for(
         .find(|block| block.contains(row))
         .map(|block| (row - block.first_id()) as usize)
         .ok_or(SHORT_ROW_BLOCK_REFUSAL)
+}
+
+/// Why a discovery title selects no localized row: no row carries it in either
+/// display form.
+pub const UNCARRIED_TITLE_REFUSAL: &str = "no localized string carries the discovery title, neither \
+     verbatim nor as the title part of a region-prefixed long name";
+
+/// Why a discovery title selects no localized row: several rows carry it, so
+/// no single row names a mission and therefore no single campaign position.
+pub const AMBIGUOUS_TITLE_REFUSAL: &str = "several localized strings carry the discovery title, so \
+     no single row names a mission and no campaign position was derived from the title";
+
+/// Which display form of a localized string row carried a discovery title.
+///
+/// Both forms are observed retail display conventions of the campaign-length
+/// mission-name rows, not a documented format, and the text is compared
+/// exactly in either case. What the form says is *where* in the row the title
+/// was found, never what the mission is.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TitleForm {
+    /// The row's display text is the discovery title, byte for byte. This is
+    /// the strongest form and it wins whenever any row offers it.
+    Verbatim,
+    /// The row's display text is a region-prefixed long name — a region, the
+    /// observed `" - "` separator and a title — and the part after the
+    /// separator is the discovery title, byte for byte. The prefix is dropped
+    /// without ever being compared with or interpreted as anything, exactly as
+    /// [`SourceContext::region_group_sizes`] groups rows by it.
+    RegionPrefixedLongName,
+}
+
+/// How one localized row carries a discovery title.
+///
+/// Pure over the two strings, so the rule a binding obeys is checkable on
+/// every arm without an installation. A row carrying the title in neither
+/// form is [`None`]; a tail that is merely *close* — a prefix of the title, the
+/// title with different capitalization, the title with a prefix of its own —
+/// is also [`None`], because no fuzzy comparison is made.
+pub fn title_form(display: &str, title: &str) -> Option<TitleForm> {
+    if display == title {
+        return Some(TitleForm::Verbatim);
+    }
+    // Region-prefixed long names are the only rows allowed to carry a title
+    // that is not the whole display text, and only after their separator.
+    let (prefix, tail) = display.split_once(LONG_NAME_SEPARATOR)?;
+    if prefix.is_empty() || tail.is_empty() {
+        return None;
+    }
+    (tail == title).then_some(TitleForm::RegionPrefixedLongName)
+}
+
+/// The separator between a region prefix and a long mission name: an observed
+/// display convention of those rows (`Hawaii - The Lost Treasure of Sir
+/// Francis Drake`), never a documented format.
+const LONG_NAME_SEPARATOR: &str = " - ";
+
+/// How the localized table confirms one discovery title.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TitleConfirmation {
+    /// Exactly one localized row carries the title, in this display form.
+    Confirmed {
+        /// The row that carries it.
+        row_id: u32,
+        /// The display form that carried it.
+        form: TitleForm,
+    },
+    /// No localized row carries the title in either form.
+    Uncarried,
+    /// More than one row carries it — several verbatim rows, or one verbatim
+    /// row plus a long name naming the same title — so no single row identifies
+    /// the mission.
+    Ambiguous,
+}
+
+impl TitleConfirmation {
+    /// The confirmed row and form, when one row carries the title.
+    pub fn confirmed(&self) -> Option<(u32, TitleForm)> {
+        match self {
+            Self::Confirmed { row_id, form } => Some((*row_id, *form)),
+            Self::Uncarried | Self::Ambiguous => None,
+        }
+    }
+
+    /// Why the confirmation failed, naming its own cause.
+    ///
+    /// [`None`] for a confirmation: a record that resolved its title has no
+    /// refusal to report.
+    pub fn refusal(&self) -> Option<&'static str> {
+        match self {
+            Self::Confirmed { .. } => None,
+            Self::Uncarried => Some(UNCARRIED_TITLE_REFUSAL),
+            Self::Ambiguous => Some(AMBIGUOUS_TITLE_REFUSAL),
+        }
+    }
 }
 
 /// One maximal run of consecutive localized string rows.
@@ -2828,7 +3043,7 @@ fn strip_font_tag(text: &str) -> &str {
 /// documented format, so only the grouping it produces is ever used — the
 /// name itself is never bound to a chapter.
 fn region_prefix(display: &str) -> Option<&str> {
-    let (prefix, rest) = display.split_once(" - ")?;
+    let (prefix, rest) = display.split_once(LONG_NAME_SEPARATOR)?;
     if prefix.is_empty() || rest.is_empty() {
         return None;
     }
