@@ -432,10 +432,10 @@ impl InteractionTransaction {
 
     /// The one control owner active at the current stage.
     ///
-    /// Before latch and during release the initiating actor owns control,
-    /// during latch and transfer the dedicated [`ControlOwner::LatchController`]
-    /// owns it, and after release the policy decides. Exactly one is returned
-    /// at every stage.
+    /// Before latch the initiating actor owns control, during latch and
+    /// transfer the dedicated [`ControlOwner::LatchController`] owns it, and
+    /// from release onward the policy's declared owner decides. Exactly one is
+    /// returned at every stage.
     #[must_use]
     pub const fn control_owner(&self) -> ControlOwner {
         if self.state.control_is_dedicated() {
