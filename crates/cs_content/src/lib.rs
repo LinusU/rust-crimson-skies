@@ -346,6 +346,15 @@
 //! Its runtime counterpart is `cs_sim::allies`; the conversion boundary is
 //! `cs_app::roster`.
 //!
+//! [`interaction`] is the F36-A declared docking/pickup/boarding/plane-swap
+//! schema (`specs/F36-docking-passenger-pickups-boarding-and-plane-swaps.md`,
+//! stage `### F36-A`): the provenance-carrying [`interaction::DeclaredInteraction`]
+//! naming its [`interaction::DeclaredInteractionKind`], the objective that
+//! authorizes it, its [`interaction::DeclaredEligibility`] envelope and its
+//! [`interaction::DeclaredTransferPolicy`], every load-bearing value a
+//! [`cs_types::content::Resolved`]. Its runtime counterpart is
+//! `cs_sim::interaction`; the conversion boundary is `cs_app::interaction`.
+//!
 //! [`cs_types`]: cs_types
 //! [`cs_formats`]: cs_formats
 //! [`cs_assets`]: cs_assets
@@ -365,6 +374,7 @@ pub mod coordinates;
 pub mod damage;
 pub mod environment;
 pub mod flight_tuning;
+pub mod interaction;
 pub mod livery;
 pub mod loading;
 pub mod localization;
