@@ -74,6 +74,15 @@ directory is original game data — no assets, scripts or extracted bytes.
   campaign missions and chapter 2's fifth mission lives in the separate `c2b`
   directory (see `docs/findings/2026-10-01-m06-a-source-binding.md`). Same five
   resolved critical dependencies, same unverified status.
+- `M07.json` — the M07 binding output (stage M07-A), generated and pinned the
+  same way by `accept_m07_a_the_committed_record_is_what_the_installation_derives`.
+  No production code changed for it either: M07 is the seventh campaign
+  position, chapter 2's second mission, one row after the chapter and region
+  boundary M06-A bound. Its world group `world/c2` is shared with M06's own
+  mission, so the world id names no single mission, and its mission number `2`
+  is reused by one mission in every chapter (see
+  `docs/findings/2026-10-02-m07-a-source-binding.md`). Same five resolved
+  critical dependencies, same unverified status.
 - `M08.json` — the M08 binding output (stage M08-A), generated and pinned the
   same way by `accept_m08_a_the_committed_record_is_what_the_installation_derives`.
   No production code changed for it either: M08 is the eighth campaign position
@@ -115,8 +124,8 @@ totals and closure reports — live in
 
 ## What is not here yet
 
-- `M07.json`, `M09.json` … `M11.json`, `M14.json`, `M15.json` and `M17.json` … `M24.json` — the
-  per-mission binding outputs of M07-A, M09-A … M11-A, M14-A, M15-A and M17-A … M24-A, created from original data the same way. Every one of them starts
+- `M09.json` … `M11.json`, `M14.json`, `M15.json` and `M17.json` … `M24.json` — the
+  per-mission binding outputs of M09-A … M11-A, M14-A, M15-A and M17-A … M24-A, created from original data the same way. Every one of them starts
   unresolved.
 - Titles the installation spells differently again — M09, M11, M14, M15, M20,
   M22 and M23 — match neither display form and stay `Uncarried`. Which retail
