@@ -312,6 +312,7 @@ pub mod asset_stack;
 pub mod assets;
 pub mod audio;
 pub mod camera;
+pub mod campaign;
 pub mod capital;
 pub mod cli;
 pub mod damage;
