@@ -54,11 +54,55 @@ fn fixtures_root() -> PathBuf {
 /// case would pass for the wrong reason. Outside it, no ancestor is a cargo
 /// workspace — which is what `accept_t383_`'s unreadable-workspace fixture
 /// already relies on for `cargo metadata` to fail.
-fn outside_root() -> PathBuf {
-    let root = std::env::temp_dir().join(format!("t437-no-root-{}", std::process::id()));
+///
+/// `case` names the caller, so the root is unique per test rather than only per
+/// process: the tests in one binary run in parallel threads, and a single
+/// process-keyed root would let either test's `remove_dir_all` delete the tree
+/// the other is writing (task #462). The directory stays under
+/// `std::env::temp_dir()` and is removed and recreated on every call, so a
+/// stale tree from an interrupted run cannot leak in.
+fn outside_root(case: &str) -> PathBuf {
+    let root = std::env::temp_dir().join(format!("t437-no-root-{}-{case}", std::process::id()));
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).expect("the fixture root must be creatable");
     root
+}
+
+/// Pins the property the fix is about, deterministically rather than by timing:
+/// two callers get two roots, so neither test's `remove_dir_all` can delete the
+/// tree the other is writing (task #462).
+///
+/// It uses the dedicated `guard-alpha`/`guard-beta` names, never the ones the
+/// two real tests use: sharing a caller name with a running test would make this
+/// guard itself the racer.
+#[test]
+fn accept_t437_outside_roots_are_unique_per_caller() {
+    let alpha = outside_root("guard-alpha");
+    let beta = outside_root("guard-beta");
+    assert_ne!(
+        alpha, beta,
+        "two callers must not share one fixture root, or whichever calls \
+         remove_dir_all first deletes the other test's tree mid-write"
+    );
+    assert!(
+        alpha.is_dir() && beta.is_dir(),
+        "both per-caller roots must exist after creation"
+    );
+
+    // Re-entering one caller's root resets only that tree; the other caller's
+    // stays intact. A single process-keyed root would destroy both.
+    let alpha_again = outside_root("guard-alpha");
+    assert_eq!(
+        alpha, alpha_again,
+        "a caller's root is stable for the life of one test process"
+    );
+    assert!(
+        beta.is_dir(),
+        "recreating one caller's root must not delete another's"
+    );
+
+    let _ = fs::remove_dir_all(&alpha);
+    let _ = fs::remove_dir_all(&beta);
 }
 
 /// A detached cargo workspace holding one package, written at `root`.
@@ -227,6 +271,11 @@ fn accept_t437_the_nearest_table_wins_when_manifests_nest() {
 /// the target directory against a package directory.
 #[test]
 fn accept_t437_only_a_workspace_table_marks_a_root() {
+    // One root for this test, keyed by its name: the three cases rewrite their
+    // own subdirectory, and the other test in this binary uses a different
+    // root, so no iteration or sibling can delete a tree the other is writing
+    // (task #462).
+    let base = outside_root("only-a-workspace-table");
     for (name, manifest) in [
         ("commented", "# [workspace]\n[package]\nname = \"probe\"\n"),
         (
@@ -238,7 +287,7 @@ fn accept_t437_only_a_workspace_table_marks_a_root() {
             "[package]\nname = \"probe\"\n\n[workspace]\nmembers = []\n",
         ),
     ] {
-        let root = outside_root().join(format!("table-{name}"));
+        let root = base.join(format!("table-{name}"));
         let _ = fs::remove_dir_all(&root);
         fs::create_dir_all(root.join("probe")).expect("the fixture dir must be creatable");
         fs::write(root.join("Cargo.toml"), manifest).expect("the manifest must be writable");
@@ -270,7 +319,7 @@ fn accept_t437_only_a_workspace_table_marks_a_root() {
 /// identify, which is the only honest answer.
 #[test]
 fn accept_t437_no_workspace_manifest_above_is_reported_not_guessed() {
-    let root = outside_root().join("bare");
+    let root = outside_root("no-workspace-manifest").join("bare");
     let _ = fs::remove_dir_all(&root);
     fs::create_dir_all(&root).expect("the fixture dir must be creatable");
     fs::write(root.join("Cargo.toml"), "[package]\nname = \"probe\"\n")
