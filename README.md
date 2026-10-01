@@ -12,6 +12,7 @@ No original assets, executables, extracted scripts, manuals or decompiled code a
 | --- | --- |
 | [AGENTS.md](AGENTS.md) | The rules every agent follows. Start here. |
 | [docs/00-SCOPE.md](docs/00-SCOPE.md), [docs/01-ARCHITECTURE.md](docs/01-ARCHITECTURE.md) | Product scope and crate architecture. |
+| [docs/architecture/crate-module-docs.md](docs/architecture/crate-module-docs.md) | Where a new crate module-doc paragraph goes (conflict-free insertion order). |
 | [specs/](specs/README.md) | 65 feature specifications (F00–F64), each in four stages A–D. |
 | [missions/](missions/README.md) | 24 mission work orders (M01–M24). |
 | [docs/contracts/](docs/contracts/) | Shared contracts: identity, flight physics, scripting, state, UI/network, CLI/evidence. |
