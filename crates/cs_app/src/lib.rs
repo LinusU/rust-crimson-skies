@@ -283,8 +283,10 @@
 //! `### F31-C`): [`ai::bind_route`], which projects a resolved
 //! `cs_content::routes::ResolvedRoute` into the runtime
 //! `cs_sim::ai::navigation::RouteGraph` while keeping the authored node id ->
-//! runtime node id map and refusing an unbound moving anchor or an
-//! unsupported termination by name; the [`ai::MovingAnchor`] component whose
+//! runtime node id map, carrying the declared route termination across (a
+//! `Loop` record binds as a route that re-arms its marker sequence, not as one
+//! refused by name) and refusing an unbound moving anchor by name; the
+//! [`ai::MovingAnchor`] component whose
 //! live Avian transform is sampled into the route frame every fixed tick; the
 //! [`ai::RoutePursuit`] component an AI aircraft carries; the session resource
 //! [`ai::AiNavigation`] that owns one `NavigationSet` and reconciles its roster

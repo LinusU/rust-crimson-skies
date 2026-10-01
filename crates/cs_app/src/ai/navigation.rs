@@ -15,10 +15,11 @@
 //!
 //! * [`bind_route`] is the content-to-runtime conversion (`ResolvedRoute` ->
 //!   [`BoundRoute`]). It keeps the authored `sequence` as the runtime node key,
-//!   carries the reference frame across, resolves a moving anchor through an
-//!   [`AnchorBinding`] and refuses an unbound anchor or an unsupported
-//!   termination by name. It also keeps the authored string id -> runtime id
-//!   map, so a mission event bound by authored name survives an ECS reorder.
+//!   carries the reference frame and the declared
+//!   [`cs_sim::ai::navigation::RouteTermination`] across, resolves a moving
+//!   anchor through an [`AnchorBinding`] and refuses an unbound anchor by
+//!   name. It also keeps the authored string id -> runtime id map, so a
+//!   mission event bound by authored name survives an ECS reorder.
 //! * [`MovingAnchor`] is the component on the live carrier/train/escort entity.
 //!   Its world `Position`/`Rotation` are sampled **every fixed tick** into the
 //!   `ReferenceFrameSample` the follower transforms a route node's local
@@ -61,7 +62,8 @@ use cs_content::routes::{
 use cs_sim::ai::navigation::{
     Blocker, NavState, NavigationCadence, NavigationError, NavigationSet, Navigator,
     PursuitDecision, PursuitRequest, ReferenceFrameSample, RouteFrame, RouteGraph, RouteGraphError,
-    RouteNode as NavRouteNode, RouteNodeId, heading_from_direction, synthetic_maneuver_envelope,
+    RouteNode as NavRouteNode, RouteNodeId, RouteTermination as NavRouteTermination,
+    heading_from_direction, synthetic_maneuver_envelope,
 };
 use cs_sim::damage::ActorId;
 use cs_sim::flight::FlightInput;
@@ -110,11 +112,6 @@ pub enum RouteBindingError {
         /// The authored anchor content id.
         anchor: String,
     },
-    /// The route asks for a loop, which the runtime follower cannot express.
-    UnsupportedTermination {
-        /// The authored termination label.
-        termination: &'static str,
-    },
     /// The projected graph failed the runtime's own validation.
     Graph(RouteGraphError),
 }
@@ -128,10 +125,6 @@ impl fmt::Display for RouteBindingError {
                     "moving route anchor {anchor:?} is not bound to a runtime actor"
                 )
             }
-            Self::UnsupportedTermination { termination } => write!(
-                f,
-                "the runtime follower cannot express route termination {termination:?}"
-            ),
             Self::Graph(error) => write!(f, "the projected route graph is invalid: {error}"),
         }
     }
@@ -157,6 +150,45 @@ impl BoundRoute {
     #[must_use]
     pub const fn graph(&self) -> &RouteGraph {
         &self.graph
+    }
+
+    /// What the route does after its last node, as the runtime expresses it.
+    ///
+    /// This is the *declared* termination, carried across from the content
+    /// record by [`bind_route`] rather than defaulted: a `Loop` record reaches
+    /// the follower as a route that re-arms its marker sequence, and an `End`
+    /// record as one that runs off the end. A caller can therefore ask the
+    /// bound route what it will do instead of re-reading the declaration.
+    #[must_use]
+    pub const fn termination(&self) -> NavRouteTermination {
+        self.graph.termination()
+    }
+
+    /// The largest leading-node count this route can be resumed past.
+    ///
+    /// The set's registration API (`NavigationSet::register_resuming`) takes a
+    /// count and **no route**, so it cannot check the count against the node
+    /// list, and `RouteProgress::is_complete` treats any target index past the
+    /// last node as complete for *every* termination. That makes the two
+    /// terminations differ:
+    ///
+    /// * an **ending** route may legitimately resume at `node_count`: the
+    ///   follower is then on the route's finished state and holds station, which
+    ///   is a real state a mission can place an aircraft in; and
+    /// * a **loop** route cannot. A loop only ever reaches the node past the
+    ///   end through a caller-supplied count, so a count at or beyond
+    ///   `node_count` is not "finished", it is a follower with no live target
+    ///   that can never wrap. Resuming a loop is therefore bounded by
+    ///   `node_count() - 1`: the last node, from which the wrap re-arms node 0.
+    ///
+    /// [`RoutePursuit::resume_past_headroom`] reports a pursuit that exceeds it
+    /// and the driver refuses it by name, so the wedge is never silent.
+    #[must_use]
+    pub fn max_resume_reached(&self) -> usize {
+        match self.graph.termination() {
+            NavRouteTermination::End => self.graph.node_count(),
+            NavRouteTermination::Loop => self.graph.node_count().saturating_sub(1),
+        }
     }
 
     /// The runtime node id for an authored node id, when the route has one.
@@ -193,13 +225,15 @@ impl BoundRoute {
 /// [`RouteGraph`], resolving its moving anchor through `anchors`.
 ///
 /// The authored `sequence` becomes the runtime node key; positions, arrival
-/// radii and clearance are carried across; a loop termination and an unbound
-/// moving anchor are refused by name.
+/// radii, clearance and the declared termination are carried across; only an
+/// unbound moving anchor is refused by name. A `Loop` record binds as a route
+/// that re-arms its marker sequence ([`BoundRoute::termination`]), exactly as
+/// `tools/cs_inspect`'s `project_route` does at the conversion boundary, so
+/// the two projections can never disagree about what a declared route means.
 ///
 /// # Errors
 ///
-/// [`RouteBindingError::UnboundAnchor`], [`RouteBindingError::UnsupportedTermination`]
-/// or [`RouteBindingError::Graph`].
+/// [`RouteBindingError::UnboundAnchor`] or [`RouteBindingError::Graph`].
 pub fn bind_route(
     route: &ResolvedRoute,
     anchors: &[AnchorBinding],
@@ -220,11 +254,10 @@ pub fn bind_route(
             }
         }
     };
-    if route.termination() == RouteTermination::Loop {
-        return Err(RouteBindingError::UnsupportedTermination {
-            termination: "loop",
-        });
-    }
+    let termination = match route.termination() {
+        RouteTermination::End => NavRouteTermination::End,
+        RouteTermination::Loop => NavRouteTermination::Loop,
+    };
     let mut node_ids = BTreeMap::new();
     let nodes = route
         .nodes()
@@ -241,8 +274,9 @@ pub fn bind_route(
             }
         })
         .collect();
-    let graph = RouteGraph::try_new(frame, route.clearance_m().value, nodes)
-        .map_err(RouteBindingError::Graph)?;
+    let graph =
+        RouteGraph::try_new_terminated(frame, termination, route.clearance_m().value, nodes)
+            .map_err(RouteBindingError::Graph)?;
     Ok(BoundRoute {
         graph,
         node_ids,
@@ -316,6 +350,13 @@ pub struct RoutePursuit {
 impl RoutePursuit {
     /// Pursues `route` as `actor`, with progress resumed past `resume_reached`
     /// leading nodes (the spawn node a mission places the aircraft on).
+    ///
+    /// `resume_reached` is a leading-node count, never an index into the node
+    /// list, and it is bounded by [`BoundRoute::max_resume_reached`]: a loop
+    /// route cannot be resumed at or past its node count, because such a
+    /// progress has no live target and can never wrap.
+    /// [`resume_past_headroom`](Self::resume_past_headroom) reports a pursuit
+    /// that exceeds the bound, and the driver refuses it by name.
     #[must_use]
     pub fn new(actor: ActorId, route: BoundRoute, resume_reached: usize) -> Self {
         Self {
@@ -355,6 +396,19 @@ impl RoutePursuit {
     #[must_use]
     pub const fn resume_reached(&self) -> usize {
         self.resume_reached
+    }
+
+    /// Whether the resume count is past the bound this route can be resumed
+    /// from, i.e. whether registering it would leave the follower with no live
+    /// target.
+    ///
+    /// `NavigationSet::register_resuming` takes a count and no route, so it
+    /// cannot make this check itself; the driver makes it here, where the bound
+    /// route is in hand, and refuses by name instead of registering a pursuit
+    /// that can never fly.
+    #[must_use]
+    pub fn resume_past_headroom(&self) -> bool {
+        self.resume_reached > self.route.max_resume_reached()
     }
 }
 
@@ -402,12 +456,29 @@ impl AiNavigation {
         self.set.contains(actor)
     }
 
-    /// How many leading route nodes `actor` has reached, if registered.
+    /// How many route nodes `actor` has reached, if registered.
+    ///
+    /// This is a monotonic **total**, not a position: on a loop-terminated
+    /// route [`cs_sim::ai::navigation::RouteProgress::reached`] counts the
+    /// nodes reached across every lap and never rewinds, so the count keeps
+    /// climbing past the route's node count. Use [`Self::laps`] as the
+    /// lap-independent companion and the route's own `next_index` as the live
+    /// target; do not index the route with this count on a loop.
     #[must_use]
     pub fn reached(&self, actor: ActorId) -> Option<usize> {
         self.set
             .state(actor)
             .map(|state| state.progress().reached())
+    }
+
+    /// How many times `actor`'s route has re-armed, if registered.
+    ///
+    /// Zero until the follower reaches a loop route's last node; it is the
+    /// count a caller reads instead of dividing [`Self::reached`] by a node
+    /// count, which would also count the resumed leading nodes.
+    #[must_use]
+    pub fn laps(&self, actor: ActorId) -> Option<u32> {
+        self.set.state(actor).map(|state| state.progress().laps())
     }
 
     /// Whether `actor` has completed `route`, if it is registered.
@@ -451,6 +522,14 @@ pub enum NavigationRefusalReason {
         /// The kind the live entity declared.
         entity: AnchorKind,
     },
+    /// The pursuit's resume count is past the bound its route can be resumed
+    /// from, so registering it would leave the follower with no live target.
+    ResumePastRouteEnd {
+        /// The resume count the pursuit declared.
+        resume_reached: usize,
+        /// The largest resume count this route can be flown from.
+        max_resume_reached: usize,
+    },
     /// The follower refused the decision.
     Decision(NavigationError),
     /// The bounded command could not be written into the flight record.
@@ -477,6 +556,15 @@ impl fmt::Display for NavigationRefusalReason {
                 "moving anchor {anchor} is a {} but the route declared a {}",
                 anchor_kind_label(*entity),
                 anchor_kind_label(*route)
+            ),
+            Self::ResumePastRouteEnd {
+                resume_reached,
+                max_resume_reached,
+            } => write!(
+                f,
+                "a pursuit resumed past {resume_reached} nodes cannot be flown: its route \
+                 accepts at most {max_resume_reached}, because a target index past the last \
+                 node leaves the follower with nothing to fly to"
             ),
             Self::Decision(error) => write!(f, "the follower refused the decision: {error}"),
             Self::Command(error) => write!(f, "the command could not be applied: {error}"),
@@ -636,11 +724,12 @@ fn decide_navigation(
     // Teardown and registration: the set's roster must exactly match the live
     // pursuit entities, so a despawn removes its state and a fresh entity with
     // an unknown/foreign actor is refused rather than inheriting one.
-    let present: Vec<(ActorId, usize)> = pursuers
+    let present: Vec<(Entity, &RoutePursuit)> = pursuers
         .iter()
-        .map(|(_, pursuit, ..)| (pursuit.actor(), pursuit.resume_reached()))
+        .map(|(entity, pursuit, ..)| (entity, pursuit))
         .collect();
-    let present_actors: BTreeSet<ActorId> = present.iter().map(|(actor, _)| *actor).collect();
+    let present_actors: BTreeSet<ActorId> =
+        present.iter().map(|(_, pursuit)| pursuit.actor()).collect();
     let stale: Vec<ActorId> = navigation
         .set
         .actors()
@@ -649,19 +738,38 @@ fn decide_navigation(
     for actor in stale {
         navigation.set.unregister(actor);
     }
-    for (actor, resume) in &present {
-        if navigation.set.contains(*actor) {
+    for (entity, pursuit) in &present {
+        let actor = pursuit.actor();
+        if navigation.set.contains(actor) {
             continue;
         }
-        if let Err(error) = navigation.set.register_resuming(*actor, *resume) {
+        // The registration API below takes a count and no route, so it cannot
+        // tell a flyable resume from one that leaves the follower with no live
+        // target. This is where the bound route is in hand, so the check is
+        // made here and refused by name instead of registering a pursuit that
+        // holds station forever.
+        if pursuit.resume_past_headroom() {
+            record_refusal(
+                &mut report,
+                tick.0,
+                Some(*entity),
+                actor,
+                NavigationRefusalReason::ResumePastRouteEnd {
+                    resume_reached: pursuit.resume_reached(),
+                    max_resume_reached: pursuit.route().max_resume_reached(),
+                },
+            );
+            continue;
+        }
+        if let Err(error) = navigation
+            .set
+            .register_resuming(actor, pursuit.resume_reached())
+        {
             report.refused += 1;
             report.last_refusal = Some(NavigationRefusal {
                 tick: tick.0,
-                entity: pursuers
-                    .iter()
-                    .find(|(_, pursuit, ..)| pursuit.actor() == *actor)
-                    .map(|(entity, ..)| entity),
-                actor: *actor,
+                entity: Some(*entity),
+                actor,
                 reason: match error {
                     NavigationError::ForeignSession { expected, found } => {
                         NavigationRefusalReason::ForeignSession { expected, found }
@@ -746,13 +854,13 @@ fn decide_navigation(
             }
         }
         Err(error) => {
-            for (actor, _) in &present {
-                if navigation.set.contains(*actor) {
+            for (_, pursuit) in &present {
+                if navigation.set.contains(pursuit.actor()) {
                     record_refusal(
                         &mut report,
                         tick.0,
                         None,
-                        *actor,
+                        pursuit.actor(),
                         NavigationRefusalReason::Decision(error.clone()),
                     );
                 }

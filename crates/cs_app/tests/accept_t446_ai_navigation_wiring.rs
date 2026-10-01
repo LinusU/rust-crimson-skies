@@ -31,7 +31,8 @@ use cs_app::physics::{
 };
 use cs_content::routes::AnchorKind;
 use cs_sim::ai::navigation::{
-    NavigationCadence, Navigator, RouteNodeId, synthetic_maneuver_envelope,
+    NavigationCadence, Navigator, RouteFrame, RouteNodeId, RouteTermination,
+    synthetic_maneuver_envelope,
 };
 use cs_sim::damage::ActorId;
 use cs_sim::flight::{EngineState, FlightInput, FlightModel, synthetic_fixed_wing};
@@ -599,13 +600,19 @@ fn accept_t446_despawn_removes_pursuit_state_and_a_fresh_session_cannot_inherit_
 }
 
 // ---------------------------------------------------------------------------
-// The binding boundary refuses an unbound anchor and an unsupported loop
+// The binding boundary refuses an unbound anchor and binds a declared loop
 // ---------------------------------------------------------------------------
-/// A moving route whose anchor has no binding is refused by name, and a loop
-/// termination the runtime cannot express is refused by name, rather than
+/// A moving route whose anchor has no binding is refused by name, rather than
 /// silently addressed at an invented id.
+///
+/// A declared loop binds instead of being refused: #447 gave the runtime
+/// follower real loop semantics and #457 carried the declared termination
+/// through this boundary, so `bind_route` can no longer report an unsupported
+/// termination for anything. That is pinned here by binding the loop draft and
+/// reading the termination off the result rather than by matching a removed
+/// error variant.
 #[test]
-fn accept_t446_bind_route_refuses_unbound_anchor_and_loop() {
+fn accept_t446_bind_route_refuses_unbound_anchor_and_binds_a_declared_loop() {
     let declared =
         declared_synthetic_moving_route(synthetic_moving_anchor_id(), AnchorKind::Carrier);
     let resolved = declared
@@ -622,21 +629,43 @@ fn accept_t446_bind_route_refuses_unbound_anchor_and_loop() {
         "an unbound moving anchor is refused: {unbound:?}"
     );
 
-    // A route that terminates in a loop cannot be expressed by the follower.
+    // A declared loop binds, and the runtime graph says what it does after its
+    // last node.
     let looped = cs_content::routes::RouteDefinition::try_new(loop_draft()).expect("a valid loop");
     let resolved_loop = looped.resolve().expect("the loop route resolves");
+    // The loop draft is world-anchored, so it needs no binding table at all.
+    let bound =
+        bind_route(&resolved_loop, &[]).expect("a declared loop binds to the runtime follower");
     assert_eq!(
-        bind_route(
-            &resolved_loop,
-            &[AnchorBinding::new(
-                synthetic_moving_anchor_id(),
-                SYNTHETIC_MOVING_ANCHOR_RUNTIME_ID,
-                AnchorKind::Carrier,
-            )],
-        ),
-        Err(RouteBindingError::UnsupportedTermination {
-            termination: "loop"
-        })
+        bound.termination(),
+        RouteTermination::Loop,
+        "the declared termination is carried into the runtime graph"
+    );
+    assert_eq!(
+        bound.graph().termination(),
+        RouteTermination::Loop,
+        "the graph the follower consumes declares the loop"
+    );
+    assert_eq!(bound.graph().node_count(), 2);
+    assert_eq!(
+        bound.max_resume_reached(),
+        1,
+        "a loop route is resumed at most from its last node"
+    );
+
+    // The authored node id map and the moving-anchor binding are unchanged: a
+    // loop binds through the same projection an ending route uses.
+    assert_eq!(bound.runtime_node_id("a"), Some(RouteNodeId(0)));
+    assert_eq!(bound.runtime_node_id("b"), Some(RouteNodeId(1)));
+    assert_eq!(
+        bound.graph().frame,
+        RouteFrame::World,
+        "the loop draft is world-anchored, so it binds without a binding table"
+    );
+    assert_eq!(
+        bound.anchor_kind(SYNTHETIC_MOVING_ANCHOR_RUNTIME_ID),
+        None,
+        "a world-anchored route declares no moving anchor"
     );
 }
 

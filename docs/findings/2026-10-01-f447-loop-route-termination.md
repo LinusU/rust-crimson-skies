@@ -107,17 +107,19 @@ the fix.
 
 ## Known limitations that gate later stages (not silently dropped)
 
-1. **`crates/cs_app::ai::bind_route` still refuses a loop.** #446 owns
-   `crates/cs_app/src/ai/navigation.rs`, which is not an F31 owner path, so this
-   task does not edit it. `RouteBindingError::UnsupportedTermination` is still
-   there and the ECS-integrated follower still cannot fly a loop route. Filed as
-   **#457**. Affected content: every AI aircraft on a loop route inside the
-   integrated ECS flight loop. Until it is fixed, the runtime can follow a loop
-   but the mission ECS cannot hand it one. #457 must also seed its actor with
-   `register_resuming` below the node count: `cs_app::AiNavigation::reached`
-   documents "how many leading route nodes" and now reports the cross-lap total
-   for a loop, and an over-counted resume holds station (see above) instead of
-   flying the route.
+1. ~~**`crates/cs_app::ai::bind_route` still refuses a loop.**~~ **Resolved by
+   #457** (2026-10-01): `bind_route` carries the declared termination through
+   `RouteGraph::try_new_terminated`, `RouteBindingError::UnsupportedTermination`
+   is gone, and `BoundRoute::termination()` exposes the declaration. #457 also
+   gave the loop its own resume bound (`BoundRoute::max_resume_reached`), because
+   `cs_app::AiNavigation::reached` reports the cross-lap total for a loop and an
+   over-counted resume holds station (see above) instead of flying the route — an
+   over-count is now refused by name (`ResumePastRouteEnd`) rather than wedging
+   the follower silently. See
+   `docs/findings/2026-10-01-t457-ecs-loop-route-binding.md`.
+   One part of the affected content is still open and tracked there: through the
+   **integrated** flight loop the wrap leg needs the turn fix in #451, so a
+   mission that expects its AI to lap a patrol in flight does not get that yet.
 2. **The original route encoding remains unmeasured.** No original route is
    parsed; whether the original expressed loop, patrol or end termination at all
    is unknown. F31-D measured the `aiv.zrd` carrier only and recorded the
