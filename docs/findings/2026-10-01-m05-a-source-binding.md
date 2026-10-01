@@ -4,9 +4,11 @@ Date: 2026-10-01. Task: M05-A "Bind original mission data and branches"
 (#270, `missions/M05.md`, work order `M05-A`). Shared contract:
 `docs/contracts/SCRIPT-MISSION.md`. Capabilities used: `retail`
 (`$CS_GAME_DIR` read-only, never written), `synthetic`. Implementer:
-**bunny-2** (session of 2026-10-01T20:17Z). No reviewer yet; the implementer's
-own run is not independent review, and no agent review replaces the owner's
-human approval.
+**bunny-2/bunny-2** (session of 2026-10-01T20:17Z). Review: **bunny-2/bunny-2**
+again, as the Rally reviewing agent, with fresh context but *not* a different
+agent instance — this is therefore **not independent review**, and no agent
+review replaces the owner's human approval. What the review changed is recorded
+in "Review notes" below.
 
 The minimum acceptance scenario, *"Source-derived binding has no unresolved
 critical dependencies"*, holds for M05 — but only after a production change
@@ -119,19 +121,30 @@ inference (`ClaimStatus::Inferred`), not an observation, and nothing here is
 
 ## What is still unknown
 
-- Seven declared titles match neither display form and stay `Uncarried`:
-  **M09** (`Perils for Blake` vs `Peril for Blake` / `Peril for Paladin
-  Blake`), **M11** (`The Stolen Scarlet` vs `The Stolen Starlet`), **M14**
-  (`Clash of the Dreadnaughts` vs `Clash of Dreadnaughts`), **M15** (`The Fight
-  for the Figaro` vs `Fight for the FIGAROA` — a case and article difference),
-  **M20** (`Unholy Alliance` vs `The Unholy Alliance`), **M22** (`Runaway
-  Witness` vs `The Runaway Witness`), **M23** (`Criminal Exodus` vs `The
-  Criminal Exodus`). These are *not* article-only differences, so the long-name
-  fallback does not reach them, and this stage does not guess a rule that would.
-  Each is recorded as `Uncarried` with its own campaign position unresolved, and
-  the M09-A…M24-A stages must decide how the guide's label maps to the original
-  string — an owner question, not one an agent should answer by proximity
-  matching.
+- Seven declared titles match neither display form and stay `Uncarried`. What
+  each one differs from is **not** uniformly "more than an article", so the
+  measured table is the honest form of the statement (short names at `3480…`,
+  long names at `3450…`, tail after the observed separator):
+
+  | Work order | Declared title | Short-name row | Long-name tail | Difference |
+  | --- | --- | --- | --- | --- |
+  | M09 | `Perils for Blake` | `Peril for Blake` (3488) | `Peril for Paladin Blake` (3458) | plural, plus a word |
+  | M11 | `The Stolen Scarlet` | `The Stolen Starlet` (3490) | `Nathan Zachary & The Stolen Starlet` (3460) | one letter (`c`/`l`) |
+  | M14 | `Clash of the Dreadnaoughts` | `Clash of Dreadnaoughts` (3493) | `Nathan Zachary & The Clash of Dreadnaoughts` (3463) | short name drops the article; long name adds a prefix |
+  | M15 | `The Fight for the Figaro` | `Fight for the FIGAROA` (3494) | `The Fight for the FIGAROA` (3464) | article, case, a final `A` |
+  | M20 | `Unholy Alliance` | `The Unholy Alliance` (3499) | `Nathan Zachary & The Unholy Alliance` (3469) | short name adds the article; long name adds a prefix |
+  | M22 | `Runaway Witness` | `The Runaway Witness` (3501) | `The Runaway Witness` (3471) | **article only**, both rows |
+  | M23 | `Criminal Exodus` | `The Criminal Exodus` (3502) | `The Criminal Exodus` (3472) | **article only**, both rows |
+
+  M22 and M23 *are* reachable by a rule that tolerates one leading article, and
+  so are the short names of M14 and M20. This stage deliberately adds no such
+  rule: tolerating an article is a guess about how the public guide spells a
+  title, it would confirm names the original program never spells that way, and
+  the declared titles live in the protected `missions/README.md`. Resolving them
+  is an owner decision (`M05-A-GUIDE-TITLES`, filed), not something an agent
+  settles by proximity matching. Each is recorded as `Uncarried` with its own
+  campaign position unresolved; the M09-A…M24-A stages must decide how the
+  guide's label maps to the original string.
 - Whether the `IA1`/`MP*` directories of `ZBD/C1` are non-campaign modes, and
   whether M05's world content depends on them. Unmeasured here; F14-D/F37/F38
   must settle it.
@@ -151,3 +164,58 @@ Each applied, run against `accept_m05_a_`, observed and reverted:
 | `confirm_title` drops the verbatim-wins precedence (long-name rows consulted first) | 4 failures: `…source_derived_binding…`, `…the_committed_record…`, `…the_title_is_confirmed_only_through_the_long_name_form`, `…the_verbatim_form_wins…` |
 | the spelling-difference `unknowns` entry removed | 3 failures: `…source_derived_binding…`, `…the_committed_record…`, `…the_title_is_confirmed_only_through_the_long_name_form` |
 | `campaign_position_for` returns position + 1 for every confirmed row | 6 failures: every retail test except `…the_campaign_keeps_everything_else…`, plus `…a_contradicted_corroboration…` |
+## Review notes (bunny-2/bunny-2 as reviewing agent, 2026-10-01)
+
+The retail facts in this finding were re-derived independently, not taken from
+the implementer's tables: `cs-inspect config --file langui.dll` decoded all
+1616 localizable strings, and the display texts of the two campaign-length
+blocks were read from that report directly. Confirmed: rows 3450–3473 are the
+region-prefixed long names grouping `5/5/5/5/4` (Hawaii, Northwest, Hollywood,
+Rocky Mountains, Manhattan) which equals the directory layout's chapter sizes;
+3480–3503 are the bare short names; the declared M05 title is carried by
+exactly one row, as the tail of 3454; six declared titles sit in both forms at
+the same block offset; seven sit in neither. `ZBD/C1/M05/zrdr.zbd` is 115570
+bytes with SHA-256 `0ae0341c…f8c34fe`.
+
+Judgement accepted, with one documentation correction: confirming a title
+against the exact tail of a region-prefixed long name is a byte-for-byte
+comparison against a string the original program really carries, the join it
+feeds is the join M02-A already established and M02-A's own guard still
+refuses on a contradiction, the resulting identity stays `ClaimStatus::Inferred`,
+and the second spelling is reported rather than chosen between. The
+verbatim-wins precedence is justified by the measured agreement of the six
+both-form titles, which the acceptance suite asserts before the preference is
+relied on.
+
+Fixed in review:
+
+- `TitleConfirmation::Ambiguous`'s doc comment claimed that "one verbatim row
+  plus a long name naming the same title" is ambiguous. It is not: the
+  implementation — and `…the_verbatim_form_wins_where_both_display_forms_carry_the_title`
+  — confirm verbatim in that case. A public enum whose documentation denies
+  the behaviour it has is a real defect; the comment now matches the code.
+- `SourceContext::confirm_title`'s closing clause ("never a row that carries
+  the title in a second form as well") was ambiguous about exactly that
+  precedence. It now states the rule plainly and says plainly that the choice
+  between two forms naming different missions is a measurement the acceptance
+  stage makes, not something this function can see.
+- `crates/cs_app/tests/campaign/evidence.rs`: the rebase that brought M04-A in
+  left M02-A's doc comment attached to `RETAIL_TESTS_M05_A` and
+  `SYNTHETIC_TESTS_M02_A` with none. The M05-A constants are moved after
+  M02-A's pair and every constant carries its own comment.
+- The failure arms of `…the_title_is_confirmed_only_through_the_long_name_form`
+  asserted only that the recorded refusal contains *one of* the two refusal
+  sentences, so swapping `UNCARRIED_TITLE_REFUSAL` and `AMBIGUOUS_TITLE_REFUSAL`
+  passed. Each arm is now paired with the `TitleConfirmation` it must produce
+  and the exact refusal the record must carry. Verified by mutation: swapping
+  the two constants now fails
+  `…the_title_is_confirmed_only_through_the_long_name_form`; on the code as
+  submitted it passed.
+- "What is still unknown" claimed the seven uncarried titles differ from the
+  installation by more than an article. That is not true and it matters,
+  because the finding is the evidence the owner decision `M05-A-GUIDE-TITLES`
+  rests on. Re-measured against both blocks: M22 and M23 differ from *both* of
+  their rows by a leading article alone, and the short names of M14 and M20
+  differ by one too. The section is now a table saying so per title. No rule
+  was added to exploit it — tolerating an article is a guess about the guide's
+  spelling, and the declared titles live in the protected `missions/README.md`.

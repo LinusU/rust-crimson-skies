@@ -460,7 +460,7 @@ fn accept_m05_a_the_title_is_confirmed_only_through_the_long_name_form() {
          title is now {title:?}"
     );
     assert!(
-        !title_form(&short_name.1, &title).is_some(),
+        title_form(&short_name.1, &title).is_none(),
         "the short name would confirm the title too, so M05 is not the long-name-only case"
     );
 
@@ -498,10 +498,26 @@ fn accept_m05_a_the_title_is_confirmed_only_through_the_long_name_form() {
     // * a spelling no retail row carries, verbatim or as a long-name tail;
     // * a display text the table carries in two rows, which names no single
     //   row and therefore no single campaign position.
-    for miss in [
-        "The Union Jack's Revengee".to_owned(),
-        duplicated_display_text(context),
+    //
+    // Each arm is paired with the confirmation it must produce, so swapping
+    // the two refusals cannot pass as "the reason names its own cause".
+    for (miss, expected, refusal_text) in [
+        (
+            "The Union Jack's Revengee".to_owned(),
+            TitleConfirmation::Uncarried,
+            UNCARRIED_TITLE_REFUSAL,
+        ),
+        (
+            duplicated_display_text(context),
+            TitleConfirmation::Ambiguous,
+            AMBIGUOUS_TITLE_REFUSAL,
+        ),
     ] {
+        assert_eq!(
+            context.confirm_title(&miss),
+            expected,
+            "the confirmation for {miss:?} does not name its own cause"
+        );
         let partial = context
             .bind(MissionLabel::new(WORK_ORDER).expect("valid label"), &miss)
             .expect("a title miss is a recorded unknown, not a failure");
@@ -532,10 +548,9 @@ fn accept_m05_a_the_title_is_confirmed_only_through_the_long_name_form() {
                 DependencyState::Resolved { .. } | DependencyState::Unsupported { .. } => None,
             })
             .expect("the title is unresolved, so it carries a reason");
-        assert!(
-            refusal.contains("no localized string carries")
-                || refusal.contains("several localized strings carry"),
-            "the refusal does not name its own cause: {refusal}"
+        assert_eq!(
+            refusal, refusal_text,
+            "the record's reason is not the refusal this title must produce"
         );
         assert_eq!(partial.localized_title_id, None);
         assert_eq!(partial.catalog_id, None);

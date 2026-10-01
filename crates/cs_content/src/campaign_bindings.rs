@@ -2601,10 +2601,18 @@ impl SourceContext {
     /// title confirms it verbatim ([`TitleForm::Verbatim`]), and only when no
     /// row does is a region-prefixed long name consulted
     /// ([`TitleForm::RegionPrefixedLongName`]). A mission the guide spells
-    /// exactly therefore keeps binding to the row that carries it exactly, and
-    /// the long-name form is the fallback for the missions the guide spells
-    /// with a word the bare short name omits — never a fuzzy comparison, and
-    /// never a row that carries the title in a second form as well.
+    /// exactly therefore keeps binding to the row that carries it exactly,
+    /// even where a long name carries the same title, and the long-name form
+    /// is the fallback for the missions the guide spells with a word the
+    /// bare short name omits — never a fuzzy comparison, and never a
+    /// long-name row once any verbatim row carries the title.
+    ///
+    /// Where both forms carry the title, the choice of the verbatim row is a
+    /// *measurement-backed* preference, not an assumption: the two rows are
+    /// expected to name the same campaign position, and a disagreement about
+    /// that is not something this function can see — it only knows the rows.
+    /// A caller that binds an identity reads the position the confirmed row
+    /// yields, and the acceptance stage measures that both forms agree.
     pub fn confirm_title(&self, discovery_title: &str) -> TitleConfirmation {
         let carrying = |form: TitleForm| {
             self.strings
@@ -2830,9 +2838,10 @@ pub enum TitleConfirmation {
     },
     /// No localized row carries the title in either form.
     Uncarried,
-    /// More than one row carries it — several verbatim rows, or one verbatim
-    /// row plus a long name naming the same title — so no single row identifies
-    /// the mission.
+    /// More than one row carries it in the *same* display form — several
+    /// verbatim rows, or several long names — so no single row identifies
+    /// the mission. Carrying it once verbatim *and* once as a long name is
+    /// not this: that is the both-forms case, and it confirms verbatim.
     Ambiguous,
 }
 
