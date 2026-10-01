@@ -228,6 +228,22 @@
 //! way of an import. Its runtime counterpart is `cs_sim::weapons::ordnance`;
 //! the conversion boundary is `cs_app::ordnance`.
 
+//! [`construction`] is the F44-A construction record
+//! (`specs/F44-aircraft-construction-budgets-loadouts-and-paint-editor.md`,
+//! stage `### F44-A`): the [`construction::AircraftBlueprint`] input every
+//! construction path shares, the per-airframe
+//! [`construction::ConstructionRules`] limit profile, the
+//! [`construction::PriceBook`] of declared component masses and prices, and the
+//! **exact integer** budget arithmetic — [`construction::WeightUnits`] game
+//! weight units and [`construction::MoneyMinor`] minor currency, with no float
+//! anywhere — that returns a [`construction::BlueprintAssessment`] whose
+//! verdicts compare integers only. Non-negotiable 1's observed four gun
+//! positions and eight rocket hardpoints are per-profile `Resolved` data rather
+//! than constants, and an unmeasured price, limit or gun-position cost is a
+//! named refusal instead of a loadout that quietly fits. The validator's
+//! constraint rules, the transactional purchase/sell draft and the preview are
+//! F44-B's and F44-C's.
+//!
 //! [`airframe_roles`] is the F25-A role record
 //! (`specs/F25-hoplite-autogyro-and-exceptional-flight-configurations.md`,
 //! stage `### F25-A`): what one airframe *is* — its control-law label, its
@@ -317,6 +333,7 @@ pub mod campaign_bindings;
 pub mod capital;
 pub mod catalog;
 pub mod config;
+pub mod construction;
 pub mod coordinates;
 pub mod damage;
 pub mod environment;
