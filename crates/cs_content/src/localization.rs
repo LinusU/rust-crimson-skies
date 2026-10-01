@@ -59,8 +59,10 @@ use std::fmt;
 
 use cs_types::asset_id::SourceSpan;
 use cs_types::content::{ContentId, ContentIdError, ContentKind, Origin, Provenance};
+use cs_types::profile::{ProfileDocument, SettingApply, SettingEntry};
 
 use crate::config::StringRow;
+use crate::save::settings::{SettingRule, ValueRule};
 
 // --------------------------------------------------------------- locale ---
 
@@ -2576,6 +2578,179 @@ impl FontCatalog {
             }
         }
         report
+    }
+}
+
+// ------------------------------------------------------- locale setting ---
+
+/// The profile setting key under which the selected UI locale is persisted.
+///
+/// A **designed** engine key, not an original measurement: the original
+/// release's settings layout is F48/F52's, and nothing here claims to know it.
+/// The key is deliberately separate from every campaign, record and unlock
+/// field, because changing locale must not be able to change save ids, mission
+/// identity, numeric parsing or a protocol value (F51 non-negotiable behavior 5).
+pub const LOCALE_SETTING_KEY: &str = "ui.locale";
+
+/// Why a locale setting could not be declared, read or written.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum LocaleSettingError {
+    /// No supported locale label was declared, so no value could ever be
+    /// accepted.
+    NoLabels,
+    /// The declared supported-locale set named one label twice, so the value
+    /// space would be ambiguous.
+    DuplicateLabel {
+        /// The repeated label.
+        label: String,
+    },
+    /// A stored settings list named the locale key more than once, so the value
+    /// in force would depend on iteration order.
+    DuplicateEntry,
+    /// The stored value is not a valid [`LocaleId`] label.
+    MalformedStoredValue {
+        /// The stored value, as written.
+        value: String,
+    },
+}
+
+impl fmt::Display for LocaleSettingError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoLabels => {
+                f.write_str("a locale setting must declare at least one supported label")
+            }
+            Self::DuplicateLabel { label } => {
+                write!(f, "supported locale {label:?} is declared more than once")
+            }
+            Self::DuplicateEntry => {
+                write!(
+                    f,
+                    "the locale setting key is stored more than once in the profile"
+                )
+            }
+            Self::MalformedStoredValue { value } => {
+                write!(f, "stored locale {value:?} is not a valid locale label")
+            }
+        }
+    }
+}
+
+impl std::error::Error for LocaleSettingError {}
+
+/// The localization feature's own setting: the selected locale, persisted as one
+/// profile setting and nothing else.
+///
+/// F48-C's rule is that *the feature that owns a setting owns its rule*; this is
+/// the localization feature's. It is a thin, typed bridge over one
+/// [`SettingEntry`] so a locale choice survives a save round-trip through the
+/// ordinary settings list, and so nothing about it can reach the campaign,
+/// record or unlock fields of a [`ProfileDocument`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct LocaleSetting;
+
+impl LocaleSetting {
+    /// The [`SettingRule`] for the locale key over the caller's declared
+    /// supported labels.
+    ///
+    /// The supported-locale list is the caller's because the original locale
+    /// list is unmeasured (F51-A recorded that). The value is a
+    /// [`ValueRule::Choice`] over exactly those labels, the change is
+    /// [`SettingApply::Live`] — a locale change takes effect on the next layout,
+    /// not after a restart — and the default is the first declared label.
+    ///
+    /// # Errors
+    ///
+    /// [`LocaleSettingError::NoLabels`] for an empty declaration and
+    /// [`LocaleSettingError::DuplicateLabel`] for a repeated label.
+    pub fn rule(labels: &'static [&'static str]) -> Result<SettingRule, LocaleSettingError> {
+        let Some((default, _)) = labels.split_first() else {
+            return Err(LocaleSettingError::NoLabels);
+        };
+        let mut seen = BTreeSet::new();
+        for label in labels {
+            if !seen.insert(*label) {
+                return Err(LocaleSettingError::DuplicateLabel {
+                    label: (*label).to_owned(),
+                });
+            }
+        }
+        Ok(SettingRule {
+            key: LOCALE_SETTING_KEY,
+            apply: SettingApply::Live,
+            value: ValueRule::Choice(labels),
+            default,
+        })
+    }
+
+    /// Reads the persisted locale from a profile document's settings, if any.
+    ///
+    /// # Errors
+    ///
+    /// [`LocaleSettingError::DuplicateEntry`] when the key is stored twice, and
+    /// [`LocaleSettingError::MalformedStoredValue`] when the stored label is not
+    /// a valid [`LocaleId`].
+    pub fn read(document: &ProfileDocument) -> Result<Option<LocaleId>, LocaleSettingError> {
+        let mut found: Option<&SettingEntry> = None;
+        for entry in &document.settings {
+            if entry.key == LOCALE_SETTING_KEY {
+                if found.is_some() {
+                    return Err(LocaleSettingError::DuplicateEntry);
+                }
+                found = Some(entry);
+            }
+        }
+        match found {
+            None => Ok(None),
+            Some(entry) => LocaleId::new(&entry.value).map(Some).map_err(|_| {
+                LocaleSettingError::MalformedStoredValue {
+                    value: entry.value.clone(),
+                }
+            }),
+        }
+    }
+
+    /// Writes the locale into a profile document's settings.
+    ///
+    /// Only the locale entry is touched: the key is replaced in place when it is
+    /// present, appended when it is not, and every other field of the document —
+    /// campaign, blueprints, records, other settings and unknown fields — is left
+    /// exactly as it was. That is what makes a locale change unable to affect an
+    /// unlock or a save identity, and it is invariantly true rather than a rule a
+    /// caller has to remember.
+    ///
+    /// # Errors
+    ///
+    /// [`LocaleSettingError::DuplicateEntry`] when the key is stored twice: the
+    /// contradiction is refused rather than resolved by overwriting one copy, so
+    /// a damaged save is not silently rewritten.
+    pub fn write(
+        document: &mut ProfileDocument,
+        locale: &LocaleId,
+    ) -> Result<(), LocaleSettingError> {
+        let existing = document
+            .settings
+            .iter()
+            .filter(|entry| entry.key == LOCALE_SETTING_KEY)
+            .count();
+        match existing {
+            0 => document.settings.push(SettingEntry {
+                key: LOCALE_SETTING_KEY.to_owned(),
+                apply: SettingApply::Live,
+                value: locale.as_str().to_owned(),
+            }),
+            1 => {
+                let entry = document
+                    .settings
+                    .iter_mut()
+                    .find(|entry| entry.key == LOCALE_SETTING_KEY)
+                    .expect("exactly one locale entry was counted");
+                entry.apply = SettingApply::Live;
+                entry.value = locale.as_str().to_owned();
+            }
+            _ => return Err(LocaleSettingError::DuplicateEntry),
+        }
+        Ok(())
     }
 }
 
