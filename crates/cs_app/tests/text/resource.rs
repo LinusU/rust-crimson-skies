@@ -133,3 +133,52 @@ fn accept_f51_b_a_language_map_refuses_empty_and_duplicate_languages() {
         })
     );
 }
+
+/// A duplicated `(id, locale)` pair keeps neither copy even when one copy is
+/// undecodable: F12 counts every row that shares the pair regardless of whether
+/// its units decoded, so the undecodable copy is a contradiction too. Keeping
+/// the decodable copy would silently choose where F12 refuses to.
+#[test]
+fn accept_f51_b_a_duplicate_key_with_an_undecodable_copy_keeps_neither() {
+    let locales = language_map(&[(1033, "en-us")]);
+    let rows = [
+        resource_row(0, 1033, Some("Confirm")),
+        // The same (id, locale) again, but its units did not decode.
+        resource_row(0, 1033, None),
+        resource_row(1, 1033, Some("Target lost")),
+    ];
+    let decode = ResourceDecode::decode(
+        &rows,
+        &locales,
+        Origin::SyntheticFixture,
+        Provenance::designed(claim()),
+    );
+
+    assert_eq!(decode.rows(), 3);
+    assert_eq!(
+        decode.decoded(),
+        1,
+        "only the unrelated unique row survives"
+    );
+    assert_eq!(decode.undecodable_ids(), &[0]);
+    assert_eq!(
+        decode.duplicates(),
+        &[(0, LocaleId::new("en-us").expect("valid locale"))]
+    );
+    assert!(!decode.is_complete());
+
+    let en = LocaleId::new("en-us").expect("valid locale");
+    assert!(
+        decode
+            .catalog()
+            .get(&TextId::from_resource_id(0), &en)
+            .is_none(),
+        "the contradictory pair keeps neither copy, decodable or not"
+    );
+    assert!(
+        decode
+            .catalog()
+            .get(&TextId::from_resource_id(1), &en)
+            .is_some()
+    );
+}

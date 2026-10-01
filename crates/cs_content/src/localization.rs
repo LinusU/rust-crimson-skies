@@ -898,9 +898,13 @@ impl ResourceDecode {
         origin: Origin,
         provenance: Provenance,
     ) -> Self {
-        // Pass one: map each row to its `(id, locale)` key and count collisions
-        // so a duplicated key can be excluded as a pair rather than resolved by
-        // whichever copy was seen first.
+        // Pass one: map each declared-language row to its `(id, locale)` key and
+        // count collisions so a duplicated key can be excluded as a pair rather
+        // than resolved by whichever copy was seen first. An undecodable row
+        // still takes part in the collision count: F12 counts every row that
+        // shares an `(id, language)` regardless of whether its units decoded, so
+        // a pair where one copy is undecodable is still a contradiction, not a
+        // licence to keep the other copy.
         let mut keys: Vec<Option<(TextId, LocaleId)>> = Vec::with_capacity(rows.len());
         let mut counts: BTreeMap<(TextId, LocaleId), usize> = BTreeMap::new();
         let mut unmapped: BTreeSet<u32> = BTreeSet::new();
@@ -913,8 +917,6 @@ impl ResourceDecode {
             };
             if row.text.is_none() {
                 undecodable.insert(row.id);
-                keys.push(None);
-                continue;
             }
             let key = (TextId::from_resource_id(row.id), locale.clone());
             *counts.entry(key.clone()).or_insert(0) += 1;
@@ -926,19 +928,19 @@ impl ResourceDecode {
             .map(|(key, _)| key.clone())
             .collect();
 
-        // Pass two: keep exactly the rows with a unique key.
+        // Pass two: keep exactly the rows with a unique key and decodable units.
         let mut catalog = TextCatalog::new();
         for (row, key) in rows.iter().zip(&keys) {
             let Some(key) = key else {
                 continue;
             };
-            if duplicate_keys.contains(key) {
+            if duplicate_keys.contains(key) || row.text.is_none() {
                 continue;
             }
             let text = row
                 .text
                 .clone()
-                .expect("an undecodable row got no key and is not inserted");
+                .expect("only a row with text keeps a key into pass two");
             catalog
                 .insert(LocalizedText::new(
                     key.0.clone(),
@@ -1010,7 +1012,9 @@ impl ResourceDecode {
         &self.undecodable_ids
     }
 
-    /// The duplicate `(resource id, locale)` pairs, both copies, sorted.
+    /// The duplicated `(resource id, locale)` pairs, one entry per pair, in
+    /// ascending order. Every row that shared the pair — decodable or not — was
+    /// left out.
     #[must_use]
     pub fn duplicates(&self) -> &[(u32, LocaleId)] {
         &self.duplicates

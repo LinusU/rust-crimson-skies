@@ -92,11 +92,13 @@ the caller happens to call `parse_markup` and inspect the document itself.
 ## Test selection and sensitivity
 
 `cargo test --workspace --locked -- accept_f51_b_ --include-ignored` discovers
-and runs **7** tests, all passing:
+and runs **8** tests, all passing:
 
 - `resource::accept_f51_b_decoding_maps_declared_languages_and_reports_the_rest`
 - `resource::accept_f51_b_a_clean_decode_is_complete_and_locale_keyed`
 - `resource::accept_f51_b_a_language_map_refuses_empty_and_duplicate_languages`
+- `resource::accept_f51_b_a_duplicate_key_with_an_undecodable_copy_keeps_neither`
+  (added by review, below)
 - `screen::accept_f51_b_malformed_markup_and_absent_glyphs_are_visible_diagnostics`
   (the minimum scenario)
 - `screen::accept_f51_b_a_clean_string_has_no_diagnostics`
@@ -109,10 +111,34 @@ Sensitivity was checked by mutation and then reverting:
 | --- | --- |
 | `layout_localized_text` skips `parse_markup` (empty document) | 3 screen tests, incl. the minimum scenario |
 | `ResourceDecode::decode` keeps a duplicate `(id, locale)` pair | 1 resource test |
+| `ResourceDecode::decode` excludes an undecodable row from the collision count | 1 resource test (the review fix below) |
 
 Full local checks before handover: `cargo fmt --all -- --check`,
 `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
 and `cargo test --workspace --locked` all pass.
+
+## Review fix (reviewer `deepseek-1/deepseek-1`, same agent instance/model)
+
+**Not an independent review.** The reviewer is the same agent instance and model
+as the implementer, so this is an internal check-and-mend pass, not the fresh
+independent review the owner asks for on format/text semantics. It is recorded
+here rather than passed off as independent evidence.
+
+One defect was found by reading the decode against its own contract and F12's:
+
+- **A duplicated `(id, locale)` pair where one copy was undecodable silently kept
+  the other copy.** The struct doc and `ResourceDecode::decode` both promise that
+  a duplicate pair keeps *neither* copy, "matching F12's own refusal to choose".
+  But pass one only counted rows whose units decoded (`StringRow::text.is_some()`),
+  so `(0, en, None)` plus `(0, en, Some("Confirm"))` counted as a unique key and
+  kept the decodable row — even though `StringCatalog::resolve(0, en)` counts both
+  rows and returns `Ambiguous`. The undecodable row now still takes part in the
+  collision count; a duplicated pair drops both copies (the undecodable id is
+  also listed in `undecodable_ids`), and the pair is listed in `duplicates`. New
+  test `accept_f51_b_a_duplicate_key_with_an_undecodable_copy_keeps_neither`,
+  which fails (2 decoded rows instead of 1) when the undecodable row is excluded
+  from the count again. `ResourceDecode::duplicates`'s doc comment was reworded
+  ("one entry per pair", not "both copies").
 
 ## What remains unknown (owned by later stages, not guessed here)
 
