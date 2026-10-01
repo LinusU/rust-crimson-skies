@@ -442,6 +442,120 @@ fn accept_f48_c_a_refused_setting_value_recovers_to_the_value_in_force() {
     session.finish().expect("teardown");
 }
 
+/// A profile name a save could not hold is refused before anything is allocated:
+/// no id is issued, no slot directory is created, and the population's mark does
+/// not move.
+#[test]
+fn accept_f48_c_an_unusable_profile_name_is_refused_before_an_id_is_issued() {
+    let base = TempBase::new("name");
+    let mut session = production(&base).expect("open");
+    assert!(matches!(
+        session.create(&"x".repeat(300)),
+        Err(SessionError::Field(_))
+    ));
+    assert!(matches!(session.create(""), Err(SessionError::Field(_))));
+    assert!(
+        session.live().is_empty(),
+        "a refused name consumes no profile"
+    );
+    assert_eq!(
+        session.library().status().high_water,
+        0,
+        "and moves no high-water mark"
+    );
+    let base_directory = session.library().base();
+    assert!(
+        !base_directory.exists()
+            || fs::read_dir(base_directory)
+                .expect("the population directory")
+                .filter_map(Result::ok)
+                .all(|entry| !entry.file_name().to_string_lossy().starts_with("profile-")),
+        "no slot directory was created for a refused name"
+    );
+
+    // An acceptable name still works afterwards: the refusal left nothing behind
+    // that would block the next attempt.
+    let id = session.create("Pilot").expect("create after a refusal");
+    assert_eq!(id.get(), 1);
+    session.finish().expect("teardown");
+}
+
+/// A save written by an older or a foreign build — carrying an unusable value,
+/// a key this build does not declare, or an unknown field — still opens, and
+/// every value it could not use is recovered to the declared default and
+/// reported rather than applied.
+#[test]
+fn accept_f48_c_a_save_from_another_build_opens_with_its_unusable_values_recovered() {
+    let base = TempBase::new("foreign-save");
+    {
+        let mut session = production(&base).expect("open");
+        let id = session.create("Pilot").expect("create");
+        // A document as a different build could have left it: a device index
+        // from a wider range, a setting key this build declares no rule for, and
+        // an unknown field the save carries verbatim.
+        let mut document = session.document().expect("a document").clone();
+        document.settings = vec![
+            SettingEntry {
+                key: "sound.device".to_owned(),
+                apply: SettingApply::Live,
+                value: "7".to_owned(),
+            },
+            SettingEntry {
+                key: "video.hdr".to_owned(),
+                apply: SettingApply::Live,
+                value: "on".to_owned(),
+            },
+        ];
+        document.extra.push(cs_types::profile::ExtraField {
+            key: "future.field".to_owned(),
+            value: "kept".to_owned(),
+        });
+        document.revision = document.revision.next().expect("a successor");
+        session
+            .library_mut()
+            .save(&document)
+            .expect("write the foreign save");
+        session.finish().expect("teardown");
+        let _ = id;
+    }
+
+    let session = production(&base).expect("open");
+    let settings = session.settings().expect("settings");
+    assert_eq!(
+        settings.live_value("sound.device"),
+        Some("0"),
+        "a device index outside the declared range is recovered to the default"
+    );
+    assert_eq!(
+        settings.live_value("video.hdr"),
+        Some("on"),
+        "a key this build declares no rule for is preserved, not reinterpreted"
+    );
+    let warnings = session.warnings();
+    assert!(
+        warnings.iter().any(|line| line.contains("sound.device=7")),
+        "the recovered value is reported: {warnings:?}"
+    );
+    assert!(
+        warnings
+            .iter()
+            .any(|line| line.contains("no rule is declared for this setting")),
+        "and so is the key this build does not know: {warnings:?}"
+    );
+    // The unknown field survived the round trip untouched, which is what makes
+    // a save from a newer build safe to open.
+    assert!(
+        session
+            .document()
+            .expect("a document")
+            .extra
+            .iter()
+            .any(|field| field.key == "future.field" && field.value == "kept"),
+        "an unknown field is preserved verbatim"
+    );
+    session.finish().expect("teardown");
+}
+
 /// Campaign state belongs to the profile and is written as one whole revision
 /// with the rest of the document. An outcome id cannot be paid twice: a replay
 /// after a crash before acknowledgment is a no-op that writes nothing.

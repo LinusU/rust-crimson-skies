@@ -395,6 +395,11 @@ impl SettingsState {
                     reason: RefusalReason::UnknownKey,
                     recovery: String::new(),
                 });
+                // Preserved and reportable, never interpreted: this build
+                // has no rule to apply, so it does not decide anything, and
+                // [`SettingsState::live_value`] reports exactly what the save
+                // says rather than a value this build would have invented.
+                live.insert(entry.key.clone(), entry.value.clone());
                 continue;
             };
             let mislabeled = entry.apply != rule.apply;
@@ -419,32 +424,32 @@ impl SettingsState {
             // display change is never applied by a save that claims it needed no
             // restart.
             let acceptable = rule.value.accepts(&entry.value);
-            if acceptable && !(mislabeled && rule.apply == SettingApply::RestartRequired) {
+            let awaiting_restart = mislabeled && rule.apply == SettingApply::RestartRequired;
+            let entry_in_force = acceptable && !awaiting_restart;
+            let recovered = entries
+                .get_mut(&entry.key)
+                .expect("the entry was inserted above");
+            // The apply label the catalog declares is what gets written, so a
+            // mislabeled save is corrected on the next commit rather than
+            // perpetuating itself.
+            recovered.apply = rule.apply;
+            if entry_in_force {
                 live.insert(entry.key.clone(), entry.value.clone());
-            } else {
-                if !acceptable {
-                    refusals.push(SettingRefusal {
-                        key: entry.key.clone(),
-                        stored: entry.value.clone(),
-                        reason: value_reason(rule.value, &entry.value),
-                        recovery: rule.default.to_owned(),
-                    });
-                }
-                if !acceptable {
-                    // An unusable value is recovered to the declared default;
-                    // a usable one is left exactly as stored, so a save is never
-                    // rewritten behind the player's back.
-                    let recovered = entries
-                        .get_mut(&entry.key)
-                        .expect("the entry was inserted above");
-                    recovered.value = rule.default.to_owned();
-                }
-                live.insert(entry.key.clone(), rule.default.to_owned());
-                let recovered = entries
-                    .get_mut(&entry.key)
-                    .expect("the entry was inserted above");
-                recovered.apply = rule.apply;
+                continue;
             }
+            if !acceptable {
+                refusals.push(SettingRefusal {
+                    key: entry.key.clone(),
+                    stored: entry.value.clone(),
+                    reason: value_reason(rule.value, &entry.value),
+                    recovery: rule.default.to_owned(),
+                });
+                // An unusable value is recovered to the declared default; a
+                // usable one is left exactly as stored, so a save is never
+                // rewritten behind the player's back.
+                recovered.value = rule.default.to_owned();
+            }
+            live.insert(entry.key.clone(), rule.default.to_owned());
         }
 
         for rule in catalog.rules() {
