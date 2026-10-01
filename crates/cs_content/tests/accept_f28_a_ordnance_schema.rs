@@ -421,6 +421,97 @@ fn accept_f28_a_declared_nitro_numbers_are_each_checked() {
     );
 }
 
+/// A refusal names the field that is corrupt, so an importer can act on it
+/// without re-deriving which number the record declared badly.
+#[test]
+fn accept_f28_a_a_corrupt_declared_field_is_named_in_its_refusal() {
+    let nitro_refusal = |mutate: &dyn Fn(&mut DeclaredNitroParameters), field: &str| {
+        let parameters = match declared_synthetic_nitro().details() {
+            DeclaredOrdnanceDetails::Nitro(nitro) => (**nitro).clone(),
+            DeclaredOrdnanceDetails::Projectile(_) => panic!("the nitro fixture is a booster"),
+        }
+        .parameters;
+        let mut corrupted = parameters.clone();
+        mutate(&mut corrupted);
+        let refusal = DeclaredOrdnance::try_new(
+            weapon_id("synthetic.fixture_named_nitro"),
+            Origin::SyntheticFixture,
+            DeclaredOrdnanceFamily::NitroBooster,
+            DeclaredOrdnanceDetails::Nitro(Box::new(DeclaredNitro {
+                parameters: corrupted,
+                media: declared_synthetic_media(),
+                equipment_rules: DeclaredEquipmentRules::default(),
+            })),
+            None,
+            declared_synthetic_provenance(),
+        );
+        assert!(
+            matches!(
+                refusal,
+                Err(OrdnanceSchemaError::CorruptNitroValue { field: named, .. })
+                    if named == field
+            ),
+            "a corrupt {field} is refused by its own name: {refusal:?}"
+        );
+    };
+    nitro_refusal(
+        &|parameters| parameters.capacity_units = known(0.0),
+        "capacity_units",
+    );
+    nitro_refusal(
+        &|parameters| parameters.consumption_per_s = known(0.0),
+        "consumption_per_s",
+    );
+    nitro_refusal(
+        &|parameters| parameters.recovery_per_s = known(-1.0),
+        "recovery_per_s",
+    );
+    nitro_refusal(
+        &|parameters| parameters.extra_thrust_n = known(f64::NAN),
+        "extra_thrust_n",
+    );
+
+    // A corrupt damage amount is refused as a damage amount, naming the
+    // channel — not as a status strength, which is a different record.
+    let mut projectile = declared_projectile();
+    projectile.armor_damage = known(-1.0);
+    assert!(
+        matches!(
+            DeclaredOrdnance::try_new(
+                weapon_id("synthetic.fixture_negative_damage"),
+                Origin::SyntheticFixture,
+                DeclaredOrdnanceFamily::DirectExplosive,
+                DeclaredOrdnanceDetails::Projectile(Box::new(projectile)),
+                None,
+                declared_synthetic_provenance(),
+            ),
+            Err(OrdnanceSchemaError::NegativeDamage {
+                field: "armor_damage",
+                ..
+            })
+        ),
+        "a negative damage amount is refused as damage, by channel name"
+    );
+    let mut projectile = declared_projectile();
+    projectile.internal_damage = known(f64::NAN);
+    assert!(
+        matches!(
+            DeclaredOrdnance::try_new(
+                weapon_id("synthetic.fixture_corrupt_damage"),
+                Origin::SyntheticFixture,
+                DeclaredOrdnanceFamily::DirectExplosive,
+                DeclaredOrdnanceDetails::Projectile(Box::new(projectile)),
+                None,
+                declared_synthetic_provenance(),
+            ),
+            Err(OrdnanceSchemaError::NonFiniteDamage {
+                field: "internal_damage"
+            })
+        ),
+        "a non-finite damage amount is refused as damage, by channel name"
+    );
+}
+
 /// The nitro fixture declares no invented tradeoff, and an unresolved
 /// tradeoff is preserved rather than defaulted to "no penalty".
 #[test]

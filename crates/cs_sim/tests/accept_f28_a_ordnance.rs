@@ -23,17 +23,18 @@ use cs_sim::damage::{ActorId, DamageNodeKey, SystemKind};
 use cs_sim::time::TickRate;
 use cs_sim::weapons::ordnance::{
     ArmingRule, CompatibilityVerdict, EquipmentRules, FuseDecision, FuseInert, FuseRule,
-    FuseTrigger, GuidanceRule, GuidanceSet, GuidanceTracker, GuidanceUpdate, LostTargetBehavior,
-    LostTargetReason, NitroActivationRule, NitroError, NitroLedger, NitroParameters, NitroRefusal,
-    NitroTradeoffs, OrdnanceComponent, OrdnanceDefinitionError, OrdnanceFamily, OrdnanceId,
-    OrdnanceRegistryError, OrdnanceState, OrdnanceStatusEffect, ProximityFuse,
-    SYNTHETIC_AREA_DENIAL_KEY, SYNTHETIC_ARMING_TICKS, SYNTHETIC_DIRECT_KEY, SYNTHETIC_FLAK_KEY,
-    SYNTHETIC_FLAK_LIFETIME_TICKS, SYNTHETIC_GUIDED_KEY, SYNTHETIC_NITRO_CONSUMPTION_PER_S,
-    SYNTHETIC_NITRO_KEY, SYNTHETIC_TORPEDO_KEY, SYNTHETIC_TRIGGER_RADIUS_M, StatusEffectError,
-    StatusEffectKind, StatusEffectLedger, StatusEffectTarget, TargetObservation, TargetPath,
-    closest_approach, synthetic_aerial_torpedo, synthetic_area_denial, synthetic_area_effect,
-    synthetic_choke, synthetic_direct_explosive, synthetic_guided_rocket, synthetic_nitro,
-    synthetic_nitro_parameters, synthetic_ordnance, synthetic_proximity_flak, synthetic_registry,
+    FuseTrigger, GuidanceError, GuidanceRule, GuidanceSet, GuidanceTracker, GuidanceUpdate,
+    LostTargetBehavior, LostTargetReason, NitroActivationRule, NitroError, NitroLedger,
+    NitroParameters, NitroRefusal, NitroTradeoffs, OrdnanceComponent, OrdnanceDefinitionError,
+    OrdnanceFamily, OrdnanceId, OrdnanceRegistryError, OrdnanceState, OrdnanceStatusEffect,
+    ProximityFuse, SYNTHETIC_AREA_DENIAL_KEY, SYNTHETIC_ARMING_TICKS, SYNTHETIC_DIRECT_KEY,
+    SYNTHETIC_FLAK_KEY, SYNTHETIC_FLAK_LIFETIME_TICKS, SYNTHETIC_GUIDED_KEY,
+    SYNTHETIC_NITRO_CONSUMPTION_PER_S, SYNTHETIC_NITRO_KEY, SYNTHETIC_TORPEDO_KEY,
+    SYNTHETIC_TRIGGER_RADIUS_M, StatusEffectError, StatusEffectKind, StatusEffectLedger,
+    StatusEffectTarget, TargetObservation, TargetPath, closest_approach, synthetic_aerial_torpedo,
+    synthetic_area_denial, synthetic_area_effect, synthetic_choke, synthetic_direct_explosive,
+    synthetic_guided_rocket, synthetic_nitro, synthetic_nitro_parameters, synthetic_ordnance,
+    synthetic_proximity_flak, synthetic_registry,
 };
 use cs_sim::weapons::{InheritanceRule, MountTransform, ProjectileId, ProjectileSegment};
 use cs_types::Tick;
@@ -489,6 +490,110 @@ fn accept_f28_a_an_unguided_item_has_no_target_to_lose() {
         "an unguided item cannot detonate on a target loss"
     );
     assert_eq!(tracker.target(), None);
+}
+
+/// A targeted item launched with **no** target is a different fact from one
+/// that lost its target, and it is resolved by the rule's own declared
+/// behavior: the cause is recorded once, and never re-announced.
+#[test]
+fn accept_f28_a_a_targeted_item_launched_without_a_target_reports_one_unassigned_loss() {
+    for lost_target in LostTargetBehavior::ALL {
+        let mut tracker = GuidanceTracker::new(
+            SESSION,
+            projectile(7),
+            GuidanceRule::Targeted {
+                lost_target: *lost_target,
+            },
+            None,
+        );
+        let first = tracker.hold();
+        // `Disarm` is in the table deliberately: a defaulting implementation
+        // that reported `Coast` for an unassigned target would be caught
+        // here, because the declared behavior is the only outcome this item
+        // may have.
+        let expected_first = match lost_target {
+            LostTargetBehavior::Detonate => GuidanceUpdate::Lost {
+                reason: LostTargetReason::Unassigned,
+                behavior: LostTargetBehavior::Detonate,
+            },
+            LostTargetBehavior::Coast => GuidanceUpdate::Coast,
+            LostTargetBehavior::Disarm => GuidanceUpdate::Disarmed,
+        };
+        assert_eq!(
+            first, expected_first,
+            "{lost_target} resolves an unassigned target by its own declared behavior"
+        );
+        assert_eq!(
+            tracker.lost(),
+            Some(LostTargetReason::Unassigned),
+            "{lost_target} records the cause once, and it is not 'despawned'"
+        );
+        let second = tracker.hold();
+        assert!(
+            !matches!(second, GuidanceUpdate::Lost { .. }),
+            "{lost_target} does not re-announce the cause on a later tick: {second:?}"
+        );
+    }
+
+    // The same resolution happens through the session's own tick, so no
+    // caller has to remember to make it.
+    let mut set = GuidanceSet::new(SESSION);
+    set.insert(GuidanceTracker::new(
+        SESSION,
+        projectile(8),
+        GuidanceRule::Targeted {
+            lost_target: LostTargetBehavior::Detonate,
+        },
+        None,
+    ));
+    let updates = set.session_tick(SESSION, TargetObservation::alive(actor(11), tick(3)));
+    assert!(
+        matches!(
+            updates.get(&projectile(8)).copied(),
+            Some(GuidanceUpdate::Lost {
+                reason: LostTargetReason::Unassigned,
+                behavior: LostTargetBehavior::Detonate,
+            })
+        ),
+        "an observation does not hand an untracked item a target: {updates:?}"
+    );
+    assert_eq!(
+        set.tracker(&projectile(8)).map(GuidanceTracker::target),
+        Some(None),
+        "an unassigned item is never given a target"
+    );
+}
+
+/// A set that is asked about an item it does not hold refuses by name, the
+/// same way the ordnance registry refuses an unknown installation, so an
+/// absent tracker is never silently skipped.
+#[test]
+fn accept_f28_a_guidance_refuses_an_unregistered_item_rather_than_skipping_it() {
+    let mut set = GuidanceSet::new(SESSION);
+    assert_eq!(
+        set.require(&projectile(12)),
+        Err(GuidanceError::UnknownProjectile {
+            projectile: projectile(12)
+        }),
+        "an item that was never registered is refused by name"
+    );
+    assert!(set.is_empty());
+
+    let guided = synthetic_guided_rocket();
+    set.insert(GuidanceTracker::new(
+        SESSION,
+        projectile(13),
+        guided.guidance(),
+        Some(actor(9)),
+    ));
+    let tracker = set
+        .require(&projectile(13))
+        .expect("the item is registered");
+    assert_eq!(
+        tracker.target(),
+        Some(actor(9)),
+        "the registered item resolves"
+    );
 }
 
 /// AC03's minimum scenario: a timed engine-status effect expires on the
@@ -1084,14 +1189,18 @@ fn accept_f28_a_pressing_nitro_without_capacity_consumes_nothing() {
 
 /// A fixed-duration burn runs for its declared number of whole ticks, so the
 /// burn length is the same on every host and at every frame rate.
+///
+/// The refusal applies to *starting another* activation, never to the burn
+/// already accepted: holding the control through the burn must not stop it.
 #[test]
 fn accept_f28_a_a_fixed_nitro_burn_lasts_exactly_its_declared_ticks() {
+    let ticks = 3u64;
     let parameters = NitroParameters::try_new(
         100.0,
         1.0,
         0.0,
         100.0,
-        NitroActivationRule::FixedTicks { ticks: 3 },
+        NitroActivationRule::FixedTicks { ticks },
         NitroTradeoffs::UNMEASURED,
     )
     .expect("the parameters are valid");
@@ -1103,7 +1212,7 @@ fn accept_f28_a_a_fixed_nitro_burn_lasts_exactly_its_declared_ticks() {
     assert!(first.is_active(), "the burn starts on the accepted tick");
 
     // A second request while the burn is running is refused by name and
-    // changes nothing.
+    // changes nothing — and the accepted burn keeps running.
     let second = ledger
         .request(SESSION, tick(2), true)
         .expect("the request is in this session");
@@ -1112,13 +1221,101 @@ fn accept_f28_a_a_fixed_nitro_burn_lasts_exactly_its_declared_ticks() {
         Some(NitroRefusal::BurnAlreadyRunning { until: tick(4) }),
         "a running burn refuses a second activation by name"
     );
+    assert!(
+        second.is_active(),
+        "a refused second activation does not stop the accepted burn: {second:?}"
+    );
+    assert_eq!(
+        second.extra_thrust_n,
+        parameters.extra_thrust_n(),
+        "the running burn still reports its thrust modifier: {second:?}"
+    );
+    assert!(
+        second.consumed_units > 0.0,
+        "a running burn still consumes capacity: {second:?}"
+    );
+
+    // Releasing the control does not end a fixed burn either.
+    let third = ledger
+        .request(SESSION, tick(3), false)
+        .expect("the request is in this session");
+    assert!(
+        third.is_active(),
+        "a fixed burn runs for its declared length whatever the control does: {third:?}"
+    );
 
     // The burn is over on the tick its declared length reaches.
     assert!(ledger.burn_running());
-    let third = ledger
+    let fourth = ledger
         .request(SESSION, tick(4), false)
         .expect("the request is in this session");
-    assert!(!third.is_active(), "the burn ends on its declared tick");
+    assert!(!fourth.is_active(), "the burn ends on its declared tick");
+    assert_eq!(
+        fourth.consumed_units, 0.0,
+        "an idle tick after a fixed burn consumes nothing"
+    );
+}
+
+/// The idle-only recovery rule holds during a fixed burn: capacity is being
+/// spent for as long as the burn runs, and a refused second activation must
+/// not pay out recovery on the ticks the pilot is already paying for.
+#[test]
+fn accept_f28_a_a_running_fixed_nitro_burn_never_recovers_capacity() {
+    let recovery = 5.0;
+    let parameters = NitroParameters::try_new(
+        50.0,
+        1.0,
+        recovery,
+        100.0,
+        NitroActivationRule::FixedTicks { ticks: 3 },
+        NitroTradeoffs::UNMEASURED,
+    )
+    .expect("the parameters are valid");
+    let per_tick = parameters.consumption_per_s() * tick_seconds();
+    let recovery_per_tick = recovery * tick_seconds();
+    assert!(
+        recovery_per_tick > per_tick,
+        "a one-tick recovery outweighs a one-tick consumption, so a stray \
+         recovery would be visible in the capacity"
+    );
+
+    let mut ledger = NitroLedger::new(SESSION, tick(0), rate(), parameters);
+    ledger
+        .request(SESSION, tick(1), true)
+        .expect("the activation is accepted");
+    let mut previous = ledger.capacity_units();
+    for step in 2..=3 {
+        let update = ledger
+            .request(SESSION, tick(step), true)
+            .expect("the request is in this session");
+        assert!(
+            update.is_active(),
+            "the burn is still running on tick {step}: {update:?}"
+        );
+        assert_eq!(
+            update.consumed_units, per_tick,
+            "each running tick consumes exactly one tick of capacity: {update:?}"
+        );
+        assert!(
+            ledger.capacity_units() < previous,
+            "a running burn only ever spends capacity: {} -> {}",
+            previous,
+            ledger.capacity_units()
+        );
+        previous = ledger.capacity_units();
+    }
+
+    // Once the burn is over, the same ledger does recover while idle.
+    let idle = ledger
+        .request(SESSION, tick(4), false)
+        .expect("the request is in this session");
+    assert!(!idle.is_active());
+    assert!(
+        ledger.capacity_units() > previous,
+        "an idle tick recovers capacity again: {} -> {}",
+        previous,
+        ledger.capacity_units()
+    );
 }
 
 /// Nitro capacity is measured in whole ticks of the declared rate: the same
