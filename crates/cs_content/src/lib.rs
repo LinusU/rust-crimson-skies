@@ -451,6 +451,7 @@ pub mod replay;
 pub mod routes;
 pub mod save;
 pub mod scene;
+pub mod scrapbook;
 pub mod settings;
 pub mod stunts;
 pub mod target_rules;
