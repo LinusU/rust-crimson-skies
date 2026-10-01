@@ -511,8 +511,8 @@ fn accept_f61_a_the_policy_is_a_value_a_later_stage_can_replace() {
 /// not a gate that refused anything.
 ///
 /// Observable failure: with an overflowing sum this test fails inside the scan
-/// (a debug-build overflow panic), and a wrapping sum reports a total smaller
-/// than any of its members.
+/// (a debug-build overflow panic), and a wrapping sum reports a total no member
+/// of the candidate declares.
 #[test]
 fn accept_f61_a_an_absurd_declared_size_is_scanned_not_fatal() {
     let mut absurd = clean_candidate();
@@ -529,10 +529,6 @@ fn accept_f61_a_an_absurd_declared_size_is_scanned_not_fatal() {
         report.total_bytes,
         u64::MAX,
         "a total past u64::MAX saturates instead of wrapping or panicking"
-    );
-    assert!(
-        report.total_bytes >= report.member_count as u64,
-        "a saturated total is never smaller than the candidate it describes"
     );
 
     // And the scan keeps working on the member list around it.

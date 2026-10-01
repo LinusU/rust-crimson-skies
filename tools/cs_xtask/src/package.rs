@@ -328,9 +328,10 @@ impl MemberClass {
 ///
 /// Comparison is ASCII-case-insensitive, and a backslash is a separator, so the
 /// answer does not depend on how the archive spelled its members. Without that
-/// rule `docs\crimson-skies` would classify as the engine — a file no packing
-/// tool that used `/` could smuggle in — and `original\data\plane00.dat` would
-/// lose the original-content-root rule. `unsafe_path` already reads `\` as a
+/// rule `docs\crimson-skies` would classify as the engine while the very same
+/// path spelled `docs/crimson-skies` is refused, and
+/// `original\data\plane00.dat` would lose the original-content-root rule and
+/// fall through to `Unclassified`. `unsafe_path` already reads `\` as a
 /// separator, and the two must not disagree about what a member path is.
 #[must_use]
 pub fn classify(path: &str) -> MemberClass {
