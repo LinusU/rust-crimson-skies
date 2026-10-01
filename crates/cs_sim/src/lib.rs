@@ -130,6 +130,18 @@
 //! provenance-carrying producer record is `cs_content::routes`; F31-C wires
 //! the set into the ECS and the original routes.
 //!
+//! [`allies`] is the F33-A pilot/aircraft/faction identity contract
+//! (`specs/F33-wingmates-factions-neutral-traffic-and-pilot-identity.md`,
+//! stage `### F33-A`): the per-session [`allies::AlliesRoster`] whose
+//! [`allies::AllyRecord`] keeps [`allies::PilotId`], [`allies::FactionId`],
+//! [`allies::GeometryId`] and the damage-scoped [`damage::ActorId`] as four
+//! distinct types; the [`allies::WingmateAssignment`] store and
+//! [`allies::SurvivabilityPolicy`]; and [`allies::AlliesRoster::capture`],
+//! the ownership transaction that changes an actor's faction and returns the
+//! geometry id it did **not** change (AC01). The declared roster schema is
+//! `cs_content::pilots`; the conversion boundary and ECS binding are
+//! `cs_app::roster`; the assignment rules and mission wiring are F33-B/C.
+//!
 //! [`environment`] owns the air-relative velocity conversion and nothing else
 //! (`specs/F19-sky-atmosphere-weather-and-visibility.md`, non-negotiable
 //! behavior 2; task #434 `F19-WIND-CONVERSION-OWNER`):
@@ -219,6 +231,7 @@
 //! [`cs_script`]: cs_script
 
 pub mod ai;
+pub mod allies;
 pub mod animated_object;
 pub mod audio_events;
 pub mod campaign;
