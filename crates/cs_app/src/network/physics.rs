@@ -30,10 +30,11 @@
 //!   use, applied exactly once. A snapshot from another epoch is therefore
 //!   refused, never blended into a wrong world position (F57 AC03: "a rebase is
 //!   not a huge velocity impulse").
-//! * **Generations never mix.** A record whose generation differs from the one
-//!   the mirror holds retires the old record and starts a new one, so no field
-//!   of one generation is carried into another. That is what makes it safe for
-//!   F57-B to key its interpolation history on `(actor, generation)` (F57 AC04).
+//! * **Generations never mix.** A record naming a *newer* generation than the one
+//!   the mirror holds retires the old record and starts a new one, so no field of
+//!   one generation is carried into another; a record naming an *older* one is
+//!   refused. That is what makes it safe for F57-B to key its interpolation
+//!   history on `(actor, generation)` (F57 AC04).
 //! * **Loss is not evidence.** An actor missing from one snapshot is *not*
 //!   despawned: sequenced snapshots are droppable, so absence proves nothing.
 //!   Retirement comes from the record's own lifecycle flag or from a reliable
