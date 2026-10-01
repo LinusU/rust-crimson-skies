@@ -34,6 +34,12 @@ marker" is the `--follow` probe below.
   end and reports the rejoin, teardown and retry counts.
 - `tools/cs_inspect/src/lib.rs`, `tools/cs_inspect/src/main.rs` (wiring/doc
   only): the `--follow` mode in the command help and the module doc.
+
+> **Superseded in part by #447** (`docs/findings/2026-10-01-f447-loop-route-termination.md`):
+> `project_route` no longer refuses a `Loop` termination — it carries the declared
+> termination into the runtime graph, and `RouteProjectionError::UnsupportedTermination`
+> has been removed. `crates/cs_app/src/ai/navigation.rs::bind_route` still refuses
+> one (filed as **#457**); `bind_route` is not an F31 owner path.
 - `crates/cs_content/tests/accept_f31_c_route_resolution.rs` (new),
   `crates/cs_sim/tests/accept_f31_c_navigation_follow.rs` (new),
   `tools/cs_inspect/tests/accept_f31_c_routes_wiring.rs` (new): the
@@ -129,7 +135,13 @@ Affected content: the whole F31 navigation path. Resolving tasks: **#446**,
 3. **Loop termination is refused, not followed.** `project_route` returns
    `UnsupportedTermination { termination: "loop" }` because `RouteProgress` is a
    finite monotonic index. Whether loops exist at all in the original encoding is
-   unknown; the decision is filed as **#447**.
+   unknown; the decision is filed as **#447**. — **Resolved by #447**: the
+   runtime follower now has explicit loop semantics (a `RouteTermination` on
+   `RouteGraph`, plus `laps` and a monotonic cross-lap node count on
+   `RouteProgress`), `project_route` carries the declared termination across and
+   no longer reports an unsupported termination. Whether the *original* encoding
+   expresses a loop is still unknown and stays with F31-D. See
+   `docs/findings/2026-10-01-f447-loop-route-termination.md`.
 4. **The authored string node key is dropped at the boundary.** The runtime
    `RouteNodeId` is a `u64` equal to the authored `sequence`; the authored string
    id (`"start"`, `"arch"`, …) is not carried into the runtime graph. This is
