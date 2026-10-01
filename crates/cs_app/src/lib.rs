@@ -223,6 +223,13 @@
 //! for Back, and [`ui::front_end::FrontEnd`], which requests domain
 //! transactions and never edits campaign or profile fields itself.
 //!
+//! [`ui::hud`] is the F46-A instrument projection
+//! (`specs/F46-hud-instruments-mission-map-and-pause.md`, stage `### F46-A`):
+//! [`ui::hud::attitude`] turns an attitude quaternion into horizon and heading,
+//! and [`ui::hud::Hud`] converts an SI aircraft sample into gauge values under a
+//! `cs_content::hud::HudPolicy`, keeps the low-altitude warning, and refuses a
+//! sample of any session or aircraft it is not bound to.
+//!
 //! [`targeting`] is the F30-A targeting boundary
 //! (`specs/F30-targeting-classification-aim-assistance-and-threat-cues.md`,
 //! stage `### F30-A`): [`targeting::lower_rules`], which lowers a declared
@@ -376,6 +383,7 @@ pub mod ui {
     //! Screens and their state machines.
 
     pub mod front_end;
+    pub mod hud;
 }
 pub mod weapons;
 pub mod world;
