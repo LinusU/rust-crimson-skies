@@ -2492,6 +2492,21 @@ impl OrdnanceState {
     ///
     /// The first trigger that applies is latched, so calling this twice for
     /// one item yields one detonation.
+    ///
+    /// `impacts` is expected in the order
+    /// [`crate::weapons::guns::Ballistics::sweep`] produces — ascending time
+    /// of impact, with the actor id as the tie-breaker — so `impacts.first()`
+    /// is the earliest contact rather than whichever report a caller happened
+    /// to collect first. `paths` carries no such requirement: the nearest
+    /// in-range path is chosen here, with the same tie-breaker.
+    ///
+    /// One consequence of the order above is worth stating: a
+    /// [`FuseRule::Proximity`] item that has run out of lifetime still
+    /// detonates on a path inside its radius, and reports
+    /// [`FuseInert::OutOfRange`] rather than [`FuseInert::Expired`] when
+    /// paths are presented but none is in range. Whether an expired item
+    /// should still be able to trigger is an unmeasured original rule, so it
+    /// is left to F28-B to decide with evidence rather than chosen here.
     pub fn fuse_decision(
         &mut self,
         segment: &ProjectileSegment,
@@ -2598,6 +2613,11 @@ pub enum LostTargetReason {
     /// The target left the world — despawned, or out of the mission's
     /// actor roster for any reason.
     Despawned,
+    /// The item was launched with no target assigned, so there was never
+    /// anything to track. This is a different fact from
+    /// [`Despawned`](LostTargetReason::Despawned) and is reported as one:
+    /// an item that never had a target did not lose one.
+    Unassigned,
     /// The tracker was asked about a tick belonging to another session
     /// generation. The item cannot carry a target across a restart, so a
     /// stale id is a lost target, not a lookup that might succeed.
@@ -2616,6 +2636,7 @@ impl LostTargetReason {
         match self {
             Self::Destroyed => "destroyed".to_owned(),
             Self::Despawned => "despawned".to_owned(),
+            Self::Unassigned => "unassigned".to_owned(),
             Self::ForeignSession { expected, found } => {
                 format!("foreign_session({expected}->{found})")
             }
@@ -2807,17 +2828,20 @@ impl GuidanceTracker {
     ///
     /// A tracker that has already lost its target ignores this: the item
     /// cannot re-acquire, so a live actor arriving later is not adopted.
-    pub fn hold(&self) -> GuidanceUpdate {
+    ///
+    /// A **targeted** item that holds no target is the one case this
+    /// resolves rather than merely reports: [`new`](Self::new) documents a
+    /// `None` target as a launch that cannot be tracked at all, not one
+    /// waiting to be found, so the lack of a target is passed through
+    /// [`lose`](Self::lose) exactly once. That way the reported behavior is
+    /// the rule's own declared `lost_target` rather than a default, and the
+    /// cause is named on the tick it is discovered and never again.
+    pub fn hold(&mut self) -> GuidanceUpdate {
         match self.rule {
             GuidanceRule::Unguided => GuidanceUpdate::Unguided,
             GuidanceRule::Targeted { .. } => match (self.lost, self.target) {
                 (None, Some(target)) => GuidanceUpdate::Tracked { target },
-                (None, None) => GuidanceUpdate::Lost {
-                    reason: LostTargetReason::Despawned,
-                    behavior: GuidanceRule::Unguided
-                        .lost_target()
-                        .unwrap_or(LostTargetBehavior::Coast),
-                },
+                (None, None) => self.lose(LostTargetReason::Unassigned),
                 (Some(_), _) => match self.rule.lost_target() {
                     Some(LostTargetBehavior::Coast) => GuidanceUpdate::Coast,
                     Some(LostTargetBehavior::Disarm) => GuidanceUpdate::Disarmed,
@@ -2910,6 +2934,24 @@ impl GuidanceSet {
         self.trackers.get(projectile)
     }
 
+    /// One item's tracker, or a refusal naming the missing item.
+    ///
+    /// The counterpart of [`OrdnanceRegistry::require`]: a caller that is
+    /// about to update a guided item's target needs to know that the item is
+    /// registered, because an absent tracker read as `None` would let a
+    /// missing item be *skipped* rather than refused.
+    ///
+    /// # Errors
+    ///
+    /// [`GuidanceError::UnknownProjectile`].
+    pub fn require(&self, projectile: &ProjectileId) -> Result<&GuidanceTracker, GuidanceError> {
+        self.trackers
+            .get(projectile)
+            .ok_or(GuidanceError::UnknownProjectile {
+                projectile: *projectile,
+            })
+    }
+
     /// One item's tracker, mutably.
     pub fn tracker_mut(&mut self, projectile: &ProjectileId) -> Option<&mut GuidanceTracker> {
         self.trackers.get_mut(projectile)
@@ -2949,8 +2991,12 @@ impl GuidanceSet {
                 } else {
                     match observation.lost {
                         Some(reason) => tracker.lose(reason),
+                        // The session reports a different actor than the item
+                        // tracks: the tracked actor has left the roster. An
+                        // observation carrying *no* target is "no news", not
+                        // a vanished one, so it falls through to `hold`.
                         None => match (observation.target, tracker.target()) {
-                            (Some(target), _) if Some(target) != tracker.target() => {
+                            (Some(observed), Some(own)) if observed != own => {
                                 tracker.lose(LostTargetReason::Despawned)
                             }
                             _ => tracker.hold(),
@@ -3513,6 +3559,13 @@ impl NitroLedger {
     /// * an accepted request consumes one tick's worth of capacity and
     ///   reports the extra thrust and the authority multiplier.
     ///
+    /// A [`NitroActivationRule::FixedTicks`] burn runs for its whole
+    /// declared length whatever the control does afterwards: the
+    /// [`NitroRefusal::BurnAlreadyRunning`] refusal is about *starting* a
+    /// second activation, not about the one already accepted, so holding the
+    /// control through a burn neither shortens it nor lets the idle-only
+    /// recovery refill the tank underneath it.
+    ///
     /// Recovery is applied first when the booster is idle, so a pilot who
     /// let go of the control gets capacity back before the next request.
     ///
@@ -3568,7 +3621,12 @@ impl NitroLedger {
             });
         }
 
-        let active = (burn_running || requested) && refused.is_none();
+        // An already-running fixed burn stays active even though this tick's
+        // request is refused: the refusal is about starting *another*
+        // activation, so gating `active` on it would stop the accepted burn
+        // one tick in, and — because recovery is idle-only — would then pay
+        // out capacity on every tick of a burn the pilot is still paying for.
+        let active = burn_running || (requested && refused.is_none());
 
         // Idle recovery, for the elapsed seconds of a tick the booster was
         // not running.
