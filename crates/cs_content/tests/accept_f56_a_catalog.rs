@@ -93,6 +93,13 @@ fn fixture_rows() -> Vec<StringRow> {
     rows.push(row(other, "INSTANT ACTION"));
     rows.push(row(other + 1, "DOGFIGHT AN ACE."));
     rows.push(row(other + 2, "a different family"));
+    // The original blocks pad the unused rows of their fixed stride with empty
+    // strings (ids 16614..16619 in the installation). Padding is not an
+    // instruction and not a printed point value.
+    let first = BRIEFING_FIRST_ID;
+    for offset in 11..BRIEFING_STRIDE {
+        rows.push(row(first + offset, ""));
+    }
     rows
 }
 
@@ -322,7 +329,9 @@ fn accept_f56_a_slots_are_found_per_world_group_with_markers_and_an_unknown_mode
             ("C1B".to_owned(), 3, vec![SlotMarker::ZeppelinData]),
         ]
     );
-    assert_eq!(catalog.without_program, ["ZBD/c1b/MP4"]);
+    // A gap is spelled as the install manifest spells the directory, so it
+    // joins with `ScenarioSlot::world_group` and the manifest alike.
+    assert_eq!(catalog.without_program, ["ZBD/C1B/MP4"]);
     assert_eq!(catalog.slots[0].companions, ["ZBD/C1/MP1/mis_anim.zbd"]);
     assert_eq!(
         catalog.slots[0].id.as_str(),
@@ -427,6 +436,24 @@ fn accept_f56_a_retail_the_installation_names_exactly_four_modes_each_with_a_bri
             vec![10, 2, -2]
         ]
     );
+    // The instruction count excludes the empty rows the blocks pad their fixed
+    // stride with (ids 16614..16619, 16633..16639, 16648..16659, 16668..16679).
+    let instructions: Vec<usize> = catalog
+        .modes
+        .iter()
+        .map(|mode| mode.briefing.instructions.len())
+        .collect();
+    assert_eq!(instructions, [2, 2, 6, 6]);
+    for mode in &catalog.modes {
+        assert!(
+            mode.briefing
+                .instructions
+                .iter()
+                .all(|line| !line.text.trim().is_empty()),
+            "{}",
+            mode.name.text
+        );
+    }
     // The table ends where the Instant Action family begins: that boundary is
     // what makes "four" a measurement and not an assumption.
     assert_eq!(catalog.briefing_blocks, 4);

@@ -94,7 +94,8 @@ pub struct Briefing {
     pub title: TextRef,
     /// The one-line description under the title.
     pub tagline: TextRef,
-    /// The instruction lines, in table order.
+    /// The instruction lines, in table order. A blank row is the table's
+    /// padding to the next block, not an instruction, and is skipped.
     pub instructions: Vec<TextRef>,
     /// The printed point values, in table order.
     pub points: Vec<PointLabel>,
@@ -327,6 +328,12 @@ pub fn discover_modes(rows: &[StringRow], language: u32) -> Result<ModeCatalog, 
             let Some(row) = table.text(base + offset)? else {
                 continue;
             };
+            // The original blocks pad the unused rows of their fixed stride
+            // with empty strings (ids 16614..16619 and so on). A blank row is
+            // neither an instruction nor a printed point value.
+            if row.text.trim().is_empty() {
+                continue;
+            }
             match row.text.trim().parse::<i32>() {
                 Ok(value) => points.push(PointLabel {
                     id: row.id,
@@ -555,7 +562,8 @@ impl From<SourceSpanError> for SlotError {
 pub struct SlotCatalog {
     /// Slots with a reader archive, ordered by world group then slot.
     pub slots: Vec<ScenarioSlot>,
-    /// `MP<n>` directories that hold no reader archive: listed, not counted.
+    /// `MP<n>` directories that hold no reader archive: listed, not counted,
+    /// spelled as the install manifest spells them.
     pub without_program: Vec<String>,
 }
 
@@ -592,25 +600,31 @@ pub fn discover_slots(
     use std::collections::BTreeMap;
 
     type Key = (String, u8);
-    let mut dirs: BTreeMap<Key, (Option<&InstallFileRecord>, Vec<String>)> = BTreeMap::new();
+    // The lower-cased group is the identity key; the spelling as inventoried is
+    // kept beside it so a reported slot or gap joins with the install manifest
+    // the same way the `ZBD` directories are actually spelled.
+    let mut dirs: BTreeMap<Key, (String, Option<&InstallFileRecord>, Vec<String>)> =
+        BTreeMap::new();
     for record in files {
         let path = record.relative_spelling.as_str();
         let Some((group, slot, file)) = parse_slot_path(path) else {
             continue;
         };
-        let entry = dirs.entry((group.to_ascii_lowercase(), slot)).or_default();
+        let entry = dirs
+            .entry((group.to_ascii_lowercase(), slot))
+            .or_insert_with(|| (group.to_owned(), None, Vec::new()));
         if file.eq_ignore_ascii_case("zrdr.zbd") {
-            entry.0 = Some(record);
+            entry.1 = Some(record);
         } else {
-            entry.1.push(path.to_owned());
+            entry.2.push(path.to_owned());
         }
     }
 
     let mut slots = Vec::new();
     let mut without_program = Vec::new();
-    for ((group, slot), (program, mut companions)) in dirs {
+    for ((group, slot), (spelled, program, mut companions)) in dirs {
         let Some(record) = program else {
-            without_program.push(format!("ZBD/{group}/MP{slot}"));
+            without_program.push(format!("ZBD/{spelled}/MP{slot}"));
             continue;
         };
         let path = record.relative_spelling.as_str();
@@ -618,7 +632,6 @@ pub fn discover_slots(
             path: path.to_owned(),
             source,
         })?;
-        let world_group = path.split('/').nth(1).unwrap_or(&group).to_owned();
         let key = format!("slot.{group}.mp{slot}");
         let id = ContentId::from_source(ContentKind::MultiplayerScenario, &key)
             .map_err(|error| SlotError::Identity(error.to_string()))?;
@@ -633,7 +646,7 @@ pub fn discover_slots(
         companions.sort();
         slots.push(ScenarioSlot {
             id,
-            world_group,
+            world_group: spelled,
             slot,
             program: SourceSpan::new(
                 install_sha256,

@@ -90,6 +90,55 @@ the evidence report's artifact.
 6. **Hidden modes.** A mode with no string, or one only reachable from a
    network lobby option, would not appear. A running original session (F56-D,
    `network_real`) is what could show one.
+7. **The mode-name run is a bounded read, not a scan.** `MODE_NAME_IDS` is
+   the measured `7011..=7014`; the walk does not search for further mode
+   names. It cannot silently mis-pair, because the briefing walk *is*
+   self-terminating and any extra family block lands in
+   `briefings_without_name`, which the retail test pins through
+   `is_complete()` and `briefing_blocks`. What it cannot catch is a mode with
+   neither a briefing block nor a name row.
+8. **`MP<n>` outside `1..=9` and other `MP` spellings are not slots.**
+   `parse_slot_path` returns `None` for them, so such a directory would be
+   skipped rather than reported as a gap. The installation has only `MP1` to
+   `MP3`, so nothing is skipped here; the bound is documented on
+   `MAX_SLOT_NUMBER`.
+
+## Review corrections (bunny-alpha-2, 2026-10-02)
+
+Independent review re-read the installation through a temporary probe
+(deleted again) and confirmed the measurements above: the string table holds
+language 1033 only (1792 rows), `7010` is the `score` column heading, `7015`
+is `TCP/IP`, the four briefing blocks sit at `16600`/`16620`/`16640`/`16660`
+with `16680` (`INSTANT ACTION`) as the boundary, and no fifth multiplayer mode
+name exists anywhere in the table. Three defects were found and fixed:
+
+1. `Briefing.instructions` carried the blocks' blank padding rows (ids
+   `16614..16619`, `16633..16639`, `16648..16659`, `16668..16679`) as if they
+   were instruction lines. Blank rows are now skipped; the retail test pins
+   the real instruction counts (`2, 2, 6, 6`).
+2. `SlotCatalog.without_program` reported a lower-cased world group
+   (`ZBD/c1b/MP4`) while `ScenarioSlot::world_group` reported the directory as
+   spelled (`C1B`), so a gap did not join with a slot. Both now use the
+   inventoried spelling; the content id keeps its lower-cased key.
+3. The evidence harness's "not set" panic named a `cs_assets` path instead of
+   its own `crates/cs_content` path.
+
+Three mutations of the production code (apply only the first event of a tick;
+force `team_play` to a value; make `RuleDraft::missing` always empty) each
+fail 1 to 6 `accept_f56_a_*` tests, so the suite is sensitive. All 28 task
+tests also pass individually with `--exact --include-ignored`, as
+`docs/contracts/CLI-EVIDENCE.md` requires.
+
+### Noted for F56-B, not fixed here
+
+`cs_net::rules::RuleField` has no slot for **spawn points** or for the
+**victory/draw condition**, both of which the F56 sheet's non-negotiable 1
+names per mode. The resolver instead fixes victory to "highest score wins,
+equal top scores are a draw" as engine design. Adding a field now would mean
+inventing a vocabulary for values the installation does not state, so the gap
+is recorded here instead and F56-B must decide how a mode's victory condition
+becomes expressible and measured.
+
 
 ## Follow-ups filed
 
