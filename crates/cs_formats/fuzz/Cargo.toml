@@ -1,0 +1,187 @@
+[package]
+name = "cs_formats-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2024"
+rust-version = "1.98"
+license = "MIT"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+cs_formats = { path = ".." }
+cs_types = { path = "../../cs_types" }
+
+# The fuzz crate is deliberately not a workspace member: it is only ever
+# built by `cargo fuzz` under the nightly toolchain libFuzzer needs.
+[workspace]
+
+[[bin]]
+name = "rof_directory"
+path = "fuzz_targets/rof_directory.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rof_tree"
+path = "fuzz_targets/rof_tree.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "rof_member"
+path = "fuzz_targets/rof_member.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "zbd_dispatch"
+path = "fuzz_targets/zbd_dispatch.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "zbd_reader_archive"
+path = "fuzz_targets/zbd_reader_archive.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "zbd_sound_archive"
+path = "fuzz_targets/zbd_sound_archive.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "zbd_trailer_index"
+path = "fuzz_targets/zbd_trailer_index.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "zbd_wave_header"
+path = "fuzz_targets/zbd_wave_header.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "interp_container"
+path = "fuzz_targets/interp_container.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "interp_decode"
+path = "fuzz_targets/interp_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "bm_image"
+path = "fuzz_targets/bm_image.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "texture_bmp"
+path = "fuzz_targets/texture_bmp.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "texture_tga"
+path = "fuzz_targets/texture_tga.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "texture_zbd_package"
+path = "fuzz_targets/texture_zbd_package.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "gamez_meshes"
+path = "fuzz_targets/gamez_meshes.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "gamez_materials"
+path = "fuzz_targets/gamez_materials.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pe_layout"
+path = "fuzz_targets/pe_layout.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "pe_resources"
+path = "fuzz_targets/pe_resources.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "script_program"
+path = "fuzz_targets/script_program.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "text_lines"
+path = "fuzz_targets/text_lines.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "text_keyed_list"
+path = "fuzz_targets/text_keyed_list.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "text_resource_header"
+path = "fuzz_targets/text_resource_header.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "script_discovery"
+path = "fuzz_targets/script_discovery.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "script_inventory"
+path = "fuzz_targets/script_inventory.rs"
+test = false
+doc = false
+bench = false

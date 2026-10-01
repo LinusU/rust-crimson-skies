@@ -1,0 +1,8 @@
+# cargo-fuzz working directories. Crash seeds may contain original bytes
+# when a run touched the private corpus, so they stay local (spec F62,
+# non-negotiable #2); seeds that minimize to clean bytes land as Regression
+# corpus entries instead.
+artifacts/
+corpus/
+coverage/
+target/
