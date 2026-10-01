@@ -304,6 +304,21 @@
 //! characters a font cannot render. Its application boundary is
 //! `cs_app::text`.
 //!
+//! [`replay`] is the F59-A replay, capture and evidence schema
+//! (`specs/F59-replays-captures-probes-and-acceptance-evidence.md`, stage
+//! `### F59-A`): the [`replay::ReplayRecord`] that carries the engine, content
+//! and rules digests, the initial state, the recorded command stream, the
+//! seeds, the tick rate and the pinned authored choices; the
+//! [`replay::StateEnvelope`] of promised per-tick state hashes with the
+//! comparison AC01 asks for; the [`replay::CompatibilityVerdict`] that rejects
+//! a cross-build replay (or records it as explicitly best-effort) and refuses a
+//! replay whose content changed (AC02); the [`replay::CaptureRecord`] that
+//! pins the exact camera, tick, render configuration and build hash (AC03); and
+//! the [`replay::EvidenceBundle`] whose capability table turns a missing device
+//! into a blocked claim rather than a silent pass (AC04). It simulates,
+//! renders and opens nothing: the capture path is `cs_app::capture` (F59-B) and
+//! the commands are `cs-inspect`/`cs_xtask` (F59-C).
+//!
 //! [`ai`] is the F32-A declared combat-AI contract
 //! (`specs/F32-ai-combat-formations-aces-and-difficulty.md`, stage
 //! `### F32-A`): the declared [`ai::DeclaredCombatRole`] vocabulary, the
@@ -343,6 +358,7 @@ pub mod loading;
 pub mod localization;
 pub mod mesh;
 pub mod ordnance;
+pub mod replay;
 pub mod routes;
 pub mod save;
 pub mod scene;
