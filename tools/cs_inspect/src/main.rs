@@ -223,18 +223,22 @@ COMMANDS
         ready. Retail handling probing arrives with F26-C/D. Exits 0 when the
         report is produced, 2 on invalid input, 1 on a runtime failure.
 
-    routes [--out <file>]
+    routes [--follow] [--out <file>]
         Render the declared route-graph contract (F31-A) as a JSON report:
         the authored route id, origin, reference frame, termination, clearance
         and every node with its stable id, authored sequence, mandatory flag,
-        resolved position and resolved trigger volume, plus the declared
-        edges. The inspected record is the authored synthetic arch fixture,
-        which names its synthetic source and is never retail-ready; unknown
-        positions, trigger volumes and clearances are reported as explicit
-        unknowns, never as a silent zero. This is the content half of the
-        contract; the runtime follower is not linked into cs-inspect. Exits 0
+        resolved position, arrival radius and resolved trigger volume, plus the
+        declared edges. The inspected record is the authored synthetic arch
+        fixture, which names its synthetic source and is never retail-ready;
+        unknown positions, arrival radii, trigger volumes and clearances are
+        reported as explicit unknowns, never as a silent zero. With --follow
+        (F31-C) the record is resolved and projected into the runtime
+        cs_sim route graph and the production follower is driven end to end: a
+        displaced actor rejoins before its next mandatory marker, the roster is
+        torn down and a fresh session generation retries from scratch, while an
+        unbound moving anchor or a loop termination is refused by name. Exits 0
         when the report is produced, 2 on invalid input and 1 on a runtime
-        failure writing --out.
+        failure building the follow report or writing --out.
 
 `--help` and `--version` read no environment variable and open no
 installation.

@@ -55,7 +55,12 @@
 //! every node's stable id, authored sequence, mandatory flag, resolved
 //! position and resolved trigger volume, plus the declared edges — from the
 //! authored synthetic fixture, which names its synthetic source and is never
-//! retail-ready.
+//! retail-ready. With `--follow` (F31-C) it is the producer-to-consumer
+//! conversion boundary: the record is resolved and projected into the runtime
+//! `cs_sim::ai::navigation::RouteGraph` and the production follower is driven
+//! over it (a displaced actor rejoining before its next mandatory marker,
+//! teardown and a fresh-session retry), propagating unknown fields, an unbound
+//! moving anchor and an unsupported loop termination as named errors.
 //! [`handling`] is the F26-A `handling` command: the declared handling probe
 //! and reference-envelope schema of `cs_sim::probes` rendered as a read-only
 //! JSON report — the probe vocabulary, and the envelope's recorded input,
