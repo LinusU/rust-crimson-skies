@@ -75,6 +75,19 @@
 //! block's position matching the campaign the directory layout declares. It
 //! is recorded with [`ClaimStatus::Inferred`] provenance, never as
 //! `verified_original` (AGENTS.md rule 8).
+//!
+//! A single block of the right length is weak evidence for that join — any
+//! `campaign.len()` unrelated strings would form one. [`SourceContext`]
+//! therefore checks the join against the second structure the installation
+//! offers: the region-prefixed long mission names, whose row *grouping* must
+//! fall into the layout's per-chapter sizes ([`SourceContext::chapter_sizes`],
+//! [`SourceContext::join_agreement`]). Only the grouping is used, never the
+//! name a group carries, because nothing establishes what a region name
+//! means. An installation that offers no such block is reported
+//! [`JoinCorroboration::Unavailable`] and keeps the inference unchallenged;
+//! one whose grouping contradicts the layout is [`JoinCorroboration::Disagreed`]
+//! and yields no campaign position at all, so a binding can never read as
+//! resolved while the two structures disagree about the campaign.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -2289,10 +2302,15 @@ impl SourceContext {
             });
         }
 
-        // --- campaign position: the localized titles form one contiguous id
-        // block, and that block must be exactly as long as the campaign the
-        // directory layout declares. Anything else is not a position.
-        let position = title_row.and_then(|row| self.campaign_position(row.id));
+        // --- campaign position: the localized titles form contiguous id
+        // blocks, a block must be exactly as long as the campaign the
+        // directory layout declares, and the localized table must not
+        // contradict that layout. Anything else is not a position.
+        let refusal = self.join_refusal();
+        let position = refusal
+            .is_none()
+            .then(|| title_row.and_then(|row| self.campaign_position(row.id)))
+            .flatten();
         let entry = position.and_then(|index| self.campaign.get(index));
 
         // --- program source map: the mission's reader archive.
@@ -2385,8 +2403,13 @@ impl SourceContext {
                     ),
                     None => DependencyState::unresolved(
                         id.claim(&label)?,
-                        "the campaign position could not be resolved, so no original mission id \
-                         was located",
+                        match refusal {
+                            Some(reason) => reason,
+                            None => {
+                                "the campaign position could not be resolved, so no original \
+                                     mission id was located"
+                            }
+                        },
                     )?,
                 },
                 CriticalDependency::WorldGroupVariant => match &world_id {
@@ -2400,8 +2423,13 @@ impl SourceContext {
                     ),
                     None => DependencyState::unresolved(
                         id.claim(&label)?,
-                        "the world group could not be located because the campaign position is \
-                         unknown",
+                        match refusal {
+                            Some(reason) => reason,
+                            None => {
+                                "the world group could not be located because the campaign \
+                                     position is unknown"
+                            }
+                        },
                     )?,
                 },
                 CriticalDependency::ProgramSourceMap => match &program_source {
@@ -2415,7 +2443,13 @@ impl SourceContext {
                     ),
                     None => DependencyState::unresolved(
                         id.claim(&label)?,
-                        "the mission program archive was not located in the installation",
+                        match refusal {
+                            Some(reason) => reason,
+                            None => {
+                                "the mission program archive was not located in the \
+                                     installation"
+                            }
+                        },
                     )?,
                 },
             };
@@ -2448,32 +2482,275 @@ impl SourceContext {
         })
     }
 
-    /// The index of the contiguous localized-title block `id` sits in, when
-    /// that block is exactly as long as the declared campaign.
-    fn campaign_position(&self, id: u32) -> Option<usize> {
-        let present: BTreeSet<u32> = self
-            .strings
+    /// How many missions each chapter of the directory layout holds, in
+    /// chapter order.
+    ///
+    /// The campaign is ordered by `(chapter, mission number)`, so this is the
+    /// run-length of its chapter numbers. It is one of the two shapes the
+    /// title→campaign join is checked against: the localized table groups its
+    /// long mission names by region, and a block whose region groups fall into
+    /// these sizes describes the same campaign the layout declares.
+    pub fn chapter_sizes(&self) -> Vec<usize> {
+        let mut sizes: Vec<usize> = Vec::new();
+        let mut previous: Option<u32> = None;
+        for entry in &self.campaign {
+            if previous == Some(entry.chapter) {
+                *sizes.last_mut().expect("a counted chapter has a size") += 1;
+            } else {
+                sizes.push(1);
+            }
+            previous = Some(entry.chapter);
+        }
+        sizes
+    }
+
+    /// Every maximal run of consecutive localized rows whose length equals
+    /// the campaign the directory layout declares, ascending by first row.
+    ///
+    /// A run is measured over the rows whose display text is not empty, so a
+    /// row that decodes to nothing ends it. More than one run can be exactly
+    /// as long as the campaign — the retail installation holds both the
+    /// mission's short name and its region-prefixed long name, 24 rows each —
+    /// and every one of them is listed rather than only the first, so a
+    /// caller can see how many independent row groups the join rests on.
+    pub fn campaign_title_blocks(&self) -> Vec<TitleBlock> {
+        let present = self.present_string_ids();
+        let blocks = title_blocks(&present);
+        let campaign = self.campaign.len();
+        blocks
+            .into_iter()
+            .filter(|block| block.len() == campaign)
+            .collect()
+    }
+
+    /// The string ids whose display text is not empty.
+    fn present_string_ids(&self) -> BTreeSet<u32> {
+        self.strings
             .rows()
             .iter()
-            .filter(|row| {
+            .filter_map(|row| {
                 row.text
                     .as_deref()
                     .is_some_and(|text| !strip_font_tag(text).is_empty())
+                    .then_some(row.id)
             })
-            .map(|row| row.id)
-            .collect();
-        let mut start = id;
-        while start > 0 && present.contains(&(start - 1)) {
-            start -= 1;
+            .collect()
+    }
+
+    /// What the localized table says about the campaign order the directory
+    /// layout declares, and whether the two agree.
+    ///
+    /// The join from a work order to a retail mission directory is an
+    /// inference, and one campaign-length row run is not evidence for it: a
+    /// run of the right length would be produced by any 24 unrelated strings.
+    /// The installation offers a second structure to check it against — the
+    /// region-prefixed long names — and its *grouping* is checkable without
+    /// claiming what any region name means: a long-name block whose rows fall
+    /// into groups of the layout's per-chapter sizes describes a campaign laid
+    /// out the way this one is. When such a block disagrees, the join is not
+    /// established and no mission identity is derived from a title at all.
+    pub fn join_agreement(&self) -> JoinAgreement {
+        let layout_chapters = self.chapter_sizes();
+        let blocks = self.campaign_title_blocks();
+        let mut grouped = Vec::new();
+        for &block in &blocks {
+            if let Some(groups) = self.region_group_sizes(&block) {
+                grouped.push(GroupedTitleBlock { block, groups });
+            }
         }
-        let mut end = id;
-        while present.contains(&(end + 1)) {
-            end += 1;
+        let state = if grouped.is_empty() {
+            JoinCorroboration::Unavailable
+        } else if grouped.iter().all(|entry| entry.groups == layout_chapters) {
+            JoinCorroboration::Agreed
+        } else {
+            JoinCorroboration::Disagreed
+        };
+        JoinAgreement {
+            layout_chapters,
+            blocks,
+            grouped,
+            state,
         }
-        if usize::try_from(end - start + 1).ok()? != self.campaign.len() {
+    }
+
+    /// How many consecutive rows of `block` share a region prefix, when every
+    /// row of it carries one.
+    ///
+    /// The prefix is the part of a row's display text before its first
+    /// `" - "` separator. That separator is an observed display convention of
+    /// the long-name rows (`Hawaii - The Lost Treasure of Sir Francis
+    /// Drake`), not a documented format: only the *grouping* it produces is
+    /// used, never the name a group carries.
+    fn region_group_sizes(&self, block: &TitleBlock) -> Option<Vec<usize>> {
+        let mut groups: Vec<usize> = Vec::new();
+        let mut previous: Option<String> = None;
+        for id in block.first_id..=block.last_id() {
+            let row = self.strings.rows().iter().find(|row| row.id == id)?;
+            let display = strip_font_tag(row.text.as_deref()?);
+            let prefix = region_prefix(display)?.to_owned();
+            match &previous {
+                Some(last) if *last == prefix => *groups.last_mut()? += 1,
+                _ => groups.push(1),
+            }
+            previous = Some(prefix);
+        }
+        Some(groups)
+    }
+
+    /// Why no campaign position is derived from a title, when the localized
+    /// table contradicts the layout the join would have to follow.
+    fn join_refusal(&self) -> Option<&'static str> {
+        match self.join_agreement().state {
+            JoinCorroboration::Disagreed => Some(
+                "the localized mission-name rows group into chapter sizes the campaign directory \
+                 layout does not declare, so the campaign order they imply contradicts the layout \
+                 and no position was derived from the title",
+            ),
+            JoinCorroboration::Unavailable | JoinCorroboration::Agreed => None,
+        }
+    }
+
+    /// The index of the contiguous localized-title block `id` sits in, when
+    /// that block is exactly as long as the declared campaign and the
+    /// localized table does not contradict that layout.
+    fn campaign_position(&self, id: u32) -> Option<usize> {
+        self.join_agreement()
+            .blocks
+            .into_iter()
+            .find(|block| block.contains(id))
+            .map(|block| (id - block.first_id()) as usize)
+    }
+}
+
+/// One maximal run of consecutive localized string rows.
+///
+/// Only the boundaries are recorded: a block never holds text, so a binding
+/// can name the row group it joined through without carrying a string.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct TitleBlock {
+    first_id: u32,
+    last_id: u32,
+}
+
+impl TitleBlock {
+    /// A run spanning `first_id …= last_id`.
+    ///
+    /// [`None`] when `first_id` is after `last_id`: a run cannot end before it
+    /// starts, and a zero-length block would let a caller claim an empty row
+    /// group.
+    pub const fn new(first_id: u32, last_id: u32) -> Option<Self> {
+        if first_id > last_id {
             return None;
         }
-        Some((id - start) as usize)
+        Some(Self { first_id, last_id })
+    }
+
+    /// The first row id of the run.
+    pub const fn first_id(&self) -> u32 {
+        self.first_id
+    }
+
+    /// The last row id of the run, inclusive.
+    pub const fn last_id(&self) -> u32 {
+        self.last_id
+    }
+
+    /// How many rows the run spans.
+    pub const fn len(&self) -> usize {
+        (self.last_id - self.first_id + 1) as usize
+    }
+
+    /// Always false: a run spans at least the one row it was found at.
+    pub const fn is_empty(&self) -> bool {
+        false
+    }
+
+    /// Whether `id` is one of the run's rows.
+    pub const fn contains(&self, id: u32) -> bool {
+        self.first_id <= id && id <= self.last_id
+    }
+}
+
+impl fmt::Display for TitleBlock {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}..{}", self.first_id, self.last_id)
+    }
+}
+
+/// The maximal runs of consecutive ids in `present`, ascending by first id.
+///
+/// A gap in `present` ends a run. The function is public and takes only the
+/// ids so the rule it implements can be exercised without an installation.
+pub fn title_blocks(present: &BTreeSet<u32>) -> Vec<TitleBlock> {
+    let mut blocks = Vec::new();
+    let mut iter = present.iter().copied();
+    let Some(mut first) = iter.next() else {
+        return blocks;
+    };
+    let mut last = first;
+    for id in iter {
+        if id == last + 1 {
+            last = id;
+            continue;
+        }
+        blocks.push(TitleBlock {
+            first_id: first,
+            last_id: last,
+        });
+        first = id;
+        last = id;
+    }
+    blocks.push(TitleBlock {
+        first_id: first,
+        last_id: last,
+    });
+    blocks
+}
+
+/// One campaign-length title block that carries a region prefix on every
+/// row, with the group sizes those prefixes fall into.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct GroupedTitleBlock {
+    /// The block the grouping was read from.
+    pub block: TitleBlock,
+    /// How many consecutive rows share a region prefix, in row order.
+    pub groups: Vec<usize>,
+}
+
+/// How far the localized table corroborates the campaign order the directory
+/// layout declares.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum JoinCorroboration {
+    /// No campaign-length block carries a region prefix on every row, so this
+    /// installation offers no second structure to check the join against. The
+    /// join stays an inference and is recorded as one.
+    Unavailable,
+    /// Every campaign-length block that carries region prefixes groups its
+    /// rows exactly as the layout groups the campaign's chapters.
+    Agreed,
+    /// At least one such block groups its rows differently, so the join is not
+    /// established and no position is derived from a title.
+    Disagreed,
+}
+
+/// The localized table's account of the campaign, and the layout's.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JoinAgreement {
+    /// How many missions each chapter of the directory layout holds, in
+    /// chapter order.
+    pub layout_chapters: Vec<usize>,
+    /// Every campaign-length title block, ascending by first row.
+    pub blocks: Vec<TitleBlock>,
+    /// The campaign-length blocks whose every row carries a region prefix.
+    pub grouped: Vec<GroupedTitleBlock>,
+    /// Whether the two structures agree.
+    pub state: JoinCorroboration,
+}
+
+impl JoinAgreement {
+    /// Whether a campaign position may be derived from a title.
+    pub fn establishes(&self) -> bool {
+        self.state != JoinCorroboration::Disagreed
     }
 }
 
@@ -2499,6 +2776,21 @@ fn strip_font_tag(text: &str) -> &str {
         return text;
     };
     &text[end + 2..]
+}
+
+/// The region prefix of a region-prefixed long mission name: the part before
+/// the first `" - "` separator.
+///
+/// `Hawaii - The Lost Treasure of Sir Francis Drake` carries `Hawaii`. The
+/// separator is an observed display convention of those rows, not a
+/// documented format, so only the grouping it produces is ever used — the
+/// name itself is never bound to a chapter.
+fn region_prefix(display: &str) -> Option<&str> {
+    let (prefix, rest) = display.split_once(" - ")?;
+    if prefix.is_empty() || rest.is_empty() {
+        return None;
+    }
+    Some(prefix)
 }
 
 /// Reads one file, naming it in the error.
