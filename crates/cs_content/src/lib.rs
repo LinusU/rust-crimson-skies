@@ -288,11 +288,27 @@
 //! characters a font cannot render. Its application boundary is
 //! `cs_app::text`.
 //!
+//! [`ai`] is the F32-A declared combat-AI contract
+//! (`specs/F32-ai-combat-formations-aces-and-difficulty.md`, stage
+//! `### F32-A`): the declared [`ai::DeclaredCombatRole`] vocabulary, the
+//! [`ai::SkillKnobs`] and [`ai::PriorityPolicy`] a role runs under — every
+//! value a [`cs_types::content::Resolved`] with its own provenance, never a
+//! silent default — the *closed* [`ai::SkillKnob`] vocabulary a variant or a
+//! difficulty tier may move (deliberately no damage, health or
+//! simulation-rate knob, so an ace is a behavior variant and difficulty
+//! cannot fake itself with a faster simulation), the data-driven
+//! [`ai::DeclaredAceProfile`], the [`ai::DeclaredFormation`] with one
+//! [`ai::RecoveryPolicy`] per recovery trigger, and the
+//! [`ai::DifficultyProfile`]s. Its runtime counterpart is
+//! `cs_sim::ai::combat`; the conversion boundary is `cs_app::ai::combat`
+//! (F32-B roles and priority, F32-C aces, difficulty and formations).
+//!
 //! [`cs_types`]: cs_types
 //! [`cs_formats`]: cs_formats
 //! [`cs_assets`]: cs_assets
 
 pub mod airframe_roles;
+pub mod ai;
 pub mod animation;
 pub mod audio;
 pub mod cameras;
