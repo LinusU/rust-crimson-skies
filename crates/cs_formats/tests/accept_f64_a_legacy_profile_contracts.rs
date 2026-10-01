@@ -492,6 +492,36 @@ fn accept_f64_a_invalid_layout_declarations_are_refused_by_name() {
         no_count.validate(),
         Err(LegacyLayoutError::RecordCountNotDeclared { .. })
     ));
+
+    // One record field carries one legacy id of one class: declaring it as an id
+    // slot twice would resolve one value twice, and into two namespaces when the
+    // classes differ — a second reading of the same bytes.
+    let twice = LegacyLayout::new(
+        "synthetic.double_id_slot/v1",
+        ClaimStatus::Designed,
+        *b"CSPROF01",
+        vec![
+            LegacySlot::new("version_major", LegacySlotType::U32, LEGACY_MAGIC_BYTES),
+            LegacySlot::new("version_minor", LegacySlotType::U32, 12),
+            LegacySlot::new("record_count", LegacySlotType::U32, 16),
+        ],
+        "version_major",
+        "version_minor",
+        1,
+        "record_count",
+        vec![LegacySlot::new("airframe_id", LegacySlotType::U32, 0)],
+        vec![
+            LegacyIdSlot::new("airframe_id", LegacyIdClass::Airframe),
+            LegacyIdSlot::new("airframe_id", LegacyIdClass::Weapon),
+        ],
+        TrailingPolicy::Retain,
+    );
+    assert_eq!(
+        twice.validate(),
+        Err(LegacyLayoutError::DuplicateIdSlot {
+            field: "airframe_id".to_owned()
+        })
+    );
 }
 
 /// A text slot that is not valid UTF-8 is refused rather than lossily

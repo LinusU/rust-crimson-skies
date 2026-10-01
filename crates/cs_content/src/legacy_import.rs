@@ -517,6 +517,21 @@ pub enum UnresolvedReason {
     /// This is what keeps an empty legacy profile from being reported as a
     /// successful import (spec F64 non-negotiable 5).
     NoRecords,
+    /// Not one record resolved a content identity, so the plan carries nothing.
+    ///
+    /// The plan's whole payload is the identities its records resolved; a
+    /// document that resolves none of them is a **blank profile**, whatever its
+    /// record count says. Reporting that as a full import would be exactly the
+    /// "silent reset to a blank profile called imported" non-negotiable 5
+    /// forbids, so it is named here instead. In practice this is a measurement
+    /// error — a layout that declares no id slot for a class whose records are
+    /// made of content identities, or a document whose every id slot failed to
+    /// resolve while nothing raised a row for it — which is why it is a named
+    /// refusal rather than a silently empty success.
+    NoResolvableIdentity {
+        /// How many records the document declared.
+        records: u32,
+    },
     /// Bytes follow the record table that the layout declares no field for.
     ///
     /// The measurement did not account for them. They are reported, never
@@ -548,6 +563,7 @@ impl UnresolvedReason {
             Self::TargetNotInCatalog { .. } => "target_not_in_catalog",
             Self::TargetNotReady { .. } => "target_not_ready",
             Self::NoRecords => "no_records",
+            Self::NoResolvableIdentity { .. } => "no_resolvable_identity",
             Self::UndeclaredTrailingBytes { .. } => "undeclared_trailing_bytes",
             Self::UnsupportedVersion { .. } => "unsupported_version",
         }
@@ -585,6 +601,11 @@ impl fmt::Display for UnresolvedReason {
                 write!(f, "mapped identity {id} is not ready ({reasons})")
             }
             Self::NoRecords => write!(f, "the document declares no records"),
+            Self::NoResolvableIdentity { records } => write!(
+                f,
+                "no record of the {records} declared resolved a content identity, so \
+                 the import would carry a blank profile"
+            ),
             Self::UndeclaredTrailingBytes { bytes } => {
                 write!(f, "{bytes} bytes follow the record table undeclared")
             }
@@ -1060,7 +1081,21 @@ pub fn plan_import(request: &ImportRequest<'_>) -> Result<ImportPlan, ImportRefu
         });
     }
 
-    let class_outcome = if unresolved.is_empty() {
+    // A plan whose every record resolved zero identities carries nothing, which
+    // is a blank profile however many records the document declared. Reporting
+    // that as `Full` is the "silent reset to a blank profile called imported"
+    // non-negotiable 5 forbids, so it is named instead. This needs the identity
+    // count rather than the resolved-record count: a layout that declares no id
+    // slot resolves every record "successfully" with no identity at all.
+    let carried: usize = records.iter().map(|record| record.resolved_ids.len()).sum();
+    let declared_records = u32::try_from(document.records().len()).unwrap_or(u32::MAX);
+    let class_outcome = if unresolved.is_empty() && carried == 0 {
+        ImportClass::Unsupported {
+            reason: UnresolvedReason::NoResolvableIdentity {
+                records: declared_records,
+            },
+        }
+    } else if unresolved.is_empty() {
         ImportClass::Full
     } else if resolved.is_empty() {
         ImportClass::Unsupported {

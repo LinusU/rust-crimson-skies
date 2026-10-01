@@ -233,6 +233,16 @@ pub enum LegacyLayoutError {
         /// The declared field name.
         field: String,
     },
+    /// One record field is declared as an id slot twice.
+    ///
+    /// A field carries one legacy id of one class. Declaring the same field as
+    /// an id slot twice would resolve one value twice, and into two namespaces
+    /// when the classes differ — a second reading of the same bytes, which is
+    /// exactly what a measured id table must not do.
+    DuplicateIdSlot {
+        /// The record field declared as an id slot twice.
+        field: String,
+    },
     /// Two slots of the same header or record share a name.
     DuplicateField {
         /// The repeated field name.
@@ -277,6 +287,9 @@ impl fmt::Display for LegacyLayoutError {
             }
             Self::IdSlotNotDeclared { field } => {
                 write!(f, "id slot {field:?} names no declared record field")
+            }
+            Self::DuplicateIdSlot { field } => {
+                write!(f, "record field {field:?} is declared as an id slot twice")
             }
             Self::DuplicateField { field } => write!(f, "field {field:?} is declared twice"),
             Self::SlotExtentOverflow { field } => {
@@ -478,6 +491,20 @@ impl LegacyLayout {
         for id_ref in &self.id_refs {
             if !self.record.iter().any(|slot| slot.name() == id_ref.field()) {
                 return Err(LegacyLayoutError::IdSlotNotDeclared {
+                    field: id_ref.field().to_owned(),
+                });
+            }
+        }
+        // One record field carries one legacy id of one class. Two id slots on
+        // the same field would resolve that one value twice, and into two
+        // namespaces when the classes differ, which is a second reading of the
+        // same bytes rather than a measurement.
+        for (index, id_ref) in self.id_refs.iter().enumerate() {
+            if self.id_refs[..index]
+                .iter()
+                .any(|earlier| earlier.field() == id_ref.field())
+            {
+                return Err(LegacyLayoutError::DuplicateIdSlot {
                     field: id_ref.field().to_owned(),
                 });
             }
@@ -969,8 +996,8 @@ pub fn read_legacy_profile(
                 header_bytes,
                 field.to_owned(),
                 LegacyProfileErrorKind::UnsupportedVersion,
-                format!("version major {}", layout.supported_version_major()),
-                format!("version major {raw}, which does not fit 32 bits"),
+                format!("{} as 32 bits", field),
+                format!("{field} {raw}, which does not fit 32 bits"),
             )
         })
     };

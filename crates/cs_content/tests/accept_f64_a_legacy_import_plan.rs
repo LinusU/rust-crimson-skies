@@ -32,8 +32,8 @@ use cs_content::legacy_import::{
 };
 use cs_formats::legacy_profile::{
     ArtifactProposal, ArtifactProposalError, LEGACY_MAGIC_BYTES, LegacyArtifactClass,
-    LegacyIdClass, LegacyIdSlot, LegacyLimits, LegacyProfileErrorKind, LegacySlot, LegacySlotType,
-    MAX_LEGACY_SOURCE_BYTES, TrailingPolicy, synthetic_layout,
+    LegacyIdClass, LegacyIdSlot, LegacyLayout, LegacyLimits, LegacyProfileErrorKind, LegacySlot,
+    LegacySlotType, MAX_LEGACY_SOURCE_BYTES, TrailingPolicy, synthetic_layout,
 };
 use cs_types::content::{
     CatalogElement, ConsumerKind, ContentId, ContentKind, Dependency, DependencyKind,
@@ -828,6 +828,78 @@ fn accept_f64_a_not_ready_target_is_unresolved_with_the_element_reason() {
         "nothing resolved, so the plan is unsupported with the element's reason"
     );
     assert!(!plan.report().class().is_complete());
+}
+
+/// A document whose records resolve **no** identity is not a full import: the
+/// plan carries nothing, so calling it `Full` would present a blank profile as a
+/// successfully imported one (spec F64 non-negotiable 5). A layout that declares
+/// no id slot makes every record resolve "successfully" with nothing to carry,
+/// which is exactly the case this names.
+#[test]
+fn accept_f64_a_document_resolving_no_identity_is_never_reported_as_a_full_import() {
+    // The same document, but read through a layout that declares its record's
+    // fields and no id slot at all, so no record can resolve an identity.
+    let layout = LegacyLayout::new(
+        "synthetic.no_id_slots/v1",
+        ClaimStatus::Designed,
+        *b"CSPROF01",
+        vec![
+            LegacySlot::new("version_major", LegacySlotType::U32, LEGACY_MAGIC_BYTES),
+            LegacySlot::new("version_minor", LegacySlotType::U32, 12),
+            LegacySlot::new("record_count", LegacySlotType::U32, 16),
+            // The same header the fixture builder writes, so the record table
+            // starts where the builder put it.
+            LegacySlot::new("label", LegacySlotType::Text { len: 8 }, 20),
+        ],
+        "version_major",
+        "version_minor",
+        1,
+        "record_count",
+        vec![
+            LegacySlot::new("airframe_id", LegacySlotType::U32, 0),
+            LegacySlot::new("weapon_id", LegacySlotType::U32, 4),
+            LegacySlot::new("name", LegacySlotType::Text { len: 8 }, 8),
+        ],
+        vec![],
+        TrailingPolicy::Retain,
+    );
+    let bytes = document(&[(7, 1, "phoenix"), (7, 2, "phoenix")], &[]);
+    let source = proposal(&bytes).expect("the fixture source is within the cap");
+    let ids = id_map();
+    let catalog = catalog();
+    let target = target();
+
+    let plan = plan_import(&request(&bytes, &source, &layout, &ids, &catalog, &target))
+        .expect("a readable document still plans");
+    assert_eq!(
+        *plan.report().class(),
+        ImportClass::Unsupported {
+            reason: UnresolvedReason::NoResolvableIdentity { records: 2 }
+        },
+        "a document that carries no identity must not be reported as a full import"
+    );
+    assert!(!plan.report().class().is_complete());
+    assert_eq!(
+        plan.report().records().len(),
+        2,
+        "the records are still listed, each carrying no identity at all"
+    );
+    assert!(
+        plan.report()
+            .records()
+            .iter()
+            .all(|record| record.resolved_ids.is_empty()),
+        "which is why the class must not be a full import"
+    );
+
+    // The same document through the id-declaring layout still imports, so the
+    // refusal above is about the missing identity and not about the document.
+    let declared = synthetic_layout();
+    let full = plan_import(&request(
+        &bytes, &source, &declared, &ids, &catalog, &target,
+    ))
+    .expect("the id-declaring layout resolves the same document");
+    assert_eq!(*full.report().class(), ImportClass::Full);
 }
 
 /// A document with no records is refused outright: an empty legacy profile is

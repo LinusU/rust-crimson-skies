@@ -44,10 +44,10 @@ names, widths and version were chosen to exercise the reader.
   `cs_assets::install::sha256`, so it asserts through the real hashing path
   instead of a copy of it). No logic in either `lib.rs`; no `Cargo.lock` change.
 - `crates/cs_formats/tests/accept_f64_a_legacy_profile_contracts.rs` (new): 13
-  `accept_f64_a_*` tests (1 added in review).
-- `crates/cs_content/tests/accept_f64_a_legacy_import_plan.rs` (new): 12
+  `accept_f64_a_*` tests (1 added in review, 1 extended).
+- `crates/cs_content/tests/accept_f64_a_legacy_import_plan.rs` (new): 13
   `accept_f64_a_*` tests, including the AC01 filesystem scenario (3 added in
-  review; see "Review findings" below).
+  review, 1 added in the second review pass; see "Review findings" below).
 - This file.
 
 **One observable failure:** a reader that trusts the document's own record
@@ -89,9 +89,12 @@ fail; that was verified by mutating each check in turn.
   every declared id slot resolved and it has no undeclared bytes; anything else
   becomes a named `UnresolvedRow`. `ImportClass` is `Full`, `Partial` (with its
   resolved indices and its unresolved rows) or `Unsupported` (with its first
-  reason). A document with zero records is refused outright as
-  `not_importable { no_records }`, so an empty legacy profile can never be
-  reported as a successful import.
+  reason). Two ways a document could be reported as an import that carries
+  nothing are refused by name instead: zero records is
+  `not_importable { no_records }`, and zero **carried identities** is
+  `Unsupported { NoResolvableIdentity { records } }` — the classification
+  counts what the plan holds, not how many records were visited, so a layout
+  that declares no id slot cannot turn a blank profile into a full import.
 - **Ids resolve through identities.** `LegacyIdMap` is keyed by
   `(LegacyIdClass, raw)` and holds a `ContentId`; `resolve` looks that identity
   up in the `Catalog` and requires it to be **ready**. There is no index
@@ -165,6 +168,52 @@ Each of these was applied, observed to fail the named tests, and reverted:
 | clamp an out-of-range legacy id back into range with `unwrap_or(u32::MAX)` | `accept_f64_a_legacy_id_wider_than_the_id_space_is_unresolved_not_clamped` |
 | drop the document-level undeclared-trailing-bytes row | `accept_f64_a_undeclared_trailing_bytes_stay_unresolved_instead_of_a_full_import` |
 | drop the declared-digest verification in `plan_import` | `accept_f64_a_same_length_source_with_a_changed_digest_is_refused` |
+| drop the carried-identity check in `plan_import` | `accept_f64_a_document_resolving_no_identity_is_never_reported_as_a_full_import` |
+| drop the duplicate-id-slot check in `LegacyLayout::validate` | `accept_f64_a_invalid_layout_declarations_are_refused_by_name` |
+
+## Second review pass (bunny-alpha-2, same agent instance, after the lander hit a rebase conflict)
+
+The first approval could not land: the lander's automatic rebase onto a newer
+main conflicted. This pass rebased by hand (one real conflict, in
+`crates/cs_content/src/lib.rs`, where main had added the F53-A `mods`
+module-doc paragraph in the same place this branch added the F64-A one; both
+were kept) and then reviewed the rebased branch again. The context was **not**
+fresh — it carries this agent's own implementation reasoning — so this is a
+defect-hunting pass, not independent review. See the handover note.
+
+Two further defects were found and fixed, both with a regression test observed
+to fail when the fix is reverted.
+
+5. **A document resolving no identity at all was reported as a full import.**
+   `ImportClass::Full` was decided by the *record* bookkeeping alone: a layout
+   that declares its record fields but **no id slot** makes every record resolve
+   "successfully" with an empty `resolved_ids`, so `unresolved` stayed empty and
+   the plan reported `Full` — a full import of a profile carrying nothing. That
+   is precisely the "silent reset to a blank profile called imported" that
+   non-negotiable 5 forbids, reached by the path the module believed it had
+   closed when it refused a zero-record document. Now the outcome counts the
+   identities the plan actually **carries**, not the records that were visited:
+   zero carried identities is a named `UnresolvedReason::NoResolvableIdentity`,
+   reported as `Unsupported`. The regression test reads the same two-record
+   document through an id-slot-less layout and through `synthetic_layout()`,
+   asserting `Unsupported { NoResolvableIdentity { records: 2 } }` for the first
+   and `Full` for the second, so the assertion is about the missing identity and
+   not about the document.
+
+6. **One record field could be declared as an id slot of two classes.**
+   `LegacyLayout::validate` checked that every id slot names a declared record
+   field, but not that each field was claimed only once. A layout declaring
+   `airframe_id` as both `LegacyIdClass::Airframe` and `LegacyIdClass::Weapon`
+   validated cleanly, and the planner then resolved that one stored value twice —
+   into two different namespaces — so a single number was read as two different
+   pieces of content. That is the same class of silent misreading as the clamp
+   fixed in defect 2, arrived at through the declaration instead of through the
+   value. Now refused as `LegacyLayoutError::DuplicateIdSlot { field }`. The
+   regression test declares the duplicate and asserts the named refusal.
+
+One diagnostic was corrected: the out-of-width version refusal named "version
+major {raw}" for **both** the major and the minor field, so a wide *minor* field
+reported the wrong field in its message. It now names the field it refused.
 
 ## Review findings (bunny-alpha-2, reviewing its own implementation)
 
