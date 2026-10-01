@@ -21,6 +21,11 @@
 //! * [`authority`] — the `UI-NETWORK` ownership table as executable data.
 //! * [`bounds`] — every packet size/count cap in one auditable place.
 //! * [`fixture`] — the minimal synthetic session fixture for tests.
+//! * [`snapshot`] — the F57-A payload schema [`message::SnapshotFrame`] carries:
+//!   the quantized actor record, every declared quantization scale and error
+//!   budget ([`snapshot::SNAPSHOT_BUDGET`]), the shared origin epoch, and the
+//!   codec both [`snapshot::Snapshot::encode`] and
+//!   [`snapshot::Snapshot::decode`] run.
 //!
 //! Wire identity ([`cs_types::net::SessionId`], [`cs_types::net::PeerId`],
 //! [`cs_types::net::ActorId`], [`cs_types::net::EventId`]) lives in
@@ -28,12 +33,13 @@
 //! actors without depending on this crate.
 //!
 //! Not here yet: the pinned transport and its codec (F54-B), connection and
-//! lifecycle wiring (F54-C), lobby state (`lobby.rs`, F55-A), the snapshot
-//! payload schema (`snapshot.rs`, F57-A) and session threat/reconnect rules
-//! (F58-A).
+//! lifecycle wiring (F54-C), lobby state (`lobby.rs`, F55-A) and session
+//! threat/reconnect rules (`lobby.rs`, F58-A). The F57-B interpolation buffer
+//! and bounded local prediction consume [`snapshot`] rather than extending it.
 
 pub mod authority;
 pub mod bounds;
 pub mod compat;
 pub mod fixture;
 pub mod message;
+pub mod snapshot;
