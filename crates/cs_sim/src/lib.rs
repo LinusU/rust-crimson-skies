@@ -193,6 +193,7 @@
 pub mod ai;
 pub mod animated_object;
 pub mod audio_events;
+pub mod campaign;
 pub mod capital;
 pub mod collision;
 pub mod control;
