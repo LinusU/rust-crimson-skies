@@ -13,23 +13,40 @@
 //! land with the F13+ tasks and consume these clocks instead of inventing
 //! their own timers.
 //!
-//! [`mission`] is the F37-A mission session
-//! (`specs/F37-mission-ir-and-deterministic-runtime-core.md`): it launches only
-//! a validated `cs_script::ir::MissionProgram` and drives the tick-ordered
-//! objective state; host effects are F37-C.
+//! [`environment`] owns the air-relative velocity conversion and nothing else
+//! (`specs/F19-sky-atmosphere-weather-and-visibility.md`, non-negotiable
+//! behavior 2; task #434 `F19-WIND-CONVERSION-OWNER`):
+//! [`environment::air_relative_velocity_m_s`] is the single implementation of
+//! the `FLIGHT-PHYSICS` convention `v_air = v_world - wind_world`, and the
+//! flight models, `cs_app::environment::air` and every future weapon consumer
+//! call it. It sits here because the code that *applies* a wind is below the
+//! crate that first needed it, and `cs_app -> cs_sim` is one-way: F19-B could
+//! not reach its own conversion from here. No wind record, no still-air default
+//! and no wind profile live in this module — reading the authoritative field
+//! out of a `cs_content` environment state stays in `cs_app`, because
+//! `cs_content` is not a dependency this crate may take.
 //!
-//! [`net_state`] is the F57-A authoritative network state
-//! (`specs/F57-networked-aircraft-prediction-interpolation-and-projectiles.md`,
-//! stage `### F57-A`): the per-session [`net_state::NetStateLedger`] that owns
-//! every actor's authoritative [`net_state::NetActorState`], allocates the
-//! nonzero [`net_state::ActorGeneration`] each actor's identity is checked
-//! against, records a destruction exactly once per generation however many times
-//! it is reported, and advances only the client input acknowledgment. Nothing
-//! client-authored can move an actor, spend a round or boost capacity, or end a
-//! record, which is what keeps a client's prediction from becoming authority
-//! (contract `docs/contracts/UI-NETWORK.md`). The wire schema and its declared
-//! quantization budgets are `cs_net::snapshot`; the receiver boundary is
-//! `cs_app::network::physics`.
+//! [`visibility`] is the environment's time domain
+//! (`specs/F19-sky-atmosphere-weather-and-visibility.md`, stage `### F19-A`):
+//! [`visibility::ENVIRONMENT_TIME_DOMAIN`] puts authored weather changes on
+//! authoritative-gameplay time, [`visibility::environment_clock_policy`]
+//! states that pause freezes them and that no local authority may inject
+//! ticks, and [`visibility::VisibilityTimeline`] installs an event's state
+//! only on the whole tick the clock committed — the record it runs is
+//! `cs_content::environment::EnvironmentTimeline`, wired in
+//! `cs_app::environment`. No value here is derived from screen fog, and no
+//! default is invented for a state the caller passes in.
+//!
+//! [`animated_object`] is the F20-A animation runtime
+//! (`specs/F20-object-animation-and-authored-destruction-states.md`, stage
+//! `### F20-A`): the tick-indexed channel records (transform, visibility,
+//! material, attachment), the gameplay/presentation event markers with their
+//! once-per-activation dedup, the [`animated_object::AnimatedObject`]
+//! fixed-tick evaluator whose per-node state keeps mesh and collider on the
+//! same evaluated pose, and the minimal synthetic door/propeller fixtures.
+//! The declared, provenance-carrying clip form is `cs_content::animation`;
+//! the conversion boundary and presentation interpolation are
+//! `cs_app::animation` (F20-B wires real tracks, F20-C stateful props).
 //!
 //! [`control`] is the F22-A/F22-B command schema's simulation consumer
 //! (`specs/F22-input-bindings-devices-and-control-ownership.md`): the
@@ -42,16 +59,6 @@
 //! rate. The device adapters and calibration are `cs_app::input::devices`;
 //! focus, replay and full ownership wiring are F22-C.
 //!
-//! [`audio_events`] is the F41-A audio runtime
-//! (`specs/F41-audio-music-radio-dialogue-and-spatial-mixing.md`, stage
-//! `### F41-A`): the audio-scoped [`audio_events::AudioEventId`] event identity,
-//! the bounded [`audio_events::AudioRouter`] whose per-`(session, producer)`
-//! sequence ledger accepts a one-shot exactly once and suppresses a replay, and
-//! the loop-emitter registry that stops on despawn, swap, declared pause policy
-//! or device loss. The provenance-carrying producer record is
-//! `cs_content::audio`; the conversion boundary is `cs_app::audio` (F41-B
-//! implements decoding, spatial emitters and the real mixer).
-//!
 //! [`collision`] is the F23-A collision vocabulary
 //! (`specs/F23-avian-integration-collision-and-fixed-step-authority.md`,
 //! stage `### F23-A`): the six declared [`collision::CollisionLayer`]s, the
@@ -59,29 +66,6 @@
 //! [`collision::classify_contact`], which makes a sensor overlap distinct from
 //! a solid contact in code. It creates no Avian body; the schedule adapter is
 //! `cs_app::physics` (F23-B/C create and drive the actual bodies).
-//!
-//! [`damage`] is the F29-A damage contract
-//! (`specs/F29-damage-zones-armor-destruction-and-bailout.md`, stage
-//! `### F29-A`): the per-actor [`damage::DamageGraph`] of armor zones,
-//! internal structure, engines and weapon mounts, the immutable
-//! [`damage::HitEvent`] input and ordered [`damage::DamageEvent`] output
-//! vocabulary, the five distinct [`damage::LifecycleKind`]s, and the
-//! per-session [`damage::DamageResolver`] whose declared hit ordering and
-//! per-actor declared attribution award a single kill per destruction.
-//! The declared, provenance-carrying schema is `cs_content::damage`; the
-//! lowering boundary and ECS bindings are `cs_app::damage`; armor-driven
-//! disablement is F29-B and visual/scoring wiring is F29-C.
-//!
-//! [`animated_object`] is the F20-A animation runtime
-//! (`specs/F20-object-animation-and-authored-destruction-states.md`, stage
-//! `### F20-A`): the tick-indexed channel records (transform, visibility,
-//! material, attachment), the gameplay/presentation event markers with their
-//! once-per-activation dedup, the [`animated_object::AnimatedObject`]
-//! fixed-tick evaluator whose per-node state keeps mesh and collider on the
-//! same evaluated pose, and the minimal synthetic door/propeller fixtures.
-//! The declared, provenance-carrying clip form is `cs_content::animation`;
-//! the conversion boundary and presentation interpolation are
-//! `cs_app::animation` (F20-B wires real tracks, F20-C stateful props).
 //!
 //! [`flight`] is the F24-A fixed-wing contract and equations
 //! (`specs/F24-fixed-wing-flight-engine-stall-and-arcade-assists.md`, stage
@@ -104,6 +88,33 @@
 //! original-fidelity claim. The headless probes that produce a real candidate
 //! are F26-B; the roster-wide audit and deviation report is `probes::audit` (F26-C).
 //!
+//! [`weapons`] is the F27-A weapon contract
+//! (`specs/F27-guns-ammunition-hardpoints-and-ballistic-hits.md`, stage
+//! `### F27-A`): the [`weapons::GunDefinition`] whose mount is the same
+//! [`damage::DamageNodeKey`] the F29 damage graph disables, the
+//! [`weapons::WeaponState`] of selected [`weapons::GunBank`], per-mount
+//! cooldown in ticks, rounds and disabled mounts, the
+//! [`weapons::FireIntent`] → [`weapons::FireResolution`] pair that the
+//! per-session [`weapons::FireResolver`] resolves exactly once, and the
+//! [`weapons::Ballistics`] swept-segment query with relative motion,
+//! earliest-time-of-impact ordering and a once-per-projectile ledger.
+//! The declared, provenance-carrying schema is `cs_content::weapons`; the
+//! lowering boundary is `cs_app::weapons`; the cadence loop and the mount
+//! transforms from the live hierarchy are F27-B, and the damage, effect,
+//! audio and bank-selection wiring is F27-C.
+//!
+//! [`damage`] is the F29-A damage contract
+//! (`specs/F29-damage-zones-armor-destruction-and-bailout.md`, stage
+//! `### F29-A`): the per-actor [`damage::DamageGraph`] of armor zones,
+//! internal structure, engines and weapon mounts, the immutable
+//! [`damage::HitEvent`] input and ordered [`damage::DamageEvent`] output
+//! vocabulary, the five distinct [`damage::LifecycleKind`]s, and the
+//! per-session [`damage::DamageResolver`] whose declared hit ordering and
+//! per-actor declared attribution award a single kill per destruction.
+//! The declared, provenance-carrying schema is `cs_content::damage`; the
+//! lowering boundary and ECS bindings are `cs_app::damage`; armor-driven
+//! disablement is F29-B and visual/scoring wiring is F29-C.
+//!
 //! [`targeting`] is the F30-A targeting contract
 //! (`specs/F30-targeting-classification-aim-assistance-and-threat-cues.md`,
 //! stage `### F30-A`): the per-session [`targeting::TargetStore`] owning
@@ -115,17 +126,6 @@
 //! deterministic. The declared schema is `cs_content::target_rules`; the
 //! conversion boundary and ECS bindings are `cs_app::targeting`; original
 //! selection actions are F30-B and verification is F30-D.
-//!
-//! [`visibility`] is the environment's time domain
-//! (`specs/F19-sky-atmosphere-weather-and-visibility.md`, stage `### F19-A`):
-//! [`visibility::ENVIRONMENT_TIME_DOMAIN`] puts authored weather changes on
-//! authoritative-gameplay time, [`visibility::environment_clock_policy`]
-//! states that pause freezes them and that no local authority may inject
-//! ticks, and [`visibility::VisibilityTimeline`] installs an event's state
-//! only on the whole tick the clock committed — the record it runs is
-//! `cs_content::environment::EnvironmentTimeline`, wired in
-//! `cs_app::environment`. No value here is derived from screen fog, and no
-//! default is invented for a state the caller passes in.
 //!
 //! [`ai`] is the F31-A/F31-B navigation contract
 //! (`specs/F31-ai-navigation-routes-and-obstacle-avoidance.md`, stages
@@ -155,47 +155,6 @@
 //! `cs_content::pilots`; the conversion boundary and ECS binding are
 //! `cs_app::roster`; the assignment rules and mission wiring are F33-B/C.
 //!
-//! [`interaction`] is the F36-A docking/pickup/boarding/plane-swap contract
-//! (`specs/F36-docking-passenger-pickups-boarding-and-plane-swaps.md`, stage
-//! `### F36-A`): the four [`interaction::InteractionKind`]s that share
-//! infrastructure but keep distinct effects, the explicit
-//! [`interaction::InteractionState`] chain, the stable
-//! [`interaction::InteractionId`] binding initiator, target, authorization
-//! and session, the swept [`interaction::evaluate_eligibility`] whose closest
-//! approach over relative motion replaces a single radius test, and
-//! [`interaction::InteractionTransaction`] with its declared per-transition
-//! [`interaction::TransferPolicy`]. The declared schema is
-//! `cs_content::interaction`; the lowering boundary is `cs_app::interaction`;
-//! the moving-frame runtime and consumer wiring are F36-B/C.
-//!
-//! [`cinematic_state`] is the F40-A cutscene contract
-//! (`specs/F40-cutscenes-video-scripted-cameras-and-transitions.md`, stage
-//! `### F40-A`): the explicit [`cinematic_state::CinematicState`] chain of the
-//! [`cinematic_state::CinematicPlayer`], and the
-//! [`cinematic_state::SemanticAction`]s kept apart from media presentation and
-//! applied exactly once whether the scene plays, is skipped or its media
-//! fails. The declared schema is `cs_content::cinematics`; the lowering
-//! boundary is `cs_app::cinematics`; decoded playback and wiring are F40-B/C.
-//!
-//! [`environment`] owns the air-relative velocity conversion and nothing else
-//! (`specs/F19-sky-atmosphere-weather-and-visibility.md`, non-negotiable
-//! behavior 2; task #434 `F19-WIND-CONVERSION-OWNER`):
-//! [`environment::air_relative_velocity_m_s`] is the single implementation of
-//! the `FLIGHT-PHYSICS` convention `v_air = v_world - wind_world`, and the
-//! flight models, `cs_app::environment::air` and every future weapon consumer
-//! call it. It sits here because the code that *applies* a wind is below the
-//! crate that first needed it, and `cs_app -> cs_sim` is one-way: F19-B could
-//! not reach its own conversion from here. No wind record, no still-air default
-//! and no wind profile live in this module — reading the authoritative field
-//! out of a `cs_content` environment state stays in `cs_app`, because
-//! `cs_content` is not a dependency this crate may take.
-//!
-//! [`objectives`] is the F39-A objective/trigger/spawn vocabulary
-//! (`specs/F39-objectives-triggers-timers-spawn-groups-and-dialogue-cues.md`,
-//! stage `### F39-A`): the seven objective states, swept entry/exit triggers
-//! that never sweep a teleport, per-category actor counters and the
-//! per-session idempotency ledger for spawns and cues. The runtime is F39-B.
-//!
 //! [`world_actors`] is the F34-A world-actor contract
 //! (`specs/F34-ground-vehicles-boats-trains-and-mission-machinery.md`, stage
 //! `### F34-A`): tick-indexed [`world_actors::trajectory::Trajectory`] whose
@@ -219,33 +178,48 @@
 //! boundary is `cs_app::capital`; the movement, weakpoint and turret runtime
 //! is F35-B and the launch/capture wiring is F35-C.
 //!
-//! [`weapons`] is the F27-A weapon contract
-//! (`specs/F27-guns-ammunition-hardpoints-and-ballistic-hits.md`, stage
-//! `### F27-A`): the [`weapons::GunDefinition`] whose mount is the same
-//! [`damage::DamageNodeKey`] the F29 damage graph disables, the
-//! [`weapons::WeaponState`] of selected [`weapons::GunBank`], per-mount
-//! cooldown in ticks, rounds and disabled mounts, the
-//! [`weapons::FireIntent`] → [`weapons::FireResolution`] pair that the
-//! per-session [`weapons::FireResolver`] resolves exactly once, and the
-//! [`weapons::Ballistics`] swept-segment query with relative motion,
-//! earliest-time-of-impact ordering and a once-per-projectile ledger.
-//! The declared, provenance-carrying schema is `cs_content::weapons`; the
-//! lowering boundary is `cs_app::weapons`; the cadence loop and the mount
-//! transforms from the live hierarchy are F27-B, and the damage, effect,
-//! audio and bank-selection wiring is F27-C.
+//! [`interaction`] is the F36-A docking/pickup/boarding/plane-swap contract
+//! (`specs/F36-docking-passenger-pickups-boarding-and-plane-swaps.md`, stage
+//! `### F36-A`): the four [`interaction::InteractionKind`]s that share
+//! infrastructure but keep distinct effects, the explicit
+//! [`interaction::InteractionState`] chain, the stable
+//! [`interaction::InteractionId`] binding initiator, target, authorization
+//! and session, the swept [`interaction::evaluate_eligibility`] whose closest
+//! approach over relative motion replaces a single radius test, and
+//! [`interaction::InteractionTransaction`] with its declared per-transition
+//! [`interaction::TransferPolicy`]. The declared schema is
+//! `cs_content::interaction`; the lowering boundary is `cs_app::interaction`;
+//! the moving-frame runtime and consumer wiring are F36-B/C.
 //!
-//! [`campaign`] is the F43-A campaign contract
-//! (`specs/F43-campaign-progression-outcomes-and-economy-rules.md`, stage
-//! `### F43-A`): the validated [`campaign::CampaignGraph`] keyed on
-//! `cs_script::Outcome`, the [`campaign::OutcomeId`] tuple the exactly-once
-//! ledger dedups, the immutable [`campaign::MissionOutcome`] transaction
-//! input and [`campaign::CampaignState`], whose
-//! [`campaign::CampaignState::apply_outcome`] checks eligibility and prior
-//! application, computes the whole change set in memory and commits it in
-//! one revision — a replayed packet can never pay twice and a replayed
-//! mission never moves progression. The declared, provenance-carrying
-//! schema is `cs_content::campaign`; the lowering boundary is
-//! `cs_app::campaign`; purchases, saves and briefing wiring are F43-B/C.
+//! [`mission`] is the F37-A mission session
+//! (`specs/F37-mission-ir-and-deterministic-runtime-core.md`): it launches only
+//! a validated `cs_script::ir::MissionProgram` and drives the tick-ordered
+//! objective state; host effects are F37-C.
+//!
+//! [`objectives`] is the F39-A objective/trigger/spawn vocabulary
+//! (`specs/F39-objectives-triggers-timers-spawn-groups-and-dialogue-cues.md`,
+//! stage `### F39-A`): the seven objective states, swept entry/exit triggers
+//! that never sweep a teleport, per-category actor counters and the
+//! per-session idempotency ledger for spawns and cues. The runtime is F39-B.
+//!
+//! [`cinematic_state`] is the F40-A cutscene contract
+//! (`specs/F40-cutscenes-video-scripted-cameras-and-transitions.md`, stage
+//! `### F40-A`): the explicit [`cinematic_state::CinematicState`] chain of the
+//! [`cinematic_state::CinematicPlayer`], and the
+//! [`cinematic_state::SemanticAction`]s kept apart from media presentation and
+//! applied exactly once whether the scene plays, is skipped or its media
+//! fails. The declared schema is `cs_content::cinematics`; the lowering
+//! boundary is `cs_app::cinematics`; decoded playback and wiring are F40-B/C.
+//!
+//! [`audio_events`] is the F41-A audio runtime
+//! (`specs/F41-audio-music-radio-dialogue-and-spatial-mixing.md`, stage
+//! `### F41-A`): the audio-scoped [`audio_events::AudioEventId`] event identity,
+//! the bounded [`audio_events::AudioRouter`] whose per-`(session, producer)`
+//! sequence ledger accepts a one-shot exactly once and suppresses a replay, and
+//! the loop-emitter registry that stops on despawn, swap, declared pause policy
+//! or device loss. The provenance-carrying producer record is
+//! `cs_content::audio`; the conversion boundary is `cs_app::audio` (F41-B
+//! implements decoding, spatial emitters and the real mixer).
 //!
 //! [`stunts`] is the F42-A stunt contract
 //! (`specs/F42-stunts-fame-photos-and-optional-achievement-events.md`, stage
@@ -261,6 +235,32 @@
 //! `cs_content::stunts`; the lowering boundary is `cs_app::stunts`; the
 //! multi-gate sequence detection is F42-B and the fame, AI and scrapbook
 //! wiring is F42-C.
+//!
+//! [`campaign`] is the F43-A campaign contract
+//! (`specs/F43-campaign-progression-outcomes-and-economy-rules.md`, stage
+//! `### F43-A`): the validated [`campaign::CampaignGraph`] keyed on
+//! `cs_script::Outcome`, the [`campaign::OutcomeId`] tuple the exactly-once
+//! ledger dedups, the immutable [`campaign::MissionOutcome`] transaction
+//! input and [`campaign::CampaignState`], whose
+//! [`campaign::CampaignState::apply_outcome`] checks eligibility and prior
+//! application, computes the whole change set in memory and commits it in
+//! one revision — a replayed packet can never pay twice and a replayed
+//! mission never moves progression. The declared, provenance-carrying
+//! schema is `cs_content::campaign`; the lowering boundary is
+//! `cs_app::campaign`; purchases, saves and briefing wiring are F43-B/C.
+//!
+//! [`net_state`] is the F57-A authoritative network state
+//! (`specs/F57-networked-aircraft-prediction-interpolation-and-projectiles.md`,
+//! stage `### F57-A`): the per-session [`net_state::NetStateLedger`] that owns
+//! every actor's authoritative [`net_state::NetActorState`], allocates the
+//! nonzero [`net_state::ActorGeneration`] each actor's identity is checked
+//! against, records a destruction exactly once per generation however many times
+//! it is reported, and advances only the client input acknowledgment. Nothing
+//! client-authored can move an actor, spend a round or boost capacity, or end a
+//! record, which is what keeps a client's prediction from becoming authority
+//! (contract `docs/contracts/UI-NETWORK.md`). The wire schema and its declared
+//! quantization budgets are `cs_net::snapshot`; the receiver boundary is
+//! `cs_app::network::physics`.
 //!
 //! [`cs_types`]: cs_types
 //! [`cs_script`]: cs_script
