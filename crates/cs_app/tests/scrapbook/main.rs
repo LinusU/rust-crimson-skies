@@ -9,8 +9,8 @@
 
 use cs_app::ui::scrapbook::MissionResult;
 use cs_content::scrapbook::{
-    EntryKind, ReplayLink, ScrapbookCatalog, ScrapbookEntry, Unlock, UnlockFact, UnlockFactKind,
-    Visibility,
+    EntryKind, EntryVisibility, ReplayLink, ScrapbookCatalog, ScrapbookEntry, Unlock, UnlockFact,
+    UnlockFactKind,
 };
 use cs_sim::campaign::{
     CampaignRunId, DifficultyId, EventKey, Outcome, OutcomeId, ProfileId, SessionGeneration,
@@ -98,7 +98,7 @@ pub fn entry(key: &str, kind: EntryKind, unlock: Resolved<Unlock>) -> ScrapbookE
         title: text(&format!("{key}-title")),
         image: Some(id(ContentKind::Image, &format!("{key}-image"))),
         unlock,
-        visibility: Visibility::HiddenUntilUnlocked,
+        visibility: EntryVisibility::HiddenUntilUnlocked,
         replay: None,
     }
 }
@@ -135,6 +135,6 @@ pub fn catalog() -> ScrapbookCatalog {
         known(fact(UnlockFactKind::MissionSucceeded, mission("m1"))),
     );
     let mut intro = entry("intro", EntryKind::Page, known(Unlock::Always));
-    intro.visibility = Visibility::Shown;
+    intro.visibility = EntryVisibility::Shown;
     ScrapbookCatalog::new(vec![intro, m1, m2, photo_a, photo_b, memento]).expect("catalog")
 }

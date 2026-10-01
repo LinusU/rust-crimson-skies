@@ -84,6 +84,14 @@ fn accept_f47_a_catalog_rejects_malformed_entries() {
         ScrapbookCatalog::new(vec![entry("d", EntryKind::Page, known(deep))]),
         Err(ScrapbookError::UnlockTooDeep { .. })
     ));
+    let mut at_limit = Unlock::Always;
+    for _ in 0..MAX_UNLOCK_DEPTH {
+        at_limit = Unlock::All(vec![at_limit]);
+    }
+    assert!(
+        ScrapbookCatalog::new(vec![entry("ok", EntryKind::Page, known(at_limit))]).is_ok(),
+        "the deepest accepted nesting is {MAX_UNLOCK_DEPTH}"
+    );
     let mut memento = entry("m", EntryKind::Memento, known(Unlock::Always));
     memento.replay = Some(ReplayLink {
         mission: mission("m1"),

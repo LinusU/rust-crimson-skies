@@ -90,7 +90,9 @@ pub fn record_mission(
         result.rule,
     )?;
     if matches!(receipt, RecordReceipt::Applied { .. }) && result.outcome == Outcome::Succeeded {
-        records.facts.note(Fact {
+        // The receipt already reports whether anything changed; the ledger only
+        // ever grows, so its answer is not needed here.
+        let _ = records.facts.note(Fact {
             kind: FactKind::MissionSucceeded,
             subject: result.mission.clone(),
         });

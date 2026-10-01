@@ -19,8 +19,8 @@
 //!   A known rule is a predicate over [`UnlockFact`]s; an unknown rule is an
 //!   explicit unknown that never unlocks, so nothing is awarded merely
 //!   because a mission succeeded.
-//! * **Hidden pages.** A [`Visibility::HiddenUntilUnlocked`] entry is absent
-//!   from [`ScrapbookCatalog::visible`] until its rule holds.
+//! * **Hidden pages.** A [`EntryVisibility::HiddenUntilUnlocked`] entry is
+//!   absent from [`ScrapbookCatalog::visible`] until its rule holds.
 //! * **Replay links.** A [`ReplayLink`] names the mission (and variant) the
 //!   replay launches through the normal loading path.
 //!
@@ -37,7 +37,7 @@ use cs_types::content::{ContentId, ContentKind, Resolved};
 pub const MAX_UNLOCK_DEPTH: usize = 8;
 
 /// What an entry is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum EntryKind {
     /// A page of the scrapbook (mission summary, article, image).
     Page,
@@ -50,8 +50,12 @@ pub enum EntryKind {
 }
 
 /// Whether an entry is shown before it unlocks.
+///
+/// Named `EntryVisibility` rather than `Visibility`: `cs_content::scene` and
+/// `cs_sim::animated_object` already own a node-draw `Visibility` in the same
+/// vocabulary, and an unqualified import of two of them must not be possible.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Visibility {
+pub enum EntryVisibility {
     /// Shown locked.
     Shown,
     /// Not shown until its rule is satisfied.
@@ -172,7 +176,7 @@ pub struct ScrapbookEntry {
     /// The unlock rule, or an explicit unknown.
     pub unlock: Resolved<Unlock>,
     /// Shown before unlocking or not.
-    pub visibility: Visibility,
+    pub visibility: EntryVisibility,
     /// The replay it offers, if any.
     pub replay: Option<ReplayLink>,
 }
@@ -364,7 +368,7 @@ impl ScrapbookCatalog {
     ) -> impl Iterator<Item = (&'a ScrapbookEntry, bool)> {
         self.entries().filter_map(move |entry| {
             let unlocked = self.is_unlocked(entry, has);
-            (unlocked || entry.visibility == Visibility::Shown).then_some((entry, unlocked))
+            (unlocked || entry.visibility == EntryVisibility::Shown).then_some((entry, unlocked))
         })
     }
 }

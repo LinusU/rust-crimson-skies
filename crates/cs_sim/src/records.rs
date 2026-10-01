@@ -123,11 +123,6 @@ pub enum RecordReceipt {
 /// Why a submission was refused; the book is untouched.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RecordError {
-    /// A per-difficulty rule was submitted without a difficulty.
-    MissingDifficulty {
-        /// The subject.
-        subject: ContentId,
-    },
     /// The same subject was submitted under a rule that differs from the
     /// one it was first kept under.
     RuleChanged {
@@ -139,9 +134,6 @@ pub enum RecordError {
 impl fmt::Display for RecordError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::MissingDifficulty { subject } => {
-                write!(f, "{subject} keeps a record per difficulty; none was given")
-            }
             Self::RuleChanged { subject } => {
                 write!(f, "{subject} was first recorded under a different rule")
             }
@@ -278,6 +270,7 @@ pub struct AchievementLedger {
 
 impl AchievementLedger {
     /// Notes `fact`; returns whether it was new.
+    #[must_use]
     pub fn note(&mut self, fact: Fact) -> bool {
         self.facts.insert(fact)
     }
