@@ -296,6 +296,7 @@ pub mod airframe_roles;
 pub mod animation;
 pub mod audio;
 pub mod cameras;
+pub mod campaign;
 pub mod campaign_bindings;
 pub mod capital;
 pub mod catalog;
