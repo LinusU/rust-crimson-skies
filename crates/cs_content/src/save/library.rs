@@ -560,7 +560,10 @@ impl ProfileLibrary {
     ///
     /// A revision that names *another* profile is refused too
     /// ([`LibraryError::ProfileMismatch`]), so a hostile slot cannot make
-    /// [`LoadedProfile::id`] and the document it carries disagree.
+    /// [`LoadedProfile::id`] and the document it carries disagree; a revision
+    /// that belongs to another *population*
+    /// ([`LibraryError::ForeignDocument`]) is refused so a synthetic or evidence
+    /// library never reads production state through a misplaced file.
     pub fn load(&self, id: ProfileId) -> Result<LoadedProfile, LibraryError> {
         match classify_slot(&self.slot_dir(id))? {
             SlotPath::Directory => {}
@@ -593,6 +596,18 @@ impl ProfileLibrary {
                     return Err(LibraryError::ProfileMismatch {
                         requested: id,
                         stored: recovery.document.profile_id,
+                    });
+                }
+                // The document must also belong to this population. A slot
+                // holding a *production* document under a synthetic library is
+                // exactly the population the separation rule refuses on the
+                // write path (`create`/`save`), and reading it here would hand a
+                // synthetic session production state (non-negotiable 4).
+                if recovery.document.kind != self.kind {
+                    return Err(LibraryError::ForeignDocument {
+                        id,
+                        stored: self.kind,
+                        offered: recovery.document.kind,
                     });
                 }
                 LoadedProfile {

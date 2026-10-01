@@ -1009,6 +1009,58 @@ fn accept_f48_d_a_slot_holding_another_profile_is_refused() {
     );
 }
 
+/// A slot holding a document from *another population* — a synthetic directory
+/// with a production pilot's save planted in it, under the synthetic id — is
+/// refused, so a synthetic or evidence library never reads production state
+/// through a misplaced file (F48 non-negotiable 4). The id check alone would
+/// accept this: the identity that separates the populations is the document
+/// kind, which `create`/`save` already enforce on the write path.
+#[test]
+fn accept_f48_d_a_slot_holding_another_population_is_refused() {
+    let base = TempBase::new("foreign-population");
+    let kind = ProfileKind::Synthetic;
+    let population = base.0.join(kind.label());
+    let mut library = ProfileLibrary::open(population.clone(), kind).expect("open");
+    let (id, _) = library
+        .create(doc(ProfileId::new(1).expect("nonzero"), 1))
+        .expect("create");
+
+    // The same id, but a *production* document, as a careless copy or a planted
+    // file would leave it.
+    let mut foreign = doc(id, 2);
+    foreign.kind = ProfileKind::Production;
+    foreign.campaign.money_minor = 4_242;
+    let bytes = encode(&foreign).expect("the foreign document encodes");
+    let slot = library.slot_dir(id);
+    for file in [SaveFile::Current, SaveFile::Backup, SaveFile::Temp] {
+        let _ = fs::remove_file(slot.join(file.prefixed_name(PROFILE_PREFIX)));
+    }
+    fs::write(
+        slot.join(SaveFile::Current.prefixed_name(PROFILE_PREFIX)),
+        bytes.clone(),
+    )
+    .expect("the foreign save is planted");
+
+    let err = library
+        .load(id)
+        .expect_err("another population's save is refused");
+    assert!(
+        matches!(
+            err,
+            cs_content::save::library::LibraryError::ForeignDocument { id: refused, .. }
+                if refused == id
+        ),
+        "the refusal is the population refusal: {err:?}"
+    );
+    // The planted bytes are left exactly as they were found.
+    assert_eq!(
+        fs::read(slot.join(SaveFile::Current.prefixed_name(PROFILE_PREFIX)))
+            .expect("the planted save"),
+        bytes,
+        "the other population's bytes are untouched"
+    );
+}
+
 /// The oversized case at the recovery level the matrix cares about: a file over
 /// the bound is refused by the length it reports, never read in full, and never
 /// overwritten by a commit.

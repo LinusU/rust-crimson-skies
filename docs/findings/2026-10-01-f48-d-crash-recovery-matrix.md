@@ -17,11 +17,12 @@ measures the engine's own write path, not a property of Crimson Skies.
   judgment about what a slot path may be, now shared by the write path
   (`DirStorage::create`) and, new in this stage, the read paths.
 - `crates/cs_content/src/save/library.rs`: `ProfileLibrary::load` refuses a slot
-  path that is not a plain directory and refuses a revision that names another
-  profile (`LibraryError::ProfileMismatch`); `slot_warnings` and
+  path that is not a plain directory, refuses a revision that names another
+  profile (`LibraryError::ProfileMismatch`) and refuses a revision of another
+  population (`LibraryError::ForeignDocument`); `slot_warnings` and
   `load_profile_slot` apply the same slot-path rule; `is_slot_directory` is now
   `classify_slot`.
-- Tests: `crates/cs_content/tests/accept_f48_d_crash_recovery_matrix.rs` (11,
+- Tests: `crates/cs_content/tests/accept_f48_d_crash_recovery_matrix.rs` (12,
   the matrix itself) and `crates/cs_app/tests/accept_f48_d_crash_recovery_matrix.rs`
   (7, the same questions through a runtime `ProfileSession`).
 
@@ -162,6 +163,31 @@ from `RecoverError::ProfileMismatch`, which is two profiles in one slot and
 reaches the caller already wrapped in `LibraryError::Recover`. Test:
 `accept_f48_d_a_slot_holding_another_profile_is_refused`.
 
+## Review addition: a save from another *population* on the read path
+
+Found by the reviewer (deepseek-1, independent context) after the two defects
+above, by asking what else the same read path trusted. `load` checked the
+document's profile **id** but not its **kind**, so a production document planted
+under a synthetic id was handed to a synthetic session as its own.
+
+Probe, before the fix: a synthetic library's slot for id 1 overwritten with a
+sealed `kind=production` document of the same id.
+
+```
+PROBE load returned kind=Some(Production) money=Some(4242) id=1
+```
+
+The write path already refuses this class: `create` and `save` return
+`LibraryError::ForeignDocument` when the offered document's kind is not the
+population's. The read path did not, so a synthetic or evidence session could
+read production campaign state, records and settings through a misplaced file —
+the same non-negotiable 4 violation as defect 1, reached through a file rather
+than a directory.
+
+**Fix.** `load` also refuses a recovered revision whose `kind` is not the
+library's population, as the existing `LibraryError::ForeignDocument`. Test:
+`accept_f48_d_a_slot_holding_another_population_is_refused`.
+
 ## AC04 through a session
 
 The stage's minimum scenario is "load a future/oversized/malicious save without
@@ -276,6 +302,7 @@ were reverted afterwards.
 | `load` no longer refuses a non-plain slot path | `accept_f48_d_a_hostile_slot_path_is_refused_and_nothing_outside_is_written` |
 | `slot_warnings` no longer refuses it | the same test |
 | `load` no longer refuses another profile's save | `accept_f48_d_a_slot_holding_another_profile_is_refused` |
+| `load` no longer refuses another population's save (review addition) | `accept_f48_d_a_slot_holding_another_population_is_refused` |
 | `run_phases` no longer finishes an interrupted commit whose temp holds the newest whole state | `accept_f48_d_a_kill_at_every_phase_boundary_leaves_a_whole_revision`, `..._the_matrix_runs_and_reports_this_platform` |
 | backup rotation no longer requires a valid current file | the two above, plus `..._a_killed_commit_never_leaves_the_slot_unrecoverable` |
 | `install_current` runs *before* `rotate_backup` | 4 tests in the cs_content matrix, including the phase matrix, `..._a_future_schema_save_is_refused_and_preserved` and `..._a_slot_holding_another_profile_is_refused` |
@@ -347,3 +374,10 @@ defects found by executable probes rather than by reading, which is weaker than
 independent review and is recorded as such. Neither defect touches original-data
 semantics, and no fidelity claim is made here, so the exposure is the size of
 the code review rather than the size of an evidence claim.
+
+**Independent review (2026-10-01, deepseek-1, fresh context):** a different agent
+instance re-ran the full local checks, independently reproduced the sensitivity
+of the slot-path and foreign-profile fixes (and of the phase-order change the
+matrix is built to catch) by mutation, and found the third read-path gap recorded
+above (a foreign *population* on the read path), which is fixed with a test in
+the same class. The platform limitation above is unchanged and remains #461.
