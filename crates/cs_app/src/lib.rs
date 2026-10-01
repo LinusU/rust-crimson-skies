@@ -207,6 +207,15 @@
 //! unknown eligibility field rather than inventing a value; and the
 //! generation-stamped [`interaction::InteractionActorBinding`] ECS record.
 //!
+//! [`cinematics`] is the F40-A cinematic boundary
+//! (`specs/F40-cutscenes-video-scripted-cameras-and-transitions.md`, stage
+//! `### F40-A`): [`cinematics::lower_cinematic`], which lowers a declared
+//! `cs_content::cinematics::DeclaredCinematic` into a
+//! `cs_sim::cinematic_state::CinematicScript` and refuses an unknown value
+//! rather than inventing one; [`cinematics::begin`], which turns missing media
+//! into a `Failed` player rather than a completion; and
+//! [`cinematics::fit_letterboxed`], which fits a frame without stretching it.
+//!
 //! [`targeting`] is the F30-A targeting boundary
 //! (`specs/F30-targeting-classification-aim-assistance-and-threat-cues.md`,
 //! stage `### F30-A`): [`targeting::lower_rules`], which lowers a declared
@@ -335,6 +344,7 @@ pub mod audio;
 pub mod camera;
 pub mod campaign;
 pub mod capital;
+pub mod cinematics;
 pub mod cli;
 pub mod damage;
 pub mod diagnostics;

@@ -370,6 +370,15 @@
 //! archive, reads no byte and mounts nothing: F53-B is the mount, F53-C the
 //! selection UI and export tooling, F53-D the reproducibility evidence.
 //!
+//! [`cinematics`] is the F40-A declared cutscene/video schema
+//! (`specs/F40-cutscenes-video-scripted-cameras-and-transitions.md`, stage
+//! `### F40-A`): the provenance-carrying [`cinematics::DeclaredCinematic`]
+//! keeping its [`cinematics::DeclaredPresentation`] (prerendered video or
+//! in-engine camera track) apart from its [`cinematics::DeclaredAction`]
+//! semantic actions, every load-bearing value a
+//! [`cs_types::content::Resolved`]. Its runtime counterpart is
+//! `cs_sim::cinematic_state`; the conversion boundary is `cs_app::cinematics`.
+//!
 //! [`cs_types`]: cs_types
 //! [`cs_formats`]: cs_formats
 //! [`cs_assets`]: cs_assets
@@ -383,6 +392,7 @@ pub mod campaign;
 pub mod campaign_bindings;
 pub mod capital;
 pub mod catalog;
+pub mod cinematics;
 pub mod config;
 pub mod construction;
 pub mod coordinates;

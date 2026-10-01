@@ -155,6 +155,15 @@
 //! `cs_content::interaction`; the lowering boundary is `cs_app::interaction`;
 //! the moving-frame runtime and consumer wiring are F36-B/C.
 //!
+//! [`cinematic_state`] is the F40-A cutscene contract
+//! (`specs/F40-cutscenes-video-scripted-cameras-and-transitions.md`, stage
+//! `### F40-A`): the explicit [`cinematic_state::CinematicState`] chain of the
+//! [`cinematic_state::CinematicPlayer`], and the
+//! [`cinematic_state::SemanticAction`]s kept apart from media presentation and
+//! applied exactly once whether the scene plays, is skipped or its media
+//! fails. The declared schema is `cs_content::cinematics`; the lowering
+//! boundary is `cs_app::cinematics`; decoded playback and wiring are F40-B/C.
+//!
 //! [`environment`] owns the air-relative velocity conversion and nothing else
 //! (`specs/F19-sky-atmosphere-weather-and-visibility.md`, non-negotiable
 //! behavior 2; task #434 `F19-WIND-CONVERSION-OWNER`):
@@ -249,6 +258,7 @@ pub mod animated_object;
 pub mod audio_events;
 pub mod campaign;
 pub mod capital;
+pub mod cinematic_state;
 pub mod collision;
 pub mod control;
 pub mod damage;
