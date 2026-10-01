@@ -202,6 +202,26 @@ fn accept_f35_a_exposure_window_rejects_degenerate_cycles() {
     assert!(window.is_weakpoint(Tick(0)));
 }
 
+/// A cycle whose phases sum past the tick counter is refused, not wrapped:
+/// accepting it would overflow (and could zero) the modulo cycle and panic
+/// when the bay is queried.
+#[test]
+fn accept_f35_a_exposure_window_rejects_overflowing_cycles() {
+    assert_eq!(
+        ExposureWindow::try_new(u64::MAX, 0, 1, 0),
+        Err(ExposureError::CycleOverflow)
+    );
+    assert_eq!(
+        ExposureWindow::try_new(u64::MAX, u64::MAX, 1, 0),
+        Err(ExposureError::CycleOverflow)
+    );
+
+    // The largest representable cycle still works, without wrapping.
+    let huge = ExposureWindow::try_new(u64::MAX - 2, 0, 1, 0).expect("a representable cycle");
+    assert_eq!(huge.cycle_ticks(), u64::MAX - 1);
+    assert!(huge.is_weakpoint(Tick(u64::MAX - 2)));
+}
+
 // ------------------------------------------------------------- launch ------
 
 /// A launch is released at most once, and destroying its bay cancels the

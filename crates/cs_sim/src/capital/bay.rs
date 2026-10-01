@@ -63,6 +63,10 @@ pub enum ExposureError {
     NoExposedTicks,
     /// The sum of all phases was zero, so no cycle exists.
     ZeroCycle,
+    /// The four phases summed past `u64::MAX`. A cycle that cannot be
+    /// represented is refused rather than wrapped into a shorter (or
+    /// zero-length) one.
+    CycleOverflow,
 }
 
 /// A repeating open/close cycle for one bay, in simulation ticks.
@@ -76,21 +80,24 @@ pub struct ExposureWindow {
 
 impl ExposureWindow {
     /// Validates and wraps a cycle. At least one tick must be exposed and
-    /// the cycle must not be zero-length.
+    /// the cycle must not be zero-length or overflow the tick counter.
     ///
     /// # Errors
     ///
-    /// [`ExposureError::NoExposedTicks`] or [`ExposureError::ZeroCycle`].
+    /// [`ExposureError::NoExposedTicks`], [`ExposureError::ZeroCycle`] or
+    /// [`ExposureError::CycleOverflow`].
     pub fn try_new(
         concealed_ticks: u64,
         opening_ticks: u64,
         exposed_ticks: u64,
         closing_ticks: u64,
     ) -> Result<Self, ExposureError> {
-        let total = concealed_ticks
-            .saturating_add(opening_ticks)
-            .saturating_add(exposed_ticks)
-            .saturating_add(closing_ticks);
+        let mut total = 0_u64;
+        for part in [concealed_ticks, opening_ticks, exposed_ticks, closing_ticks] {
+            total = total
+                .checked_add(part)
+                .ok_or(ExposureError::CycleOverflow)?;
+        }
         if total == 0 {
             return Err(ExposureError::ZeroCycle);
         }

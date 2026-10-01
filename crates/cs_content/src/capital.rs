@@ -270,6 +270,9 @@ pub enum ExposureSchemaError {
     NoExposedTicks,
     /// The sum of all phases was zero.
     ZeroCycle,
+    /// The four phases summed past `u64::MAX`; the window cannot be lowered
+    /// to a runtime exposure window without wrapping.
+    CycleOverflow,
 }
 
 impl DeclaredExposure {
@@ -277,14 +280,21 @@ impl DeclaredExposure {
     ///
     /// # Errors
     ///
-    /// [`ExposureSchemaError::NoExposedTicks`] or
-    /// [`ExposureSchemaError::ZeroCycle`].
+    /// [`ExposureSchemaError::NoExposedTicks`],
+    /// [`ExposureSchemaError::ZeroCycle`] or
+    /// [`ExposureSchemaError::CycleOverflow`].
     pub fn validate(&self) -> Result<(), ExposureSchemaError> {
-        let total = self
-            .concealed_ticks
-            .saturating_add(self.opening_ticks)
-            .saturating_add(self.exposed_ticks)
-            .saturating_add(self.closing_ticks);
+        let mut total = 0_u64;
+        for part in [
+            self.concealed_ticks,
+            self.opening_ticks,
+            self.exposed_ticks,
+            self.closing_ticks,
+        ] {
+            total = total
+                .checked_add(part)
+                .ok_or(ExposureSchemaError::CycleOverflow)?;
+        }
         if total == 0 {
             return Err(ExposureSchemaError::ZeroCycle);
         }

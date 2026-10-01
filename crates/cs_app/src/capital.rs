@@ -13,8 +13,14 @@
 //!   [`cs_content::capital::DeclaredCapitalShip`] becomes a
 //!   [`cs_sim::capital::CapitalShip`] with every subsystem, engine, bay,
 //!   turret, anchor, the cargo pool and the authored trajectory mapped
-//!   field-wise. Nothing is dropped: a turret's unknown weapon binding or a
-//!   launch bay's socket lowers as [`Resolved::Unknown`] and stays unknown.
+//!   field-wise. An unmeasured value (a turret's weapon binding, an engine's
+//!   thrust) lowers as [`Resolved::Unknown`] and stays unknown. Three
+//!   declared fields have no F35-A runtime counterpart and stay parked on the
+//!   declared record: a launch bay's `socket_offset_m` and `capacity`, and a
+//!   gas/structural section's `integrity` pool. The boundary does not invent
+//!   runtime state for them; their consumption is F35-C (launch/cargo wiring)
+//!   and F35-B (damage/weakpoint resolution). See
+//!   `docs/findings/2026-10-01-f35-a-capital-subsystems-and-bays.md`.
 //! * [`CapitalLowerError::UnknownOwnership`] — the one mandatory value: a
 //!   ship whose owner is unresolved cannot have its guns, targeting and
 //!   docking eligibility switched coherently, so the boundary refuses

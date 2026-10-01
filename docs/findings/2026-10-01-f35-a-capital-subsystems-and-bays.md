@@ -31,7 +31,10 @@ carrying designed provenance.
   `Concealed`/`Opening`/`Exposed`/`Closing` from one pure tick; `is_weakpoint`
   is true only for `Exposed`. A destroyed bay is `BayState::Destroyed` at every
   tick and never exposed. A closed bay is therefore not an always-hittable
-  invisible bar (non-negotiable 2).
+  invisible bar (non-negotiable 2). A cycle whose four phases would sum past
+  `u64::MAX` is refused (`ExposureError::CycleOverflow` /
+  `ExposureSchemaError::CycleOverflow`) rather than wrapped into a shorter or
+  zero-length cycle, which would overflow (or divide by zero) at query time.
 - **Release once, cancel on destruction.** `LaunchSocket` + `release_aircraft`
   use the F34 `anchor_sample` so a spawn pose is the anchor pose (carrier
   velocity, rotational part and ejection included) and `dynamic_authority` is
@@ -54,6 +57,12 @@ carrying designed provenance.
 - Script-driven spawn, the capture/cargo state wiring and staged destruction:
   F35-C; the AC03 script path and the AC04 in-flight-projectile relation switch
   are not present, only their identity/ordering contract.
+- Three declared fields are validated and carried but not lowered into the
+  F35-A runtime aggregate, which has no counterpart for them: a launch bay's
+  `socket_offset_m` and `capacity` (consumed by F35-C launch wiring) and a
+  gas/structural section's `integrity` pool (consumed by F35-B damage
+  resolution). The boundary refuses to invent runtime state for them; the
+  `cs_app::capital` module doc says so explicitly.
 - Original mission validation: F35-D (needs `retail`).
 - No Avian body, no renderer, no file access: `cs_sim` depends only on
   `cs_types` and `cs_script`.

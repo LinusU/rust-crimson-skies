@@ -431,6 +431,30 @@ fn accept_f35_a_schema_rejects_corrupt_numbers() {
     assert_eq!(zero.validate(), Err(ExposureSchemaError::ZeroCycle));
 }
 
+/// A declared cycle whose phases sum past the tick counter is refused, so a
+/// window the runtime cannot represent is never accepted by the schema.
+#[test]
+fn accept_f35_a_schema_rejects_overflowing_exposure() {
+    let overflow = DeclaredExposure {
+        concealed_ticks: u64::MAX,
+        opening_ticks: 0,
+        exposed_ticks: 1,
+        closing_ticks: 0,
+    };
+    assert_eq!(overflow.validate(), Err(ExposureSchemaError::CycleOverflow));
+
+    // The boundary refuses it too, rather than lowering a wrapped cycle.
+    let mut parts = base_parts();
+    parts.weapon_bays[0].exposure = overflow;
+    assert_eq!(
+        ship(parts, designed(1.0)),
+        Err(CapitalSchemaError::Exposure {
+            key: key("weapon_bay_1"),
+            source: ExposureSchemaError::CycleOverflow,
+        })
+    );
+}
+
 /// A declared trajectory is carried whole, including its tick rate and keys.
 #[test]
 fn accept_f35_a_declared_trajectory_is_carried() {
