@@ -727,6 +727,149 @@ impl AudioRouter {
     }
 }
 
+// -------------------------------------------------------------- spatial ----
+
+/// Why a spatial input was refused.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum SpatialError {
+    /// A position or axis component was NaN or infinite.
+    NonFinite,
+    /// The reference distance was not a positive finite number.
+    BadReferenceDistance {
+        /// The rejected value.
+        value: f64,
+    },
+    /// The cutoff distance was not finite and strictly beyond the reference.
+    BadMaxDistance {
+        /// The rejected value.
+        value: f64,
+    },
+    /// The listener's right axis was not a unit vector.
+    NonUnitRightAxis,
+}
+
+impl fmt::Display for SpatialError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NonFinite => f.write_str("a spatial input was not finite"),
+            Self::BadReferenceDistance { value } => {
+                write!(f, "reference distance {value} must be positive and finite")
+            }
+            Self::BadMaxDistance { value } => {
+                write!(
+                    f,
+                    "cutoff distance {value} must exceed the reference distance"
+                )
+            }
+            Self::NonUnitRightAxis => f.write_str("the listener right axis is not a unit vector"),
+        }
+    }
+}
+
+impl std::error::Error for SpatialError {}
+
+/// The designed distance-attenuation law of one emitter bus.
+///
+/// Designed, not measured: the original attenuation curve is unmeasured (F41
+/// "Research boundary"), so this is an inverse-distance law a later evidence
+/// stage may replace. Full gain inside `reference`, `reference / distance`
+/// beyond it, silence at and beyond `cutoff`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpatialPolicy {
+    reference: f64,
+    cutoff: f64,
+}
+
+impl SpatialPolicy {
+    /// Validates a policy.
+    ///
+    /// # Errors
+    ///
+    /// [`SpatialError::BadReferenceDistance`] or [`SpatialError::BadMaxDistance`].
+    pub fn try_new(reference: f64, cutoff: f64) -> Result<Self, SpatialError> {
+        if !reference.is_finite() || reference <= 0.0 {
+            return Err(SpatialError::BadReferenceDistance { value: reference });
+        }
+        if !cutoff.is_finite() || cutoff <= reference {
+            return Err(SpatialError::BadMaxDistance { value: cutoff });
+        }
+        Ok(Self { reference, cutoff })
+    }
+}
+
+/// The listener's pose, in the same origin-rebased frame as the emitters.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Listener {
+    position: [f64; 3],
+    right: [f64; 3],
+}
+
+impl Listener {
+    /// Validates a listener: finite position and a unit right axis.
+    ///
+    /// # Errors
+    ///
+    /// [`SpatialError::NonFinite`] or [`SpatialError::NonUnitRightAxis`].
+    pub fn try_new(position: [f64; 3], right: [f64; 3]) -> Result<Self, SpatialError> {
+        if !position.iter().chain(right.iter()).all(|c| c.is_finite()) {
+            return Err(SpatialError::NonFinite);
+        }
+        let length = right.iter().map(|c| c * c).sum::<f64>().sqrt();
+        if (length - 1.0).abs() > 1e-6 {
+            return Err(SpatialError::NonUnitRightAxis);
+        }
+        Ok(Self { position, right })
+    }
+}
+
+/// The spatial result for one emitter: a distance gain and a stereo pan.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpatialMix {
+    /// Linear distance gain in `0.0..=1.0`.
+    pub gain: f64,
+    /// Stereo placement in `-1.0` (full left) `..=1.0` (full right).
+    pub pan: f64,
+}
+
+/// Places one emitter relative to the listener.
+///
+/// Pan is the emitter direction's component along the listener's right axis,
+/// so an emitter on the right pans positive; an emitter at the listener's own
+/// position is centred.
+///
+/// # Errors
+///
+/// [`SpatialError::NonFinite`] for a non-finite emitter position.
+pub fn spatialize(
+    policy: &SpatialPolicy,
+    listener: &Listener,
+    emitter: [f64; 3],
+) -> Result<SpatialMix, SpatialError> {
+    if !emitter.iter().all(|c| c.is_finite()) {
+        return Err(SpatialError::NonFinite);
+    }
+    let rel = [
+        emitter[0] - listener.position[0],
+        emitter[1] - listener.position[1],
+        emitter[2] - listener.position[2],
+    ];
+    let distance = rel.iter().map(|c| c * c).sum::<f64>().sqrt();
+    let gain = if distance >= policy.cutoff {
+        0.0
+    } else if distance <= policy.reference {
+        1.0
+    } else {
+        policy.reference / distance
+    };
+    let pan = if distance <= f64::EPSILON {
+        0.0
+    } else {
+        let along: f64 = rel.iter().zip(listener.right).map(|(r, a)| r * a).sum();
+        (along / distance).clamp(-1.0, 1.0)
+    };
+    Ok(SpatialMix { gain, pan })
+}
+
 // ------------------------------------------------------------ fixtures -----
 
 /// The key of the synthetic weapon one-shot used by F41-A's minimum scenario.

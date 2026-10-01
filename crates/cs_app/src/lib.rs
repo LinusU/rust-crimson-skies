@@ -173,7 +173,8 @@
 //! `cs_sim::audio_events::AudioAssetSpec` the router schedules, refusing an
 //! unknown bus, level or playback mode by claim instead of inventing one; and
 //! the generation-stamped [`audio::AudioEmitterBinding`] tying an entity to its
-//! session-qualified emitter, bus and asset.
+//! session-qualified emitter, bus and asset. F41-B adds [`audio::sync_emitter_loops`],
+//! which starts, swaps and stops loops as those bindings spawn and despawn.
 //!
 //! [`damage`] is the F29-A damage boundary
 //! (`specs/F29-damage-zones-armor-destruction-and-bailout.md`, stage
