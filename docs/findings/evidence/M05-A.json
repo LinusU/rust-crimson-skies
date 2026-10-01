@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "M05-A",
+ "candidate_tree": "db35d78686a2fa427c3457a141e77e29764752a9",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-10-01T20:52:58Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_m05_a_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/bunny-2", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 8, "executed": 8, "passed": 8, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_m05_a_only_an_exact_title_or_an_exact_long_name_tail_confirms", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m05_a_a_contradicted_corroboration_establishes_no_position", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m05_a_the_committed_record_is_what_the_installation_derives", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m05_a_the_campaign_keeps_everything_else_unresolved_and_unready", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m05_a_the_title_is_confirmed_only_through_the_long_name_form", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m05_a_the_world_group_is_shared_and_the_program_singles_the_mission_out", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m05_a_the_verbatim_form_wins_where_both_display_forms_carry_the_title", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m05_a_source_derived_binding_has_no_unresolved_critical_dependencies", "status": "pass", "evidence": ["cargo-test.log"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "74142a97e9acbad4143fa6d27d7fd6c5326e7ec276fddaca47e83eb449ede536", "kind": "log"}, {"path": "m05-binding.json", "sha256": "317324f61b155d8ebe0666b59fad6edc3e36d03104f00b59c7071514adaec141", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "implementer: bunny-2 (Rally #270, session of 2026-10-01T20:17Z); reviewer: not yet assigned at hand-over. The implementer's own run is not independent review and is not independent original-reference evidence; no agent review replaces the owner's human approval", "method": "acceptance suite run locally with the retail capability; this harness derives every field from the recorded log, production discovery of $CS_GAME_DIR and the binding `SourceContext::read` + `SourceContext::bind` derive from it (all five critical dependencies resolved; checklist entries still unknown are recorded in missions/bindings/M05.json, not dropped). This stage's production change is the two-display-form title confirmation: M05's declared title is carried only as the title part of a region-prefixed long name, the installation's bare short name for the same campaign position spells it without the leading article, and the record reports that difference instead of reconciling it, so verified stays false; claim is implemented only; validated with tools/validate_evidence.py --require-pass"},
+ "claim": "implemented"
+}
