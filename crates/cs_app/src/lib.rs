@@ -216,6 +216,13 @@
 //! into a `Failed` player rather than a completion; and
 //! [`cinematics::fit_letterboxed`], which fits a frame without stretching it.
 //!
+//! [`ui::front_end`] is the F45-A front-end state table
+//! (`specs/F45-main-menu-pandora-cabin-briefing-and-flight-check.md`, stage
+//! `### F45-A`): every screen from install selection to results, each action's
+//! transition, the resources it acquires and releases, the draft/confirm rule
+//! for Back, and [`ui::front_end::FrontEnd`], which requests domain
+//! transactions and never edits campaign or profile fields itself.
+//!
 //! [`targeting`] is the F30-A targeting boundary
 //! (`specs/F30-targeting-classification-aim-assistance-and-threat-cues.md`,
 //! stage `### F30-A`): [`targeting::lower_rules`], which lowers a declared
@@ -365,5 +372,10 @@ pub mod stunts;
 pub mod synthetic;
 pub mod targeting;
 pub mod text;
+pub mod ui {
+    //! Screens and their state machines.
+
+    pub mod front_end;
+}
 pub mod weapons;
 pub mod world;
