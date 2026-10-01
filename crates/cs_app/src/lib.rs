@@ -252,6 +252,7 @@
 //! `cs_content::cameras::DeclaredCameraModes` set into the
 //! [`camera::LoweredCameraModes`] a session's camera path consumes.
 //!
+//!
 //! [`ai`] is the F31-C mission-ECS binding
 //! (`specs/F31-ai-navigation-routes-and-obstacle-avoidance.md`, stage
 //! `### F31-C`): [`ai::bind_route`], which projects a resolved
@@ -265,6 +266,19 @@
 //! with the live pursuit entities; and [`ai::AiNavigationPlugin`], whose
 //! fixed-tick systems decide one bounded command per aircraft and write it into
 //! the same `FlightAircraft` boundary the player input session uses.
+//!
+//! [`text`] is the F51-A text boundary
+//! (`specs/F51-localization-fonts-text-layout-and-original-media-ids.md`, stage
+//! `### F51-A`): [`text::TextMetrics`] — the typed measurement input where
+//! F51-B's font parsing will land, so the layout never opens a font file — and
+//! [`text::layout_text`], which lays a validated
+//! `cs_content::localization::MarkupDocument` out inside a panel's largest
+//! **free band** (the strip no required control occupies) and reports whether
+//! the result fits or has to scroll, so a long translation never paints over
+//! the buttons a screen must keep readable (AC01). Every absent glyph, refused
+//! markup control and unresolved substitution comes back as a
+//! [`text::LayoutDiagnostic`] rather than being applied silently. Nothing here
+//! draws: F51-C wires it into the real menus, HUD and subtitles.
 
 pub mod ai;
 pub mod airframe_visual;
@@ -287,5 +301,6 @@ pub mod run;
 pub mod scene;
 pub mod synthetic;
 pub mod targeting;
+pub mod text;
 pub mod weapons;
 pub mod world;
