@@ -767,10 +767,20 @@ impl NetStateLedger {
         }
     }
 
-    /// Checks the actor belongs to this ledger and is a well-formed id.
+    /// Checks the actor names a live actor id and belongs to this ledger.
+    ///
+    /// The two refusals are distinct because they are different mistakes: a zero
+    /// session or serial is a malformed id, while a nonzero id of another session
+    /// generation is a valid id that belongs to a session this ledger does not own.
     fn expect_own_actor(&self, actor: ActorId) -> Result<(), NetStateError> {
-        if actor.session != self.session || actor.session.get() == 0 || actor.serial == 0 {
+        if actor.session.get() == 0 || actor.serial == 0 {
             return Err(NetStateError::InvalidActorId { actor });
+        }
+        if actor.session != self.session {
+            return Err(NetStateError::ForeignSession {
+                expected: self.session,
+                found: actor.session,
+            });
         }
         Ok(())
     }

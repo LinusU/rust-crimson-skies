@@ -515,19 +515,19 @@ fn run_scenario(conditions: Conditions, seed: u64) {
     );
     // The mirrored pose is the *authoritative* pose, epoch-relative all the way:
     // whatever latency and loss did to the packet, the reconstructed world
-    // position is inside the declared position budget of the server's own value
-    // on the tick the record came from.
+    // position is inside the declared tolerance of the server's own value on the
+    // tick the record came from.
     let authoritative = authoritative_positions
         .get(&shown.tick.0)
         .and_then(|at_tick| at_tick.get(&survivor))
         .copied()
         .expect("the record's tick was published under these conditions");
+    let tolerance = mirrored_position_tolerance_m(authoritative, &world_origin);
     let distance = distance_m(shown.position, authoritative);
     assert!(
-        distance <= POSITION_QUANTIZATION.max_error(),
-        "the mirrored position is {distance} m from the authoritative one at tick {} under {label}, budget is {}",
-        shown.tick.0,
-        POSITION_QUANTIZATION.max_error()
+        distance <= tolerance,
+        "the mirrored position is {distance} m from the authoritative one at tick {} under {label}, tolerance is {tolerance}",
+        shown.tick.0
     );
 
     if conditions.loss_per_thousand > 0 {
@@ -654,8 +654,7 @@ fn accept_f57_a_a_foreign_origin_epoch_is_refused_and_a_rebase_is_not_a_jump() {
 
     // After a rebase the world origin moves but the aircraft's world position does
     // not: the position is reconstructed through the shared epoch, so the
-    // apparent jump is inside the declared position budget, not the size of the
-    // rebase.
+    // apparent jump is inside the declared tolerance, not the size of the rebase.
     let rebased = first_origin
         .rebased(WorldPosition::try_new([250_000.0, 900.0, -400_000.0]).expect("finite"))
         .expect("the epoch counter does not wrap");
@@ -669,11 +668,11 @@ fn accept_f57_a_a_foreign_origin_epoch_is_refused_and_a_rebase_is_not_a_jump() {
         .aircraft(survivor)
         .expect("mirrored in the new epoch")
         .position;
+    let tolerance = mirrored_position_tolerance_m(before, &rebased);
     let distance = distance_m(before, after);
     assert!(
-        distance <= POSITION_QUANTIZATION.max_error(),
-        "a rebase moved the mirrored aircraft {distance} m; budget is {}",
-        POSITION_QUANTIZATION.max_error()
+        distance <= tolerance,
+        "a rebase moved the mirrored aircraft {distance} m; tolerance is {tolerance}"
     );
 }
 
@@ -890,6 +889,111 @@ fn accept_f57_a_the_mirror_awards_nothing() {
     assert_eq!(mirror.aircraft_count(), 2);
 }
 
+/// A record from an *older* generation than the mirror holds is refused rather
+/// than treated as a new actor, and a reliable event stamped with another session
+/// generation never retires anything: generations only ever increase for an id, so
+/// an older one is a late packet, not a recycled id.
+#[test]
+fn accept_f57_a_an_older_generation_is_refused_rather_than_replayed_back() {
+    let (ledger, actors) = seeded_ledger();
+    let world_origin = origin();
+    let mut mirror = RemoteMirror::new(SESSION, world_origin);
+    let target = actors[0];
+    let generation = ledger
+        .generation(target)
+        .expect("the ledger knows the actor")
+        .get();
+
+    let snapshot = publish_snapshot(&ledger, &world_origin).expect("publishes");
+    mirror.ingest(&snapshot, Tick(1));
+    let held = *mirror.aircraft(target).expect("mirrored");
+    assert_eq!(held.generation, generation);
+
+    // The same actor comes back two generations on, which is what a lost
+    // intermediate snapshot looks like: the mirror never applied the generation in
+    // between, so it has no ended record for it.
+    let mut newer = *snapshot.actor(target).expect("the record is present");
+    newer.generation = generation + 2;
+    let replacement = Snapshot::new(snapshot.origin, snapshot.input_ack, vec![newer]);
+    let report = mirror.ingest(&replacement, Tick(2));
+    assert_eq!(report.replaced, vec![target]);
+    let now = *mirror
+        .aircraft(target)
+        .expect("mirrored under the new generation");
+    assert_eq!(now.generation, generation + 2);
+
+    // An intermediate generation arriving afterwards is refused by name and
+    // changes nothing: it neither replaces the newer record nor resurrects the old
+    // pose. Without that check it would look like an id recycled forward.
+    let mut older = *snapshot.actor(target).expect("the record is present");
+    older.generation = generation + 1;
+    let late = Snapshot::new(snapshot.origin, snapshot.input_ack, vec![older]);
+    let report = mirror.ingest(&late, Tick(3));
+    assert_eq!(
+        report.refused,
+        vec![(
+            target,
+            IngestRefusal::StaleGeneration {
+                record: generation + 1,
+                held: generation + 2,
+            }
+        )],
+        "an older generation must be refused, not applied as a new actor"
+    );
+    assert!(report.applied == 0 && report.replaced.is_empty() && report.spawned.is_empty());
+    assert_eq!(*mirror.aircraft(target).expect("still mirrored"), now);
+
+    // A reliable removal stamped with another session generation is not this
+    // session's event: it retires nothing, and the actor stays mirrored.
+    let foreign_event = ReliableEvent {
+        id: EventId {
+            session: SessionId::new(97).expect("nonzero"),
+            tick: Tick(4),
+            producer: 0,
+            sequence: 0,
+        },
+        body: EventBody::ActorRemoved { actor: target },
+    };
+    assert!(!mirror.apply_event(&foreign_event));
+    assert!(mirror.aircraft(target).is_some());
+    assert_eq!(mirror.aircraft_count(), 3);
+
+    // A stored integer that does not fit the declared width of the field it
+    // arrived in is named by that field: the mirror's whole contract is that a
+    // refusal says which part of the record it is about. `Snapshot::decode` and
+    // `Snapshot::validate` already refuse such a record on the wire, so this is the
+    // receiver's own boundary — and it names the field rather than blaming the
+    // rotation, which is what the mirror could not do before.
+    let broken = actors[1];
+    let mut unreadable = *snapshot.actor(broken).expect("the record is present");
+    unreadable.linear_velocity = cs_net::snapshot::QuantizedVector::quantize(
+        cs_net::snapshot::POSITION_QUANTIZATION,
+        [1.0e6, 0.0, 0.0],
+    )
+    .expect("a million meters is inside the declared position range");
+    assert_eq!(
+        cs_app::network::physics::RemoteAircraft::from_record(&unreadable, Tick(5), &world_origin),
+        Err(cs_app::network::physics::MirrorError::UnreadableField {
+            field: "linear_velocity",
+        })
+    );
+    let report = mirror.ingest(
+        &Snapshot::new(snapshot.origin, snapshot.input_ack, vec![unreadable]),
+        Tick(5),
+    );
+    assert_eq!(
+        report.refused,
+        vec![(
+            broken,
+            IngestRefusal::UnreadableField {
+                field: "linear_velocity",
+            }
+        )],
+        "an unreadable field must be named, not reported as an unusable rotation"
+    );
+    assert_eq!(mirror.aircraft_count(), 3);
+}
+
 /// The mirror's per-actor bookkeeping is keyed by actor id and stays bounded by
 /// the actors the session knows; forgetting an actor is the only way its
 /// ended-generation record is dropped.
@@ -921,6 +1025,20 @@ fn distance_m(a: WorldPosition, b: WorldPosition) -> f64 {
     let [ax, ay, az] = a.to_array();
     let [bx, by, bz] = b.to_array();
     ((bx - ax).powi(2) + (by - ay).powi(2) + (bz - az).powi(2)).sqrt()
+}
+
+/// The tolerance a mirrored pose may differ from the authority's own value by,
+/// per axis.
+///
+/// Two declared bounds compose here, and comparing a *three-axis distance*
+/// against a *per-axis* budget would be the wrong unit in any case:
+/// [`POSITION_QUANTIZATION`]'s half-step, and the f32 world → local → world round
+/// trip the publish/mirror path goes through
+/// ([`cs_app::origin::local_round_trip_tolerance_m`]).
+fn mirrored_position_tolerance_m(authoritative: WorldPosition, world_origin: &WorldOrigin) -> f64 {
+    let local = world_origin.local_of(authoritative).expect("finite");
+    POSITION_QUANTIZATION.max_error()
+        + cs_app::origin::local_round_trip_tolerance_m(authoritative, local)
 }
 
 /// The destruction ledger's own award is visible from this test's server side, so

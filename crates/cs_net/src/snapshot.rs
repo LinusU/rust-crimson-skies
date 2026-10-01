@@ -445,15 +445,26 @@ impl Quantization {
     /// and signedness, so a corrupt or foreign payload cannot decode into a
     /// plausible number.
     pub fn decode(self, raw: i32) -> Result<f64, SnapshotError> {
-        let steps = f64::from(raw);
-        if steps < self.min_steps() || steps > self.max_steps() {
-            return Err(SnapshotError::OutOfRange {
-                field: self.field,
-                value: steps,
-                max: self.max_value(),
-            });
+        if !self.fits(raw) {
+            return Err(self.out_of(raw));
         }
-        Ok(steps / self.steps_per_unit)
+        Ok(f64::from(raw) / self.steps_per_unit)
+    }
+
+    /// Whether a stored integer fits this declaration's width and signedness.
+    #[must_use]
+    pub fn fits(self, raw: i32) -> bool {
+        let steps = f64::from(raw);
+        steps >= self.min_steps() && steps <= self.max_steps()
+    }
+
+    /// The refusal this declaration reports for a stored integer it cannot hold.
+    fn out_of(self, raw: i32) -> SnapshotError {
+        SnapshotError::OutOfRange {
+            field: self.field,
+            value: f64::from(raw),
+            max: self.max_value(),
+        }
     }
 }
 
@@ -509,17 +520,27 @@ pub const ROTATION_COMPONENT_ERROR: f64 = 0.5 / ROTATION_COMPONENT_SCALE;
 
 /// Declared orientation error budget of the rotation encoding, in radians.
 ///
-/// A first-order bound, stated rather than measured: each stored component is
-/// off by at most [`ROTATION_COMPONENT_ERROR`] `e`, so the stored sum of
-/// squares is off by at most `2e(|a|+|b|+|c|) <= 2e*sqrt(3)`, and the
-/// reconstructed dropped component — whose magnitude is at least `1/sqrt(3)` —
-/// moves by at most `3e`. The perturbation of the unit quaternion is therefore
-/// at most `sqrt(3)e + 3e = 4.73e`, and a perturbation of that size turns the
-/// represented axis by at most the same angle. `6e` leaves headroom over that
-/// bound without being loose enough to hide a wrong index or a lost sign. The
-/// acceptance test measures the worst case over a deterministic sweep of
-/// rotations and asserts it stays under this budget.
-pub const ROTATION_ORIENTATION_ERROR_RAD: f64 = 6.0 * ROTATION_COMPONENT_ERROR;
+/// A first-order bound, derived rather than picked: each stored component is off
+/// by at most [`ROTATION_COMPONENT_ERROR`] `e`, so the stored sum of squares is
+/// off by at most `2e(|a|+|b|+|c|) <= 2e*sqrt(3)`, and the reconstructed dropped
+/// component — whose magnitude is at least `1/sqrt(3)` — moves by at most `3e`.
+/// The perturbation of the unit quaternion is therefore at most
+/// `sqrt(3*e^2 + (3e)^2) = 3.47e`. A unit quaternion perturbed by `p` represents a
+/// rotation that differs from the original by `2*|p|`, not `|p|`: for two unit
+/// quaternions `|q - q'| = 2*sin(theta/4)`, so the rotation angle between them is
+/// `theta ~= 2*|q - q'|`. The bound is therefore `2*3.47e = 6.93e`, and `8e` is
+/// declared: enough headroom over that bound to cover the f32 world→local
+/// narrowing an input rotation carries (`cs_types::space::
+/// QUATERNION_LENGTH_TOLERANCE`, which `decode` normalizes away), while still far
+/// too tight to hide a wrong dropped index or a lost sign, which are
+/// order-one rotations.
+///
+/// Measured worst cases agree: a dense random sweep of unit rotations peaks at
+/// about `2.8e`, and the structural worst case — a rotation whose four
+/// components are near `1/2` in magnitude, so the dropped component is smallest
+/// and its reconstruction is most amplified — peaks at about `6.93e`. The
+/// acceptance test measures both and asserts they stay under this budget.
+pub const ROTATION_ORIENTATION_ERROR_RAD: f64 = 8.0 * ROTATION_COMPONENT_ERROR;
 
 /// A rotation as the three smallest components of its unit quaternion, plus the
 /// index and sign of the component that was dropped.
@@ -705,6 +726,27 @@ impl QuantizedVector {
             budget.decode(self.steps[1])?,
             budget.decode(self.steps[2])?,
         ])
+    }
+
+    /// Checks that every stored step count fits `budget`'s declared width.
+    ///
+    /// A record's fields are public and `QuantizedVector` is `Copy`, so a vector
+    /// built under one budget can be assigned to a field declared with another.
+    /// That has to be a named refusal at the schema boundary rather than a silent
+    /// narrowing by [`Self::write_to`], or a record could travel with numbers
+    /// that do not mean what its field declares.
+    ///
+    /// # Errors
+    ///
+    /// [`SnapshotError::OutOfRange`] naming `budget`'s field for the first
+    /// component that does not fit.
+    pub fn check_width(self, budget: Quantization) -> Result<(), SnapshotError> {
+        for step in self.steps {
+            if !budget.fits(step) {
+                return Err(budget.out_of(step));
+            }
+        }
+        Ok(())
     }
 
     /// Bytes this vector occupies on the wire under `budget`.
@@ -1379,7 +1421,9 @@ impl Snapshot {
     /// The declared budgets are re-checked here, so a snapshot is valid only
     /// while every quantization it depends on is a usable declaration. Each
     /// record is checked for session, serial and generation validity, integrity
-    /// is bounded by its permille range, and an actor may appear only once.
+    /// is bounded by its permille range, every stored position/velocity integer
+    /// must fit the width its own field declares, and an actor may appear only
+    /// once.
     ///
     /// # Errors
     ///
@@ -1431,6 +1475,16 @@ impl Snapshot {
                     max: 1000.0,
                 });
             }
+            // Every spatial field must hold integers its own declaration can
+            // store, so a record assembled under a different budget is refused
+            // here instead of being narrowed on the way to the wire.
+            record.position.check_width(POSITION_QUANTIZATION)?;
+            record
+                .linear_velocity
+                .check_width(LINEAR_VELOCITY_QUANTIZATION)?;
+            record
+                .angular_velocity
+                .check_width(ANGULAR_VELOCITY_QUANTIZATION)?;
         }
         Ok(())
     }

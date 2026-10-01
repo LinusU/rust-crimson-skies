@@ -44,14 +44,70 @@ fn three_actors() -> [ActorId; 3] {
     ]
 }
 
-/// The largest axis-aligned angle, in radians, by which two unit quaternions
-/// disagree. Measured rather than assumed: `2*asin(|q1 - q2|/2)` is the exact
-/// rotation angle between them.
+/// The largest angle, in radians, by which two unit quaternions disagree.
+///
+/// Two unit quaternions whose dot product is `c` represent rotations that differ
+/// by exactly `2*acos(|c|)`: `|q1 - q2| = 2*sin(theta/4)`, so the rotation angle
+/// `theta` is *twice* the chord, not the chord. Both arguments are normalized
+/// first because
+/// [`Quaternion::try_new`](cs_types::space::Quaternion) accepts a rotation within
+/// `QUATERNION_LENGTH_TOLERANCE` of unit length, while `decode` returns a
+/// strictly unit rotation — measuring against a denormalized input would report
+/// the input's own error as the encoding's.
 fn orientation_error_rad(a: Quaternion, b: Quaternion) -> f64 {
-    let [ax, ay, az, aw] = a.components();
-    let [bx, by, bz, bw] = b.components();
+    let [ax, ay, az, aw] = normalized_components(a);
+    let [bx, by, bz, bw] = normalized_components(b);
     let dot = (ax * bx + ay * by + az * bz + aw * bw).abs();
-    2.0 * dot.clamp(-1.0, 1.0).min(1.0).acos() * 0.5
+    2.0 * dot.clamp(-1.0, 1.0).min(1.0).acos()
+}
+
+/// The components of `rotation`, scaled to exactly unit length.
+fn normalized_components(rotation: Quaternion) -> [f64; 4] {
+    let [x, y, z, w] = rotation.components();
+    let length = (x * x + y * y + z * z + w * w).sqrt();
+    if length > 0.0 {
+        [x / length, y / length, z / length, w / length]
+    } else {
+        [x, y, z, w]
+    }
+}
+
+/// The structural worst cases of the smallest-three encoding: a rotation whose
+/// four components are near `1/2` in magnitude, so the dropped component is the
+/// smallest one and its reconstruction from the unit-norm constraint is the most
+/// amplified. These are the rotations that decide the declared budget; a sweep of
+/// well-separated rotations alone never reaches them.
+fn near_equal_component_rotations() -> Vec<Quaternion> {
+    let mut rotations = Vec::new();
+    // All sixteen sign patterns of (+-0.5, +-0.5, +-0.5, +-0.5): the components
+    // are exactly equal in magnitude, so whichever one is dropped leaves the
+    // other three at their worst ratio to it.
+    for bits in 0_u8..16 {
+        rotations.push(
+            Quaternion::try_new([
+                if bits & 1 == 0 { 0.5 } else { -0.5 },
+                if bits & 2 == 0 { 0.5 } else { -0.5 },
+                if bits & 4 == 0 { 0.5 } else { -0.5 },
+                if bits & 8 == 0 { 0.5 } else { -0.5 },
+            ])
+            .expect("exactly unit"),
+        );
+    }
+    // The same structure reached continuously: every rotation about the diagonal
+    // (1,1,1)/sqrt(3) axis passes through a state where three components are
+    // equal, which is where the dropped component is smallest.
+    let diagonal = UnitVec3::try_new([
+        1.0 / 3.0_f64.sqrt(),
+        1.0 / 3.0_f64.sqrt(),
+        1.0 / 3.0_f64.sqrt(),
+    ])
+    .expect("unit");
+    let steps = 720;
+    for step in 0..steps {
+        let angle = std::f64::consts::TAU * step as f64 / steps as f64;
+        rotations.push(Quaternion::from_axis_angle(diagonal, Radians(angle)).expect("unit"));
+    }
+    rotations
 }
 
 /// The declared budgets are explicit: every entry names its field, unit, scale
@@ -302,6 +358,61 @@ fn accept_f57_a_every_field_round_trips_inside_its_declared_error_budget() {
         "rotation error should be nonzero and inside its budget, measured worst was {}",
         worst[3]
     );
+}
+
+/// The declared orientation budget is an actual upper bound: it holds for a dense
+/// random sweep *and* for the structural worst cases of the smallest-three
+/// encoding, where the dropped component is smallest and its reconstruction from
+/// the unit-norm constraint is most amplified.
+///
+/// The random sweep alone peaks well below the budget, so a bound that only the
+/// random sweep can see would be an unproven one.
+#[test]
+fn accept_f57_a_the_rotation_budget_bounds_the_structural_worst_cases() {
+    let mut rng = SplitMix64::new(0x0000_1200_5EED_0001);
+    let mut worst_random = 0.0_f64;
+    for _ in 0..4096 {
+        let u = |rng: &mut SplitMix64| cs_types::random::unit_f64(rng.next_u64());
+        let Ok(axis) = UnitVec3::try_new([
+            u(&mut rng) * 2.0 - 1.0,
+            u(&mut rng) * 2.0 - 1.0,
+            u(&mut rng) * 2.0 - 1.0,
+        ]) else {
+            continue;
+        };
+        let rotation =
+            Quaternion::from_axis_angle(axis, Radians(u(&mut rng) * std::f64::consts::TAU))
+                .expect("unit-length axis and finite angle");
+        worst_random = worst_random.max(rotation_error_within_budget(rotation));
+    }
+    let worst_structural = near_equal_component_rotations()
+        .into_iter()
+        .map(rotation_error_within_budget)
+        .fold(0.0_f64, f64::max);
+    // Both families stay inside the declared budget, and the structural family is
+    // the one that comes close to it: a budget only the easy family can meet
+    // would be unproven.
+    assert!(
+        worst_structural > worst_random,
+        "the structural worst cases must be the binding ones, measured random {worst_random} vs structural {worst_structural}"
+    );
+    assert!(
+        worst_structural > 0.75 * ROTATION_ORIENTATION_ERROR_RAD,
+        "the structural worst case must approach the declared budget, measured {worst_structural} of {ROTATION_ORIENTATION_ERROR_RAD}"
+    );
+}
+
+/// Encodes and decodes `rotation`, asserting the round trip stays inside the
+/// declared budget and returning the measured error.
+fn rotation_error_within_budget(rotation: Quaternion) -> f64 {
+    let encoded = cs_net::snapshot::QuantizedRotation::encode(rotation).expect("unit");
+    let decoded = encoded.decode().expect("decodes to unit length");
+    let error = orientation_error_rad(rotation, decoded);
+    assert!(
+        error <= ROTATION_ORIENTATION_ERROR_RAD,
+        "rotation drifted {error} rad, declared budget is {ROTATION_ORIENTATION_ERROR_RAD}"
+    );
+    error
 }
 
 /// The smallest-three rotation encoding keeps its index/sign discipline: a
@@ -633,6 +744,65 @@ fn accept_f57_a_encoded_size_matches_the_declared_layout_and_the_envelope_cap() 
         Snapshot::from_frame(&frame, SESSION),
         Ok(snapshot),
         "the envelope's payload must decode back to the snapshot that produced it"
+    );
+}
+
+/// A record assembled under a different budget than the field it is assigned to
+/// is refused by name, never narrowed: the wire width a field declares is the
+/// width its integers have to fit, and a silently truncated step count would
+/// travel as a plausible different position or velocity.
+#[test]
+fn accept_f57_a_a_record_whose_stored_integers_exceed_its_field_width_is_refused() {
+    let [first, second, _] = three_actors();
+    let mut record = synthetic_actor_record(first, 1, [1.0, 2.0, 3.0]);
+
+    // A velocity field carrying integers quantized for the 32-bit position budget
+    // is refused by name, per field, rather than narrowed to 16 bits on the way to
+    // the wire.
+    record.linear_velocity =
+        cs_net::snapshot::QuantizedVector::quantize(POSITION_QUANTIZATION, [1.0e6, 0.0, 0.0])
+            .expect("a million meters is inside the declared position range");
+    assert_eq!(
+        Snapshot::new(OriginEpoch(1), 0, vec![record]).validate(SESSION),
+        Err(SnapshotError::OutOfRange {
+            field: "linear_velocity",
+            value: 1.0e6 * 64.0,
+            max: LINEAR_VELOCITY_QUANTIZATION.max_value(),
+        })
+    );
+    record.linear_velocity =
+        cs_net::snapshot::QuantizedVector::quantize(LINEAR_VELOCITY_QUANTIZATION, [30.0; 3])
+            .expect("30 m/s is inside the declared velocity range");
+    record.angular_velocity =
+        cs_net::snapshot::QuantizedVector::quantize(POSITION_QUANTIZATION, [-1.0e6, 0.0, 0.0])
+            .expect("a million meters is inside the declared position range");
+    assert_eq!(
+        Snapshot::new(OriginEpoch(1), 0, vec![record]).validate(SESSION),
+        Err(SnapshotError::OutOfRange {
+            field: "angular_velocity",
+            value: -1.0e6 * 64.0,
+            max: ANGULAR_VELOCITY_QUANTIZATION.max_value(),
+        })
+    );
+
+    // A record built the declared way passes, so the check is not vacuous, and
+    // the position field itself still carries its full 32-bit range.
+    let _ = second;
+    record.angular_velocity =
+        cs_net::snapshot::QuantizedVector::quantize(ANGULAR_VELOCITY_QUANTIZATION, [1.0; 3])
+            .expect("1 rad/s is inside the declared angular velocity range");
+    assert_eq!(
+        Snapshot::new(OriginEpoch(1), 0, vec![record]).validate(SESSION),
+        Ok(())
+    );
+    record.position = cs_net::snapshot::QuantizedVector::quantize(
+        POSITION_QUANTIZATION,
+        [POSITION_QUANTIZATION.max_value(), 0.0, 0.0],
+    )
+    .expect("the declared position maximum is inside the declared position range");
+    assert_eq!(
+        Snapshot::new(OriginEpoch(1), 0, vec![record]).validate(SESSION),
+        Ok(())
     );
 }
 

@@ -40,8 +40,11 @@
 //!   [`cs_net::message::EventBody::ActorRemoved`], which is why a session with
 //!   10 % loss still ends with no ghost aircraft (F57 AC01).
 //! * **Reordering is not rollback.** A snapshot older than the one already
-//!   applied is refused whole. A late packet never rewinds a remote aircraft and
-//!   never resurrects a generation that has already ended.
+//!   applied is refused whole, and a record naming an *older* generation than
+//!   the one the mirror holds is refused per record: generations only ever
+//!   increase for an id, so an older one is a late packet, not a new actor. A
+//!   late packet never rewinds a remote aircraft and never resurrects a
+//!   generation that has already ended.
 //! * **Presentation only.** Nothing here awards damage, consumes ammunition or
 //!   resolves a hit. Those are server-owned (UI-NETWORK ownership table); the
 //!   mirror only reports what the server said.
@@ -115,6 +118,12 @@ impl std::error::Error for PublishError {}
 /// The pose conversion is the one canonical conversion the local bodies use
 /// ([`WorldOrigin::local_of`]): world identity stays f64 on this side and the
 /// integer on the wire is that local frame through the declared quantization.
+///
+/// The declared position budget therefore bounds *quantization*, not the f32 the
+/// local frame is held in: a position far from the origin epoch is additionally
+/// subject to the world → local → world round-trip tolerance
+/// ([`crate::origin::local_round_trip_tolerance_m`]), which is the bound a
+/// consumer should use for a mirrored pose and not the quantization budget alone.
 ///
 /// # Errors
 ///
@@ -290,6 +299,16 @@ pub enum IngestRefusal {
         /// The generation that already ended.
         generation: u16,
     },
+    /// The record names an *older* generation than the one the mirror holds. A
+    /// generation only ever increases for an id, so this is a reordered or
+    /// replayed record rather than a new actor, and applying it would roll the
+    /// mirror back to a state it has already left.
+    StaleGeneration {
+        /// The older generation the record names.
+        record: u16,
+        /// The newer generation the mirror holds.
+        held: u16,
+    },
     /// The actor was retired by a reliable `ActorRemoved`. Actor ids are never
     /// recycled, so no later record of any generation may apply.
     ReliablyRemoved,
@@ -297,6 +316,13 @@ pub enum IngestRefusal {
     UnusableRotation,
     /// The record's position could not be expressed in the local origin frame.
     UnusablePosition,
+    /// A stored integer does not fit the declared width of the field it arrived
+    /// in. A corrupt or foreign payload is named by its field rather than
+    /// reported as something else.
+    UnreadableField {
+        /// The declared field whose stored value cannot be read.
+        field: &'static str,
+    },
 }
 
 impl fmt::Display for IngestRefusal {
@@ -322,6 +348,10 @@ impl fmt::Display for IngestRefusal {
                 f,
                 "record's generation {generation} has already ended and cannot be applied again"
             ),
+            Self::StaleGeneration { record, held } => write!(
+                f,
+                "record names generation {record}, older than the generation {held} the mirror holds"
+            ),
             Self::ReliablyRemoved => write!(
                 f,
                 "actor was retired by a reliable removal; its id is never recycled"
@@ -332,21 +362,29 @@ impl fmt::Display for IngestRefusal {
             Self::UnusablePosition => {
                 write!(f, "record's position is not usable in this origin frame")
             }
+            Self::UnreadableField { field } => write!(
+                f,
+                "record's {field} field holds a value its declared width cannot carry"
+            ),
         }
     }
 }
 
 /// Why a dequantized remote state could not be built.
 ///
-/// Both variants mean "this record is untrustworthy"; which one is named so a
-/// caller can tell a bad rotation from a position the origin frame cannot
-/// express.
+/// Every variant names the field it is about: a caller that is told "the rotation
+/// is unusable" must not be handed a position that failed instead.
 #[derive(Clone, Debug, PartialEq)]
 pub enum MirrorError {
     /// A dequantized spatial value crossed the boundary and was rejected there.
     Origin(OriginError),
     /// The record's rotation did not decode into a unit quaternion.
     Rotation,
+    /// A stored integer does not fit the declared width of its field.
+    UnreadableField {
+        /// The declared field that cannot be read.
+        field: &'static str,
+    },
 }
 
 impl fmt::Display for MirrorError {
@@ -354,6 +392,10 @@ impl fmt::Display for MirrorError {
         match self {
             Self::Origin(error) => write!(f, "origin conversion rejected the record: {error}"),
             Self::Rotation => write!(f, "record rotation did not decode into a unit quaternion"),
+            Self::UnreadableField { field } => write!(
+                f,
+                "record's {field} field holds a value its declared width cannot carry"
+            ),
         }
     }
 }
@@ -421,25 +463,36 @@ impl RemoteAircraft {
     ///
     /// # Errors
     ///
-    /// [`MirrorError::Rotation`] when the rotation does not decode or a stored
-    /// velocity does not fit its declared width, and [`MirrorError::Origin`]
-    /// when the position cannot be expressed in the local frame.
+    /// [`MirrorError::Rotation`] when the rotation does not decode,
+    /// [`MirrorError::UnreadableField`] naming the position or velocity field
+    /// whose stored integer does not fit its declared width, and
+    /// [`MirrorError::Origin`] when the position cannot be expressed in the local
+    /// frame.
     pub fn from_record(
         record: &ActorRecord,
         tick: Tick,
         origin: &WorldOrigin,
     ) -> Result<Self, MirrorError> {
-        let relative = record.position_m().map_err(|_| MirrorError::Rotation)?;
+        let relative = record
+            .position_m()
+            .map_err(|_| MirrorError::UnreadableField {
+                field: POSITION_QUANTIZATION.field(),
+            })?;
         let orientation = record
             .rotation
             .decode()
             .map_err(|_| MirrorError::Rotation)?;
         let linear = record
             .linear_velocity_mps()
-            .map_err(|_| MirrorError::Rotation)?;
-        let angular = record
-            .angular_velocity_radps()
-            .map_err(|_| MirrorError::Rotation)?;
+            .map_err(|_| MirrorError::UnreadableField {
+                field: LINEAR_VELOCITY_QUANTIZATION.field(),
+            })?;
+        let angular =
+            record
+                .angular_velocity_radps()
+                .map_err(|_| MirrorError::UnreadableField {
+                    field: ANGULAR_VELOCITY_QUANTIZATION.field(),
+                })?;
         let position = origin
             .world_of(
                 LocalPosition::try_new([
@@ -693,6 +746,22 @@ impl RemoteMirror {
                 previous.is_some_and(|current| current.generation == record.generation);
             if let Some(current) = previous
                 && !same_generation
+                && current.generation > record.generation
+            {
+                // Generations only ever increase for an id, so an older one is a
+                // reordered record, not a new actor: applying it would rewind the
+                // mirror to a state it has already left.
+                report.refused.push((
+                    record.actor,
+                    IngestRefusal::StaleGeneration {
+                        record: record.generation,
+                        held: current.generation,
+                    },
+                ));
+                continue;
+            }
+            if let Some(current) = previous
+                && !same_generation
             {
                 // A generation change retires the old record outright: nothing of
                 // it survives into the new one.
@@ -743,13 +812,18 @@ impl RemoteMirror {
     /// and retry can replay a request) is absorbed instead of retiring an actor a
     /// second time, and a snapshot that carries the same removal afterwards — or
     /// one that arrives with a different generation — cannot bring the id back.
-    /// Every other event is observed and ignored: the mirror is presentation
-    /// state and runs no mission logic.
+    /// An event stamped with another session generation is not this session's
+    /// event at all, so it is left alone like any other foreign event. Every
+    /// other event is observed and ignored: the mirror is presentation state and
+    /// runs no mission logic.
     ///
     /// Returns `true` when this call is the one that recorded the removal, so a
     /// replay is distinguishable from the first application.
     #[must_use]
     pub fn apply_event(&mut self, event: &ReliableEvent) -> bool {
+        if event.id.session != self.session {
+            return false;
+        }
         let EventBody::ActorRemoved { actor } = event.body else {
             return false;
         };
@@ -778,5 +852,6 @@ fn refusal_for(error: MirrorError) -> IngestRefusal {
     match error {
         MirrorError::Rotation => IngestRefusal::UnusableRotation,
         MirrorError::Origin(_) => IngestRefusal::UnusablePosition,
+        MirrorError::UnreadableField { field } => IngestRefusal::UnreadableField { field },
     }
 }

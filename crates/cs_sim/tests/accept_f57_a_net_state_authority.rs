@@ -87,7 +87,8 @@ fn accept_f57_a_generations_are_allocated_once_per_actor_and_never_recycled() {
         Err(NetStateError::DuplicateActor { actor: actors[0] })
     );
 
-    // A foreign session, and a malformed id, are both refused by name.
+    // A foreign session, and a malformed id, are both refused by name — and by
+    // different names, because they are different mistakes.
     let foreign = SessionId::new(77).expect("nonzero");
     let foreign_actor = ActorId {
         session: foreign,
@@ -101,10 +102,44 @@ fn accept_f57_a_generations_are_allocated_once_per_actor_and_never_recycled() {
     );
     assert_eq!(
         ledger.spawn(state),
-        Err(NetStateError::InvalidActorId {
-            actor: foreign_actor
+        Err(NetStateError::ForeignSession {
+            expected: SESSION,
+            found: foreign,
         })
     );
+    // Every entry point that takes an actor id refuses it the same way, so no
+    // method is a way around the session check.
+    let generation_of_foreign = ActorGeneration::try_new(1).expect("one is valid");
+    let refused = NetStateError::ForeignSession {
+        expected: SESSION,
+        found: foreign,
+    };
+    // Every entry point that takes an actor id refuses it the same way, so no
+    // method is a way around the session check.
+    assert_eq!(
+        ledger.record_destruction(foreign_actor, generation_of_foreign, Tick(9)),
+        Err(refused),
+    );
+    assert_eq!(
+        ledger.end_lifecycle(
+            foreign_actor,
+            generation_of_foreign,
+            NetLifecycle::Despawned,
+        ),
+        Err(refused),
+    );
+    assert_eq!(ledger.forget(foreign_actor), Err(refused));
+    assert_eq!(
+        ledger.publish(NetActorState::spawn(
+            foreign_actor,
+            WorldPosition::try_new([0.0; 3]).expect("finite"),
+            Quaternion::IDENTITY,
+            10,
+        )),
+        Err(refused),
+        "a foreign-session id must be refused by every entry point"
+    );
+    assert_eq!(ledger.actor_count(), 3, "no foreign actor was registered");
     let zero_serial = ActorId {
         session: SESSION,
         serial: 0,
@@ -118,6 +153,15 @@ fn accept_f57_a_generations_are_allocated_once_per_actor_and_never_recycled() {
     assert_eq!(
         ledger.spawn(state),
         Err(NetStateError::InvalidActorId { actor: zero_serial })
+    );
+    // And a ledger for another session generation refuses this ledger's actors.
+    let other = SessionId::new(5).expect("nonzero");
+    assert_eq!(
+        NetStateLedger::new(other).forget(actors[0]),
+        Err(NetStateError::ForeignSession {
+            expected: other,
+            found: SESSION,
+        })
     );
 }
 

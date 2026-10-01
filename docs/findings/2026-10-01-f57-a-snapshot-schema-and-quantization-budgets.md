@@ -58,16 +58,16 @@ so a consumer audits it instead of trusting the values it happens to use.
 | unit fraction (throttle, spool, boost) | 1/65535 | u16 | 7.6e-6 |
 | integrity | 1/1000 | u16 | 0.5 per mille |
 | rounds | 1 | u16 | 0.5 round (exact for integers) |
-| orientation | smallest-three | 7 bytes | 9.2e-5 rad |
+| orientation | smallest-three | 7 bytes | 1.22e-4 rad (`8e`) — see the review correction below |
 
 Derived, not chosen to make a test pass: position is ±33 554 km from the origin
 epoch, so a world-scale distance is representable while the step stays at 7.8 mm;
 velocity ranges (±1638 m/s, ±63.997 rad/s) cover any airframe F24's model can
-produce with headroom. The rotation budget is a first-order bound stated in the
-module doc (`sqrt(3)e + 3e` perturbation of the unit quaternion, rounded up to
-`6e`); the acceptance test measures the worst case over a deterministic sweep
-and separately proves the dropped component is always a largest one and keeps its
-sign, which is what a wrong index or a lost sign would break.
+produce with headroom. The rotation budget is derived in the module doc and
+measured by two acceptance tests (a dense random sweep and the structural worst
+case); the first version of that derivation was wrong and is corrected below. The
+acceptance test separately proves the dropped component is always a largest one
+and keeps its sign, which is what a wrong index or a lost sign would break.
 
 Three properties make the budgets claims rather than comments:
 
@@ -113,6 +113,94 @@ Three properties make the budgets claims rather than comments:
   no field of the old generation survives, and a stale record for the old
   generation is refused. F57-D measures the interpolation-history consequence;
   this is the schema-level guarantee F57-B builds the buffer on.
+
+## Review corrections (F57-A review, 2026-10-01)
+
+The review of this branch found two measurement defects that were hiding a real
+bug in a declared budget, plus four smaller defects. All are fixed on the branch;
+the claims above are the corrected ones.
+
+1. **The declared orientation budget was ~13 % too tight, and the test could not
+   see it.** `ROTATION_ORIENTATION_ERROR_RAD` was declared as `6e` from the
+   derivation "`sqrt(3)e + 3e` of perturbation turns the axis by at most the same
+   angle". That last step is wrong by a factor of two: for two unit quaternions
+   `|q - q'| = 2*sin(theta/4)`, so a perturbation `p` separates the two rotations
+   by `theta ~= 2*|p|`, not `|p|`. The corrected first-order bound is therefore
+   `2*sqrt(3e^2 + (3e)^2) = 6.93e`, and **`8e` (1.22e-4 rad, 0.007°) is now
+   declared**. Two things hid this. First, the test's own measurement helper
+   returned `2*acos(|dot|)*0.5` — exactly half the true angle, and its doc comment
+   described a formula (`2*asin(|q1 - q2|/2)`) that the code did not implement and
+   that is itself half the angle. Second, the sweep used four axes and 256 random
+   angles, which never reaches the encoding's structural worst case.
+   The measured worst cases now agree with the derivation: a dense random sweep
+   peaks at `2.8e`, and rotations whose four components are near equal in
+   magnitude — where the dropped component is smallest and its reconstruction
+   from the unit norm is most amplified — peak at `6.93e`.
+   `accept_f57_a_the_rotation_budget_bounds_the_structural_worst_cases` measures
+   both families, asserts the structural one is the binding one and that it comes
+   within 25 % of the budget, and fails if the constant is lowered to `6e`.
+   The helper also normalizes its arguments now: `Quaternion::try_new` accepts a
+   rotation within `QUATERNION_LENGTH_TOLERANCE` (1e-6) of unit length while
+   `decode` returns a strictly unit rotation, so measuring against a denormalized
+   input reported the input's own error as the encoding's — worth `9e-7` on its
+   own, and it dominated the apparent error of every random sample.
+2. **`NetStateError::ForeignSession` was unreachable.** `expect_own_actor`
+   returned `InvalidActorId` for both a malformed id and an id of another session,
+   so the variant every method's `# Errors` section promised could never be
+   constructed, and the distinction the type drew was not real. It now returns
+   `InvalidActorId` only for a zero session/serial and `ForeignSession` for a
+   valid id of another session generation; the test asserts every entry point
+   (`spawn`, `publish`, `record_destruction`, `end_lifecycle`, `forget`) and a
+   second ledger refusing this one's actors.
+3. **The mirror named the wrong field.** `RemoteAircraft::from_record` mapped a
+   position or velocity stored integer that did not fit its declared width onto
+   `MirrorError::Rotation`, so a corrupt position was reported to the application
+   as "the rotation did not decode into a unit quaternion". `MirrorError` and
+   `IngestRefusal` now carry `UnreadableField { field }` and name the field.
+4. **A record could travel with integers that do not fit its field.** `ActorRecord`
+   fields are public and `QuantizedVector` is `Copy`, so a vector quantized under
+   the 32-bit position budget could be assigned to a 16-bit velocity field, and
+   `write_to` would have narrowed it silently. `Snapshot::validate` now checks every
+   stored position/velocity integer against its own field's declared width, and
+   `accept_f57_a_a_record_whose_stored_integers_exceed_its_field_width_is_refused`
+   covers it. (`Snapshot::decode` runs `validate`, so this also refuses a corrupt
+   payload whose position integer is `i32::MIN`.)
+5. **The mirror replayed an older generation.** A record naming an older generation
+   than the one held was treated as a *newer* actor — the previous record was
+   retired and the mirror rewound to the stale pose. That needs a lost intermediate
+   snapshot, which the 10 % loss rows of AC01 produce. It is now refused as
+   `IngestRefusal::StaleGeneration { record, held }`.
+6. **A reliable event from another session generation retired a live actor.**
+   `apply_event` checked the actor's session but not the event's own `EventId`
+   session. It now refuses an event that is not this session's event, and the same
+   test covers it.
+
+Two test tolerances were also wrong rather than merely loose, and both were
+fixed against the right declared bounds rather than by widening a number:
+
+- The latency scenario and the rebase test compared a **three-axis distance**
+  against the **per-axis** quantization budget, and ignored the f32 the local frame
+  is held in. A mirrored pose is now checked against
+  `POSITION_QUANTIZATION::max_error() + cs_app::origin::local_round_trip_tolerance_m(..)`,
+  the composition of the two bounds that actually apply, and `publish_actor`'s doc
+  says so explicitly.
+
+### Review sensitivity checks
+
+Applied, observed failing, reverted:
+
+| Mutation | Failing test |
+| --- | --- |
+| `ROTATION_ORIENTATION_ERROR_RAD` back to `6e` | `accept_f57_a_the_rotation_budget_bounds_the_structural_worst_cases` |
+| drop the `check_width` calls in `Snapshot::validate` | `accept_f57_a_a_record_whose_stored_integers_exceed_its_field_width_is_refused` |
+| collapse `ForeignSession` back into `InvalidActorId` | `accept_f57_a_generations_are_allocated_once_per_actor_and_never_recycled` |
+| drop the `current.generation > record.generation` guard | `accept_f57_a_an_older_generation_is_refused_rather_than_replayed_back` |
+| drop the `event.id.session` check | `accept_f57_a_an_older_generation_is_refused_rather_than_replayed_back` |
+
+The reviewer of this branch is the same agent instance that implemented it
+(`bunny-alpha-1`), on a fresh session but without an independent context, so this
+review is **not** independent evidence. Nothing here claims original-reference
+fidelity, and none of these numbers is measured from the original game.
 
 ## Sensitivity: what fails when the implementation is removed
 
@@ -162,6 +250,16 @@ These are real and belong to later stages; none of them is presented as working.
    ("a local tracer cannot award a kill") is structural here — the mirror holds
    no damage or reward state at all, and `accept_f57_a_the_mirror_awards_nothing`
    pins that — but the predicted-tracer path itself is F57-B/C work.
+8. **The declared position budget is a quantization budget, not a
+   world-position-resolution claim.** Publish and mirror both go through
+   `WorldOrigin::local_of`/`world_of`, whose local frame is `f32`: a position
+   100 km from the origin epoch has an f32 ulp of about 8 mm, the same order as the
+   7.8 mm quantization step, and it grows with distance. The bound that actually
+   applies to a mirrored pose is
+   `POSITION_QUANTIZATION::max_error() + local_round_trip_tolerance_m(world, local)`,
+   and F57-B's reconciliation budget must use that composition rather than the
+   quantization step alone. This stage neither removes the f32 narrowing (F16 owns
+   the local frame) nor claims a world-precision the frame cannot hold.
 
 ## Unknowns, recorded rather than guessed
 
