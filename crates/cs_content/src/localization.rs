@@ -1499,6 +1499,12 @@ fn parse_control(
         if open.last().is_some_and(|expected| expected == name) {
             open.pop();
             flush(document, literal);
+            // A closing control is a token too: a renderer has to be able to
+            // pop the style the matching opening control pushed.
+            document.tokens.push(MarkupToken::Control {
+                name: name.to_owned(),
+                argument: None,
+            });
         } else {
             keep_literal(document, literal, delimiters, closed);
             document
@@ -2044,12 +2050,14 @@ impl FontCatalog {
     pub fn missing_glyphs(&self, texts: &[String]) -> MissingGlyphReport {
         let mut report = MissingGlyphReport::default();
         for text in texts {
-            let uncovered: BTreeSet<char> = text
-                .chars()
-                .filter(|ch| !ch.is_whitespace())
-                .filter(|ch| self.faces.values().all(|face| !face.coverage().covers(*ch)))
-                .collect();
-            for ch in uncovered {
+            let mut seen: BTreeSet<char> = BTreeSet::new();
+            for ch in text.chars() {
+                if ch.is_whitespace() || !seen.insert(ch) {
+                    continue;
+                }
+                if self.faces.values().any(|face| face.coverage().covers(ch)) {
+                    continue;
+                }
                 let occurrences = text.chars().filter(|other| *other == ch).count();
                 report.add(ch, occurrences);
             }
@@ -2084,16 +2092,61 @@ pub fn declared_synthetic_text_catalog() -> TextCatalog {
                    north since the last briefing, so the assigned corridor now crosses the edge of \
                    the storm cell. Expect reduced visibility, intermittent rain and a longer \
                    crossing than planned. Acknowledge this briefing and confirm your assigned \
-                   corridor before you take the runway.";
-    let long_de = "Achtung Besatzung. Die Wetterfront ueber den Schifffahrtsrouten ist seit dem \
+                   corridor before you take the runway. The escort flight will hold at the relay \
+                   point until the corridor is acknowledged, and the tanker group behind you will \
+                   close up to the same spacing, so any deviation from the assigned corridor adds \
+                   fuel to every aircraft behind you. Navigation lights are to be on, the escort \
+                   frequency is to be monitored continuously, and no aircraft is to break formation \
+                   inside the cell boundary regardless of the weather. If the crossing cannot be \
+                   completed inside the fuel margin, return to the relay point and request a new \
+                   corridor from the control ship; do not improvise a route through the rain band \
+                   on the northern flank, because the cell edge moves with the wind and the \
+                   surveyed marks inside it are two years old. Acknowledge this briefing.";
+    let long_de = "Achtung Besatzung. Die Wetterfront über den Schifffahrtsrouten ist seit dem \
                    letzten Briefing nach Norden gewandert, der zugewiesene Korridor kreuzt daher \
-                   den Rand der Sturmzelle. Geringere Sicht, zeitweiliger Regen und eine laengere \
-                   Ueberfahrt als geplant sind zu erwarten. Bestaetigen Sie dieses Briefing und \
-                   geben Sie Ihren zugewiesenen Korridor an, bevor Sie die Startbahn nehmen.";
+                   den Rand der Sturmzelle. Geringere Sicht, zeitweiliger Regen und eine längere \
+                   Überfahrt als geplant sind zu erwarten. Bestätigen Sie dieses Briefing und \
+                   geben Sie Ihren zugewiesenen Korridor an, bevor Sie die Startbahn nehmen. Das \
+                   Begleitflugzeug hält am Relaispunkt, bis der Korridor bestätigt ist, und die \
+                   Tankergruppe hinter Ihnen schließt auf denselben Abstand auf, sodass jede \
+                   Abweichung vom zugewiesenen Korridor den Brennstoff für alle hinter Ihnen \
+                   vergrößert. Positionslichter sind einzuschalten, der Begleitfunk ist \
+                   ununterbrochen zu überwachen, und keine Maschine löst sich innerhalb der \
+                   Zellgrenze aus dem Verband, unabhängig vom Wetter. Lässt sich die Überfahrt \
+                   innerhalb des Treibstoffrahmens nicht abschließen, kehren Sie zum Relaispunkt \
+                   zurück und fordern Sie einen neuen Korridor vom Führungsschiff an; improvisieren \
+                   Sie keinen Weg durch das Regenband am nördlichen Flanke, denn die Zellgrenze \
+                   wandert mit dem Wind, und die vermessenen Marken darin sind zwei Jahre alt. \
+                   Der Anflug auf die Startbahn erfolgt gegen den Wind, und die Sichtweite am \
+                   Bodensegment kann unter dem Regen geringer ausfallen als am Kontrollschiff \
+                   gemeldet; halten Sie die Anfluggeschwindigkeit nach Sicht, nicht nach Uhr. \
+                   Meldet das Begleitflugzeug eine Triebwerksstörung, brechen Sie den Anflug ab und \
+                   bleiben Sie in Holding, bis die Bodenkennung erneut freigegeben ist. Eine \
+                   Freigabe durch den Lotsen ohne bestätigten Korridor wird nicht angenommen, und \
+                   eine Verspätung gegenüber der im Fahrplan genannten Zeit wird an die Leitstelle \
+                   gemeldet, bevor die Startbahn freigegeben wird. Bestätigen Sie dieses Briefing.";
     let long_fr = "Equipage, attention. Le front meteorologique au-dessus des couloirs maritimes a \
                    remonte vers le nord depuis le dernier briefing; le corridor assigne croise donc \
                    le bord de la cellule de tempete. Attendez-vous a une visibilite reduite, a des \
-                   pluies intermittentes et a une traversée plus longue que prevu.";
+                   pluies intermittentes et a une traversée plus longue que prevu. Confirmez ce \
+                   briefing et annoncez le corridor qui vous est assigne avant de prendre la piste. \
+                   L'avion d'escorte se/maintiendra au point relais jusqu'a confirmation du \
+                   corridor, et le groupe de ravitaillement derriere vous reduira au meme espacement, \
+                   de sorte que tout ecart au corridor assigne augmente le carburant de tous les \
+                   avions qui suivent. Les feux de position doivent etre allumes, la frequence \
+                   d'escorte doit etre suivie en permanence, et aucun appareil ne doit rompre la \
+                   formation a l'interieur de la limite de la cellule, quel que soit le temps. Si \
+                   la traversee ne peut pas etre achevee dans la marge de carburant, revenez au \
+                   point relais et demandez un nouveau corridor au navire de commandement; \
+                   n'improvisez pas un itineraire dans la bande de pluie du flanc nord, car la \
+                   limite de la cellule avance avec le vent et les reperes releves a l'interieur \
+                   ont deux ans. L'approche se fait face au vent, et la visibilite au niveau du \
+                   sol peut etre plus mauvaise que celle annoncee par le navire de commandement; \
+                   tenez votre vitesse d'approche a la vue, pas a l'horloge. Si l'avion d'escorte \
+                   signale une panne de moteur, interrompez l'approche et restez en attente jusqu'a \
+                   une nouvelle liberation de l'identifiant au sol; une clearance de l'aerodrome \
+                   sans corridor confirme n'est pas acceptee, et tout retard est signale au poste de \
+                   commandement avant que la piste ne soit liberee. Confirmez ce briefing.";
     let mut catalog = TextCatalog::new();
     let row = |key: &str, locale: &str, text: &str| {
         LocalizedText::new(
