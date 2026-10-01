@@ -1,11 +1,11 @@
-//! F51-A/F51-B acceptance tests: locale fallback, control-markup grammar, font
-//! provenance, the fit-or-scroll layout, resource decoding and the screen text
-//! pipeline.
+//! F51-A/F51-B/F51-C acceptance tests: locale fallback, control-markup grammar,
+//! font provenance, the fit-or-scroll layout, resource decoding, the screen text
+//! pipeline and the runtime menus, HUD and subtitles share.
 //!
 //! Spec: `specs/F51-localization-fonts-text-layout-and-original-media-ids.md`,
-//! stages `### F51-A` and `### F51-B`; shared contract
-//! `docs/contracts/UI-NETWORK.md`. Task test prefixes: `accept_f51_a_` and
-//! `accept_f51_b_`.
+//! stages `### F51-A`, `### F51-B` and `### F51-C`; shared contract
+//! `docs/contracts/UI-NETWORK.md`. Task test prefixes: `accept_f51_a_`,
+//! `accept_f51_b_` and `accept_f51_c_`.
 //!
 //! These tests drive production code only: `cs_content::localization` owns the
 //! declared records, their validation, the markup parser and the F12 resource
@@ -16,6 +16,10 @@
 //! The F51-B minimum scenario — *malformed markup and absent glyphs produce
 //! visible diagnostics* — lives in `screen`, reached through the decoded F12
 //! rows; `resource` owns the decode report.
+//!
+//! The F51-C minimum scenario — *switch locale and reopen the same save without
+//! losing unlocks* — lives in `session`, together with the shared runtime, the
+//! locale teardown/retry and the original-font load transaction.
 //!
 //! The F51-A minimum scenario — *long localized text fits or scrolls without
 //! covering required buttons* — lives in `layout`. `catalog` owns the locale
@@ -33,3 +37,4 @@ mod layout;
 mod markup;
 mod resource;
 mod screen;
+mod session;
