@@ -142,6 +142,11 @@ impl MoneyMinor {
         let divisor = u64::from(mapping.minor_per_major);
         let major = self.0 / divisor;
         let minor = self.0 % divisor;
+        if mapping.decimal_width() == 0 {
+            // No fractional part is displayed, so printing a `0` would invent a
+            // decimal place the mapping does not declare.
+            return major.to_string();
+        }
         format!("{major}.{minor:0width$}", width = mapping.decimal_width())
     }
 }
@@ -198,9 +203,9 @@ impl DisplayMapping {
 /// from the integer value, so a display mapping never depends on a float's
 /// printed precision.
 const fn decimal_width(divisor: u32) -> usize {
-    let mut width = 1;
-    let mut scale = 10;
-    while scale <= divisor {
+    let mut width = 0;
+    let mut scale = 1;
+    while scale < divisor {
         width += 1;
         scale *= 10;
     }
@@ -720,9 +725,7 @@ impl AircraftBlueprint {
             ConstructionSlot::WeaponMount,
         )?;
         reject_repeated(
-            ordnance
-                .iter()
-                .map(|fitment| fitment.hardpoint().clone()),
+            ordnance.iter().map(|fitment| fitment.hardpoint().clone()),
             ConstructionSlot::Hardpoint,
         )?;
         let mut equipment_seen: Vec<ContentId> = Vec::with_capacity(equipment.len());
@@ -850,9 +853,7 @@ impl AircraftBlueprint {
         ordnance: Vec<OrdnanceFitment>,
     ) -> Result<Self, ConstructionSchemaError> {
         reject_repeated(
-            ordnance
-                .iter()
-                .map(|fitment| fitment.hardpoint().clone()),
+            ordnance.iter().map(|fitment| fitment.hardpoint().clone()),
             ConstructionSlot::Hardpoint,
         )?;
         self.ordnance = ordnance;
@@ -977,7 +978,10 @@ impl fmt::Display for ConstructionSchemaError {
                 write!(f, "{id} must be in the {expected} namespace")
             }
             Self::NotAnAirframe { kind } => {
-                write!(f, "a construction rule profile must name an airframe, got {kind}")
+                write!(
+                    f,
+                    "a construction rule profile must name an airframe, got {kind}"
+                )
             }
             Self::DuplicateComponent { component } => {
                 write!(f, "{component} is quoted more than once in the price book")
@@ -989,7 +993,10 @@ impl fmt::Display for ConstructionSchemaError {
                 write!(f, "{component} is fitted as equipment more than once")
             }
             Self::DuplicatePaint { component } => {
-                write!(f, "{component} is listed in the paint selection more than once")
+                write!(
+                    f,
+                    "{component} is listed in the paint selection more than once"
+                )
             }
             Self::ZeroGunPositions => {
                 f.write_str("a fitted gun must occupy at least one gun position")
@@ -1052,6 +1059,15 @@ impl BudgetCategory {
         }
     }
 
+    /// Looks a category up by its label; `None` for an unknown label.
+    #[must_use]
+    pub fn from_label(label: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|category| category.label() == label)
+    }
+
     /// The row this category occupies in [`BudgetBreakdown::lines`].
     const fn index(self) -> usize {
         match self {
@@ -1099,19 +1115,9 @@ impl BudgetLine {
 
     /// Adds one component, refusing an integer overflow instead of wrapping to
     /// a smaller subtotal that could pass a limit check.
-    fn add(
-        &mut self,
-        mass: WeightUnits,
-        cost: MoneyMinor,
-    ) -> Result<(), BudgetQuantity> {
-        self.mass = self
-            .mass
-            .checked_add(mass)
-            .ok_or(BudgetQuantity::Mass)?;
-        self.cost = self
-            .cost
-            .checked_add(cost)
-            .ok_or(BudgetQuantity::Cost)?;
+    fn add(&mut self, mass: WeightUnits, cost: MoneyMinor) -> Result<(), BudgetQuantity> {
+        self.mass = self.mass.checked_add(mass).ok_or(BudgetQuantity::Mass)?;
+        self.cost = self.cost.checked_add(cost).ok_or(BudgetQuantity::Cost)?;
         Ok(())
     }
 }
@@ -1139,12 +1145,30 @@ impl BudgetBreakdown {
     #[must_use]
     pub const fn lines(&self) -> [(BudgetCategory, BudgetLine); 6] {
         [
-            (BudgetCategory::Airframe, self.lines[BudgetCategory::Airframe.index()]),
-            (BudgetCategory::Engine, self.lines[BudgetCategory::Engine.index()]),
-            (BudgetCategory::Armor, self.lines[BudgetCategory::Armor.index()]),
-            (BudgetCategory::Guns, self.lines[BudgetCategory::Guns.index()]),
-            (BudgetCategory::Ordnance, self.lines[BudgetCategory::Ordnance.index()]),
-            (BudgetCategory::Equipment, self.lines[BudgetCategory::Equipment.index()]),
+            (
+                BudgetCategory::Airframe,
+                self.lines[BudgetCategory::Airframe.index()],
+            ),
+            (
+                BudgetCategory::Engine,
+                self.lines[BudgetCategory::Engine.index()],
+            ),
+            (
+                BudgetCategory::Armor,
+                self.lines[BudgetCategory::Armor.index()],
+            ),
+            (
+                BudgetCategory::Guns,
+                self.lines[BudgetCategory::Guns.index()],
+            ),
+            (
+                BudgetCategory::Ordnance,
+                self.lines[BudgetCategory::Ordnance.index()],
+            ),
+            (
+                BudgetCategory::Equipment,
+                self.lines[BudgetCategory::Equipment.index()],
+            ),
         ]
     }
 
@@ -1201,6 +1225,17 @@ impl BudgetQuantity {
 impl fmt::Display for BudgetQuantity {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.write_str(self.label())
+    }
+}
+
+impl BudgetQuantity {
+    /// Looks a quantity up by its label; `None` for an unknown label.
+    #[must_use]
+    pub fn from_label(label: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|quantity| quantity.label() == label)
     }
 }
 
@@ -1419,14 +1454,23 @@ impl fmt::Display for BudgetRefusal {
                 f,
                 "the rule profile describes {rules}, not the blueprint's airframe {blueprint}"
             ),
-            Self::NotPriced { component, category } => {
+            Self::NotPriced {
+                component,
+                category,
+            } => {
                 write!(f, "the price book does not price {component} as {category}")
             }
             Self::UnknownMass { component } => {
-                write!(f, "the mass of {component} is unmeasured, so no exact total exists")
+                write!(
+                    f,
+                    "the mass of {component} is unmeasured, so no exact total exists"
+                )
             }
             Self::UnknownCost { component } => {
-                write!(f, "the price of {component} is unmeasured, so no exact total exists")
+                write!(
+                    f,
+                    "the price of {component} is unmeasured, so no exact total exists"
+                )
             }
             Self::UnknownGunPositions { component } => write!(
                 f,
@@ -1478,20 +1522,16 @@ impl Limits {
                 .ok_or(BudgetRefusal::UnknownLimit {
                     quantity: BudgetQuantity::Cost,
                 })?,
-            gun_positions: rules
-                .gun_positions()
-                .clone()
-                .known()
-                .ok_or(BudgetRefusal::UnknownLimit {
+            gun_positions: rules.gun_positions().clone().known().ok_or(
+                BudgetRefusal::UnknownLimit {
                     quantity: BudgetQuantity::GunPositions,
-                })?,
-            rocket_hardpoints: rules
-                .rocket_hardpoints()
-                .clone()
-                .known()
-                .ok_or(BudgetRefusal::UnknownLimit {
+                },
+            )?,
+            rocket_hardpoints: rules.rocket_hardpoints().clone().known().ok_or(
+                BudgetRefusal::UnknownLimit {
                     quantity: BudgetQuantity::RocketHardpoints,
-                })?,
+                },
+            )?,
         })
     }
 }
@@ -1503,10 +1543,12 @@ fn price(
     category: BudgetCategory,
     breakdown: &mut BudgetBreakdown,
 ) -> Result<(), BudgetRefusal> {
-    let quote = book.quote(component).ok_or_else(|| BudgetRefusal::NotPriced {
-        component: component.clone(),
-        category,
-    })?;
+    let quote = book
+        .quote(component)
+        .ok_or_else(|| BudgetRefusal::NotPriced {
+            component: component.clone(),
+            category,
+        })?;
     let mass = quote
         .mass()
         .clone()
@@ -1626,8 +1668,18 @@ impl ConstructionRules {
         let limits = Limits::from_rules(self)?;
 
         let mut breakdown = BudgetBreakdown::new();
-        price(book, blueprint.airframe(), BudgetCategory::Airframe, &mut breakdown)?;
-        price(book, blueprint.engine(), BudgetCategory::Engine, &mut breakdown)?;
+        price(
+            book,
+            blueprint.airframe(),
+            BudgetCategory::Airframe,
+            &mut breakdown,
+        )?;
+        price(
+            book,
+            blueprint.engine(),
+            BudgetCategory::Engine,
+            &mut breakdown,
+        )?;
         for fitment in blueprint.armor() {
             price(book, fitment.armor(), BudgetCategory::Armor, &mut breakdown)?;
         }
@@ -1635,7 +1687,12 @@ impl ConstructionRules {
             price(book, fitment.gun(), BudgetCategory::Guns, &mut breakdown)?;
         }
         for fitment in blueprint.ordnance() {
-            price(book, fitment.ordnance(), BudgetCategory::Ordnance, &mut breakdown)?;
+            price(
+                book,
+                fitment.ordnance(),
+                BudgetCategory::Ordnance,
+                &mut breakdown,
+            )?;
         }
         for item in blueprint.equipment() {
             price(book, item, BudgetCategory::Equipment, &mut breakdown)?;
@@ -1643,27 +1700,27 @@ impl ConstructionRules {
 
         let mut gun_positions: u32 = 0;
         for fitment in blueprint.guns() {
-            let positions = fitment.known_positions().ok_or_else(|| {
-                BudgetRefusal::UnknownGunPositions {
-                    component: fitment.gun().clone(),
-                }
-            })?;
-            gun_positions = gun_positions
-                .checked_add(positions)
-                .ok_or(BudgetRefusal::Overflow {
-                    quantity: BudgetQuantity::GunPositions,
-                    category: None,
-                })?;
+            let positions =
+                fitment
+                    .known_positions()
+                    .ok_or_else(|| BudgetRefusal::UnknownGunPositions {
+                        component: fitment.gun().clone(),
+                    })?;
+            gun_positions =
+                gun_positions
+                    .checked_add(positions)
+                    .ok_or(BudgetRefusal::Overflow {
+                        quantity: BudgetQuantity::GunPositions,
+                        category: None,
+                    })?;
         }
-        let rocket_hardpoints = u32::try_from(blueprint.ordnance().len()).map_err(|_| {
-            BudgetRefusal::Overflow {
+        let rocket_hardpoints =
+            u32::try_from(blueprint.ordnance().len()).map_err(|_| BudgetRefusal::Overflow {
                 quantity: BudgetQuantity::RocketHardpoints,
                 category: None,
-            }
-        })?;
+            })?;
 
-        let totals =
-            BlueprintTotals::from_breakdown(&breakdown, gun_positions, rocket_hardpoints)?;
+        let totals = BlueprintTotals::from_breakdown(&breakdown, gun_positions, rocket_hardpoints)?;
 
         let mut breaches = Vec::new();
         if totals.mass > limits.mass {
@@ -1797,7 +1854,9 @@ fn fixture_key(key: &str) -> DamageNodeKey {
 /// weight sum, and a plate the book simply does not quote.
 #[must_use]
 pub fn declared_synthetic_price_book() -> PriceBook {
-    let quote = |mass: u64, cost: u64| ComponentQuote::new(known(WeightUnits::new(mass)), known(MoneyMinor::new(cost)));
+    let quote = |mass: u64, cost: u64| {
+        ComponentQuote::new(known(WeightUnits::new(mass)), known(MoneyMinor::new(cost)))
+    };
     PriceBook::try_new(vec![
         (
             fixture_id(ContentKind::Airframe, SYNTHETIC_AIRFRAME_KEY),
@@ -1820,10 +1879,7 @@ pub fn declared_synthetic_price_book() -> PriceBook {
             quote(251, 1_000),
         ),
         (
-            fixture_id(
-                ContentKind::Armor,
-                SYNTHETIC_UNPRICED_PLATE_KEY,
-            ),
+            fixture_id(ContentKind::Armor, SYNTHETIC_UNPRICED_PLATE_KEY),
             ComponentQuote::new(
                 known(WeightUnits::new(250)),
                 unknown(
