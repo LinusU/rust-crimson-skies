@@ -22,8 +22,9 @@
 //! [`NavigationSet`] with [`cs_sim::ai::navigation::follow_route`] — a
 //! displaced actor rejoining before its next mandatory marker, the teardown of
 //! the actor and a retry in a fresh session generation. An unknown position,
-//! arrival radius or clearance, an unsupported loop termination and an unbound
-//! moving anchor are propagated as named errors, never defaulted.
+//! arrival radius or clearance and an unbound moving anchor are propagated as
+//! named errors, never defaulted. A declared `Loop` termination is carried into
+//! the runtime graph, which re-arms the marker sequence instead of ending.
 //!
 //! Every value the record carries is newly authored project design
 //! ([`Origin::SyntheticFixture`]); the report names its synthetic source and
@@ -74,9 +75,9 @@ use cs_formats::zbd::ZbdFamily;
 use cs_sim::ai::navigation::{
     FollowPlan, NavState, NavigationCadence, NavigationError, NavigationSet, Navigator,
     PursuitRequest, ReferenceFrameSample, RouteFrame, RouteGraph, RouteGraphError,
-    RouteNode as NavRouteNode, RouteNodeId, SYNTHETIC_PURSUIT_SEED, SYNTHETIC_PURSUIT_SESSION,
-    follow_route, heading_from_direction, synthetic_maneuver_envelope, synthetic_pursuit_actor,
-    synthetic_pursuit_start,
+    RouteNode as NavRouteNode, RouteNodeId, RouteTermination as NavRouteTermination,
+    SYNTHETIC_PURSUIT_SEED, SYNTHETIC_PURSUIT_SESSION, follow_route, heading_from_direction,
+    synthetic_maneuver_envelope, synthetic_pursuit_actor, synthetic_pursuit_start,
 };
 use cs_sim::damage::ActorId;
 use cs_types::Tick;
@@ -740,11 +741,6 @@ pub enum RouteProjectionError {
         /// The authored anchor content id.
         anchor: String,
     },
-    /// The route asks for a loop, which the runtime follower cannot express.
-    UnsupportedTermination {
-        /// The authored termination.
-        termination: &'static str,
-    },
     /// The projected graph failed the runtime's own validation.
     Graph(RouteGraphError),
 }
@@ -755,10 +751,6 @@ impl std::fmt::Display for RouteProjectionError {
             Self::UnboundAnchor { anchor } => write!(
                 f,
                 "moving route anchor {anchor:?} is not bound to a runtime actor"
-            ),
-            Self::UnsupportedTermination { termination } => write!(
-                f,
-                "the runtime follower cannot express route termination {termination:?}"
             ),
             Self::Graph(error) => write!(f, "the projected route graph is invalid: {error}"),
         }
@@ -791,12 +783,15 @@ pub struct AnchorBinding {
 /// container reorder. Node positions and arrival radii are the known values the
 /// producer resolved; the world/moving reference frame is carried across.
 ///
+/// The declared [`RouteTermination`] is carried across too, so a `Loop` record
+/// reaches a follower that re-arms the marker sequence instead of the
+/// projection refusing it or silently following it as an end.
+///
 /// # Errors
 ///
 /// [`RouteProjectionError::UnboundAnchor`] for a moving route whose anchor has
-/// no binding, [`RouteProjectionError::UnsupportedTermination`] for a loop the
-/// runtime cannot express, and [`RouteProjectionError::Graph`] when the
-/// projected graph fails the runtime's validation.
+/// no binding, and [`RouteProjectionError::Graph`] when the projected graph
+/// fails the runtime's validation.
 pub fn project_route(
     route: &ResolvedRoute,
     anchors: &[AnchorBinding],
@@ -814,11 +809,10 @@ pub fn project_route(
             RouteFrame::Moving { anchor: runtime_id }
         }
     };
-    if route.termination() == RouteTermination::Loop {
-        return Err(RouteProjectionError::UnsupportedTermination {
-            termination: "loop",
-        });
-    }
+    let termination = match route.termination() {
+        RouteTermination::End => NavRouteTermination::End,
+        RouteTermination::Loop => NavRouteTermination::Loop,
+    };
     let nodes = route
         .nodes()
         .iter()
@@ -830,7 +824,7 @@ pub fn project_route(
             arrival_radius_m: node.arrival_radius_m.value,
         })
         .collect();
-    RouteGraph::try_new(frame, route.clearance_m().value, nodes)
+    RouteGraph::try_new_terminated(frame, termination, route.clearance_m().value, nodes)
         .map_err(RouteProjectionError::Graph)
 }
 

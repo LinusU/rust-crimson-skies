@@ -24,7 +24,9 @@ use cs_content::routes::{
 use cs_inspect::routes::{
     AnchorBinding, RouteProjectionError, project_route, routes_command_result,
 };
-use cs_sim::ai::navigation::{RouteFrame, RouteNodeId, synthetic_arch_route};
+use cs_sim::ai::navigation::{
+    RouteFrame, RouteNodeId, RouteTermination as NavRouteTermination, synthetic_arch_route,
+};
 use cs_types::content::{ContentId, ContentKind, Known, Origin, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
 
@@ -110,21 +112,37 @@ fn accept_f31_c_projection_binds_a_moving_anchor_or_refuses_it() {
     assert_eq!(projected.nodes.len(), 5);
 }
 
-/// A loop termination is refused because the runtime follower cannot express
-/// it, rather than being silently followed as an end.
+/// A declared loop termination reaches the runtime graph as a loop, so the
+/// follower re-arms the marker sequence instead of the projection refusing the
+/// record or silently following it as an end.
+///
+/// The refusal this test used to pin was removed by task #447, which gave the
+/// runtime explicit loop semantics (`accept_t447_` in `cs_sim`). Whether the
+/// original 2000 route encoding expresses a loop is still unmeasured (F13;
+/// F31-D owns retail coverage); this is project design, not an original claim.
 #[test]
-fn accept_f31_c_projection_refuses_a_loop_termination() {
+fn accept_f31_c_projection_carries_a_loop_termination_into_the_runtime_graph() {
     let nodes = declared_synthetic_arch_route().nodes().to_vec();
     let definition = RouteDefinition::try_new(world_draft(nodes, RouteTermination::Loop))
         .expect("the looping route is valid content");
     let resolved = definition.resolve().expect("the looping route resolves");
 
+    let projected =
+        project_route(&resolved, &[]).expect("the looping route projects into the runtime graph");
     assert_eq!(
-        project_route(&resolved, &[]),
-        Err(RouteProjectionError::UnsupportedTermination {
-            termination: "loop"
-        })
+        projected.termination(),
+        NavRouteTermination::Loop,
+        "the declared loop must survive projection, not be defaulted to an end"
     );
+    assert_eq!(projected.nodes.len(), definition.nodes().len());
+
+    // The ending fixture still projects as an end, so the mapping is a real
+    // discrimination and not a constant.
+    let ending = declared_synthetic_arch_route()
+        .resolve()
+        .expect("the declared fixture resolves");
+    let projected_end = project_route(&ending, &[]).expect("the world route projects");
+    assert_eq!(projected_end.termination(), NavRouteTermination::End);
 }
 
 /// The runtime graph keys a projected node by its authored sequence, so a

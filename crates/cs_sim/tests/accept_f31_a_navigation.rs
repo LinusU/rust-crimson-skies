@@ -36,6 +36,7 @@ fn navigator() -> Navigator {
 fn single_node_route(position_m: [f64; 3], arrival_radius_m: f64) -> RouteGraph {
     RouteGraph {
         frame: cs_sim::ai::navigation::RouteFrame::World,
+        termination: cs_sim::ai::navigation::RouteTermination::End,
         clearance_m: 0.0,
         nodes: vec![RouteNode {
             id: RouteNodeId(0),
@@ -123,6 +124,7 @@ fn accept_f31_a_direct_goal_pursuit_would_cross_the_wall() {
 fn accept_f31_a_mandatory_marker_is_targeted_before_its_successor() {
     let route = RouteGraph {
         frame: cs_sim::ai::navigation::RouteFrame::World,
+        termination: cs_sim::ai::navigation::RouteTermination::End,
         clearance_m: 0.0,
         nodes: vec![
             RouteNode {

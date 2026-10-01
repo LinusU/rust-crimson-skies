@@ -327,6 +327,13 @@ pub struct MovingAnchor {
     pub kind: AnchorKind,
 }
 
+/// The fewest nodes a [`RouteTermination::Loop`] route may declare.
+///
+/// A loop needs a real last-to-first edge; a one-node loop has none, so
+/// re-arming it could never move the follower. This mirrors the runtime
+/// follower's own constant, so producer and consumer agree on what a loop is.
+pub const MIN_LOOP_NODES: usize = 2;
+
 /// The declared kinds of moving anchor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AnchorKind {
@@ -341,11 +348,18 @@ pub enum AnchorKind {
 }
 
 /// What a route does after its last node.
+///
+/// Whether the original 2000 route encoding expresses a loop at all is
+/// **unmeasured**: F13 recovers no route layout and F31-D owns retail route
+/// coverage. Declaring the variant here is a project design choice so a record
+/// that says `Loop` is followed as a loop rather than refused or silently
+/// followed as an end; it is not a claim about original content.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RouteTermination {
     /// The route ends at its last node.
     End,
-    /// The route returns to its first node (a patrol).
+    /// The route returns to its first node (a patrol), re-arming every node —
+    /// mandatory markers included — in authored sequence order.
     Loop,
 }
 
@@ -356,7 +370,8 @@ pub enum RouteTermination {
 /// Validation ([`RouteDefinition::try_new`]) refuses what the runtime cannot
 /// honestly follow: an id outside the `route` namespace, no nodes, a duplicate
 /// node or volume id, a non-increasing sequence, a non-finite known position,
-/// a non-positive known trigger shape and an edge that is not between adjacent
+/// a non-positive known trigger shape, a loop route with fewer than
+/// [`MIN_LOOP_NODES`] nodes and an edge that is not between adjacent
 /// sequences. Unknown references are not refused — they are data a later stage
 /// must block on — but a *known* value of the wrong kind or the wrong sign is
 /// an authoring error, not content.
@@ -416,6 +431,14 @@ impl RouteDefinition {
         }
         if nodes.is_empty() {
             return Err(RouteError::EmptyNodes);
+        }
+        // A one-node loop has no wrap edge, so re-arming it would re-target the
+        // node the follower already occupies and progress could never advance.
+        // The rule mirrors the runtime follower's own
+        // `cs_sim::ai::navigation::MIN_LOOP_NODES`, so a record that validates
+        // here is one the runtime can honestly follow.
+        if matches!(termination, RouteTermination::Loop) && nodes.len() < MIN_LOOP_NODES {
+            return Err(RouteError::LoopNeedsMultipleNodes { nodes: nodes.len() });
         }
 
         let mut node_ids: HashSet<&str> = HashSet::new();
@@ -675,6 +698,11 @@ pub enum RouteError {
         /// The destination key.
         to: String,
     },
+    /// A loop route declared fewer nodes than it needs to wrap.
+    LoopNeedsMultipleNodes {
+        /// How many nodes the loop route declared.
+        nodes: usize,
+    },
 }
 
 impl fmt::Display for RouteError {
@@ -748,6 +776,10 @@ impl fmt::Display for RouteError {
                     "route edge {from:?} -> {to:?} is declared more than once"
                 )
             }
+            Self::LoopNeedsMultipleNodes { nodes } => write!(
+                f,
+                "a loop route needs at least {MIN_LOOP_NODES} nodes to wrap, got {nodes}"
+            ),
         }
     }
 }

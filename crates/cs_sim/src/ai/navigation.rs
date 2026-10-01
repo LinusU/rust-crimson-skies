@@ -18,9 +18,13 @@
 //!   capabilities. Every lookahead, pursuit and avoidance command is bounded
 //!   by it (spec non-negotiable behavior 2); the type names its turn radius so
 //!   a caller can prove a route is flyable before committing to it.
+//! * [`RouteTermination`], what a route does after its last node. A loop
+//!   re-arms the whole marker sequence instead of ending.
 //! * [`RouteProgress`], the monotonic progression state that only ever moves
 //!   forward, so a follower can never skip a mandatory marker and rewind
-//!   (spec non-negotiable behavior 1).
+//!   (spec non-negotiable behavior 1). On a loop route the target wraps back to
+//!   node 0 after the last node, a lap is recorded, and the monotonic node
+//!   count keeps climbing.
 //! * [`Blocker`], the declared obstacle geometry a committed swept segment is
 //!   tested against. A decision that would cross a blocker is never issued:
 //!   the follower either deviates within its envelope or reports
@@ -89,6 +93,14 @@ pub const CLIMB_APPROACH_S: f64 = 2.0;
 /// blocked, in multiples of one tick's maximum yaw step.
 pub const AVOIDANCE_CANDIDATE_STEPS: u32 = 8;
 
+/// The fewest nodes a loop-terminated route may declare.
+///
+/// A one-node loop has no wrap edge: re-arming it would re-target the node the
+/// follower already occupies, so the route could never progress. This is the
+/// smallest node count with a real last-to-first edge, i.e. project design, not
+/// a measured original rule.
+pub const MIN_LOOP_NODES: usize = 2;
+
 /// The domain constant the F31 behavior tie-break uses
 /// (`docs/contracts/CLI-EVIDENCE.md`, `--seed`). F31-B subdivides this domain
 /// per actor and per tick, so the tie-break a follower sees is a pure function
@@ -117,6 +129,35 @@ impl RouteNodeId {
 impl fmt::Display for RouteNodeId {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "{}", self.0)
+    }
+}
+
+/// What a route does after its last node.
+///
+/// The runtime mirrors the content contract's
+/// `cs_content::routes::RouteTermination` so the producer's declared
+/// termination survives projection instead of being refused (F31-C). Whether
+/// the original 2000 route encoding expresses a loop at all is **unmeasured**:
+/// F13 recovers no route layout, and F31-D owns retail route coverage. This
+/// enum is therefore project design — it lets a declared record be followed
+/// honestly, and it never asserts that the original authored one.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum RouteTermination {
+    /// The route ends at its last node: progress runs off the end and the
+    /// follower holds station.
+    #[default]
+    End,
+    /// The route returns to its first node: after the last node is reached,
+    /// progress wraps back to node 0 and the whole marker sequence is armed
+    /// again, so the route never completes.
+    Loop,
+}
+
+impl RouteTermination {
+    /// Whether reaching the last node re-arms the route instead of ending it.
+    #[must_use]
+    pub const fn is_loop(self) -> bool {
+        matches!(self, Self::Loop)
     }
 }
 
@@ -155,6 +196,8 @@ pub struct RouteNode {
 pub struct RouteGraph {
     /// The frame the node positions live in.
     pub frame: RouteFrame,
+    /// What the route does after its last node.
+    pub termination: RouteTermination,
     /// The minimum clearance to keep from every blocker, in meters.
     pub clearance_m: f64,
     /// The nodes, in authored sequence order.
@@ -168,16 +211,31 @@ impl RouteGraph {
         self.nodes.len()
     }
 
+    /// What the route does after its last node.
+    #[must_use]
+    pub const fn termination(&self) -> RouteTermination {
+        self.termination
+    }
+
     /// Validates the graph before it is followed.
     ///
     /// # Errors
     ///
     /// [`RouteGraphError`] for an empty graph, a non-finite position, a
-    /// non-positive arrival radius or clearance, a duplicate node id or a
-    /// sequence that does not strictly increase.
+    /// non-positive arrival radius or clearance, a duplicate node id, a
+    /// sequence that does not strictly increase, or a single-node loop.
     pub fn validate(&self) -> Result<(), RouteGraphError> {
         if self.nodes.is_empty() {
             return Err(RouteGraphError::EmptyNodes);
+        }
+        // A one-node loop has no wrap edge: re-arming it would re-target the
+        // node the follower already occupies forever, so progress could never
+        // advance and the follower would never leave. That is an authoring
+        // error, not a route the runtime can honestly follow.
+        if self.termination.is_loop() && self.nodes.len() < MIN_LOOP_NODES {
+            return Err(RouteGraphError::LoopNeedsMultipleNodes {
+                nodes: self.nodes.len(),
+            });
         }
         if !self.clearance_m.is_finite() {
             return Err(RouteGraphError::NonFinite {
@@ -228,6 +286,9 @@ impl RouteGraph {
     /// Builds a route graph from already-collected parts, validating it before
     /// it can be followed (F31-C).
     ///
+    /// The termination defaults to [`RouteTermination::End`]; a producer that
+    /// declares a loop passes it explicitly.
+    ///
     /// # Errors
     ///
     /// [`RouteGraphError`] under the same rules as [`Self::validate`]. Nothing
@@ -238,8 +299,23 @@ impl RouteGraph {
         clearance_m: f64,
         nodes: Vec<RouteNode>,
     ) -> Result<Self, RouteGraphError> {
+        Self::try_new_terminated(frame, RouteTermination::End, clearance_m, nodes)
+    }
+
+    /// Builds a route graph that declares what it does after its last node.
+    ///
+    /// # Errors
+    ///
+    /// [`RouteGraphError`] under the same rules as [`Self::validate`].
+    pub fn try_new_terminated(
+        frame: RouteFrame,
+        termination: RouteTermination,
+        clearance_m: f64,
+        nodes: Vec<RouteNode>,
+    ) -> Result<Self, RouteGraphError> {
         let graph = Self {
             frame,
+            termination,
             clearance_m,
             nodes,
         };
@@ -290,6 +366,11 @@ pub enum RouteGraphError {
         /// The offending node's sequence.
         current: u32,
     },
+    /// A loop route declared fewer nodes than it needs to wrap.
+    LoopNeedsMultipleNodes {
+        /// How many nodes the loop route declared.
+        nodes: usize,
+    },
 }
 
 impl fmt::Display for RouteGraphError {
@@ -309,6 +390,10 @@ impl fmt::Display for RouteGraphError {
                 f,
                 "route node {index} has sequence {current}, not greater than the previous {previous}"
             ),
+            Self::LoopNeedsMultipleNodes { nodes } => write!(
+                f,
+                "a loop route needs at least {MIN_LOOP_NODES} nodes to wrap, got {nodes}"
+            ),
         }
     }
 }
@@ -319,57 +404,118 @@ impl std::error::Error for RouteGraphError {}
 
 /// How far a follower has progressed along a route.
 ///
-/// Progression is monotonic **by construction**: the only mutator advances
-/// `next_index` by one, so a follower can never rewind onto an already passed
-/// marker, and because the target is always the next sequence it can never
-/// skip a mandatory one.
+/// Progression is monotonic **by construction**: the only mutator,
+/// [`advanced`](Self::advanced), moves the target forward by exactly one
+/// authored node, so a follower can never rewind onto a marker it has already
+/// passed out of order and, because the target is always the next sequence, it
+/// can never skip a mandatory one.
+///
+/// # Looping
+///
+/// A [`RouteTermination::Loop`] route never completes: reaching its last node
+/// wraps [`next_index`](Self::next_index) back to node 0 and increments
+/// [`laps`](Self::laps), which re-arms **every** node of the route — mandatory
+/// markers included — in authored sequence order. Three properties follow, and
+/// they are what makes a loop a real route rather than a rewind:
+///
+/// * **Progress stays monotonic.** [`reached`](Self::reached) counts the nodes
+///   reached across all laps and only ever increases; the wrap moves the
+///   *target*, never the count. A caller can therefore compare progress
+///   between ticks exactly as it does on an ending route.
+/// * **The wrap edge has no special geometry.** The wrap is the ordinary
+///   last-to-first edge, so arrival at node 0 after a wrap is the same swept
+///   test against node 0's own authored `arrival_radius_m` as arrival on any
+///   other edge. No extra wrap-edge radius is invented.
+/// * **A mandatory marker is re-armed, not remembered.** Each lap re-targets
+///   every node in order, so a lap cannot skip a mandatory marker; there is no
+///   "already fired this lap" shortcut.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct RouteProgress {
     next_index: usize,
+    laps: u32,
+    reached_total: usize,
 }
 
 impl RouteProgress {
     /// Progress before any node has been reached.
     #[must_use]
     pub const fn start() -> Self {
-        Self { next_index: 0 }
+        Self {
+            next_index: 0,
+            laps: 0,
+            reached_total: 0,
+        }
     }
 
     /// Progress that has already reached the first `reached` nodes.
     ///
     /// Used to resume a route whose leading nodes (such as the spawn point)
-    /// are already occupied.
+    /// are already occupied. The resume is always on the first lap.
     #[must_use]
     pub const fn reached_nodes(reached: usize) -> Self {
         Self {
             next_index: reached,
+            laps: 0,
+            reached_total: reached,
         }
     }
 
     /// The index of the node currently being targeted.
+    ///
+    /// For a loop route this wraps back to 0 after the last node, so it names
+    /// the live target rather than a total. Use [`reached`](Self::reached) for
+    /// a monotonic count.
     #[must_use]
     pub const fn next_index(self) -> usize {
         self.next_index
     }
 
-    /// How many leading nodes have been reached.
+    /// How many nodes have been reached in total, across every lap.
+    ///
+    /// Monotonic by construction: it never decreases, not even across a wrap.
     #[must_use]
     pub const fn reached(self) -> usize {
-        self.next_index
+        self.reached_total
+    }
+
+    /// How many times the route has been re-armed by wrapping.
+    #[must_use]
+    pub const fn laps(self) -> u32 {
+        self.laps
     }
 
     /// Whether every node has been reached.
+    ///
+    /// A loop route is never complete: it re-arms instead of ending.
     #[must_use]
     pub const fn is_complete(self, route: &RouteGraph) -> bool {
+        if route.termination.is_loop() {
+            return false;
+        }
         self.next_index >= route.nodes.len()
     }
 
-    /// Advances by exactly one node. There is deliberately no way to set it
-    /// back or jump.
+    /// Advances by exactly one node of `route`. There is deliberately no way to
+    /// set it back or jump.
+    ///
+    /// On a loop route, reaching the last node wraps the target to node 0 and
+    /// records another lap; on an ending route the target runs off the end and
+    /// [`is_complete`](Self::is_complete) becomes true.
     #[must_use]
-    fn advanced(self) -> Self {
-        Self {
-            next_index: self.next_index + 1,
+    fn advanced(self, route: &RouteGraph) -> Self {
+        let reached_total = self.reached_total + 1;
+        if route.termination.is_loop() && self.next_index + 1 >= route.nodes.len() {
+            Self {
+                next_index: 0,
+                laps: self.laps.saturating_add(1),
+                reached_total,
+            }
+        } else {
+            Self {
+                next_index: self.next_index + 1,
+                laps: self.laps,
+                reached_total,
+            }
         }
     }
 }
@@ -1129,7 +1275,7 @@ impl Navigator {
                 node.arrival_radius_m,
             )
         {
-            progress = progress.advanced();
+            progress = progress.advanced(route);
         }
 
         let command = self.command_for(state, &step);
@@ -1913,7 +2059,9 @@ impl FollowOutcome {
         route
             .nodes
             .iter()
-            .take(self.progress.reached())
+            // A loop route's node count is reached on every lap, so one lap's
+            // worth is the whole list here; `reached()` only widens the window.
+            .take(self.progress.reached().min(route.nodes.len()))
             .position(|node| node.mandatory)
     }
 }
@@ -2054,6 +2202,7 @@ pub fn synthetic_maneuver_envelope() -> ManeuverEnvelope {
 pub fn synthetic_arch_route() -> RouteGraph {
     RouteGraph {
         frame: RouteFrame::World,
+        termination: RouteTermination::End,
         clearance_m: SYNTHETIC_ARCH_CLEARANCE_M,
         nodes: vec![
             RouteNode {
@@ -2146,6 +2295,7 @@ pub const fn synthetic_pursuit_actor(serial: u64) -> ActorId {
 pub fn synthetic_pursuit_route() -> RouteGraph {
     RouteGraph {
         frame: RouteFrame::World,
+        termination: RouteTermination::End,
         clearance_m: 0.0,
         nodes: vec![
             RouteNode {
@@ -2187,6 +2337,52 @@ pub fn synthetic_pursuit_route() -> RouteGraph {
 #[must_use]
 pub fn synthetic_pursuit_tie_blocker() -> Blocker {
     Blocker::sphere([0.0, 0.0, -0.3], 0.004)
+}
+
+/// The synthetic looping patrol: a three-node closed circuit that returns to
+/// its first node.
+///
+/// The three nodes form a triangle in the XZ plane, so the wrap edge (node 2
+/// back to node 0) is a real leg the follower must fly rather than a teleport
+/// back to the spawn. Node 1 is a mandatory marker, so a lap that skipped it
+/// would be observable; node 0 deliberately is **not** mandatory, so the wrap
+/// itself has no marker requirement. Node 0 declares the widest arrival radius
+/// of the three, which makes the wrap edge's arrival volume observable: the
+/// wrap must be tested against node 0's own authored radius, not against the
+/// last node's tighter one and not against an invented wrap-edge radius.
+///
+/// All positions and radii are newly authored project design: the original
+/// route encoding is unmeasured (F13) and F31-D owns retail route coverage.
+#[must_use]
+pub fn synthetic_loop_route() -> RouteGraph {
+    RouteGraph {
+        frame: RouteFrame::World,
+        termination: RouteTermination::Loop,
+        clearance_m: 0.0,
+        nodes: vec![
+            RouteNode {
+                id: RouteNodeId(0),
+                sequence: 0,
+                mandatory: false,
+                position_m: [0.0, 0.0, 0.0],
+                arrival_radius_m: 12.0,
+            },
+            RouteNode {
+                id: RouteNodeId(1),
+                sequence: 1,
+                mandatory: true,
+                position_m: [0.0, 0.0, -160.0],
+                arrival_radius_m: 8.0,
+            },
+            RouteNode {
+                id: RouteNodeId(2),
+                sequence: 2,
+                mandatory: true,
+                position_m: [-160.0, 0.0, -80.0],
+                arrival_radius_m: 6.0,
+            },
+        ],
+    }
 }
 
 /// The aircraft state the F31-B pursuit fixture starts from: on the spawn

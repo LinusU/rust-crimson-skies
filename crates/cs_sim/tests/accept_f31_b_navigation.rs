@@ -25,10 +25,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use cs_sim::ai::navigation::{
     AvoidanceState, Blocker, NavState, NavigationCadence, NavigationError, NavigationSet,
     Navigator, PursuitDecision, PursuitRequest, ReferenceFrameSample, RouteFrame, RouteGraph,
-    RouteNode, RouteNodeId, RouteProgress, SYNTHETIC_PURSUIT_SEED, SYNTHETIC_PURSUIT_SESSION,
-    heading_from_direction, synthetic_arch_blockers, synthetic_arch_route, synthetic_arch_start,
-    synthetic_maneuver_envelope, synthetic_pursuit_actor, synthetic_pursuit_route,
-    synthetic_pursuit_set, synthetic_pursuit_start, synthetic_pursuit_tie_blocker, tie_break_draw,
+    RouteNode, RouteNodeId, RouteProgress, RouteTermination, SYNTHETIC_PURSUIT_SEED,
+    SYNTHETIC_PURSUIT_SESSION, heading_from_direction, synthetic_arch_blockers, synthetic_arch_route,
+    synthetic_arch_start, synthetic_maneuver_envelope, synthetic_pursuit_actor,
+    synthetic_pursuit_route, synthetic_pursuit_set, synthetic_pursuit_start,
+    synthetic_pursuit_tie_blocker, tie_break_draw,
 };
 use cs_sim::damage::ActorId;
 use cs_types::Tick;
@@ -50,6 +51,7 @@ fn navigator() -> Navigator {
 fn single_node_route(position_m: [f64; 3], arrival_radius_m: f64) -> RouteGraph {
     RouteGraph {
         frame: RouteFrame::World,
+        termination: RouteTermination::End,
         clearance_m: 0.0,
         nodes: vec![RouteNode {
             id: RouteNodeId(0),
@@ -550,6 +552,7 @@ fn accept_f31_b_origin_shift_does_not_reset_progress_or_fire_arrival() {
 fn accept_f31_b_moving_waypoint_does_not_reset_progress_or_fire_false_arrival() {
     let route = RouteGraph {
         frame: RouteFrame::Moving { anchor: 7 },
+        termination: RouteTermination::End,
         clearance_m: 0.0,
         nodes: vec![
             RouteNode {
