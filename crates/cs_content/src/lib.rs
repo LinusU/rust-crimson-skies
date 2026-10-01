@@ -241,6 +241,24 @@
 //! boundary is F31-C. The original route encoding is undecoded, so every value
 //! here is designed or an explicit unknown, never an original route.
 //!
+//! [`localization`] is the F51-A declared localization contract
+//! (`specs/F51-localization-fonts-text-layout-and-original-media-ids.md`,
+//! stage `### F51-A`): the opaque, validated [`localization::LocaleId`] and
+//! the *explicit* [`localization::LocaleChain`] a resolution walks (never a
+//! defaulted language list, because the original supported locales are
+//! unmeasured), a [`localization::TextCatalog`] of locale-bound rows keyed by
+//! the locale-independent [`localization::TextId`] that reports which locale
+//! and which chain depth answered — and names every locale it tried when none
+//! did — the declared control-markup grammar
+//! ([`localization::MarkupGrammar`] and [`localization::parse_markup`]) that
+//! keeps a refused control as literal text plus a [`localization::MarkupIssue`]
+//! instead of interpreting a resource string as executable markup, and the font
+//! provenance ([`localization::FontFace`], [`localization::FontSource`]) that
+//! can only hold an original private font or a licensed fallback with verified
+//! permission, plus the [`localization::GlyphCoverage`] that *counts* the
+//! characters a font cannot render. Its application boundary is
+//! `cs_app::text`.
+//!
 //! [`cs_types`]: cs_types
 //! [`cs_formats`]: cs_formats
 //! [`cs_assets`]: cs_assets
@@ -258,6 +276,7 @@ pub mod environment;
 pub mod flight_tuning;
 pub mod livery;
 pub mod loading;
+pub mod localization;
 pub mod mesh;
 pub mod routes;
 pub mod save;
