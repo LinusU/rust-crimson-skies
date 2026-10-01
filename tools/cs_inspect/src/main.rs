@@ -224,6 +224,7 @@ COMMANDS
         report is produced, 2 on invalid input, 1 on a runtime failure.
 
     routes [--follow] [--out <file>]
+    routes --coverage [--cs-path <dir>] [--out <file>]
         Render the declared route-graph contract (F31-A) as a JSON report:
         the authored route id, origin, reference frame, termination, clearance
         and every node with its stable id, authored sequence, mandatory flag,
@@ -236,9 +237,16 @@ COMMANDS
         cs_sim route graph and the production follower is driven end to end: a
         displaced actor rejoins before its next mandatory marker, the roster is
         torn down and a fresh session generation retries from scratch, while an
-        unbound moving anchor or a loop termination is refused by name. Exits 0
-        when the report is produced, 2 on invalid input and 1 on a runtime
-        failure building the follow report or writing --out.
+        unbound moving anchor or a loop termination is refused by name. With
+        --coverage (F31-D) the command audits the retail installation's every
+        ZBD/<group>/<mission> directory, classifies each by mission type
+        (campaign M##, Instant Action IA#, multiplayer MP#) and checks that its
+        reader archive locates the observed AI-navigation control carrier
+        member aiv.zrd. It is a carrier coverage, not a route decode: the
+        original route encoding stays unmeasured and the report says so. Exits
+        0 when the report is produced (and coverage holds), 2 on invalid input,
+        3 when coverage fails, 4 when --coverage has no installation, and 1 on
+        a runtime failure building a report or writing --out.
 
 `--help` and `--version` read no environment variable and open no
 installation.
