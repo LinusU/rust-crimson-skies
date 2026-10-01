@@ -680,6 +680,78 @@ fn accept_f48_b_stale_and_foreign_writes_are_refused_without_a_write() {
 /// without importing it under a shadowed name.
 type LibraryErrorRefusal = cs_content::save::library::LibraryError;
 
+/// The newest *whole* revision wins wherever it is: a complete temp file left
+/// by an interrupted commit is newer than the current file and than the backup,
+/// and recovery must take it rather than the file it happens to read first.
+#[test]
+fn accept_f48_b_the_highest_whole_revision_wins_wherever_it_is() {
+    let base = TempBase::new("highest");
+    let id = ProfileId::new(1).expect("nonzero");
+    let directory = base.0.join(slot_name(id));
+
+    // Build the three files by hand so each holds a different revision: the
+    // commit sequence only ever leaves current and backup in step.
+    let mut slot = DirStorage::create(&directory, PROFILE_PREFIX).expect("slot");
+    commit(&mut slot, &doc(id, 1)).expect("install rev 1");
+    let current = fs::read(slot.path(SaveFile::Current)).expect("read");
+
+    // rev 2 as the backup, rev 3 as a complete temp file: a commit that wrote
+    // and synced its temp and was killed before the install.
+    for (file, revision) in [(SaveFile::Backup, 2), (SaveFile::Temp, 3)] {
+        let mut staged = DirStorage::new(&directory, PROFILE_PREFIX);
+        // Commit the revision into the current file, then move it where this
+        // case needs it, so every file is a whole revision produced by the
+        // production encoder.
+        commit(&mut staged, &doc(id, revision)).expect("commit");
+        let produced = fs::read(staged.path(SaveFile::Current)).expect("read");
+        std::fs::rename(staged.path(SaveFile::Current), staged.path(file)).expect("stage");
+        assert_eq!(
+            decode(&produced).expect("whole").revision,
+            Revision(revision)
+        );
+    }
+    // Put the original rev 1 back as current, after the two moves above.
+    std::fs::write(slot.path(SaveFile::Current), &current).expect("restore current");
+
+    let found = recover(&slot).expect("recover").expect("a revision");
+    assert_eq!(
+        found.document.revision,
+        Revision(3),
+        "the complete temp file is the newest whole revision"
+    );
+    assert_eq!(found.source, SaveFile::Temp);
+    assert_eq!(found.document, doc(id, 3), "and it is whole, not a mixture");
+    assert!(
+        found.warnings.iter().any(|w| matches!(
+            w,
+            cs_content::save::store::RecoveryWarning::UsedFallback {
+                source: SaveFile::Temp
+            }
+        )),
+        "the fallback is reported: {:?}",
+        found.warnings
+    );
+
+    // A commit on top finishes that interrupted one rather than discarding it:
+    // the temp revision is installed first, and it becomes the backup's
+    // predecessor, so nothing that was whole is lost.
+    commit(&mut slot, &doc(id, 4)).expect("commit over the debris");
+    let found = recover(&DirStorage::new(&directory, PROFILE_PREFIX))
+        .expect("recover")
+        .expect("a revision");
+    assert_eq!(found.document.revision, Revision(4));
+    assert_eq!(found.source, SaveFile::Current);
+    let backup = fs::read(DirStorage::new(&directory, PROFILE_PREFIX).path(SaveFile::Backup))
+        .expect("read the backup");
+    assert_eq!(
+        decode(&backup)
+            .expect("the backup is a whole save")
+            .revision,
+        Revision(3),
+        "the interrupted revision was installed, not overwritten"
+    );
+}
+
 // --- The registry itself ---------------------------------------------------
 
 /// The registry is a checksummed document with the same bounds as a save, and
@@ -838,6 +910,57 @@ fn accept_f48_b_an_oversized_registry_is_refused() {
     fs::write(slot.path(SaveFile::Current), &huge).expect("write");
     let held = load_registry(&population, ProfileKind::Synthetic);
     assert!(held.is_err(), "an oversized registry is refused");
+}
+
+/// The install step is a rename, not a copy: the file that becomes current is
+/// the *same* file object that was synced as temp, so it was whole before it
+/// was visible under the name a reader opens. A copy would produce a different
+/// file that happens to have the same bytes, and a reader racing the copy
+/// could see it half-written.
+#[cfg(unix)]
+#[test]
+fn accept_f48_b_installing_a_revision_is_a_rename_of_the_synced_file() {
+    use cs_content::save::store::SaveStorage;
+    use std::os::unix::fs::MetadataExt;
+
+    let base = TempBase::new("rename-identity");
+    let id = ProfileId::new(1).expect("nonzero");
+    let directory = base.0.join(slot_name(id));
+    let mut slot = DirStorage::create(&directory, PROFILE_PREFIX).expect("slot");
+    commit(&mut slot, &doc(id, 1)).expect("first");
+
+    // Run the phases by hand and look at the file identity at each step.
+    let bytes = encode(&doc(id, 2)).expect("encode");
+    slot.write_temp(&bytes).expect("write temp");
+    slot.sync_temp().expect("sync temp");
+    let temp_inode = fs::metadata(slot.path(SaveFile::Temp))
+        .expect("temp metadata")
+        .ino();
+    let current_inode = fs::metadata(slot.path(SaveFile::Current))
+        .expect("current metadata")
+        .ino();
+    assert_ne!(
+        temp_inode, current_inode,
+        "before the install, temp and current are different files"
+    );
+
+    slot.install_current().expect("install");
+    let installed = fs::metadata(slot.path(SaveFile::Current))
+        .expect("current metadata")
+        .ino();
+    assert_eq!(
+        installed, temp_inode,
+        "the current file is the very file that was synced, not a copy of it"
+    );
+    assert!(
+        !slot.path(SaveFile::Temp).exists(),
+        "the temp name is gone once the rename happened"
+    );
+    assert_eq!(
+        fs::read(slot.path(SaveFile::Current)).expect("read"),
+        bytes,
+        "and the current file is exactly the synced bytes"
+    );
 }
 
 // --- Platform reporting ----------------------------------------------------
