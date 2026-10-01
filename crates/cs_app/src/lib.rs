@@ -306,6 +306,16 @@
 //! markup control and unresolved substitution comes back as a
 //! [`text::LayoutDiagnostic`] rather than being applied silently. Nothing here
 //! draws: F51-C wires it into the real menus, HUD and subtitles.
+//!
+//! [`roster`] is the F33-A pilot-roster boundary
+//! (`specs/F33-wingmates-factions-neutral-traffic-and-pilot-identity.md`,
+//! stage `### F33-A`): [`roster::lower_roster`], which lowers a declared
+//! `cs_content::pilots::DeclaredRoster` into the
+//! [`roster::LoweredRoster`] a session registers actors and wingmate
+//! assignments from — refusing an unknown pilot voice (never a random line)
+//! and an unknown survivability (never a silent mortal) — and the
+//! generation-stamped [`roster::RosterBinding`] ECS record tying an entity to
+//! its session-qualified actor and roster subject.
 
 pub mod ai;
 pub mod airframe_visual;
@@ -327,6 +337,7 @@ pub mod origin;
 pub mod physics;
 pub mod profile;
 pub mod render;
+pub mod roster;
 pub mod run;
 pub mod scene;
 pub mod stunts;
