@@ -47,6 +47,85 @@ use cs_types::evidence::ClaimId;
 /// Maximum byte length of a [`RouteNodeId`] or [`TriggerVolumeId`] key.
 pub const MAX_ROUTE_KEY_LEN: usize = 128;
 
+// ------------------------------------------------- F31-D: mission types ---
+
+/// The mission type a retail mission directory declares (F31-D).
+///
+/// The type is a classification of the *directory name* the installation
+/// uses — `M<digits>` for a campaign mission, `IA<digits>` for an Instant
+/// Action scenario, `MP<digits>` for a multiplayer scenario — exactly the
+/// mission-directory shape F13-B's `mission_scope` and F14-E's campaign layout
+/// already walk. It says nothing about the mission's contents: in particular
+/// it makes no claim about whether the mission carries a route, where a route
+/// would be stored or how it is encoded (that stays unmeasured; see
+/// [`classify_mission_type`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum MissionType {
+    /// A campaign mission, `ZBD/<group>/M<digits>/`.
+    Campaign,
+    /// An Instant Action scenario, `ZBD/<group>/IA<digits>/`.
+    InstantAction,
+    /// A multiplayer scenario, `ZBD/<group>/MP<digits>/`.
+    Multiplayer,
+    /// A `ZBD/<group>/<name>` directory that is neither of the three above.
+    Other,
+}
+
+impl MissionType {
+    /// The stable label this type carries in a report.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Campaign => "campaign",
+            Self::InstantAction => "instant_action",
+            Self::Multiplayer => "multiplayer",
+            Self::Other => "other",
+        }
+    }
+}
+
+/// Classifies a mission directory name by the mission type it declares
+/// (F31-D).
+///
+/// The rule is the directory-name grammar only, matched without regard to
+/// case: `M<digits>` is [`MissionType::Campaign`], `IA<digits>` is
+/// [`MissionType::InstantAction`], `MP<digits>` is [`MissionType::Multiplayer`]
+/// and anything else is [`MissionType::Other`]. A name that has the prefix but
+/// no digits after it (`M`, `IA`) is [`MissionType::Other`], never a silent
+/// campaign/Instant Action entry.
+///
+/// This is a **name classification, not a decode**: it is the same level of
+/// evidence F13-B records for a mission program's member name. Whether a
+/// mission of any type actually carries a route and how that route is encoded
+/// is not measured here.
+#[must_use]
+pub fn classify_mission_type(name: &str) -> MissionType {
+    if prefixed_digits(name, "IA").is_some() {
+        MissionType::InstantAction
+    } else if prefixed_digits(name, "MP").is_some() {
+        MissionType::Multiplayer
+    } else if prefixed_digits(name, "M").is_some() {
+        MissionType::Campaign
+    } else {
+        MissionType::Other
+    }
+}
+
+/// Returns the all-digits rest of `name` after a case-insensitive `prefix`, or
+/// `None` when `name` does not carry that prefix followed by at least one
+/// digit.
+fn prefixed_digits<'a>(name: &'a str, prefix: &str) -> Option<&'a str> {
+    let head = name.get(..prefix.len())?;
+    if !head.eq_ignore_ascii_case(prefix) {
+        return None;
+    }
+    let rest = name.get(prefix.len()..)?;
+    if rest.is_empty() || !rest.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    Some(rest)
+}
+
 // ------------------------------------------------------------------ ids ---
 
 /// A stable identity for one node of a route.
@@ -1169,5 +1248,32 @@ mod tests {
                 to: "lower".to_owned(),
             })
         );
+    }
+
+    /// The F31-D mission-type rule: the three observed directory families are
+    /// classified, case-insensitively, and a prefix without digits (or an
+    /// unrelated name) is `Other`, never a silent campaign entry.
+    #[test]
+    fn accept_f31_d_mission_type_classifies_the_observed_directory_families() {
+        assert_eq!(classify_mission_type("M01"), MissionType::Campaign);
+        assert_eq!(classify_mission_type("m12"), MissionType::Campaign);
+        assert_eq!(classify_mission_type("IA1"), MissionType::InstantAction);
+        assert_eq!(classify_mission_type("ia10"), MissionType::InstantAction);
+        assert_eq!(classify_mission_type("MP1"), MissionType::Multiplayer);
+        assert_eq!(classify_mission_type("mp3"), MissionType::Multiplayer);
+
+        // A prefix with no digits and an unrelated name are `Other`; `MP` is
+        // not misread as the `M` campaign prefix.
+        assert_eq!(classify_mission_type("M"), MissionType::Other);
+        assert_eq!(classify_mission_type("IA"), MissionType::Other);
+        assert_eq!(classify_mission_type("MP"), MissionType::Other);
+        assert_eq!(classify_mission_type("M01B"), MissionType::Other);
+        assert_eq!(classify_mission_type("INTRO"), MissionType::Other);
+        assert_eq!(classify_mission_type(""), MissionType::Other);
+
+        assert_eq!(MissionType::Campaign.label(), "campaign");
+        assert_eq!(MissionType::InstantAction.label(), "instant_action");
+        assert_eq!(MissionType::Multiplayer.label(), "multiplayer");
+        assert_eq!(MissionType::Other.label(), "other");
     }
 }
