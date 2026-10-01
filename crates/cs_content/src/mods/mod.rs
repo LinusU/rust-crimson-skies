@@ -1611,6 +1611,39 @@ mod tests {
             plan.mod_stack()
                 .contains(&mod_id("synthetic.bright-panels"))
         );
+
+        // The order is a *dependency* order, not an alphabetical one. The
+        // fixture above cannot tell the two apart, because its required mod
+        // happens to sort first. This pair is built so it can: the dependent
+        // mod's id sorts *before* its dependency's, so a plain alphabetical
+        // order would mount it first and topple it.
+        let ordered = plan_mods(
+            &ModSet::new(vec![
+                synthetic_manifest_with_dependencies(
+                    "synthetic.aaa-user",
+                    ModVersion::new(1, 0, 0),
+                    true,
+                    vec![ModDependency::new(
+                        mod_id("synthetic.zzz-lib"),
+                        VersionRange::at_least(ModVersion::new(1, 0, 0)),
+                        DependencyStrength::Required,
+                    )],
+                ),
+                synthetic_manifest_with_dependencies(
+                    "synthetic.zzz-lib",
+                    ModVersion::new(1, 0, 0),
+                    true,
+                    Vec::new(),
+                ),
+            ]),
+            &synthetic_mount_request(),
+        )
+        .expect("a satisfied dependency plans");
+        assert_eq!(
+            ordered.order(),
+            [mod_id("synthetic.zzz-lib"), mod_id("synthetic.aaa-user")],
+            "a required mod is mounted before the mod that requires it, whatever their ids sort like"
+        );
     }
 
     /// Determinism is the property AC01 actually names: the same set of
