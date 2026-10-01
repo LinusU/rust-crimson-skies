@@ -16,3 +16,7 @@ cs_types.workspace = true
 # retains against the SHA-256 of the same bytes, so the assertion uses the
 # production hashing path rather than a copy of it.
 cs_assets.workspace = true
+# The F56-A acceptance test checks that the rule labels `cs_content::multiplayer`
+# reports are the ones `cs_net::rules::RuleField` defines, so the two crates
+# cannot drift apart. It is a test-only edge: `cs_content` does not link `cs_net`.
+cs_net.workspace = true
