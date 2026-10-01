@@ -169,6 +169,45 @@ impl From<SlotError> for StorageError {
     }
 }
 
+/// What a save slot's *path* is on this filesystem.
+///
+/// One judgment, applied by both sides of the write: [`DirStorage::create`] and
+/// [`super::library::ProfileLibrary::load`] must agree about what a slot
+/// directory may be, or the read path can follow something the write path
+/// refuses.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SlotPath {
+    /// A plain directory this storage could write into.
+    Directory,
+    /// Nothing is there: a fresh, unwritten slot.
+    Absent,
+    /// Something that is not a plain directory — a symbolic link, a regular
+    /// file, anything else — so a save would be written beside it or through it
+    /// rather than inside it, and a read would come from wherever it leads.
+    NotADirectory(PathBuf),
+}
+
+/// Classifies a slot path the way [`DirStorage::create`] judges it, so the read
+/// path applies the same rule and does not follow what the write path refuses.
+///
+/// A link at a slot path is the interesting case: the link itself is refused
+/// rather than followed, because what it points at is outside the population
+/// directory — for one production slot, that is another population's save
+/// (spec F48 non-negotiable 4).
+pub fn classify_slot(path: &Path) -> Result<SlotPath, SlotError> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
+            Ok(SlotPath::NotADirectory(path.to_path_buf()))
+        }
+        Ok(_) => Ok(SlotPath::Directory),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(SlotPath::Absent),
+        Err(error) => Err(SlotError::Io {
+            path: path.to_path_buf(),
+            reason: error.to_string(),
+        }),
+    }
+}
+
 /// One real directory holding the three files of a save slot.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DirStorage {
@@ -194,23 +233,15 @@ impl DirStorage {
         prefix: impl Into<String>,
     ) -> Result<Self, SlotError> {
         let directory = directory.as_ref();
-        match fs::symlink_metadata(directory) {
-            Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
-                return Err(SlotError::NotADirectory(directory.to_path_buf()));
-            }
-            Ok(_) => {}
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+        match classify_slot(directory)? {
+            SlotPath::Directory => {}
+            SlotPath::Absent => {
                 fs::create_dir_all(directory).map_err(|error| SlotError::Io {
                     path: directory.to_path_buf(),
                     reason: error.to_string(),
                 })?;
             }
-            Err(error) => {
-                return Err(SlotError::Io {
-                    path: directory.to_path_buf(),
-                    reason: error.to_string(),
-                });
-            }
+            SlotPath::NotADirectory(path) => return Err(SlotError::NotADirectory(path)),
         }
         Ok(Self::new(directory, prefix))
     }
