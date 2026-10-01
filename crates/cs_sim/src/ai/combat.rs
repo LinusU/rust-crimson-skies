@@ -285,7 +285,12 @@ impl SkillProfile {
         knobs: SkillKnobs,
         priority: PriorityPolicy,
     ) -> Result<Self, CombatError> {
-        check_bound("reaction_ticks", knobs.reaction_ticks as f64, 0.0, MAX_REACTION_TICKS as f64)?;
+        check_bound(
+            "reaction_ticks",
+            knobs.reaction_ticks as f64,
+            0.0,
+            MAX_REACTION_TICKS as f64,
+        )?;
         check_bound(
             "fire_discipline_ticks",
             knobs.fire_discipline_ticks as f64,
@@ -380,12 +385,7 @@ impl SkillProfile {
 }
 
 /// Checks one knob number against its bounds.
-fn check_bound(
-    name: &'static str,
-    value: f64,
-    min: f64,
-    max: f64,
-) -> Result<(), CombatError> {
+fn check_bound(name: &'static str, value: f64, min: f64, max: f64) -> Result<(), CombatError> {
     if !value.is_finite() {
         return Err(CombatError::NonFiniteKnob { knob: name });
     }
@@ -1267,10 +1267,7 @@ impl CombatPlanner {
     /// stamped on a later tick, and [`CombatError::NoRecoveryPolicy`] when
     /// a recovery trigger is pending for a formation the planner does not
     /// carry. Each refuses rather than deciding on inconsistent input.
-    pub fn decide(
-        &self,
-        request: &CombatRequest<'_>,
-    ) -> Result<CombatDecision, CombatError> {
+    pub fn decide(&self, request: &CombatRequest<'_>) -> Result<CombatDecision, CombatError> {
         if request.observer.session != self.session {
             return Err(CombatError::ForeignSession {
                 actor: request.observer,
@@ -1293,12 +1290,11 @@ impl CombatPlanner {
                 }
                 *variant
             }
-            None => *self
-                .profiles
-                .get(&request.assignment.role())
-                .ok_or(CombatError::NoProfileForRole {
+            None => *self.profiles.get(&request.assignment.role()).ok_or(
+                CombatError::NoProfileForRole {
                     role: request.assignment.role(),
-                })?,
+                },
+            )?,
         };
         let protected = request.assignment.protected();
         if let (Some(actor), Some(_)) = (protected, request.protected_alive)
@@ -1351,17 +1347,16 @@ impl CombatPlanner {
                 });
             }
             Some(facts) => {
-                let trigger = facts.pending_trigger().or_else(|| {
-                    protected_lost.map(|_| RecoveryTrigger::ProtectedActorLost)
-                });
+                let trigger = facts
+                    .pending_trigger()
+                    .or_else(|| protected_lost.map(|_| RecoveryTrigger::ProtectedActorLost));
                 match trigger {
                     Some(trigger) => {
-                        let policies = self
-                            .formations
-                            .get(&facts.formation)
-                            .ok_or(CombatError::NoRecoveryPolicy {
+                        let policies = self.formations.get(&facts.formation).ok_or(
+                            CombatError::NoRecoveryPolicy {
                                 formation: facts.formation,
-                            })?;
+                            },
+                        )?;
                         Some(RecoveryOutcome {
                             trigger,
                             action: policies.action(trigger),
@@ -1468,9 +1463,9 @@ impl CombatPlanner {
         // The reaction gate: a threat younger than the profile's delay has
         // not been noticed, so its terms score zero — visibly, in the
         // trace, rather than by dropping the candidate.
-        let fresh = candidate.threat.filter(|threat| {
-            threat.age_ticks(request.now) <= profile.priority.threat_window_ticks
-        });
+        let fresh = candidate
+            .threat
+            .filter(|threat| threat.age_ticks(request.now) <= profile.priority.threat_window_ticks);
         if let Some(threat) = &candidate.threat {
             let age = threat.age_ticks(request.now);
             trace.reaction = if age < profile.knobs.reaction_ticks {
@@ -1522,7 +1517,8 @@ impl CombatPlanner {
                 friendlies: candidate.friendlies_in_line_of_fire,
             })
         } else {
-            arsenal.filter(|report| report.usable_guns == 0 && report.ready_ordnance == 0)
+            arsenal
+                .filter(|report| report.usable_guns == 0 && report.ready_ordnance == 0)
                 .map(|report| FireVeto::ArsenalUnusable {
                     usable_guns: report.usable_guns,
                     ready_ordnance: report.ready_ordnance,
@@ -1546,10 +1542,7 @@ fn compare_traces(left: &CandidateTrace, right: &CandidateTrace) -> std::cmp::Or
         (true, true) => right
             .total
             .total_cmp(&left.total)
-            .then_with(|| {
-                left.distance_m
-                    .total_cmp(&right.distance_m)
-            })
+            .then_with(|| left.distance_m.total_cmp(&right.distance_m))
             .then_with(|| left.actor.cmp(&right.actor)),
         (false, false) => left.actor.cmp(&right.actor),
     }
@@ -1716,8 +1709,7 @@ impl fmt::Display for CombatError {
             Self::ThreatFromTheFuture { attacker, at, now } => write!(
                 f,
                 "{attacker}'s attack is stamped on tick {} but the decision is tick {}",
-                at.0,
-                now.0
+                at.0, now.0
             ),
             Self::ProtectedIsSelf { actor } => {
                 write!(f, "{actor} cannot be its own protected actor")

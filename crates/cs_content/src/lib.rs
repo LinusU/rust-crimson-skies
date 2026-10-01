@@ -307,8 +307,8 @@
 //! [`cs_formats`]: cs_formats
 //! [`cs_assets`]: cs_assets
 
-pub mod airframe_roles;
 pub mod ai;
+pub mod airframe_roles;
 pub mod animation;
 pub mod audio;
 pub mod cameras;

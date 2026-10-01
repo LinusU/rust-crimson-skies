@@ -38,6 +38,10 @@ build/test only (no `CS_GAME_DIR` read, no evidence report required).
   `tests/ai/main.rs` (Cargo auto-discovers a `tests/<dir>/main.rs` target).
 - This file.
 
+Test counts: 29 `accept_f32_a_*` tests in `crates/cs_sim/tests/ai/` (16 in
+`accept_f32_a_combat.rs`, 13 in `accept_f32_a_combat_failures.rs`) and 7
+`accept_f32_a_*` unit tests in `crates/cs_content/src/ai.rs`.
+
 **Why the declared-schema tests are unit tests, not `cs_content/tests/`:**
 `crates/cs_content/tests/` is *not* an owner path of this task, and a
 `cs_sim` test cannot reach `cs_content` (`docs/01-ARCHITECTURE.md`: `cs_sim`
@@ -102,9 +106,25 @@ fixture), so removing a layer fails to compile.
 - **Recovery paths are declared, not invented per tick.**
   `DeclaredFormation` names its leader, members and one `RecoveryPolicy`
   per recovery trigger (leader loss, assigned-target destruction, route
-  interruption — non-negotiable 4). The runtime reports which trigger is
-  pending and the policy the formation declared; the stateful follower
-  recovery itself is F32-C (its AC03 scenario).
+  interruption, protected-actor loss — non-negotiable 4). The runtime
+  `FormationFacts::pending_trigger` names the single pending trigger in a
+  fixed order and `CombatPlanner::decide` reports it with the action the
+  formation declared; a trigger with no registered `RecoveryPolicySet` is
+  refused rather than dropped. The stateful follower recovery itself is
+  F32-C (its AC03 scenario).
+- **An ace is a variant of a role, not a second role.**
+  `CombatRequest::profile` takes the actor's effective profile: `None` runs
+  the planner's profile for the assigned role, and `Some` runs a declared
+  variant (an ace, or a difficulty-overridden copy) whose role must match
+  the assignment — `CombatError::ProfileRoleMismatch` refuses a fighter
+  profile handed to an escort. This keeps "aces are data-driven
+  behavior/skill variants" a property of the type: the whole runtime
+  vocabulary has no damage, armor, health, tick-rate or time-scale field
+  anywhere.
+- **The reaction gate is part of the trace, not a silent drop.** A threat
+  younger than the profile's `reaction_ticks` scores zero on its terms and
+  is recorded as `ReactionState::Deferred { age_ticks, required_ticks }`,
+  so a profile's skill difference is inspectable rather than invisible.
 - **Determinism.** `CombatPlanner::decide` is a pure function of the
   planner's immutable policy and one typed request. The selection order is
   the total `(score desc, distance asc, ActorId asc)`, so the candidate
@@ -142,3 +162,41 @@ No original-data verification, no ECS wiring, no maneuver selection, no
 firing solution, no stateful formation recovery, no spawn ownership
 (non-negotiable 5 stays with mission execution) — F32-B/C/D own those. The
 task awards at most **checked** status.
+
+## Sensitivity probes (run and reverted; no probe committed)
+
+Each probe removes one load-bearing rule and names the test that caught
+it. All were reverted; the committed tree is the green one.
+
+1. `PriorityTerm::ProtectedActorThreat => 0.0` (the protected-actor threat
+   term removed from the scoring) → 4 failures:
+   `accept_f32_a_escort_prioritizes_attacker_threatening_protected_actor`,
+   `accept_f32_a_line_of_fire_veto_is_reported_on_the_selected_hostile`,
+   `accept_f32_a_ace_variant_reacts_where_a_slow_profile_has_not_noticed_yet`,
+   `accept_f32_a_decision_is_independent_of_candidate_order`.
+2. Scoring a threat only when the evidence's victim is the *observer*
+   (self-defense evidence used for the protected-actor term) → the same 4
+   failures: the AC01 scenario's attack on the charge would score nothing.
+3. `trace.reaction = if false && age < reaction_ticks` (the reaction gate
+   removed) → `accept_f32_a_ace_variant_reacts_where_a_slow_profile_has_not_noticed_yet`
+   fails: the slow escort would notice a 10-tick-old attack.
+4. `traces.sort_by(compare_traces)` removed (the trace follows the request
+   order) → 5 failures, including
+   `accept_f32_a_decision_is_independent_of_candidate_order`, which is the
+   test that exists for exactly that property.
+5. `if false && value.unit() != knob.unit()` in the declared schema's
+   validator (a distance accepted in a weight slot) →
+   `accept_f32_a_difficulty_profile_moves_only_evidence_backed_knobs`.
+6. `if false && id.kind() != ContentKind::Pilot` in `DeclaredAceProfile::try_new`
+   → `accept_f32_a_ace_variant_is_a_behavior_override_of_its_base_role`.
+7. `if false && !seen.insert(change.knob)` in the declared duplicate-knob
+   check (the last override would silently win) →
+   `accept_f32_a_difficulty_profile_moves_only_evidence_backed_knobs`.
+
+## Commands run (all exit 0)
+
+- `cargo fmt --all -- --check`
+- `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
+- `cargo test --workspace --locked` (1812 tests passing)
+- `cargo test --workspace --locked -- accept_f32_a_ --include-ignored`
+  (36 tests: 29 in `cs_sim`'s `ai` target, 7 in `cs_content`'s lib)

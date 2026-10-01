@@ -11,10 +11,11 @@
 
 use cs_sim::ai::combat::{
     ArsenalSnapshot, CandidateView, CombatError, CombatPlanner, CombatRequest, CombatRole,
-    FormationFacts, FormationId, FormationSlot, MountAvailability, MountKind, PriorityPolicy,
-    RoleArsenal, RoleAssignment, SkillKnobs, SkillProfile, synthetic_actor, synthetic_arsenal,
-    synthetic_candidate, synthetic_combat_planner, synthetic_escort_profile,
-    synthetic_recovery_policies, synthetic_threat, MAX_ENGAGEMENT_RANGE_M, SYNTHETIC_SESSION,
+    FormationFacts, FormationId, FormationSlot, MAX_ENGAGEMENT_RANGE_M, MountAvailability,
+    MountKind, PriorityPolicy, RoleArsenal, RoleAssignment, SYNTHETIC_SESSION, SkillKnobs,
+    SkillProfile, synthetic_actor, synthetic_arsenal, synthetic_candidate,
+    synthetic_combat_planner, synthetic_escort_profile, synthetic_recovery_policies,
+    synthetic_threat,
 };
 use cs_sim::damage::{ActorId, DamageNodeKey, HitEventId};
 use cs_sim::targeting::Allegiance;
@@ -40,9 +41,19 @@ fn escort_assignment() -> RoleAssignment {
 
 fn candidates() -> Vec<cs_sim::ai::combat::CandidateView> {
     vec![
-        synthetic_candidate(BYSTANDER, [300.0, 0.0, 0.0], Some(Allegiance::Hostile), false),
-        synthetic_candidate(ATTACKER, [800.0, 0.0, 0.0], Some(Allegiance::Hostile), false)
-            .with_threat(synthetic_threat(ATTACKER, CHARGE, Tick(3_900), 2, 0)),
+        synthetic_candidate(
+            BYSTANDER,
+            [300.0, 0.0, 0.0],
+            Some(Allegiance::Hostile),
+            false,
+        ),
+        synthetic_candidate(
+            ATTACKER,
+            [800.0, 0.0, 0.0],
+            Some(Allegiance::Hostile),
+            false,
+        )
+        .with_threat(synthetic_threat(ATTACKER, CHARGE, Tick(3_900), 2, 0)),
     ]
 }
 
@@ -85,7 +96,13 @@ fn accept_f32_a_foreign_session_identities_are_refused() {
     };
 
     let err = planner
-        .decide(&request(foreign, &assignment, &candidates, None, &arsenal()))
+        .decide(&request(
+            foreign,
+            &assignment,
+            &candidates,
+            None,
+            &arsenal(),
+        ))
         .expect_err("a foreign observer is refused");
     assert!(
         matches!(err, CombatError::ForeignSession { .. }),
@@ -109,7 +126,13 @@ fn accept_f32_a_foreign_session_identities_are_refused() {
         .with_threat(ThreatEvidenceForeign::build()),
     ];
     let err = planner
-        .decide(&request(synthetic_actor(1), &assignment, &mixed, None, &arsenal()))
+        .decide(&request(
+            synthetic_actor(1),
+            &assignment,
+            &mixed,
+            None,
+            &arsenal(),
+        ))
         .expect_err("a foreign candidate is refused");
     match err {
         CombatError::ForeignSession { actor, session } => {
@@ -122,21 +145,32 @@ fn accept_f32_a_foreign_session_identities_are_refused() {
     // A threat event from a stale generation cannot mint a threat either.
     let stale_event = vec![
         candidates[0].clone(),
-        synthetic_candidate(ATTACKER, [800.0, 0.0, 0.0], Some(Allegiance::Hostile), false)
-            .with_threat(cs_sim::ai::combat::ThreatEvidence::new(
-                synthetic_actor(ATTACKER),
-                synthetic_actor(CHARGE),
-                Tick(3_990),
-                HitEventId {
-                    session: SYNTHETIC_SESSION + 5,
-                    tick: Tick(3_990),
-                    producer: 2,
-                    sequence: 0,
-                },
-            )),
+        synthetic_candidate(
+            ATTACKER,
+            [800.0, 0.0, 0.0],
+            Some(Allegiance::Hostile),
+            false,
+        )
+        .with_threat(cs_sim::ai::combat::ThreatEvidence::new(
+            synthetic_actor(ATTACKER),
+            synthetic_actor(CHARGE),
+            Tick(3_990),
+            HitEventId {
+                session: SYNTHETIC_SESSION + 5,
+                tick: Tick(3_990),
+                producer: 2,
+                sequence: 0,
+            },
+        )),
     ];
     let err = planner
-        .decide(&request(synthetic_actor(1), &assignment, &stale_event, None, &arsenal()))
+        .decide(&request(
+            synthetic_actor(1),
+            &assignment,
+            &stale_event,
+            None,
+            &arsenal(),
+        ))
         .expect_err("a stale-generation attack event is refused");
     assert!(matches!(err, CombatError::ForeignSession { .. }), "{err}");
 }
@@ -174,12 +208,28 @@ fn accept_f32_a_threat_evidence_naming_another_attacker_is_refused() {
     let planner = synthetic_combat_planner();
     let assignment = escort_assignment();
     let misattributed = vec![
-        synthetic_candidate(BYSTANDER, [300.0, 0.0, 0.0], Some(Allegiance::Hostile), false),
-        synthetic_candidate(ATTACKER, [800.0, 0.0, 0.0], Some(Allegiance::Hostile), false)
-            .with_threat(synthetic_threat(BYSTANDER, CHARGE, Tick(3_990), 2, 0)),
+        synthetic_candidate(
+            BYSTANDER,
+            [300.0, 0.0, 0.0],
+            Some(Allegiance::Hostile),
+            false,
+        ),
+        synthetic_candidate(
+            ATTACKER,
+            [800.0, 0.0, 0.0],
+            Some(Allegiance::Hostile),
+            false,
+        )
+        .with_threat(synthetic_threat(BYSTANDER, CHARGE, Tick(3_990), 2, 0)),
     ];
     let err = planner
-        .decide(&request(synthetic_actor(1), &assignment, &misattributed, None, &arsenal()))
+        .decide(&request(
+            synthetic_actor(1),
+            &assignment,
+            &misattributed,
+            None,
+            &arsenal(),
+        ))
         .expect_err("evidence naming another attacker is refused");
     match err {
         CombatError::ThreatAttackerMismatch {
@@ -200,12 +250,28 @@ fn accept_f32_a_threat_evidence_from_the_future_is_refused() {
     let planner = synthetic_combat_planner();
     let assignment = escort_assignment();
     let from_the_future = vec![
-        synthetic_candidate(BYSTANDER, [300.0, 0.0, 0.0], Some(Allegiance::Hostile), false),
-        synthetic_candidate(ATTACKER, [800.0, 0.0, 0.0], Some(Allegiance::Hostile), false)
-            .with_threat(synthetic_threat(ATTACKER, CHARGE, Tick(4_001), 2, 0)),
+        synthetic_candidate(
+            BYSTANDER,
+            [300.0, 0.0, 0.0],
+            Some(Allegiance::Hostile),
+            false,
+        ),
+        synthetic_candidate(
+            ATTACKER,
+            [800.0, 0.0, 0.0],
+            Some(Allegiance::Hostile),
+            false,
+        )
+        .with_threat(synthetic_threat(ATTACKER, CHARGE, Tick(4_001), 2, 0)),
     ];
     let err = planner
-        .decide(&request(synthetic_actor(1), &assignment, &from_the_future, None, &arsenal()))
+        .decide(&request(
+            synthetic_actor(1),
+            &assignment,
+            &from_the_future,
+            None,
+            &arsenal(),
+        ))
         .expect_err("evidence from the future is refused");
     match err {
         CombatError::ThreatFromTheFuture { attacker, at, now } => {
@@ -225,7 +291,13 @@ fn accept_f32_a_assignment_for_another_actor_is_refused() {
     let assignment = RoleAssignment::new(synthetic_actor(42), CombatRole::FighterAttack);
     let candidates = candidates();
     let err = planner
-        .decide(&request(synthetic_actor(1), &assignment, &candidates, None, &arsenal()))
+        .decide(&request(
+            synthetic_actor(1),
+            &assignment,
+            &candidates,
+            None,
+            &arsenal(),
+        ))
         .expect_err("another actor's assignment is refused");
     assert!(
         matches!(err, CombatError::AssignmentObserverMismatch { .. }),
@@ -242,12 +314,15 @@ fn accept_f32_a_role_without_a_profile_is_refused() {
     let assignment = RoleAssignment::new(synthetic_actor(1), CombatRole::Intercept);
     let candidates = candidates();
     let err = planner
-        .decide(&request(synthetic_actor(1), &assignment, &candidates, None, &arsenal()))
+        .decide(&request(
+            synthetic_actor(1),
+            &assignment,
+            &candidates,
+            None,
+            &arsenal(),
+        ))
         .expect_err("no profile for the role");
-    assert!(
-        matches!(err, CombatError::NoProfileForRole { .. }),
-        "{err}"
-    );
+    assert!(matches!(err, CombatError::NoProfileForRole { .. }), "{err}");
 }
 
 /// Two profiles for one role are refused at construction: resolving the
@@ -260,7 +335,10 @@ fn accept_f32_a_duplicate_role_profile_is_refused() {
         &[synthetic_escort_profile(), synthetic_escort_profile()],
     )
     .expect_err("two profiles for one role");
-    assert!(matches!(err, CombatError::DuplicateRoleProfile { .. }), "{err}");
+    assert!(
+        matches!(err, CombatError::DuplicateRoleProfile { .. }),
+        "{err}"
+    );
 }
 
 /// Registering a formation twice is refused.
@@ -269,7 +347,10 @@ fn accept_f32_a_duplicate_formation_registration_is_refused() {
     let err = synthetic_combat_planner()
         .with_formation(FormationId(1), synthetic_recovery_policies())
         .expect_err("formation 1 is already registered");
-    assert!(matches!(err, CombatError::DuplicateFormation { .. }), "{err}");
+    assert!(
+        matches!(err, CombatError::DuplicateFormation { .. }),
+        "{err}"
+    );
 }
 
 /// A pending recovery trigger for a formation the planner carries no
@@ -303,10 +384,7 @@ fn accept_f32_a_pending_recovery_without_declared_policies_is_refused() {
             &arsenal(),
         ))
         .expect_err("no declared recovery paths for the pending trigger");
-    assert!(
-        matches!(err, CombatError::NoRecoveryPolicy { .. }),
-        "{err}"
-    );
+    assert!(matches!(err, CombatError::NoRecoveryPolicy { .. }), "{err}");
 }
 
 /// An assignment that protects the assigned actor is refused: "escort"
@@ -314,12 +392,9 @@ fn accept_f32_a_pending_recovery_without_declared_policies_is_refused() {
 /// self-defense would silently change the role.
 #[test]
 fn accept_f32_a_self_protecting_assignment_is_refused() {
-    let err = RoleAssignment::protecting(
-        synthetic_actor(1),
-        CombatRole::Escort,
-        synthetic_actor(1),
-    )
-    .expect_err("an actor cannot protect itself");
+    let err =
+        RoleAssignment::protecting(synthetic_actor(1), CombatRole::Escort, synthetic_actor(1))
+            .expect_err("an actor cannot protect itself");
     assert!(matches!(err, CombatError::ProtectedIsSelf { .. }), "{err}");
 }
 
@@ -342,14 +417,25 @@ fn accept_f32_a_profile_knobs_are_bounded_and_finite() {
         threat_window_ticks: 120,
     };
 
-    let cases: Vec<(SkillKnobs, PriorityPolicy, fn(&CombatError) -> bool)> = vec![
+    /// One bounded-knob case: the knobs, the policy, and a predicate naming
+    /// the error the validator must produce for them.
+    type KnobCase = (SkillKnobs, PriorityPolicy, fn(&CombatError) -> bool);
+
+    let cases: Vec<KnobCase> = vec![
         (
             SkillKnobs {
                 aim_error_rad: f64::NAN,
                 ..base_knobs
             },
             base_policy,
-            |err| matches!(err, CombatError::NonFiniteKnob { knob: "aim_error_rad" }),
+            |err| {
+                matches!(
+                    err,
+                    CombatError::NonFiniteKnob {
+                        knob: "aim_error_rad"
+                    }
+                )
+            },
         ),
         (
             SkillKnobs {
@@ -357,7 +443,14 @@ fn accept_f32_a_profile_knobs_are_bounded_and_finite() {
                 ..base_knobs
             },
             base_policy,
-            |err| matches!(err, CombatError::NonFiniteKnob { knob: "engagement_range_m" }),
+            |err| {
+                matches!(
+                    err,
+                    CombatError::NonFiniteKnob {
+                        knob: "engagement_range_m"
+                    }
+                )
+            },
         ),
         (
             SkillKnobs {
@@ -365,7 +458,15 @@ fn accept_f32_a_profile_knobs_are_bounded_and_finite() {
                 ..base_knobs
             },
             base_policy,
-            |err| matches!(err, CombatError::KnobOutOfRange { knob: "aim_error_rad", .. }),
+            |err| {
+                matches!(
+                    err,
+                    CombatError::KnobOutOfRange {
+                        knob: "aim_error_rad",
+                        ..
+                    }
+                )
+            },
         ),
         (
             SkillKnobs {
@@ -374,7 +475,13 @@ fn accept_f32_a_profile_knobs_are_bounded_and_finite() {
             },
             base_policy,
             |err| {
-                matches!(err, CombatError::KnobOutOfRange { knob: "engagement_range_m", .. })
+                matches!(
+                    err,
+                    CombatError::KnobOutOfRange {
+                        knob: "engagement_range_m",
+                        ..
+                    }
+                )
             },
         ),
         (
@@ -384,7 +491,13 @@ fn accept_f32_a_profile_knobs_are_bounded_and_finite() {
             },
             base_policy,
             |err| {
-                matches!(err, CombatError::KnobOutOfRange { knob: "engagement_range_m", .. })
+                matches!(
+                    err,
+                    CombatError::KnobOutOfRange {
+                        knob: "engagement_range_m",
+                        ..
+                    }
+                )
             },
         ),
         (
@@ -393,7 +506,15 @@ fn accept_f32_a_profile_knobs_are_bounded_and_finite() {
                 ..base_knobs
             },
             base_policy,
-            |err| matches!(err, CombatError::KnobOutOfRange { knob: "reaction_ticks", .. }),
+            |err| {
+                matches!(
+                    err,
+                    CombatError::KnobOutOfRange {
+                        knob: "reaction_ticks",
+                        ..
+                    }
+                )
+            },
         ),
         (
             base_knobs,
@@ -401,7 +522,15 @@ fn accept_f32_a_profile_knobs_are_bounded_and_finite() {
                 threat_window_ticks: 99_999,
                 ..base_policy
             },
-            |err| matches!(err, CombatError::KnobOutOfRange { knob: "threat_window_ticks", .. }),
+            |err| {
+                matches!(
+                    err,
+                    CombatError::KnobOutOfRange {
+                        knob: "threat_window_ticks",
+                        ..
+                    }
+                )
+            },
         ),
         (
             base_knobs,
@@ -409,7 +538,15 @@ fn accept_f32_a_profile_knobs_are_bounded_and_finite() {
                 proximity_weight: -1.0,
                 ..base_policy
             },
-            |err| matches!(err, CombatError::KnobOutOfRange { knob: "proximity_weight", .. }),
+            |err| {
+                matches!(
+                    err,
+                    CombatError::KnobOutOfRange {
+                        knob: "proximity_weight",
+                        ..
+                    }
+                )
+            },
         ),
     ];
 
@@ -427,14 +564,19 @@ fn accept_f32_a_profile_knobs_are_bounded_and_finite() {
         base_policy,
     )
     .expect_err("a torpedo run needs ordnance");
-    assert!(matches!(err, CombatError::RoleArsenalMissing { .. }), "{err}");
-    assert!(SkillProfile::try_new(
-        CombatRole::TorpedoRun,
-        RoleArsenal::guns_and_ordnance(),
-        base_knobs,
-        base_policy
-    )
-    .is_ok());
+    assert!(
+        matches!(err, CombatError::RoleArsenalMissing { .. }),
+        "{err}"
+    );
+    assert!(
+        SkillProfile::try_new(
+            CombatRole::TorpedoRun,
+            RoleArsenal::guns_and_ordnance(),
+            base_knobs,
+            base_policy
+        )
+        .is_ok()
+    );
 }
 
 /// The same rule on the bumping side: a mount that is intact but empty and

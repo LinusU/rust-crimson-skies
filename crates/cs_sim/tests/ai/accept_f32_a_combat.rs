@@ -15,10 +15,10 @@
 use cs_sim::ai::combat::{
     CandidateVerdict, CombatError, CombatPlanner, CombatRequest, CombatRole, FormationFacts,
     FormationId, FormationSlot, PriorityTerm, ReactionState, RecoveryAction, RecoveryTrigger,
-    RejectReason, RoleAssignment, synthetic_actor, synthetic_arsenal, synthetic_ace_profile,
-    synthetic_candidate, synthetic_combat_planner, synthetic_escort_profile,
-    synthetic_fighter_profile, synthetic_recovery_policies,
-    synthetic_rookie_escort_profile, synthetic_threat, SYNTHETIC_SESSION,
+    RejectReason, RoleAssignment, SYNTHETIC_SESSION, synthetic_ace_profile, synthetic_actor,
+    synthetic_arsenal, synthetic_candidate, synthetic_combat_planner, synthetic_escort_profile,
+    synthetic_fighter_profile, synthetic_recovery_policies, synthetic_rookie_escort_profile,
+    synthetic_threat,
 };
 use cs_sim::damage::{ActorId, LifecycleKind};
 use cs_sim::targeting::Allegiance;
@@ -65,10 +65,26 @@ fn escort_assignment() -> RoleAssignment {
 /// bystander, the friendly, then the attacker.
 fn candidates() -> Vec<cs_sim::ai::combat::CandidateView> {
     vec![
-        synthetic_candidate(BYSTANDER, [300.0, 0.0, 0.0], Some(Allegiance::Hostile), false),
+        synthetic_candidate(
+            BYSTANDER,
+            [300.0, 0.0, 0.0],
+            Some(Allegiance::Hostile),
+            false,
+        ),
         synthetic_candidate(FRIEND, [150.0, 0.0, 0.0], Some(Allegiance::Friendly), false),
-        synthetic_candidate(ATTACKER, [800.0, 0.0, 0.0], Some(Allegiance::Hostile), false)
-            .with_threat(synthetic_threat(ATTACKER, CHARGE, Tick(AC01_ATTACK_TICK), 2, 0)),
+        synthetic_candidate(
+            ATTACKER,
+            [800.0, 0.0, 0.0],
+            Some(Allegiance::Hostile),
+            false,
+        )
+        .with_threat(synthetic_threat(
+            ATTACKER,
+            CHARGE,
+            Tick(AC01_ATTACK_TICK),
+            2,
+            0,
+        )),
     ]
 }
 
@@ -130,7 +146,10 @@ fn accept_f32_a_escort_prioritizes_attacker_threatening_protected_actor() {
     assert_eq!(threat_term.value, 1.0);
     assert_eq!(threat_term.weight, 2.0);
     assert_eq!(threat_term.contribution, 2.0);
-    assert!(attacker.total > 2.0, "proximity adds to the attacker's score");
+    assert!(
+        attacker.total > 2.0,
+        "proximity adds to the attacker's score"
+    );
 
     let bystander = decision
         .trace
@@ -176,8 +195,18 @@ fn accept_f32_a_protected_actor_term_requires_authoritative_evidence_against_it(
 
     // No evidence at all: proximity wins.
     let unevidenced = vec![
-        synthetic_candidate(BYSTANDER, [300.0, 0.0, 0.0], Some(Allegiance::Hostile), false),
-        synthetic_candidate(ATTACKER, [800.0, 0.0, 0.0], Some(Allegiance::Hostile), false),
+        synthetic_candidate(
+            BYSTANDER,
+            [300.0, 0.0, 0.0],
+            Some(Allegiance::Hostile),
+            false,
+        ),
+        synthetic_candidate(
+            ATTACKER,
+            [800.0, 0.0, 0.0],
+            Some(Allegiance::Hostile),
+            false,
+        ),
     ];
     assert_eq!(
         decide(&planner, &assignment, &unevidenced).target,
@@ -186,9 +215,19 @@ fn accept_f32_a_protected_actor_term_requires_authoritative_evidence_against_it(
 
     // Evidence against a third party is not evidence against the charge.
     let wrong_victim = vec![
-        synthetic_candidate(BYSTANDER, [300.0, 0.0, 0.0], Some(Allegiance::Hostile), false),
-        synthetic_candidate(ATTACKER, [800.0, 0.0, 0.0], Some(Allegiance::Hostile), false)
-            .with_threat(synthetic_threat(ATTACKER, 99, Tick(3_990), 2, 0)),
+        synthetic_candidate(
+            BYSTANDER,
+            [300.0, 0.0, 0.0],
+            Some(Allegiance::Hostile),
+            false,
+        ),
+        synthetic_candidate(
+            ATTACKER,
+            [800.0, 0.0, 0.0],
+            Some(Allegiance::Hostile),
+            false,
+        )
+        .with_threat(synthetic_threat(ATTACKER, 99, Tick(3_990), 2, 0)),
     ];
     let decision = decide(&planner, &assignment, &wrong_victim);
     assert_eq!(
@@ -232,7 +271,12 @@ fn accept_f32_a_hostility_gate_refuses_friendly_neutral_and_undeclared_candidate
     ];
     for (allegiance, expected) in cases {
         let candidates = vec![
-            synthetic_candidate(BYSTANDER, [300.0, 0.0, 0.0], Some(Allegiance::Hostile), false),
+            synthetic_candidate(
+                BYSTANDER,
+                [300.0, 0.0, 0.0],
+                Some(Allegiance::Hostile),
+                false,
+            ),
             // The objective is 100 m away: the highest objective weight in
             // the policy still must not make it a target.
             synthetic_candidate(7, [100.0, 0.0, 0.0], allegiance, true),
@@ -260,7 +304,12 @@ fn accept_f32_a_script_assigned_objective_outranks_proximity() {
     let planner = synthetic_combat_planner();
     let assignment = RoleAssignment::new(synthetic_actor(1), CombatRole::FighterAttack);
     let candidates = vec![
-        synthetic_candidate(BYSTANDER, [200.0, 0.0, 0.0], Some(Allegiance::Hostile), false),
+        synthetic_candidate(
+            BYSTANDER,
+            [200.0, 0.0, 0.0],
+            Some(Allegiance::Hostile),
+            false,
+        ),
         synthetic_candidate(ATTACKER, [350.0, 0.0, 0.0], Some(Allegiance::Hostile), true),
     ];
     let decision = decide(&planner, &assignment, &candidates);
@@ -289,10 +338,26 @@ fn accept_f32_a_line_of_fire_veto_is_reported_on_the_selected_hostile() {
     let planner = synthetic_combat_planner();
     let assignment = escort_assignment();
     let candidates = vec![
-        synthetic_candidate(BYSTANDER, [300.0, 0.0, 0.0], Some(Allegiance::Hostile), false),
-        synthetic_candidate(ATTACKER, [800.0, 0.0, 0.0], Some(Allegiance::Hostile), false)
-            .with_threat(synthetic_threat(ATTACKER, CHARGE, Tick(AC01_ATTACK_TICK), 2, 0))
-            .with_friendlies_in_line_of_fire(2),
+        synthetic_candidate(
+            BYSTANDER,
+            [300.0, 0.0, 0.0],
+            Some(Allegiance::Hostile),
+            false,
+        ),
+        synthetic_candidate(
+            ATTACKER,
+            [800.0, 0.0, 0.0],
+            Some(Allegiance::Hostile),
+            false,
+        )
+        .with_threat(synthetic_threat(
+            ATTACKER,
+            CHARGE,
+            Tick(AC01_ATTACK_TICK),
+            2,
+            0,
+        ))
+        .with_friendlies_in_line_of_fire(2),
     ];
     let decision = decide(&planner, &assignment, &candidates);
 
@@ -308,9 +373,7 @@ fn accept_f32_a_line_of_fire_veto_is_reported_on_the_selected_hostile() {
     assert_eq!(attacker.verdict, CandidateVerdict::Eligible);
     assert_eq!(
         attacker.fire_veto,
-        Some(cs_sim::ai::combat::FireVeto::FriendlyInLineOfFire {
-            friendlies: 2
-        }),
+        Some(cs_sim::ai::combat::FireVeto::FriendlyInLineOfFire { friendlies: 2 }),
         "the veto is reported on the target, separately from the gate"
     );
 }
@@ -325,9 +388,19 @@ fn accept_f32_a_ace_variant_reacts_where_a_slow_profile_has_not_noticed_yet() {
     let now = Tick(DECISION_TICK);
     let observed = Tick(DECISION_TICK - 10);
     let candidates = vec![
-        synthetic_candidate(BYSTANDER, [300.0, 0.0, 0.0], Some(Allegiance::Hostile), false),
-        synthetic_candidate(ATTACKER, [800.0, 0.0, 0.0], Some(Allegiance::Hostile), false)
-            .with_threat(synthetic_threat(ATTACKER, CHARGE, observed, 2, 0)),
+        synthetic_candidate(
+            BYSTANDER,
+            [300.0, 0.0, 0.0],
+            Some(Allegiance::Hostile),
+            false,
+        ),
+        synthetic_candidate(
+            ATTACKER,
+            [800.0, 0.0, 0.0],
+            Some(Allegiance::Hostile),
+            false,
+        )
+        .with_threat(synthetic_threat(ATTACKER, CHARGE, observed, 2, 0)),
     ];
     let assignment = escort_assignment();
 
@@ -387,9 +460,19 @@ fn accept_f32_a_threat_outside_the_declared_window_stops_counting() {
     let assignment = escort_assignment();
     let stale = Tick(DECISION_TICK - 1_000);
     let candidates = vec![
-        synthetic_candidate(BYSTANDER, [300.0, 0.0, 0.0], Some(Allegiance::Hostile), false),
-        synthetic_candidate(ATTACKER, [800.0, 0.0, 0.0], Some(Allegiance::Hostile), false)
-            .with_threat(synthetic_threat(ATTACKER, CHARGE, stale, 2, 0)),
+        synthetic_candidate(
+            BYSTANDER,
+            [300.0, 0.0, 0.0],
+            Some(Allegiance::Hostile),
+            false,
+        ),
+        synthetic_candidate(
+            ATTACKER,
+            [800.0, 0.0, 0.0],
+            Some(Allegiance::Hostile),
+            false,
+        )
+        .with_threat(synthetic_threat(ATTACKER, CHARGE, stale, 2, 0)),
     ];
     let decision = decide(&planner, &assignment, &candidates);
     assert_eq!(
@@ -416,9 +499,25 @@ fn accept_f32_a_lost_protected_actor_reports_the_declared_recovery_action() {
         route_available: true,
     };
     let candidates = vec![
-        synthetic_candidate(BYSTANDER, [300.0, 0.0, 0.0], Some(Allegiance::Hostile), false),
-        synthetic_candidate(ATTACKER, [800.0, 0.0, 0.0], Some(Allegiance::Hostile), false)
-            .with_threat(synthetic_threat(ATTACKER, CHARGE, Tick(AC01_ATTACK_TICK), 2, 0)),
+        synthetic_candidate(
+            BYSTANDER,
+            [300.0, 0.0, 0.0],
+            Some(Allegiance::Hostile),
+            false,
+        ),
+        synthetic_candidate(
+            ATTACKER,
+            [800.0, 0.0, 0.0],
+            Some(Allegiance::Hostile),
+            false,
+        )
+        .with_threat(synthetic_threat(
+            ATTACKER,
+            CHARGE,
+            Tick(AC01_ATTACK_TICK),
+            2,
+            0,
+        )),
     ];
 
     let decision = planner
@@ -526,7 +625,10 @@ fn accept_f32_a_every_recovery_trigger_reports_its_declared_action() {
             .trace
             .recovery
             .expect("the pending trigger is reported");
-        assert_eq!(recovery.trigger, expected_trigger, "trigger priority is fixed");
+        assert_eq!(
+            recovery.trigger, expected_trigger,
+            "trigger priority is fixed"
+        );
         assert_eq!(recovery.action, expected_action);
     }
 }
@@ -543,8 +645,16 @@ fn accept_f32_a_decision_is_independent_of_candidate_order() {
     let reversed: Vec<_> = ordered.iter().rev().cloned().collect();
     permutations.push(ordered.clone());
     permutations.push(reversed);
-    permutations.push(vec![ordered[2].clone(), ordered[0].clone(), ordered[1].clone()]);
-    permutations.push(vec![ordered[1].clone(), ordered[2].clone(), ordered[0].clone()]);
+    permutations.push(vec![
+        ordered[2].clone(),
+        ordered[0].clone(),
+        ordered[1].clone(),
+    ]);
+    permutations.push(vec![
+        ordered[1].clone(),
+        ordered[2].clone(),
+        ordered[0].clone(),
+    ]);
 
     let mut reference: Option<(Option<ActorId>, Vec<ActorId>)> = None;
     for permutation in &permutations {
@@ -591,9 +701,25 @@ fn accept_f32_a_candidate_beyond_the_engagement_range_is_refused() {
     let planner = synthetic_combat_planner();
     let assignment = escort_assignment();
     let candidates = vec![
-        synthetic_candidate(BYSTANDER, [300.0, 0.0, 0.0], Some(Allegiance::Hostile), false),
-        synthetic_candidate(ATTACKER, [2_000.0, 0.0, 0.0], Some(Allegiance::Hostile), false)
-            .with_threat(synthetic_threat(ATTACKER, CHARGE, Tick(AC01_ATTACK_TICK), 2, 0)),
+        synthetic_candidate(
+            BYSTANDER,
+            [300.0, 0.0, 0.0],
+            Some(Allegiance::Hostile),
+            false,
+        ),
+        synthetic_candidate(
+            ATTACKER,
+            [2_000.0, 0.0, 0.0],
+            Some(Allegiance::Hostile),
+            false,
+        )
+        .with_threat(synthetic_threat(
+            ATTACKER,
+            CHARGE,
+            Tick(AC01_ATTACK_TICK),
+            2,
+            0,
+        )),
     ];
     let decision = decide(&planner, &assignment, &candidates);
     assert_eq!(decision.target, Some(synthetic_actor(BYSTANDER)));
@@ -617,7 +743,12 @@ fn accept_f32_a_observer_and_destroyed_actors_are_never_targets() {
     let assignment = escort_assignment();
     let candidates = vec![
         synthetic_candidate(1, [0.0, 0.0, 0.0], Some(Allegiance::Friendly), false),
-        synthetic_candidate(BYSTANDER, [300.0, 0.0, 0.0], Some(Allegiance::Hostile), false),
+        synthetic_candidate(
+            BYSTANDER,
+            [300.0, 0.0, 0.0],
+            Some(Allegiance::Hostile),
+            false,
+        ),
     ];
     let decision = decide(&planner, &assignment, &candidates);
     assert_eq!(decision.target, Some(synthetic_actor(BYSTANDER)));
@@ -680,9 +811,7 @@ fn accept_f32_a_no_eligible_candidate_holds_with_a_reason() {
 /// typed input F32-B's firing solution (AC02) reads; F32-A only reports it.
 #[test]
 fn accept_f32_a_arsenal_snapshot_reports_separate_availability_counts() {
-    use cs_sim::ai::combat::{
-        ArsenalSnapshot, FireVeto, MountAvailability, MountKind,
-    };
+    use cs_sim::ai::combat::{ArsenalSnapshot, FireVeto, MountAvailability, MountKind};
     use cs_sim::damage::DamageNodeKey;
 
     let planner = synthetic_combat_planner();
@@ -766,11 +895,13 @@ fn accept_f32_a_arsenal_snapshot_reports_separate_availability_counts() {
             .fire_veto,
         None
     );
-    assert_eq!(
+    assert!(
         synthetic_fighter_profile().arsenal().gun,
-        true,
         "the fixture fighter profile declares guns"
     );
+    // The veto variant is the one an all-unusable arsenal raises; AC02's
+    // firing solution is F32-B's work, so only the vocabulary is asserted
+    // here.
     assert!(matches!(
         FireVeto::ArsenalUnusable {
             usable_guns: 0,

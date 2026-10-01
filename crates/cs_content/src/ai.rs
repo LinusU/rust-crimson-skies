@@ -426,10 +426,7 @@ fn resolved_value<T: Copy>(resolved: &Resolved<T>) -> Option<T> {
 /// A known [`Resolved`] carrying the given provenance: what an override
 /// leaves behind after it moves a knob.
 fn resolved_with<T>(value: T, provenance: &Provenance) -> Resolved<T> {
-    Resolved::Known(cs_types::content::Known::new(
-        value,
-        provenance.clone(),
-    ))
+    Resolved::Known(cs_types::content::Known::new(value, provenance.clone()))
 }
 
 /// Checks a knob value against its unit and its approved range.
@@ -536,10 +533,7 @@ impl SkillKnobs {
             validate_knob_value(SkillKnob::EngagementRangeM, SkillKnobValue::Distance(m.0))?;
         }
         if let Some(ticks) = resolved_value(&self.fire_discipline_ticks) {
-            validate_knob_value(
-                SkillKnob::FireDisciplineTicks,
-                SkillKnobValue::Ticks(ticks),
-            )?;
+            validate_knob_value(SkillKnob::FireDisciplineTicks, SkillKnobValue::Ticks(ticks))?;
         }
         Ok(())
     }
@@ -669,7 +663,10 @@ impl PriorityPolicy {
     /// positive.
     pub fn validate(&self) -> Result<(), CombatSchemaError> {
         let weights = [
-            (SkillKnob::ProtectedActorWeight, &self.protected_actor_weight),
+            (
+                SkillKnob::ProtectedActorWeight,
+                &self.protected_actor_weight,
+            ),
             (SkillKnob::ObjectiveWeight, &self.objective_weight),
             (SkillKnob::SelfDefenseWeight, &self.self_defense_weight),
             (SkillKnob::ProximityWeight, &self.proximity_weight),
@@ -828,7 +825,10 @@ impl DeclaredAceProfile {
     ///
     /// [`CombatSchemaError::NotASkillKnob`] for a priority weight, which
     /// lives on the policy rather than the knobs.
-    pub fn knob_value(&self, knob: SkillKnob) -> Result<Resolved<SkillKnobValue>, CombatSchemaError> {
+    pub fn knob_value(
+        &self,
+        knob: SkillKnob,
+    ) -> Result<Resolved<SkillKnobValue>, CombatSchemaError> {
         let change = self
             .overrides
             .iter()
@@ -1045,12 +1045,8 @@ pub enum DifficultyTier {
 
 impl DifficultyTier {
     /// Every tier, from most forgiving to most demanding.
-    pub const ALL: &'static [DifficultyTier] = &[
-        Self::Relaxed,
-        Self::Standard,
-        Self::Hard,
-        Self::Elite,
-    ];
+    pub const ALL: &'static [DifficultyTier] =
+        &[Self::Relaxed, Self::Standard, Self::Hard, Self::Elite];
 
     /// The stable label used in reports.
     #[must_use]
@@ -1250,7 +1246,10 @@ impl fmt::Display for CombatSchemaError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::SubjectKind { subject } => {
-                write!(f, "combat subject {subject} is neither a mission nor a launchable")
+                write!(
+                    f,
+                    "combat subject {subject} is neither a mission nor a launchable"
+                )
             }
             Self::DuplicateRole { role } => write!(f, "role {role} is declared more than once"),
             Self::UndeclaredRole { role } => {
@@ -1286,10 +1285,7 @@ impl fmt::Display for CombatSchemaError {
                 knob,
                 expected,
                 found,
-            } => write!(
-                f,
-                "knob {knob} is expressed in {expected}, not in {found}"
-            ),
+            } => write!(f, "knob {knob} is expressed in {expected}, not in {found}"),
             Self::NonFiniteKnob { knob } => write!(f, "knob {knob} must be a finite number"),
             Self::KnobOutOfRange { knob, value } => {
                 write!(f, "knob {knob} value {value} is outside its approved range")
@@ -1642,10 +1638,7 @@ pub fn declared_synthetic_ace_profile() -> DeclaredAceProfile {
     let overrides = [
         (SkillKnob::ReactionTicks, SkillKnobValue::Ticks(6)),
         (SkillKnob::AimErrorRad, SkillKnobValue::Angle(0.015)),
-        (
-            SkillKnob::ProtectedActorWeight,
-            SkillKnobValue::Weight(4.0),
-        ),
+        (SkillKnob::ProtectedActorWeight, SkillKnobValue::Weight(4.0)),
     ]
     .into_iter()
     .map(|(knob, value)| {
@@ -1708,10 +1701,7 @@ pub fn declared_synthetic_difficulty_profiles() -> Vec<DifficultyProfile> {
     let elite = [
         (SkillKnob::ReactionTicks, SkillKnobValue::Ticks(6)),
         (SkillKnob::AimErrorRad, SkillKnobValue::Angle(0.015)),
-        (
-            SkillKnob::ProtectedActorWeight,
-            SkillKnobValue::Weight(4.0),
-        ),
+        (SkillKnob::ProtectedActorWeight, SkillKnobValue::Weight(4.0)),
     ]
     .into_iter()
     .map(|(knob, value)| {
@@ -1777,4 +1767,690 @@ pub fn declared_synthetic_combat_rules() -> DeclaredCombatRules {
         provenance,
     )
     .expect("the declared synthetic combat rules fixture is valid")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cs_types::content::Known;
+
+    fn claim(id: &str) -> ClaimId {
+        ClaimId::new(id).expect("valid claim id")
+    }
+
+    fn designed() -> Provenance {
+        Provenance::designed(claim("f32a.unit"))
+    }
+
+    fn pilot(key: &str) -> ContentId {
+        ContentId::from_source(ContentKind::Pilot, key).expect("valid pilot id")
+    }
+
+    fn override_of(knob: SkillKnob, value: SkillKnobValue) -> SkillKnobOverride {
+        SkillKnobOverride::try_new(knob, value, designed()).expect("the unit override is valid")
+    }
+
+    /// The declared synthetic rules are a synthetic, designed record: an
+    /// escort-sortie mission with the three roles the fixture needs, one
+    /// behavior-only ace variant, one formation with four declared recovery
+    /// paths and two difficulty tiers.
+    #[test]
+    fn accept_f32_a_declared_synthetic_rules_are_synthetic_and_complete() {
+        let rules = declared_synthetic_combat_rules();
+        assert_eq!(rules.subject().as_str(), "mission/synthetic.escort-sortie");
+        assert_eq!(rules.origin(), &Origin::SyntheticFixture);
+        assert!(!rules.origin().is_original());
+        assert_eq!(rules.roles().len(), 3);
+        assert!(rules.role(DeclaredCombatRole::Escort).is_some());
+        assert!(rules.role(DeclaredCombatRole::BomberRun).is_some());
+        assert!(rules.role(DeclaredCombatRole::Intercept).is_none());
+
+        let escort = rules
+            .role(DeclaredCombatRole::Escort)
+            .expect("the fixture declares an escort role");
+        assert_eq!(escort.arsenal(), RoleArsenal::guns());
+        assert_eq!(
+            escort
+                .priority()
+                .known_weight(PriorityTerm::ProtectedActorThreat),
+            Some(2.0)
+        );
+        assert!(
+            escort
+                .priority()
+                .known_weight(PriorityTerm::ProtectedActorThreat)
+                > escort.priority().known_weight(PriorityTerm::Proximity),
+            "the declared escort policy weighs the charge's threat above proximity"
+        );
+        assert_eq!(escort.knobs().reaction_ticks.clone().known(), Some(24));
+        assert_eq!(
+            escort.knobs().engagement_range_m.clone().known(),
+            Some(Meters(1_500.0))
+        );
+        assert_eq!(
+            escort.priority().threat_window_ticks.clone().known(),
+            Some(120)
+        );
+
+        // Every declared value carries provenance, so a lowered profile can
+        // say which claim produced it.
+        assert_eq!(
+            escort
+                .knobs()
+                .reaction_ticks
+                .provenance()
+                .map(|provenance| provenance.claim_id.clone()),
+            Some(synthetic_combat_claim())
+        );
+
+        assert_eq!(rules.aces().len(), 1);
+        assert_eq!(rules.formations().len(), 1);
+        assert_eq!(rules.difficulties().len(), 2);
+        assert!(rules.difficulty(DifficultyTier::Standard).is_some());
+        assert!(rules.difficulty(DifficultyTier::Elite).is_some());
+        assert!(rules.difficulty(DifficultyTier::Hard).is_none());
+
+        // The baseline tier states that it changes nothing rather than
+        // being left missing.
+        assert!(
+            rules
+                .difficulty(DifficultyTier::Standard)
+                .expect("the baseline tier is declared")
+                .overrides()
+                .is_empty()
+        );
+    }
+
+    /// A difficulty profile can only move behavior knobs. The knob
+    /// vocabulary is the enforcement of F32 non-negotiable 1: there is no
+    /// simulation-rate, time-scale, tick-rate, damage, armor or health
+    /// variant, so difficulty cannot be faked by speeding the simulation
+    /// up and an ace cannot be inflated health.
+    #[test]
+    fn accept_f32_a_difficulty_profile_moves_only_evidence_backed_knobs() {
+        let labels: Vec<&str> = SkillKnob::ALL.iter().map(|knob| knob.label()).collect();
+        assert_eq!(labels.len(), 9, "the knob vocabulary is closed");
+        for forbidden in [
+            "simulation_speed",
+            "tick_rate",
+            "time_scale",
+            "physics_rate",
+            "ai_tick_divisor",
+            "damage_scale",
+            "damage_taken_scale",
+            "player_health",
+            "enemy_health",
+            "armor_scale",
+        ] {
+            assert_eq!(
+                SkillKnob::from_label(forbidden),
+                None,
+                "{forbidden} must not be expressible as a skill knob"
+            );
+            assert!(
+                !labels.contains(&forbidden),
+                "{forbidden} is not part of the knob vocabulary"
+            );
+        }
+        for knob in SkillKnob::ALL {
+            assert_eq!(
+                SkillKnob::from_label(knob.label()),
+                Some(*knob),
+                "label and lookup cannot disagree about one knob"
+            );
+        }
+
+        // A knob carries a unit, and an override whose value is in another
+        // unit is refused rather than reinterpreted.
+        assert_eq!(SkillKnob::AimErrorRad.unit(), SkillKnobUnit::Angle);
+        assert_eq!(SkillKnob::EngagementRangeM.unit(), SkillKnobUnit::Distance);
+        assert_eq!(SkillKnob::ProximityWeight.unit(), SkillKnobUnit::Weight);
+        assert_eq!(SkillKnob::ReactionTicks.unit(), SkillKnobUnit::Ticks);
+        assert_eq!(
+            SkillKnobOverride::try_new(
+                SkillKnob::ProximityWeight,
+                SkillKnobValue::Distance(500.0),
+                designed(),
+            )
+            .expect_err("a distance in a weight slot is a content bug"),
+            CombatSchemaError::KnobUnitMismatch {
+                knob: SkillKnob::ProximityWeight,
+                expected: SkillKnobUnit::Weight,
+                found: SkillKnobUnit::Distance,
+            }
+        );
+
+        // Out-of-range and non-finite values are refused by name.
+        assert_eq!(
+            SkillKnobOverride::try_new(
+                SkillKnob::AimErrorRad,
+                SkillKnobValue::Angle(f64::NAN),
+                designed()
+            )
+            .expect_err("NaN is refused"),
+            CombatSchemaError::NonFiniteKnob {
+                knob: SkillKnob::AimErrorRad
+            }
+        );
+        assert!(matches!(
+            SkillKnobOverride::try_new(
+                SkillKnob::ReactionTicks,
+                SkillKnobValue::Ticks(MAX_REACTION_TICKS + 1),
+                designed()
+            )
+            .expect_err("a reaction delay beyond the bound is refused"),
+            CombatSchemaError::KnobOutOfRange {
+                knob: SkillKnob::ReactionTicks,
+                ..
+            }
+        ));
+
+        // The elite tier moves three behavior knobs, each carrying its own
+        // provenance.
+        let elite = DifficultyProfile::try_new(
+            DifficultyTier::Elite,
+            vec![
+                override_of(SkillKnob::ReactionTicks, SkillKnobValue::Ticks(6)),
+                override_of(SkillKnob::AimErrorRad, SkillKnobValue::Angle(0.015)),
+                override_of(SkillKnob::ProtectedActorWeight, SkillKnobValue::Weight(4.0)),
+            ],
+            designed(),
+        )
+        .expect("the elite tier is valid");
+        assert_eq!(elite.tier(), DifficultyTier::Elite);
+        assert_eq!(elite.overrides().len(), 3);
+        for change in elite.overrides() {
+            assert_eq!(&change.provenance.claim_id, &claim("f32a.unit"));
+        }
+        // A tier that moves one knob twice is refused: the second value
+        // would silently win.
+        assert_eq!(
+            DifficultyProfile::try_new(
+                DifficultyTier::Elite,
+                vec![
+                    override_of(SkillKnob::ReactionTicks, SkillKnobValue::Ticks(6)),
+                    override_of(SkillKnob::ReactionTicks, SkillKnobValue::Ticks(12)),
+                ],
+                designed()
+            )
+            .expect_err("a knob cannot be overridden twice"),
+            CombatSchemaError::DuplicateKnob {
+                knob: SkillKnob::ReactionTicks
+            }
+        );
+    }
+
+    /// The declared ace variant is a list of behavior overrides, applied to
+    /// the base role's profile field-wise, and it carries no damage, armor
+    /// or health field to inflate.
+    #[test]
+    fn accept_f32_a_ace_variant_is_a_behavior_override_of_its_base_role() {
+        let ace = declared_synthetic_ace_profile();
+        assert_eq!(ace.id().as_str(), "pilot/synthetic.ace-wing-leader");
+        assert_eq!(ace.base_role(), DeclaredCombatRole::Escort);
+        assert_eq!(ace.origin(), &Origin::SyntheticFixture);
+        assert_eq!(ace.overrides().len(), 3);
+        assert_eq!(
+            ace.knob_value(SkillKnob::ReactionTicks)
+                .expect("the ace overrides the reaction")
+                .known(),
+            Some(SkillKnobValue::Ticks(6))
+        );
+        assert_eq!(
+            ace.knob_value(SkillKnob::AimErrorRad)
+                .expect("the ace overrides the aim error")
+                .known(),
+            Some(SkillKnobValue::Angle(0.015))
+        );
+        assert!(matches!(
+            ace.knob_value(SkillKnob::ProximityWeight),
+            Err(CombatSchemaError::UnknownKnob { .. })
+        ));
+
+        // Applying the variant to the declared escort role moves exactly the
+        // three behavior numbers and leaves everything else alone.
+        let mut profile = DeclaredRoleProfile::try_new(
+            DeclaredCombatRole::Escort,
+            RoleArsenal::guns(),
+            declared_synthetic_escort_knobs(),
+            declared_synthetic_escort_policy(),
+            Origin::SyntheticFixture,
+            designed(),
+        )
+        .expect("the escort role is valid");
+        for change in ace.overrides() {
+            profile.apply(change).expect("the ace override applies");
+        }
+        assert_eq!(profile.knobs().reaction_ticks.clone().known(), Some(6));
+        assert_eq!(
+            profile.knobs().aim_error_rad.clone().known(),
+            Some(Radians(0.015))
+        );
+        assert_eq!(
+            profile
+                .priority()
+                .known_weight(PriorityTerm::ProtectedActorThreat),
+            Some(4.0)
+        );
+        // Untouched knobs keep their declared values.
+        assert_eq!(
+            profile.knobs().engagement_range_m.clone().known(),
+            Some(Meters(1_500.0))
+        );
+        assert_eq!(
+            profile.knobs().fire_discipline_ticks.clone().known(),
+            Some(30)
+        );
+        assert_eq!(
+            profile.priority().threat_window_ticks.clone().known(),
+            Some(120)
+        );
+        // A moved knob carries the override's own claim id, so a lowered
+        // profile can say which record moved it.
+        assert_eq!(
+            profile
+                .knobs()
+                .reaction_ticks
+                .provenance()
+                .map(|provenance| provenance.claim_id.clone()),
+            Some(synthetic_combat_claim())
+        );
+
+        // An ace id outside the pilot namespace is refused.
+        assert_eq!(
+            DeclaredAceProfile::try_new(
+                ContentId::from_source(ContentKind::Airframe, "synthetic.ace-plane")
+                    .expect("valid airframe id"),
+                DeclaredCombatRole::Escort,
+                Vec::new(),
+                Origin::SyntheticFixture,
+                designed(),
+            )
+            .expect_err("an ace variant is identified by a pilot id"),
+            CombatSchemaError::AceKindMismatch {
+                id: ContentId::from_source(ContentKind::Airframe, "synthetic.ace-plane")
+                    .expect("valid airframe id")
+            }
+        );
+    }
+
+    /// The declared formation names a leader that is one of its members and
+    /// one policy per recovery trigger, and refuses a leader slot that is
+    /// not a member (F32 non-negotiable 4).
+    #[test]
+    fn accept_f32_a_formation_declares_a_leader_and_a_policy_per_trigger() {
+        let formation = declared_synthetic_formation();
+        assert_eq!(formation.id(), FormationId(1));
+        assert_eq!(formation.leader_slot(), 0);
+        assert_eq!(formation.members().len(), 3);
+        assert_eq!(formation.members()[0].formation_role, FormationRole::Leader);
+        assert_eq!(
+            formation.members()[1].formation_role,
+            FormationRole::Follower
+        );
+        assert_eq!(
+            formation.recovery().leader_loss,
+            RecoveryPolicy::ReassignLead
+        );
+        assert_eq!(
+            formation.recovery().assigned_target_destroyed,
+            RecoveryPolicy::Regroup
+        );
+        assert_eq!(
+            formation.recovery().route_interrupted,
+            RecoveryPolicy::ResumeRoute
+        );
+        assert_eq!(
+            formation.recovery().protected_actor_lost,
+            RecoveryPolicy::Regroup
+        );
+        assert_eq!(RecoveryPolicy::ALL.len(), 5);
+        for policy in RecoveryPolicy::ALL {
+            assert!(!policy.label().is_empty());
+        }
+
+        let recovery = *formation.recovery();
+        // A leader slot that is not a member is refused by name.
+        assert_eq!(
+            DeclaredFormation::try_new(
+                FormationId(1),
+                7,
+                vec![FormationMember {
+                    slot: 0,
+                    formation_role: FormationRole::Leader,
+                    role: DeclaredCombatRole::Escort,
+                }],
+                recovery,
+                designed()
+            )
+            .expect_err("a leader that is not a member is refused"),
+            CombatSchemaError::FormationLeaderNotAMember {
+                formation: FormationId(1),
+                leader_slot: 7,
+            }
+        );
+        // Two members in one slot are refused.
+        assert_eq!(
+            DeclaredFormation::try_new(
+                FormationId(1),
+                0,
+                vec![
+                    FormationMember {
+                        slot: 0,
+                        formation_role: FormationRole::Leader,
+                        role: DeclaredCombatRole::Escort,
+                    },
+                    FormationMember {
+                        slot: 0,
+                        formation_role: FormationRole::Follower,
+                        role: DeclaredCombatRole::Escort,
+                    },
+                ],
+                recovery,
+                designed()
+            )
+            .expect_err("a slot holds one member"),
+            CombatSchemaError::DuplicateFormationMember {
+                formation: FormationId(1),
+                slot: 0,
+            }
+        );
+    }
+
+    /// The rules record refuses a wrong subject, a duplicated role, a role
+    /// used but never declared, and a duplicated ace, formation or tier — and
+    /// an unknown knob value stays an explicit unknown rather than a number.
+    #[test]
+    fn accept_f32_a_declared_rules_refuse_inconsistent_records() {
+        let fixture = declared_synthetic_combat_rules();
+
+        // An unknown weight is not a zero: it stays unknown and is reported
+        // at the lowering boundary.
+        let mut escort_policy = declared_synthetic_escort_policy();
+        escort_policy.protected_actor_weight = Resolved::Unknown {
+            claim_id: claim("f32a.escort-protected-weight"),
+            reason: "the original escort's protected-actor weight is unmeasured".to_owned(),
+        };
+        let role = DeclaredRoleProfile::try_new(
+            DeclaredCombatRole::Escort,
+            RoleArsenal::guns(),
+            declared_synthetic_escort_knobs(),
+            escort_policy.clone(),
+            Origin::SyntheticFixture,
+            designed(),
+        )
+        .expect("an unknown weight is recorded, not refused at construction");
+        assert!(!role.priority().protected_actor_weight.is_known());
+        assert_eq!(
+            role.priority()
+                .known_weight(PriorityTerm::ProtectedActorThreat),
+            None,
+            "an unknown weight has no number to lower"
+        );
+        // A policy whose four weights are all known and zero is refused: it
+        // would score nothing.
+        let mut unscored = declared_synthetic_escort_policy();
+        unscored.protected_actor_weight = known(0.0);
+        unscored.objective_weight = known(0.0);
+        unscored.self_defense_weight = known(0.0);
+        unscored.proximity_weight = known(0.0);
+        assert_eq!(
+            unscored
+                .validate()
+                .expect_err("an all-zero policy scores nothing"),
+            CombatSchemaError::NoScoredPriorityTerm
+        );
+
+        // A subject that is neither a mission nor a launchable scenario.
+        assert_eq!(
+            DeclaredCombatRules::try_new(
+                ContentId::from_source(ContentKind::Airframe, "synthetic.not-a-subject")
+                    .expect("valid airframe id"),
+                Origin::SyntheticFixture,
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                designed()
+            )
+            .expect_err("only a mission or a launchable owns combat rules"),
+            CombatSchemaError::SubjectKind {
+                subject: ContentId::from_source(ContentKind::Airframe, "synthetic.not-a-subject")
+                    .expect("valid airframe id")
+            }
+        );
+
+        // A duplicated role.
+        let escort_role = || {
+            DeclaredRoleProfile::try_new(
+                DeclaredCombatRole::Escort,
+                RoleArsenal::guns(),
+                declared_synthetic_escort_knobs(),
+                declared_synthetic_escort_policy(),
+                Origin::SyntheticFixture,
+                designed(),
+            )
+            .expect("the escort role is valid")
+        };
+        assert_eq!(
+            DeclaredCombatRules::try_new(
+                fixture.subject().clone(),
+                Origin::SyntheticFixture,
+                vec![escort_role(), escort_role()],
+                Vec::new(),
+                Vec::new(),
+                Vec::new(),
+                designed()
+            )
+            .expect_err("one role is declared once"),
+            CombatSchemaError::DuplicateRole {
+                role: DeclaredCombatRole::Escort
+            }
+        );
+
+        // A formation member naming a role the subject never declared.
+        let undeclared_member = DeclaredFormation::try_new(
+            FormationId(2),
+            0,
+            vec![FormationMember {
+                slot: 0,
+                formation_role: FormationRole::Leader,
+                role: DeclaredCombatRole::Retreat,
+            }],
+            *declared_synthetic_formation().recovery(),
+            designed(),
+        )
+        .expect("the formation itself is well-formed");
+        assert_eq!(
+            DeclaredCombatRules::try_new(
+                fixture.subject().clone(),
+                Origin::SyntheticFixture,
+                vec![escort_role()],
+                Vec::new(),
+                vec![undeclared_member],
+                Vec::new(),
+                designed()
+            )
+            .expect_err("a member cannot use an undeclared role"),
+            CombatSchemaError::UndeclaredRole {
+                role: DeclaredCombatRole::Retreat
+            }
+        );
+
+        // A duplicated ace, formation and tier are each refused by name.
+        // The synthetic formation's leader holds the fighter role, so these
+        // cases declare both roles.
+        let fighter_role = || {
+            DeclaredRoleProfile::try_new(
+                DeclaredCombatRole::FighterAttack,
+                RoleArsenal::guns(),
+                declared_synthetic_fighter_knobs(),
+                declared_synthetic_fighter_policy(),
+                Origin::SyntheticFixture,
+                designed(),
+            )
+            .expect("the fighter role is valid")
+        };
+        let both_roles = vec![escort_role(), fighter_role()];
+        let ace = declared_synthetic_ace_profile();
+        assert_eq!(
+            DeclaredCombatRules::try_new(
+                fixture.subject().clone(),
+                Origin::SyntheticFixture,
+                both_roles.clone(),
+                vec![ace.clone(), ace.clone()],
+                Vec::new(),
+                Vec::new(),
+                designed()
+            )
+            .expect_err("one ace variant per id"),
+            CombatSchemaError::DuplicateAce {
+                id: ace.id().clone()
+            }
+        );
+        assert_eq!(
+            DeclaredCombatRules::try_new(
+                fixture.subject().clone(),
+                Origin::SyntheticFixture,
+                both_roles.clone(),
+                vec![ace.clone()],
+                vec![
+                    declared_synthetic_formation(),
+                    declared_synthetic_formation()
+                ],
+                Vec::new(),
+                designed()
+            )
+            .expect_err("one formation per id"),
+            CombatSchemaError::DuplicateFormation {
+                formation: FormationId(1)
+            }
+        );
+        assert_eq!(
+            DeclaredCombatRules::try_new(
+                fixture.subject().clone(),
+                Origin::SyntheticFixture,
+                both_roles,
+                Vec::new(),
+                Vec::new(),
+                vec![
+                    DifficultyProfile::try_new(DifficultyTier::Elite, Vec::new(), designed())
+                        .expect("the tier is valid"),
+                    DifficultyProfile::try_new(DifficultyTier::Elite, Vec::new(), designed())
+                        .expect("the tier is valid"),
+                ],
+                designed()
+            )
+            .expect_err("one profile per tier"),
+            CombatSchemaError::DuplicateDifficultyTier {
+                tier: DifficultyTier::Elite
+            }
+        );
+
+        // An ace naming a base role the subject never declared.
+        assert_eq!(
+            DeclaredCombatRules::try_new(
+                fixture.subject().clone(),
+                Origin::SyntheticFixture,
+                vec![
+                    DeclaredRoleProfile::try_new(
+                        DeclaredCombatRole::FighterAttack,
+                        RoleArsenal::guns(),
+                        declared_synthetic_fighter_knobs(),
+                        declared_synthetic_fighter_policy(),
+                        Origin::SyntheticFixture,
+                        designed(),
+                    )
+                    .expect("the fighter role is valid")
+                ],
+                vec![
+                    DeclaredAceProfile::try_new(
+                        pilot("synthetic.ace-of-another-role"),
+                        DeclaredCombatRole::Escort,
+                        Vec::new(),
+                        Origin::SyntheticFixture,
+                        designed(),
+                    )
+                    .expect("the ace itself is well-formed")
+                ],
+                Vec::new(),
+                Vec::new(),
+                designed()
+            )
+            .expect_err("an ace must name a declared base role"),
+            CombatSchemaError::UndeclaredRole {
+                role: DeclaredCombatRole::Escort
+            }
+        );
+    }
+
+    /// A role whose declared arsenal cannot carry it is refused: a torpedo
+    /// run with no ordnance would declare a role no actor can execute.
+    #[test]
+    fn accept_f32_a_role_arsenal_must_carry_the_role() {
+        assert_eq!(
+            DeclaredRoleProfile::try_new(
+                DeclaredCombatRole::TorpedoRun,
+                RoleArsenal::guns(),
+                declared_synthetic_fighter_knobs(),
+                declared_synthetic_fighter_policy(),
+                Origin::SyntheticFixture,
+                designed(),
+            )
+            .expect_err("a torpedo run needs a launcher"),
+            CombatSchemaError::RoleArsenalMissing {
+                role: DeclaredCombatRole::TorpedoRun
+            }
+        );
+        assert!(
+            DeclaredRoleProfile::try_new(
+                DeclaredCombatRole::TorpedoRun,
+                RoleArsenal::guns_and_ordnance(),
+                declared_synthetic_fighter_knobs(),
+                declared_synthetic_fighter_policy(),
+                Origin::SyntheticFixture,
+                designed(),
+            )
+            .is_ok()
+        );
+        // The role vocabulary matches the seven behaviors the F32 sheet
+        // names, and the ordnance roles are the two that need a launcher.
+        assert_eq!(DeclaredCombatRole::ALL.len(), 7);
+        assert!(DeclaredCombatRole::BomberRun.needs_ordnance());
+        assert!(DeclaredCombatRole::TorpedoRun.needs_ordnance());
+        assert!(!DeclaredCombatRole::Escort.needs_ordnance());
+        for role in DeclaredCombatRole::ALL {
+            assert!(!role.label().is_empty());
+        }
+        assert_eq!(PriorityTerm::ALL.len(), 4);
+        for term in PriorityTerm::ALL {
+            assert_eq!(term.knob().unit(), SkillKnobUnit::Weight);
+        }
+    }
+
+    /// The declared `Known` values all carry designed provenance, so no
+    /// record in the fixture can be read as original data.
+    #[test]
+    fn accept_f32_a_declared_fixture_claims_no_original_data() {
+        let rules = declared_synthetic_combat_rules();
+        for profile in rules.roles() {
+            assert_eq!(profile.origin(), &Origin::SyntheticFixture);
+            assert_eq!(
+                profile.provenance().claim_id.clone(),
+                synthetic_combat_claim()
+            );
+            assert!(matches!(
+                profile.knobs().aim_error_rad,
+                Resolved::Known(Known { .. })
+            ));
+        }
+        for ace in rules.aces() {
+            assert_eq!(ace.origin(), &Origin::SyntheticFixture);
+            assert!(!ace.origin().is_original());
+        }
+        assert_eq!(DifficultyTier::ALL.len(), 4);
+        for tier in DifficultyTier::ALL {
+            assert!(!tier.label().is_empty());
+        }
+    }
 }
