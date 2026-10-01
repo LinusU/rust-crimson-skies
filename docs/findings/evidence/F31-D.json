@@ -1,9 +1,9 @@
 {
  "schema_version": 1,
  "task_id": "F31-D",
- "candidate_tree": "1f624b99d1ccefa48657370f9f73611731bfbd2a",
+ "candidate_tree": "6eafa51676b98b59724f06142e06c930f0bacaa2",
  "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
- "created_at": "2026-10-01T07:25:54Z",
+ "created_at": "2026-10-01T09:10:46Z",
  "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_f31_d_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/deepseek-1", "exit_code": 0},
  "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
  "seed": 0,
@@ -11,8 +11,8 @@
  "overrides": [],
  "capabilities": ["retail", "synthetic"],
  "tests": {"discovered": 9, "executed": 9, "passed": 9, "failed": 0, "ignored": 0},
- "assertions": [{"id": "accept_f31_d_command_result_wins_flag_over_environment", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f31_d_coverage_reports_every_mission_type", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f31_d_coverage_fails_closed_on_a_missing_carrier_or_archive", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f31_d_coverage_refuses_missing_installation_and_bad_input", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f31_d_retail_covers_every_mission_type", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f31_d_moving_waypoint_and_origin_shift_do_not_reset_progress_or_false_arrive", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f31_d_a_mid_route_origin_shift_keeps_the_earned_progress", "status": "pass", "evidence": ["cargo-test.log"]}],
- "artifacts": [{"path": "cargo-test.log", "sha256": "1b565c1b4b57b052db59b8d6f7731cc71e41319d58e47eb5cfa0cfa8a6011cf1", "kind": "log"}, {"path": "routes-coverage.json", "sha256": "3655ad9e231e861a80fd700a007bb5a23f3b22869c5a1f0dbd3e9ee3f2838a24", "kind": "json"}],
+ "assertions": [{"id": "routes::tests::accept_f31_d_mission_type_classifies_the_observed_directory_families", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "routes::tests::accept_f31_d_coverage_summary_never_passes_an_empty_denominator", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f31_d_command_result_wins_flag_over_environment", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f31_d_coverage_reports_every_mission_type", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f31_d_coverage_fails_closed_on_a_missing_carrier_or_archive", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f31_d_coverage_refuses_missing_installation_and_bad_input", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f31_d_retail_covers_every_mission_type", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f31_d_moving_waypoint_and_origin_shift_do_not_reset_progress_or_false_arrive", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f31_d_a_mid_route_origin_shift_keeps_the_earned_progress", "status": "pass", "evidence": ["cargo-test.log"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "ab2c6a246856367b6384e0735d45c8fe48813860c77d0dd17b0ba3a03c5a8fa9", "kind": "log"}, {"path": "routes-coverage.json", "sha256": "3655ad9e231e861a80fd700a007bb5a23f3b22869c5a1f0dbd3e9ee3f2838a24", "kind": "json"}],
  "unknowns": [],
  "review": {"identity": "implementer: deepseek-1, the agent that implemented and submitted #128. This stage makes no original-reference claim: it records a retail carrier-coverage audit and its own production tests, not a decoded original route.", "method": "acceptance suite run locally with the retail capability; this harness derives every field from the recorded log, production discovery of $CS_GAME_DIR, the cs-inspect routes --coverage output, rustc and Cargo.lock; validated with tools/validate_evidence.py --require-pass. The coverage audit is a fail-closed carrier check (the observed AI-navigation member aiv.zrd in every mission of every mission type); the original route encoding stays unmeasured and no decoded-route claim is made."},
  "claim": "implemented"
