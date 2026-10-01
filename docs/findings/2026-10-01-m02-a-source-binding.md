@@ -112,7 +112,7 @@ not turn the mapping into an observation, and nothing here is
   missions (M02, M04, M05), so `world/c1` alone cannot identify this mission.
   M01-A could not see this: `ZBD/C1C` holds only M01. A consumer keying
   mission content by the world row would conflate three missions. The mission
-  id and the program id do single it out.
+  id and the program id do single it out. Follow-up filed as #449 (`M02-T2`).
 - **The original spellings disagree.** The short block says
   `The Bomber Heist`; the long block says
   `Hawaii - The Great British Bomber Heist`. Neither is "the" name; each is
@@ -122,11 +122,12 @@ not turn the mapping into an observation, and nothing here is
   declared inventory with the localized block, eight of twenty-four declared
   titles differ from the original string: M05, M09, M11, M14, M15, M20, M22,
   M23. M02 is not one of them, which is *why* this stage's binding resolves at
-  all. The eight are recorded as unknowns below and filed with
-  `create_tasks`; they are **not** corrected here, because the inventory is
-  the frozen denominator whose titles come from `missions/README.md`
-  (`missions/bindings/README.md`), and the retail spelling is not this task's
-  to substitute.
+  all. The eight are recorded as unknowns below and filed as #448
+  (`M02-T1`); they are **not** corrected here, because the inventory is the
+  frozen denominator whose titles come from `missions/README.md`
+  (`missions/bindings/README.md`) and the retail spelling is not this task's to
+  substitute. Their bindings will leave `CriticalDependency::TitleString`
+  unresolved until the owner decides.
 - **The retail table carries duplicated display texts** (66 of them, e.g.
   `OK`, `Cancel`, `Manhattan`). A title matching several rows names no single
   row and therefore no single campaign position; `bind` refuses it, and the
@@ -224,8 +225,8 @@ committed inventory.
 - **Eight of twenty-four declared work-order titles are not the original
   localized strings** (M05, M09, M11, M14, M15, M20, M22, M23). Their
   bindings will leave `CriticalDependency::TitleString` unresolved until the
-  discrepancy is resolved by the owner. Recorded and filed; **not** silently
-  corrected.
+  discrepancy is resolved by the owner. Recorded and filed as #448
+  (`M02-T1`); **not** silently corrected.
 - **String-id numbering is not established** (`cs_formats::string_id` numbers
   rows `(block - 1) * 16 + index`, one block below the documented Win32 rule
   for the same `RT_STRING` leaf). Filed as #374 by M01-A. M02-A joins only on
