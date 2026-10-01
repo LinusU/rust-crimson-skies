@@ -175,6 +175,11 @@ moved, never deleted — they are quoted in the report's `review.method`, writte
 up here and filed as follow-ups. This stage awards at most **checked**; it makes
 no visual, audible or ordinary-play claim and no original-route claim.
 
+The report's `assertions` array lists every selected `accept_f31_d_` test,
+including the two unit tests whose libtest names carry a module path
+(`routes::tests::...`), so it matches the nine tests the acceptance run
+executed.
+
 ## Review status and identity
 
 Implemented by `deepseek-1`. At the time of submission this branch has **not**

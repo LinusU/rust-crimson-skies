@@ -96,7 +96,7 @@ fn evidence_report_f31_d_writes_the_acceptance_report() {
     let retail_line = suite
         .assertions
         .iter()
-        .find(|(name, _)| name.starts_with("accept_f31_d_retail_"))
+        .find(|(name, _)| task_test_leaf(name).starts_with("accept_f31_d_retail_"))
         .unwrap_or_else(|| {
             panic!(
                 "the retail acceptance test did not run: F31-D requires capability `retail`, \
@@ -109,11 +109,9 @@ fn evidence_report_f31_d_writes_the_acceptance_report() {
         retail_line.1
     );
     assert!(
-        suite
-            .assertions
-            .iter()
-            .any(|(name, _)| name.starts_with("accept_f31_d_")
-                && !name.starts_with("accept_f31_d_retail_")),
+        suite.assertions.iter().any(|(name, _)| {
+            is_task_test(name) && !task_test_leaf(name).starts_with("accept_f31_d_retail_")
+        }),
         "synthetic task tests must be present alongside the retail one"
     );
 
@@ -337,6 +335,22 @@ struct Suite {
     assertions: Vec<(String, &'static str)>,
 }
 
+/// The leaf name of a libtest test name: everything after the last `::`
+/// module separator, or the whole name when it has none.
+///
+/// Integration-test names are bare (`accept_f31_d_retail_...`), while a unit
+/// test is reported with its module path
+/// (`routes::tests::accept_f31_d_...`). The task prefix is always on the leaf,
+/// so the prefix test must look there and not at the whole name.
+fn task_test_leaf(name: &str) -> &str {
+    name.rsplit("::").next().unwrap_or(name)
+}
+
+/// Whether `name` is one of this task's `accept_f31_d_` tests.
+fn is_task_test(name: &str) -> bool {
+    task_test_leaf(name).starts_with("accept_f31_d_")
+}
+
 /// Extracts the libtest summaries and the per-test results of the
 /// `accept_f31_d_` tests from a recorded `cargo test` output.
 fn parse_suite(log: &str) -> Suite {
@@ -376,7 +390,7 @@ fn parse_suite(log: &str) -> Suite {
             let name = after[..separator].to_owned();
             let tail = &after[separator + 5..];
             cursor = tail;
-            if !name.starts_with("accept_f31_d_") {
+            if !is_task_test(&name) {
                 continue;
             }
             match tail.split_whitespace().next() {
