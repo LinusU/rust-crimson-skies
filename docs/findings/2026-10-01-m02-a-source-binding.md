@@ -5,17 +5,67 @@ Date: 2026-10-01. Task: M02-A "Bind original mission data and branches"
 `docs/contracts/SCRIPT-MISSION.md`; identity rules
 `docs/contracts/IDENTITY-CONTENT.md`. Capabilities used: `retail`
 (`$CS_GAME_DIR` read-only, never written), `synthetic`. Implementer:
-**bunny-alpha-2** (session of 04:31Z). Reviewer: *not yet assigned at
-hand-over* — the task selection asked for an independent reviewer, and
-`evidence.rs`'s M02-A report method records that no reviewer has run yet
-rather than naming one. This note is therefore an implementer's account: a
-review by the same agent would not be independent original-reference evidence,
-and no agent review replaces the owner's human approval.
+**bunny-alpha-2** (session of 04:31Z). Reviewer: **bunny-alpha-2** (Rally
+review claim on the same task, 05:25Z), which is the *same agent identity*, so
+this is **not independent review** — the reviewer found two inaccurate rows in
+the implementer's own mutation table, which is exactly the kind of thing a same
+identity reviewing its own work is bad at. The reviewer's context was fresh (a
+new session with no memory of the implementation; everything it checked was
+re-read from the tree, the installation and the task history), but a fresh
+context does not make it an independent reviewer. No agent review replaces the
+owner's human approval. `evidence.rs`'s M02-A report method still records that
+no reviewer has run yet, because that string is written by the acceptance
+harness at the moment the implementer generated the report; the reviewer
+identity belongs here and in the Rally `complete_review` notes.
+
+Reviewer's changes, all inside owner paths:
+
+- `campaign_position_for` now refuses through `JoinAgreement::establishes()`
+  rather than re-reading `agreement.state` itself. The guard a binding obeys and
+  the predicate callers read were the same rule written twice; they are now one.
+- `accept_m02_a_the_join_is_corroborated_by_the_long_name_rows` asserts that
+  every listed row block is exactly as long as the campaign. Without it the
+  corroboration test passed even with the campaign-length rule deleted (see the
+  mutation table).
+- This note's mutation table, corrected against re-observed runs, plus the
+  judgement on the unreachable contradiction arm below.
 
 The stage's minimum acceptance scenario is *"Source-derived binding has no
 unresolved critical dependencies."* It holds. This note records what was read,
 how the binding was derived, **what is new at this mission** beyond M01-A, and
 which parts of the chain remain inference rather than observation.
+
+## Reviewer's judgement on the unreachable contradiction arm
+
+The implementer asked whether the contradiction arm — the one no installation
+produces, so it is proved only on authored values — is an acceptable limit.
+It is, for this merge, for three reasons and with one caveat:
+
+1. The retail installation *agrees with itself*, so `classify_join` returns
+   `Agreed` on real data and the arm is not the difference between passing and
+   failing here.
+2. The rule is a pure function, `campaign_position_for`, over a confirmed row
+   and a `JoinAgreement`. Every arm of it is therefore reachable without an
+   installation, and all of them are asserted. That is what makes the arm a real
+   guard rather than dead code: deleting it fails a real test.
+3. `SourceContext` is only constructible by reading a real installation root,
+   so there is no supported seam through which an *authored* disagreement could
+   be fed to `bind`. The pure split is the right way to test it; adding a seam
+   just to make the arm reachable from `bind` would add production surface for
+   no new evidence.
+
+The caveat: the guard has therefore never been observed end to end, so a future
+installation whose localized table contradicts its directory layout would be
+refused *wholesale* — no mission, world or program identity at all, with the
+contradiction named as the reason. That is the intended conservative behaviour,
+but it is unverified on real data and is recorded as an unknown below. It also
+means the guard is **all-or-nothing**: one disagreeing block outvotes every
+agreeing one. That is deliberate (a single structure that contradicts the layout
+is evidence *against* the join, not for it) and is asserted in the synthetic
+test, but an installation that disagrees for a benign reason — say one campaign
+length run of unrelated strings that happens to carry `" - "` on every row —
+would lose every binding. A future stage that reads a second or third
+installation should watch for that.
 
 ## Files
 
@@ -63,6 +113,35 @@ on this installation, all of it re-derived by the tests:
 not distinguish a correct join from a constant, because M01 *is* the first
 row of the block *and* the first mission of the campaign. Every constant-answer
 mutation below is caught here for exactly that reason.
+
+### Reviewer's independent re-measurement
+
+The reviewer re-derived the load-bearing numbers **without** the binding path,
+so the acceptance tests are not the only thing standing behind them:
+
+- `shasum -a 256` over `ZBD/C1/M02/zrdr.zbd` (117 252 bytes) and
+  `GOSDATA/ASSETS/BINARIES/langui.dll` gives the two digests `M02.json` records,
+  byte for byte.
+- A walk of `ZBD/<chapter><variant>/<mission>/zrdr.zbd` gives 24 missions per
+  chapter `5, 5, 5, 5, 4` — so `chapter_sizes()` is the directory layout's own
+  accounting. Chapter 1 is `C1C/M01`, `C1/M02`, `C1B/M03`, `C1/M04`, `C1/M05`
+  once ordered by mission number, which is why position 1 is `mission/ch1-m02`
+  with world group `C1` and program `ZBD/C1/M02/zrdr.zbd`.
+- `cs-inspect config --file …langui.dll --string <id>:1033` over the whole table
+  gives the two campaign-length runs directly: rows `3450…3473` are the
+  region-prefixed long names and `3480…3503` the short names, both 24 rows and
+  no others that long. The short run's first two rows are `The Lost Treasure`
+  and `The Bomber Heist`, so the declared M02 title is row `3481`, index 1 —
+  the position the record claims.
+- The same dump puts `The Bomber Heist` and
+  `Hawaii - The Great British Bomber Heist` each exactly once in the file, and
+  shows the long run's prefixes grouping `Hawaii`×5, `Northwest`×5,
+  `Hollywood`×5, `Rocky Mountains`×5, `Manhattan`×4 — `[5,5,5,5,4]`, the
+  layout's chapter sizes. That is the corroboration, measured without
+  `join_agreement`.
+- Comparing `missions/bindings/campaign-inventory.tsv` with the short run row by
+  row confirms the eight mismatches below are exactly M05, M09, M11, M14, M15,
+  M20, M22 and M23.
 
 ## What is new at M02
 
@@ -178,7 +257,7 @@ Two states stay apart, as the 2026-09-28 owner directive requires:
 | `accept_m02_a_source_derived_binding_has_no_unresolved_critical_dependencies` (retail) | the scenario: all five dependencies resolved with the right evidence class, the installation hash re-measured through production discovery, the ids carry the kinds their roles mean, the selected directory and reader archive exist, the record is not M01's, every span re-hashed and in range, and `verified` false with the unbound checklist entries still named |
 | `accept_m02_a_the_committed_record_is_what_the_installation_derives` (retail) | `missions/bindings/M02.json` is byte-identical to what production code derives, and carries the schema's fields |
 | `accept_m02_a_the_original_name_is_confirmed_against_the_local_strings` (retail) | the declared title is carried by exactly one retail row in a campaign-length block; the second block's row at the same index says something **else** (region-prefixed), so the two blocks are independent; and a title the strings do not carry — and a title they carry **twice** — resolve neither the title nor the three identities that depend on it, while the installation hash stays resolved and no span is cited |
-| `accept_m02_a_the_join_is_corroborated_by_the_long_name_rows` (retail) | the stage's new claim, measured: `Agreed`, at least two campaign-length blocks, at least one grouped, the grouping equal to the layout's chapter sizes, the groups covering every row, M02's own block **not** the grouped one, and every row of the corroborating block selecting the campaign position and mission identity its index names |
+| `accept_m02_a_the_join_is_corroborated_by_the_long_name_rows` (retail) | the stage's new claim, measured: `Agreed`, at least two campaign-length blocks, **every listed block exactly as long as the campaign** (added by the reviewer), at least one grouped, the grouping equal to the layout's chapter sizes, the groups covering every row, M02's own block **not** the grouped one, and every row of the corroborating block selecting the campaign position and mission identity its index names |
 | `accept_m02_a_the_world_group_holds_several_missions` (retail) | `ZBD/C1` holds more than one mission, every sibling's archive exists, the record binds only the mission its position selects, and the program identities of the siblings are distinct — so the world row cannot be a mission identity |
 | `accept_m02_a_the_campaign_keeps_everything_else_unresolved_and_unready` (retail) | 24 missions, 168 cells, exactly 1 complete, 552 subsystem rows all unresolved, 24 unknown progressions, `is_ready()` false, and M02's closure counts 7 cells / 1 complete / 23 unresolved subsystems |
 | `accept_m02_a_a_title_block_must_be_exactly_the_campaign_length` (synthetic) | `title_blocks` on authored id sets: a gap ends a run, a single row is a run of one, a run one short or one long is not the campaign, two campaign-length runs are both listed ascending, and `TitleBlock::new(5, 4)` is `None` |
@@ -191,12 +270,19 @@ record it checks: the retail assertions are re-measured from
 `$CS_GAME_DIR`, from the string table the installation holds, or from the
 committed inventory.
 
-## Mutation probes (applied, then reverted; results are the observed runs)
+## Mutation probes
 
-| Mutation | Observed result |
+The implementer applied seven mutations, then reverted them. The reviewing
+agent re-applied all seven independently and observed the results below; two
+of the implementer's rows were corrected by that re-run (marked **corrected**),
+because the mutation table is a claim about test strength and has to name the
+test that actually fails. Every mutation was reverted again; the tree carries
+none of them.
+
+| Mutation | Observed result (re-run by the reviewer) |
 | --- | --- |
-| `campaign_position` answers position 0 for every confirmed title | 4 of 8 fail, including `…_the_committed_record_is_what_the_installation_derives` and `…_the_join_is_corroborated_by_the_long_name_rows` (every long name would select position 0) |
-| `campaign_title_blocks` returns every run, dropping the campaign-length rule | 1 fails: `…_the_join_is_corroborated_by_the_long_name_rows` — a block of a different length is no longer a campaign list |
+| `campaign_position_for` answers position 0 for every row that sits in a block | **corrected: 5 of 8 fail**, not 4: `…_the_committed_record_is_what_the_installation_derives`, `…_the_join_is_corroborated_by_the_long_name_rows`, `…_source_derived_binding_has_no_unresolved_critical_dependencies`, `…_the_world_group_holds_several_missions` and `…_a_contradicted_corroboration_establishes_no_position` |
+| `campaign_title_blocks` returns every run, dropping the campaign-length rule | **corrected: 1 fails — `…_the_original_name_is_confirmed_against_the_local_strings`, not `…_the_join_is_corroborated_by_the_long_name_rows`**. With the rule gone, 66 rows of unrelated runs land at the same index, so that test's "exactly one second row at campaign position 1" assertion breaks. The corroboration test did **not** catch it: no other run in the retail table carries a region prefix on every row, so `grouped` is unchanged and every corroboration assertion still holds. The reviewer therefore added an assertion that every listed block is exactly as long as the campaign, so a repeat of this mutation now fails the corroboration test as well |
 | `region_group_sizes` treats a missing prefix as a group of its own instead of reporting the block ungrouped | 6 of 8 fail |
 | `chapter_sizes` returns a constant | 6 of 8 fail |
 | `classify_join` uses `any()` instead of `all()` | 1 fails: `…_a_contradicted_corroboration_establishes_no_position` (one agreeing block would outvote a contradicting one) |
@@ -214,6 +300,15 @@ committed inventory.
 | `cargo test --locked -p cs_app --test campaign -- accept_m01_a_ --include-ignored` | 0 (8 tests) — M01-A's suite is unaffected by the `campaign_position` change |
 | `python3 tools/validate_evidence.py private/evidence/M02-A/acceptance.json --artifact-root private/evidence/M02-A --require-pass` | 0 (`structurally_valid: true`) |
 
+The reviewer re-ran every one of these on the rebased tree, added
+`cargo doc --locked -p cs_content --no-deps` (0; the change adds no new rustdoc
+warning — the two `campaign_bindings.rs` warnings are pre-existing F14-E links
+to the private `scan_campaign`), and ran each of the eight `accept_m02_a_*`
+tests alone with `--exact` as `docs/contracts/CLI-EVIDENCE.md` requires. Because
+the reviewer's fix touches production code, the evidence report was regenerated
+on the corrected commit per the same contract, so its `candidate_tree` is that
+commit's tree.
+
 ## Recorded unknowns (not guessed)
 
 - **The join remains an inference**, now with a second structure checking its
@@ -222,6 +317,17 @@ committed inventory.
 - **What a region name means is not established.** Only the grouping is used.
   Which region corresponds to which chapter, and whether the five regions are
   the chapters at all, stays open.
+- **`" - "` is a display convention, not a format.** `region_prefix` splits on
+  the first `" - "` of a row's display text, which the long-name rows happen to
+  use (`Hawaii - The Lost Treasure of Sir Francis Drake`). Nothing declares
+  that every row carrying one names a region, and a short mission name that
+  contains `" - "` would make its block *grouped*. On this installation it does
+  not: M02's own block is asserted ungrouped, and the only fully prefixed block
+  is the long-name one. But a mission whose short name contains `" - "` and
+  groups into anything other than the chapter sizes would flip
+  `classify_join` to `Disagreed` and refuse every binding at once, because the
+  guard is all-or-nothing. If M05 … M24-A ever bind a row like that, this is
+  the first thing to look at.
 - **Eight of twenty-four declared work-order titles are not the original
   localized strings** (M05, M09, M11, M14, M15, M20, M22, M23). Their
   bindings will leave `CriticalDependency::TitleString` unresolved until the

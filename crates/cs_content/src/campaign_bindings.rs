@@ -2630,7 +2630,9 @@ pub fn campaign_position_for(
     agreement: &JoinAgreement,
 ) -> Result<usize, &'static str> {
     let row = title_row.ok_or(NO_CONFIRMED_ROW_REFUSAL)?;
-    if agreement.state == JoinCorroboration::Disagreed {
+    // `establishes`, not a second reading of `state` here: the guard a binding
+    // obeys and the predicate callers read are one rule, so they cannot drift.
+    if !agreement.establishes() {
         return Err(CONTRADICTED_JOIN_REFUSAL);
     }
     agreement

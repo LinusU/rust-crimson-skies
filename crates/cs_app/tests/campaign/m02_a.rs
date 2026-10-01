@@ -489,6 +489,18 @@ fn accept_m02_a_the_join_is_corroborated_by_the_long_name_rows() {
          structure alone",
         agreement.blocks.len()
     );
+    // Every block listed is exactly as long as the campaign. The corroborated
+    // block is *also* the one carrying region prefixes, so without this the
+    // test would still pass on a table that listed every row run it finds.
+    let campaign_len = context.campaign().len();
+    assert!(
+        agreement
+            .blocks
+            .iter()
+            .all(|block| block.len() == campaign_len),
+        "a listed row block is not as long as the campaign: {:?}",
+        agreement.blocks
+    );
     assert!(
         !agreement.grouped.is_empty(),
         "no campaign-length row block carries a region prefix, so nothing corroborates the join"
