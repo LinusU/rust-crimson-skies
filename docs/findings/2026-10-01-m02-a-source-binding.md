@@ -13,10 +13,7 @@ identity reviewing its own work is bad at. The reviewer's context was fresh (a
 new session with no memory of the implementation; everything it checked was
 re-read from the tree, the installation and the task history), but a fresh
 context does not make it an independent reviewer. No agent review replaces the
-owner's human approval. `evidence.rs`'s M02-A report method still records that
-no reviewer has run yet, because that string is written by the acceptance
-harness at the moment the implementer generated the report; the reviewer
-identity belongs here and in the Rally `complete_review` notes.
+owner's human approval.
 
 Reviewer's changes, all inside owner paths:
 
@@ -27,6 +24,11 @@ Reviewer's changes, all inside owner paths:
   every listed row block is exactly as long as the campaign. Without it the
   corroboration test passed even with the campaign-length rule deleted (see the
   mutation table).
+- `evidence.rs`'s M02-A report method no longer says "reviewer: not yet assigned
+  at hand-over". The reviewer regenerated the report on the corrected commit, so
+  a copy claiming no reviewer had run would be false in the repository; it now
+  names the reviewer, says the identity is the same as the implementer's and so
+  is **not** independent, and lists what the reviewer changed.
 - This note's mutation table, corrected against re-observed runs, plus the
   judgement on the unreachable contradiction arm below.
 
@@ -212,6 +214,19 @@ not turn the mapping into an observation, and nothing here is
   row and therefore no single campaign position; `bind` refuses it, and the
   refusal is tested with a duplicated retail string rather than an authored
   one.
+- **The two campaign-length blocks name the same 24 missions in the same
+  order, and nothing checks that.** Row *i* of the long-name block (rows
+  3450…3473) and row *i* of the short-name block (rows 3480…3503) are the same
+  mission: `Hawaii - The Great British Bomber Heist` against
+  `The Bomber Heist`, `Northwest - Peril for Paladin Blake` against
+  `Peril for Blake`, and so on, differing by a leading article, by case and in
+  one row by a letter (index 7 is `The Petrol Pit` long, `The Petrol Plot`
+  short). `classify_join` compares only *shapes* — a run length, and a region
+  grouping that equals the per-chapter mission counts `[5,5,5,5,4]`, whose
+  first four entries are identical and so discriminate nothing. That
+  row-to-row correspondence is a much stronger and still region-agnostic
+  constraint, and it is available today. It is not M02-A's scope to add, so the
+  reviewer filed it as #450 (`M02-T3`) with the measured table.
 
 ## What "critical" means here, and why
 
