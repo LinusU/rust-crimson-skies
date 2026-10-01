@@ -2607,6 +2607,16 @@ pub enum LocaleSettingError {
     /// A stored settings list named the locale key more than once, so the value
     /// in force would depend on iteration order.
     DuplicateEntry,
+    /// A declared supported label is not a canonical [`LocaleId`], so a value
+    /// the rule accepts could not be read back as a locale (or written as one).
+    /// The value space and the reader must agree, or the feature's own default
+    /// could be unusable.
+    InvalidLabel {
+        /// The rejected label, as declared.
+        label: String,
+        /// Why it is not a usable locale label.
+        reason: String,
+    },
     /// The stored value is not a valid [`LocaleId`] label.
     MalformedStoredValue {
         /// The stored value, as written.
@@ -2629,6 +2639,9 @@ impl fmt::Display for LocaleSettingError {
                     "the locale setting key is stored more than once in the profile"
                 )
             }
+            Self::InvalidLabel { label, reason } => {
+                write!(f, "supported locale {label:?} is not usable: {reason}")
+            }
             Self::MalformedStoredValue { value } => {
                 write!(f, "stored locale {value:?} is not a valid locale label")
             }
@@ -2637,6 +2650,27 @@ impl fmt::Display for LocaleSettingError {
 }
 
 impl std::error::Error for LocaleSettingError {}
+
+/// Why a declared label is not a canonical [`LocaleId`] string, if it is not.
+///
+/// [`LocaleId::new`] trims its input, so a label with surrounding whitespace
+/// parses but does not spell the same value the reader returns. A rule that
+/// declared it would accept a value the writer could never produce, so the label
+/// is refused rather than silently normalized.
+fn canonical_locale_label(label: &str) -> Result<(), String> {
+    match LocaleId::new(label) {
+        Ok(parsed) if parsed.as_str() == label => Ok(()),
+        Ok(parsed) => Err(format!(
+            "it parses as {:?}, not the declared spelling",
+            parsed.as_str()
+        )),
+        Err(LocaleIdError::Empty) => Err("it is empty".to_owned()),
+        Err(LocaleIdError::TooLong { len }) => Err(format!(
+            "it is {len} bytes, over the {MAX_LOCALE_ID_LEN}-byte bound"
+        )),
+        Err(LocaleIdError::BadCharacter { ch }) => Err(format!("it contains the character {ch:?}")),
+    }
+}
 
 /// The localization feature's own setting: the selected locale, persisted as one
 /// profile setting and nothing else.
@@ -2659,10 +2693,18 @@ impl LocaleSetting {
     /// [`SettingApply::Live`] — a locale change takes effect on the next layout,
     /// not after a restart — and the default is the first declared label.
     ///
+    /// Every label is required to be a canonical [`LocaleId`]: the value space a
+    /// rule declares and the values [`LocaleSetting::read`] and
+    /// [`LocaleSetting::write`] carry must be the same set, or the rule's own
+    /// default could be a stored value the reader refuses and no
+    /// [`LocaleChain`](LocaleChain) could be built from it.
+    ///
     /// # Errors
     ///
-    /// [`LocaleSettingError::NoLabels`] for an empty declaration and
-    /// [`LocaleSettingError::DuplicateLabel`] for a repeated label.
+    /// [`LocaleSettingError::NoLabels`] for an empty declaration,
+    /// [`LocaleSettingError::DuplicateLabel`] for a repeated label and
+    /// [`LocaleSettingError::InvalidLabel`] for a label that is not a canonical
+    /// [`LocaleId`].
     pub fn rule(labels: &'static [&'static str]) -> Result<SettingRule, LocaleSettingError> {
         let Some((default, _)) = labels.split_first() else {
             return Err(LocaleSettingError::NoLabels);
@@ -2672,6 +2714,12 @@ impl LocaleSetting {
             if !seen.insert(*label) {
                 return Err(LocaleSettingError::DuplicateLabel {
                     label: (*label).to_owned(),
+                });
+            }
+            if let Err(reason) = canonical_locale_label(label) {
+                return Err(LocaleSettingError::InvalidLabel {
+                    label: (*label).to_owned(),
+                    reason,
                 });
             }
         }

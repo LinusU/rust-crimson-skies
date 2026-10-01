@@ -671,6 +671,21 @@ fn accept_f51_c_the_locale_setting_preserves_unlocks_and_save_identity() {
         Err(LocaleSettingError::DuplicateEntry)
     );
 
+    // A stored value that is not a locale label is reported, never read back as
+    // if it were a locale.
+    let mut malformed = before.clone();
+    malformed.settings.push(SettingEntry {
+        key: LOCALE_SETTING_KEY.to_owned(),
+        apply: SettingApply::Live,
+        value: "not a locale".to_owned(),
+    });
+    assert_eq!(
+        LocaleSetting::read(&malformed),
+        Err(LocaleSettingError::MalformedStoredValue {
+            value: "not a locale".to_owned()
+        })
+    );
+
     // The rule the localization feature owns.
     assert_eq!(
         LocaleSetting::rule(NO_LABELS),
@@ -686,4 +701,46 @@ fn accept_f51_c_the_locale_setting_preserves_unlocks_and_save_identity() {
     assert_eq!(rule.key, LOCALE_SETTING_KEY);
     assert_eq!(rule.apply, SettingApply::Live);
     assert_eq!(rule.default, "en-us");
+}
+
+/// The rule's declared value space and the reader/writer must be the same set: a
+/// label that is empty, outside the locale grammar or not in canonical spelling
+/// is refused at declaration time rather than becoming a rule default the reader
+/// rejects and no locale chain could carry.
+#[test]
+fn accept_f51_c_the_locale_rule_refuses_a_label_it_cannot_read_back() {
+    assert!(matches!(
+        LocaleSetting::rule(&["  en-us "]),
+        Err(LocaleSettingError::InvalidLabel { .. })
+    ));
+    assert!(matches!(
+        LocaleSetting::rule(&[""]),
+        Err(LocaleSettingError::InvalidLabel { .. })
+    ));
+    assert!(matches!(
+        LocaleSetting::rule(&["en us"]),
+        Err(LocaleSettingError::InvalidLabel { .. })
+    ));
+    const TOO_LONG: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    assert!(TOO_LONG.len() > cs_content::localization::MAX_LOCALE_ID_LEN);
+    assert!(matches!(
+        LocaleSetting::rule(&[TOO_LONG]),
+        Err(LocaleSettingError::InvalidLabel { .. })
+    ));
+
+    // Every label the rule does accept round-trips through the writer and reader.
+    let mut document = ProfileDocument::synthetic(
+        ProfileId::new(1).expect("a nonzero profile id"),
+        Revision(1),
+    );
+    for label in SUPPORTED {
+        LocaleSetting::write(&mut document, &locale(label)).expect("the label is a valid locale");
+        assert_eq!(
+            LocaleSetting::read(&document)
+                .expect("readable")
+                .expect("present")
+                .as_str(),
+            *label
+        );
+    }
 }
