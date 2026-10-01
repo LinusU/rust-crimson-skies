@@ -27,7 +27,7 @@ no record in this module can award `verified_original`.
   - `encode` / `decode` / `encode_capture` / `decode_capture` (bounded,
     checksummed `CSREPLAY` / `CSCAPTURE` line documents) and the three
     `synthetic_*` fixtures.
-- `crates/cs_content/tests/accept_f59_a_replay_schema.rs` (new, 49 tests).
+- `crates/cs_content/tests/accept_f59_a_replay_schema.rs` (new, 56 tests).
 - Wiring only: `pub mod replay;` plus a module paragraph in
   `crates/cs_content/src/lib.rs`. No other crate is touched.
 
@@ -64,9 +64,47 @@ made on one tree certifies a different one
 - **The promised envelope excludes unknown fields.** `ReplayRecord::extra`
   preserves a newer minor's lines verbatim and re-emits them, but it is not in
   the signature: an unknown line describes a *document*, not a different run.
-- **Authored choices carry their provenance class into the canonical text**, so
-  the same value recorded as `inferred` and as `designed` is not silently the
-  same run. This is the F01 discipline applied to a replay field.
+  Preserving is bounded, though: an `extra` entry is re-emitted as one
+  `key=value` line, so `check_extra` refuses a key or value carrying a newline
+  and a key the decoder already interprets. Without that, a field whose entire
+  purpose is to be *unknown* could smuggle in a promised state hash, an input
+  record or a second `subject=`, and a genuinely newer minor's line would be
+  indistinguishable from an injection. `MAX_EXTRA_FIELDS` bounds the list.
+- **The signature and the difference list are one contract, not two.** Every
+  field `compatibility_signature` covers except `extra` has a
+  `CompatibilityDifference` variant and is checked by `differences_from`. This
+  is load-bearing rather than tidiness: a field that moves the signature but is
+  absent from the difference list is a field `CrossBuildPolicy::Reject`
+  silently accepts, which is precisely the shortcut AC02 exists to catch.
+  `accept_f59_a_every_signature_field_is_compared_field_wise` states it as a
+  property.
+- **`purpose=` and `profile_write=` are required lines.** `RunPurpose::default()`
+  is `OrdinaryPlay`, so defaulting a missing line would let a truncated or
+  hand-edited *capture* document read as a player's ordinary session — the one
+  conclusion non-negotiable 4 has to be able to refuse. A document that does not
+  say what it is says nothing.
+- **`encode` checks its own output against the decoder's bounds.** A record at
+  `MAX_STREAM_RECORDS` is valid and encodes to ~13.5 MB, which the 4 MiB decoder
+  bound refuses with `TooLarge`; encoding it would put a file on disk this build
+  cannot read back. `encode` returns `DocumentTooLarge` / `DocumentTooManyLines`
+  instead, using the decoder's own constants, so the two cannot drift.
+- **A bundle's own record minimum is part of certification.** `certify` runs
+  `EvidenceBundle::validate` first and reports `EvidenceRefusal::IncompleteRecord`.
+  Without it a bundle with an empty `tool` and `test_command` certified cleanly,
+  which is a report that cannot tell a reader what was run. Unresolved issues are
+  explicitly *not* a refusal: the contract requires them to survive, so naming
+  one may never remove a claim.
+- **Authored choices carry their whole provenance into the canonical text** —
+  the claim *and* its source span, not just the class — so the same value
+  recorded as `inferred` and as `designed` is not silently the same run, and
+  neither is a `observed_tool` claim that names where it was observed and one
+  that names nothing. This is the F01 discipline applied to a replay field.
+  The span is written to the document as
+  `choice.<slot>=<class>|<claim>|<span>|<value>` with `-` for an absent span, so
+  a round trip cannot strip a located observation. The decoder builds the
+  provenance through `Provenance::new`, so a hand-edited
+  `verified_original` choice with no span is refused by F01's own rule rather
+  than smuggled in through the document form.
 - **Capability table, not inference.** `ArtifactMedia::required_capabilities`
   is the whole of AC04 at this stage: a trace and a report need nothing, a
   screenshot needs `gpu`, a decode-only PCM capture needs nothing (it is a
@@ -93,8 +131,14 @@ made on one tree certifies a different one
   collide on a shared byte boundary.
 - **Frame and choice separators are characters the grammar cannot produce.**
   An input tick is `input.<tick>=<edges>|<axes>` and a choice is
-  `choice.<slot>=<class>|<claim>|<value>`. `|` appears in no action label,
-  command label, claim id or claim status, so both splits are unambiguous.
+  `choice.<slot>=<class>|<claim>|<span>|<value>`. `|` appears in no action label,
+  command label, claim id or claim status, and the choice *value* is the last
+  part so a value containing `|` survives. A source span is
+  `install@container[member]:offset+length#member_sha256`; because that
+  decomposition depends on its delimiters, `check_source_span_keys` refuses a
+  container path or member key containing `@ [ ] : + # |` or a newline on encode,
+  and `decode_source_span` refuses the same set — a provenance that cannot be
+  transported unambiguously is not provenance.
 - **Floats never enter the replay document.** The render configuration is
   stored in thousandths (`exposure_milli`, `gamma_milli`), so a capture's
   settings are exact integer text. Only the camera pose is float, it is stored
@@ -113,6 +157,60 @@ made on one tree certifies a different one
   tests fail.
 - The decoder dropping `input.` lines → 5 tests fail, including the AC01 replay
   and the round trip.
+
+### The review pass on this branch (2026-10-01, reviewer bunny-2)
+
+Six defects were found in the first implementation and fixed in review; each
+one is now covered by a test that fails when the fix is removed. The mutations
+below were each run and reverted.
+
+1. **`differences_from` did not cover the signature.** `compatibility_signature`
+   hashes the schema, the subject, the initial-state *label* and the whole
+   override log (purpose, named overrides, profile-write flag), but
+   `differences_from` compared none of them. A replay of a different mission,
+   a different run purpose, a debug-override run or a run that wrote a
+   production profile all returned `CompatibilityVerdict::Compatible`, whose
+   `certifies_determinism()` is `true` — the same false pass `Reject` exists to
+   prevent. Fixed with four new variants (`Schema`, `Subject`, a
+   field-carrying `InitialState`, `Overrides`).
+   *Mutation:* deleting the `Overrides` check → 2 tests fail.
+2. **The document form dropped `Provenance::source`.** A choice line carried
+   only `<class>|<claim>|<value>`, so a record with an `observed_tool` provenance
+   naming a source span decoded back to `source: None` — the round trip was not
+   identity, and the *identity* comparison did not see the span either
+   (`canonical()` omitted it), so two records differing only in whether they
+   located their evidence compared equal. Fixed by writing the span, hashing it,
+   and building the decoded provenance through `Provenance::new`.
+   *Mutations:* dropping the span from `canonical()` → 1 test fails; writing `-`
+   for every span → 1 test fails. The first mutation initially passed, which
+   showed the test was only comparing different provenance *classes*; the test
+   now holds class and value fixed so only the span differs.
+3. **`encode` could write a document its own `decode` refuses.** A record at the
+   declared `MAX_STREAM_RECORDS` bound validates, then encodes to 13.5 MB
+   against a 4 MiB decoder bound. Fixed with a post-encode check against the
+   decoder's own constants.
+   *Mutation:* removing the guard → 1 test fails.
+4. **A preserved unknown field could inject an interpreted line.** `extra` is
+   re-emitted as one `key=value` line with no validation, so a value containing
+   a newline could add an `envelope.<tick>=<hash>` line that the decoder read as
+   a *promised state hash*, and a key like `subject` collided with a real field.
+   A field whose whole purpose is to be unknown could therefore author the
+   record. Fixed by `check_extra` in `validate`.
+   *Mutation:* removing the `check_extra` call → 1 test fails.
+5. **`EvidenceBundle::validate` was never called by `certify`.** A bundle with an
+   empty `tool`, `tool_version` and `test_command` certified as `Checked` — a
+   report that cannot tell a reader what was run. Fixed by running it in
+   `certify` and reporting `EvidenceRefusal::IncompleteRecord`.
+   *Mutation:* removing the `validate` call → 1 test fails.
+6. **Missing `purpose=` / `profile_write=` lines defaulted to the strongest
+   claim.** `RunPurpose::default()` is `OrdinaryPlay` and `profile_write`
+   defaulted to `false`, so a capture document with those lines stripped read
+   back as an ordinary player session — directly against non-negotiable 4.
+   Fixed by making both required fields.
+   *Mutation:* restoring the defaults → 1 test fails.
+
+Also removed: an ambiguous-span check was added and is mutation-tested
+(removing `check_source_span_keys` → 2 tests fail).
 
 ## Open / not claimed (resolving stages)
 

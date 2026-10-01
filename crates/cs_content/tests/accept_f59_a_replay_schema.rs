@@ -12,11 +12,11 @@ use cs_content::replay::{
     BuildFingerprint, BuildId, CandidateBuild, CapabilityClass, CaptureDifference, CaptureError,
     Certification, ChoiceSlot, CompatibilityVerdict, CrossBuildPolicy, DeclaredCapabilities,
     DecodeError, DivergenceReason, EnvelopeError, EvidenceArtifact, EvidenceBundle,
-    EvidenceRefusal, InitialState, InputStreamDigest, MAX_MSAA_SAMPLES, OverrideEntry, OverrideLog,
-    PcmRole, PlatformTag, RenderConfig, ReplayError, ReplayField, ReplayRecord, ReplaySeeds,
-    ReplayVersion, RunPurpose, SeedStream, StaleReason, StateEnvelope, TestCounts, TonemapKind,
-    decode, decode_capture, encode, encode_capture, synthetic_capture_record,
-    synthetic_evidence_bundle, synthetic_replay_record,
+    EvidenceRefusal, InitialState, InputStreamDigest, MAX_MSAA_SAMPLES, MAX_REPLAY_LINES,
+    MAX_STREAM_RECORDS, OverrideEntry, OverrideLog, PcmRole, PlatformTag, RenderConfig,
+    ReplayError, ReplayField, ReplayRecord, ReplaySeeds, ReplayVersion, RunPurpose, SeedStream,
+    StaleReason, StateEnvelope, TestCounts, TonemapKind, decode, decode_capture, encode,
+    encode_capture, synthetic_capture_record, synthetic_evidence_bundle, synthetic_replay_record,
 };
 use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind, Provenance};
@@ -443,7 +443,18 @@ fn accept_f59_a_every_identity_field_is_load_bearing() {
     let other_tree = BuildId::new("2222222222222222222222222222222222222222").expect("valid");
     let other_os = PlatformTag::new("linux", "x86_64").expect("valid");
 
+    let other_subject = ContentId::from_source(ContentKind::Mission, "synthetic.other")
+        .expect("a valid content id");
+
     let cases: Vec<(&str, IdentityField)> = vec![
+        (
+            "schema",
+            Box::new(|r: &mut ReplayRecord| r.schema = ReplayVersion { major: 1, minor: 4 }),
+        ),
+        (
+            "subject",
+            Box::new(move |r: &mut ReplayRecord| r.subject = other_subject.clone()),
+        ),
         (
             "engine",
             Box::new(|r: &mut ReplayRecord| r.fingerprint.engine = sha256(b"engine2")),
@@ -476,6 +487,40 @@ fn accept_f59_a_every_identity_field_is_load_bearing() {
             "initial_state",
             Box::new(|r: &mut ReplayRecord| r.initial_state.digest = sha256(b"initial2")),
         ),
+        (
+            "initial_state",
+            Box::new(|r: &mut ReplayRecord| {
+                r.initial_state.label = "synthetic.replay@tick7".to_owned()
+            }),
+        ),
+        (
+            "overrides",
+            Box::new(|r: &mut ReplayRecord| {
+                r.overrides = OverrideLog::new(RunPurpose::Capture, Vec::new(), false)
+                    .expect("a valid override log")
+            }),
+        ),
+        (
+            "overrides",
+            Box::new(|r: &mut ReplayRecord| {
+                r.overrides = OverrideLog::new(
+                    RunPurpose::OrdinaryPlay,
+                    vec![OverrideEntry {
+                        name: "debug_overrides".to_owned(),
+                        detail: "godmode=1".to_owned(),
+                    }],
+                    false,
+                )
+                .expect("a valid override log")
+            }),
+        ),
+        (
+            "overrides",
+            Box::new(|r: &mut ReplayRecord| {
+                r.overrides =
+                    OverrideLog::new(RunPurpose::OrdinaryPlay, Vec::new(), true).expect("valid")
+            }),
+        ),
         ("seeds", Box::new(|r: &mut ReplayRecord| r.seeds = seeds(7))),
         (
             "input_stream",
@@ -494,6 +539,15 @@ fn accept_f59_a_every_identity_field_is_load_bearing() {
     for (label, mutate) in cases {
         let mut changed = record.clone();
         mutate(&mut changed);
+        // Every field the signature covers is compared field-wise, so a field
+        // that moves the signature always names itself in the refusal. A field
+        // in the signature and missing from `differences_from` would silently
+        // certify determinism here, which is the shortcut this guards.
+        assert_ne!(
+            record.compatibility_signature(),
+            changed.compatibility_signature(),
+            "{label}: the mutation must move the signature at all"
+        );
         let verdict = record.compatibility_with(&changed, CrossBuildPolicy::Reject);
         assert!(!verdict.certifies_determinism(), "{label}: {verdict}");
         assert_eq!(
@@ -502,6 +556,68 @@ fn accept_f59_a_every_identity_field_is_load_bearing() {
             "{label}: the refusal names the field that moved"
         );
     }
+}
+
+/// The two functions that decide whether two runs are the same run stay in
+/// step: no field moves the compatibility signature without also being named by
+/// `differences_from`, and no field is named by `differences_from` that does
+/// not move it.
+///
+/// This is the invariant the case list above checks one field at a time, stated
+/// as a property: it is the difference between "the signature moved" and "the
+/// comparison refused", and AC02 needs the second one.
+#[test]
+fn accept_f59_a_every_signature_field_is_compared_field_wise() {
+    let record = fixture();
+    let mutations: Vec<(&str, IdentityField)> = vec![
+        (
+            "schema",
+            Box::new(|r: &mut ReplayRecord| r.schema = ReplayVersion { major: 1, minor: 4 }),
+        ),
+        (
+            "subject",
+            Box::new(|r: &mut ReplayRecord| {
+                r.subject = ContentId::from_source(ContentKind::Mission, "synthetic.other")
+                    .expect("a valid content id")
+            }),
+        ),
+        (
+            "initial_state",
+            Box::new(|r: &mut ReplayRecord| r.initial_state.label = "other".to_owned()),
+        ),
+        (
+            "overrides",
+            Box::new(|r: &mut ReplayRecord| {
+                r.overrides = OverrideLog::new(RunPurpose::Probe, Vec::new(), true).expect("valid")
+            }),
+        ),
+        (
+            "content",
+            Box::new(|r: &mut ReplayRecord| r.fingerprint.content = sha256(b"other")),
+        ),
+    ];
+
+    for (label, mutate) in mutations {
+        let mut changed = record.clone();
+        mutate(&mut changed);
+        let verdict = record.compatibility_with(&changed, CrossBuildPolicy::Reject);
+        assert!(
+            !verdict.certifies_determinism(),
+            "{label}: a moved signature must not certify determinism"
+        );
+        assert!(
+            verdict.differences().iter().any(|d| d.label() == label),
+            "{label}: differences_from must name it: {:?}",
+            verdict.differences()
+        );
+    }
+
+    // And the converse direction: the two records themselves agree, so nothing
+    // is named and determinism is certified.
+    let identical = fixture();
+    let verdict = record.compatibility_with(&identical, CrossBuildPolicy::Reject);
+    assert!(verdict.certifies_determinism(), "{verdict}");
+    assert!(verdict.differences().is_empty());
 }
 
 fn seeds(root: u64) -> ReplaySeeds {
@@ -705,6 +821,325 @@ fn accept_f59_a_an_unknown_field_is_preserved_and_re_emitted() {
         without.compatibility_signature(),
         "an unknown field must not change what the run is"
     );
+}
+
+/// A pinned choice's provenance **locates** its evidence, and the document form
+/// carries that location: a choice that names where it was observed and the same
+/// choice with no span are different records, and a round trip does not quietly
+/// turn one into the other.
+#[test]
+fn accept_f59_a_a_choice_provenance_survives_the_document_form() {
+    let record = fixture();
+    let span = source_span("crimson.dat", Some("missions/m01.dat"), 4096, 512);
+    let mut with_span = record.clone();
+    with_span.choices = AuthoredChoices::new(vec![AuthoredChoice {
+        slot: ChoiceSlot::Mission,
+        value: "synthetic.replay".to_owned(),
+        provenance: Provenance::new(
+            claim("f59.a.observed.choice"),
+            ClaimStatus::ObservedTool,
+            Some(span),
+        )
+        .expect("an observed_tool provenance may carry a span"),
+    }])
+    .expect("valid choices");
+
+    let decoded = decode(&encode(&with_span).expect("encode")).expect("decode");
+    assert_eq!(
+        decoded.choices.choices()[0].provenance,
+        with_span.choices.choices()[0].provenance,
+        "the source span must survive the document form verbatim"
+    );
+    assert_eq!(decoded, with_span, "the whole record round trips");
+
+    // The span is part of the choice's identity, so dropping it moves the
+    // signature and is a named difference — a record that laundered an observed
+    // value into an unlocated one would otherwise compare equal. The
+    // comparison holds the class fixed, so it is the *span* and nothing else
+    // that makes the two records differ.
+    let mut unlocated = record.clone();
+    unlocated.choices = AuthoredChoices::new(vec![AuthoredChoice {
+        slot: ChoiceSlot::Mission,
+        value: "synthetic.replay".to_owned(),
+        provenance: Provenance::new(
+            claim("f59.a.observed.choice"),
+            ClaimStatus::ObservedTool,
+            None,
+        )
+        .expect("an observed_tool provenance may carry no span"),
+    }])
+    .expect("valid choices");
+    assert_eq!(
+        unlocated.choices.choices()[0].provenance.class,
+        with_span.choices.choices()[0].provenance.class,
+        "the class is held fixed, so only the span differs"
+    );
+    assert_eq!(
+        unlocated.choices.choices()[0].value,
+        with_span.choices.choices()[0].value,
+        "the value is held fixed too"
+    );
+    assert_ne!(
+        unlocated.compatibility_signature(),
+        with_span.compatibility_signature(),
+        "a provenance that locates its evidence differs from one that does not"
+    );
+    let verdict = with_span.compatibility_with(&unlocated, CrossBuildPolicy::Reject);
+    assert!(!verdict.certifies_determinism(), "{verdict}");
+    assert_eq!(verdict.differences()[0].label(), "choices");
+
+    // A different *location* is also a different choice, not a relabelling of
+    // the same evidence.
+    let mut elsewhere = with_span.clone();
+    elsewhere.choices = AuthoredChoices::new(vec![AuthoredChoice {
+        slot: ChoiceSlot::Mission,
+        value: "synthetic.replay".to_owned(),
+        provenance: Provenance::new(
+            claim("f59.a.observed.choice"),
+            ClaimStatus::ObservedTool,
+            Some(source_span(
+                "crimson.dat",
+                Some("missions/m02.dat"),
+                4096,
+                512,
+            )),
+        )
+        .expect("a valid provenance"),
+    }])
+    .expect("valid choices");
+    assert_ne!(
+        elsewhere.compatibility_signature(),
+        with_span.compatibility_signature(),
+        "a span naming a different member is a different choice"
+    );
+
+    let without = record.clone();
+    assert_ne!(
+        with_span.compatibility_signature(),
+        without.compatibility_signature()
+    );
+    let verdict = with_span.compatibility_with(&without, CrossBuildPolicy::Reject);
+    assert!(!verdict.certifies_determinism(), "{verdict}");
+    assert_eq!(verdict.differences()[0].label(), "choices");
+
+    // A verified_original choice with no span is refused by F01's own rule, and
+    // the document form cannot be used to smuggle one past it.
+    let text = String::from_utf8(encode(&record).expect("encode")).expect("utf8");
+    let stripped = text.replace(
+        &format!(
+            "choice.mission={}|{}|-|synthetic.replay",
+            ClaimStatus::Designed.label(),
+            claim("f59.a.synthetic-fixture")
+        ),
+        &format!(
+            "choice.mission={}|{}|-|synthetic.replay",
+            ClaimStatus::VerifiedOriginal.label(),
+            claim("f59.a.synthetic-fixture")
+        ),
+    );
+    assert_ne!(stripped, text, "the body was edited");
+    let forged = sealed_body_of_forged(&stripped);
+    assert!(
+        matches!(
+            decode(&forged),
+            Err(DecodeError::Malformed {
+                reason: "the choice's provenance is not a valid provenance",
+                ..
+            })
+        ),
+        "a verified_original choice with no source span is refused"
+    );
+}
+
+/// A source span whose keys contain a span delimiter cannot be written and read
+/// back unambiguously, so it is refused rather than encoded lossily.
+#[test]
+fn accept_f59_a_an_ambiguous_source_span_is_refused() {
+    let record = fixture();
+    for container in ["crimson.dat:extra", "crimson[dat", "crimson+dat"] {
+        let mut changed = record.clone();
+        let result = AuthoredChoices::new(vec![AuthoredChoice {
+            slot: ChoiceSlot::Mission,
+            value: "synthetic.replay".to_owned(),
+            provenance: Provenance::new(
+                claim("f59.a.ambiguous"),
+                ClaimStatus::ObservedTool,
+                Some(source_span(container, None, 0, 1)),
+            )
+            .expect("a valid provenance"),
+        }]);
+        assert!(
+            matches!(result, Err(ReplayError::UnpreservableField { .. })),
+            "{container} must be refused: {result:?}"
+        );
+        changed.choices = AuthoredChoices::none();
+    }
+}
+
+fn source_span(
+    container: &str,
+    member: Option<&str>,
+    offset: u64,
+    length: u64,
+) -> cs_types::asset_id::SourceSpan {
+    cs_types::asset_id::SourceSpan::new(
+        sha256(b"cs.f59.test.installation"),
+        container,
+        member,
+        offset,
+        length,
+        member.map(|_| sha256(b"cs.f59.test.member")),
+    )
+    .expect("a valid source span")
+}
+
+/// Re-seals an edited body whose seal no longer matches, so the decoder reaches
+/// the fields rather than refusing the checksum.
+fn sealed_body_of_forged(text: &str) -> Vec<u8> {
+    let checksum_start = text.rfind("checksum=").expect("a seal");
+    let head = &text[..checksum_start];
+    format!("{head}checksum={}\n", sha256(head.as_bytes()).to_hex()).into_bytes()
+}
+
+/// A record whose encoded form would be larger than the decoder's own byte
+/// bound is refused at `encode` rather than written as a file this build cannot
+/// read back.
+#[test]
+fn accept_f59_a_a_record_too_large_to_encode_is_refused_rather_than_written() {
+    let mut record = fixture();
+    let mut stream = CommandStream::new();
+    let mut promised = StateEnvelope::new();
+    for tick in 0..MAX_STREAM_RECORDS as u64 {
+        let mut frame = InputFrame::new(Tick(tick));
+        frame.set_axis(
+            AxisValue::from_quantized(FlightCommand::Pitch, (tick % 1000) as i16)
+                .expect("pitch is a continuous axis"),
+        );
+        promised
+            .push(Tick(tick), sha256(format!("state {tick}").as_bytes()))
+            .expect("increasing ticks");
+        stream.record_tick(frame).expect("increasing ticks");
+    }
+    record.stream = stream;
+    record.promised = promised;
+    record.first_tick = Tick(0);
+    record.last_tick = Tick(MAX_STREAM_RECORDS as u64 - 1);
+    // At the declared entry bound the record itself is valid...
+    record
+        .validate()
+        .expect("a record at the entry bounds is valid");
+    // ...but it does not fit the declared document bound, and writing it would
+    // produce a file `decode` refuses with `TooLarge`.
+    assert!(
+        matches!(encode(&record), Err(ReplayError::DocumentTooLarge { .. })),
+        "encode must not write a document its own decoder refuses"
+    );
+
+    // The line bound is checked the way the decoder counts it — over the body,
+    // with the header and the seal line excluded — so a document of many short
+    // preserved lines is measured honestly rather than slipping past on a
+    // two-line discrepancy.
+    let many_lines = fixture();
+    let document = encode(&many_lines).expect("a small record encodes");
+    let body_lines = String::from_utf8(document.clone())
+        .expect("utf8")
+        .lines()
+        .count()
+        - 2;
+    assert!(body_lines > 0 && body_lines < MAX_REPLAY_LINES);
+    let decoded = decode(&document).expect("decode");
+    assert_eq!(decoded, many_lines, "and it round trips");
+}
+
+/// A preserved unknown line is re-emitted as one `key=value` line, so a value
+/// carrying a newline would otherwise become a line the decoder reads as a
+/// *different*, interpreted field — an injection of a promised state hash, an
+/// input record or a second subject through a field whose whole purpose is to
+/// be unknown. Both a newline and a reserved key are refused.
+#[test]
+fn accept_f59_a_a_preserved_field_cannot_inject_an_interpreted_line() {
+    let mut record = fixture();
+    record.promised = StateEnvelope::new();
+    record.stream = CommandStream::new();
+
+    // A newline in the value: the injected line is a promised state hash at a
+    // tick the record promises nothing for.
+    let mut injecting = record.clone();
+    injecting.extra.push(ReplayField {
+        key: "future".to_owned(),
+        value: format!("harmless\nenvelope.0={}", sha256(b"injected")),
+    });
+    assert!(
+        matches!(
+            injecting.validate(),
+            Err(ReplayError::UnpreservableField { .. })
+        ),
+        "a preserved value with a newline is refused: {:?}",
+        injecting.validate()
+    );
+
+    // A key the decoder already interprets would collide with it.
+    for key in [
+        "subject",
+        "content",
+        "input.0",
+        "envelope.3",
+        "choice.mission",
+    ] {
+        let mut colliding = record.clone();
+        colliding.extra.push(ReplayField {
+            key: key.to_owned(),
+            value: "whatever".to_owned(),
+        });
+        assert!(
+            matches!(
+                colliding.validate(),
+                Err(ReplayError::UnpreservableField { .. })
+            ),
+            "{key} must not be preservable"
+        );
+    }
+
+    // A genuinely unknown key with a single-line value still round trips, so
+    // the refusal is about injection and not about preservation.
+    let mut preserving = record;
+    preserving.extra.push(ReplayField {
+        key: "future.field".to_owned(),
+        value: "some-newer-value".to_owned(),
+    });
+    let decoded = decode(&encode(&preserving).expect("encode")).expect("decode");
+    assert_eq!(decoded, preserving);
+    assert!(decoded.promised.is_empty(), "nothing was injected");
+}
+
+/// A document that does not state its run purpose states nothing about it, so
+/// the decoder refuses it rather than reading a capture or probe run as a
+/// player's ordinary session — the one conclusion non-negotiable 4 has to be
+/// able to refuse.
+#[test]
+fn accept_f59_a_a_document_that_omits_its_purpose_is_refused() {
+    let record = fixture();
+    for line in ["purpose=ordinary_play\n", "profile_write=0\n"] {
+        let text = String::from_utf8(encode(&record).expect("encode")).expect("utf8");
+        let stripped = text.replace(line, "");
+        assert!(!stripped.contains(line), "the line was removed");
+        let resealed = reseal_after(&stripped);
+        assert!(
+            matches!(
+                decode(&resealed),
+                Err(DecodeError::MissingField("purpose" | "profile_write"))
+            ),
+            "a document without `{line}` must be refused, not defaulted"
+        );
+    }
+}
+
+/// Re-seals a document body after a line has been removed, so the decoder
+/// reaches the field rules rather than refusing the checksum.
+fn reseal_after(text: &str) -> Vec<u8> {
+    let checksum_start = text.rfind("checksum=").expect("a seal");
+    let head = &text[..checksum_start];
+    format!("{head}checksum={}\n", sha256(head.as_bytes()).to_hex()).into_bytes()
 }
 
 /// A repeated single-valued field is refused rather than silently taking the
@@ -1708,6 +2143,92 @@ fn accept_f59_a_a_run_that_did_not_pass_is_never_a_pass() {
             failed: 0
         }
     );
+}
+
+/// A report that does not carry the contract's record minimum certifies
+/// nothing: without a task id, a tool or a test command a reader cannot tell
+/// what was run, so the report is refused rather than checked.
+#[test]
+fn accept_f59_a_a_report_without_the_record_minimum_is_refused() {
+    let base = bundle_of(
+        DeclaredCapabilities::headless_synthetic(),
+        vec![artifact(
+            "claim.trace",
+            "trace.jsonl",
+            ArtifactMedia::Trace,
+            sha256(b"trace"),
+        )],
+    );
+    assert!(
+        base.certify(&candidate_of(&fixture())).is_checked(),
+        "the complete bundle is checked"
+    );
+
+    for (field, blank) in [
+        ("test command", BundleField::TestCommand),
+        ("tool", BundleField::Tool),
+        ("tool version", BundleField::ToolVersion),
+    ] {
+        let mut incomplete = base.clone();
+        blank.clear(&mut incomplete);
+        assert!(
+            incomplete.validate().is_err(),
+            "{field}: the bundle's own validate refuses it"
+        );
+        let report = incomplete.certify(&candidate_of(&fixture()));
+        assert!(
+            !report.is_checked(),
+            "{field}: a report with no {field} is not a pass: {:?}",
+            report.diagnostic_lines()
+        );
+        assert!(
+            report
+                .refused
+                .iter()
+                .any(|refusal| matches!(refusal, EvidenceRefusal::IncompleteRecord { .. })),
+            "{field}: the refusal names the missing field: {:?}",
+            report.diagnostic_lines()
+        );
+        assert_eq!(
+            report.certification(),
+            Certification::Refused { reasons: 1 },
+            "{field}: one problem, one reason"
+        );
+    }
+
+    // An oversized task id is refused on the same grounds, and an unresolved
+    // issue is not: the contract requires unresolved issues to survive, so
+    // naming one may never remove a claim.
+    let mut padded = base.clone();
+    padded.task = "F".repeat(200);
+    assert!(!padded.certify(&candidate_of(&fixture())).is_checked());
+    let mut unresolved = base;
+    unresolved
+        .unresolved
+        .push("a product limitation is still open".to_owned());
+    let report = unresolved.certify(&candidate_of(&fixture()));
+    assert!(
+        report.is_checked(),
+        "an unresolved issue is reported, not refused: {:?}",
+        report.diagnostic_lines()
+    );
+}
+
+/// Which of a bundle's record-minimum fields a test blanks.
+enum BundleField {
+    TestCommand,
+    Tool,
+    ToolVersion,
+}
+
+impl BundleField {
+    fn clear(self, bundle: &mut EvidenceBundle) {
+        match self {
+            Self::TestCommand => bundle.test_command = "   ".to_owned(),
+            Self::Tool => bundle.tool = String::new(),
+            Self::ToolVersion => bundle.tool_version = String::new(),
+        }
+    }
 }
 
 /// The report names the claims it certifies, and nothing is certified when

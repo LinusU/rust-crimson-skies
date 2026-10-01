@@ -40,7 +40,9 @@
 //!   tick range, in whole ticks ([`cs_types::Tick`]) and nothing else.
 //! * [`AuthoredChoices`] — the authored decisions a replay must pin (airframe,
 //!   difficulty, loadout, assists, mission, ruleset), each with its
-//!   [`Provenance`], so a replay cannot silently assume one.
+//!   [`Provenance`] *including any source span*, so a replay cannot silently
+//!   assume one and cannot launder a located observation into an unlocated
+//!   claim.
 //!
 //! # What a capture records
 //!
@@ -87,7 +89,10 @@
 //!    result; a stale report cannot certify a new build.*
 //!    [`EvidenceBundle::certify`] takes a [`CandidateBuild`] and reports
 //!    [`StaleReason::TreeChanged`] / [`StaleReason::ContentChanged`] instead
-//!    of a pass.
+//!    of a pass. The bundle's own record minimum is checked first: a report
+//!    with no task id, tool or test command is
+//!    [`EvidenceRefusal::IncompleteRecord`], because a reader could not tell
+//!    what was run.
 //!
 //! # On-disk form
 //!
@@ -99,6 +104,29 @@
 //! of a readable major are preserved in [`ReplayRecord::extra`] and
 //! re-emitted, so a newer minor's document survives a round trip through an
 //! older build. A different major is refused, never merged or partially read.
+//!
+//! "Survives a round trip" is a property the module holds to in both
+//! directions, and the rules that make it true are the interesting part:
+//!
+//! * **Nothing a round trip would lose is written.** A pinned choice's
+//!   [`Provenance`] source span is carried in the document, so a record does
+//!   not come back with its provenance quietly stripped; and the same span is
+//!   hashed by [`AuthoredChoices::canonical`], so it is part of the run's
+//!   identity rather than decoration.
+//! * **Nothing a preserved unknown line could inject is written.** An
+//!   [`ReplayRecord::extra`] entry is re-emitted as one `key=value` line, so a
+//!   key or value carrying a newline, or a key the decoder itself interprets,
+//!   is refused: otherwise a field whose entire purpose is to be *unknown*
+//!   could smuggle in a promised state hash, an input record or a second
+//!   `subject=`.
+//! * **Nothing the decoder would refuse is written.** `encode` checks its own
+//!   output against the decoder's byte and line bounds and returns
+//!   [`ReplayError::DocumentTooLarge`] rather than putting a file on disk that
+//!   this build cannot read back.
+//! * **Nothing missing is defaulted into a claim.** `purpose=` and
+//!   `profile_write=` are required lines. Defaulting them would let a
+//!   truncated or hand-edited capture document read as a player's ordinary
+//!   session — the exact conclusion non-negotiable 4 has to be able to refuse.
 //!
 //! # What this stage does not do
 //!
@@ -122,6 +150,7 @@ use std::fmt;
 use cs_assets::install::Sha256;
 use cs_assets::install::sha256;
 use cs_types::Tick;
+use cs_types::asset_id::SourceSpan;
 use cs_types::content::{ContentId, Provenance};
 use cs_types::evidence::{
     ClaimId, ClaimStatus, ContentHash, EvidenceRecord, EvidenceSource, Fingerprint,
@@ -173,6 +202,13 @@ pub const MAX_ARTIFACTS: usize = 256;
 
 /// Largest accepted recorded seed label, in bytes.
 pub const MAX_SEED_LABEL_BYTES: usize = 64;
+
+/// Largest accepted number of preserved unknown lines in one replay.
+///
+/// A declared bound, not a measurement: enough for a newer minor's own
+/// additions and small enough that a document cannot be padded past the line
+/// bound the decoder enforces.
+pub const MAX_EXTRA_FIELDS: usize = 256;
 
 /// Domain separator of the replay compatibility signature.
 const COMPATIBILITY_DOMAIN: &[u8] = b"cs.f59.replay.compatibility.v1";
@@ -285,6 +321,28 @@ pub enum ReplayError {
         /// The bound.
         max: usize,
     },
+    /// The encoded document is larger than [`MAX_REPLAY_BYTES`], so writing it
+    /// would produce a file this build's own reader refuses.
+    DocumentTooLarge {
+        /// The measured size in bytes.
+        len: usize,
+        /// The bound it exceeded.
+        max: usize,
+    },
+    /// The encoded document has more lines than [`MAX_REPLAY_LINES`], so
+    /// writing it would produce a file this build's own reader refuses.
+    DocumentTooManyLines {
+        /// The measured line count.
+        lines: usize,
+        /// The bound it exceeded.
+        max: usize,
+    },
+    /// A preserved unknown field was not a single-line `key=value` the decoder
+    /// can re-emit without changing what the document says.
+    UnpreservableField {
+        /// Why the field could not be preserved.
+        reason: &'static str,
+    },
     /// The promised state envelope broke its own ordering or bounds.
     Envelope(EnvelopeError),
     /// A camera pose was not finite or a field of view was not a real angle.
@@ -323,6 +381,24 @@ impl fmt::Display for ReplayError {
             Self::Duplicate { what, key } => write!(f, "{what} is declared twice: {key}"),
             Self::TooManyEntries { what, max } => {
                 write!(f, "a record may hold at most {max} {what}")
+            }
+            Self::DocumentTooLarge { len, max } => {
+                write!(
+                    f,
+                    "the encoded document is {len} bytes, over the bound of {max}"
+                )
+            }
+            Self::DocumentTooManyLines { lines, max } => {
+                write!(
+                    f,
+                    "the encoded document has {lines} lines, over the bound of {max}"
+                )
+            }
+            Self::UnpreservableField { reason } => {
+                write!(
+                    f,
+                    "a preserved unknown field cannot be re-emitted: {reason}"
+                )
             }
             Self::Envelope(error) => write!(f, "state envelope: {error}"),
             Self::Camera(error) => write!(f, "capture camera: {error}"),
@@ -840,6 +916,137 @@ impl ReplaySeeds {
 }
 
 /* ------------------------------------------------------------------ */
+/* Source spans                                                        */
+/* ------------------------------------------------------------------ */
+
+/**
+ * The text form of a [`SourceSpan`]:
+ * `install@container[member]:offset+length#member_sha256`, with `-` standing
+ * for an absent optional part.
+ *
+ * Every field is either a fixed-width digest, a bounded identifier or a
+ * `[...]`/`+`/`#`-delimited run, and the container and member keys this
+ * repository produces cannot contain any of those delimiters — so the
+ * decomposition is unambiguous. A span whose keys *do* contain a delimiter is
+ * refused rather than written ambiguously, and a decoder that meets such a span
+ * refuses it too.
+ */
+fn encode_source_span(span: &SourceSpan) -> String {
+    let member = span
+        .member_key()
+        .map(|key| format!("[{key}]"))
+        .unwrap_or_default();
+    format!(
+        "{}@{}{}:{}+{}#{}",
+        span.install_sha256(),
+        span.container_path(),
+        member,
+        span.offset(),
+        span.length(),
+        span.member_sha256()
+            .map_or_else(|| "-".to_owned(), |hash| hash.to_hex()),
+    )
+}
+
+/// Largest accepted container path in a preserved source span, in bytes.
+const MAX_SPAN_PATH_BYTES: usize = 128;
+
+/// Refuses a source span whose keys cannot be written and read back
+/// unambiguously.
+///
+/// `encode_source_span` separates its fields with `@`, `[`, `]`, `:`, `+` and
+/// `#`, so a container path or member key carrying one of those would decode
+/// into a different span than the one encoded. Such a span is refused rather
+/// than written ambiguously: a provenance that cannot be transported is not
+/// provenance.
+fn check_source_span_keys(span: &SourceSpan) -> Result<(), ReplayError> {
+    let unpreservable = |reason: &'static str| ReplayError::UnpreservableField { reason };
+    for (field, key) in [
+        ("container path", Some(span.container_path())),
+        ("member key", span.member_key()),
+    ] {
+        let Some(key) = key else { continue };
+        if key.is_empty() {
+            return Err(ReplayError::Blank { field });
+        }
+        if key.len() > MAX_SPAN_PATH_BYTES {
+            return Err(ReplayError::TooLong {
+                field,
+                len: key.len(),
+                max: MAX_SPAN_PATH_BYTES,
+            });
+        }
+        if key.contains(['@', '[', ']', ':', '+', '#', '|', '\n', '\r']) {
+            return Err(unpreservable(
+                "a source span key may not contain a span delimiter or a newline",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Parses the text form of a [`SourceSpan`].
+fn decode_source_span(line: usize, text: &str) -> Result<SourceSpan, DecodeError> {
+    let malformed = |reason: &'static str| DecodeError::Malformed { line, reason };
+    let (install, rest) = text.split_once('@').ok_or_else(|| {
+        malformed("a source span is `install@container[member]:offset+length#member_sha256`")
+    })?;
+    let (container, rest) = rest
+        .split_once(':')
+        .ok_or_else(|| malformed("a source span needs an offset and length"))?;
+    let (range, member_sha) = match rest.split_once('#') {
+        Some((range, sha)) => (range, Some(sha)),
+        None => (rest, None),
+    };
+    let (offset, length) = range
+        .split_once('+')
+        .ok_or_else(|| malformed("a source span needs an offset and length"))?;
+    let (container, member_key) = match container.split_once('[') {
+        Some((container, member)) => match member.strip_suffix(']') {
+            Some(member) => (container, Some(member.to_owned())),
+            None => return Err(malformed("a source span member is `[key]`")),
+        },
+        None => (container, None),
+    };
+    if container.is_empty() || container.len() > MAX_SPAN_PATH_BYTES {
+        return Err(malformed(
+            "a source span container path is empty or oversized",
+        ));
+    }
+    if let Some(member) = &member_key
+        && (member.is_empty() || member.len() > MAX_SPAN_PATH_BYTES)
+    {
+        return Err(malformed("a source span member key is empty or oversized"));
+    }
+    // The same delimiter rule the encoder enforces, so a hand-edited document
+    // cannot smuggle an ambiguous span past the seal.
+    for key in [Some(container), member_key.as_deref()]
+        .into_iter()
+        .flatten()
+    {
+        if key.contains(['@', '[', ']', ':', '+', '#', '|']) {
+            return Err(malformed("a source span key contains a span delimiter"));
+        }
+    }
+    let member_sha256 = match member_sha {
+        None => None,
+        Some("-") => None,
+        Some(text) => Some(parse_hash(line, text)?),
+    };
+    let offset = parse_u64(line, offset)?;
+    let length = parse_u64(line, length)?;
+    SourceSpan::new(
+        parse_hash(line, install)?,
+        container,
+        member_key.as_deref(),
+        offset,
+        length,
+        member_sha256,
+    )
+    .map_err(|_| malformed("a source span is not a valid span"))
+}
+
+/* ------------------------------------------------------------------ */
 /* Authored choices                                                    */
 /* ------------------------------------------------------------------ */
 
@@ -931,6 +1138,9 @@ impl AuthoredChoices {
         }
         for choice in &choices {
             check_text("choice value", &choice.value)?;
+            if let Some(source) = &choice.provenance.source {
+                check_source_span_keys(source)?;
+            }
         }
         choices.sort_by_key(|choice| choice.slot);
         for pair in choices.windows(2) {
@@ -974,8 +1184,13 @@ impl AuthoredChoices {
     }
 
     /// The canonical text form: `slot=value` per choice, sorted, with the
-    /// provenance class, so two records that pin the same values with a
-    /// stronger provenance are *not* silently equal.
+    /// provenance class *and its source span*, so two records that pin the
+    /// same values with a stronger provenance are *not* silently equal.
+    ///
+    /// The span is part of the text because a provenance that names where it
+    /// observed its value and one that does not are different evidence: the
+    /// document form carries the span (see `encode`), so the signature has to
+    /// see it too, or a round trip would silently drop it.
     pub fn canonical(&self) -> String {
         let mut text = String::new();
         for choice in &self.0 {
@@ -984,6 +1199,10 @@ impl AuthoredChoices {
             text.push_str(choice.provenance.class.label());
             text.push(':');
             text.push_str(choice.provenance.claim_id.as_str());
+            if let Some(source) = &choice.provenance.source {
+                text.push(':');
+                text.push_str(&encode_source_span(source));
+            }
             text.push(':');
             text.push_str(&choice.value);
             text.push('\n');
@@ -1534,12 +1753,18 @@ impl ReplayRecord {
     /// The compatibility signature of the run: a SHA-256 digest over every
     /// field that decides whether two runs are the same run.
     ///
-    /// The engine, content and rules digests, the toolchain and platform, the
-    /// subject, the tick rate and range, the initial state, the seeds, the
-    /// input stream, the pinned choices, the promised envelope and the
-    /// overrides are all in it. `extra` is deliberately **not**: unknown lines
-    /// of a newer minor describe a document, not a different run, so a
+    /// The schema, the subject, the engine/content/rules digests, the
+    /// toolchain and platform, the tick rate and range, the initial state, the
+    /// seeds, the input stream, the pinned choices, the promised envelope and
+    /// the overrides are all in it. `extra` is deliberately **not**: unknown
+    /// lines of a newer minor describe a document, not a different run, so a
     /// forward-compatible document keeps its signature.
+    ///
+    /// [`differences_from`](Self::differences_from) checks every one of those
+    /// fields. The two stay in step deliberately: a field that moved the
+    /// signature but was not compared field-wise would be a field
+    /// [`CrossBuildPolicy::Reject`] silently accepted, which is exactly the
+    /// shortcut AC02 exists to catch.
     #[must_use]
     pub fn compatibility_signature(&self) -> ContentHash {
         let mut hasher = Sha256::new();
@@ -1620,6 +1845,18 @@ impl ReplayRecord {
     #[must_use]
     pub fn differences_from(&self, candidate: &ReplayRecord) -> Vec<CompatibilityDifference> {
         let mut differences = Vec::new();
+        if self.schema != candidate.schema {
+            differences.push(CompatibilityDifference::Schema {
+                recorded: self.schema,
+                candidate: candidate.schema,
+            });
+        }
+        if self.subject != candidate.subject {
+            differences.push(CompatibilityDifference::Subject {
+                recorded: self.subject.clone(),
+                candidate: candidate.subject.clone(),
+            });
+        }
         if self.fingerprint.engine != candidate.fingerprint.engine {
             differences.push(CompatibilityDifference::Engine);
         }
@@ -1657,8 +1894,11 @@ impl ReplayRecord {
                 candidate: (candidate.first_tick, candidate.last_tick),
             });
         }
-        if self.initial_state.digest != candidate.initial_state.digest {
-            differences.push(CompatibilityDifference::InitialState);
+        if self.initial_state != candidate.initial_state {
+            differences.push(CompatibilityDifference::InitialState {
+                recorded: self.initial_state.clone(),
+                candidate: candidate.initial_state.clone(),
+            });
         }
         if self.seeds.digest() != candidate.seeds.digest() {
             differences.push(CompatibilityDifference::Seeds);
@@ -1675,6 +1915,12 @@ impl ReplayRecord {
                 .chain_digest(candidate.initial_state.digest)
         {
             differences.push(CompatibilityDifference::PromisedEnvelope);
+        }
+        if self.overrides != candidate.overrides {
+            differences.push(CompatibilityDifference::Overrides {
+                recorded: self.overrides.clone(),
+                candidate: candidate.overrides.clone(),
+            });
         }
         differences
     }
@@ -1786,8 +2032,97 @@ impl ReplayRecord {
             self.overrides.entries().to_vec(),
             self.overrides.production_profile_write(),
         )?;
+        check_extra(&self.extra)?;
         Ok(())
     }
+}
+
+/// The keys a preserved unknown field may not use, because the decoder gives
+/// them a meaning: a `ReplayField` is re-emitted as one `key=value` line, so a
+/// key that *is* an interpreted field would either collide with it or be
+/// reinterpreted on the way back in.
+fn is_interpreted_key(key: &str) -> bool {
+    const KEYS: &[&str] = &[
+        "subject",
+        "tree",
+        "engine",
+        "content",
+        "rules",
+        "toolchain",
+        "platform.os",
+        "platform.arch",
+        "tick_rate",
+        "first_tick",
+        "last_tick",
+        "initial.label",
+        "initial.digest",
+        "seed.root",
+        "purpose",
+        "profile_write",
+    ];
+    const PREFIXES: &[&str] = &[
+        "seed.stream.",
+        "override.",
+        "choice.",
+        "input.",
+        "envelope.",
+    ];
+    KEYS.contains(&key) || PREFIXES.iter().any(|prefix| key.starts_with(prefix))
+}
+
+/// Checks that every preserved unknown line can be re-emitted without changing
+/// what the document says.
+///
+/// A `ReplayField` is written back as one `key=value` line, so a key or value
+/// carrying a newline would write a line the decoder reads as a *different*
+/// field — a preserved unknown line could then inject a promised state hash, an
+/// input record or a second `subject=`. A key the decoder already interprets
+/// would collide with it instead. Both are refused at `validate`, so a record
+/// that encodes is a document that decodes back to the same record.
+fn check_extra(extra: &[ReplayField]) -> Result<(), ReplayError> {
+    if extra.len() > MAX_EXTRA_FIELDS {
+        return Err(ReplayError::TooManyEntries {
+            what: "preserved unknown fields",
+            max: MAX_EXTRA_FIELDS,
+        });
+    }
+    for field in extra {
+        if field.key.trim().is_empty() {
+            return Err(ReplayError::Blank {
+                field: "a preserved unknown field's key",
+            });
+        }
+        if field.key.contains(['=', '\n', '\r']) {
+            return Err(ReplayError::UnpreservableField {
+                reason: "a preserved key may not contain `=` or a newline",
+            });
+        }
+        if field.key.len() > MAX_LABEL_BYTES {
+            return Err(ReplayError::TooLong {
+                field: "a preserved unknown field's key",
+                len: field.key.len(),
+                max: MAX_LABEL_BYTES,
+            });
+        }
+        if is_interpreted_key(&field.key) {
+            return Err(ReplayError::UnpreservableField {
+                reason: "a preserved key may not name a field the decoder interprets",
+            });
+        }
+        if field.value.contains(['\n', '\r']) {
+            return Err(ReplayError::UnpreservableField {
+                reason: "a preserved value may not contain a newline",
+            });
+        }
+        if field.value.len() > MAX_VALUE_BYTES {
+            return Err(ReplayError::TooLong {
+                field: "a preserved unknown field's value",
+                len: field.value.len(),
+                max: MAX_VALUE_BYTES,
+            });
+        }
+    }
+    Ok(())
 }
 
 /// What a cross-build comparison is allowed to conclude.
@@ -1889,8 +2224,28 @@ fn join_differences(differences: &[CompatibilityDifference]) -> String {
 }
 
 /// One field in which two runs of a replay differ.
+///
+/// Every field the [`ReplayRecord::compatibility_signature`] covers except
+/// `extra` has exactly one variant here, and
+/// [`ReplayRecord::differences_from`] checks all of them: a field that moves
+/// the signature but is absent from this list would be a field a
+/// [`CrossBuildPolicy::Reject`] comparison silently accepts.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CompatibilityDifference {
+    /// The two records declare different schema versions of the same major.
+    Schema {
+        /// The recorded version.
+        recorded: ReplayVersion,
+        /// The candidate's version.
+        candidate: ReplayVersion,
+    },
+    /// The two records replay different subjects.
+    Subject {
+        /// The recorded catalog id.
+        recorded: ContentId,
+        /// The candidate's catalog id.
+        candidate: ContentId,
+    },
     /// The engine sources differ.
     Engine,
     /// The canonical content differs — the AC02 case.
@@ -1923,7 +2278,12 @@ pub enum CompatibilityDifference {
         candidate: (Tick, Tick),
     },
     /// The initial state differs.
-    InitialState,
+    InitialState {
+        /// The recorded initial state.
+        recorded: InitialState,
+        /// The candidate's initial state.
+        candidate: InitialState,
+    },
     /// The seeds differ.
     Seeds,
     /// The recorded input stream differs.
@@ -1932,12 +2292,22 @@ pub enum CompatibilityDifference {
     Choices,
     /// The promised state envelope differs.
     PromisedEnvelope,
+    /// The run's purpose, its debug overrides or its profile-write request
+    /// differ.
+    Overrides {
+        /// The recorded override log.
+        recorded: OverrideLog,
+        /// The candidate's override log.
+        candidate: OverrideLog,
+    },
 }
 
 impl CompatibilityDifference {
     /// The short label used in a one-line diagnostic.
     pub fn label(&self) -> &'static str {
         match self {
+            Self::Schema { .. } => "schema",
+            Self::Subject { .. } => "subject",
             Self::Engine => "engine",
             Self::Content => "content",
             Self::Rules => "rules",
@@ -1946,11 +2316,12 @@ impl CompatibilityDifference {
             Self::Platform { .. } => "platform",
             Self::TickRate { .. } => "tick_rate",
             Self::TickRange { .. } => "tick_range",
-            Self::InitialState => "initial_state",
+            Self::InitialState { .. } => "initial_state",
             Self::Seeds => "seeds",
             Self::InputStream => "input_stream",
             Self::Choices => "choices",
             Self::PromisedEnvelope => "promised_envelope",
+            Self::Overrides { .. } => "overrides",
         }
     }
 }
@@ -2994,12 +3365,24 @@ impl EvidenceBundle {
     /// stand, and collapsing them into "failed" would hide which.
     /// [`CertificationReport::is_checked`] is the single question, and it is
     /// true only when every list is empty and the run actually passed.
+    ///
+    /// The bundle's own [`validate`](Self::validate) runs first and is a
+    /// refusal of its own: a report that does not carry the record minimum the
+    /// contract names — no task id, no tool, no test command — cannot certify
+    /// anything, because a reader could not tell what was run.
     #[must_use]
     pub fn certify(&self, candidate: &CandidateBuild) -> CertificationReport {
         let mut report = CertificationReport {
             counts: self.counts,
             ..CertificationReport::default()
         };
+
+        if let Err(error) = self.validate() {
+            report.refused.push(EvidenceRefusal::IncompleteRecord {
+                task: self.task.clone(),
+                problem: error.to_string(),
+            });
+        }
 
         if self.tree != candidate.tree {
             report.stale.push(StaleReason::TreeChanged {
@@ -3155,6 +3538,14 @@ pub enum EvidenceRefusal {
         /// The task that did it.
         task: String,
     },
+    /// The bundle does not carry the record minimum: a field the contract
+    /// names is blank or oversized, so a reader cannot tell what was run.
+    IncompleteRecord {
+        /// The bundle's task.
+        task: String,
+        /// What is wrong with it.
+        problem: String,
+    },
 }
 
 impl fmt::Display for EvidenceRefusal {
@@ -3173,6 +3564,9 @@ impl fmt::Display for EvidenceRefusal {
                 "task {task} ran a capture/probe that wrote a production profile without \
                  requesting it"
             ),
+            Self::IncompleteRecord { task, problem } => {
+                write!(f, "the {task} report is incomplete: {problem}")
+            }
         }
     }
 }
@@ -3735,11 +4129,21 @@ pub fn encode(record: &ReplayRecord) -> Result<Vec<u8>, ReplayError> {
         out.push_str(&format!("override.{}={}\n", entry.name, entry.detail));
     }
     for choice in record.choices.choices() {
+        // The span is part of the choice, not an extra: a provenance that says
+        // where it observed its value and one that says nothing are different
+        // evidence, so the document carries the span and `canonical()` hashes
+        // it. A choice with no span writes `-`, which is what an absent one
+        // reads back as.
         out.push_str(&format!(
-            "choice.{}={}|{}|{}\n",
+            "choice.{}={}|{}|{}|{}\n",
             choice.slot.label(),
             choice.provenance.class.label(),
             choice.provenance.claim_id,
+            choice
+                .provenance
+                .source
+                .as_ref()
+                .map_or_else(|| "-".to_owned(), encode_source_span),
             choice.value
         ));
     }
@@ -3757,7 +4161,27 @@ pub fn encode(record: &ReplayRecord) -> Result<Vec<u8>, ReplayError> {
         out.push_str(&format!("{}={}\n", field.key, field.value));
     }
     seal(&mut out);
-    Ok(out.into_bytes())
+    // A document that `decode` would refuse is not a document: writing one
+    // would put a file on disk that this build cannot read back, which is the
+    // one thing the seal-and-validate discipline exists to prevent. The bounds
+    // are the decoder's own and the line count is taken the way the decoder
+    // takes it — over the body, with the header and the seal line excluded — so
+    // a document `encode` accepts is exactly a document `decode` accepts.
+    let lines = out.lines().count().saturating_sub(2);
+    let bytes = out.into_bytes();
+    if bytes.len() > MAX_REPLAY_BYTES {
+        return Err(ReplayError::DocumentTooLarge {
+            len: bytes.len(),
+            max: MAX_REPLAY_BYTES,
+        });
+    }
+    if lines > MAX_REPLAY_LINES {
+        return Err(ReplayError::DocumentTooManyLines {
+            lines,
+            max: MAX_REPLAY_LINES,
+        });
+    }
+    Ok(bytes)
 }
 
 /// Decodes and fully validates a replay document. Never panics on any input.
@@ -3881,12 +4305,19 @@ pub fn decode(bytes: &[u8]) -> Result<ReplayRecord, DecodeError> {
                         detail: value.to_owned(),
                     });
                 } else if let Some(slot) = key.strip_prefix("choice.") {
-                    let mut parts = value.splitn(3, '|');
+                    // `<class>|<claim>|<span>|<value>`: four parts, and the
+                    // span is `-` when the choice has none. The value is last
+                    // so a value containing `|` survives.
+                    let mut parts = value.splitn(4, '|');
                     let class = parts.next().unwrap_or_default();
                     let claim = parts.next().unwrap_or_default();
+                    let span = parts.next().ok_or(DecodeError::Malformed {
+                        line: number,
+                        reason: "a choice is `<class>|<claim>|<span>|<value>`",
+                    })?;
                     let text = parts.next().ok_or(DecodeError::Malformed {
                         line: number,
-                        reason: "a choice is `<class>|<claim>|<value>`",
+                        reason: "a choice is `<class>|<claim>|<span>|<value>`",
                     })?;
                     let class = claim_status_from_label(class).ok_or(DecodeError::Malformed {
                         line: number,
@@ -3896,17 +4327,28 @@ pub fn decode(bytes: &[u8]) -> Result<ReplayRecord, DecodeError> {
                         line: number,
                         reason: "invalid claim id",
                     })?;
+                    let source = if span == "-" {
+                        None
+                    } else {
+                        Some(decode_source_span(number, span)?)
+                    };
+                    // `Provenance::new` is used rather than a struct literal so
+                    // a `verified_original` choice without a span — which F01
+                    // refuses — cannot be smuggled in through the document
+                    // form.
+                    let provenance = Provenance::new(claim, class, source).map_err(|_| {
+                        DecodeError::Malformed {
+                            line: number,
+                            reason: "the choice's provenance is not a valid provenance",
+                        }
+                    })?;
                     choices.push(AuthoredChoice {
                         slot: ChoiceSlot::from_label(slot).ok_or(DecodeError::Malformed {
                             line: number,
                             reason: "unknown choice slot",
                         })?,
                         value: text.to_owned(),
-                        provenance: Provenance {
-                            claim_id: claim,
-                            class,
-                            source: None,
-                        },
+                        provenance,
                     });
                 } else if let Some(tick) = key.strip_prefix("input.") {
                     let tick = Tick(parse_u64(number, tick)?);
@@ -3954,9 +4396,14 @@ pub fn decode(bytes: &[u8]) -> Result<ReplayRecord, DecodeError> {
         choices: AuthoredChoices::new(choices)?,
         promised,
         overrides: OverrideLog::new(
-            purpose.unwrap_or_default(),
+            // Required, not defaulted. `RunPurpose::default()` is
+            // `OrdinaryPlay`, and defaulting a missing line to it would let a
+            // truncated or hand-edited capture document read as a player's
+            // session — the one conclusion non-negotiable 4 has to be able to
+            // refuse. A document that does not say what it is says nothing.
+            purpose.ok_or(DecodeError::MissingField("purpose"))?,
             overrides,
-            profile_write.unwrap_or(false),
+            profile_write.ok_or(DecodeError::MissingField("profile_write"))?,
         )?,
         extra,
     };
