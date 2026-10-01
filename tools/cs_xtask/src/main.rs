@@ -1,6 +1,6 @@
 //! `cs_xtask` — the workspace's reproducible testing and packaging gates.
 //!
-//! Six commands, all local (the owner's F00-C note keeps task-specific
+//! Seven commands, all local (the owner's F00-C note keeps task-specific
 //! discovery out of CI):
 //!
 //! * `test-select --prefix <prefix>` runs the task's positive test selection
@@ -22,6 +22,9 @@
 //!   artifacts a removed worktree produced (task #433); and that it does not
 //!   hold artifacts a different worktree that is still there produced (task
 //!   #440).
+//! * `verify-package` reads a candidate release manifest and fails when it
+//!   carries proprietary content, an unsafe member path or is missing a
+//!   required notice ([`package`], F61-A).
 //! * `corpus manifest` prints the declared F62-A corpus contract as JSON and
 //!   `corpus audit` checks the synthetic/private separation rules against the
 //!   real tracked file list ([`corpus`]).
@@ -37,6 +40,7 @@ use cs_xtask::bootstrap;
 use cs_xtask::budget;
 use cs_xtask::ci;
 use cs_xtask::corpus;
+use cs_xtask::package;
 use cs_xtask::target_dir;
 use cs_xtask::test_select;
 
@@ -82,6 +86,11 @@ COMMANDS
         lets cargo run that worktree's binary. A green or red test run would
         not be evidence about this tree in any of them (tasks #383, #433 and
         #440).
+    verify-package --manifest <file> [--workspace-root <dir>]
+        Read a candidate release manifest (F61-A) and refuse it when it
+        carries proprietary content, a member path that could escape the
+        archive, a member nothing classifies, or a missing required notice or
+        engine binary.
     corpus manifest
         Print the declared F62-A corpus contract as JSON: the known
         container entrypoints with their truncation oracles and boundary
@@ -98,6 +107,8 @@ COMMANDS
 OPTIONS
     --prefix <prefix>       Task test prefix, e.g. accept_f00_c_
     --workspace-root <dir>  Workspace to run in (default: current directory)
+    --manifest <file>       verify-package only: candidate release manifest
+                            to scan
     --private-root <dir>    corpus audit only: private corpus root,
                             e.g. the read-only original installation
     -h, --help              Print this help text and exit 0
@@ -108,6 +119,7 @@ OPTIONS
 struct Options {
     prefix: Option<String>,
     workspace_root: PathBuf,
+    manifest: Option<PathBuf>,
 }
 
 fn main() -> ExitCode {
@@ -131,6 +143,7 @@ fn main() -> ExitCode {
         "verify-bootstrap" => run_verify_bootstrap(&args[1..]),
         "verify-ci-budget" => run_verify_ci_budget(&args[1..]),
         "verify-target-dir" => run_verify_target_dir(&args[1..]),
+        "verify-package" => run_verify_package(&args[1..]),
         "corpus" => run_corpus(&args[1..]),
         other => {
             eprintln!("cs-xtask: unknown command {other:?}");
@@ -140,10 +153,17 @@ fn main() -> ExitCode {
     }
 }
 
-/// Parses `--prefix`, `--workspace-root` and rejects anything else.
-fn parse_options(args: &[String], allow_prefix: bool) -> Result<Options, String> {
+/// Parses `--prefix`, `--workspace-root`, `--manifest` and rejects anything
+/// else. `allow_prefix` gates `--prefix` to `test-select` alone, so a typo
+/// aimed at another subcommand is an error rather than a silently ignored flag.
+fn parse_options(
+    args: &[String],
+    allow_prefix: bool,
+    allow_manifest: bool,
+) -> Result<Options, String> {
     let mut prefix = None;
     let mut workspace_root = PathBuf::from(".");
+    let mut manifest = None;
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -155,6 +175,16 @@ fn parse_options(args: &[String], allow_prefix: bool) -> Result<Options, String>
                     return Err("--prefix needs a value".to_string());
                 };
                 prefix = Some(value.clone());
+                index += 2;
+            }
+            "--manifest" if allow_manifest => {
+                if manifest.is_some() {
+                    return Err("--manifest was given twice".to_string());
+                }
+                let Some(value) = args.get(index + 1) else {
+                    return Err("--manifest needs a value".to_string());
+                };
+                manifest = Some(PathBuf::from(value));
                 index += 2;
             }
             "--workspace-root" => {
@@ -170,6 +200,7 @@ fn parse_options(args: &[String], allow_prefix: bool) -> Result<Options, String>
     Ok(Options {
         prefix,
         workspace_root,
+        manifest,
     })
 }
 
@@ -186,7 +217,7 @@ fn require_workspace(root: &Path) -> Result<(), String> {
 }
 
 fn run_test_select(args: &[String]) -> ExitCode {
-    let options = match parse_options(args, true) {
+    let options = match parse_options(args, true, false) {
         Ok(options) => options,
         Err(error) => return usage_error(&error),
     };
@@ -222,7 +253,7 @@ fn run_test_select(args: &[String]) -> ExitCode {
 }
 
 fn run_verify_ci(args: &[String]) -> ExitCode {
-    let options = match parse_options(args, false) {
+    let options = match parse_options(args, false, false) {
         Ok(options) => options,
         Err(error) => return usage_error(&error),
     };
@@ -246,7 +277,7 @@ fn run_verify_ci(args: &[String]) -> ExitCode {
 /// Runs the platform bootstrap gate: required workspace members with real
 /// manifests, frozen pins, intact CI gates — all four checks must pass.
 fn run_verify_bootstrap(args: &[String]) -> ExitCode {
-    let options = match parse_options(args, false) {
+    let options = match parse_options(args, false, false) {
         Ok(options) => options,
         Err(error) => return usage_error(&error),
     };
@@ -283,7 +314,7 @@ fn run_verify_bootstrap(args: &[String]) -> ExitCode {
 /// Runs the CI build-footprint gate (task #430): the profiles CI links under
 /// must not emit full DWARF.
 fn run_verify_ci_budget(args: &[String]) -> ExitCode {
-    let options = match parse_options(args, false) {
+    let options = match parse_options(args, false, false) {
         Ok(options) => options,
         Err(error) => return usage_error(&error),
     };
@@ -306,7 +337,7 @@ does not emit full DWARF for CI's dev, test and bench profiles",
 
 /// Runs the per-worktree target-directory gate (task #383).
 fn run_verify_target_dir(args: &[String]) -> ExitCode {
-    let options = match parse_options(args, false) {
+    let options = match parse_options(args, false, false) {
         Ok(options) => options,
         Err(error) => return usage_error(&error),
     };
@@ -435,6 +466,41 @@ fn count_private_selectors() -> usize {
 fn usage_error(message: &str) -> ExitCode {
     eprintln!("cs-xtask: {message}");
     ExitCode::from(EXIT_USAGE)
+}
+
+/// Runs the release-contents gate (F61-A): read a candidate manifest and fail
+/// when it may not be released.
+fn run_verify_package(args: &[String]) -> ExitCode {
+    let options = match parse_options(args, false, true) {
+        Ok(options) => options,
+        Err(error) => return usage_error(&error),
+    };
+    let Some(manifest) = options.manifest else {
+        return usage_error("verify-package requires --manifest <file>");
+    };
+
+    let candidate = match package::read_manifest(&manifest) {
+        Ok(candidate) => candidate,
+        Err(error) => return gate_failed(&error.to_string()),
+    };
+    let report = package::scan(&candidate);
+    if report.is_releasable() {
+        println!(
+            "verify-package: {} is releasable — {} member(s), {} byte(s), no proprietary \
+             content and every required notice present",
+            report.version, report.member_count, report.total_bytes
+        );
+        ExitCode::from(EXIT_OK)
+    } else {
+        for line in report.lines() {
+            eprintln!("cs-xtask: {line}");
+        }
+        gate_failed(&format!(
+            "{} is not releasable: {} finding(s)",
+            manifest.display(),
+            report.findings.len()
+        ))
+    }
 }
 
 fn gate_failed(message: &str) -> ExitCode {
