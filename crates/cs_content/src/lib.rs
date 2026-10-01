@@ -334,6 +334,18 @@
 //! `cs_sim::ai::combat`; the conversion boundary is `cs_app::ai::combat`
 //! (F32-B roles and priority, F32-C aces, difficulty and formations).
 //!
+//! [`pilots`] is the F33-A declared pilot/aircraft/faction roster
+//! (`specs/F33-wingmates-factions-neutral-traffic-and-pilot-identity.md`,
+//! stage `### F33-A`): the provenance-carrying [`pilots::DeclaredRoster`] of
+//! a subject's [`pilots::DeclaredPilot`]s (identity and voice), its
+//! [`pilots::DeclaredWingmate`] slots (pilot, airframe, loadout and
+//! [`pilots::DeclaredSurvivability`]) and its [`pilots::DeclaredNeutralTraffic`].
+//! Pilot, aircraft and faction are separate catalog namespaces, so a faction
+//! change can never rename a vehicle (AC01); neutral traffic is authored per
+//! mission, so an omitted list is empty, never a population default (AC04).
+//! Its runtime counterpart is `cs_sim::allies`; the conversion boundary is
+//! `cs_app::roster`.
+//!
 //! [`cs_types`]: cs_types
 //! [`cs_formats`]: cs_formats
 //! [`cs_assets`]: cs_assets
@@ -358,6 +370,7 @@ pub mod loading;
 pub mod localization;
 pub mod mesh;
 pub mod ordnance;
+pub mod pilots;
 pub mod replay;
 pub mod routes;
 pub mod save;
