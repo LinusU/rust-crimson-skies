@@ -43,9 +43,10 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 
 use cs_content::campaign_bindings::{
-    BindingCategory, CampaignBindings, CellState, CriticalDependency, DependencyState,
-    GroupedTitleBlock, JoinAgreement, JoinCorroboration, MissionLabel, SourceBinding,
-    SourceContext, TitleBlock, title_blocks,
+    BindingCategory, CONTRADICTED_JOIN_REFUSAL, CampaignBindings, CellState, CriticalDependency,
+    DependencyState, GroupedTitleBlock, JoinAgreement, JoinCorroboration, MissionLabel,
+    NO_CONFIRMED_ROW_REFUSAL, SHORT_ROW_BLOCK_REFUSAL, SourceBinding, SourceContext, TitleBlock,
+    campaign_position_for, classify_join, title_blocks,
 };
 use cs_types::content::{ContentId, ContentKind, Provenance};
 use cs_types::evidence::{ClaimId, ClaimStatus};
@@ -787,21 +788,19 @@ fn accept_m02_a_a_title_block_must_be_exactly_the_campaign_length() {
 
 #[test]
 fn accept_m02_a_a_contradicted_corroboration_establishes_no_position() {
-    // The guard is only real if a disagreement actually stops the join. The
-    // predicates are proved here on authored values; the agreement they read
-    // on the retail installation is measured by
+    // The guard is only real if a disagreement actually stops the join, and
+    // the retail installation never disagrees — so the contradiction arm is
+    // proved here on authored values, arm by arm. What those values measure
+    // on the retail installation is
     // `accept_m02_a_the_join_is_corroborated_by_the_long_name_rows`.
     let layout = vec![5usize, 5, 5, 5, 4];
     let block = TitleBlock::new(1, 24).expect("a forward run is a block");
-    let agreement = |groups: Vec<usize>, state: JoinCorroboration| JoinAgreement {
-        layout_chapters: layout.clone(),
-        blocks: vec![block],
-        grouped: if groups.is_empty() {
+    let grouped = |groups: Vec<usize>| {
+        if groups.is_empty() {
             Vec::new()
         } else {
             vec![GroupedTitleBlock { block, groups }]
-        },
-        state,
+        }
     };
 
     assert_eq!(
@@ -811,30 +810,129 @@ fn accept_m02_a_a_contradicted_corroboration_establishes_no_position() {
     );
 
     // Agreed: the long names fall into the layout's chapter sizes.
-    let agreed = agreement(layout.clone(), JoinCorroboration::Agreed);
-    assert_eq!(agreed.state, JoinCorroboration::Agreed);
-    assert!(agreed.establishes());
-    assert_eq!(agreed.grouped.len(), 1);
+    let agreed = grouped(layout.clone());
+    assert_eq!(classify_join(&layout, &agreed), JoinCorroboration::Agreed);
 
-    // Disagreed: the same rows grouped differently. No position may follow.
-    let disagreed = agreement(vec![24], JoinCorroboration::Disagreed);
-    assert_eq!(disagreed.state, JoinCorroboration::Disagreed);
-    assert!(
-        !disagreed.establishes(),
-        "a contradicted corroboration must establish no position"
-    );
+    // Disagreed: the same rows grouped differently.
+    let disagreed = grouped(vec![24]);
     assert_eq!(
-        disagreed.layout_chapters, layout,
-        "the layout's own shape is unchanged by a disagreement"
+        classify_join(&layout, &disagreed),
+        JoinCorroboration::Disagreed
+    );
+    // One agreeing block cannot outvote one that contradicts.
+    let mixed = [GroupedTitleBlock {
+        block,
+        groups: layout.clone(),
+    }]
+    .into_iter()
+    .chain(disagreed.clone())
+    .collect::<Vec<_>>();
+    assert_eq!(
+        classify_join(&layout, &mixed),
+        JoinCorroboration::Disagreed,
+        "a single contradicting block must decide the join"
+    );
+    // A different shape with the same total is still a contradiction.
+    let regrouped = grouped(vec![6, 6, 6, 6]);
+    assert_eq!(
+        classify_join(&layout, &regrouped),
+        JoinCorroboration::Disagreed
     );
 
     // Unavailable: nothing to check against is not a disagreement.
-    let unavailable = agreement(Vec::new(), JoinCorroboration::Unavailable);
-    assert_eq!(unavailable.state, JoinCorroboration::Unavailable);
+    let unavailable = classify_join(&layout, &grouped(Vec::new()));
+    assert_eq!(unavailable, JoinCorroboration::Unavailable);
+
+    // The guard a binding reads: only a contradiction stops it.
+    for (state, expected) in [
+        (JoinCorroboration::Unavailable, true),
+        (JoinCorroboration::Agreed, true),
+        (JoinCorroboration::Disagreed, false),
+    ] {
+        let report = JoinAgreement {
+            layout_chapters: layout.clone(),
+            blocks: vec![block],
+            grouped: match state {
+                JoinCorroboration::Unavailable => Vec::new(),
+                JoinCorroboration::Agreed => grouped(layout.clone()),
+                JoinCorroboration::Disagreed => grouped(vec![24]),
+            },
+            state,
+        };
+        assert_eq!(
+            report.establishes(),
+            expected,
+            "state {state:?} must {} a campaign position",
+            if expected { "establish" } else { "refuse" }
+        );
+    }
+
+    // Every arm of the decision a binding actually reads. The contradiction
+    // arm is the one no retail installation produces, so it is proved here
+    // rather than left untested: a confirmed row inside a campaign-length
+    // block must select a position when the table agrees and none when it
+    // contradicts the layout, and each refusal names its own cause.
+    let agreed = JoinAgreement {
+        layout_chapters: layout.clone(),
+        blocks: vec![TitleBlock::new(100, 123).expect("block")],
+        grouped: grouped(layout.clone()),
+        state: JoinCorroboration::Agreed,
+    };
+    assert_eq!(
+        campaign_position_for(Some(113), &agreed),
+        Ok(13),
+        "a confirmed row must select the position its index names"
+    );
+    assert_eq!(
+        campaign_position_for(Some(113), &agreed),
+        Ok(13),
+        "the same row must select the same position twice"
+    );
+    assert_eq!(
+        campaign_position_for(None, &agreed),
+        Err(NO_CONFIRMED_ROW_REFUSAL),
+        "no confirmed row can select a position"
+    );
+    assert_eq!(
+        campaign_position_for(Some(124), &agreed),
+        Err(SHORT_ROW_BLOCK_REFUSAL),
+        "a row outside every campaign-length block selects no position"
+    );
+    assert_eq!(
+        campaign_position_for(Some(99), &agreed),
+        Err(SHORT_ROW_BLOCK_REFUSAL),
+        "a row before every campaign-length block selects no position"
+    );
+
+    let contradicted = JoinAgreement {
+        state: JoinCorroboration::Disagreed,
+        ..agreed.clone()
+    };
+    assert_eq!(
+        campaign_position_for(Some(113), &contradicted),
+        Err(CONTRADICTED_JOIN_REFUSAL),
+        "a contradicted table must select no position even for a confirmed row"
+    );
+    assert_eq!(
+        campaign_position_for(None, &contradicted),
+        Err(NO_CONFIRMED_ROW_REFUSAL),
+        "an unconfirmed row is refused before the table is consulted"
+    );
     assert!(
-        unavailable.establishes(),
-        "an installation with no second structure must keep the inference unchallenged, not refuse \
-         every binding"
+        CONTRADICTED_JOIN_REFUSAL.contains("contradicts"),
+        "the refusal must name the contradiction: {CONTRADICTED_JOIN_REFUSAL:?}"
+    );
+
+    // An installation with nothing to check against keeps the inference.
+    let unchallenged = JoinAgreement {
+        grouped: Vec::new(),
+        state: JoinCorroboration::Unavailable,
+        ..agreed
+    };
+    assert_eq!(
+        campaign_position_for(Some(113), &unchallenged),
+        Ok(13),
+        "an unchallenged table must not refuse a confirmed row"
     );
 
     // And a record whose critical dependencies are all resolved is still not

@@ -1,44 +1,46 @@
-//! Evidence-report harness for task M01-A (`docs/contracts/CLI-EVIDENCE.md`,
-//! schema `schemas/evidence.schema.json`).
+//! Evidence-report harnesses for the per-mission binding stages M01-A and
+//! M02-A (`docs/contracts/CLI-EVIDENCE.md`, schema
+//! `schemas/evidence.schema.json`).
 //!
-//! This test is deliberately **not** named `accept_m01_a_*`: it is not part
-//! of the acceptance suite, it fails loudly when its inputs are missing
-//! instead of passing vacuously, and the task's test selection must never
-//! pick it up as an acceptance test. Run from the workspace root, after the
-//! acceptance suite, exactly as:
+//! These tests are deliberately **not** named `accept_m01_a_*` /
+//! `accept_m02_a_*`: they are not part of the acceptance suites, they fail
+//! loudly when their inputs are missing instead of passing vacuously, and a
+//! task's test selection must never pick them up as acceptance tests. Run
+//! from the workspace root, after the acceptance suite, exactly as (with
+//! `M01-A` / `accept_m01_a_` substituted for `M02-A` / `accept_m02_a_`):
 //!
 //! 1. ```sh
-//!    cargo test --workspace --locked -- accept_m01_a_ --include-ignored \
-//!      2>&1 | tee private/evidence/M01-A/cargo-test.log
+//!    cargo test --workspace --locked -- accept_m02_a_ --include-ignored \
+//!      2>&1 | tee private/evidence/M02-A/cargo-test.log
 //!    ```
 //!    (record the pipeline's exit status — it is passed to this harness as
 //!    `CS_EVIDENCE_EXIT_CODE`.)
 //! 2. ```sh
-//!    CS_EVIDENCE_DIR=private/evidence/M01-A \
+//!    CS_EVIDENCE_DIR=private/evidence/M02-A \
 //!    CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') \
-//!    CS_EVIDENCE_ARGV="cargo test --workspace --locked -- accept_m01_a_ --include-ignored" \
+//!    CS_EVIDENCE_ARGV="cargo test --workspace --locked -- accept_m02_a_ --include-ignored" \
 //!    CS_EVIDENCE_EXIT_CODE=<status from step 1> \
-//!      cargo test --locked --test campaign evidence_report_m01_a -- --ignored
+//!      cargo test --locked --test campaign evidence_report_m02_a -- --ignored
 //!    ```
 //! 3. ```sh
-//!    python3 tools/validate_evidence.py private/evidence/M01-A/acceptance.json \
-//!      --artifact-root private/evidence/M01-A --require-pass
+//!    python3 tools/validate_evidence.py private/evidence/M02-A/acceptance.json \
+//!      --artifact-root private/evidence/M02-A --require-pass
 //!    ```
 //! 4. Commit a copy of `acceptance.json` as
-//!    `docs/findings/evidence/M01-A.json`.
+//!    `docs/findings/evidence/M02-A.json`.
 //!
 //! Every field is derived from real inputs: the recorded test log, the
 //! environment, production discovery of `$CS_GAME_DIR` and the binding
 //! production code derives from it, `rustc --version` and `Cargo.lock`.
 //! Nothing is typed in by hand.
 //!
-//! The report's `unknowns` are *this task's* blockers and are empty because
-//! the acceptance run passed. The binding's own unbound checklist entries
-//! are **not** dropped anywhere: they are carried in
-//! `missions/bindings/M01.json` and in `docs/findings/`, which is where the
-//! product-incompleteness state lives (`AUDIT-PLAN-SYNC`: keep the states
-//! separate). The claim is `implemented`, never `checked` or
-//! `verified_original`.
+//! The reports' `unknowns` are *those tasks'* blockers and are empty because
+//! the acceptance run passed. The bindings' own unbound checklist entries are
+//! **not** dropped anywhere: they are carried in
+//! `missions/bindings/M01.json` / `missions/bindings/M02.json` and in
+//! `docs/findings/`, which is where the product-incompleteness state lives
+//! (`AUDIT-PLAN-SYNC`: keep the states separate). The claim is `implemented`,
+//! never `checked` or `verified_original`.
 
 use std::collections::VecDeque;
 use std::fs;
@@ -58,6 +60,23 @@ const RETAIL_TESTS: &[&str] = &[
     "accept_m01_a_the_campaign_keeps_everything_else_unresolved_and_unready",
     "accept_m01_a_the_retail_title_block_binds_every_campaign_position",
     "accept_m01_a_a_title_outside_the_retail_title_block_resolves_no_position",
+];
+
+/// The retail acceptance tests M02-A's capabilities are judged on, and the
+/// synthetic ones that must run alongside them.
+const RETAIL_TESTS_M02_A: &[&str] = &[
+    "accept_m02_a_source_derived_binding_has_no_unresolved_critical_dependencies",
+    "accept_m02_a_the_committed_record_is_what_the_installation_derives",
+    "accept_m02_a_the_original_name_is_confirmed_against_the_local_strings",
+    "accept_m02_a_the_join_is_corroborated_by_the_long_name_rows",
+    "accept_m02_a_the_world_group_holds_several_missions",
+    "accept_m02_a_the_campaign_keeps_everything_else_unresolved_and_unready",
+];
+
+/// The synthetic predicate tests M02-A's report must also record.
+const SYNTHETIC_TESTS_M02_A: &[&str] = &[
+    "accept_m02_a_a_title_block_must_be_exactly_the_campaign_length",
+    "accept_m02_a_a_contradicted_corroboration_establishes_no_position",
 ];
 
 #[test]
@@ -236,6 +255,204 @@ fn evidence_report_m01_a_writes_the_acceptance_report() {
     println!("wrote {}", out.display());
 }
 
+/// Evidence-report harness for task M02-A, the second mission's source
+/// binding. It follows the sequence in this module's doc with `M02-A` and
+/// `accept_m02_a_` in place of `M01-A` and `accept_m01_a_`, and differs in
+/// three ways from the M01-A report above:
+///
+/// * the acceptance-log parser selects `accept_m02_a_` tests, so the recorded
+///   assertions are this task's own;
+/// * the artifact beside the report is the **M02** binding, derived from the
+///   committed inventory's declared title, so the report cites the mission it
+///   is evidence for;
+/// * the report records the join corroboration the stage adds, because that is
+///   what M02-A's production change is: the localized table's account of the
+///   campaign is compared with the campaign directory layout's, and a
+///   disagreement would yield no campaign position at all.
+///
+/// Everything else — the toolchain versions, the installation hashes, the
+/// candidate tree, the counts, the digests and the timestamps — is derived
+/// from the same real inputs as the M01-A report.
+#[test]
+#[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_GAME_DIR"]
+fn evidence_report_m02_a_writes_the_acceptance_report() {
+    let evidence_dir = workspace_path(&env_var("CS_EVIDENCE_DIR"));
+    let candidate_tree = env_var("CS_CANDIDATE_TREE");
+    let argv: Vec<String> = env_var("CS_EVIDENCE_ARGV")
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+    assert!(
+        !argv.is_empty(),
+        "CS_EVIDENCE_ARGV must hold the acceptance command (space-separated)"
+    );
+    let exit_code: i32 = env_var("CS_EVIDENCE_EXIT_CODE")
+        .parse()
+        .expect("CS_EVIDENCE_EXIT_CODE must be the exit status of the acceptance run");
+    let game_dir = PathBuf::from(env_var("CS_GAME_DIR"));
+
+    let head_tree = git(&["rev-parse", "HEAD^{tree}"]);
+    assert_eq!(
+        candidate_tree, head_tree,
+        "CS_CANDIDATE_TREE must be `git rev-parse 'HEAD^{{tree}}'` of the tested commit; \
+         old reports cannot be reused for new code"
+    );
+
+    let log_path = evidence_dir.join("cargo-test.log");
+    let log = fs::read_to_string(&log_path).unwrap_or_else(|error| {
+        panic!(
+            "cannot read the acceptance log {}: {error} (step 1 must tee its output there)",
+            log_path.display()
+        )
+    });
+    let suite = parse_m02_a_suite(&log);
+    assert!(
+        suite.passed > 0 && !suite.assertions.is_empty(),
+        "no `accept_m02_a_` tests were recorded in {}",
+        log_path.display()
+    );
+
+    for retail_test in RETAIL_TESTS_M02_A {
+        let status = suite
+            .assertions
+            .iter()
+            .find(|(name, _)| name == retail_test)
+            .map(|(_, status)| *status)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{retail_test} did not run: M02-A requires capability `retail`, run step 1 \
+                     with `--include-ignored` and CS_GAME_DIR set"
+                )
+            });
+        assert_eq!(
+            status, "pass",
+            "{retail_test} must pass; got status {status}"
+        );
+    }
+    for synthetic_test in SYNTHETIC_TESTS_M02_A {
+        let status = suite
+            .assertions
+            .iter()
+            .find(|(name, _)| name == synthetic_test)
+            .map(|(_, status)| *status)
+            .unwrap_or_else(|| {
+                panic!("{synthetic_test} did not run: it pins predicates the retail tests assume")
+            });
+        assert_eq!(
+            status, "pass",
+            "{synthetic_test} must pass; got status {status}"
+        );
+    }
+
+    let found = discover(&game_dir)
+        .expect("production discovery must read the original installation for the evidence record");
+    let install_sha256 = fingerprint(&found.manifest).to_hex();
+    let content_sha256 = content_fingerprint(&found.manifest).to_hex();
+
+    let source_binding = source_binding_for(&game_dir, "M02");
+    assert!(
+        source_binding.unresolved_critical().is_empty(),
+        "the acceptance run passed while a critical dependency is unresolved; the report must \
+         not be written"
+    );
+    let binding_path = evidence_dir.join("m02-binding.json");
+    fs::write(&binding_path, source_binding.to_json())
+        .unwrap_or_else(|error| panic!("write {}: {error}", binding_path.display()));
+    let mut artifacts = vec![artifact(&log_path, "log", &evidence_dir)];
+    artifacts.push(artifact(&binding_path, "json", &evidence_dir));
+
+    let engine = Engine {
+        rust: rustc_version(),
+        bevy: locked_version("bevy"),
+        avian: locked_version("avian3d"),
+    };
+
+    let report = format!(
+        "{{\n\
+         \x20\"schema_version\": 1,\n\
+         \x20\"task_id\": \"M02-A\",\n\
+         \x20\"candidate_tree\": {},\n\
+         \x20\"engine\": {},\n\
+         \x20\"created_at\": {},\n\
+         \x20\"command\": {{\"argv\": {}, \"cwd\": {}, \"exit_code\": {}}},\n\
+         \x20\"source\": {{\"install_sha256\": {}, \"content_sha256\": {}}},\n\
+         \x20\"seed\": 0,\n\
+         \x20\"ticks\": {{\"start\": 0, \"end\": 0}},\n\
+         \x20\"overrides\": [],\n\
+         \x20\"capabilities\": [\"retail\", \"synthetic\"],\n\
+         \x20\"tests\": {{\"discovered\": {}, \"executed\": {}, \"passed\": {}, \"failed\": {}, \"ignored\": {}}},\n\
+         \x20\"assertions\": [{}],\n\
+         \x20\"artifacts\": [{}],\n\
+         \x20\"unknowns\": [],\n\
+         \x20\"review\": {{\"identity\": {}, \"method\": {}}},\n\
+         \x20\"claim\": \"implemented\"\n\
+         }}\n",
+        jstr(&candidate_tree),
+        engine_json(&engine),
+        jstr(&iso_utc_now()),
+        str_array(&argv),
+        jstr(&git(&["rev-parse", "--show-toplevel"])),
+        exit_code,
+        jstr(&install_sha256),
+        jstr(&content_sha256),
+        suite.discovered,
+        suite.executed,
+        suite.passed,
+        suite.failed,
+        suite.ignored,
+        assertion_array(&suite.assertions),
+        artifact_array(&artifacts),
+        jstr(
+            "implementer: bunny-alpha-2 (Rally #261, session of 2026-10-01T04:31Z); reviewer: \
+             not yet assigned at hand-over. Same-agent review would not be independent \
+             original-reference evidence, and no agent review replaces the owner's human approval"
+        ),
+        jstr(
+            "acceptance suite re-run locally with the retail capability; this harness derives every \
+             field from the recorded log, production discovery of $CS_GAME_DIR and the binding \
+             `SourceContext::read` + `SourceContext::bind` derive from it (all five critical \
+             dependencies resolved; checklist entries still unknown are recorded in \
+             missions/bindings/M02.json, not dropped). This stage adds the join corroboration \
+             `SourceContext::join_agreement` + `campaign_position_for`, whose contradiction arm no \
+             retail installation produces and which is therefore proved on authored values in the \
+             synthetic test; claim is implemented only; validated with \
+             tools/validate_evidence.py --require-pass. `candidate_tree` is the tree of the commit \
+             the suite ran on: the only later delta is this report's own copy under \
+             docs/findings/evidence/, whose bytes are this file"
+        ),
+    );
+
+    let out = evidence_dir.join("acceptance.json");
+    fs::write(&out, &report).unwrap_or_else(|error| panic!("write {}: {error}", out.display()));
+
+    let written = fs::read_to_string(&out).expect("the report reads back");
+    for needle in [
+        "\"schema_version\": 1",
+        "\"task_id\": \"M02-A\"",
+        "\"claim\": \"implemented\"",
+        "\"install_sha256\"",
+        "\"assertions\": [",
+        "\"artifacts\": [",
+    ] {
+        assert!(
+            written.contains(needle),
+            "the written report is missing {needle:?}:\n{written}"
+        );
+    }
+    assert!(
+        suite.failed == 0 && exit_code == 0,
+        "the acceptance run failed (exit {exit_code}, {} failed): the report was written \
+         honestly and must NOT validate; fix the tests first",
+        suite.failed
+    );
+    println!("wrote {}", out.display());
+}
+
+/// [`parse_suite`] with this task's test prefix.
+fn parse_m02_a_suite(log: &str) -> Suite {
+    parse_suite_prefixed(log, "accept_m02_a_")
+}
+
 // ---------------------------------------------------------------- inputs ---
 
 fn env_var(name: &str) -> String {
@@ -308,22 +525,29 @@ fn locked_version(package: &str) -> String {
 /// The M01 binding derived from the installation, built once.
 fn source_binding(game_dir: &Path) -> &'static SourceBinding {
     static BINDING: OnceLock<SourceBinding> = OnceLock::new();
-    BINDING.get_or_init(|| {
-        let context = SourceContext::read(game_dir)
-            .expect("production source context reads the original installation");
-        let title = declared_title();
-        context
-            .bind(
-                cs_content::campaign_bindings::MissionLabel::new("M01")
-                    .expect("M01 is a valid label"),
-                &title,
-            )
-            .expect("M01 binds to the original data")
-    })
+    BINDING.get_or_init(|| source_binding_for(game_dir, "M01"))
 }
 
-/// The declared discovery title of M01, read from the committed inventory.
-fn declared_title() -> String {
+/// One work order's binding derived from the installation, through the same
+/// production path `SourceContext::read` + `SourceContext::bind` the
+/// acceptance suite uses. The declared discovery title comes from the
+/// committed inventory, never from this file.
+fn source_binding_for(game_dir: &Path, work_order: &str) -> SourceBinding {
+    let context = SourceContext::read(game_dir)
+        .expect("production source context reads the original installation");
+    let title = declared_title(work_order);
+    context
+        .bind(
+            cs_content::campaign_bindings::MissionLabel::new(work_order)
+                .unwrap_or_else(|error| panic!("{work_order} is not a valid label: {error}")),
+            &title,
+        )
+        .unwrap_or_else(|error| panic!("{work_order} binds to the original data: {error}"))
+}
+
+/// The declared discovery title of one work order, read from the committed
+/// inventory.
+fn declared_title(work_order: &str) -> String {
     let inventory = fs::read_to_string(
         Path::new(&git(&["rev-parse", "--show-toplevel"]))
             .join("missions/bindings/campaign-inventory.tsv"),
@@ -333,9 +557,9 @@ fn declared_title() -> String {
         .lines()
         .filter(|line| !line.trim_start().starts_with('#'))
         .filter_map(|line| line.split_once('\t'))
-        .find(|(label, _)| *label == "M01")
+        .find(|(label, _)| *label == work_order)
         .map(|(_, title)| title.trim().to_owned())
-        .expect("the declared inventory has an M01 work order")
+        .unwrap_or_else(|| panic!("the declared inventory has no {work_order} work order"))
 }
 
 // ---------------------------------------------------------- log parsing ---
@@ -355,6 +579,12 @@ struct Suite {
 /// Extracts the libtest summaries and the per-test results of the
 /// `accept_m01_a_` tests from a recorded `cargo test` output.
 fn parse_suite(log: &str) -> Suite {
+    parse_suite_prefixed(log, "accept_m01_a_")
+}
+
+/// [`parse_suite`] with a task's own test prefix, so one parser serves every
+/// mission binding stage and no report can record another task's assertions.
+fn parse_suite_prefixed(log: &str, prefix: &str) -> Suite {
     let mut suite = Suite::default();
     let mut pending: VecDeque<String> = VecDeque::new();
     for line in log.lines() {
@@ -394,7 +624,7 @@ fn parse_suite(log: &str) -> Suite {
                 break;
             };
             let full = &after[..separator];
-            if !full.contains("accept_m01_a_") {
+            if !full.contains(prefix) {
                 cursor = &after[separator + 5..];
                 continue;
             }

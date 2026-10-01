@@ -28,6 +28,15 @@ directory is original game data — no assets, scripts or extracted bytes.
   bind (actors, objectives, media, rewards, difficulty branches, precedence,
   progression, `closure_sha256`) are recorded there and keep the mission out
   of any readiness claim.
+- `M02.json` — the M02 binding output (stage M02-A), generated and pinned the
+  same way by `accept_m02_a_the_committed_record_is_what_the_installation_derives`.
+  It is source-derived under the same five critical dependencies and equally
+  unverified. M02-A adds the check that makes the work-order ↔ retail-mission
+  join more than one structure's word: `SourceContext::join_agreement`
+  compares the localized table's campaign-length row blocks against the
+  campaign directory layout, and `campaign_position_for` derives no position
+  at all when they contradict each other. `docs/findings/2026-10-01-m02-a-source-binding.md`
+  records what that does and does not establish.
 
 The typed records those missions fill in — the seven required content
 categories, one unresolved dependency row per required subsystem, coverage
@@ -36,7 +45,7 @@ totals and closure reports — live in
 
 ## What is not here yet
 
-- `M02.json` … `M24.json` — the per-mission binding outputs of M02-A …
+- `M03.json` … `M24.json` — the per-mission binding outputs of M03-A …
   M24-A, created from original data the same way. Every one of them starts
   unresolved.
 

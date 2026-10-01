@@ -81,13 +81,19 @@
 //! therefore checks the join against the second structure the installation
 //! offers: the region-prefixed long mission names, whose row *grouping* must
 //! fall into the layout's per-chapter sizes ([`SourceContext::chapter_sizes`],
-//! [`SourceContext::join_agreement`]). Only the grouping is used, never the
-//! name a group carries, because nothing establishes what a region name
-//! means. An installation that offers no such block is reported
+//! [`SourceContext::join_agreement`], [`classify_join`]). Only the grouping is
+//! used, never the name a group carries, because nothing establishes what a
+//! region name means. An installation that offers no such block is reported
 //! [`JoinCorroboration::Unavailable`] and keeps the inference unchallenged;
 //! one whose grouping contradicts the layout is [`JoinCorroboration::Disagreed`]
 //! and yields no campaign position at all, so a binding can never read as
 //! resolved while the two structures disagree about the campaign.
+//!
+//! The decision itself is [`campaign_position_for`], a pure function over a
+//! confirmed row and that agreement, so every arm — including the
+//! contradiction no retail installation produces — is reachable without an
+//! installation and each refusal names its own cause instead of leaving an
+//! identity blank.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -2306,11 +2312,10 @@ impl SourceContext {
         // blocks, a block must be exactly as long as the campaign the
         // directory layout declares, and the localized table must not
         // contradict that layout. Anything else is not a position.
-        let refusal = self.join_refusal();
-        let position = refusal
-            .is_none()
-            .then(|| title_row.and_then(|row| self.campaign_position(row.id)))
-            .flatten();
+        let agreement = self.join_agreement();
+        let resolved = campaign_position_for(title_row.map(|row| row.id), &agreement);
+        let position = resolved.as_ref().ok().copied();
+        let refusal = resolved.as_ref().err().copied();
         let entry = position.and_then(|index| self.campaign.get(index));
 
         // --- program source map: the mission's reader archive.
@@ -2558,13 +2563,7 @@ impl SourceContext {
                 grouped.push(GroupedTitleBlock { block, groups });
             }
         }
-        let state = if grouped.is_empty() {
-            JoinCorroboration::Unavailable
-        } else if grouped.iter().all(|entry| entry.groups == layout_chapters) {
-            JoinCorroboration::Agreed
-        } else {
-            JoinCorroboration::Disagreed
-        };
+        let state = classify_join(&layout_chapters, &grouped);
         JoinAgreement {
             layout_chapters,
             blocks,
@@ -2596,30 +2595,50 @@ impl SourceContext {
         }
         Some(groups)
     }
+}
 
-    /// Why no campaign position is derived from a title, when the localized
-    /// table contradicts the layout the join would have to follow.
-    fn join_refusal(&self) -> Option<&'static str> {
-        match self.join_agreement().state {
-            JoinCorroboration::Disagreed => Some(
-                "the localized mission-name rows group into chapter sizes the campaign directory \
-                 layout does not declare, so the campaign order they imply contradicts the layout \
-                 and no position was derived from the title",
-            ),
-            JoinCorroboration::Unavailable | JoinCorroboration::Agreed => None,
-        }
-    }
+/// Why a confirmed localized row selects no campaign position: the row it was
+/// confirmed in is carried by no single localized row.
+pub const NO_CONFIRMED_ROW_REFUSAL: &str =
+    "the discovery title is carried by no single localized row";
 
-    /// The index of the contiguous localized-title block `id` sits in, when
-    /// that block is exactly as long as the declared campaign and the
-    /// localized table does not contradict that layout.
-    fn campaign_position(&self, id: u32) -> Option<usize> {
-        self.join_agreement()
-            .blocks
-            .into_iter()
-            .find(|block| block.contains(id))
-            .map(|block| (id - block.first_id()) as usize)
+/// Why a confirmed localized row selects no campaign position when the
+/// localized table contradicts the campaign layout the join would follow.
+pub const CONTRADICTED_JOIN_REFUSAL: &str = "the localized mission-name rows group into chapter \
+     sizes the campaign directory layout does not declare, so the campaign order they imply \
+     contradicts the layout and no position was derived from the title";
+
+/// Why a confirmed localized row selects no campaign position when its row
+/// block is not as long as the campaign.
+pub const SHORT_ROW_BLOCK_REFUSAL: &str = "the localized row does not sit in a row block as long as the campaign the directory layout \
+     declares, so no campaign position was derived from the title";
+
+/// Turns a confirmed localized title row into a campaign position.
+///
+/// `title_row` is the id of the row that confirmed the discovery title, or
+/// [`None`] when no single row does. `agreement` is the localized table's
+/// account of the campaign. `Ok(index)` means the row sits in a row block
+/// exactly as long as the campaign *and* the localized table does not
+/// contradict the layout; the `Err` reason names which of the two failed, so
+/// a binding records what is missing instead of an empty identity.
+///
+/// The whole rule is a pure function so it can be exercised on every arm —
+/// including the contradiction no retail installation produces — without an
+/// installation.
+pub fn campaign_position_for(
+    title_row: Option<u32>,
+    agreement: &JoinAgreement,
+) -> Result<usize, &'static str> {
+    let row = title_row.ok_or(NO_CONFIRMED_ROW_REFUSAL)?;
+    if agreement.state == JoinCorroboration::Disagreed {
+        return Err(CONTRADICTED_JOIN_REFUSAL);
     }
+    agreement
+        .blocks
+        .iter()
+        .find(|block| block.contains(row))
+        .map(|block| (row - block.first_id()) as usize)
+        .ok_or(SHORT_ROW_BLOCK_REFUSAL)
 }
 
 /// One maximal run of consecutive localized string rows.
@@ -2751,6 +2770,27 @@ impl JoinAgreement {
     /// Whether a campaign position may be derived from a title.
     pub fn establishes(&self) -> bool {
         self.state != JoinCorroboration::Disagreed
+    }
+}
+
+/// Decides how far the localized table corroborates the campaign order.
+///
+/// Pure, so the rule that guards the join is checkable without an
+/// installation: no grouped block is
+/// [`JoinCorroboration::Unavailable`] (nothing to compare against, which is
+/// not a contradiction), every grouped block matching `layout_chapters` is
+/// [`JoinCorroboration::Agreed`], and any block that groups differently is
+/// [`JoinCorroboration::Disagreed`].
+pub fn classify_join(
+    layout_chapters: &[usize],
+    grouped: &[GroupedTitleBlock],
+) -> JoinCorroboration {
+    if grouped.is_empty() {
+        JoinCorroboration::Unavailable
+    } else if grouped.iter().all(|entry| entry.groups == layout_chapters) {
+        JoinCorroboration::Agreed
+    } else {
+        JoinCorroboration::Disagreed
     }
 }
 
