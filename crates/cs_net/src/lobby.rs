@@ -40,7 +40,7 @@
 //! [`JoinError::ContentMismatch`], F55 AC03).
 //!
 //! Everything here is newly authored design. The original multiplayer option
-//! table is not known; see `docs/findings/2026-10-01-f55-a-lobby-state-and-
+//! table is not known; see `docs/findings/2026-10-02-f55-a-lobby-state-and-
 //! revision-protocol.md`. [`RulesDigest`] is an FNV-1a staleness check, not a
 //! security primitive, and the password comparison is a placeholder for the
 //! F58-A session identity rules.
