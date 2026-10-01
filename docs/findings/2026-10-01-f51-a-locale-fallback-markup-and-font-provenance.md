@@ -36,6 +36,14 @@ required, and no capability beyond build/test is claimed.
     `de-de`, `fr-fr` at three different lengths, one string only `en-us` has,
     one confirm string), `synthetic_markup_grammar`, `synthetic_font_face`,
     `SYNTHETIC_LONG_TRANSLATION_KEY`.
+  - `MarkupToken::is_opening` / `is_closing` / `control_name` (a renderer needs
+    the opening/closing distinction to push and pop a style),
+    `MarkupDocument::paragraph_substitutions` (the unresolved ids **per
+    paragraph, in render order, with repeats**, so a layout can name the line a
+    marker landed on), `LocaleAudit::coverage` / `coverage_percent`,
+    `SubstitutionTable::insert`'s validated form and
+    `SubstitutionValueError::{BadId, MarkerInValue}` — all added by review; see
+    the review section for why each was needed.
 - `crates/cs_app/src/text/mod.rs`, `metrics.rs`, `layout.rs` (new): the
   application boundary.
   - `metrics.rs`: `TextMetrics` (pixel size, per-character advances, line
@@ -53,7 +61,7 @@ required, and no capability beyond build/test is claimed.
 - `crates/cs_content/src/lib.rs`, `crates/cs_app/src/lib.rs` (wiring only):
   `pub mod localization;` / `pub mod text;` and one module-doc paragraph each.
 - `crates/cs_app/tests/text/{main,common,catalog,markup,fonts,layout}.rs` (new):
-  the 23 `accept_f51_a_*` acceptance tests.
+  the 30 `accept_f51_a_*` acceptance tests.
 - This file.
 
 **One observable failure:** a long translation wrapped into a panel whose bottom
@@ -65,6 +73,84 @@ clear_of_the_required_buttons` fails: `TextLayout::covers` is `true` for the
 `Ok`/`Cancel` `RequiredControl`s. Verified by mutation: making the layout use
 `request.panel` instead of the free band fails 5 of the 23 tests, including this
 one.
+
+## Review findings and the fixes applied
+
+The implementer's branch was reviewed against the sheet, `AGENTS.md` and
+`docs/contracts/UI-NETWORK.md`. The four defects below were real bugs in the
+shipped code, each found by reading rather than by a failing check, and each is
+now fixed with a test that fails without the fix.
+
+1. **`TextCatalog::ids` counted rows, not strings, so the AC04 audit's
+   denominator was inflated.** The map is keyed by `(TextId, LocaleId)`, so a
+   string translated into three locales appeared three times in the key
+   iteration; `LocaleAudit::ids` therefore reported 5 for a 3-string catalog
+   and `resolved` could exceed the number of strings a locale could ever
+   answer. The doc comment already claimed "deduplicated", so the code
+   contradicted its own contract. `ids` now deduplicates the adjacent equal ids
+   the ordered key map yields, and `LocaleAudit::coverage` /
+   `coverage_percent` were added so a caller cannot re-derive a ratio with the
+   wrong denominator. New test:
+   `accept_f51_a_the_locale_audit_denominator_counts_strings_not_rows`.
+2. **`MarkupToken::Control` could not express a closing control.** Both
+   `[bold]` and `[/bold]` produced the identical token
+   `Control { name: "bold", argument: None }`, while the module doc promised
+   "a renderer can pop the style the opening control pushed" — a consumer had
+   no way to tell the two apart except by re-deriving the nesting itself. The
+   variant now carries `closing: bool` and the stream has
+   `MarkupToken::is_opening` / `is_closing` / `control_name`. New test:
+   `accept_f51_a_a_closing_control_is_distinguishable_from_an_opening_one`.
+3. **A substitution id that failed the token grammar was mislabelled as empty.**
+   `parse_substitution` mapped *every* `validate_token` failure onto
+   `EmptySubstitution { offset }`, so `{first name}` was reported as "a
+   substitution had no id" when the author had written one. The diagnostic sent
+   the fix in the wrong direction. Added
+   `MarkupIssueKind::BadSubstitutionId { id, offset }` (code
+   `bad_substitution_id`), which names what was written. New test:
+   `accept_f51_a_a_malformed_substitution_id_is_named_not_called_empty`.
+4. **Every unresolved substitution was reported on the same line.** The layout
+   searched for "the first line containing the marker", so a briefing with
+   `{runway}` on line 4 and `{pilot}` on line 11 reported both on line 4 —
+   pointing a content fix at the wrong place, which is the entire purpose of
+   carrying a line number. `MarkupDocument::paragraph_substitutions` now returns
+   the unresolved ids **per paragraph, in render order and with repeats**, and
+   the layout pairs the k-th marker of a paragraph with the k-th id of that
+   paragraph. New test:
+   `accept_f51_a_each_unresolved_substitution_is_reported_on_its_own_line`.
+
+Two gaps the review closed that were not outright bugs:
+
+- **`SubstitutionTable::insert` accepted a value containing the marker**, which
+  made the fix for defect 4 unsound: a supplied `Ma\ufffdr a` would have been
+  counted as somebody else's unresolved marker. The marker now means exactly
+  "this substitution was unresolved", and the value is refused
+  (`SubstitutionValueError::MarkerInValue`); the id is validated against the
+  same token grammar as a tag (`BadId`). An *empty* value is still admitted —
+  that is the caller's data and a different defect from a missing entry. New
+  test: `accept_f51_a_a_substitution_value_may_not_impersonate_the_marker`.
+- **`TextLayout::covers` could not be shown to discriminate.** Because the free
+  band is computed to exclude the declared controls, the AC01 assertion holds by
+  construction, so a broken `covers` would not have failed any test. The new
+  `accept_f51_a_covers_detects_a_control_inside_the_viewport` lays text out in an
+  unreserved panel and shows `covers` reporting a control placed on a painted
+  line, which pins the geometry check independently of the free-band
+  computation. A mutation that dropped the viewport clipping from `covers` fails
+  4 tests, this one included.
+
+### Reviewer sensitivity checks (independent of the implementer's)
+
+Every fix was mutation-checked: the reverted behaviour fails the new tests.
+
+| mutation | tests that fail |
+| --- | --- |
+| `TextCatalog::ids` stops deduplicating | 2 (incl. the denominator test) |
+| every control token is emitted as `closing: false` | 1 (the closing-control test) |
+| `BadSubstitutionId` reported as `EmptySubstitution` | 2 |
+| no marker counted per line (defect 4 restored) | 2 |
+| every line counted as holding a marker | 2 |
+| `SubstitutionTable` accepts a marker-carrying value | 1 |
+| `coverage` divides by a wrong denominator | 1 |
+| `covers` ignores clipping to the viewport | 4 |
 
 ## The design decisions a reviewer should check
 
@@ -143,7 +229,7 @@ here is an original measurement:
 ## Test selection and sensitivity
 
 `cargo test --workspace --locked -- accept_f51_a_ --include-ignored` discovers
-and runs 23 tests, all passing. Sensitivity was checked by mutating production
+and runs 30 tests, all passing. Sensitivity was checked by mutating production
 code and confirming failures:
 
 | mutation | tests that fail |
@@ -152,6 +238,7 @@ code and confirming failures:
 | `FontFace::try_new` accepts an operating-system font | `accept_f51_a_operating_system_and_proprietary_fonts_are_refused` |
 | `parse_markup` interprets an unknown tag instead of refusing it | 4 (incl. both markup and layout) |
 | `TextCatalog::resolve` ignores the caller's chain order and reports depth 0 | 4 (incl. the fallback and layout scenarios) |
+| the eight reviewer mutations listed above | 1–4 each, see the review section |
 
 ## Follow-ups not filed as new tasks
 

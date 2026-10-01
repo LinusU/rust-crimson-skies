@@ -451,12 +451,44 @@ pub fn layout_text(request: &LayoutRequest<'_>) -> Result<TextLayout, LayoutErro
         })
         .collect();
 
-    let (paragraphs, unresolved) = request.document.paragraphs(request.substitutions);
+    // Each paragraph is wrapped on its own, and the unresolved ids it carries
+    // are consumed as the paragraph's markers are laid out, so a diagnostic
+    // names the line its own marker landed on rather than the first line that
+    // happens to hold one.
+    let (paragraphs, per_paragraph_unresolved) = request
+        .document
+        .paragraph_substitutions(request.substitutions);
     let mut texts: Vec<String> = Vec::new();
-    for paragraph in &paragraphs {
+    let mut unresolved: Vec<(String, Option<usize>)> = Vec::new();
+    for (paragraph, ids) in paragraphs.iter().zip(&per_paragraph_unresolved) {
         let wrapped = wrap_paragraph(paragraph, width, request.metrics);
         if wrapped.broke_word {
             diagnostics.push(LayoutDiagnostic::BrokenWord { line: texts.len() });
+        }
+        // The k-th marker of a paragraph belongs to the k-th unresolved id of
+        // that same paragraph: wrapping only reorders whole words, so a marker
+        // character is never split across two lines.
+        let mut pending: Vec<String> = ids.clone();
+        for (offset, line) in wrapped.lines.iter().enumerate() {
+            let mut on_this_line = line.matches(UNRESOLVED_SUBSTITUTION).count();
+            while on_this_line > 0 {
+                on_this_line -= 1;
+                if let Some(id) = pending.first().cloned() {
+                    pending.remove(0);
+                    // A later occurrence of the same id does not report again;
+                    // the first line the marker landed on is the one to show.
+                    if !unresolved.iter().any(|(seen, _)| *seen == id) {
+                        unresolved.push((id, Some(texts.len() + offset)));
+                    }
+                }
+            }
+        }
+        // A marker the wrapper could not place (it cannot happen today, because
+        // the marker is a single character and never whitespace) is still named.
+        for id in pending {
+            if !unresolved.iter().any(|(seen, _)| *seen == id) {
+                unresolved.push((id, None));
+            }
         }
         texts.extend(wrapped.lines);
     }
@@ -498,13 +530,8 @@ pub fn layout_text(request: &LayoutRequest<'_>) -> Result<TextLayout, LayoutErro
         }
     };
 
-    for id in unresolved {
-        diagnostics.push(LayoutDiagnostic::UnresolvedSubstitution {
-            id,
-            line: lines
-                .iter()
-                .position(|line| line.text.contains(UNRESOLVED_SUBSTITUTION)),
-        });
+    for (id, line) in unresolved {
+        diagnostics.push(LayoutDiagnostic::UnresolvedSubstitution { id, line });
     }
 
     Ok(TextLayout {

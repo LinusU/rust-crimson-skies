@@ -8,7 +8,7 @@
 
 use cs_content::localization::{
     MAX_MARKUP_TOKEN_LEN, MarkupDelimiterError, MarkupGrammar, MarkupGrammarError, MarkupToken,
-    SubstitutionTable, UNRESOLVED_SUBSTITUTION, parse_markup,
+    SubstitutionTable, SubstitutionValueError, UNRESOLVED_SUBSTITUTION, parse_markup,
 };
 
 use crate::common::{document, grammar};
@@ -30,8 +30,10 @@ fn accept_f51_a_admitted_markup_becomes_tokens_with_its_line_breaks() {
             .collect::<Vec<_>>()
     );
     let tokens = document.tokens();
-    assert!(matches!(&tokens[0], MarkupToken::Control { name, argument }
-        if name == "color" && argument.as_deref() == Some("red")));
+    assert!(
+        matches!(&tokens[0], MarkupToken::Control { name, argument, closing }
+        if name == "color" && argument.as_deref() == Some("red") && !*closing)
+    );
     assert!(matches!(
         tokens
             .iter()
@@ -54,11 +56,112 @@ fn accept_f51_a_admitted_markup_becomes_tokens_with_its_line_breaks() {
     );
 
     let mut substitutions = SubstitutionTable::new();
-    substitutions.insert("pilot", "Mara");
+    substitutions
+        .insert("pilot", "Mara")
+        .expect("a plain value is admitted");
     let (paragraphs, unresolved) = document.paragraphs(&substitutions);
     assert_eq!(paragraphs.len(), 2, "the hard line break split the string");
     assert_eq!(paragraphs[1], "Second line for Mara.");
     assert!(unresolved.is_empty());
+}
+
+/// A supplied value may not smuggle in the unresolved-substitution marker, and
+/// its id must be writable as `{id}`. Otherwise a marker in the rendered text
+/// would stop meaning "this substitution was unresolved", and a layout counting
+/// markers to place its diagnostics would blame the wrong id.
+#[test]
+fn accept_f51_a_a_substitution_value_may_not_impersonate_the_marker() {
+    let mut substitutions = SubstitutionTable::new();
+    assert_eq!(
+        substitutions
+            .insert("pilot", "Ma\u{fffd}ra")
+            .expect_err("a value carrying the marker is refused"),
+        SubstitutionValueError::MarkerInValue {
+            id: "pilot".to_owned()
+        }
+    );
+    assert_eq!(
+        substitutions
+            .insert("", "Mara")
+            .expect_err("an empty id is refused"),
+        SubstitutionValueError::BadId { id: String::new() }
+    );
+    assert_eq!(
+        substitutions
+            .insert("first name", "Mara")
+            .expect_err("an id outside the token grammar is refused"),
+        SubstitutionValueError::BadId {
+            id: "first name".to_owned()
+        }
+    );
+    assert!(substitutions.is_empty(), "a refused value is never stored");
+
+    // An empty value is admitted: an empty *value* is the caller's data, and it
+    // is not the same defect as an unresolved substitution, which is a missing
+    // entry rather than an empty one.
+    substitutions
+        .insert("callsign", "")
+        .expect("an empty value is the caller's choice");
+    assert_eq!(substitutions.get("callsign"), Some(""));
+    assert!(substitutions.contains("callsign"));
+
+    // The rendered text therefore contains a marker only for a genuinely
+    // unresolved id.
+    let document = document("Callsign {callsign} ready, pilot {pilot}.");
+    let (paragraphs, unresolved) = document.paragraphs(&substitutions);
+    assert_eq!(paragraphs, vec!["Callsign  ready, pilot \u{fffd}."]);
+    assert_eq!(unresolved, vec!["pilot".to_owned()]);
+}
+
+/// The positional form keeps *which paragraph* an unresolved id is in, and with
+/// repeats, so a layout can name the line a marker landed on instead of
+/// guessing from a deduplicated global list.
+#[test]
+fn accept_f51_a_paragraph_substitutions_keep_the_positional_markers() {
+    let document = document("Ready {pilot}.\nCorridor {runway} via {pilot}.\nClear.");
+    let (paragraphs, per_paragraph) = document.paragraph_substitutions(&SubstitutionTable::new());
+    assert_eq!(
+        paragraphs.len(),
+        3,
+        "two hard line breaks make three paragraphs"
+    );
+    assert_eq!(per_paragraph.len(), 3, "one entry per paragraph");
+    assert_eq!(per_paragraph[0], vec!["pilot".to_owned()]);
+    assert_eq!(
+        per_paragraph[1],
+        vec!["runway".to_owned(), "pilot".to_owned()],
+        "the order the markers render in, with the repeat kept"
+    );
+    assert!(
+        per_paragraph[2].is_empty(),
+        "the last paragraph has no marker"
+    );
+    for paragraph in &paragraphs[0..2] {
+        assert!(paragraph.contains(UNRESOLVED_SUBSTITUTION));
+    }
+
+    // The deduplicated view is the same ids in first-appearance order.
+    let (paragraphs, unresolved) = document.paragraphs(&SubstitutionTable::new());
+    assert_eq!(paragraphs.len(), 3);
+    assert_eq!(unresolved, vec!["pilot".to_owned(), "runway".to_owned()]);
+
+    // A supplied value removes exactly that id from the positional list.
+    let mut substitutions = SubstitutionTable::new();
+    substitutions
+        .insert("pilot", "Mara")
+        .expect("a plain value is admitted");
+    let (paragraphs, per_paragraph) = document.paragraph_substitutions(&substitutions);
+    assert_eq!(paragraphs[0], "Ready Mara.");
+    assert!(per_paragraph[0].is_empty());
+    assert_eq!(
+        per_paragraph[1],
+        vec!["runway".to_owned()],
+        "supplying the pilot removes only that id, and the repeat goes with it"
+    );
+    assert_eq!(
+        paragraphs[1],
+        format!("Corridor {UNRESOLVED_SUBSTITUTION} via Mara.")
+    );
 }
 
 /// Every markup problem the grammar can find is reported, and the refused
@@ -74,6 +177,9 @@ fn accept_f51_a_refused_markup_stays_literal_text_and_is_reported() {
         ("[]x[]", "empty_tag", true),
         ("{}x{}", "empty_substitution", true),
         ("{unterminated", "unterminated_substitution", true),
+        // An id that is present but outside the token grammar is named as such,
+        // not mislabelled as an empty substitution.
+        ("{pilot name}", "bad_substitution_id", true),
         // An unclosed control was admitted; only the missing close is reported,
         // so the control itself is not literal text.
         ("[color=red]x", "unclosed_control", false),
@@ -238,6 +344,121 @@ fn accept_f51_a_a_malformed_grammar_is_refused() {
     );
 }
 
+/// The token stream says which control opens and which closes, and the two pair
+/// up in order: a renderer pushes the style an opening control names and pops
+/// it at the matching close, and it can only do that if the stream distinguishes
+/// them. A close that does not match the innermost open tag is refused instead.
+#[test]
+fn accept_f51_a_a_closing_control_is_distinguishable_from_an_opening_one() {
+    let document = document("[color=red]Warning[bold] now[/bold][/color]");
+    assert!(document.is_clean(), "{:?}", document.issues());
+
+    let controls: Vec<(&str, Option<&str>, bool)> = document
+        .tokens()
+        .iter()
+        .filter_map(|token| match token {
+            MarkupToken::Control {
+                name,
+                argument,
+                closing,
+            } => Some((name.as_str(), argument.as_deref(), *closing)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        controls,
+        vec![
+            ("color", Some("red"), false),
+            ("bold", None, false),
+            ("bold", None, true),
+            ("color", None, true),
+        ],
+        "two opening and two closing controls, in order"
+    );
+
+    // The helper a renderer uses: push on an open, pop on a close, and the
+    // stack is empty again at the end of the string.
+    let mut stack: Vec<&str> = Vec::new();
+    for token in document.tokens() {
+        if token.is_opening() {
+            stack.push(token.control_name().expect("a control names its tag"));
+        } else if token.is_closing() {
+            assert_eq!(
+                stack.pop(),
+                token.control_name(),
+                "a closing control must pop the tag it names"
+            );
+        }
+    }
+    assert!(stack.is_empty(), "every opening control was closed");
+    assert!(
+        document
+            .tokens()
+            .iter()
+            .all(|token| !token.is_closing() || token.control_name().is_some())
+    );
+
+    // Text and substitution tokens are neither an opening nor a closing control.
+    let plain = crate::common::document("[bold]crew[/bold]");
+    for token in plain.tokens() {
+        match token {
+            MarkupToken::Text(_) | MarkupToken::Substitution { .. } => {
+                assert!(!token.is_opening() && !token.is_closing());
+                assert!(token.control_name().is_none());
+            }
+            MarkupToken::LineBreak => assert!(!token.is_opening() && !token.is_closing()),
+            MarkupToken::Control { .. } => {}
+        }
+    }
+}
+
+/// A substitution id that is present but outside the token grammar is reported
+/// as a *bad id*, naming what was written — a diagnostic that claims "no id"
+/// when the author wrote one sends the fix in the wrong direction.
+#[test]
+fn accept_f51_a_a_malformed_substitution_id_is_named_not_called_empty() {
+    let source = "Confirm with {first name}.";
+    let document = document(source);
+    let issue = document
+        .issues()
+        .iter()
+        .find(|issue| issue.code() == "bad_substitution_id")
+        .expect("the bad id is reported");
+    assert_eq!(issue.offset(), Some(source.find('{').expect("an offset")));
+    assert!(issue.to_string().contains("first name"), "{issue}");
+    assert!(
+        !document
+            .issues()
+            .iter()
+            .any(|issue| issue.code() == "empty_substitution"),
+        "a written id is not an empty substitution: {:?}",
+        document.issues()
+    );
+    // It stays literal text, and it is not admitted as a substitution token.
+    let rendered: String = document
+        .tokens()
+        .iter()
+        .map(|token| match token {
+            MarkupToken::Text(text) => text.as_str(),
+            MarkupToken::LineBreak => "\n",
+            MarkupToken::Control { .. } | MarkupToken::Substitution { .. } => "",
+        })
+        .collect();
+    assert_eq!(rendered, source);
+    assert!(!document.is_clean());
+
+    // A valid id of the same shape is admitted, so the rule is the grammar and
+    // not a blanket refusal of ids.
+    let valid = crate::common::document("Confirm with {firstname}.");
+    assert!(valid.is_clean(), "{:?}", valid.issues());
+    assert!(
+        valid
+            .tokens()
+            .iter()
+            .any(|token| matches!(token, MarkupToken::Substitution { id } if id == "firstname"))
+    );
+}
+
 /// A substitution the screen did not supply renders as a **visible** marker and
 /// is named, never as an empty gap that reads as correct output.
 #[test]
@@ -249,7 +470,9 @@ fn accept_f51_a_an_unresolved_substitution_is_visible_and_named() {
     assert_eq!(unresolved, vec!["pilot".to_owned(), "runway".to_owned()]);
 
     let mut substitutions = SubstitutionTable::new();
-    substitutions.insert("pilot", "Mara");
+    substitutions
+        .insert("pilot", "Mara")
+        .expect("a plain value is admitted");
     let (paragraphs, unresolved) = document.paragraphs(&substitutions);
     assert_eq!(paragraphs[0], "Confirm with Mara before \u{fffd}.");
     assert_eq!(unresolved, vec!["runway".to_owned()]);

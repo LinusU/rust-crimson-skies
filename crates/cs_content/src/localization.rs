@@ -506,10 +506,17 @@ impl TextCatalog {
         self.rows.values()
     }
 
-    /// The string ids the catalog holds, deduplicated and in id order.
+    /// The distinct string ids the catalog holds, in id order.
+    ///
+    /// The rows are keyed by `(id, locale)` in that order, so the equal ids of
+    /// one string are adjacent and the deduplication is exact: an id that is
+    /// translated into three locales is reported **once**, so a coverage
+    /// denominator counts strings and not translations.
     #[must_use]
     pub fn ids(&self) -> Vec<TextId> {
-        self.rows.keys().map(|(id, _)| id.clone()).collect()
+        let mut ids: Vec<TextId> = self.rows.keys().map(|(id, _)| id.clone()).collect();
+        ids.dedup();
+        ids
     }
 
     /// The locales the catalog holds at least one row for, deduplicated and
@@ -549,12 +556,15 @@ impl TextCatalog {
         }
     }
 
-    /// Audits every id in the catalog against `chain`.
+    /// Audits every distinct id in the catalog against `chain`.
     ///
     /// This is the machine-readable shape of F51's AC04 ("audit all strings and
     /// media for each declared supported original locale"): the coverage
-    /// denominator is the catalog's own ids, and an id with no row anywhere in
-    /// the chain stays counted as missing instead of being dropped.
+    /// denominator is the catalog's own **distinct** ids
+    /// ([`TextCatalog::ids`], not its row count), so a string translated into
+    /// three locales counts once however many rows it has, and an id with no
+    /// row anywhere in the chain stays counted as missing instead of being
+    /// dropped.
     #[must_use]
     pub fn audit(&self, chain: &LocaleChain) -> LocaleAudit {
         let mut audit = LocaleAudit {
@@ -658,7 +668,8 @@ impl<'a> TextResolution<'a> {
 pub struct LocaleAudit {
     /// The chain that was audited, in order.
     pub chain: Vec<LocaleId>,
-    /// How many distinct string ids the catalog holds.
+    /// How many distinct string ids the catalog holds — the coverage
+    /// denominator, never the row count.
     pub ids: usize,
     /// How many ids some locale in the chain answered.
     pub resolved: usize,
@@ -674,6 +685,27 @@ impl LocaleAudit {
     #[must_use]
     pub fn is_complete(&self) -> bool {
         self.missing.is_empty()
+    }
+
+    /// The share of the catalog's distinct ids some locale in the chain
+    /// answered, in `0.0..=1.0`.
+    ///
+    /// The denominator is [`LocaleAudit::ids`] — distinct strings, not rows — so
+    /// a string translated into several locales is not counted several times.
+    /// A catalog with no ids at all reports `1.0`: there is nothing missing.
+    #[must_use]
+    pub fn coverage(&self) -> f32 {
+        if self.ids == 0 {
+            return 1.0;
+        }
+        self.resolved as f32 / self.ids as f32
+    }
+
+    /// The same coverage expressed as whole percent, for a report a human or a
+    /// packager reads.
+    #[must_use]
+    pub fn coverage_percent(&self) -> u32 {
+        (self.coverage() * 100.0).round() as u32
     }
 }
 
@@ -967,11 +999,19 @@ pub enum MarkupToken {
     /// A hard line break the resource declared (`\n`).
     LineBreak,
     /// An admitted control tag, with its argument when the grammar allows one.
+    ///
+    /// A closing control is the *same* tag, flagged by [`MarkupToken::is_closing`]:
+    /// a renderer pushes the style an opening control names and pops it at the
+    /// matching close, and it can only do that if the token stream says which of
+    /// the two a token is.
     Control {
         /// The tag's name.
         name: String,
-        /// The `=argument` value, when the tag takes one.
+        /// The `=argument` value, when the tag takes one. A closing control
+        /// never carries one.
         argument: Option<String>,
+        /// Whether this control closes the tag it names rather than opening it.
+        closing: bool,
     },
     /// An admitted substitution: an id whose value the layout supplies.
     Substitution {
@@ -979,6 +1019,34 @@ pub enum MarkupToken {
         /// delimiters.
         id: String,
     },
+}
+
+impl MarkupToken {
+    /// The tag name of a [`MarkupToken::Control`], and nothing for any other
+    /// token.
+    #[must_use]
+    pub fn control_name(&self) -> Option<&str> {
+        match self {
+            Self::Control { name, .. } => Some(name),
+            Self::Text(_) | Self::LineBreak | Self::Substitution { .. } => None,
+        }
+    }
+
+    /// Whether this token is a control that **closes** the tag it names.
+    ///
+    /// A renderer needs the distinction: an opening control pushes a style and
+    /// the matching close pops it, and the grammar's balance check already
+    /// guarantees the two pair up in order.
+    #[must_use]
+    pub fn is_closing(&self) -> bool {
+        matches!(self, Self::Control { closing: true, .. })
+    }
+
+    /// Whether this token is a control that **opens** the tag it names.
+    #[must_use]
+    pub fn is_opening(&self) -> bool {
+        matches!(self, Self::Control { closing: false, .. })
+    }
 }
 
 /// What kind of markup problem was found, and where.
@@ -1037,6 +1105,18 @@ pub enum MarkupIssueKind {
         /// Its length in bytes.
         len: usize,
     },
+    /// A substitution id was non-empty but outside the `[A-Za-z0-9_-]` token
+    /// grammar, so it stays literal text.
+    ///
+    /// This is a different problem from [`MarkupIssueKind::EmptySubstitution`]:
+    /// the author wrote an id, and the diagnostic has to name it so the
+    /// resource can be fixed, rather than claiming there was no id at all.
+    BadSubstitutionId {
+        /// The rejected id, as written between the substitution delimiters.
+        id: String,
+        /// The byte offset the substitution was at.
+        offset: usize,
+    },
 }
 
 impl MarkupIssueKind {
@@ -1053,6 +1133,7 @@ impl MarkupIssueKind {
             Self::UnterminatedSubstitution { .. } => "unterminated_substitution",
             Self::EmptySubstitution { .. } => "empty_substitution",
             Self::SubstitutionIdTooLong { .. } => "substitution_id_too_long",
+            Self::BadSubstitutionId { .. } => "bad_substitution_id",
         }
     }
 }
@@ -1083,6 +1164,10 @@ impl fmt::Display for MarkupIssueKind {
             Self::SubstitutionIdTooLong { len } => write!(
                 f,
                 "a substitution id is {len} bytes, max is {MAX_MARKUP_TOKEN_LEN}"
+            ),
+            Self::BadSubstitutionId { id, .. } => write!(
+                f,
+                "substitution id {id:?} is outside the [A-Za-z0-9_-] grammar and stays literal text"
             ),
         }
     }
@@ -1124,6 +1209,7 @@ impl MarkupIssue {
             | MarkupIssueKind::UnexpectedArgument { offset, .. }
             | MarkupIssueKind::EmptyTag { offset }
             | MarkupIssueKind::UnterminatedSubstitution { offset }
+            | MarkupIssueKind::BadSubstitutionId { offset, .. }
             | MarkupIssueKind::EmptySubstitution { offset } => Some(offset),
             MarkupIssueKind::UnclosedControl { .. }
             | MarkupIssueKind::SubstitutionIdTooLong { .. } => None,
@@ -1177,14 +1263,41 @@ impl MarkupDocument {
     ///
     /// An id with no supplied value becomes the visible
     /// [`UNRESOLVED_SUBSTITUTION`] marker rather than an empty gap, and the
-    /// name is appended to `unresolved` so the caller can report it.
+    /// name is appended to `unresolved`, in first-appearance order and without
+    /// repeats. Use [`MarkupDocument::paragraph_substitutions`] when the
+    /// position of each marker matters.
     #[must_use]
     pub fn paragraphs(
         &self,
         substitutions: &SubstitutionTable,
     ) -> (Vec<String>, Vec<SubstitutionId>) {
+        let (paragraphs, per_paragraph) = self.paragraph_substitutions(substitutions);
+        let mut seen: BTreeSet<SubstitutionId> = BTreeSet::new();
+        let unresolved: Vec<SubstitutionId> = per_paragraph
+            .into_iter()
+            .flatten()
+            .filter(|id| seen.insert(id.clone()))
+            .collect();
+        (paragraphs, unresolved)
+    }
+
+    /// The paragraphs the tokens form together with, **per paragraph**, the
+    /// substitution ids that paragraph could not resolve — in the order they
+    /// appear and **with repeats**.
+    ///
+    /// This is the positional form of [`MarkupDocument::paragraphs`]: a layout
+    /// needs to know *which* paragraph each unresolved id is in, and in which
+    /// order the markers appear, to name the line a diagnostic belongs to. A
+    /// deduplicated global list cannot say that, so it is not used for that.
+    #[must_use]
+    pub fn paragraph_substitutions(
+        &self,
+        substitutions: &SubstitutionTable,
+    ) -> (Vec<String>, Vec<Vec<SubstitutionId>>) {
         let mut paragraphs = vec![String::new()];
-        let mut unresolved = Vec::new();
+        // One entry per paragraph, so each id keeps the paragraph its marker
+        // renders in.
+        let mut unresolved: Vec<Vec<SubstitutionId>> = vec![Vec::new()];
         for token in &self.tokens {
             match token {
                 MarkupToken::Text(text) => {
@@ -1193,7 +1306,10 @@ impl MarkupDocument {
                         .expect("one paragraph exists")
                         .push_str(text);
                 }
-                MarkupToken::LineBreak => paragraphs.push(String::new()),
+                MarkupToken::LineBreak => {
+                    paragraphs.push(String::new());
+                    unresolved.push(Vec::new());
+                }
                 MarkupToken::Control { .. } => {}
                 MarkupToken::Substitution { id } => match substitutions.get(id) {
                     Some(value) => paragraphs
@@ -1205,9 +1321,10 @@ impl MarkupDocument {
                             .last_mut()
                             .expect("one paragraph exists")
                             .push_str(UNRESOLVED_SUBSTITUTION);
-                        if !unresolved.iter().any(|seen: &String| seen == id) {
-                            unresolved.push(id.clone());
-                        }
+                        unresolved
+                            .last_mut()
+                            .expect("one paragraph exists")
+                            .push(id.clone());
                     }
                 },
             }
@@ -1224,6 +1341,47 @@ pub const UNRESOLVED_SUBSTITUTION: &str = "\u{fffd}";
 
 /// A validated substitution id: the `id` in `{id}`.
 pub type SubstitutionId = String;
+
+/// Why a [`SubstitutionTable`] refused a value.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SubstitutionValueError {
+    /// The id was empty or outside the `[A-Za-z0-9_-]` token grammar, so it
+    /// could never be written as `{id}` in a resource string.
+    BadId {
+        /// The rejected id.
+        id: String,
+    },
+    /// The value contained [`UNRESOLVED_SUBSTITUTION`].
+    ///
+    /// That marker is how an *unresolved* substitution is made visible, so a
+    /// value carrying it would be indistinguishable from one: a layout counts
+    /// the markers in a paragraph to name the line each unresolved id landed on,
+    /// and a marker a caller supplied would be counted as somebody else's
+    /// diagnostic. The marker is the replacement character, so a value
+    /// containing it is already damaged text and is refused rather than
+    /// silently made ambiguous.
+    MarkerInValue {
+        /// The id whose value was refused.
+        id: String,
+    },
+}
+
+impl fmt::Display for SubstitutionValueError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::BadId { id } => write!(
+                f,
+                "substitution id {id:?} must be 1..={MAX_MARKUP_TOKEN_LEN} bytes of [A-Za-z0-9_-]"
+            ),
+            Self::MarkerInValue { id } => write!(
+                f,
+                "the value for substitution {id:?} contains the unresolved-substitution marker"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SubstitutionValueError {}
 
 /// The substitution values a layout supplies for a document.
 ///
@@ -1246,8 +1404,29 @@ impl SubstitutionTable {
     }
 
     /// Supplies a value for a substitution id.
-    pub fn insert(&mut self, id: impl Into<SubstitutionId>, value: impl Into<String>) {
-        self.values.insert(id.into(), value.into());
+    ///
+    /// The id must be writable as `{id}` in a resource string, and the value
+    /// must not contain [`UNRESOLVED_SUBSTITUTION`], so that a marker in the
+    /// rendered text always means *this* substitution was unresolved.
+    ///
+    /// # Errors
+    ///
+    /// [`SubstitutionValueError::BadId`] for an id the token grammar rejects
+    /// and [`SubstitutionValueError::MarkerInValue`] for a value that would be
+    /// indistinguishable from an unresolved substitution.
+    pub fn insert(
+        &mut self,
+        id: impl Into<SubstitutionId>,
+        value: impl Into<String>,
+    ) -> Result<(), SubstitutionValueError> {
+        let id = id.into();
+        validate_token(&id).map_err(|_| SubstitutionValueError::BadId { id: id.clone() })?;
+        let value = value.into();
+        if is_marker(&value) {
+            return Err(SubstitutionValueError::MarkerInValue { id });
+        }
+        self.values.insert(id, value);
+        Ok(())
     }
 
     /// The value supplied for `id`, if any.
@@ -1274,6 +1453,15 @@ impl SubstitutionTable {
     pub fn is_empty(&self) -> bool {
         self.values.is_empty()
     }
+}
+
+/// Whether `text` holds the visible unresolved-substitution marker.
+///
+/// The marker is [`UNRESOLVED_SUBSTITUTION`], one character, and it is what a
+/// layout counts to name the line each unresolved id landed on — so a
+/// *supplied* value may not contain it either.
+fn is_marker(text: &str) -> bool {
+    text.contains(UNRESOLVED_SUBSTITUTION)
 }
 
 /// Validates a control tag or substitution id against the token grammar.
@@ -1464,10 +1652,13 @@ fn parse_substitution(
                 .push(MarkupToken::Substitution { id: id.to_owned() });
         }
         Err(_) => {
+            // The id is present but outside the token grammar, so it is named
+            // rather than reported as an empty substitution.
             keep_literal(document, literal, delimiters, closed);
             document
                 .issues
-                .push(MarkupIssue::new(MarkupIssueKind::EmptySubstitution {
+                .push(MarkupIssue::new(MarkupIssueKind::BadSubstitutionId {
+                    id: body.to_owned(),
                     offset,
                 }));
         }
@@ -1504,6 +1695,7 @@ fn parse_control(
             document.tokens.push(MarkupToken::Control {
                 name: name.to_owned(),
                 argument: None,
+                closing: true,
             });
         } else {
             keep_literal(document, literal, delimiters, closed);
@@ -1552,6 +1744,7 @@ fn parse_control(
     document.tokens.push(MarkupToken::Control {
         name: tag.name().to_owned(),
         argument: argument.map(str::to_owned),
+        closing: false,
     });
     open.push(tag.name().to_owned());
 }

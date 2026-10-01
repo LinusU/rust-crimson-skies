@@ -84,8 +84,12 @@ fn accept_f51_a_a_missing_string_is_a_named_miss_not_a_placeholder() {
 
     // The audit keeps the miss in the denominator instead of dropping the id.
     let audit = catalog.audit(&chain("de-de", &["en-us"]));
-    assert_eq!(audit.ids, catalog.ids().len());
+    assert_eq!(audit.ids, 3);
     assert_eq!(audit.resolved, audit.ids);
+    assert_eq!(
+        audit.served_by_fallback, 2,
+        "the two strings only en-us has are answered by the fallback"
+    );
     assert!(audit.missing.is_empty());
     assert!(audit.is_complete());
 
@@ -100,8 +104,98 @@ fn accept_f51_a_a_missing_string_is_a_named_miss_not_a_placeholder() {
     );
     assert!(audit.missing.contains(&id));
     assert!(!audit.is_complete());
-    assert_eq!(audit.ids, catalog.ids().len());
+    assert_eq!(audit.ids, 3);
+    assert_eq!(audit.resolved, 1, "only the german briefing answers");
     assert_eq!(audit.resolved + audit.missing.len(), audit.ids);
+}
+
+/// The audit's denominator counts **strings, not rows**: the long briefing
+/// exists in three locales and is still one string, so a coverage report cannot
+/// be inflated by how many languages a title happened to ship.
+#[test]
+fn accept_f51_a_the_locale_audit_denominator_counts_strings_not_rows() {
+    let catalog = declared_synthetic_text_catalog();
+    assert_eq!(catalog.len(), 5, "the fixture holds five rows");
+    assert_eq!(
+        catalog.locales().len(),
+        3,
+        "the fixture holds three locales"
+    );
+
+    let ids = catalog.ids();
+    assert_eq!(
+        ids,
+        vec![
+            text_id("hud.untranslated"),
+            text_id("mission.briefing.confirm"),
+            text_id(SYNTHETIC_LONG_TRANSLATION_KEY)
+        ],
+        "three distinct strings, in id order and without repeats"
+    );
+    assert_eq!(
+        ids.iter()
+            .filter(|id| **id == text_id(SYNTHETIC_LONG_TRANSLATION_KEY))
+            .count(),
+        1,
+        "a string translated into three locales is one id"
+    );
+
+    // The reportable share, with the distinct denominator.
+    // `en-us` translates the briefing, the confirm string and the untranslated
+    // HUD line: every id answers, none through a fallback.
+    let exact_en = catalog.audit(&chain("en-us", &[]));
+    assert_eq!(exact_en.ids, 3);
+    assert_eq!(exact_en.resolved, 3);
+    assert_eq!(exact_en.served_by_fallback, 0);
+    assert_eq!(exact_en.coverage(), 1.0);
+    // `de-de` translates only the briefing.
+    let exact_de = catalog.audit(&chain("de-de", &[]));
+    assert_eq!(exact_de.resolved, 1);
+    assert_eq!(exact_de.served_by_fallback, 0);
+    assert_eq!(exact_de.coverage_percent(), 33, "1 of 3 strings is german");
+    assert!((exact_de.coverage() - 1.0 / 3.0).abs() < 1e-6);
+    let full = catalog.audit(&chain("de-de", &["en-us"]));
+    assert_eq!(full.coverage(), 1.0);
+    assert_eq!(full.coverage_percent(), 100);
+    // An empty catalog has nothing missing, which is complete coverage, not 0%.
+    assert_eq!(
+        TextCatalog::new().audit(&chain("en-us", &[])).coverage(),
+        1.0
+    );
+    assert!(TextCatalog::new().audit(&chain("en-us", &[])).is_complete());
+
+    // Every chain audits the same denominator, and the totals always add up.
+    for selected in ["en-us", "de-de", "fr-fr", "es-es"] {
+        for fallbacks in [vec![], vec!["en-us"], vec!["de-de", "fr-fr"]] {
+            // A chain that repeats the selected locale is refused, so a
+            // fallback list never contains it.
+            if fallbacks.contains(&selected) {
+                continue;
+            }
+            let chain = chain(selected, &fallbacks);
+            let audit = catalog.audit(&chain);
+            assert_eq!(audit.ids, ids.len(), "{selected} {fallbacks:?}");
+            assert_eq!(audit.chain, chain.locales());
+            assert_eq!(
+                audit.resolved + audit.missing.len(),
+                audit.ids,
+                "{selected} {fallbacks:?}: every id is either answered or a named miss"
+            );
+            assert!(audit.served_by_fallback <= audit.resolved);
+            if fallbacks.is_empty() {
+                // An exact chain can only answer what that locale itself has.
+                assert_eq!(
+                    audit.resolved,
+                    catalog
+                        .ids()
+                        .iter()
+                        .filter(|id| catalog.get(id, chain.selected()).is_some())
+                        .count(),
+                    "{selected}"
+                );
+            }
+        }
+    }
 }
 
 /// Changing the locale changes the text and nothing else: the string identity

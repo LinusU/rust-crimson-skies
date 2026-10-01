@@ -351,22 +351,90 @@ fn accept_f51_a_an_unresolved_substitution_is_reported_by_the_layout() {
     let layout = layout_text(&request(None, &document, &metrics, &values, &controls))
         .expect("the panel has a free band");
 
-    let unresolved: Vec<&str> = layout
+    let unresolved: Vec<(&str, usize)> = layout
         .diagnostics()
         .iter()
         .filter_map(|diagnostic| match diagnostic {
             LayoutDiagnostic::UnresolvedSubstitution { id, line } => {
-                assert!(line.is_some(), "the marker landed on a line");
-                Some(id.as_str())
+                Some((id.as_str(), line.expect("the marker landed on a line")))
             }
             _ => None,
         })
         .collect();
-    assert_eq!(unresolved, vec!["runway", "pilot"]);
+    assert_eq!(
+        unresolved.iter().map(|(id, _)| *id).collect::<Vec<_>>(),
+        vec!["runway", "pilot"],
+        "each id is named once, in document order"
+    );
+    // Both markers are on the same line here, and it is the line that really
+    // holds them: a diagnostic must not blame a line that has no marker.
+    for (id, line) in &unresolved {
+        assert!(
+            layout.lines()[*line].text().contains('\u{fffd}'),
+            "{id} is reported on line {line}, which holds no marker: {:?}",
+            layout.lines()[*line].text()
+        );
+    }
     assert!(layout.text().contains('\u{fffd}'));
     for control in &controls {
         assert!(!layout.covers(control));
     }
+}
+
+/// Two unresolved substitutions on different lines are each reported on *their
+/// own* line. Attributing every one of them to the first line that happens to
+/// hold a marker sends a content fix to the wrong place, which is the whole
+/// point of reporting a line at all.
+#[test]
+fn accept_f51_a_each_unresolved_substitution_is_reported_on_its_own_line() {
+    let metrics = synthetic_monospace(16.0);
+    let values = SubstitutionTable::new();
+    let controls = buttons();
+    // A hard line break puts the two markers in different paragraphs, and each
+    // paragraph is long enough to wrap so the markers end up on different
+    // lines.
+    let filler = "transmission ".repeat(40);
+    let source = format!("{filler}{{runway}} now\n{filler}{{pilot}} now");
+    let document = document(&source);
+    let layout = layout_text(&request(None, &document, &metrics, &values, &controls))
+        .expect("the panel has a free band");
+
+    let reported: Vec<(String, Option<usize>)> = layout
+        .diagnostics()
+        .iter()
+        .filter_map(|diagnostic| match diagnostic {
+            LayoutDiagnostic::UnresolvedSubstitution { id, line } => Some((id.clone(), *line)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(reported.len(), 2, "{reported:?}");
+
+    let lines: Vec<usize> = reported
+        .iter()
+        .map(|(_, line)| line.expect("the marker landed on a line"))
+        .collect();
+    assert_ne!(
+        lines[0], lines[1],
+        "the two markers are on different lines, so they must be reported separately: {reported:?}"
+    );
+    for (id, line) in &reported {
+        let line = line.expect("the marker landed on a line");
+        assert!(
+            layout.lines()[line].text().contains('\u{fffd}'),
+            "{id} is reported on line {line}, which holds no marker"
+        );
+        // The line is inside the text that was laid out, and the id is the one
+        // the marker really stood for.
+        assert!(line < layout.lines().len());
+    }
+    // The order is document order, and each id is named exactly once.
+    assert_eq!(
+        reported
+            .iter()
+            .map(|(id, _)| id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["runway", "pilot"]
+    );
 }
 
 /// A single token wider than the band is broken by character instead of
@@ -409,6 +477,75 @@ fn accept_f51_a_a_token_wider_than_the_band_is_broken_not_overflowed() {
     );
     for control in &controls {
         assert!(!layout.covers(control));
+    }
+}
+
+/// `covers` is a real check, not a tautology: the free band is computed to
+/// exclude the declared controls, so the AC01 assertion above is guaranteed by
+/// construction *unless* the geometry check itself works. A control placed
+/// inside the viewport — one the layout was not told about — is detected, so a
+/// regression in the painted geometry cannot hide behind the free band.
+#[test]
+fn accept_f51_a_covers_detects_a_control_inside_the_viewport() {
+    let metrics = synthetic_monospace(16.0);
+    let values = substitutions();
+    let document = document("A briefing line long enough to occupy the band.");
+    // No declared controls, so the viewport is the whole panel.
+    let layout = layout_text(&request(None, &document, &metrics, &values, &[]))
+        .expect("an unreserved panel has a free band");
+    assert_eq!(layout.viewport(), PANEL);
+
+    // A control on the panel edge, outside every painted line, is clear.
+    let below = RequiredControl::new(
+        control_id("dialog.status"),
+        Rect::new(0.0, 470.0, 640.0, 480.0),
+    )
+    .expect("a ui_resource id");
+    assert!(
+        !layout.covers(&below),
+        "a control below the text must not be reported"
+    );
+
+    // A control over the first line's box is detected.
+    let over_first_line =
+        RequiredControl::new(control_id("dialog.banner"), layout.lines()[0].rect())
+            .expect("a ui_resource id");
+    assert!(
+        layout.covers(&over_first_line),
+        "a control on a painted line must be reported as covered"
+    );
+
+    // And in the declared-control case the same geometry proves the real
+    // buttons are clear, because they sit in the band the layout excluded.
+    let controls = buttons();
+    let reserved = layout_text(&request(None, &document, &metrics, &values, &controls))
+        .expect("the panel has a free band");
+    assert_eq!(reserved.viewport().max.y, BUTTON_ROW_TOP);
+    for control in &controls {
+        assert!(!reserved.covers(control));
+    }
+    // Moving a button up into the band changes the band, and the layout then
+    // cannot paint the line the button sits on.
+    let intruding = vec![
+        RequiredControl::new(control_id("dialog.ok"), Rect::new(160.0, 20.0, 300.0, 60.0))
+            .expect("a ui_resource id"),
+    ];
+    let narrowed =
+        layout_text(&request(None, &document, &metrics, &values, &intruding)).expect("a free band");
+    assert!(
+        narrowed.viewport().min.y >= 60.0,
+        "{:?}",
+        narrowed.viewport()
+    );
+    assert!(!narrowed.covers(&intruding[0]));
+    for index in 0..narrowed.lines().len() {
+        let painted = narrowed
+            .painted_rect(index)
+            .expect("a laid-out line has a painted box");
+        assert!(
+            painted.intersect(intruding[0].rect()).is_empty(),
+            "line {index} painted over the intruding button: {painted:?}"
+        );
     }
 }
 
