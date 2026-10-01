@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "M03-A",
+ "candidate_tree": "77bfbbfccd726b7927f744586c55ddf55a551b59",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-10-01T19:35:23Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_m03_a_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/agent-2", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 8, "executed": 8, "passed": 8, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_m03_a_a_title_block_must_be_exactly_the_campaign_length", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m03_a_a_contradicted_corroboration_establishes_no_position", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m03_a_the_committed_record_is_what_the_installation_derives", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m03_a_the_campaign_keeps_everything_else_unresolved_and_unready", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m03_a_the_original_name_is_confirmed_against_the_local_strings", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m03_a_the_world_group_is_its_own_but_not_its_directory", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m03_a_the_join_is_corroborated_by_the_long_name_rows", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m03_a_source_derived_binding_has_no_unresolved_critical_dependencies", "status": "pass", "evidence": ["cargo-test.log"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "794949bcdadda7afcaefd8b7b47ff049e4d10b441735d16a2f7f95bb0e3733e4", "kind": "log"}, {"path": "m03-binding.json", "sha256": "e4fab33f9435e617929caa6273014f5e93f8682d43dbbd109697cbf20151961e", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "implementer: claude-1 (Rally #264, Sonnet 5.5, session of 2026-10-01T19:25Z); reviewer: not yet assigned at hand-over. The implementer's own run is not independent review and is not independent original-reference evidence; no agent review replaces the owner's human approval", "method": "acceptance suite run locally with the retail capability; this harness derives every field from the recorded log, production discovery of $CS_GAME_DIR and the binding `SourceContext::read` + `SourceContext::bind` derive from it (all five critical dependencies resolved; checklist entries still unknown are recorded in missions/bindings/M03.json, not dropped). No production code changed at M03-A: the join, its corroboration and the guard are M02-A's, and this stage exercises them at the third campaign position and pins the world-group case that differs (one campaign mission in world/c1b, plus non-campaign subdirectories); claim is implemented only; validated with tools/validate_evidence.py --require-pass"},
+ "claim": "implemented"
+}
