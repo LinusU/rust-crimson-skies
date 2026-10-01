@@ -19,11 +19,16 @@
 
 use std::fmt;
 
-use cs_types::profile::{ProfileDocument, ProfileId, Revision, SchemaVersion};
+use cs_types::profile::{ProfileDocument, ProfileId, ProfileKind, Revision, SchemaVersion};
 
 use super::codec::{DecodeError, decode, encode};
 
-/// The three files of one profile slot.
+/// The file name prefix of a profile's three save files.
+pub const PROFILE_PREFIX: &str = "profile";
+
+/// The three files of one save slot. A slot holds three files of the same
+/// document kind — a profile's save, or a population's registry — so a
+/// recovery rule is stated once and applies to both.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum SaveFile {
     Current,
@@ -41,6 +46,17 @@ impl SaveFile {
             Self::Backup => "profile.bak",
             Self::Temp => "profile.tmp",
         }
+    }
+
+    /// The same file inside a slot whose document is spelled with `prefix`, so
+    /// a slot's name is derived from its subject and never the reverse.
+    pub fn prefixed_name(self, prefix: &str) -> String {
+        let suffix = match self {
+            Self::Current => "sav",
+            Self::Backup => "bak",
+            Self::Temp => "tmp",
+        };
+        format!("{prefix}.{suffix}")
     }
 }
 
@@ -213,12 +229,41 @@ pub enum RecoveryWarning {
     UsedFallback { source: SaveFile },
 }
 
+impl fmt::Display for RecoveryWarning {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Corrupt { file, error } => {
+                write!(
+                    f,
+                    "{} did not decode and was ignored: {error}",
+                    file.file_name()
+                )
+            }
+            Self::UsedFallback { source } => write!(
+                f,
+                "the newest state was recovered from {} instead of {}",
+                source.file_name(),
+                SaveFile::Current.file_name()
+            ),
+        }
+    }
+}
+
 /// The recovered state.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Recovery {
     pub document: ProfileDocument,
     pub source: SaveFile,
     pub warnings: Vec<RecoveryWarning>,
+}
+
+impl Recovery {
+    /// The warnings as text, so a caller that owns a display surface can show
+    /// what recovery had to do instead of logging it (F48 AC02: a recovered
+    /// backup is never silent).
+    pub fn warning_lines(&self) -> Vec<String> {
+        self.warnings.iter().map(ToString::to_string).collect()
+    }
 }
 
 /// Why recovery did not produce a state. None of these modify storage.
@@ -240,6 +285,12 @@ pub enum RecoverError {
         first: ProfileId,
         second: ProfileId,
     },
+    /// The registry in a population's directory belongs to another
+    /// population. It is not adopted and not overwritten.
+    RegistryKindMismatch {
+        stored: ProfileKind,
+        offered: ProfileKind,
+    },
     Storage(StorageError),
 }
 
@@ -259,6 +310,12 @@ impl fmt::Display for RecoverError {
             Self::ProfileMismatch { first, second } => {
                 write!(f, "slot holds profiles {first} and {second}")
             }
+            Self::RegistryKindMismatch { stored, offered } => write!(
+                f,
+                "the registry belongs to the {} population, not {}",
+                stored.label(),
+                offered.label()
+            ),
             Self::Storage(error) => write!(f, "{error}"),
         }
     }
@@ -272,46 +329,92 @@ impl From<StorageError> for RecoverError {
     }
 }
 
-/// Read-only recovery. `Ok(None)` means the slot is empty (a fresh profile).
-pub fn recover(storage: &dyn SaveStorage) -> Result<Option<Recovery>, RecoverError> {
-    let mut valid: Vec<(SaveFile, ProfileDocument)> = Vec::new();
-    let mut corrupt: Vec<(SaveFile, DecodeError)> = Vec::new();
-    // Preference on equal revisions: current, then temp, then backup.
+/// What a slot holds, every file read and decoded whole.
+///
+/// This is the contract's selection rule, stated once for every document kind
+/// that has a slot (a profile's save, the profile registry): read each file
+/// whole, refuse an unreadable schema outright rather than shadow it, and take
+/// the valid file with the highest revision — `Current` first on a tie, because
+/// the read order above is the preference order. Two files are never combined:
+/// the winner is one whole file or nothing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Survey<T> {
+    /// The files that decoded, in read order, with the revision each declares.
+    pub valid: Vec<(SaveFile, Revision, T)>,
+    /// The files that did not decode, with why. They are kept, never deleted.
+    pub corrupt: Vec<(SaveFile, DecodeError)>,
+}
+
+impl<T> Survey<T> {
+    /// The index of the winning file, or `None` when no file decoded.
+    pub fn best(&self) -> Option<usize> {
+        self.valid
+            .iter()
+            .enumerate()
+            .max_by(
+                |(left, (_, left_revision, _)), (right, (_, right_revision, _))| {
+                    left_revision
+                        .cmp(right_revision)
+                        // Ties go to the earlier file in read order, so the
+                        // greatest index wins only by holding a higher revision.
+                        .then_with(|| right.cmp(left))
+                },
+            )
+            .map(|(index, _)| index)
+    }
+}
+
+/// Reads every file of a slot and decodes each one whole with `decode`, which
+/// reports the document's revision alongside it.
+pub fn survey<T>(
+    storage: &dyn SaveStorage,
+    decode: impl Fn(&[u8]) -> Result<(Revision, T), DecodeError>,
+) -> Result<Survey<T>, RecoverError> {
+    let mut valid = Vec::new();
+    let mut corrupt = Vec::new();
     for file in [SaveFile::Current, SaveFile::Temp, SaveFile::Backup] {
         let Some(bytes) = storage.read(file)? else {
             continue;
         };
         match decode(&bytes) {
-            Ok(document) => valid.push((file, document)),
+            Ok((revision, value)) => valid.push((file, revision, value)),
             Err(DecodeError::UnsupportedMajor { found }) => {
                 return Err(RecoverError::UnsupportedMajor { file, found });
             }
             Err(error) => corrupt.push((file, error)),
         }
     }
-    let Some(best) = valid
-        .iter()
-        .enumerate()
-        .max_by_key(|(index, (_, doc))| (doc.revision, std::cmp::Reverse(*index)))
-        .map(|(index, _)| index)
-    else {
-        return if corrupt.is_empty() {
+    Ok(Survey { valid, corrupt })
+}
+
+/// Read-only recovery. `Ok(None)` means the slot is empty (a fresh profile).
+pub fn recover(storage: &dyn SaveStorage) -> Result<Option<Recovery>, RecoverError> {
+    let mut survey = survey(storage, |bytes| {
+        decode(bytes).map(|document| (document.revision, document))
+    })?;
+    let Some(best) = survey.best() else {
+        return if survey.corrupt.is_empty() {
             Ok(None)
         } else {
             Err(RecoverError::NoValidSave {
-                diagnostics: corrupt,
+                diagnostics: survey.corrupt,
             })
         };
     };
-    let first_id = valid[0].1.profile_id;
-    if let Some((_, other)) = valid.iter().find(|(_, doc)| doc.profile_id != first_id) {
+    let first_id = survey.valid[0].2.profile_id;
+    if let Some((_, _, other)) = survey
+        .valid
+        .iter()
+        .find(|(_, _, doc)| doc.profile_id != first_id)
+    {
         return Err(RecoverError::ProfileMismatch {
             first: first_id,
             second: other.profile_id,
         });
     }
-    let (source, document) = valid.swap_remove(best);
-    let mut warnings: Vec<RecoveryWarning> = corrupt
+    let (source, _, document) = survey.valid.swap_remove(best);
+    let mut warnings: Vec<RecoveryWarning> = survey
+        .corrupt
         .into_iter()
         .map(|(file, error)| RecoveryWarning::Corrupt { file, error })
         .collect();
@@ -344,6 +447,16 @@ pub enum CommitError {
         stored: ProfileId,
         offered: ProfileId,
     },
+    /// Two valid files of one slot describe different subjects, so neither is
+    /// a continuation of the other.
+    SlotIdentityMismatch {
+        file: SaveFile,
+        stored: String,
+        offered: String,
+    },
+    /// The revision counter cannot advance, so nothing further can be written
+    /// without a revision that is not higher than what is stored.
+    RevisionExhausted,
     Storage(StorageError),
 }
 
@@ -361,6 +474,16 @@ impl fmt::Display for CommitError {
             Self::WrongProfile { stored, offered } => {
                 write!(f, "slot holds profile {stored}, not {offered}")
             }
+            Self::SlotIdentityMismatch {
+                file,
+                stored,
+                offered,
+            } => write!(
+                f,
+                "{} describes {offered} while the slot holds {stored}",
+                file.file_name()
+            ),
+            Self::RevisionExhausted => write!(f, "the revision counter cannot advance"),
             Self::Storage(error) => write!(f, "{error}"),
         }
     }
@@ -374,9 +497,54 @@ impl From<StorageError> for CommitError {
     }
 }
 
+/// The five phases above, on bytes that are already encoded, given what
+/// [`survey`] found in the slot.
+///
+/// Shared with every other persisted document that has a slot, so there is one
+/// write sequence rather than one per document type: write the whole new
+/// revision to temp, sync it, rotate a *valid* current over the backup, install
+/// the temp as current, sync the directory. An interrupted commit whose temp
+/// file is the newest whole state is finished first, so writing the next temp
+/// cannot destroy the only copy of it.
+pub fn run_phases<T>(
+    storage: &mut dyn SaveStorage,
+    bytes: &[u8],
+    survey: Survey<T>,
+    decode: &impl Fn(&[u8]) -> Result<(Revision, T), DecodeError>,
+) -> Result<(), CommitError> {
+    let mut survey = survey;
+    if survey
+        .best()
+        .is_some_and(|index| survey.valid[index].0 == SaveFile::Temp)
+    {
+        // A corrupt current is never rotated, so it cannot replace a good
+        // backup: the rotation is conditional on the current file decoding.
+        if storage
+            .read(SaveFile::Current)?
+            .is_some_and(|held| decode(&held).is_ok())
+        {
+            storage.rotate_backup()?;
+        }
+        storage.install_current()?;
+        storage.sync_dir()?;
+        survey = self::survey(storage, decode).map_err(CommitError::Recover)?;
+    }
+    storage.write_temp(bytes)?;
+    storage.sync_temp()?;
+    if survey
+        .best()
+        .is_some_and(|index| survey.valid[index].0 == SaveFile::Current)
+    {
+        storage.rotate_backup()?;
+    }
+    storage.install_current()?;
+    storage.sync_dir()?;
+    Ok(())
+}
+
 /// Writes `document` as the new current revision following the phase order
-/// above. If a previous commit was interrupted after its temp file was
-/// complete, that revision is installed first so it is not discarded.
+/// above. A revision that is not above the stored one, or a slot that holds
+/// another profile, is refused rather than written over.
 pub fn commit(
     storage: &mut dyn SaveStorage,
     document: &ProfileDocument,
@@ -385,48 +553,99 @@ pub fn commit(
         return Err(CommitError::UnwritableSchema(document.schema));
     }
     let bytes = encode(document).map_err(CommitError::Encode)?;
-    let mut existing = recover(storage).map_err(CommitError::Recover)?;
-    if let Some(found) = &existing {
-        if found.document.profile_id != document.profile_id {
+    let survey = survey(storage, |held| {
+        decode(held).map(|decoded| (decoded.revision, decoded))
+    })
+    .map_err(CommitError::Recover)?;
+    // Every valid file of a profile slot must be that profile's, so recovery
+    // and a commit agree on which slot this is. `from_parts` is the same
+    // consistency rule the registry uses, so an inconsistent record is
+    // reported as a corrupt file rather than trusted as a revision.
+    if let Some((_, _, first)) = survey.valid.first() {
+        if survey
+            .valid
+            .iter()
+            .any(|(_, _, other)| other.profile_id != first.profile_id)
+        {
+            let other = survey
+                .valid
+                .iter()
+                .find(|(_, _, held)| held.profile_id != first.profile_id)
+                .map(|(_, _, held)| held.profile_id)
+                .expect("a differing profile is present");
+            return Err(CommitError::Recover(RecoverError::ProfileMismatch {
+                first: first.profile_id,
+                second: other,
+            }));
+        }
+    }
+    if let Some(index) = survey.best() {
+        let stored = survey.valid[index].2.profile_id;
+        if stored != document.profile_id {
             return Err(CommitError::WrongProfile {
-                stored: found.document.profile_id,
+                stored,
                 offered: document.profile_id,
             });
         }
-        if document.revision <= found.document.revision {
-            return Err(CommitError::RevisionConflict {
-                stored: found.document.revision,
-                offered: document.revision,
-            });
-        }
     }
-    // Finish an interrupted commit whose temp file is the newest state, so
-    // writing the next temp cannot destroy the only copy of it.
-    if existing
-        .as_ref()
-        .is_some_and(|r| r.source == SaveFile::Temp)
-    {
-        rotate_if_current_valid(storage)?;
-        storage.install_current()?;
-        storage.sync_dir()?;
-        existing = recover(storage).map_err(CommitError::Recover)?;
-    }
-    storage.write_temp(&bytes)?;
-    storage.sync_temp()?;
-    if existing.is_some_and(|r| r.source == SaveFile::Current) {
-        storage.rotate_backup()?;
-    }
-    storage.install_current()?;
-    storage.sync_dir()?;
+    check_offer(&survey, document)?;
+    run_phases(storage, &bytes, survey, &|held| {
+        decode(held).map(|decoded| (decoded.revision, decoded))
+    })?;
     Ok(())
 }
 
-fn rotate_if_current_valid(storage: &mut dyn SaveStorage) -> Result<(), CommitError> {
-    let current_valid = storage
-        .read(SaveFile::Current)?
-        .is_some_and(|bytes| decode(&bytes).is_ok());
-    if current_valid {
-        storage.rotate_backup()?;
+/// Checks an offer against what a slot already holds: every valid file must
+/// describe the same subject, and the offer's revision must be above the
+/// highest stored one.
+///
+/// This is the second half of the commit rule, shared by every document kind
+/// that has a slot, so a registry commit refuses a stale or foreign slot
+/// exactly as a profile commit refuses a stale or foreign profile.
+pub fn check_offer<T: SlotIdentity>(
+    survey: &Survey<T>,
+    offer: &impl SlotIdentity,
+) -> Result<(), CommitError> {
+    if let Some(first) = survey.valid.first() {
+        for (file, _, other) in &survey.valid {
+            if other.identity() != first.2.identity() {
+                return Err(CommitError::SlotIdentityMismatch {
+                    file: *file,
+                    stored: first.2.identity(),
+                    offered: other.identity(),
+                });
+            }
+        }
+    }
+    if let Some((_, stored, _)) = survey
+        .valid
+        .iter()
+        .find(|(_, revision, _)| *revision >= offer.revision())
+    {
+        return Err(CommitError::RevisionConflict {
+            stored: *stored,
+            offered: offer.revision(),
+        });
     }
     Ok(())
+}
+
+/// A persisted document that names its own subject and carries a revision, so
+/// the shared commit and selection rules apply to it.
+pub trait SlotIdentity {
+    /// A stable text identity of the subject this document describes. Two
+    /// files of one slot that disagree on it are not one another's successor.
+    fn identity(&self) -> String;
+    /// The revision this document declares.
+    fn revision(&self) -> Revision;
+}
+
+impl SlotIdentity for ProfileDocument {
+    fn identity(&self) -> String {
+        self.profile_id.to_string()
+    }
+
+    fn revision(&self) -> Revision {
+        self.revision
+    }
 }

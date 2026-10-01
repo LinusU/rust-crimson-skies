@@ -19,6 +19,11 @@
 //!
 //! The checksum is an integrity check against torn or corrupted files, not a
 //! security measure. Everything is bounded before it is interpreted.
+//!
+//! [`sealed_body`] and [`check_line_count`] are the framing this module shares
+//! with the profile registry (`super::library`), which is a different document
+//! with the same durability rules; a body is only ever interpreted by the
+//! decoder that owns its format.
 
 use std::fmt;
 
@@ -34,7 +39,9 @@ pub const MAX_SAVE_BYTES: usize = 256 * 1024;
 pub const MAX_SAVE_LINES: usize = 4096;
 
 const MAGIC: &str = "CSSAVE";
-const CHECKSUM_KEY: &str = "checksum=";
+
+/// The key of the trailing integrity line every sealed document ends with.
+pub const CHECKSUM_KEY: &str = "checksum=";
 
 /// Why a byte string is not an acceptable save.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -58,6 +65,13 @@ pub enum DecodeError {
     },
     MissingField(&'static str),
     Field(ProfileFieldError),
+    /// The document's fields decoded but do not hold together: a profile
+    /// registry whose mark is below a live id, or which lists one id twice.
+    /// The bytes are intact, so this is not a torn write.
+    Inconsistent {
+        document: &'static str,
+        reason: String,
+    },
 }
 
 impl fmt::Display for DecodeError {
@@ -75,6 +89,9 @@ impl fmt::Display for DecodeError {
             Self::Malformed { line, reason } => write!(f, "line {line}: {reason}"),
             Self::MissingField(name) => write!(f, "save lacks required field {name}"),
             Self::Field(error) => write!(f, "{error}"),
+            Self::Inconsistent { document, reason } => {
+                write!(f, "{document} does not hold together: {reason}")
+            }
         }
     }
 }
@@ -145,7 +162,9 @@ pub fn encode(document: &ProfileDocument) -> Result<Vec<u8>, ProfileFieldError> 
     Ok(out.into_bytes())
 }
 
-fn parse_u64(line: usize, text: &str) -> Result<u64, DecodeError> {
+/// A bounded decimal field. Every number in a save is read through this, so a
+/// value that is not digits or does not fit is refused before it is used.
+pub fn parse_u64(line: usize, text: &str) -> Result<u64, DecodeError> {
     if text.is_empty() || !text.bytes().all(|b| b.is_ascii_digit()) {
         return Err(DecodeError::Malformed {
             line,
@@ -158,9 +177,17 @@ fn parse_u64(line: usize, text: &str) -> Result<u64, DecodeError> {
     })
 }
 
-fn parse_version(header: &str) -> Result<SchemaVersion, DecodeError> {
+/// A `ProfileId` field: a nonzero persistent number.
+pub fn parse_profile_id(line: usize, text: &str) -> Result<ProfileId, DecodeError> {
+    ProfileId::new(parse_u64(line, text)?).ok_or(DecodeError::Malformed {
+        line,
+        reason: "profile id must not be zero",
+    })
+}
+
+fn parse_version(magic: &str, header: &str) -> Result<SchemaVersion, DecodeError> {
     let rest = header
-        .strip_prefix(MAGIC)
+        .strip_prefix(magic)
         .and_then(|r| r.strip_prefix(' '))
         .ok_or(DecodeError::BadHeader)?;
     let (major, minor) = rest.split_once('.').ok_or(DecodeError::BadHeader)?;
@@ -176,14 +203,25 @@ fn parse_version(header: &str) -> Result<SchemaVersion, DecodeError> {
     })
 }
 
-/// Decodes and fully validates a save. Never panics on any input.
-pub fn decode(bytes: &[u8]) -> Result<ProfileDocument, DecodeError> {
+/// Opens a sealed line document: returns the body its checksum covers and the
+/// schema its header declares.
+///
+/// This is the shared framing of every persisted engine document — a profile
+/// save and the profile registry — so an oversized, non-UTF-8, unsealed,
+/// checksum-broken or unreadable-schema document is refused the same way
+/// whatever it holds. The body is *covered* text: it excludes the header line
+/// and the trailing `checksum=` line, and it has already been verified against
+/// the stored checksum. What the body means is the caller's business.
+pub fn sealed_body<'a>(
+    magic: &str,
+    bytes: &'a [u8],
+) -> Result<(&'a str, SchemaVersion), DecodeError> {
     if bytes.len() > MAX_SAVE_BYTES {
         return Err(DecodeError::TooLarge { len: bytes.len() });
     }
     let text = std::str::from_utf8(bytes).map_err(|_| DecodeError::NotUtf8)?;
     let header_end = text.find('\n').ok_or(DecodeError::BadHeader)?;
-    let schema = parse_version(&text[..header_end])?;
+    let schema = parse_version(magic, &text[..header_end])?;
     if !schema.is_readable() {
         return Err(DecodeError::UnsupportedMajor { found: schema });
     }
@@ -208,10 +246,21 @@ pub fn decode(bytes: &[u8]) -> Result<ProfileDocument, DecodeError> {
     if checksum(&bytes[..checksum_start]) != stored {
         return Err(DecodeError::ChecksumMismatch);
     }
-    let covered = &text[header_end + 1..checksum_start];
-    if covered.lines().count() > MAX_SAVE_LINES {
+    Ok((&text[header_end + 1..checksum_start], schema))
+}
+
+/// Refuses a sealed document with more lines than a bounded reader accepts.
+pub fn check_line_count(body: &str) -> Result<(), DecodeError> {
+    if body.lines().count() > MAX_SAVE_LINES {
         return Err(DecodeError::TooManyLines);
     }
+    Ok(())
+}
+
+/// Decodes and fully validates a save. Never panics on any input.
+pub fn decode(bytes: &[u8]) -> Result<ProfileDocument, DecodeError> {
+    let (covered, schema) = sealed_body(MAGIC, bytes)?;
+    check_line_count(covered)?;
 
     let mut profile_id = None;
     let mut kind = None;
@@ -244,12 +293,7 @@ pub fn decode(bytes: &[u8]) -> Result<ProfileDocument, DecodeError> {
         match key {
             "profile_id" => {
                 once(profile_id.is_some())?;
-                profile_id = Some(ProfileId::new(parse_u64(number, value)?).ok_or(
-                    DecodeError::Malformed {
-                        line: number,
-                        reason: "profile id must not be zero",
-                    },
-                )?);
+                profile_id = Some(parse_profile_id(number, value)?);
             }
             "kind" => {
                 once(kind.is_some())?;
