@@ -31,11 +31,19 @@
 //! * [`ProfileSession::commit_with`] is the one write path, and it **retries**
 //!   by re-reading the stored revision: a conflict refreshes the view and the
 //!   change is re-applied to what is actually stored, never written over it.
+//!   A refresh replaces the *document* only — this session's own uncommitted
+//!   settings are re-applied on top of it, so a retry adopts the other writer's
+//!   progression without discarding the change this session was asked to make.
+//! * Every commit is checked against the session's own profile id, so no caller
+//!   can retarget this session's writes at another pilot's save.
 //! * [`ProfileSession::finish`] is the explicit teardown that reports whether
 //!   uncommitted work was dropped; dropping the session releases the claim
 //!   either way, so an error path cannot leak ownership.
 //! * [`open_sandbox`] is the sandbox rule: an automated session over the
 //!   synthetic population, which is never a player's live profile tree.
+//! * Opening a population **reads** the persisted active pointer and never
+//!   rewrites it, so launching costs no write and a read-only profile tree is
+//!   still openable.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -232,6 +240,14 @@ pub struct PopulationClaim {
 
 impl PopulationClaim {
     /// Claims a population directory exclusively.
+    ///
+    /// The key is the canonicalized directory, so two spellings of one directory
+    /// (a symlink, a relative path) are one population rather than two. A
+    /// directory that does not exist yet cannot be canonicalized, so the key
+    /// falls back to the path as given — the claim is still exclusive, it is just
+    /// spelling-sensitive until the first write creates the directory. That is a
+    /// bound on the in-process guard, not a filesystem lock; the registry's
+    /// revision check is what catches a second *process*.
     fn acquire(directory: &Path) -> Result<Self, ClaimError> {
         let key = std::fs::canonicalize(directory).unwrap_or_else(|_| directory.to_path_buf());
         let mut held = held_populations()
@@ -326,6 +342,13 @@ pub enum SessionError {
     /// adopted profile must hold a save file — so it means the slot lost its
     /// files after the registry named it.
     EmptySlot { profile: ProfileId },
+    /// A commit tried to write a document naming a profile other than the one
+    /// this session owns. Nothing was written: the library would have installed
+    /// it into that other profile's slot.
+    ForeignProfile {
+        expected: ProfileId,
+        offered: ProfileId,
+    },
     /// The revision counter is at the top of its range.
     RevisionExhausted { profile: ProfileId },
     /// Every attempt hit a moved expected revision.
@@ -350,6 +373,11 @@ impl fmt::Display for SessionError {
             Self::EmptySlot { profile } => {
                 write!(f, "profile {profile} has no readable revision to select")
             }
+            Self::ForeignProfile { expected, offered } => write!(
+                f,
+                "this session owns profile {expected}, so it will not write a \
+                 document naming profile {offered}"
+            ),
             Self::RevisionExhausted { profile } => {
                 write!(
                     f,
@@ -485,12 +513,18 @@ impl ProfileSession {
         // and nothing is selected, so another profile can be picked. Failing
         // the whole session would make one unreadable save hide every other
         // pilot in the tree.
-        if let Some(active) = session.library.active()
-            && let Err(error) = session.select(active)
-        {
-            session.open_failures.push(error.to_string());
-            session.selected = None;
-            session.settings = None;
+        //
+        // The pointer is *read*, never rewritten, on the way in. It already
+        // names this profile, so writing it back would change nothing and cost
+        // a full atomic registry revision on every launch — and would make a
+        // read-only population (a mounted archive, a permissions problem)
+        // impossible to open at all, which is exactly when a player most needs
+        // to see the pilot they have.
+        if let Some(active) = session.library.active() {
+            match session.load_selected(active) {
+                Ok(found) => session.install(found),
+                Err(error) => session.open_failures.push(error.to_string()),
+            }
         }
         Ok(session)
     }
@@ -589,6 +623,12 @@ impl ProfileSession {
     /// a name a save could not hold never consumes an id. The id comes from the
     /// persisted high-water mark, and the document written carries that same id:
     /// it is the identity, not a label derived afterwards.
+    ///
+    /// The new profile becomes the persisted active pointer as well as this
+    /// session's selection. A selection that lives only in memory is not a
+    /// selection: the next session opens the population by reading that pointer,
+    /// so a profile created but not pointed at would be a pilot the player never
+    /// returns to.
     pub fn create(&mut self, display_name: &str) -> Result<ProfileId, SessionError> {
         validate_text("display_name", display_name, MAX_DISPLAY_NAME_BYTES, false)?;
         let kind = self.library.kind();
@@ -604,6 +644,12 @@ impl ProfileSession {
             )
         };
         let (id, document) = self.library.create(draft)?;
+        // The registry makes the first profile active on its own; a later one has
+        // to be pointed at explicitly, or the pointer keeps naming the pilot
+        // that was active before.
+        if self.library.active() != Some(id) {
+            self.library.set_active(id)?;
+        }
         self.install(LoadedProfile {
             id,
             document: Some(document),
@@ -755,6 +801,14 @@ impl ProfileSession {
     /// reward cannot be paid twice. The reward *amount* is not decided here —
     /// progression and rewards are F43-B's; what this owns is that the applied
     /// list lives in the profile and is written atomically with it.
+    ///
+    /// The idempotence check happens inside the change, against the document the
+    /// commit is about to write, so it holds after a conflict retry as well as
+    /// on a first attempt: if a concurrent writer applied the same outcome id in
+    /// the meantime, the retry sees it and reports
+    /// [`OutcomeRecord::AlreadyApplied`] rather than an error, because a
+    /// duplicate application is the safe outcome the contract asks for, not a
+    /// failure. Nothing is written on that path.
     pub fn record_outcome(&mut self, outcome: &str) -> Result<OutcomeRecord, SessionError> {
         if let Some(state) = self.campaign()
             && state.applied_outcomes.iter().any(|held| held == outcome)
@@ -762,7 +816,7 @@ impl ProfileSession {
             return Ok(OutcomeRecord::AlreadyApplied);
         }
         let subject = outcome.to_owned();
-        self.commit_with(move |document| {
+        match self.commit_with(move |document| {
             cs_types::profile::validate_key("campaign.outcome", &subject).map_err(|reason| {
                 ChangeRefusal {
                     subject: subject.clone(),
@@ -777,8 +831,21 @@ impl ProfileSession {
             }
             document.campaign.applied_outcomes.push(subject.clone());
             Ok(())
-        })?;
-        Ok(OutcomeRecord::Recorded)
+        }) {
+            Ok(_) => Ok(OutcomeRecord::Recorded),
+            // A concurrent writer applied the same id between this session's read
+            // and its write. The retry saw it and refused to apply it twice,
+            // which is the contract's required outcome — reported as such rather
+            // than as a failure, so a caller replaying after a crash does not
+            // treat a correctly-suppressed double reward as an error. Nothing
+            // was written on that path.
+            Err(SessionError::Refused(refusal))
+                if refusal.reason == ChangeRefusalReason::AlreadyApplied =>
+            {
+                Ok(OutcomeRecord::AlreadyApplied)
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Starts or continues a campaign run on this profile.
@@ -845,6 +912,7 @@ impl ProfileSession {
                 }))?;
         let mut draft = base;
         draft.revision = next;
+        self.check_owns(&draft).map_err(WriteAttempt::from)?;
         change(&mut draft).map_err(WriteAttempt::from)?;
         // The session's resolved settings are what the disk must hold, so they
         // are written into the draft before the commit: a document that carried
@@ -874,9 +942,40 @@ impl ProfileSession {
     /// unreadable in the meantime fails the session rather than continuing from
     /// a copy it knows is stale. The active pointer is left alone: it already
     /// names this profile.
+    ///
+    /// Only the *document* is refreshed. The session's own uncommitted settings
+    /// are its own work, not a copy of what another writer holds, so they are
+    /// carried across the refresh and re-applied on top of the freshly-read
+    /// document — a concurrent writer's progression survives, and so does the
+    /// change this session was asked to make.
     fn refresh(&mut self, id: ProfileId) -> Result<(), SessionError> {
+        // The session's own uncommitted setting values, read before the refresh
+        // replaces the state they live in.
+        let pending: Vec<(String, String)> = self
+            .settings
+            .as_ref()
+            .map(|settings| {
+                settings
+                    .changed()
+                    .into_iter()
+                    .map(|(key, value)| (key.to_owned(), value.to_owned()))
+                    .collect()
+            })
+            .unwrap_or_default();
         let found = self.load_selected(id)?;
         self.install(found);
+        if let Some(resolved) = self.settings.as_mut() {
+            // Re-applied through the same rules a live change goes through, so a
+            // pending value is validated and labeled exactly as it was the first
+            // time and cannot slip past a rule it did not satisfy then.
+            for (key, value) in &pending {
+                let catalog = self.catalog.clone();
+                let _ = resolved.set(&catalog, key, value);
+            }
+        }
+        // `install` cleared the flag with the state it replaced; whether there is
+        // still uncommitted work is now a fact about the re-applied values.
+        self.uncommitted_settings = !pending.is_empty();
         Ok(())
     }
 
@@ -893,6 +992,7 @@ impl ProfileSession {
             .ok_or(SessionError::RevisionExhausted { profile: id })?;
         let mut draft = base;
         draft.revision = next;
+        self.check_owns(&draft)?;
         if let Some(settings) = &self.settings {
             draft.settings = settings.entries();
         }
@@ -902,6 +1002,29 @@ impl ProfileSession {
         found.source = Some(cs_content::save::store::SaveFile::Current);
         found.warnings.clear();
         Ok(next)
+    }
+
+    /// Refuses a draft that names a profile other than the one this session
+    /// selected.
+    ///
+    /// A session owns exactly one profile, and the library writes a document
+    /// into the slot its `profile_id` names. [`ProfileSession::document_mut`]
+    /// hands out the whole in-memory document, so a caller that renames its
+    /// `profile_id` — by accident or on purpose — would otherwise have this
+    /// session write one pilot's entire state over another pilot's save, under
+    /// a revision high enough to pass the conflict check. That is precisely the
+    /// "an id never refers to a new profile" property this whole feature is
+    /// about, violated by the write path, so it is checked on the way out.
+    fn check_owns(&self, draft: &ProfileDocument) -> Result<(), SessionError> {
+        let selected = self.selected().ok_or(SessionError::NoProfileSelected)?;
+        if draft.profile_id == selected {
+            Ok(())
+        } else {
+            Err(SessionError::ForeignProfile {
+                expected: selected,
+                offered: draft.profile_id,
+            })
+        }
     }
 }
 
@@ -916,6 +1039,12 @@ enum WriteAttempt {
 impl From<ChangeRefusal> for WriteAttempt {
     fn from(refusal: ChangeRefusal) -> Self {
         Self::Failed(SessionError::Refused(refusal))
+    }
+}
+
+impl From<SessionError> for WriteAttempt {
+    fn from(error: SessionError) -> Self {
+        Self::Failed(error)
     }
 }
 

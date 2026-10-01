@@ -1179,6 +1179,478 @@ fn accept_f48_c_uncommitted_settings_are_dropped_and_reported_at_teardown() {
     );
 }
 
+/// A conflict retry re-reads the save underneath the session, and that refresh
+/// must not swallow the session's own uncommitted work: the pending value is
+/// re-applied on top of what the other writer stored, so both survive.
+#[test]
+fn accept_f48_c_a_conflict_retry_keeps_the_sessions_uncommitted_settings() {
+    let base = TempBase::new("retry-settings");
+    let mut session = production(&base).expect("open");
+    let id = session.create("Pilot").expect("create");
+    let directory = session.directory().to_path_buf();
+
+    // A change this session has made but not yet written.
+    session
+        .set_setting("video.detail", "low")
+        .expect("set a setting");
+    assert!(session.has_uncommitted_settings());
+
+    // Another writer moves the profile, so the commit conflicts and retries.
+    move_the_profile(&directory, id, 555);
+
+    let revision = session
+        .commit_with(|document| {
+            document.campaign.money_minor += 1;
+            Ok(())
+        })
+        .expect("the commit retries and succeeds");
+    assert_eq!(
+        session
+            .settings()
+            .expect("settings")
+            .live_value("video.detail"),
+        Some("low"),
+        "a retry must not drop the change this session made"
+    );
+    assert_eq!(
+        session.document().expect("a document").campaign.money_minor,
+        556,
+        "and must not drop the other writer's work either"
+    );
+    assert!(
+        !session.has_uncommitted_settings(),
+        "the retry wrote the pending change, so nothing is owed to the disk"
+    );
+
+    // It is on disk, not only in memory: the pending value survived the refresh
+    // all the way into the revision that was written.
+    let library =
+        ProfileLibrary::open(directory, ProfileKind::Production).expect("reopen the library");
+    let stored = library
+        .load(id)
+        .expect("load")
+        .document
+        .expect("a document");
+    assert_eq!(stored.revision, revision);
+    assert!(
+        stored
+            .settings
+            .iter()
+            .any(|entry| entry.key == "video.detail" && entry.value == "low"),
+        "the pending value was written by the retry, got {settings:?}",
+        settings = stored.settings
+    );
+}
+
+/// A refresh that is *not* followed by a successful write must still report the
+/// dropped work, or a caller has no way to know its change was lost.
+#[test]
+fn accept_f48_c_a_conflict_that_never_settles_still_reports_the_pending_setting() {
+    let base = TempBase::new("retry-dropped");
+    let mut session = production(&base).expect("open");
+    let id = session.create("Pilot").expect("create");
+    let directory = session.directory().to_path_buf();
+    session
+        .set_setting("sound.device", "3")
+        .expect("set a setting");
+
+    let mut moves = 0;
+    let error = session
+        .commit_with(|_| {
+            moves += 1;
+            move_the_profile(&directory, id, moves);
+            Ok(())
+        })
+        .expect_err("a continuously moved profile is reported");
+    assert!(matches!(error, SessionError::Conflict { .. }));
+    let report = session.finish().expect("teardown");
+    assert!(
+        report.uncommitted_changes,
+        "the pending setting was never written, so teardown says so"
+    );
+    let library =
+        ProfileLibrary::open(directory, ProfileKind::Production).expect("reopen the library");
+    assert_eq!(
+        library
+            .load(id)
+            .expect("load")
+            .document
+            .expect("a document")
+            .campaign
+            .money_minor,
+        moves,
+        "the refused commit wrote nothing of its own"
+    );
+}
+
+/// A created profile is selected, and the selection is persisted: the next
+/// session opens the population by reading the active pointer, so a pilot
+/// created but never pointed at would be one the player never returns to.
+#[test]
+fn accept_f48_c_a_created_profile_becomes_the_persisted_selection() {
+    let base = TempBase::new("create-pointer");
+    let (first, second) = {
+        let mut session = production(&base).expect("open");
+        let first = session.create("First Pilot").expect("create");
+        assert_eq!(session.library().active(), Some(first));
+
+        let second = session.create("Second Pilot").expect("create");
+        assert_eq!(
+            session.library().active(),
+            Some(second),
+            "creating a pilot makes it the active one, not the one before it"
+        );
+        assert_eq!(session.selected(), Some(second));
+        session.finish().expect("teardown");
+        (first, second)
+    };
+
+    let session = production(&base).expect("reopen");
+    assert_eq!(
+        session.selected(),
+        Some(second),
+        "the pilot created last is the one the next session opens"
+    );
+    assert_eq!(
+        session
+            .document()
+            .expect("a document")
+            .display_name
+            .as_str(),
+        "Second Pilot"
+    );
+    assert_ne!(session.selected(), Some(first));
+    session.finish().expect("teardown");
+}
+
+/// Opening a population reads the active pointer; it does not write it. A
+/// session that rewrote the pointer on the way in would cost a full atomic
+/// registry revision per launch and would make a read-only profile tree
+/// impossible to open at all.
+#[test]
+fn accept_f48_c_opening_a_population_writes_nothing() {
+    let base = TempBase::new("open-readonly");
+    let registry = {
+        let mut session = production(&base).expect("open");
+        session.create("Pilot").expect("create");
+        session.finish().expect("teardown");
+        base.path().join("production").join("registry.sav")
+    };
+    let before = fs::read(&registry).expect("read the registry");
+
+    let session = production(&base).expect("reopen");
+    assert_eq!(
+        session.selected(),
+        Some(ProfileId::new(1).expect("nonzero"))
+    );
+    drop(session);
+    assert_eq!(
+        fs::read(&registry).expect("read the registry"),
+        before,
+        "opening a population must not write to it"
+    );
+
+    // A read-only tree is therefore openable, which is exactly when a player
+    // most needs to see the pilot they have.
+    let population = base.path().join("production");
+    let mut permissions = fs::metadata(&population).expect("metadata").permissions();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        permissions.set_mode(0o555);
+    }
+    #[cfg(not(unix))]
+    permissions.set_readonly(true);
+    fs::set_permissions(&population, permissions).expect("make the population read-only");
+
+    let session = production(&base).expect("a read-only population still opens");
+    assert_eq!(
+        session.selected(),
+        Some(ProfileId::new(1).expect("nonzero")),
+        "a read-only profile tree is readable, so the pilot is still selectable"
+    );
+    session.finish().expect("teardown");
+
+    let mut permissions = fs::metadata(&population).expect("metadata").permissions();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        permissions.set_mode(0o755);
+    }
+    #[cfg(not(unix))]
+    permissions.set_readonly(false);
+    fs::set_permissions(&population, permissions).expect("restore permissions");
+}
+
+/// A session owns one profile. `document_mut` hands out the whole in-memory
+/// document, so a rename of its `profile_id` must not let this session write
+/// one pilot's entire state over another pilot's save — the "an id never refers
+/// to a new profile" property, enforced on the write path rather than assumed.
+#[test]
+fn accept_f48_c_a_commit_cannot_be_retargeted_at_another_profile() {
+    let base = TempBase::new("retarget");
+    let mut session = production(&base).expect("open");
+    let first = session.create("First").expect("create");
+    let second = session.create("Second").expect("create");
+    session.select(first).expect("select the first profile");
+
+    // Give the first profile a revision well above the second's, so the
+    // conflict check cannot be what refuses the retarget.
+    for _ in 0..8 {
+        session.commit_with(|_| Ok(())).expect("advance");
+    }
+    session
+        .commit_with(|document| {
+            document.campaign.money_minor = 1111;
+            Ok(())
+        })
+        .expect("mark the first profile");
+    let (first_revision, first_money) = (
+        session.document().expect("a document").revision,
+        session.document().expect("a document").campaign.money_minor,
+    );
+
+    session.document_mut().expect("a document").profile_id = second;
+    assert!(
+        matches!(
+            session.commit(),
+            Err(SessionError::ForeignProfile { expected, offered })
+                if expected == first && offered == second
+        ),
+        "a commit naming another profile is refused"
+    );
+
+    // Nothing was written to either profile: the second pilot still holds its
+    // own save, and the first still holds what this session had.
+    let library = ProfileLibrary::open(base.path().join("production"), ProfileKind::Production)
+        .expect("reopen the library");
+    let untouched = library
+        .load(second)
+        .expect("load")
+        .document
+        .expect("a document");
+    assert_eq!(
+        untouched.display_name, "Second",
+        "the other pilot's save was not overwritten"
+    );
+    assert_eq!(
+        untouched.campaign.money_minor, 0,
+        "and neither was its campaign state"
+    );
+    let own = library
+        .load(first)
+        .expect("load")
+        .document
+        .expect("a document");
+    assert_eq!(own.revision, first_revision);
+    assert_eq!(own.campaign.money_minor, first_money);
+}
+
+/// A replay that a *concurrent* writer already applied is the contract's
+/// required safe outcome, not a failure: the retry sees the id in the stored
+/// revision, refuses to apply it twice and reports `AlreadyApplied`.
+#[test]
+fn accept_f48_c_an_outcome_another_writer_applied_is_reported_as_already_applied() {
+    let base = TempBase::new("concurrent-replay");
+    let mut session = production(&base).expect("open");
+    let id = session.create("Pilot").expect("create");
+    let directory = session.directory().to_path_buf();
+
+    // Another writer applies the same outcome id before this session does.
+    {
+        let mut library =
+            ProfileLibrary::open(directory.clone(), ProfileKind::Production).expect("library");
+        let mut document = library
+            .load(id)
+            .expect("load")
+            .document
+            .expect("a document");
+        document.revision = document.revision.next().expect("a successor");
+        document
+            .campaign
+            .applied_outcomes
+            .push("m01.complete".to_owned());
+        library
+            .save(&document)
+            .expect("the other writer applies it");
+    }
+
+    assert_eq!(
+        session
+            .record_outcome("m01.complete")
+            .expect("a concurrent replay is safe, not a failure"),
+        OutcomeRecord::AlreadyApplied
+    );
+    let applied = session
+        .document()
+        .expect("a document")
+        .campaign
+        .applied_outcomes
+        .clone();
+    assert_eq!(
+        applied,
+        ["m01.complete".to_owned()],
+        "the id is applied exactly once"
+    );
+    session.finish().expect("teardown");
+
+    let library = ProfileLibrary::open(directory, ProfileKind::Production).expect("library");
+    let stored = library
+        .load(id)
+        .expect("load")
+        .document
+        .expect("a document");
+    assert_eq!(
+        stored.campaign.applied_outcomes,
+        ["m01.complete".to_owned()],
+        "and the refusal wrote no second entry"
+    );
+}
+
+/// A save already holding the most settings a document may carry is opened as
+/// it is. The resolved list is what a commit writes, so adding this build's
+/// declared defaults on top would leave the session holding a profile it can no
+/// longer save.
+#[test]
+fn accept_f48_c_a_save_at_the_settings_bound_stays_writable() {
+    let base = TempBase::new("settings-bound");
+    {
+        let mut session = production(&base).expect("open");
+        session.create("Pilot").expect("create");
+        // A save from a build with far more settings than this one declares,
+        // already at the list bound.
+        let mut document = session.document().expect("a document").clone();
+        document.settings = (0..cs_content::save::settings::MAX_SETTINGS)
+            .map(|index| SettingEntry {
+                key: format!("future.key{index:04}"),
+                apply: SettingApply::Live,
+                value: "kept".to_owned(),
+            })
+            .collect();
+        document.revision = document.revision.next().expect("a successor");
+        session
+            .library_mut()
+            .save(&document)
+            .expect("write the foreign save");
+        session.finish().expect("teardown");
+    }
+
+    let mut session = production(&base).expect("reopen");
+    let settings = session.settings().expect("settings");
+    assert_eq!(
+        settings.entries().len(),
+        cs_content::save::settings::MAX_SETTINGS,
+        "the resolved list never exceeds what a document may hold"
+    );
+    // A declared key this save has no room for is in force from its default and
+    // reported, not silently dropped and not silently added.
+    assert_eq!(
+        settings.live_value("video.detail"),
+        Some("high"),
+        "a declared setting still has a value in force"
+    );
+    assert!(
+        settings
+            .refusals()
+            .iter()
+            .any(|refusal| matches!(refusal.reason, RefusalReason::ListFull { .. })),
+        "and the fact that it has no entry of its own is reported: {:?}",
+        settings.refusals()
+    );
+    // The player-chosen values are all still there.
+    assert!(
+        settings.entries().iter().all(|entry| entry.value == "kept"),
+        "not one stored value was discarded to make room"
+    );
+
+    // And the profile is still writable, which is the point.
+    session
+        .commit_with(|document| {
+            document.campaign.money_minor = 5;
+            Ok(())
+        })
+        .expect("a save at the settings bound is still saveable");
+    session.finish().expect("teardown");
+}
+
+/// A restart-required value that a save mislabeled as live is not in force in
+/// this session and will be at the next one, so the session is waiting for a
+/// restart and says so — a device change that is stored, not applied, and
+/// silently unmentioned is the failure this prevents.
+#[test]
+fn accept_f48_c_a_mislabeled_restart_value_is_reported_as_waiting_for_a_restart() {
+    let base = TempBase::new("mislabeled-pending");
+    {
+        let mut session = production(&base).expect("open");
+        session.create("Pilot").expect("create");
+        let mut document = session.document().expect("a document").clone();
+        document.settings = vec![SettingEntry {
+            key: "video.driver".to_owned(),
+            apply: SettingApply::Live,
+            value: "opengl".to_owned(),
+        }];
+        document.revision = document.revision.next().expect("a successor");
+        session
+            .library_mut()
+            .save(&document)
+            .expect("write the mislabeled save");
+        session.finish().expect("teardown");
+    }
+
+    let session = production(&base).expect("reopen");
+    let settings = session.settings().expect("settings");
+    assert_eq!(settings.live_value("video.driver"), Some("d3d9"));
+    assert_eq!(settings.stored_value("video.driver"), Some("opengl"));
+    assert!(
+        settings.needs_restart(),
+        "a stored value this session is not using, that takes effect at the \
+         next one, is a pending restart"
+    );
+    assert_eq!(settings.pending_restart(), ["video.driver".to_owned()]);
+    session.finish().expect("teardown");
+}
+
+/// A reconciliation is a decision this build made about the player's profile
+/// set — which slots it adopted, which mark it raised — and a caller that
+/// cannot see it cannot account for the population it was handed.
+#[test]
+fn accept_f48_c_a_reconciled_population_reports_what_it_adopted() {
+    let base = TempBase::new("reconciled");
+    {
+        let mut session = production(&base).expect("open");
+        session.create("Pilot").expect("create");
+        session.finish().expect("teardown");
+    }
+    // Damage the newest registry: the open has to rebuild from the slots on
+    // disk, which is a reconciliation and must be reported.
+    let registry = base.path().join("production").join("registry.sav");
+    let bytes = fs::read(&registry).expect("read the registry");
+    let mut damaged = bytes.clone();
+    let header = damaged
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .expect("the registry has a header line");
+    damaged.splice(0..header, b"CSREG 9.0".iter().copied());
+    fs::write(&registry, &damaged).expect("damage the registry");
+
+    let session = production(&base).expect("open the damaged population");
+    assert_eq!(session.live(), &[ProfileId::new(1).expect("nonzero")]);
+    assert!(
+        !session.library().status().notices.is_empty(),
+        "the open did have to reconcile"
+    );
+    let warnings = session.warnings();
+    assert!(
+        warnings.iter().any(|line| line.contains("adopted")),
+        "and the caller is told what was adopted: {warnings:?}"
+    );
+    assert!(
+        warnings.iter().any(|line| line.contains("high-water mark")),
+        "and that the mark was raised rather than trusted: {warnings:?}"
+    );
+    session.finish().expect("teardown");
+}
+
 /// Writes one new revision of a profile from a second owner of the same
 /// directory — the concurrent-writer case the revision check exists for.
 fn move_the_profile(directory: &Path, id: ProfileId, money_minor: u64) {

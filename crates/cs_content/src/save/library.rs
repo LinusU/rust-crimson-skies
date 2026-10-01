@@ -227,6 +227,41 @@ pub enum LibraryNotice {
     },
 }
 
+impl fmt::Display for LibraryNotice {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Reconciled {
+                registry_high_water,
+                adopted,
+            } if adopted.is_empty() => write!(
+                f,
+                "the registry recorded a high-water mark of {registry_high_water}; \
+                 the profile directory names a higher id, so the mark was raised \
+                 rather than lowered"
+            ),
+            Self::Reconciled {
+                registry_high_water,
+                adopted,
+            } => write!(
+                f,
+                "the registry recorded a high-water mark of {registry_high_water} \
+                 and did not list {}; the profile directories are the authority, \
+                 so the mark was raised and {} adopted",
+                adopted.len(),
+                describe_ids(adopted)
+            ),
+        }
+    }
+}
+
+/// A list of ids as text a caller can show, without a trailing separator.
+fn describe_ids(ids: &[ProfileId]) -> String {
+    ids.iter()
+        .map(ProfileId::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 /// What opening a library recovered, so a caller can show it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LibraryStatus {
@@ -246,9 +281,18 @@ pub struct LibraryStatus {
 }
 
 impl LibraryStatus {
-    /// Every diagnostic from the registry slot, as text.
+    /// Every diagnostic from opening this population, as text a caller can show:
+    /// the registry slot's own warnings *and* the reconciliations this open had
+    /// to perform.
+    ///
+    /// Both kinds belong here. A notice is not a warning — nothing failed — but
+    /// it is a decision this build made about the player's profile set (which
+    /// slots it adopted, which mark it raised), and a caller that cannot see it
+    /// is looking at a population whose shape it cannot account for.
     pub fn warning_lines(&self) -> Vec<String> {
-        self.registry_warnings.clone()
+        let mut lines = self.registry_warnings.clone();
+        lines.extend(self.notices.iter().map(ToString::to_string));
+        lines
     }
 }
 

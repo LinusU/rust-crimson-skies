@@ -5,6 +5,13 @@ ownership" (`specs/F48-profiles-saves-settings-migration-and-recovery.md`,
 stage `### F48-C`), contract `docs/contracts/STATE-TRANSACTIONS.md` ("Session
 reset", "Outcome and economy transaction", "Persistence").
 
+> **Review addendum (same day, later).** The review of this task found eight
+> defects in the first implementation, all of which violated a property this
+> stage exists to provide. They are fixed here, each with a regression test named
+> `accept_f48_c_*`. See [Review findings and fixes](#review-findings-and-fixes)
+> at the end; the sections above describe the original implementation and the
+> decisions behind it, and the review changed some of those decisions.
+
 Capabilities used: ordinary build/test only. Every byte the tests write is
 newly authored synthetic data in a temporary directory; no test reads
 `$CS_GAME_DIR`, a real user profile directory or any original data. Nothing here
@@ -22,7 +29,8 @@ format and the settings vocabulary are newly authored engine design.
   `SessionError`, `ChangeRefusal`/`ChangeRefusalReason`, `OutcomeRecord`,
   `TeardownReport`, `MAX_COMMIT_ATTEMPTS`.
 - `crates/cs_content/src/save/mod.rs`: `pub mod settings;` and the module docs.
-- Tests: `crates/cs_app/tests/accept_f48_c_profile_ownership.rs` (16).
+- Tests: `crates/cs_app/tests/accept_f48_c_profile_ownership.rs` (16 at first
+  pass, 25 after the review below).
 
 Failure without the implementation: nothing opens a population as a runtime
 resource — a profile's stored settings have no owner, so an unusable device
@@ -192,3 +200,182 @@ the reported attempt count.
   implements, so it needs a flag surface, not new machinery.
 - **Mid-mission suspend is not implemented and not claimed** (contract: optional).
 - **Legacy import is F64**; nothing here reads an original save.
+
+## Review findings and fixes
+
+Reviewer: `bunny-alpha-2`, reviewing the branch it had itself implemented — the
+same-agent case, which is *not* independent evidence, so the review leaned on
+executable probes rather than on reading alone. Every defect below was first
+reproduced by a throwaway probe against the shipped code (its output is quoted
+in each entry) and only then fixed; none was found by inspection. The
+independent-review preference in the project instructions is unmet for this
+task and is recorded as such in the handover.
+
+The common shape of these defects: the first implementation tested the happy
+path thoroughly and left the *conflict, boundary and teardown* paths — the ones
+this stage exists for — asserting less than they claimed.
+
+### 1. A conflict retry silently dropped the session's uncommitted settings
+
+`ProfileSession::refresh` re-read the save and rebuilt `SettingsState` from it,
+which discarded any setting the session had changed but not yet written. The
+concurrent writer's work was preserved, so the *existing* conflict test passed;
+the session's own pending change vanished, and because `install` also cleared
+`uncommitted_settings`, teardown then reported `uncommitted_changes: false` —
+the loss was not merely silent, it was reported as a clean session.
+
+Probe, before the fix: `after retry: live=Some("high") stored=Some("high")
+uncommitted=false / teardown uncommitted_changes=false` after a `set_setting` to
+`low` and a conflicting commit.
+
+**Fix.** `SettingsState` now records which keys this session changed
+(`SettingsState::changed`), and `refresh` re-applies exactly those through the
+same `set` path the original change went through — validated and labeled
+identically — on top of the freshly-read document. The uncommitted flag is then
+recomputed from what was actually re-applied.
+Tests: `accept_f48_c_a_conflict_retry_keeps_the_sessions_uncommitted_settings`,
+`accept_f48_c_a_conflict_that_never_settles_still_reports_the_pending_setting`.
+
+### 2. `create` selected a profile only in memory
+
+`ProfileSession::create` installed the new profile as the session's selection
+but never moved the persisted active pointer, so a second profile created in
+one session was lost on the next launch: the pointer still named the first.
+This is the same class of bug as the id-recycling rule the task is named for —
+identity that exists in memory but not on disk.
+
+Probe: `session selected=Some(ProfileId(2)) library active=Some(ProfileId(1))`,
+and after a restart `selected=Some(ProfileId(1))`.
+
+**Fix.** `create` calls `library.set_active(id)` when the pointer does not
+already name the new profile. Test:
+`accept_f48_c_a_created_profile_becomes_the_persisted_selection`.
+
+### 3. Opening a population wrote to it, and a read-only population could not be opened
+
+`open` selected the active profile through `select`, which calls `set_active` —
+a full atomic registry write (temp file, two fsyncs, two renames) on every
+launch, changing nothing. Worse, on a read-only profile tree the write failed,
+the selection was dropped, and the session reported *no profile selected* even
+though the pilot was perfectly readable: exactly when a player most needs to see
+their profile, the game could not show it.
+
+Probe: `read-only population: selected=None live=[ProfileId(1)] warnings=["storage
+error: .../registry.tmp: Permission denied"]`; and `registry unchanged by open:
+false` on a writable one.
+
+**Fix.** `open` loads and installs the active profile without rewriting the
+pointer, which already names it. Test:
+`accept_f48_c_opening_a_population_writes_nothing` (covers both the
+no-write and the read-only case).
+
+### 4. A save at the settings-list bound became permanently unsaveable
+
+`SettingsState::open` added every catalog-declared key to the stored map on top
+of whatever the save carried. A save already holding `MAX_LIST_ENTRIES` (512)
+settings — legal, since the bound is the maximum — resolved to 514 entries, and
+because the resolved list is what every commit writes, **every subsequent commit
+failed permanently** with `setting has more than 512 entries`. The session could
+read the profile and never save it again. This is a denial of the whole feature
+by a save this build can perfectly well read.
+
+Probe: `resolved entries=515 / commit FAILED: setting has more than 512 entries`.
+
+**Fix.** The stored list is capped at `MAX_SETTINGS` in both directions: a save
+at the bound is opened as it is (its entries are the data — none is discarded),
+a declared key with no room is in force from its default and reported as
+`RefusalReason::ListFull`, and `set` refuses a new key rather than pushing the
+list past what could be written. Test:
+`accept_f48_c_a_save_at_the_settings_bound_stays_writable`.
+
+### 5. `document_mut` + `commit` could overwrite a different pilot's save
+
+`document_mut` hands out the whole in-memory document, and the library writes a
+document into the slot its `profile_id` names. A caller that changed that field
+therefore had this session write one pilot's entire state — name, campaign,
+settings — over another pilot's save. The revision check does not catch it: the
+retargeted document carries a *higher* revision, so it passes. This is the
+feature's central invariant ("an id never refers to a new profile") violated by
+the write path.
+
+Probe: after retargeting, `profile 2: name=Some("First") money=Some(1111)` — the
+second pilot had become a copy of the first.
+
+**Fix.** `check_owns` refuses any draft whose `profile_id` is not the selected
+profile's, on both commit paths, with a new `SessionError::ForeignProfile`.
+Test: `accept_f48_c_a_commit_cannot_be_retargeted_at_another_profile`.
+
+### 6. A concurrent outcome replay was reported as an error
+
+`record_outcome` checked the in-memory applied list and returned
+`AlreadyApplied`; the in-change check (correctly) re-checked the document about
+to be written, but its `AlreadyApplied` refusal surfaced as
+`SessionError::Refused`. So an outcome a *concurrent* writer had already applied
+came back as a failure, when the contract requires the replay to be a safe
+no-op. A caller retrying after a crash would have treated a correctly-suppressed
+double reward as a failure.
+
+Probe: `record_outcome FAILED: m01.complete was already applied to this profile`.
+
+**Fix.** That specific refusal is mapped back to `OutcomeRecord::AlreadyApplied`.
+Other refusals (a malformed outcome key) still propagate as errors. Test:
+`accept_f48_c_an_outcome_another_writer_applied_is_reported_as_already_applied`.
+
+### 7. A mislabeled restart-required value was stored, not applied, and unmentioned
+
+A restart-required key whose stored entry claimed `live` is correctly not put
+into force (that part was right and is still tested). But the session did not
+record the key as pending, so `needs_restart()` was `false` while a stored value
+sat unused and waiting for the next session. A player whose driver change was
+ignored mid-run, with the settings screen reporting nothing pending, has no way
+to learn why.
+
+Probe: `stored=Some("opengl") live=Some("d3d9") needs_restart=false pending=[]`.
+
+**Fix.** The key is added to `pending_restart`, so a stored-but-unapplied
+restart-required value is reported as what it is. Test:
+`accept_f48_c_a_mislabeled_restart_value_is_reported_as_waiting_for_a_restart`.
+
+### 8. Reconciliation notices were dropped from the session's warnings
+
+`ProfileLibrary` reports a reconciliation (`Reconciled`) as a notice and the
+library's own docs say it is "never applied silently", but
+`LibraryStatus::warning_lines` returned only the registry warnings — so
+`ProfileSession::warnings()` dropped every notice. A population whose registry
+had been rebuilt from the slots on disk was handed to the caller with no
+indication that a decision had been made about which profiles exist.
+
+Probe: `notices=[Reconciled { registry_high_water: 0, adopted: [ProfileId(1)] }]`
+against `session warnings=["profile.sav has unsupported schema 9.0"]`.
+
+**Fix.** `LibraryNotice` gained a `Display` and `warning_lines` now includes the
+notices. F48-B's tests read `registry_warnings` directly, so they are unaffected.
+Test: `accept_f48_c_a_reconciled_population_reports_what_it_adopted`.
+
+### Sensitivity of the new tests
+
+Each of the eight fixes was reverted individually and the suite re-run. Every
+revert produced a failing `accept_f48_c_*` test:
+
+| Reverted fix | Test that failed |
+| --- | --- |
+| `refresh` re-applies pending settings | `..._a_conflict_retry_keeps_the_sessions_uncommitted_settings` (and the never-settles one) |
+| `create` persists the active pointer | `..._a_created_profile_becomes_the_persisted_selection` |
+| `open` does not rewrite the pointer | `..._opening_a_population_writes_nothing` |
+| the settings list is capped | `..._a_save_at_the_settings_bound_stays_writable` |
+| `check_owns` on the commit paths | `..._a_commit_cannot_be_retargeted_at_another_profile` |
+| the concurrent replay maps to `AlreadyApplied` | `..._an_outcome_another_writer_applied_is_reported_as_already_applied` |
+| a mislabeled restart value is pending | `..._a_mislabeled_restart_value_is_reported_as_waiting_for_a_restart` |
+| notices reach `warning_lines` | `..._a_reconciled_population_reports_what_it_adopted` |
+
+A ninth check confirmed the original behaviour still holds: removing the
+`refresh` call entirely fails three tests, including the pre-existing
+`accept_f48_c_a_conflicting_commit_reapplies_to_the_stored_revision`.
+
+### Still open after the review
+
+Everything in "Open / not claimed" above stands unchanged. In particular the
+review did **not** address: no runtime consumer of `ProfileSession` exists yet
+(F45-B / F61 / F49), the user-data base is still unchosen (F61), in-process
+exclusivity is still not a cross-process lock file, retired slots are still
+never collected, and no crash or `fsync` durability was measured (F48-D).

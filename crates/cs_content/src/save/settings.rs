@@ -24,7 +24,10 @@
 //!   entry, so a save written by a build that mislabeled a key cannot make a
 //!   restart-required change take effect immediately. Such a change lands in
 //!   [`SettingsState::pending_restart`] and becomes effective at the next
-//!   session, which is the only place it is ever read from.
+//!   session, which is the only place it is ever read from. A stored value that
+//!   is *not* in force for that reason is itself reported as pending, so a
+//!   caller can tell the player their device change is stored and not yet
+//!   applied rather than leaving a value nobody is using unmentioned.
 //! * **An unusable value has a safe recovery path.** A stored value a rule
 //!   refuses is recovered to the rule's declared [`SettingRule::default`] and
 //!   reported as a [`SettingRefusal`]; a *newly offered* value a rule refuses
@@ -34,6 +37,13 @@
 //!   is carried through the save verbatim, exactly as an unknown document field
 //!   is, and reported as [`RefusalReason::UnknownKey`]; a build that does not
 //!   know what a setting means must not act on it.
+//! * **Resolution never produces a document that could not be written.** The
+//!   resolved list is what a commit writes, so a save already at
+//!   [`MAX_SETTINGS`] is opened as it is — its entries are the data and none is
+//!   discarded to make room — and a declared key with no room is in force from
+//!   its default and reported as [`RefusalReason::ListFull`]. Without this, a
+//!   readable save would leave the session holding a profile it could never
+//!   save again.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -230,6 +240,11 @@ pub enum RefusalReason {
         stored: SettingApply,
         declared: SettingApply,
     },
+    /// The save already holds every setting a document may carry, so this
+    /// declared setting has no entry of its own. Its declared default is in
+    /// force for this session and is reported rather than stored, because a
+    /// list one entry too long could never be written back.
+    ListFull { max: usize },
 }
 
 impl fmt::Display for RefusalReason {
@@ -243,6 +258,11 @@ impl fmt::Display for RefusalReason {
                 "the save labels this change {} while the rule declares {}",
                 stored.label(),
                 declared.label()
+            ),
+            Self::ListFull { max } => write!(
+                f,
+                "the save already holds the {max} settings a document may carry, \
+                 so this one is in force but not written"
             ),
         }
     }
@@ -353,6 +373,12 @@ pub struct SettingsState {
     /// Declared keys whose stored value is not yet the one in force, because the
     /// rule labels the change as needing a restart.
     pending_restart: Vec<String>,
+    /// Keys whose stored value this session changed through
+    /// [`SettingsState::set`], in key order. Everything else in `stored` came
+    /// from the save or from a rule's declared default, so this is exactly the
+    /// set of uncommitted work — what a caller must still write, and what must
+    /// survive a refresh that re-reads the save underneath the session.
+    changed: Vec<String>,
     /// Everything that had to be recovered or was not used, as text.
     refusals: Vec<SettingRefusal>,
 }
@@ -372,12 +398,34 @@ impl SettingsState {
     /// Every declared key the profile does not store starts from its declared
     /// default, so a setting added by a newer build of the engine has a value
     /// without the save having to carry it.
+    ///
+    /// A save that already holds the most settings a document may carry is
+    /// opened as it is. Its entries are the data; a declared key that has no
+    /// room for an entry of its own is in force from its default and reported
+    /// as [`RefusalReason::ListFull`] rather than added, because a list one
+    /// entry over the bound could never be written back — the session would be
+    /// left holding a profile it can no longer save.
     pub fn open(catalog: &SettingCatalog, stored: &[SettingEntry]) -> Self {
         let mut entries: BTreeMap<String, SettingEntry> = BTreeMap::new();
         let mut live: BTreeMap<String, String> = BTreeMap::new();
+        let mut pending_restart: Vec<String> = Vec::new();
         let mut refusals = Vec::new();
 
         for entry in stored {
+            // A save that is already at the list bound stays as it is: its
+            // entries are the data, and dropping one to make room for a declared
+            // default would discard a value the player chose. The bound is
+            // enforced by the document validator, so a list at the bound is
+            // readable and a list over it never reaches here.
+            if entries.len() >= MAX_SETTINGS {
+                refusals.push(SettingRefusal {
+                    key: entry.key.clone(),
+                    stored: entry.value.clone(),
+                    reason: RefusalReason::ListFull { max: MAX_SETTINGS },
+                    recovery: String::new(),
+                });
+                continue;
+            }
             // A duplicate key cannot reach here — the document validator refuses
             // one — so the last entry wins and is reported rather than hidden.
             if entries.insert(entry.key.clone(), entry.clone()).is_some() {
@@ -437,6 +485,14 @@ impl SettingsState {
                 live.insert(entry.key.clone(), entry.value.clone());
                 continue;
             }
+            if awaiting_restart {
+                // The stored value is kept and will be in force at the next
+                // session, so this session *is* waiting for a restart. Reporting
+                // that is what lets a caller tell the player their device change
+                // is stored and not yet applied, rather than leaving a value the
+                // session is not using with nothing saying why.
+                pending_restart.push(entry.key.clone());
+            }
             if !acceptable {
                 refusals.push(SettingRefusal {
                     key: entry.key.clone(),
@@ -453,6 +509,22 @@ impl SettingsState {
         }
 
         for rule in catalog.rules() {
+            // A declared key the save does not carry gets an entry, but never
+            // one that pushes the list past what a document may hold: the
+            // resolved list is what a commit writes, so exceeding the bound here
+            // would leave the session holding a profile it can no longer save.
+            // The default is still in force and still reported.
+            if !entries.contains_key(rule.key) && entries.len() >= MAX_SETTINGS {
+                refusals.push(SettingRefusal {
+                    key: rule.key.to_owned(),
+                    stored: rule.default.to_owned(),
+                    reason: RefusalReason::ListFull { max: MAX_SETTINGS },
+                    recovery: rule.default.to_owned(),
+                });
+                live.entry(rule.key.to_owned())
+                    .or_insert_with(|| rule.default.to_owned());
+                continue;
+            }
             entries
                 .entry(rule.key.to_owned())
                 .or_insert_with(|| SettingEntry {
@@ -464,12 +536,32 @@ impl SettingsState {
                 .or_insert_with(|| rule.default.to_owned());
         }
 
+        pending_restart.sort();
+        pending_restart.dedup();
         Self {
             stored: entries,
             live,
-            pending_restart: Vec::new(),
+            pending_restart,
+            // Everything above came from the save or from a rule's default, so
+            // nothing is this session's uncommitted work.
+            changed: Vec::new(),
             refusals,
         }
+    }
+
+    /// The keys this session changed through [`SettingsState::set`], in key
+    /// order, with the stored value each one now holds.
+    ///
+    /// This is the session's uncommitted work: the entries a commit still owes
+    /// the save. A caller that re-reads the document underneath the session —
+    /// which is what a conflict retry does — re-applies exactly these, so a
+    /// concurrent writer's work is adopted and this session's own change is not
+    /// silently dropped.
+    pub fn changed(&self) -> Vec<(&str, &str)> {
+        self.changed
+            .iter()
+            .filter_map(|key| Some((key.as_str(), self.stored.get(key)?.value.as_str())))
+            .collect()
     }
 
     /// The value this process is using for `key`, whether or not a rule governs
@@ -557,6 +649,25 @@ impl SettingsState {
             .get(key)
             .map(|entry| entry.value.clone())
             .unwrap_or_else(|| rule.default.to_owned());
+        // A key with no entry of its own needs one, and a save may hold only so
+        // many. Refusing here is the same safe path as an unusable value: the
+        // value in force stays in force, and nothing is stored that could not be
+        // written back.
+        if !self.stored.contains_key(key) && self.stored.len() >= MAX_SETTINGS {
+            let recovery = self.live_value(key).unwrap_or(rule.default).to_owned();
+            self.refusals.push(SettingRefusal {
+                key: key.to_owned(),
+                stored: value.to_owned(),
+                reason: RefusalReason::ListFull { max: MAX_SETTINGS },
+                recovery: recovery.clone(),
+            });
+            return Ok(SettingOutcome::Refused {
+                key: key.to_owned(),
+                offered: value.to_owned(),
+                reason: RefusalReason::ListFull { max: MAX_SETTINGS },
+                recovery,
+            });
+        }
         self.stored.insert(
             key.to_owned(),
             SettingEntry {
@@ -565,6 +676,10 @@ impl SettingsState {
                 value: value.to_owned(),
             },
         );
+        if !self.changed.iter().any(|held| held == key) {
+            self.changed.push(key.to_owned());
+            self.changed.sort();
+        }
         match rule.apply {
             SettingApply::Live => {
                 self.live.insert(key.to_owned(), value.to_owned());
