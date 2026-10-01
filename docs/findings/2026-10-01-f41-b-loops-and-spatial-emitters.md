@@ -30,3 +30,7 @@ Date: 2026-10-01. Task F41-B. Capabilities: ordinary build/test only.
 - Loop regions are unknown (no `smpl` chunks); none were invented.
 - The system is not yet registered in the app schedule (no `AudioSession` is
   inserted by the loading handoff); that is wiring for the mixer consumer.
+
+The smoothing, mixer and schedule-registration items above are follow-up
+task #445. Until #444 and #445 are done, no retail sound plays and F41-B
+fidelity claims stay unmade.
