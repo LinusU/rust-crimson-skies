@@ -15,12 +15,14 @@
 //! game data.
 
 use cs_sim::ai::navigation::{
-    Blocker, FollowPlan, NavState, NavigationError, ReferenceFrameSample, RouteFrame, RouteGraph,
-    RouteGraphError, SYNTHETIC_PURSUIT_DT_S, SYNTHETIC_PURSUIT_SESSION, follow_route,
-    heading_from_direction, synthetic_pursuit_actor, synthetic_pursuit_route,
-    synthetic_pursuit_set,
+    Blocker, FollowPlan, NavState, NavigationCadence, NavigationError, NavigationSet, Navigator,
+    ReferenceFrameSample, RouteFrame, RouteGraph, RouteGraphError, RouteNode, RouteNodeId,
+    SYNTHETIC_PURSUIT_DT_S, SYNTHETIC_PURSUIT_SEED, SYNTHETIC_PURSUIT_SESSION, follow_route,
+    heading_from_direction, synthetic_maneuver_envelope, synthetic_pursuit_actor,
+    synthetic_pursuit_route, synthetic_pursuit_set,
 };
 use cs_sim::damage::ActorId;
+use cs_types::Tick;
 
 fn actor(serial: u64) -> ActorId {
     synthetic_pursuit_actor(serial)
@@ -71,24 +73,30 @@ fn accept_f31_c_displaced_actor_rejoins_before_the_next_mandatory_marker() {
     }
 }
 
-/// The production driver propels a moving-frame route by sampling the frame
-/// each tick, so an origin shift between ticks neither resets progress nor
-/// fires a false arrival.
+/// The production driver samples the moving frame on every tick, so the same
+/// local node maps to its current world position: a large per-tick origin shift
+/// moves the observed target, and the shifted frame neither resets the
+/// set-owned progress nor fires a false arrival.
+///
+/// The frame origin drives 300 m down `-Z` between ticks. A follower that
+/// sampled only the identity frame would keep reporting the first node at its
+/// local 200 m instead of the moved ~500 m, so the second decision's target
+/// distance discriminates a real sample from an ignored one.
 #[test]
 fn accept_f31_c_follow_route_samples_a_moving_frame_each_tick() {
     let route = RouteGraph::try_new(
         RouteFrame::Moving { anchor: 7 },
         0.0,
         vec![
-            cs_sim::ai::navigation::RouteNode {
-                id: cs_sim::ai::navigation::RouteNodeId(0),
+            RouteNode {
+                id: RouteNodeId(0),
                 sequence: 0,
                 mandatory: true,
                 position_m: [0.0, 0.0, -200.0],
                 arrival_radius_m: 6.0,
             },
-            cs_sim::ai::navigation::RouteNode {
-                id: cs_sim::ai::navigation::RouteNodeId(1),
+            RouteNode {
+                id: RouteNodeId(1),
                 sequence: 1,
                 mandatory: true,
                 position_m: [0.0, 0.0, -500.0],
@@ -98,9 +106,18 @@ fn accept_f31_c_follow_route_samples_a_moving_frame_each_tick() {
     )
     .expect("the moving route is valid");
 
+    // Register at the route start (unlike `synthetic_pursuit_set`, which
+    // resumes past a spawn node) so the first node is the live target.
+    let navigator = Navigator::new(
+        synthetic_maneuver_envelope(),
+        NavigationCadence::designed_default(),
+    )
+    .expect("the synthetic envelope and cadence are valid");
+    let mut set = NavigationSet::new(SYNTHETIC_PURSUIT_SESSION, SYNTHETIC_PURSUIT_SEED, navigator);
     let actor = actor(1);
-    let mut set = synthetic_pursuit_set(1);
-    // The frame origin jumps 200 m down the route between the two ticks.
+    set.register(actor).expect("the fixture actor registers");
+
+    // The frame origin drives 300 m down -Z between ticks.
     let outcome = follow_route(
         &mut set,
         actor,
@@ -114,25 +131,47 @@ fn accept_f31_c_follow_route_samples_a_moving_frame_each_tick() {
                 speed_mps: 40.0,
                 climb_mps: 0.0,
             },
-            max_ticks: 4000,
+            max_ticks: 4,
         },
         |tick| ReferenceFrameSample {
-            origin_m: [0.0, 0.0, -200.0 * tick.0 as f64],
+            origin_m: [0.0, 0.0, -300.0 * tick.0 as f64],
             yaw_rad: 0.0,
         },
     )
     .expect("the moving follow request is valid");
 
     assert!(
-        outcome.progress.reached() >= 1,
-        "the follower reaches the first mandatory marker despite the moving frame"
+        outcome.decisions.len() >= 2,
+        "the probe runs at least two ticks"
     );
-    let mut previous = 0;
+    // Tick 0: the frame is at the origin, so the first node is 200 m ahead.
+    let first = outcome.decisions[0]
+        .decision
+        .diagnostics
+        .distance_to_target_m;
+    assert!(
+        (first - 200.0).abs() < 1.0,
+        "the first tick targets the frame-mapped first node, got {first}"
+    );
+    // Tick 1: the frame moved 300 m, so the target is ~500 m away. An ignored
+    // frame would still report ~199 m.
+    let second = outcome.decisions[1]
+        .decision
+        .diagnostics
+        .distance_to_target_m;
+    assert!(
+        second > 400.0,
+        "the second tick must observe the moved frame, got {second}"
+    );
+    // The receding target is neither a false arrival nor a progress reset.
     for decision in &outcome.decisions {
-        let reached = decision.decision.progress.reached();
-        assert!(reached == previous || reached == previous + 1);
-        previous = reached;
+        assert_eq!(
+            decision.decision.progress.reached(),
+            0,
+            "a moving frame must not report progress it did not earn"
+        );
     }
+    assert_eq!(outcome.progress.reached(), 0);
 }
 
 /// The driver refuses an actor the set does not own rather than inventing a
