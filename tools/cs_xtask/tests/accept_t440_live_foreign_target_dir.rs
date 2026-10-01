@@ -28,14 +28,21 @@ use std::process::{Command, Output};
 
 use cs_xtask::target_dir::{self, TargetDirError};
 
-/// The checkout under test, canonicalized: cargo resolves a checkout's own
-/// root before it hands `CARGO_MANIFEST_DIR` to rustc, so an unnormalized
-/// `tools/cs_xtask/../..` would never compare equal to what it records.
+/// The checkout under test, named at run time from the working directory.
+///
+/// Cargo resolves a checkout's own root before it hands `CARGO_MANIFEST_DIR` to
+/// rustc, so an unnormalized `tools/cs_xtask/../..` would never compare equal
+/// to what it records. And `env!("CARGO_MANIFEST_DIR")` is baked into whichever
+/// checkout compiled this binary, which need not be the checkout running it: a
+/// shared `CARGO_TARGET_DIR` lets `cargo test` reuse a foreign artifact, and
+/// this gate would judge a tree it never touches — and a checkout whose
+/// recorded crates are legitimately foreign would be named against the wrong
+/// root (task #437). Cargo runs test binaries with the package root as the
+/// working directory, so [`target_dir::running_workspace_root`] walks up inside
+/// the running checkout. The walk is pinned by `accept_t437_` in
+/// `accept_t437_runtime_workspace_root.rs`.
 fn workspace_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
-        .expect("the workspace root must exist")
+    target_dir::running_workspace_root().expect("the workspace root must exist")
 }
 
 /// Root every fixture is created under (inside the gitignored `target/`, so

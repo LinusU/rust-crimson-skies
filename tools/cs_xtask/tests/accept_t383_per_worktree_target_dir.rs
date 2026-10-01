@@ -17,9 +17,8 @@ use std::process::Command;
 
 use cs_xtask::target_dir::{self, TargetDirError};
 
-/// The workspace root of the checkout this test process is *running* in,
-/// found at run time by walking up from the working directory to the
-/// manifest with `[workspace]`.
+/// The workspace root of the checkout this test process is *running* in, found
+/// at run time from the working directory rather than baked in at compile time.
 ///
 /// The gate compares the environment that launched the test, and a compiled
 /// test binary can outlive the tree that built it: a `CARGO_TARGET_DIR`
@@ -29,34 +28,20 @@ use cs_xtask::target_dir::{self, TargetDirError};
 /// touches. Comparing a runtime target directory against a compile-time
 /// root misfires: it reports a private `…/f18b/target` as shared because the
 /// baked root is `…/devin-1` (task #437). Cargo runs test binaries with the
-/// package root as the working directory, so the walk starts inside the
-/// running checkout regardless of where the binary was compiled.
+/// package root as the working directory, so
+/// [`target_dir::running_workspace_root`] walks up inside the running
+/// checkout regardless of where the binary was compiled. The walk itself is
+/// pinned by `accept_t437_` in `accept_t437_runtime_workspace_root.rs`.
 fn workspace_root() -> PathBuf {
-    let start =
-        std::env::current_dir().expect("cargo test runs test binaries with a working directory");
-    let mut dir = start.as_path();
-    loop {
-        let manifest = dir.join("Cargo.toml");
-        if manifest.is_file()
-            && fs::read_to_string(&manifest)
-                .map(|contents| {
-                    contents
-                        .lines()
-                        .any(|line| line.trim_start().starts_with("[workspace]"))
-                })
-                .unwrap_or(false)
-        {
-            return dir.to_path_buf();
-        }
-        let Some(parent) = dir.parent() else {
-            panic!(
-                "no ancestor of {} holds a Cargo.toml with [workspace]; cannot \
-                 name the checkout this test is running in",
-                start.display()
-            );
-        };
-        dir = parent;
-    }
+    target_dir::running_workspace_root().unwrap_or_else(|| {
+        panic!(
+            "no ancestor of the working directory holds a Cargo.toml with a \
+             [workspace] table, so this run cannot name the checkout it is \
+             running in; cargo test runs test binaries with the package root \
+             as the working directory, so the checkout's own manifest is an \
+             ancestor of it"
+        )
+    })
 }
 
 /// Root every fixture worktree is created under (inside the gitignored
