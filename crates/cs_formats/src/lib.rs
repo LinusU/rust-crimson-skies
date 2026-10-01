@@ -51,6 +51,14 @@
 //! `specs/F12-text-configuration-strings-and-pe-resources.md` (stage F12-A,
 //! [`text`]).
 //!
+//! The legacy-import surface inventory and the declared-layout reader its
+//! measurements will plug into:
+//! `specs/F64-legacy-custom-aircraft-and-optional-save-import.md` (stage
+//! F64-A, [`legacy_profile`]). Every inventory row's layout evidence is
+//! `Unknown` and the one shipped layout is `Designed` fixture data: no legacy
+//! original file was opened, so nothing here may be read as a measurement of
+//! the original profile, save or custom-aircraft formats.
+//!
 //! The inventory of candidate script containers and its disassembly-neutral
 //! evidence schema:
 //! `specs/F13-mission-language-discovery-and-compatibility-closure.md`
@@ -69,6 +77,7 @@ pub mod error;
 pub mod gamez;
 pub mod interp;
 pub mod io;
+pub mod legacy_profile;
 pub mod pe_resources;
 #[cfg(test)]
 mod pe_resources_tests;
@@ -95,6 +104,14 @@ pub use interp::{
     plan_interp_loading_classified, read_interp,
 };
 pub use io::{AllocationBudget, ParseContext, Reader, RecursionBudget, RecursionGuard};
+pub use legacy_profile::{
+    ArtifactProposal, ArtifactProposalError, ImportRequirement, LEGACY_LAYOUT_INVENTORY,
+    LEGACY_MAGIC_BYTES, LEGACY_PROFILE_ENTRYPOINT, LegacyArtifactClass, LegacyIdClass,
+    LegacyIdSlot, LegacyLayout, LegacyLayoutError, LegacyLayoutRecord, LegacyLimits,
+    LegacyProfileDocument, LegacyProfileError, LegacyProfileErrorKind, LegacyRecord, LegacySlot,
+    LegacySlotType, LegacyValue, MAX_LEGACY_SOURCE_BYTES, TrailingPolicy, check_slot_widths,
+    layout_record, read_legacy_profile, synthetic_layout,
+};
 pub use pe_resources::{
     COFF_HEADER_BYTES, DATA_DIRECTORY_BYTES, DOS_LFANEW_OFFSET, DOS_MAGIC, DataDirectory, HIGH_BIT,
     LANG_ENGLISH_US, LANG_NEUTRAL, OFFSET_MASK, OPTIONAL_MAGIC_PE32, OPTIONAL_MAGIC_PE32PLUS,

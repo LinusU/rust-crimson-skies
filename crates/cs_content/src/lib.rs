@@ -392,6 +392,20 @@
 //! tagged designed or original-verified. The instrument projection that uses it
 //! is `cs_app::ui::hud`.
 //!
+//! [`legacy_import`] is the F64-A legacy-import contract
+//! (`specs/F64-legacy-custom-aircraft-and-optional-save-import.md`, stage
+//! `### F64-A`): [`legacy_import::plan_import`] turns one read-only legacy
+//! source into an [`legacy_import::ImportPlan`] or an
+//! [`legacy_import::ImportRefusal`], classifying the result as full, partial
+//! or unsupported and retaining the source fingerprint and the unresolved rows
+//! as a [`legacy_import::MigrationReport`]. Legacy ids resolve through
+//! [`legacy_import::LegacyIdMap`] content identities, never through list
+//! positions; undeclared bytes stay unresolved rather than guessed; and only a
+//! measured layout is admitted by default. It is a pure function over borrowed
+//! bytes with no write path, so a hostile or oversized profile cannot touch the
+//! source or a new save. Nothing here is original-verified: every legacy layout
+//! is still `Unknown` and F64-B supplies the measured one.
+//!
 //! [`cs_types`]: cs_types
 //! [`cs_formats`]: cs_formats
 //! [`cs_assets`]: cs_assets
@@ -414,6 +428,7 @@ pub mod environment;
 pub mod flight_tuning;
 pub mod hud;
 pub mod interaction;
+pub mod legacy_import;
 pub mod livery;
 pub mod loading;
 pub mod localization;
