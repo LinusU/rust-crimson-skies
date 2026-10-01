@@ -31,7 +31,8 @@ build/test only (no `CS_GAME_DIR` read, no evidence report required).
   crate-level doc paragraph.
 - This file.
 
-Test count: 21 `accept_f53_a_*` unit tests in
+Test count: 22 `accept_f53_a_*` unit tests in (21 as submitted, one added
+by review for the action-premise check) in
 `crates/cs_content/src/mods/`, selected by
 `cargo test --workspace --locked -- accept_f53_a_ --include-ignored`.
 
@@ -92,10 +93,33 @@ that resolves the conflict by input order, fails this.
   The cosmetic set is deliberately small and is the conservative direction:
   a false "cosmetic" would let a gameplay change escape the session/save/
   replay/handshake marking, while a false "gameplay" only costs caution.
-  **`ContentKind::Mesh` is therefore *not* cosmetic** — a render mesh can be
-  the source of a derived collider in this project
-  (`docs/findings/2026-09-23-avian-collider-from-mesh-needs-bevy-asset-
-  stack.md`), so a mesh override is not *provably* cosmetic.
+  **`ContentKind::Mesh` and `ContentKind::AnimationTrack` are therefore
+  *not* cosmetic** — the two kinds this project can already show reaching
+  collision or simulation state:
+
+  * a render mesh can be the source of a derived collider
+    (`docs/findings/2026-09-23-avian-collider-from-mesh-needs-bevy-asset-
+    stack.md`);
+  * an F20-A animation clip carries `MarkerEffect::Gameplay` markers that
+    move simulation state — mission cues, state transitions, destruction
+    triggers (`cs_content::animation`) — **and** its `VisibilityChannel`
+    drives `AnimatedNodeState::collider_enabled` in
+    `cs_sim::animated_object`, so a clip can enable or disable a collider.
+
+  So a mesh or clip override cannot be *proved* cosmetic. Both were
+  **corrected during review**: `AnimationTrack` was in the cosmetic set in the
+  first submission, which would have let a gameplay-affecting clip escape the
+  session/save/replay/handshake marking that non-negotiable 3 demands.
+- **Each override action is checked against what the set provides.**
+  `Add` claims an id is new and `Replace` claims there is something to take
+  over, so `check_actions` refuses an `Add` of an id the base game already
+  provides (`AddOfExistingContent`) and a `Replace` of an id nothing
+  provides (`ReplaceOfMissingContent`). `MountRequest::base_ids` was
+  accepted but never consulted in the first submission, while
+  `overrides::OverrideAction`'s documentation promised exactly this check;
+  **both the check and the field's use were added during review**. An id
+  claimed both ways is reported as `ActionCollision` alone, so a contested id
+  never also collects a premise fault that may not be the real one.
 - **Precedence (F53 AC01).** `plan_mods` returns one `PrecedenceEntry` per
   claimed content id, sorted by id, naming the winner (the mod loaded last),
   its position and every shadowed claim with positions. The load order is fed
@@ -108,10 +132,12 @@ that resolves the conflict by input order, fails this.
   `PlanProblem`s, sorts and dedups them, and returns them together, so
   fixing one fault does not hide the next. The order is the derived `Ord` of
   the enum, which is stable across runs and input orders.
-- **Action collisions.** One mod `Add`ing and another `Replace`ing the same
-  id is a contradiction about whether the base game has it, and is refused
-  (`ActionCollision`) rather than resolved by load order. Contesting the
-  *same* action is legitimate and is reported as precedence instead.
+- **Action collisions and action premises.** One mod `Add`ing and another
+  `Replace`ing the same id is a contradiction about whether the base game has
+  it, and is refused (`ActionCollision`) rather than resolved by load order.
+  Contesting the *same* action is legitimate and is reported as precedence
+  instead. Independently, each action is checked against what the mounted set
+  provides; see the classification section above.
 - **Budgets.** Five integer limits (`max_mods`, `max_dependencies`,
   `max_overrides_per_mod`, `max_declared_bytes_per_mod`,
   `max_declared_bytes_total`), all designed bounds, all overridable through
@@ -156,7 +182,7 @@ that resolves the conflict by input order, fails this.
 - `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
 - `cargo test --workspace --locked`
 - `cargo test --workspace --locked -- accept_f53_a_ --include-ignored`
-  — 21 tests, all in `cs_content`'s lib target
+  — 22 tests, all in `cs_content`'s lib target
 
 ## Sensitivity probes (run and reverted; none committed)
 
@@ -204,3 +230,36 @@ dependency order. With that assertion in place, probe 3 fails as it should.
 - `crates/cs_content/tests/` and the other two owner paths
   (`crates/cs_assets/src/mods.rs`, `crates/cs_app/src/ui/mods.rs`) are
   untouched by this stage; F53-B and F53-C are their natural consumers.
+
+## Review corrections (reviewer pass)
+
+Two defects were found in review and fixed on this branch. Both were
+load-bearing policy errors, not style:
+
+1. **`ContentKind::AnimationTrack` was classified `Cosmetic`.** The
+   classification policy is the hash policy F53 non-negotiable 3 relies on,
+   and its own stated rule is that a kind is cosmetic only when it is
+   *provably* free of simulation state. An F20-A clip is not: it carries
+   `MarkerEffect::Gameplay` markers (mission cues, state transitions,
+   destruction triggers — `cs_content::animation`) and its visibility channel
+   drives `AnimatedNodeState::collider_enabled`
+   (`cs_sim::animated_object`). A mod replacing a clip could therefore change
+   the simulation while the plan reported a cosmetic-only mount and skipped
+   the marking non-negotiable 3 requires. `Mesh` was already excluded for the
+   same class of reason; `AnimationTrack` had been missed. It was removed from
+   the cosmetic set, and the policy test now pins both kinds with the reason.
+2. **`MountRequest::base_ids` was accepted and never consulted.**
+   `overrides::OverrideAction`'s documentation promised that "`Add` may not
+   name an id the base content already provides, and a `Replace` may not name
+   an id nothing provides", but no code implemented it and the doc link it
+   cited (`super::plan::PlanProblem`) did not resolve to anything. A mod could
+   `Add` over base content or `Replace` nothing and still plan cleanly, making
+   the mounted result depend on load order rather than on a stated premise.
+   Implemented as `AddOfExistingContent` and `ReplaceOfMissingContent`, and
+   the broken intra-doc links in the module were repaired.
+
+Sensitivity probes for both corrections were run and reverted: disabling the
+premise checks fails
+`accept_f53_a_each_action_is_checked_against_what_the_set_provides`, and
+returning `AnimationTrack` to the cosmetic set fails
+`accept_f53_a_effect_policy_is_derived_from_the_target_kind`.

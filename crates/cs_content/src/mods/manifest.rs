@@ -330,7 +330,8 @@ impl fmt::Display for ModDependency {
 ///
 /// This is a *classification of what a manifest said*, not a capability:
 /// [`ModManifest::try_new`] refuses a manifest that carries
-/// [`NativeLibrary`], so a native library can be named in a report and can
+/// [`NativeLibrary`](Self::NativeLibrary), so a native library can be named
+/// in a report and can
 /// never be mounted. F53 non-negotiable 2 forbids executing native
 /// DLL/plugin code from an original or a mod archive, and this engine has no
 /// loader for it at all.
@@ -346,7 +347,8 @@ impl PayloadKind {
     /// Extensions classified as native code, lowercased and without the dot.
     ///
     /// A closed list, not a detection: an extension outside it is
-    /// [`DeclarativeData`], which is the safe direction because a
+    /// [`DeclarativeData`](Self::DeclarativeData), which is the safe direction
+    /// because a
     /// declarative file that turns out to be unreadable is refused by its
     /// reader rather than executed.
     pub const NATIVE_EXTENSIONS: &'static [&'static str] =

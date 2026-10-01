@@ -25,7 +25,8 @@
 //!   never hold an id that escapes its namespace or a source path that
 //!   escapes the mod root.
 //! * [`overrides::ContentOverride`] — one mod's claim about one content id:
-//!   [`overrides::Add`] or [`overrides::Replace`], a mod-root-relative source
+//!   [`overrides::OverrideAction::Add`] or
+//!   [`overrides::OverrideAction::Replace`], a mod-root-relative source
 //!   spelling and a declared byte count.
 //! * [`ModSet`] — a set of manifests as supplied, with no order assumed.
 //! * [`ModPlan`] — the answer: a deterministic load order, a
@@ -187,6 +188,11 @@ impl MountRequest {
     }
 
     /// The content ids the base game provides.
+    ///
+    /// The plan checks every override's action against this set: an
+    /// [`OverrideAction::Add`] of an id listed here is refused, because the
+    /// id is not new. This is the caller's claim about the base game, not
+    /// something the plan verifies; F53-B supplies it from the real catalog.
     pub fn base_ids(&self) -> &BTreeSet<ContentId> {
         &self.base_ids
     }
@@ -563,24 +569,6 @@ pub enum PlanProblem {
         /// The gameplay ids it claims, sorted.
         gameplay_targets: Vec<ContentId>,
     },
-    /// A mod ships a native library or executable.
-    ///
-    /// F53 non-negotiable 2: no native DLL/plugin code is ever loaded from a
-    /// mod archive, and a manifest that asks for it is refused rather than
-    /// quietly stripped.
-    NativePayload {
-        /// The mod.
-        id: ModId,
-        /// The file it ships.
-        path: String,
-    },
-    /// A payload or override source spelling is not a safe relative path.
-    UnsafePath {
-        /// The mod.
-        id: ModId,
-        /// The spelling as written.
-        spelling: String,
-    },
     /// Two mods claim the same content id with different actions, so which
     /// one introduces it and which one takes it over cannot both be true.
     ActionCollision {
@@ -590,6 +578,31 @@ pub enum PlanProblem {
         adds: ModId,
         /// The mod that replaces it.
         replaces: ModId,
+    },
+    /// An [`OverrideAction::Add`] names a content id the base game already
+    /// provides.
+    ///
+    /// "Add" is a claim that the id does not exist yet, so an id the base
+    /// game ships contradicts it. Left unchecked the mount would silently
+    /// shadow base content behind an *add*, which is the same ambiguity a
+    /// [`ActionCollision`] refuses.
+    AddOfExistingContent {
+        /// The mod.
+        id: ModId,
+        /// The id it claims to introduce.
+        target: ContentId,
+    },
+    /// A [`OverrideAction::Replace`] names a content id nothing provides: not the
+    /// base game, and not any other mod in the set.
+    ///
+    /// "Replace" is a claim that something is already there to take over, so
+    /// an id nothing provides contradicts it and the override could only ever
+    /// introduce content while calling itself a replacement.
+    ReplaceOfMissingContent {
+        /// The mod.
+        id: ModId,
+        /// The id it claims to take over.
+        target: ContentId,
     },
 }
 
@@ -610,9 +623,9 @@ impl PlanProblem {
             Self::TotalByteBudgetExceeded { .. } => "total_byte_budget_exceeded",
             Self::TooManyMods { .. } => "too_many_mods",
             Self::CosmeticOnlyMismatch { .. } => "cosmetic_only_mismatch",
-            Self::NativePayload { .. } => "native_payload",
-            Self::UnsafePath { .. } => "unsafe_path",
             Self::ActionCollision { .. } => "action_collision",
+            Self::AddOfExistingContent { .. } => "add_of_existing_content",
+            Self::ReplaceOfMissingContent { .. } => "replace_of_missing_content",
         }
     }
 }
@@ -688,14 +701,6 @@ impl fmt::Display for PlanProblem {
                     "mod {id} claims to be cosmetic-only but claims gameplay content: {targets}"
                 )
             }
-            Self::NativePayload { id, path } => write!(
-                f,
-                "mod {id} ships the native payload {path}, which this engine never loads"
-            ),
-            Self::UnsafePath { id, spelling } => write!(
-                f,
-                "mod {id} spells a payload path {spelling:?} that could escape the mod root"
-            ),
             Self::ActionCollision {
                 target,
                 adds,
@@ -704,6 +709,13 @@ impl fmt::Display for PlanProblem {
                 f,
                 "{adds} adds {target} while {replaces} replaces it; one id cannot be both"
             ),
+            Self::AddOfExistingContent { id, target } => write!(
+                f,
+                "mod {id} adds {target}, which the base game already provides"
+            ),
+            Self::ReplaceOfMissingContent { id, target } => {
+                write!(f, "mod {id} replaces {target}, which nothing provides")
+            }
         }
     }
 }
@@ -947,7 +959,7 @@ pub fn plan_mods(set: &ModSet, request: &MountRequest) -> Result<ModPlan, ModPla
         problems.push(PlanProblem::DependencyCycle { cycle });
     }
 
-    check_actions(&by_id, &mut problems);
+    check_actions(&by_id, request.base_ids(), &mut problems);
 
     if !problems.is_empty() {
         problems.sort();
@@ -1068,13 +1080,31 @@ fn find_cycle(edges: &BTreeMap<ModId, BTreeSet<ModId>>) -> Option<Vec<ModId>> {
     None
 }
 
-/// Refuses a content id that one mod adds while another replaces.
+/// Refuses a content id that one mod adds while another replaces, and
+/// refuses each action taken against the wrong premise.
 ///
 /// Adding and replacing the same id are contradictory claims about whether
 /// the base game has it, and silently picking one would make the resulting
 /// content depend on load order. Contesting the *same action* is fine and is
 /// reported as precedence instead.
-fn check_actions(by_id: &BTreeMap<ModId, &ModManifest>, problems: &mut Vec<PlanProblem>) {
+///
+/// The second half checks each claim against what the set actually provides,
+/// which is [`MountRequest::base_ids`] plus every id any mod in the set
+/// [`OverrideAction::Add`]s:
+///
+/// * an `Add` of an id the base game already provides contradicts itself —
+///   the id is not new;
+/// * a `Replace` of an id nothing provides contradicts itself — there is
+///   nothing to take over.
+///
+/// Without both checks a mod could `Add` over base content or `Replace`
+/// nothing, and in either case the mounted result would depend on load order
+/// rather than on a stated premise.
+fn check_actions(
+    by_id: &BTreeMap<ModId, &ModManifest>,
+    base_ids: &BTreeSet<ContentId>,
+    problems: &mut Vec<PlanProblem>,
+) {
     let mut actions: BTreeMap<&ContentId, BTreeMap<&ModId, OverrideAction>> = BTreeMap::new();
     for (id, manifest) in by_id {
         for entry in manifest.overrides() {
@@ -1084,6 +1114,21 @@ fn check_actions(by_id: &BTreeMap<ModId, &ModManifest>, problems: &mut Vec<PlanP
                 .insert(id, entry.action());
         }
     }
+    // Every id the mounted set will have, whatever the action: the base
+    // content plus whatever the mods introduce.
+    let provided: BTreeSet<&ContentId> = base_ids
+        .iter()
+        .chain(
+            actions
+                .iter()
+                .filter(|(_, claimants)| {
+                    claimants
+                        .values()
+                        .any(|action| *action == OverrideAction::Add)
+                })
+                .map(|(target, _)| *target),
+        )
+        .collect();
     for (target, claimants) in actions {
         let mut adds: Option<&ModId> = None;
         let mut replaces: Option<&ModId> = None;
@@ -1101,6 +1146,26 @@ fn check_actions(by_id: &BTreeMap<ModId, &ModManifest>, problems: &mut Vec<PlanP
                 adds: adds.clone(),
                 replaces: replaces.clone(),
             });
+        }
+        let exists = base_ids.contains(target) || provided.contains(target);
+        // Only meaningful once the claims agree on the action; an id claimed
+        // both ways is already refused as a collision and naming one of the
+        // two premises here would report a fault that may not be the real one.
+        match (adds, replaces) {
+            (Some(_), Some(_)) => {}
+            (Some(adds), None) if base_ids.contains(target) => {
+                problems.push(PlanProblem::AddOfExistingContent {
+                    id: adds.clone(),
+                    target: target.clone(),
+                });
+            }
+            (None, Some(replaces)) if !exists => {
+                problems.push(PlanProblem::ReplaceOfMissingContent {
+                    id: replaces.clone(),
+                    target: target.clone(),
+                });
+            }
+            _ => {}
         }
     }
 }
@@ -2103,6 +2168,113 @@ mod tests {
         assert_eq!(refused.problems()[0].code(), "action_collision");
     }
 
+    /// Each action is a claim about whether the id already exists, and the
+    /// plan checks the claim against what the set actually provides:
+    /// [`MountRequest::base_ids`] plus whatever the mods themselves add.
+    ///
+    /// This is the check `overrides::OverrideAction`'s documentation
+    /// promises. Without it a mod could `Add` over base content or `Replace`
+    /// nothing and the mounted result would depend on load order rather than
+    /// on a stated premise.
+    #[test]
+    fn accept_f53_a_each_action_is_checked_against_what_the_set_provides() {
+        let base_panel =
+            ContentId::from_source(ContentKind::Image, "synthetic.hull-panel").expect("valid id");
+        assert!(
+            synthetic_mount_request().base_ids().contains(&base_panel),
+            "the fixture request really does provide the panel, or this test proves nothing"
+        );
+
+        // An `Add` of an id the base game already provides contradicts
+        // itself: the id is not new.
+        let adds_base = synthetic_manifest_with_overrides(
+            "synthetic.adds-base",
+            vec![synthetic_image_override(
+                "synthetic.hull-panel",
+                OverrideAction::Add,
+                "art/shadow.png",
+                64,
+            )],
+        );
+        let refused = plan_mods(&ModSet::new(vec![adds_base]), &synthetic_mount_request())
+            .expect_err("an add of base content is not an add");
+        assert_eq!(
+            refused.problems(),
+            [PlanProblem::AddOfExistingContent {
+                id: mod_id("synthetic.adds-base"),
+                target: base_panel.clone(),
+            }]
+        );
+        assert_eq!(refused.problems()[0].code(), "add_of_existing_content");
+
+        // A `Replace` of an id nothing provides contradicts itself: there is
+        // nothing to take over. `synthetic.repaint-stripe` is absent from the
+        // fixture base list, and nothing else in the set adds it.
+        let replaces_nothing = || {
+            synthetic_manifest_with_overrides(
+                "synthetic.replaces-nothing",
+                vec![synthetic_image_override(
+                    "synthetic.repaint-stripe",
+                    OverrideAction::Replace,
+                    "art/ghost.png",
+                    64,
+                )],
+            )
+        };
+        let refused = plan_mods(
+            &ModSet::new(vec![replaces_nothing()]),
+            &synthetic_mount_request(),
+        )
+        .expect_err("a replace of an id nothing provides is not a replace");
+        assert_eq!(
+            refused.problems(),
+            [PlanProblem::ReplaceOfMissingContent {
+                id: mod_id("synthetic.replaces-nothing"),
+                target: ContentId::from_source(ContentKind::Image, "synthetic.repaint-stripe")
+                    .expect("valid"),
+            }]
+        );
+        assert_eq!(refused.problems()[0].code(), "replace_of_missing_content");
+
+        // When one mod adds an id and another replaces it, the *collision*
+        // is the real fault, so only that is reported: the premise checks
+        // stay silent rather than piling a second, possibly misleading fault
+        // onto the same contested id.
+        let introduced = synthetic_manifest_with_overrides(
+            "synthetic.introduces",
+            vec![synthetic_image_override(
+                "synthetic.repaint-stripe",
+                OverrideAction::Add,
+                "art/stripe.png",
+                64,
+            )],
+        );
+        let refused = plan_mods(
+            &ModSet::new(vec![introduced, replaces_nothing()]),
+            &synthetic_mount_request(),
+        )
+        .expect_err("one id cannot be both added and replaced");
+        assert_eq!(
+            refused.problems(),
+            [PlanProblem::ActionCollision {
+                target: ContentId::from_source(ContentKind::Image, "synthetic.repaint-stripe")
+                    .expect("valid"),
+                adds: mod_id("synthetic.introduces"),
+                replaces: mod_id("synthetic.replaces-nothing"),
+            }],
+            "the collision is reported alone, not also as a premise fault"
+        );
+
+        // And a `Replace` of base content is accepted, which is the normal
+        // case: the AC01 fixture does exactly this and plans cleanly.
+        let (first, second) = synthetic_conflicting_mods();
+        plan_mods(
+            &ModSet::new(vec![first, second]),
+            &synthetic_mount_request(),
+        )
+        .expect("replacing base content is the normal case");
+    }
+
     /// A duplicate mod id is a collision the set cannot resolve, and an
     /// empty set is refused rather than planned as an empty, valid plan.
     #[test]
@@ -2250,6 +2422,19 @@ mod tests {
             dependencies,
             Vec::new(),
             Vec::new(),
+        )
+    }
+
+    /// A synthetic manifest carrying only the given override rows, for the
+    /// base-content premise cases.
+    fn synthetic_manifest_with_overrides(id: &str, overrides: Vec<ContentOverride>) -> ModManifest {
+        synthetic_manifest(
+            id,
+            ModVersion::new(1, 0, 0),
+            true,
+            Vec::new(),
+            Vec::new(),
+            overrides,
         )
     }
 
