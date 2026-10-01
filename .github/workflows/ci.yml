@@ -2,6 +2,9 @@ name: CI
 
 on:
   push:
+  # Rally's lander (land.yml) pushes with GITHUB_TOKEN, which triggers no workflows, so it starts CI
+  # on the rebased branch through workflow_dispatch.
+  workflow_dispatch:
 
 concurrency:
   group: ci-${{ github.ref }}
