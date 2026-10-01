@@ -16,7 +16,10 @@
 //! [`library::ProfileLibrary`] is where the pieces meet: one population's
 //! profiles, allocating persistent ids above the persisted high-water mark,
 //! committing revisions and reporting every recovery as text a caller can
-//! show.
+//! show. [`settings`] is the consumer half of the setting list a document
+//! carries: a caller-supplied [`settings::SettingCatalog`] declares which keys
+//! exist, which values they accept, whether a change takes effect now or after
+//! a restart and which value is safe when the stored one is unusable.
 //!
 //! The formats are newly authored engine design, not original-game formats, so
 //! nothing here is `verified_original`. The cross-platform crash/recovery
@@ -27,4 +30,5 @@
 pub mod codec;
 pub mod fs;
 pub mod library;
+pub mod settings;
 pub mod store;
