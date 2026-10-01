@@ -122,6 +122,15 @@ name exists anywhere in the table. Three defects were found and fixed:
    inventoried spelling; the content id keeps its lower-cased key.
 3. The evidence harness's "not set" panic named a `cs_assets` path instead of
    its own `crates/cs_content` path.
+4. The commit that put this stage's `cs_sim` doc paragraph into feature-sheet
+   order pasted the F57 `net_state` paragraph `main` already carried, so after
+   the rebase `crates/cs_sim/src/lib.rs` held that paragraph twice and the
+   doclib order guard added by task #474
+   (`crates/cs_sim/tests/accept_doclib_conflict.rs`) failed: F56 sat between F20
+   and F22. The duplicate is gone and the F56 paragraph now sits directly
+   before the single F57 paragraph. CI had been green on the pre-rebase branch
+   only because the guard did not exist there yet, so this was a real defect the
+   rebase surfaced, not an artifact of the reviewer's conflict resolution.
 
 Three mutations of the production code (apply only the first event of a tick;
 force `team_play` to a value; make `RuleDraft::missing` always empty) each
