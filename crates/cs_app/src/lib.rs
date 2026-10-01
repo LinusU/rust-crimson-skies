@@ -197,6 +197,20 @@
 //! [`targeting::TargetableBinding`] ECS record tying an entity to its
 //! session-qualified targeting actor and rules subject.
 //!
+//! [`weapons`] is the F27-A weapon boundary
+//! (`specs/F27-guns-ammunition-hardpoints-and-ballistic-hits.md`, stage
+//! `### F27-A`): [`weapons::lower_gun`], which lowers a declared
+//! `cs_content::weapons::DeclaredGunDefinition` into the
+//! `cs_sim::weapons::GunDefinition` a fire resolver registers — refusing
+//! every unresolved field by name, because a session must not fire a gun
+//! whose muzzle velocity, cadence, spread or damage was invented;
+//! [`weapons::lower_rules`], which lowers the declared self-hit,
+//! friendly-fire, penetration, ricochet and ammo-switching options into the
+//! runtime rules a sweep filters candidates with and refuses each unknown;
+//! [`weapons::lower_ammunition`]; the [`weapons::MountPoseBinding`] and
+//! generation-stamped [`weapons::WeaponActorBinding`] ECS records that keep
+//! a mount's live hierarchy pose session- and generation-qualified.
+//!
 //! [`environment`] is the F19-A/F19-B environment boundary
 //! (`specs/F19-sky-atmosphere-weather-and-visibility.md`, stages
 //! `### F19-A` and `### F19-B`): [`environment::SkyFrame`], the one record
@@ -258,4 +272,5 @@ pub mod run;
 pub mod scene;
 pub mod synthetic;
 pub mod targeting;
+pub mod weapons;
 pub mod world;
