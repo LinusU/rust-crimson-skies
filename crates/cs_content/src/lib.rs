@@ -372,14 +372,6 @@
 //! [`settings::FidelityLabel`] replay metadata records and the strict
 //! persisted text form. The application side is `cs_app::accessibility`.
 //!
-//! [`multiplayer`] is the F56-A original multiplayer catalog
-//! (`specs/F56-original-multiplayer-scenarios-and-mode-rules.md`, stage
-//! `### F56-A`): [`multiplayer::discover_modes`] reads the modes the localized
-//! string table names and their briefings, [`multiplayer::discover_slots`]
-//! inventories the `MP<n>` scenario slots of every world group, and what the
-//! installation does not state (per-mode rules, the slot-to-mode binding)
-//! stays an explicit [`cs_types::content::Resolved::Unknown`].
-//!
 //! [`mods`] is the F53-A mod manifest and mount-plan contract
 //! (`specs/F53-mod-mounts-custom-content-and-compatibility-signatures.md`,
 //! stage `### F53-A`): the typed [`mods::ModManifest`] an F53-B manifest
@@ -395,6 +387,14 @@
 //! into, so "the later mod wins" is one rule rather than two. It opens no
 //! archive, reads no byte and mounts nothing: F53-B is the mount, F53-C the
 //! selection UI and export tooling, F53-D the reproducibility evidence.
+//!
+//! [`multiplayer`] is the F56-A original multiplayer catalog
+//! (`specs/F56-original-multiplayer-scenarios-and-mode-rules.md`, stage
+//! `### F56-A`): [`multiplayer::discover_modes`] reads the modes the localized
+//! string table names and their briefings, [`multiplayer::discover_slots`]
+//! inventories the `MP<n>` scenario slots of every world group, and what the
+//! installation does not state (per-mode rules, the slot-to-mode binding)
+//! stays an explicit [`cs_types::content::Resolved::Unknown`].
 //!
 //! [`replay`] is the F59-A replay, capture and evidence schema
 //! (`specs/F59-replays-captures-probes-and-acceptance-evidence.md`, stage
