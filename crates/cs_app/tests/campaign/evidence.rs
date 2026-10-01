@@ -1055,20 +1055,24 @@ fn evidence_report_m06_a_writes_the_acceptance_report() {
         artifact_array(&artifacts),
         jstr(
             "implementer: deepseek-1 (Rally #273, DeepSeek V4.1 Flash, session of 2026-10-01T20:41Z); \
-             reviewer: not yet assigned at hand-over. The implementer's own run is not independent \
-             review and is not independent original-reference evidence; no agent review replaces the \
-             owner's human approval"
+             reviewer: deepseek-1/deepseek-1 — a separate session with fresh context (the review \
+             claim of 2026-10-01T21:12Z) that did not take part in the implementation — \
+             regenerating this report on the rebased commit. Same agent name and model, different \
+             context: this review is not independent original-reference evidence and no agent \
+             review replaces the owner's human approval"
         ),
         jstr(
-            "acceptance suite run locally with the retail capability; this harness derives every \
-             field from the recorded log, production discovery of $CS_GAME_DIR and the binding \
-             `SourceContext::read` + `SourceContext::bind` derive from it (all five critical \
-             dependencies resolved; checklist entries still unknown are recorded in \
-             missions/bindings/M06.json, not dropped). No production code changed at M06-A: the \
-             join, its corroboration and the guard are M02-A's, and this stage exercises them at the \
-             sixth campaign position, the first mission of chapter 2 and the first row of the \
-             localized long names' second region group; claim is implemented only; validated with \
-             tools/validate_evidence.py --require-pass"
+            "acceptance suite re-run locally with the retail capability by the reviewer; this \
+             harness derives every field from the recorded log, production discovery of \
+             $CS_GAME_DIR and the binding `SourceContext::read` + `SourceContext::bind` derive \
+             from it (all five critical dependencies resolved; checklist entries still unknown are \
+             recorded in missions/bindings/M06.json, not dropped). No production code changed at \
+             M06-A: the join, its corroboration and the guard are M02-A's, and this stage exercises \
+             them at the sixth campaign position, the first mission of chapter 2 and the first row \
+             of the localized long names' second region group; claim is implemented only; validated \
+             with tools/validate_evidence.py --require-pass. `candidate_tree` is the tree of the \
+             commit the suite ran on: the only later delta is this report's own copy under \
+             docs/findings/evidence/, whose bytes are this file"
         ),
     );
 
