@@ -28,6 +28,7 @@ pub mod content;
 pub mod evidence;
 pub mod input;
 pub mod install;
+pub mod profile;
 pub mod random;
 pub mod space;
 
