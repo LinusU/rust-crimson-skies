@@ -882,6 +882,10 @@ fn accept_f48_d_a_hostile_slot_path_is_refused_and_nothing_outside_is_written() 
     let mut canary_slot = DirStorage::create(&canary, PROFILE_PREFIX).expect("canary slot");
     commit(&mut canary_slot, &doc(id, 99)).expect("the canary save");
     drop(canary_slot);
+    // Read only where the link-planting assertion below can run: off unix the
+    // canary bytes are never compared, and an unused binding is a `-D warnings`
+    // failure there.
+    #[cfg(unix)]
     let canary_before = fs::read(canary.join("profile.sav")).expect("the canary bytes");
 
     #[cfg(unix)]
