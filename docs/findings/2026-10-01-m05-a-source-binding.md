@@ -148,6 +148,6 @@ Each applied, run against `accept_m05_a_`, observed and reverted:
 | --- | --- |
 | `missions/bindings/M05.json`: `ch1-m05` changed to `ch1-m04` | 1 failure: `…the_committed_record_is_what_the_installation_derives` |
 | `title_form` accepts a tail that differs only in case | 1 failure: `…only_an_exact_title_or_an_exact_long_name_tail_confirms` |
-| `confirm_title` drops the verbatim-wins precedence (long-name rows consulted first) | failures in `…the_title_is_confirmed_only_through_the_long_name_form`, `…the_verbatim_form_wins…` |
-| the spelling-difference `unknowns` entry removed | 1 failure: `…the_title_is_confirmed_only_through_the_long_name_form` |
-| `campaign_position_for` returns position 3 for every confirmed row | failures in `…source_derived_binding…`, `…the_title_is_confirmed…`, `…the_verbatim_form_wins…`, `…the_campaign_keeps_everything_else…` |
+| `confirm_title` drops the verbatim-wins precedence (long-name rows consulted first) | 4 failures: `…source_derived_binding…`, `…the_committed_record…`, `…the_title_is_confirmed_only_through_the_long_name_form`, `…the_verbatim_form_wins…` |
+| the spelling-difference `unknowns` entry removed | 3 failures: `…source_derived_binding…`, `…the_committed_record…`, `…the_title_is_confirmed_only_through_the_long_name_form` |
+| `campaign_position_for` returns position + 1 for every confirmed row | 6 failures: every retail test except `…the_campaign_keeps_everything_else…`, plus `…a_contradicted_corroboration…` |
