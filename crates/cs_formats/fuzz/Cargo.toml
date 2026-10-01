@@ -54,6 +54,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "zbd_list_members"
+path = "fuzz_targets/zbd_list_members.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "zbd_sound_archive"
 path = "fuzz_targets/zbd_sound_archive.rs"
 test = false

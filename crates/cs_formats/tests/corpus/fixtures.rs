@@ -89,6 +89,13 @@ pub fn zbd_reader_archive() -> CorpusFixture {
     CorpusFixture::new(bytes, &[hard(TABLE, 0..10), slack(10..14)])
 }
 
+/// The same member-payload bytes read through the shared `list_members`
+/// layer: extents still arrive via the member table input, so the span map
+/// is identical.
+pub fn zbd_list_members() -> CorpusFixture {
+    zbd_reader_archive()
+}
+
 /// The same for the sound family.
 pub fn zbd_sound_archive() -> CorpusFixture {
     let mut bytes = b"sound-data".to_vec();

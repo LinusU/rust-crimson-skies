@@ -212,7 +212,7 @@ pub enum ExpectedOutcome {
 
 /// One corpus input.
 pub struct CorpusEntry {
-    /// Stable corpus identifier, e.g. `"synthetic/rof.directory.minimal"`.
+    /// Stable corpus identifier, e.g. `"synthetic/committed/rectangular.bm"`.
     pub id: &'static str,
     /// The [`ContainerSpec::id`] this entry feeds.
     pub container: &'static str,
@@ -254,8 +254,9 @@ const SLACK_ONLY: &[BoundaryKind] = &[BoundaryKind::Slack];
 /// parsed values (`decode_interp` records, `ImageDescriptor` inputs,
 /// `read_placeholders`, `decode_strip`) are deliberately not containers;
 /// the findings document records them as covered by their own stage's
-/// tests. A new parser landing without a spec here — or a spec whose id
-/// no corpus binding resolves — fails `accept_f62_a_registry_*`.
+/// tests. A spec whose id no corpus binding resolves — or a binding that
+/// names no declared container — fails `accept_f62_a_registry_*`, so the
+/// manifest and the test registry cannot drift apart.
 pub fn containers() -> &'static [ContainerSpec] {
     CONTAINERS
 }
@@ -299,6 +300,18 @@ static CONTAINERS: &[ContainerSpec] = &[
         },
         boundaries: TABLE_SLACK,
         fuzz_target: Some("zbd_reader_archive"),
+    },
+    ContainerSpec {
+        id: "zbd.list_members",
+        entrypoint: "cs_formats::zbd::list_members",
+        truncation: TruncationOracle::ExtentStatus {
+            rationale: "the shared member-listing layer the family readers \
+                        wrap: extents arrive via the MemberTable input, so a \
+                        cut can only degrade the member rows it no longer \
+                        covers",
+        },
+        boundaries: TABLE_SLACK,
+        fuzz_target: Some("zbd_list_members"),
     },
     ContainerSpec {
         id: "zbd.sound_archive",
@@ -495,6 +508,10 @@ static ENTRIES: &[CorpusEntry] = &[
         "signature-family header a probe dispatch accepts",
     ),
     synthetic("zbd.reader_archive", "one-member reader archive"),
+    synthetic(
+        "zbd.list_members",
+        "the same member payload through the shared listing layer",
+    ),
     synthetic("zbd.sound_archive", "one-member sound archive"),
     synthetic(
         "zbd.trailer_index",

@@ -16,8 +16,8 @@ use cs_formats::script_raw::{
 use cs_formats::text::{read_keyed_list, read_resource_header, scan_lines};
 use cs_formats::texture::{read_bmp, read_tga, read_zbd_textures};
 use cs_formats::zbd::{
-    MemberExtent, MemberTable, ZbdProbe, dispatch, read_reader_archive, read_sound_archive,
-    read_version_one_index, read_wave_header,
+    MemberExtent, MemberTable, ZbdProbe, dispatch, list_members, read_reader_archive,
+    read_sound_archive, read_version_one_index, read_wave_header,
 };
 use cs_formats::{
     AllocationBudget, ParseContext, RofLimits, decode_interp, read_bm, read_directory, read_interp,
@@ -107,6 +107,21 @@ pub fn registry() -> &'static [Binding] {
             container: "zbd.reader_archive",
             fixture: fixtures::zbd_reader_archive,
             probe: |fixture, cut| archive_probe(fixture, cut, "zbd/zrdr.zbd", false),
+        },
+        Binding {
+            container: "zbd.list_members",
+            fixture: fixtures::zbd_list_members,
+            probe: |fixture, cut| {
+                let table = archive_table(fixture, "zbd/zrdr.zbd");
+                let mut context = ParseContext::with_defaults("corpus/zbd.list_members");
+                match list_members(&mut context, cut, &table) {
+                    Err(error) => ProbeOutcome::Refused(error.code()),
+                    Ok(listing) => match listing.status() {
+                        cs_formats::zbd::ContainerStatus::Clean => ProbeOutcome::Accepted("clean"),
+                        cs_formats::zbd::ContainerStatus::Failed { .. } => ProbeOutcome::Damaged,
+                    },
+                }
+            },
         },
         Binding {
             container: "zbd.sound_archive",
@@ -334,6 +349,42 @@ fn role(spelling: &'static str) -> RelativePath {
     RelativePath::new(spelling).expect("corpus spellings are valid relative paths")
 }
 
+/// The member extents the `ExtentStatus` probes declare for the archive
+/// fixtures: one member over the load-bearing payload span and one over
+/// the unreferenced tail.
+const ARCHIVE_MEMBERS: &[MemberExtent<'static>] = &[
+    MemberExtent::new(
+        b"readme",
+        Some(1),
+        SourceSpan {
+            offset: 0,
+            length: 10,
+        },
+    ),
+    MemberExtent::new(
+        b"slack",
+        Some(2),
+        SourceSpan {
+            offset: 10,
+            length: 4,
+        },
+    ),
+];
+
+/// Builds the member table the family's own readers would declare for the
+/// fixture: dispatch on the fixture's role path, then the shared member
+/// extents.
+fn archive_table(fixture: &CorpusFixture, spelling: &'static str) -> MemberTable<'static> {
+    let path = role(spelling);
+    let decided = dispatch(ZbdProbe::new(
+        "corpus/zbd.archive",
+        &path,
+        &fixture.bytes[..fixture.bytes.len().min(64)],
+    ))
+    .expect("the role paths dispatch without a signature");
+    MemberTable::from_dispatch(&decided, ARCHIVE_MEMBERS)
+}
+
 /// The shared probe for the two `ExtentStatus` archives: build the member
 /// table the family's own reader would declare for the fixture, then hand
 /// the (possibly truncated) bytes to the production listing.
@@ -343,32 +394,7 @@ fn archive_probe(
     spelling: &'static str,
     sound: bool,
 ) -> ProbeOutcome {
-    let path = role(spelling);
-    let decided = dispatch(ZbdProbe::new(
-        "corpus/zbd.archive",
-        &path,
-        &fixture.bytes[..fixture.bytes.len().min(64)],
-    ))
-    .expect("the role paths dispatch without a signature");
-    let members = [
-        MemberExtent::new(
-            b"readme",
-            Some(1),
-            SourceSpan {
-                offset: 0,
-                length: 10,
-            },
-        ),
-        MemberExtent::new(
-            b"slack",
-            Some(2),
-            SourceSpan {
-                offset: 10,
-                length: 4,
-            },
-        ),
-    ];
-    let table = MemberTable::from_dispatch(&decided, &members);
+    let table = archive_table(fixture, spelling);
     let mut context = ParseContext::with_defaults("corpus/zbd.archive");
     let outcome = if sound {
         read_sound_archive(&mut context, &table, cut)

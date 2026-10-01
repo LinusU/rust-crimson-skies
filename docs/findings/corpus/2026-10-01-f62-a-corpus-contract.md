@@ -41,9 +41,10 @@ oracles:
 - `PrefixRefusal` — the container is self-framed; a prefix that damages a
   required span must be refused with a structured diagnostic.
 - `ExtentStatus` — the extents arrive as an input the bytes do not carry
-  (`read_reader_archive`, `read_sound_archive` take a `MemberTable`), so a
-  cut cannot be a top-level error; the contract is that the listing reports
-  the loss (`ContainerStatus::Failed`), never a silent success.
+  (`read_reader_archive`, `read_sound_archive` and the shared
+  `list_members` layer they wrap take a `MemberTable`), so a cut cannot be
+  a top-level error; the contract is that the listing reports the loss
+  (`ContainerStatus::Failed`), never a silent success.
 - `NotApplicable` — the input is not prefix-closed at all: the text readers
   are total over any byte slice, and `discover_container`/`inventory_scripts`
   absorb anything into findings and opaque records. They are still declared
@@ -71,7 +72,7 @@ offsets, with one of three damage rules:
 ### Measured outcomes, stage A
 
 `accept_f62_a_truncation_refuses_every_required_cut` probes every prefix of
-every fixture (46,707 probes, 46,273 required cuts). Notable shape the
+every fixture (46,721 probes, 46,283 required cuts). Notable shape the
 sweep surfaced and the span maps record:
 
 - `rof.tree`/`pe.layout`/`gamez.*`/`bm.image` tolerate trailing bytes, so

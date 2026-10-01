@@ -1,6 +1,6 @@
 //! `cs_xtask` — the workspace's reproducible testing and packaging gates.
 //!
-//! Five commands, all local (the owner's F00-C note keeps task-specific
+//! Six commands, all local (the owner's F00-C note keeps task-specific
 //! discovery out of CI):
 //!
 //! * `test-select --prefix <prefix>` runs the task's positive test selection
@@ -22,6 +22,9 @@
 //!   artifacts a removed worktree produced (task #433); and that it does not
 //!   hold artifacts a different worktree that is still there produced (task
 //!   #440).
+//! * `corpus manifest` prints the declared F62-A corpus contract as JSON and
+//!   `corpus audit` checks the synthetic/private separation rules against the
+//!   real tracked file list ([`corpus`]).
 //!
 //! Exit codes: 0 gate passed, 1 the gate failed, 2 the request itself was
 //! invalid. Failures are printed on stderr, never returned as success.
