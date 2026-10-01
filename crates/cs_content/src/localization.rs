@@ -12,7 +12,9 @@
 //!   supplies. There is no default chain and no language enum: the original
 //!   supported locale list is **unmeasured** (see the stage finding
 //!   `docs/findings/2026-10-01-f51-a-locale-fallback-markup-and-font-provenance.md`),
-//!   so a guessed list would be a fabricated compatibility claim.
+//!   so a guessed list would be a fabricated compatibility claim. When the
+//!   original files are available, the set is derived from what they carry
+//!   instead of guessed — see "Declaring the locale set from measurement".
 //! * **What does a string's markup mean?** [`parse_markup`] interprets a
 //!   resource string only against a [`MarkupGrammar`] the caller declares.
 //!   Anything the grammar does not admit stays literal text and produces a
@@ -41,7 +43,9 @@
 //! [`TextCatalog`]. The mapping from a resource language id to a [`LocaleId`]
 //! is the caller's [`LanguageMap`] — never a built-in language table — because
 //! the original supported-locale list is unmeasured; a row whose language is
-//! not declared is reported, not guessed. A row whose code units did not decode
+//! not declared is reported, not guessed. A caller that has measured the
+//! installation's own resource languages can build that map from the
+//! measurement ([`MeasuredLocales::from_table`]) instead of typing it. A row whose code units did not decode
 //! (`StringRow::text == None`) and a duplicate `(id, locale)` pair are likewise
 //! reported instead of being replaced or silently chosen between.
 //!
