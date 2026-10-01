@@ -329,6 +329,7 @@ pub mod profile;
 pub mod render;
 pub mod run;
 pub mod scene;
+pub mod stunts;
 pub mod synthetic;
 pub mod targeting;
 pub mod text;

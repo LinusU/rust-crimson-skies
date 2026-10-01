@@ -145,3 +145,81 @@ discontinuous coordinate change as a teleport loses a genuine passage.
   schema here.
 * **Fame/photo presentation** (scrapbook page unlock, fame display, the
   photograph's own asset) belongs to F47 and F42-C.
+
+## What was built
+
+* `crates/cs_content/src/stunts.rs` — the **declared** half:
+  `GateEvidence::{Measured, Reconstructed, NotRecovered}` (sheet behavior 5
+  is a field, not a convention), `Gate` (centre, authored normal, in-plane
+  half extents, half depth, evidence marking) with `Gate::unit_normal` /
+  `is_usable`, `TraversalRules` with both thresholds `Resolved`,
+  `MissionScope` (a non-empty unique list of `Mission` ids, **no wildcard
+  variant**), `StuntReward` (fame, cash in minor units, scrapbook media id —
+  `ContentKind::ScrapbookItem` only), `StuntCriticality`, `StuntRepeat`, and
+  `StuntDefinition::try_new(StuntDraft)` refusing a non-`Stunt` id, a
+  non-`World` world, corrupt gate geometry (non-finite centre/normal, a
+  zero-length normal, a non-positive extent, a negative depth), an
+  out-of-range cosine rule, a negative clearance rule, non-scrapbook media, an
+  empty scope, a non-`Mission` scope entry and a duplicate scope entry.
+  `declared_synthetic_gate_stunt()` is the fixture, with
+  `synthetic_gate_mission()` / `synthetic_gate_world()` and the eight
+  `SYNTHETIC_GATE_*` designed constants.
+* `crates/cs_sim/src/stunts.rs` — the **runtime** half:
+  - lowered `Gate` (a `WorldPosition` centre, a `UnitVec3` normal and the
+    deterministically derived `right`/`up` in-plane basis) with `gate_frame`
+    and `classify`, which requires a swept segment, a mid-plane crossing
+    inside the aperture, `cos(travel, normal) ≥ min_forward_cosine` and a rim
+    clearance of at least `min_clearance_m`. `GateRefusal` is the
+    geometry-only refusal (`NoSweep`, `MissedGate`, `WrongDirection`,
+    `InsufficientClearance`, `BadRule`) and names no stunt; `PassRefusal`
+    adds the identity (`ForeignActor`, `NotPlayerFlight`,
+    `MissionNotEligible`, `Discontinuous`, `Geometry{stunt, reason}`,
+    `AlreadyRewarded`).
+  - `TraversalRule`, `StuntRule::try_new` (its own re-validation, since
+    `cs_sim` cannot see `cs_content`), `StuntReward`, `StuntCriticality`,
+    `StuntRepeat`, `GateEvidence`.
+  - `StuntMovement::{Swept, Rebased, Teleport}` and `StuntAuthority::
+    {PlayerFlight, AiFlight, DeveloperCamera, Spectator}` (only
+    `PlayerFlight` earns) as the typed input; `TraversalRequest` is
+    session-qualified.
+  - `StuntRewardKey = (profile, mission, stunt)`, `Admission`,
+    `StuntLedger` (seeded from the persisted record, stale-session refusing)
+    and `StuntBook::observe` — the one place a completion is counted.
+    `StuntObserveError` carries `StaleSession`, `NotAdvancing`,
+    `DuplicateStunt` and `CorruptLedger`.
+* `crates/cs_app/src/stunts.rs` — the lowering boundary: `lower_stunt`
+  (declared → runtime, refusing an unknown gate, direction rule, clearance
+  rule, fame, cash or media **by claim id and reason**, and a runtime
+  validation failure as `Rejected`) and `lower_mission_stunts`, which filters
+  a mission's declared set by scope and refuses a duplicate id.
+* `crates/cs_app/tests/accept_f42_a_traversal_predicates.rs` — 14 acceptance
+  tests; plus 6 unit tests inside the two schema modules. 20 `accept_f42_a_`
+  tests in total, all on the production path
+  (`declared_synthetic_gate_stunt` → `lower_stunt` → `StuntBook`).
+
+## Test sensitivity (each mutation was applied, run and reverted)
+
+Each mutation below was applied to production code, the `accept_f42_a_`
+selection was run, the failure was recorded, and the file was then restored
+and the full selection re-run green.
+
+| Removed behavior | Tests that failed |
+| --- | --- |
+| the direction rule (a cosine below the authored minimum no longer refuses) | `..._through_counts_and_beside_backwards_and_teleport_do_not`, `..._the_predicate_uses_direction_and_margin_rather_than_proximity` |
+| the teleport distinction (`Teleport` reports swept endpoints) | the same two |
+| the one-time dedup (`StuntLedger::grant` always admits) | `..._one_time_reward_pays_once_across_a_retry_but_a_repeatable_one_pays_again` |
+| the aperture (only the half-depth test remains, so a pass beside the hole counts) | `..._through_counts_...`, `..._a_miss_a_rim_graze_and_a_stationary_sample_never_count` |
+| the subject and authority checks | `..._only_the_player_aircraft_counts_and_geometry_failures_carry_measurements` |
+| the runtime mission-scope re-check | `..._the_same_world_in_another_mission_has_a_different_eligible_set` |
+| the declared id-namespace validation | `cs_content::stunts::accept_f42_a_declared_stunt_names_every_authoring_mistake` |
+
+## Checks run
+
+* `cargo test --workspace --locked -- accept_f42_a_ --include-ignored`: 20
+  tests pass (14 in `cs_app/tests/accept_f42_a_traversal_predicates.rs`, 3 in
+  `cs_content::stunts`, 3 in `cs_sim::stunts`).
+* `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets
+  --all-features --locked -- -D warnings` and `cargo test --workspace
+  --locked` all pass; the workspace result is in the handover summary.
+* No evidence report: this stage needs ordinary build/test only, so the
+  acceptance harness produces no `private/evidence/#171/acceptance.json`.

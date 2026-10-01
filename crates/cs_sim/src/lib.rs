@@ -200,6 +200,21 @@
 //! schema is `cs_content::campaign`; the lowering boundary is
 //! `cs_app::campaign`; purchases, saves and briefing wiring are F43-B/C.
 //!
+//! [`stunts`] is the F42-A stunt contract
+//! (`specs/F42-stunts-fame-photos-and-optional-achievement-events.md`, stage
+//! `### F42-A`): the lowered [`stunts::Gate`] whose `classify` predicate
+//! answers whether a segment actually *flew through* an authored aperture
+//! (mid-plane crossing inside the hole, authored direction cosine, authored
+//! rim margin), the typed [`stunts::StuntMovement`] that keeps a rebase
+//! continuous and a teleport unearnable, the [`stunts::StuntAuthority`] that
+//! stops a developer camera from scoring, and the
+//! [`stunts::StuntRewardKey`] / [`stunts::StuntLedger`] pair that
+//! deduplicates a one-time reward by profile/mission/stunt identity across a
+//! mission retry. The declared, provenance-carrying schema is
+//! `cs_content::stunts`; the lowering boundary is `cs_app::stunts`; the
+//! multi-gate sequence detection is F42-B and the fame, AI and scrapbook
+//! wiring is F42-C.
+//!
 //! [`cs_types`]: cs_types
 //! [`cs_script`]: cs_script
 
@@ -216,6 +231,7 @@ pub mod flight;
 pub mod mission;
 pub mod objectives;
 pub mod probes;
+pub mod stunts;
 pub mod targeting;
 pub mod time;
 pub mod visibility;

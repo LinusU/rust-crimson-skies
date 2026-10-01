@@ -329,6 +329,7 @@ pub mod ordnance;
 pub mod routes;
 pub mod save;
 pub mod scene;
+pub mod stunts;
 pub mod target_rules;
 pub mod textures;
 pub mod weapons;
