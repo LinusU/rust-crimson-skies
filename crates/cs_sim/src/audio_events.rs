@@ -688,6 +688,11 @@ impl AudioRouter {
         self.loops.get(emitter)
     }
 
+    /// The active loops, in emitter order.
+    pub fn active_loops(&self) -> impl Iterator<Item = &LoopBinding> {
+        self.loops.values()
+    }
+
     /// How many loops are active.
     #[must_use]
     pub fn active_loop_count(&self) -> usize {
@@ -868,6 +873,425 @@ pub fn spatialize(
         (along / distance).clamp(-1.0, 1.0)
     };
     Ok(SpatialMix { gain, pan })
+}
+
+// ---------------------------------------------------------- radio queue ----
+
+/// Maximum lines waiting behind the active radio line; a designed bound.
+pub const MAX_PENDING_RADIO_LINES: usize = 32;
+
+/// One radio dialogue line: speaker, priority, interruptibility, subtitle and
+/// the simulation-tick length that defines when it completes.
+///
+/// Completion is measured in simulation ticks, never by a device callback, so
+/// mission progression cannot depend on an audio device (F41 non-negotiable
+/// behavior 2). The caller derives `duration_ticks` from the decoded clip.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RadioLine {
+    /// The line's identity and dedup key.
+    pub id: AudioEventId,
+    /// Who speaks.
+    pub speaker: String,
+    /// The dialogue asset.
+    pub asset: ContentId,
+    /// Higher preempts lower.
+    pub priority: u8,
+    /// Whether a strictly higher priority line may cut this one off.
+    pub interruptible: bool,
+    /// The subtitle text shown while the line is active, if any.
+    pub subtitle: Option<String>,
+    /// How many simulation ticks the line lasts; nonzero.
+    pub duration_ticks: u64,
+}
+
+/// Why a radio line was refused at construction.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RadioLineError {
+    /// The asset is not a dialogue id.
+    NotDialogue {
+        /// The kind it names.
+        kind: ContentKind,
+    },
+    /// The speaker name is empty.
+    EmptySpeaker,
+    /// The duration is zero.
+    ZeroDuration,
+}
+
+impl fmt::Display for RadioLineError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NotDialogue { kind } => {
+                write!(f, "radio line asset names a {kind}, not dialogue")
+            }
+            Self::EmptySpeaker => f.write_str("radio line has no speaker"),
+            Self::ZeroDuration => f.write_str("radio line has zero duration"),
+        }
+    }
+}
+
+impl std::error::Error for RadioLineError {}
+
+impl RadioLine {
+    /// Validates and builds a radio line.
+    ///
+    /// # Errors
+    ///
+    /// [`RadioLineError`] for a non-dialogue asset, an empty speaker or a zero
+    /// duration.
+    pub fn try_new(
+        id: AudioEventId,
+        speaker: &str,
+        asset: ContentId,
+        priority: u8,
+        interruptible: bool,
+        subtitle: Option<&str>,
+        duration_ticks: u64,
+    ) -> Result<Self, RadioLineError> {
+        if asset.kind() != ContentKind::Dialogue {
+            return Err(RadioLineError::NotDialogue { kind: asset.kind() });
+        }
+        if speaker.is_empty() {
+            return Err(RadioLineError::EmptySpeaker);
+        }
+        if duration_ticks == 0 {
+            return Err(RadioLineError::ZeroDuration);
+        }
+        Ok(Self {
+            id,
+            speaker: speaker.to_owned(),
+            asset,
+            priority,
+            interruptible,
+            subtitle: subtitle.map(str::to_owned),
+            duration_ticks,
+        })
+    }
+}
+
+/// What the radio queue reports.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RadioEvent {
+    /// A line became active; `audible` is whether a device was available.
+    Started {
+        /// The line.
+        id: AudioEventId,
+        /// The speaker.
+        speaker: String,
+        /// The dialogue asset.
+        asset: ContentId,
+        /// The subtitle to show.
+        subtitle: Option<String>,
+        /// Whether the line is being voiced.
+        audible: bool,
+    },
+    /// A line reached its full duration. `voiced` is false when the device was
+    /// absent or lost at any point; completion is reported either way.
+    Completed {
+        /// The line.
+        id: AudioEventId,
+        /// Whether it was voiced throughout.
+        voiced: bool,
+    },
+    /// A higher priority line cut the active one off.
+    Interrupted {
+        /// The cut-off line.
+        id: AudioEventId,
+        /// The line that replaced it.
+        by: AudioEventId,
+    },
+    /// The device was lost under the active line; it keeps its timing.
+    PlaybackLost {
+        /// The line.
+        id: AudioEventId,
+    },
+    /// The line was already accepted under this `(producer, sequence)`.
+    SuppressedDuplicate {
+        /// The line.
+        id: AudioEventId,
+    },
+    /// The line belongs to another session generation.
+    RefusedForeignSession {
+        /// The line.
+        id: AudioEventId,
+    },
+    /// The pending queue is at [`MAX_PENDING_RADIO_LINES`].
+    RefusedQueueFull {
+        /// The line.
+        id: AudioEventId,
+    },
+}
+
+#[derive(Clone, Debug)]
+struct ActiveLine {
+    line: RadioLine,
+    started: Tick,
+    voiced: bool,
+}
+
+/// The per-session radio queue: priority ordering, interruption, subtitles and
+/// tick-based completion that is independent of any audio device.
+#[derive(Clone, Debug)]
+pub struct RadioQueue {
+    session: u64,
+    highest_sequence: BTreeMap<u32, u32>,
+    pending: Vec<RadioLine>,
+    active: Option<ActiveLine>,
+    device_available: bool,
+}
+
+impl RadioQueue {
+    /// An empty queue for `session` with a working device.
+    #[must_use]
+    pub fn new(session: u64) -> Self {
+        Self {
+            session,
+            highest_sequence: BTreeMap::new(),
+            pending: Vec::new(),
+            active: None,
+            device_available: true,
+        }
+    }
+
+    /// The active line, if any.
+    #[must_use]
+    pub fn active(&self) -> Option<&RadioLine> {
+        self.active.as_ref().map(|a| &a.line)
+    }
+
+    /// The subtitle of the active line; shown whether or not it is voiced.
+    #[must_use]
+    pub fn subtitle(&self) -> Option<&str> {
+        self.active()?.subtitle.as_deref()
+    }
+
+    /// How many lines wait behind the active one.
+    #[must_use]
+    pub fn pending_len(&self) -> usize {
+        self.pending.len()
+    }
+
+    /// Offers a line at simulation tick `now`.
+    ///
+    /// It starts at once when idle, preempts the active line when strictly
+    /// higher priority and that line is interruptible, and otherwise waits
+    /// (highest priority first, then identity order).
+    pub fn enqueue(&mut self, line: RadioLine, now: Tick) -> Vec<RadioEvent> {
+        let id = line.id;
+        if id.session != self.session {
+            return vec![RadioEvent::RefusedForeignSession { id }];
+        }
+        if self
+            .highest_sequence
+            .get(&id.producer)
+            .is_some_and(|seen| id.sequence <= *seen)
+        {
+            return vec![RadioEvent::SuppressedDuplicate { id }];
+        }
+        let preempts = self
+            .active
+            .as_ref()
+            .is_some_and(|a| a.line.interruptible && line.priority > a.line.priority);
+        if self.active.is_some() && !preempts && self.pending.len() >= MAX_PENDING_RADIO_LINES {
+            return vec![RadioEvent::RefusedQueueFull { id }];
+        }
+        self.highest_sequence.insert(id.producer, id.sequence);
+        let mut events = Vec::new();
+        if preempts {
+            if let Some(cut) = self.active.take() {
+                events.push(RadioEvent::Interrupted {
+                    id: cut.line.id,
+                    by: id,
+                });
+            }
+            self.start(line, now, &mut events);
+        } else if self.active.is_none() {
+            self.start(line, now, &mut events);
+        } else {
+            let at = self.pending.partition_point(|p| {
+                (std::cmp::Reverse(p.priority), p.id) <= (std::cmp::Reverse(line.priority), id)
+            });
+            self.pending.insert(at, line);
+        }
+        events
+    }
+
+    /// Advances to tick `now`: completes the active line when its duration has
+    /// elapsed and starts the next pending one. Total: no device is consulted.
+    pub fn advance(&mut self, now: Tick) -> Vec<RadioEvent> {
+        let mut events = Vec::new();
+        let done = self
+            .active
+            .as_ref()
+            .is_some_and(|a| now.0.saturating_sub(a.started.0) >= a.line.duration_ticks);
+        if done && let Some(a) = self.active.take() {
+            events.push(RadioEvent::Completed {
+                id: a.line.id,
+                voiced: a.voiced,
+            });
+        }
+        if self.active.is_none() && !self.pending.is_empty() {
+            let next = self.pending.remove(0);
+            self.start(next, now, &mut events);
+        }
+        events
+    }
+
+    /// The physical device is gone: the active line keeps its tick timing and
+    /// subtitle but is no longer voiced; later lines start unvoiced.
+    pub fn device_lost(&mut self) -> Vec<RadioEvent> {
+        self.device_available = false;
+        match self.active.as_mut() {
+            Some(a) if a.voiced => {
+                a.voiced = false;
+                vec![RadioEvent::PlaybackLost { id: a.line.id }]
+            }
+            _ => Vec::new(),
+        }
+    }
+
+    /// The device is back: lines that start from now on are voiced. A line
+    /// already running is not re-voiced mid-sentence.
+    pub fn device_restored(&mut self) {
+        self.device_available = true;
+    }
+
+    fn start(&mut self, line: RadioLine, now: Tick, events: &mut Vec<RadioEvent>) {
+        events.push(RadioEvent::Started {
+            id: line.id,
+            speaker: line.speaker.clone(),
+            asset: line.asset.clone(),
+            subtitle: line.subtitle.clone(),
+            audible: self.device_available,
+        });
+        self.active = Some(ActiveLine {
+            line,
+            started: now,
+            voiced: self.device_available,
+        });
+    }
+}
+
+// ---------------------------------------------------------------- music ----
+
+/// One authored music cue request.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MusicCue {
+    /// The request's identity and dedup key.
+    pub id: AudioEventId,
+    /// The music asset.
+    pub asset: ContentId,
+}
+
+/// What a music request produced.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MusicOutcome {
+    /// Music began with nothing before it.
+    Started {
+        /// The new asset.
+        to: ContentId,
+        /// Whether a device is playing it.
+        audible: bool,
+    },
+    /// The authored transition from one cue to the next.
+    Transition {
+        /// The cue left.
+        from: ContentId,
+        /// The cue entered.
+        to: ContentId,
+        /// Whether a device is playing it.
+        audible: bool,
+    },
+    /// The requested cue is already current.
+    Unchanged,
+    /// The request was already accepted.
+    SuppressedDuplicate {
+        /// The request.
+        id: AudioEventId,
+    },
+    /// The request belongs to another session generation.
+    RefusedForeignSession {
+        /// The request.
+        id: AudioEventId,
+    },
+    /// The asset is not a music id.
+    RefusedNotMusic {
+        /// The kind it names.
+        kind: ContentKind,
+    },
+}
+
+/// The per-session music director: authored cue transitions only, no random
+/// substitution (F41 non-negotiable behavior 4), surviving device loss as
+/// state so it can be re-issued on retry.
+#[derive(Clone, Debug)]
+pub struct MusicDirector {
+    session: u64,
+    highest_sequence: BTreeMap<u32, u32>,
+    current: Option<MusicCue>,
+    device_available: bool,
+}
+
+impl MusicDirector {
+    /// A director with no cue, over a working device.
+    #[must_use]
+    pub fn new(session: u64) -> Self {
+        Self {
+            session,
+            highest_sequence: BTreeMap::new(),
+            current: None,
+            device_available: true,
+        }
+    }
+
+    /// The current authored cue (kept through device loss).
+    #[must_use]
+    pub fn current(&self) -> Option<&MusicCue> {
+        self.current.as_ref()
+    }
+
+    /// Requests a cue; the transition is the caller's authored decision.
+    pub fn request(&mut self, cue: MusicCue) -> MusicOutcome {
+        if cue.id.session != self.session {
+            return MusicOutcome::RefusedForeignSession { id: cue.id };
+        }
+        if cue.asset.kind() != ContentKind::Music {
+            return MusicOutcome::RefusedNotMusic {
+                kind: cue.asset.kind(),
+            };
+        }
+        if self
+            .highest_sequence
+            .get(&cue.id.producer)
+            .is_some_and(|seen| cue.id.sequence <= *seen)
+        {
+            return MusicOutcome::SuppressedDuplicate { id: cue.id };
+        }
+        self.highest_sequence
+            .insert(cue.id.producer, cue.id.sequence);
+        let audible = self.device_available;
+        let to = cue.asset.clone();
+        match self.current.replace(cue) {
+            Some(prev) if prev.asset == to => MusicOutcome::Unchanged,
+            Some(prev) => MusicOutcome::Transition {
+                from: prev.asset,
+                to,
+                audible,
+            },
+            None => MusicOutcome::Started { to, audible },
+        }
+    }
+
+    /// Device lost: the cue stays current but is not playing.
+    pub fn device_lost(&mut self) {
+        self.device_available = false;
+    }
+
+    /// Device back: returns the current cue to restart, if any.
+    pub fn device_restored(&mut self) -> Option<&MusicCue> {
+        self.device_available = true;
+        self.current.as_ref()
+    }
 }
 
 // ------------------------------------------------------------ fixtures -----
