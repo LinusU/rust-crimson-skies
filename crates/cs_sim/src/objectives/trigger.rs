@@ -82,7 +82,7 @@ pub enum CrossingKind {
     Exit,
 }
 
-/// One emitted crossing. Ordered by tick, then `order` (entry before exit).
+/// One emitted crossing. Within a tick the entry precedes the exit.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TriggerEvent {
     pub trigger: SymbolId,
