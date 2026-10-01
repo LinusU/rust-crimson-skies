@@ -902,6 +902,118 @@ fn accept_f64_a_document_resolving_no_identity_is_never_reported_as_a_full_impor
     assert_eq!(*full.report().class(), ImportClass::Full);
 }
 
+/// An unexplained leftover must not mask a plan that carries nothing. The
+/// carried-identity check used to run only when the document had *no*
+/// unresolved rows, so a document whose records resolved no identity **and**
+/// which carried a 4-byte tail was reported `Partial`, listing both records as
+/// resolved: a partial import of a blank profile, which is the same thing
+/// non-negotiable 5 forbids as the `Full` case, reached through the leftover.
+/// The blank profile is now named first, whatever else went wrong with it.
+#[test]
+fn accept_f64_a_carrying_nothing_is_named_even_when_a_leftover_is_present() {
+    // The same header and record fields as the fixture builder writes, but with
+    // no id slot declared, so no record can resolve an identity.
+    let no_ids = LegacyLayout::new(
+        "synthetic.no_id_slots_tail/v1",
+        ClaimStatus::Designed,
+        *b"CSPROF01",
+        vec![
+            LegacySlot::new("version_major", LegacySlotType::U32, LEGACY_MAGIC_BYTES),
+            LegacySlot::new("version_minor", LegacySlotType::U32, 12),
+            LegacySlot::new("record_count", LegacySlotType::U32, 16),
+            LegacySlot::new("label", LegacySlotType::Text { len: 8 }, 20),
+        ],
+        "version_major",
+        "version_minor",
+        1,
+        "record_count",
+        vec![
+            LegacySlot::new("airframe_id", LegacySlotType::U32, 0),
+            LegacySlot::new("weapon_id", LegacySlotType::U32, 4),
+            LegacySlot::new("name", LegacySlotType::Text { len: 8 }, 8),
+        ],
+        vec![],
+        TrailingPolicy::Retain,
+    );
+    let ids = id_map();
+    let catalog = catalog();
+    let target = target();
+
+    // Two records that each resolve with nothing to carry, plus an unexplained
+    // tail: every record is "resolved", so the old classification was Partial.
+    let tailed = document(
+        &[(7, 1, "phoenix"), (7, 2, "phoenix")],
+        &[0xde, 0xad, 0xbe, 0xef],
+    );
+    let tailed_source = proposal(&tailed).expect("the fixture source is within the cap");
+    let plan = plan_import(&request(
+        &tailed,
+        &tailed_source,
+        &no_ids,
+        &ids,
+        &catalog,
+        &target,
+    ))
+    .expect("a readable document still plans");
+    assert!(
+        !matches!(plan.report().class(), ImportClass::Partial { .. }),
+        "a plan that carries no identity is never a partial import, got {}",
+        plan.report().class()
+    );
+    assert!(
+        plan.report()
+            .records()
+            .iter()
+            .all(|r| r.resolved_ids.is_empty()),
+        "which is the whole reason it cannot be an import"
+    );
+
+    // The same document with no tail is the `no_resolvable_identity` refusal, so
+    // the assertion above is about the leftover not changing the outcome.
+    let clean = document(&[(7, 1, "phoenix"), (7, 2, "phoenix")], &[]);
+    let clean_source = proposal(&clean).expect("the fixture source is within the cap");
+    assert_eq!(
+        *plan_import(&request(
+            &clean,
+            &clean_source,
+            &no_ids,
+            &ids,
+            &catalog,
+            &target,
+        ))
+        .expect("a readable document still plans")
+        .report()
+        .class(),
+        ImportClass::Unsupported {
+            reason: UnresolvedReason::NoResolvableIdentity { records: 2 }
+        }
+    );
+
+    // And the tailed document through the id-declaring layout really is a
+    // partial import, so the refusal above is about the missing identity and
+    // not about the tail alone.
+    let declared = synthetic_layout();
+    let ImportClass::Partial { .. } = plan_import(&request(
+        &tailed,
+        &tailed_source,
+        &declared,
+        &ids,
+        &catalog,
+        &target,
+    ))
+    .expect("the id-declaring layout still plans")
+    .report()
+    .class() else {
+        panic!(
+            "with ids declared the same tailed document is a partial import, got {}",
+            ImportClass::Partial {
+                resolved: vec![0],
+                unresolved: vec![]
+            }
+        );
+    };
+}
+
 /// A document with no records is refused outright: an empty legacy profile is
 /// never reported as a successful import.
 #[test]

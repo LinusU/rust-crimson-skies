@@ -218,6 +218,17 @@ pub enum TrailingPolicy {
 pub enum LegacyLayoutError {
     /// The layout declares no record field, so a record carries nothing.
     NoRecordFields,
+    /// The declared record fields occupy no bytes between them.
+    ///
+    /// A record table whose stride is zero cannot describe a document: every
+    /// record would alias the same offset, so the record count would be
+    /// entirely unconstrained by the bytes — a 20-byte document could declare
+    /// as many records as the limits allow and the reader would faithfully
+    /// report that many identical ones. A measured layout's records occupy
+    /// bytes, so this is a measurement error rather than a format, and it is
+    /// refused at the declaration like every other one that could not describe
+    /// a table.
+    ZeroRecordExtent,
     /// The named record-count field is not a declared integer header slot.
     RecordCountNotDeclared {
         /// The declared field name.
@@ -276,6 +287,11 @@ impl fmt::Display for LegacyLayoutError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NoRecordFields => write!(f, "the layout declares no record field"),
+            Self::ZeroRecordExtent => write!(
+                f,
+                "the declared record fields occupy no bytes, so a record table \
+                 cannot be described"
+            ),
             Self::RecordCountNotDeclared { field } => {
                 write!(
                     f,
@@ -474,6 +490,13 @@ impl LegacyLayout {
     pub fn validate(&self) -> Result<(), LegacyLayoutError> {
         if self.record.is_empty() {
             return Err(LegacyLayoutError::NoRecordFields);
+        }
+        // A record table needs a stride. Without one every record would read
+        // the same bytes at the same offset, so the record count would be
+        // bounded by nothing in the document: a hostile file could claim the
+        // limit and the reader would report that many identical records.
+        if self.record_bytes() == 0 {
+            return Err(LegacyLayoutError::ZeroRecordExtent);
         }
         self.check_slots(&self.header, LEGACY_MAGIC_BYTES)?;
         self.check_slots(&self.record, 0)?;

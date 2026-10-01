@@ -522,6 +522,56 @@ fn accept_f64_a_invalid_layout_declarations_are_refused_by_name() {
             field: "airframe_id".to_owned()
         })
     );
+
+    // A record table needs a stride. A record whose only declared field
+    // occupies no bytes would make every record alias the same offset, so the
+    // document's record count would be bounded by nothing in its bytes: a
+    // 20-byte file could claim `max_records` records and the reader would
+    // faithfully report that many identical ones. Such a declaration cannot
+    // describe a table and is refused like the others.
+    let zero_stride = LegacyLayout::new(
+        "synthetic.zero_stride/v1",
+        ClaimStatus::Designed,
+        *b"CSPROF01",
+        vec![
+            LegacySlot::new("version_major", LegacySlotType::U32, LEGACY_MAGIC_BYTES),
+            LegacySlot::new("version_minor", LegacySlotType::U32, 12),
+            LegacySlot::new("record_count", LegacySlotType::U32, 16),
+        ],
+        "version_major",
+        "version_minor",
+        1,
+        "record_count",
+        vec![LegacySlot::new("flag", LegacySlotType::Bytes { len: 0 }, 0)],
+        vec![],
+        TrailingPolicy::Retain,
+    );
+    assert_eq!(zero_stride.record_bytes(), 0);
+    assert_eq!(
+        zero_stride.validate(),
+        Err(LegacyLayoutError::ZeroRecordExtent)
+    );
+
+    // A stride of one byte is the smallest table this contract describes, and
+    // it validates, so the refusal above is about the zero stride alone.
+    let one_byte = LegacyLayout::new(
+        "synthetic.one_byte_stride/v1",
+        ClaimStatus::Designed,
+        *b"CSPROF01",
+        vec![
+            LegacySlot::new("version_major", LegacySlotType::U32, LEGACY_MAGIC_BYTES),
+            LegacySlot::new("version_minor", LegacySlotType::U32, 12),
+            LegacySlot::new("record_count", LegacySlotType::U32, 16),
+        ],
+        "version_major",
+        "version_minor",
+        1,
+        "record_count",
+        vec![LegacySlot::new("flag", LegacySlotType::U8, 0)],
+        vec![],
+        TrailingPolicy::Retain,
+    );
+    assert!(one_byte.validate().is_ok());
 }
 
 /// A text slot that is not valid UTF-8 is refused rather than lossily

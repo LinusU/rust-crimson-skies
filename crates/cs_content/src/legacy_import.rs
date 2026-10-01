@@ -1081,12 +1081,13 @@ pub fn plan_import(request: &ImportRequest<'_>) -> Result<ImportPlan, ImportRefu
         });
     }
 
-    // A plan whose every record resolved zero identities carries nothing, which
-    // is a blank profile however many records the document declared. Reporting
-    // that as `Full` is the "silent reset to a blank profile called imported"
-    // non-negotiable 5 forbids, so it is named instead. This needs the identity
-    // count rather than the resolved-record count: a layout that declares no id
-    // slot resolves every record "successfully" with no identity at all.
+    // A plan that carries no content identity at all is a blank profile,
+    // however many records the document declared, and it must never be reported
+    // as an import. This counts the identities the plan actually **carries**,
+    // not the records it visited: a layout that declares its record fields and
+    // no id slot resolves every record "successfully" with nothing to carry, so
+    // the resolved-record count would call that a full import (spec F64
+    // non-negotiable 5, "no silent reset to a blank profile called imported").
     let carried: usize = records.iter().map(|record| record.resolved_ids.len()).sum();
     let declared_records = u32::try_from(document.records().len()).unwrap_or(u32::MAX);
     let class_outcome = if unresolved.is_empty() && carried == 0 {
@@ -1097,7 +1098,11 @@ pub fn plan_import(request: &ImportRequest<'_>) -> Result<ImportPlan, ImportRefu
         }
     } else if unresolved.is_empty() {
         ImportClass::Full
-    } else if resolved.is_empty() {
+    } else if resolved.is_empty() || carried == 0 {
+        // Nothing was carried, and the first unresolved row says why. This also
+        // covers records that were each individually "resolved" yet carried no
+        // identity: listing them as a partial import would report an import of
+        // a blank profile.
         ImportClass::Unsupported {
             reason: unresolved[0].reason.clone(),
         }

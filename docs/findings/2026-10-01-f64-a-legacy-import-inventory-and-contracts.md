@@ -45,9 +45,10 @@ names, widths and version were chosen to exercise the reader.
   instead of a copy of it). No logic in either `lib.rs`; no `Cargo.lock` change.
 - `crates/cs_formats/tests/accept_f64_a_legacy_profile_contracts.rs` (new): 13
   `accept_f64_a_*` tests (1 added in review, 1 extended).
-- `crates/cs_content/tests/accept_f64_a_legacy_import_plan.rs` (new): 13
+- `crates/cs_content/tests/accept_f64_a_legacy_import_plan.rs` (new): 14
   `accept_f64_a_*` tests, including the AC01 filesystem scenario (3 added in
-  review, 1 added in the second review pass; see "Review findings" below).
+  review, 1 added in each of the second and third review passes; see "Review
+  findings" below).
 - This file.
 
 **One observable failure:** a reader that trusts the document's own record
@@ -154,6 +155,59 @@ fail; that was verified by mutating each check in turn.
   (spelling + size + SHA-256 + declared class) and borrowed bytes. F64-B
   discovers the real locations and produces the proposals.
 
+## Third review pass (bunny-alpha-2, same agent instance, after a second lander rebase conflict)
+
+The second approval could not land either: the lander's automatic rebase hit
+another conflict with main. This pass rebased by hand onto `a832a98` (one real
+conflict, in `crates/cs_content/src/lib.rs`, where main had added the F45-A
+`ui_layout` module-doc paragraph in the same place this branch added the F64-A
+one; both were kept) and then reviewed the rebased branch again. The context was
+again **not** fresh, so this is a third defect-hunting pass, not independent
+review. See the handover note.
+
+7. **A blank profile could still be reported as a *partial* import.** The
+   carried-identity check added in the second pass ran only when the document
+   had **no** unresolved rows (`unresolved.is_empty() && carried == 0`). A
+   document read through a layout that declares its record fields and no id
+   slot, which *also* carried an unexplained tail, therefore classified as
+   `Partial { resolved: [0, 1], unresolved: [undeclared_trailing_bytes] }` —
+   the report claimed two records were imported while the plan carried no
+   content identity at all. That is the same "silent reset to a blank profile
+   called imported" the `Full` branch was closed for, reached through an
+   unrelated leftover: the second pass closed the all-clean path and left the
+   others. `carried == 0` is now tested on its own in the `Unsupported` branch,
+   so a leftover can no longer mask it; the leftover is still reported, as the
+   branch's `unresolved` rows. The regression test reads the same tailed
+   document through an id-slot-less layout (asserting it is **not** `Partial`),
+   the same document without the tail (asserting the named
+   `no_resolvable_identity`), and the tailed document through
+   `synthetic_layout()` (asserting it *is* `Partial`), so the assertion is about
+   the missing identity rather than about the tail.
+
+8. **A layout could declare a record table with a zero stride.** `validate()`
+   refused an empty record slot list (`NoRecordFields`) but accepted a record
+   whose only declared field has zero extent (`Bytes { len: 0 }` or
+   `Text { len: 0 }`), so `record_size()` was 0. Every record then read the
+   same bytes at the same offset and the record count was bounded by nothing in
+   the document: a **20-byte** file could claim 4096 records and
+   `read_legacy_profile` faithfully reported 4096 identical records, each with
+   its own index and offset — 4096 records the file does not contain. Probed and
+   confirmed before the fix (`read Ok records=4096` from 20 bytes). Now refused
+   as `LegacyLayoutError::ZeroRecordExtent` at the declaration, like every other
+   declaration that could not describe a table. The test also asserts that a
+   **one-byte** stride still validates, so the refusal is about the zero stride
+   and not about small records.
+
+Note on a limit that was checked and is *not* a defect: `plan_import` takes the
+caller's `LegacyLimits` verbatim, so a caller may raise `max_records` or
+`max_bytes` past the designed values. That is the caller choosing its own
+policy, not a hole — the document length is still checked against the limit and
+the F03 budget is still charged against `max_bytes` before any `Vec` is
+reserved, and `MAX_LEGACY_SOURCE_BYTES` is enforced independently of the
+`limits` struct. Probed with `max_records: u32::MAX` and `max_bytes: u64::MAX`:
+the same documents plan and the same oversized document is still refused with
+`max = MAX_LEGACY_SOURCE_BYTES`. Left as is.
+
 ## Sensitivity checks run
 
 Each of these was applied, observed to fail the named tests, and reverted:
@@ -170,6 +224,15 @@ Each of these was applied, observed to fail the named tests, and reverted:
 | drop the declared-digest verification in `plan_import` | `accept_f64_a_same_length_source_with_a_changed_digest_is_refused` |
 | drop the carried-identity check in `plan_import` | `accept_f64_a_document_resolving_no_identity_is_never_reported_as_a_full_import` |
 | drop the duplicate-id-slot check in `LegacyLayout::validate` | `accept_f64_a_invalid_layout_declarations_are_refused_by_name` |
+| drop `carried == 0` from the `Partial` branch in `plan_import` | `accept_f64_a_carrying_nothing_is_named_even_when_a_leftover_is_present` |
+| drop the zero-record-extent check in `LegacyLayout::validate` | `accept_f64_a_invalid_layout_declarations_are_refused_by_name` |
+
+Probed and found correct (no change made): `LegacyIdMap::insert` refuses a
+duplicate `(class, raw)`; `TrailingPolicy::Reject` refuses an unexplained tail
+as `trailing_bytes`; a saturating `slot.end()` is caught by `validate()` as
+`SlotExtentOverflow` before `header_bytes()` is used; a
+`with_record_size`-widened stride still charges the undeclared bytes per record
+and keeps them verbatim.
 
 ## Second review pass (bunny-alpha-2, same agent instance, after the lander hit a rebase conflict)
 
