@@ -32,14 +32,18 @@
 //! `cs_types::net` so simulation and content crates can name sessions and
 //! actors without depending on this crate.
 //!
+//! F55-A adds [`lobby`]: the host's authoritative lobby record, the rules
+//! revision/digest protocol, readiness bound to a revision, atomic
+//! acknowledged launch and distinct join refusals.
+//!
 //! Not here yet: the pinned transport and its codec (F54-B), connection and
-//! lifecycle wiring (F54-C), lobby state (`lobby.rs`, F55-A) and session
-//! threat/reconnect rules (`lobby.rs`, F58-A). The F57-B interpolation buffer
+//! lifecycle wiring (F54-C), and session threat/reconnect rules (F58-A). The F57-B interpolation buffer
 //! and bounded local prediction consume [`snapshot`] rather than extending it.
 
 pub mod authority;
 pub mod bounds;
 pub mod compat;
 pub mod fixture;
+pub mod lobby;
 pub mod message;
 pub mod snapshot;
