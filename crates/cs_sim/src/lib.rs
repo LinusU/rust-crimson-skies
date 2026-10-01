@@ -282,6 +282,7 @@ pub mod mission;
 pub mod net_state;
 pub mod objectives;
 pub mod probes;
+pub mod records;
 pub mod stunts;
 pub mod targeting;
 pub mod time;
