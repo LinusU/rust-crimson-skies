@@ -195,11 +195,33 @@ Sensitivity was checked by mutation and then reverting:
 | `audit_localization` never emits the unmeasured-glyph blocker | the media/license test |
 | `text_boxes` uses the band-wide `rect` instead of the line's `text_width` | the GPU test (the three locale frames become byte-identical) |
 
-## Review fix
+## Review
 
-None yet: the Rally review claim owns the independent check the task requests
-for locale/font semantics and will record its own identity and any fix. This
-report was produced by the implementer and is not that review.
+Reviewed as Rally `#207` by `deepseek-1/deepseek-1` (opencode, model
+`deepseek/deepseek-v4.1-flash`) with a **fresh context**: the reviewer did not
+implement this branch and re-derived everything from the diff, the spec and the
+original installation. `cargo fmt --all -- --check`, `cargo clippy --workspace
+--all-targets --all-features --locked -- -D warnings`, `cargo test --workspace
+--locked`, and `cargo test --workspace --locked -- accept_f51_d_
+--include-ignored` (7/7, on a real Apple M3 Pro / Metal adapter with
+`$CS_GAME_DIR` set) all passed on the rebased head.
+
+The evidence report was regenerated on the rebased checkout and matched the
+committed copy on every semantic field: the same 7 assertions all `pass`, the
+same `source`, `tests`, `capabilities`, `claim` and `unknowns`, and a
+byte-identical `string-media-census.json` and three GPU frames. Only
+`candidate_tree` and the `cargo-test.log` digest differ, because the committed
+copy is the follow-up evidence commit (the `F18-D` precedent has the same
+shape); `tools/validate_evidence.py --require-pass` passes on it.
+
+The tests' sensitivity was re-checked independently: mutating production code to
+drop the fallback subtraction from `translated`, to never count a scrolling
+layout as an overflow, and to never emit the unmeasured-glyph blocker made
+exactly the per-locale, overflow and media/license tests fail and no others.
+The reviewer found no code defect and changed no production or test code. It
+corrected this finding's follow-up claim (the sheet names no later font-decode
+stage) and filed `#466` / `#467` above. This is an agent review with a fresh
+context; it is not `verified_original` and not the owner's approval.
 
 ## Evidence
 
@@ -238,10 +260,19 @@ report was produced by the implementer and is not that review.
 - **Focus order and UI scale** remain noted by F51-C and are not claimed here.
 
 These are the F51-D-owned unknowns; the affected content is the three string
-images and the two fonts above. No follow-up task is filed from this stage
-because the sheet already assigns a private original font decode to the
-rendering/audio work and the locale/format questions to F51-A/F51-D's own
-record.
+images and the two fonts above. The sheet assigns no later stage to the
+original bitmap-font decode (it names only F51-A..D) and F51-D is its last
+stage, so the two blockers are filed as follow-ups that gate the fidelity
+claims above rather than left without a resolving task:
+
+- `#466 F51-FONTCELL` — decode the original bitmap-font cell-to-character
+  mapping (`font.tga`, `arial8.tga`) so the audit can report measured glyph
+  coverage instead of `GlyphEvidence::Unmeasured`.
+- `#467 F51-LOCALE-SET` — measure the original supported-locale set and verify
+  localized-installation id stability (F12-D AC04); it needs a second localized
+  installation or owner-supplied reference material.
+
+Both were filed during the Rally review of `#207`; neither is guessed here.
 
 ## Identities and sources
 
