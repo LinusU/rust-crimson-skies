@@ -959,18 +959,39 @@ pub fn read_legacy_profile(
             LegacyProfileError::layout_error(header_bytes, field.to_owned(), missing)
         })
     };
-    let version_major = declared_integer(
+    // A declared version field is narrowed with a checked conversion, never
+    // with `as u32`: a layout that declares a 64-bit version and a document
+    // carrying 0x1_0000_0001 must be refused as a version this build cannot
+    // read, not silently truncated onto the supported major.
+    let narrow_version = |field: &str, raw: u64| {
+        u32::try_from(raw).map_err(|_| {
+            LegacyProfileError::new(
+                header_bytes,
+                field.to_owned(),
+                LegacyProfileErrorKind::UnsupportedVersion,
+                format!("version major {}", layout.supported_version_major()),
+                format!("version major {raw}, which does not fit 32 bits"),
+            )
+        })
+    };
+    let version_major = narrow_version(
         &layout.version_major_field,
-        LegacyLayoutError::VersionFieldNotDeclared {
-            field: layout.version_major_field.clone(),
-        },
-    )? as u32;
-    let version_minor = declared_integer(
+        declared_integer(
+            &layout.version_major_field,
+            LegacyLayoutError::VersionFieldNotDeclared {
+                field: layout.version_major_field.clone(),
+            },
+        )?,
+    )?;
+    let version_minor = narrow_version(
         &layout.version_minor_field,
-        LegacyLayoutError::VersionFieldNotDeclared {
-            field: layout.version_minor_field.clone(),
-        },
-    )? as u32;
+        declared_integer(
+            &layout.version_minor_field,
+            LegacyLayoutError::VersionFieldNotDeclared {
+                field: layout.version_minor_field.clone(),
+            },
+        )?,
+    )?;
     if version_major != layout.supported_version_major() {
         return Err(LegacyProfileError::new(
             header_bytes,

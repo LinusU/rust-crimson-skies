@@ -31,14 +31,15 @@ use cs_content::legacy_import::{
     LegacyIdMap, LegacyIdMapError, TargetProfile, UnresolvedReason, plan_import,
 };
 use cs_formats::legacy_profile::{
-    ArtifactProposal, ArtifactProposalError, LegacyArtifactClass, LegacyIdClass, LegacyLimits,
-    LegacyProfileErrorKind, MAX_LEGACY_SOURCE_BYTES, synthetic_layout,
+    ArtifactProposal, ArtifactProposalError, LEGACY_MAGIC_BYTES, LegacyArtifactClass,
+    LegacyIdClass, LegacyIdSlot, LegacyLimits, LegacyProfileErrorKind, LegacySlot, LegacySlotType,
+    MAX_LEGACY_SOURCE_BYTES, TrailingPolicy, synthetic_layout,
 };
 use cs_types::content::{
     CatalogElement, ConsumerKind, ContentId, ContentKind, Dependency, DependencyKind,
     NormalizeState, Origin, Provenance, Readiness, RuntimeConsumer, UnsupportedReason,
 };
-use cs_types::evidence::{ClaimId, ContentHash};
+use cs_types::evidence::{ClaimId, ClaimStatus};
 use cs_types::install::ParseState;
 use cs_types::profile::{ProfileId, ProfileKind};
 
@@ -221,17 +222,17 @@ fn document(records: &[(u32, u32, &str)], trailing: &[u8]) -> Vec<u8> {
     document_with(records, &[], trailing)
 }
 
-fn hash(byte: u8) -> ContentHash {
-    let mut bytes = [0u8; 32];
-    bytes[0] = byte;
-    ContentHash::from_bytes(bytes)
-}
-
+/// A proposal for `bytes` that declares the digest those bytes actually have.
+///
+/// The digest is the production `cs_assets::install::sha256`, not a fixture
+/// constant: the planner verifies the declared fingerprint against the supplied
+/// bytes, so a proposal that invented a digest would be refused before the
+/// document was ever read.
 fn proposal(bytes: &[u8]) -> Result<ArtifactProposal, ArtifactProposalError> {
     ArtifactProposal::new(
         "profiles/legacy/player.sav",
         bytes.len() as u64,
-        hash(0x5a),
+        cs_assets::install::sha256(bytes),
         Some(LegacyArtifactClass::CampaignSave),
     )
 }
@@ -352,11 +353,12 @@ fn accept_f64_a_malicious_or_oversized_old_profile_fails_without_touching_source
 
         // The declared size is capped rather than honest, so the planner's own
         // size check — not the proposal's constructor — is what has to refuse
-        // the oversized payload.
+        // the oversized payload. The digest is the real one for both payloads:
+        // the refusal under test is the size, not a stale fingerprint.
         let source = ArtifactProposal::new(
             "profiles/legacy/player.sav",
             bytes.len().min(MAX_LEGACY_SOURCE_BYTES as usize) as u64,
-            hash(0x5a),
+            cs_assets::install::sha256(bytes),
             Some(LegacyArtifactClass::CampaignSave),
         )
         .expect("the declared size is within the cap");
@@ -425,7 +427,7 @@ fn accept_f64_a_fingerprint_mismatch_is_refused_before_the_document_is_read() {
     let lying = ArtifactProposal::new(
         "profiles/legacy/player.sav",
         bytes.len() as u64 + 10,
-        hash(0x5a),
+        cs_assets::install::sha256(&bytes),
         Some(LegacyArtifactClass::CampaignSave),
     )
     .expect("the spelling and size are within the cap");
@@ -443,6 +445,47 @@ fn accept_f64_a_fingerprint_mismatch_is_refused_before_the_document_is_read() {
             actual: bytes.len() as u64,
         })
     );
+}
+
+/// The digest half of the fingerprint: a source that kept its length but whose
+/// bytes changed between being inventoried and being read is refused too. A
+/// same-length substitution is exactly the case a length check cannot see, and
+/// importing it under the inventoried identity would be the corruption
+/// non-negotiable 1 forbids.
+#[test]
+fn accept_f64_a_same_length_source_with_a_changed_digest_is_refused() {
+    let bytes = document(&[(7, 1, "phoenix")], &[]);
+    let other = document(&[(7, 2, "phoenix")], &[]);
+    assert_eq!(
+        bytes.len(),
+        other.len(),
+        "the substituted source must be indistinguishable by length alone"
+    );
+
+    // The proposal describes `other`'s bytes; `bytes` is what is offered.
+    let stale = ArtifactProposal::new(
+        "profiles/legacy/player.sav",
+        bytes.len() as u64,
+        cs_assets::install::sha256(&other),
+        Some(LegacyArtifactClass::CampaignSave),
+    )
+    .expect("the spelling and size are within the cap");
+    let layout = synthetic_layout();
+    let ids = id_map();
+    let catalog = catalog();
+    let target = target();
+
+    let refused = plan_import(&request(&bytes, &stale, &layout, &ids, &catalog, &target))
+        .expect_err("a changed source must be refused, not imported as the inventoried one");
+    assert_eq!(
+        refused,
+        ImportRefusal::Source(ArtifactProposalError::HashMismatch {
+            declared: cs_assets::install::sha256(&other),
+            actual: cs_assets::install::sha256(&bytes),
+        }),
+        "the refusal must name the digest it saw, and no document may be read"
+    );
+    assert_eq!(refused.code(), "source_refused");
 }
 
 /// The default admission refuses the designed fixture layout, so no production
@@ -499,7 +542,7 @@ fn accept_f64_a_optional_save_import_can_be_switched_off_without_touching_other_
     let aircraft = ArtifactProposal::new(
         "profiles/legacy/custom.pln",
         bytes.len() as u64,
-        hash(0x5a),
+        cs_assets::install::sha256(&bytes),
         Some(LegacyArtifactClass::CustomAircraft),
     )
     .expect("the aircraft proposal is valid");
@@ -597,6 +640,152 @@ fn accept_f64_a_unmapped_ids_and_undeclared_bytes_stay_unresolved() {
     assert!(
         synthetic_layout().with_record_size(4).is_err(),
         "a stride below the declared fields must be refused"
+    );
+}
+
+/// Bytes past the record table are as unaccounted-for as bytes past a record's
+/// last declared slot, so they make the plan partial rather than letting it be
+/// reported `Full`. A document whose tail the layout cannot explain has not
+/// imported completely, whatever its records resolved to.
+#[test]
+fn accept_f64_a_undeclared_trailing_bytes_stay_unresolved_instead_of_a_full_import() {
+    let clean = document(&[(7, 1, "phoenix")], &[]);
+    let with_tail = document(&[(7, 1, "phoenix")], &[0xde, 0xad, 0xbe, 0xef]);
+    let layout = synthetic_layout();
+    let ids = id_map();
+    let catalog = catalog();
+    let target = target();
+
+    // The same document with no tail really is a full import, so the assertion
+    // below is about the tail and not about the records.
+    let clean_source = proposal(&clean).expect("the fixture source is within the cap");
+    let clean_plan = plan_import(&request(
+        &clean,
+        &clean_source,
+        &layout,
+        &ids,
+        &catalog,
+        &target,
+    ))
+    .expect("the untailed document plans");
+    assert_eq!(*clean_plan.report().class(), ImportClass::Full);
+
+    let tail_source = proposal(&with_tail).expect("the fixture source is within the cap");
+    let plan = plan_import(&request(
+        &with_tail,
+        &tail_source,
+        &layout,
+        &ids,
+        &catalog,
+        &target,
+    ))
+    .expect("a document with a tail still plans, as partial");
+    let ImportClass::Partial {
+        resolved,
+        unresolved,
+    } = plan.report().class()
+    else {
+        panic!(
+            "an unexplained tail must not be a full import, got {}",
+            plan.report().class()
+        );
+    };
+    assert!(
+        !plan.report().class().is_complete(),
+        "a document with undeclared trailing bytes is not a complete import"
+    );
+    assert_eq!(resolved, &[0u32][..], "the record itself still resolves");
+    assert_eq!(unresolved.len(), 1);
+    assert_eq!(
+        unresolved[0].record_index, None,
+        "the tail is a document-level row, not a record's"
+    );
+    assert_eq!(
+        unresolved[0].reason,
+        UnresolvedReason::UndeclaredTrailingBytes { bytes: 4 },
+        "the retained tail is reported, not interpreted"
+    );
+    assert_eq!(unresolved[0].reason.code(), "undeclared_trailing_bytes");
+}
+
+/// A legacy id slot declared wider than a `u32` is refused as out of range,
+/// never clamped: a clamped value resolves against whatever is bound at the
+/// clamp boundary, which would import one weapon as another.
+#[test]
+fn accept_f64_a_legacy_id_wider_than_the_id_space_is_unresolved_not_clamped() {
+    // The same declared document, with the weapon id slot widened to 64 bits
+    // and the record carrying a value that does not fit a legacy id.
+    let layout = cs_formats::legacy_profile::LegacyLayout::new(
+        "synthetic.wide_id/v1",
+        ClaimStatus::Designed,
+        *b"CSPROF01",
+        vec![
+            LegacySlot::new("version_major", LegacySlotType::U32, LEGACY_MAGIC_BYTES),
+            LegacySlot::new("version_minor", LegacySlotType::U32, 12),
+            LegacySlot::new("record_count", LegacySlotType::U32, 16),
+        ],
+        "version_major",
+        "version_minor",
+        1,
+        "record_count",
+        vec![
+            LegacySlot::new("airframe_id", LegacySlotType::U32, 0),
+            LegacySlot::new("weapon_id", LegacySlotType::U64, 4),
+        ],
+        vec![LegacyIdSlot::new("weapon_id", LegacyIdClass::Weapon)],
+        TrailingPolicy::Retain,
+    );
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&layout.magic());
+    bytes.extend_from_slice(&1u32.to_le_bytes());
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.extend_from_slice(&1u32.to_le_bytes());
+    bytes.extend_from_slice(&7u32.to_le_bytes());
+    bytes.extend_from_slice(&0x1_0000_0001u64.to_le_bytes());
+    assert_eq!(
+        bytes.len(),
+        32,
+        "an 8 byte magic, three u32s and a 12 byte record"
+    );
+
+    // A binding exists at the value a clamp would produce, so a clamping
+    // implementation would resolve this record and report a full import.
+    let mut ids = id_map();
+    ids.insert(
+        LegacyIdBinding::new(
+            LegacyIdClass::Weapon,
+            u32::MAX,
+            cid(ContentKind::Weapon, "needle-gun"),
+        )
+        .expect("the gun binding is in the weapon namespace"),
+    )
+    .expect("the binding inserts");
+    let catalog = catalog();
+    let target = target();
+    let source = proposal(&bytes).expect("the fixture source is within the cap");
+
+    let plan = plan_import(&request(&bytes, &source, &layout, &ids, &catalog, &target))
+        .expect("a document with an out-of-range id still plans");
+    let ImportClass::Unsupported { reason } = plan.report().class() else {
+        panic!(
+            "an out-of-range id must not resolve, got {}",
+            plan.report().class()
+        );
+    };
+    assert_eq!(
+        *reason,
+        UnresolvedReason::IdOutOfRange {
+            field: "weapon_id".to_owned(),
+            class: LegacyIdClass::Weapon,
+            value: 0x1_0000_0001,
+        },
+        "the value is reported as it was read, never clamped into range"
+    );
+    assert_eq!(reason.code(), "id_out_of_range");
+    assert_eq!(
+        plan.report().records().len(),
+        0,
+        "an out-of-range id is never resolved to the binding at the clamp boundary"
     );
 }
 

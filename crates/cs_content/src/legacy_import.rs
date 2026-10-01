@@ -21,21 +21,23 @@
 //! Five properties are load-bearing, and each is enforced by a test rather
 //! than a comment:
 //!
-//! 1. **The source fingerprint is retained, not recomputed from the copy.**
-//!    [`SourceFingerprint`] records the spelling, size and SHA-256 of the
-//!    bytes the plan was made from, and [`plan_import`] refuses a proposal
-//!    whose declared size does not match the bytes supplied — so a plan can
-//!    never describe a file that was not the one read (spec F64 non-negotiable
-//!    1: "retain source fingerprint").
+//! 1. **The source fingerprint is retained, and it is verified.** A source that
+//!    changes length *or* digest between being inventoried and being read is
+//!    refused, so a plan can never describe a file that was not the one the
+//!    inventory fingerprinted (spec F64 non-negotiable 1: "retain source
+//!    fingerprint"). [`SourceFingerprint`] then records that verified spelling,
+//!    size and SHA-256 rather than a fresh digest of whatever arrived.
 //! 2. **Ids resolve through content identities, never through positions.**
 //!    [`LegacyIdMap`] is keyed by the legacy raw id and holds a
 //!    [`ContentId`]; [`LegacyIdMap::resolve`] looks that id up in the
 //!    [`Catalog`] and requires the element to be *ready*. There is no index
-//!    arithmetic anywhere in the module, and reordering catalog rows cannot
-//!    change an outcome (spec F64 non-negotiable 3).
+//!    arithmetic anywhere in the module, no value is ever clamped into the id
+//!    range, and reordering catalog rows cannot change an outcome (spec F64
+//!    non-negotiable 3).
 //! 3. **Unknown stays unknown.** A record with bytes no declared slot covers, a
-//!    record whose id is not mapped, and a target that is not ready all become
-//!    named [`UnresolvedRow`]s. Nothing is defaulted, rounded or guessed, and
+//!    record whose id is not mapped, a value wider than a legacy id, bytes past
+//!    the record table and a target that is not ready all become named
+//!    [`UnresolvedRow`]s. Nothing is defaulted, rounded, clamped or guessed, and
 //!    no currency, mission index or equipment value is ever inferred from a
 //!    nearby number (spec F64 non-negotiable 2).
 //! 4. **Full, partial and unsupported are distinct, and "empty" is never
@@ -132,16 +134,18 @@ pub struct SourceFingerprint {
 
 impl SourceFingerprint {
     /// Records a source's identity.
+    ///
+    /// The SHA-256 is the proposal's **declared** one, not a fresh digest of the
+    /// bytes: the digest of the supplied bytes is compared against the declared
+    /// one before this is called (see [`plan_import`]), so the retained value is
+    /// the fingerprint the inventory measured *and* verified, and a report can
+    /// trace an imported profile back to the exact inventoried file.
     #[must_use]
-    pub fn new(
-        proposal: &ArtifactProposal,
-        bytes: &[u8],
-        install_identity: Option<InstallIdentity>,
-    ) -> Self {
+    pub fn new(proposal: &ArtifactProposal, install_identity: Option<InstallIdentity>) -> Self {
         Self {
             spelling: proposal.spelling().as_str().to_owned(),
-            size_bytes: bytes.len() as u64,
-            sha256: sha256(bytes),
+            size_bytes: proposal.size_bytes(),
+            sha256: *proposal.sha256(),
             install_identity,
         }
     }
@@ -481,6 +485,21 @@ pub enum UnresolvedReason {
         /// The id class the layout declared for the slot.
         class: LegacyIdClass,
     },
+    /// The id slot carries a value the legacy id space cannot represent.
+    ///
+    /// A slot declared wider than a `u32` id can hold a value outside it. The
+    /// record is unresolved: the value is **never** clamped into range, because
+    /// a clamped value resolves to whichever element happens to be bound at the
+    /// clamp boundary and a document would then be imported as a different
+    /// aircraft or weapon than it names (spec F64 non-negotiable 3).
+    IdOutOfRange {
+        /// The declared field name.
+        field: String,
+        /// The id class the layout declared for the slot.
+        class: LegacyIdClass,
+        /// The value the document carried, which is wider than a legacy id.
+        value: u64,
+    },
     /// A bound identity is not in the catalog.
     TargetNotInCatalog {
         /// The identity the binding names.
@@ -498,6 +517,16 @@ pub enum UnresolvedReason {
     /// This is what keeps an empty legacy profile from being reported as a
     /// successful import (spec F64 non-negotiable 5).
     NoRecords,
+    /// Bytes follow the record table that the layout declares no field for.
+    ///
+    /// The measurement did not account for them. They are reported, never
+    /// interpreted and never dropped: a document whose tail the layout cannot
+    /// explain is not a full import, whatever its records resolved to (spec F64
+    /// non-negotiable 2).
+    UndeclaredTrailingBytes {
+        /// How many bytes follow the record table.
+        bytes: u32,
+    },
     /// The document's version major is not the one the layout supports.
     UnsupportedVersion {
         /// The version the document declared.
@@ -515,9 +544,11 @@ impl UnresolvedReason {
             Self::UndeclaredRecordBytes { .. } => "undeclared_record_bytes",
             Self::IdNotMapped { .. } => "id_not_mapped",
             Self::IdSlotNotInteger { .. } => "id_slot_not_integer",
+            Self::IdOutOfRange { .. } => "id_out_of_range",
             Self::TargetNotInCatalog { .. } => "target_not_in_catalog",
             Self::TargetNotReady { .. } => "target_not_ready",
             Self::NoRecords => "no_records",
+            Self::UndeclaredTrailingBytes { .. } => "undeclared_trailing_bytes",
             Self::UnsupportedVersion { .. } => "unsupported_version",
         }
     }
@@ -537,6 +568,16 @@ impl fmt::Display for UnresolvedReason {
                 "slot {field:?} is declared as a {} id but carries no integer",
                 class.label()
             ),
+            Self::IdOutOfRange {
+                field,
+                class,
+                value,
+            } => write!(
+                f,
+                "slot {field:?} carries legacy {} id {value}, which is wider than \
+                 an id and is never clamped into range",
+                class.label()
+            ),
             Self::TargetNotInCatalog { id } => {
                 write!(f, "mapped identity {id} is not in the catalog")
             }
@@ -544,6 +585,9 @@ impl fmt::Display for UnresolvedReason {
                 write!(f, "mapped identity {id} is not ready ({reasons})")
             }
             Self::NoRecords => write!(f, "the document declares no records"),
+            Self::UndeclaredTrailingBytes { bytes } => {
+                write!(f, "{bytes} bytes follow the record table undeclared")
+            }
             Self::UnsupportedVersion { found, supported } => {
                 write!(
                     f,
@@ -851,11 +895,14 @@ impl ImportPlan {
         &self.report
     }
 
-    /// Whether the plan was made through
+    /// Whether the plan could only be made through
     /// [`LayoutAdmission::AllowDesignedFixtures`].
     ///
-    /// A report must never present fixture data as a measured import, so this
-    /// is part of the plan rather than of the caller's intent.
+    /// The strict policy admits only a measured layout, so any layout that got
+    /// in *because* the caller named the fixture admission — a designed one or
+    /// an `observed_tool` one — must say so here. A report must never present
+    /// fixture data as a measured import, and this flag is what makes that
+    /// checkable rather than a matter of trusting the call site.
     #[must_use]
     pub fn admitted_designed_layout(&self) -> bool {
         self.admitted_designed_layout
@@ -867,11 +914,12 @@ impl ImportPlan {
 /// # Errors
 ///
 /// [`ImportRefusal`] when the source is refused at the door (a spelling that
-/// escapes the root, a size over the cap, a fingerprint that does not describe
-/// the bytes), when its class is an optional enhancement that is switched off,
-/// when the layout's evidence is not admitted, when the document cannot be
-/// read within the limits, or when it reads but is not importable. On any
-/// refusal nothing is planned, nothing is written and the source is untouched.
+/// escapes the root, a size over the cap, a declared length or digest that does
+/// not describe the bytes), when its class is an optional enhancement that is
+/// switched off, when the layout's evidence is not admitted, when the document
+/// cannot be read within the limits, or when it reads but is not importable. On
+/// any refusal nothing is planned, nothing is written and the source is
+/// untouched.
 pub fn plan_import(request: &ImportRequest<'_>) -> Result<ImportPlan, ImportRefusal> {
     let ImportRequest {
         source,
@@ -914,6 +962,17 @@ pub fn plan_import(request: &ImportRequest<'_>) -> Result<ImportPlan, ImportRefu
     source
         .validate_against(bytes.len() as u64)
         .map_err(ImportRefusal::Source)?;
+    // The size half of the fingerprint is checked above; this is the digest
+    // half. A source whose bytes changed between being inventoried and being
+    // read would otherwise be imported silently under the identity the
+    // inventory gave it, which is the corruption non-negotiable 1 forbids.
+    let actual_sha256 = sha256(bytes);
+    if source.sha256() != &actual_sha256 {
+        return Err(ImportRefusal::Source(ArtifactProposalError::HashMismatch {
+            declared: *source.sha256(),
+            actual: actual_sha256,
+        }));
+    }
 
     let document = read_legacy_profile(bytes, layout, limits).map_err(ImportRefusal::Unreadable)?;
 
@@ -952,7 +1011,22 @@ pub fn plan_import(request: &ImportRequest<'_>) -> Result<ImportPlan, ImportRefu
                 });
                 continue;
             };
-            let raw = u32::try_from(raw).unwrap_or(u32::MAX);
+            // A declared id wider than a legacy id is unresolved, never clamped:
+            // clamping would resolve it against whatever happens to be bound at
+            // the clamp boundary, which is the silent misreading non-negotiable
+            // 3 forbids.
+            let Ok(raw) = u32::try_from(raw) else {
+                row_unresolved.push(UnresolvedRow {
+                    record_index: Some(record_index),
+                    field: Some(id_ref.field().to_owned()),
+                    reason: UnresolvedReason::IdOutOfRange {
+                        field: id_ref.field().to_owned(),
+                        class: id_ref.class(),
+                        value: raw,
+                    },
+                });
+                continue;
+            };
             match ids.resolve(id_ref.class(), raw, catalog) {
                 Ok(target) => identities.push((id_ref.class(), target)),
                 Err(reason) => row_unresolved.push(UnresolvedRow {
@@ -972,6 +1046,20 @@ pub fn plan_import(request: &ImportRequest<'_>) -> Result<ImportPlan, ImportRefu
         unresolved.extend(row_unresolved);
     }
 
+    // Bytes past the record table are exactly as unaccounted-for as bytes past
+    // a record's last declared slot, so they are reported the same way instead
+    // of being dropped: `ImportClass::Full` means "no byte was left over", and a
+    // document whose tail the layout cannot explain has not left nothing over.
+    if !document.trailing().is_empty() {
+        unresolved.push(UnresolvedRow {
+            record_index: None,
+            field: None,
+            reason: UnresolvedReason::UndeclaredTrailingBytes {
+                bytes: u32::try_from(document.trailing().len()).unwrap_or(u32::MAX),
+            },
+        });
+    }
+
     let class_outcome = if unresolved.is_empty() {
         ImportClass::Full
     } else if resolved.is_empty() {
@@ -989,10 +1077,10 @@ pub fn plan_import(request: &ImportRequest<'_>) -> Result<ImportPlan, ImportRefu
         class,
         requirement,
         target: (*target).clone(),
-        admitted_designed_layout: layout.evidence() == ClaimStatus::Designed
-            && *admission == LayoutAdmission::AllowDesignedFixtures,
+        admitted_designed_layout: *admission == LayoutAdmission::AllowDesignedFixtures
+            && !LayoutAdmission::MeasuredOnly.admits(layout.evidence()),
         report: MigrationReport {
-            source: SourceFingerprint::new(source, bytes, install_identity.clone()),
+            source: SourceFingerprint::new(source, install_identity.clone()),
             layout_id: document.layout_id().to_owned(),
             layout_evidence: document.layout_evidence(),
             class: class_outcome,

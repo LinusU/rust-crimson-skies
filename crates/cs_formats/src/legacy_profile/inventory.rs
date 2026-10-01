@@ -283,6 +283,20 @@ pub enum ArtifactProposalError {
         /// The size of the bytes actually supplied.
         actual: u64,
     },
+    /// The proposal's declared SHA-256 does not describe the supplied bytes.
+    ///
+    /// [`Self::FingerprintMismatch`] is the size half of the same fact, checked
+    /// by [`ArtifactProposal::validate_against`]. This is the digest half, and
+    /// it is raised by the import layer rather than here, because hashing lives
+    /// in `cs_assets` and this crate is below it. A source whose bytes changed
+    /// between being inventoried and being read is refused instead of being
+    /// imported under the identity the inventory gave it.
+    HashMismatch {
+        /// The SHA-256 the proposal declared.
+        declared: ContentHash,
+        /// The SHA-256 of the bytes actually supplied.
+        actual: ContentHash,
+    },
     /// No class was declared for the source, so it cannot be routed.
     Unclassified,
 }
@@ -297,6 +311,12 @@ impl fmt::Display for ArtifactProposalError {
             Self::FingerprintMismatch { declared, actual } => write!(
                 f,
                 "the fingerprint declares {declared} bytes but {actual} bytes were supplied"
+            ),
+            Self::HashMismatch { declared, actual } => write!(
+                f,
+                "the fingerprint declares sha256 {} but the supplied bytes hash to {}",
+                declared.to_hex(),
+                actual.to_hex()
             ),
             Self::Unclassified => write!(
                 f,

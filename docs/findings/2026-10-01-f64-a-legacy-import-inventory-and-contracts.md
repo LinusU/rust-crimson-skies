@@ -43,10 +43,11 @@ names, widths and version were chosen to exercise the reader.
   AC01 test compares the retained fingerprint against the production
   `cs_assets::install::sha256`, so it asserts through the real hashing path
   instead of a copy of it). No logic in either `lib.rs`; no `Cargo.lock` change.
-- `crates/cs_formats/tests/accept_f64_a_legacy_profile_contracts.rs` (new): 12
-  `accept_f64_a_*` tests.
-- `crates/cs_content/tests/accept_f64_a_legacy_import_plan.rs` (new): 9
-  `accept_f64_a_*` tests, including the AC01 filesystem scenario.
+- `crates/cs_formats/tests/accept_f64_a_legacy_profile_contracts.rs` (new): 13
+  `accept_f64_a_*` tests (1 added in review).
+- `crates/cs_content/tests/accept_f64_a_legacy_import_plan.rs` (new): 12
+  `accept_f64_a_*` tests, including the AC01 filesystem scenario (3 added in
+  review; see "Review findings" below).
 - This file.
 
 **One observable failure:** a reader that trusts the document's own record
@@ -160,3 +161,84 @@ Each of these was applied, observed to fail the named tests, and reverted:
 | drop the planner's `bytes.len()` size gate | `accept_f64_a_malicious_or_oversized_old_profile_fails_without_touching_source_or_new_saves` |
 | make `LegacyIdMap::resolve` return the first binding regardless of the key | 4 tests, including `..._ids_resolve_by_identity_...` and `..._not_ready_target_...` |
 | drop the retained undeclared record bytes | `accept_f64_a_unmapped_ids_and_undeclared_bytes_stay_unresolved` |
+| narrow the version field with `as u32` instead of `u32::try_from` | `accept_f64_a_wide_version_field_is_refused_never_truncated_onto_a_supported_major` |
+| clamp an out-of-range legacy id back into range with `unwrap_or(u32::MAX)` | `accept_f64_a_legacy_id_wider_than_the_id_space_is_unresolved_not_clamped` |
+| drop the document-level undeclared-trailing-bytes row | `accept_f64_a_undeclared_trailing_bytes_stay_unresolved_instead_of_a_full_import` |
+| drop the declared-digest verification in `plan_import` | `accept_f64_a_same_length_source_with_a_changed_digest_is_refused` |
+
+## Review findings (bunny-alpha-2, reviewing its own implementation)
+
+The reviewer re-read the whole diff against the sheet, the shared contract and
+`AGENTS.md`, and probed the behaviour with throwaway tests before changing
+anything. Four defects were found and fixed. All four were live behaviours, not
+style: each one made the contract the module documents **not** hold, and each has
+a regression test that fails when the fix is reverted.
+
+1. **A wide version field truncated onto the supported major.**
+   `read_legacy_profile` narrowed the declared version with `? as u32`. A
+   layout declaring a 64-bit version and a document carrying `0x1_0000_0001`
+   was reported as version major 1 and **read as if supported** — the one check
+   that decides whether an unknown format version is admitted. Now narrowed
+   with `u32::try_from`; an out-of-width version is refused as
+   `unsupported_version` naming the value it read. *This is the most serious of
+   the four: it defeats the "clearly distinguish unsupported version" rule of
+   non-negotiable 5 for any layout whose version field is wider than 32 bits.*
+
+2. **A legacy id wider than the id space was clamped into range.**
+   `plan_import` did `u32::try_from(raw).unwrap_or(u32::MAX)`. An id slot
+   declared wider than a `u32`, carrying a value that does not fit, was silently
+   clamped to `u32::MAX` and then looked up — so it resolved to whatever element
+   happened to be bound at the clamp boundary. A hostile or merely damaged file
+   would import **one weapon as another**, which is exactly what non-negotiable
+   3 forbids. Now a named `UnresolvedReason::IdOutOfRange` carrying the value as
+   read. The regression test deliberately binds `u32::MAX`, so a clamping
+   implementation would report a full import and fail.
+
+3. **Undeclared bytes past the record table were dropped from the report.**
+   The reader retained them in `LegacyProfileDocument::trailing` and
+   `TrailingPolicy::Retain` is the default, but `plan_import` never looked at
+   them: a document with a fully resolvable record table plus 4 unexplained
+   trailing bytes planned as `ImportClass::Full`. Non-negotiable 2 requires
+   unknown fields to stay unresolved, and a `Full` report claims nothing was
+   left over. Now a document-level `UndeclaredTrailingBytes` row, exactly as a
+   record's undeclared bytes already were. The test also asserts the *same*
+   document without the tail is `Full`, so the assertion is about the tail.
+
+4. **The declared SHA-256 was never verified against the bytes.**
+   `ArtifactProposal` carries a fingerprint and `validate_against` only compared
+   **length**; `SourceFingerprint::new` then recomputed the digest from the
+   supplied bytes, so the plan always reported a correct digest — and a
+   source that changed between being inventoried and being read was imported
+   silently under the identity the inventory gave it. Non-negotiable 1 requires
+   the source fingerprint to be retained, and retaining a *recomputed* digest
+   while ignoring the declared one cannot detect a changed source. Now the
+   digest is compared and a mismatch is refused as `HashMismatch` before the
+   document is read; `SourceFingerprint` retains the verified declared digest,
+   so a report traces back to the inventoried file rather than to whatever
+   bytes arrived. The regression test substitutes a **same-length** document,
+   which is the case a length check cannot see.
+
+Two smaller corrections came with the fixes:
+
+- **`admitted_designed_layout` under-reported.** It was `evidence == Designed`,
+  so a plan made through `AllowDesignedFixtures` from an `observed_tool` layout
+  reported `false` — a report could present tool-observed fixture data as
+  measured. It is now "the strict policy would have refused this layout and the
+  caller named the fixture admission instead", which is what the flag is for.
+- **The test fixtures declared a placeholder digest.** The F64-A fixtures
+  declared `hash(0x5a)` for every source regardless of the bytes, which is
+  precisely why defect 4 was invisible: the tests passed *because* the declared
+  digest was never checked. The fixture helper now declares the production
+  `cs_assets::install::sha256(bytes)`, so the suite would have caught defect 4
+  rather than accommodating it.
+
+`SourceFingerprint::new` lost its `bytes` parameter as a result of fix 4: it
+retains the declared fingerprint rather than digesting the bytes again. A public
+API of an unmerged stage, so the signature change is in place rather than
+deprecated.
+
+Nothing else in the diff was changed: the inventory, the refusal taxonomy, the
+allocation bounding, the declared-layout reader's other checks, the identity-based
+id map, the full/partial/unsupported split and the AC01 filesystem scenario were
+re-read and are correct as written. The `crates/cs_app/src/ui/import.rs` decision
+(not created at this stage, F64-C owns the wiring) is recorded above and stands.

@@ -365,6 +365,56 @@ fn accept_f64_a_foreign_magic_and_unsupported_version_are_named_refusals() {
     assert!(refused.expected.contains('1'));
 }
 
+/// A version field declared wider than a `u32` is narrowed with a checked
+/// conversion, so a document carrying `0x1_0000_0001` is refused as a version
+/// this build cannot read instead of truncating onto the supported major. A
+/// truncating reader would import a document it cannot actually version-check.
+#[test]
+fn accept_f64_a_wide_version_field_is_refused_never_truncated_onto_a_supported_major() {
+    let layout = LegacyLayout::new(
+        "synthetic.wide_version/v1",
+        ClaimStatus::Designed,
+        *b"CSPROF01",
+        vec![
+            LegacySlot::new("version_major", LegacySlotType::U64, LEGACY_MAGIC_BYTES),
+            LegacySlot::new("version_minor", LegacySlotType::U32, 16),
+            LegacySlot::new("record_count", LegacySlotType::U32, 20),
+        ],
+        "version_major",
+        "version_minor",
+        1,
+        "record_count",
+        vec![LegacySlot::new("airframe_id", LegacySlotType::U32, 0)],
+        vec![],
+        TrailingPolicy::Retain,
+    );
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(&layout.magic());
+    bytes.extend_from_slice(&0x1_0000_0001u64.to_le_bytes());
+    bytes.extend_from_slice(&0u32.to_le_bytes());
+    bytes.extend_from_slice(&1u32.to_le_bytes());
+    bytes.extend_from_slice(&7u32.to_le_bytes());
+
+    let refused = read_legacy_profile(&bytes, &layout, &LegacyLimits::designed())
+        .expect_err("a version that does not fit 32 bits must be refused");
+    assert_eq!(refused.kind, LegacyProfileErrorKind::UnsupportedVersion);
+    assert_eq!(refused.field, "version_major");
+    assert!(
+        refused.observed.contains("4294967297"),
+        "the refusal reports the value it read, got {}",
+        refused.observed
+    );
+
+    // The same layout reading a major that does fit is accepted, so the refusal
+    // above is about the width and not about the layout being unusable.
+    let mut fitting = bytes.clone();
+    fitting[LEGACY_MAGIC_BYTES..LEGACY_MAGIC_BYTES + 8].copy_from_slice(&1u64.to_le_bytes());
+    let read = read_legacy_profile(&fitting, &layout, &LegacyLimits::designed())
+        .expect("a version that fits 32 bits reads normally");
+    assert_eq!(read.version_major(), 1);
+    assert_eq!(read.version_minor(), 0);
+}
+
 /// A layout declaration that could not describe a document is refused, so a
 /// measured layout cannot be built with an id slot naming no field.
 #[test]
