@@ -24,8 +24,8 @@ use cs_content::save::fs::{
 };
 use cs_content::save::library::{ProfileLibrary, retired_name, slot_name};
 use cs_content::save::store::{
-    CommitError, PROFILE_PREFIX, RecoverError, SaveFile, SavePhase, SaveStorage, StorageError,
-    commit, recover,
+    CommitError, PROFILE_PREFIX, RecoverError, RecoveryWarning, SaveFile, SavePhase, SaveStorage,
+    StorageError, commit, recover,
 };
 use cs_types::content::{ContentId, ContentKind};
 use cs_types::profile::{
@@ -624,7 +624,277 @@ fn accept_f48_b_foreign_and_hostile_files_are_refused_not_overwritten() {
     );
 }
 
-// --- Refusals a stale or foreign write must not overwrite ------------------
+/// A save file is refused on the length it reports, and the read itself is
+/// capped, so a path that reports a small length but is not a bounded regular
+/// file cannot make this read without limit. `/dev/zero` reads forever, so
+/// without the cap this test does not finish.
+#[cfg(unix)]
+#[test]
+fn accept_f48_b_a_save_file_is_read_within_its_bound() {
+    let base = TempBase::new("bounded-read");
+    let id = ProfileId::new(1).expect("nonzero");
+    let directory = base.0.join(slot_name(id));
+    fs::create_dir_all(&directory).expect("the slot directory");
+    std::os::unix::fs::symlink("/dev/zero", directory.join("profile.sav")).expect("a link");
+
+    let err = recover(&DirStorage::new(&directory, PROFILE_PREFIX))
+        .expect_err("a device at the save name is not a save");
+    assert!(
+        err.to_string().contains("over the"),
+        "the read is refused at the bound, not after an unbounded one: {err}"
+    );
+}
+
+/// The temp name must be the slot's own file. A link left there by anything
+/// else is refused rather than written through, so a commit cannot be
+/// redirected out of its slot, and the refusal leaves the installed revision
+/// whole.
+#[cfg(unix)]
+#[test]
+fn accept_f48_b_a_save_is_never_written_through_a_symbolic_link() {
+    let base = TempBase::new("temp-link");
+    let id = ProfileId::new(1).expect("nonzero");
+    let directory = base.0.join(slot_name(id));
+    let mut slot = DirStorage::create(&directory, PROFILE_PREFIX).expect("slot");
+    commit(&mut slot, &doc(id, 1)).expect("first");
+
+    let outside = base.0.join("not-a-save");
+    let held = b"a file the slot has no business writing";
+    fs::write(&outside, held).expect("write");
+    std::os::unix::fs::symlink(&outside, slot.path(SaveFile::Temp)).expect("a link");
+
+    let err = commit(
+        &mut DirStorage::new(&directory, PROFILE_PREFIX),
+        &doc(id, 2),
+    )
+    .expect_err("a link at the temp name is refused");
+    assert!(
+        matches!(err, CommitError::Storage(StorageError::Io(_))),
+        "the refusal is a storage refusal: {err:?}"
+    );
+    assert_eq!(
+        fs::read(&outside).expect("read"),
+        held,
+        "the file the link pointed at is untouched"
+    );
+
+    // The installed revision is still whole, and the next commit works once the
+    // link is gone.
+    fs::remove_file(slot.path(SaveFile::Temp)).expect("remove the link");
+    assert_slot_holds(&directory, &doc(id, 1), "after the refused commit");
+    commit(
+        &mut DirStorage::new(&directory, PROFILE_PREFIX),
+        &doc(id, 2),
+    )
+    .expect("the next commit");
+    assert_slot_holds(&directory, &doc(id, 2), "after the next commit");
+}
+
+/// Two files of one slot that declare the same revision are the same state
+/// twice. The current file is the one a reader opens first, so a tie resolves
+/// to it — the rule the selection code states, asserted rather than assumed.
+#[test]
+fn accept_f48_b_a_tie_in_revisions_prefers_the_current_file() {
+    let base = TempBase::new("tie");
+    let id = ProfileId::new(1).expect("nonzero");
+    let directory = base.0.join(slot_name(id));
+    let slot = DirStorage::create(&directory, PROFILE_PREFIX).expect("slot");
+    let bytes = encode(&doc(id, 4)).expect("encode");
+    for file in SaveFile::ALL {
+        fs::write(slot.path(file), &bytes).expect("write the same revision everywhere");
+    }
+
+    let found = recover(&slot).expect("recover").expect("a revision");
+    assert_eq!(found.source, SaveFile::Current, "a tie is the current file");
+    assert_eq!(found.document, doc(id, 4));
+    assert!(found.warnings.is_empty(), "nothing needed recovering");
+}
+
+/// A slot with no whole revision in it at all is still writable. The commit
+/// goes through the temp file and the atomic install, the unreadable files stay
+/// on disk for the owner to inspect, and a profile whose save and backup were
+/// both lost is not left permanently unable to save — the offered revision comes
+/// from the caller, because nothing on disk could say what it was.
+#[test]
+fn accept_f48_b_a_slot_with_no_whole_revision_is_still_writable() {
+    let base = TempBase::new("unreadable-slot");
+    let id = ProfileId::new(1).expect("nonzero");
+    let directory = base.0.join(slot_name(id));
+    let mut slot = DirStorage::create(&directory, PROFILE_PREFIX).expect("slot");
+    commit(&mut slot, &doc(id, 1)).expect("first");
+
+    let debris = b"not a save at all";
+    for file in [SaveFile::Current, SaveFile::Backup] {
+        fs::write(slot.path(file), debris).expect("damage");
+    }
+    assert!(
+        recover(&DirStorage::new(&directory, PROFILE_PREFIX)).is_err(),
+        "nothing in the slot is readable"
+    );
+
+    commit(
+        &mut DirStorage::new(&directory, PROFILE_PREFIX),
+        &doc(id, 9),
+    )
+    .expect("not refused");
+    let found = recover(&DirStorage::new(&directory, PROFILE_PREFIX))
+        .expect("recover")
+        .expect("the installed revision");
+    assert_eq!(found.source, SaveFile::Current);
+    assert_eq!(found.document, doc(id, 9));
+    assert_eq!(
+        fs::read(slot.path(SaveFile::Backup)).expect("read"),
+        debris,
+        "the unreadable file is kept, not deleted"
+    );
+}
+
+/// A counter with no successor could never be advanced, so a document or a
+/// registry that carries one is refused instead of being adopted: the previous
+/// whole revision stays in force, and the slot is writable again rather than
+/// stuck for good.
+#[test]
+fn accept_f48_b_a_counter_with_no_successor_is_refused() {
+    let base = TempBase::new("no-successor");
+    let kind = ProfileKind::Synthetic;
+    let population = base.population(kind);
+    let seed = ProfileId::new(1).expect("nonzero");
+
+    let (first, second);
+    {
+        let mut library = ProfileLibrary::open(&population, kind).expect("open");
+        let (a, mut document) = library.create(doc(seed, 1)).expect("create a");
+        document.revision = Revision(2);
+        library.save(&document).expect("a second revision");
+        let (b, _) = library.create(doc(seed, 1)).expect("create b");
+        library.set_active(b).expect("a third registry revision");
+        first = a;
+        second = b;
+    }
+
+    // The encoder refuses a revision that has no successor, so no write can put
+    // a slot into a state it could never leave.
+    let mut stuck = doc(first, 1);
+    stuck.revision = Revision(u64::MAX);
+    assert!(encode(&stuck).is_err(), "no such revision is written");
+
+    // A stored one is refused as a whole file, so the backup stays in force.
+    let directory = population.join(slot_name(first));
+    let current = directory.join("profile.sav");
+    let held = fs::read_to_string(&current).expect("read");
+    fs::write(
+        &current,
+        seal(&held.replace("revision=2\n", "revision=18446744073709551615\n")),
+    )
+    .expect("write");
+    let mut library = ProfileLibrary::open(&population, kind).expect("open");
+    let loaded = library.load(first).expect("load");
+    assert_eq!(
+        loaded.document.as_ref().expect("a revision").revision,
+        Revision(1),
+        "the previous whole revision is in force"
+    );
+    assert!(
+        !loaded.warnings.is_empty(),
+        "the unusable revision is reported: {:?}",
+        loaded.warnings
+    );
+    let mut next = doc(first, 3);
+    next.kind = kind;
+    library.save(&next).expect("the slot is writable again");
+
+    // A registry whose mark leaves no room for another id is refused the same
+    // way, so the last good mark stays in force and the population can still
+    // issue ids.
+    let slot = registry_slot(&population);
+    fs::write(
+        slot.path(SaveFile::Current),
+        seal(
+            "CSREG 1.0\nkind=synthetic\nrevision=9\nhigh_water=18446744073709551615\nlive=1\nlive=2\n",
+        ),
+    )
+    .expect("write");
+    let held = load_registry(&population, kind).expect("the backup's registry is in force");
+    assert_eq!(held.registry.high_water(), second.get());
+    assert!(
+        held.warnings
+            .iter()
+            .any(|w| matches!(w, RecoveryWarning::Corrupt { .. })),
+        "the unusable registry is reported: {:?}",
+        held.warnings
+    );
+    let mut next = doc(ProfileId::new(1).expect("nonzero"), 1);
+    next.kind = kind;
+    let mut library = ProfileLibrary::open(&population, kind).expect("open");
+    let (issued, _) = library
+        .create(next)
+        .expect("the population can still issue an id");
+    assert!(issued > second, "an issued id is not reissued: {issued}");
+
+    // The parts rebuilt from a directory listing are validated the same way, so
+    // a set that does not hold together is a refusal and never a panic.
+    let one = ProfileId::new(first.get()).expect("nonzero");
+    assert!(
+        Registry::rebuilt(Revision(1), kind, 5, vec![one, one], None).is_err(),
+        "a repeated id is refused"
+    );
+    assert!(
+        Registry::rebuilt(Revision(1), kind, u64::MAX, Vec::new(), None).is_err(),
+        "a mark with no successor is refused"
+    );
+}
+
+/// A directory that names a profile id is not automatically a profile. An empty
+/// slot — a `create` killed between making the directory and writing its first
+/// revision — and a symbolic link are not adopted as pilots, while the ids they
+/// name still raise the mark, so neither can have an id issued again.
+#[cfg(unix)]
+#[test]
+fn accept_f48_b_only_a_writable_slot_with_a_save_is_adopted() {
+    let base = TempBase::new("adoption");
+    let kind = ProfileKind::Synthetic;
+    let population = base.population(kind);
+
+    // A real profile: its save landed, so it is a profile the registry did not
+    // list.
+    let first = ProfileId::new(1).expect("nonzero");
+    let mut slot =
+        DirStorage::create(population.join(slot_name(first)), PROFILE_PREFIX).expect("a real slot");
+    commit(&mut slot, &doc(first, 1)).expect("a save that landed");
+    // A create killed before its first write leaves an empty slot directory.
+    let empty = ProfileId::new(2).expect("nonzero");
+    fs::create_dir_all(population.join(slot_name(empty))).expect("an empty slot");
+    // And a link where a slot would be, pointing at the real one.
+    let linked = ProfileId::new(3).expect("nonzero");
+    std::os::unix::fs::symlink(
+        population.join(slot_name(first)),
+        population.join(slot_name(linked)),
+    )
+    .expect("a link");
+
+    let mut library = ProfileLibrary::open(&population, kind).expect("open");
+    assert_eq!(
+        library.live(),
+        &[first],
+        "only a slot the library could have written and that holds a save is a profile"
+    );
+    assert_eq!(
+        library.status().high_water,
+        linked.get(),
+        "every id the directory names still raises the mark"
+    );
+    assert!(
+        !library.status().notices.is_empty(),
+        "the reconciliation is reported"
+    );
+    let (issued, _) = library
+        .create(doc(ProfileId::new(1).expect("nonzero"), 1))
+        .expect("create");
+    assert!(
+        issued > linked,
+        "a name that is not a profile does not release its id: {issued}"
+    );
+}
 
 /// A revision that is not above the stored one, a document from another
 /// population and an id that is not live are all refused, and a refused write
