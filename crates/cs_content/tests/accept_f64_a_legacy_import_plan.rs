@@ -3,11 +3,19 @@
 //! `### F64-A`).
 //!
 //! The stage's minimum scenario is sheet **AC01**: a malicious or oversized old
-//! profile fails **without touching the source or any new save**. That is
-//! asserted on a real filesystem: a hostile payload is offered to the
-//! production `cs_content::legacy_import::plan_import`, and afterwards the
-//! source's bytes, its size and its modification time and the whole destination
-//! profile directory are compared against the snapshot taken before the call.
+//! profile fails **without touching the source or any new save**.
+//!
+//! What makes that true at this stage is structural, and this file pins both
+//! halves honestly. `plan_import` is handed the legacy bytes and a *relative*
+//! spelling — never a host path, a file handle or a writer — so it has nothing
+//! through which it could reach the filesystem at all. The test still offers a
+//! real hostile payload on a real tree and compares the source's bytes, size and
+//! modification time plus the whole destination directory against the snapshot
+//! taken before the call; that comparison is a **guard** against a later stage
+//! handing the planner a path, not the mechanism, and it could not catch a
+//! writer that `ImportRequest` has no field to put one in. What makes the test
+//! discriminating is the refusal itself: drop the planner's size gate or the
+//! reader's record-count cap and it fails.
 //!
 //! The other tests pin the contracts the later stages depend on: the
 //! full/partial/unsupported split with named unresolved rows, identity-based id
@@ -349,7 +357,15 @@ fn accept_f64_a_malicious_or_oversized_old_profile_fails_without_touching_source
             .expect("the platform reports a modification time");
         let source_before = fs::read(&source_path).expect("the source reads");
         let destination_before = tree(&profiles_root);
-        let destination_files_before = destination_before.len();
+        // Pin the snapshot to the one save that is really there. `tree`
+        // swallows a `read_dir`/`read` failure, so without this the comparison
+        // below could pass by observing nothing at all — a comparison of the
+        // snapshot's own length against itself proves nothing either way.
+        assert_eq!(
+            destination_before,
+            vec![("existing.save".to_owned(), b"fresh-engine-save".to_vec())],
+            "the destination holds exactly the pre-existing new-engine save"
+        );
 
         // The declared size is capped rather than honest, so the planner's own
         // size check — not the proposal's constructor — is what has to refuse
@@ -406,11 +422,6 @@ fn accept_f64_a_malicious_or_oversized_old_profile_fails_without_touching_source
             tree(&profiles_root),
             destination_before,
             "{label}: the refused import must not touch any new save"
-        );
-        assert_eq!(
-            destination_before.len(),
-            destination_files_before,
-            "{label}: the destination must hold the same files it held"
         );
         assert_eq!(
             fs::read(&existing_save).expect("the existing save reads"),

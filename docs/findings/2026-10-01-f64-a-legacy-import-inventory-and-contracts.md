@@ -227,6 +227,27 @@ Each of these was applied, observed to fail the named tests, and reverted:
 | drop `carried == 0` from the `Partial` branch in `plan_import` | `accept_f64_a_carrying_nothing_is_named_even_when_a_leftover_is_present` |
 | drop the zero-record-extent check in `LegacyLayout::validate` | `accept_f64_a_invalid_layout_declarations_are_refused_by_name` |
 
+One test-quality fix came with the above. The AC01 filesystem test ended with
+`assert_eq!(destination_before.len(), destination_files_before, ...)`, which
+compares the pre-call snapshot's length with itself and therefore proves nothing
+— and because the `tree` helper swallows a `read_dir`/`read` failure, the
+whole-tree comparison around it would have passed vacuously if the snapshot had
+been empty. The pre-call snapshot is now pinned to the one save that is really
+on disk, so the after-call comparison cannot pass by observing nothing.
+
+**An honest limitation of AC01, recorded rather than papered over.** What makes
+"without touching the source or a new save" true at this stage is *structural*:
+`ImportRequest` carries the legacy bytes and a `RelativePath` spelling and has no
+field through which a caller could hand the planner a host path, a file handle
+or a writer. The AC01 test offers a real hostile payload on a real tree and
+compares the source bytes, size and modification time and the whole destination
+directory before and after, but that comparison is a guard against a later stage
+introducing a path, not the mechanism — no test could catch a writer that
+`ImportRequest` cannot express. The test's discriminating power is in the
+*refusal*: removing the planner's size gate or the reader's record-count cap
+makes it fail, which is what the sensitivity table above records. A reviewer
+should not read the filesystem assertions as proving more than that.
+
 Probed and found correct (no change made): `LegacyIdMap::insert` refuses a
 duplicate `(class, raw)`; `TrailingPolicy::Reject` refuses an unexplained tail
 as `trailing_bytes`; a saturating `slot.end()` is caught by `validate()` as
