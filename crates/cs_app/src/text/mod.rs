@@ -28,6 +28,13 @@
 //!   document out and returns a [`screen::ScreenText`]. Every refused control,
 //!   absent glyph and unresolved substitution is a [`layout::LayoutDiagnostic`]
 //!   a screen can show, and a miss is a named error rather than an empty box.
+//! * [`session::TextSession`] (F51-C) is the runtime the three consumers share:
+//!   it owns the selected locale, the decoded catalog, the declared grammar and
+//!   the loaded fonts ([`fonts::FontSet`]), serves `menu_text`/`hud_text`/
+//!   `subtitle_text`, and performs the locale teardown/retry
+//!   ([`session::TextSession::switch_locale`]) and font retry
+//!   ([`session::TextSession::retry_font`]) the stage needs. [`fonts::FontMeasurer`]
+//!   is the declared seam where F51-D's real font decode lands.
 //!
 //! [`MarkupDocument`]: cs_content::localization::MarkupDocument
 //! [`TextId`]: cs_content::localization::TextId
@@ -54,16 +61,23 @@
 //! the band. The unknowns are recorded in
 //! `docs/findings/2026-10-01-f51-a-locale-fallback-markup-and-font-provenance.md`.
 
+pub mod fonts;
 pub mod layout;
 pub mod metrics;
 pub mod screen;
+pub mod session;
 
+pub use fonts::{FontLoadError, FontMeasurer, FontSet, LoadedFont};
 pub use layout::{
     ControlIdError, LaidOutLine, LayoutDiagnostic, LayoutError, LayoutRequest, RequiredControl,
     TextFit, TextLayout, layout_text,
 };
 pub use metrics::{TextMetrics, TextMetricsError, synthetic_monospace};
 pub use screen::{ScreenText, ScreenTextError, ScreenTextRequest, layout_localized_text};
+pub use session::{
+    HudText, HudTextRequest, MenuText, MenuTextRequest, SubtitleRequest, SubtitleText, TextSession,
+    TextSessionError,
+};
 
 /// The substitution values a screen supplies for a localized string.
 ///
