@@ -144,6 +144,15 @@
 //! that never sweep a teleport, per-category actor counters and the
 //! per-session idempotency ledger for spawns and cues. The runtime is F39-B.
 //!
+//! [`world_actors`] is the F34-A world-actor contract
+//! (`specs/F34-ground-vehicles-boats-trains-and-mission-machinery.md`, stage
+//! `### F34-A`): tick-indexed [`world_actors::trajectory::Trajectory`] whose
+//! position and velocity share one function, the single
+//! [`world_actors::anchor::anchor_sample`] renderer and pickup both read,
+//! relative-velocity pickup eligibility, the explicit
+//! [`world_actors::graph::SupportGraph`] and detached-payload release. The
+//! runtime is F34-B and the wiring is F34-C.
+//!
 //! [`cs_types`]: cs_types
 //! [`cs_script`]: cs_script
 
@@ -161,3 +170,4 @@ pub mod probes;
 pub mod targeting;
 pub mod time;
 pub mod visibility;
+pub mod world_actors;
