@@ -149,7 +149,8 @@ pub enum RouteTermination {
     End,
     /// The route returns to its first node: after the last node is reached,
     /// progress wraps back to node 0 and the whole marker sequence is armed
-    /// again, so the route never completes.
+    /// again, so the target never leaves the node list and the route does not
+    /// run off its end.
     Loop,
 }
 
@@ -412,11 +413,11 @@ impl std::error::Error for RouteGraphError {}
 ///
 /// # Looping
 ///
-/// A [`RouteTermination::Loop`] route never completes: reaching its last node
-/// wraps [`next_index`](Self::next_index) back to node 0 and increments
-/// [`laps`](Self::laps), which re-arms **every** node of the route — mandatory
-/// markers included — in authored sequence order. Three properties follow, and
-/// they are what makes a loop a real route rather than a rewind:
+/// A [`RouteTermination::Loop`] route does not run off its end: reaching its
+/// last node wraps [`next_index`](Self::next_index) back to node 0 and
+/// increments [`laps`](Self::laps), which re-arms **every** node of the route —
+/// mandatory markers included — in authored sequence order. Three properties
+/// follow, and they are what makes a loop a real route rather than a rewind:
 ///
 /// * **Progress stays monotonic.** [`reached`](Self::reached) counts the nodes
 ///   reached across all laps and only ever increases; the wrap moves the
