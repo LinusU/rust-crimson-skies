@@ -556,8 +556,10 @@ fn assertion_array(assertions: &[(String, &'static str)]) -> String {
     let items: Vec<String> = assertions
         .iter()
         .map(|(name, status)| {
+            // The recorded acceptance log is the evidence for every assertion;
+            // the census artifact carries the measurement this run derived.
             format!(
-                "{{\"id\": {}, \"status\": {}, \"evidence\": []}}",
+                "{{\"id\": {}, \"status\": {}, \"evidence\": [\"cargo-test.log\",                  \"{CENSUS_ARTIFACT}\"]}}",
                 jstr(name),
                 jstr(status)
             )
