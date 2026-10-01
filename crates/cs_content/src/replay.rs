@@ -932,7 +932,7 @@ impl AuthoredChoices {
         for choice in &choices {
             check_text("choice value", &choice.value)?;
         }
-        choices.sort_by(|left, right| left.slot.cmp(&right.slot));
+        choices.sort_by_key(|choice| choice.slot);
         for pair in choices.windows(2) {
             if pair[0].slot == pair[1].slot {
                 return Err(ReplayError::Duplicate {
@@ -997,9 +997,14 @@ impl AuthoredChoices {
 /* ------------------------------------------------------------------ */
 
 /// Why a run existed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+///
+/// [`OrdinaryPlay`](Self::OrdinaryPlay) is the default a record with no
+/// `purpose=` line means: a run that declared no tooling around it is a
+/// player's session.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum RunPurpose {
     /// Ordinary play: a player session with no tooling around it.
+    #[default]
     OrdinaryPlay,
     /// A capture or probe run.
     Capture,
@@ -1065,9 +1070,11 @@ pub struct OverrideLog {
     production_profile_write: bool,
 }
 
-impl Default for RunPurpose {
-    fn default() -> Self {
-        Self::OrdinaryPlay
+impl RunPurpose {
+    /// Whether a run with this purpose is an ordinary play session, which is
+    /// the default a record with no `purpose=` line means.
+    pub const fn is_ordinary_play(self) -> bool {
+        matches!(self, Self::OrdinaryPlay)
     }
 }
 
@@ -2714,9 +2721,9 @@ impl fmt::Display for DeclaredCapabilities {
 ///
 /// The record carries a **path and a digest**, never content: the artifacts
 /// themselves stay in the owner's private directory, and the committed copy of
-/// a report is hashes and paths only. [`EvidenceArtifact::validate`] enforces
-/// that the path is private-relative, so a report cannot smuggle an original
-/// asset into the public repository by naming it.
+/// a report is hashes and paths only. [`EvidenceArtifact::new`] enforces that
+/// the path is private-relative, so a report cannot smuggle an original asset
+/// into the public repository by naming it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct EvidenceArtifact {
     /// The claim this artifact is evidence for.
@@ -2738,6 +2745,27 @@ pub struct EvidenceArtifact {
     pub locator: String,
 }
 
+/// What an artifact *is*, as a caller describes it before validation.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ArtifactDescription<'a> {
+    /// The claim it is evidence for.
+    pub claim: &'a ClaimId,
+    /// The task that produced it.
+    pub task: &'a str,
+    /// Its path, relative to the private evidence directory.
+    pub path: &'a str,
+    /// The SHA-256 of the produced bytes.
+    pub sha256: ContentHash,
+    /// What the artifact is.
+    pub media: ArtifactMedia,
+    /// Who produced the bytes.
+    pub origin: ArtifactOrigin,
+    /// What the recorder hashed to stand behind it.
+    pub fingerprint: Fingerprint,
+    /// Where inside the fingerprinted source the observation lives.
+    pub locator: &'a str,
+}
+
 impl EvidenceArtifact {
     /// Validates and wraps an artifact link.
     ///
@@ -2747,17 +2775,8 @@ impl EvidenceArtifact {
     /// [`ReplayError::TooLong`] for an oversized field, and
     /// [`ReplayError::Syntax`] for a path that is absolute or escapes the
     /// private directory.
-    pub fn new(
-        claim: ClaimId,
-        task: &str,
-        path: &str,
-        sha256: ContentHash,
-        media: ArtifactMedia,
-        origin: ArtifactOrigin,
-        fingerprint: Fingerprint,
-        locator: &str,
-    ) -> Result<Self, ReplayError> {
-        let task = check_label("task id", task)?;
+    pub fn new(described: ArtifactDescription<'_>) -> Result<Self, ReplayError> {
+        let task = check_label("task id", described.task)?;
         if task.len() > MAX_LABEL_BYTES {
             return Err(ReplayError::TooLong {
                 field: "task id",
@@ -2765,17 +2784,17 @@ impl EvidenceArtifact {
                 max: MAX_LABEL_BYTES,
             });
         }
-        check_private_path(path)?;
-        check_text("observation locator", locator)?;
+        check_private_path(described.path)?;
+        check_text("observation locator", described.locator)?;
         Ok(Self {
-            claim,
+            claim: described.claim.clone(),
             task,
-            path: path.to_owned(),
-            sha256,
-            media,
-            origin,
-            fingerprint,
-            locator: locator.to_owned(),
+            path: described.path.to_owned(),
+            sha256: described.sha256,
+            media: described.media,
+            origin: described.origin,
+            fingerprint: described.fingerprint,
+            locator: described.locator.to_owned(),
         })
     }
 
@@ -4370,33 +4389,35 @@ pub fn synthetic_capture_record() -> CaptureRecord {
 pub fn synthetic_evidence_bundle() -> EvidenceBundle {
     let replay = synthetic_replay_record();
     let claim = ClaimId::new("f59.a.synthetic-trace").expect("the fixture's claim id is valid");
-    let trace = EvidenceArtifact::new(
-        claim.clone(),
-        "F59-A",
-        "trace.jsonl",
-        cs_assets::install::sha256(b"cs.f59.synthetic.trace"),
-        ArtifactMedia::Trace,
-        ArtifactOrigin::Runtime,
-        Fingerprint {
+    let trace = EvidenceArtifact::new(ArtifactDescription {
+        claim: &claim,
+        task: "F59-A",
+        path: "trace.jsonl",
+        sha256: sha256(b"cs.f59.synthetic.trace"),
+        media: ArtifactMedia::Trace,
+        origin: ArtifactOrigin::Runtime,
+        fingerprint: Fingerprint {
             kind: FingerprintKind::Content,
             sha256: replay.fingerprint.content,
         },
-        "synthetic.trace",
-    )
+        locator: "synthetic.trace",
+    })
     .expect("the fixture's trace artifact is valid");
-    let authored = EvidenceArtifact::new(
-        ClaimId::new("f59.a.synthetic-screenshot").expect("the fixture's claim id is valid"),
-        "F59-A",
-        "screenshot.png",
-        cs_assets::install::sha256(b"cs.f59.synthetic.drawn"),
-        ArtifactMedia::Screenshot,
-        ArtifactOrigin::Authored,
-        Fingerprint {
+    let drawn_claim =
+        ClaimId::new("f59.a.synthetic-screenshot").expect("the fixture's claim id is valid");
+    let authored = EvidenceArtifact::new(ArtifactDescription {
+        claim: &drawn_claim,
+        task: "F59-A",
+        path: "screenshot.png",
+        sha256: sha256(b"cs.f59.synthetic.drawn"),
+        media: ArtifactMedia::Screenshot,
+        origin: ArtifactOrigin::Authored,
+        fingerprint: Fingerprint {
             kind: FingerprintKind::Content,
             sha256: replay.fingerprint.content,
         },
-        "synthetic.screenshot",
-    )
+        locator: "synthetic.screenshot",
+    })
     .expect("the fixture's authored artifact is valid");
     EvidenceBundle {
         task: "F59-A".to_owned(),

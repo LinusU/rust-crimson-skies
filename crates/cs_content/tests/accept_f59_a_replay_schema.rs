@@ -8,15 +8,15 @@
 
 use cs_assets::install::sha256;
 use cs_content::replay::{
-    ArtifactMedia, ArtifactOrigin, AuthoredChoice, AuthoredChoices, BuildFingerprint, BuildId,
-    CandidateBuild, CapabilityClass, CaptureDifference, CaptureError, Certification, ChoiceSlot,
-    CompatibilityVerdict, CrossBuildPolicy, DeclaredCapabilities, DecodeError, DivergenceReason,
-    EnvelopeError, EvidenceArtifact, EvidenceBundle, EvidenceRefusal, InitialState,
-    InputStreamDigest, MAX_MSAA_SAMPLES, OverrideEntry, OverrideLog, PcmRole, PlatformTag,
-    RenderConfig, ReplayError, ReplayField, ReplayRecord, ReplaySeeds, ReplayVersion, RunPurpose,
-    SeedStream, StaleReason, StateEnvelope, TestCounts, TonemapKind, decode, decode_capture,
-    encode, encode_capture, synthetic_capture_record, synthetic_evidence_bundle,
-    synthetic_replay_record,
+    ArtifactDescription, ArtifactMedia, ArtifactOrigin, AuthoredChoice, AuthoredChoices,
+    BuildFingerprint, BuildId, CandidateBuild, CapabilityClass, CaptureDifference, CaptureError,
+    Certification, ChoiceSlot, CompatibilityVerdict, CrossBuildPolicy, DeclaredCapabilities,
+    DecodeError, DivergenceReason, EnvelopeError, EvidenceArtifact, EvidenceBundle,
+    EvidenceRefusal, InitialState, InputStreamDigest, MAX_MSAA_SAMPLES, OverrideEntry, OverrideLog,
+    PcmRole, PlatformTag, RenderConfig, ReplayError, ReplayField, ReplayRecord, ReplaySeeds,
+    ReplayVersion, RunPurpose, SeedStream, StaleReason, StateEnvelope, TestCounts, TonemapKind,
+    decode, decode_capture, encode, encode_capture, synthetic_capture_record,
+    synthetic_evidence_bundle, synthetic_replay_record,
 };
 use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind, Provenance};
@@ -121,7 +121,7 @@ fn accept_f59_a_replaying_one_input_stream_twice_gives_identical_promises() {
     );
 
     for (replay, label) in [(&first_replay, "first"), (&second_replay, "second")] {
-        let verdict = replay.verdict_against(&replay_stream(&replay, &replay));
+        let verdict = replay.verdict_against(&replay_stream(replay, replay));
         assert!(
             verdict.is_identical(),
             "{label}: promised hashes must match the replayed stream, got {:?}",
@@ -431,6 +431,10 @@ fn accept_f59_a_an_unchanged_replay_is_compatible() {
     );
 }
 
+/// Moves one identity field of a record, so the test can ask what the refusal
+/// names when it moved.
+type IdentityField = Box<dyn Fn(&mut ReplayRecord)>;
+
 /// Each field that decides a run's identity is load-bearing: moving any one of
 /// them is a refusal, and naming the right one.
 #[test]
@@ -439,7 +443,7 @@ fn accept_f59_a_every_identity_field_is_load_bearing() {
     let other_tree = BuildId::new("2222222222222222222222222222222222222222").expect("valid");
     let other_os = PlatformTag::new("linux", "x86_64").expect("valid");
 
-    let cases: Vec<(&str, Box<dyn Fn(&mut ReplayRecord)>)> = vec![
+    let cases: Vec<(&str, IdentityField)> = vec![
         (
             "engine",
             Box::new(|r: &mut ReplayRecord| r.fingerprint.engine = sha256(b"engine2")),
@@ -1244,16 +1248,16 @@ fn accept_f59_a_an_authored_artifact_never_backs_an_original_claim() {
         kind: FingerprintKind::Installation,
         sha256: sha256(b"cs.f59.original.installation"),
     };
-    let authored = EvidenceArtifact::new(
-        claim("f59.a.drawn-image"),
-        "F59-A",
-        "screenshot.png",
-        sha256(b"drawn-by-hand"),
-        ArtifactMedia::Screenshot,
-        ArtifactOrigin::Authored,
-        install,
-        "mission/screenshot.png",
-    )
+    let authored = EvidenceArtifact::new(ArtifactDescription {
+        claim: &claim("f59.a.drawn-image"),
+        task: "F59-A",
+        path: "screenshot.png",
+        sha256: sha256(b"drawn-by-hand"),
+        media: ArtifactMedia::Screenshot,
+        origin: ArtifactOrigin::Authored,
+        fingerprint: install,
+        locator: "mission/screenshot.png",
+    })
     .expect("a private-relative path is valid");
 
     let record = authored.evidence_record("cs", "0.1.0");
@@ -1356,19 +1360,28 @@ fn artifact(
     media: ArtifactMedia,
     digest: ContentHash,
 ) -> EvidenceArtifact {
-    EvidenceArtifact::new(
-        claim(claim_id),
-        "F59-A",
+    runtime_artifact(claim(claim_id), path, media, digest)
+}
+
+fn runtime_artifact(
+    claim: ClaimId,
+    path: &str,
+    media: ArtifactMedia,
+    digest: ContentHash,
+) -> EvidenceArtifact {
+    EvidenceArtifact::new(ArtifactDescription {
+        claim: &claim,
+        task: "F59-A",
         path,
-        digest,
+        sha256: digest,
         media,
-        ArtifactOrigin::Runtime,
-        Fingerprint {
+        origin: ArtifactOrigin::Runtime,
+        fingerprint: Fingerprint {
             kind: FingerprintKind::Content,
             sha256: sha256(b"cs.f59.test.content"),
         },
-        "synthetic.artifact",
-    )
+        locator: "synthetic.artifact",
+    })
     .expect("a valid artifact link")
 }
 
@@ -1387,16 +1400,16 @@ fn accept_f59_a_an_artifact_path_must_stay_inside_the_private_directory() {
         "../outside/trace.jsonl",
         "nested/../../escape.jsonl",
     ] {
-        let result = EvidenceArtifact::new(
-            claim("f59.a.path"),
-            "F59-A",
+        let result = EvidenceArtifact::new(ArtifactDescription {
+            claim: &claim("f59.a.path"),
+            task: "F59-A",
             path,
-            sha256(b"bytes"),
-            ArtifactMedia::Trace,
-            ArtifactOrigin::Runtime,
+            sha256: sha256(b"bytes"),
+            media: ArtifactMedia::Trace,
+            origin: ArtifactOrigin::Runtime,
             fingerprint,
-            "synthetic.trace",
-        );
+            locator: "synthetic.trace",
+        });
         assert!(
             matches!(
                 result,
@@ -1410,16 +1423,16 @@ fn accept_f59_a_an_artifact_path_must_stay_inside_the_private_directory() {
     }
     // A private-relative path is accepted.
     assert!(
-        EvidenceArtifact::new(
-            claim("f59.a.path"),
-            "F59-A",
-            "artifacts/trace.jsonl",
-            sha256(b"bytes"),
-            ArtifactMedia::Trace,
-            ArtifactOrigin::Runtime,
+        EvidenceArtifact::new(ArtifactDescription {
+            claim: &claim("f59.a.path"),
+            task: "F59-A",
+            path: "artifacts/trace.jsonl",
+            sha256: sha256(b"bytes"),
+            media: ArtifactMedia::Trace,
+            origin: ArtifactOrigin::Runtime,
             fingerprint,
-            "synthetic.trace",
-        )
+            locator: "synthetic.trace",
+        })
         .is_ok()
     );
 }
@@ -1736,19 +1749,19 @@ fn accept_f59_a_a_bundle_certifies_exactly_the_claims_it_can() {
     // another task's evidence.
     let mut foreign = bundle.clone();
     foreign.artifacts.push(
-        EvidenceArtifact::new(
-            claim("claim.foreign"),
-            "F59-B",
-            "three.jsonl",
-            sha256(b"three"),
-            ArtifactMedia::Trace,
-            ArtifactOrigin::Runtime,
-            Fingerprint {
+        EvidenceArtifact::new(ArtifactDescription {
+            claim: &claim("claim.foreign"),
+            task: "F59-B",
+            path: "three.jsonl",
+            sha256: sha256(b"three"),
+            media: ArtifactMedia::Trace,
+            origin: ArtifactOrigin::Runtime,
+            fingerprint: Fingerprint {
                 kind: FingerprintKind::Content,
                 sha256: sha256(b"content"),
             },
-            "synthetic.trace",
-        )
+            locator: "synthetic.trace",
+        })
         .expect("valid"),
     );
     let report = foreign.certify(&candidate_of(&fixture()));
