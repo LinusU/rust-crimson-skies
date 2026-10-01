@@ -45,6 +45,15 @@ directory is original game data — no assets, scripts or extracted bytes.
   outside the campaign layout (see
   `docs/findings/2026-10-01-m03-a-source-binding.md`). Same five resolved
   critical dependencies, same unverified status.
+- `M04.json` — the M04 binding output (stage M04-A), generated and pinned the
+  same way by `accept_m04_a_the_committed_record_is_what_the_installation_derives`.
+  No production code changed for it either: it runs M02-A's join and
+  corroboration at the fourth campaign position. Its world group, `world/c1`,
+  is shared with two other campaign missions, and its mission number `4` is
+  reused by one mission in every chapter, so neither the world id nor the
+  mission number identifies the mission — only the campaign position does (see
+  `docs/findings/2026-10-01-m04-a-source-binding.md`). Same five resolved
+  critical dependencies, same unverified status.
 
 The typed records those missions fill in — the seven required content
 categories, one unresolved dependency row per required subsystem, coverage
@@ -53,7 +62,7 @@ totals and closure reports — live in
 
 ## What is not here yet
 
-- `M04.json` … `M24.json` — the per-mission binding outputs of M04-A …
+- `M05.json` … `M24.json` — the per-mission binding outputs of M05-A …
   M24-A, created from original data the same way. Every one of them starts
   unresolved.
 
