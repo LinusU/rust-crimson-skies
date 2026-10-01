@@ -1,0 +1,2226 @@
+//! Guns, ammunition, hardpoints and swept ballistic hits (F27-A).
+//!
+//! Spec: `specs/F27-guns-ammunition-hardpoints-and-ballistic-hits.md`, stage
+//! `### F27-A`. Shared contract: `docs/contracts/FLIGHT-PHYSICS.md`,
+//! "Collision and ballistic tests".
+//!
+//! This module is the **runtime** half of the weapon contract: the records
+//! one session resolves against, with no Bevy, Avian, renderer or file
+//! dependency (`docs/01-ARCHITECTURE.md`). The declared,
+//! provenance-carrying half is `cs_content::weapons`; the conversion
+//! boundary is `cs_app::weapons`.
+//!
+//! # What is defined here and what is not
+//!
+//! Stage F27-A defines the *typed* contract and a minimal synthetic fixture:
+//!
+//! * [`GunDefinition`] — one gun's declared behavior, with every field the
+//!   sheet's deliverable names kept separate: mount, caliber, ammunition
+//!   type, rate, muzzle velocity, lifetime, spread, damage channels,
+//!   effects and sound.
+//! * [`WeaponState`] — one actor's live weapon state: the selected
+//!   [`GunBank`], per-mount cooldown in ticks, per-mount remaining rounds
+//!   and the disabled mounts.
+//! * [`FireIntent`] in, [`FireResolution`] out. Fire intents are resolved
+//!   **once** by the authoritative [`FireResolver`], which is the only
+//!   thing that consumes a round, starts a cooldown, spawns a projectile
+//!   or names a sound.
+//! * [`Ballistics::sweep`] — the swept-segment query with relative motion
+//!   and a once-per-projectile ledger. This is AC01's minimum scenario at
+//!   this stage.
+//!
+//! What F27-B and F27-C own, and what is therefore deliberately absent: the
+//! per-tick cadence loop, the mount transforms read out of the *live*
+//! aircraft hierarchy, an Avian body or collider for a projectile, the
+//! routing of a swept hit into a [`crate::damage::HitEvent`], the audio and
+//! muzzle-effect consumers and the player's bank-selection input.
+//!
+//! # Designed vocabulary, not original data
+//!
+//! Every mount kind, caliber, rate, spread model, damage number and
+//! interaction rule here is **newly authored project design**, carried by
+//! synthetic fixture values. The original ammunition catalogue — slug,
+//! armor-piercing, dum-dum and explosive are *discovery leads* per F27
+//! non-negotiable 1, not measurements — is deliberately **not** enumerated;
+//! see `docs/findings/2026-10-01-f27-a-weapon-ammo-schemas-and-fire-events.md`.
+
+use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
+
+use cs_types::Tick;
+use cs_types::content::{ContentId, ContentKind};
+use cs_types::evidence::ClaimId;
+use cs_types::space::{UnitVec3, WorldPosition};
+
+use crate::damage::{ActorId, DamageChannel, DamageNodeKey};
+use crate::targeting::Allegiance;
+
+// ---------------------------------------------------------------- identity ----
+
+/// One ammunition **type** identifier.
+///
+/// Ammunition is deliberately *not* an enum here. The original catalogue's
+/// actual types are unmeasured (F27 "Research boundary"; the public manual
+/// establishes no ammunition table) and F27 non-negotiable behavior 1 names
+/// slug, armor-piercing, dum-dum and explosive as *leads* while forbidding an
+/// unverified multiplier table. So a type is an opaque [`ContentId`] in the
+/// `ammo` namespace: an importer that has read real ammunition data supplies
+/// real ids, and nothing is defaulted in its absence.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AmmunitionId(ContentId);
+
+impl AmmunitionId {
+    /// Wraps an ammunition content id.
+    ///
+    /// # Errors
+    ///
+    /// [`AmmunitionIdError::KindMismatch`] when the id is not in the `ammo`
+    /// namespace.
+    pub fn try_new(id: ContentId) -> Result<Self, AmmunitionIdError> {
+        if id.kind() != ContentKind::Ammo {
+            return Err(AmmunitionIdError::KindMismatch { id });
+        }
+        Ok(Self(id))
+    }
+
+    /// The catalog id of the ammunition type.
+    #[must_use]
+    pub const fn id(&self) -> &ContentId {
+        &self.0
+    }
+
+    /// The `namespace/key` text of the ammunition type.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+}
+
+impl fmt::Display for AmmunitionId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.0.as_str())
+    }
+}
+
+/// Why an [`AmmunitionId`] was rejected.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AmmunitionIdError {
+    /// The content id is not in the `ammo` namespace.
+    KindMismatch {
+        /// The offending id.
+        id: ContentId,
+    },
+}
+
+impl fmt::Display for AmmunitionIdError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::KindMismatch { id } => {
+                write!(f, "ammunition id {id} is not in the ammo namespace")
+            }
+        }
+    }
+}
+
+impl std::error::Error for AmmunitionIdError {}
+
+/// Where a weapon sits on the airframe.
+///
+/// The list is **designed**, not measured: it is the smallest set that
+/// states AC02 ("a disabled *wing* gun") and the per-mount discipline of
+/// non-negotiable 2. F27-D maps the original hardpoint set onto it, and a
+/// kind the original does not have simply stays unused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum GunMountKind {
+    /// A nose or forward-fuselage gun.
+    Nose,
+    /// A wing gun on the airframe's left side.
+    WingLeft,
+    /// A wing gun on the airframe's right side.
+    WingRight,
+    /// A tail gun.
+    Tail,
+    /// A fuselage or gondola gun.
+    Gondola,
+}
+
+impl GunMountKind {
+    /// Every mount kind, in a stable order.
+    pub const ALL: &'static [GunMountKind] = &[
+        Self::Nose,
+        Self::WingLeft,
+        Self::WingRight,
+        Self::Tail,
+        Self::Gondola,
+    ];
+
+    /// The stable label used in reports.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Nose => "nose",
+            Self::WingLeft => "wing_left",
+            Self::WingRight => "wing_right",
+            Self::Tail => "tail",
+            Self::Gondola => "gondola",
+        }
+    }
+
+    /// Whether this mount is on a wing. AC02's "disabled wing gun" is the
+    /// discriminating case: a wing gun can be destroyed independently of
+    /// the fuselage, so the gate has to be per mount, not per airframe.
+    #[must_use]
+    pub const fn is_wing(self) -> bool {
+        matches!(self, Self::WingLeft | Self::WingRight)
+    }
+}
+
+impl fmt::Display for GunMountKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+// -------------------------------------------------------------- definition ----
+
+/// How fast a gun may fire, in the simulation's own tick unit.
+///
+/// A gun's rate is *ticks between shots*, never wall-clock seconds or a
+/// frame-time approximation (`FLIGHT-PHYSICS`: commands belong to one
+/// simulation tick).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct GunRate {
+    ticks_between_shots: u32,
+}
+
+impl GunRate {
+    /// Builds a rate, refusing a zero interval — even a fastest-firing gun
+    /// needs one tick between two accepted shots.
+    ///
+    /// # Errors
+    ///
+    /// [`GunDefinitionError::ZeroRateInterval`] when the interval is zero.
+    pub fn try_new(ticks_between_shots: u32) -> Result<Self, GunDefinitionError> {
+        if ticks_between_shots == 0 {
+            return Err(GunDefinitionError::ZeroRateInterval);
+        }
+        Ok(Self {
+            ticks_between_shots,
+        })
+    }
+
+    /// Ticks the gun must wait between two accepted shots.
+    #[must_use]
+    pub const fn ticks_between_shots(self) -> u32 {
+        self.ticks_between_shots
+    }
+}
+
+/// How a round inherits the firing airframe's velocity.
+///
+/// F27 non-negotiable 2 makes inherited velocity an *explicit verified
+/// rule*, so it is declared data with its own type rather than an assumption
+/// buried in the spawn math. The original's rule is unmeasured — the public
+/// manual establishes no ballistic parameter — so which variant the original
+/// used is F27-D's audit, and the content schema carries this field
+/// `Resolved`.
+///
+/// Convergence is deliberately **not** modelled here: the distance at which
+/// a wing pair's barrels meet is unmeasured, so [`MountTransform::forward`]
+/// already carries the *resolved* direction and this stage invents no
+/// convergence geometry.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum InheritanceRule {
+    /// The round keeps the airframe's whole world velocity; the muzzle
+    /// velocity is added to it.
+    Full,
+    /// The round keeps a declared fraction of the airframe's world velocity.
+    Fraction {
+        /// The declared share of the airframe's velocity.
+        share: f64,
+    },
+    /// The round keeps none of the airframe's velocity: its world velocity is
+    /// the muzzle velocity alone.
+    None,
+}
+
+impl InheritanceRule {
+    /// The stable label used in reports.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Full => "full",
+            Self::Fraction { .. } => "fraction",
+            Self::None => "none",
+        }
+    }
+}
+
+impl fmt::Display for InheritanceRule {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Fraction { share } => write!(f, "fraction({share})"),
+            other => f.write_str(other.label()),
+        }
+    }
+}
+
+/// The damage channels one round delivers.
+///
+/// A gun delivers a *profile*, not a scalar: the same round may do more to
+/// structure than to armor. What the gun declares is the amount **per
+/// channel**; how a target's armor intercepts a channel is the damage
+/// resolver's declared rule, not the gun's, so no multiplier is invented
+/// here.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WeaponDamage {
+    /// Damage routed on [`DamageChannel::Armor`].
+    pub armor: f64,
+    /// Damage routed on [`DamageChannel::Internal`].
+    pub internal: f64,
+}
+
+impl WeaponDamage {
+    /// Builds a damage profile, refusing non-finite or negative amounts.
+    ///
+    /// # Errors
+    ///
+    /// [`GunDefinitionError::NonFiniteDamage`] or
+    /// [`GunDefinitionError::NegativeDamage`].
+    pub fn try_new(armor: f64, internal: f64) -> Result<Self, GunDefinitionError> {
+        for amount in [armor, internal] {
+            if !amount.is_finite() {
+                return Err(GunDefinitionError::NonFiniteDamage);
+            }
+            if amount < 0.0 {
+                return Err(GunDefinitionError::NegativeDamage { amount });
+            }
+        }
+        Ok(Self { armor, internal })
+    }
+
+    /// The amount this round delivers on `channel`.
+    #[must_use]
+    pub const fn amount_on(&self, channel: DamageChannel) -> f64 {
+        match channel {
+            DamageChannel::Armor => self.armor,
+            DamageChannel::Internal => self.internal,
+        }
+    }
+}
+
+/// How a gun's rounds scatter around its declared direction.
+///
+/// F27 non-negotiable 2 makes convergence and inherited velocity *explicit
+/// verified rules*; spread is the third such knob. At this stage spread is
+/// only a declared cone half-angle in radians — the sampling model the
+/// original used is unmeasured, so no distribution is chosen here and no
+/// sample is drawn.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SpreadCone {
+    half_angle_radians: f64,
+}
+
+impl SpreadCone {
+    /// Builds a cone, refusing a non-finite or out-of-range half-angle.
+    ///
+    /// # Errors
+    ///
+    /// [`GunDefinitionError::NonFiniteSpread`] or
+    /// [`GunDefinitionError::SpreadOutOfRange`].
+    pub fn try_new(half_angle_radians: f64) -> Result<Self, GunDefinitionError> {
+        if !half_angle_radians.is_finite() {
+            return Err(GunDefinitionError::NonFiniteSpread);
+        }
+        if !(0.0..=std::f64::consts::FRAC_PI_2).contains(&half_angle_radians) {
+            return Err(GunDefinitionError::SpreadOutOfRange { half_angle_radians });
+        }
+        Ok(Self { half_angle_radians })
+    }
+
+    /// The declared cone half-angle, in radians.
+    #[must_use]
+    pub const fn half_angle_radians(self) -> f64 {
+        self.half_angle_radians
+    }
+}
+
+/// The declared behavior of one gun.
+///
+/// Every field the sheet's deliverable names is present and separate:
+/// `mount`, `caliber`, `ammunition`, `rate`, `muzzle_velocity_mps`,
+/// `lifetime_ticks`, `spread`, `damage` (the channels), `effect` and
+/// `sound`.
+///
+/// `mount` is a [`DamageNodeKey`] — the *same* identity discipline the F29
+/// damage graph applies to its `WeaponMount` nodes. Reusing the graph's own
+/// key is what makes non-negotiable 2's "mount transforms come from the live
+/// aircraft hierarchy/damage state" concrete: a mount is disabled by exactly
+/// the damage transition that destroyed it, and no gun can be silenced
+/// through an unrelated node.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GunDefinition {
+    mount: DamageNodeKey,
+    kind: GunMountKind,
+    caliber: String,
+    ammunition: AmmunitionId,
+    rate: GunRate,
+    muzzle_velocity_mps: f64,
+    lifetime_ticks: u64,
+    spread: SpreadCone,
+    damage: WeaponDamage,
+    inheritance: InheritanceRule,
+    effect: ContentId,
+    sound: ContentId,
+}
+
+impl GunDefinition {
+    /// Assembles a gun definition.
+    ///
+    /// # Errors
+    ///
+    /// [`GunDefinitionError`] on an empty caliber, a non-finite or
+    /// non-positive muzzle velocity, a zero round lifetime, an effect id
+    /// outside the `hardpoint_equipment` namespace or a sound id outside the
+    /// `sound` namespace.
+    #[allow(clippy::too_many_arguments)]
+    pub fn try_new(
+        mount: DamageNodeKey,
+        kind: GunMountKind,
+        caliber: impl Into<String>,
+        ammunition: AmmunitionId,
+        rate: GunRate,
+        muzzle_velocity_mps: f64,
+        lifetime_ticks: u64,
+        spread: SpreadCone,
+        damage: WeaponDamage,
+        inheritance: InheritanceRule,
+        effect: ContentId,
+        sound: ContentId,
+    ) -> Result<Self, GunDefinitionError> {
+        let caliber = caliber.into();
+        if caliber.trim().is_empty() {
+            return Err(GunDefinitionError::EmptyCaliber);
+        }
+        if !muzzle_velocity_mps.is_finite() {
+            return Err(GunDefinitionError::NonFiniteMuzzleVelocity);
+        }
+        if muzzle_velocity_mps <= 0.0 {
+            return Err(GunDefinitionError::NonPositiveMuzzleVelocity {
+                muzzle_velocity_mps,
+            });
+        }
+        if lifetime_ticks == 0 {
+            return Err(GunDefinitionError::ZeroLifetime);
+        }
+        if let InheritanceRule::Fraction { share } = inheritance
+            && (!share.is_finite() || !(0.0..=1.0).contains(&share))
+        {
+            return Err(GunDefinitionError::InvalidInheritanceShare { share });
+        }
+        if effect.kind() != ContentKind::HardpointEquipment {
+            return Err(GunDefinitionError::EffectKindMismatch { id: effect });
+        }
+        if sound.kind() != ContentKind::Sound {
+            return Err(GunDefinitionError::SoundKindMismatch { id: sound });
+        }
+        Ok(Self {
+            mount,
+            kind,
+            caliber,
+            ammunition,
+            rate,
+            muzzle_velocity_mps,
+            lifetime_ticks,
+            spread,
+            damage,
+            inheritance,
+            effect,
+            sound,
+        })
+    }
+
+    /// The mount this gun occupies, by damage-node key.
+    #[must_use]
+    pub const fn mount(&self) -> &DamageNodeKey {
+        &self.mount
+    }
+
+    /// Where on the airframe this mount sits.
+    #[must_use]
+    pub const fn kind(&self) -> GunMountKind {
+        self.kind
+    }
+
+    /// The declared caliber text. Free text, not an enum: the original
+    /// caliber vocabulary is unmeasured, so a closed set would be a
+    /// fabrication.
+    #[must_use]
+    pub fn caliber(&self) -> &str {
+        &self.caliber
+    }
+
+    /// The ammunition type this gun fires.
+    #[must_use]
+    pub const fn ammunition(&self) -> &AmmunitionId {
+        &self.ammunition
+    }
+
+    /// The declared rate, in ticks between shots.
+    #[must_use]
+    pub const fn rate(&self) -> GunRate {
+        self.rate
+    }
+
+    /// The declared muzzle velocity, in meters per second.
+    #[must_use]
+    pub const fn muzzle_velocity_mps(&self) -> f64 {
+        self.muzzle_velocity_mps
+    }
+
+    /// How many ticks one round lives after it leaves the mount.
+    #[must_use]
+    pub const fn lifetime_ticks(&self) -> u64 {
+        self.lifetime_ticks
+    }
+
+    /// The declared spread cone.
+    #[must_use]
+    pub const fn spread(&self) -> SpreadCone {
+        self.spread
+    }
+
+    /// The damage channels one round delivers.
+    #[must_use]
+    pub const fn damage(&self) -> &WeaponDamage {
+        &self.damage
+    }
+
+    /// The declared rule for how much of the firing airframe's velocity a
+    /// round inherits.
+    #[must_use]
+    pub const fn inheritance(&self) -> InheritanceRule {
+        self.inheritance
+    }
+
+    /// The muzzle/hit effect resource id.
+    #[must_use]
+    pub const fn effect(&self) -> &ContentId {
+        &self.effect
+    }
+
+    /// The sound resource id an accepted shot plays.
+    #[must_use]
+    pub const fn sound(&self) -> &ContentId {
+        &self.sound
+    }
+}
+
+impl fmt::Display for GunDefinition {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} {} gun on the {} mount",
+            self.caliber, self.ammunition, self.kind
+        )
+    }
+}
+
+/// Why a [`GunDefinition`] or one of its sub-records was rejected.
+#[derive(Clone, Debug, PartialEq)]
+pub enum GunDefinitionError {
+    /// The rate interval was zero; even the fastest gun needs one tick
+    /// between two accepted shots.
+    ZeroRateInterval,
+    /// The caliber text was empty or whitespace.
+    EmptyCaliber,
+    /// The muzzle velocity was NaN or infinite.
+    NonFiniteMuzzleVelocity,
+    /// The muzzle velocity was zero or negative.
+    NonPositiveMuzzleVelocity {
+        /// The rejected value.
+        muzzle_velocity_mps: f64,
+    },
+    /// The round lifetime was zero: a round that dies on the muzzle never
+    /// exists as a projectile.
+    ZeroLifetime,
+    /// A damage amount was NaN or infinite.
+    NonFiniteDamage,
+    /// A damage amount was negative.
+    NegativeDamage {
+        /// The rejected value.
+        amount: f64,
+    },
+    /// The spread half-angle was NaN or infinite.
+    NonFiniteSpread,
+    /// The spread half-angle fell outside `[0, π/2]`.
+    SpreadOutOfRange {
+        /// The rejected value.
+        half_angle_radians: f64,
+    },
+    /// An [`InheritanceRule::Fraction`] share was NaN, infinite or outside
+    /// `[0, 1]`.
+    InvalidInheritanceShare {
+        /// The rejected share.
+        share: f64,
+    },
+    /// The effect id is not in the `hardpoint_equipment` namespace.
+    EffectKindMismatch {
+        /// The offending id.
+        id: ContentId,
+    },
+    /// The sound id is not in the `sound` namespace.
+    SoundKindMismatch {
+        /// The offending id.
+        id: ContentId,
+    },
+}
+
+impl fmt::Display for GunDefinitionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ZeroRateInterval => {
+                write!(f, "a gun rate must be at least one tick between shots")
+            }
+            Self::EmptyCaliber => write!(f, "a gun caliber must not be empty"),
+            Self::NonFiniteMuzzleVelocity => write!(f, "muzzle velocity must be finite"),
+            Self::NonPositiveMuzzleVelocity {
+                muzzle_velocity_mps,
+            } => {
+                write!(
+                    f,
+                    "muzzle velocity must be positive, got {muzzle_velocity_mps}"
+                )
+            }
+            Self::ZeroLifetime => write!(f, "a round's lifetime must be at least one tick"),
+            Self::NonFiniteDamage => write!(f, "gun damage must be finite"),
+            Self::NegativeDamage { amount } => {
+                write!(f, "gun damage must not be negative, got {amount}")
+            }
+            Self::NonFiniteSpread => write!(f, "spread half-angle must be finite"),
+            Self::SpreadOutOfRange { half_angle_radians } => {
+                write!(
+                    f,
+                    "spread half-angle {half_angle_radians} rad is outside [0, π/2]"
+                )
+            }
+            Self::InvalidInheritanceShare { share } => {
+                write!(
+                    f,
+                    "an inherited-velocity share must be finite and within [0, 1], got {share}"
+                )
+            }
+            Self::EffectKindMismatch { id } => {
+                write!(
+                    f,
+                    "gun effect id {id} is not in the hardpoint_equipment namespace"
+                )
+            }
+            Self::SoundKindMismatch { id } => {
+                write!(f, "gun sound id {id} is not in the sound namespace")
+            }
+        }
+    }
+}
+
+impl std::error::Error for GunDefinitionError {}
+
+// ------------------------------------------------------------ interaction ----
+
+/// Whether a gun's own rounds may hit the airframe that fired them.
+///
+/// F27 non-negotiable 4 requires this to be defined by evidence or marked
+/// unknown; it is a **declared** rule, never an implicit exclusion. The
+/// content schema carries it `Resolved`, so an unmeasured rule stays
+/// unknown and refuses to lower.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SelfHitRule {
+    /// A round never damages the airframe that fired it.
+    Excluded,
+    /// A round may damage its own airframe, subject to the damage graph.
+    Allowed,
+}
+
+impl SelfHitRule {
+    /// Every rule, in a stable order.
+    pub const ALL: &'static [SelfHitRule] = &[Self::Excluded, Self::Allowed];
+
+    /// The stable label used in reports.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Excluded => "excluded",
+            Self::Allowed => "allowed",
+        }
+    }
+}
+
+impl fmt::Display for SelfHitRule {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+/// Which declared relations a gun's rounds may damage.
+///
+/// The relations are the F30-A [`Allegiance`] vocabulary, so a gun never
+/// re-derives hostility: an undeclared pair carries no relation and is
+/// admitted only by [`FriendlyFireRule::Everyone`], never by a rule that
+/// asserts hostility it does not have.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FriendlyFireRule {
+    /// Only a declared hostile relation may be damaged.
+    HostileOnly,
+    /// A declared hostile *or neutral* relation may be damaged; an ally
+    /// never is.
+    NonFriendly,
+    /// Every actor except the shooter may be damaged, including one with no
+    /// declared relation at all.
+    Everyone,
+}
+
+impl FriendlyFireRule {
+    /// Every rule, in a stable order.
+    pub const ALL: &'static [FriendlyFireRule] =
+        &[Self::HostileOnly, Self::NonFriendly, Self::Everyone];
+
+    /// The stable label used in reports.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::HostileOnly => "hostile_only",
+            Self::NonFriendly => "non_friendly",
+            Self::Everyone => "everyone",
+        }
+    }
+
+    /// Whether this rule admits a target with the given declared relation.
+    /// `None` is an *undeclared* pair, which is not the same statement as
+    /// "friendly": only [`FriendlyFireRule::Everyone`] admits it.
+    #[must_use]
+    pub const fn allows(self, relation: Option<Allegiance>) -> bool {
+        matches!(
+            (self, relation),
+            (Self::Everyone, _)
+                | (Self::HostileOnly, Some(Allegiance::Hostile))
+                | (
+                    Self::NonFriendly,
+                    Some(Allegiance::Hostile | Allegiance::Neutral)
+                )
+        )
+    }
+}
+
+impl fmt::Display for FriendlyFireRule {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+/// The declared interaction rules one gun's rounds run under.
+///
+/// `self_hit` and `friendly_fire` are load-bearing here:
+/// [`WeaponRules::eligible`] is the query that assembles a
+/// [`Ballistics::sweep`] candidate list, so a gun cannot hit its own
+/// shooter or an ally unless the *declared* rule admits it
+/// (non-negotiable 4).
+///
+/// `penetration`, `ricochet` and `ammo_switching` are declared and carried
+/// but not consumed at this stage. They are behaviors a content schema must
+/// be able to state before F27-C routes a swept hit into damage and before
+/// F27-D audits what the original actually did; inventing a penetration or
+/// ricochet *model* here would be exactly the "simulator features
+/// unsupported by game content" F27 non-negotiable 4 forbids.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WeaponRules {
+    /// Whether a round may hit the airframe that fired it.
+    pub self_hit: SelfHitRule,
+    /// Which declared relations a round may damage.
+    pub friendly_fire: FriendlyFireRule,
+    /// Whether this ammunition type is declared to penetrate what it hits.
+    pub penetration: bool,
+    /// Whether this ammunition type is declared to ricochet.
+    pub ricochet: bool,
+    /// Whether a pilot may change ammunition type in flight.
+    pub ammo_switching: bool,
+}
+
+impl WeaponRules {
+    /// Whether this gun's rounds may damage `target` at all, given the
+    /// declared relation of `shooter` toward it.
+    #[must_use]
+    pub fn admits(&self, shooter: ActorId, target: ActorId, relation: Option<Allegiance>) -> bool {
+        if target == shooter && self.self_hit == SelfHitRule::Excluded {
+            return false;
+        }
+        self.friendly_fire.allows(relation)
+    }
+
+    /// The subset of `candidates` this gun's rules admit, paired with the
+    /// relation each one was offered under. This is the candidate list a
+    /// [`Ballistics::sweep`] consumes: the sweep itself is pure geometry,
+    /// and eligibility is decided here by declared rules rather than by
+    /// proximity.
+    #[must_use]
+    pub fn eligible(
+        &self,
+        shooter: ActorId,
+        candidates: impl IntoIterator<Item = (SweepTarget, Option<Allegiance>)>,
+    ) -> Vec<SweepTarget> {
+        candidates
+            .into_iter()
+            .filter(|(target, relation)| self.admits(shooter, target.actor, *relation))
+            .map(|(target, _)| target)
+            .collect()
+    }
+}
+
+// ----------------------------------------------------------------- state ----
+
+/// A gun bank: the group of mounts that fire together when selected.
+///
+/// The *bank vocabulary* is designed, not measured. The original cockpit's
+/// bank names and cycle order (nose / wings / tail / all are the common
+/// community reading, not evidence) are unmeasured, so this stage models a
+/// bank as a set of [`DamageNodeKey`]s and leaves naming and cycling to
+/// F27-C, which owns the player's selection input.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct GunBank {
+    mounts: BTreeSet<DamageNodeKey>,
+}
+
+impl GunBank {
+    /// Builds a bank from its mount keys.
+    ///
+    /// # Errors
+    ///
+    /// [`GunBankError::Empty`] when no mount is named: a bank with no mounts
+    /// could never fire, so it is a malformed declaration rather than an
+    /// inert one.
+    pub fn try_new(mounts: impl IntoIterator<Item = DamageNodeKey>) -> Result<Self, GunBankError> {
+        let mounts: BTreeSet<DamageNodeKey> = mounts.into_iter().collect();
+        if mounts.is_empty() {
+            return Err(GunBankError::Empty);
+        }
+        Ok(Self { mounts })
+    }
+
+    /// The bank's mounts, in the stable key order.
+    #[must_use]
+    pub fn mounts(&self) -> &BTreeSet<DamageNodeKey> {
+        &self.mounts
+    }
+
+    /// Whether the bank names `mount`.
+    #[must_use]
+    pub fn contains(&self, mount: &DamageNodeKey) -> bool {
+        self.mounts.contains(mount)
+    }
+
+    /// How many mounts the bank names.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.mounts.len()
+    }
+
+    /// Whether the bank names no mount. A [`GunBank`] cannot be *built*
+    /// empty; this reports the state of a *cleared* selection, which is how
+    /// "no guns selected" is represented.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.mounts.is_empty()
+    }
+}
+
+/// Why a [`GunBank`] was rejected.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum GunBankError {
+    /// A bank must name at least one mount.
+    Empty,
+}
+
+impl fmt::Display for GunBankError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => write!(f, "a gun bank must name at least one mount"),
+        }
+    }
+}
+
+impl std::error::Error for GunBankError {}
+
+/// One actor's live weapon state: the selected bank, per-mount cooldown in
+/// ticks, per-mount remaining rounds and the disabled mounts.
+///
+/// The cooldown is stored in *ticks remaining*, not as a wall-clock
+/// deadline, so it counts down exactly one tick per simulation tick and can
+/// never depend on a render frame rate (`FLIGHT-PHYSICS`: integer
+/// simulation ticks).
+#[derive(Clone, Debug, PartialEq)]
+pub struct WeaponState {
+    selected: GunBank,
+    cooldown_ticks: BTreeMap<DamageNodeKey, u64>,
+    ammunition: BTreeMap<DamageNodeKey, u64>,
+    disabled_mounts: BTreeSet<DamageNodeKey>,
+}
+
+impl WeaponState {
+    /// Builds the state of one actor's mounted guns.
+    ///
+    /// `definitions` are the actor's mounted [`GunDefinition`]s; each starts
+    /// loaded with `starting_rounds` and off cooldown.
+    ///
+    /// # Errors
+    ///
+    /// [`GunStateError::InvalidStartingRounds`] when `starting_rounds` is
+    /// zero, [`GunStateError::DuplicateMount`] when two definitions share a
+    /// mount key, and [`GunStateError::UnknownSelection`] when the selected
+    /// bank names a mount the actor does not carry.
+    pub fn try_new(
+        definitions: &[GunDefinition],
+        selected: GunBank,
+        starting_rounds: u64,
+    ) -> Result<Self, GunStateError> {
+        if starting_rounds == 0 {
+            return Err(GunStateError::InvalidStartingRounds);
+        }
+        let mut cooldown_ticks = BTreeMap::new();
+        let mut ammunition = BTreeMap::new();
+        for definition in definitions {
+            let mount = definition.mount();
+            if ammunition.insert(mount.clone(), starting_rounds).is_some() {
+                return Err(GunStateError::DuplicateMount {
+                    mount: mount.clone(),
+                });
+            }
+            cooldown_ticks.insert(mount.clone(), 0);
+        }
+        for mount in selected.mounts() {
+            if !ammunition.contains_key(mount) {
+                return Err(GunStateError::UnknownSelection {
+                    mount: mount.clone(),
+                });
+            }
+        }
+        Ok(Self {
+            selected,
+            cooldown_ticks,
+            ammunition,
+            disabled_mounts: BTreeSet::new(),
+        })
+    }
+
+    /// The currently selected bank.
+    #[must_use]
+    pub const fn selected(&self) -> &GunBank {
+        &self.selected
+    }
+
+    /// Replaces the selected bank.
+    ///
+    /// Selection changes *nothing else*: it never refills ammunition and
+    /// never resets a cooldown, so switching bank mid-cooldown can neither
+    /// duplicate a shot nor hand the pilot free rounds (AC03's state half).
+    pub fn select(&mut self, bank: GunBank) {
+        self.selected = bank;
+    }
+
+    /// Ticks the named mount must still wait before it may fire.
+    #[must_use]
+    pub fn cooldown_ticks(&self, mount: &DamageNodeKey) -> u64 {
+        self.cooldown_ticks.get(mount).copied().unwrap_or(0)
+    }
+
+    /// Rounds remaining in the named mount.
+    #[must_use]
+    pub fn ammunition(&self, mount: &DamageNodeKey) -> u64 {
+        self.ammunition.get(mount).copied().unwrap_or(0)
+    }
+
+    /// Whether the named mount is disabled.
+    #[must_use]
+    pub fn is_disabled(&self, mount: &DamageNodeKey) -> bool {
+        self.disabled_mounts.contains(mount)
+    }
+
+    /// The currently disabled mounts, in the stable key order.
+    #[must_use]
+    pub fn disabled_mounts(&self) -> &BTreeSet<DamageNodeKey> {
+        &self.disabled_mounts
+    }
+
+    /// Disables the named mount — the weapon-side effect of a destroyed
+    /// weapon-mount damage node.
+    ///
+    /// Idempotent: the damage resolver may report the same destruction more
+    /// than once, and disabling twice is not a second event.
+    pub fn disable(&mut self, mount: &DamageNodeKey) {
+        self.disabled_mounts.insert(mount.clone());
+    }
+
+    /// Re-enables the named mount, as an aircraft repair does.
+    pub fn enable(&mut self, mount: &DamageNodeKey) {
+        self.disabled_mounts.remove(mount);
+    }
+
+    /// Advances every mount's cooldown by one simulation tick.
+    pub fn tick_cooldowns(&mut self) {
+        for remaining in self.cooldown_ticks.values_mut() {
+            *remaining = remaining.saturating_sub(1);
+        }
+    }
+
+    /// Consumes one round from the named mount and starts its cooldown.
+    ///
+    /// This is the only place a round is ever consumed, and it is reached
+    /// only from an accepted shot.
+    ///
+    /// # Errors
+    ///
+    /// [`GunStateError::UnknownMount`] when the actor does not carry the
+    /// mount, [`GunStateError::Empty`] when it has no rounds left.
+    pub fn consume_round(
+        &mut self,
+        mount: &DamageNodeKey,
+        rate: GunRate,
+    ) -> Result<(), GunStateError> {
+        let rounds = self
+            .ammunition
+            .get_mut(mount)
+            .ok_or_else(|| GunStateError::UnknownMount {
+                mount: mount.clone(),
+            })?;
+        if *rounds == 0 {
+            return Err(GunStateError::Empty {
+                mount: mount.clone(),
+            });
+        }
+        *rounds -= 1;
+        self.cooldown_ticks
+            .insert(mount.clone(), u64::from(rate.ticks_between_shots()));
+        Ok(())
+    }
+}
+
+/// Why a [`WeaponState`] was rejected.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum GunStateError {
+    /// Two mounted guns share one mount key.
+    DuplicateMount {
+        /// The repeated mount.
+        mount: DamageNodeKey,
+    },
+    /// The selected bank names a mount the actor does not carry.
+    UnknownSelection {
+        /// The mount the bank named.
+        mount: DamageNodeKey,
+    },
+    /// Starting ammunition was zero, so no gun could ever fire.
+    InvalidStartingRounds,
+    /// The actor does not carry the named mount.
+    UnknownMount {
+        /// The unnamed mount.
+        mount: DamageNodeKey,
+    },
+    /// The named mount has no rounds left.
+    Empty {
+        /// The empty mount.
+        mount: DamageNodeKey,
+    },
+}
+
+impl fmt::Display for GunStateError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DuplicateMount { mount } => {
+                write!(f, "mount {mount} carries more than one gun")
+            }
+            Self::UnknownSelection { mount } => {
+                write!(
+                    f,
+                    "the selected bank names mount {mount}, which is not carried"
+                )
+            }
+            Self::InvalidStartingRounds => {
+                write!(f, "a weapon must start with at least one round")
+            }
+            Self::UnknownMount { mount } => write!(f, "mount {mount} is not carried"),
+            Self::Empty { mount } => write!(f, "mount {mount} has no rounds left"),
+        }
+    }
+}
+
+impl std::error::Error for GunStateError {}
+
+// ------------------------------------------------------------------ fire ----
+
+/// The identity of one [`FireIntent`]: `EventId(session, tick, producer,
+/// sequence)`.
+///
+/// `producer` is the serial of the firing system (a player's craft, a
+/// scripted wingman, a replayed network packet) and `sequence` orders that
+/// producer's intents. The whole id is the *once* key: a duplicate packet
+/// carrying an already-resolved id is refused whole and changes no state
+/// (non-negotiable 5).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FireIntentId {
+    /// The session generation the intent belongs to.
+    pub session: u64,
+    /// The simulation tick the intent belongs to.
+    pub tick: Tick,
+    /// The firing system's serial.
+    pub producer: u32,
+    /// The intent's sequence within its producer.
+    pub sequence: u32,
+}
+
+impl fmt::Display for FireIntentId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "fire intent {}:{}#{}.{}",
+            self.session, self.tick.0, self.producer, self.sequence
+        )
+    }
+}
+
+/// The identity of one accepted [`FireEvent`]: the same `EventId` shape,
+/// stamped by the resolver.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct FireEventId {
+    /// The session generation the event was produced in.
+    pub session: u64,
+    /// The simulation tick the shot belongs to.
+    pub tick: Tick,
+    /// The firing actor's serial within the session.
+    pub producer: u32,
+    /// The event's sequence within the resolver.
+    pub sequence: u32,
+}
+
+/// The identity of one projectile: a session-qualified, never-recycled
+/// serial.
+///
+/// The [`Ballistics`] ledger is keyed by this id, which is how "one
+/// projectile applies a hit at most once" is enforced across ticks and
+/// across several collision features reporting the same contact.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ProjectileId {
+    /// The session generation the projectile belongs to.
+    pub session: u64,
+    /// The projectile's serial within that session.
+    pub serial: u64,
+}
+
+impl fmt::Display for ProjectileId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "projectile {}:{}", self.session, self.serial)
+    }
+}
+
+/// A mount's pose for one tick: where the muzzle is, where it points and
+/// what velocity the airframe already has.
+///
+/// This is the whole of F27 non-negotiable 2's "mount transforms come from
+/// the live aircraft hierarchy/damage state, not a fixed center-screen
+/// origin": a spawn's pose is *supplied*, never defaulted, and a mount with
+/// no transform cannot fire at all.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MountTransform {
+    /// The muzzle's canonical world position.
+    pub origin: WorldPosition,
+    /// The mount's canonical forward direction.
+    pub forward: UnitVec3,
+    /// The world velocity the firing airframe already has. F27
+    /// non-negotiable 2 makes inherited velocity an *explicit verified
+    /// rule*: it is a supplied vector, and this stage defines no rule for
+    /// how much of it a round inherits.
+    pub inherited_velocity_mps: [f64; 3],
+}
+
+impl MountTransform {
+    /// Assembles a transform, refusing a non-finite inherited velocity.
+    ///
+    /// # Errors
+    ///
+    /// [`MountTransformError::NonFiniteInheritedVelocity`] when a component
+    /// of `inherited_velocity_mps` is NaN or infinite.
+    pub fn try_new(
+        origin: WorldPosition,
+        forward: UnitVec3,
+        inherited_velocity_mps: [f64; 3],
+    ) -> Result<Self, MountTransformError> {
+        if inherited_velocity_mps
+            .iter()
+            .any(|value| !value.is_finite())
+        {
+            return Err(MountTransformError::NonFiniteInheritedVelocity);
+        }
+        Ok(Self {
+            origin,
+            forward,
+            inherited_velocity_mps,
+        })
+    }
+
+    /// The round's world velocity at the muzzle: the declared share of the
+    /// airframe's world velocity plus the muzzle velocity along the mount's
+    /// forward axis.
+    ///
+    /// Both terms are explicit, and the share is the declared
+    /// [`InheritanceRule`] rather than an assumption. No drag, no
+    /// convergence and no gravity are applied here — those are F27-B's
+    /// ballistics and F27-D's measurements.
+    #[must_use]
+    pub fn world_velocity_mps(
+        &self,
+        inheritance: InheritanceRule,
+        muzzle_velocity_mps: f64,
+    ) -> [f64; 3] {
+        let share = match inheritance {
+            InheritanceRule::Full => 1.0,
+            InheritanceRule::Fraction { share } => share,
+            InheritanceRule::None => 0.0,
+        };
+        let forward = self.forward.to_array();
+        [
+            self.inherited_velocity_mps[0] * share + forward[0] * muzzle_velocity_mps,
+            self.inherited_velocity_mps[1] * share + forward[1] * muzzle_velocity_mps,
+            self.inherited_velocity_mps[2] * share + forward[2] * muzzle_velocity_mps,
+        ]
+    }
+}
+
+/// Why a [`MountTransform`] was rejected.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MountTransformError {
+    /// The inherited airframe velocity had a non-finite component.
+    NonFiniteInheritedVelocity,
+}
+
+impl fmt::Display for MountTransformError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NonFiniteInheritedVelocity => {
+                write!(f, "the inherited airframe velocity must be finite")
+            }
+        }
+    }
+}
+
+impl std::error::Error for MountTransformError {}
+
+/// A request to fire: the currently selected bank of one actor, on one
+/// tick.
+///
+/// An intent carries no damage, no spawn and no consequence — it is the
+/// *request*. Only the authoritative [`FireResolver`] turns it into a
+/// [`FireEvent`], and only an accepted event consumes anything.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FireIntent {
+    /// The intent's once-only identity.
+    pub id: FireIntentId,
+    /// The actor whose guns are being asked to fire.
+    pub shooter: ActorId,
+}
+
+/// The spawned projectile of one accepted shot.
+///
+/// The pose and velocity come from the supplied mount transform; the
+/// lifetime and spread come from the gun definition. What the round *does*
+/// on arrival — the damage, the effects — is F27-C's wiring into
+/// [`crate::damage`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct ProjectileSpawn {
+    /// The projectile's stable identity.
+    pub projectile: ProjectileId,
+    /// The world position the round leaves the muzzle at.
+    pub origin: WorldPosition,
+    /// The world velocity the round starts with.
+    pub velocity_mps: [f64; 3],
+    /// The declared cone the round is scattered in.
+    pub spread: SpreadCone,
+    /// How many further ticks the round lives.
+    pub lifetime_ticks: u64,
+}
+
+/// One accepted shot.
+///
+/// An event exists **only** for a shot that happened. Its presence is the
+/// authority for consuming a round, starting a cooldown, spawning a
+/// projectile and naming a sound and muzzle effect (non-negotiable 5:
+/// "Consumption, sound and muzzle effects derive from accepted fire events;
+/// no ammo drain from a denied input or duplicate network packet").
+#[derive(Clone, Debug, PartialEq)]
+pub struct FireEvent {
+    /// The event's stable identity and ordering key.
+    pub id: FireEventId,
+    /// The intent this shot answers.
+    pub intent: FireIntentId,
+    /// The actor that fired.
+    pub shooter: ActorId,
+    /// The mount that fired.
+    pub mount: DamageNodeKey,
+    /// Where on the airframe the mount sits.
+    pub mount_kind: GunMountKind,
+    /// The gun that fired, by declared caliber text.
+    pub caliber: String,
+    /// The ammunition type that was consumed.
+    pub ammunition: AmmunitionId,
+    /// The spawned projectile.
+    pub projectile: ProjectileSpawn,
+    /// The damage channels this round delivers.
+    pub damage: WeaponDamage,
+    /// The effect resource an accepted shot plays.
+    pub effect: ContentId,
+    /// The sound resource an accepted shot plays.
+    pub sound: ContentId,
+}
+
+/// Why one mount of a bank did not fire.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FireDenialReason {
+    /// The actor does not carry the mount the bank names.
+    UnmountedBankMember {
+        /// The mount the bank named.
+        mount: DamageNodeKey,
+    },
+    /// The mount is disabled: its weapon-mount damage node was destroyed.
+    MountDisabled {
+        /// The disabled mount.
+        mount: DamageNodeKey,
+    },
+    /// The mount is still cooling down from its last accepted shot.
+    Cooldown {
+        /// The cooling mount.
+        mount: DamageNodeKey,
+        /// Ticks it must still wait.
+        remaining_ticks: u64,
+    },
+    /// The mount has no rounds left.
+    OutOfAmmunition {
+        /// The empty mount.
+        mount: DamageNodeKey,
+    },
+    /// The resolver has no transform for the mount, so it has no pose to
+    /// fire from. It refuses rather than firing from a default origin.
+    MissingMountTransform {
+        /// The mount with no transform.
+        mount: DamageNodeKey,
+    },
+}
+
+impl FireDenialReason {
+    /// The stable label used in reports.
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::UnmountedBankMember { .. } => "unmounted_bank_member",
+            Self::MountDisabled { .. } => "mount_disabled",
+            Self::Cooldown { .. } => "cooldown",
+            Self::OutOfAmmunition { .. } => "out_of_ammunition",
+            Self::MissingMountTransform { .. } => "missing_mount_transform",
+        }
+    }
+
+    /// The mount this denial is about.
+    #[must_use]
+    pub const fn mount(&self) -> &DamageNodeKey {
+        match self {
+            Self::UnmountedBankMember { mount }
+            | Self::MountDisabled { mount }
+            | Self::Cooldown { mount, .. }
+            | Self::OutOfAmmunition { mount }
+            | Self::MissingMountTransform { mount } => mount,
+        }
+    }
+}
+
+impl fmt::Display for FireDenialReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnmountedBankMember { mount } => {
+                write!(
+                    f,
+                    "the bank names mount {mount}, which this actor does not carry"
+                )
+            }
+            Self::MountDisabled { mount } => write!(f, "mount {mount} is disabled"),
+            Self::Cooldown {
+                mount,
+                remaining_ticks,
+            } => write!(
+                f,
+                "mount {mount} is cooling down for {remaining_ticks} more tick(s)"
+            ),
+            Self::OutOfAmmunition { mount } => {
+                write!(f, "mount {mount} has no rounds left")
+            }
+            Self::MissingMountTransform { mount } => {
+                write!(f, "mount {mount} has no transform to fire from")
+            }
+        }
+    }
+}
+
+/// Why a whole fire intent was refused, changing no state at all.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IntentRefusal {
+    /// The intent names a session generation other than the resolver's.
+    ForeignSession {
+        /// The resolver's session.
+        expected: u64,
+        /// The session the intent carried.
+        found: u64,
+    },
+    /// The intent names a tick other than the one being resolved.
+    ForeignTick {
+        /// The tick being resolved.
+        expected: Tick,
+        /// The tick the intent carried.
+        found: Tick,
+    },
+    /// The intent's id was already resolved. A duplicate network packet must
+    /// not fire a second time (non-negotiable 5).
+    DuplicateIntent {
+        /// The repeated intent id.
+        id: FireIntentId,
+    },
+    /// The intent names an actor this resolver has no weapons for.
+    UnknownShooter {
+        /// The actor that was named.
+        shooter: ActorId,
+    },
+    /// The actor has an empty selection: nothing is selected, so there is
+    /// nothing to fire.
+    NoSelectedBank {
+        /// The actor with the empty selection.
+        shooter: ActorId,
+    },
+}
+
+impl IntentRefusal {
+    /// The stable label used in reports.
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::ForeignSession { .. } => "foreign_session",
+            Self::ForeignTick { .. } => "foreign_tick",
+            Self::DuplicateIntent { .. } => "duplicate_intent",
+            Self::UnknownShooter { .. } => "unknown_shooter",
+            Self::NoSelectedBank { .. } => "no_selected_bank",
+        }
+    }
+}
+
+impl fmt::Display for IntentRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ForeignSession { expected, found } => {
+                write!(
+                    f,
+                    "fire intent is for session {found}, but this resolver is session {expected}"
+                )
+            }
+            Self::ForeignTick { expected, found } => {
+                write!(
+                    f,
+                    "fire intent is for tick {found:?}, but tick {expected:?} is resolving"
+                )
+            }
+            Self::DuplicateIntent { id } => {
+                write!(f, "fire intent {id} was already resolved")
+            }
+            Self::UnknownShooter { shooter } => {
+                write!(f, "{shooter} has no weapons registered here")
+            }
+            Self::NoSelectedBank { shooter } => {
+                write!(f, "{shooter} has no gun bank selected")
+            }
+        }
+    }
+}
+
+impl std::error::Error for IntentRefusal {}
+
+/// One resolved intent: the accepted shots and the refused mounts.
+///
+/// The two lists partition the selected bank's mounts. Exactly the accepted
+/// list consumed anything, so a bank whose every member is disabled resolves
+/// to an empty `accepted` and a full `refused` — no projectile, no sound, no
+/// ammunition decrement (AC02).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FireResolution {
+    /// The intent that was resolved.
+    pub intent: FireIntentId,
+    /// The shots that happened, in the bank's mount order.
+    pub accepted: Vec<FireEvent>,
+    /// The mounts that did not fire, with the reason.
+    pub refused: Vec<FireDenialReason>,
+}
+
+impl FireResolution {
+    /// Whether nothing fired.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.accepted.is_empty()
+    }
+}
+
+/// Why a [`FireResolver`] operation was refused.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FireError {
+    /// The actor was already registered.
+    DuplicateShooter {
+        /// The actor that exists already.
+        shooter: ActorId,
+    },
+    /// Two mounted guns share one mount key.
+    DuplicateMount {
+        /// The actor being registered.
+        shooter: ActorId,
+        /// The repeated mount.
+        mount: DamageNodeKey,
+    },
+    /// The actor is not registered with this resolver.
+    UnknownShooter {
+        /// The actor that was named.
+        shooter: ActorId,
+    },
+    /// A [`WeaponState`] operation was refused.
+    State(GunStateError),
+}
+
+impl fmt::Display for FireError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DuplicateShooter { shooter } => {
+                write!(f, "{shooter} is already registered with this resolver")
+            }
+            Self::DuplicateMount { shooter, mount } => {
+                write!(f, "{shooter} already carries a gun on mount {mount}")
+            }
+            Self::UnknownShooter { shooter } => {
+                write!(f, "{shooter} has no weapons registered here")
+            }
+            Self::State(source) => {
+                write!(f, "weapon state refused the operation: {source}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for FireError {}
+
+/// One actor's registered guns and live weapon state.
+#[derive(Clone, Debug)]
+struct ActorArsenal {
+    definitions: BTreeMap<DamageNodeKey, GunDefinition>,
+    state: WeaponState,
+    next_event_sequence: u32,
+}
+
+/// One session generation's authority over fire intents and weapon state.
+///
+/// The resolver is the *only* place a round is consumed, a cooldown is
+/// started, a projectile is spawned and a sound is named
+/// (non-negotiable 5). Everything a consumer needs to apply those effects
+/// is on the [`FireEvent`]s it emits, and a refused intent emits none.
+///
+/// It is deliberately **not** a tick loop: it resolves one tick's intents on
+/// demand, and the schedule that calls it every tick — and that supplies the
+/// mount transforms from the live aircraft hierarchy — is F27-B's runtime.
+#[derive(Clone, Debug)]
+pub struct FireResolver {
+    session: u64,
+    tick: Tick,
+    actors: BTreeMap<ActorId, ActorArsenal>,
+    next_projectile_serial: u64,
+    resolved_intents: BTreeSet<FireIntentId>,
+}
+
+impl FireResolver {
+    /// Opens a resolver for one session generation, positioned at `tick`.
+    #[must_use]
+    pub fn new(session: u64, tick: Tick) -> Self {
+        Self {
+            session,
+            tick,
+            actors: BTreeMap::new(),
+            next_projectile_serial: 0,
+            resolved_intents: BTreeSet::new(),
+        }
+    }
+
+    /// The session generation this resolver is confined to.
+    #[must_use]
+    pub const fn session(&self) -> u64 {
+        self.session
+    }
+
+    /// The tick this resolver is currently resolving.
+    #[must_use]
+    pub const fn tick(&self) -> Tick {
+        self.tick
+    }
+
+    /// Advances the resolver to `tick`, ticking every cooldown down once per
+    /// elapsed tick.
+    ///
+    /// Time never runs backwards: a `tick` at or before the current one is
+    /// ignored, so a re-entered schedule step cannot double-decrement or
+    /// rewind a cooldown.
+    pub fn advance_to(&mut self, tick: Tick) {
+        if tick <= self.tick {
+            return;
+        }
+        for _ in self.tick.0..tick.0 {
+            for arsenal in self.actors.values_mut() {
+                arsenal.state.tick_cooldowns();
+            }
+        }
+        self.tick = tick;
+    }
+
+    /// Registers one actor's mounted guns and its weapon state.
+    ///
+    /// # Errors
+    ///
+    /// [`FireError::DuplicateShooter`] when the actor is registered already
+    /// and [`FireError::DuplicateMount`] when two of the definitions share a
+    /// mount key.
+    pub fn register(
+        &mut self,
+        shooter: ActorId,
+        definitions: Vec<GunDefinition>,
+        state: WeaponState,
+    ) -> Result<(), FireError> {
+        if self.actors.contains_key(&shooter) {
+            return Err(FireError::DuplicateShooter { shooter });
+        }
+        let mut by_mount: BTreeMap<DamageNodeKey, GunDefinition> = BTreeMap::new();
+        for definition in definitions {
+            let mount = definition.mount().clone();
+            if by_mount.insert(mount.clone(), definition).is_some() {
+                return Err(FireError::DuplicateMount { shooter, mount });
+            }
+        }
+        self.actors.insert(
+            shooter,
+            ActorArsenal {
+                definitions: by_mount,
+                state,
+                next_event_sequence: 0,
+            },
+        );
+        Ok(())
+    }
+
+    /// One actor's weapon state, if registered.
+    #[must_use]
+    pub fn state(&self, shooter: &ActorId) -> Option<&WeaponState> {
+        self.actors.get(shooter).map(|arsenal| &arsenal.state)
+    }
+
+    /// One actor's mutable weapon state, if registered.
+    ///
+    /// This is how the damage system's
+    /// [`crate::damage::DamageEventKind::SystemDisabled`] reaches the weapon
+    /// gate: its caller disables the named mount here.
+    pub fn state_mut(&mut self, shooter: &ActorId) -> Option<&mut WeaponState> {
+        self.actors
+            .get_mut(shooter)
+            .map(|arsenal| &mut arsenal.state)
+    }
+
+    /// One actor's mounted gun on `mount`, if any.
+    #[must_use]
+    pub fn definition(&self, shooter: &ActorId, mount: &DamageNodeKey) -> Option<&GunDefinition> {
+        self.actors
+            .get(shooter)
+            .and_then(|arsenal| arsenal.definitions.get(mount))
+    }
+
+    /// Allocates the next [`ProjectileId`] of this session.
+    ///
+    /// Serials are never recycled inside a session, so a projectile id
+    /// always names exactly one projectile — which is what makes the
+    /// [`Ballistics`] ledger's once-per-projectile guarantee sound.
+    pub fn next_projectile_id(&mut self) -> ProjectileId {
+        let id = ProjectileId {
+            session: self.session,
+            serial: self.next_projectile_serial,
+        };
+        self.next_projectile_serial += 1;
+        id
+    }
+
+    /// Resolves one intent for the resolver's current tick.
+    ///
+    /// Returns [`Err`] with an [`IntentRefusal`] when the intent is refused
+    /// **whole** — a foreign session or tick, an already-resolved id, an
+    /// unknown shooter or an empty selection. In every one of those cases no
+    /// state changed at all: nothing fired, nothing was consumed, no
+    /// cooldown started and no sound was named.
+    ///
+    /// Otherwise returns [`Ok`] with a [`FireResolution`] whose `accepted`
+    /// and `refused` lists partition the selected bank's mounts.
+    pub fn resolve(
+        &mut self,
+        intent: &FireIntent,
+        transforms: &BTreeMap<DamageNodeKey, MountTransform>,
+    ) -> Result<FireResolution, IntentRefusal> {
+        if intent.id.session != self.session {
+            return Err(IntentRefusal::ForeignSession {
+                expected: self.session,
+                found: intent.id.session,
+            });
+        }
+        if intent.id.tick != self.tick {
+            return Err(IntentRefusal::ForeignTick {
+                expected: self.tick,
+                found: intent.id.tick,
+            });
+        }
+        if self.resolved_intents.contains(&intent.id) {
+            return Err(IntentRefusal::DuplicateIntent { id: intent.id });
+        }
+        if !self.actors.contains_key(&intent.shooter) {
+            return Err(IntentRefusal::UnknownShooter {
+                shooter: intent.shooter,
+            });
+        }
+        if self
+            .actors
+            .get(&intent.shooter)
+            .is_some_and(|arsenal| arsenal.state.selected().is_empty())
+        {
+            return Err(IntentRefusal::NoSelectedBank {
+                shooter: intent.shooter,
+            });
+        }
+
+        let arsenal = self
+            .actors
+            .get_mut(&intent.shooter)
+            .expect("the shooter was checked above");
+        let mut context = ShotContext {
+            session: self.session,
+            tick: self.tick,
+            next_projectile_serial: &mut self.next_projectile_serial,
+            intent: intent.id,
+            shooter: intent.shooter,
+            transforms,
+        };
+        let mut accepted = Vec::new();
+        let mut refused = Vec::new();
+        for mount in arsenal
+            .state
+            .selected()
+            .mounts()
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>()
+        {
+            match fire_one_mount(&mut context, &mount, arsenal) {
+                Ok(event) => accepted.push(event),
+                Err(reason) => refused.push(reason),
+            }
+        }
+        self.resolved_intents.insert(intent.id);
+        Ok(FireResolution {
+            intent: intent.id,
+            accepted,
+            refused,
+        })
+    }
+}
+
+/// Resolves one mount of a bank into an accepted shot or a named refusal.
+///
+/// A free function rather than a method so the resolver's own borrows stay
+/// disjoint: it needs the arsenal mutably, the projectile serial cursor
+/// mutably, and the caller's transforms immutably.
+struct ShotContext<'a> {
+    session: u64,
+    tick: Tick,
+    next_projectile_serial: &'a mut u64,
+    intent: FireIntentId,
+    shooter: ActorId,
+    transforms: &'a BTreeMap<DamageNodeKey, MountTransform>,
+}
+
+fn fire_one_mount(
+    context: &mut ShotContext<'_>,
+    mount: &DamageNodeKey,
+    arsenal: &mut ActorArsenal,
+) -> Result<FireEvent, FireDenialReason> {
+    let session = context.session;
+    let tick = context.tick;
+    let shooter = context.shooter;
+    let intent = context.intent;
+    let next_projectile_serial = &mut *context.next_projectile_serial;
+    let transforms = context.transforms;
+    let Some(definition) = arsenal.definitions.get(mount) else {
+        return Err(FireDenialReason::UnmountedBankMember {
+            mount: mount.clone(),
+        });
+    };
+    if arsenal.state.is_disabled(mount) {
+        return Err(FireDenialReason::MountDisabled {
+            mount: mount.clone(),
+        });
+    }
+    let remaining_ticks = arsenal.state.cooldown_ticks(mount);
+    if remaining_ticks > 0 {
+        return Err(FireDenialReason::Cooldown {
+            mount: mount.clone(),
+            remaining_ticks,
+        });
+    }
+    if arsenal.state.ammunition(mount) == 0 {
+        return Err(FireDenialReason::OutOfAmmunition {
+            mount: mount.clone(),
+        });
+    }
+    // The mount's pose is supplied, never defaulted: without a transform
+    // there is no muzzle position and nothing fires.
+    let Some(transform) = transforms.get(mount) else {
+        return Err(FireDenialReason::MissingMountTransform {
+            mount: mount.clone(),
+        });
+    };
+
+    // The shot is accepted. From here a round is consumed and the cooldown
+    // starts — the only place either happens.
+    let rate = definition.rate();
+    arsenal
+        .state
+        .consume_round(mount, rate)
+        .map_err(|source| match source {
+            GunStateError::Empty { .. } => FireDenialReason::OutOfAmmunition {
+                mount: mount.clone(),
+            },
+            // The emptiness and the membership were both checked above, so
+            // this arm is unreachable today; it is mapped rather than
+            // unwrapped so a future state change can never take the
+            // simulation down mid-fire.
+            _ => FireDenialReason::UnmountedBankMember {
+                mount: mount.clone(),
+            },
+        })?;
+
+    let projectile = ProjectileId {
+        session,
+        serial: *next_projectile_serial,
+    };
+    *next_projectile_serial += 1;
+    let event = FireEvent {
+        id: FireEventId {
+            session,
+            tick,
+            producer: shooter.serial as u32,
+            sequence: arsenal.next_event_sequence,
+        },
+        intent,
+        shooter,
+        mount: mount.clone(),
+        mount_kind: definition.kind(),
+        caliber: definition.caliber().to_owned(),
+        ammunition: definition.ammunition().clone(),
+        projectile: ProjectileSpawn {
+            projectile,
+            origin: transform.origin,
+            velocity_mps: transform
+                .world_velocity_mps(definition.inheritance(), definition.muzzle_velocity_mps()),
+            spread: definition.spread(),
+            lifetime_ticks: definition.lifetime_ticks(),
+        },
+        damage: *definition.damage(),
+        effect: definition.effect().clone(),
+        sound: definition.sound().clone(),
+    };
+    arsenal.next_event_sequence += 1;
+    Ok(event)
+}
+
+// -------------------------------------------------------------- ballistics ----
+
+/// One projectile's motion across a single tick: where it was and where it
+/// is now.
+///
+/// The swept segment, not the two endpoints, is the geometry of record
+/// (`FLIGHT-PHYSICS`: "For high-speed tests choose speed*dt larger than the
+/// obstacle thickness so a discrete endpoint-only implementation provably
+/// fails").
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ProjectileSegment {
+    /// The projectile this segment belongs to.
+    pub projectile: ProjectileId,
+    /// The world position at the start of the tick.
+    pub previous: WorldPosition,
+    /// The world position at the end of the tick.
+    pub current: WorldPosition,
+}
+
+/// One target's swept box over a single tick.
+///
+/// A box, not a point: an aircraft is not a mathematical point, and the
+/// original's collision shapes are unmeasured (F27-D). The box is swept
+/// between `previous` and `current`, so a target that crosses the
+/// projectile's path *between* ticks is still tested (`FLIGHT-PHYSICS`:
+/// "Check relative movement: a target can cross the projectile path between
+/// ticks").
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SweepTarget {
+    /// The actor the box belongs to.
+    pub actor: ActorId,
+    /// The box centre at the start of the tick.
+    pub previous: WorldPosition,
+    /// The box centre at the end of the tick.
+    pub current: WorldPosition,
+    /// The axis-aligned half extents of the box, in meters.
+    pub half_extents_m: [f64; 3],
+}
+
+impl SweepTarget {
+    /// Assembles a swept target, refusing non-finite geometry and negative
+    /// extents.
+    ///
+    /// # Errors
+    ///
+    /// [`SweepTargetError`] on a non-finite position or half extent, or on a
+    /// negative half extent. A negative extent would silently mirror the box
+    /// and make the slab test answer nonsense.
+    pub fn try_new(
+        actor: ActorId,
+        previous: [f64; 3],
+        current: [f64; 3],
+        half_extents_m: [f64; 3],
+    ) -> Result<Self, SweepTargetError> {
+        let previous = WorldPosition::try_new(previous).map_err(SweepTargetError::Position)?;
+        let current = WorldPosition::try_new(current).map_err(SweepTargetError::Position)?;
+        for (axis, extent) in half_extents_m.iter().enumerate() {
+            if !extent.is_finite() {
+                return Err(SweepTargetError::NonFiniteHalfExtent { axis });
+            }
+            if *extent < 0.0 {
+                return Err(SweepTargetError::NegativeHalfExtent {
+                    axis,
+                    value: *extent,
+                });
+            }
+        }
+        Ok(Self {
+            actor,
+            previous,
+            current,
+            half_extents_m,
+        })
+    }
+}
+
+/// Why a [`SweepTarget`] was rejected.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SweepTargetError {
+    /// A centre position had a non-finite component.
+    Position(cs_types::space::SpaceError),
+    /// A half extent was NaN or infinite.
+    NonFiniteHalfExtent {
+        /// The offending axis index: `0` X, `1` Y, `2` Z.
+        axis: usize,
+    },
+    /// A half extent was negative.
+    NegativeHalfExtent {
+        /// The offending axis index: `0` X, `1` Y, `2` Z.
+        axis: usize,
+        /// The rejected value.
+        value: f64,
+    },
+}
+
+impl fmt::Display for SweepTargetError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Position(source) => {
+                write!(f, "a swept target position is not finite: {source}")
+            }
+            Self::NonFiniteHalfExtent { axis } => {
+                let axis = match axis {
+                    0 => "x",
+                    1 => "y",
+                    _ => "z",
+                };
+                write!(f, "the swept target's {axis} half extent must be finite")
+            }
+            Self::NegativeHalfExtent { axis, value } => {
+                let axis = match axis {
+                    0 => "x",
+                    1 => "y",
+                    _ => "z",
+                };
+                write!(
+                    f,
+                    "the swept target's {axis} half extent is negative: {value}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for SweepTargetError {}
+
+/// One hit a swept segment produced.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SweptHit {
+    /// The projectile that hit.
+    pub projectile: ProjectileId,
+    /// The actor that was hit.
+    pub target: ActorId,
+    /// The hit's normalized time of impact along the tick, in `[0, 1]`:
+    /// `0.0` is the start of the tick, `1.0` its end. A hit at `0.4`
+    /// happened four tenths of the way through the tick, *before* the
+    /// projectile's end position.
+    pub time_of_impact: f64,
+}
+
+/// The per-session swept-ballistics query.
+///
+/// [`Ballistics::sweep`] is the authoritative swept test: it takes a
+/// projectile's tick segment and the eligible targets, computes relative
+/// motion, runs a slab test and returns the hits **in ascending time of
+/// impact**, with the actor id as the stable tie-breaker — the ordering
+/// `FLIGHT-PHYSICS` requires ("A closest-hit policy must choose earliest
+/// time-of-impact and stable tie-breakers").
+///
+/// The ledger keyed by `(ProjectileId, ActorId)` is what enforces "one
+/// projectile applies a hit at most once" (non-negotiable 3): several
+/// collision features reporting the same contact, or the same segment swept
+/// twice, still yield one hit.
+#[derive(Clone, Debug, Default)]
+pub struct Ballistics {
+    applied: BTreeSet<(ProjectileId, ActorId)>,
+}
+
+impl Ballistics {
+    /// An empty ledger: no projectile has applied a hit yet.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The swept test for one projectile segment against the eligible
+    /// targets.
+    ///
+    /// Targets arrive already filtered by the caller: this function is
+    /// geometry. Eligibility — allegiance, self-hit exclusion, layer rules —
+    /// belongs to the query that assembles the candidate list, which is
+    /// F27-C's wiring. What the sweep owns is the segment-vs-box test, the
+    /// deterministic ordering and the once-per-projectile guarantee.
+    pub fn sweep(&mut self, segment: &ProjectileSegment, targets: &[SweepTarget]) -> Vec<SweptHit> {
+        let mut candidates: Vec<(f64, ActorId)> = targets
+            .iter()
+            .filter(|target| !self.has_hit(segment.projectile, target.actor))
+            .filter_map(|target| {
+                earliest_time_of_impact(segment, target).map(|t| (t, target.actor))
+            })
+            .collect();
+        // Ascending time of impact, actor id as the stable tie-breaker: a
+        // total order that does not depend on the caller's target order.
+        candidates.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
+        candidates
+            .into_iter()
+            .map(|(time_of_impact, actor)| {
+                self.applied.insert((segment.projectile, actor));
+                SweptHit {
+                    projectile: segment.projectile,
+                    target: actor,
+                    time_of_impact,
+                }
+            })
+            .collect()
+    }
+
+    /// Whether this projectile has already applied a hit on this actor.
+    #[must_use]
+    pub fn has_hit(&self, projectile: ProjectileId, target: ActorId) -> bool {
+        self.applied.contains(&(projectile, target))
+    }
+
+    /// How many `(projectile, actor)` hits this ledger has recorded.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.applied.len()
+    }
+
+    /// Whether the ledger records no hit at all.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.applied.is_empty()
+    }
+}
+
+/// The earliest time in `[0, 1]` at which a projectile's swept segment
+/// enters a target's swept box, or `None` if it never does.
+///
+/// The two moves are put in one frame first: the box's own motion over the
+/// tick is subtracted from the projectile's, so the test is a static segment
+/// against a static box and a target that crosses the path between ticks is
+/// caught. The tick is normalized to `[0, 1]`, so the result is a fraction
+/// of the tick rather than a time — the caller owns the tick length.
+///
+/// A degenerate axis (`delta == 0.0`) is handled by a containment test
+/// rather than a division. No numerical epsilon is introduced: a near-zero
+/// axis produces enormous `t` values that the slab bounds reject correctly,
+/// and `FLIGHT-PHYSICS` reserves an epsilon for avoiding singularities, not
+/// for silently widening a shape.
+fn earliest_time_of_impact(segment: &ProjectileSegment, target: &SweepTarget) -> Option<f64> {
+    let p0 = segment.previous.to_array();
+    let p1 = segment.current.to_array();
+    let t0 = target.previous.to_array();
+    let t1 = target.current.to_array();
+
+    let mut enter: f64 = 0.0;
+    let mut exit: f64 = 1.0;
+    for axis in 0..3 {
+        let start = p0[axis] - t0[axis];
+        let delta = (p1[axis] - p0[axis]) - (t1[axis] - t0[axis]);
+        let half = target.half_extents_m[axis];
+        if delta == 0.0 {
+            if start.abs() > half {
+                return None;
+            }
+            continue;
+        }
+        let first = (-half - start) / delta;
+        let second = (half - start) / delta;
+        let (near, far) = if first <= second {
+            (first, second)
+        } else {
+            (second, first)
+        };
+        enter = enter.max(near);
+        exit = exit.min(far);
+        if enter > exit {
+            return None;
+        }
+    }
+    Some(enter)
+}
+
+// ---------------------------------------------------------------- fixture ----
+
+/// The fixture ammunition type's catalog key.
+pub const SYNTHETIC_AMMO_KEY: &str = "synthetic.fixture_slug";
+/// The fixture gun's mount key, matching the synthetic airframe damage
+/// graph's weapon-mount node.
+pub const SYNTHETIC_GUN_MOUNT: &str = "gun_mount_1";
+/// The fixture gun's muzzle effect catalog key.
+pub const SYNTHETIC_EFFECT_KEY: &str = "synthetic.fixture_muzzle";
+/// The fixture gun's shot sound catalog key.
+pub const SYNTHETIC_SOUND_KEY: &str = "synthetic.fixture_shot";
+/// The fixture gun's caliber text.
+pub const SYNTHETIC_CALIBER: &str = "synthetic fixture caliber";
+/// The fixture gun's muzzle velocity, in meters per second.
+pub const SYNTHETIC_MUZZLE_VELOCITY_MPS: f64 = 640.0;
+/// The fixture gun's round lifetime, in ticks.
+pub const SYNTHETIC_LIFETIME_TICKS: u64 = 90;
+/// The fixture gun's spread cone half-angle, in radians.
+pub const SYNTHETIC_SPREAD_HALF_ANGLE_RAD: f64 = 0.004;
+/// The fixture gun's armor-channel damage per round.
+pub const SYNTHETIC_ARMOR_DAMAGE: f64 = 6.0;
+/// The fixture gun's internal-channel damage per round.
+pub const SYNTHETIC_INTERNAL_DAMAGE: f64 = 3.0;
+/// The fixture gun's rate, in ticks between shots.
+pub const SYNTHETIC_TICKS_BETWEEN_SHOTS: u32 = 4;
+/// Rounds a [`WeaponState`] starts with in the fixture.
+pub const SYNTHETIC_STARTING_ROUNDS: u64 = 250;
+
+/// The claim the fixture's synthetic values carry.
+#[must_use]
+pub fn synthetic_claim() -> ClaimId {
+    ClaimId::new("f27a.synthetic-fixture").expect("the fixture claim id is valid")
+}
+
+/// The fixture's ammunition type: one synthetic `ammo` id.
+///
+/// Deliberately *not* a claim about the original catalogue. The word "slug"
+/// appears only inside a fixture key; the real ammunition set is unknown
+/// and F27-D audits it.
+#[must_use]
+pub fn synthetic_ammunition() -> AmmunitionId {
+    AmmunitionId::try_new(
+        ContentId::from_source(ContentKind::Ammo, SYNTHETIC_AMMO_KEY)
+            .expect("the fixture ammunition id is valid"),
+    )
+    .expect("the fixture ammunition id is in the ammo namespace")
+}
+
+/// The fixture's mount key — the same weapon-mount node the synthetic
+/// airframe damage graph declares, so a damage-driven disable and a weapon
+/// gate are the same key.
+#[must_use]
+pub fn synthetic_mount() -> DamageNodeKey {
+    DamageNodeKey::new(SYNTHETIC_GUN_MOUNT).expect("the fixture mount key is valid")
+}
+
+/// The fixture gun's muzzle effect id.
+#[must_use]
+pub fn synthetic_effect() -> ContentId {
+    ContentId::from_source(ContentKind::HardpointEquipment, SYNTHETIC_EFFECT_KEY)
+        .expect("the fixture effect id is valid")
+}
+
+/// The fixture gun's shot sound id.
+#[must_use]
+pub fn synthetic_sound() -> ContentId {
+    ContentId::from_source(ContentKind::Sound, SYNTHETIC_SOUND_KEY)
+        .expect("the fixture sound id is valid")
+}
+
+/// The fixture gun: a synthetic nose cannon with one known damage profile,
+/// a declared muzzle velocity, lifetime and spread.
+///
+/// Every number here is newly authored fixture content. None of it is an
+/// original Crimson Skies value and none of it is presented as one.
+#[must_use]
+pub fn synthetic_gun_definition() -> GunDefinition {
+    GunDefinition::try_new(
+        synthetic_mount(),
+        GunMountKind::Nose,
+        SYNTHETIC_CALIBER,
+        synthetic_ammunition(),
+        GunRate::try_new(SYNTHETIC_TICKS_BETWEEN_SHOTS).expect("the fixture rate is valid"),
+        SYNTHETIC_MUZZLE_VELOCITY_MPS,
+        SYNTHETIC_LIFETIME_TICKS,
+        SpreadCone::try_new(SYNTHETIC_SPREAD_HALF_ANGLE_RAD).expect("the fixture spread is valid"),
+        WeaponDamage::try_new(SYNTHETIC_ARMOR_DAMAGE, SYNTHETIC_INTERNAL_DAMAGE)
+            .expect("the fixture damage is valid"),
+        InheritanceRule::Full,
+        synthetic_effect(),
+        synthetic_sound(),
+    )
+    .expect("the fixture gun definition is valid")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The ammunition identity discipline: an id must be in the `ammo`
+    /// namespace, and there is deliberately no closed enum to fall back on.
+    #[test]
+    fn accept_f27_a_ammunition_id_requires_the_ammo_namespace() {
+        let good = ContentId::from_source(ContentKind::Ammo, SYNTHETIC_AMMO_KEY)
+            .expect("a valid content id");
+        assert!(AmmunitionId::try_new(good).is_ok());
+
+        let wrong = ContentId::from_source(ContentKind::Gun, SYNTHETIC_AMMO_KEY)
+            .expect("a valid content id");
+        assert_eq!(
+            AmmunitionId::try_new(wrong.clone()),
+            Err(AmmunitionIdError::KindMismatch { id: wrong }),
+            "a gun id is not an ammunition type"
+        );
+    }
+}

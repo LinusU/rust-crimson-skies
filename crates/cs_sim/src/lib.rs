@@ -158,6 +158,21 @@
 //! [`world_actors::graph::SupportGraph`] and detached-payload release. The
 //! runtime is F34-B and the wiring is F34-C.
 //!
+//! [`weapons`] is the F27-A weapon contract
+//! (`specs/F27-guns-ammunition-hardpoints-and-ballistic-hits.md`, stage
+//! `### F27-A`): the [`weapons::GunDefinition`] whose mount is the same
+//! [`damage::DamageNodeKey`] the F29 damage graph disables, the
+//! [`weapons::WeaponState`] of selected [`weapons::GunBank`], per-mount
+//! cooldown in ticks, rounds and disabled mounts, the
+//! [`weapons::FireIntent`] → [`weapons::FireResolution`] pair that the
+//! per-session [`weapons::FireResolver`] resolves exactly once, and the
+//! [`weapons::Ballistics`] swept-segment query with relative motion,
+//! earliest-time-of-impact ordering and a once-per-projectile ledger.
+//! The declared, provenance-carrying schema is `cs_content::weapons`; the
+//! lowering boundary is `cs_app::weapons`; the cadence loop and the mount
+//! transforms from the live hierarchy are F27-B, and the damage, effect,
+//! audio and bank-selection wiring is F27-C.
+//!
 //! [`cs_types`]: cs_types
 //! [`cs_script`]: cs_script
 
@@ -175,4 +190,5 @@ pub mod probes;
 pub mod targeting;
 pub mod time;
 pub mod visibility;
+pub mod weapons;
 pub mod world_actors;
