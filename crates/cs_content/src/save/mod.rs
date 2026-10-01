@@ -13,6 +13,10 @@
 //! pointer and the id high-water mark through those same phases, and
 //! [`fs::Replacement`]/[`fs::directory_sync_supported`] report what this
 //! platform actually does instead of assuming POSIX semantics.
+//! [`library::ProfileLibrary`] is where the pieces meet: one population's
+//! profiles, allocating persistent ids above the persisted high-water mark,
+//! committing revisions and reporting every recovery as text a caller can
+//! show.
 //!
 //! The formats are newly authored engine design, not original-game formats, so
 //! nothing here is `verified_original`. The cross-platform crash/recovery
@@ -22,4 +26,5 @@
 
 pub mod codec;
 pub mod fs;
+pub mod library;
 pub mod store;

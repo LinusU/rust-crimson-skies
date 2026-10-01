@@ -39,14 +39,24 @@ use super::store::{
 /// The file name prefix of the registry slot.
 pub const REGISTRY_PREFIX: &str = "registry";
 
-/// What this build's replacement actually does on this platform.
+/// The magic word in a registry document's header line, so a registry is never
+/// mistaken for a save (or the other way round) by either decoder.
+const REGISTRY_MAGIC: &str = "CSREG";
+
+/// The header line a registry document starts with: the magic word and the
+/// schema version, which the decoder re-reads and checks rather than trusting.
+const REGISTRY_HEADER: &str = concat!("CSREG", " 1.0\n");
+
+/// Which rename call this build's replacement is on this platform.
 ///
 /// The contract refuses to assume POSIX rename behavior on Windows, so the
-/// difference is reported rather than described. `ReplaceFile` gives the
-/// destination file's identity to the replacement and is atomic; plain rename
-/// is atomic but does not preserve that. Which one is available is a platform
-/// property, so it is measured from the platform and stated here, and the
-/// cross-platform matrix is F48-D's measurement, not this module's claim.
+/// difference is reported rather than described. `std::fs::rename` maps to
+/// `rename(2)` on unix and to `MoveFileExW` with `MOVEFILE_REPLACE_EXISTING`
+/// on Windows: both replace an existing destination, but they differ in what
+/// happens to an open or read-only destination, and that difference is a
+/// platform property this build states rather than assumes. Which one behaves
+/// correctly under a real crash on each supported platform is F48-D's
+/// measurement, not this module's claim.
 pub const fn replacement_semantics() -> Replacement {
     if cfg!(windows) {
         Replacement::MoveFileEx
@@ -418,6 +428,48 @@ impl Registry {
     pub fn is_live(&self, id: ProfileId) -> bool {
         self.live.contains(&id)
     }
+
+    /// A registry whose parts were read off the filesystem rather than off a
+    /// registry record: a slot directory names the id it belongs to, so the
+    /// mark can be recovered without a trustworthy registry file.
+    ///
+    /// `revision` is the revision of the record the parts came from, or zero
+    /// when there was none. Keeping it is what makes the next write a
+    /// continuation of what is stored rather than a second attempt at an
+    /// already-used revision.
+    ///
+    /// The parts are still checked by the same rule — a mark below a live id or
+    /// a repeated id is refused — so this is not a way around the consistency
+    /// requirement; it is the same construction with a mark that is known to
+    /// cover the live ids because it is their maximum.
+    pub fn rebuilt(
+        revision: Revision,
+        kind: ProfileKind,
+        high_water: u64,
+        live: Vec<ProfileId>,
+        active: Option<ProfileId>,
+    ) -> Self {
+        // `rebuild_from_live` computes the maximum of the live ids, so the
+        // parts are consistent by construction when the mark is that maximum.
+        let mut parts = ProfileRegistry::rebuild_from_live(live, active);
+        if high_water > parts.high_water() {
+            // A mark above every live id is kept: a deleted id above the live
+            // set is exactly what must never be issued again, so it is carried
+            // rather than lowered.
+            parts = ProfileRegistry::from_parts(high_water, parts.live().to_vec(), parts.active())
+                .unwrap_or(
+                    ProfileRegistry::from_parts(high_water, parts.live().to_vec(), None)
+                        .expect("a mark above every live id is consistent"),
+                );
+        }
+        Self {
+            revision,
+            kind,
+            high_water: parts.high_water(),
+            live: parts.live().to_vec(),
+            active: parts.active(),
+        }
+    }
 }
 
 impl SlotIdentity for Registry {
@@ -441,20 +493,21 @@ struct RegistryRecord {
     active: Option<ProfileId>,
 }
 
-/// Encodes a registry as a checksummed line document.
+/// Encodes a registry as a checksummed line document, using the same framing
+/// and bounds as a save (`sealed_body`, `check_line_count`).
 ///
 /// ```text
 /// CSREG 1.0
 /// kind=<label>
 /// revision=<n>
 /// high_water=<n>
-/// live=<id>            (repeated, in order)
+/// live=<id>            (repeated, in allocation order)
 /// active=<id>          (only when a profile is active)
 /// checksum=<16 hex>
 /// ```
 pub fn encode_registry(registry: &Registry) -> Vec<u8> {
     let mut text = String::new();
-    text.push_str(&format!("CSREG 1.0\n"));
+    text.push_str(REGISTRY_HEADER);
     text.push_str(&format!("kind={}\n", registry.kind.label()));
     text.push_str(&format!("revision={}\n", registry.revision.0));
     text.push_str(&format!("high_water={}\n", registry.high_water));
@@ -472,7 +525,7 @@ pub fn encode_registry(registry: &Registry) -> Vec<u8> {
 /// Decodes a registry document. Never panics and never interprets a field
 /// before its size and character bounds are checked.
 pub fn decode_registry(bytes: &[u8]) -> Result<(Revision, Registry), DecodeError> {
-    let (covered, _) = sealed_body("CSREG", bytes)?;
+    let (covered, _) = sealed_body(REGISTRY_MAGIC, bytes)?;
     check_line_count(covered)?;
     let mut revision = None;
     let mut kind = None;
@@ -602,7 +655,7 @@ impl LoadedRegistry {
 /// whole slot rather than being shadowed, and no two files are combined.
 pub fn load_registry(directory: &Path, kind: ProfileKind) -> Result<LoadedRegistry, RecoverError> {
     let slot = registry_slot(directory);
-    let mut survey = survey(&slot, &decode_registry)?;
+    let mut survey = survey(&slot, decode_registry)?;
     let Some(best) = survey.best() else {
         return if survey.corrupt.is_empty() {
             Ok(LoadedRegistry {
@@ -652,7 +705,7 @@ pub fn commit_registry(
     registry: &Registry,
 ) -> Result<Registry, CommitError> {
     let offer = registry.advanced()?;
-    let survey = survey(slot, &decode_registry).map_err(CommitError::Recover)?;
+    let survey = survey(slot, decode_registry).map_err(CommitError::Recover)?;
     check_offer(&survey, &offer)?;
     run_phases(slot, &encode_registry(&offer), survey, &decode_registry)?;
     Ok(offer)

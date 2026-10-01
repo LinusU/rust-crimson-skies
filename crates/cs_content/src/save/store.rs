@@ -558,26 +558,18 @@ pub fn commit(
     })
     .map_err(CommitError::Recover)?;
     // Every valid file of a profile slot must be that profile's, so recovery
-    // and a commit agree on which slot this is. `from_parts` is the same
-    // consistency rule the registry uses, so an inconsistent record is
-    // reported as a corrupt file rather than trusted as a revision.
-    if let Some((_, _, first)) = survey.valid.first() {
-        if survey
+    // and a commit agree on which slot this is. A slot holding two profiles is
+    // not either of their continuations, so neither is written over.
+    if let Some((_, _, first)) = survey.valid.first()
+        && let Some((_, _, other)) = survey
             .valid
             .iter()
-            .any(|(_, _, other)| other.profile_id != first.profile_id)
-        {
-            let other = survey
-                .valid
-                .iter()
-                .find(|(_, _, held)| held.profile_id != first.profile_id)
-                .map(|(_, _, held)| held.profile_id)
-                .expect("a differing profile is present");
-            return Err(CommitError::Recover(RecoverError::ProfileMismatch {
-                first: first.profile_id,
-                second: other,
-            }));
-        }
+            .find(|(_, _, held)| held.profile_id != first.profile_id)
+    {
+        return Err(CommitError::Recover(RecoverError::ProfileMismatch {
+            first: first.profile_id,
+            second: other.profile_id,
+        }));
     }
     if let Some(index) = survey.best() {
         let stored = survey.valid[index].2.profile_id;
