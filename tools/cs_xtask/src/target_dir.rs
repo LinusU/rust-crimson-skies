@@ -58,12 +58,20 @@
 //! dependencies. [`foreign_manifest_dirs`] applies that, and
 //! [`verify_workspace`] reports it as [`TargetDirError::Foreign`].
 //!
-//! [`verify_workspace`] is the gate: the `accept_t383_`, `accept_t433_` and
-//! `accept_t440_` tests run it against this very checkout as part of `cargo
-//! test --workspace`, so an agent whose environment still exports a shared
-//! directory, whose private directory still serves a removed worktree, or
-//! whose private directory holds a live foreign checkout's artifacts, gets a
+//! [`verify_workspace`] is the gate: the `accept_t383_`, `accept_t433_`,
+//! `accept_t437_` and `accept_t440_` tests run it against this very checkout as
+//! part of `cargo test --workspace`, so an agent whose environment still exports
+//! a shared directory, whose private directory still serves a removed worktree,
+//! or whose private directory holds a live foreign checkout's artifacts, gets a
 //! loud failure naming the fix instead of silently trusting foreign binaries.
+//!
+//! A gate has to name the checkout it judges, and a compiled test binary can
+//! outlive the tree that built it (task #437).
+//! [`running_workspace_root`] therefore derives the root from the process's
+//! working directory, which cargo sets inside the checkout under test, rather
+//! than from `env!("CARGO_MANIFEST_DIR")`, which is baked into whichever
+//! checkout compiled the binary. Without it a reused artifact judges the wrong
+//! tree and reports a private target directory as shared.
 
 use std::collections::BTreeSet;
 use std::env;
@@ -280,6 +288,56 @@ pub fn is_per_worktree(workspace_root: &Path, target_dir: &Path) -> bool {
     candidate_components[shared_ancestry..]
         .iter()
         .any(|component| component.as_os_str() == name)
+}
+
+/// The manifest table that marks a `Cargo.toml` as the root of a workspace.
+const WORKSPACE_TABLE: &str = "[workspace]";
+
+/// The workspace root of the checkout that contains `start`, found at *run*
+/// time by walking up to the nearest manifest carrying a `[workspace]` table,
+/// or `None` when no ancestor of `start` has one.
+///
+/// This is the same nearest-ancestor rule cargo itself applies to resolve a
+/// package's workspace, so it cannot name a different root than the one cargo
+/// built against.
+///
+/// The reason it is not `env!("CARGO_MANIFEST_DIR")` is task #437: a compiled
+/// test binary can outlive the tree that built it. A `CARGO_TARGET_DIR` shared
+/// between checkouts — or one naming a checkout that was later replaced — lets
+/// `cargo test` reuse a foreign artifact, and the manifest directory baked into
+/// that artifact names a root this run never touches. A gate built on the baked
+/// root then judges the wrong checkout: it reports a private `…/f18b/target` as
+/// shared because the baked root is `…/devin-1`, which is a failure with no
+/// cause in the environment under test. Cargo runs test binaries with the
+/// package root as the working directory, so a walk from
+/// [`running_workspace_root`] lands inside the checkout that is *running*,
+/// whichever checkout compiled the binary.
+///
+/// Only the table header counts: `[workspace.dependencies]` is a different
+/// table, and `# [workspace]` is a comment, so neither makes a manifest a
+/// workspace root.
+pub fn workspace_root_from(start: &Path) -> Option<PathBuf> {
+    start
+        .ancestors()
+        .find(|dir| {
+            fs::read_to_string(dir.join("Cargo.toml")).is_ok_and(|manifest| {
+                manifest
+                    .lines()
+                    .any(|line| line.trim_start().starts_with(WORKSPACE_TABLE))
+            })
+        })
+        .map(Path::to_path_buf)
+}
+
+/// [`workspace_root_from`] at the process's own working directory: the
+/// workspace root of the checkout this process is *running* in.
+///
+/// `None` when the working directory cannot be read, or when no ancestor of it
+/// holds a workspace manifest — which is also what the `verify-target-dir`
+/// subcommand's own default (`--workspace-root .`) resolves to, so the CLI and
+/// the live gates agree on what "this worktree" means.
+pub fn running_workspace_root() -> Option<PathBuf> {
+    workspace_root_from(&env::current_dir().ok()?)
 }
 
 /// The whole gate: resolve the effective directory through Cargo, then
