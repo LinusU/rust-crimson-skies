@@ -681,12 +681,9 @@ fn accept_f32_a_foreign_protected_actor_is_refused_without_a_lifecycle_report() 
         session: SYNTHETIC_SESSION + 4,
         serial: CHARGE,
     };
-    let assignment = RoleAssignment::protecting(
-        synthetic_actor(1),
-        CombatRole::Escort,
-        foreign_charge,
-    )
-    .expect("the protected actor is not the observer itself");
+    let assignment =
+        RoleAssignment::protecting(synthetic_actor(1), CombatRole::Escort, foreign_charge)
+            .expect("the protected actor is not the observer itself");
 
     for protected_alive in [None, Some(true), Some(false)] {
         let err = planner

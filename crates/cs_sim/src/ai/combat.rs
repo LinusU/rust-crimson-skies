@@ -1335,7 +1335,10 @@ impl CombatPlanner {
                     facts: facts.formation,
                 });
             }
-            for actor in [Some(facts.leader), facts.assigned_target].into_iter().flatten() {
+            for actor in [Some(facts.leader), facts.assigned_target]
+                .into_iter()
+                .flatten()
+            {
                 if actor.session != self.session {
                     return Err(CombatError::ForeignSession {
                         actor,

@@ -17,7 +17,7 @@ build/test only (no `CS_GAME_DIR` read, no evidence report required).
   `FormationId`/`DeclaredFormation`/`FormationRecovery`/`RecoveryPolicy`,
   the `CombatSchemaError` validation and the minimal synthetic fixture
   (`declared_synthetic_combat_rules`, `declared_synthetic_ace_profile`,
-  `declared_synthetic_difficulty_profile`).
+  `declared_synthetic_formation`, `declared_synthetic_difficulty_profiles`).
 - `crates/cs_sim/src/ai/combat.rs` (new): the runtime contract —
   `CombatPlanner`, `SkillProfile` (knobs + priority policy), the
   `CombatRole` mirror, `RoleAssignment`, `CandidateView`/`ThreatEvidence`,
@@ -38,9 +38,10 @@ build/test only (no `CS_GAME_DIR` read, no evidence report required).
   `tests/ai/main.rs` (Cargo auto-discovers a `tests/<dir>/main.rs` target).
 - This file.
 
-Test counts: 29 `accept_f32_a_*` tests in `crates/cs_sim/tests/ai/` (16 in
-`accept_f32_a_combat.rs`, 13 in `accept_f32_a_combat_failures.rs`) and 7
-`accept_f32_a_*` unit tests in `crates/cs_content/src/ai.rs`.
+Test counts: 32 `accept_f32_a_*` tests in `crates/cs_sim/tests/ai/` (17 in
+`accept_f32_a_combat.rs`, 15 in `accept_f32_a_combat_failures.rs`) and 7
+`accept_f32_a_*` unit tests in `crates/cs_content/src/ai.rs` — 39 selected
+by `cargo test --workspace --locked -- accept_f32_a_ --include-ignored`.
 
 **Why the declared-schema tests are unit tests, not `cs_content/tests/`:**
 `crates/cs_content/tests/` is *not* an owner path of this task, and a
@@ -91,10 +92,10 @@ fixture), so removing a layer fails to compile.
   inside the declared window, never from proximity, faction or role
   (non-negotiable 3/4, mirroring F30's threat ledger).
 - **Skill knobs are a closed behavior vocabulary.** `SkillKnob` has exactly
-  eight variants — reaction delay, aim error, engagement range, fire
-  discipline and the four priority weights — each with a unit. There is
-  deliberately no damage, armor or health variant, so an ace variant is a
-  list of *behavior* overrides and cannot be inflated health
+  nine variants — reaction delay, aim error, engagement range, fire
+  discipline, threat window and the four priority weights — each with a
+  unit. There is deliberately no damage, armor or health variant, so an ace
+  variant is a list of *behavior* overrides and cannot be inflated health
   (F32 "Deliverable and interfaces"). A unit or range mismatch in an
   override is refused.
 - **Difficulty moves those knobs and nothing else.** `DifficultyProfile` is
@@ -200,3 +201,89 @@ it. All were reverted; the committed tree is the green one.
 - `cargo test --workspace --locked` (1812 tests passing)
 - `cargo test --workspace --locked -- accept_f32_a_ --include-ignored`
   (36 tests: 29 in `cs_sim`'s `ai` target, 7 in `cs_content`'s lib)
+
+## Review (bunny-2, same session as the implementation — not independent)
+
+The same agent that wrote this stage also reviewed it, so this section is a
+self-review, **not** independent evidence and not a substitute for the
+owner's review. What it did: re-derived the AC01 numbers by hand from
+`decide`, re-ran every probe below, and fixed what it found.
+
+### Fixed
+
+1. **The protected actor's session generation was only checked when the
+   caller also reported its lifecycle** (`if let (Some(actor), Some(_)) = …`).
+   A request with `protected_alive: None` therefore carried a stale
+   generation's actor into the decision unchecked. The identity check is now
+   unconditional, and `accept_f32_a_foreign_protected_actor_is_refused_without_a_lifecycle_report`
+   covers all three lifecycle values.
+2. **The formation's `assigned_target` identity was never checked** while
+   its `leader` was. It is now refused by the same rule, and
+   `accept_f32_a_foreign_formation_leader_is_refused` covers both.
+3. **`FormationFacts` and `RoleAssignment` could disagree about which
+   formation the observer is in**, and the recovery path was then resolved
+   from the facts' formation. `decide` now refuses
+   `FormationAssignmentMismatch`. This tightened one existing fixture:
+   `accept_f32_a_foreign_formation_leader_is_refused` had been passing
+   formation facts for an assignment that declared no formation at all,
+   which is the contradiction the new refusal names.
+4. **Two tests asserted nothing about production code.**
+   `accept_f32_a_observer_and_destroyed_actors_are_never_targets` built a
+   `Vec` of the same actor once per `LifecycleKind` and compared its length
+   — it exercised no code at all. It is split into the observer-itself case
+   and `accept_f32_a_a_real_damage_event_destroys_the_charge_and_its_id_is_the_threat_evidence`,
+   which resolves a real lethal `HitEvent` through a real
+   `cs_sim::damage::DamageResolver`, asserts the charge's
+   `LifecycleKind::Destroyed` and then hands the planner the very
+   `HitEventId` the resolver stamped. That also upgrades the
+   "authoritative evidence" claim from a hand-built id to a producer-stamped
+   one. The arsenal test's closing `assert!(matches!(
+   FireVeto::ArsenalUnusable { .. }, FireVeto::ArsenalUnusable { .. }))`
+   matched a constructed value against its own variant and observed
+   nothing; it now runs a decision with a fully disarmed arsenal and asserts
+   the veto on the target, which is the first real coverage of that variant.
+5. **The declared schema accepted an engagement range of 0 m that the
+   lowered runtime profile refuses** (`cs_sim::ai::combat` bounds the range
+   below by `PROXIMITY_EPSILON_M` so the proximity term stays normalizable).
+   `MIN_ENGAGEMENT_RANGE_M` now refuses it at declaration too, so a record
+   the lowering boundary would reject cannot validate here.
+6. Documentation: the proximity term is zeroed for a refused candidate while
+   the other three terms are still reported, which was true but unstated;
+   `CandidateTrace` scoring now says so. `CombatPlanner::decide`'s contract
+   now states that it is target *selection* only — what an `Evade` or
+   `Retreat` assignment does about the target it is given is F32-B's.
+
+### Review sensitivity probes (run and reverted; none committed)
+
+1. Formation/assignment mismatch check disabled → 1 failure
+   (`…formation_facts_that_contradict_the_assignment_are_refused`).
+2. Protected-actor session check gated on the lifecycle report again → 1
+   failure (`…foreign_protected_actor_is_refused_without_a_lifecycle_report`).
+3. `assigned_target` dropped from the session check → 1 failure
+   (`…foreign_formation_leader_is_refused`).
+4. `ArsenalUnusable` veto branch disabled → 1 failure
+   (`…arsenal_snapshot_reports_separate_availability_counts`).
+5. `MIN_ENGAGEMENT_RANGE_M` back to `0.0` → 1 failure
+   (`accept_f32_a_difficulty_profile_moves_only_evidence_backed_knobs`).
+6. `ProtectedActorThreat` term zeroed (re-verification of the implementer's
+   probe 1) → 6 failures, including the AC01 scenario.
+7. Observer-itself gate disabled → 1 failure
+   (`…observer_is_never_its_own_target`).
+
+## Noted for the owner, not fixed here
+
+- `crates/cs_content/tests/` is **not** an owner path of this task, so the
+  declared half's acceptance tests are `#[cfg(test)]` tests inside
+  `crates/cs_content/src/ai.rs` instead of the
+  `crates/cs_content/tests/accept_f*.rs` files every predecessor stage
+  (F24-A, F27-A, F28-A, F29-A, F30-A, F31-A) used. The tests are real and
+  selected by the same filter, but the asymmetry is caused by the task's
+  owner paths, not by a technical limit: a `cs_content/tests/accept_f32_a_*.rs`
+  would work fine. Future "define the X schema" tasks should name that path.
+- F32-A implements a *policy function* (`CombatPlanner::decide`) rather than
+  only type declarations. This is required by the stage's own minimum
+  scenario (AC01 needs something that ranks targets) and bounded by
+  F32-B's AC02 (the firing solution is not implemented — only its typed
+  input) and F32-C's AC03 (the stateful recovery is not implemented — only
+  its declared-path reporting). A reviewer should confirm they agree that
+  this split respects `docs/TASK-SPLITTING.md`.
