@@ -251,7 +251,22 @@
 //! [`camera::lower_camera_modes`], which lowers a declared
 //! `cs_content::cameras::DeclaredCameraModes` set into the
 //! [`camera::LoweredCameraModes`] a session's camera path consumes.
+//!
+//! [`ai`] is the F31-C mission-ECS binding
+//! (`specs/F31-ai-navigation-routes-and-obstacle-avoidance.md`, stage
+//! `### F31-C`): [`ai::bind_route`], which projects a resolved
+//! `cs_content::routes::ResolvedRoute` into the runtime
+//! `cs_sim::ai::navigation::RouteGraph` while keeping the authored node id ->
+//! runtime node id map and refusing an unbound moving anchor or an
+//! unsupported termination by name; the [`ai::MovingAnchor`] component whose
+//! live Avian transform is sampled into the route frame every fixed tick; the
+//! [`ai::RoutePursuit`] component an AI aircraft carries; the session resource
+//! [`ai::AiNavigation`] that owns one `NavigationSet` and reconciles its roster
+//! with the live pursuit entities; and [`ai::AiNavigationPlugin`], whose
+//! fixed-tick systems decide one bounded command per aircraft and write it into
+//! the same `FlightAircraft` boundary the player input session uses.
 
+pub mod ai;
 pub mod airframe_visual;
 pub mod animation;
 pub mod asset_stack;
