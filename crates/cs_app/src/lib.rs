@@ -54,6 +54,14 @@
 //! [`scene::NodeDisabled`] markers, so loading and unloading the same
 //! airframe a hundred times leaves the live entity count unchanged (AC03).
 //!
+//! [`accessibility`] is the F52-A boundary
+//! (`specs/F52-accessibility-and-explicitly-separated-modern-options.md`, stage
+//! `### F52-A`): keyboard-only and controller-only front-end navigation, a
+//! remap session that cannot strand a device, colour-independent objective
+//! cues, reduced shake/flash that keeps required notifications, and atomic
+//! settings persistence with a safe-defaults startup. The settings types are
+//! `cs_content::settings`.
+//!
 //! [`input`] is the F22-A/F22-B/F22-C application boundary
 //! (`specs/F22-input-bindings-devices-and-control-ownership.md`):
 //! the active action map and input context ([`input::InputBindings`]) and the
@@ -364,6 +372,7 @@
 //! error budgets are [`cs_net::snapshot`]. Interpolation and bounded local
 //! prediction are F57-B, reconciliation wiring F57-C.
 
+pub mod accessibility;
 pub mod ai;
 pub mod airframe_visual;
 pub mod animation;
