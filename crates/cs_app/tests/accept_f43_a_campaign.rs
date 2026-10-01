@@ -18,6 +18,7 @@
 //! game data.
 
 use cs_app::campaign::{CampaignLowerError, lower_campaign};
+use cs_content::campaign::CampaignError as DeclaredError;
 use cs_content::campaign::{
     CampaignDefinition, CampaignDraft, CampaignEdge, CampaignNode, CampaignNodeId, EdgeCondition,
     NodeKind, RewardSpec, declared_synthetic_campaign,
@@ -25,6 +26,9 @@ use cs_content::campaign::{
 use cs_sim::campaign::{
     CampaignError, CampaignNodeKey, CampaignRunId, CampaignState, DifficultyId, MissionOutcome,
     OutcomeAuthority, OutcomeId, OutcomeReceipt, ProfileId,
+};
+use cs_sim::campaign::{
+    CampaignGraph, GraphError, Reward, RuntimeEdge, RuntimeNode, RuntimeNodeKind,
 };
 use cs_sim::campaign::{EventKey, SessionGeneration};
 use cs_sim::campaign::{Outcome, SymbolId};
@@ -362,6 +366,70 @@ fn accept_f43_a_lowering_refuses_unknown_bindings_and_rewards() {
     assert!(matches!(
         lower_campaign(&unknown_reward),
         Err(CampaignLowerError::UnknownReward { .. })
+    ));
+}
+
+/// A mission node bound to a non-mission content id refuses — at the
+/// declared schema and again in the runtime mirror, so a hand-built
+/// `CampaignGraph` cannot smuggle a non-mission id into a mission node.
+#[test]
+fn accept_f43_a_mission_nodes_refuse_non_mission_bindings() {
+    let blueprint = ContentId::from_source(ContentKind::Blueprint, "synthetic.not-a-mission")
+        .expect("valid id");
+    let declared = CampaignDefinition::try_new(CampaignDraft {
+        nodes: vec![
+            CampaignNode {
+                id: node("m"),
+                kind: NodeKind::Mission {
+                    mission: known(blueprint.clone()),
+                },
+                edges: vec![CampaignEdge {
+                    on: EdgeCondition::Victory,
+                    to: node("end"),
+                    grant: None,
+                    provenance: designed(),
+                }],
+                provenance: designed(),
+            },
+            CampaignNode {
+                id: node("end"),
+                kind: NodeKind::Ending,
+                edges: vec![],
+                provenance: designed(),
+            },
+        ],
+        entry: node("m"),
+        roster: vec![],
+        provenance: designed(),
+    });
+    assert!(matches!(
+        declared,
+        Err(DeclaredError::MissionBindingKind { .. })
+    ));
+
+    let runtime = CampaignGraph::try_new(
+        vec![
+            RuntimeNode {
+                id: key("m"),
+                kind: RuntimeNodeKind::Mission { mission: blueprint },
+                edges: vec![RuntimeEdge {
+                    on: Outcome::Succeeded,
+                    to: key("end"),
+                    grant: Reward::default(),
+                }],
+            },
+            RuntimeNode {
+                id: key("end"),
+                kind: RuntimeNodeKind::Ending,
+                edges: vec![],
+            },
+        ],
+        key("m"),
+        vec![],
+    );
+    assert!(matches!(
+        runtime,
+        Err(GraphError::MissionBindingKind { .. })
     ));
 }
 

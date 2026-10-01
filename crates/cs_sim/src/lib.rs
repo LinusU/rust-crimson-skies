@@ -187,6 +187,19 @@
 //! transforms from the live hierarchy are F27-B, and the damage, effect,
 //! audio and bank-selection wiring is F27-C.
 //!
+//! [`campaign`] is the F43-A campaign contract
+//! (`specs/F43-campaign-progression-outcomes-and-economy-rules.md`, stage
+//! `### F43-A`): the validated [`campaign::CampaignGraph`] keyed on
+//! `cs_script::Outcome`, the [`campaign::OutcomeId`] tuple the exactly-once
+//! ledger dedups, the immutable [`campaign::MissionOutcome`] transaction
+//! input and [`campaign::CampaignState`], whose
+//! [`campaign::CampaignState::apply_outcome`] checks eligibility and prior
+//! application, computes the whole change set in memory and commits it in
+//! one revision — a replayed packet can never pay twice and a replayed
+//! mission never moves progression. The declared, provenance-carrying
+//! schema is `cs_content::campaign`; the lowering boundary is
+//! `cs_app::campaign`; purchases, saves and briefing wiring are F43-B/C.
+//!
 //! [`cs_types`]: cs_types
 //! [`cs_script`]: cs_script
 

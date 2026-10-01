@@ -103,8 +103,8 @@ pub enum CampaignError {
         /// The outcome's id.
         outcome: OutcomeId,
     },
-    /// The outcome names a node the run has neither selected nor completed —
-    /// a future mission cannot report results.
+    /// The outcome names a node the run has neither selected nor previously
+    /// visited — a future mission cannot report results.
     IneligibleNode {
         /// The node the outcome names.
         node: CampaignNodeKey,
@@ -141,7 +141,7 @@ impl fmt::Display for CampaignError {
             ),
             Self::IneligibleNode { node, current } => write!(
                 f,
-                "node {node} is neither selected ({current}) nor previously completed"
+                "node {node} is neither selected ({current}) nor previously visited"
             ),
             Self::UnknownNode { node } => {
                 write!(f, "node {node} is not in the campaign graph")
@@ -270,9 +270,9 @@ impl CampaignState {
     /// The outcome transaction: apply `outcome` exactly once.
     ///
     /// Order of checks (the contract's): foreign `(profile, run)` → already
-    /// applied → eligible node → mission node → compute plan → validate
-    /// (currency overflow) → commit → bump revision. A refusal changes
-    /// nothing.
+    /// applied → known node → mission node → eligible → compute plan →
+    /// validate (currency overflow) → commit → bump revision. A refusal
+    /// changes nothing.
     ///
     /// An edge's grant fires only on the node's first outcome *of that
     /// kind* — a replayed victory cannot re-pay its reward (which is what
@@ -306,9 +306,9 @@ impl CampaignState {
         if !matches!(node.kind, RuntimeNodeKind::Mission { .. }) {
             return Err(CampaignError::NotAMission { node: node_key });
         }
-        let completed_before = self.progress.contains_key(&node_key);
+        let visited_before = self.progress.contains_key(&node_key);
         let progresses = node_key == self.current;
-        if !progresses && !completed_before {
+        if !progresses && !visited_before {
             return Err(CampaignError::IneligibleNode {
                 node: node_key,
                 current: self.current.clone(),

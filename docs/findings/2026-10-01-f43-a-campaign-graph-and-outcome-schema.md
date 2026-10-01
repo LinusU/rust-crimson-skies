@@ -16,7 +16,11 @@ contract `docs/contracts/STATE-TRANSACTIONS.md`.
   are never indistinguishable), `RosterEntry` (availability gated on a
   node's first victory), and `CampaignDefinition::try_new` enforcing unique
   ids, declared entry, no dangling edges, ≤1 edge per condition, no edges
-  out of endings, no non-ending dead ends, roster gates on declared nodes.
+  out of endings, no non-ending dead ends, roster gates on declared nodes,
+  and mission nodes whose resolved bindings are `ContentKind::Mission` ids
+  (mirrored by `CampaignGraph::try_new`, matching the binding-kind rule of
+  `airframe_roles`/`animation`/`audio`; an `Unknown` binding stays legal
+  and refuses only at the lowering boundary).
   `declared_synthetic_campaign()` is the minimal fixture: `m01 → m02 →
   ending`, victory-forward, defeat-in-place (a declared retry loop, not an
   implied rule), one roster gate.
@@ -42,8 +46,10 @@ contract `docs/contracts/STATE-TRANSACTIONS.md`.
   `UnknownMissionBinding` and `UnknownReward` refuse here rather than pay
   or route on a guess; `Interlude` assets are optional and an unbound one
   lowers to a silent beat.
-* `crates/cs_app/tests/accept_f43_a_campaign.rs` — 10 acceptance tests plus
-  2 content unit tests; 12 `accept_f43_a_` tests total.
+* `crates/cs_app/tests/accept_f43_a_campaign.rs` — 11 acceptance tests plus
+  2 content unit tests; 13 `accept_f43_a_` tests total (the binding-kind
+  refusal added in review is covered on both the declared and the runtime
+  mirror).
 
 ## Decisions that needed a rule the sheet does not fix
 
@@ -86,6 +92,11 @@ and revision are bit-identical.
   original's levels and their effects are unmeasured.
 - **Abort routing** — the vocabulary carries `Abort` edges; whether the
   original distinguishes quit from defeat is unmeasured.
+- **Interlude traversal** — an interlude has no outcome of its own, so
+  `apply_outcome` refuses it (`NotAMission`) and nothing in this stage
+  advances `current` through an interlude chain or an interlude entry
+  node. How the runtime walks declared interludes (and whether a campaign
+  may legally begin on one) is deferred to F43-B/C's wiring.
 - **Economy display mapping** — minor units to rendered dollars/points is
   a UI concern; unmeasured.
 - **Persistence** — AC03's crash-mid-save recovery needs F48's atomic
@@ -94,6 +105,6 @@ and revision are bit-identical.
 ## Checks run
 
 - `cargo test --workspace --locked -- accept_f43_a_ --include-ignored`:
-  12 tests pass (10 in `cs_app/tests/accept_f43_a_campaign.rs`, 2 in
+  13 tests pass (11 in `cs_app/tests/accept_f43_a_campaign.rs`, 2 in
   `cs_content::campaign` unit tests).
 - Workspace fmt/clippy/test results are in the handover summary.

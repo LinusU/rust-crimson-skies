@@ -10,7 +10,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use cs_script::ir::Outcome;
-use cs_types::content::ContentId;
+use cs_types::content::{ContentId, ContentKind};
 
 use super::identity::CampaignNodeKey;
 use super::state::CampaignState;
@@ -118,6 +118,15 @@ pub enum GraphError {
         /// The undeclared gate.
         gate: CampaignNodeKey,
     },
+    /// A mission node's content id is not a [`ContentKind::Mission`] — the
+    /// mirror of the declared schema's binding rule, so a hand-built graph
+    /// is held to it too.
+    MissionBindingKind {
+        /// The node.
+        node: CampaignNodeKey,
+        /// The binding's actual kind.
+        kind: ContentKind,
+    },
 }
 
 impl fmt::Display for GraphError {
@@ -142,6 +151,9 @@ impl fmt::Display for GraphError {
             }
             Self::UnknownRosterGate { item, gate } => {
                 write!(f, "roster item {item} is gated on undeclared node {gate}")
+            }
+            Self::MissionBindingKind { node, kind } => {
+                write!(f, "mission node {node} is bound to a {kind:?} content id")
             }
         }
     }
@@ -183,6 +195,14 @@ impl CampaignGraph {
             return Err(GraphError::MissingEntry { node: entry });
         }
         for node in map.values() {
+            if let RuntimeNodeKind::Mission { mission } = &node.kind
+                && mission.kind() != ContentKind::Mission
+            {
+                return Err(GraphError::MissionBindingKind {
+                    node: node.id.clone(),
+                    kind: mission.kind(),
+                });
+            }
             if node.kind == RuntimeNodeKind::Ending && !node.edges.is_empty() {
                 return Err(GraphError::EdgeFromEnding {
                     node: node.id.clone(),

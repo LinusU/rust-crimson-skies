@@ -27,8 +27,9 @@
 //! [`NodeKind::Ending`] terminal states. Every [`CampaignEdge`] leaves a node
 //! on a declared [`EdgeCondition`] (`Victory`, `Defeat`, `Abort`) and may
 //! carry a [`RewardSpec`]. `try_new` refuses duplicate node ids, dangling
-//! edge targets, a missing entry node and edges out of an ending — the
-//! invariants a consumer needs so it never has to guess.
+//! edge targets, a missing entry node, edges out of an ending and a
+//! mission node whose resolved binding is not a `ContentKind::Mission` —
+//! the invariants a consumer needs so it never has to guess.
 //!
 //! **What an edge means is declared, never invented** (spec F43
 //! non-negotiable behavior 4): whether defeat retries in place or skips
@@ -290,6 +291,16 @@ pub enum CampaignError {
         /// The undeclared gate node.
         node: CampaignNodeId,
     },
+    /// A mission node's resolved binding is not a [`ContentKind::Mission`]
+    /// — a node that says "mission" must name a mission. An
+    /// unsurveyed ([`Resolved::Unknown`]) binding stays legal: it refuses at
+    /// the lowering boundary instead.
+    MissionBindingKind {
+        /// The node.
+        node: CampaignNodeId,
+        /// The binding's actual kind.
+        kind: ContentKind,
+    },
     /// A campaign needs at least one node.
     Empty,
 }
@@ -315,6 +326,9 @@ impl fmt::Display for CampaignError {
             }
             Self::UnknownRosterGate { item, node } => {
                 write!(f, "roster item {item} is gated on undeclared node {node}")
+            }
+            Self::MissionBindingKind { node, kind } => {
+                write!(f, "mission node {node} is bound to a {kind:?} content id")
             }
             Self::Empty => write!(f, "a campaign needs at least one node"),
         }
@@ -349,8 +363,9 @@ pub struct CampaignDraft {
 impl CampaignDefinition {
     /// Validates the graph: unique node ids, a declared entry, no dangling
     /// edge targets, at most one edge per condition per node, no edges out
-    /// of an ending, no non-ending dead ends, and roster gates that name
-    /// declared nodes.
+    /// of an ending, no non-ending dead ends, roster gates that name
+    /// declared nodes, and mission nodes whose resolved bindings are
+    /// actually [`ContentKind::Mission`] ids.
     ///
     /// # Errors
     ///
@@ -370,6 +385,16 @@ impl CampaignDefinition {
             return Err(CampaignError::MissingEntry { node: draft.entry });
         }
         for node in nodes.values() {
+            if let NodeKind::Mission {
+                mission: Resolved::Known(known),
+            } = &node.kind
+                && known.value.kind() != ContentKind::Mission
+            {
+                return Err(CampaignError::MissionBindingKind {
+                    node: node.id.clone(),
+                    kind: known.value.kind(),
+                });
+            }
             if node.kind == NodeKind::Ending && !node.edges.is_empty() {
                 return Err(CampaignError::EdgeFromEnding {
                     node: node.id.clone(),
@@ -662,6 +687,38 @@ mod tests {
             ),
             Err(CampaignError::DuplicateCondition { .. })
         ));
+        // A mission node bound to a non-mission content id is refused —
+        // the kind check matches every other declared schema's binding
+        // rule (airframe_roles, animation, audio).
+        let mut wrong_kind = mission("m", vec![edge(EdgeCondition::Victory, "end")]);
+        wrong_kind.kind = NodeKind::Mission {
+            mission: known(
+                ContentId::from_source(ContentKind::Blueprint, "synthetic.not-a-mission")
+                    .expect("valid id"),
+            ),
+        };
+        assert!(matches!(
+            draft(vec![wrong_kind, ending()], "m", vec![]),
+            Err(CampaignError::MissionBindingKind {
+                kind: ContentKind::Blueprint,
+                ..
+            })
+        ));
+        // An unsurveyed binding stays legal at this layer — the lowering
+        // boundary is where an unknown refuses.
+        let unsurveyed = CampaignNode {
+            id: node("m"),
+            kind: NodeKind::Mission {
+                mission: Resolved::unknown(
+                    claim("f43a.unit.unsurveyed"),
+                    "the original mission id is unsurveyed",
+                )
+                .expect("a reason is present"),
+            },
+            edges: vec![edge(EdgeCondition::Victory, "end")],
+            provenance: designed(),
+        };
+        assert!(draft(vec![unsurveyed, ending()], "m", vec![]).is_ok());
     }
 
     /// The declared fixture is synthetic throughout and structurally sound.
