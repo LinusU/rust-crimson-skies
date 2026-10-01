@@ -29,7 +29,7 @@
 pub mod loops;
 pub mod lower;
 
-pub use loops::{AudioSession, LOOP_PRODUCER, LoopRefusal, sync_emitter_loops};
+pub use loops::{AudioSession, LOOP_PRODUCER, LoopRefusal, advance_radio, sync_emitter_loops};
 
 pub use lower::{
     AudioLowerError, LoweredAudioAsset, lower_bus, lower_catalog, lower_mode, lower_record,

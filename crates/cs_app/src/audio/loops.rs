@@ -33,7 +33,8 @@ use bevy::ecs::resource::Resource;
 use bevy::ecs::system::{Query, ResMut};
 use cs_sim::audio_events::{
     AudioAssetSpec, AudioEmitterId, AudioEventError, AudioEventId, AudioRouter, EmitterStopReason,
-    LoopOutcome,
+    LoopBinding, LoopOutcome, MusicCue, MusicDirector, MusicOutcome, RadioEvent, RadioLine,
+    RadioQueue,
 };
 use cs_types::Tick;
 use cs_types::content::ContentId;
@@ -86,6 +87,14 @@ pub struct AudioSession {
     specs: BTreeMap<ContentId, AudioAssetSpec>,
     bound: BTreeMap<Entity, (AudioEmitterId, AudioEventId)>,
     next_sequence: u32,
+    lost_loops: BTreeMap<AudioEmitterId, LoopBinding>,
+    device_available: bool,
+    /// The radio queue; its completion is tick-driven, never device-driven.
+    pub radio: RadioQueue,
+    /// The authored music cue director.
+    pub music: MusicDirector,
+    /// Every radio event since the last [`Self::drain_radio`], in order.
+    pub radio_events: Vec<RadioEvent>,
     /// Every loop outcome since the last [`Self::drain`], in order.
     pub outcomes: Vec<LoopOutcome>,
     /// Every refused binding since the last [`Self::drain`].
@@ -100,9 +109,15 @@ impl AudioSession {
         generation: SceneGeneration,
         specs: impl IntoIterator<Item = AudioAssetSpec>,
     ) -> Self {
+        let session = router.session();
         Self {
             router,
             generation,
+            lost_loops: BTreeMap::new(),
+            device_available: true,
+            radio: RadioQueue::new(session),
+            music: MusicDirector::new(session),
+            radio_events: Vec::new(),
             tick: Tick(0),
             specs: specs.into_iter().map(|s| (s.asset().clone(), s)).collect(),
             bound: BTreeMap::new(),
@@ -118,6 +133,62 @@ impl AudioSession {
             std::mem::take(&mut self.outcomes),
             std::mem::take(&mut self.refusals),
         )
+    }
+
+    /// Takes the accumulated radio events.
+    pub fn drain_radio(&mut self) -> Vec<RadioEvent> {
+        std::mem::take(&mut self.radio_events)
+    }
+
+    /// Offers a radio line at the session's current tick.
+    pub fn enqueue_radio(&mut self, line: RadioLine) {
+        let events = self.radio.enqueue(line, self.tick);
+        self.radio_events.extend(events);
+    }
+
+    /// Requests an authored music cue.
+    pub fn request_music(&mut self, cue: MusicCue) -> MusicOutcome {
+        self.music.request(cue)
+    }
+
+    /// Whether an output device is currently available.
+    #[must_use]
+    pub const fn device_available(&self) -> bool {
+        self.device_available
+    }
+
+    /// The output device is lost: every loop stops as `DeviceLost` but is
+    /// remembered for retry; radio keeps its tick timing unvoiced. Total and
+    /// idempotent; simulation never depends on it.
+    pub fn device_lost(&mut self) {
+        if !self.device_available {
+            return;
+        }
+        self.device_available = false;
+        let lost: Vec<LoopBinding> = self.router.active_loops().cloned().collect();
+        for binding in lost {
+            self.lost_loops.insert(binding.emitter, binding);
+        }
+        let outcomes = self.router.device_lost();
+        self.outcomes.extend(outcomes);
+        let events = self.radio.device_lost();
+        self.radio_events.extend(events);
+        self.music.device_lost();
+    }
+
+    /// The device returned: rebinds every loop whose emitter is still alive and
+    /// returns the music cue to restart, if any.
+    pub fn device_restored(&mut self) -> Option<MusicCue> {
+        if self.device_available {
+            return None;
+        }
+        self.device_available = true;
+        for (_, binding) in std::mem::take(&mut self.lost_loops) {
+            let outcome = self.router.start_loop(&binding);
+            self.outcomes.push(outcome);
+        }
+        self.radio.device_restored();
+        self.music.device_restored().cloned()
     }
 
     fn bind(&mut self, entity: Entity, binding: &AudioEmitterBinding) {
@@ -146,6 +217,12 @@ impl AudioSession {
         match spec.loop_binding(emitter, id) {
             Ok(loop_binding) => {
                 self.next_sequence += 1;
+                if !self.device_available {
+                    // Remembered; started when the device returns.
+                    self.bound.insert(entity, (emitter, id));
+                    self.lost_loops.insert(emitter, loop_binding);
+                    return;
+                }
                 let outcome = self.router.start_loop(&loop_binding);
                 if matches!(
                     outcome,
@@ -163,6 +240,10 @@ impl AudioSession {
         let Some((emitter, id)) = self.bound.remove(&entity) else {
             return;
         };
+        if self.lost_loops.get(&emitter).map(|l| l.id) == Some(id) {
+            self.lost_loops.remove(&emitter);
+            return;
+        }
         // A newer entity may have swapped the emitter's loop already.
         if self.router.active_loop(&emitter).map(|l| l.id) == Some(id) {
             let outcome = self
@@ -185,4 +266,11 @@ pub fn sync_emitter_loops(
     for (entity, binding) in &added {
         session.bind(entity, binding);
     }
+}
+
+/// Advances the radio queue to the session tick; completion is tick-driven.
+pub fn advance_radio(mut session: ResMut<AudioSession>) {
+    let now = session.tick;
+    let events = session.radio.advance(now);
+    session.radio_events.extend(events);
 }
