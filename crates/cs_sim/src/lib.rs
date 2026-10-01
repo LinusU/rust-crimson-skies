@@ -13,6 +13,11 @@
 //! land with the F13+ tasks and consume these clocks instead of inventing
 //! their own timers.
 //!
+//! [`mission`] is the F37-A mission session
+//! (`specs/F37-mission-ir-and-deterministic-runtime-core.md`): it launches only
+//! a validated `cs_script::ir::MissionProgram` and drives the tick-ordered
+//! objective state; host effects are F37-C.
+//!
 //! [`control`] is the F22-A/F22-B command schema's simulation consumer
 //! (`specs/F22-input-bindings-devices-and-control-ownership.md`): the
 //! [`control::ControlBuffer`] that keeps continuous axes and one-shot edges
@@ -144,6 +149,7 @@ pub mod control;
 pub mod damage;
 pub mod environment;
 pub mod flight;
+pub mod mission;
 pub mod probes;
 pub mod targeting;
 pub mod time;
