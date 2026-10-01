@@ -131,11 +131,21 @@ These are not doable from inside a task branch:
   `env!("CARGO_MANIFEST_DIR")`, which let a *stale* binary — compiled in one
   checkout, run in another because the shared directory reused it — compare
   the runtime target directory against the foreign compile-time root and
-  misfire on a genuinely private directory. Fixed by #437: the test derives
-  the workspace root at run time by walking up from the process working
-  directory to the manifest with `[workspace]` (cargo runs test binaries
-  with the package root as cwd), so a stale binary gates the checkout it
-  runs in rather than the one that produced it.
+  misfire on a genuinely private directory. Fixed by #437: the root is now
+  derived at run time by `target_dir::running_workspace_root`, which walks up
+  from the process working directory to the nearest manifest carrying a
+  `[workspace]` table (cargo runs test binaries with the package root as cwd),
+  so a stale binary gates the checkout it runs in rather than the one that
+  produced it. All three live gates (`accept_t383_`, `accept_t433_`,
+  `accept_t440_`) share that one function, so they cannot drift apart, and
+  `accept_t437_` pins the walk.
+* `running_workspace_root` reads the `[workspace]` table header by scanning
+  manifest lines for one that starts with it, because this crate carries no
+  toml parser and no other is justified for the one field. It therefore does
+  not understand the full syntax: a `[workspace]` header split oddly by a
+  quoted key or written in a flow context would not be seen. Cargo's own
+  manifest has it on a plain line, and the gate then reports no root — a loud
+  failure naming the checkout it could not identify, never a wrong one.
 * `target_dir_from_metadata` takes the first `"target_directory"` string
   field in the `cargo metadata` JSON, matching the hand-rolled extraction
   used elsewhere in `cs_xtask`. A workspace member that carried such a key
