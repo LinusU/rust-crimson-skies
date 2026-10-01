@@ -199,6 +199,23 @@
 //! the rows F27-D's ammunition audit walks. Its runtime counterpart is
 //! `cs_sim::weapons`; the conversion boundary is `cs_app::weapons`.
 //!
+//! [`ordnance`] is the F28-A declared ordnance schema
+//! (`specs/F28-rockets-special-ordnance-counter-effects-and-nitro.md`, stage
+//! `### F28-A`): the provenance-carrying
+//! [`ordnance::DeclaredOrdnance`] whose launch geometry, stack capacity and
+//! mass, arming, fuse, guidance, lost-target rule, lifetime, area effect,
+//! per-channel damage, status effects and media are each a separate
+//! [`ordnance`] `Resolved` value, never a silent default; the
+//! [`ordnance::DeclaredOrdnanceFamily`] vocabulary whose six names are the
+//! sheet's discovery leads rather than a catalogue, with the family required
+//! to agree with the declared [`ordnance::DeclaredOrdnanceDetails`]; the
+//! [`ordnance::DeclaredNitro`] booster, kept separate from the projectile
+//! record because a booster has no fuse, no lifetime and no blast; and the
+//! [`ordnance::DeclaredEquipmentRules`] that loadout validation and an
+//! import both read, so an unsupported component cannot reach a session by
+//! way of an import. Its runtime counterpart is `cs_sim::weapons::ordnance`;
+//! the conversion boundary is `cs_app::ordnance`.
+
 //! [`airframe_roles`] is the F25-A role record
 //! (`specs/F25-hoplite-autogyro-and-exceptional-flight-configurations.md`,
 //! stage `### F25-A`): what one airframe *is* — its control-law label, its
@@ -278,6 +295,7 @@ pub mod livery;
 pub mod loading;
 pub mod localization;
 pub mod mesh;
+pub mod ordnance;
 pub mod routes;
 pub mod save;
 pub mod scene;
