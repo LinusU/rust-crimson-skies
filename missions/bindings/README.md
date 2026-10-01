@@ -37,6 +37,14 @@ directory is original game data — no assets, scripts or extracted bytes.
   campaign directory layout, and `campaign_position_for` derives no position
   at all when they contradict each other. `docs/findings/2026-10-01-m02-a-source-binding.md`
   records what that does and does not establish.
+- `M03.json` — the M03 binding output (stage M03-A), generated and pinned the
+  same way by `accept_m03_a_the_committed_record_is_what_the_installation_derives`.
+  No production code changed for it: it runs M02-A's join and corroboration at
+  the third campaign position. Its world group, `world/c1b`, is the opposite of
+  M02's: one campaign mission, but a directory that also holds subdirectories
+  outside the campaign layout (see
+  `docs/findings/2026-10-01-m03-a-source-binding.md`). Same five resolved
+  critical dependencies, same unverified status.
 
 The typed records those missions fill in — the seven required content
 categories, one unresolved dependency row per required subsystem, coverage
@@ -45,7 +53,7 @@ totals and closure reports — live in
 
 ## What is not here yet
 
-- `M03.json` … `M24.json` — the per-mission binding outputs of M03-A …
+- `M04.json` … `M24.json` — the per-mission binding outputs of M04-A …
   M24-A, created from original data the same way. Every one of them starts
   unresolved.
 
