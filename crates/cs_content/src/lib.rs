@@ -386,6 +386,12 @@
 //! scale and offset. The state table that consumes it is
 //! `cs_app::ui::front_end`.
 //!
+//! [`hud`] is the F46-A display-unit policy (`specs/F46-hud-instruments-mission-map-and-pause.md`,
+//! stage `### F46-A`): a [`hud::HudPolicy`] naming each gauge's unit, the speed
+//! it reads, the altitude datum and the low-altitude thresholds, every choice
+//! tagged designed or original-verified. The instrument projection that uses it
+//! is `cs_app::ui::hud`.
+//!
 //! [`cs_types`]: cs_types
 //! [`cs_formats`]: cs_formats
 //! [`cs_assets`]: cs_assets
@@ -406,6 +412,7 @@ pub mod coordinates;
 pub mod damage;
 pub mod environment;
 pub mod flight_tuning;
+pub mod hud;
 pub mod interaction;
 pub mod livery;
 pub mod loading;
