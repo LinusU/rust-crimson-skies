@@ -45,6 +45,24 @@
 //! (`StringRow::text == None`) and a duplicate `(id, locale)` pair are likewise
 //! reported instead of being replaced or silently chosen between.
 //!
+//! # Declaring the locale set from measurement (F51-LOCALE-SET)
+//!
+//! [`MeasuredLocales`] replaces the caller's guess with what the original files
+//! actually carry: [`ResourceLanguageTable`] is the set of third-level PE
+//! resource language ids read out of the installation's string images, each
+//! with the [`SourceSpan`] that proves it, and the declaration is *derived* from
+//! that table ([`MeasuredLocales::from_table`]) instead of being typed in. The
+//! derived [`LocaleId`] label spells the measured id (`resource-1033`), never a
+//! language name, because the release's own naming of its locales is unmeasured
+//! and Win32's naming convention is not evidence about the 2000 release.
+//!
+//! [`IdNumbering`] answers F12 AC04 — *a localized installation preserves
+//! stable ids while changing display text* — by comparing the ids two locales
+//! answer, and it is what a second, localized installation will be measured
+//! with. One installation carries one language id, so that comparison is
+//! measurable only once the owner supplies a second installation; the type
+//! exists so the answer is a measurement rather than an assumption.
+//!
 //! # What this stage does not do
 //!
 //! No font is parsed and no glyph is rasterized. The real control-markup
@@ -3206,6 +3224,461 @@ impl TextCatalog {
             ids: ids.len(),
             undeclared,
             missing_everywhere,
+        }
+    }
+}
+
+// ------------------------------------------ measured locale set (F51-LOCALE-SET) ---
+
+/// The [`LocaleId`] label a measured resource language id is declared under.
+///
+/// The label is `resource-<id>`, spelled from the measurement itself. It is
+/// deliberately **not** a language name: the original release's own naming of
+/// its locales is unmeasured, and mapping a Win32 language id to a conventional
+/// name (`1033` to "en-US") would import an assumption about the 2000 release
+/// that no measurement supports. Spelling the id keeps a locale label
+/// truthful — it names what the files said — while staying a valid
+/// [`LocaleId`] (ASCII alphanumerics and `-`).
+#[must_use]
+pub fn measured_locale_label(language: u32) -> String {
+    format!("resource-{language}")
+}
+
+/// One measured occurrence of a resource language id.
+///
+/// An occurrence is *where the id was seen and how much came with it*: the
+/// [`SourceSpan`] is the evidence (it carries the installation digest and the
+/// container spelling), and `rows` is how many F12 string rows of that language
+/// the container held. Two images of one installation usually each contribute
+/// one occurrence of the same id, which is why occurrences are kept rather than
+/// collapsed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LanguageObservation {
+    /// Where the language id was measured.
+    pub source: SourceSpan,
+    /// The third-level PE resource language id, verbatim (F12 § resource tree).
+    pub language: u32,
+    /// How many string rows of that language the container held.
+    pub rows: usize,
+}
+
+/// The resource language table measured from an installation's string images.
+///
+/// This is the measured answer to "which languages do the original's own files
+/// carry?", and it is what a [`SupportedLocales`] declaration is *derived* from
+/// by [`MeasuredLocales::from_table`]. It is not, by itself, a statement about
+/// which locales the release was localized into: one installation carries the
+/// languages *it* was built with, and the release-wide set needs a second,
+/// localized installation to be measured.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ResourceLanguageTable {
+    observations: Vec<LanguageObservation>,
+}
+
+impl ResourceLanguageTable {
+    /// An empty table, before anything is measured.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Records one occurrence of `language`, with the span that proves it.
+    ///
+    /// A zero-row occurrence is kept: it says "this container declared the
+    /// language and carried no strings in it", which is a measurement a
+    /// coverage audit needs and a drop would hide.
+    pub fn observe(&mut self, source: SourceSpan, language: u32, rows: usize) {
+        self.observations.push(LanguageObservation {
+            source,
+            language,
+            rows,
+        });
+    }
+
+    /// Every occurrence, in the order it was measured.
+    #[must_use]
+    pub fn observations(&self) -> &[LanguageObservation] {
+        &self.observations
+    }
+
+    /// The distinct language ids measured, in ascending order.
+    #[must_use]
+    pub fn languages(&self) -> Vec<u32> {
+        let languages: BTreeSet<u32> = self
+            .observations
+            .iter()
+            .map(|entry| entry.language)
+            .collect();
+        languages.into_iter().collect()
+    }
+
+    /// The summed rows of every occurrence of `language`, across containers.
+    #[must_use]
+    pub fn rows_for(&self, language: u32) -> usize {
+        self.observations
+            .iter()
+            .filter(|entry| entry.language == language)
+            .map(|entry| entry.rows)
+            .sum()
+    }
+
+    /// How many containers contributed an occurrence.
+    #[must_use]
+    #[allow(clippy::len_without_is_empty)]
+    pub fn containers(&self) -> usize {
+        self.observations.len()
+    }
+
+    /// Whether nothing was measured, so no locale can be declared from it.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.observations.is_empty()
+    }
+}
+
+/// Why a measured locale declaration was refused.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MeasuredLocalesError {
+    /// The table held no occurrence at all, so a declaration would be a guess.
+    NothingMeasured,
+    /// The table held more distinct language ids than one language map may
+    /// declare ([`MAX_LANGUAGE_MAP_LEN`]).
+    TooManyLanguages {
+        /// How many distinct language ids were measured.
+        len: usize,
+    },
+}
+
+impl fmt::Display for MeasuredLocalesError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NothingMeasured => {
+                f.write_str("no resource language was measured, so no locale can be declared")
+            }
+            Self::TooManyLanguages { len } => write!(
+                f,
+                "measured {len} resource languages, max is {MAX_LANGUAGE_MAP_LEN}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for MeasuredLocalesError {}
+
+/// A supported-locale declaration **derived from measurement**.
+///
+/// F51-A made the supported-locale set and the language map caller-declared,
+/// because the original release's list was unmeasured. This type is what
+/// replaces that caller choice whenever the original files themselves are
+/// available: the caller hands in the [`ResourceLanguageTable`] measured from
+/// the installation's string images, and the [`SupportedLocales`] set plus the
+/// [`LanguageMap`] are built from the ids that were actually observed.
+///
+/// Two properties follow, and both are the point:
+///
+/// * **No guessed language.** Every declared locale is named
+///   [`measured_locale_label`], so a label cannot assert a language the
+///   measurement did not contain. A locale that is not in the table cannot be
+///   declared here at all.
+/// * **The measurement stays attached.** [`MeasuredLocales::table`] keeps every
+///   occurrence with its span and row count, so a report can name the source of
+///   each declared locale instead of asserting a list.
+///
+/// The derived set is still the *installation's* locale set, not the release's.
+/// A second, localized installation is what measures the release-wide list.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MeasuredLocales {
+    table: ResourceLanguageTable,
+    locales: SupportedLocales,
+    languages: LanguageMap,
+}
+
+impl MeasuredLocales {
+    /// Derives the declaration from a measured table.
+    ///
+    /// The declared locales are the measured language ids in ascending order,
+    /// each labelled by [`measured_locale_label`], so the declaration is a
+    /// function of the measurement and nothing else.
+    ///
+    /// # Errors
+    ///
+    /// [`MeasuredLocalesError::NothingMeasured`] when no occurrence was
+    /// recorded, and [`MeasuredLocalesError::TooManyLanguages`] when the table
+    /// holds more distinct ids than [`MAX_LANGUAGE_MAP_LEN`].
+    pub fn from_table(table: ResourceLanguageTable) -> Result<Self, MeasuredLocalesError> {
+        let languages = table.languages();
+        if languages.is_empty() {
+            return Err(MeasuredLocalesError::NothingMeasured);
+        }
+        if languages.len() > MAX_LANGUAGE_MAP_LEN {
+            return Err(MeasuredLocalesError::TooManyLanguages {
+                len: languages.len(),
+            });
+        }
+        let locales = SupportedLocales::new(
+            languages
+                .iter()
+                .map(|language| LocaleId::new(&measured_locale_label(*language)))
+                .map(|label| label.expect("a measured label is ASCII alphanumerics and one dash")),
+        )
+        .expect("measured labels are unique because the language ids are");
+        let language_map = LanguageMap::new(languages.iter().map(|language| {
+            (
+                *language,
+                LocaleId::new(&measured_locale_label(*language))
+                    .expect("a measured label is a valid locale label"),
+            )
+        }))
+        .expect("measured languages are distinct, so the map has no duplicate");
+        Ok(Self {
+            table,
+            locales,
+            languages: language_map,
+        })
+    }
+
+    /// The measured table the declaration was derived from.
+    #[must_use]
+    pub fn table(&self) -> &ResourceLanguageTable {
+        &self.table
+    }
+
+    /// The declared supported-locale set, in measured-id order.
+    #[must_use]
+    pub fn supported(&self) -> &SupportedLocales {
+        &self.locales
+    }
+
+    /// The resource-language map the audit decodes rows with.
+    #[must_use]
+    pub fn language_map(&self) -> &LanguageMap {
+        &self.languages
+    }
+
+    /// The measured language ids, in ascending order.
+    #[must_use]
+    pub fn languages(&self) -> Vec<u32> {
+        self.table.languages()
+    }
+
+    /// The locale a measured resource language id was declared under.
+    #[must_use]
+    pub fn locale_for(&self, language: u32) -> Option<&LocaleId> {
+        self.languages.locale(language)
+    }
+
+    /// How many locales the measurement declared.
+    #[must_use]
+    #[allow(clippy::len_without_is_empty)]
+    pub fn len(&self) -> usize {
+        self.locales.len()
+    }
+
+    /// Always `false`: [`MeasuredLocales::from_table`] refuses an empty
+    /// measurement, so a value that exists always declares at least one locale.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.locales.is_empty()
+    }
+}
+
+/// The id-numbering comparison of two locales of the same string surface.
+///
+/// This is the machine-readable shape of F12 AC04 — *a localized installation
+/// preserves stable ids while changing display text*. Stability is a property
+/// of the **id sets**: a translation that renumbers or drops ids is not a
+/// translation. The text half is counted too, so a comparison can say that ids
+/// held while the display text changed, and can distinguish that from two
+/// locales that carry the very same strings.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct IdNumbering {
+    /// Ids both locales answer.
+    pub shared: usize,
+    /// Ids only the first locale answers.
+    pub only_first: Vec<TextId>,
+    /// Ids only the second locale answers.
+    pub only_second: Vec<TextId>,
+    /// Shared ids whose two rows hold exactly the same text.
+    pub identical_text: usize,
+    /// Shared ids whose two rows hold different text.
+    pub changed_text: usize,
+}
+
+impl IdNumbering {
+    /// Whether both locales answer exactly the same ids.
+    ///
+    /// This is the stability question, and it is deliberately independent of
+    /// the text counts: an unchanged proper noun is not a renumbering, and a
+    /// changed string under a vanished id is not stability either.
+    #[must_use]
+    pub fn is_stable(&self) -> bool {
+        self.only_first.is_empty() && self.only_second.is_empty()
+    }
+
+    /// How many ids the two locales answered in common.
+    #[must_use]
+    pub fn compared(&self) -> usize {
+        self.shared
+    }
+
+    /// How many ids one locale has and the other does not.
+    #[must_use]
+    pub fn renumbered(&self) -> usize {
+        self.only_first.len() + self.only_second.len()
+    }
+
+    /// How many shared ids changed their display text.
+    #[must_use]
+    pub fn changed(&self) -> usize {
+        self.changed_text
+    }
+}
+
+/// The answer to "do two measured locales keep the same string ids?".
+///
+/// F12 AC04 — *a localized installation preserves stable ids while changing
+/// display text* — is a question about **two** installations' worth of strings.
+/// One installation carries one language id, so for a single-language
+/// installation the question cannot be asked, and the honest result is
+/// [`IdStability::SingleLocale`] naming what *was* measured. That distinction is
+/// the reason this type exists: a one-installation run must never be able to
+/// report [`IdStability::Compared`] and therefore must never be able to look
+/// like AC04 evidence.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IdStability {
+    /// Only one locale was available, so no comparison was made.
+    SingleLocale {
+        /// The locale that *was* measured.
+        measured: LocaleId,
+        /// How many ids it answered.
+        ids: usize,
+    },
+    /// Two locales were measured and compared.
+    Compared {
+        /// The first locale, as measured.
+        first: LocaleId,
+        /// The second locale, as measured.
+        second: LocaleId,
+        /// The comparison itself.
+        numbering: IdNumbering,
+    },
+}
+
+impl IdStability {
+    /// Whether two locales were actually compared.
+    #[must_use]
+    pub fn is_compared(&self) -> bool {
+        matches!(self, Self::Compared { .. })
+    }
+
+    /// The comparison, if two locales were measured.
+    #[must_use]
+    pub fn numbering(&self) -> Option<&IdNumbering> {
+        match self {
+            Self::Compared { numbering, .. } => Some(numbering),
+            Self::SingleLocale { .. } => None,
+        }
+    }
+
+    /// Whether the two measured locales kept the same id numbering.
+    ///
+    /// `false` for [`IdStability::SingleLocale`]: a single installation is not
+    /// evidence of id stability, and reporting otherwise would turn an
+    /// unmeasured criterion into a pass.
+    #[must_use]
+    pub fn is_stable(&self) -> bool {
+        self.numbering().is_some_and(IdNumbering::is_stable)
+    }
+}
+
+/// Compares the id numbering of two measured locales, or records that only one
+/// locale was available.
+///
+/// `localized` is `None` when no second installation was available: the result
+/// is then [`IdStability::SingleLocale`] naming the locale that was measured,
+/// which is a measurement rather than an assumption.
+#[must_use]
+pub fn measure_id_stability(
+    first_catalog: &TextCatalog,
+    first: &LocaleId,
+    localized: Option<(&TextCatalog, &LocaleId)>,
+) -> IdStability {
+    let Some((second_catalog, second)) = localized else {
+        return IdStability::SingleLocale {
+            measured: first.clone(),
+            ids: first_catalog.ids_for(first).len(),
+        };
+    };
+    IdStability::Compared {
+        first: first.clone(),
+        second: second.clone(),
+        numbering: first_catalog.compare_installation_ids(first, second_catalog, second),
+    }
+}
+
+impl TextCatalog {
+    /// The distinct ids `locale` answers, in id order.
+    #[must_use]
+    pub fn ids_for(&self, locale: &LocaleId) -> Vec<TextId> {
+        self.rows()
+            .filter(|row| row.locale() == locale)
+            .map(|row| row.id().clone())
+            .collect()
+    }
+
+    /// Compares the id numbering of two locales of this catalog.
+    ///
+    /// This is the same-image form: a catalog decoded from one image that
+    /// carries two languages.
+    #[must_use]
+    pub fn compare_locale_ids(&self, first: &LocaleId, second: &LocaleId) -> IdNumbering {
+        self.compare_installation_ids(first, self, second)
+    }
+
+    /// Compares the id numbering of one locale of this catalog against one
+    /// locale of another catalog.
+    ///
+    /// This is the cross-installation form of F12 AC04: hand it the catalog
+    /// decoded from an English installation and the catalog decoded from a
+    /// localized one, and it reports whether the localized build kept the id
+    /// numbering. Nothing here is asserted about a second installation — the
+    /// comparison is a measurement that needs both catalogs, and with one
+    /// installation the honest answer is that the question was not asked.
+    #[must_use]
+    pub fn compare_installation_ids(
+        &self,
+        first: &LocaleId,
+        other: &Self,
+        second: &LocaleId,
+    ) -> IdNumbering {
+        let first_ids: BTreeSet<TextId> = self.ids_for(first).into_iter().collect();
+        let second_ids: BTreeSet<TextId> = other.ids_for(second).into_iter().collect();
+
+        let only_first: Vec<TextId> = first_ids.difference(&second_ids).cloned().collect();
+        let only_second: Vec<TextId> = second_ids.difference(&first_ids).cloned().collect();
+
+        let mut identical_text = 0usize;
+        let mut changed_text = 0usize;
+        for id in first_ids.intersection(&second_ids) {
+            match (self.get(id, first), other.get(id, second)) {
+                // Two rows under one id always carry the same text, because a
+                // duplicate `(id, locale)` pair is refused when it is inserted,
+                // so `None` on either side is unreachable and must not be
+                // silently counted as "unchanged".
+                (Some(left), Some(right)) if left.text() == right.text() => identical_text += 1,
+                (Some(_), Some(_)) => changed_text += 1,
+                (Some(_), None) | (None, Some(_)) | (None, None) => {
+                    unreachable!("an id collected from a locale has a row in it")
+                }
+            }
+        }
+
+        IdNumbering {
+            shared: first_ids.intersection(&second_ids).count(),
+            only_first,
+            only_second,
+            identical_text,
+            changed_text,
         }
     }
 }

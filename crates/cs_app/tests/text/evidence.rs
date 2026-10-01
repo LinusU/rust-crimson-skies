@@ -55,7 +55,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use cs_assets::install::{content_fingerprint, discover, fingerprint};
 
-use crate::common::{retail_audit, retail_declared_locales};
+use crate::common::{retail_audit, retail_locale_measurement};
 
 /// The acceptance tests whose capabilities this report declares.
 ///
@@ -162,7 +162,7 @@ fn evidence_report_f51_d_writes_the_acceptance_report() {
          font cells to characters, and a complete report would mean the blocker was dropped"
     );
     let census_path = evidence_dir.join(CENSUS_ARTIFACT);
-    fs::write(&census_path, census_json(&audit))
+    fs::write(&census_path, census_json(&audit, &game_dir))
         .unwrap_or_else(|error| panic!("write {}: {error}", census_path.display()));
 
     let mut artifacts = vec![artifact(&log_path, "log", &evidence_dir)];
@@ -250,8 +250,14 @@ fn evidence_report_f51_d_writes_the_acceptance_report() {
 /// The derived census of every string image and media file, as JSON: counts,
 /// digests and the audit's verdict, never original content and never a stored
 /// byte.
-fn census_json(audit: &cs_app::text::LocalizationAudit) -> String {
-    let declared: Vec<String> = retail_declared_locales()
+fn census_json(audit: &cs_app::text::LocalizationAudit, game_dir: &Path) -> String {
+    // The declared locale set is the one **measured** from the installation
+    // (F51-LOCALE-SET), not a caller's list: the census below reports what the
+    // original files carried.
+    let measured = retail_locale_measurement(game_dir);
+    let declared: Vec<String> = measured
+        .declared
+        .supported()
         .locales()
         .iter()
         .map(|locale| jstr(locale.as_str()))

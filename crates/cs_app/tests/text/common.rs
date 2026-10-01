@@ -13,13 +13,15 @@
 use bevy::math::Rect;
 pub use cs_app::text::layout::{LayoutRequest, RequiredControl};
 use cs_app::text::{
-    GlyphEvidence, LocalizationAudit, LocalizationAuditRequest, MediaSource, StringImageSource,
-    audit_localization, synthetic_monospace,
+    GlyphEvidence, LocalizationAudit, LocalizationAuditRequest, MediaSource,
+    StringImageMeasurement, StringImageSource, audit_localization, measure_string_image_languages,
+    synthetic_monospace,
 };
 use cs_content::config::StringRow;
 use cs_content::localization::{
-    FontProvenance, LanguageMap, LocaleChain, LocaleId, LocalizedText, MarkupDocument,
-    MarkupGrammar, SupportedLocales, TextId, parse_markup, synthetic_markup_grammar,
+    FontProvenance, LocaleChain, LocaleId, LocalizedText, MarkupDocument, MarkupGrammar,
+    MeasuredLocales, ResourceDecode, ResourceLanguageTable, TextId, measured_locale_label,
+    parse_markup, synthetic_markup_grammar,
 };
 use cs_types::asset_id::SourceSpan;
 use cs_types::content::{ContentId, ContentKind, Origin, Provenance};
@@ -228,60 +230,123 @@ pub fn retail_string_rows(
         .to_vec()
 }
 
-/// The declared supported-locale set the retail audit walks.
+/// The locale label a measured resource language id is declared under.
 ///
-/// The single available installation declares one language id (1033), so this
-/// declares one locale. It is **not** a claim about the original release's
-/// supported-locale list, which F51-A recorded as unmeasured.
-pub fn retail_declared_locales() -> SupportedLocales {
-    SupportedLocales::new([locale("en-us")]).expect("one declared locale is a valid set")
+/// This is the production spelling ([`cs_content::localization::measured_locale_label`]),
+/// so a test that looks a locale up after a measurement uses the same label the
+/// declaration built and never a hand-written one.
+pub fn measured_locale(language: u32) -> LocaleId {
+    LocaleId::new(&measured_locale_label(language))
+        .expect("a measured locale label is a valid locale label")
 }
 
-/// The caller-declared language map for the retail audit: the one language id
-/// (1033) the three routed string images carry (F12-A/F12-D).
-pub fn retail_language_map() -> LanguageMap {
-    language_map(&[(1033, "en-us")])
+/// The measured locale declaration of the original installation.
+///
+/// Everything a locale claim needs comes from the files: the installation
+/// digest, the resource language table observed in the routed string images,
+/// and the [`MeasuredLocales`] derived from that table. No locale label, no
+/// language id and no locale set is typed in here — that is the whole point of
+/// the F51-LOCALE-SET measurement, and it is why the F51-D audit below takes
+/// its declaration from measurement instead of from a caller.
+pub struct RetailLocaleMeasurement {
+    /// The installation digest every span carries.
+    pub install: ContentHash,
+    /// The resource language table, one occurrence per image and language.
+    pub table: ResourceLanguageTable,
+    /// The declaration derived from the table.
+    pub declared: MeasuredLocales,
+    /// The F12 rows of each routed image, in [`RETAIL_STRING_IMAGES`] order.
+    pub rows: Vec<Vec<StringRow>>,
+    /// The container span of each routed image, in the same order.
+    pub spans: Vec<SourceSpan>,
 }
 
-/// The F51-D audit of the original installation: all three routed string
-/// images, each read through the production reader and audited in isolation,
-/// plus the two original bitmap fonts with their **unmeasured** glyph coverage.
-///
-/// The returned audit owns every count and digest; no original bytes or text
-/// escape this function.
-pub fn retail_audit(dir: &std::path::Path) -> LocalizationAudit {
-    let install_hash = retail_install_hash(dir);
-    let declared = retail_declared_locales();
-    let languages = retail_language_map();
-    let grammar = grammar();
-    let metrics = synthetic_monospace(16.0);
-    let required = buttons();
-    let substitutions = substitutions();
+impl RetailLocaleMeasurement {
+    /// One routed image's catalog, decoded through the **measured** language
+    /// map — the production decode, with a language map that came from the
+    /// files rather than from a test author.
+    pub fn catalog(&self, index: usize) -> ResourceDecode {
+        ResourceDecode::decode(
+            &self.rows[index],
+            self.declared.language_map(),
+            Origin::Installation {
+                source: self.spans[index].clone(),
+            },
+            Provenance::unknown(claim()),
+        )
+    }
+}
 
+/// Measures the original installation's locales from its own string images.
+///
+/// Every step is production: the files are read through
+/// [`cs_content::config::StringCatalog::read`], the language table through
+/// [`measure_string_image_languages`] and the declaration through
+/// [`cs_content::localization::MeasuredLocales::from_table`]. A missing
+/// capability is a panic with its name, never a silent fallback.
+pub fn retail_locale_measurement(dir: &std::path::Path) -> RetailLocaleMeasurement {
+    let install = retail_install_hash(dir);
     let rows: Vec<Vec<StringRow>> = RETAIL_STRING_IMAGES
         .iter()
-        .map(|spelling| retail_string_rows(dir, spelling, install_hash))
+        .map(|spelling| retail_string_rows(dir, spelling, install))
         .collect();
-    let origins: Vec<Origin> = RETAIL_STRING_IMAGES
+    let spans: Vec<SourceSpan> = RETAIL_STRING_IMAGES
         .iter()
         .map(|spelling| {
             let length = std::fs::metadata(dir.join(spelling))
                 .unwrap_or_else(|error| panic!("stat {spelling}: {error}"))
                 .len();
-            let span = SourceSpan::new(install_hash, spelling, None, 0, length, None)
-                .expect("the retail image span is valid");
-            Origin::Installation { source: span }
+            SourceSpan::new(install, spelling, None, 0, length, None)
+                .expect("the retail image span is valid")
         })
         .collect();
+    let images: Vec<StringImageMeasurement<'_>> = spans
+        .iter()
+        .zip(&rows)
+        .map(|(span, rows)| StringImageMeasurement { span, rows })
+        .collect();
+    let table = measure_string_image_languages(&images);
+    let declared = MeasuredLocales::from_table(table.clone())
+        .expect("the original installation declares at least one measured locale");
+    RetailLocaleMeasurement {
+        install,
+        table,
+        declared,
+        rows,
+        spans,
+    }
+}
+
+/// The F51-D audit of the original installation, with its locale set and
+/// language map **measured** from the installation (F51-LOCALE-SET).
+///
+/// The three routed string images are read through the production reader and
+/// audited in isolation, plus the two original bitmap fonts with their
+/// **unmeasured** glyph coverage. The returned audit owns every count and
+/// digest; no original bytes or text escape this function.
+pub fn retail_audit(dir: &std::path::Path) -> LocalizationAudit {
+    let measured = retail_locale_measurement(dir);
+    let install_hash = measured.install;
+    let declared = measured.declared.supported();
+    let languages = measured.declared.language_map();
+    let grammar = grammar();
+    let metrics = synthetic_monospace(16.0);
+    let required = buttons();
+    let substitutions = substitutions();
+
+    let rows = &measured.rows;
+    let spans = &measured.spans;
     let provenance = Provenance::unknown(claim());
     let images: Vec<StringImageSource<'_>> = RETAIL_STRING_IMAGES
         .iter()
-        .zip(&rows)
-        .zip(&origins)
-        .map(|((spelling, image_rows), origin)| StringImageSource {
+        .zip(rows)
+        .zip(spans)
+        .map(|((spelling, image_rows), span)| StringImageSource {
             path: spelling,
             rows: image_rows,
-            origin: origin.clone(),
+            origin: Origin::Installation {
+                source: span.clone(),
+            },
             provenance: provenance.clone(),
         })
         .collect();
@@ -312,8 +377,8 @@ pub fn retail_audit(dir: &std::path::Path) -> LocalizationAudit {
 
     audit_localization(&LocalizationAuditRequest {
         images: &images,
-        locales: &declared,
-        language_map: &languages,
+        locales: declared,
+        language_map: languages,
         grammar: &grammar,
         metrics: &metrics,
         panel: PANEL,

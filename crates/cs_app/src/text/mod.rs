@@ -50,6 +50,17 @@
 //!   real line boxes [`layout::layout_text`] produced on the real renderer and
 //!   writes a PNG, refusing a frame that drew nothing. It is a geometry witness,
 //!   not glyph rendering and not an appearance or metric measurement.
+//! * [`locale_measure`] (F51-LOCALE-SET) measures the **locale set** instead of
+//!   declaring it: the resource language ids the installation's string images
+//!   carry ([`locale_measure::measure_string_image_languages`]), from which
+//!   `cs_content::localization::MeasuredLocales` derives the declared
+//!   [`cs_content::localization::SupportedLocales`], plus the whole-installation
+//!   PE resource language census
+//!   ([`locale_measure::measure_installation_languages`]) that shows no other
+//!   language hides elsewhere. What one installation cannot answer — whether a
+//!   localized installation keeps the id numbering (F12 AC04) — stays
+//!   `cs_content::localization::IdStability::SingleLocale` until a second
+//!   installation is measured.
 //!
 //! [`MarkupDocument`]: cs_content::localization::MarkupDocument
 //! [`TextId`]: cs_content::localization::TextId
@@ -80,6 +91,7 @@ pub mod audit;
 pub mod fonts;
 pub mod gpu_capture;
 pub mod layout;
+pub mod locale_measure;
 pub mod metrics;
 pub mod screen;
 pub mod session;
@@ -96,6 +108,11 @@ pub use gpu_capture::{
 pub use layout::{
     ControlIdError, LaidOutLine, LayoutDiagnostic, LayoutError, LayoutRequest, RequiredControl,
     TextFit, TextLayout, layout_text,
+};
+pub use locale_measure::{
+    ImageLanguages, InstallationLanguages, LocaleMeasureError, ResourceLessImage,
+    StringImageMeasurement, measure_image_languages, measure_installation_languages,
+    measure_string_image_languages, string_image_languages,
 };
 pub use metrics::{TextMetrics, TextMetricsError, synthetic_monospace};
 pub use screen::{ScreenText, ScreenTextError, ScreenTextRequest, layout_localized_text};

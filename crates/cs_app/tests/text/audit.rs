@@ -35,7 +35,8 @@ use cs_types::evidence::ContentHash;
 
 use crate::common::{
     PANEL, RETAIL_FONT_MEDIA, RETAIL_STRING_IMAGES, buttons, claim, grammar, language_map, locale,
-    resource_row, retail_audit, retail_game_dir, substitutions,
+    measured_locale, resource_row, retail_audit, retail_game_dir, retail_locale_measurement,
+    substitutions,
 };
 use cs_app::text::layout::{LayoutRequest, layout_text};
 
@@ -532,6 +533,15 @@ fn accept_f51_d_retail_every_string_image_and_font_is_audited_for_the_declared_l
     // The whole installation audit, assembled by the shared test scaffolding
     // exactly as the evidence harness assembles it.
     let audit = retail_audit(&dir);
+    // The locale under audit is the one **measured** from the installation's own
+    // string images (F51-LOCALE-SET), not a label this test chose.
+    let measured = retail_locale_measurement(&dir);
+    assert_eq!(
+        measured.declared.languages(),
+        vec![1033],
+        "the three routed images carry one measured resource language"
+    );
+    let en = measured_locale(1033);
 
     // The measured magnitudes F12-A/F12-D recorded, re-read through production.
     let expected_rows = [1792usize, 1616, 48];
@@ -543,8 +553,11 @@ fn accept_f51_d_retail_every_string_image_and_font_is_audited_for_the_declared_l
             image.decoded, image.ids,
             "every {spelling} unit decodes and maps under the declared language map"
         );
-        let en = image.locale(&locale("en-us")).expect("en-us was declared");
-        assert_eq!(en.missing, 0, "en-us answers every {spelling} id");
+        let en = image.locale(&en).expect("the measured locale was declared");
+        assert_eq!(
+            en.missing, 0,
+            "the measured locale answers every {spelling} id"
+        );
         assert_eq!(en.translated, image.ids);
         assert_eq!(en.via_fallback, 0);
         assert_eq!(en.covering_controls, 0, "AC01: no line reaches a button");

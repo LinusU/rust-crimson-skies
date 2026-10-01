@@ -36,6 +36,7 @@ mod common;
 mod evidence;
 mod fonts;
 mod layout;
+mod locale_set;
 mod markup;
 mod resource;
 mod screen;
