@@ -252,6 +252,7 @@ pub mod livery;
 pub mod loading;
 pub mod origin;
 pub mod physics;
+pub mod profile;
 pub mod render;
 pub mod run;
 pub mod scene;
