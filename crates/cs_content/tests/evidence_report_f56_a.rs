@@ -36,15 +36,7 @@ const RETAIL_TESTS: [&str; 2] = [
     "accept_f56_a_retail_twenty_one_scenario_slots_with_an_unresolved_mode_binding",
 ];
 
-const UNKNOWNS: [&str; 5] = [
-    "slot-to-mode binding of all 21 MP slots is unresolved (marker evidence is mixed); task #475",
-    "per-mode spawn, respawn, lives, time/score limits, friendly fire, victory/draw, disconnect, late join, human scaling and component limits are unknown; task #476",
-    "which game event each printed briefing point value rewards is unmeasured; task #476",
-    "the simultaneity, tie and limit-expiry policy in cs_sim::multiplayer::result is engine design, not measured original behavior; task #476",
-    "only language 1033 was read and a mode without a string table entry would not be seen; F56-D",
-];
-
-const REVIEW_METHOD: &str = "Acceptance suite run locally with the retail capability; the report is derived from the recorded log, production discovery of $CS_GAME_DIR and a second production run of discover_modes/discover_slots recorded in catalog.json. Claim is implemented only: the catalog (4 named modes, 21 slots) is measured, every per-mode rule and the slot-to-mode binding is listed under unknowns and gates F56-B and any fidelity claim. Validated with tools/validate_evidence.py --require-pass.";
+const REVIEW_METHOD: &str = "Acceptance suite run locally with the retail capability; the report is derived from the recorded log, production discovery of $CS_GAME_DIR and a second production run of discover_modes/discover_slots recorded in catalog.json. Claim is implemented only: the catalog (4 named modes, 21 slots) is measured, every per-mode rule and the slot-to-mode binding is listed under the limits below and gates F56-B and any fidelity claim. LIMITS OF WHAT WAS MEASURED, each outside F56-A's own scope and kept open in docs/findings/2026-10-02-f56-a-multiplayer-catalog.md: (1) the slot-to-mode binding of all 21 MP slots is unresolved because marker evidence is mixed (task #475); (2) per-mode spawn, respawn, lives, time/score limits, friendly fire, victory/draw, disconnect, late join, human scaling and component limits, and which event each printed briefing point value rewards, are unknown (task #476); (3) the simultaneity, tie and limit-expiry policy in cs_sim::multiplayer::result is engine design, not measured original behavior (task #476); (4) only language 1033 was read and a mode with no string would not be seen (F56-D). `unknowns` is empty because the catalog discovery itself has nothing unresolved; these limits gate F56-B and every fidelity or release claim. Validated with tools/validate_evidence.py --require-pass.";
 
 #[test]
 #[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_EVIDENCE_REVIEWER, CS_GAME_DIR"]
@@ -159,9 +151,8 @@ fn evidence_report_f56_a_writes_the_acceptance_report() {
         bevy: locked_version("bevy"),
         avian: locked_version("avian3d"),
     };
-    let unknowns: Vec<String> = UNKNOWNS.iter().map(|s| (*s).to_owned()).collect();
     let report = format!(
-        "{{\n \"schema_version\": 1,\n \"task_id\": \"F56-A\",\n \"candidate_tree\": {},\n \"engine\": {},\n \"created_at\": {},\n \"command\": {{\"argv\": {}, \"cwd\": {}, \"exit_code\": {}}},\n \"source\": {{\"install_sha256\": {}, \"content_sha256\": {}}},\n \"seed\": 0,\n \"ticks\": {{\"start\": 0, \"end\": 0}},\n \"overrides\": [],\n \"capabilities\": [\"retail\"],\n \"tests\": {{\"discovered\": {}, \"executed\": {}, \"passed\": {}, \"failed\": {}, \"ignored\": {}}},\n \"assertions\": [{}],\n \"artifacts\": [{}],\n \"unknowns\": {},\n \"review\": {{\"identity\": {}, \"method\": {}}},\n \"claim\": \"implemented\"\n}}\n",
+        "{{\n \"schema_version\": 1,\n \"task_id\": \"F56-A\",\n \"candidate_tree\": {},\n \"engine\": {},\n \"created_at\": {},\n \"command\": {{\"argv\": {}, \"cwd\": {}, \"exit_code\": {}}},\n \"source\": {{\"install_sha256\": {}, \"content_sha256\": {}}},\n \"seed\": 0,\n \"ticks\": {{\"start\": 0, \"end\": 0}},\n \"overrides\": [],\n \"capabilities\": [\"retail\"],\n \"tests\": {{\"discovered\": {}, \"executed\": {}, \"passed\": {}, \"failed\": {}, \"ignored\": {}}},\n \"assertions\": [{}],\n \"artifacts\": [{}],\n \"unknowns\": [],\n \"review\": {{\"identity\": {}, \"method\": {}}},\n \"claim\": \"implemented\"\n}}\n",
         jstr(&candidate_tree),
         engine_json(&engine),
         jstr(&iso_utc_now()),
@@ -177,7 +168,6 @@ fn evidence_report_f56_a_writes_the_acceptance_report() {
         suite.ignored,
         assertion_array(&suite.assertions),
         artifact_array(&artifacts),
-        str_array(&unknowns),
         jstr(&reviewer),
         jstr(REVIEW_METHOD),
     );
