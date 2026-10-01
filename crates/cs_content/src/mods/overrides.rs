@@ -22,13 +22,22 @@
 //! * [`classify_effect`] answers [`OverrideEffect::Cosmetic`] only for the
 //!   presentation kinds that carry no simulation state and no rule the
 //!   runtime reads. Every other kind is [`OverrideEffect::Gameplay`]. The
-//!   set is deliberately small: a render [`ContentKind::Mesh`] is **not**
-//!   cosmetic, because a mesh can be the source of a derived collider in
-//!   this project (`docs/findings/2026-09-23-avian-collider-from-mesh-
-//!   needs-bevy-asset-stack.md`), so a mesh override cannot be *proved*
-//!   cosmetic. A false "cosmetic" would let a gameplay change escape the
-//!   marking non-negotiable 3 demands; a false "gameplay" only costs
-//!   caution.
+//!   set is deliberately small, because a kind whose payload the simulation
+//!   reads for anything but drawing **cannot be *proved* cosmetic**:
+//!
+//!   * [`ContentKind::Mesh`] is **not** cosmetic: a mesh can be the source
+//!     of a derived collider in this project
+//!     (`docs/findings/2026-09-23-avian-collider-from-mesh-needs-bevy-
+//!     asset-stack.md`).
+//!   * [`ContentKind::AnimationTrack`] is **not** cosmetic: an F20-A clip
+//!     carries [`MarkerEffect::Gameplay`] markers that move simulation state
+//!     (mission cues, state transitions, destruction triggers — see
+//!     `cs_content::animation`), and its visibility channel drives
+//!     `AnimatedNodeState::collider_enabled`, so a clip can enable or
+//!     disable a collider (`cs_sim::animated_object`).
+//!
+//!   A false "cosmetic" would let a gameplay change escape the marking
+//!   non-negotiable 3 demands; a false "gameplay" only costs caution.
 //! * [`classify_validation`] answers [`OverrideValidation::SandboxedProgram`]
 //!   for the kinds that carry executable or mission-program content, which
 //!   F53-B must hand to the *same* bounded validator the original adapter
@@ -58,9 +67,10 @@ use super::manifest::ManifestError;
 /// one.
 ///
 /// The two are different claims with different preconditions, and the mount
-/// plan checks them differently ([`super::plan::PlanProblem`]): an [`Add`]
-/// may not name an id the base content already provides, and a [`Replace`]
-/// may not name an id nothing provides.
+/// plan checks both against what the set actually provides
+/// ([`super::check_actions`]): an [`Add`](Self::Add) may not name an id the
+/// base content already provides, and a [`Replace`](Self::Replace) may not
+/// name an id nothing provides.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum OverrideAction {
     /// The mod introduces a new content id the base content does not have.
@@ -160,13 +170,14 @@ impl fmt::Display for OverrideValidation {
 /// A mod that overrides nothing else is a cosmetic-only mod, and its mount
 /// need not mark sessions, saves, replays or handshakes for gameplay
 /// reasons. Every kind outside this list is gameplay, including
-/// [`ContentKind::Mesh`] (a mesh can feed a derived collider) and every
-/// airframe, engine, gun, blueprint, mission, script and world kind.
+/// [`ContentKind::Mesh`] (a mesh can feed a derived collider),
+/// [`ContentKind::AnimationTrack`] (an F20-A clip fires gameplay markers and
+/// its visibility channel gates a collider) and every airframe, engine, gun,
+/// blueprint, mission, script and world kind.
 pub const COSMETIC_CONTENT_KINDS: &[ContentKind] = &[
     ContentKind::Image,
     ContentKind::Material,
     ContentKind::PaintMask,
-    ContentKind::AnimationTrack,
     ContentKind::CameraTrack,
     ContentKind::Sound,
     ContentKind::Music,
@@ -203,7 +214,6 @@ pub const fn classify_effect(kind: ContentKind) -> OverrideEffect {
         ContentKind::Image
         | ContentKind::Material
         | ContentKind::PaintMask
-        | ContentKind::AnimationTrack
         | ContentKind::CameraTrack
         | ContentKind::Sound
         | ContentKind::Music
@@ -216,6 +226,9 @@ pub const fn classify_effect(kind: ContentKind) -> OverrideEffect {
         | ContentKind::World
         | ContentKind::SceneNode
         | ContentKind::Mesh
+        // An F20-A clip carries gameplay markers and gates a collider
+        // through its visibility channel, so it is not provably cosmetic.
+        | ContentKind::AnimationTrack
         | ContentKind::CollisionSurface
         | ContentKind::Airframe
         | ContentKind::Engine
@@ -473,6 +486,22 @@ mod tests {
         // can be the source of a derived collider, so a mesh override is a
         // gameplay change until measured otherwise.
         assert!(!classify_effect(ContentKind::Mesh).is_cosmetic());
+
+        // Nor is an animation track: an F20-A clip can fire
+        // `MarkerEffect::Gameplay` (mission cues, destruction triggers) and
+        // its visibility channel gates `collider_enabled`. A mod replacing
+        // one therefore changes the simulation, so the plan must mark its
+        // sessions rather than treat the mount as cosmetic-only.
+        assert!(!classify_effect(ContentKind::AnimationTrack).is_cosmetic());
+        // `Mesh` and `AnimationTrack` are the two kinds this project can
+        // already show reaching collision or simulation state, which is why
+        // neither is in the cosmetic set.
+        for coupled in [ContentKind::Mesh, ContentKind::AnimationTrack] {
+            assert!(
+                !COSMETIC_CONTENT_KINDS.contains(&coupled),
+                "{coupled} reaches the simulation, so it cannot be cosmetic"
+            );
+        }
     }
 
     /// The classification is a property of the id, not of the manifest: two
