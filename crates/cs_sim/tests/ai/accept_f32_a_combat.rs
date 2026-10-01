@@ -20,7 +20,7 @@ use cs_sim::ai::combat::{
     synthetic_fighter_profile, synthetic_recovery_policies, synthetic_rookie_escort_profile,
     synthetic_threat,
 };
-use cs_sim::damage::{ActorId, LifecycleKind};
+use cs_sim::damage::{ActorId, HitEventId};
 use cs_sim::targeting::Allegiance;
 use cs_types::Tick;
 use cs_types::space::WorldPosition;
@@ -734,15 +734,13 @@ fn accept_f32_a_candidate_beyond_the_engagement_range_is_refused() {
     assert_eq!(attacker.distance_m, 2_000.0);
 }
 
-/// The observer is never its own target, and a lifecycle transition that
-/// ended the actor's presence removes it from the candidate set entirely
-/// — the AI cannot "remember" a destroyed target.
+/// The observer is never its own target.
 #[test]
-fn accept_f32_a_observer_and_destroyed_actors_are_never_targets() {
+fn accept_f32_a_observer_is_never_its_own_target() {
     let planner = synthetic_combat_planner();
     let assignment = escort_assignment();
     let candidates = vec![
-        synthetic_candidate(1, [0.0, 0.0, 0.0], Some(Allegiance::Friendly), false),
+        synthetic_candidate(1, [0.0, 0.0, 0.0], Some(Allegiance::Hostile), true),
         synthetic_candidate(
             BYSTANDER,
             [300.0, 0.0, 0.0],
@@ -758,26 +756,118 @@ fn accept_f32_a_observer_and_destroyed_actors_are_never_targets() {
             .candidate(synthetic_actor(1))
             .expect("the observer is in the trace")
             .verdict,
-        CandidateVerdict::Rejected(RejectReason::ObserverItself)
+        CandidateVerdict::Rejected(RejectReason::ObserverItself),
+        "not even the objective flag makes the observer its own target"
     );
+}
 
-    // A destroyed charge is a lifecycle fact, not a candidate: the
-    // perception model drops it, so the planner cannot target it.
-    let destroyed: Vec<ActorId> = LifecycleKind::ALL
-        .iter()
-        .map(|kind| {
-            let _ = kind;
-            synthetic_actor(CHARGE)
-        })
-        .collect();
-    assert_eq!(destroyed.len(), LifecycleKind::ALL.len());
+/// The threat evidence is the damage system's own event id, and a charge the
+/// damage resolver really destroyed is absent from the candidate set: the
+/// planner selects only what perception reported and never invents an actor,
+/// so a destroyed actor cannot be "remembered" as a target.
+///
+/// This drives [`cs_sim::damage::DamageResolver`] for the destruction and
+/// hands the planner the very [`HitEventId`] the resolver stamped, so the
+/// "authoritative event" claim is checked against the producer rather than
+/// against a hand-built id.
+#[test]
+fn accept_f32_a_a_real_damage_event_destroys_the_charge_and_its_id_is_the_threat_evidence() {
+    use cs_sim::damage::{
+        AttributionRule, DamageChannel, DamageEventKind, DamageNodeKey, DamagePolicy,
+        DamageResolver, HitEvent, LifecycleKind, SYNTHETIC_HULL_INTEGRITY, SYNTHETIC_HULL_NODE,
+        synthetic_airframe_graph,
+    };
+
+    let planner = synthetic_combat_planner();
+    let assignment = escort_assignment();
+
+    let mut resolver = DamageResolver::new(SYNTHETIC_SESSION, 2);
+    resolver
+        .register_actor(
+            synthetic_actor(CHARGE),
+            synthetic_airframe_graph(),
+            DamagePolicy {
+                attribution: AttributionRule::FirstLethalHit,
+            },
+        )
+        .expect("the charge is a synthetic-session actor");
+    let hit = HitEvent::try_new(
+        HitEventId {
+            session: SYNTHETIC_SESSION,
+            tick: Tick(AC01_ATTACK_TICK),
+            producer: 2,
+            sequence: 0,
+        },
+        Some(synthetic_actor(ATTACKER)),
+        synthetic_actor(CHARGE),
+        DamageNodeKey::new(SYNTHETIC_HULL_NODE).expect("the fixture node key is valid"),
+        DamageChannel::Internal,
+        SYNTHETIC_HULL_INTEGRITY + 1.0,
+    )
+    .expect("the hit is well-formed");
+    let hit_id = hit.id;
+    let resolution = resolver
+        .resolve(Tick(AC01_ATTACK_TICK), std::slice::from_ref(&hit))
+        .expect("the batch resolves");
+    assert!(
+        resolution.events.iter().any(|event| {
+            matches!(
+                event.kind,
+                DamageEventKind::Lifecycle {
+                    actor,
+                    kind: LifecycleKind::Destroyed,
+                } if actor == synthetic_actor(CHARGE)
+            )
+        }),
+        "the hit really destroyed the charge"
+    );
+    assert!(resolver.is_destroyed(&synthetic_actor(CHARGE)));
+
+    // Perception reports the attacker but not the destroyed charge, and the
+    // evidence the escort reasons about is the resolver's own event id.
+    let candidates = vec![
+        synthetic_candidate(
+            ATTACKER,
+            [800.0, 0.0, 0.0],
+            Some(Allegiance::Hostile),
+            false,
+        )
+        .with_threat(cs_sim::ai::combat::ThreatEvidence::new(
+            synthetic_actor(ATTACKER),
+            synthetic_actor(CHARGE),
+            Tick(AC01_ATTACK_TICK),
+            hit_id,
+        )),
+    ];
+    let decision = decide(&planner, &assignment, &candidates);
+    assert_eq!(
+        decision.target,
+        Some(synthetic_actor(ATTACKER)),
+        "a resolver-stamped event id is authoritative evidence like any other"
+    );
+    assert_eq!(
+        decision
+            .trace
+            .candidate(synthetic_actor(ATTACKER))
+            .expect("the attacker is in the trace")
+            .term(PriorityTerm::ProtectedActorThreat)
+            .expect("the term was scored")
+            .contribution,
+        2.0
+    );
     assert!(
         !decision
             .trace
             .candidates
             .iter()
             .any(|trace| trace.actor == synthetic_actor(CHARGE)),
-        "a destroyed actor is absent from the candidate set, not a rejected one"
+        "the planner can only target what perception reported, so a destroyed \
+         charge that perception dropped is unreachable"
+    );
+    assert_eq!(
+        decision.trace.candidates.len(),
+        1,
+        "no candidate is invented from the assignment's protected actor"
     );
 }
 
@@ -899,16 +989,66 @@ fn accept_f32_a_arsenal_snapshot_reports_separate_availability_counts() {
         synthetic_fighter_profile().arsenal().gun,
         "the fixture fighter profile declares guns"
     );
-    // The veto variant is the one an all-unusable arsenal raises; AC02's
-    // firing solution is F32-B's work, so only the vocabulary is asserted
-    // here.
-    assert!(matches!(
-        FireVeto::ArsenalUnusable {
-            usable_guns: 0,
-            ready_ordnance: 0
-        },
-        FireVeto::ArsenalUnusable { .. }
-    ));
+
+    // When nothing at all is left the veto is raised on the target, and it
+    // names the counts that produced it. AC02's firing solution is F32-B's
+    // work, so this is the vocabulary the solution will read: the target is
+    // still the target, and the veto says why a shot may not follow.
+    let mut dead_gun = MountAvailability::usable(
+        DamageNodeKey::new("gun_mount_2").expect("valid mount key"),
+        MountKind::Gun,
+        120,
+    );
+    dead_gun.disabled = true;
+    let disarmed = ArsenalSnapshot::try_new(vec![
+        MountAvailability::usable(
+            DamageNodeKey::new("gun_mount_1").expect("valid mount key"),
+            MountKind::Gun,
+            0,
+        ),
+        dead_gun,
+        MountAvailability::usable(
+            DamageNodeKey::new("ordnance_mount_1").expect("valid mount key"),
+            MountKind::Ordnance,
+            0,
+        ),
+    ])
+    .expect("the disarmed arsenal is valid");
+    let decision = planner
+        .decide(&CombatRequest {
+            observer: synthetic_actor(1),
+            now: Tick(DECISION_TICK),
+            observer_position: position(0.0),
+            assignment: &assignment,
+            formation: None,
+            protected_alive: Some(true),
+            candidates: &candidates,
+            arsenal: Some(&disarmed),
+            profile: None,
+        })
+        .expect("the request is well-formed");
+    assert_eq!(
+        decision.target,
+        Some(synthetic_actor(ATTACKER)),
+        "an empty arsenal does not change who the target is"
+    );
+    let report = decision.trace.arsenal.expect("the report is carried");
+    assert_eq!(report.disabled_mounts, 1);
+    assert_eq!(report.empty_mounts, 2);
+    for serial in [ATTACKER, BYSTANDER] {
+        assert_eq!(
+            decision
+                .trace
+                .candidate(synthetic_actor(serial))
+                .expect("the candidate is in the trace")
+                .fire_veto,
+            Some(FireVeto::ArsenalUnusable {
+                usable_guns: 0,
+                ready_ordnance: 0,
+            }),
+            "the arsenal veto is reported on every candidate while nothing can be fired"
+        );
+    }
 }
 
 /// A profile whose every weight is zero is refused: it would score no

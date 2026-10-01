@@ -604,12 +604,18 @@ fn accept_f32_a_arsenal_snapshot_refuses_a_duplicated_mount() {
     assert!(ArsenalSnapshot::empty().report().total_mounts == 0);
 }
 
-/// The planner is per-session state, and a formation's leader identity from
-/// another session is refused with the same rule as any other actor.
+/// The planner is per-session state, and a formation's member identities
+/// from another session are refused with the same rule as any other actor.
 #[test]
 fn accept_f32_a_foreign_formation_leader_is_refused() {
     let planner = synthetic_combat_planner();
-    let assignment = escort_assignment();
+    // The observer is a member of formation 1, so its assignment and the
+    // facts agree on which formation this is; only the leader's session is
+    // wrong.
+    let assignment = escort_assignment().in_formation(FormationSlot {
+        formation: FormationId(1),
+        slot: 1,
+    });
     let facts = FormationFacts {
         formation: FormationId(1),
         leader: ActorId {
@@ -633,6 +639,142 @@ fn accept_f32_a_foreign_formation_leader_is_refused() {
         ))
         .expect_err("a foreign leader is refused");
     assert!(matches!(err, CombatError::ForeignSession { .. }), "{err}");
+
+    // The formation's assigned target is an actor identity too, and a
+    // stale generation in that slot is refused the same way.
+    let foreign_target = FormationFacts {
+        leader: synthetic_actor(2),
+        assigned_target: Some(ActorId {
+            session: SYNTHETIC_SESSION + 3,
+            serial: 8,
+        }),
+        assigned_target_alive: true,
+        ..facts
+    };
+    let err = planner
+        .decide(&request(
+            synthetic_actor(1),
+            &assignment,
+            &candidates,
+            Some(&foreign_target),
+            &arsenal(),
+        ))
+        .expect_err("a foreign assigned target is refused");
+    match err {
+        CombatError::ForeignSession { actor, session } => {
+            assert_eq!(actor.session, SYNTHETIC_SESSION + 3);
+            assert_eq!(session, SYNTHETIC_SESSION);
+        }
+        other => panic!("expected a session refusal for the assigned target, got {other}"),
+    }
+}
+
+/// A protected actor from another session generation is refused on the
+/// identity alone. The check does not wait for a lifecycle report: a
+/// request that omits `protected_alive` must not be able to carry a stale
+/// generation into a decision.
+#[test]
+fn accept_f32_a_foreign_protected_actor_is_refused_without_a_lifecycle_report() {
+    let planner = synthetic_combat_planner();
+    let candidates = candidates();
+    let foreign_charge = ActorId {
+        session: SYNTHETIC_SESSION + 4,
+        serial: CHARGE,
+    };
+    let assignment = RoleAssignment::protecting(
+        synthetic_actor(1),
+        CombatRole::Escort,
+        foreign_charge,
+    )
+    .expect("the protected actor is not the observer itself");
+
+    for protected_alive in [None, Some(true), Some(false)] {
+        let err = planner
+            .decide(&CombatRequest {
+                observer: synthetic_actor(1),
+                now: Tick(4_000),
+                observer_position: position(0.0),
+                assignment: &assignment,
+                formation: None,
+                protected_alive,
+                candidates: &candidates,
+                arsenal: Some(&arsenal()),
+                profile: None,
+            })
+            .expect_err("a foreign protected actor is refused");
+        match err {
+            CombatError::ForeignSession { actor, session } => {
+                assert_eq!(actor, foreign_charge);
+                assert_eq!(session, SYNTHETIC_SESSION);
+            }
+            other => panic!("expected a session refusal, got {other}"),
+        }
+    }
+}
+
+/// The assignment and the formation facts are two statements about which
+/// formation the observer is in. A request that makes both, and disagrees,
+/// is refused: otherwise the recovery path would be resolved from whichever
+/// formation the caller happened to fill in.
+#[test]
+fn accept_f32_a_formation_facts_that_contradict_the_assignment_are_refused() {
+    let planner = synthetic_combat_planner();
+    let candidates = candidates();
+    let facts = FormationFacts {
+        formation: FormationId(1),
+        leader: synthetic_actor(2),
+        leader_alive: true,
+        observer_is_leader: false,
+        assigned_target: None,
+        assigned_target_alive: true,
+        route_available: true,
+    };
+
+    // The assignment places the observer in formation 2 while the facts
+    // describe formation 1.
+    let wrong_formation = escort_assignment().in_formation(FormationSlot {
+        formation: FormationId(2),
+        slot: 0,
+    });
+    let err = planner
+        .decide(&request(
+            synthetic_actor(1),
+            &wrong_formation,
+            &candidates,
+            Some(&facts),
+            &arsenal(),
+        ))
+        .expect_err("two formations at once is refused");
+    assert_eq!(
+        err,
+        CombatError::FormationAssignmentMismatch {
+            assigned: Some(FormationId(2)),
+            facts: FormationId(1),
+        }
+    );
+
+    // Facts for a formation the assignment does not place the observer in
+    // are the same contradiction in the other direction.
+    let err = planner
+        .decide(&request(
+            synthetic_actor(1),
+            &escort_assignment(),
+            &candidates,
+            Some(&facts),
+            &arsenal(),
+        ))
+        .expect_err("facts for a formation the actor does not hold a slot in are refused");
+    assert_eq!(
+        err,
+        CombatError::FormationAssignmentMismatch {
+            assigned: None,
+            facts: FormationId(1),
+        }
+    );
+    assert!(
+        err.to_string().contains("no formation at all"),
+        "the refusal names what the assignment declared: {err}"
+    );
 }
 
 /// A destroyed leader is not its own recovery case: the observer that *is*

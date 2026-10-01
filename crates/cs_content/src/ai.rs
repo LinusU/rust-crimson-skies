@@ -83,6 +83,15 @@ pub const MAX_THREAT_WINDOW_TICKS: u64 = 3_600;
 /// designed bound, not a measured weapon or sensor range.
 pub const MAX_ENGAGEMENT_RANGE_M: f64 = 20_000.0;
 
+/// The smallest engagement range a declared role may carry, in meters.
+///
+/// A zero-meter range is not a tight engagement, it is a role that can
+/// never acquire anything: the proximity term is normalized over it, so the
+/// range has to be positive. This mirrors the guard the lowered
+/// `cs_sim::ai::combat::SkillProfile` applies, so a declared record cannot
+/// carry a value the lowering boundary would refuse.
+pub const MIN_ENGAGEMENT_RANGE_M: f64 = 1e-9;
+
 /// The largest aim error half-angle a declared role may carry, in radians.
 /// A designed bound: a quarter turn, so an "aim error" can never exceed a
 /// deliberate deflection.
@@ -473,7 +482,7 @@ fn validate_knob_value(knob: SkillKnob, value: SkillKnobValue) -> Result<(), Com
             if !m.is_finite() {
                 return Err(CombatSchemaError::NonFiniteKnob { knob });
             }
-            if !(0.0..=MAX_ENGAGEMENT_RANGE_M).contains(&m) {
+            if !(MIN_ENGAGEMENT_RANGE_M..=MAX_ENGAGEMENT_RANGE_M).contains(&m) {
                 return Err(CombatSchemaError::KnobOutOfRange {
                     knob,
                     value: value.to_string(),
@@ -1944,6 +1953,40 @@ mod tests {
                 ..
             }
         ));
+        // A zero-meter engagement range is refused by the declared record
+        // for the same reason the lowered runtime profile refuses it: the
+        // proximity term is normalized over it, so it must be positive, and
+        // a record the lowering boundary would reject must not validate
+        // here.
+        assert!(matches!(
+            SkillKnobOverride::try_new(
+                SkillKnob::EngagementRangeM,
+                SkillKnobValue::Distance(0.0),
+                designed()
+            )
+            .expect_err("a zero engagement range is refused"),
+            CombatSchemaError::KnobOutOfRange {
+                knob: SkillKnob::EngagementRangeM,
+                ..
+            }
+        ));
+        let mut zero_range = declared_synthetic_escort_knobs();
+        zero_range.engagement_range_m = known(Meters(0.0));
+        assert!(
+            matches!(
+                zero_range.validate(),
+                Err(CombatSchemaError::KnobOutOfRange {
+                    knob: SkillKnob::EngagementRangeM,
+                    ..
+                })
+            ),
+            "a role profile carrying a zero range is refused by name, not \
+             clamped into a number: {zero_range:?}"
+        );
+        assert!(
+            SkillKnobs::validate(&declared_synthetic_escort_knobs()).is_ok(),
+            "the declared fixture range is inside the bounds"
+        );
 
         // The elite tier moves three behavior knobs, each carrying its own
         // provenance.

@@ -1253,20 +1253,33 @@ impl CombatPlanner {
 
     /// Decides one target for one tick.
     ///
+    /// This is target *selection* and nothing more: the maneuver the role
+    /// flies, whether a shot may be taken and what happens after the
+    /// formation's recovery action are F32-B's and F32-C's, and the trace
+    /// is the record they consume. An `Evade` or `Retreat` assignment is
+    /// still given the target its policy ranks; what to do about it is the
+    /// maneuver stage's decision, not an omission here.
+    ///
     /// # Errors
     ///
-    /// [`CombatError::ForeignSession`] when the observer, a candidate or a
-    /// threat event belongs to another session generation,
+    /// [`CombatError::ForeignSession`] when the observer, a candidate, a
+    /// threat event, the protected actor or a formation member identity
+    /// belongs to another session generation,
     /// [`CombatError::AssignmentObserverMismatch`] when the request's
     /// assignment belongs to another actor,
+    /// [`CombatError::ProfileRoleMismatch`] when a supplied variant profile
+    /// belongs to another role,
     /// [`CombatError::NoProfileForRole`] when the planner carries no profile
     /// for the assigned role,
     /// [`CombatError::ThreatAttackerMismatch`] when a candidate's evidence
     /// names a different attacker,
     /// [`CombatError::ThreatFromTheFuture`] when a candidate's evidence is
-    /// stamped on a later tick, and [`CombatError::NoRecoveryPolicy`] when
-    /// a recovery trigger is pending for a formation the planner does not
-    /// carry. Each refuses rather than deciding on inconsistent input.
+    /// stamped on a later tick,
+    /// [`CombatError::FormationAssignmentMismatch`] when the assignment and
+    /// the formation facts disagree about the observer's formation, and
+    /// [`CombatError::NoRecoveryPolicy`] when a recovery trigger is pending
+    /// for a formation the planner does not carry. Each refuses rather than
+    /// deciding on inconsistent input.
     pub fn decide(&self, request: &CombatRequest<'_>) -> Result<CombatDecision, CombatError> {
         if request.observer.session != self.session {
             return Err(CombatError::ForeignSession {
@@ -1296,14 +1309,40 @@ impl CombatPlanner {
                 },
             )?,
         };
+        // Every identity the request carries must belong to this session
+        // generation, whether or not the caller reported anything else
+        // about it: a foreign protected actor is refused on the identity
+        // alone, so a request that omits the lifecycle report cannot slip
+        // a stale generation past the check.
         let protected = request.assignment.protected();
-        if let (Some(actor), Some(_)) = (protected, request.protected_alive)
+        if let Some(actor) = protected
             && actor.session != self.session
         {
             return Err(CombatError::ForeignSession {
                 actor,
                 session: self.session,
             });
+        }
+        // The formation the assignment places the observer in and the
+        // formation the facts describe are one statement about the
+        // observer; a request that makes two is refused instead of
+        // resolving a recovery path from the wrong formation.
+        let assigned_formation = request.assignment.formation().map(|slot| slot.formation);
+        if let Some(facts) = request.formation {
+            if assigned_formation != Some(facts.formation) {
+                return Err(CombatError::FormationAssignmentMismatch {
+                    assigned: assigned_formation,
+                    facts: facts.formation,
+                });
+            }
+            for actor in [Some(facts.leader), facts.assigned_target].into_iter().flatten() {
+                if actor.session != self.session {
+                    return Err(CombatError::ForeignSession {
+                        actor,
+                        session: self.session,
+                    });
+                }
+            }
         }
         let protected_alive = request.protected_alive;
         let arsenal_report = request.arsenal.map(ArsenalSnapshot::report);
@@ -1340,12 +1379,6 @@ impl CombatPlanner {
             _ => None,
         };
         let recovery = match request.formation {
-            Some(facts) if facts.leader.session != self.session => {
-                return Err(CombatError::ForeignSession {
-                    actor: facts.leader,
-                    session: self.session,
-                });
-            }
             Some(facts) => {
                 let trigger = facts
                     .pending_trigger()
@@ -1492,6 +1525,12 @@ impl CombatPlanner {
                 },
                 PriorityTerm::ScriptObjective => f64::from(u8::from(candidate.objective)),
                 PriorityTerm::Proximity => {
+                    // A refused candidate has no engagement to be close to,
+                    // so its proximity factor is zero rather than a number
+                    // that would only matter if the gate had passed. The
+                    // other three terms are still reported for a refused
+                    // candidate: the trace shows what a producer's mistake
+                    // would have been worth.
                     if trace.verdict != CandidateVerdict::Eligible {
                         0.0
                     } else {
@@ -1616,6 +1655,16 @@ pub enum CombatError {
         /// The formation.
         formation: FormationId,
     },
+    /// The role assignment and the formation facts disagree about which
+    /// formation the observer is in. The recovery path would otherwise be
+    /// resolved from whichever of the two the caller happened to fill in.
+    FormationAssignmentMismatch {
+        /// The formation the assignment places the observer in, when it
+        /// places it in one at all.
+        assigned: Option<FormationId>,
+        /// The formation the supplied facts describe.
+        facts: FormationId,
+    },
     /// Two arsenal entries share one mount key.
     DuplicateMount {
         /// The repeated mount.
@@ -1696,6 +1745,17 @@ impl fmt::Display for CombatError {
                 f,
                 "{formation} has a pending recovery trigger but no declared recovery paths"
             ),
+            Self::FormationAssignmentMismatch { assigned, facts } => {
+                let assigned = match assigned {
+                    Some(formation) => format!("formation {formation}"),
+                    None => "no formation at all".to_owned(),
+                };
+                write!(
+                    f,
+                    "the formation facts describe {} but the assignment declares {assigned}",
+                    facts.0
+                )
+            }
             Self::DuplicateMount { mount } => {
                 write!(f, "the arsenal lists mount {mount} more than once")
             }
