@@ -30,8 +30,10 @@
 //! development content, so these tests prove the interface and the contract,
 //! never the original game.
 
+mod audit;
 mod catalog;
 mod common;
+mod evidence;
 mod fonts;
 mod layout;
 mod markup;

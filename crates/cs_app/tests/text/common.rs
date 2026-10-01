@@ -12,10 +12,14 @@
 
 use bevy::math::Rect;
 pub use cs_app::text::layout::{LayoutRequest, RequiredControl};
+use cs_app::text::{
+    GlyphEvidence, LocalizationAudit, LocalizationAuditRequest, MediaSource, StringImageSource,
+    audit_localization, synthetic_monospace,
+};
 use cs_content::config::StringRow;
 use cs_content::localization::{
-    LocaleChain, LocaleId, LocalizedText, MarkupDocument, MarkupGrammar, TextId, parse_markup,
-    synthetic_markup_grammar,
+    FontProvenance, LanguageMap, LocaleChain, LocaleId, LocalizedText, MarkupDocument,
+    MarkupGrammar, SupportedLocales, TextId, parse_markup, synthetic_markup_grammar,
 };
 use cs_types::asset_id::SourceSpan;
 use cs_types::content::{ContentId, ContentKind, Origin, Provenance};
@@ -154,4 +158,167 @@ pub fn request<'a>(
 /// An empty substitution table.
 pub fn substitutions() -> cs_content::localization::SubstitutionTable {
     cs_content::localization::SubstitutionTable::new()
+}
+
+// ------------------------------------------------------- retail (F51-D) ---
+
+/// The three PE string images the F12-A/F12-D survey routed, in a fixed order.
+///
+/// Each is audited in isolation, because an id is meaningful only inside its
+/// own image (see `cs_app::text::audit`). Names only: no original byte is read
+/// or kept by this module, and nothing here opens `CS_GAME_DIR` unless a
+/// retail test calls one of the `retail_*` helpers.
+pub const RETAIL_STRING_IMAGES: &[&str] = &[
+    "strings.dll",
+    "GOSDATA/ASSETS/BINARIES/langui.dll",
+    "GOSDATA/ASSETS/BINARIES/language.dll",
+];
+
+/// The two original bitmap-font files F51 audits as media, in a fixed order.
+pub const RETAIL_FONT_MEDIA: &[&str] = &[
+    "GOSDATA/ASSETS/GRAPHICS/font.tga",
+    "GOSDATA/ASSETS/GRAPHICS/arial8.tga",
+];
+
+/// The read-only original installation root, or a loud failure: a retail test
+/// must fail, not pass, when `CS_GAME_DIR` is absent.
+pub fn retail_game_dir() -> std::path::PathBuf {
+    let dir = std::env::var_os("CS_GAME_DIR").expect(
+        "CS_GAME_DIR is not set: this test needs the original installation (capability `retail`)",
+    );
+    let dir = std::path::PathBuf::from(dir);
+    assert!(
+        dir.is_dir(),
+        "CS_GAME_DIR {} is not a directory",
+        dir.display()
+    );
+    dir
+}
+
+/// The whole installation fingerprint, read through production discovery.
+pub fn retail_install_hash(dir: &std::path::Path) -> ContentHash {
+    let found = cs_assets::install::discover(dir)
+        .expect("production discovery must read the original installation");
+    cs_assets::install::fingerprint(&found.manifest)
+}
+
+/// The bytes of one installation file, named by its `/`-separated spelling.
+pub fn retail_file(dir: &std::path::Path, spelling: &str) -> Vec<u8> {
+    let path = dir.join(spelling);
+    std::fs::read(&path).unwrap_or_else(|error| panic!("read {}: {error}", path.display()))
+}
+
+/// The F12 rows of one PE string image, read through the production
+/// `StringCatalog::read`.
+///
+/// A loose file is its own source, so the span carries no member digest —
+/// exactly the rule `cs-inspect config` and the campaign binding apply.
+pub fn retail_string_rows(
+    dir: &std::path::Path,
+    spelling: &str,
+    install_hash: ContentHash,
+) -> Vec<StringRow> {
+    let bytes = retail_file(dir, spelling);
+    let source = SourceSpan::new(install_hash, spelling, None, 0, bytes.len() as u64, None)
+        .expect("the image span is valid");
+    let mut context = cs_formats::ParseContext::with_defaults(spelling);
+    cs_content::config::StringCatalog::read(&mut context, source, &bytes)
+        .expect("the production reader reads the string image")
+        .rows()
+        .to_vec()
+}
+
+/// The declared supported-locale set the retail audit walks.
+///
+/// The single available installation declares one language id (1033), so this
+/// declares one locale. It is **not** a claim about the original release's
+/// supported-locale list, which F51-A recorded as unmeasured.
+pub fn retail_declared_locales() -> SupportedLocales {
+    SupportedLocales::new([locale("en-us")]).expect("one declared locale is a valid set")
+}
+
+/// The caller-declared language map for the retail audit: the one language id
+/// (1033) the three routed string images carry (F12-A/F12-D).
+pub fn retail_language_map() -> LanguageMap {
+    language_map(&[(1033, "en-us")])
+}
+
+/// The F51-D audit of the original installation: all three routed string
+/// images, each read through the production reader and audited in isolation,
+/// plus the two original bitmap fonts with their **unmeasured** glyph coverage.
+///
+/// The returned audit owns every count and digest; no original bytes or text
+/// escape this function.
+pub fn retail_audit(dir: &std::path::Path) -> LocalizationAudit {
+    let install_hash = retail_install_hash(dir);
+    let declared = retail_declared_locales();
+    let languages = retail_language_map();
+    let grammar = grammar();
+    let metrics = synthetic_monospace(16.0);
+    let required = buttons();
+    let substitutions = substitutions();
+
+    let rows: Vec<Vec<StringRow>> = RETAIL_STRING_IMAGES
+        .iter()
+        .map(|spelling| retail_string_rows(dir, spelling, install_hash))
+        .collect();
+    let origins: Vec<Origin> = RETAIL_STRING_IMAGES
+        .iter()
+        .map(|spelling| {
+            let length = std::fs::metadata(dir.join(spelling))
+                .unwrap_or_else(|error| panic!("stat {spelling}: {error}"))
+                .len();
+            let span = SourceSpan::new(install_hash, spelling, None, 0, length, None)
+                .expect("the retail image span is valid");
+            Origin::Installation { source: span }
+        })
+        .collect();
+    let provenance = Provenance::unknown(claim());
+    let images: Vec<StringImageSource<'_>> = RETAIL_STRING_IMAGES
+        .iter()
+        .zip(&rows)
+        .zip(&origins)
+        .map(|((spelling, image_rows), origin)| StringImageSource {
+            path: spelling,
+            rows: image_rows,
+            origin: origin.clone(),
+            provenance: provenance.clone(),
+        })
+        .collect();
+
+    let font_bytes: Vec<Vec<u8>> = RETAIL_FONT_MEDIA
+        .iter()
+        .map(|spelling| retail_file(dir, spelling))
+        .collect();
+    let media: Vec<MediaSource<'_>> = RETAIL_FONT_MEDIA
+        .iter()
+        .zip(&font_bytes)
+        .map(|(spelling, bytes)| {
+            let span = SourceSpan::new(install_hash, spelling, None, 0, bytes.len() as u64, None)
+                .expect("the retail font span is valid");
+            MediaSource {
+                path: spelling,
+                bytes,
+                provenance: FontProvenance::OriginalPrivate {
+                    span: Box::new(span),
+                },
+                glyphs: GlyphEvidence::Unmeasured {
+                    reason: "the original bitmap font's cell-to-character mapping is unmeasured"
+                        .to_owned(),
+                },
+            }
+        })
+        .collect();
+
+    audit_localization(&LocalizationAuditRequest {
+        images: &images,
+        locales: &declared,
+        language_map: &languages,
+        grammar: &grammar,
+        metrics: &metrics,
+        panel: PANEL,
+        required: &required,
+        substitutions: &substitutions,
+        media: &media,
+    })
 }

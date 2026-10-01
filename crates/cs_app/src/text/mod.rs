@@ -36,6 +36,21 @@
 //!   ([`session::TextSession::retry_font`]) the stage needs. [`fonts::FontMeasurer`]
 //!   is the declared seam where F51-D's real font decode lands.
 //!
+//! * [`audit::audit_localization`] (F51-D) is the retail-capable audit the
+//!   stage's own scenario requires: it decodes the F12 rows through the caller's
+//!   language map, audits **every declared locale** against the decoded catalog,
+//!   lays every resolved string out in the caller's panel so an overflow or a
+//!   covered control is counted, and audits each media file's length, digest,
+//!   distributability and glyph evidence. A language, id or media the inputs do
+//!   not cover is a named [`audit::AuditBlocker`], and a media whose glyph
+//!   coverage was not measured — the original bitmap fonts — stays
+//!   [`audit::GlyphEvidence::Unmeasured`], so [`audit::LocalizationAudit::is_complete`]
+//!   is honestly `false` rather than a guessed pass.
+//! * [`gpu_capture::capture_text_boxes`] (F51-D) is the `gpu` half: it draws the
+//!   real line boxes [`layout::layout_text`] produced on the real renderer and
+//!   writes a PNG, refusing a frame that drew nothing. It is a geometry witness,
+//!   not glyph rendering and not an appearance or metric measurement.
+//!
 //! [`MarkupDocument`]: cs_content::localization::MarkupDocument
 //! [`TextId`]: cs_content::localization::TextId
 //! [`LocaleChain`]: cs_content::localization::LocaleChain
@@ -61,13 +76,23 @@
 //! the band. The unknowns are recorded in
 //! `docs/findings/2026-10-01-f51-a-locale-fallback-markup-and-font-provenance.md`.
 
+pub mod audit;
 pub mod fonts;
+pub mod gpu_capture;
 pub mod layout;
 pub mod metrics;
 pub mod screen;
 pub mod session;
 
+pub use audit::{
+    AuditBlocker, GlyphEvidence, LocaleTextAudit, LocalizationAudit, LocalizationAuditRequest,
+    MediaAudit, MediaSource, StringImageAudit, StringImageSource, audit_localization,
+};
 pub use fonts::{FontLoadError, FontMeasurer, FontSet, LoadedFont};
+pub use gpu_capture::{
+    TEXT_CAPTURE_HEIGHT, TEXT_CAPTURE_WIDTH, TextBox, TextCapture, TextCaptureError,
+    capture_text_boxes, text_boxes,
+};
 pub use layout::{
     ControlIdError, LaidOutLine, LayoutDiagnostic, LayoutError, LayoutRequest, RequiredControl,
     TextFit, TextLayout, layout_text,

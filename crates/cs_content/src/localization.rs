@@ -2962,3 +2962,250 @@ pub fn synthetic_font_face() -> FontFace {
     })
     .expect("a verified licensed fallback is admitted")
 }
+
+// ------------------------------------------------ supported locales (F51-D) ---
+
+/// Maximum number of locales one [`SupportedLocales`] set may declare.
+///
+/// A designed bound, not an original measurement: the original release's
+/// supported-locale list is unmeasured (F51-A recorded that), so a set larger
+/// than this is a reading or authoring error and is refused rather than
+/// silently truncated.
+pub const MAX_SUPPORTED_LOCALES: usize = 64;
+
+/// Why a [`SupportedLocales`] set was refused.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SupportedLocalesError {
+    /// The set declared no locale at all, so no locale could be audited.
+    Empty,
+    /// The set held more than [`MAX_SUPPORTED_LOCALES`] locales.
+    TooLong {
+        /// How many locales were supplied.
+        len: usize,
+    },
+    /// One locale was declared twice, so the set would depend on iteration
+    /// order and the same locale could be audited twice.
+    Duplicate {
+        /// The repeated locale.
+        locale: LocaleId,
+    },
+}
+
+impl fmt::Display for SupportedLocalesError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => f.write_str("a supported-locale set must declare at least one locale"),
+            Self::TooLong { len } => write!(
+                f,
+                "supported-locale set holds {len} locales, max is {MAX_SUPPORTED_LOCALES}"
+            ),
+            Self::Duplicate { locale } => {
+                write!(f, "locale {locale} is declared supported more than once")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SupportedLocalesError {}
+
+/// The declared supported-locale set an F51-D audit walks, in declaration order.
+///
+/// The set is **caller-declared** for the same reason [`LanguageMap`] is: the
+/// original release's supported-locale list is unmeasured, so a built-in list
+/// would be a fabricated compatibility claim. Order is meaningful — it is the
+/// fallback order an audit walks — so it is preserved rather than sorted, and a
+/// locale declared twice or an empty set is refused instead of silently
+/// deduplicated.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SupportedLocales {
+    locales: Vec<LocaleId>,
+}
+
+impl SupportedLocales {
+    /// Validates and assembles the declared set, preserving declaration order.
+    ///
+    /// # Errors
+    ///
+    /// [`SupportedLocalesError::Empty`], [`SupportedLocalesError::TooLong`] or
+    /// [`SupportedLocalesError::Duplicate`].
+    pub fn new(locales: impl IntoIterator<Item = LocaleId>) -> Result<Self, SupportedLocalesError> {
+        let locales: Vec<LocaleId> = locales.into_iter().collect();
+        if locales.is_empty() {
+            return Err(SupportedLocalesError::Empty);
+        }
+        if locales.len() > MAX_SUPPORTED_LOCALES {
+            return Err(SupportedLocalesError::TooLong { len: locales.len() });
+        }
+        let mut seen = BTreeSet::new();
+        for locale in &locales {
+            if !seen.insert(locale.clone()) {
+                return Err(SupportedLocalesError::Duplicate {
+                    locale: locale.clone(),
+                });
+            }
+        }
+        Ok(Self { locales })
+    }
+
+    /// The declared locales, in declaration order.
+    #[must_use]
+    pub fn locales(&self) -> &[LocaleId] {
+        &self.locales
+    }
+
+    /// How many locales the set declares.
+    #[must_use]
+    #[allow(clippy::len_without_is_empty)]
+    pub fn len(&self) -> usize {
+        self.locales.len()
+    }
+
+    /// Whether the set declares no locale. Always `false` for a set built by
+    /// [`SupportedLocales::new`], which refuses the empty set.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.locales.is_empty()
+    }
+
+    /// Whether `locale` is one of the declared locales.
+    #[must_use]
+    pub fn contains(&self, locale: &LocaleId) -> bool {
+        self.locales.iter().any(|entry| entry == locale)
+    }
+}
+
+/// One declared locale's coverage of a catalog, audited against a chain that
+/// starts with that locale and then falls back to the other declared locales.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LocaleCoverage {
+    /// The locale this record audits.
+    pub locale: LocaleId,
+    /// The chain that was walked, `locale` first.
+    pub chain: Vec<LocaleId>,
+    /// Distinct ids in the catalog — the coverage denominator.
+    pub ids: usize,
+    /// Ids the locale itself answered.
+    pub translated: usize,
+    /// Ids another declared locale answered, i.e. this locale is untranslated
+    /// there.
+    pub via_fallback: usize,
+    /// Ids no declared locale in the chain answered.
+    pub missing: Vec<TextId>,
+}
+
+/// The result of auditing every declared locale against one catalog (F51-D).
+///
+/// This is the machine-readable shape of "audit all strings for each declared
+/// supported original locale": one [`LocaleCoverage`] per declared locale, the
+/// catalog's distinct-id denominator, the locales the catalog holds rows for but
+/// nobody declared, and the ids no declared locale answers at all.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MultiLocaleAudit {
+    /// One record per declared locale, in declaration order.
+    pub locales: Vec<LocaleCoverage>,
+    /// Distinct ids in the catalog.
+    pub ids: usize,
+    /// Locales the catalog holds rows for that the declared set does not name,
+    /// in sorted order.
+    pub undeclared: Vec<LocaleId>,
+    /// Ids no declared locale has a row for, in id order.
+    pub missing_everywhere: Vec<TextId>,
+}
+
+impl MultiLocaleAudit {
+    /// Whether every declared locale was audited and every id is answered by
+    /// some declared locale, with no undeclared locale present.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.undeclared.is_empty() && self.missing_everywhere.is_empty()
+    }
+
+    /// The coverage record for `locale`, if it was declared.
+    #[must_use]
+    pub fn coverage_for(&self, locale: &LocaleId) -> Option<&LocaleCoverage> {
+        self.locales
+            .iter()
+            .find(|coverage| &coverage.locale == locale)
+    }
+
+    /// The total number of id/locale pairs the declared locales answer
+    /// themselves, i.e. the sum of every [`LocaleCoverage::translated`].
+    #[must_use]
+    pub fn translated_total(&self) -> usize {
+        self.locales
+            .iter()
+            .map(|coverage| coverage.translated)
+            .sum()
+    }
+}
+
+impl TextCatalog {
+    /// Audits every declared locale against this catalog.
+    ///
+    /// Each declared locale is audited against a chain of that locale followed
+    /// by the other declared locales in declaration order (bounded to
+    /// [`MAX_LOCALE_CHAIN_LEN`] entries), so `translated` is how much of the
+    /// catalog this locale answers *itself* and `via_fallback` is how much its
+    /// chain has to borrow from another declared locale. The denominator is the
+    /// catalog's own distinct ids, so a string translated into three locales
+    /// counts once. An id no declared locale answers is
+    /// [`MultiLocaleAudit::missing_everywhere`]; a locale the catalog holds
+    /// rows for but nobody declared is [`MultiLocaleAudit::undeclared`] — both
+    /// are reported, never dropped.
+    #[must_use]
+    pub fn audit_locales(&self, supported: &SupportedLocales) -> MultiLocaleAudit {
+        let ids = self.ids();
+        let undeclared: Vec<LocaleId> = self
+            .locales()
+            .into_iter()
+            .filter(|locale| !supported.contains(locale))
+            .collect();
+
+        let mut locales = Vec::with_capacity(supported.len());
+        for locale in supported.locales() {
+            // The chain starts at the audited locale and falls back to the
+            // other declared locales in declaration order, bounded by the
+            // chain limit. A locale can never appear twice, so the chain is
+            // always valid.
+            let fallbacks: Vec<LocaleId> = supported
+                .locales()
+                .iter()
+                .filter(|other| *other != locale)
+                .take(MAX_LOCALE_CHAIN_LEN - 1)
+                .cloned()
+                .collect();
+            let chain = LocaleChain::new(locale.clone(), fallbacks)
+                .expect("a nonempty bounded unique chain is valid");
+            let audit = self.audit(&chain);
+            locales.push(LocaleCoverage {
+                locale: locale.clone(),
+                chain: chain.locales().to_vec(),
+                ids: audit.ids,
+                translated: audit.resolved.saturating_sub(audit.served_by_fallback),
+                via_fallback: audit.served_by_fallback,
+                missing: audit.missing,
+            });
+        }
+
+        let mut covered: BTreeSet<TextId> = BTreeSet::new();
+        for locale in supported.locales() {
+            for id in &ids {
+                if self.get(id, locale).is_some() {
+                    covered.insert(id.clone());
+                }
+            }
+        }
+        let missing_everywhere: Vec<TextId> = ids
+            .iter()
+            .filter(|id| !covered.contains(*id))
+            .cloned()
+            .collect();
+
+        MultiLocaleAudit {
+            locales,
+            ids: ids.len(),
+            undeclared,
+            missing_everywhere,
+        }
+    }
+}

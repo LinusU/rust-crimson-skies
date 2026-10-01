@@ -202,13 +202,17 @@ impl TextFit {
 /// `rect` spans the **whole viewport width** for the line's height, because
 /// that is the box a renderer fills. Keeping the conservative width is what
 /// makes [`TextLayout::covers`] a real check: a renderer that paints the line
-/// box cannot paint outside it.
+/// box cannot paint outside it. [`LaidOutLine::text_width`] is the narrower
+/// measured extent of the line's own text, which a renderer or a geometry
+/// witness can use when it wants to show the text's extent rather than the
+/// band's.
 #[derive(Clone, Debug, PartialEq)]
 pub struct LaidOutLine {
     text: String,
     index: usize,
     rect: Rect,
     baseline: f32,
+    text_width: f32,
 }
 
 impl LaidOutLine {
@@ -230,6 +234,16 @@ impl LaidOutLine {
     #[must_use]
     pub fn rect(&self) -> Rect {
         self.rect
+    }
+
+    /// The measured advance width of this line's text, in pixels.
+    ///
+    /// Never wider than [`LaidOutLine::rect`]: wrapping only breaks a line when
+    /// the next word would exceed the band, so the text's extent stays inside
+    /// the conservative box.
+    #[must_use]
+    pub fn text_width(&self) -> f32 {
+        self.text_width
     }
 
     /// The baseline's `y`, in panel coordinates.
@@ -536,6 +550,7 @@ pub fn layout_text(request: &LayoutRequest<'_>) -> Result<TextLayout, LayoutErro
             index,
             rect: Rect::new(viewport.min.x, top, viewport.max.x, top + line_height),
             baseline: top + ascent,
+            text_width: request.metrics.measure(text),
         });
         let report = request.metrics.coverage().missing_in(text);
         for ch in report.missing() {
