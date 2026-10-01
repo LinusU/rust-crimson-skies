@@ -97,7 +97,9 @@ pub struct Gate {
     pub right_half_extent_m: f64,
     /// Half of the hole's height, along the gate's derived `up` axis.
     pub up_half_extent_m: f64,
-    /// Half of the aperture's thickness, along `normal`.
+    /// Half of the aperture's thickness, along `normal`. A zero half depth is
+    /// a legal infinitely thin plane gate; the thickness records how thick the
+    /// gate was drawn and does not change whether a traversal counts.
     pub half_depth_m: f64,
     /// Whether this volume is measured, drawn, or missing.
     pub evidence: GateEvidence,
@@ -156,6 +158,10 @@ pub struct TraversalRules {
     /// The margin, in meters, the crossing point must keep from the nearest
     /// aperture rim. A pass inside the hole but inside this margin is
     /// `InsufficientClearance`, not a pass.
+    ///
+    /// A margin wider than half the hole's smaller extent can never be met, so
+    /// the runtime reports it as an unusable rule instead of refusing every
+    /// traversal as a near miss.
     pub min_clearance_m: Resolved<f64>,
 }
 
@@ -381,6 +387,22 @@ impl StuntDefinition {
         {
             return Err(StuntError::NegativeClearance { value: known.value });
         }
+        // A margin wider than the hole can never be met, so a known gate and a
+        // known margin are checked together: the rule would otherwise refuse
+        // every traversal of this stunt as a near miss.
+        if let (Resolved::Known(gate), Resolved::Known(clearance)) = (&gate, &rules.min_clearance_m)
+        {
+            let max_possible_m = gate
+                .value
+                .right_half_extent_m
+                .min(gate.value.up_half_extent_m);
+            if clearance.value > max_possible_m {
+                return Err(StuntError::UnsatisfiableClearance {
+                    required_m: clearance.value,
+                    max_possible_m,
+                });
+            }
+        }
         if let Resolved::Known(known) = &reward.media
             && let Some(media) = &known.value
             && media.kind() != ContentKind::ScrapbookItem
@@ -545,6 +567,14 @@ pub enum StuntError {
         /// The offending value.
         value: f64,
     },
+    /// A known clearance rule is wider than the gate's own hole, so no
+    /// crossing of this gate could ever satisfy it.
+    UnsatisfiableClearance {
+        /// The authored minimum margin, in meters.
+        required_m: f64,
+        /// The widest margin the authored aperture can offer, in meters.
+        max_possible_m: f64,
+    },
     /// The reward's media id is not a scrapbook item.
     MediaNotScrapbookItem {
         /// The kind it actually names.
@@ -581,6 +611,13 @@ impl fmt::Display for StuntError {
             Self::NegativeClearance { value } => {
                 write!(f, "min_clearance_m {value} is not finite and non-negative")
             }
+            Self::UnsatisfiableClearance {
+                required_m,
+                max_possible_m,
+            } => write!(
+                f,
+                "min_clearance_m {required_m} exceeds the {max_possible_m} this gate can offer"
+            ),
             Self::MediaNotScrapbookItem { kind } => {
                 write!(f, "reward media names a {kind}, not a scrapbook item")
             }

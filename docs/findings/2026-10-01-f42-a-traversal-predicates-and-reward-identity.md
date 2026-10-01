@@ -7,7 +7,9 @@ contract `docs/contracts/STATE-TRANSACTIONS.md`.
 
 This record is written **before** the code (sheet requirement: "Before
 editing, list the specific functions/files and one observable failure"). The
-"what was built" and "checks" sections are appended when the slice is done.
+"what was built" and "checks" sections are appended when the slice is done,
+and the **review findings** section at the end records what the review of
+`91ab6ad` changed.
 
 ## Files and functions this slice will add
 
@@ -74,11 +76,16 @@ discontinuous coordinate change as a teleport loses a genuine passage.
 
 ## Rules that need a decision the sheet does not fix (designed, documented)
 
-* **What counts as a traversal.** A traversal is the crossing of the gate's
-  **mid-plane** inside the aperture (|right|, |up| within the authored
-  extents, |depth| within the authored half depth). A segment that only clips
-  the slab's rim is a miss, not a pass — a full swept-box overlap test would
-  credit a shallow graze of the rim, which is not "flying through the gate".
+* **What counts as a traversal.** A traversal is a segment that *crosses* the
+  gate's **mid-plane** at a point inside the aperture (|right|, |up| within the
+  authored extents). Reaching the plane is part of the definition: a segment
+  that stops inside the slab, turns back before it or runs parallel to it did
+  not fly through the gate, however deep inside the hole its endpoints sit. A
+  segment that only clips the slab's rim is a miss, not a pass — a full
+  swept-box overlap test would credit a shallow graze of the rim, which is not
+  "flying through the gate". The authored `half_depth_m` therefore records how
+  thick the gate was *drawn*; it is validated but never decides a traversal,
+  and a zero half depth (a plane gate) is a legal authored volume.
 * **Direction.** The travel direction is the swept segment's own direction and
   is compared with the gate normal by cosine against the authored
   `min_forward_cosine`. The segment direction is used rather than the
@@ -88,7 +95,11 @@ discontinuous coordinate change as a teleport loses a genuine passage.
 * **Clearance.** The margin is measured from the crossing point to the nearest
   aperture rim, in the gate's in-plane frame: `min(right_half - |r|,
   up_half - |u|)`. A pass inside the aperture but inside the authored margin
-  is `InsufficientClearance`, not a pass.
+  is `InsufficientClearance`, not a pass. A margin *wider than the hole itself*
+  is an authored impossibility, not a near miss: it is named
+  `UnsatisfiableClearance` by the declared constructor, the runtime rule and
+  the raw predicate, so a corrupt record can never silently refuse every
+  traversal of a gate as a near miss.
 * **Rebase vs. teleport.** `StuntMovement::Rebased` keeps both endpoints
   exactly like `Swept` (F16 `OriginChange::Rebase` preserves swept
   continuity); only `Teleport` is discontinuous. A teleport can still *report*
@@ -114,6 +125,12 @@ discontinuous coordinate change as a teleport loses a genuine passage.
   `is_eligible_in` even though the caller supplies the mission's own set. A
   stunt declared for `m01` refuses in `m02` with `MissionNotEligible` instead
   of paying.
+* **A book pairs with its own ledger's session.** `StuntBook::new` refuses a
+  ledger whose generation is not the book's (`StuntObserveError::LedgerSession`),
+  including an unopened default ledger. Without that pairing, every later
+  grant would fail *mid-traversal* — after the book had advanced its tick and
+  possibly paid an earlier rule — so the "the book is unchanged on error"
+  promise would be false.
 
 ## Recorded unknowns (do not guess; file follow-up tasks)
 
@@ -167,14 +184,14 @@ discontinuous coordinate change as a teleport loses a genuine passage.
 * `crates/cs_sim/src/stunts.rs` — the **runtime** half:
   - lowered `Gate` (a `WorldPosition` centre, a `UnitVec3` normal and the
     deterministically derived `right`/`up` in-plane basis) with `gate_frame`
-    and `classify`, which requires a swept segment, a mid-plane crossing
-    inside the aperture, `cos(travel, normal) ≥ min_forward_cosine` and a rim
-    clearance of at least `min_clearance_m`. `GateRefusal` is the
-    geometry-only refusal (`NoSweep`, `MissedGate`, `WrongDirection`,
-    `InsufficientClearance`, `BadRule`) and names no stunt; `PassRefusal`
-    adds the identity (`ForeignActor`, `NotPlayerFlight`,
-    `MissionNotEligible`, `Discontinuous`, `Geometry{stunt, reason}`,
-    `AlreadyRewarded`).
+    and `classify`, which requires a swept segment that *reaches* the mid-plane,
+    a crossing point inside the aperture, `cos(travel, normal) ≥
+    min_forward_cosine` and a rim clearance of at least `min_clearance_m`.
+    `GateRefusal` is the geometry-only refusal (`NoSweep`, `MissedGate`,
+    `WrongDirection`, `InsufficientClearance`, `UnsatisfiableClearance`,
+    `BadRule`) and names no stunt; `PassRefusal` adds the identity
+    (`ForeignActor`, `NotPlayerFlight`, `MissionNotEligible`, `Discontinuous`,
+    `Geometry{stunt, reason}`, `AlreadyRewarded`).
   - `TraversalRule`, `StuntRule::try_new` (its own re-validation, since
     `cs_sim` cannot see `cs_content`), `StuntReward`, `StuntCriticality`,
     `StuntRepeat`, `GateEvidence`.
@@ -186,14 +203,14 @@ discontinuous coordinate change as a teleport loses a genuine passage.
     `StuntLedger` (seeded from the persisted record, stale-session refusing)
     and `StuntBook::observe` — the one place a completion is counted.
     `StuntObserveError` carries `StaleSession`, `NotAdvancing`,
-    `DuplicateStunt` and `CorruptLedger`.
+    `DuplicateStunt`, `LedgerSession` and `CorruptLedger`.
 * `crates/cs_app/src/stunts.rs` — the lowering boundary: `lower_stunt`
   (declared → runtime, refusing an unknown gate, direction rule, clearance
   rule, fame, cash or media **by claim id and reason**, and a runtime
   validation failure as `Rejected`) and `lower_mission_stunts`, which filters
   a mission's declared set by scope and refuses a duplicate id.
-* `crates/cs_app/tests/accept_f42_a_traversal_predicates.rs` — 14 acceptance
-  tests; plus 6 unit tests inside the two schema modules. 20 `accept_f42_a_`
+* `crates/cs_app/tests/accept_f42_a_traversal_predicates.rs` — 18 acceptance
+  tests; plus 6 unit tests inside the two schema modules. 24 `accept_f42_a_`
   tests in total, all on the production path
   (`declared_synthetic_gate_stunt` → `lower_stunt` → `StuntBook`).
 
@@ -213,10 +230,69 @@ and the full selection re-run green.
 | the runtime mission-scope re-check | `..._the_same_world_in_another_mission_has_a_different_eligible_set` |
 | the declared id-namespace validation | `cs_content::stunts::accept_f42_a_declared_stunt_names_every_authoring_mistake` |
 
+## Review findings (review of `91ab6ad`)
+
+The review reproduced three defects on the implementation as submitted, fixed
+each on the branch, and added a regression test per defect. Each fix was
+checked for sensitivity by removing it again and confirming a real
+`accept_f42_a_` test fails.
+
+1. **A traversal was credited without ever reaching the gate plane**
+   (`Gate::classify`). The crossing parameter was clamped to `[0, 1]`, so for a
+   segment that never reaches the mid-plane the crossing point became its
+   nearer endpoint, and that endpoint was then accepted whenever it happened to
+   lie inside the slab. The *unmodified* fixture demonstrates it: flying
+   `[0,0,200] → [0,0,2]` — stopping two metres short of a gate with a 4 m half
+   depth — was reported as a completed traversal at `[0,0,2]`, paying fame,
+   cash and the one-time photo for a stunt never flown. The same clamp
+   credited a segment that started inside the slab and flew away from the
+   plane, and (with a legal `min_forward_cosine = 0.0`) a segment sliding
+   parallel to the plane inside the slab. Fix: the segment must *span* the
+   plane (`(d0 ≤ 0 ∧ d1 ≥ 0) ∨ (d0 ≥ 0 ∧ d1 ≤ 0)`), otherwise `MissedGate`.
+   The `half_depth_m` term was removed from the crossing test, which also
+   fixes a second bug: the authored thickness was being used as the tolerance
+   for "did we reach the plane", so a legal **zero-thickness plane gate**
+   refused genuine crossings on the float residue of the interpolation.
+2. **A book could be paired with another session's ledger**
+   (`StuntBook::new`). Nothing checked that the ledger's generation was the
+   book's, so the first grant that reached it returned `CorruptLedger` /
+   `StaleSession` *mid-traversal* — after `last_tick` had advanced and possibly
+   after an earlier rule in the same sample had already been paid — while
+   `observe` documented "the book is unchanged". Fix: `StuntBook::new` refuses
+   a mismatched or unopened ledger with `StuntObserveError::LedgerSession`, so
+   the grant inside `observe` cannot fail and the documented atomicity is true.
+3. **An impossible clearance rule blamed the aircraft.** A margin wider than
+   the gate's own hole can never be satisfied, and every crossing was refused as
+   `InsufficientClearance` — a flight report blaming the pilot for an authored
+   impossibility. Fix: named `UnsatisfiableClearance` (with both margins) by
+   the declared constructor, the runtime `TraversalRule::new` and the raw
+   `classify`, so the corrupt record is caught at lowering time and the raw
+   predicate still refuses it if handed such thresholds directly. The
+   comparison is strict, so the exactly achievable maximum still counts.
+
+Two test-quality problems were fixed as well: an assertion in
+`..._a_scope_cannot_be_emptied_or_widened_to_every_mission` that could not
+fail (`missions().is_empty() || len() == 1`) was replaced with a real
+two-mission widening check, and a doc comment on
+`..._a_duplicate_stunt_id_in_one_book_is_refused` described a two-rule
+foreign-actor case the test does not contain (the duplicate check in
+`lower_mission_stunts`, which had no test at all, was added instead).
+
+Additional mutations run during the review, each failing at least one real test
+before being reverted:
+
+| Removed behavior | Tests that failed |
+| --- | --- |
+| the plane-spanning requirement | 5 tests, including `..._a_segment_that_never_reaches_the_mid_plane_never_counts` and `..._a_parallel_segment_inside_the_slab_is_not_a_crossing` |
+| the declared `UnsatisfiableClearance` check | `..._a_clearance_wider_than_the_hole_is_a_corrupt_record` |
+| the runtime `TraversalRule::new` `UnsatisfiableClearance` check | the same test |
+| the predicate's `UnsatisfiableClearance` check | the same test, plus `..._the_runtime_gate_classifies_a_segment_against_its_own_rules` |
+| the ledger/session pairing in `StuntBook::new` | `..._a_book_whose_ledger_belongs_to_another_session_is_refused` |
+
 ## Checks run
 
-* `cargo test --workspace --locked -- accept_f42_a_ --include-ignored`: 20
-  tests pass (14 in `cs_app/tests/accept_f42_a_traversal_predicates.rs`, 3 in
+* `cargo test --workspace --locked -- accept_f42_a_ --include-ignored`: 24
+  tests pass (18 in `cs_app/tests/accept_f42_a_traversal_predicates.rs`, 3 in
   `cs_content::stunts`, 3 in `cs_sim::stunts`).
 * `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets
   --all-features --locked -- -D warnings` and `cargo test --workspace

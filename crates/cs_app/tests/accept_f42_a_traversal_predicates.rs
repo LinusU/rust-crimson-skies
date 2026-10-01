@@ -412,6 +412,146 @@ fn accept_f42_a_the_same_world_in_another_mission_has_a_different_eligible_set()
     assert_eq!(book.completions(), 0);
 }
 
+/// **Only a segment that actually crosses the mid-plane counts.** A sample
+/// that merely enters the gate's slab and stops inside it, or one that starts
+/// inside the slab and flies away from the plane, never flew through the
+/// gate: both are refused, while the same line continued past the plane
+/// completes. The fixture's half depth (4 m) is deliberately larger than the
+/// stops used here, so those samples sit inside the slab the whole time.
+#[test]
+fn accept_f42_a_a_segment_that_never_reaches_the_mid_plane_never_counts() {
+    let mut book = fixture_book();
+
+    // Flies straight at the aperture and stops two metres short of the
+    // mid-plane, still inside the slab and inside the authored margin.
+    let stops_inside = book
+        .observe(&swept(1, [0.0, 0.0, 200.0], [0.0, 0.0, 2.0]))
+        .unwrap();
+    assert_eq!(
+        expect_refused(&stops_inside),
+        &geometry(GateRefusal::MissedGate)
+    );
+
+    // The same line, continued to the far side of the plane, is a real
+    // crossing and completes — so the refusal above is about the missing
+    // crossing, not about the line or the direction.
+    let crossing = book
+        .observe(&swept(2, [0.0, 0.0, 2.0], [0.0, 0.0, -200.0]))
+        .unwrap();
+    let TraversalOutcome::Completed(done) = only(&crossing) else {
+        panic!(
+            "a segment that crosses the mid-plane must complete, got {:?}",
+            only(&crossing)
+        );
+    };
+    assert_eq!(done.crossing_m, [0.0, 0.0, 0.0]);
+    assert!((done.forward_cosine - 1.0).abs() < 1.0e-12);
+    assert_eq!(book.completions(), 1);
+
+    // Starts inside the slab in front of the plane and flies away from it, so
+    // the plane is never reached.
+    let flies_away = book
+        .observe(&swept(3, [0.0, 0.0, -2.0], [0.0, 0.0, -200.0]))
+        .unwrap();
+    assert_eq!(
+        expect_refused(&flies_away),
+        &geometry(GateRefusal::MissedGate)
+    );
+
+    assert_eq!(book.completions(), 1);
+    assert_eq!(book.ledger().len(), 1, "no refusal granted an identity");
+}
+
+/// A segment that runs **parallel** to the mid-plane inside the slab is not a
+/// crossing either, and the authored direction rule may not rescue it: a
+/// rule of `0.0` is a legal authored value ("any direction that is not
+/// backwards"), so the predicate has to refuse this segment for the geometry
+/// it is — the missing crossing.
+#[test]
+fn accept_f42_a_a_parallel_segment_inside_the_slab_is_not_a_crossing() {
+    let permissive = with_draft(&declared_synthetic_gate_stunt(), |draft| {
+        draft.rules.min_forward_cosine = Resolved::Known(Known::new(0.0, designed()));
+    });
+    let mut book = book(
+        vec![lower_stunt(&permissive).expect("the permissive rule lowers")],
+        StuntLedger::new(SESSION, Vec::new()),
+    );
+    // Two metres along the gate's normal, dead on the aperture's centre,
+    // sliding sideways: it never touches the mid-plane.
+    let parallel = book
+        .observe(&swept(1, [0.0, 0.0, -2.0], [120.0, 0.0, -2.0]))
+        .unwrap();
+    assert_eq!(
+        expect_refused(&parallel),
+        &geometry(GateRefusal::MissedGate)
+    );
+    assert_eq!(book.completions(), 0);
+
+    // A plane gate — zero half depth, a legal authored volume — still
+    // classifies a genuine crossing. The crossing point is on the mid-plane by
+    // construction, so the predicate may not reject it on the float residue of
+    // the interpolation.
+    let plane_gate =
+        RuntimeGate::new([0.0; 3], [0.0, 0.0, -1.0], 12.0, 8.0, 0.0).expect("a usable gate");
+    let passage = plane_gate
+        .classify(
+            pos([0.0, 0.0, 3.0]),
+            pos([100.0, 0.0, -197.0]),
+            SYNTHETIC_GATE_MIN_FORWARD_COSINE,
+            SYNTHETIC_GATE_MIN_CLEARANCE_M,
+        )
+        .unwrap_or_else(|refusal| panic!("a plane gate must classify a crossing: {refusal}"));
+    assert!((passage.crossing_m[2] - 0.0).abs() < 1.0e-9);
+    assert!(passage.forward_cosine >= SYNTHETIC_GATE_MIN_FORWARD_COSINE);
+    assert!(passage.clearance_m >= SYNTHETIC_GATE_MIN_CLEARANCE_M);
+}
+
+/// A book whose ledger belongs to another session generation is refused when
+/// it is built, so no sample can reach a grant that would half-apply a
+/// traversal before failing.
+#[test]
+fn accept_f42_a_a_book_whose_ledger_belongs_to_another_session_is_refused() {
+    let rules = vec![lower_stunt(&declared_synthetic_gate_stunt()).expect("the fixture lowers")];
+    let other = SessionGeneration(2);
+    assert_eq!(
+        StuntBook::new(
+            SESSION,
+            profile("profile-1"),
+            synthetic_gate_mission(),
+            SUBJECT,
+            rules.clone(),
+            StuntLedger::new(other, Vec::new()),
+        ),
+        Err(StuntObserveError::LedgerSession {
+            book: SESSION,
+            ledger: Some(other)
+        })
+    );
+    // An unopened ledger belongs to no session either, so it is refused too.
+    assert_eq!(
+        StuntBook::new(
+            SESSION,
+            profile("profile-1"),
+            synthetic_gate_mission(),
+            SUBJECT,
+            rules,
+            StuntLedger::default(),
+        ),
+        Err(StuntObserveError::LedgerSession {
+            book: SESSION,
+            ledger: None
+        })
+    );
+    // The matching pair is accepted, and an award through it is exactly the
+    // one the book counts.
+    let mut book = fixture_book();
+    let outcomes = book
+        .observe(&swept(1, [0.0, 0.0, 200.0], [0.0, 0.0, -200.0]))
+        .unwrap();
+    assert!(matches!(only(&outcomes), TraversalOutcome::Completed(_)));
+    assert_eq!(book.completions(), 1);
+}
+
 /// A developer camera and a foreign actor cannot earn, and a pass that misses
 /// the authored margin or the mid-plane is refused with its measurement
 /// attached.
@@ -672,9 +812,9 @@ fn accept_f42_a_the_predicate_uses_direction_and_margin_rather_than_proximity() 
     assert_eq!(book.completions(), 1);
 }
 
-/// A two-rule book judges both rules and refuses a sample that a foreign
-/// actor produced without needing a second traversal, while a duplicate
-/// stunt id in one set is refused as ambiguous.
+/// A duplicate stunt id is refused as ambiguous in a book's rule set and in a
+/// mission's lowered set, so an id cannot be counted or paid twice in one
+/// mission. A non-mission book is refused by name too.
 #[test]
 fn accept_f42_a_a_duplicate_stunt_id_in_one_book_is_refused() {
     let once = lower_stunt(&declared_synthetic_gate_stunt()).expect("lowers");
@@ -705,6 +845,19 @@ fn accept_f42_a_a_duplicate_stunt_id_in_one_book_is_refused() {
         ),
         Err(StuntObserveError::CorruptLedger { .. })
     ));
+
+    // The lowering boundary refuses the same ambiguity before a book is ever
+    // built: two declared records that share one id in one mission's set.
+    let record = declared_synthetic_gate_stunt();
+    let twin = with_draft(&record, |draft| {
+        draft.repeat = StuntRepeat::Repeatable;
+    });
+    assert_eq!(
+        lower_mission_stunts(&synthetic_gate_mission(), [&record, &twin]),
+        Err(StuntLowerError::DuplicateStuntInSet {
+            stunt: "stunt/synthetic.flyby-gate".to_owned()
+        })
+    );
 }
 
 // -------------------------------------------------------------- fixtures ---
@@ -779,16 +932,32 @@ fn accept_f42_a_the_runtime_gate_classifies_a_segment_against_its_own_rules() {
         )
         .expect("the axial pass is a passage");
     assert!((passage.clearance_m - 8.0).abs() < 1.0e-12);
-    // Beyond the half depth, the segment never reaches the mid-plane.
-    assert_eq!(
-        gate.classify(
+    // Inside the 4 m slab but short of the mid-plane: the segment never reaches
+    // the plane, so it is a miss. (The slab's thickness records how thick the
+    // gate was drawn; it is not a distance a traversal has to travel.)
+    for to_z in [50.0, 4.0, 0.001] {
+        assert_eq!(
+            gate.classify(
+                pos([0.0, 0.0, 100.0]),
+                pos([0.0, 0.0, to_z]),
+                SYNTHETIC_GATE_MIN_FORWARD_COSINE,
+                SYNTHETIC_GATE_MIN_CLEARANCE_M,
+            ),
+            Err(GateRefusal::MissedGate),
+            "a segment ending at z={to_z} must not be credited as a crossing"
+        );
+    }
+    // Touching the mid-plane exactly is a crossing, so the boundary is not an
+    // off-by-one that refuses the plane itself.
+    let touching = gate
+        .classify(
             pos([0.0, 0.0, 100.0]),
-            pos([0.0, 0.0, 50.0]),
+            pos([0.0, 0.0, 0.0]),
             SYNTHETIC_GATE_MIN_FORWARD_COSINE,
             SYNTHETIC_GATE_MIN_CLEARANCE_M,
-        ),
-        Err(GateRefusal::MissedGate)
-    );
+        )
+        .expect("a segment that reaches the mid-plane is a passage");
+    assert_eq!(touching.crossing_m, [0.0, 0.0, 0.0]);
     // A zero-length segment moved nowhere.
     assert_eq!(
         gate.classify(
@@ -805,11 +974,37 @@ fn accept_f42_a_the_runtime_gate_classifies_a_segment_against_its_own_rules() {
         gate.classify(pos([0.0, 0.0, 100.0]), pos([0.0, 0.0, -100.0]), 2.0, 0.0),
         Err(GateRefusal::BadRule)
     );
+    // A margin wider than the hole's smaller half extent can never be met, so
+    // it is named as an unusable rule rather than blamed on the aircraft.
+    assert_eq!(
+        gate.classify(
+            pos([0.0, 0.0, 100.0]),
+            pos([0.0, 0.0, -100.0]),
+            SYNTHETIC_GATE_MIN_FORWARD_COSINE,
+            9.0
+        ),
+        Err(GateRefusal::UnsatisfiableClearance {
+            required_m: 9.0,
+            max_possible_m: SYNTHETIC_GATE_HALF_HEIGHT_M,
+        })
+    );
+    // Exactly the achievable maximum is a usable rule, so the comparison is
+    // strict rather than an off-by-one that refuses the centre line.
+    assert!(
+        gate.classify(
+            pos([0.0, 0.0, 100.0]),
+            pos([0.0, 0.0, -100.0]),
+            SYNTHETIC_GATE_MIN_FORWARD_COSINE,
+            SYNTHETIC_GATE_HALF_HEIGHT_M,
+        )
+        .is_ok()
+    );
 }
 
-// Keep the scope helper referenced: the acceptance file builds its own
-// eligible set for a second mission above, and this proves the scope really
-// is a list with no wildcard.
+/// The mission scope is a list with no wildcard, so a stunt is exactly as
+/// available as the missions that declare it: an empty scope cannot be
+/// constructed, and widening it to a second mission leaves every other
+/// mission without the stunt.
 #[test]
 fn accept_f42_a_a_scope_cannot_be_emptied_or_widened_to_every_mission() {
     let record = declared_synthetic_gate_stunt();
@@ -817,19 +1012,111 @@ fn accept_f42_a_a_scope_cannot_be_emptied_or_widened_to_every_mission() {
     assert!(!record.scope().is_empty());
     assert!(record.scope().contains(&synthetic_gate_mission()));
     assert!(!record.scope().contains(&mission("synthetic.m02")));
-    // The declared set for the other mission is genuinely empty rather than
-    // "all missions".
-    assert!(record.scope().missions().is_empty() || record.scope().len() == 1);
-    // An explicit unknown scope entry is refused; there is no wildcard id to
-    // smuggle one through.
+
+    // An empty scope is refused, so a world stunt is never mission-universal.
     assert!(
         MissionScope::try_new(Vec::new()).is_err(),
         "an empty scope is refused, so a world stunt is never mission-universal"
     );
+
+    // Widening the scope to a second mission lowers for exactly those two
+    // missions and for no other, so "every mission" stays inexpressible.
+    let wide = with_draft(&record, |draft| {
+        draft.scope =
+            MissionScope::try_new(vec![synthetic_gate_mission(), mission("synthetic.m02")])
+                .expect("a two-mission scope is valid");
+    });
+    for eligible in [synthetic_gate_mission(), mission("synthetic.m02")] {
+        let lowered = lower_mission_stunts(&eligible, [&wide]).expect("the wide record lowers");
+        assert_eq!(lowered.len(), 1, "{eligible:?} declares the stunt");
+    }
+    assert!(
+        lower_mission_stunts(&mission("synthetic.m03"), [&wide])
+            .expect("the wide record is structurally fine")
+            .is_empty(),
+        "a mission outside the declared scope gets nothing"
+    );
 }
 
-// A declared reward that pays nothing is still a valid, lowerable record, and
-// it is distinguishable from an unmeasured one.
+/// An authored clearance margin that no crossing of its own hole could ever
+/// satisfy is a corrupt record, not a flight that keeps missing. Every layer
+/// names it: the declared constructor, the lowering boundary, the runtime rule
+/// and the raw predicate.
+#[test]
+fn accept_f42_a_a_clearance_wider_than_the_hole_is_a_corrupt_record() {
+    let base = declared_synthetic_gate_stunt();
+    // The fixture hole is 12 m x 8 m, so the widest margin the centre of the
+    // hole can offer is 8 m.
+    let too_wide = SYNTHETIC_GATE_HALF_HEIGHT_M + 1.0;
+    let mut impossible = draft_of(&base);
+    impossible.rules.min_clearance_m = Resolved::Known(Known::new(too_wide, designed()));
+
+    // The declared record refuses it by name.
+    assert_eq!(
+        StuntDefinition::try_new(impossible),
+        Err(cs_content::stunts::StuntError::UnsatisfiableClearance {
+            required_m: too_wide,
+            max_possible_m: SYNTHETIC_GATE_HALF_HEIGHT_M,
+        })
+    );
+
+    // The runtime rule refuses the same value, so the two halves agree on what
+    // a usable rule is.
+    let gate = RuntimeGate::new(
+        [0.0; 3],
+        [0.0, 0.0, -1.0],
+        SYNTHETIC_GATE_HALF_WIDTH_M,
+        SYNTHETIC_GATE_HALF_HEIGHT_M,
+        4.0,
+    )
+    .expect("a usable gate");
+    assert_eq!(
+        cs_sim::stunts::TraversalRule::new(gate, 0.5, too_wide),
+        Err(cs_sim::stunts::StuntError::UnsatisfiableClearance {
+            required_m: too_wide,
+            max_possible_m: SYNTHETIC_GATE_HALF_HEIGHT_M,
+        })
+    );
+
+    // The predicate, which is public and takes its thresholds as plain values,
+    // refuses it as an unusable rule instead of blaming the aircraft.
+    assert_eq!(
+        gate.classify(
+            pos([0.0, 0.0, 200.0]),
+            pos([0.0, 0.0, -200.0]),
+            SYNTHETIC_GATE_MIN_FORWARD_COSINE,
+            too_wide,
+        ),
+        Err(GateRefusal::UnsatisfiableClearance {
+            required_m: too_wide,
+            max_possible_m: SYNTHETIC_GATE_HALF_HEIGHT_M,
+        })
+    );
+
+    // Exactly the achievable maximum is a legal rule, so the boundary is the
+    // strict comparison and not an off-by-one that refuses the centre line.
+    let exactly = with_draft(&base, |draft| {
+        draft.rules.min_clearance_m =
+            Resolved::Known(Known::new(SYNTHETIC_GATE_HALF_HEIGHT_M, designed()));
+    });
+    let mut reachable = book(
+        vec![lower_stunt(&exactly).expect("the maximum margin lowers")],
+        StuntLedger::new(SESSION, Vec::new()),
+    );
+    let outcomes = reachable
+        .observe(&swept(1, [0.0, 0.0, 200.0], [0.0, 0.0, -200.0]))
+        .unwrap();
+    let TraversalOutcome::Completed(done) = only(&outcomes) else {
+        panic!(
+            "the achievable maximum margin must still complete, got {:?}",
+            only(&outcomes)
+        );
+    };
+    assert!((done.clearance_m - SYNTHETIC_GATE_HALF_HEIGHT_M).abs() < 1.0e-12);
+}
+
+/// A declared reward that pays nothing is still a valid, lowerable record, and
+/// it is distinguishable from an unmeasured one.
 #[test]
 fn accept_f42_a_a_declared_empty_reward_lowers_and_is_distinct_from_an_unknown_one() {
     let base = declared_synthetic_gate_stunt();

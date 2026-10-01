@@ -20,11 +20,16 @@
 //!    ([`StuntMovement::Teleport`]), while a rebase keeps the same physical
 //!    flight and still counts ([`StuntMovement::Rebased`], sheet behavior 1);
 //! 2. a crossing of the gate's mid-plane inside the aperture
-//!    ([`PassRefusal::MissedGate`]);
+//!    ([`PassRefusal::MissedGate`]). The segment must actually *reach* the
+//!    plane: one that stops inside the slab, turns back before it or runs
+//!    parallel to it did not fly through anything, however deep inside the
+//!    hole its endpoints happen to sit;
 //! 3. a travel direction at least as aligned with the gate normal as the
 //!    authored rule ([`PassRefusal::WrongDirection`]); and
 //! 4. the authored margin from the nearest rim
-//!    ([`PassRefusal::InsufficientClearance`]).
+//!    ([`PassRefusal::InsufficientClearance`]). A margin wider than the hole
+//!    itself is refused as an unusable rule
+//!    ([`GateRefusal::UnsatisfiableClearance`]) rather than as a near miss.
 //!
 //! The gate's in-plane `right`/`up` axes are **derived** from its normal by
 //! [`Gate::new`], deterministically, so a lowered record and a test agree
@@ -142,7 +147,7 @@ impl StuntReward {
 }
 
 /// The lowered traversal aperture: a centre, a unit normal, a derived
-/// in-plane basis and the authored extents.
+/// in-plane basis and the authored extents and thickness.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Gate {
     center: WorldPosition,
@@ -259,6 +264,10 @@ impl Gate {
     }
 
     /// Half the aperture's thickness, in meters.
+    ///
+    /// A traversal is a crossing of the mid-plane, so this records how thick
+    /// the gate was drawn rather than changing the predicate. A zero half
+    /// depth is a legal plane gate.
     #[must_use]
     pub const fn half_depth_m(&self) -> f64 {
         self.half_depth_m
@@ -330,10 +339,22 @@ impl Gate {
         }
 
         // The crossing point of the gate's mid-plane along the segment. A
-        // segment that never reaches the plane is clamped to its nearer
-        // endpoint, which then fails the depth test below.
+        // segment that does not reach the plane at all — one that stops short
+        // of it, turns back before it, or runs parallel to it inside the slab
+        // — never flew through the gate, so it is refused here rather than
+        // clamped to its nearer endpoint: an endpoint that happens to lie
+        // inside the slab would otherwise be credited as a traversal.
         let from_gate = self.gate_frame(from_m);
         let to_gate = self.gate_frame(to_m);
+        let spans_plane = (from_gate[2] <= 0.0 && to_gate[2] >= 0.0)
+            || (from_gate[2] >= 0.0 && to_gate[2] <= 0.0);
+        if !spans_plane {
+            return Err(GateRefusal::MissedGate);
+        }
+        // A segment that lies wholly in the mid-plane touches it everywhere;
+        // its crossing is its own start. Otherwise the plane is reached
+        // between the two endpoints, so the crossing parameter is inside the
+        // segment by construction.
         let depth_span = from_gate[2] - to_gate[2];
         let t = if depth_span.abs() <= f64::EPSILON {
             0.0
@@ -345,8 +366,12 @@ impl Gate {
             from_gate[1] + (to_gate[1] - from_gate[1]) * t,
             from_gate[2] + (to_gate[2] - from_gate[2]) * t,
         ];
-        if crossing_gate[2].abs() > self.half_depth_m
-            || crossing_gate[0].abs() > self.right_half_extent_m
+        // The crossing is on the mid-plane by construction, so only the
+        // in-plane extents decide whether it fell inside the hole. The
+        // authored half depth records how thick the gate was drawn and is not
+        // tested here, so a legal zero-thickness (plane) gate never refuses a
+        // genuine crossing on the float residue of the interpolation.
+        if crossing_gate[0].abs() > self.right_half_extent_m
             || crossing_gate[1].abs() > self.up_half_extent_m
         {
             return Err(GateRefusal::MissedGate);
@@ -354,6 +379,17 @@ impl Gate {
 
         let clearance_m = (self.right_half_extent_m - crossing_gate[0].abs())
             .min(self.up_half_extent_m - crossing_gate[1].abs());
+        // A margin wider than the hole can never be met, so it is a corrupt
+        // rule rather than a refusal of this particular flight: reporting it as
+        // `InsufficientClearance` would blame the aircraft for an authored
+        // impossibility.
+        let max_possible_m = self.right_half_extent_m.min(self.up_half_extent_m);
+        if min_clearance_m > max_possible_m {
+            return Err(GateRefusal::UnsatisfiableClearance {
+                required_m: min_clearance_m,
+                max_possible_m,
+            });
+        }
         if clearance_m < min_clearance_m {
             return Err(GateRefusal::InsufficientClearance {
                 clearance_m,
@@ -399,7 +435,10 @@ impl TraversalRule {
     /// # Errors
     ///
     /// [`StuntError::BadRule`] when the direction rule is outside `[-1, 1]`
-    /// or not finite, or the clearance rule is negative or not finite.
+    /// or not finite, or when the clearance rule is negative or not finite;
+    /// [`StuntError::UnsatisfiableClearance`] when the clearance margin is
+    /// wider than the gate's own hole could ever offer, so no crossing could
+    /// satisfy it.
     pub fn new(
         gate: Gate,
         min_forward_cosine: f64,
@@ -413,6 +452,13 @@ impl TraversalRule {
         if !min_clearance_m.is_finite() || min_clearance_m < 0.0 {
             return Err(StuntError::BadRule {
                 field: "min_clearance_m",
+            });
+        }
+        let max_possible_m = gate.right_half_extent_m.min(gate.up_half_extent_m);
+        if min_clearance_m > max_possible_m {
+            return Err(StuntError::UnsatisfiableClearance {
+                required_m: min_clearance_m,
+                max_possible_m,
             });
         }
         Ok(Self {
@@ -870,7 +916,9 @@ pub struct TraversalCompletion {
 pub enum GateRefusal {
     /// The sample did not move, so it traversed nothing.
     NoSweep,
-    /// The segment did not cross the gate's mid-plane inside the aperture.
+    /// The segment did not cross the gate's mid-plane inside the aperture: it
+    /// missed the hole, stopped short of the plane, turned back before it or
+    /// ran parallel to it.
     MissedGate,
     /// The travel direction was too far from the gate normal.
     WrongDirection {
@@ -886,6 +934,18 @@ pub enum GateRefusal {
         /// The authored minimum, in meters.
         required_m: f64,
     },
+    /// The authored rim margin is wider than the gate's own hole, so no
+    /// crossing of this gate could ever satisfy it.
+    ///
+    /// This is a defect in the authored record rather than a statement about
+    /// the flight, and it is reported instead of silently refusing every
+    /// passage as [`GateRefusal::InsufficientClearance`].
+    UnsatisfiableClearance {
+        /// The authored minimum margin, in meters.
+        required_m: f64,
+        /// The widest margin the aperture allows, in meters.
+        max_possible_m: f64,
+    },
     /// A threshold handed to the predicate was non-finite, out of range or
     /// negative. The record is corrupt, not the flight.
     BadRule,
@@ -895,9 +955,10 @@ impl fmt::Display for GateRefusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::NoSweep => write!(f, "the sample did not move, so it traversed nothing"),
-            Self::MissedGate => {
-                write!(f, "the segment did not cross the gate inside the aperture")
-            }
+            Self::MissedGate => write!(
+                f,
+                "the segment did not cross the gate's mid-plane inside the aperture"
+            ),
             Self::WrongDirection {
                 forward_cosine,
                 required,
@@ -913,6 +974,14 @@ impl fmt::Display for GateRefusal {
                 f,
                 "the crossing keeps {clearance_m} m from the nearest rim, \
                  below the authored minimum {required_m} m"
+            ),
+            Self::UnsatisfiableClearance {
+                required_m,
+                max_possible_m,
+            } => write!(
+                f,
+                "the authored minimum margin {required_m} m exceeds the {max_possible_m} m \
+                 this aperture can ever offer, so the rule is unusable"
             ),
             Self::BadRule => write!(f, "the traversal rule carries an unusable threshold"),
         }
@@ -1070,6 +1139,14 @@ pub enum StuntObserveError {
         /// The duplicated id.
         id: String,
     },
+    /// The reward ledger does not belong to the book's session generation.
+    LedgerSession {
+        /// The session the book is for.
+        book: SessionGeneration,
+        /// The session the ledger is for, or [`None`] for an unopened
+        /// ledger.
+        ledger: Option<SessionGeneration>,
+    },
     /// The rule set or reward ledger is corrupt, so a sample cannot be
     /// judged. This is a defect in the lowered record, not in the flight.
     CorruptLedger {
@@ -1096,6 +1173,12 @@ impl fmt::Display for StuntObserveError {
             Self::DuplicateStunt { id } => {
                 write!(f, "stunt id {id:?} appears more than once in one book")
             }
+            Self::LedgerSession { book, ledger } => write!(
+                f,
+                "the reward ledger is session generation {}, but the book is session generation {}",
+                ledger.map_or(0, |generation| generation.0),
+                book.0
+            ),
             Self::CorruptLedger { reason } => {
                 write!(f, "the stunt book is corrupt: {reason}")
             }
@@ -1128,10 +1211,15 @@ pub struct StuntBook {
 impl StuntBook {
     /// Builds a book for one session.
     ///
+    /// The ledger must belong to `session`: pairing it with a book that could
+    /// never write into it would turn every later grant into a
+    /// mid-traversal failure, after the book had already advanced its tick.
+    ///
     /// # Errors
     ///
     /// [`StuntObserveError::DuplicateStunt`] when two rules share one stunt
-    /// id, and [`StuntError::NotAMission`] when `mission` is not a
+    /// id, [`StuntObserveError::LedgerSession`] when `ledger` does not belong
+    /// to `session`, and [`StuntError::NotAMission`] when `mission` is not a
     /// `ContentKind::Mission` id.
     pub fn new(
         session: SessionGeneration,
@@ -1146,6 +1234,12 @@ impl StuntBook {
                 kind: mission.kind(),
             }
             .into());
+        }
+        if ledger.generation() != Some(session) {
+            return Err(StuntObserveError::LedgerSession {
+                book: session,
+                ledger: ledger.generation(),
+            });
         }
         let mut seen: BTreeSet<&str> = BTreeSet::new();
         for rule in &rules {
@@ -1208,8 +1302,13 @@ impl StuntBook {
     ///
     /// # Errors
     ///
-    /// [`StuntObserveError`] for a stale session, a non-advancing tick, or a
-    /// corrupt rule set. The book is unchanged.
+    /// [`StuntObserveError`] for a stale session or a non-advancing tick. The
+    /// book is unchanged: both are checked before any rule is judged, so a
+    /// refused sample cannot advance the book or grant an identity.
+    ///
+    /// The grant below cannot fail either — [`StuntBook::new`] only accepts a
+    /// ledger that belongs to this book's session — so no rule can be paid
+    /// before a later one fails.
     pub fn observe(
         &mut self,
         request: &TraversalRequest,
@@ -1349,6 +1448,14 @@ pub enum StuntError {
         /// Which threshold is corrupt.
         field: &'static str,
     },
+    /// The authored clearance margin is wider than the gate's own hole, so no
+    /// crossing of it could ever satisfy the rule.
+    UnsatisfiableClearance {
+        /// The authored minimum margin, in meters.
+        required_m: f64,
+        /// The widest margin the aperture can offer, in meters.
+        max_possible_m: f64,
+    },
     /// A canonical position or normal was rejected.
     BadSpace(SpaceError),
     /// A stunt declared no eligible mission.
@@ -1370,12 +1477,22 @@ pub enum StuntError {
 impl From<StuntError> for StuntObserveError {
     fn from(value: StuntError) -> Self {
         match value {
-            // A ledger always carries its generation, so the absent case is
-            // an unopened ledger, which this path cannot reach.
+            // A ledger built by `StuntLedger::new` always carries its
+            // generation; an unopened one carries none, which this path cannot
+            // reach from a book.
             StuntError::StaleSession {
                 ledger: Some(book),
                 given,
             } => Self::StaleSession { book, given },
+            StuntError::StaleSession {
+                ledger: None,
+                given,
+            } => Self::CorruptLedger {
+                reason: format!(
+                    "the ledger is unopened, so it cannot pay generation {}",
+                    given.0
+                ),
+            },
             other => Self::CorruptLedger {
                 reason: other.to_string(),
             },
@@ -1395,6 +1512,13 @@ impl fmt::Display for StuntError {
             Self::BadRule { field } => {
                 write!(f, "stunt rule threshold {field} is not a usable value")
             }
+            Self::UnsatisfiableClearance {
+                required_m,
+                max_possible_m,
+            } => write!(
+                f,
+                "min_clearance_m {required_m} exceeds the {max_possible_m} this gate can offer"
+            ),
             Self::BadSpace(error) => write!(f, "stunt position was rejected: {error}"),
             Self::EmptyMissionScope => {
                 write!(f, "a stunt must declare at least one eligible mission")
