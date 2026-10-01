@@ -8,11 +8,12 @@
 
 use cs_net::authority::{AuthorityDomain, Owner};
 use cs_net::bounds::{
-    MAX_EDGES_PER_FRAME, MAX_INPUT_BATCH_SPAN_TICKS, MAX_INPUT_FRAMES_PER_PACKET,
-    MAX_SNAPSHOT_BYTES,
+    MAX_EDGES_PER_FRAME, MAX_INPUT_BATCH_SPAN_TICKS, MAX_INPUT_FRAMES_PER_PACKET, MAX_MODS,
+    MAX_PACKET_BYTES, MAX_SESSION_PEERS, MAX_SNAPSHOT_BYTES,
 };
 use cs_net::compat::{
-    ClientHello, CompatError, HandshakeReject, PROTOCOL_VERSION, ProtocolVersion, evaluate_hello,
+    ClientHello, CompatError, HandshakeReject, HelloReply, PROTOCOL_VERSION, PeerAllocError,
+    PeerAllocator, ProtocolVersion, admit_hello, evaluate_hello,
 };
 use cs_net::fixture::{
     SYNTHETIC_CONTENT_SHA256, SYNTHETIC_PEER, SYNTHETIC_SESSION, synthetic_blueprint_id,
@@ -33,6 +34,16 @@ fn hello_with_protocol(version: u16) -> ClientHello {
     let mut hello = synthetic_hello();
     hello.protocol = ProtocolVersion::new(version).expect("nonzero version");
     hello
+}
+
+/// `count` distinct catalog ids, usable as an enabled-mod set.
+fn distinct_mod_ids(count: usize) -> Vec<ContentId> {
+    (0..count)
+        .map(|i| {
+            ContentId::from_source(ContentKind::Blueprint, &format!("synthetic_mod_{i:04}"))
+                .expect("the synthetic key satisfies the id grammar")
+        })
+        .collect()
 }
 
 #[test]
@@ -132,12 +143,55 @@ fn accept_f54_a_malformed_hello_is_rejected() {
     let id = synthetic_blueprint_id();
     hello.compatibility.mods = vec![id.clone(), id];
 
+    let Err(reject) = evaluate_hello(&params, &hello) else {
+        panic!("a mod list that repeats an id must be rejected");
+    };
     assert_eq!(
-        evaluate_hello(&params, &hello),
-        Err(HandshakeReject::MalformedHello(CompatError::DuplicateMod {
+        reject,
+        HandshakeReject::MalformedSignature(CompatError::DuplicateMod {
             id: synthetic_blueprint_id(),
-        }))
+        })
     );
+    // The reason names the defect without blaming the client for a defect that
+    // may be in the host's own signature.
+    let reason = reject.to_string();
+    assert!(
+        reason.contains("malformed compatibility signature"),
+        "the reason must name the defect: {reason}"
+    );
+
+    // An over-long mod list is refused before it is ever compared.
+    let mut many = synthetic_hello();
+    many.compatibility.mods = distinct_mod_ids(MAX_MODS + 1);
+    assert_eq!(
+        evaluate_hello(&params, &many),
+        Err(HandshakeReject::MalformedSignature(
+            CompatError::TooManyMods { len: MAX_MODS + 1 }
+        ))
+    );
+    // Exactly at the cap the offer is still well formed: the cap is a bound,
+    // not a smaller limit.
+    let mut at_cap = synthetic_hello();
+    at_cap.compatibility.mods = distinct_mod_ids(MAX_MODS);
+    at_cap
+        .compatibility
+        .validate()
+        .expect("MAX_MODS mods are valid");
+}
+
+#[test]
+fn accept_f54_a_mod_set_comparison_ignores_order() {
+    // The mod set is compared as a set: two peers agree when they enable the
+    // same mods, whatever order the client happened to list them in.
+    let mut ids = distinct_mod_ids(2);
+    let (first, second) = (ids.remove(0), ids.remove(0));
+
+    let mut params = synthetic_parameters();
+    params.compatibility.mods = vec![first.clone(), second.clone()];
+    let mut hello = synthetic_hello();
+    hello.compatibility.mods = vec![second, first];
+
+    assert_eq!(evaluate_hello(&params, &hello), Ok(()));
 }
 
 #[test]
@@ -148,6 +202,130 @@ fn accept_f54_a_matching_hello_is_accepted_before_launch() {
         evaluate_hello(&synthetic_parameters(), &synthetic_hello()),
         Ok(())
     );
+}
+
+#[test]
+fn accept_f54_a_admission_grants_a_session_scoped_peer_id() {
+    let mut peers = PeerAllocator::new();
+
+    // The accept path is the one that consumes session state: only a
+    // compatible offer is admitted, and it hands the client the host's epoch
+    // plus a nonzero peer id.
+    let HelloReply::Welcome(grant) = admit_hello(
+        SYNTHETIC_SESSION,
+        &synthetic_parameters(),
+        &synthetic_hello(),
+        &mut peers,
+    ) else {
+        panic!("a matching hello must be admitted");
+    };
+    assert_eq!(grant.session, SYNTHETIC_SESSION);
+    assert_eq!(grant.peer, PeerId::new(1).expect("nonzero peer"));
+    assert_eq!(peers.next_peer(), 2, "the admitted peer consumed its id");
+
+    // A rejection is refused before it spends a peer id, so a mismatching
+    // client cannot exhaust a session's membership.
+    let mut foreign = synthetic_hello();
+    foreign.compatibility.content_sha256 = ContentHash::from_bytes([0xDE; 32]);
+    let HelloReply::Rejected(reason) = admit_hello(
+        SYNTHETIC_SESSION,
+        &synthetic_parameters(),
+        &foreign,
+        &mut peers,
+    ) else {
+        panic!("a content mismatch must not be admitted");
+    };
+    assert!(matches!(reason, HandshakeReject::ContentMismatch { .. }));
+    assert_eq!(
+        peers.next_peer(),
+        2,
+        "a rejected hello must not consume a peer id"
+    );
+}
+
+#[test]
+fn accept_f54_a_peer_ids_are_bounded_and_never_reissued() {
+    let mut peers = PeerAllocator::new();
+    for expected in 1..=MAX_SESSION_PEERS {
+        let peer = peers.allocate().expect("within the cap");
+        assert_eq!(peer.get() as usize, expected);
+        assert_ne!(peer.get(), 0, "peer 0 is never live");
+    }
+    // The cap is enforced: a full session refuses rather than minting an id
+    // outside the declared bound, and stays refused.
+    assert_eq!(peers.allocate(), Err(PeerAllocError::Full));
+    assert_eq!(peers.allocate(), Err(PeerAllocError::Full));
+    assert_eq!(peers.next_peer() as usize, MAX_SESSION_PEERS + 1);
+
+    // A full session is a rejection with a clear reason, not a silent drop.
+    let HelloReply::Rejected(reason) = admit_hello(
+        SYNTHETIC_SESSION,
+        &synthetic_parameters(),
+        &synthetic_hello(),
+        &mut peers,
+    ) else {
+        panic!("a full session must not admit another peer");
+    };
+    assert_eq!(
+        reason,
+        HandshakeReject::SessionFull {
+            max: MAX_SESSION_PEERS
+        }
+    );
+    assert!(
+        reason.to_string().contains("maximum"),
+        "the reason must say the session is full: {reason}"
+    );
+}
+
+#[test]
+fn accept_f54_a_declared_bounds_are_internally_consistent() {
+    // Relations between the declared caps are compile-time invariants of
+    // `bounds.rs`, checked where they are declared: a snapshot envelope can
+    // never exceed a whole packet, and a batch at the frame cap must be able
+    // to fit inside the tick-span cap (N strictly increasing ticks span at
+    // least N-1), or a legal batch would always be refused.
+    const _: () = assert!(MAX_SNAPSHOT_BYTES <= MAX_PACKET_BYTES);
+    const _: () = assert!((MAX_INPUT_FRAMES_PER_PACKET as u64) <= MAX_INPUT_BATCH_SPAN_TICKS + 1);
+
+    // The span/frame relation holds through production validation, not just on
+    // paper: the tightest legal batch — consecutive ticks, no gaps — at the
+    // frame cap validates.
+    let tightest: Vec<InputFrame> = (0..MAX_INPUT_FRAMES_PER_PACKET as u64)
+        .map(|i| InputFrame::new(Tick(i + 1)))
+        .collect();
+    let batch = ClientMessage {
+        header: MessageHeader {
+            session: SYNTHETIC_SESSION,
+            sequence: 0,
+        },
+        payload: ClientPayload::Input(InputBatch { frames: tightest }),
+    };
+    assert_eq!(batch.validate(), Ok(()));
+
+    // A snapshot exactly at the envelope cap is inside the cap; one byte more
+    // is not (pinned in accept_f54_a_oversized_snapshot_payload_is_rejected).
+    let at_cap = ServerMessage {
+        header: MessageHeader {
+            session: SYNTHETIC_SESSION,
+            sequence: 0,
+        },
+        payload: ServerPayload::Snapshot(SnapshotFrame {
+            tick: Tick(0),
+            payload: vec![0; MAX_SNAPSHOT_BYTES],
+        }),
+    };
+    assert_eq!(at_cap.validate(), Ok(()));
+
+    // The peer cap is reachable inside the nonzero peer id space, and
+    // production allocation stops exactly there.
+    let mut peers = PeerAllocator::new();
+    let mut admitted = 0;
+    while peers.allocate().is_ok() {
+        admitted += 1;
+    }
+    assert_eq!(admitted, MAX_SESSION_PEERS);
+    assert!(PeerId::new(MAX_SESSION_PEERS as u16).is_some());
 }
 
 #[test]
@@ -212,19 +390,35 @@ fn accept_f54_a_server_payloads_never_originate_from_a_client() {
 
 #[test]
 fn accept_f54_a_client_payloads_are_requests_not_authority() {
-    // Exhaustive by construction: a new client payload cannot be added
-    // without editing this match, so the vocabulary can never silently grow
-    // a server-owned client verb.
-    for payload in [
+    // Exhaustive by construction: a new client verb cannot be added without
+    // restating its contract class in this match, so the vocabulary can never
+    // silently grow a server-owned client verb — `ClientPayload` has no spawn,
+    // snapshot, score or outcome variant to add one to.
+    let payloads = [
         ClientPayload::Input(InputBatch { frames: Vec::new() }),
         ClientPayload::Leave,
-    ] {
-        match payload {
-            // Local input requests: client-owned, sequenced, acked.
-            ClientPayload::Input(_) => {}
+    ];
+    for payload in &payloads {
+        let expected = match payload {
+            // Local input requests: client-owned, sequenced and acked.
+            ClientPayload::Input(_) => Delivery::Sequenced,
             // A farewell request: client-owned, reliable.
-            ClientPayload::Leave => {}
-        }
+            ClientPayload::Leave => Delivery::Reliable,
+        };
+        assert_eq!(payload.delivery(), expected);
+        // The envelope forwards the payload's class unchanged.
+        let envelope = ClientMessage {
+            header: MessageHeader {
+                session: SYNTHETIC_SESSION,
+                sequence: 0,
+            },
+            payload: payload.clone(),
+        };
+        assert_eq!(envelope.delivery(), expected);
+        // A request is a request: the envelope's bounds still apply, and the
+        // packet only carries what the client owns.
+        let packet = SessionMessage::ToServer(envelope);
+        assert!(packet.verify_origin(Origin::Client).is_ok());
     }
 }
 

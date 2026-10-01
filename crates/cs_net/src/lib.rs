@@ -8,9 +8,11 @@
 //!
 //! * [`compat`] — the handshake: [`compat::ProtocolVersion`],
 //!   [`compat::Compatibility`] (rules/content signatures plus enabled mods),
-//!   [`compat::ClientHello`], [`compat::SessionParameters`] and the pure
+//!   [`compat::ClientHello`], [`compat::SessionParameters`], the pure
 //!   [`compat::evaluate_hello`] gate that rejects an unsupported protocol or
-//!   signature mismatch with a named reason before launch.
+//!   signature mismatch with a named reason before launch, and
+//!   [`compat::admit_hello`]/[`compat::PeerAllocator`], the host-side decision
+//!   that turns the gate into a [`compat::HelloReply`] grant or rejection.
 //! * [`message`] — the in-session vocabulary: the epoch-and-sequence
 //!   [`message::MessageHeader`], the directional [`message::ClientMessage`] /
 //!   [`message::ServerMessage`] envelopes (server-owned state exists only on

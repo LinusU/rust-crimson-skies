@@ -11,7 +11,9 @@
 //!
 //! Nothing here opens a socket: the evaluation is a pure function the
 //! transport stage (F54-B) calls before it commits any session state, so a
-//! mismatch can never reach launch.
+//! mismatch can never reach launch. [`admit_hello`] wraps that gate with the
+//! host-side [`PeerAllocator`] so the decision the host actually sends —
+//! [`HelloReply`] — is defined, bounded and tested at this stage too.
 
 use std::fmt;
 
@@ -19,7 +21,7 @@ use cs_types::content::ContentId;
 use cs_types::evidence::ContentHash;
 use cs_types::net::{PeerId, SessionId};
 
-use crate::bounds::MAX_MODS;
+use crate::bounds::{MAX_MODS, MAX_SESSION_PEERS};
 
 /// The wire protocol revision this build speaks.
 ///
@@ -156,8 +158,10 @@ pub struct SessionParameters {
 /// spec F54 AC01) instead of failing as a bare disconnect.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HandshakeReject {
-    /// The offer itself was out of bounds or malformed.
-    MalformedHello(CompatError),
+    /// A compatibility record was out of bounds or malformed — the client's
+    /// offer *or* the host's own [`SessionParameters`]. The reason names the
+    /// defect without blaming a side that may be innocent.
+    MalformedSignature(CompatError),
     /// The client speaks a protocol revision this build does not.
     UnsupportedProtocol {
         /// What the client offered.
@@ -186,12 +190,20 @@ pub enum HandshakeReject {
         /// Mods the client enables that the session does not run.
         unexpected: Vec<ContentId>,
     },
+    /// The session already holds [`MAX_SESSION_PEERS`] peers, so no peer id is
+    /// left to admit this client with.
+    SessionFull {
+        /// The session's peer cap.
+        max: usize,
+    },
 }
 
 impl fmt::Display for HandshakeReject {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::MalformedHello(reason) => write!(f, "invalid hello: {reason}"),
+            Self::MalformedSignature(reason) => {
+                write!(f, "malformed compatibility signature: {reason}")
+            }
             Self::UnsupportedProtocol { offered, supported } => write!(
                 f,
                 "unsupported protocol version {offered}: this session speaks {supported}"
@@ -210,6 +222,9 @@ impl fmt::Display for HandshakeReject {
                 f,
                 "mod set mismatch: missing {missing:?}, unexpected {unexpected:?}"
             ),
+            Self::SessionFull { max } => {
+                write!(f, "session already holds its maximum of {max} peers")
+            }
         }
     }
 }
@@ -218,6 +233,9 @@ impl std::error::Error for HandshakeReject {}
 
 /// What a session becomes for one accepted client: the session id (the wire
 /// epoch every later packet must carry) and the host-allocated peer id.
+///
+/// Produced by [`admit_hello`]; the client learns nothing else about its
+/// membership from the handshake.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct SessionGrant {
     /// The session the client joined.
@@ -228,7 +246,7 @@ pub struct SessionGrant {
 
 /// The host's answer to a [`ClientHello`]: either a grant or the reason for
 /// refusal. This is the only pre-session server message; both arms are
-/// reliable lifecycle traffic.
+/// reliable lifecycle traffic. Built by [`admit_hello`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum HelloReply {
     /// The client may join: the grant hands it its session epoch and peer id.
@@ -248,8 +266,8 @@ pub enum HelloReply {
 ///
 /// # Errors
 ///
-/// The first mismatch found, in handshake order: a malformed offer
-/// ([`HandshakeReject::MalformedHello`]), then protocol
+/// The first mismatch found, in handshake order: a malformed compatibility
+/// record ([`HandshakeReject::MalformedSignature`]), then protocol
 /// ([`HandshakeReject::UnsupportedProtocol`]), rules
 /// ([`HandshakeReject::RulesMismatch`]), content
 /// ([`HandshakeReject::ContentMismatch`]) and mod set
@@ -261,11 +279,11 @@ pub fn evaluate_hello(
     hello
         .compatibility
         .validate()
-        .map_err(HandshakeReject::MalformedHello)?;
+        .map_err(HandshakeReject::MalformedSignature)?;
     params
         .compatibility
         .validate()
-        .map_err(HandshakeReject::MalformedHello)?;
+        .map_err(HandshakeReject::MalformedSignature)?;
     if hello.protocol != PROTOCOL_VERSION {
         return Err(HandshakeReject::UnsupportedProtocol {
             offered: hello.protocol,
@@ -284,6 +302,9 @@ pub fn evaluate_hello(
             offered: hello.compatibility.content_sha256,
         });
     }
+    // `missing_mods` answers "what does `other` enable that this signature
+    // does not", so the client's copy names what the *session* requires that
+    // the client lacks, and the session's copy names the reverse.
     let missing = hello.compatibility.missing_mods(&params.compatibility);
     let unexpected = params.compatibility.missing_mods(&hello.compatibility);
     if !missing.is_empty() || !unexpected.is_empty() {
@@ -293,4 +314,106 @@ pub fn evaluate_hello(
         });
     }
     Ok(())
+}
+
+/// Why a [`PeerId`] could not be allocated.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PeerAllocError {
+    /// The session's peer population is already at its cap
+    /// ([`MAX_SESSION_PEERS`]), or the nonzero `u16` peer space ran out.
+    Full,
+}
+
+impl fmt::Display for PeerAllocError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Full => write!(
+                f,
+                "session already holds its maximum of {MAX_SESSION_PEERS} peers"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for PeerAllocError {}
+
+/// Server-side allocation of [`PeerId`]s for one session.
+///
+/// The host owns membership (`docs/contracts/UI-NETWORK.md`, ownership table),
+/// so a client never names its own peer id. Peer numbers start at 1 and are
+/// **not** recycled within a session — a departed peer's id must never alias a
+/// later arrival, or a late packet from the old peer would be attributed to
+/// the new one. The cap is [`MAX_SESSION_PEERS`]; a full session refuses
+/// further allocation rather than minting an id outside the declared bound.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PeerAllocator {
+    next_peer: u16,
+}
+
+impl PeerAllocator {
+    /// Starts allocation at peer 1, so peer 0 is never a live peer.
+    pub const fn new() -> Self {
+        Self { next_peer: 1 }
+    }
+
+    /// The peer number the next allocation would issue.
+    pub const fn next_peer(&self) -> u16 {
+        self.next_peer
+    }
+
+    /// Allocates the next peer id for this session.
+    ///
+    /// # Errors
+    ///
+    /// [`PeerAllocError::Full`] once the session holds
+    /// [`MAX_SESSION_PEERS`] peers. The allocator then stays full: it never
+    /// wraps onto an id it already issued.
+    pub const fn allocate(&mut self) -> Result<PeerId, PeerAllocError> {
+        let Some(peer) = PeerId::new(self.next_peer) else {
+            return Err(PeerAllocError::Full);
+        };
+        if peer.get() as usize > MAX_SESSION_PEERS {
+            return Err(PeerAllocError::Full);
+        }
+        match self.next_peer.checked_add(1) {
+            Some(next) => {
+                self.next_peer = next;
+                Ok(peer)
+            }
+            None => Err(PeerAllocError::Full),
+        }
+    }
+}
+
+impl Default for PeerAllocator {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// The host's decision about one hello: admit it with a grant, or reject it
+/// with the reason to report.
+///
+/// `session` is the epoch the host already allocated for this session; the
+/// host-side source of session generations is runtime work (F54-B/C). The
+/// ordering is the point of this function: [`evaluate_hello`] runs first and is
+/// pure, so a mismatch never consumes a peer id — no session state is spent on
+/// a client that is about to be turned away. Only a compatible offer reaches
+/// [`PeerAllocator::allocate`], and a full session is itself a rejection with a
+/// clear reason ([`HandshakeReject::SessionFull`]).
+pub fn admit_hello(
+    session: SessionId,
+    params: &SessionParameters,
+    hello: &ClientHello,
+    peers: &mut PeerAllocator,
+) -> HelloReply {
+    match evaluate_hello(params, hello) {
+        Ok(()) => match peers.allocate() {
+            Ok(peer) => HelloReply::Welcome(SessionGrant { session, peer }),
+            Err(PeerAllocError::Full) => HelloReply::Rejected(HandshakeReject::SessionFull {
+                max: MAX_SESSION_PEERS,
+            }),
+        },
+        Err(reason) => HelloReply::Rejected(reason),
+    }
 }

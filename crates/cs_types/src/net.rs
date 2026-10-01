@@ -13,10 +13,16 @@
 //! crates must name sessions, actors and events without depending on the
 //! protocol crate (`docs/01-ARCHITECTURE.md` dependency table).
 //!
-//! Every id is an integer newtype that is **never zero**: zero is reserved as
-//! the "no session / no peer" sentinel so a default-constructed or truncated
-//! field can never alias a live id. Nothing here is derived from original
-//! game data; the shapes are the new-engine contract.
+//! The session/peer identity types are integer newtypes that are **never
+//! zero**: zero is reserved as the "no session / no peer" sentinel, so a
+//! default-constructed or truncated field can never alias a live id. The
+//! compound ids ([`ActorId`], [`EventId`]) pair such a newtype with a
+//! component that legitimately starts at 0 (`producer` is the first counter of
+//! the first producing system); what zero never names there is a *live* actor
+//! or event, because [`ActorAllocator`] hands out serials from 1.
+//!
+//! Nothing here is derived from original game data; the shapes are the
+//! new-engine contract.
 
 use std::fmt;
 
@@ -94,7 +100,9 @@ impl fmt::Display for PeerId {
 pub struct ActorId {
     /// The session generation the actor belongs to.
     pub session: SessionId,
-    /// The actor's serial within that session.
+    /// The actor's serial within that session. Server-allocated and never
+    /// recycled; [`ActorAllocator`] issues from 1, so serial 0 is never a live
+    /// actor.
     pub serial: u64,
 }
 
@@ -119,9 +127,9 @@ pub struct EventId {
     pub session: SessionId,
     /// The simulation tick the event belongs to.
     pub tick: Tick,
-    /// The producing system's serial.
+    /// The producing system's serial, counted from 0.
     pub producer: u32,
-    /// The event's sequence within its producer.
+    /// The event's sequence within its producer, counted from 0.
     pub sequence: u32,
 }
 
