@@ -365,6 +365,13 @@
 //! characters a font cannot render. Its application boundary is
 //! `cs_app::text`.
 //!
+//! [`settings`] is the F52-A accessibility settings and fidelity boundary
+//! (`specs/F52-accessibility-and-explicitly-separated-modern-options.md`, stage
+//! `### F52-A`): [`settings::Presentation`] that cannot reach the simulation,
+//! the separate [`settings::ModernProfile`] of gameplay assists, the
+//! [`settings::FidelityLabel`] replay metadata records and the strict
+//! persisted text form. The application side is `cs_app::accessibility`.
+//!
 //! [`mods`] is the F53-A mod manifest and mount-plan contract
 //! (`specs/F53-mod-mounts-custom-content-and-compatibility-signatures.md`,
 //! stage `### F53-A`): the typed [`mods::ModManifest`] an F53-B manifest
@@ -409,13 +416,6 @@
 //! bytes with no write path, so a hostile or oversized profile cannot touch the
 //! source or a new save. Nothing here is original-verified: every legacy layout
 //! is still `Unknown` and F64-B supplies the measured one.
-//!
-//! [`settings`] is the F52-A accessibility settings and fidelity boundary
-//! (`specs/F52-accessibility-and-explicitly-separated-modern-options.md`, stage
-//! `### F52-A`): [`settings::Presentation`] that cannot reach the simulation,
-//! the separate [`settings::ModernProfile`] of gameplay assists, the
-//! [`settings::FidelityLabel`] replay metadata records and the strict
-//! persisted text form. The application side is `cs_app::accessibility`.
 //!
 //! [`cs_types`]: cs_types
 //! [`cs_formats`]: cs_formats
