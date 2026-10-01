@@ -534,6 +534,30 @@ pub fn pe_resources() -> CorpusFixture {
 }
 
 // ---------------------------------------------------------------------------
+// Legacy profile (`src/legacy_profile/`): an 8-byte magic, fixed header
+// slots (28 bytes total in the designed layout), a counted fixed-stride
+// record table and a retained tail — the slack span.
+// ---------------------------------------------------------------------------
+
+/// One-record document in the designed `synthetic_layout`: magic +
+/// version/count/label header (28 bytes), one 16-byte record, four
+/// retained tail bytes.
+pub fn legacy_profile() -> CorpusFixture {
+    let mut bytes = Vec::new();
+    bytes.extend_from_slice(b"CSPROF01"); // synthetic_layout magic
+    words(&mut bytes, &[1, 0, 1]); // version_major, version_minor, record_count
+    bytes.extend_from_slice(b"label1\0\0"); // 8-byte text slot
+    words(&mut bytes, &[7, 9]); // airframe_id, weapon_id
+    bytes.extend_from_slice(b"record1\0"); // 8-byte text slot
+    bytes.extend_from_slice(&[0xAA; 4]); // retained tail
+    assert_eq!(bytes.len(), 48);
+    CorpusFixture::new(
+        bytes,
+        &[hard(HEADER, 0..28), hard(TABLE, 28..44), slack(44..48)],
+    )
+}
+
+// ---------------------------------------------------------------------------
 // Script programs (`src/script_raw/ledger.rs`): three 4-byte words, each
 // naming an opcode the ledger knows.
 // ---------------------------------------------------------------------------

@@ -9,6 +9,7 @@
 //! the point of binding by name.
 
 use cs_formats::gamez::{read_gamez_materials, read_gamez_meshes};
+use cs_formats::legacy_profile::{LegacyLimits, read_legacy_profile, synthetic_layout};
 use cs_formats::script_raw::{
     ByteSpan, Confidence, OpcodeEntry, OpcodeLedger, ProgramKind, ProgramLocator, ScriptSource,
     discover_container, inventory_scripts, walk_program,
@@ -254,6 +255,16 @@ pub fn registry() -> &'static [Binding] {
                 read_pe_resources(&mut context, cut)
                     .map(|_| ProbeOutcome::Accepted("resources"))
                     .unwrap_or_else(|error| ProbeOutcome::Refused(error.code()))
+            },
+        },
+        Binding {
+            container: "legacy.profile",
+            fixture: fixtures::legacy_profile,
+            probe: |_, cut| {
+                let layout = synthetic_layout();
+                read_legacy_profile(cut, &layout, &LegacyLimits::designed())
+                    .map(|_| ProbeOutcome::Accepted("document"))
+                    .unwrap_or_else(|error| ProbeOutcome::Refused(error.kind.as_str()))
             },
         },
         Binding {

@@ -408,6 +408,13 @@ static CONTAINERS: &[ContainerSpec] = &[
         fuzz_target: Some("pe_resources"),
     },
     ContainerSpec {
+        id: "legacy.profile",
+        entrypoint: "cs_formats::legacy_profile::read_legacy_profile",
+        truncation: REFUSAL,
+        boundaries: HEADER_TABLE_SLACK,
+        fuzz_target: Some("legacy_profile"),
+    },
+    ContainerSpec {
         id: "script.program",
         entrypoint: "cs_formats::script_raw::walk_program",
         truncation: REFUSAL,
@@ -542,6 +549,10 @@ static ENTRIES: &[CorpusEntry] = &[
     synthetic(
         "pe.resources",
         "smallest PE carrying one resource string block",
+    ),
+    synthetic(
+        "legacy.profile",
+        "one-record document in the designed fixture layout",
     ),
     synthetic("script.program", "a three-word program of known opcodes"),
     synthetic("text.lines", "a small multi-line document"),

@@ -152,6 +152,13 @@ doc = false
 bench = false
 
 [[bin]]
+name = "legacy_profile"
+path = "fuzz_targets/legacy_profile.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
 name = "script_program"
 path = "fuzz_targets/script_program.rs"
 test = false

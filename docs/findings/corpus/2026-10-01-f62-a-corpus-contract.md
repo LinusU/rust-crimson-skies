@@ -72,7 +72,7 @@ offsets, with one of three damage rules:
 ### Measured outcomes, stage A
 
 `accept_f62_a_truncation_refuses_every_required_cut` probes every prefix of
-every fixture (46,721 probes, 46,283 required cuts). Notable shape the
+every fixture (46,769 probes, 46,327 required cuts). Notable shape the
 sweep surfaced and the span maps record:
 
 - `rof.tree`/`pe.layout`/`gamez.*`/`bm.image` tolerate trailing bytes, so
@@ -93,6 +93,10 @@ sweep surfaced and the span maps record:
   material array, so the minimal container is 44,220 bytes and contributes
   44,216 required cuts. The sweep still runs in milliseconds since parsing
   is bounds-checked reads.
+- `legacy.profile` (the F64-A declared-layout reader, which landed on main
+  while this contract was in review) is `PrefixRefusal` over the fixed
+  header and counted record table; its retained tail is slack — a cut
+  there is a shorter valid document.
 
 ## Inputs the contract deliberately does not call containers
 
