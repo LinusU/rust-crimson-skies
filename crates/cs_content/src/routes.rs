@@ -41,7 +41,7 @@
 use std::collections::HashSet;
 use std::fmt;
 
-use cs_types::content::{ContentId, ContentKind, Origin, Provenance, Resolved};
+use cs_types::content::{ContentId, ContentKind, Known, Origin, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
 
 /// Maximum byte length of a [`RouteNodeId`] or [`TriggerVolumeId`] key.
@@ -189,9 +189,15 @@ pub struct TriggerVolume {
 ///
 /// `sequence` is the authored order that preserves mission progression; it is
 /// separate from `id` so a node can be renamed without moving, and moved
-/// without being renamed. The node's position, its trigger volume and its
-/// arrival relationship to the route are resolved values: an unmeasured field
-/// is an explicit unknown, never a guessed origin.
+/// without being renamed. The node's position, its arrival radius, its trigger
+/// volume and its arrival relationship to the route are resolved values: an
+/// unmeasured field is an explicit unknown, never a guessed origin.
+///
+/// The `arrival_radius_m` is the navigation **swept arrival volume** the
+/// follower tests a step against; it is deliberately separate from `trigger`,
+/// which is the authored mission **event** volume. A node can fire an event
+/// without being a navigation marker and vice versa, so the two are resolved
+/// independently and F31-C's projection never substitutes one for the other.
 #[derive(Clone, Debug, PartialEq)]
 pub struct RouteNode {
     /// The stable authored node id.
@@ -202,6 +208,9 @@ pub struct RouteNode {
     pub mandatory: bool,
     /// The node's position in the route's [`ReferenceFrame`], or an unknown.
     pub position_m: Resolved<[f64; 3]>,
+    /// The radius of the navigation swept arrival volume, in meters, or an
+    /// unknown. Distinct from the mission [`TriggerVolume`] in `trigger`.
+    pub arrival_radius_m: Resolved<f64>,
     /// The trigger volume that fires at this node: `Known(Some)` for an
     /// authored volume, `Known(None)` for a node that deliberately has none,
     /// and `Unknown` for a node whose trigger was not measured.
@@ -355,6 +364,19 @@ impl RouteDefinition {
                             component,
                         });
                     }
+                }
+            }
+            if let Resolved::Known(known) = &node.arrival_radius_m {
+                if !known.value.is_finite() {
+                    return Err(RouteError::NonFiniteArrivalRadius {
+                        node: node.id.as_str().to_owned(),
+                    });
+                }
+                if known.value <= 0.0 {
+                    return Err(RouteError::NonPositiveArrivalRadius {
+                        node: node.id.as_str().to_owned(),
+                        value: known.value,
+                    });
                 }
             }
             if let Resolved::Known(known) = &node.trigger
@@ -531,6 +553,18 @@ pub enum RouteError {
         /// The offending component.
         component: usize,
     },
+    /// A known arrival radius was not finite.
+    NonFiniteArrivalRadius {
+        /// The node whose arrival radius is corrupt.
+        node: String,
+    },
+    /// A known arrival radius was not strictly positive.
+    NonPositiveArrivalRadius {
+        /// The node whose arrival radius is corrupt.
+        node: String,
+        /// The offending value.
+        value: f64,
+    },
     /// A known trigger volume was not strictly positive.
     NonPositiveTrigger {
         /// The node whose trigger is corrupt.
@@ -607,6 +641,13 @@ impl fmt::Display for RouteError {
                 f,
                 "route node {node:?} position component {component} is not finite"
             ),
+            Self::NonFiniteArrivalRadius { node } => {
+                write!(f, "route node {node:?} arrival radius is not finite")
+            }
+            Self::NonPositiveArrivalRadius { node, value } => write!(
+                f,
+                "route node {node:?} arrival radius {value} is not strictly positive"
+            ),
             Self::NonPositiveTrigger { node } => write!(
                 f,
                 "route node {node:?} trigger volume is not strictly positive"
@@ -634,6 +675,214 @@ impl fmt::Display for RouteError {
 
 impl std::error::Error for RouteError {}
 
+// ------------------------------------------------------- resolved route ----
+
+/// One route node with every navigation field resolved to a known value (F31-C).
+///
+/// It is the producer half of the [F31-C] conversion boundary: a consumer
+/// crate (`cs_inspect`, and later `cs_app`) maps it into the runtime
+/// `cs_sim::ai::navigation::RouteGraph`. An unmeasured position or arrival
+/// radius never reaches this type, so a consumer cannot silently follow a
+/// guessed node.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolvedRouteNode {
+    /// The stable authored node id.
+    pub id: RouteNodeId,
+    /// The authored sequence number.
+    pub sequence: u32,
+    /// Whether skipping this node is forbidden (a mandatory marker).
+    pub mandatory: bool,
+    /// The known node position and its provenance.
+    pub position_m: Known<[f64; 3]>,
+    /// The known navigation arrival radius and its provenance.
+    pub arrival_radius_m: Known<f64>,
+    /// The node's mission trigger volume, kept unresolved because a mission
+    /// event binding is not a navigation input.
+    pub trigger: Resolved<Option<TriggerVolume>>,
+}
+
+/// One declared route with every navigation field resolved to a known value
+/// (F31-C).
+///
+/// [`RouteDefinition::resolve`] is the error-propagating boundary: an unknown
+/// clearance, position or arrival radius is refused by name instead of being
+/// defaulted, so the runtime follower only ever consumes measured/designed
+/// values.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ResolvedRoute {
+    id: ContentId,
+    origin: Origin,
+    frame: ReferenceFrame,
+    termination: RouteTermination,
+    clearance_m: Known<f64>,
+    nodes: Vec<ResolvedRouteNode>,
+    provenance: Provenance,
+}
+
+impl ResolvedRoute {
+    /// The route's `route` id.
+    #[must_use]
+    pub fn id(&self) -> &ContentId {
+        &self.id
+    }
+
+    /// Where this route's bytes came from.
+    #[must_use]
+    pub fn origin(&self) -> &Origin {
+        &self.origin
+    }
+
+    /// The frame the node positions are authored in.
+    #[must_use]
+    pub fn frame(&self) -> &ReferenceFrame {
+        &self.frame
+    }
+
+    /// What the route does at its last node.
+    #[must_use]
+    pub const fn termination(&self) -> RouteTermination {
+        self.termination
+    }
+
+    /// The known minimum clearance from blockers.
+    #[must_use]
+    pub fn clearance_m(&self) -> &Known<f64> {
+        &self.clearance_m
+    }
+
+    /// The resolved nodes, in authored sequence order.
+    #[must_use]
+    pub fn nodes(&self) -> &[ResolvedRouteNode] {
+        &self.nodes
+    }
+
+    /// The provenance of the route record itself.
+    #[must_use]
+    pub fn provenance(&self) -> &Provenance {
+        &self.provenance
+    }
+}
+
+/// Why a declared route could not be resolved for the runtime follower (F31-C).
+#[derive(Clone, Debug, PartialEq)]
+pub enum RouteResolutionError {
+    /// The route clearance is an explicit unknown.
+    UnknownClearance {
+        /// The claim the unknown belongs to.
+        claim_id: ClaimId,
+        /// Why it is unknown.
+        reason: String,
+    },
+    /// A node position is an explicit unknown.
+    UnknownPosition {
+        /// The offending node key.
+        node: String,
+        /// The claim the unknown belongs to.
+        claim_id: ClaimId,
+        /// Why it is unknown.
+        reason: String,
+    },
+    /// A node arrival radius is an explicit unknown.
+    UnknownArrivalRadius {
+        /// The offending node key.
+        node: String,
+        /// The claim the unknown belongs to.
+        claim_id: ClaimId,
+        /// Why it is unknown.
+        reason: String,
+    },
+}
+
+impl fmt::Display for RouteResolutionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownClearance { claim_id, reason } => {
+                write!(f, "route clearance_m is unknown ({claim_id}): {reason}")
+            }
+            Self::UnknownPosition {
+                node,
+                claim_id,
+                reason,
+            } => write!(
+                f,
+                "route node {node:?} position is unknown ({claim_id}): {reason}"
+            ),
+            Self::UnknownArrivalRadius {
+                node,
+                claim_id,
+                reason,
+            } => write!(
+                f,
+                "route node {node:?} arrival radius is unknown ({claim_id}): {reason}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for RouteResolutionError {}
+
+impl RouteDefinition {
+    /// Resolves every navigation field to a known value for the runtime
+    /// follower, or names the first explicit unknown (F31-C).
+    ///
+    /// # Errors
+    ///
+    /// [`RouteResolutionError`] naming the unknown clearance, position or
+    /// arrival radius. Never defaults an unknown, so a consumer cannot follow a
+    /// guessed node.
+    pub fn resolve(&self) -> Result<ResolvedRoute, RouteResolutionError> {
+        let clearance_m = match &self.clearance_m {
+            Resolved::Known(known) => known.clone(),
+            Resolved::Unknown { claim_id, reason } => {
+                return Err(RouteResolutionError::UnknownClearance {
+                    claim_id: claim_id.clone(),
+                    reason: reason.clone(),
+                });
+            }
+        };
+        let mut nodes = Vec::with_capacity(self.nodes.len());
+        for node in &self.nodes {
+            let position_m = match &node.position_m {
+                Resolved::Known(known) => known.clone(),
+                Resolved::Unknown { claim_id, reason } => {
+                    return Err(RouteResolutionError::UnknownPosition {
+                        node: node.id.as_str().to_owned(),
+                        claim_id: claim_id.clone(),
+                        reason: reason.clone(),
+                    });
+                }
+            };
+            let arrival_radius_m = match &node.arrival_radius_m {
+                Resolved::Known(known) => known.clone(),
+                Resolved::Unknown { claim_id, reason } => {
+                    return Err(RouteResolutionError::UnknownArrivalRadius {
+                        node: node.id.as_str().to_owned(),
+                        claim_id: claim_id.clone(),
+                        reason: reason.clone(),
+                    });
+                }
+            };
+            nodes.push(ResolvedRouteNode {
+                id: node.id.clone(),
+                sequence: node.sequence,
+                mandatory: node.mandatory,
+                position_m,
+                arrival_radius_m,
+                trigger: node.trigger.clone(),
+            });
+        }
+        Ok(ResolvedRoute {
+            id: self.id.clone(),
+            origin: self.origin.clone(),
+            frame: self.frame.clone(),
+            termination: self.termination,
+            clearance_m,
+            nodes,
+            provenance: self.provenance.clone(),
+        })
+    }
+}
+
 // ------------------------------------------------------------- fixture ----
 
 /// The declared fallback clearance of [`declared_synthetic_arch_route`], in
@@ -653,25 +902,36 @@ pub const SYNTHETIC_ARCH_CLEARANCE_M: f64 = 2.0;
 pub fn declared_synthetic_arch_route() -> RouteDefinition {
     let designed =
         || Provenance::designed(ClaimId::new("f31a.synthetic-arch-route").expect("valid"));
-    let node = |id: &str, sequence: u32, mandatory: bool, position: [f64; 3]| RouteNode {
-        id: RouteNodeId::try_new(id).expect("fixture node id is valid"),
-        sequence,
-        mandatory,
-        position_m: Resolved::Known(cs_types::content::Known::new(position, designed())),
-        // No trigger is authored for a plain waypoint.
-        trigger: Resolved::Known(cs_types::content::Known::new(None, designed())),
-    };
+    let node =
+        |id: &str, sequence: u32, mandatory: bool, position: [f64; 3], arrival_radius_m: f64| {
+            RouteNode {
+                id: RouteNodeId::try_new(id).expect("fixture node id is valid"),
+                sequence,
+                mandatory,
+                position_m: Resolved::Known(cs_types::content::Known::new(position, designed())),
+                arrival_radius_m: Resolved::Known(cs_types::content::Known::new(
+                    arrival_radius_m,
+                    designed(),
+                )),
+                // No trigger is authored for a plain waypoint.
+                trigger: Resolved::Known(cs_types::content::Known::new(None, designed())),
+            }
+        };
     let arch_trigger = TriggerVolume {
         id: TriggerVolumeId::try_new("synthetic.arch.opening").expect("fixture volume id is valid"),
         shape: TriggerShape::Sphere { radius_m: 5.0 },
     };
 
+    // The arrival radii are the navigation swept volumes of the geometer's
+    // authored route; they intentionally match the runtime fixture
+    // `cs_sim::ai::navigation::synthetic_arch_route` so F31-C's projection can
+    // assert the producer and the consumer agree.
     let mut nodes = vec![
-        node("start", 0, false, [0.0, 0.0, -30.0]),
-        node("funnel", 1, true, [60.0, 5.0, -4.0]),
-        node("arch", 2, true, [100.0, 5.0, 0.0]),
-        node("exit", 3, true, [140.0, 5.0, -4.0]),
-        node("goal", 4, true, [260.0, 5.0, -30.0]),
+        node("start", 0, false, [0.0, 0.0, -30.0], 3.0),
+        node("funnel", 1, true, [60.0, 5.0, -4.0], 5.0),
+        node("arch", 2, true, [100.0, 5.0, 0.0], 5.0),
+        node("exit", 3, true, [140.0, 5.0, -4.0], 5.0),
+        node("goal", 4, true, [260.0, 5.0, -30.0], 8.0),
     ];
     nodes[2].trigger = Resolved::Known(cs_types::content::Known::new(
         Some(arch_trigger),
@@ -887,6 +1147,7 @@ mod tests {
             sequence,
             mandatory: true,
             position_m: Resolved::Known(Known::new([0.0, 0.0, 0.0], designed.clone())),
+            arrival_radius_m: Resolved::Known(Known::new(1.0, designed.clone())),
             trigger: Resolved::Known(Known::new(None, designed.clone())),
         };
 
