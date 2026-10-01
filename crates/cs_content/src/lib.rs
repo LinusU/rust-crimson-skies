@@ -411,6 +411,17 @@
 //! renders and opens nothing: the capture path is `cs_app::capture` (F59-B) and
 //! the commands are `cs-inspect`/`cs_xtask` (F59-C).
 //!
+//!
+//! [`instant_action`] is the F49-A declared preset and custom-scenario schema
+//! (`specs/F49-instant-action-presets-and-custom-scenarios.md`, stage
+//! `### F49-A`): the [`instant_action::InstantActionCatalog`] with its presets
+//! and the closed [`instant_action::ScenarioOptions`] a custom scenario may
+//! select, the shared parameter set a preset and a
+//! [`instant_action::CustomScenarioRequest`] both carry, and
+//! [`instant_action::InstantActionCatalog::validate_custom`]'s full list of
+//! actionable problems for an impossible roster. The lowering boundary to the
+//! simulation is `cs_app::ui::instant_action`.
+//!
 //! [`legacy_import`] is the F64-A legacy-import contract
 //! (`specs/F64-legacy-custom-aircraft-and-optional-save-import.md`, stage
 //! `### F64-A`): [`legacy_import::plan_import`] turns one read-only legacy
@@ -446,6 +457,7 @@ pub mod damage;
 pub mod environment;
 pub mod flight_tuning;
 pub mod hud;
+pub mod instant_action;
 pub mod interaction;
 pub mod legacy_import;
 pub mod livery;
