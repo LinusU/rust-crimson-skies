@@ -33,6 +33,7 @@ use std::process::ExitCode;
 use cs_xtask::bootstrap;
 use cs_xtask::budget;
 use cs_xtask::ci;
+use cs_xtask::corpus;
 use cs_xtask::target_dir;
 use cs_xtask::test_select;
 
@@ -78,10 +79,24 @@ COMMANDS
         lets cargo run that worktree's binary. A green or red test run would
         not be evidence about this tree in any of them (tasks #383, #433 and
         #440).
+    corpus manifest
+        Print the declared F62-A corpus contract as JSON: the known
+        container entrypoints with their truncation oracles and boundary
+        kinds, every corpus entry with its synthetic/private/regression
+        class, and the real counts.
+    corpus audit [--workspace-root <dir>] [--private-root <dir>]
+        Check the separation contract: the manifest is internally
+        consistent, no tracked file lives under a private-only prefix, and
+        every committed synthetic fixture is tracked. With --private-root
+        (the read-only original installation or a private corpus dir), each
+        private selector is enumerated and fingerprinted; without it the
+        private suite is reported unavailable rather than passed.
 
 OPTIONS
     --prefix <prefix>       Task test prefix, e.g. accept_f00_c_
     --workspace-root <dir>  Workspace to run in (default: current directory)
+    --private-root <dir>    corpus audit only: private corpus root,
+                            e.g. the read-only original installation
     -h, --help              Print this help text and exit 0
     -V, --version           Print the version and exit 0
 ";
@@ -113,6 +128,7 @@ fn main() -> ExitCode {
         "verify-bootstrap" => run_verify_bootstrap(&args[1..]),
         "verify-ci-budget" => run_verify_ci_budget(&args[1..]),
         "verify-target-dir" => run_verify_target_dir(&args[1..]),
+        "corpus" => run_corpus(&args[1..]),
         other => {
             eprintln!("cs-xtask: unknown command {other:?}");
             eprint!("{USAGE}");
@@ -306,6 +322,111 @@ fn run_verify_target_dir(args: &[String]) -> ExitCode {
         }
         Err(error) => gate_failed(&error.to_string()),
     }
+}
+
+/// `corpus manifest` prints the declared contract; `corpus audit` checks
+/// the separation rules against the real tracked file list and, when
+/// `--private-root` is given, resolves the private selectors.
+fn run_corpus(args: &[String]) -> ExitCode {
+    let Some(subcommand) = args.first().map(String::as_str) else {
+        return usage_error("corpus requires a subcommand: manifest | audit");
+    };
+    match subcommand {
+        "manifest" => {
+            if args.len() != 1 {
+                return usage_error("corpus manifest takes no options");
+            }
+            print!("{}", corpus::manifest_json());
+            ExitCode::from(EXIT_OK)
+        }
+        "audit" => {
+            let mut workspace_root = PathBuf::from(".");
+            let mut private_root: Option<PathBuf> = None;
+            let mut index = 1;
+            while index < args.len() {
+                match args[index].as_str() {
+                    "--workspace-root" => {
+                        let Some(value) = args.get(index + 1) else {
+                            return usage_error("--workspace-root needs a value");
+                        };
+                        workspace_root = PathBuf::from(value);
+                        index += 2;
+                    }
+                    "--private-root" => {
+                        let Some(value) = args.get(index + 1) else {
+                            return usage_error("--private-root needs a value");
+                        };
+                        private_root = Some(PathBuf::from(value));
+                        index += 2;
+                    }
+                    option => return usage_error(&format!("unknown option {option:?}")),
+                }
+            }
+            if let Err(error) = require_workspace(&workspace_root) {
+                return gate_failed(&error);
+            }
+            match corpus::audit(&workspace_root, private_root.as_deref()) {
+                Ok(report) => {
+                    for path in &report.tracked_private_paths {
+                        eprintln!("corpus audit: tracked private path {path}");
+                    }
+                    for path in &report.missing_committed_fixtures {
+                        eprintln!("corpus audit: committed fixture {path} is not tracked");
+                    }
+                    for error in &report.manifest_errors {
+                        eprintln!("corpus audit: {error}");
+                    }
+                    match report.private_availability {
+                        corpus::PrivateAvailability::Unavailable => {
+                            println!(
+                                "corpus audit: private corpus unavailable (no --private-root); \
+                                 {} private selector(s) not exercised",
+                                report
+                                    .private_selectors
+                                    .len()
+                                    .max(count_private_selectors())
+                            );
+                        }
+                        corpus::PrivateAvailability::Available => {
+                            for selector in &report.private_selectors {
+                                println!(
+                                    "corpus audit: {} matched {} member(s), {} bytes, sha256 {}",
+                                    selector.entry,
+                                    selector.members,
+                                    selector.total_bytes,
+                                    corpus::sha256_hex(&selector.fingerprint),
+                                );
+                            }
+                        }
+                    }
+                    let counts = corpus::manifest_counts();
+                    println!(
+                        "corpus audit: {} container(s), {} synthetic + {} private + \
+                         {} regression entries, {} fuzz target(s)",
+                        counts.containers,
+                        counts.synthetic,
+                        counts.private,
+                        counts.regression,
+                        counts.fuzz_targets,
+                    );
+                    if corpus::audit_is_clean(&report) {
+                        ExitCode::from(EXIT_OK)
+                    } else {
+                        ExitCode::from(EXIT_GATE_FAILED)
+                    }
+                }
+                Err(error) => gate_failed(&error.to_string()),
+            }
+        }
+        other => usage_error(&format!("unknown corpus subcommand {other:?}")),
+    }
+}
+
+fn count_private_selectors() -> usize {
+    corpus::entries()
+        .iter()
+        .filter(|entry| entry.class == corpus::CorpusClass::Private)
+        .count()
 }
 
 fn usage_error(message: &str) -> ExitCode {

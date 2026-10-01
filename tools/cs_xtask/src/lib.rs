@@ -21,14 +21,19 @@
 //!   artifacts (task #383), requires it to hold no artifact a worktree that
 //!   has since been removed produced (task #433), and requires it to hold no
 //!   artifact a different, still-present checkout produced (task #440).
+//! * [`corpus`] declares the F62-A differential-corpus contract — the
+//!   synthetic/private/regression separation, the per-container truncation
+//!   oracle and the known-container manifest — and audits that no private
+//!   bytes are tracked in the repo.
 //!
 //! The `cs_xtask` binary exposes `test-select`, `verify-ci`,
-//! `verify-bootstrap`, `verify-ci-budget` and `verify-target-dir`; packaging
-//! and coverage commands arrive with later tooling tasks.
+//! `verify-bootstrap`, `verify-ci-budget`, `verify-target-dir` and `corpus`;
+//! packaging and coverage commands arrive with later tooling tasks.
 
 pub mod bootstrap;
 pub mod budget;
 pub mod ci;
+pub mod corpus;
 pub mod pins;
 pub mod target_dir;
 pub mod test_select;
