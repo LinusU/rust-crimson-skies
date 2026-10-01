@@ -244,6 +244,7 @@ pub mod livery;
 pub mod loading;
 pub mod mesh;
 pub mod routes;
+pub mod save;
 pub mod scene;
 pub mod target_rules;
 pub mod textures;
