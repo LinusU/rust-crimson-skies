@@ -23,7 +23,12 @@
 //!
 //! The wrap this asserts is real: the follower reaches the loop's last node,
 //! the target re-arms to node 0, `reached()` stays monotonic across the wrap
-//! and `laps()` counts it. **Several** laps through the *integrated* loop are
+//! and `laps()` counts it. The scenario is also **causal**: an identical spawn
+//! flown without the navigation plugin (`unguided_flight`) diverges from the
+//! guided aircraft by more than 5 m of altitude, so the loop flight cannot be an
+//! artifact of a route laid out along the airframe's own trim path.
+//!
+//! **Several** laps through the *integrated* loop are
 //! not claimed, and cannot be until #451: a closed circuit needs a U-turn, and
 //! through the production flight loop the F24 synthetic airframe turns the
 //! wrong way (`roll` sign) and far too slowly (envelope/airframe mismatch), so
@@ -132,24 +137,61 @@ fn bound_loop_route() -> BoundRoute {
     bind_route(&resolved, &[]).expect("a declared loop binds to the follower")
 }
 
-/// A flight world: the real physics fixture with the production flight driver
-/// and the F31 navigation driver.
-fn fixture() -> PhysicsFixture {
-    PhysicsFixture::builder(FixtureBodySpec {
+/// The shared fixture body spec: one tiny free-flying box far from any fixture
+/// route, so nothing is inherited from the fixture's own body.
+fn fixture_spec() -> FixtureBodySpec {
+    FixtureBodySpec {
         mass_kg: 1.0,
         half_extents_m: [0.05, 0.05, 0.05],
         position_m: [-10_000.0, 0.0, 0.0],
         linear_velocity_m_s: [0.0; 3],
-    })
-    .configure(|app| {
-        app.add_plugins(FlightForcesPlugin);
-        app.add_plugins(AiNavigationPlugin::new(
-            SYNTHETIC_NAVIGATION_SESSION,
-            SYNTHETIC_NAVIGATION_SEED,
-        ));
-    })
-    .build()
-    .expect("the fixture spec is valid")
+    }
+}
+
+/// A flight world: the real physics fixture with the production flight driver
+/// and the F31 navigation driver.
+fn fixture() -> PhysicsFixture {
+    PhysicsFixture::builder(fixture_spec())
+        .configure(|app| {
+            app.add_plugins(FlightForcesPlugin);
+            app.add_plugins(AiNavigationPlugin::new(
+                SYNTHETIC_NAVIGATION_SESSION,
+                SYNTHETIC_NAVIGATION_SEED,
+            ));
+        })
+        .build()
+        .expect("the fixture spec is valid")
+}
+
+/// Spawns one flight body through the production flight path, at cruise down
+/// `-Z` from `position_m`.
+fn spawn_aircraft(fixture: &mut PhysicsFixture, position_m: [f32; 3]) -> Entity {
+    spawn_flight_body(
+        fixture.world_mut(),
+        FlightModel::new(synthetic_fixed_wing()),
+        &FlightSpawnSpec {
+            engine: EngineState::direct(1.0),
+            command: FlightInput::try_new(0.0, 0.0, 0.0, 1.0, false).expect("valid input"),
+            ..FlightSpawnSpec::level_at(position_m, [0.0, 0.0, -40.0])
+        },
+    )
+    .expect("the spawn spec is valid")
+}
+
+/// The control flight: the **identical** production spawn in a world with the
+/// production flight driver but **no** AI navigation plugin, so it flies on the
+/// airframe's own trim alone. The differential against this flight is what makes
+/// "the follower flew the loop" a causal claim rather than a coincidence of
+/// geometry (see `accept_t457_a_bound_loop_route_is_flown_and_re_arms_at_the_wrap`).
+fn unguided_flight() -> (PhysicsFixture, Entity) {
+    let mut fixture = PhysicsFixture::builder(fixture_spec())
+        .configure(|app| {
+            app.add_plugins(FlightForcesPlugin);
+        })
+        .build()
+        .expect("the fixture spec is valid");
+    let aircraft = spawn_aircraft(&mut fixture, [0.0, 0.0, 0.0]);
+    (fixture, aircraft)
 }
 
 /// Spawns one AI aircraft through the production flight path, on node 0 of the
@@ -161,16 +203,7 @@ fn spawn_ai_aircraft(
     route: BoundRoute,
     resume_reached: usize,
 ) -> Entity {
-    let aircraft = spawn_flight_body(
-        fixture.world_mut(),
-        FlightModel::new(synthetic_fixed_wing()),
-        &FlightSpawnSpec {
-            engine: EngineState::direct(1.0),
-            command: FlightInput::try_new(0.0, 0.0, 0.0, 1.0, false).expect("valid input"),
-            ..FlightSpawnSpec::level_at([0.0, 0.0, 0.0], [0.0, 0.0, -40.0])
-        },
-    )
-    .expect("the spawn spec is valid");
+    let aircraft = spawn_aircraft(fixture, [0.0, 0.0, 0.0]);
     fixture
         .world_mut()
         .entity_mut(aircraft)
@@ -275,12 +308,20 @@ fn accept_t457_bind_route_carries_a_declared_loop_termination_into_the_graph() {
 /// target goes back to node 0, `reached()` is monotonic across the wrap, and
 /// `laps()` counts it. The route is never reported complete.
 ///
+/// The flight is *caused* by the follower, not by the geometry: the same
+/// production spawn without the navigation plugin (`unguided_flight`) flies a
+/// materially different trajectory over the same ticks, so "the loop was flown"
+/// cannot be an artifact of a route laid out along the spawn's own trim path.
+/// The arrivals are the set's (`NavigationSet` owns progress), the command
+/// reaches the flight record, and the wrap is real.
+///
 /// See the module doc: additional laps need the wrap leg, which the integrated
 /// follower cannot fly until #451. This asserts the wrap and the re-arm, which
 /// is what the integrated loop can reach, and no lateral rejoin.
 #[test]
 fn accept_t457_a_bound_loop_route_is_flown_and_re_arms_at_the_wrap() {
     let mut fixture = fixture();
+    let (mut unguided, unguided_plane) = unguided_flight();
     let route = bound_loop_route();
     let actor = actor(ACTOR_SERIAL);
 
@@ -291,10 +332,13 @@ fn accept_t457_a_bound_loop_route_is_flown_and_re_arms_at_the_wrap() {
 
     let plane = spawn_ai_aircraft(&mut fixture, actor, route.clone(), 1);
 
-    // Fly the loop. Progress must never decrease, not even across the wrap.
+    // Fly the loop. Progress must never decrease, not even across the wrap. The
+    // control flight is advanced in lockstep, so the differential below compares
+    // two aircraft that have flown exactly the same number of ticks.
     let mut previous = reached(&fixture, actor).unwrap_or(1);
     for _ in 0..6_000 {
         fixture.step(1);
+        unguided.step(1);
         let current = reached(&fixture, actor).expect("the actor registers on its first tick");
         assert!(
             current >= previous,
@@ -332,6 +376,19 @@ fn accept_t457_a_bound_loop_route_is_flown_and_re_arms_at_the_wrap() {
     assert!(
         position[2] < -200.0,
         "the aircraft actually flew down the loop's legs to its last node: {position:?}"
+    );
+
+    // The differential: the flight that reached the loop's nodes is the
+    // follower's flight and not the airframe's own trim. The follower commands a
+    // climb back toward the marker line (measured: the guided aircraft rises
+    // ~10 m above the route by the wrap, while the trim-only control sinks ~8 m
+    // below it). A collinear route would otherwise be satisfiable by flying
+    // straight, so this is what makes the scenario discriminating.
+    let unguided_position = position_of(&unguided, unguided_plane);
+    assert!(
+        (position[1] - unguided_position[1]).abs() > 5.0,
+        "the guided flight is materially different from the trim-only control: guided \
+         {position:?} vs unguided {unguided_position:?}"
     );
 
     let tick_report = report(&fixture);

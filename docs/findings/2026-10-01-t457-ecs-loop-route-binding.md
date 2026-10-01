@@ -65,6 +65,14 @@ An over-count is refused, not clamped, and both branches are pinned
 `accept_t457_an_ending_route_resume_past_its_end_is_still_legal`). The refusal
 is per tick, so a mission that fixes its count is not wedged forever.
 
+One consequence recorded rather than hidden: a refused pursuit is never
+registered, so the follower produces **no command** for it and the aircraft keeps
+whatever `FlightInput` it last held (level flight, for a freshly spawned one).
+That is a loud, named failure in the tick report, not a silent station hold —
+`AiNavigation::reached`/`laps` return `None` and `NavigationTickReport::refused`
+climbs by one every tick — but the aircraft is not flown home either. Clamping the
+count instead would hide the authoring error, so the refusal stays.
+
 ## What the loop test claims, and what it deliberately does not
 
 The route is three **collinear** nodes down `-Z` (`entry`, `leg`, `turn`),
@@ -133,6 +141,33 @@ Two other things from the handoff, handled by documentation rather than code:
 
 Probe 1 is the important one: it shows the new tests fail on the old behavior
 rather than passing vacuously.
+
+## Review note (bunny-alpha-1, #457 review; the reviewer is the implementing agent)
+
+The reviewer's probe found a real defect in the first version of the core
+scenario: **it did not discriminate who flew the aircraft.** The route is
+collinear straight down `-Z` and the spawn already points down it, so a neutral
+straight-and-level command reaches the same three nodes. Probe 4 replaced the
+follower's decision with `FlightInput::try_new(0.0, 0.0, 0.0, 1.0, false)` in
+`decide_navigation`'s candidate list: all four `accept_t457_` tests still
+passed, so "the follower flew the loop" was not established by that test.
+
+The fix (in the test, no production change) is an `unguided_flight()` control:
+the **identical** production spawn in a world with `FlightForcesPlugin` and **no**
+`AiNavigationPlugin`, advanced in lockstep with the guided world, plus an
+assertion that the two aircraft's altitudes differ by more than 5 m at the wrap.
+The measured separation is wide: the guided aircraft climbs to about **+10 m**
+above the route (the follower's pitch channel commands the climb) while the
+trim-only control sinks to about **-8 m**. Under probe 4 the new assertion
+FAILS, so the loop flight is now causally attributed to the follower.
+
+Probe 4 (after the fix): the follower's command replaced by a neutral
+straight-and-level input -> `accept_t457_a_bound_loop_route_is_flown_and_re_arms_at_the_wrap`
+FAILED (guided and unguided positions became identical).
+
+The same review also corrected the stale note in
+`docs/findings/2026-10-01-f31-c-original-routes-and-moving-frames.md`, which
+still said `bind_route` refuses a loop.
 
 ## Commands run
 

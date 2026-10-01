@@ -28,18 +28,22 @@ marker" is the `--follow` probe below.
 - `tools/cs_inspect/src/routes.rs` (extended): the F31-C conversion boundary,
   the same place F24-C owns the flight conversion. `project_route` maps a
   `ResolvedRoute` into a `RouteGraph` (authored sequence -> runtime node key,
-  world/moving frame carried, loop and unbound moving anchor refused by name),
+  world/moving frame carried, unbound moving anchor refused by name; the loop
+  refusal named below was superseded by #447),
   `AnchorBinding` binds a content anchor to a runtime actor id, and
   `routes --follow` resolves, projects and drives the production follower end to
   end and reports the rejoin, teardown and retry counts.
 - `tools/cs_inspect/src/lib.rs`, `tools/cs_inspect/src/main.rs` (wiring/doc
   only): the `--follow` mode in the command help and the module doc.
 
-> **Superseded in part by #447** (`docs/findings/2026-10-01-f447-loop-route-termination.md`):
+> **Superseded in part by #447 and #457**:
 > `project_route` no longer refuses a `Loop` termination — it carries the declared
 > termination into the runtime graph, and `RouteProjectionError::UnsupportedTermination`
-> has been removed. `crates/cs_app/src/ai/navigation.rs::bind_route` still refuses
-> one (filed as **#457**); `bind_route` is not an F31 owner path.
+> has been removed (#447,
+> `docs/findings/2026-10-01-f447-loop-route-termination.md`). `crates/cs_app/src/ai/navigation.rs::bind_route`
+> was the last boundary still refusing one; **#457** made it carry the declared
+> termination across the same way and removed `RouteBindingError::UnsupportedTermination`
+> (`docs/findings/2026-10-01-t457-ecs-loop-route-binding.md`).
 - `crates/cs_content/tests/accept_f31_c_route_resolution.rs` (new),
   `crates/cs_sim/tests/accept_f31_c_navigation_follow.rs` (new),
   `tools/cs_inspect/tests/accept_f31_c_routes_wiring.rs` (new): the
