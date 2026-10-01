@@ -23,6 +23,10 @@ cs_content.workspace = true
 cs_formats.workspace = true
 cs_sim.workspace = true
 cs_types.workspace = true
+# `src/capital.rs` (F35-A) names `cs_script::ir::ActorId`, the actor identity
+# the `cs_sim::capital` aggregate is keyed by; `cs_sim` re-exports neither it
+# nor a substitute, so the boundary depends on the crate that owns it.
+cs_script.workspace = true
 
 [[bin]]
 name = "cs"

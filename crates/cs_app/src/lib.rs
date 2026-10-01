@@ -187,6 +187,17 @@
 //! [`damage::DamageActorBinding`] ECS record tying an entity to its
 //! session-qualified actor and damage-graph subject.
 //!
+//! [`capital`] is the F35-A capital-ship boundary
+//! (`specs/F35-zeppelins-capital-ships-subsystems-and-launch-bays.md`, stage
+//! `### F35-A`): [`capital::lower_capital_ship`], which lowers a declared
+//! `cs_content::capital::DeclaredCapitalShip` into the
+//! `cs_sim::capital::CapitalShip` aggregate with every subsystem, engine,
+//! bay, turret, anchor, cargo pool and trajectory mapped field-wise and every
+//! `Resolved::Unknown` carried through; the boundary refuses an unknown
+//! initial owner outright, because guns, targeting and docking eligibility
+//! cannot switch coherently under a guessed owner; and the generation-stamped
+//! [`capital::CapitalActorBinding`] ECS record.
+//!
 //! [`targeting`] is the F30-A targeting boundary
 //! (`specs/F30-targeting-classification-aim-assistance-and-threat-cues.md`,
 //! stage `### F30-A`): [`targeting::lower_rules`], which lowers a declared
@@ -301,6 +312,7 @@ pub mod asset_stack;
 pub mod assets;
 pub mod audio;
 pub mod camera;
+pub mod capital;
 pub mod cli;
 pub mod damage;
 pub mod environment;

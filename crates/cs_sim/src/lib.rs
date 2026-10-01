@@ -158,6 +158,20 @@
 //! [`world_actors::graph::SupportGraph`] and detached-payload release. The
 //! runtime is F34-B and the wiring is F34-C.
 //!
+//! [`capital`] is the F35-A capital-ship contract
+//! (`specs/F35-zeppelins-capital-ships-subsystems-and-launch-bays.md`, stage
+//! `### F35-A`): the [`capital::SubsystemGraph`] of engines, bays, turrets,
+//! docking anchors, gas cells and structural sections whose
+//! [`capital::SubsystemGraph::disable`] applies the destroyed part's
+//! behavior; the [`capital::EngineSpec`] thrust sum a disabled engine
+//! removes (the minimum scenario); the explicit tick-indexed
+//! [`capital::ExposureWindow`] that makes a bay a weakpoint only while open;
+//! the once-only [`capital::LaunchLedger`] and [`capital::LaunchSocket`]
+//! release; and the staged [`capital::CaptureTransaction`] ownership
+//! contract. The declared schema is `cs_content::capital` and the lowering
+//! boundary is `cs_app::capital`; the movement, weakpoint and turret runtime
+//! is F35-B and the launch/capture wiring is F35-C.
+//!
 //! [`weapons`] is the F27-A weapon contract
 //! (`specs/F27-guns-ammunition-hardpoints-and-ballistic-hits.md`, stage
 //! `### F27-A`): the [`weapons::GunDefinition`] whose mount is the same
@@ -179,6 +193,7 @@
 pub mod ai;
 pub mod animated_object;
 pub mod audio_events;
+pub mod capital;
 pub mod collision;
 pub mod control;
 pub mod damage;

@@ -151,6 +151,18 @@
 //! Its runtime counterpart is `cs_sim::damage`; the conversion boundary is
 //! `cs_app::damage`.
 //!
+//! [`capital`] is the F35-A declared capital-ship schema
+//! (`specs/F35-zeppelins-capital-ships-subsystems-and-launch-bays.md`, stage
+//! `### F35-A`): the provenance-carrying [`capital::DeclaredCapitalShip`]
+//! with its authored trajectory, engines, gas/structural sections, turrets,
+//! weapon bays, launch bays with socket transforms, docking anchors, cargo
+//! and ownership. Identity is the [`capital::CapitalSubsystemKey`]; the
+//! shared [`capital::DeclaredSubsystem`] list pairs each part's kind with
+//! the behavior its destruction changes, and every load-bearing value is a
+//! [`Resolved`], so an unmeasured thrust, socket or owner stays an explicit
+//! unknown. Its runtime counterpart is `cs_sim::capital`; the lowering
+//! boundary is `cs_app::capital`.
+//!
 //! [`flight_tuning`] is the F24-A provenance-carrying tuning schema
 //! (`specs/F24-fixed-wing-flight-engine-stall-and-arcade-assists.md`, stage
 //! `### F24-A`): every numeric field the `cs_sim::flight` equations consume,
@@ -285,6 +297,7 @@ pub mod animation;
 pub mod audio;
 pub mod cameras;
 pub mod campaign_bindings;
+pub mod capital;
 pub mod catalog;
 pub mod config;
 pub mod coordinates;
