@@ -778,6 +778,18 @@ pub enum OrdnanceSchemaError {
         /// The rejected value.
         strength: f64,
     },
+    /// A known damage amount was NaN or infinite.
+    NonFiniteDamage {
+        /// Which declared damage channel was corrupt.
+        field: &'static str,
+    },
+    /// A known damage amount was negative.
+    NegativeDamage {
+        /// Which declared damage channel was corrupt.
+        field: &'static str,
+        /// The rejected value.
+        damage: f64,
+    },
     /// A known lifetime was zero, so the item exists for no ticks.
     ZeroLifetime,
     /// A known fuse tick count was zero.
@@ -855,6 +867,12 @@ impl fmt::Display for OrdnanceSchemaError {
             Self::NonFiniteStatusStrength => write!(f, "a status strength must be finite"),
             Self::NegativeStatusStrength { strength } => {
                 write!(f, "a status strength is negative: {strength}")
+            }
+            Self::NonFiniteDamage { field } => {
+                write!(f, "the declared {field} amount must be finite")
+            }
+            Self::NegativeDamage { field, damage } => {
+                write!(f, "the declared {field} is negative: {damage}")
             }
             Self::ZeroLifetime => write!(f, "ordnance must live for at least one tick"),
             Self::ZeroFuseTicks => write!(f, "a timed fuse must fire after at least one tick"),
@@ -978,14 +996,18 @@ fn validate_projectile(projectile: &DeclaredProjectile) -> Result<(), OrdnanceSc
     {
         return Err(OrdnanceSchemaError::ZeroLifetime);
     }
-    for amount in [&projectile.armor_damage, &projectile.internal_damage] {
+    for (field, amount) in [
+        ("armor_damage", &projectile.armor_damage),
+        ("internal_damage", &projectile.internal_damage),
+    ] {
         if let Resolved::Known(known) = amount {
             if !known.value.is_finite() {
-                return Err(OrdnanceSchemaError::NonFiniteStatusStrength);
+                return Err(OrdnanceSchemaError::NonFiniteDamage { field });
             }
             if known.value < 0.0 {
-                return Err(OrdnanceSchemaError::NegativeStatusStrength {
-                    strength: known.value,
+                return Err(OrdnanceSchemaError::NegativeDamage {
+                    field,
+                    damage: known.value,
                 });
             }
         }
@@ -1003,19 +1025,21 @@ fn validate_nitro(parameters: &DeclaredNitroParameters) -> Result<(), OrdnanceSc
     // Capacity, consumption and thrust must each be strictly positive: a
     // booster with none of them is a different component, not a weaker one.
     // Recovery may be zero — a booster that never recharges is a legitimate
-    // design — but it may not be negative.
-    for (resolved, must_be_positive) in [
-        (&parameters.capacity_units, true),
-        (&parameters.consumption_per_s, true),
-        (&parameters.recovery_per_s, false),
-        (&parameters.extra_thrust_n, true),
+    // design — but it may not be negative. Each entry names its own declared
+    // field, so a refusal points at the number that is corrupt rather than at
+    // the record as a whole.
+    for (field, resolved, must_be_positive) in [
+        ("capacity_units", &parameters.capacity_units, true),
+        ("consumption_per_s", &parameters.consumption_per_s, true),
+        ("recovery_per_s", &parameters.recovery_per_s, false),
+        ("extra_thrust_n", &parameters.extra_thrust_n, true),
     ] {
         let Resolved::Known(known) = resolved else {
             continue;
         };
         if !known.value.is_finite() {
             return Err(OrdnanceSchemaError::CorruptNitroValue {
-                field: "nitro",
+                field,
                 reason: "capacity, consumption, recovery and thrust must all be finite",
             });
         }
@@ -1026,7 +1050,7 @@ fn validate_nitro(parameters: &DeclaredNitroParameters) -> Result<(), OrdnanceSc
         };
         if unusable {
             return Err(OrdnanceSchemaError::CorruptNitroValue {
-                field: "nitro",
+                field,
                 reason: if must_be_positive {
                     "capacity, consumption and thrust must each be above zero"
                 } else {
