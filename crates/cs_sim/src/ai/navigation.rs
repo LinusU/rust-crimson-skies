@@ -225,6 +225,28 @@ impl RouteGraph {
         Ok(())
     }
 
+    /// Builds a route graph from already-collected parts, validating it before
+    /// it can be followed (F31-C).
+    ///
+    /// # Errors
+    ///
+    /// [`RouteGraphError`] under the same rules as [`Self::validate`]. Nothing
+    /// is clamped or repaired, so a producer cannot hand the follower an
+    /// invalid graph.
+    pub fn try_new(
+        frame: RouteFrame,
+        clearance_m: f64,
+        nodes: Vec<RouteNode>,
+    ) -> Result<Self, RouteGraphError> {
+        let graph = Self {
+            frame,
+            clearance_m,
+            nodes,
+        };
+        graph.validate()?;
+        Ok(graph)
+    }
+
     /// The node at `index`, when it exists.
     #[must_use]
     pub fn node(&self, index: usize) -> Option<&RouteNode> {
@@ -1867,6 +1889,129 @@ fn actor_stream_domain(actor: ActorId) -> u64 {
     value = (value ^ (value >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     value = (value ^ (value >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     value ^ (value >> 31)
+}
+
+// ------------------------------------------------------- follow driver -----
+
+/// The outcome of one production route-follow run (F31-C).
+#[derive(Clone, Debug, PartialEq)]
+pub struct FollowOutcome {
+    /// Every decision, in tick order.
+    pub decisions: Vec<PursuitDecision>,
+    /// The progress the actor reached at the end of the run.
+    pub progress: RouteProgress,
+    /// Whether every node was reached.
+    pub complete: bool,
+    /// The tick of the first `Blocked` hold, if any.
+    pub blocked_at: Option<u64>,
+}
+
+impl FollowOutcome {
+    /// The index of the actor's first reached mandatory marker, if any.
+    #[must_use]
+    pub fn first_mandatory_reached(&self, route: &RouteGraph) -> Option<usize> {
+        route
+            .nodes
+            .iter()
+            .take(self.progress.reached())
+            .position(|node| node.mandatory)
+    }
+}
+
+/// The static configuration of one production route-follow run (F31-C):
+/// the graph to fly and the environment it is flown in.
+///
+/// Bundling these keeps [`follow_route`]'s inputs to the set, the actor, this
+/// plan and the per-tick frame sampler, rather than a long positional list.
+#[derive(Clone, Copy, Debug)]
+pub struct FollowPlan<'a> {
+    /// The projected route to fly.
+    pub route: &'a RouteGraph,
+    /// Static obstacles evaluated by every decision.
+    pub blockers: &'a [Blocker],
+    /// The fixed decision step, in seconds.
+    pub dt_s: f64,
+    /// The actor's initial kinematic state.
+    pub start: NavState,
+    /// The hard cap on decisions, so a wedged follower can never loop forever.
+    pub max_ticks: usize,
+}
+
+/// Drives one already-registered actor along `plan.route` from `plan.start`,
+/// advancing its state from each committed step (the kinematic closure the
+/// synthetic probes use) for up to `plan.max_ticks` decisions (F31-C).
+///
+/// `frame_at` supplies the sampled pose of the route's frame on each tick, so a
+/// route authored against a moving anchor is followed in its relative
+/// coordinates. The run stops early when the route completes or the actor is
+/// held [`AvoidanceState::Blocked`]. The set keeps every actor's progress, so a
+/// displaced start does not reset it and an origin shift cannot restart the
+/// route (spec non-negotiable behaviors 1, 3 and 4).
+///
+/// # Errors
+///
+/// Every [`NavigationError`] [`NavigationSet::decide`] can raise, including a
+/// request for an actor the set does not own and a stale command generation.
+pub fn follow_route<F>(
+    set: &mut NavigationSet,
+    actor: ActorId,
+    plan: FollowPlan<'_>,
+    mut frame_at: F,
+) -> Result<FollowOutcome, NavigationError>
+where
+    F: FnMut(Tick) -> ReferenceFrameSample,
+{
+    let FollowPlan {
+        route,
+        blockers,
+        dt_s,
+        start,
+        max_ticks,
+    } = plan;
+    let mut state = start;
+    let mut decisions = Vec::new();
+    let mut blocked_at = None;
+    let mut complete = false;
+    for index in 0..max_ticks {
+        let tick = Tick(index as u64);
+        let request = PursuitRequest {
+            actor,
+            tick,
+            generation: set.session(),
+            state,
+            route,
+            frame: frame_at(tick),
+            blockers,
+            dt_s,
+        };
+        let decision = set.decide(&request)?;
+        let blocked = matches!(decision.decision.avoidance, AvoidanceState::Blocked);
+        state = NavState {
+            position_m: decision.decision.step.to_m,
+            heading_rad: decision.decision.step.heading_rad,
+            speed_mps: decision.decision.step.speed_mps,
+            climb_mps: decision.decision.step.climb_mps,
+        };
+        let finished = decision.state.is_complete(route);
+        decisions.push(decision);
+        if blocked {
+            blocked_at = Some(tick.0);
+            break;
+        }
+        if finished {
+            complete = true;
+            break;
+        }
+    }
+    let progress = set
+        .state(actor)
+        .map_or_else(RouteProgress::start, PursuitState::progress);
+    Ok(FollowOutcome {
+        decisions,
+        progress,
+        complete,
+        blocked_at,
+    })
 }
 
 // ------------------------------------------------------------- fixture -----
