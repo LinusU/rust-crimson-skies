@@ -187,8 +187,15 @@ fn accept_t447_a_one_node_loop_is_refused_at_the_content_boundary() {
 }
 
 /// The projection boundary still refuses what it always did, so removing the
-/// loop refusal did not turn it into a permissive pass-everything: an unbound
-/// moving anchor and an invalid graph are still named errors.
+/// loop refusal did not turn it into a permissive pass-everything: a moving
+/// route with no anchor binding is still a named error.
+///
+/// The `Graph` arm is deliberately not probed here. Every rule
+/// `RouteGraph::validate` enforces is also enforced by
+/// `RouteDefinition::try_new` — and since #447 the one-node-loop rule is
+/// enforced on both sides with the same threshold — so no content record that
+/// resolves can reach it. The runtime rules themselves are pinned by the
+/// `accept_f31_a_` graph tests in `cs_sim`.
 #[test]
 fn accept_t447_projection_still_names_its_other_refusals() {
     let mut draft = loop_draft();

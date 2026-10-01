@@ -76,8 +76,10 @@ state (probes 4 and 5).
   list-ordered. The reference frame and clearance are carried across. A route
   authored against a moving anchor is addressed at the runtime actor id the
   caller bound through `AnchorBinding`; an unbound anchor is refused
-  (`UnboundAnchor`), never invented. A `Loop` termination is refused
-  (`UnsupportedTermination`) because the runtime follower has no loop semantics.
+  (`UnboundAnchor`), never invented. A `Loop` termination was refused here
+  (`UnsupportedTermination`) because the runtime follower had no loop semantics;
+  **#447** replaced that refusal with real loop semantics, so the declared
+  termination is now carried across and the follower re-arms it.
 - **Per-tick frame sampling (moving reference frames).** `follow_route` samples
   `frame_at(tick)` on every decision and hands it to the set, so the same local
   node position becomes the anchor's current world position. The set, not the

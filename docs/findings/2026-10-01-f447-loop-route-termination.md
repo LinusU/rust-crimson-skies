@@ -75,19 +75,29 @@ threshold pinned to the same `MIN_LOOP_NODES` constant on both sides.
 criterion required that `project_route` no longer report an unexplained
 unsupported termination. Nothing can produce that variant any more.
 
-## Defect found and fixed by a mutation probe
+## The `is_complete` bound: a defect the probes found and the review confirmed
 
-Probe 1 (removing the loop re-arm) initially failed with `index out of bounds:
-the len is 3 but the index is 3` rather than a clean assertion. That was a real
-defect introduced by this task, not a probe artifact: `is_complete` returned
-`false` unconditionally for a loop, so a `RouteProgress` seeded past the end
-(`reached_nodes(n)` with `n` beyond the node count) indexed off the end of the
-node list instead of holding station.
+Probe 1 (removing the loop re-arm) failed with `index out of bounds: the len is
+3 but the index is 3` rather than with a clean assertion. That is not a probe
+artifact: the same panic is reachable in production, not only under the probe.
 
-It is fixed by keeping the bound as `next_index >= route.nodes.len()`. A loop
-followed through `advanced()` never completes, because the wrap keeps
-`next_index` inside the list; the bound is still checked so a bad resume holds
-station. See `RouteProgress::is_complete`.
+`RouteProgress::is_complete` short-circuited to `false` for a loop, so the
+bound `next_index >= route.nodes.len()` was never checked for that termination.
+`NavigationSet::register_resuming(actor, reached)` is public, takes **no route**
+and validates nothing, so a `RouteProgress` seeded past the end of a loop route
+is an ordinary caller state — and `Navigator::decide_with_tie_break` then indexed
+`route.nodes[next_index]` off the end. Before this task the bound covered every
+route, because a loop could not exist; adding the termination is what opened the
+hole.
+
+It is fixed by keeping the bound for every termination:
+`is_complete` is `self.next_index >= route.nodes.len()`. A loop followed through
+`advanced()` never trips it, because the wrap keeps `next_index` inside the list;
+a progress seeded past the end holds station — no target, no teleport — exactly
+as it does on an ending route. Pinned by
+`accept_t447_a_resume_past_the_end_of_a_loop_holds_station_instead_of_panicking`
+(`crates/cs_sim/tests/accept_t447_loop_route_progress.rs`), which panics without
+the fix.
 
 ## Known limitations that gate later stages (not silently dropped)
 
@@ -97,7 +107,11 @@ station. See `RouteProgress::is_complete`.
    there and the ECS-integrated follower still cannot fly a loop route. Filed as
    **#457**. Affected content: every AI aircraft on a loop route inside the
    integrated ECS flight loop. Until it is fixed, the runtime can follow a loop
-   but the mission ECS cannot hand it one.
+   but the mission ECS cannot hand it one. #457 must also seed its actor with
+   `register_resuming` below the node count: `cs_app::AiNavigation::reached`
+   documents "how many leading route nodes" and now reports the cross-lap total
+   for a loop, and an over-counted resume holds station (see above) instead of
+   flying the route.
 2. **The original route encoding remains unmeasured.** No original route is
    parsed; whether the original expressed loop, patrol or end termination at all
    is unknown. Resolving task: **F31-D** (needs `retail`).
@@ -123,6 +137,7 @@ Each probe was applied to the working tree, run, and reverted with
 | 6 | `reached()` returns `next_index` (rewinds on wrap) | 1 FAILED |
 | 7 | `laps()` hardcoded to 0 | 1 FAILED |
 | 8 | wrap credits two arrivals (would skip a marker) | 1 FAILED |
+| 9 | `is_complete` short-circuits to `false` for a loop (the defect above) | 1 FAILED (panics) |
 
 Probe 5 initially did **not** fail. The first version of that test measured the
 distance from node 0 at the decision that *re-armed* the target — which is taken
@@ -133,15 +148,23 @@ bound the firing tick from both sides (`node0_radius - 1.0 < from < node0_radius
 version of the test was not discriminating and a reviewer should know it was
 replaced for that reason.
 
+The review re-applied probes 1, 2 and 9 independently on the pushed commit:
+probe 1 failed 4 of 8, probe 2 failed the wrap-radius test at the lower bound
+(`from` had collapsed into the last node's 6 m radius), and probe 9 — which the
+implementer had already diagnosed in prose but had not left in the code — panicked
+as described.
+
 ## Commands run
 
-Exit codes as printed on the final tree:
+Exit codes as printed on the final tree, by the implementer and again by the
+review after the `is_complete` fix:
 
 ```
 cargo fmt --all -- --check                                                -> 0
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings -> 0
-cargo test --workspace --locked                                           -> 0 (1756 passed, 0 failed, 104 ignored)
-cargo test --workspace --locked -- accept_t447_ --include-ignored         -> 0 (8 tests selected, all passed)
+cargo test --workspace --locked                                           -> 0 (1785 passed, 0 failed, 104 ignored)
+cargo test --workspace --locked -- accept_t447_ --include-ignored         -> 0 (9 tests selected, all passed)
+cargo test --workspace --locked -- accept_f31_ --include-ignored          -> 0 (54 tests selected, all passed)
 ```
 
 ## Evidence
