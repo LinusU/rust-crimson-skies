@@ -63,6 +63,9 @@ at least one of them.
   totals back to their exact integers. `BlueprintAssessment::is_within_limits`
   reads only the integers and never consults a mapping, so no display step
   exists for an eligibility decision to be confused by.
+  The injectivity claim only holds for a divisor that is a **power of ten**, so
+  `DisplayMapping::try_new` refuses any other value
+  (`MinorPerMajorNotPowerOfTen`) — see "Review fixes" below.
 - **The manual's rack numbers are profile data, never constants.**
   Non-negotiable 1 reports four gun positions and up to eight rocket
   hardpoints as *observed manual* constraints and requires confirming them
@@ -109,7 +112,7 @@ at least one of them.
 
 ## Test inventory (`accept_f44_a_*`)
 
-All nine are in `crates/cs_content/tests/accept_f44_a_budget_bounds.rs` and
+All ten are in `crates/cs_content/tests/accept_f44_a_budget_bounds.rs` and
 call only the public `cs_content::construction` API.
 
 | Test | Covers |
@@ -119,6 +122,7 @@ call only the public `cs_content::construction` API.
 | `one_cost_unit_over_the_limit_is_rejected` | AC01 cost half: 42001 vs 42000 gives `LimitBreach::Cost` with `excess() == 1`, weight still exact — the two limits are independent |
 | `display_rounding_cannot_change_purchase_eligibility` | non-negotiable 2: display mapping is injective and round-trips; the verdict is display-independent; a zero divisor is refused |
 | `manual_rack_limits_are_profile_data_not_constants` | non-negotiable 1: two profiles of one airframe judge the same blueprint differently; a paired 6-position loadout is refused by the 4-position rack and accepted by the 6-position one |
+| `every_limit_boundary_is_inclusive_and_breaches_are_ordered` | the hardpoint comparison is inclusive too (2 of 2 accepted, 3 of 2 refused with `excess() == 1` and no other breach), and all four breaches come back in `BudgetQuantity::ALL` order with mass first |
 | `an_unmeasured_limit_refuses_instead_of_reading_as_no_limit` | an unmeasured ceiling is `UnknownLimit`, while a profile that measures it accepts the same blueprint |
 | `unknown_prices_and_footprints_are_refused_by_name` | `UnknownMass`, `UnknownCost`, `NotPriced`, `UnknownGunPositions`, `AirframeMismatch` and `Overflow` each by name |
 | `blueprint_is_a_validated_typed_input` | kind checks, repeated-node refusal naming the slot, zero-position refusal, non-airframe profile, duplicate mask, duplicate quote, and an empty book refusing rather than pricing a loadout free |
@@ -136,6 +140,41 @@ target run, and the file restored:
 | unmeasured gun-position count defaulted to `1` | 1 |
 | `checked_add` replaced with `wrapping_add` on weights | 1 |
 | an unquoted component treated as free instead of refused | 2 |
+| rocket hardpoints compared with `>=` instead of `>` (review-added) | 1 |
+| `excess` subtracting instead of saturating (review-added) | 2 |
+| the power-of-ten divisor check dropped (review-added) | 1 |
+
+## Review fixes (bunny-alpha-1 reviewing its own implementation)
+
+Three defects were found and fixed on the review pass rather than handed back:
+
+1. **`DisplayMapping` accepted a divisor its own formatter could not honour.**
+   `decimal_width` counted the divisor's digits and multiplied a `u32` scale by
+   ten until it reached it, so `try_new(u32::MAX)` produced a mapping whose
+   `decimal_width()` overflowed that `u32` — a debug panic, and a wrapped
+   near-random walk in release. A non-power-of-ten divisor was worse than a
+   panic: with `2500` minor units per major unit, `format_display` printed the
+   remainder `2000` in a four-digit field, i.e. `0.2000` where the true amount
+   is `0.8` — a plausible-looking wrong number, produced by the one code path
+   the type exists to be. `try_new` now refuses any non-power-of-ten divisor
+   with `ConstructionSchemaError::MinorPerMajorNotPowerOfTen`, which both removes
+   the overflow (the largest accepted divisor is `1_000_000_000`) and makes every
+   constructible mapping exact. No money figure changed; the display vocabulary
+   got smaller and honest.
+2. **`BlueprintTotals::excess` contradicted its own contract.** Its doc said
+   "or zero when it is not breached", but the body subtracted: passing a
+   `LimitBreach` that was not over its limit — a limit borrowed from another
+   profile, which the public API accepts — underflowed the `u64`, panicking in
+   debug and reporting an absurd excess in release. It now saturates, which is
+   exactly what the documented sentence already promised.
+3. **The hardpoint limit comparison had no boundary test.** Every existing rack
+   assertion compared a loadout clearly over or clearly under the limit, so
+   `rocket_hardpoints > limits.rocket_hardpoints` mutated to `>=` failed
+   nothing: the boundary profile allows 8 and the fixture uses 4, and the wide
+   profile allows 2 and the fixture uses 4. The added
+   `every_limit_boundary_is_inclusive_and_breaches_are_ordered` puts two rockets
+   on two hardpoints and three on three, and pins the canonical breach order
+   that no test previously observed.
 
 ## Designed vocabulary, not original data
 

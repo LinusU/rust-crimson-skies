@@ -19,12 +19,12 @@ use cs_content::construction::{
     SYNTHETIC_BOUNDARY_GUN_POSITIONS, SYNTHETIC_BOUNDARY_MASS_LIMIT_UNITS,
     SYNTHETIC_BOUNDARY_MASS_UNITS, SYNTHETIC_BOUNDARY_ROCKET_HARDPOINTS, SYNTHETIC_DECAL_KEY,
     SYNTHETIC_ENGINE_KEY, SYNTHETIC_GUN_KEY, SYNTHETIC_HEAVY_MISSILE_KEY,
-    SYNTHETIC_HEAVY_PLATE_KEY, SYNTHETIC_OTHER_AIRFRAME_KEY, SYNTHETIC_OVERFLOW_ENGINE_KEY,
-    SYNTHETIC_PAINT_MASK_KEY, SYNTHETIC_PLATE_KEY, SYNTHETIC_UNMEASURED_ENGINE_KEY,
-    SYNTHETIC_UNPRICED_PLATE_KEY, WeightUnits, declared_synthetic_blueprint,
-    declared_synthetic_price_book, synthetic_blueprint_with_engine, synthetic_boundary_rules,
-    synthetic_gun_fitments, synthetic_ordnance_fitments, synthetic_paint_selection,
-    synthetic_unmeasured_limit_rules, synthetic_wide_rack_rules,
+    SYNTHETIC_HEAVY_PLATE_KEY, SYNTHETIC_MISSILE_KEY, SYNTHETIC_OTHER_AIRFRAME_KEY,
+    SYNTHETIC_OVERFLOW_ENGINE_KEY, SYNTHETIC_PAINT_MASK_KEY, SYNTHETIC_PLATE_KEY,
+    SYNTHETIC_UNMEASURED_ENGINE_KEY, SYNTHETIC_UNPRICED_PLATE_KEY, WeightUnits,
+    declared_synthetic_blueprint, declared_synthetic_price_book, synthetic_blueprint_with_engine,
+    synthetic_boundary_rules, synthetic_gun_fitments, synthetic_ordnance_fitments,
+    synthetic_paint_selection, synthetic_unmeasured_limit_rules, synthetic_wide_rack_rules,
 };
 use cs_content::damage::DamageNodeKey;
 use cs_types::content::{ContentId, ContentKind, Known, Origin, Provenance, Resolved};
@@ -359,6 +359,56 @@ fn accept_f44_a_display_rounding_cannot_change_purchase_eligibility() {
         DisplayMapping::try_new(0).err(),
         Some(ConstructionSchemaError::ZeroMinorPerMajor)
     );
+
+    // A divisor that is not a power of ten is refused too: its remainder has no
+    // exact fixed-width decimal form, so rendering it would print a
+    // plausible-looking *wrong* amount — with 2500 minor units per major unit
+    // the remainder 2000 is 0.8 major units, not 0.2000. Refusing it also keeps
+    // the digit-count arithmetic bounded, so no divisor can overflow it.
+    for refused in [2, 25, 250, 2_500, 1_000_001, u32::MAX] {
+        assert_eq!(
+            DisplayMapping::try_new(refused).err(),
+            Some(ConstructionSchemaError::MinorPerMajorNotPowerOfTen {
+                minor_per_major: refused
+            }),
+            "{refused} minor units per major unit is refused rather than misrendered"
+        );
+    }
+
+    // Every divisor the constructor accepts renders exactly: the fraction field
+    // is as wide as that power of ten needs, and the printed text always
+    // recovers the exact total.
+    let mut scale = 1_u32;
+    while let Some(next) = scale.checked_mul(10) {
+        let mapping = DisplayMapping::try_new(scale).expect("a power of ten is valid");
+        let minor = 42_001;
+        let text = MoneyMinor::new(minor).format_display(mapping);
+        match text.split_once('.') {
+            None => {
+                assert_eq!(scale, 1, "only a divisor of one prints no fraction");
+                assert_eq!(text, minor.to_string());
+            }
+            Some((major_text, minor_text)) => {
+                assert_eq!(
+                    minor_text.len(),
+                    mapping.decimal_width(),
+                    "the fraction field is exactly as wide as the divisor needs"
+                );
+                let major: u64 = major_text.parse().expect("the major part is an integer");
+                let fraction: u64 = minor_text.parse().expect("the minor part is an integer");
+                assert_eq!(
+                    major * u64::from(scale) + fraction,
+                    minor,
+                    "{text} round-trips to the exact total {minor} at a divisor of {scale}"
+                );
+            }
+        }
+        scale = next;
+    }
+    assert_eq!(
+        scale, 1_000_000_000,
+        "every power of ten that fits was exercised"
+    );
 }
 
 /// Non-negotiable 1: the manual's four gun positions and eight rocket
@@ -459,6 +509,113 @@ fn accept_f44_a_manual_rack_limits_are_profile_data_not_constants() {
             .iter()
             .any(|breach| breach.quantity() == BudgetQuantity::GunPositions),
         "six positions fit the wider rack exactly"
+    );
+}
+
+/// Every limit comparison is inclusive at the boundary, the rocket-hardpoint one
+/// included, and the breach list is reported in the canonical quantity order.
+///
+/// The rack assertions elsewhere only ever compare a loadout that is clearly
+/// over or clearly under, so a hardpoint comparison mutated from `>` to `>=`
+/// would have failed nothing. Two rockets on the wide profile's two hardpoints
+/// is exactly at the limit and must be inside it; three is one over and must be
+/// the *only* breach, with weight and price still inside their ceilings.
+#[test]
+fn accept_f44_a_every_limit_boundary_is_inclusive_and_breaches_are_ordered() {
+    let book = declared_synthetic_price_book();
+    let wide = synthetic_wide_rack_rules();
+
+    // The boundary blueprint with `count` missiles instead of four.
+    let with_rockets = |count: u32| -> AircraftBlueprint {
+        let fitments = (0..count)
+            .map(|index| {
+                OrdnanceFitment::try_new(
+                    DamageNodeKey::new(&format!("hardpoint_{index}"))
+                        .expect("the fixture node key is valid"),
+                    id(ContentKind::Weapon, SYNTHETIC_MISSILE_KEY),
+                )
+                .expect("the ordnance fitment is valid")
+            })
+            .collect();
+        declared_synthetic_blueprint()
+            .with_ordnance(fitments)
+            .expect("the edited blueprint is valid")
+    };
+
+    // Exactly the profile's two hardpoints is at the limit, so it is inside it,
+    // and the lighter loadout is inside the weight and price ceilings too.
+    let at_limit = wide
+        .assess(&with_rockets(2), &book)
+        .expect("the two-rocket loadout is measurable");
+    assert_eq!(at_limit.totals().rocket_hardpoints(), 2);
+    assert_eq!(at_limit.breaches(), &[] as &[LimitBreach]);
+    assert!(
+        at_limit.is_within_limits(),
+        "two of two rocket hardpoints is at the limit, not over it"
+    );
+
+    // One more rocket is a breach of exactly that quantity, and nothing else
+    // moved: the weight and price totals are still inside their ceilings.
+    let over = wide
+        .assess(&with_rockets(3), &book)
+        .expect("the three-rocket loadout is measurable");
+    assert_eq!(
+        over.breaches(),
+        &[LimitBreach::RocketHardpoints { limit: 2, used: 3 }]
+    );
+    assert!(
+        !over.is_within_limits(),
+        "three of two rocket hardpoints is over the limit"
+    );
+    let breach = over
+        .first_breach()
+        .expect("the hardpoint breach is reported");
+    assert_eq!(breach.quantity(), BudgetQuantity::RocketHardpoints);
+    assert_eq!(over.totals().excess(*breach), 1);
+
+    // A profile every quantity is over reports all four breaches in the canonical
+    // quantity order, so a caller may read the first one as *the* reason.
+    let tiny = ConstructionRules::try_new(
+        id(ContentKind::Airframe, SYNTHETIC_AIRFRAME_KEY),
+        known(0),
+        known(0),
+        known(WeightUnits::new(1)),
+        known(MoneyMinor::new(1)),
+        Origin::SyntheticFixture,
+        designed("f44a.test.tiny-limits"),
+    )
+    .expect("a profile with tiny limits is structurally valid");
+    let every = tiny
+        .assess(&declared_synthetic_blueprint(), &book)
+        .expect("a measurable loadout is measurable against tiny limits too");
+    assert_eq!(
+        every.breaches(),
+        &[
+            LimitBreach::Mass {
+                limit: WeightUnits::new(1),
+                total: WeightUnits::new(SYNTHETIC_BOUNDARY_MASS_UNITS),
+            },
+            LimitBreach::Cost {
+                limit: MoneyMinor::new(1),
+                total: MoneyMinor::new(SYNTHETIC_BOUNDARY_COST_MINOR),
+            },
+            LimitBreach::GunPositions { limit: 0, used: 4 },
+            LimitBreach::RocketHardpoints { limit: 0, used: 4 },
+        ]
+    );
+    assert_eq!(
+        every.first_breach().map(LimitBreach::quantity),
+        Some(BudgetQuantity::Mass),
+        "the canonical order starts with mass"
+    );
+    assert_eq!(
+        every
+            .breaches()
+            .iter()
+            .map(LimitBreach::quantity)
+            .collect::<Vec<_>>(),
+        BudgetQuantity::ALL.to_vec(),
+        "breaches are reported in the canonical quantity order"
     );
 }
 
@@ -793,6 +950,29 @@ fn accept_f44_a_budget_vocabulary_is_closed_and_consistent() {
     assert_eq!(breach.quantity(), BudgetQuantity::Mass);
     assert_eq!(assessment.totals().excess(breach), 1);
     assert_ne!(breach.to_string(), "");
+
+    // `excess` reports no excess for a breach that is not actually over its
+    // limit — a limit borrowed from another profile, say — so the difference
+    // can never underflow the exact integers it is computed from.
+    assert_eq!(
+        assessment.totals().excess(LimitBreach::Mass {
+            limit: WeightUnits::new(SYNTHETIC_BOUNDARY_MASS_LIMIT_UNITS + 1),
+            total: WeightUnits::new(SYNTHETIC_BOUNDARY_MASS_UNITS),
+        }),
+        0
+    );
+    assert_eq!(
+        assessment
+            .totals()
+            .excess(LimitBreach::GunPositions { limit: 6, used: 4 }),
+        0
+    );
+    assert_eq!(
+        assessment
+            .totals()
+            .excess(LimitBreach::RocketHardpoints { limit: 8, used: 4 }),
+        0
+    );
 
     // The synthetic profile and fixture are declared data, never original.
     let rules = synthetic_boundary_rules();

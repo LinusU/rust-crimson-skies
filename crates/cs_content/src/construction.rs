@@ -165,6 +165,14 @@ impl fmt::Display for MoneyMinor {
 /// minor units make one displayed major unit, and it is display only. Nothing
 /// in the budget path reads it, so a mapping coarse enough to print two
 /// different totals as the same text cannot make either of them purchasable.
+///
+/// The divisor is a **power of ten** ([`DisplayMapping::try_new`] refuses any
+/// other value). The fraction field is a fixed-width decimal, and only a power
+/// of ten renders an integer remainder at its true scale: with a divisor of
+/// `2500` the remainder `2000` is `0.8` major units, not `0.2000`. Refusing
+/// the divisor a fixed-width fraction cannot represent exactly keeps every
+/// constructible mapping *exact*, so displaying an amount can never produce a
+/// plausible-looking wrong number.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DisplayMapping {
     minor_per_major: u32,
@@ -173,13 +181,21 @@ pub struct DisplayMapping {
 impl DisplayMapping {
     /// A mapping with `minor_per_major` minor units per displayed major unit.
     ///
+    /// `minor_per_major` must be a power of ten — `1`, `10`, `100`, … up to
+    /// `1_000_000_000`, the largest that fits this integer.
+    ///
     /// # Errors
     ///
     /// [`ConstructionSchemaError::ZeroMinorPerMajor`] when the divisor is zero,
-    /// which would make every amount display as an undefined fraction.
+    /// which would make every amount display as an undefined fraction, and
+    /// [`ConstructionSchemaError::MinorPerMajorNotPowerOfTen`] when it is a
+    /// nonzero divisor whose remainder has no exact fixed-width decimal form.
     pub const fn try_new(minor_per_major: u32) -> Result<Self, ConstructionSchemaError> {
         if minor_per_major == 0 {
             return Err(ConstructionSchemaError::ZeroMinorPerMajor);
+        }
+        if !is_power_of_ten(minor_per_major) {
+            return Err(ConstructionSchemaError::MinorPerMajorNotPowerOfTen { minor_per_major });
         }
         Ok(Self { minor_per_major })
     }
@@ -202,6 +218,9 @@ impl DisplayMapping {
 /// `1000` needs three (`"1.000"`), `10_000` needs four (`"1.0000"`). Counted
 /// from the integer value, so a display mapping never depends on a float's
 /// printed precision.
+///
+/// Only ever called with a [`DisplayMapping`]-accepted divisor, which is a power
+/// of ten of at most `1_000_000_000`, so `scale` cannot overflow this `u32`.
 const fn decimal_width(divisor: u32) -> usize {
     let mut width = 0;
     let mut scale = 1;
@@ -210,6 +229,21 @@ const fn decimal_width(divisor: u32) -> usize {
         scale *= 10;
     }
     width
+}
+
+/// Whether `value` is `10^n` for some `n`.
+///
+/// `0` is not a power of ten, so this agrees with
+/// [`DisplayMapping::try_new`]'s zero check rather than duplicating it.
+const fn is_power_of_ten(value: u32) -> bool {
+    let mut rest = value;
+    while rest > 1 {
+        if !rest.is_multiple_of(10) {
+            return false;
+        }
+        rest /= 10;
+    }
+    rest == 1
 }
 
 // ------------------------------------------------------------ price book ----
@@ -400,6 +434,7 @@ impl ConstructionRules {
         &self.provenance
     }
 }
+
 // ----------------------------------------------------- blueprint inputs ----
 
 /// One armor zone's fitted armor.
@@ -969,6 +1004,12 @@ pub enum ConstructionSchemaError {
     ZeroGunPositions,
     /// A display mapping declared zero minor units per major unit.
     ZeroMinorPerMajor,
+    /// A display mapping declared a divisor that is not a power of ten, whose
+    /// remainder has no exact fixed-width decimal form.
+    MinorPerMajorNotPowerOfTen {
+        /// The rejected divisor.
+        minor_per_major: u32,
+    },
 }
 
 impl fmt::Display for ConstructionSchemaError {
@@ -1003,6 +1044,13 @@ impl fmt::Display for ConstructionSchemaError {
             }
             Self::ZeroMinorPerMajor => {
                 f.write_str("a display mapping needs at least one minor unit per major unit")
+            }
+            Self::MinorPerMajorNotPowerOfTen { minor_per_major } => {
+                write!(
+                    f,
+                    "{minor_per_major} minor units per major unit is not a power of ten, so its \
+                     fraction has no exact fixed decimal width"
+                )
             }
         }
     }
@@ -1316,14 +1364,17 @@ impl BlueprintTotals {
     /// How much over the limit `quantity` is, or zero when it is not breached.
     ///
     /// The difference is computed on exact integers, so a shortfall reported to
-    /// a player is the same number the comparison rejected.
+    /// a player is the same number the comparison rejected. The subtraction
+    /// saturates at zero: a `breach` that is not actually over its limit — a
+    /// limit from a different profile, say — reports no excess instead of
+    /// underflowing a `u64`.
     #[must_use]
     pub fn excess(&self, breach: LimitBreach) -> u64 {
         match breach {
-            LimitBreach::Mass { limit, total } => total.as_units() - limit.as_units(),
-            LimitBreach::Cost { limit, total } => total.as_minor() - limit.as_minor(),
-            LimitBreach::GunPositions { limit, used } => u64::from(used - limit),
-            LimitBreach::RocketHardpoints { limit, used } => u64::from(used - limit),
+            LimitBreach::Mass { limit, total } => total.as_units().saturating_sub(limit.as_units()),
+            LimitBreach::Cost { limit, total } => total.as_minor().saturating_sub(limit.as_minor()),
+            LimitBreach::GunPositions { limit, used } => u64::from(used.saturating_sub(limit)),
+            LimitBreach::RocketHardpoints { limit, used } => u64::from(used.saturating_sub(limit)),
         }
     }
 }
