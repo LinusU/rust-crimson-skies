@@ -18,8 +18,10 @@
 //! 2026-09-28). Binding real identities and running the real campaign stay
 //! with F50-B/C/D.
 //!
-//! `m01_a.rs` … `m06_a.rs`, `m08_a.rs`, `m12_a.rs`, `m13_a.rs` and `m16_a.rs` are the exception that proves the rule: their
-//! `accept_m01_a_*` / … / `accept_m06_a_*` / `accept_m08_a_*` / `accept_m12_a_*` / `accept_m13_a_*` / `accept_m16_a_*` retail tests read `$CS_GAME_DIR`
+//! `m01_a.rs` … `m08_a.rs`, `m12_a.rs`, `m13_a.rs` and `m16_a.rs` are the
+//! exception that proves the rule: their `accept_m01_a_*` / … /
+//! `accept_m08_a_*` / `accept_m12_a_*` / `accept_m13_a_*` / `accept_m16_a_*`
+//! retail tests read `$CS_GAME_DIR`
 //! through production code and are marked
 //! `#[ignore = "requires CS_GAME_DIR"]`, so CI skips them and the
 //! implementing and reviewing agents run them with `--include-ignored`.
@@ -39,6 +41,7 @@ mod m03_a;
 mod m04_a;
 mod m05_a;
 mod m06_a;
+mod m07_a;
 mod m08_a;
 mod m12_a;
 mod m13_a;
