@@ -20,8 +20,9 @@ game and no `$CS_GAME_DIR` was read.
   plus its usage text and option parsing in `tools/cs_xtask/src/main.rs`.
 - `packaging/README.md` and `packaging/fixtures/candidate-clean.manifest`: the
   synthetic candidate the scan is exercised against.
-- Tests: `tools/cs_xtask/tests/accept_f61_a_release_contents.rs` (8) and
-  `tools/cs_xtask/tests/accept_f61_a_user_data_policy.rs` (4).
+- Tests: `tools/cs_xtask/tests/accept_f61_a_release_contents.rs` (10) and
+  `tools/cs_xtask/tests/accept_f61_a_user_data_policy.rs` (4), plus two more in
+  the first file added in review (see the review corrections below).
 - Observable failure without the implementation: a candidate carrying
   `textures/plane00.dds` scans as releasable, and a candidate with no `NOTICE.md`
   scans as releasable — `accept_f61_a_proprietary_content_is_refused` and
@@ -45,10 +46,11 @@ game and no `$CS_GAME_DIR` was read.
   "recorded separately from new-engine code", non-negotiable 2), `NOTICE.md`
   (provenance and non-affiliation, non-negotiable 3), `COMPATIBILITY.md` (the
   "versioned compatibility report") and `README.md` ("user instructions").
-- **A source hash manifest is content** (non-negotiable 1's explicit
-  exception). Hash-manifest suffixes and names are matched *before* the
-  proprietary table, but *after* the original-content-root rule, so the
-  exception cannot launder content out of `original/`.
+- **A source hash manifest is not content** (non-negotiable 1's explicit
+  exception: "A source hash manifest is not an asset bundle"). Hash-manifest
+  suffixes and names are matched *before* the proprietary table, but *after* the
+  original-content-root rule, so the exception cannot launder content out of
+  `original/`.
 - **The user-data base is derived from the platform and an environment, and
   from nothing else.** `resolve` has no argument through which a build path, a
   working directory or an executable location could enter the answer, which is
@@ -106,6 +108,34 @@ game and no `$CS_GAME_DIR` was read.
 - **Platform coverage is logic, not runs.** The three platforms are resolved
   from synthetic environments in one test binary; no Windows or Linux machine
   has run this code. Resolving: F61-D.
+
+## Review corrections (independent reviewer, 2026-10-02)
+
+Three defects were found in review and fixed on the task branch rather than
+handed back. Each fix is pinned by a test that fails without it.
+
+- **A backslash-spelled member could satisfy the engine rule.** `classify` split
+  only on `/`, so `docs\crimson-skies` was classified `EngineBinary` and set the
+  "this release ships an engine" flag — a member that a `/`-written manifest
+  cannot produce, and a rule the same module documents as "the archive root or
+  `bin/`". `classify` now normalises `\` to `/`, so it agrees with
+  `unsafe_path` (which already read `\` as a separator) and
+  `original\data\plane00.dat` keeps the original-content-root rule instead of
+  falling through to `Unclassified`.
+- **`total_bytes` panicked on an absurd manifest.** Declared sizes come from a
+  text file and were summed with `sum()`, which overflows: two members of
+  `u64::MAX` aborted the gate instead of reporting on it. The sum now saturates,
+  documented on the field. The gate decides on findings, never on the total.
+- **`--workspace-root` was accepted and ignored by `verify-package`.** Every
+  other subcommand checks the root it was handed; this one ignored it, so a bad
+  root could not be told apart from a good one. It is now checked like its
+  siblings.
+
+Also added: a process-level test of `verify-package` (exit 0 releasable, exit 1
+with every finding on stderr, exit 2 for a bad request, exit 1 for an unreadable
+manifest or an unusable root) — the subcommand was wiring the library tests never
+exercised — and an assertion that every `ProprietaryKind` has a spelled-out case,
+so a new class of proprietary content cannot arrive covered by nothing.
 
 ## Why this stage did not touch `.github/`
 

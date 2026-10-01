@@ -326,10 +326,15 @@ impl MemberClass {
 /// 7. anything else is [`MemberClass::Unclassified`] and refused — a gate that
 ///    passes what it does not understand is not a gate.
 ///
-/// Comparison is ASCII-case-insensitive.
+/// Comparison is ASCII-case-insensitive, and a backslash is a separator, so the
+/// answer does not depend on how the archive spelled its members. Without that
+/// rule `docs\crimson-skies` would classify as the engine — a file no packing
+/// tool that used `/` could smuggle in — and `original\data\plane00.dat` would
+/// lose the original-content-root rule. `unsafe_path` already reads `\` as a
+/// separator, and the two must not disagree about what a member path is.
 #[must_use]
 pub fn classify(path: &str) -> MemberClass {
-    let lower = path.to_ascii_lowercase();
+    let lower = path.replace('\\', "/").to_ascii_lowercase();
     let components: Vec<String> = lower.split('/').map(str::to_owned).collect();
     let file_name = components.last().map_or("", String::as_str);
 
@@ -722,6 +727,10 @@ pub struct PackageReport {
     /// How many members were scanned.
     pub member_count: usize,
     /// The uncompressed bytes those members declare.
+    ///
+    /// The total saturates at [`u64::MAX`] rather than wrapping or panicking,
+    /// because the sizes are declared in a text file and an absurd manifest must
+    /// be scanned and reported on, not crash the gate that exists to refuse it.
     pub total_bytes: u64,
     /// Everything that blocks the release, in scan order.
     pub findings: Vec<Finding>,
@@ -846,7 +855,9 @@ impl ReleasePolicy {
         PackageReport {
             version: package.version.clone(),
             member_count: package.members.len(),
-            total_bytes: package.members.iter().map(|member| member.size_bytes).sum(),
+            total_bytes: package.members.iter().fold(0u64, |total, member| {
+                total.saturating_add(member.size_bytes)
+            }),
             findings,
         }
     }

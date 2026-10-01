@@ -46,6 +46,11 @@ version is part of what is being checked.
 cargo run -p cs_xtask -- verify-package --manifest packaging/fixtures/candidate-clean.manifest
 ```
 
+Run it from the workspace root, or name one with `--workspace-root <dir>`: like
+every other `cs_xtask` gate, the command checks the root it was handed instead of
+ignoring it. It exits 0 when the candidate is releasable, 1 when it is not (with
+every finding on stderr) and 2 when the request itself is wrong.
+
 ## Fixtures
 
 `fixtures/` holds newly authored synthetic candidate manifests. Every file

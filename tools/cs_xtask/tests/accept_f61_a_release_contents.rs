@@ -10,10 +10,15 @@
 //!
 //! Every fixture is newly authored synthetic data. The committed candidate
 //! manifest under `packaging/fixtures/` holds text written for this
-//! repository; the negative cases add members to a copy of it in memory. No
-//! test opens `$CS_GAME_DIR`, and no original content is present or read.
+//! repository; the negative cases add members to a copy of it in memory. The
+//! one fixture written to disk by this file is a manifest under the gitignored
+//! `target/`, so nothing lands in Git. No test opens `$CS_GAME_DIR`, and no
+//! original content is present or read.
 
+use std::collections::BTreeSet;
+use std::fs;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
 use cs_xtask::package::{
     CandidatePackage, Finding, MemberClass, NoticeKind, PROPRIETARY_SUFFIXES, PackageMember,
@@ -132,7 +137,7 @@ fn accept_f61_a_proprietary_content_is_refused() {
     }
 
     // Spelled out, so the table cannot quietly lose one of these.
-    for (path, kind) in [
+    const CASES: [(&str, ProprietaryKind); 10] = [
         ("textures/plane00.dds", ProprietaryKind::Texture),
         ("sounds/eng_01.wav", ProprietaryKind::Audio),
         ("scripts/m01.win.lua", ProprietaryKind::Script),
@@ -149,7 +154,8 @@ fn accept_f61_a_proprietary_content_is_refused() {
             "extracted/Data/Sounds/eng_01.bin",
             ProprietaryKind::OriginalContentTree,
         ),
-    ] {
+    ];
+    for (path, kind) in CASES {
         assert_eq!(
             classify(path),
             MemberClass::Proprietary(kind),
@@ -169,6 +175,17 @@ fn accept_f61_a_proprietary_content_is_refused() {
             report.lines()
         );
     }
+
+    // A new class of proprietary content has to arrive with a case here: the
+    // loop above walks the suffix table, but a variant with no suffix — or one
+    // only an original-content root catches — would otherwise be covered by
+    // nothing at all.
+    let covered: BTreeSet<ProprietaryKind> = CASES.iter().map(|(_, kind)| *kind).collect();
+    let every: BTreeSet<ProprietaryKind> = ProprietaryKind::ALL.into_iter().collect();
+    assert_eq!(
+        covered, every,
+        "every ProprietaryKind needs a spelled-out case in this test"
+    );
 
     // Case does not smuggle content past the table.
     assert_eq!(
@@ -215,20 +232,35 @@ fn accept_f61_a_only_the_declared_engine_executable_may_ship() {
         MemberClass::Unclassified,
         "a file named after the engine outside the root or bin/ is not the engine"
     );
+    assert_eq!(
+        classify(r"docs\crimson-skies"),
+        MemberClass::Unclassified,
+        "the engine-directory rule must not depend on how the member spelled its separators"
+    );
+    assert_eq!(
+        classify(r"original\data\plane00.dat"),
+        MemberClass::Proprietary(ProprietaryKind::OriginalContentTree),
+        "an original-content root spelled with backslashes is still an original-content root"
+    );
     let mut candidate = clean_candidate();
     candidate
         .members
         .retain(|member| member.path != "crimson-skies");
-    candidate
-        .members
-        .push(PackageMember::new("docs/crimson-skies", 512));
-    let report = scan(&candidate);
-    assert!(!report.is_releasable(), "no engine, so not releasable");
-    assert!(
-        report.findings.contains(&Finding::MissingEngineBinary),
-        "the report must say the engine is missing, got: {:#?}",
-        report.lines()
-    );
+    for impostor in [
+        "docs/crimson-skies",
+        r"docs\crimson-skies",
+        r"bin\..\docs\crimson-skies",
+    ] {
+        let mut candidate = candidate.clone();
+        candidate.members.push(PackageMember::new(impostor, 512));
+        let report = scan(&candidate);
+        assert!(!report.is_releasable(), "no engine, so not releasable");
+        assert!(
+            report.findings.contains(&Finding::MissingEngineBinary),
+            "the report must say the engine is missing, got: {:#?}",
+            report.lines()
+        );
+    }
 }
 
 /// AC01, second half: a candidate missing a required notice is refused, and one
@@ -472,4 +504,173 @@ fn accept_f61_a_the_policy_is_a_value_a_later_stage_can_replace() {
         vec!["crimson-skies".to_string(), "crimson-skies.exe".to_string()],
         "the release policy ships the new engine and nothing else executable"
     );
+}
+
+/// The sizes in a candidate manifest are declared in a text file, so the report
+/// must survive an absurd one: a gate that panics or wraps on hostile input is
+/// not a gate that refused anything.
+///
+/// Observable failure: with an overflowing sum this test fails inside the scan
+/// (a debug-build overflow panic), and a wrapping sum reports a total smaller
+/// than any of its members.
+#[test]
+fn accept_f61_a_an_absurd_declared_size_is_scanned_not_fatal() {
+    let mut absurd = clean_candidate();
+    for member in &mut absurd.members {
+        member.size_bytes = u64::MAX;
+    }
+    let report = scan(&absurd);
+    assert!(
+        report.is_releasable(),
+        "the declared sizes do not change the shape of a candidate, got: {:#?}",
+        report.lines()
+    );
+    assert_eq!(
+        report.total_bytes,
+        u64::MAX,
+        "a total past u64::MAX saturates instead of wrapping or panicking"
+    );
+    assert!(
+        report.total_bytes >= report.member_count as u64,
+        "a saturated total is never smaller than the candidate it describes"
+    );
+
+    // And the scan keeps working on the member list around it.
+    let report = scan(&with_members(&["textures/plane00.dds"]));
+    assert_eq!(
+        report.findings,
+        vec![Finding::ProprietaryContent {
+            path: "textures/plane00.dds".to_string(),
+            kind: ProprietaryKind::Texture,
+        }],
+        "a proprietary member is still the only finding"
+    );
+}
+
+/// The gate an agent or a packaging step actually runs: `cs_xtask
+/// verify-package --manifest <file>` exits 0 for a releasable candidate, exits 1
+/// with every finding on stderr for one that may not ship, and exits 2 when the
+/// request itself is wrong. A subcommand that printed success while refusing
+/// nothing would satisfy the library tests and still let a bad release out.
+///
+/// The scratch manifests live under the gitignored `target/`, so nothing this
+/// test writes lands in Git or in the packaging inputs.
+#[test]
+fn accept_f61_a_the_verify_package_command_fails_a_release_it_may_not_ship() {
+    let root = workspace_root();
+    let bin = env!("CARGO_BIN_EXE_cs_xtask");
+    let fixtures = root.join("target/f61-a-package-fixtures");
+    fs::create_dir_all(&fixtures).expect("the scratch fixture directory must be creatable");
+
+    let run = |args: &[&std::ffi::OsStr]| {
+        Command::new(bin)
+            .args(args)
+            .output()
+            .expect("the cs_xtask binary must run")
+    };
+    fn as_os(text: &str) -> &std::ffi::OsStr {
+        std::ffi::OsStr::new(text)
+    }
+
+    // The committed candidate passes, and says so on stdout.
+    let passing = run(&[
+        as_os("verify-package"),
+        as_os("--workspace-root"),
+        root.as_os_str(),
+        as_os("--manifest"),
+        root.join("packaging/fixtures/candidate-clean.manifest")
+            .as_os_str(),
+    ]);
+    assert_eq!(
+        passing.status.code(),
+        Some(0),
+        "verify-package must pass the committed candidate; stderr: {}",
+        String::from_utf8_lossy(&passing.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&passing.stdout).contains("is releasable"),
+        "a pass must say what passed, got: {:?}",
+        String::from_utf8_lossy(&passing.stdout)
+    );
+
+    // Proprietary content and five missing notices: exit 1, every finding named.
+    let bad = fixtures.join("candidate-proprietary.manifest");
+    fs::write(
+        &bad,
+        "version: 0.1.0\n\
+         member crimson-skies 12582912\n\
+         member LICENSE 1073\n\
+         member textures/plane00.dds 4096\n",
+    )
+    .expect("the negative candidate must be writable");
+    let failing = run(&[
+        as_os("verify-package"),
+        as_os("--workspace-root"),
+        root.as_os_str(),
+        as_os("--manifest"),
+        bad.as_os_str(),
+    ]);
+    assert_eq!(
+        failing.status.code(),
+        Some(1),
+        "a candidate carrying proprietary content must fail the gate, not print success"
+    );
+    let stderr = String::from_utf8_lossy(&failing.stderr);
+    for expected in [
+        "textures/plane00.dds",
+        "texture",
+        "NOTICE.md",
+        "COMPATIBILITY.md",
+    ] {
+        assert!(
+            stderr.contains(expected),
+            "the failure must name {expected}, got: {stderr:?}"
+        );
+    }
+
+    // A manifest that cannot be read is a failure, never an empty candidate that
+    // passes for the wrong reason.
+    let unreadable = run(&[
+        as_os("verify-package"),
+        as_os("--workspace-root"),
+        root.as_os_str(),
+        as_os("--manifest"),
+        fixtures.join("does-not-exist.manifest").as_os_str(),
+    ]);
+    assert_eq!(
+        unreadable.status.code(),
+        Some(1),
+        "a missing manifest must fail the gate"
+    );
+    assert!(
+        String::from_utf8_lossy(&unreadable.stderr).contains("cannot read candidate manifest"),
+        "the failure must say what failed, got: {:?}",
+        String::from_utf8_lossy(&unreadable.stderr)
+    );
+
+    // The request itself being wrong is a usage error, and an unusable
+    // --workspace-root is a failure rather than a flag that is quietly ignored.
+    // The releasable candidate is the one that proves the second half: against a
+    // root that is not a workspace it must not report success.
+    assert_eq!(
+        run(&[as_os("verify-package")]).status.code(),
+        Some(2),
+        "verify-package without --manifest must be a usage error"
+    );
+    assert_eq!(
+        run(&[
+            as_os("verify-package"),
+            as_os("--workspace-root"),
+            fixtures.as_os_str(),
+            as_os("--manifest"),
+            root.join("packaging/fixtures/candidate-clean.manifest")
+                .as_os_str(),
+        ])
+        .status
+        .code(),
+        Some(1),
+        "a --workspace-root that is not a workspace must fail, not be ignored"
+    );
+
+    let _ = fs::remove_dir_all(&fixtures);
 }

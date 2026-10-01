@@ -478,6 +478,12 @@ fn run_verify_package(args: &[String]) -> ExitCode {
     let Some(manifest) = options.manifest else {
         return usage_error("verify-package requires --manifest <file>");
     };
+    // `--workspace-root` is accepted by every subcommand, so it is checked
+    // rather than silently ignored: a gate that reads a flag it ignores cannot
+    // be told apart from one that honoured it.
+    if let Err(error) = require_workspace(&options.workspace_root) {
+        return gate_failed(&error);
+    }
 
     let candidate = match package::read_manifest(&manifest) {
         Ok(candidate) => candidate,
