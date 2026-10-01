@@ -48,6 +48,27 @@
 //! the conversion boundary and presentation interpolation are
 //! `cs_app::animation` (F20-B wires real tracks, F20-C stateful props).
 //!
+//! [`multiplayer`] is the F56-A multiplayer rule layer
+//! (`specs/F56-original-multiplayer-scenarios-and-mode-rules.md`, stage
+//! `### F56-A`): [`multiplayer::result::MatchResolver`] folds lethal events and
+//! the time/score limits into one sealed final result, deduplicating a
+//! retransmitted event by its `EventId` and refusing another session's events.
+//! The original rule values are unknown, so the score table and limits are
+//! caller inputs; mode state machines are F56-B.
+//!
+//! [`net_state`] is the F57-A authoritative network state
+//! (`specs/F57-networked-aircraft-prediction-interpolation-and-projectiles.md`,
+//! stage `### F57-A`): the per-session [`net_state::NetStateLedger`] that owns
+//! every actor's authoritative [`net_state::NetActorState`], allocates the
+//! nonzero [`net_state::ActorGeneration`] each actor's identity is checked
+//! against, records a destruction exactly once per generation however many times
+//! it is reported, and advances only the client input acknowledgment. Nothing
+//! client-authored can move an actor, spend a round or boost capacity, or end a
+//! record, which is what keeps a client's prediction from becoming authority
+//! (contract `docs/contracts/UI-NETWORK.md`). The wire schema and its declared
+//! quantization budgets are `cs_net::snapshot`; the receiver boundary is
+//! `cs_app::network::physics`.
+//!
 //! [`control`] is the F22-A/F22-B command schema's simulation consumer
 //! (`specs/F22-input-bindings-devices-and-control-ownership.md`): the
 //! [`control::ControlBuffer`] that keeps continuous axes and one-shot edges
@@ -279,6 +300,7 @@ pub mod environment;
 pub mod flight;
 pub mod interaction;
 pub mod mission;
+pub mod multiplayer;
 pub mod net_state;
 pub mod objectives;
 pub mod probes;
