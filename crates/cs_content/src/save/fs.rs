@@ -23,7 +23,7 @@
 
 use std::fmt;
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 
 use cs_types::profile::{ProfileId, ProfileKind, ProfileRegistry, RegistryError, Revision};
@@ -228,31 +228,66 @@ impl DirStorage {
 
 impl SaveStorage for DirStorage {
     fn read(&self, file: SaveFile) -> Result<Option<Vec<u8>>, StorageError> {
-        match fs::read(self.path(file)) {
-            Ok(bytes) => {
-                if bytes.len() > MAX_SAVE_BYTES {
-                    // Refused here rather than handed on: a caller that reads
-                    // and ignores a decode refusal would then treat the file as
-                    // an ignorable diagnostic and install a new revision over
-                    // bytes it never looked at.
-                    return Err(StorageError::Io(format!(
-                        "{} is {} bytes, over the {MAX_SAVE_BYTES} a save may be",
-                        self.path(file).display(),
-                        bytes.len()
-                    )));
-                }
-                Ok(Some(bytes))
+        let path = self.path(file);
+        let handle = match File::open(&path) {
+            Ok(handle) => handle,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(error) => {
+                return Err(StorageError::Io(format!("{}: {error}", path.display())));
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(StorageError::Io(format!(
-                "{}: {error}",
-                self.path(file).display()
-            ))),
+        };
+        // The size bound is enforced on the file itself, before its bytes are
+        // in memory, and the read is capped as well: a file of any size is
+        // refused by the length it reports, and a path that is not a bounded
+        // regular file (a device, a pipe) cannot make this read without limit.
+        // Refused here rather than handed on, because a caller that reads and
+        // ignores a decode refusal would then treat the file as an ignorable
+        // diagnostic and install a new revision over bytes it never looked at.
+        let over_bound = |len: u64| {
+            StorageError::Io(format!(
+                "{} is {len} bytes, over the {MAX_SAVE_BYTES} a save may be",
+                path.display()
+            ))
+        };
+        let length = handle
+            .metadata()
+            .map_err(|error| StorageError::Io(format!("{}: {error}", path.display())))?
+            .len();
+        if length > MAX_SAVE_BYTES as u64 {
+            return Err(over_bound(length));
         }
+        let mut bytes = Vec::new();
+        handle
+            .take(MAX_SAVE_BYTES as u64 + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|error| StorageError::Io(format!("{}: {error}", path.display())))?;
+        if bytes.len() > MAX_SAVE_BYTES {
+            return Err(over_bound(bytes.len() as u64));
+        }
+        Ok(Some(bytes))
     }
 
     fn write_temp(&mut self, bytes: &[u8]) -> Result<(), StorageError> {
         let path = self.path(SaveFile::Temp);
+        // The temp name must be this slot's own file. A symbolic link or any
+        // other non-regular file found at that name is refused rather than
+        // written through, so a save cannot be redirected out of its slot
+        // directory by whatever left the name there. The current and backup
+        // names need no such test: they are only ever replaced by a rename,
+        // which replaces the directory entry instead of following it.
+        match fs::symlink_metadata(&path) {
+            Ok(metadata) if !metadata.is_file() => {
+                return Err(StorageError::Io(format!(
+                    "{} is not a regular file; refusing to write through it",
+                    path.display()
+                )));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(StorageError::Io(format!("{}: {error}", path.display())));
+            }
+        }
         let mut file = OpenOptions::new()
             .write(true)
             .create(true)
@@ -441,34 +476,30 @@ impl Registry {
     /// The parts are still checked by the same rule — a mark below a live id or
     /// a repeated id is refused — so this is not a way around the consistency
     /// requirement; it is the same construction with a mark that is known to
-    /// cover the live ids because it is their maximum.
+    /// cover the live ids because it is their maximum. A set that does not hold
+    /// together is a [`RegistryError`], never a panic: this constructor takes
+    /// ids from a directory listing, which is not a trusted source.
     pub fn rebuilt(
         revision: Revision,
         kind: ProfileKind,
         high_water: u64,
         live: Vec<ProfileId>,
         active: Option<ProfileId>,
-    ) -> Self {
-        // `rebuild_from_live` computes the maximum of the live ids, so the
-        // parts are consistent by construction when the mark is that maximum.
-        let mut parts = ProfileRegistry::rebuild_from_live(live, active);
+    ) -> Result<Self, RegistryError> {
+        let mut parts = ProfileRegistry::rebuild_from_live(live, active)?;
         if high_water > parts.high_water() {
             // A mark above every live id is kept: a deleted id above the live
             // set is exactly what must never be issued again, so it is carried
             // rather than lowered.
-            parts = ProfileRegistry::from_parts(high_water, parts.live().to_vec(), parts.active())
-                .unwrap_or(
-                    ProfileRegistry::from_parts(high_water, parts.live().to_vec(), None)
-                        .expect("a mark above every live id is consistent"),
-                );
+            parts = ProfileRegistry::from_parts(high_water, parts.live().to_vec(), parts.active())?;
         }
-        Self {
+        Ok(Self {
             revision,
             kind,
             high_water: parts.high_water(),
             live: parts.live().to_vec(),
             active: parts.active(),
-        }
+        })
     }
 }
 
@@ -712,12 +743,13 @@ pub fn commit_registry(
 }
 
 /// Writes `registry` into the real directory `directory`, creating it if needed.
-pub fn save_registry(directory: &Path, registry: &Registry) -> Result<Registry, SlotError> {
-    let mut slot = DirStorage::create(directory, REGISTRY_PREFIX)?;
-    commit_registry(&mut slot, registry).map_err(|error| SlotError::Io {
-        path: directory.to_path_buf(),
-        reason: error.to_string(),
-    })
+///
+/// A refusal is the commit's own error, not an IO error: a registry of another
+/// population, a stale revision or an unreadable slot is reported as what it
+/// is, and nothing is written.
+pub fn save_registry(directory: &Path, registry: &Registry) -> Result<Registry, CommitError> {
+    let mut slot = DirStorage::create(directory, REGISTRY_PREFIX).map_err(StorageError::from)?;
+    commit_registry(&mut slot, registry)
 }
 
 /// One line about what a recovery did, for a diagnostics surface.

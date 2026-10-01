@@ -33,10 +33,12 @@ use std::path::{Path, PathBuf};
 use cs_types::profile::{ProfileDocument, ProfileId, ProfileKind, RegistryError, Revision};
 
 use super::fs::{
-    DirStorage, LoadedRegistry, Registry, SlotError, commit_registry, load_registry, profile_slot,
-    recover_profile, registry_slot,
+    DirStorage, LoadedRegistry, REGISTRY_PREFIX, Registry, SlotError, commit_registry,
+    load_registry, profile_slot, recover_profile, registry_slot,
 };
-use super::store::{CommitError, PROFILE_PREFIX, RecoverError, RecoveryWarning, commit, recover};
+use super::store::{
+    CommitError, PROFILE_PREFIX, RecoverError, RecoveryWarning, SaveFile, commit, recover,
+};
 
 /// The directory name of one profile's slot.
 ///
@@ -102,6 +104,28 @@ fn observed_ids(base: &Path) -> Result<Vec<ProfileId>, LibraryError> {
     ids.sort();
     ids.dedup();
     Ok(ids)
+}
+
+/// Whether `path` is a slot directory this library could have written: a plain
+/// directory, the same test [`DirStorage::create`] and [`retire_slot`] apply.
+///
+/// A symbolic link, a regular file or anything else is not a profile slot, so
+/// it is never adopted as a live profile — a live profile the library cannot
+/// write is worse than one it does not claim. The id it names still raises the
+/// high-water mark, so a link is never a way to have an id issued again.
+fn is_slot_directory(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok_and(|metadata| metadata.is_dir())
+}
+
+/// Whether `path` holds any of the three files of a save slot.
+///
+/// An empty slot directory is not a profile: a `create` killed between making
+/// the directory and writing its first revision leaves exactly that, and
+/// adopting it would offer the player a profile with no state to load.
+fn has_save_files(path: &Path) -> bool {
+    SaveFile::ALL
+        .iter()
+        .any(|file| std::fs::metadata(path.join(file.prefixed_name(PROFILE_PREFIX))).is_ok())
 }
 
 /// Why a library operation failed.
@@ -273,12 +297,7 @@ impl ProfileLibrary {
                 if observed.is_empty() {
                     return Err(error.into());
                 }
-                return Ok(Self::from_observed(
-                    base,
-                    kind,
-                    &error.to_string(),
-                    observed,
-                ));
+                return Self::from_observed(base, kind, &error.to_string(), observed);
             }
         };
         Self::from_loaded(base, kind, loaded)
@@ -320,17 +339,18 @@ impl ProfileLibrary {
         kind: ProfileKind,
         reason: &str,
         observed: Vec<ProfileId>,
-    ) -> Self {
+    ) -> Result<Self, LibraryError> {
         let high_water = observed.iter().map(|id| id.get()).max().unwrap_or(0);
         let live: Vec<ProfileId> = observed
             .iter()
             .copied()
-            .filter(|id| base.join(slot_name(*id)).is_dir())
+            .filter(|id| is_slot_directory(&base.join(slot_name(*id))))
+            .filter(|id| has_save_files(&base.join(slot_name(*id))))
             .collect();
         // No readable registry file, so the next write offers revision 1: there
         // is nothing on disk for that to conflict with, and the mark carried
         // from the directory is what stops an issued id returning.
-        let registry = Registry::rebuilt(Revision(0), kind, high_water, live, None);
+        let registry = Registry::rebuilt(Revision(0), kind, high_water, live, None)?;
         let status = LibraryStatus {
             registry_warnings: vec![reason.to_owned()],
             notices: vec![LibraryNotice::Reconciled {
@@ -342,12 +362,12 @@ impl ProfileLibrary {
             live: registry.live().to_vec(),
             active: None,
         };
-        Self {
+        Ok(Self {
             base,
             kind,
             registry,
             status,
-        }
+        })
     }
 
     /// Raises the mark to every id the directory names and adopts live slots
@@ -373,11 +393,18 @@ impl ProfileLibrary {
             .max(registry.high_water());
         // A live slot the registry did not list is a profile whose save landed
         // but whose registry write did not; adopting it is the only reading
-        // under which the directory and the record agree.
+        // under which the directory and the record agree. A slot that is not a
+        // plain directory, or that holds no save file, is not a profile whose
+        // save landed: its id still raises the mark, but it is not offered as a
+        // pilot with no state behind it.
         let adopted: Vec<ProfileId> = observed
             .iter()
             .copied()
-            .filter(|id| base.join(slot_name(*id)).is_dir() && !registry.live().contains(id))
+            .filter(|id| !registry.live().contains(id))
+            .filter(|id| {
+                let directory = base.join(slot_name(*id));
+                is_slot_directory(&directory) && has_save_files(&directory)
+            })
             .collect();
         if high_water == registry.high_water() && adopted.is_empty() {
             return Ok((registry.clone(), Vec::new()));
@@ -390,7 +417,7 @@ impl ProfileLibrary {
             high_water,
             live,
             registry.active(),
-        );
+        )?;
         Ok((
             reconciled,
             vec![LibraryNotice::Reconciled {
@@ -556,7 +583,9 @@ impl ProfileLibrary {
     fn persist(&mut self, registry: Registry) -> Result<Registry, LibraryError> {
         // The population directory is created on the first write, and
         // `DirStorage::create` refuses a path that is not a plain directory.
-        DirStorage::create(&self.base, PROFILE_PREFIX)?;
+        // The registry's own slot is the one living in that directory, so that
+        // is the prefix the check is made with.
+        DirStorage::create(&self.base, REGISTRY_PREFIX)?;
         let mut slot = registry_slot(&self.base);
         let written = commit_registry(&mut slot, &registry)?;
         self.registry = written.clone();

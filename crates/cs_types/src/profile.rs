@@ -202,7 +202,9 @@ pub struct ProfileDocument {
     pub extra: Vec<ExtraField>,
 }
 
-/// Why a key, name or value was refused.
+/// Why a key, name or value was refused. `NoSuccessor` is a monotonic counter
+/// at the top of its range: it could never be advanced again, so the document
+/// carrying it is refused rather than written or accepted.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum ProfileFieldError {
     Empty { field: &'static str },
@@ -210,6 +212,7 @@ pub enum ProfileFieldError {
     BadCharacter { field: &'static str },
     TooManyEntries { field: &'static str, max: usize },
     DuplicateKey { field: &'static str, key: String },
+    NoSuccessor { field: &'static str },
 }
 
 impl fmt::Display for ProfileFieldError {
@@ -220,6 +223,10 @@ impl fmt::Display for ProfileFieldError {
             Self::BadCharacter { field } => write!(f, "{field} contains a disallowed character"),
             Self::TooManyEntries { field, max } => write!(f, "{field} has more than {max} entries"),
             Self::DuplicateKey { field, key } => write!(f, "{field} repeats key {key:?}"),
+            Self::NoSuccessor { field } => write!(
+                f,
+                "the {field} is at the end of its range, so nothing could be written after it"
+            ),
         }
     }
 }
@@ -313,6 +320,13 @@ impl ProfileDocument {
     /// decoder both call this, so an out-of-range document is neither written
     /// nor accepted.
     pub fn validate(&self) -> Result<(), ProfileFieldError> {
+        if self.revision.next().is_none() {
+            // A revision with no successor could never be written again. The
+            // encoder refuses to produce one and the decoder refuses to accept
+            // one, so a slot carrying it falls back to its previous whole
+            // revision instead of becoming a profile that can never be saved.
+            return Err(ProfileFieldError::NoSuccessor { field: "revision" });
+        }
         validate_text(
             "display_name",
             &self.display_name,
@@ -409,7 +423,8 @@ pub enum RegistryError {
     UnknownProfile(ProfileId),
     /// The live list names an id twice.
     DuplicateLive(ProfileId),
-    /// Ids are exhausted.
+    /// Ids are exhausted: the mark is at the top of its range, so no further
+    /// id could ever be allocated from it.
     Exhausted,
 }
 
@@ -446,6 +461,13 @@ impl ProfileRegistry {
         live: Vec<ProfileId>,
         active: Option<ProfileId>,
     ) -> Result<Self, RegistryError> {
+        if high_water == u64::MAX {
+            // A mark with no successor could never allocate another id, so a
+            // set that carries one is refused where its parts are validated
+            // rather than accepted and left as a population that can never gain
+            // a profile again.
+            return Err(RegistryError::Exhausted);
+        }
         for (index, id) in live.iter().enumerate() {
             if id.get() > high_water {
                 return Err(RegistryError::HighWaterBelowLive {
@@ -470,10 +492,17 @@ impl ProfileRegistry {
     /// inferred from the surviving ids, which cannot know about a deleted
     /// higher id. Callers must surface that limitation (see the F48-A
     /// findings).
-    pub fn rebuild_from_live(live: Vec<ProfileId>, active: Option<ProfileId>) -> Self {
+    ///
+    /// The surviving ids are not a trusted source, so this validates them the
+    /// same way [`ProfileRegistry::from_parts`] does and reports the refusal
+    /// rather than panicking on it: a repeated id, or a set that would have no
+    /// successor left, is an error the caller has to surface.
+    pub fn rebuild_from_live(
+        live: Vec<ProfileId>,
+        active: Option<ProfileId>,
+    ) -> Result<Self, RegistryError> {
         let high_water = live.iter().map(|id| id.get()).max().unwrap_or(0);
         Self::from_parts(high_water, live, active)
-            .expect("high-water is the maximum live id, so the parts are consistent")
     }
 
     pub const fn high_water(&self) -> u64 {
