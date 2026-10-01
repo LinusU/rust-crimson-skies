@@ -211,6 +211,20 @@
 //! generation-stamped [`weapons::WeaponActorBinding`] ECS records that keep
 //! a mount's live hierarchy pose session- and generation-qualified.
 //!
+//! [`ordnance`] is the F28-A ordnance boundary
+//! (`specs/F28-rockets-special-ordnance-counter-effects-and-nitro.md`, stage
+//! `### F28-A`): [`ordnance::lower_ordnance`], which lowers a declared
+//! `cs_content::ordnance::DeclaredOrdnance` into the
+//! `cs_sim::weapons::ordnance::OrdnanceComponent` a session registers —
+//! refusing every unresolved field by name, because a session must not fly a
+//! rocket whose trigger radius, arming delay, blast radius, damage or
+//! lost-target rule was invented;
+//! [`ordnance::lower_equipment_rules`], the shared equipment-compatibility
+//! rule the shop and an import both read, refusing each unresolved option;
+//! and the generation-stamped
+//! [`ordnance::OrdnanceLauncherBinding`] ECS record that keeps a launcher's
+//! live hierarchy pose session- and generation-qualified.
+
 //! [`environment`] is the F19-A/F19-B environment boundary
 //! (`specs/F19-sky-atmosphere-weather-and-visibility.md`, stages
 //! `### F19-A` and `### F19-B`): [`environment::SkyFrame`], the one record
@@ -293,6 +307,7 @@ pub mod environment;
 pub mod input;
 pub mod livery;
 pub mod loading;
+pub mod ordnance;
 pub mod origin;
 pub mod physics;
 pub mod profile;
