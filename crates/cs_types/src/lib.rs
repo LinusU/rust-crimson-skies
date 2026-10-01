@@ -18,6 +18,11 @@
 //! [`input::DeviceId`] identity rather than by an enumeration index. Its
 //! labels, dead zone, curves and designed default map are engine design, not
 //! measurements of the original game.
+//!
+//! [`net`] is the F54-A session-scoped wire identity: [`net::SessionId`]
+//! (the wire's session epoch), [`net::PeerId`], the contract-shaped
+//! [`net::ActorId`] and [`net::EventId`], and the server-side
+//! [`net::ActorAllocator`] that mints non-recycled serials.
 
 use std::fmt;
 
@@ -28,6 +33,7 @@ pub mod content;
 pub mod evidence;
 pub mod input;
 pub mod install;
+pub mod net;
 pub mod profile;
 pub mod random;
 pub mod space;
