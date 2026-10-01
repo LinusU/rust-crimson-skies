@@ -120,12 +120,39 @@ impl ImageLanguages {
     }
 }
 
-/// One file of the census that is a PE image with no resource directory.
+/// What measuring one file's resource languages found.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ImageMeasure {
+    /// A PE image with a resource directory: its measured language ids.
+    Resources(ImageLanguages),
+    /// A PE image that declares no resource directory, or one that declares zero
+    /// bytes. The original ships a helper DLL whose data directory is present
+    /// but empty, and the resource walker rightly refuses a zero-byte
+    /// directory, so this is a measured absence rather than a failure.
+    NoResources {
+        /// The installation-relative spelling.
+        path: String,
+        /// The image's length in bytes.
+        bytes: u64,
+    },
+    /// Not a PE image at all: a game archive, an audio bank, a video, a bitmap,
+    /// an empty marker file, or a 16-bit DOS/Windows binary that begins with
+    /// `MZ` and is not a PE image.
+    NotPe {
+        /// The installation-relative spelling.
+        path: String,
+        /// The file's length in bytes.
+        bytes: u64,
+    },
+}
+
+/// One inventoried file the census classified without measuring languages: a PE
+/// image with no resource directory, or a file that is not a PE image.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ResourceLessImage {
     /// The installation-relative spelling.
     pub path: String,
-    /// The image's length in bytes.
+    /// The file's length in bytes.
     pub bytes: u64,
 }
 
@@ -138,10 +165,12 @@ pub struct InstallationLanguages {
     pub files: usize,
     /// The PE images that declare a resource directory, in path order.
     pub images: Vec<ImageLanguages>,
-    /// The PE images that declare no resource directory, in path order.
+    /// The PE images that declare no resource directory (or an empty one), in
+    /// path order.
     pub without_resources: Vec<ResourceLessImage>,
-    /// The files that are not PE images at all.
-    pub not_pe: Vec<String>,
+    /// The files that are not PE images at all, with their lengths, in path
+    /// order.
+    pub not_pe: Vec<ResourceLessImage>,
 }
 
 impl InstallationLanguages {
@@ -163,12 +192,6 @@ impl InstallationLanguages {
     #[must_use]
     pub fn image(&self, path: &str) -> Option<&ImageLanguages> {
         self.images.iter().find(|image| image.path == path)
-    }
-
-    /// Whether the whole installation measured exactly one resource language.
-    #[must_use]
-    pub fn is_single_language(&self) -> bool {
-        self.languages().len() == 1
     }
 }
 
@@ -237,30 +260,28 @@ pub fn measure_installation_languages(
             path: spelling.clone(),
             message: error.to_string(),
         })?;
-        match measure_image_languages(&spelling, install, &bytes) {
-            Ok(Some(image)) => census.images.push(image),
-            Ok(None) => census.without_resources.push(ResourceLessImage {
-                path: spelling,
-                bytes: bytes.len() as u64,
-            }),
-            Err(message) => {
-                return Err(LocaleMeasureError::Layout {
-                    path: spelling,
-                    message,
-                });
+        match measure_image_languages(&spelling, install, &bytes)? {
+            ImageMeasure::Resources(image) => census.images.push(image),
+            ImageMeasure::NoResources { path, bytes } => {
+                census
+                    .without_resources
+                    .push(ResourceLessImage { path, bytes });
+            }
+            ImageMeasure::NotPe { path, bytes } => {
+                census.not_pe.push(ResourceLessImage { path, bytes });
             }
         }
     }
     Ok(census)
 }
 
-/// The resource language ids of one PE image, or `None` when the bytes are not
-/// a PE image.
+/// The resource language ids of one file, or why it has none to measure.
 ///
 /// A file whose bytes are not a PE image is not an error: the original ships
 /// game archives, audio banks and video alongside its executables, and the
 /// census needs to say "not a PE image" rather than fail on them — including the
-/// empty marker file, which is too short to hold a header at all. A file that
+/// empty marker file, which is too short to hold a header at all, and the 16-bit
+/// DOS/Windows binaries, which begin with `MZ` and are not PE images. A file that
 /// *is* a PE image but cannot be parsed is an error, because a header this
 /// project cannot read is a gap in the measurement rather than an absence of
 /// languages.
@@ -268,30 +289,55 @@ pub fn measure_image_languages(
     path: &str,
     install: ContentHash,
     bytes: &[u8],
-) -> Result<Option<ImageLanguages>, String> {
+) -> Result<ImageMeasure, LocaleMeasureError> {
+    let length = bytes.len() as u64;
     // A file too short to hold even the DOS signature is not a PE image; the
     // original ships an empty marker file, and reading it must not fail a census.
     if bytes.len() < DOS_SIGNATURE.len() {
-        return Ok(None);
+        return Ok(ImageMeasure::NotPe {
+            path: path.to_owned(),
+            bytes: length,
+        });
     }
     let mut context = cs_formats::ParseContext::with_defaults(path);
     let layout = match cs_formats::read_pe_layout(&mut context, bytes) {
         Ok(layout) => layout,
-        Err(error) if is_not_a_pe_image(&error) => return Ok(None),
-        Err(error) => return Err(error.to_string()),
+        Err(error) if is_not_a_pe_image(&error) => {
+            return Ok(ImageMeasure::NotPe {
+                path: path.to_owned(),
+                bytes: length,
+            });
+        }
+        Err(error) => {
+            return Err(LocaleMeasureError::Layout {
+                path: path.to_owned(),
+                message: error.to_string(),
+            });
+        }
     };
-    // No resource data directory, or one that declares zero bytes, is an image
-    // that carries no resource tree. The original ships a helper DLL whose data
-    // directory is present but empty, and the resource walker rightly refuses a
-    // zero-byte directory, so the census records it as a PE image without
-    // resources instead of failing a whole run over a linker's leftover entry.
+    // No resource data directory, or one that declares zero bytes, is a PE image
+    // that carries no resource tree.
     match layout.resource_directory() {
-        None => return Ok(None),
-        Some(directory) if directory.size == 0 => return Ok(None),
+        None => {
+            return Ok(ImageMeasure::NoResources {
+                path: path.to_owned(),
+                bytes: length,
+            });
+        }
+        Some(directory) if directory.size == 0 => {
+            return Ok(ImageMeasure::NoResources {
+                path: path.to_owned(),
+                bytes: length,
+            });
+        }
         Some(_) => {}
     }
-    let resources =
-        cs_formats::read_pe_resources(&mut context, bytes).map_err(|error| error.to_string())?;
+    let resources = cs_formats::read_pe_resources(&mut context, bytes).map_err(|message| {
+        LocaleMeasureError::Layout {
+            path: path.to_owned(),
+            message: message.to_string(),
+        }
+    })?;
 
     // The language is the third-level resource key, which F12 records as the raw
     // id the image stored. The tree's depth is the format's business, not this
@@ -305,10 +351,10 @@ pub fn measure_image_languages(
     languages.sort_unstable();
     languages.dedup();
 
-    Ok(Some(ImageLanguages {
+    Ok(ImageMeasure::Resources(ImageLanguages {
         path: path.to_owned(),
         install,
-        bytes: bytes.len() as u64,
+        bytes: length,
         languages,
         leaves: resources.leaves().len(),
         string_blocks: resources.strings().len(),

@@ -232,6 +232,7 @@ fn census_json(
         "  \"images_without_resources\": {},\n",
         census.without_resources.len()
     ));
+    out.push_str(&format!("  \"files_not_pe\": {},\n", census.not_pe.len()));
 
     out.push_str("  \"measured_surface\": [\n");
     let rows: Vec<String> = measured

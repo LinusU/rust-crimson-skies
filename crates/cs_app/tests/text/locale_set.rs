@@ -425,7 +425,7 @@ fn accept_f51_locale_set_retail_the_installation_declares_only_measured_locales(
     let census = measure_installation_languages(&dir).expect("the installation census reads");
     assert_eq!(census.install, measured.install, "one installation digest");
     assert_eq!(
-        census.images.len() + census.without_resources.len(),
+        census.images.len() + census.without_resources.len() + census.not_pe.len(),
         census.files,
         "every inventoried file is measured as a PE image or recorded as not one"
     );
@@ -457,6 +457,24 @@ fn accept_f51_locale_set_retail_the_installation_declares_only_measured_locales(
             "{spelling} carries only the measured language"
         );
     }
+    // The census classified every file rather than skipping it: a game archive
+    // is not a PE image, and a PE image whose resource data directory declares
+    // zero bytes is an image without resources.
+    assert!(
+        census
+            .not_pe
+            .iter()
+            .any(|file| file.path == "GOSDATA/ASSETS/crimson.rof"),
+        "a game archive is recorded as not a PE image"
+    );
+    assert!(
+        census
+            .without_resources
+            .iter()
+            .any(|file| file.path == "GOSDATA/ASSETS/BINARIES/roffile.dll"),
+        "a PE image with an empty resource directory is recorded separately"
+    );
+
     // The language ids that are *not* the measured one exist installation-wide,
     // and every one of them comes from a third-party image.
     let other_languages: Vec<u32> = census

@@ -110,7 +110,7 @@ pub use layout::{
     TextFit, TextLayout, layout_text,
 };
 pub use locale_measure::{
-    ImageLanguages, InstallationLanguages, LocaleMeasureError, ResourceLessImage,
+    ImageLanguages, ImageMeasure, InstallationLanguages, LocaleMeasureError, ResourceLessImage,
     StringImageMeasurement, measure_image_languages, measure_installation_languages,
     measure_string_image_languages, string_image_languages,
 };

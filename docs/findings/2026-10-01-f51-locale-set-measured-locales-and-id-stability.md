@@ -73,12 +73,14 @@ wrote**: `crates/cs_app/tests/text/common.rs` held
   - `StringImageMeasurement` and `measure_string_image_languages` — the
     installation's localization surface measured into a `ResourceLanguageTable`.
   - `ImageLanguages` (`path`, `install`, `bytes`, `languages`, `leaves`,
-    `string_blocks`, `carries_only`), `ResourceLessImage`,
+    `string_blocks`, `carries_only`), `ImageMeasure::{Resources, NoResources,
+    NotPe}`, `ResourceLessImage`,
     `InstallationLanguages` (`install`, `files`, `images`, `without_resources`,
-    `not_pe`; `languages`, `image`, `is_single_language`),
+    `not_pe`; `languages`, `image`),
     `measure_image_languages` and `measure_installation_languages` — the
     installation-wide PE resource language census, over the production
-    discovery's file set and the production PE reader.
+    discovery's file set and the production PE reader. Every inventoried file
+    lands in exactly one of the three lists, so nothing is skipped.
   - `LocaleMeasureError::{Discovery, Read, Layout}`: a file that cannot be read,
     or a PE image this project cannot parse, fails the run **by name**. A census
     that quietly dropped an unreadable image would not be a census.
@@ -144,8 +146,8 @@ Every one of the 228 inventoried files was read: 18 are PE images with a
 resource directory, 210 are not (a game archive, audio banks, video, two
 bitmaps, a `rof` pair, the empty `EBUSetup.sem` marker, and
 `GOSDATA/ASSETS/BINARIES/roffile.dll`, which is a PE image whose resource data
-directory declares **zero** bytes). The 18 measured images carry these resource
-language ids:
+directory declares **zero** bytes) and 205 are not PE images at all. The 18
+measured images carry these resource language ids:
 
 | image | leaves | `RT_STRING` blocks | measured resource languages |
 | --- | --- | --- | --- |
@@ -247,7 +249,7 @@ its own evidence and not part of this measurement.
    counts, so an unchanged proper noun is not a renumbering and a changed string
    under a vanished id is not stability.
 5. **Unparseable is not language-free.** A file that is not a PE image is
-   recorded as such (including the empty marker file and the 16-bit
+   recorded as `not_pe` (including the empty marker file and the 16-bit
    `clcd16.dll`, which begins with `MZ` and is not a PE image); a PE image with a
    zero-length resource directory is recorded as an image without resources; any
    other reader failure fails the run by name.
