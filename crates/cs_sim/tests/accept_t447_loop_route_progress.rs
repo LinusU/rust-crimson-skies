@@ -19,32 +19,39 @@
 //! game data.
 
 use cs_sim::ai::navigation::{
-    MIN_LOOP_NODES, NavigationCadence, NavigationSet, Navigator, ReferenceFrameSample, RouteFrame,
-    RouteGraph, RouteGraphError, RouteNode, RouteNodeId, RouteTermination, SYNTHETIC_PURSUIT_DT_S,
-    SYNTHETIC_PURSUIT_SEED, SYNTHETIC_PURSUIT_SESSION, follow_route, synthetic_loop_route,
-    synthetic_maneuver_envelope, synthetic_pursuit_actor,
+    AvoidanceState, FollowPlan, MIN_LOOP_NODES, NavState, NavigationCadence, NavigationSet,
+    Navigator, PursuitRequest, ReferenceFrameSample, RouteFrame, RouteGraph, RouteGraphError,
+    RouteNode, RouteNodeId, RouteTermination, SYNTHETIC_PURSUIT_DT_S, SYNTHETIC_PURSUIT_SEED,
+    SYNTHETIC_PURSUIT_SESSION, follow_route, synthetic_loop_route, synthetic_maneuver_envelope,
+    synthetic_pursuit_actor,
 };
 use cs_sim::damage::ActorId;
+use cs_types::Tick;
 
 fn actor(serial: u64) -> ActorId {
     synthetic_pursuit_actor(serial)
 }
 
-/// A `NavigationSet` whose actor registers at the route's start (node 0 is the
-/// live target), so a loop is followed from its very first node.
-fn loop_set(actor: ActorId) -> NavigationSet {
+/// An empty set, so a test chooses how its actor registers.
+fn empty_set() -> NavigationSet {
     let navigator = Navigator::new(
         synthetic_maneuver_envelope(),
         NavigationCadence::designed_default(),
     )
     .expect("the synthetic envelope and cadence are valid");
-    let mut set = NavigationSet::new(SYNTHETIC_PURSUIT_SESSION, SYNTHETIC_PURSUIT_SEED, navigator);
+    NavigationSet::new(SYNTHETIC_PURSUIT_SESSION, SYNTHETIC_PURSUIT_SEED, navigator)
+}
+
+/// A `NavigationSet` whose actor registers at the route's start (node 0 is the
+/// live target), so a loop is followed from its very first node.
+fn loop_set(actor: ActorId) -> NavigationSet {
+    let mut set = empty_set();
     set.register(actor).expect("the fixture actor registers");
     set
 }
 
-fn start_at_origin() -> cs_sim::ai::navigation::NavState {
-    cs_sim::ai::navigation::NavState {
+fn start_at_origin() -> NavState {
+    NavState {
         position_m: [0.0, 0.0, 0.0],
         heading_rad: 0.0,
         speed_mps: 40.0,
@@ -66,7 +73,7 @@ fn accept_t447_loop_route_is_followed_with_monotonic_rearmed_progress() {
     let outcome = follow_route(
         &mut set,
         actor,
-        cs_sim::ai::navigation::FollowPlan {
+        FollowPlan {
             route: &route,
             blockers: &[],
             dt_s: SYNTHETIC_PURSUIT_DT_S,
@@ -141,7 +148,7 @@ fn accept_t447_loop_route_rearms_every_node_including_mandatory_markers() {
     let outcome = follow_route(
         &mut set,
         actor,
-        cs_sim::ai::navigation::FollowPlan {
+        FollowPlan {
             route: &route,
             blockers: &[],
             dt_s: SYNTHETIC_PURSUIT_DT_S,
@@ -213,7 +220,7 @@ fn accept_t447_loop_wrap_edge_uses_the_first_nodes_own_arrival_radius() {
     let outcome = follow_route(
         &mut set,
         actor,
-        cs_sim::ai::navigation::FollowPlan {
+        FollowPlan {
             route: &route,
             blockers: &[],
             dt_s: SYNTHETIC_PURSUIT_DT_S,
@@ -329,4 +336,56 @@ fn accept_t447_a_one_node_loop_is_refused_by_name() {
         RouteGraph::try_new(RouteFrame::World, 0.0, one_node()).is_ok(),
         "an ending route may legitimately declare a single node"
     );
+}
+
+/// A resume count beyond the node list is a caller error, and the runtime must
+/// survive it on a loop exactly as it does on an ending route: hold station,
+/// report no target, and never index off the node list.
+///
+/// [`NavigationSet::register_resuming`] is public and takes no route, so it
+/// cannot check the count against the node list. This is the one place a loop
+/// could run its target off the end (`next_index` past the last node), because a
+/// followed loop wraps before it can: the bound has to be checked in
+/// [`RouteProgress::is_complete`] for every termination, not only for
+/// [`RouteTermination::End`]. A `loop` that short-circuited that bound to
+/// `false` panics here with `index out of bounds` instead of holding station.
+#[test]
+fn accept_t447_a_resume_past_the_end_of_a_loop_holds_station_instead_of_panicking() {
+    let route = synthetic_loop_route();
+    let actor = actor(1);
+    // `register_resuming` is the production seeding API and validates nothing
+    // against the route, so an over-counted resume is reachable.
+    let mut set = empty_set();
+    set.register_resuming(actor, route.node_count())
+        .expect("a resume count is not refused at registration");
+
+    let decision = set
+        .decide(&PursuitRequest {
+            actor,
+            tick: Tick(0),
+            generation: set.session(),
+            state: start_at_origin(),
+            route: &route,
+            frame: ReferenceFrameSample::IDENTITY,
+            blockers: &[],
+            dt_s: SYNTHETIC_PURSUIT_DT_S,
+        })
+        .expect("an over-counted resume is a decision, not a panic");
+    assert_eq!(
+        decision.decision.avoidance,
+        AvoidanceState::Arrived,
+        "a progress seeded past the node list holds station"
+    );
+    assert_eq!(
+        decision.decision.target, None,
+        "there is no node left to target, so none is named"
+    );
+    assert!(
+        decision.state.is_complete(&route),
+        "the same bound answers completion on an ending route, so it answers it here"
+    );
+    // The same seeded state is still monotone and untouched: holding station is
+    // not a rewind and not a teleport (spec non-negotiable behavior 4).
+    assert_eq!(decision.decision.progress.reached(), route.node_count());
+    assert_eq!(decision.decision.progress.laps(), 0);
 }

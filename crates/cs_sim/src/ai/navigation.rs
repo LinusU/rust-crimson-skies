@@ -149,8 +149,8 @@ pub enum RouteTermination {
     End,
     /// The route returns to its first node: after the last node is reached,
     /// progress wraps back to node 0 and the whole marker sequence is armed
-    /// again, so the target never leaves the node list and the route does not
-    /// run off its end.
+    /// again, so a followed route's target never leaves the node list and it
+    /// does not run off its end.
     Loop,
 }
 
@@ -487,12 +487,18 @@ impl RouteProgress {
 
     /// Whether every node has been reached.
     ///
-    /// A loop route is never complete: it re-arms instead of ending.
+    /// A followed [`RouteTermination::Loop`] route is never complete: the wrap
+    /// keeps [`next_index`](Self::next_index) inside the node list, so the bound
+    /// below is never tripped and the route re-arms instead of ending.
+    ///
+    /// The bound is still checked for a loop, because
+    /// [`reached_nodes`](Self::reached_nodes) is a caller-supplied count that is
+    /// not validated against any route (`NavigationSet::register_resuming` takes
+    /// no route). A progress seeded past the end holds station — no target, no
+    /// teleport — rather than running off the node list, exactly as it does on
+    /// an ending route.
     #[must_use]
     pub const fn is_complete(self, route: &RouteGraph) -> bool {
-        if route.termination.is_loop() {
-            return false;
-        }
         self.next_index >= route.nodes.len()
     }
 
@@ -502,9 +508,13 @@ impl RouteProgress {
     /// On a loop route, reaching the last node wraps the target to node 0 and
     /// records another lap; on an ending route the target runs off the end and
     /// [`is_complete`](Self::is_complete) becomes true.
+    ///
+    /// Both counters saturate, so the documented monotonicity of
+    /// [`reached`](Self::reached) and [`laps`](Self::laps) cannot be broken by
+    /// a counter overflowing on a route that never ends.
     #[must_use]
     fn advanced(self, route: &RouteGraph) -> Self {
-        let reached_total = self.reached_total + 1;
+        let reached_total = self.reached_total.saturating_add(1);
         if route.termination.is_loop() && self.next_index + 1 >= route.nodes.len() {
             Self {
                 next_index: 0,
@@ -2093,9 +2103,11 @@ pub struct FollowPlan<'a> {
 /// `frame_at` supplies the sampled pose of the route's frame on each tick, so a
 /// route authored against a moving anchor is followed in its relative
 /// coordinates. The run stops early when the route completes or the actor is
-/// held [`AvoidanceState::Blocked`]. The set keeps every actor's progress, so a
-/// displaced start does not reset it and an origin shift cannot restart the
-/// route (spec non-negotiable behaviors 1, 3 and 4).
+/// held [`AvoidanceState::Blocked`]. A [`RouteTermination::Loop`] route never
+/// completes, so it runs the whole `plan.max_ticks` unless the actor is held,
+/// and [`FollowOutcome::progress`] then names the laps it flew. The set keeps
+/// every actor's progress, so a displaced start does not reset it and an origin
+/// shift cannot restart the route (spec non-negotiable behaviors 1, 3 and 4).
 ///
 /// # Errors
 ///
