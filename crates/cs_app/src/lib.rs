@@ -409,6 +409,7 @@ pub mod ui {
 
     pub mod front_end;
     pub mod hud;
+    pub mod lobby;
 }
 pub mod weapons;
 pub mod world;
