@@ -21,6 +21,10 @@ bevy.workspace = true
 cs_assets.workspace = true
 cs_content.workspace = true
 cs_formats.workspace = true
+# `cs_net` is a production dependency of `src/network/physics.rs` (F57-A): the
+# receiver boundary decodes the F57-A snapshot schema and consumes the
+# idempotent lifecycle events that retire remote actors.
+cs_net.workspace = true
 cs_sim.workspace = true
 cs_types.workspace = true
 # `src/capital.rs` (F35-A) names `cs_script::ir::ActorId`, the actor identity

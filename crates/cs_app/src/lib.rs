@@ -348,6 +348,21 @@
 //! and an unknown survivability (never a silent mortal) — and the
 //! generation-stamped [`roster::RosterBinding`] ECS record tying an entity to
 //! its session-qualified actor and roster subject.
+//!
+//! [`network`] is the F57-A networked-aircraft boundary
+//! (`specs/F57-networked-aircraft-prediction-interpolation-and-projectiles.md`,
+//! stage `### F57-A`): [`network::physics`] is the client-side ingest path that
+//! turns one decoded [`cs_net::snapshot::Snapshot`] plus the session's live
+//! world-origin epoch into the [`network::physics::RemoteMirror`] of remote
+//! aircraft, refusing a foreign epoch, an out-of-order tick, an ended
+//! generation and an uninterpretable record by name — and, because sequenced
+//! snapshots are droppable, never treating an actor's absence from a snapshot as
+//! a despawn, so a lossy or reordered link leaves neither a duplicate
+//! destruction nor a permanent ghost aircraft. The server-side authority for the
+//! same schema (generations, the once-per-generation destruction gate, input
+//! acknowledgment) is [`cs_sim::net_state`]; the schema, quantizers and declared
+//! error budgets are [`cs_net::snapshot`]. Interpolation and bounded local
+//! prediction are F57-B, reconciliation wiring F57-C.
 
 pub mod ai;
 pub mod airframe_visual;
@@ -367,6 +382,7 @@ pub mod input;
 pub mod interaction;
 pub mod livery;
 pub mod loading;
+pub mod network;
 pub mod ordnance;
 pub mod origin;
 pub mod physics;
