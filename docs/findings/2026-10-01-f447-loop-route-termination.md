@@ -165,13 +165,13 @@ as described.
 ## Commands run
 
 Exit codes as printed by the implementer and again by the review, on the tree
-rebased onto `main` (which by then carried F31-D, hence 1793 rather than the
-1785 the pre-rebase tree had):
+rebased onto `main` (which by then carried F31-D and M02-A, hence 1795 rather
+than the 1785 the pre-rebase tree had):
 
 ```
 cargo fmt --all -- --check                                                -> 0
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings -> 0
-cargo test --workspace --locked                                           -> 0 (1793 passed, 0 failed, 106 ignored)
+cargo test --workspace --locked                                           -> 0 (1795 passed, 0 failed, 113 ignored)
 cargo test --workspace --locked -- accept_t447_ --include-ignored         -> 0 (9 tests selected, all passed)
 cargo test --workspace --locked -- accept_f31_ --include-ignored          -> 0 (63 tests selected, all passed)
 ```
