@@ -183,6 +183,22 @@
 //! silent default. Its runtime counterpart is `cs_sim::targeting`; the
 //! conversion boundary is `cs_app::targeting`.
 //!
+//! [`weapons`] is the F27-A declared weapon schema
+//! (`specs/F27-guns-ammunition-hardpoints-and-ballistic-hits.md`, stage
+//! `### F27-A`): the provenance-carrying
+//! [`weapons::DeclaredGunDefinition`] whose `mount` is the same
+//! `crate::damage::DamageNodeKey` the declared damage graph disables and
+//! whose every ballistic parameter — caliber, ammunition, rate, muzzle
+//! velocity, lifetime, spread, per-channel damage, inheritance rule,
+//! effect and sound — is a separate [`weapons`] `Resolved` value, never a
+//! silent default; the [`weapons::AmmunitionId`] that keeps ammunition an
+//! opaque `ammo` catalog id instead of an invented enum; the
+//! [`weapons::InteractionRules`] whose self-hit, friendly-fire, penetration,
+//! ricochet and ammo-switching options each refuse to lower while unknown;
+//! and the [`weapons::DeclaredLoadout`] whose gun/ammunition pairings are
+//! the rows F27-D's ammunition audit walks. Its runtime counterpart is
+//! `cs_sim::weapons`; the conversion boundary is `cs_app::weapons`.
+//!
 //! [`airframe_roles`] is the F25-A role record
 //! (`specs/F25-hoplite-autogyro-and-exceptional-flight-configurations.md`,
 //! stage `### F25-A`): what one airframe *is* — its control-law label, its
@@ -248,4 +264,5 @@ pub mod save;
 pub mod scene;
 pub mod target_rules;
 pub mod textures;
+pub mod weapons;
 pub mod world;
