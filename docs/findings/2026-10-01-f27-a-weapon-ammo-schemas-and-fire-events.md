@@ -19,7 +19,7 @@ evidence report required).
   `GunDefinition`, `GunRate`, `WeaponDamage`, `SpreadCone`,
   `InheritanceRule`, `WeaponRules`/`FriendlyFireRule`, `GunBank`,
   `WeaponState`, `MountTransform`, `FireIntent`, `FireEvent`,
-  `ProjectileSpawn`, `FireRefusal`/`FireRefusalReason`,
+  `ProjectileSpawn`, `FireDenialReason`,
   `IntentRefusal`, `FireResolution`, `FireResolver`, `FireError`, the
   sweep types (`ProjectileSegment`, `SweepTarget`, `SweptHit`, `Ballistics`)
   and the synthetic fixture (`synthetic_gun_definition`,
@@ -29,7 +29,7 @@ evidence report required).
   `InteractionRules`, `InheritanceRule`, `WeaponSchemaError` validation and
   the `declared_synthetic_gun` / `declared_synthetic_ammunition` fixtures.
 - `crates/cs_app/src/weapons.rs` (new): `lower_gun`, `lower_ammunition`,
-  `lower_rules`, `GunLowerError` and the generation-stamped
+  `lower_rules`, `WeaponLowerError` and the generation-stamped
   `WeaponActorBinding` ECS record.
 - `crates/cs_sim/src/lib.rs`, `crates/cs_content/src/lib.rs`,
   `crates/cs_app/src/lib.rs` (wiring only): module declarations and docs.
@@ -136,8 +136,9 @@ parameter, and this stage had no `CS_GAME_DIR` at all. Nothing here claims
 - The original cadence unit, muzzle velocity, projectile lifetime and
   spread model, and whether spread is a cone, a pattern or per-mount.
 - Gun convergence: the distance at which a wing pair's barrels converge is
-  unmeasured. `ProjectileSpawn::direction` carries the *already resolved*
-  direction from the mount transform; this stage invents no convergence
+  unmeasured. `ProjectileSpawn::velocity_mps` is already the *resolved*
+  world velocity — the mount transform's declared forward axis composed
+  with the declared inheritance share; this stage invents no convergence
   distance and no convergence geometry.
 - How a bank is named or cycled in the original cockpit (nose/wing/tail/all
   are the common community reading, not evidence). `GunBank` is an

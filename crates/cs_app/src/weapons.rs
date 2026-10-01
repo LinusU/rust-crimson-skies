@@ -120,7 +120,7 @@ impl std::error::Error for WeaponLowerError {}
 /// presentation reference into gameplay state. It stays available on the
 /// declared record for F27-B to read there.
 pub fn lower_gun(gun: &DeclaredGunDefinition) -> Result<GunDefinition, WeaponLowerError> {
-    let mount = lower_mount_key(gun.mount());
+    let mount = lower_mount_key(gun.mount())?;
     let caliber = known_or_refuse("caliber", gun.caliber())?;
     let ammunition = lower_ammunition_id(gun.ammunition())?;
     let rate = known_or_refuse("rate", gun.rate())?;
@@ -241,15 +241,16 @@ pub struct WeaponActorBinding {
     pub generation: SceneGeneration,
 }
 
-fn lower_mount_key(key: &cs_content::damage::DamageNodeKey) -> DamageNodeKey {
+fn lower_mount_key(
+    key: &cs_content::damage::DamageNodeKey,
+) -> Result<DamageNodeKey, WeaponLowerError> {
     // Both crates apply the same key grammar, so a declared key always
     // forms a runtime key; the boundary maps by text and a failure here
-    // would mean the two grammars had diverged.
-    DamageNodeKey::new(key.as_str()).unwrap_or_else(|source| {
-        panic!(
-            "a declared mount key that satisfied the content grammar must satisfy the runtime \
-             grammar: {source}"
-        )
+    // would mean the two grammars had diverged — a refused lower, not a
+    // crash, matches `cs_app::damage`'s `lower_key`.
+    DamageNodeKey::new(key.as_str()).map_err(|source| WeaponLowerError::MountKey {
+        key: key.as_str().to_owned(),
+        source,
     })
 }
 
