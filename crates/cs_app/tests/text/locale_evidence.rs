@@ -298,7 +298,7 @@ fn census_json(
     out.push_str("\n  ],\n");
 
     out.push_str(&format!(
-        "  \"string_images\": [{}],\n",
+        "  \"string_images\": {},\n",
         str_array(
             &RETAIL_STRING_IMAGES
                 .iter()
