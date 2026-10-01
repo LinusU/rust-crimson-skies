@@ -308,6 +308,16 @@ production code and reverting:
   text, no original byte, no screenshot of original content.
 - Capabilities declared by the report: `retail` and `synthetic`. The report's
   `claim` is `implemented`; a Rally merge would award at most `checked`.
+- **The committed F51-D evidence copy is now stale in one field.** The F51-D
+  harness's derived census reported the *caller-declared* locale set, so
+  `docs/findings/evidence/F51-D.json`'s `string-media-census.json` digest
+  covers `"declared": ["en-us"]`; that field is now measured and will read
+  `["resource-1033"]` when the F51-D harness is next run. The F51-D report was
+  not regenerated here (it needs its own acceptance run with the `gpu` adapter
+  and its three frames, and it is that task's evidence, not this one's), and no
+  F51-D assertion, count or verdict changed — only where its declared locale list
+  came from. Whoever regenerates F51-D evidence should expect that one field
+  difference.
 
 ## What remains unknown (recorded, not guessed)
 
