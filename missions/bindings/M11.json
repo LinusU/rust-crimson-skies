@@ -1,0 +1,21 @@
+{
+ "schema_version": 1,
+ "work_order": "M11",
+ "discovery_title": "The Stolen Scarlet",
+ "verified": false,
+ "install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978",
+ "catalog_id": null,
+ "world_id": null,
+ "program_id": null,
+ "closure_sha256": null,
+ "source_spans": [],
+ "required_actor_ids": [],
+ "objective_ids": [],
+ "interaction_ids": [],
+ "media_ids": [],
+ "stunt_ids": [],
+ "reward_ids": [],
+ "difficulty_ids": [],
+ "unknowns": ["initial player and wingmate configurations: not bound from original data at this stage", "actor/spawn/route sets: not bound from original data at this stage", "objective graph: not bound from original data at this stage", "interaction authorizations: not bound from original data at this stage", "script/native coverage: the mission opcode table is unmeasured, so F13-C probes every program against an empty signature table", "required geometry/collision/materials: not bound from original data at this stage", "audio/dialogue/video/camera cues: not bound from original data at this stage", "initial and terminal campaign state: not bound from original data at this stage", "optional/stunt/reward ids: not bound from original data at this stage", "difficulty branches: not bound from original data at this stage", "exact failure/success precedence: not measured", "campaign progression: the successor mission is not bound to original mission ids", "closure_sha256: the mission dependency closure hash needs the retail content catalog (F14-D) and decoded mission programs (F37/F38)", "mission_id: unresolved — the discovery title is carried by no single localized row", "title_string: unresolved — no localized string carries the discovery title, neither verbatim nor as the title part of a region-prefixed long name", "program_source_map: unresolved — the discovery title is carried by no single localized row", "world_group_variant: unresolved — the discovery title is carried by no single localized row"],
+ "evidence_ids": []
+}

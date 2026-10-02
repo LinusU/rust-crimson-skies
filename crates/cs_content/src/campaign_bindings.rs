@@ -1975,6 +1975,31 @@ pub struct SourceDependency {
     pub state: DependencyState,
 }
 
+/// One `unknowns` entry per critical dependency that is not resolved, in
+/// checklist order, naming the dependency and the refusal that caused it.
+///
+/// [`SourceBinding::unknowns`] is the only place a committed record can say
+/// *why* it is missing an identity: `to_json` writes no dependency states, so a
+/// record whose `catalog_id`, `world_id` and `program_id` are all `null` would
+/// otherwise read as an empty record rather than a refused one. This is the
+/// rule `SourceContext::bind` applies, as a pure function over the dependency
+/// list so a caller (and an acceptance test) can check it without an
+/// installation.
+pub fn unresolved_critical_entries(dependencies: &[SourceDependency]) -> Vec<String> {
+    dependencies
+        .iter()
+        .filter_map(|dependency| match &dependency.state {
+            DependencyState::Resolved { .. } => None,
+            DependencyState::Unresolved { reason, .. } => {
+                Some(format!("{}: unresolved — {reason}", dependency.id.label()))
+            }
+            DependencyState::Unsupported { reason } => {
+                Some(format!("{}: unsupported — {reason}", dependency.id.label()))
+            }
+        })
+        .collect()
+}
+
 /// One byte range of one original asset a source-derived binding rests on.
 ///
 /// `sha256` is the digest of the whole asset named by `asset_id`;
@@ -2291,6 +2316,12 @@ impl SourceContext {
     /// differently in another campaign-length block, that second spelling is
     /// recorded in [`SourceBinding::unknowns`] rather than reconciled.
     ///
+    /// Every critical dependency that stays unresolved is recorded there too,
+    /// with the refusal that caused it, so the committed record explains its
+    /// own empty identities instead of leaving a reader to guess whether the
+    /// installation does not name this mission or the stage simply did not
+    /// reach it.
+    ///
     /// # Errors
     ///
     /// [`SourceBindingError::Io`] when the mission program archive cannot be
@@ -2518,6 +2549,15 @@ impl SourceContext {
                 ));
             }
         }
+        // Every critical dependency that stayed unresolved says so *in the
+        // record*, with the reason the refusal gave. `to_json` writes the
+        // dependencies' states nowhere, so a record whose ids are all `null`
+        // would otherwise say only that it is empty and not *why* — and a
+        // reader could not tell a mission the installation does not name from
+        // a mission this stage simply did not reach. A binding that resolves
+        // all five adds nothing here, so the committed records of the stages
+        // that do resolve them are unchanged.
+        unknowns.extend(unresolved_critical_entries(&dependencies));
 
         Ok(SourceBinding {
             label,
