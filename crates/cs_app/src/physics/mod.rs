@@ -25,6 +25,12 @@
 //! margin, and switches control modes without a pose or velocity discontinuity.
 //! [`contacts`] classifies Avian's collision events back into that vocabulary
 //! and reports each contact episode once, pruning pairs whose body is gone.
+//! [`collider`] is the collision-side consumer of the animation layer's
+//! visibility verdict (F20-C.04): [`NodeColliderPresence`](collider::NodeColliderPresence)
+//! is the record this layer owns for a node's collider, [`apply_collider_presence`](collider::apply_collider_presence)
+//! merges the clip's composed collider verdict into it and projects it onto
+//! Avian's `ColliderDisabled` marker, and a damage removal is terminal there —
+//! no clip can re-enable a collider the damage side removed.
 //! [`preflight`] closes the measured first-tick hole in Avian's swept
 //! detection: a fast body spawned inside one tick's travel of an obstacle is
 //! shape-cast ahead and clamped to the contact, not allowed to tunnel.
@@ -49,6 +55,7 @@
 
 pub mod adapter;
 pub mod body;
+pub mod collider;
 pub mod contacts;
 pub mod evidence;
 pub mod fixture;
@@ -62,6 +69,11 @@ pub use adapter::{
 };
 pub use body::{
     BodyError, BodyLayer, BodyMode, BodySpec, BodyTransitionError, set_body_mode, spawn_body,
+};
+pub use collider::{
+    ColliderDecisionError, ColliderPresenceLedger, ColliderPresencePlugin, ColliderPresenceReport,
+    NodeColliderPresence, apply_collider_presence, apply_collider_presence_on_fixed_tick,
+    remove_collider_for_damage, restore_collider_after_repair,
 };
 pub use contacts::{ContactReport, ContactReports, PhysicsBodiesPlugin};
 pub use evidence::{
