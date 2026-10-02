@@ -52,7 +52,7 @@ use cs_sim::damage::{
 use cs_sim::weapons::{
     AmmunitionId, AmmunitionIdError, FireEvent, FriendlyFireRule, GunDefinition,
     GunDefinitionError, GunHitRouter, GunMountKind, GunRate, InheritanceRule, ProjectileSegment,
-    SelfHitRule, SpreadCone, SweepCandidate, SweepOutcome, WeaponDamage, WeaponRules,
+    SelfHitRule, SpreadCone, SweepCandidate, SweepOutcome, SweepRefusal, WeaponDamage, WeaponRules,
 };
 use cs_types::Tick;
 use cs_types::content::{ContentId, Known, Resolved};
@@ -400,7 +400,7 @@ impl SweptDamageOutcome {
 
     /// The contacts the routing refused, by name.
     #[must_use]
-    pub fn refused_contacts(&self) -> &[cs_sim::weapons::SweepRefusal] {
+    pub fn refused_contacts(&self) -> &[SweepRefusal] {
         &self.sweep.refused
     }
 }
@@ -417,13 +417,14 @@ impl SweptDamageOutcome {
 /// and the gun's declared per-channel damage amounts reach the graph only
 /// through the [`cs_sim::damage::HitEvent`]s it resolves.
 ///
-/// # Errors
+/// # Why this returns an outcome rather than a `Result`
 ///
-/// The error is the [`DamageResolver`]'s own, returned inside
-/// [`SweptDamageOutcome::damage`] rather than as this function's `Err`: the
-/// routing outcome is still meaningful, and dropping it would hide which
-/// contacts produced the batch that could not be applied. See the module
-/// section above.
+/// The resolver's own error — a foreign session, a duplicate hit id — is
+/// carried inside [`SweptDamageOutcome::damage`] rather than as this
+/// function's `Err`, because the routing outcome is still meaningful
+/// alongside it: dropping it would hide which contacts produced the batch
+/// that could not be applied. A caller that only wants the damage reads
+/// `outcome.damage`; a caller auditing the routing reads `outcome.sweep`.
 #[must_use]
 pub fn resolve_swept_damage(
     router: &mut GunHitRouter,
