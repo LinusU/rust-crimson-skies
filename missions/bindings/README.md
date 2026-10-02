@@ -131,6 +131,14 @@ directory is original game data — no assets, scripts or extracted bytes.
   so the world row identifies the chapter and not the mission (see
   `docs/findings/2026-10-02-m21-a-source-binding.md`). Same five resolved
   critical dependencies, same unverified status.
+- `M24.json` — the M24 binding output (stage M24-A), generated and pinned the
+  same way by `accept_m24_a_the_committed_record_is_what_the_installation_derives`.
+  No production code changed for it either: M24 is the twenty-fourth and last
+  campaign position, the fourth mission of chapter 5 (`world/c5`, shared with
+  the other three, so the world row identifies the chapter and not the mission),
+  and the last row of the localized long names' final region group (see
+  `docs/findings/2026-10-02-m24-a-source-binding.md`). Same five resolved
+  critical dependencies, same unverified status.
 
 The typed records those missions fill in — the seven required content
 categories, one unresolved dependency row per required subsystem, coverage
