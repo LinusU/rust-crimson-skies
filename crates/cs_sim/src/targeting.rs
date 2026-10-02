@@ -1,17 +1,35 @@
-//! Target queries, allegiance and threat contracts (F30-A).
+//! Target queries, allegiance, selection actions and threat contracts
+//! (F30-A, F30-B).
 //!
 //! Spec: `specs/F30-targeting-classification-aim-assistance-and-threat-cues.md`,
-//! stage `### F30-A`. Shared contract: `docs/contracts/IDENTITY-CONTENT.md`.
+//! stages `### F30-A` and `### F30-B`. Shared contract:
+//! `docs/contracts/IDENTITY-CONTENT.md`.
 //!
 //! Stage **F30-A** defines the typed contract — the inputs a session feeds
 //! the targeting authority, the queries it answers and the records it
 //! returns — plus the minimal synthetic fixture the acceptance tests
-//! drive. It does not implement the original selection-action bindings
-//! (F30-B maps `cs_types::input::FlightCommand::TargetNext`/`TargetPrev`
-//! edges and the rest of the declared request vocabulary onto
-//! [`SelectionRequest`]), the HUD/spyglass/weapon consumers (F30-C) or the
-//! original-data verification of ordering, reveal and assistance rules
-//! (F30-D).
+//! drive.
+//!
+//! Stage **F30-B** adds the production path that runs it:
+//!
+//! * [`SelectionAction`] and [`SelectionBinding`] bind
+//!   `cs_types::input::FlightCommand` edges — `TargetNext`/`TargetPrev` and
+//!   any other declared target edge — onto the F30-A
+//!   [`SelectionRequest`] vocabulary, and [`TargetStore::act`] resolves one
+//!   against the phase's [`SelectionFrame`], so the tick and the crosshair
+//!   ray come from the session rather than from a caller guessing them.
+//! * [`AttackEvent::from_hit`] and [`TargetStore::record_hits`] are the
+//!   threat state's real feed: the damage system's own [`HitEvent`]s become
+//!   ledger entries, and a hit that credits nobody mints nothing
+//!   (non-negotiable 4).
+//! * [`Reticle`] and [`TargetPhase`] are what one phase boundary produces:
+//!   a single record that clears an ineligible selection and carries the
+//!   selected actor's class, live allegiance, hostility gate and threat
+//!   state, so the reticle the HUD draws and the hostility the combat AI
+//!   reads cannot straddle a boundary (AC02's production half).
+//!
+//! The HUD/spyglass/weapon consumers are F30-C and the original-data
+//! verification of ordering, reveal and assistance rules is F30-D.
 //!
 //! # Pieces
 //!
@@ -43,6 +61,10 @@
 //!   spyglass. It carries what those consumers display — allegiance,
 //!   class, distance — and confers no combat authority: it is a copy of
 //!   store state, not a handle into it.
+//! * [`SelectionAction`]/[`SelectionBinding`] are the F30-B action
+//!   vocabulary and the command-edge table that reaches it, and
+//!   [`TargetStore::phase`] is the one call a session's consumers make per
+//!   phase boundary.
 //!
 //! # Determinism
 //!
@@ -50,6 +72,8 @@
 //! the AC01 "equal-distance targets" case — break on the stable
 //! session-qualified actor id, so the cycle sequence is a function of the
 //! roster, never of ECS iteration or insertion order (non-negotiable 2).
+//! The phase record is derived in that same order, so a reticle, a
+//! hostility gate and a threat cue all read the same snapshot.
 //!
 //! # Designed vocabulary, not original data
 //!
@@ -58,7 +82,9 @@
 //! behavior are unmeasured (F30 "Research boundary"; F30-D's retail stage).
 //! Every vocabulary value, filter and fixture number here is newly
 //! authored engine design, recorded in
-//! `docs/findings/2026-09-30-f30-a-target-queries-and-allegiance-contracts.md`.
+//! `docs/findings/2026-09-30-f30-a-target-queries-and-allegiance-contracts.md`
+//! and, for the F30-B action table and threat feed, in
+//! `docs/findings/2026-10-02-f30-b-selection-actions-and-threat-state.md`.
 //! The declared, provenance-carrying half is
 //! `cs_content::target_rules`; the lowering boundary and ECS bindings are
 //! `cs_app::targeting`.
@@ -74,10 +100,11 @@ use std::fmt;
 
 use cs_types::Tick;
 use cs_types::content::ContentId;
+use cs_types::input::FlightCommand;
 use cs_types::net::SessionId;
 use cs_types::space::{Meters, Radians, UnitVec3, WorldPosition};
 
-use crate::damage::{ActorId, HitEventId, LifecycleKind};
+use crate::damage::{ActorId, HitEvent, HitEventId, LifecycleKind};
 
 /// What kind of actor a target is.
 ///
@@ -303,6 +330,20 @@ pub enum TargetFilter {
     Objective,
 }
 
+impl TargetFilter {
+    /// The stable label used in reports and action descriptions.
+    #[must_use]
+    pub fn label(&self) -> String {
+        match self {
+            Self::Any => "any".to_owned(),
+            Self::Allegiance(allegiance) => format!("{allegiance}"),
+            Self::Class(class) => class.label().to_owned(),
+            Self::NotClass(class) => format!("not_{}", class.label()),
+            Self::Objective => "objective".to_owned(),
+        }
+    }
+}
+
 /// The direction a cycle request walks the ordered target list.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum CycleDirection {
@@ -310,6 +351,26 @@ pub enum CycleDirection {
     Next,
     /// Toward the previous nearer target in the ordering, wrapping.
     Previous,
+}
+
+impl CycleDirection {
+    /// Every direction, in a stable order.
+    pub const ALL: &'static [CycleDirection] = &[Self::Next, Self::Previous];
+
+    /// The stable label used in reports.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Next => "next",
+            Self::Previous => "previous",
+        }
+    }
+}
+
+impl fmt::Display for CycleDirection {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
 }
 
 /// An authoritative attack, for the threat ledger.
@@ -329,6 +390,48 @@ pub struct AttackEvent {
     pub at: Tick,
     /// The authoritative event this attack is evidenced by.
     pub evidence: HitEventId,
+}
+
+impl AttackEvent {
+    /// The attack a landed hit evidences, or `None` when the hit credits
+    /// nobody.
+    ///
+    /// A hit with no attributable source (`HitEvent::attacker` is `None` —
+    /// the world, a hazard) damages without crediting an actor, so it mints
+    /// no threat cue; neither does a self-hit, because an actor is not a
+    /// threat against itself. Everything else becomes a ledger entry whose
+    /// evidence is the hit's own id and whose `at` is that id's tick — the
+    /// damage system's clock, not a caller's.
+    #[must_use]
+    pub fn from_hit(hit: &HitEvent) -> Option<Self> {
+        let attacker = hit.attacker?;
+        (attacker != hit.target).then_some(Self {
+            attacker,
+            victim: hit.target,
+            at: hit.id.tick,
+            evidence: hit.id,
+        })
+    }
+}
+
+/// What one batch of authoritative hits did to the threat ledger.
+///
+/// The counters are the batch's whole accounting: a session can tell a
+/// quiet tick from a tick whose hits all missed the roster, and neither
+/// looks like a minting of cues.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ThreatFeed {
+    /// Hits that minted a new ledger entry.
+    pub recorded: usize,
+    /// Hits already in the ledger under the same evidence id and
+    /// attacker — a redelivered batch, counted once.
+    pub repeated: usize,
+    /// Hits that credited nobody: no attributable source, or a self-hit.
+    pub unattributed: usize,
+    /// Hits naming an actor this store does not track, which is a normal
+    /// outcome — damage records exist for parts the target roster never
+    /// listed.
+    pub untracked: usize,
 }
 
 /// One live threat against an actor: an attacker that produced an
@@ -484,6 +587,189 @@ impl TargetSelection {
     }
 }
 
+/// One bound target action: what a target command edge does when it fires.
+///
+/// The difference from [`SelectionRequest`] is who supplies the phase's
+/// context. A request carries the tick or the crosshair ray its caller
+/// already has; an action names *what* to select and lets
+/// [`TargetStore::act`] take `now` and the ray from the
+/// [`SelectionFrame`] the session is running. That is what lets a command
+/// edge be a plain piece of declared data instead of code that closes over
+/// a tick.
+///
+/// The variant set is the deliverable's action list: the two cycle
+/// directions over any filter (the enemy/objective/ally/non-aircraft
+/// cycles), nearest of a filter, nearest attacker, under-crosshair and
+/// clear. Which of them the original game binds, and to which keys, is
+/// unverified until F30-D measures it.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SelectionAction {
+    /// Walk the eligible list matching `filter` in `direction`, wrapping.
+    Cycle {
+        /// Which way to walk.
+        direction: CycleDirection,
+        /// Which actors the cycle considers.
+        filter: TargetFilter,
+    },
+    /// Select the nearest eligible actor matching `filter`.
+    Nearest {
+        /// Which actors are considered.
+        filter: TargetFilter,
+    },
+    /// Select the nearest eligible actor with a live threat cue against
+    /// the observer at the frame's tick.
+    NearestAttacker,
+    /// Select the eligible, unoccluded actor under the frame's crosshair
+    /// ray. Refused with [`TargetError::MissingCrosshair`] when the frame
+    /// carries no ray — an absent ray is not "nothing under the
+    /// crosshair".
+    UnderCrosshair,
+    /// Drop the current selection.
+    Clear,
+}
+
+impl SelectionAction {
+    /// The stable label used in reports and persisted bindings.
+    #[must_use]
+    pub fn label(&self) -> String {
+        match self {
+            Self::Cycle { direction, filter } => {
+                format!("{}_{}", direction.label(), filter.label())
+            }
+            Self::Nearest { filter } => format!("nearest_{}", filter.label()),
+            Self::NearestAttacker => "nearest_attacker".to_owned(),
+            Self::UnderCrosshair => "under_crosshair".to_owned(),
+            Self::Clear => "clear".to_owned(),
+        }
+    }
+}
+
+impl fmt::Display for SelectionAction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.label())
+    }
+}
+
+/// The per-phase context an action resolves against: the tick the phase
+/// runs at and the crosshair ray the camera producer reported, if any.
+///
+/// The crosshair ray is `None` when the producer had none to report (no
+/// targetable geometry in front of the camera, a frame where the ray was
+/// refused). [`TargetStore::act`] then refuses an
+/// [`SelectionAction::UnderCrosshair`] rather than answering "no target"
+/// for a ray it never saw.
+#[derive(Clone, Copy, Debug)]
+pub struct SelectionFrame<'a> {
+    /// The tick the phase runs at.
+    pub now: Tick,
+    /// The crosshair ray the producer reported this phase.
+    pub crosshair: Option<&'a CrosshairQuery>,
+}
+
+impl<'a> SelectionFrame<'a> {
+    /// A frame at `now` with no crosshair ray.
+    #[must_use]
+    pub const fn at(now: Tick) -> Self {
+        Self {
+            now,
+            crosshair: None,
+        }
+    }
+
+    /// The same frame with the producer's crosshair ray attached.
+    #[must_use]
+    pub const fn with_crosshair(self, query: &'a CrosshairQuery) -> Self {
+        Self {
+            now: self.now,
+            crosshair: Some(query),
+        }
+    }
+}
+
+/// The session's target command edges: which
+/// [`cs_types::input::FlightCommand`] runs which [`SelectionAction`].
+///
+/// The table is the F30-B binding of the engine's command vocabulary onto
+/// the selection vocabulary, and the record an importer's declared action
+/// table lowers into. It is a [`BTreeMap`], so iterating it is a total
+/// order over commands and two runs with the same edges act in the same
+/// order however the caller collected them (non-negotiable 2).
+///
+/// A command with no entry is not a targeting command: it is left to
+/// control, weapons and ordnance, and firing it changes no selection.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SelectionBinding {
+    actions: BTreeMap<FlightCommand, SelectionAction>,
+}
+
+impl SelectionBinding {
+    /// An empty table: no command runs a selection action.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Binds `command` to `action`, returning the action it replaced.
+    pub fn bind(
+        &mut self,
+        command: FlightCommand,
+        action: SelectionAction,
+    ) -> Option<SelectionAction> {
+        self.actions.insert(command, action)
+    }
+
+    /// The action `command` runs, if it is a targeting command.
+    #[must_use]
+    pub fn action(&self, command: FlightCommand) -> Option<&SelectionAction> {
+        self.actions.get(&command)
+    }
+
+    /// Every bound command with its action, in stable command order.
+    pub fn bindings(&self) -> impl Iterator<Item = (FlightCommand, &SelectionAction)> {
+        self.actions
+            .iter()
+            .map(|(command, action)| (*command, action))
+    }
+
+    /// How many commands are bound.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.actions.len()
+    }
+
+    /// Whether no command is bound.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.actions.is_empty()
+    }
+
+    /// The designed default: the two declared target edges walk a cycle
+    /// over `filter`, away from and toward the observer.
+    ///
+    /// This is newly authored engine design with no original key evidence
+    /// (F30-D's retail stage) — the fixture, not a claim about the
+    /// original game.
+    #[must_use]
+    pub fn cycling(filter: TargetFilter) -> Self {
+        let mut binding = Self::new();
+        binding.bind(
+            FlightCommand::TargetNext,
+            SelectionAction::Cycle {
+                direction: CycleDirection::Next,
+                filter,
+            },
+        );
+        binding.bind(
+            FlightCommand::TargetPrev,
+            SelectionAction::Cycle {
+                direction: CycleDirection::Previous,
+                filter,
+            },
+        );
+        binding
+    }
+}
+
 /// A read-only snapshot of one registered actor for HUD, spyglass and
 /// assistance consumers.
 ///
@@ -513,6 +799,71 @@ pub struct TargetInfo {
     pub distance: Meters,
 }
 
+/// What one phase boundary reports about the observer's selection: what a
+/// reticle draws, and what the combat AI's hostility gate reads.
+///
+/// The two live in one record on purpose. A faction change is applied to
+/// the store, and the *next* phase derives both from the same read, so the
+/// reticle and the AI can never disagree about whether the selected actor
+/// is an enemy — the failure AC02 names (non-negotiable 1). Nothing here is
+/// stored: a reticle cannot be held across a phase and rendered stale.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Reticle {
+    /// The selected actor.
+    pub target: ActorId,
+    /// What kind of actor it is.
+    pub class: TargetClass,
+    /// Its current faction.
+    pub faction: ContentId,
+    /// The declared relation to the observer's faction, re-derived in this
+    /// phase. `None` is an *undeclared* pair: neither enemy nor friend, and
+    /// never a hostility.
+    pub allegiance: Option<Allegiance>,
+    /// Whether the combat AI may engage: a **declared** hostile relation.
+    ///
+    /// Hostility is a gate, not a weight
+    /// ([`crate::ai::combat`](crate::ai)), so a neutral, a friendly and an
+    /// undeclared pair are all non-hostile here, and the AI's own gate makes
+    /// the same call from the same [`Allegiance`].
+    pub hostile: bool,
+    /// Whether this actor produced an authoritative attack against the
+    /// observer inside the declared threat window — the threat cue the
+    /// HUD's warning reads (non-negotiable 4).
+    pub threatening: bool,
+    /// Whether mission rules flag the actor as an objective target.
+    pub objective: bool,
+    /// Whether the actor is revealed to sensors/HUD.
+    pub revealed: bool,
+    /// Its canonical world position — the point a reticle projects and a
+    /// candidate view is built from, in the same f64 world space the
+    /// ordering used, so a rebase cannot move it.
+    pub position: WorldPosition,
+    /// Its distance from the observer.
+    pub distance: Meters,
+}
+
+/// One phase boundary's targeting state: the selection after pruning, the
+/// reticle record for it and the observer's live threat cues.
+///
+/// [`TargetStore::phase`] is the single call a session's consumers make per
+/// boundary, and every field is derived in it. A consumer therefore never
+/// reads the selection and the allegiance in two calls that a faction change
+/// could come between.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TargetPhase {
+    /// The tick the phase ran at.
+    pub at: Tick,
+    /// The observer's selection after pruning: `None` when there was none,
+    /// or when the held target stopped being eligible (AC03's contract
+    /// half, applied before any consumer reads the record).
+    pub selection: Option<ActorId>,
+    /// The reticle record for [`selection`](Self::selection); `None` when
+    /// there is no selection.
+    pub reticle: Option<Reticle>,
+    /// The live threat cues against the observer, most recent first.
+    pub threats: Vec<ThreatCue>,
+}
+
 /// Why a [`TargetStore`] operation was refused.
 #[derive(Clone, Debug, PartialEq)]
 pub enum TargetError {
@@ -534,6 +885,11 @@ pub enum TargetError {
         /// The actor that was named.
         actor: ActorId,
     },
+    /// An [`SelectionAction::UnderCrosshair`] was run in a
+    /// [`SelectionFrame`] that carries no crosshair ray. Refused rather
+    /// than answered: a frame without a ray is missing evidence, not
+    /// evidence that nothing is under the crosshair.
+    MissingCrosshair,
 }
 
 impl fmt::Display for TargetError {
@@ -545,6 +901,10 @@ impl fmt::Display for TargetError {
             ),
             Self::DuplicateActor { actor } => write!(f, "{actor} is already registered"),
             Self::UnknownActor { actor } => write!(f, "{actor} is not registered"),
+            Self::MissingCrosshair => write!(
+                f,
+                "the under-crosshair action needs a crosshair ray, and this phase carries none"
+            ),
         }
     }
 }
@@ -773,6 +1133,95 @@ impl TargetStore {
             ledger.push(event);
         }
         Ok(())
+    }
+
+    /// The production threat feed: turns a tick's authoritative hits into
+    /// ledger entries and reports what the batch did.
+    ///
+    /// The hits are the damage system's own [`HitEvent`]s, so a cue is
+    /// always evidence of a hit somebody landed rather than of proximity
+    /// or of a request to select (non-negotiable 4). The whole batch is
+    /// checked against this store's session first, so a hit from another
+    /// generation refuses the batch instead of half-recording it; hits
+    /// naming actors the roster does not track are counted, not refused —
+    /// damage records exist for parts targeting never listed.
+    ///
+    /// # Errors
+    ///
+    /// [`TargetError::ForeignSession`] when a hit's evidence, its target
+    /// or its attacker belongs to another generation.
+    pub fn record_hits(&mut self, hits: &[HitEvent]) -> Result<ThreatFeed, TargetError> {
+        for hit in hits {
+            for session in [
+                Some(hit.id.session),
+                Some(hit.target.session),
+                hit.attacker.map(|attacker| attacker.session),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                if session != self.session {
+                    return Err(TargetError::ForeignSession {
+                        expected: self.session,
+                        found: session,
+                    });
+                }
+            }
+        }
+
+        let mut feed = ThreatFeed::default();
+        for hit in hits {
+            let Some(attack) = AttackEvent::from_hit(hit) else {
+                feed.unattributed += 1;
+                continue;
+            };
+            if !self.records.contains_key(&attack.attacker)
+                || !self.records.contains_key(&attack.victim)
+            {
+                feed.untracked += 1;
+                continue;
+            }
+            let ledger = self.attacks.entry(attack.victim).or_default();
+            if ledger
+                .iter()
+                .any(|held| held.evidence == attack.evidence && held.attacker == attack.attacker)
+            {
+                feed.repeated += 1;
+            } else {
+                ledger.push(attack);
+                feed.recorded += 1;
+            }
+        }
+        Ok(feed)
+    }
+
+    /// Every registered actor, in stable actor order.
+    #[must_use]
+    pub fn registered(&self) -> Vec<ActorId> {
+        self.records.keys().copied().collect()
+    }
+
+    /// Removes the actor from the roster and from the threat ledger, in
+    /// both directions.
+    ///
+    /// This is the *entity left the world* transaction, which is not the
+    /// same statement as a recorded [`LifecycleKind::Destroyed`]: a
+    /// destroyed actor keeps its attack evidence in the ledger (the record
+    /// of what killed it is evidence, and the F30-A acceptance case asserts
+    /// it), whereas an unregistered actor is not in the world at all and can
+    /// never be a live threat cue or a selectable target.
+    ///
+    /// Unregistering an actor that is not registered is a no-op, so two
+    /// systems noticing the same departure cannot fail each other.
+    pub fn unregister(&mut self, actor: ActorId) {
+        if actor.session != self.session {
+            return;
+        }
+        self.records.remove(&actor);
+        self.attacks.remove(&actor);
+        for ledger in self.attacks.values_mut() {
+            ledger.retain(|attack| attack.attacker != actor);
+        }
     }
 
     /// The live threat cues against `victim` at tick `now`: one
@@ -1008,6 +1457,126 @@ impl TargetStore {
         }
     }
 
+    /// Runs one bound [`SelectionAction`] for `observer` against the phase's
+    /// context, updating `selection` and returning the resulting target.
+    ///
+    /// This is the F30-B production path from a command edge to a
+    /// selection: the action supplies *what* to select, the
+    /// [`SelectionFrame`] supplies the phase's tick and crosshair ray, and
+    /// the result is the same deterministic answer
+    /// [`TargetStore::apply`] gives for the equivalent request.
+    ///
+    /// # Errors
+    ///
+    /// [`TargetError::UnknownActor`] when `observer` is unregistered,
+    /// [`TargetError::MissingCrosshair`] when the action needs a crosshair
+    /// ray the frame does not carry.
+    pub fn act(
+        &self,
+        observer: ActorId,
+        selection: &mut TargetSelection,
+        action: &SelectionAction,
+        frame: SelectionFrame<'_>,
+    ) -> Result<Option<ActorId>, TargetError> {
+        let request = match action {
+            SelectionAction::Cycle { direction, filter } => SelectionRequest::Cycle {
+                direction: *direction,
+                filter: *filter,
+            },
+            SelectionAction::Nearest { filter } => SelectionRequest::Nearest { filter: *filter },
+            SelectionAction::NearestAttacker => {
+                SelectionRequest::NearestAttacker { now: frame.now }
+            }
+            SelectionAction::UnderCrosshair => SelectionRequest::UnderCrosshair(
+                frame
+                    .crosshair
+                    .ok_or(TargetError::MissingCrosshair)?
+                    .clone(),
+            ),
+            SelectionAction::Clear => SelectionRequest::Clear,
+        };
+        self.apply(observer, selection, &request)
+    }
+
+    /// Builds this phase's crosshair query for the producer's ray, using
+    /// the declared default cone when the producer does not override it.
+    ///
+    /// The declared [`TargetPolicy::crosshair_cone`] is the fallback, not a
+    /// value the producer may ignore: a producer with its own cone passes
+    /// it, and a producer that only knows a ray takes the declared one. The
+    /// cone is validated here, so a corrupt declared or supplied angle is
+    /// refused at the boundary rather than inside a sort.
+    ///
+    /// # Errors
+    ///
+    /// [`CrosshairError`] on a non-finite or out-of-range cone.
+    pub fn crosshair_query(
+        &self,
+        origin: WorldPosition,
+        direction: UnitVec3,
+        cone: Option<Radians>,
+        occluded: BTreeSet<ActorId>,
+    ) -> Result<CrosshairQuery, CrosshairError> {
+        CrosshairQuery::try_new(
+            origin,
+            direction,
+            cone.unwrap_or(self.policy.crosshair_cone),
+            occluded,
+        )
+    }
+
+    /// One phase boundary: prunes a selection whose target stopped being
+    /// eligible, then derives the reticle record and the observer's threat
+    /// cues from the same reads.
+    ///
+    /// The pruning runs *before* the record is derived, so a destroyed,
+    /// hidden or phase-gated target is never described by a phase that
+    /// reports it (AC03's contract half). The reticle's allegiance and its
+    /// hostility verdict are two fields of one read of the roster, so a
+    /// faction change applied before this call reaches both in the same
+    /// boundary and no consumer can see one without the other (AC02).
+    ///
+    /// # Errors
+    ///
+    /// [`TargetError::UnknownActor`] when `observer` is unregistered.
+    pub fn phase(
+        &self,
+        observer: ActorId,
+        selection: &mut TargetSelection,
+        now: Tick,
+    ) -> Result<TargetPhase, TargetError> {
+        let observer_record = self
+            .record(&observer)
+            .ok_or(TargetError::UnknownActor { actor: observer })?;
+        let observer_record_faction = observer_record.faction.clone();
+        self.prune(selection);
+        let threats = self.threats(observer, now);
+        let reticle = selection.current().and_then(|target| {
+            let observer_position = self.record(&observer)?.position;
+            let record = self.record(&target)?;
+            let allegiance = self.allegiance(&observer_record_faction, &record.faction);
+            let threatening = threats.iter().any(|cue| cue.attacker == target);
+            Some(Reticle {
+                target,
+                class: record.class,
+                faction: record.faction.clone(),
+                allegiance,
+                hostile: allegiance == Some(Allegiance::Hostile),
+                threatening,
+                objective: record.objective,
+                revealed: record.revealed,
+                position: record.position,
+                distance: Meters(distance_squared(observer_position, record.position).sqrt()),
+            })
+        });
+        Ok(TargetPhase {
+            at: now,
+            selection: selection.current(),
+            reticle,
+            threats,
+        })
+    }
+
     /// The eligible, unoccluded actor — never the observer — nearest the
     /// query's ray direction within its cone: maximize `cos(angle)`, break
     /// angular ties on ascending distance, then on actor id, so the pick
@@ -1130,6 +1699,14 @@ pub fn synthetic_target_policy() -> TargetPolicy {
         threat_window_ticks: 120,
         crosshair_cone: Radians(std::f64::consts::PI / 18.0),
     }
+}
+
+/// The synthetic command-edge table: the two declared target edges walk a
+/// cycle over the fixture's declared hostiles — newly authored design, not
+/// a claim about the original game's keys.
+#[must_use]
+pub fn synthetic_selection_binding() -> SelectionBinding {
+    SelectionBinding::cycling(TargetFilter::Allegiance(Allegiance::Hostile))
 }
 
 #[allow(clippy::too_many_arguments)]

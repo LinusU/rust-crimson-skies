@@ -116,17 +116,23 @@
 //! lowering boundary and ECS bindings are `cs_app::damage`; armor-driven
 //! disablement is F29-B and visual/scoring wiring is F29-C.
 //!
-//! [`targeting`] is the F30-A targeting contract
+//! [`targeting`] is the F30-A/F30-B targeting contract
 //! (`specs/F30-targeting-classification-aim-assistance-and-threat-cues.md`,
-//! stage `### F30-A`): the per-session [`targeting::TargetStore`] owning
-//! the target roster, the directed [`targeting::AllegianceTable`] and the
-//! authoritative-attack threat ledger; the typed [`targeting::TargetRecord`]
-//! input, the [`targeting::SelectionRequest`] vocabulary and the read-only
-//! [`targeting::TargetInfo`] snapshot HUD and spyglass consume; and the
+//! stages `### F30-A`/`### F30-B`): the per-session
+//! [`targeting::TargetStore`] owning the target roster, the directed
+//! [`targeting::AllegianceTable`] and the authoritative-attack threat
+//! ledger; the typed [`targeting::TargetRecord`] input, the
+//! [`targeting::SelectionRequest`] vocabulary and the read-only
+//! [`targeting::TargetInfo`] snapshot HUD and spyglass consume; the
 //! total `(distance, ActorId)` ordering that makes equal-distance cycling
-//! deterministic. The declared schema is `cs_content::target_rules`; the
-//! conversion boundary and ECS bindings are `cs_app::targeting`; original
-//! selection actions are F30-B and verification is F30-D.
+//! deterministic; and F30-B's production path — the
+//! [`targeting::SelectionBinding`] command-edge table with
+//! [`targeting::TargetStore::act`], the [`targeting::TargetStore::phase`]
+//! record whose reticle and AI hostility gate are one read, and
+//! [`targeting::TargetStore::record_hits`] as the threat state's only feed.
+//! The declared schema is `cs_content::target_rules`; the conversion
+//! boundary and ECS bindings are `cs_app::targeting`; the HUD/spyglass/
+//! weapon consumers are F30-C and verification is F30-D.
 //!
 //! [`ai`] is the F31-A/F31-B navigation contract
 //! (`specs/F31-ai-navigation-routes-and-obstacle-avoidance.md`, stages

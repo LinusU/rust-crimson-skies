@@ -1,8 +1,9 @@
-//! The declared targeting schema: provenance-carrying faction relations
-//! and targeting rules (F30-A).
+//! The declared targeting schema: provenance-carrying faction relations,
+//! targeting rules and selection actions (F30-A, F30-B).
 //!
 //! Spec: `specs/F30-targeting-classification-aim-assistance-and-threat-cues.md`,
-//! stage `### F30-A`. Shared contract: `docs/contracts/IDENTITY-CONTENT.md`.
+//! stages `### F30-A` and `### F30-B`. Shared contract:
+//! `docs/contracts/IDENTITY-CONTENT.md`.
 //!
 //! This module is the **content half** of the targeting contract — the
 //! normalized record a mission/rules importer produces. Its runtime
@@ -43,20 +44,33 @@
 //! aim assistance is a declared option with an evidence class, not a
 //! behavior this schema smuggles in.
 //!
+//! # Selection actions (F30-B)
+//!
+//! [`DeclaredSelectionActions`] is the declared action table: which typed
+//! command edge (`cs_types::input::FlightCommand`, the engine's once-per-
+//! press edges) an IA preset or control scheme binds to which selection
+//! action. Each action is a [`Resolved`], so an action the importer could
+//! not evidence stays unknown and refuses to lower rather than binding an
+//! edge to a guess; the table is validated so one command binds at most one
+//! action and no continuous axis is ever bound to a target action.
+//!
 //! # Designed vocabulary, not original data
 //!
-//! The original game's faction matrix, target-cycle order, reveal rules,
-//! crosshair cone and assistance behavior are unmeasured (F30 "Research
-//! boundary"; F30-D's retail stage). Every value in the synthetic fixture
-//! is newly authored project design carrying `Origin::SyntheticFixture`
-//! and designed provenance, recorded in
-//! `docs/findings/2026-09-30-f30-a-target-queries-and-allegiance-contracts.md`.
+//! The original game's faction matrix, target-cycle order, selection
+//! actions and their key bindings, reveal rules, crosshair cone and
+//! assistance behavior are unmeasured (F30 "Research boundary"; F30-D's
+//! retail stage). Every value in the synthetic fixtures is newly authored
+//! project design carrying `Origin::SyntheticFixture` and designed
+//! provenance, recorded in
+//! `docs/findings/2026-09-30-f30-a-target-queries-and-allegiance-contracts.md`
+//! and `docs/findings/2026-10-02-f30-b-selection-actions-and-threat-state.md`.
 
 use std::collections::BTreeSet;
 use std::fmt;
 
 use cs_types::content::{ContentId, ContentKind, Known, Origin, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
+use cs_types::input::FlightCommand;
 use cs_types::space::Radians;
 
 /// The declared relation of one faction toward another.
@@ -367,6 +381,216 @@ fn validate(
     Ok(())
 }
 
+/// The declared selection action vocabulary (F30-B).
+///
+/// Mirrors `cs_sim::targeting::SelectionAction`; the boundary lowers it
+/// onto the runtime table that binds command edges. The set is the
+/// deliverable's action list — the enemy/objective, ally, non-aircraft,
+/// nearest-attacker, under-crosshair and clear actions, plus the two cycle
+/// directions. Which of them the original game binds, and to which keys, is
+/// unmeasured (F30-D).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum DeclaredAction {
+    /// Walk the declared-hostile cycle away from the observer.
+    NextHostile,
+    /// Walk it toward the observer.
+    PreviousHostile,
+    /// The nearest declared hostile.
+    NearestHostile,
+    /// The nearest actor mission rules flagged as an objective.
+    NearestObjective,
+    /// The nearest declared ally.
+    NearestAlly,
+    /// The nearest actor that is not an aircraft.
+    NearestNonAircraft,
+    /// The nearest actor with a live threat cue against the observer.
+    NearestAttacker,
+    /// The eligible, unoccluded actor under the crosshair.
+    UnderCrosshair,
+    /// Drop the selection.
+    Clear,
+}
+
+impl DeclaredAction {
+    /// Every action, in a stable order.
+    pub const ALL: &'static [DeclaredAction] = &[
+        Self::NextHostile,
+        Self::PreviousHostile,
+        Self::NearestHostile,
+        Self::NearestObjective,
+        Self::NearestAlly,
+        Self::NearestNonAircraft,
+        Self::NearestAttacker,
+        Self::UnderCrosshair,
+        Self::Clear,
+    ];
+
+    /// The stable label used in reports and persisted bindings.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::NextHostile => "next_hostile",
+            Self::PreviousHostile => "previous_hostile",
+            Self::NearestHostile => "nearest_hostile",
+            Self::NearestObjective => "nearest_objective",
+            Self::NearestAlly => "nearest_ally",
+            Self::NearestNonAircraft => "nearest_non_aircraft",
+            Self::NearestAttacker => "nearest_attacker",
+            Self::UnderCrosshair => "under_crosshair",
+            Self::Clear => "clear",
+        }
+    }
+
+    /// Looks an action up by its label; `None` for an unknown label.
+    #[must_use]
+    pub fn from_label(label: &str) -> Option<Self> {
+        Self::ALL
+            .iter()
+            .copied()
+            .find(|action| action.label() == label)
+    }
+}
+
+impl fmt::Display for DeclaredAction {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+/// One declared command binding: the typed command edge an IA preset or
+/// control scheme binds, and the action it runs.
+///
+/// `action` is a [`Resolved`]: a binding the importer could not evidence
+/// refuses to lower rather than binding the edge to a guess — an unknown
+/// action is not the same statement as "this command is not a target
+/// command" (F30 non-negotiable 1, AGENTS "unknown means unknown").
+/// `evidence` records where the binding itself came from, so a
+/// `verified_original` key binding and a `designed` default are never the
+/// same record.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeclaredSelectionAction {
+    /// The command edge this binding fires on.
+    pub command: FlightCommand,
+    /// The action it runs, or an explicit unknown.
+    pub action: Resolved<DeclaredAction>,
+    /// Where the binding came from.
+    pub evidence: Provenance,
+}
+
+/// Why a [`DeclaredSelectionActions`] was rejected.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SelectionActionsError {
+    /// A binding names a continuous axis command. A target action is a
+    /// once-per-press edge; binding it to an axis would fire it on every
+    /// frame the axis moved.
+    ContinuousCommand {
+        /// The offending command.
+        command: FlightCommand,
+    },
+    /// The same command is bound twice; one edge runs one action.
+    DuplicateCommand {
+        /// The command bound more than once.
+        command: FlightCommand,
+    },
+}
+
+impl fmt::Display for SelectionActionsError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ContinuousCommand { command } => write!(
+                f,
+                "{command} is a continuous axis; a selection action must bind a once-per-press command"
+            ),
+            Self::DuplicateCommand { command } => {
+                write!(f, "command {command} is bound to more than one action")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SelectionActionsError {}
+
+/// The declared selection-action table of one catalog subject.
+///
+/// `subject` is the catalog id the table belongs to — the same discipline
+/// [`DeclaredTargetRules`] follows, so an IA preset's actions and a
+/// mission's relations are separately addressable records that can still
+/// name each other.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeclaredSelectionActions {
+    subject: ContentId,
+    origin: Origin,
+    bindings: Vec<DeclaredSelectionAction>,
+    provenance: Provenance,
+}
+
+impl DeclaredSelectionActions {
+    /// Assembles and validates a declared action table.
+    ///
+    /// # Errors
+    ///
+    /// [`SelectionActionsError`] when a binding names a continuous axis
+    /// command or the same command is bound twice.
+    pub fn try_new(
+        subject: ContentId,
+        origin: Origin,
+        bindings: Vec<DeclaredSelectionAction>,
+        provenance: Provenance,
+    ) -> Result<Self, SelectionActionsError> {
+        let mut commands = BTreeSet::new();
+        for binding in &bindings {
+            if binding.command.is_continuous() {
+                return Err(SelectionActionsError::ContinuousCommand {
+                    command: binding.command,
+                });
+            }
+            if !commands.insert(binding.command) {
+                return Err(SelectionActionsError::DuplicateCommand {
+                    command: binding.command,
+                });
+            }
+        }
+        Ok(Self {
+            subject,
+            origin,
+            bindings,
+            provenance,
+        })
+    }
+
+    /// The catalog id the table belongs to.
+    #[must_use]
+    pub fn subject(&self) -> &ContentId {
+        &self.subject
+    }
+
+    /// Where the table came from.
+    #[must_use]
+    pub const fn origin(&self) -> &Origin {
+        &self.origin
+    }
+
+    /// The declared bindings, in authored order.
+    #[must_use]
+    pub fn bindings(&self) -> &[DeclaredSelectionAction] {
+        &self.bindings
+    }
+
+    /// The binding for one command edge, if the table declares it.
+    #[must_use]
+    pub fn binding(&self, command: FlightCommand) -> Option<&DeclaredSelectionAction> {
+        self.bindings
+            .iter()
+            .find(|binding| binding.command == command)
+    }
+
+    /// Where the table itself came from.
+    #[must_use]
+    pub const fn provenance(&self) -> &Provenance {
+        &self.provenance
+    }
+}
+
 // ----------------------------------------------------------- fixture ------
 
 fn faction(key: &str) -> ContentId {
@@ -426,4 +650,41 @@ pub fn declared_synthetic_target_rules() -> DeclaredTargetRules {
         Provenance::designed(ClaimId::new("f30a.synthetic-target-range").expect("valid claim id")),
     )
     .expect("the declared synthetic target rules fixture is valid")
+}
+
+fn action_binding(command: FlightCommand, action: DeclaredAction) -> DeclaredSelectionAction {
+    // The action table carries its own claim, distinct from the F30-A rules
+    // record: a preset's key binding and a mission's faction relations are
+    // separately evidenced statements.
+    let claim = ClaimId::new("f30b.synthetic-target-bindings").expect("valid claim id");
+    DeclaredSelectionAction {
+        command,
+        action: Resolved::Known(Known::new(action, Provenance::designed(claim.clone()))),
+        evidence: Provenance::designed(claim),
+    }
+}
+
+/// The minimal synthetic action table in declared form: the two cycle edges
+/// over the declared hostiles plus one nearest-attacker binding, the same
+/// shape the runtime `SelectionBinding` fixture defines.
+///
+/// Newly authored project design with designed provenance. It says nothing
+/// about which keys the original game bound — that is F30-D's retail
+/// measurement.
+#[must_use]
+pub fn declared_synthetic_selection_actions() -> DeclaredSelectionActions {
+    DeclaredSelectionActions::try_new(
+        ContentId::from_source(ContentKind::IaScenario, "synthetic.target-range")
+            .expect("fixture subject id is valid"),
+        Origin::SyntheticFixture,
+        vec![
+            action_binding(FlightCommand::TargetNext, DeclaredAction::NextHostile),
+            action_binding(FlightCommand::TargetPrev, DeclaredAction::PreviousHostile),
+            action_binding(FlightCommand::CycleWeapon, DeclaredAction::NearestAttacker),
+        ],
+        Provenance::designed(
+            ClaimId::new("f30b.synthetic-target-bindings").expect("valid claim id"),
+        ),
+    )
+    .expect("the declared synthetic selection-action fixture is valid")
 }

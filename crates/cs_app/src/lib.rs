@@ -304,15 +304,27 @@
 //! [`damage::repair_damage_zone`]) that decides a destroyed zone's collider and
 //! calls the F20-C.04 collision seam.
 //!
-//! [`targeting`] is the F30-A targeting boundary
+//! [`targeting`] is the F30-A/F30-B targeting boundary
 //! (`specs/F30-targeting-classification-aim-assistance-and-threat-cues.md`,
-//! stage `### F30-A`): [`targeting::lower_rules`], which lowers a declared
-//! `cs_content::target_rules::DeclaredTargetRules` into the
-//! `cs_sim::targeting::TargetPolicy` and `AllegianceTable` a session opens
-//! with — refusing every `Resolved::Unknown` rather than guessing a
+//! stages `### F30-A`/`### F30-B`): [`targeting::lower_rules`], which
+//! lowers a declared `cs_content::target_rules::DeclaredTargetRules` into
+//! the `cs_sim::targeting::TargetPolicy` and `AllegianceTable` a session
+//! opens with — refusing every `Resolved::Unknown` rather than guessing a
 //! relation, window or assistance flag — and the generation-stamped
 //! [`targeting::TargetableBinding`] ECS record tying an entity to its
 //! session-qualified targeting actor and rules subject.
+//!
+//! F30-B adds the production path: [`targeting::lower_selection_actions`]
+//! lowers the declared action table into the `cs_sim::targeting`
+//! command-edge table,
+//! [`targeting::TargetingSession`] owns one session's store, selection and
+//! last phase record, and the three producer entries
+//! [`targeting::sync_targetable_roster`] (roster and poses from bound
+//! entities), [`targeting::apply_selection_edges`] (command edges to
+//! selections) and [`targeting::apply_target_damage`] (the damage system's
+//! applied hits and lifecycle transitions to threat state and eligibility)
+//! drive it. The HUD, spyglass and weapon consumers of the phase record are
+//! F30-C.
 //!
 //!
 //! [`ai`] is the F31-C mission-ECS binding

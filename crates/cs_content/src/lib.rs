@@ -227,16 +227,19 @@
 //! Its runtime counterpart is `cs_sim::damage`; the conversion boundary is
 //! `cs_app::damage`.
 //!
-//! [`target_rules`] is the F30-A declared targeting schema
+//! [`target_rules`] is the F30-A/F30-B declared targeting schema
 //! (`specs/F30-targeting-classification-aim-assistance-and-threat-cues.md`,
-//! stage `### F30-A`): the provenance-carrying
+//! stages `### F30-A`/`### F30-B`): the provenance-carrying
 //! [`target_rules::DeclaredTargetRules`] of a subject's faction set,
 //! directed [`target_rules::DeclaredRelation`]s and the
 //! [`target_rules::TargetRuleSet`] policy knobs — threat window, crosshair
 //! cone and the separate lead-indicator/aim-assistance options — each
 //! [`Resolved`] known with provenance or an explicit unknown, never a
-//! silent default. Its runtime counterpart is `cs_sim::targeting`; the
-//! conversion boundary is `cs_app::targeting`.
+//! silent default, plus F30-B's
+//! [`target_rules::DeclaredSelectionActions`], the command-edge table an IA
+//! preset declares and the runtime binding lowers from. Its runtime
+//! counterpart is `cs_sim::targeting`; the conversion boundary is
+//! `cs_app::targeting`.
 //!
 //! [`routes`] is the F31-A declared route graph
 //! (`specs/F31-ai-navigation-routes-and-obstacle-avoidance.md`, stage
