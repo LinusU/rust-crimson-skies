@@ -1,0 +1,175 @@
+{
+  "schema": "rally-review-snapshot/1",
+  "task": "M16-A-FU2 (#479)",
+  "purpose": "The campaign-binding evidence reports under docs/findings/evidence/ must name the implementer and the reviewer that actually ran, including whether the reviewer's context was fresh (docs/contracts/CLI-EVIDENCE.md, 'Evidence record minimum'; owner ruling 2026-09-28). Rally is not reachable from CI or from an offline check, so the review facts read out of the Rally activity log are committed here and enforced against the reports and against the harness that writes them by tools/tests/test_evidence_review_identity.py.",
+  "source": "Rally activity log of project crimson-skies, read with the `rally` MCP server (get_task history per task) on 2026-10-02T01:22Z by bunny-2/bunny-2, agent instance acting under M16-A-FU2 (#479).",
+  "read_at": "2026-10-02T01:22:00Z",
+  "read_by": "bunny-2/bunny-2",
+  "review_event_types": ["review.started", "task.approved", "task.merged"],
+  "actor_meaning": "Rally actor strings are `<agent instance>/<session label>`. Two claims from the same actor string are the same agent instance, so the second is not independent of the first (owner ruling 2026-09-28, review policy).",
+  "independent_is_derived": "The check derives independence from actor equality; this file records the actors and the event timestamps, not a verdict.",
+  "tasks": [
+    {
+      "task_key": "M01-A",
+      "rally_task": 258,
+      "evidence_report": "docs/findings/evidence/M01-A.json",
+      "merged_sha": "97379221c5b0ae458e50a40aed26a775f60425b5",
+      "implementer": {
+        "actor": "opencode-1/opencode-1",
+        "claim_started": "2026-09-29T05:06:06Z",
+        "submitted": "2026-09-29T06:46:43Z"
+      },
+      "reviewer": {
+        "actor": "opencode-1/opencode-1",
+        "review_claim_started": "2026-09-29T06:47:47Z",
+        "merge_event": {"type": "task.merged", "actor": "opencode-1/opencode-1", "at": "2026-09-29T08:32:55Z"}
+      },
+      "report_written_by": "reviewer",
+      "report_regenerated_on_reviewed_commit": true
+    },
+    {
+      "task_key": "M02-A",
+      "rally_task": 261,
+      "evidence_report": "docs/findings/evidence/M02-A.json",
+      "merged_sha": "54a6cf8b3826f60c7a7cc24531106723efe1ebfb",
+      "implementer": {
+        "actor": "bunny-alpha-2/bunny-alpha-2",
+        "claim_started": "2026-10-01T04:31:13Z",
+        "submitted": "2026-10-01T05:24:52Z"
+      },
+      "reviewer": {
+        "actor": "bunny-alpha-2/bunny-alpha-2",
+        "review_claim_started": "2026-10-01T05:25:06Z",
+        "merge_event": {"type": "task.merged", "actor": "bunny-alpha-2/bunny-alpha-2", "at": "2026-10-01T10:18:49Z"}
+      },
+      "report_written_by": "reviewer",
+      "report_regenerated_on_reviewed_commit": true
+    },
+    {
+      "task_key": "M03-A",
+      "rally_task": 264,
+      "evidence_report": "docs/findings/evidence/M03-A.json",
+      "merged_sha": "76dedc2e348045d0735df75cf165ad761df89d68",
+      "implementer": {
+        "actor": "claude-2/claude-1",
+        "claim_started": "2026-10-01T19:24:58Z",
+        "submitted": "2026-10-01T19:35:44Z"
+      },
+      "reviewer": {
+        "actor": "claude-2/claude-1",
+        "review_claim_started": "2026-10-01T19:35:53Z",
+        "merge_event": {"type": "task.approved", "actor": "claude-2/claude-1", "at": "2026-10-01T19:40:33Z"}
+      },
+      "report_written_by": "implementer",
+      "report_regenerated_on_reviewed_commit": false
+    },
+    {
+      "task_key": "M04-A",
+      "rally_task": 267,
+      "evidence_report": "docs/findings/evidence/M04-A.json",
+      "merged_sha": "6cdff44944dc4e3ac85ec7911cfdcfea22ee60e8",
+      "implementer": {
+        "actor": "deepseek-1/deepseek-1",
+        "claim_started": "2026-10-01T19:46:53Z",
+        "submitted": "2026-10-01T20:25:18Z"
+      },
+      "reviewer": {
+        "actor": "deepseek-1/deepseek-1",
+        "review_claim_started": "2026-10-01T20:25:42Z",
+        "merge_event": {"type": "task.approved", "actor": "deepseek-1/deepseek-1", "at": "2026-10-01T20:40:43Z"}
+      },
+      "report_written_by": "implementer",
+      "report_regenerated_on_reviewed_commit": false
+    },
+    {
+      "task_key": "M05-A",
+      "rally_task": 270,
+      "evidence_report": "docs/findings/evidence/M05-A.json",
+      "merged_sha": "fa2209bff0ebc103bb55515eb7add426780ad687",
+      "implementer": {
+        "actor": "bunny-2/bunny-2",
+        "claim_started": "2026-10-01T20:17:31Z",
+        "submitted": "2026-10-01T21:04:02Z"
+      },
+      "reviewer": {
+        "actor": "bunny-2/bunny-2",
+        "review_claim_started": "2026-10-01T21:04:12Z",
+        "merge_event": {"type": "task.approved", "actor": "bunny-2/bunny-2", "at": "2026-10-01T22:55:12Z"}
+      },
+      "report_written_by": "reviewer",
+      "report_regenerated_on_reviewed_commit": true
+    },
+    {
+      "task_key": "M06-A",
+      "rally_task": 273,
+      "evidence_report": "docs/findings/evidence/M06-A.json",
+      "merged_sha": "397e8142171a05201c597fac0c2e6e64d35374e7",
+      "implementer": {
+        "actor": "deepseek-1/deepseek-1",
+        "claim_started": "2026-10-01T20:41:03Z",
+        "submitted": "2026-10-01T21:12:24Z"
+      },
+      "reviewer": {
+        "actor": "deepseek-1/deepseek-1",
+        "review_claim_started": "2026-10-01T21:12:39Z",
+        "merge_event": {"type": "task.approved", "actor": "deepseek-1/deepseek-1", "at": "2026-10-01T21:36:57Z"}
+      },
+      "report_written_by": "reviewer",
+      "report_regenerated_on_reviewed_commit": true
+    },
+    {
+      "task_key": "M08-A",
+      "rally_task": 279,
+      "evidence_report": "docs/findings/evidence/M08-A.json",
+      "merged_sha": "5cb4ffa8a0a458814d66d902d00db1a05acc0643",
+      "implementer": {
+        "actor": "claude-2/claude-1",
+        "claim_started": "2026-10-01T23:16:51Z",
+        "submitted": "2026-10-01T23:49:53Z"
+      },
+      "reviewer": {
+        "actor": "claude-2/claude-1",
+        "review_claim_started": "2026-10-01T23:50:00Z",
+        "merge_event": {"type": "task.merged", "actor": "claude-2/claude-1", "at": "2026-10-01T23:58:50Z"}
+      },
+      "report_written_by": "implementer",
+      "report_regenerated_on_reviewed_commit": false
+    },
+    {
+      "task_key": "M12-A",
+      "rally_task": 291,
+      "evidence_report": "docs/findings/evidence/M12-A.json",
+      "merged_sha": "db01969838373641bcba450d04d9b684fd9ca947",
+      "implementer": {
+        "actor": "claude-2/claude-1",
+        "claim_started": "2026-10-01T23:58:58Z",
+        "submitted": "2026-10-02T00:05:19Z"
+      },
+      "reviewer": {
+        "actor": "claude-2/claude-1",
+        "review_claim_started": "2026-10-02T00:05:28Z",
+        "merge_event": {"type": "task.merged", "actor": "claude-2/claude-1", "at": "2026-10-02T00:10:06Z"}
+      },
+      "report_written_by": "implementer",
+      "report_regenerated_on_reviewed_commit": false
+    },
+    {
+      "task_key": "M13-A",
+      "rally_task": 294,
+      "evidence_report": "docs/findings/evidence/M13-A.json",
+      "merged_sha": "f3d2bbae6df8865f7fd3af6e32966a7f86f85f63",
+      "implementer": {
+        "actor": "claude-2/claude-1",
+        "claim_started": "2026-10-02T00:10:14Z",
+        "submitted": "2026-10-02T00:15:16Z"
+      },
+      "reviewer": {
+        "actor": "claude-2/claude-1",
+        "review_claim_started": "2026-10-02T00:15:25Z",
+        "merge_event": {"type": "task.approved", "actor": "claude-2/claude-1", "at": "2026-10-02T00:19:43Z"}
+      },
+      "report_written_by": "implementer",
+      "report_regenerated_on_reviewed_commit": false
+    }
+  ]
+}
