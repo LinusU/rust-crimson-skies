@@ -70,7 +70,7 @@ use bevy::{
     time::{Real, Time, TimeUpdateStrategy},
 };
 use cs_app::animation::{
-    AnimationInstance, AnimationPlayback, AnimatedNodeBinding, AnimationSchedulePlugin,
+    AnimatedNodeBinding, AnimationInstance, AnimationPlayback, AnimationSchedulePlugin,
     CommittedSessionTick, NodeAnimatedVisibility, play_animation,
 };
 use cs_app::asset_stack::headless_app;
@@ -417,7 +417,10 @@ fn accept_f20_c_04_a_clip_hidden_node_stops_colliding_and_its_show_restores_the_
         Some(Visibility::Visible),
         "the clip's first key shows the node"
     );
-    assert_eq!(presence(app.world(), hatch), Some(NodeColliderPresence::Live));
+    assert_eq!(
+        presence(app.world(), hatch),
+        Some(NodeColliderPresence::Live)
+    );
     assert!(
         !engine_disabled(app.world(), hatch),
         "a node the clip does not hide carries its authored collider"
@@ -545,7 +548,10 @@ fn accept_f20_c_04_a_damage_removed_collider_is_never_restored_by_a_clip_loop_or
     // layer's to apply.
     app.world_mut().entity_mut(hatch).insert(NodeDisabled);
     run_lod_pass(app.world_mut());
-    assert_eq!(presentation(app.world(), hatch), Some(PresentationState::Disabled));
+    assert_eq!(
+        presentation(app.world(), hatch),
+        Some(PresentationState::Disabled)
+    );
     assert!(
         remove_collider_for_damage(app.world_mut(), hatch)
             .expect("the spawner put this node under the collision policy"),
@@ -611,9 +617,7 @@ fn accept_f20_c_04_a_damage_removed_collider_is_never_restored_by_a_clip_loop_or
         "the instance is torn down"
     );
     assert!(
-        app.world()
-            .get::<NodeAnimatedVisibility>(hatch)
-            .is_none(),
+        app.world().get::<NodeAnimatedVisibility>(hatch).is_none(),
         "the teardown released the clip's own record"
     );
     assert_eq!(
@@ -640,11 +644,13 @@ fn accept_f20_c_04_a_damage_removed_collider_is_never_restored_by_a_clip_loop_or
     // Only the damage side lifts it: a repair with nothing hiding the node puts
     // the collider back, and the engine sees it.
     assert!(
-        restore_collider_after_repair(app.world_mut(), hatch)
-            .expect("the node is still managed"),
+        restore_collider_after_repair(app.world_mut(), hatch).expect("the node is still managed"),
         "the repair changes the physics-side state"
     );
-    assert_eq!(presence(app.world(), hatch), Some(NodeColliderPresence::Live));
+    assert_eq!(
+        presence(app.world(), hatch),
+        Some(NodeColliderPresence::Live)
+    );
     assert!(!engine_disabled(app.world(), hatch));
     let repaired_probe = spawn_probe(&mut app);
     assert!(
@@ -676,8 +682,7 @@ fn accept_f20_c_04_a_repair_under_a_still_hiding_clip_leaves_the_collider_off() 
     );
 
     assert!(
-        restore_collider_after_repair(app.world_mut(), hatch)
-            .expect("the node is still managed"),
+        restore_collider_after_repair(app.world_mut(), hatch).expect("the node is still managed"),
         "the damage side lifted its own removal, so the record changed owner"
     );
     assert_eq!(
@@ -707,7 +712,10 @@ fn accept_f20_c_04_a_repair_under_a_still_hiding_clip_leaves_the_collider_off() 
     // The clip's show tick then restores the collider, with no damage record in
     // force any more.
     commit_and_step(&mut app, SYNTHETIC_BREAKABLE_SHOWN_TICK);
-    assert_eq!(presence(app.world(), hatch), Some(NodeColliderPresence::Live));
+    assert_eq!(
+        presence(app.world(), hatch),
+        Some(NodeColliderPresence::Live)
+    );
     assert!(!engine_disabled(app.world(), hatch));
 }
 
@@ -718,8 +726,8 @@ fn accept_f20_c_04_a_repair_under_a_still_hiding_clip_leaves_the_collider_off() 
 /// rather than only through a tick-by-tick walk.
 #[test]
 fn accept_f20_c_04_the_merge_rule_never_lets_a_clip_leave_a_damage_removal() {
-    use cs_app::animation::ColliderVerdict;
     use NodeColliderPresence::{HiddenByAnimation, Live, RemovedByDamage};
+    use cs_app::animation::ColliderVerdict;
 
     // The clip's hide is the only thing that removes a collider on the
     // animation's account, and its own show is the only thing that restores it.
@@ -786,7 +794,10 @@ fn accept_f20_c_04_applying_the_same_verdict_twice_changes_nothing_on_the_physic
             report.is_noop(),
             "a repeated verdict is a no-op: {report:?}"
         );
-        assert_eq!(report.without_collider, 0, "the node carries a real collider");
+        assert_eq!(
+            report.without_collider, 0,
+            "the node carries a real collider"
+        );
     }
     assert_eq!(marker_writes(app.world()), writes);
 
@@ -807,7 +818,10 @@ fn accept_f20_c_04_applying_the_same_verdict_twice_changes_nothing_on_the_physic
         ledger_after.last
     );
     assert_eq!(
-        (ledger_after.total_presence_updates, ledger_after.total_collider_writes),
+        (
+            ledger_after.total_presence_updates,
+            ledger_after.total_collider_writes
+        ),
         (
             ledger_before.total_presence_updates,
             ledger_before.total_collider_writes
@@ -817,25 +831,21 @@ fn accept_f20_c_04_applying_the_same_verdict_twice_changes_nothing_on_the_physic
 
     // A repeated *removal* is equally quiet, and so is a repeated repair.
     assert!(
-        remove_collider_for_damage(app.world_mut(), hatch)
-            .expect("the node is managed"),
+        remove_collider_for_damage(app.world_mut(), hatch).expect("the node is managed"),
         "the first removal changes the record"
     );
     let after_removal = marker_writes(app.world());
     assert!(
-        !remove_collider_for_damage(app.world_mut(), hatch)
-            .expect("the node is still managed"),
+        !remove_collider_for_damage(app.world_mut(), hatch).expect("the node is still managed"),
         "a repeated removal changes nothing"
     );
     assert_eq!(marker_writes(app.world()), after_removal);
     assert!(
-        restore_collider_after_repair(app.world_mut(), hatch)
-            .expect("the node is still managed")
+        restore_collider_after_repair(app.world_mut(), hatch).expect("the node is still managed")
     );
     let after_repair = marker_writes(app.world());
     assert!(
-        !restore_collider_after_repair(app.world_mut(), hatch)
-            .expect("the node is still managed"),
+        !restore_collider_after_repair(app.world_mut(), hatch).expect("the node is still managed"),
         "a repeated repair changes nothing"
     );
     assert_eq!(marker_writes(app.world()), after_repair);
@@ -866,21 +876,32 @@ fn accept_f20_c_04_the_damage_seam_refuses_a_node_the_spawner_never_managed() {
     );
 
     // Even a clip that hides a node does not make this layer adopt one.
-    app.world_mut().entity_mut(unmanaged).insert(NodeAnimatedVisibility::new(
-        cs_sim::animated_object::Visibility::Hidden,
-    ));
+    app.world_mut()
+        .entity_mut(unmanaged)
+        .insert(NodeAnimatedVisibility::new(
+            cs_sim::animated_object::Visibility::Hidden,
+        ));
+    assert_eq!(
+        cs_app::animation::composed_visibility_verdict(app.world(), unmanaged).collider(),
+        cs_app::animation::ColliderVerdict::NoCollider,
+        "the clip does hide this node, so the verdict is there to be read: the pass declines to \
+         act on it because the node is not under the policy, not because it saw nothing"
+    );
     let report = apply_collider_presence(app.world_mut());
     assert!(
-        report.is_noop() || report.without_collider == 1,
-        "the pass has nothing to do for an unmanaged node: {report:?}"
+        report.is_noop(),
+        "the pass has nothing to do for an unmanaged node, and the managed one is already in \
+         the state its record says: {report:?}"
+    );
+    assert_eq!(
+        presence(app.world(), unmanaged),
+        None,
+        "the pass does not adopt a node the spawner never put under the policy: the opt-in is \
+         the spawner's decision, not this layer's"
     );
     assert!(
         !engine_disabled(app.world(), unmanaged),
         "an unmanaged collider is never written to, whatever the animation record says"
-    );
-    assert!(
-        !engine_disabled(app.world(), unmanaged),
-        "the engine marker is absent, not merely unreadable"
     );
 
     // The damage seam refuses it, and names the entity.
@@ -895,10 +916,7 @@ fn accept_f20_c_04_the_damage_seam_refuses_a_node_the_spawner_never_managed() {
     );
 
     // An entity that is not in this world is refused as such.
-    let absent = app
-        .world_mut()
-        .spawn_empty()
-        .id();
+    let absent = app.world_mut().spawn_empty().id();
     app.world_mut().entity_mut(absent).despawn();
     assert_eq!(
         remove_collider_for_damage(app.world_mut(), absent),
@@ -950,7 +968,10 @@ fn accept_f20_c_04_an_lod_cull_keeps_the_collider_while_a_clip_hide_takes_it_awa
         applied_visibility(app.world(), hatch),
         Some(Visibility::Visible)
     );
-    assert_eq!(presence(app.world(), hatch), Some(NodeColliderPresence::Live));
+    assert_eq!(
+        presence(app.world(), hatch),
+        Some(NodeColliderPresence::Live)
+    );
     assert!(!engine_disabled(app.world(), hatch));
     let culled_probe = spawn_probe(&mut app);
     assert!(

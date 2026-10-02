@@ -119,7 +119,7 @@
 //! The cost of the opt-in is stated rather than hidden: a clip-hidden node
 //! whose spawner never inserted the record keeps colliding, which is the
 //! invisible obstacle F20-A's rule exists to prevent. That is a wiring
-//// requirement on the spawn path (F11-C's scene import, or F29's part
+//! requirement on the spawn path (F11-C's scene import, or F29's part
 //! colliders — neither of which puts an Avian collider on a scene node yet),
 //! recorded as a follow-up, and the acceptance test asserts the boundary
 //! explicitly instead of letting it pass unnoticed.
