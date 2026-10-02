@@ -725,16 +725,27 @@ pub enum NodeCollisionShape {
 impl NodeCollisionShape {
     /// A declared box, refusing an extent that cannot bound a solid.
     ///
+    /// Two tests, not one, for the same reason
+    /// [`AffinePlacement::of`](crate::world::affine::AffinePlacement::of) has
+    /// two: the record's `f64` and the runtime's `f32` are different questions.
+    /// A finite positive extent of `1e300` is a perfectly good `f64`, and
+    /// becomes an **infinite** half extent the moment it is narrowed into the
+    /// `Cuboid` the broad phase measures — a solid with no bound, which is what
+    /// this refuses. (`cs_content::world`'s identical record is narrowed further
+    /// away, in the world spawn path; here the narrowing is a few lines below,
+    /// so the refusal is made here.)
+    ///
     /// # Errors
     ///
-    /// [`NodeCollisionError::DegenerateBox`] when a half extent is not finite or
-    /// not strictly positive. The refusal is here rather than at the spawn so
-    /// the geometry table is either wholly usable or refused while it is being
-    /// built, exactly as [`cs_content::world`] refuses an unusable instance.
+    /// [`NodeCollisionError::DegenerateBox`] when a half extent is not finite,
+    /// not strictly positive, or does not survive that narrowing. The refusal
+    /// is here rather than at the spawn so the geometry table is either wholly
+    /// usable or refused while it is being built, exactly as
+    /// [`cs_content::world`] refuses an unusable instance.
     pub fn cuboid(half_extents_m: [f64; 3]) -> Result<Self, NodeCollisionError> {
         if half_extents_m
             .iter()
-            .all(|extent| extent.is_finite() && *extent > 0.0)
+            .all(|extent| extent.is_finite() && *extent > 0.0 && survives_f32(*extent))
         {
             Ok(Self::Cuboid { half_extents_m })
         } else {
@@ -759,6 +770,14 @@ impl NodeCollisionShape {
     }
 }
 
+/// Whether a declared `f64` half extent is still a finite, positive bound once
+/// the runtime narrows it to `f32` — the value a `Cuboid` is actually built
+/// from.
+fn survives_f32(extent: f64) -> bool {
+    let narrowed = extent as f32;
+    narrowed.is_finite() && narrowed > 0.0
+}
+
 /// Why a node's declared collision geometry was refused.
 #[derive(Clone, Debug, PartialEq)]
 pub enum NodeCollisionError {
@@ -774,8 +793,9 @@ pub enum NodeCollisionError {
         /// The node that has no declared geometry.
         node: SceneNodeId,
     },
-    /// A declared half extent is not finite or not strictly positive, so it
-    /// bounds no solid.
+    /// A declared half extent is not finite or not strictly positive, or is a
+    /// finite positive `f64` that does not survive the runtime's `f32`
+    /// narrowing, so it bounds no solid the engine can measure.
     DegenerateBox {
         /// The refused extents, in metres.
         half_extents_m: [f64; 3],
@@ -982,6 +1002,18 @@ const NODE_COLLISION_LAYER: cs_sim::collision::CollisionLayer =
 ///   that moves an airframe's collision as one body has not been built. A
 ///   static body takes no force, so nothing in [`ForceRequests`](crate::physics::ForceRequests)
 ///   or [`FlightAircraft`](crate::physics::FlightAircraft) can move it.
+/// * **No [`CollisionEventsEnabled`](avian3d::prelude::CollisionEventsEnabled)
+///   on the node**, deliberately — the opposite of
+///   [`spawn_cuboid_collider`](crate::world::spawn), which carries it. Avian
+///   emits **one directed event per collider that has the flag**, so a pair
+///   where both sides carry it is reported twice and the second one lands in
+///   [`ContactReports`](crate::physics::ContactReports)' suppression counter
+///   rather than in a report. The partner of a node contact is the moving body
+///   (an aircraft, a projectile or a trigger), and every one of those is spawned
+///   by [`spawn_body`](crate::physics::spawn_body), which flags the layers whose
+///   contacts the reporter is meant to see. So the node is the *silent* half of
+///   every pair, and a contact is reported exactly once. **Do not "fix" this by
+///   adding the flag**: it would double-report every node contact.
 fn node_collider_bundle(
     world: &mut World,
     entity: Entity,
@@ -1272,11 +1304,18 @@ pub enum SceneEvent {
         /// ([`CollisionRole::Collider`])
         /// and for which no collider could be built, each with the reason.
         ///
+        /// **Bound** sockets, which is what the list means: a socket whose
+        /// *gameplay* role the evidence left unknown is never bound (it has no
+        /// [`PartBinding`] to read a collision role off) and is reported in
+        /// `unresolved` instead, so a node whose collision role says `Collider`
+        /// and whose gameplay role does not resolve is reported there and not
+        /// here.
+        ///
         /// Reported here, inside the event that describes what the load did,
         /// rather than as an event of their own: a gap in one node's collision
-        /// is part of *this* load's result, and a load of a model whose collider
-        /// nodes have no measured geometry yet would otherwise append one event
-        /// per node to every load. A node is never fitted with a guessed shape
+        /// is part of *this* load's result, and a load of a model whose
+        /// collider nodes have no measured geometry yet would otherwise append
+        /// one event per node to every load. A node is never fitted with a guessed shape
         /// instead: it was authored to collide and cannot, and that is a hole a
         /// shot passes through.
         uncollidable: Vec<(SceneNodeId, NodeCollisionError)>,

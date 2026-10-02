@@ -170,7 +170,16 @@ calls), and every physics assertion is read from the production contact reporter
 | `accept_f20_c_05_a_clip_hidden_loaded_node_is_no_longer_an_obstacle` | the spawn-wiring version of the observation F20-C.04 makes for a body spawned directly, on the collision channel: a probe is stopped and reported while the clip shows the node, flies **through** the same volume with no contact reported against *any* entity of the live scene after the clip's authored hide tick (all three fixture nodes sit in that volume, so this is also the observation that the `None` and unknown nodes contributed no collider), and is stopped again after the show tick |
 | `accept_f20_c_05_a_reload_releases_the_presence_record_with_the_node` | the third acceptance criterion: a reload consumes a fresh generation, the superseded node's entity is gone, **no** live entity of a superseded generation carries a `NodeColliderPresence`, the new node carries both records again, and a probe is stopped by the reloaded collider — a rebuild, not a wiring that stopped working |
 | `accept_f20_c_05_a_collider_node_without_declared_geometry_is_reported_and_gets_no_collider` | the honesty half: a collider-role node with no declared geometry gets the opt-in, **no** collider, and a report naming the node and `UndeclaredGeometry` inside the load's own `Loaded` event; a clip hiding it moves the record to `HiddenByAnimation` and the pass reports `without_collider == 1` with `collider_writes == 0` rather than conjuring a collider |
-| `accept_f20_c_05_the_geometry_table_refuses_a_degenerate_box_and_a_duplicate_node` | the declaration boundary: a zero or non-finite half extent is refused where it is declared, and a node cannot be declared twice (`DuplicateNodeGeometry`) |
+| `accept_f20_c_05_the_geometry_table_refuses_a_degenerate_box_and_a_duplicate_node` | the declaration boundary: a zero or non-finite half extent is refused where it is declared, so is one that is finite in the record but infinite after the runtime's `f32` narrowing, and a node cannot be declared twice (`DuplicateNodeGeometry`) |
+| `accept_f20_c_05_an_offset_node_is_placed_at_its_composed_pose_with_the_scale_in_the_shape` | **review addition**: where the collider is. A second fixture whose root is offset **and** turned, with a child carrying a canonical `z` scale of two: the collider body sits at the node's **composed** translation and carries its **composed** rotation, the declared box keeps the authored scale (`0.5 × 0.5 × 1.0` m), and the engine's own broad-phase box agrees |
+| `accept_f20_c_05_a_sheared_node_carries_its_linear_map_in_the_shape` | **review addition**: the other placement. A child whose stored 3×3 carries a shear: the collider is the box's exact affine image (a convex polyhedron, not the declared box), the pose keeps only the authored translation with the identity rotation, and the engine's box is the sheared solid's 0.75 m vertical reach |
+
+The first fixture's nodes all sit at the origin with an identity authored
+transform, so they cannot tell a **composed** pose from an authored local one, a
+dropped authored scale from a folded one, or a baked shear from an unbaked one.
+Every part of a real airframe is an offset child, so the two placement tests
+exist because that is where the wiring decides where colliders go; see
+"Review findings" below for the probes that proved the gap.
 
 ## Mutation probes
 
@@ -199,6 +208,67 @@ collider is a first-class broad-phase citizen), so the *physics* observation
 alone would not have caught the wrong layout. What catches it is the
 `ColliderOf.body` assertion, which is the same-entity constraint F20-C.04
 recorded. That is the constraint, pinned.
+
+### Review probes (bunny-2, independent re-run)
+
+The reviewer re-ran the driver on the submitted commit and added three probes
+of the *placement*, because the first fixture sits at the origin and could not
+speak to where a collider is built. On the submitted commit all three were
+**invisible**:
+
+| probe | edit | submitted (5 tests) | after the review additions (7 tests) |
+| --- | --- | --- | --- |
+| PA the collision pose is the node's **local** transform | `socket.pose()` → `node.local_transform()` | **0 failing** | 2 |
+| PB the authored scale is dropped instead of folded into the shape | `Cuboid::new(half * scale.abs())` → `Cuboid::new(half)` | **0 failing** | 1 |
+| PC a sheared placement skips the bake | the `Sheared` arm keeps the un-sheared box | **0 failing** | 1 |
+| P1 re-run (control that the driver works) | the wiring removed | 4 | 4 |
+| P4 re-run (the authored role) | every bound socket opted in | 3 | 3 |
+| P7 re-run (the collider on a child) | the bundle spawned under `ChildOf(node)` | 3 | 3 |
+
+So the submitted suite pinned **that** a node is wired and **that** a clip-hidden
+one stops being an obstacle, and did not pin **where** the collider is. PA is
+the dangerous one: every part of a real airframe is an offset child, so reading
+the local transform would have put every part's collision one parent off — with
+the whole suite green. The two placement tests above close that, and PA/PB/PC now
+fail.
+
+## Review findings
+
+Three, all fixed on the branch:
+
+1. **The placement was unpinned** (PA/PB/PC above). Fixed by the two placement
+   tests: a second fixture whose root is offset *and* turned, with a
+   rotation-times-scale child and a sheared child, asserting the composed pose,
+   the scale inside the shape, the baked polyhedron and the engine's own
+   broad-phase boxes. Nothing about the production decision changed — the probes
+   found a hole in the tests, not a bug in the wiring, and the expected values
+   in the new tests were hand-derived from the declared adapter (the first
+   hand-derivation had the fixture's left-hand quarter turn backwards; the
+   production pose was right).
+2. **A declared extent that is finite in the record but infinite in `f32` was
+   accepted.** `1e300` is a perfectly good `f64` and becomes an infinite half
+   extent at the narrowing, which is a solid the broad phase cannot bound — and
+   the refusal's own doc claimed a non-finite extent is refused.
+   `NodeCollisionShape::cuboid` now makes the runtime's test as well as the
+   record's, which is the same two-test rule `AffinePlacement::of` applies to
+   its matrix, and the table test asserts it. (`cs_content::world`'s identical
+   record is narrowed further away, in the world spawn path; that path is F18's
+   and was not touched.)
+3. **The absence of `CollisionEventsEnabled` on a node was unstated**, and it
+   reads like an oversight next to F18's colliders, which carry it. It is
+   deliberate: Avian emits one *directed* event per flagged collider, so a node
+   that also flagged would double-report every contact into
+   `ContactReports`' suppression counter. The partner is the moving body, and
+   every layer whose contacts the reporter is meant to see is flagged by
+   `spawn_body`. Stated in the module docs, with the "do not add it" warning.
+   Two smaller doc corrections went with it: `SceneEvent::Loaded`'s `uncollidable`
+   list is now described as the list of **bound** sockets (a socket whose
+   gameplay role is an explicit unknown is never bound and is reported in
+   `unresolved`), which is what the field actually contains.
+
+Nothing else was changed. In particular the F11-C test change stands as
+submitted: the report is a field inside `Loaded`, the three nodes are now
+expected by name, and the other three F11-C tests pass untouched.
 
 ## Checks run
 
@@ -233,6 +303,26 @@ checks were run again on the rebased tree rather than the lighter post-rebase
 set, and the numbers above are from that run. F20-C.04's constraint is unchanged:
 `apply_collider_presence` still runs after the animation advance, and the draw
 consumer reads the composed verdict, so the two do not compete for a writer.
+
+By the reviewer, on the branch with the three findings above fixed — the full
+four checks, not the lighter post-rebase set, and this time with no rebase
+involved:
+
+- `cargo fmt --all -- --check` — exit 0.
+- `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
+  — exit 0.
+- `cargo test --workspace --locked` — exit 0, 2550 passed, 0 failed (the two
+  added tests).
+- `cargo test --workspace --locked -- accept_f20_c_05_ --include-ignored` —
+  exit 0, **7 matched**, all passing, none `#[ignore]`d.
+- `cargo test --workspace --locked -- accept_f20 --include-ignored` — exit 0,
+  70 passed, so no earlier F20 assertion moved.
+- the six probes in "Review probes", plus one for the `f32` narrowing refusal
+  (removing `survives_f32` fails the table test).
+- `RUSTDOCFLAGS="-D warnings" cargo doc -p cs_app --no-deps` — this crate does
+  not gate on rustdoc, and the review's three new intra-doc links added nothing:
+  the error set is byte-identical with the review changes stashed (89 lines,
+  diff empty).
 
 ## What one earlier test had to change, and why it is not a weakening
 

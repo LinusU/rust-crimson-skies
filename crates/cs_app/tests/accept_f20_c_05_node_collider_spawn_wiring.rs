@@ -50,10 +50,12 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use avian3d::prelude::{Collider, ColliderDisabled, Gravity, Position};
+use avian3d::parry::shape::SharedShape;
+use avian3d::prelude::{Collider, ColliderAabb, ColliderDisabled, Gravity, Position, Rotation};
 use bevy::{
     ecs::schedule::{IntoScheduleConfigs, Schedule},
     ecs::world::World,
+    math::{Mat3, Quat, Vec3},
     prelude::{App, Entity},
     time::{Real, Time, TimeUpdateStrategy},
 };
@@ -80,7 +82,8 @@ use cs_content::animation::{
 };
 use cs_content::coordinates::SourceAdapter;
 use cs_content::scene::{
-    BindingMap, CollisionRole, ParsedNode, ParsedNodeKind, SceneGraph, SceneNodeId, SemanticBinding,
+    AuthoredTransform, BindingMap, CanonicalTransform, CollisionRole, ParsedNode, ParsedNodeKind,
+    SceneGraph, SceneNodeId, SemanticBinding,
 };
 use cs_sim::animated_object::Visibility;
 use cs_sim::collision::{CollisionLayer, ShapeClass};
@@ -104,9 +107,29 @@ const PANEL_NODE: &str = "synthetic.plane.hatch.panel";
 /// The child whose collision role the evidence left an explicit unknown.
 const SENSOR_NODE: &str = "synthetic.plane.hatch.sensor";
 
+/// The container of the **placement** fixture, whose parts are not at the
+/// origin: an airframe's colliders are all children of an offset parent, so a
+/// wiring that placed them at their *authored local* pose would be invisible to
+/// a fixture that sits at the origin.
+const PLACEMENT_CONTAINER: &str = "synthetic.wing";
+/// The placement fixture's root: offset and turned, so nothing below it shares
+/// its parent's pose.
+const FUSELAGE_NODE: &str = "synthetic.wing.fuselage";
+/// The offset child whose authored linear map **is** a rotation times a scale.
+const WING_NODE: &str = "synthetic.wing.fuselage.wing";
+/// The offset child whose authored linear map is **sheared**, which is the
+/// placement that has to carry its map inside the shape.
+const FIN_NODE: &str = "synthetic.wing.fuselage.fin";
+
 /// Half the declared box on every axis, in metres: a 1 m cube at the origin,
-/// which is where every fixture node sits.
+/// which is where every fixture node of the *first* fixture sits.
 const NODE_HALF_M: [f64; 3] = [0.5; 3];
+
+/// How far a half extent may miss before an assertion about it is a failure.
+/// Avian's own broad-phase margin is a few millimetres and the authored
+/// conversion runs through an f64 → f32 narrowing, so an exact comparison would
+/// be a test of the engine's margin rather than of the wiring.
+const EXTENT_TOLERANCE_M: f32 = 0.05;
 
 /// The probe that flies at the node: 0.2 m across, 40 m/s. 0.33 m of travel per
 /// tick at the declared 120 Hz, so the discrete phase cannot tunnel the 1 m
@@ -243,6 +266,94 @@ fn fixture_visual() -> AirframeVisual {
     .expect("the fixture root reference is well formed")
 }
 
+// ------------------------------------------------ the placement fixture ---
+
+/// The placement fixture's authored geometry, in the **source** frame of
+/// [`fixture_adapter`]: centimetres, degrees, source x up. Everything below is
+/// hand-authored rather than copied out of a run, so the expected values in the
+/// tests are consequences of the declared conversion and not of the code under
+/// test. The conversion that matters here: canonical `x` is source `+y` at
+/// 0.01 m per unit, canonical `y` is source `+z`, and canonical `z` is source
+/// `-x`, so the up axis (source `x`) is canonical `z`; a stored scale
+/// `[2, 1, 1]` is therefore a canonical **z** scale of two, and the fixture's
+/// left-hand rotation sense turns the fuselage's authored +90° into a **-90°**
+/// turn about canonical `z`.
+const FUSELAGE_T: [f32; 3] = [0.0, 200.0, 0.0];
+/// The wing's own offset, 1 m along canonical `x` from the fuselage.
+const WING_T: [f32; 3] = [0.0, 100.0, 0.0];
+/// The fin's own offset, 3 m along canonical `y` from the fuselage.
+const FIN_T: [f32; 3] = [0.0, 0.0, 300.0];
+
+/// The placement hierarchy:
+///
+/// ```text
+/// fuselage   translation (2, 0, 0) m, -90° about the up axis  (no rule)
+///  ├─ wing    +1 m along x, turned by the parent, z scale 2    collider
+///  └─ fin     +3 m along y, stored matrix with a 0.5 shear     collider
+/// ```
+///
+/// The root is deliberately offset and turned, so a child's **composed** pose
+/// differs from its authored local one in translation *and* rotation: a wiring
+/// that read the local transform would put both colliders in the wrong place
+/// and a test that only ever saw nodes at the origin could not tell.
+fn placement_nodes() -> Vec<ParsedNode> {
+    let mut fuselage = ParsedNode::new(0, "fuselage", ParsedNodeKind::Object3d);
+    fuselage.children = vec![1, 2];
+    fuselage.transform = AuthoredTransform {
+        rotation: [90.0, 0.0, 0.0],
+        translation: FUSELAGE_T,
+        ..AuthoredTransform::IDENTITY
+    };
+    let mut wing = object(1, "wing", 0);
+    wing.transform = AuthoredTransform {
+        scale: [2.0, 1.0, 1.0],
+        translation: WING_T,
+        ..AuthoredTransform::IDENTITY
+    };
+    let mut fin = object(2, "fin", 0);
+    fin.transform = AuthoredTransform {
+        // A stored 3x3 the euler triple cannot express: an off-diagonal term,
+        // which the conversion conjugates into an xz shear.
+        matrix: Some([[1.0, 0.5, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]),
+        translation: FIN_T,
+        ..AuthoredTransform::IDENTITY
+    };
+    vec![fuselage, wing, fin]
+}
+
+fn placement_graph() -> Arc<SceneGraph> {
+    Arc::new(
+        SceneGraph::build(
+            &cid(ContentKind::InstallFile, PLACEMENT_CONTAINER),
+            &placement_nodes(),
+            &fixture_adapter(),
+            &BindingMap::new(vec![
+                rule(
+                    "fuselage.wing",
+                    known(cs_content::scene::PartRole::ControlSurface),
+                    known(CollisionRole::Collider),
+                ),
+                rule(
+                    "fuselage.fin",
+                    known(cs_content::scene::PartRole::ControlSurface),
+                    known(CollisionRole::Collider),
+                ),
+            ])
+            .expect("the fixture rules name distinct paths"),
+        )
+        .expect("the placement fixture converts"),
+    )
+}
+
+fn placement_visual() -> AirframeVisual {
+    AirframeVisual::new(
+        cid(ContentKind::Airframe, "alpha"),
+        cid(ContentKind::InstallFile, PLACEMENT_CONTAINER),
+        node_id(FUSELAGE_NODE),
+    )
+    .expect("the fixture root reference is well formed")
+}
+
 fn box_shape() -> NodeCollisionShape {
     NodeCollisionShape::cuboid(NODE_HALF_M).expect("the declared box bounds a solid")
 }
@@ -318,11 +429,21 @@ fn world_with_the_real_loop() -> (App, Schedule) {
 /// Serves one production load request, with the declared geometry the producer
 /// inserted beside it, and returns the generation the load stamped.
 fn load(app: &mut App, scene: &mut Schedule, geometry: SceneCollisionGeometry) -> SceneGeneration {
+    load_graph(app, scene, fixture_visual(), fixture_graph(), geometry)
+}
+
+/// The same load for a fixture that names its own root and graph, so a second
+/// hierarchy can be served through the identical production path.
+fn load_graph(
+    app: &mut App,
+    scene: &mut Schedule,
+    visual: AirframeVisual,
+    graph: Arc<SceneGraph>,
+    geometry: SceneCollisionGeometry,
+) -> SceneGeneration {
     app.world_mut().insert_resource(geometry);
-    app.world_mut().insert_resource(AirframeSceneRequest::load(
-        fixture_visual(),
-        fixture_graph(),
-    ));
+    app.world_mut()
+        .insert_resource(AirframeSceneRequest::load(visual, graph));
     scene.run(app.world_mut());
     // `resource` panics when the load published nothing, which is the point:
     // the generation this test binds the clip to is the live record's own.
@@ -371,6 +492,111 @@ fn position_x(world: &World, entity: Entity) -> f32 {
         .expect("a spawned body carries a Position")
         .0
         .x
+}
+
+// ------------------------------------------- the collider's pose and shape --
+
+/// The body pose the load gave a node's collider.
+fn body_pose(world: &World, entity: Entity) -> (Vec3, Quat) {
+    let position = world
+        .get::<Position>(entity)
+        .expect("a collider body carries a Position")
+        .0;
+    let rotation = **world
+        .get::<Rotation>(entity)
+        .expect("a collider body carries a Rotation");
+    (position, rotation)
+}
+
+/// The engine's broad-phase box for a collider: its half extents and its centre,
+/// which is where the collider actually sits in the simulation.
+fn broad_phase_box(world: &World, entity: Entity) -> (Vec3, Vec3) {
+    let aabb = world
+        .get::<ColliderAabb>(entity)
+        .expect("the collider has a broad-phase box");
+    ((aabb.max - aabb.min) / 2.0, (aabb.max + aabb.min) / 2.0)
+}
+
+fn collider_shape(world: &World, entity: Entity) -> SharedShape {
+    world
+        .get::<Collider>(entity)
+        .expect("the node carries a collider")
+        .shape()
+        .clone()
+}
+
+/// The rotation the canonical linear map describes, as the runtime's `Quat`.
+///
+/// The columns are normalised first, because a rotation-times-scale matrix is
+/// not a rotation matrix and `Quat::from_mat3` assumes it is: removing the
+/// scale is the same decomposition the production placement performs, and
+/// leaving it in would test this helper rather than the wiring.
+///
+/// Read from the record rather than hand-written, so a failure here is about
+/// *which* record the collider was placed from, not about this test's own
+/// arithmetic.
+fn rotation_of(transform: &CanonicalTransform) -> Quat {
+    let linear = transform.linear();
+    let columns = [
+        Vec3::new(
+            linear[0][0] as f32,
+            linear[1][0] as f32,
+            linear[2][0] as f32,
+        ),
+        Vec3::new(
+            linear[0][1] as f32,
+            linear[1][1] as f32,
+            linear[2][1] as f32,
+        ),
+        Vec3::new(
+            linear[0][2] as f32,
+            linear[1][2] as f32,
+            linear[2][2] as f32,
+        ),
+    ]
+    .map(|column| column.normalize());
+    Quat::from_mat3(&Mat3::from_cols_array(
+        &columns
+            .into_iter()
+            .flat_map(|column| [column.x, column.y, column.z])
+            .collect::<Vec<f32>>()
+            .try_into()
+            .expect("three columns of three components"),
+    ))
+}
+
+/// Asserts a vector is within `tolerance` of `expected` on every axis. The
+/// message carries both vectors, so a failure says which way the collider is
+/// wrong rather than only that it is.
+#[track_caller]
+fn assert_vec_close(label: &str, found: Vec3, expected: Vec3, tolerance: f32) {
+    let miss = (found - expected).abs() - Vec3::splat(tolerance);
+    assert!(
+        miss.x.max(miss.y).max(miss.z) <= 0.0,
+        "{label}: found {found:?}, expected {expected:?} (tolerance {tolerance} m)"
+    );
+}
+
+/// Asserts two quaternions name the same rotation. Compared through the
+/// absolute dot product, because `q` and `-q` are the same rotation and the
+/// decomposition is free to return either.
+#[track_caller]
+fn assert_rot_close(label: &str, found: Quat, expected: Quat) {
+    let agreement = (found.dot(expected)).abs();
+    assert!(
+        agreement > 1.0 - 1e-6,
+        "{label}: found {found:?}, expected {expected:?} (they agree to {agreement})"
+    );
+}
+
+#[track_caller]
+fn assert_half_extents(label: &str, found: Vec3, expected: [f64; 3]) {
+    assert_vec_close(
+        label,
+        found,
+        Vec3::new(expected[0] as f32, expected[1] as f32, expected[2] as f32),
+        EXTENT_TOLERANCE_M,
+    );
 }
 
 fn spawn_probe(app: &mut App) -> Entity {
@@ -561,6 +787,185 @@ fn accept_f20_c_05_a_collider_node_is_loaded_with_its_presence_record_and_a_real
             .get::<SceneNodeBinding>(hatch)
             .map(|binding| binding.generation),
         Some(at)
+    );
+}
+
+// ------------------------------------------- 1b. where the collider sits --
+
+/// Where a node's collider is built: at the node's **composed** canonical pose,
+/// with the authored scale folded into the shape.
+///
+/// Every part of a real airframe is an offset child, so this is the decision
+/// that decides where every collider in the game ends up. The first fixture's
+/// nodes all sit at the origin with an identity transform, which cannot tell a
+/// composed pose from an authored local one, so this fixture's root is offset
+/// **and** turned and the node under test carries a canonical `z` scale of two:
+///
+/// * the collider's body pose is the **composed** pose, not the local one — the
+///   node is 1 m from its parent's centre, and its parent is 2 m out and turned
+///   90°, so the two differ in translation *and* rotation;
+/// * the authored scale rides in the **shape**, because a scene node has no
+///   `Transform` for Avian to read a collider scale from (`update_collider_scale`
+///   takes it from the `Transform` of a root body or the `ColliderTransform` of
+///   a child, and this entity has neither: Avian's own transform propagation
+///   cannot write a `GlobalTransform` onto a node whose one visual pose owner
+///   is `NodeVisualTransform`).
+#[test]
+fn accept_f20_c_05_an_offset_node_is_placed_at_its_composed_pose_with_the_scale_in_the_shape() {
+    let (mut app, mut scene) = world_with_the_real_loop();
+    load_graph(
+        &mut app,
+        &mut scene,
+        placement_visual(),
+        placement_graph(),
+        SceneCollisionGeometry::new()
+            .declare(node_id(WING_NODE), box_shape())
+            .expect("one declaration per node"),
+    );
+
+    let graph = app.world().resource::<LiveAirframeScene>().graph();
+    let wing = node_entity(&app, WING_NODE);
+    let composed = graph
+        .node(&node_id(FUSELAGE_NODE))
+        .expect("the root is in the graph")
+        .local_transform()
+        .compose(
+            graph
+                .node(&node_id(WING_NODE))
+                .expect("the wing is in the graph")
+                .local_transform(),
+        );
+    let local = *graph
+        .node(&node_id(WING_NODE))
+        .expect("the wing is in the graph")
+        .local_transform();
+
+    // The concrete consequences of the authored centimetres and degrees, through
+    // the declared fixture adapter: the fuselage's 200 cm along source +y is 2 m
+    // of canonical x, and its quarter turn carries the wing's own 1 m of source
+    // +y round to canonical -y.
+    assert_eq!(
+        composed.translation(),
+        [2.0, -1.0, 0.0],
+        "the composed pose is the parent's 2 m along x, turned, plus the wing's own 1 m"
+    );
+    assert_eq!(
+        local.translation(),
+        [1.0, 0.0, 0.0],
+        "and the authored local pose is 1 m out along x, so the two are not the same value"
+    );
+
+    let (position, rotation) = body_pose(app.world(), wing);
+    assert_vec_close(
+        "the collider body sits at the node's composed translation",
+        position,
+        Vec3::new(2.0, -1.0, 0.0),
+        EXTENT_TOLERANCE_M,
+    );
+    assert_rot_close(
+        "the collider body carries the node's composed rotation (its parent's quarter turn)",
+        rotation,
+        rotation_of(&composed),
+    );
+    assert_rot_close(
+        "the node's own rotation is the identity, so this assertion is about the composition",
+        rotation_of(&local),
+        Quat::IDENTITY,
+    );
+
+    // The scale is in the shape, not in a transform: a box twice as deep on the
+    // canonical up axis.
+    let shape = collider_shape(app.world(), wing);
+    let cuboid = shape
+        .as_cuboid()
+        .expect("a rotation-times-scale placement keeps the declared box");
+    assert_half_extents(
+        "the declared box carries the authored scale",
+        cuboid.half_extents,
+        [0.5, 0.5, 1.0],
+    );
+
+    // And the engine agrees: the broad-phase box is the placed box, so the pose
+    // and the shape reached the simulation together.
+    let (half, centre) = broad_phase_box(app.world(), wing);
+    assert_half_extents(
+        "the broad-phase box is the scaled box",
+        half,
+        [0.5, 0.5, 1.0],
+    );
+    assert_vec_close(
+        "the broad-phase box is centred on the composed translation",
+        centre,
+        Vec3::new(2.0, -1.0, 0.0),
+        EXTENT_TOLERANCE_M,
+    );
+}
+
+/// The other half of the same decision: a node whose authored linear map is
+/// **sheared** cannot carry that map in a pose at all (the runtime pose is a
+/// translation/rotation/scale decomposition), so the map is baked into the
+/// geometry by the one decision `world::affine` owns, and the collider's pose
+/// keeps only the authored translation.
+///
+/// The expected numbers come from the authored stored matrix — a 0.5 off-diagonal
+/// term, which the declared conversion conjugates into a shear between canonical
+/// `x` and `z` — applied to a 0.5 m half-extent box and then turned 90° about
+/// the up axis: the image is a parallelepiped whose vertical reach is
+/// `0.5 + 0.5 · 0.5` = 0.75 m, against the 0.5 m of the un-sheared box.
+#[test]
+fn accept_f20_c_05_a_sheared_node_carries_its_linear_map_in_the_shape() {
+    let (mut app, mut scene) = world_with_the_real_loop();
+    load_graph(
+        &mut app,
+        &mut scene,
+        placement_visual(),
+        placement_graph(),
+        SceneCollisionGeometry::new()
+            .declare(node_id(FIN_NODE), box_shape())
+            .expect("one declaration per node"),
+    );
+
+    let fin = node_entity(&app, FIN_NODE);
+    assert_eq!(
+        presence(app.world(), fin),
+        Some(NodeColliderPresence::Live),
+        "a sheared node is opted in exactly like any other collider-role node"
+    );
+
+    // The bake happened: a convex polyhedron, not the declared box.
+    let shape = collider_shape(app.world(), fin);
+    assert!(
+        shape.as_cuboid().is_none(),
+        "a sheared placement is not the declared box any more"
+    );
+    assert!(
+        shape.as_convex_polyhedron().is_some(),
+        "it is the authored box's exact affine image, built by the one placement decision"
+    );
+
+    // The pose carries the translation and nothing it cannot hold. The fin's own
+    // 3 m along canonical y is turned a quarter turn by its parent — which
+    // carries +y to +x — so the composed translation is 5 m along x.
+    let (position, rotation) = body_pose(app.world(), fin);
+    assert_vec_close(
+        "a sheared collider keeps the authored translation",
+        position,
+        Vec3::new(5.0, 0.0, 0.0),
+        EXTENT_TOLERANCE_M,
+    );
+    assert_rot_close(
+        "and the identity rotation, because the map is inside the shape",
+        rotation,
+        Quat::IDENTITY,
+    );
+
+    // The engine's own box is the sheared solid's, which is what a collider
+    // built from the un-sheared box would not produce.
+    let (half, _) = broad_phase_box(app.world(), fin);
+    assert_half_extents(
+        "the broad-phase box is the sheared image of the declared box",
+        half,
+        [0.5, 0.5, 0.75],
     );
 }
 
@@ -836,6 +1241,11 @@ fn accept_f20_c_05_the_geometry_table_refuses_a_degenerate_box_and_a_duplicate_n
     assert!(
         NodeCollisionShape::cuboid([f64::NAN, 0.5, 0.5]).is_err(),
         "and neither does a non-finite one"
+    );
+    assert!(
+        NodeCollisionShape::cuboid([1e300, 0.5, 0.5]).is_err(),
+        "nor one that is finite in the record but infinite once the runtime narrows it to f32, \
+         which would build a collider the broad phase cannot bound"
     );
     let shape = box_shape();
     assert_eq!(shape.half_extents_m(), NODE_HALF_M);
