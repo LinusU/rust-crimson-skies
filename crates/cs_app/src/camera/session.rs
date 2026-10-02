@@ -362,7 +362,10 @@ pub enum SessionError {
     /// The producer published no pose for the body the player flies.
     ///
     /// The camera cannot follow a body it has no pose for, and inventing one
-    /// would place the eye in the world with no authority behind it.
+    /// would place the eye in the world with no authority behind it. It is a
+    /// producer that has not finished writing the frame, not a body that died,
+    /// so the frame refuses and the next one retries — including when a script
+    /// is framing the player role.
     PlayerPoseMissing {
         /// The body with no published pose.
         actor: ActorId,
@@ -938,6 +941,17 @@ impl CameraSession {
             ScriptedShot::Follows { subject: role } => {
                 let subject = role.resolve(inputs.player);
                 let Some(body) = inputs.pose_of(subject) else {
+                    if subject == inputs.player {
+                        // The producer says the player flies this body and
+                        // published no pose for it. That is a producer that has
+                        // not finished writing this frame, not a body that died:
+                        // the player is stated every frame and a body the
+                        // producer still names is still there. So the frame
+                        // refuses and the next frame retries with the script
+                        // still installed — ending it here would let one
+                        // incomplete frame cut a cinematic short.
+                        return Err(SessionError::PlayerPoseMissing { actor: subject });
+                    }
                     // The body the shot named is not in this frame. The camera
                     // cannot follow a body it cannot see, and it must not keep
                     // drawing as though it could: the script ends here, the

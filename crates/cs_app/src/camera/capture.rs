@@ -277,6 +277,19 @@ impl PinnedProjection {
         self.declared_vertical_fov
     }
 
+    /// The field of view the capture actually pins, with both ends of the
+    /// narrowing.
+    ///
+    /// This is the declared policy's own value at the capture aspect **after**
+    /// the magnification has been folded in, in `f64`, next to the `f32` the
+    /// record carries. [`Self::declared_vertical_fov`] is the value before the
+    /// fold, and a consumer comparing a magnified capture against the declared
+    /// policy needs this one.
+    #[must_use]
+    pub const fn pinned_vertical_fov(&self) -> Narrowing {
+        self.vertical_fov
+    }
+
     /// Every narrowing this pin performed, in a stable order: field of view,
     /// aspect, near plane, far plane.
     #[must_use]
@@ -666,6 +679,8 @@ impl CaptureRequest {
         let aspect = self.aspect.unwrap_or(target.aspect);
         let pinned = pin(target.projection, aspect, target.magnification)?;
         let mut overrides = Vec::new();
+        // First everything the *request* pinned, in the order a reader wants
+        // it: which view, which pose, which viewport, which settings.
         if let Some(requested) = self.rig {
             overrides.push(CaptureOverride::Rig {
                 requested,
@@ -677,9 +692,6 @@ impl CaptureRequest {
                 requested,
                 effective: target.pose,
             });
-            overrides.push(CaptureOverride::Smoothing { bypassed: true });
-        } else {
-            overrides.push(CaptureOverride::Smoothing { bypassed: false });
         }
         if let Some(requested) = self.aspect {
             overrides.push(CaptureOverride::Aspect {
@@ -690,6 +702,14 @@ impl CaptureRequest {
         if let Some(settings) = self.settings {
             overrides.push(CaptureOverride::Settings { settings });
         }
+        // Then the three the engine always had to state: whether the live
+        // camera's smoothing stood, how the mode's magnification reached the
+        // frustum, and how far the `f32` record drifted from the declared
+        // `f64` policy. A capture that pinned nothing still reports all three,
+        // so "no overrides" and "not reported" can never look the same.
+        overrides.push(CaptureOverride::Smoothing {
+            bypassed: self.pose.is_some(),
+        });
         overrides.push(CaptureOverride::Magnification {
             factor: pinned.magnification().factor,
             folded_into_fov: pinned.magnification().folded_into_fov,

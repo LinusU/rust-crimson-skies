@@ -7,16 +7,24 @@
 //! the projection tests. The F21-B half adds the declared-placement helpers
 //! the rig tests build their records with, so the cockpit/chase/spyglass
 //! tests state a placement in metres instead of restating a record
-//! constructor at every call site.
+//! constructor at every call site. The F21-C half adds the mode set that also
+//! declares an authored sequence (the synthetic fixture declares none, and
+//! that refusal is tested), the session helpers built over it, and the
+//! identity helpers the scripted-camera and capture tests address records
+//! with.
 
-use cs_app::camera::{CameraPose, CameraRig, LookOffset, LoweredCameraModes, lower_camera_modes};
+use cs_app::camera::{
+    CameraPose, CameraRig, CameraSession, LookOffset, LoweredCameraModes, lower_camera_modes,
+};
 use cs_content::cameras::{
     AspectFraming, AspectRatio, BodyOffset, CameraModeKind, CockpitBindingSource, CockpitViewpoint,
     DeclaredCameraMode, DeclaredCameraModes, DeclaredPlacement, FovAxis, LookLimits, Magnification,
     ProjectionPolicy,
 };
+use cs_sim::damage::ActorId;
 use cs_types::content::{ContentId, ContentKind, Known, Origin, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
+use cs_types::net::SessionId;
 use cs_types::space::{Meters, Quaternion, Radians, WorldPosition};
 
 /// The claim id every designed test value is recorded under.
@@ -103,6 +111,76 @@ pub fn declared_set(
 /// The lowered form of [`declared_set`].
 pub fn lowered_set(modes: Vec<DeclaredCameraMode>, default: CameraModeKind) -> LoweredCameraModes {
     lower_camera_modes(&declared_set(modes, default)).expect("the designed set lowers")
+}
+
+/// Where the F21-C scripted camera sits in its owner's body frame.
+///
+/// 3 m above and 12 m astern, which is the chase convention F21-B fixed: a
+/// **negative** `forward_m` is behind the aircraft. A scripted camera that used
+/// the other sign would sit 12 m in front of a body flying at it, and the
+/// test's "the body is in front of the eye" assertion would fail.
+pub fn authored_placement() -> DeclaredPlacement {
+    DeclaredPlacement::BodyOffset(body_offset(0.0, 3.0, -12.0))
+}
+
+/// A mode set that also declares an authored-sequence mode.
+///
+/// The synthetic fixture declares none, which is the honest default: F21-B
+/// refuses a scripted camera with no declared mode to run it under, and that
+/// refusal is itself tested. This set adds one so the F21-C scripted path has
+/// something to run against.
+pub fn authored_set() -> LoweredCameraModes {
+    lowered_set(
+        vec![
+            declared_mode(CameraModeKind::Cockpit),
+            declared_mode(CameraModeKind::External),
+            declared_mode_with(
+                CameraModeKind::AuthoredSequence,
+                authored_placement(),
+                false,
+            ),
+        ],
+        CameraModeKind::Cockpit,
+    )
+}
+
+/// A rig over [`authored_set`].
+pub fn authored_rig() -> CameraRig {
+    CameraRig::new(authored_set()).expect("the authored set's default mode has a rig")
+}
+
+/// A session over [`authored_rig`].
+pub fn authored_session() -> CameraSession {
+    CameraSession::new(authored_rig()).expect("the rig's response rate is finite and positive")
+}
+
+/// A session over the synthetic fixture's own mode set, which declares no
+/// authored sequence.
+pub fn fixture_session() -> CameraSession {
+    CameraSession::new(fixture_rig()).expect("the fixture's response rate is finite")
+}
+
+/// The session generation the F21-C fixtures live in.
+pub fn session_generation() -> SessionId {
+    SessionId::new(21).expect("a nonzero session generation")
+}
+
+/// An actor in [`session_generation`].
+pub fn actor(serial: u64) -> ActorId {
+    ActorId {
+        session: session_generation(),
+        serial,
+    }
+}
+
+/// A camera-track id: the identity an authored camera is addressed by.
+pub fn camera_track(key: &str) -> ContentId {
+    ContentId::from_source(ContentKind::CameraTrack, key).expect("a valid camera track id")
+}
+
+/// A mission id.
+pub fn mission(key: &str) -> ContentId {
+    ContentId::from_source(ContentKind::Mission, key).expect("a valid mission id")
 }
 
 /// A rig over the synthetic fixture's own declared mode set.
