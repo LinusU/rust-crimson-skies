@@ -2779,9 +2779,11 @@ pub enum CadenceRefusal {
     /// The intent resolved into shots, but a spawned round was refused by the
     /// projectile runtime.
     ///
-    /// Unreachable for a normally resolved event — the resolver allocates a
-    /// fresh id, refuses non-finite geometry at the mount, and never declares a
-    /// zero lifetime — it is mapped rather than unwrapped so a future event
+    /// The caller-supplied wind is checked **before** the intent is resolved,
+    /// so a corrupt wind refuses with no state change. A normally resolved
+    /// event cannot otherwise reach this arm — the resolver allocates a fresh
+    /// id, refuses non-finite geometry at the mount, and never declares a zero
+    /// lifetime — but it is mapped rather than unwrapped so a future event
     /// cannot take the simulation down mid-fire.
     Projectile(ProjectileRuntimeError),
 }
@@ -2900,6 +2902,10 @@ impl GunCadence {
     /// so its shot is absent from `accepted`, spawns nothing here, and an
     /// accepted sibling shot on the same intent still fires.
     ///
+    /// A non-finite wind is refused (`CadenceRefusal::Projectile`) **before**
+    /// the intent is resolved, so it too changes no state rather than draining
+    /// a round for a projectile that cannot spawn.
+    ///
     /// # Errors
     ///
     /// [`CadenceRefusal::Intent`] for a whole-intent refusal and
@@ -2910,6 +2916,12 @@ impl GunCadence {
         transforms: &BTreeMap<DamageNodeKey, MountTransform>,
         wind_velocity_m_s: [f64; 3],
     ) -> Result<FireResolution, CadenceRefusal> {
+        // The resolver consumes a round and starts a cooldown the moment it
+        // accepts a shot, so the caller-supplied wind is validated before it
+        // runs: a refused fire must not leave a round spent on a projectile
+        // that could not spawn. `ProjectileRuntime::spawn` re-checks the same
+        // input; this boundary check is what makes the refusal state-free.
+        check_finite_wind(wind_velocity_m_s).map_err(CadenceRefusal::Projectile)?;
         let resolution = self
             .resolver
             .resolve(intent, transforms)

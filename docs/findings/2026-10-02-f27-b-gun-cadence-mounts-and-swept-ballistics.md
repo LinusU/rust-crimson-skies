@@ -15,12 +15,12 @@ no audio, so no `private/evidence/` report is produced and none is claimed.
 - `crates/cs_app/src/weapons.rs` (extend): `MountPoseRefusal`,
   `LiveMountTransforms`, `live_mount_transforms`, `PartSweptBox`,
   `PartSweepRefusal`, `PartSweepCandidates`, `part_sweep_candidates`.
-- `crates/cs_sim/tests/accept_f27_b_guns_runtime.rs` (**new**, 7 tests).
-- `crates/cs_app/tests/accept_f27_b_live_mounts_and_parts.rs` (**new**, 5 tests).
+- `crates/cs_sim/tests/accept_f27_b_guns_runtime.rs` (**new**, 8 tests).
+- `crates/cs_app/tests/accept_f27_b_live_mounts_and_parts.rs` (**new**, 6 tests).
 - This file.
 
 No protected path, no `Cargo.toml`/`Cargo.lock` change, no original data, no
-binary. Task test prefix `accept_f27_b_`; 12 tests, all passing.
+binary. Task test prefix `accept_f27_b_`; 14 tests, all passing.
 
 **One observable failure, before the change:** F27-A resolved a fire intent
 into accepted `FireEvent`s and F27-C routed a swept contact into `HitEvent`s,
@@ -158,6 +158,37 @@ the only ones the tests live in):
 The disabled-mount gate itself is F27-A's (`FireResolver`) and is exercised
 unchanged through the cadence by both AC02 tests; this stage adds no second
 gate.
+
+## Review notes (2026-10-02, reviewing agent deepseek-1)
+
+The implementation and its 12 tests were reviewed against the F27-B section,
+the contract and this record. Two defects were found and fixed; the rest of
+the stage stands.
+
+1. **`part_sweep_candidates` silently substituted a zero airframe velocity.**
+   The provider computed `airframe_velocity(world, entity).unwrap_or([0.0; 3])`,
+   so a part with no reachable `LinearVelocity` was treated as stationary. That
+   contradicts this file's own "nothing is dropped silently ... no reachable
+   airframe velocity" claim and the project's "unknown means unknown" rule: an
+   unmeasurable relative motion is not the same statement as a still target,
+   and the sibling `live_mount_transforms` already refuses the identical case
+   (`MountPoseRefusal::MissingAirframeVelocity`). It now reports
+   `PartSweepRefusal::MissingAirframeVelocity { node }` and fabricates no
+   candidate. New test:
+   `accept_f27_b_a_part_with_no_airframe_velocity_is_refused` (cs_app).
+2. **`GunCadence::fire` could change state on a fire it refused.** The wind was
+   only checked inside `ProjectileRuntime::spawn`, which runs *after*
+   `FireResolver::resolve` had already consumed a round and started a cooldown,
+   so a non-finite wind returned `Err(CadenceRefusal::Projectile)` with the
+   round already spent and the intent already marked resolved (unretryable).
+   `fire` now validates the caller-supplied wind with the same `check_finite_wind`
+   before resolving, so the refusal is state-free and the intent is retryable.
+   New test: `accept_f27_b_a_refused_fire_changes_no_state` (cs_sim).
+
+Both fixes are small and local to the owner paths. The mutation table above
+predates them; the two new tests are themselves sensitivity cases (removing the
+missing-velocity refusal makes the first fail; moving the wind check back below
+`resolve` makes the second fail).
 
 ## Not claimed
 

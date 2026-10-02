@@ -481,3 +481,39 @@ fn accept_f27_b_unreadable_parts_are_refused_without_losing_the_rest() {
         read.refused
     );
 }
+
+/// A part whose airframe velocity is unreadable is refused by name rather than
+/// assumed to be still. The relative motion is a sweep input (F27
+/// non-negotiable 3), so "no velocity is reachable" and "the target is not
+/// moving" are different statements and the first must not silently become the
+/// second.
+#[test]
+fn accept_f27_b_a_part_with_no_airframe_velocity_is_refused() {
+    let generation = SceneGeneration(1);
+    let mut world = World::new();
+    // A live actor root with no `LinearVelocity`: the part's motion over the
+    // tick cannot be reconstructed.
+    let root = world
+        .spawn(WeaponActorBinding {
+            actor: actor(9),
+            guns: Vec::new(),
+            loadout: declared_synthetic_gun().gun().clone(),
+            generation,
+        })
+        .id();
+    let node = key(HULL);
+    part_node(
+        &mut world,
+        root,
+        PartSweptBox::new(actor(2), node.clone(), [1.0; 3]),
+        [0.0; 3],
+    );
+
+    let read = part_sweep_candidates(&world, 1.0 / 30.0, |_| Some(Allegiance::Hostile));
+    assert!(read.candidates.is_empty(), "no candidate is fabricated");
+    assert_eq!(
+        read.refused,
+        vec![PartSweepRefusal::MissingAirframeVelocity { node }],
+        "the unreadable airframe velocity is named"
+    );
+}

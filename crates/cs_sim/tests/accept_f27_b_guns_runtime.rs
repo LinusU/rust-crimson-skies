@@ -390,6 +390,43 @@ fn accept_f27_b_projectile_spawn_refuses_corrupt_inputs_by_name() {
     );
 }
 
+/// A fire whose caller-supplied wind is corrupt is refused **before** the
+/// intent is resolved. The resolver consumes a round and starts a cooldown the
+/// moment it accepts a shot, so a wind that would make the projectile
+/// impossible to spawn must not let it run: the round, the cooldown and the
+/// intent are all left as they were, and the same intent can be retried once
+/// the wind is valid.
+#[test]
+fn accept_f27_b_a_refused_fire_changes_no_state() {
+    let mount = key("nose_mount");
+    let mut cadence = cadence(gun(&mount, GunMountKind::Nose, 90), &mount);
+    let transforms = transforms_for(&mount, [0.0, 0.0, 0.0]);
+    match cadence.fire(&intent(0, 1), &transforms, [f64::NAN, 0.0, 0.0]) {
+        Err(CadenceRefusal::Projectile(ProjectileRuntimeError::NonFiniteWind { component: 0 })) => {
+        }
+        other => panic!("a corrupt wind must be refused by name, got {other:?}"),
+    }
+    assert!(
+        cadence.projectiles().is_empty(),
+        "a refused fire spawns no projectile"
+    );
+    assert_eq!(
+        cadence
+            .state(&actor(1))
+            .expect("the actor is registered")
+            .ammunition(&mount),
+        SYNTHETIC_STARTING_ROUNDS,
+        "a refused fire consumes no round"
+    );
+
+    // The same intent id is still unresolved, so a valid wind fires it.
+    let firing = cadence
+        .fire(&intent(0, 1), &transforms, [0.0; 3])
+        .expect("the same intent fires once the wind is valid");
+    assert_eq!(firing.accepted.len(), 1, "the retried intent fires once");
+    assert_eq!(cadence.projectiles().len(), 1, "the shot spawns one round");
+}
+
 /// The cadence refusal type keeps a whole-intent refusal and a spawn refusal
 /// distinguishable, and an acceptance test can drive the `CadenceRefusal`
 /// path: a duplicate intent id is refused whole and spawns nothing.

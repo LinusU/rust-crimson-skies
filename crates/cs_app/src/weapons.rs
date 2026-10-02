@@ -671,6 +671,17 @@ pub enum PartSweepRefusal {
         /// Why the box was refused.
         source: SweepTargetError,
     },
+    /// No ancestor of the part (up to the hierarchy root) carries a live
+    /// `LinearVelocity`, so the target's motion through the tick is unknown.
+    ///
+    /// The relative motion is an input to the sweep (F27 non-negotiable 3), so
+    /// an unmeasurable one is refused by name rather than assumed to be zero:
+    /// a still target and an unreadable one are different statements, and the
+    /// latter must not be silently treated as the former.
+    MissingAirframeVelocity {
+        /// The part's damage node.
+        node: DamageNodeKey,
+    },
 }
 
 impl PartSweepRefusal {
@@ -681,6 +692,7 @@ impl PartSweepRefusal {
             Self::MissingPose { .. } => "missing_pose",
             Self::NonFinitePose { .. } => "non_finite_pose",
             Self::Target { .. } => "target",
+            Self::MissingAirframeVelocity { .. } => "missing_airframe_velocity",
         }
     }
 
@@ -690,7 +702,8 @@ impl PartSweepRefusal {
         match self {
             Self::MissingPose { node }
             | Self::NonFinitePose { node }
-            | Self::Target { node, .. } => node,
+            | Self::Target { node, .. }
+            | Self::MissingAirframeVelocity { node } => node,
         }
     }
 }
@@ -730,10 +743,11 @@ impl PartSweepCandidates {
 ///   `None` (the exact statement `FriendlyFireRule` needs).
 ///
 /// `dt_s` is the tick length the previous centre is reconstructed over. A
-/// part with no pose, a non-finite pose, or a box the shared geometry
-/// vocabulary refuses is named in [`PartSweepCandidates::refused`]; one bad
-/// part never drops the others, because a refused contact is a reported defect
-/// in one candidate, not a licence to lose the round.
+/// part with no pose, a non-finite pose, no reachable airframe velocity, or a
+/// box the shared geometry vocabulary refuses is named in
+/// [`PartSweepCandidates::refused`]; one bad part never drops the others,
+/// because a refused contact is a reported defect in one candidate, not a
+/// licence to lose the round.
 #[must_use]
 pub fn part_sweep_candidates(
     world: &World,
@@ -762,7 +776,11 @@ pub fn part_sweep_candidates(
             read.refused.push(PartSweepRefusal::NonFinitePose { node });
             continue;
         }
-        let velocity = airframe_velocity(world, entity).unwrap_or([0.0; 3]);
+        let Some(velocity) = airframe_velocity(world, entity) else {
+            read.refused
+                .push(PartSweepRefusal::MissingAirframeVelocity { node });
+            continue;
+        };
         let previous = [
             current[0] - velocity[0] * dt_s,
             current[1] - velocity[1] * dt_s,
