@@ -106,6 +106,46 @@ Nothing was re-pointed.
   above, committed because Rally is not reachable from an offline check.
 - `tools/tests/test_evidence_review_identity.py`: the extended check, below.
 
+## What the review changed
+
+Reviewer: **bunny-2/bunny-2**, the same agent instance that implemented #483, so
+per AGENTS.md this review is **not independent** and is not independent
+original-reference evidence. It found four defects and fixed them on this branch;
+nothing was regenerated and no claim level moved.
+
+- **The reader's ignore list was matched against the absolute path.** `IGNORED`
+  holds `target`, `.git` and `private`, and the test compared it against
+  `path.parts` of the full path. A checkout that lives under a directory called
+  `private/` — which is how this repository is developed on some machines, and
+  how the review ran the check against `origin/main` in a scratch worktree — then
+  excluded every harness and the reader found nothing at all. The three names are
+  now matched against the path *relative to the checkout*, and a test builds a
+  synthetic root under a directory called `private` to pin it.
+- **A `"review"` block the reader could not resolve was skipped silently.** The
+  `if not ids or not claim: continue` in `read_harness` dropped a harness with no
+  task id before its marker or no `claim` after it, which is precisely the
+  "quietly stops covering the new one" failure this reader exists to prevent: the
+  harness would stop being cross-checked and nothing would say so. It is now
+  keyed by its own offset and reported as a problem, with a test for each way it
+  can happen.
+- **`F10-D`'s identity had no full stop and repeated itself.** The sentence read
+  "No agent review replaces the owner's human approval Per the owner directive of
+  2026-09-28 … and no agent review replaces the owner's human approval". It now
+  ends that clause and adds "and this review did not get it", which is the fact
+  the second copy was trying to say. `F12-K` had the same missing full stop
+  before "The harness that wrote this report is a private Python script", which
+  now also names the path the report's own `review.method` names.
+- **`F51-D` claimed a regeneration was "byte-identical", which it could not have
+  been.** `created_at` is `iso_utc_now()` in that harness, so a regeneration
+  during the review carries the review's own clock. The Rally log says
+  "regenerated evidence (matched)"; the identity now says exactly that, and
+  records why the committed copy is still the implementer's bytes.
+
+The counts in this note were wrong in three places and are corrected above: 36
+`literal` and 7 `runtime` harnesses (not 37 and 6), 38 harnesses compared
+byte-for-byte, and six harnesses in five production `src/` files. Of the 29
+advisory reports, 26 are honest records and three are #484's.
+
 ## What deliberately did *not* change
 
 - **No report was regenerated.** `docs/contracts/CLI-EVIDENCE.md` requires a
@@ -140,13 +180,14 @@ Nothing was re-pointed.
 ## The check
 
 `python3 -m unittest discover -s tools/tests -p 'test_evidence_review_identity.py' -v`
-— 12 tests, 18 with the whole `tools/tests`.
+— 14 tests, 20 with the whole `tools/tests`.
 
 **The reader now covers the family instead of one file.** It walks every `*.rs`
 under `crates/` and `tools/` and keeps the files that write a `"review"` object,
 so a new stage's harness is covered the day it lands. It finds 45 harnesses in
-28 files: the 17 campaign ones, and 28 more, of which six live in a production
-`src/` file rather than a test file (`crates/cs_content/src/livery.rs` and
+28 files: the 17 campaign ones, and 28 more, of which six harnesses live in
+five production `src/` files rather than test files (`F06-D`, `F07-D`, `F08-D`,
+`F09-D`, `F13-B` and `F13-C` in `crates/cs_content/src/livery.rs` and
 `tools/cs_inspect/src/{interp,script_discovery,textures,zbd}.rs`). A
 hand-maintained list would have been a list that rots, which is exactly how
 #479's scope became this task.
@@ -156,16 +197,16 @@ which one it found so a fourth cannot pass unnoticed:
 
 | shape | how the identity reaches the report | count |
 | --- | --- | --- |
-| `literal` | a `jstr` string literal in the harness | 37 |
+| `literal` | a `jstr` string literal in the harness | 36 |
 | `function` | the return value of a `fn …() -> String` in the same file | 2 (F18-D, F51-D) |
-| `runtime` | `CS_EVIDENCE_REVIEW` / `CS_EVIDENCE_REVIEWER` at run time | 6 |
+| `runtime` | `CS_EVIDENCE_REVIEW` / `CS_EVIDENCE_REVIEWER` at run time | 7 |
 | `unknown` | anything else — reported as a failure, never skipped | 0 |
 
-The 37 literal/function harnesses' committed reports are compared byte-for-byte
-against what the harness writes, and all 37 agree. 45 of the 53 committed
-reports have a harness; the other eight (`F05-D`, `F12-D.langui`, `F12-E`,
-`F12-G`, `F12-H`, `F12-J`, `F12-K`, `T351`) have a private or absent harness and
-are still covered by the report-side rules.
+The 38 literal and function harnesses' committed reports are compared
+byte-for-byte against what the harness writes, and all 38 agree. 45 of the 53
+committed reports have a harness; the other eight (`F05-D`, `F12-D.langui`,
+`F12-E`, `F12-G (Rally #368)`, `F12-H`, `F12-J`, `F12-K`, `T351`) have a private
+or absent harness and are still covered by the report-side rules.
 
 **The two-level design is kept, and one rule moved down a level.** A hand-over
 placeholder in any committed report is still an unconditional failure, as are a
@@ -218,7 +259,8 @@ context.
   `runtime` reason above. That is recorded, pinned and visible in the test output
   rather than papered over.
 - **Twenty-nine reports have no Rally facts in either snapshot** and pass as
-  advisories. Twenty of them are honest records; the rest are #484.
+  advisories. Twenty-six of them are honest records; the other three are #484's
+  `F05-D`, `F07-D` and `F31-D`.
 
 ## Sources
 

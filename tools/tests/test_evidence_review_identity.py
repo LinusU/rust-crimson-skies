@@ -47,6 +47,7 @@ import json
 from pathlib import Path
 import re
 import sys
+import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -55,10 +56,17 @@ NON_CAMPAIGN_SNAPSHOT = ROOT / 'docs/findings/2026-10-02-m16-a-fu4-rally-review-
 REPORTS = ROOT / 'docs/findings/evidence'
 # Every evidence report is written by a Rust file, most of them by one under a
 # `tests/` directory.  A few harnesses live in a production `src/` file
-# (F06-D, F07-D, F08-D, F09-D, F11-D, F13-B, F13-C), so the reader walks both
+# (F06-D, F07-D, F08-D, F09-D, F13-B, F13-C), so the reader walks both
 # roots rather than only the test directories.
 HARNESS_ROOTS = ('crates', 'tools')
+# Matched against the path *relative to the checkout*, never against the
+# absolute one: this repository is developed in a directory called `private/`
+# on some machines, and a reader that excluded every harness because of the
+# name of an ancestor above the checkout would report nothing and look green.
 IGNORED = frozenset({'target', '.git', 'private'})
+# The key a `"review"` marker gets when the reader cannot resolve it to a task
+# id, so an unresolvable harness is reported rather than skipped.
+UNRESOLVED = 'unresolved review marker at offset {}'
 
 # The placeholder wording the reports used while they claimed that no review had
 # happened, or handed the job to a reviewer that had not run yet.  None of it
@@ -84,6 +92,25 @@ ARGUMENT = re.compile(r'\A\s*&?\s*(\w+)\b')
 # `fn review_identity() -> String {` and `let review = env_var("CS_EVIDENCE_REVIEWER");`
 FUNCTION = r'fn\s+{}(?:\s*<[^>]*>)?\s*\(\s*\)\s*->\s*String\b'
 DECLARATION = r'(?:let\s+{}\b|fn\s+{}\b)[^;{{]{{0,200}}?(?:env::var|env_var)\(\s*"(?P<env>[A-Z0-9_]+)"'
+
+# A whole evidence harness, small enough to read: a `format!` whose `review`
+# object is filled from two `jstr` arguments, with a `\`-continued identity
+# literal because that is how every real harness writes one.
+MINIMAL_HARNESS = '''fn evidence_report_x99_a() {
+    let report = format!(
+        "{{\\n\\
+         \\x20\\"task_id\\": \\"X99-A\\",\\n\\
+         \\x20\\"review\\": {{\\"identity\\": {}, \\"method\\": {}}},\\n\\
+         \\x20\\"claim\\": \\"implemented\\"\\n\\
+         }}\\n",
+        jstr(
+            "one \\
+             two"
+        ),
+        jstr("three"),
+    );
+}
+'''
 
 
 def read_rust_string(text, quote):
@@ -194,12 +221,21 @@ def read_identity(text, start):
 
 
 def read_harness(text):
-    """Return the task id, `review.identity` and `claim` of every harness in one file."""
+    """Return the task id, `review.identity` and `claim` of every harness in one file.
+
+    A `"review"` marker the reader cannot resolve to a task id and a `claim` is
+    a hole, so it is keyed by its own offset and reported by
+    `review_problems` instead of being skipped: a harness that is quietly
+    dropped is a harness that silently stops being cross-checked.
+    """
     harnesses = {}
     for marker in re.finditer(re.escape(REVIEW_MARKER), text):
         ids = TASK_ID.findall(text[:marker.start()])
         claim = CLAIM.search(text, marker.end())
         if not ids or not claim:
+            harnesses[UNRESOLVED.format(marker.start())] = {
+                'claim': None, 'identity': None, 'shape': 'unknown',
+                'via': 'no task id before the marker' if not ids else 'no claim after the marker'}
             continue
         harnesses[ids[-1]] = {'claim': claim.group(1), **read_identity(text, marker.end())}
     return harnesses
@@ -209,19 +245,27 @@ def harness_files(root=ROOT):
     """Every Rust file that writes an evidence report, discovered rather than listed."""
     files = []
     for base in HARNESS_ROOTS:
-        files += [path for path in sorted((root / base).rglob('*.rs'))
-                  if not any(part in IGNORED for part in path.parts)
-                  and REVIEW_MARKER in path.read_text()]
+        for path in sorted((root / base).rglob('*.rs')):
+            if any(part in IGNORED for part in path.relative_to(root).parts):
+                continue
+            if REVIEW_MARKER in path.read_text():
+                files.append(path)
     return files
+
+
+def read_harnesses_from(files):
+    """Read the harnesses of `{relative path: text}`, keyed by the `task_id` each writes."""
+    harnesses = {}
+    for source, text in files.items():
+        for key, harness in read_harness(text).items():
+            harnesses[key] = dict(harness, source=source)
+    return harnesses
 
 
 def read_harnesses(root=ROOT):
     """Every committed evidence harness, keyed by the `task_id` it writes."""
-    harnesses = {}
-    for path in harness_files(root):
-        for key, harness in read_harness(path.read_text()).items():
-            harnesses[key] = dict(harness, source=str(path.relative_to(root)))
-    return harnesses
+    return read_harnesses_from({str(path.relative_to(root)): path.read_text()
+                                for path in harness_files(root)})
 
 
 def read_snapshot(path=CAMPAIGN_SNAPSHOT):
@@ -346,9 +390,15 @@ def review_problems(snapshots, harnesses, reports):
                             f' ({task["reviewer"]["actor"]}) but `review.identity` does not say the'
                             f' review is not independent')
     for key in sorted(harnesses):
-        if key not in reports:
-            problems.append(f'docs/findings/evidence/{key}.json: no committed report, but {key} has'
-                            f' an evidence harness')
+        if key in reports:
+            continue
+        if key.startswith('unresolved review marker'):
+            problems.append(f'{harnesses[key]["source"]}: a `review` block at {key} cannot be'
+                            f' resolved ({harnesses[key]["via"]}), so this harness is not'
+                            f' cross-checked against a report')
+            continue
+        problems.append(f'docs/findings/evidence/{key}.json: no committed report, but {key} has'
+                        f' an evidence harness')
     return problems, unrecorded
 
 
@@ -471,22 +521,7 @@ class EvidenceReviewIdentityTests(unittest.TestCase):
                         problems)
 
     def test_accept_m16_a_fu2_harness_reader_joins_rust_line_continuations(self):
-        chunk = '''fn evidence_report_x99_a() {
-    let report = format!(
-        "{{\\n\\
-         \\x20\\"task_id\\": \\"X99-A\\",\\n\\
-         \\x20\\"review\\": {{\\"identity\\": {}, \\"method\\": {}}},\\n\\
-         \\x20\\"claim\\": \\"implemented\\"\\n\\
-         }}\\n",
-        jstr(
-            "one \\
-             two"
-        ),
-        jstr("three"),
-    );
-}
-'''
-        self.assertEqual(read_harness(chunk),
+        self.assertEqual(read_harness(MINIMAL_HARNESS),
                          {'X99-A': {'claim': 'implemented', 'identity': 'one two',
                                     'shape': 'literal', 'via': None}})
 
@@ -618,6 +653,40 @@ class EvidenceReviewIdentityTests(unittest.TestCase):
                                                           via='review')})
         self.assertTrue(any('cannot work out how the F02-B harness' in problem
                             for problem in review_problems(self.snapshots, harnesses, self.reports)[0]))
+
+    def test_accept_m16_a_fu4_a_harness_the_reader_cannot_resolve_is_reported(self):
+        """A `review` block with no task id, or no `claim`, is a hole, not a harness to skip."""
+        def without(needle):
+            return '\n'.join(line for line in MINIMAL_HARNESS.splitlines() if needle not in line)
+
+        for needle, reason in (('task_id', 'no task id before the marker'),
+                               ('claim', 'no claim after the marker')):
+            harnesses = read_harnesses_from({'crates/demo/tests/evidence.rs': without(needle)})
+            key = next(iter(harnesses))
+            self.assertTrue(key.startswith('unresolved review marker'), key)
+            self.assertEqual(harnesses[key]['shape'], 'unknown')
+            self.assertEqual(harnesses[key]['via'], reason)
+            self.assertTrue(any('cannot be resolved' in problem
+                                and 'crates/demo/tests/evidence.rs' in problem
+                                for problem in review_problems(self.snapshots, harnesses,
+                                                               self.reports)[0]),
+                            harnesses)
+
+    def test_accept_m16_a_fu4_discovery_ignores_only_paths_inside_the_checkout(self):
+        """A checkout that lives under a directory named `private` is still read."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory) / 'private' / 'checkout'
+            harness = root / 'crates/demo/tests/evidence.rs'
+            harness.parent.mkdir(parents=True)
+            harness.write_text(MINIMAL_HARNESS)
+            (root / 'crates/demo/target').mkdir()
+            (root / 'crates/demo/target/generated.rs').write_text(MINIMAL_HARNESS)
+            self.assertEqual([path.relative_to(root).as_posix() for path in harness_files(root)],
+                             ['crates/demo/tests/evidence.rs'])
+            self.assertEqual(read_harnesses(root)['X99-A']['shape'], 'literal')
+            self.assertEqual(self.harnesses['M01-A']['source'],
+                             'crates/cs_app/tests/campaign/evidence.rs',
+                             'the reader found nothing in this checkout either')
 
 
 def copy_reports(reports, **extra):

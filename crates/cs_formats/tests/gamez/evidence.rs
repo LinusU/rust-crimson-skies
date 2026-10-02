@@ -328,9 +328,9 @@ fn evidence_report_f10_d_writes_the_acceptance_report() {
             is on both sides, so this review is not independent and is not independent \
             original-reference evidence; the review claim started sixty-six seconds after the \
             hand-over, so the activity log cannot prove a fresh context and none is claimed. No \
-            agent review replaces the owner's human approval Per the owner directive of \
+            agent review replaces the owner's human approval. Per the owner directive of \
             2026-09-28 a different agent instance or model should review format and evidence \
-            machinery, and no agent review replaces the owner's human approval",
+            machinery, and this review did not get it",
         ),
         jstr(
             "acceptance suite run locally with the `retail` capability. This harness derives \
