@@ -3119,7 +3119,7 @@ mod tests {
 ///    CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') \
 ///    CS_EVIDENCE_ARGV="cargo test --workspace --locked -- accept_f09_d_ --include-ignored" \
 ///    CS_EVIDENCE_EXIT_CODE=<status from step 1> \
-///      cargo test --locked -p cs_content --lib -- evidence_report_f09_d -- --ignored
+///      cargo test --locked -p cs_content --lib evidence_report_f09_d -- --ignored
 ///    ```
 /// 3. ```sh
 ///    python3 tools/validate_evidence.py \
@@ -3588,7 +3588,7 @@ mod evidence {
     ///    CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') \
     ///    CS_EVIDENCE_ARGV="cargo test --workspace --locked -- accept_f09_palette_ --include-ignored" \
     ///    CS_EVIDENCE_EXIT_CODE=<status from step 1> \
-    ///      cargo test --locked -p cs_content --lib -- evidence_report_f09_palette -- --ignored
+    ///      cargo test --locked -p cs_content --lib evidence_report_f09_palette -- --ignored
     ///    ```
     /// 3. ```sh
     ///    python3 tools/validate_evidence.py \
