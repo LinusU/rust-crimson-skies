@@ -3176,8 +3176,19 @@ pub enum TriggerVolumeError {
         /// The speed that was refused.
         speed_m_s: f64,
     },
-    /// A tick rate was zero, which has no tick in it.
-    ZeroTickRate,
+    /// A speed was zero or negative. A body that is not moving forward has no
+    /// **one tick of travel** to be compared against, and a negative speed
+    /// would invert the comparison rather than answer it.
+    NonPositiveSpeed {
+        /// The speed that was refused.
+        speed_m_s: f64,
+    },
+    /// A tick rate was zero or negative, which has no tick in it. A negative
+    /// rate would make one tick of travel a distance in the wrong direction.
+    NonPositiveTickRate {
+        /// The rate that was refused.
+        tick_hz: f64,
+    },
     /// Two zones of the same world claimed the same name.
     DuplicateZone {
         /// The world the duplicate is in.
@@ -3211,7 +3222,12 @@ impl fmt::Display for TriggerVolumeError {
             Self::NonFiniteSpeed { speed_m_s } => {
                 write!(f, "the speed {speed_m_s} m/s is not a number")
             }
-            Self::ZeroTickRate => write!(f, "a tick rate of zero has no tick in it"),
+            Self::NonPositiveSpeed { speed_m_s } => {
+                write!(f, "the speed {speed_m_s} m/s is not greater than zero")
+            }
+            Self::NonPositiveTickRate { tick_hz } => {
+                write!(f, "the tick rate {tick_hz} Hz is not greater than zero")
+            }
             Self::DuplicateZone { world, zone } => {
                 write!(f, "two zones of world {world} claim the name {zone}")
             }
@@ -3575,6 +3591,14 @@ impl TriggerTickVerdict {
     ///
     /// `None` when there is no thinnest zone to flip on, which is the
     /// [`Self::NoZones`] state and nothing else.
+    ///
+    /// `Some(f64::INFINITY)` when the thinnest measured zone has **zero**
+    /// thickness — a plane, which [`StoredVolume::new`] accepts — because a zone
+    /// with no thickness is thinner than one tick under every factor, so no
+    /// finite factor flips the verdict. It is `Some`, not `None`, because the
+    /// zone was measured and the comparison was made; and it is an infinity
+    /// rather than a number, because the caller has to be able to see that there
+    /// is no finite one.
     #[must_use]
     pub fn break_even_meters_per_unit(&self) -> Option<f64> {
         match self {
@@ -3753,14 +3777,20 @@ impl RetailTriggerVolumeSurvey {
     ///
     /// # Errors
     ///
-    /// [`TriggerVolumeError::NonFiniteSpeed`] for a speed no arithmetic can use
-    /// and [`TriggerVolumeError::ZeroTickRate`] for a rate with no tick in it.
+    /// [`TriggerVolumeError::NonFiniteSpeed`] for a speed no arithmetic can use,
+    /// [`TriggerVolumeError::NonPositiveSpeed`] for a body that is not moving
+    /// forward, and [`TriggerVolumeError::NonPositiveTickRate`] for a rate with
+    /// no tick in it — zero, negative, or not a number at all, since every one of
+    /// those makes `speed / tick` something other than a distance.
     pub fn travel_m_per_tick(speed_m_s: f64, tick_hz: f64) -> Result<f64, TriggerVolumeError> {
         if !speed_m_s.is_finite() {
             return Err(TriggerVolumeError::NonFiniteSpeed { speed_m_s });
         }
-        if tick_hz == 0.0 || !tick_hz.is_finite() {
-            return Err(TriggerVolumeError::ZeroTickRate);
+        if speed_m_s <= 0.0 {
+            return Err(TriggerVolumeError::NonPositiveSpeed { speed_m_s });
+        }
+        if !tick_hz.is_finite() || tick_hz <= 0.0 {
+            return Err(TriggerVolumeError::NonPositiveTickRate { tick_hz });
         }
         Ok(speed_m_s / tick_hz)
     }
@@ -3788,10 +3818,16 @@ impl RetailTriggerVolumeSurvey {
         };
         let thinnest_zone = thinnest.zone().to_owned();
         let Some(scale) = self.vertex_scale_to_m else {
-            // A stored extent of zero is a record that stores no box; dividing
-            // by it would be an infinity dressed as a break-even factor. The
-            // survey never reports such a zone as thinnest, so this is the
-            // `NoZones`-adjacent case the caller gets told about honestly.
+            // The thinnest zone may be a **plane**: `StoredVolume::new` accepts a
+            // degenerate box because a plane is a real authored volume, and the
+            // survey keeps it (an all-zero box is refused by the survey itself,
+            // which is a different state). For a plane this factor is `+inf`,
+            // which is the honest answer rather than a number that pretends to
+            // be one: a zero extent is thinner than one tick under **every**
+            // factor, so no finite factor flips the verdict. A caller that needs
+            // a finite number must check the thinnest extent first, and
+            // `travel_m_per_tick` is already refused as non-positive so the
+            // `0 / 0` that would make this a NaN cannot be reached.
             return Ok(TriggerTickVerdict::UnitUnmeasured {
                 speed_m_s,
                 tick_hz,

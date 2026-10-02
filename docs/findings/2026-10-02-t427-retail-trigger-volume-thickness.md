@@ -34,7 +34,7 @@ carries as `install_sha256`).
 - `crates/cs_app/src/world/mod.rs` (wiring only): `pub mod triggers;`, the
   re-exports and one module-doc bullet.
 - `crates/cs_app/tests/world/triggers.rs` (new) and
-  `crates/cs_app/tests/world/main.rs` (wiring only): the eleven `accept_t427_`
+  `crates/cs_app/tests/world/main.rs` (wiring only): the twelve `accept_t427_`
   tests.
 - `docs/findings/2026-10-02-t427-retail-trigger-volume-thickness.md` (this file).
 
@@ -85,7 +85,7 @@ row, for instance, is container `zbd/c5/gamez.zbd` (SHA-256 `4e7a6690…`), slot
 
 F11-A's reader exposes three candidate boxes in a node's info record —
 `unk116`, `unk140`, `unk164` — and documents all three as "Unmeasured". Measured
-over the eight world containers' **56 620** node records:
+over the eight world containers' **53 303** node records:
 
 | field | non-zero records, all nodes | non-zero, numbered zones | zero, numbered zones |
 | --- | --- | --- | --- |
@@ -194,8 +194,9 @@ finding record. It is now also a contract statement on the producer itself.
 
 Eleven mutations applied, `cargo test -p cs_app --test world -- accept_t427_`
 run (the **unignored** selection, so CI sees the same coverage), source
-restored. All eight unignored tests pass unmutated; the three `#[ignore]`d
-retail tests are listed separately below.
+restored. All nine unignored tests pass unmutated (the ninth is the review's
+zero-thickness test, below); the three `#[ignore]`d retail tests are listed
+separately.
 
 | mutation | tests that failed |
 | --- | --- |
@@ -247,6 +248,117 @@ now "every axis is zero", the survey has a distinct `TriggerVolumeSurveyError::N
 refusal for it, and
 `accept_t427_every_survey_refusal_names_the_container_it_could_not_measure` pins
 both the refusal and the flat case that must **not** be refused.
+
+## Review (2026-10-02)
+
+Reviewer: **`bunny-alpha-1/bunny-alpha-1`, the same agent instance that
+implemented this task.** Rally assigned the review to the implementer; the
+context here is the implementation session's, not a fresh one. Per AGENTS.md that
+makes this **not independent evidence** — it is a same-session self-check of the
+code and the arithmetic, nothing more. Nothing here is `verified_original`
+either way.
+
+The corpus was nevertheless re-measured from the original bytes with a parser
+written for the review and **sharing no code with the workspace**: the eight
+containers' info arrays read directly at their own offsets. Every number the
+record asserts reproduces:
+
+| assertion | record | review's own parse |
+| --- | --- | --- |
+| numbered zones, total | 80 | 80 |
+| per container | `C1` 6, `C1B` 7, `C2` 13, `C3` 5, `C4` 15, `C5` 34; `C1C`/`C2B` none | identical |
+| thinnest stored extent | 32.00 | 32.0 |
+| non-zero `unk116` / `unk140` / `unk164`, all nodes | 1 330 / 30 161 / 15 289 | identical |
+| non-zero `unk140` over the 80 zones | 80 | 80 (and 0 for the other two) |
+| `C5/dzpath1` | slot 4636, bytes 6 242 124..6 242 335, mesh 949, digest `4e7a6690…` | identical |
+| `dzzones.zrd` members | 23, 155–826 bytes, 9 197 total | identical |
+| node records over the eight containers | **56 620** | **53 303 — the record was wrong** |
+
+The `dzones.zrd` framing claim was re-tested the same way: a recursive-descent
+reader that treats the word after a `4` tag as an item count consumes **0 of the
+23** members exactly, so the "not a length-prefixed value list" reading stands on
+its own evidence rather than on the implementer's word.
+
+### What the review changed
+
+1. **A wrong measured number.** The denominator of the field-discrimination
+   table was **56 620**; the eight containers hold **53 303** node records
+   (`C1` 7 064, `C1B` 5 603, `C1C` 5 644, `C2` 4 956, `C2B` 4 901, `C3` 5 408,
+   `C4` 8 289, `C5` 11 438 — the `node_array_size` header word, which is what the
+   production reader iterates). The three non-zero counts were right, so only the
+   denominator moved; corrected here and in the `ZONE_BOX_FIELD` doc comment.
+2. **The survey did not enforce the identity transform it relied on.** The
+   record and the module header both said every zone is an `object3d` record that
+   stores no transform "so the box needs no composition", but the loop matched
+   `NodeKind::Object3d(_)` and read the box whatever the flags word said. A
+   rotated zone would have been reported with its extents on the **node's** axes,
+   and the one-tick verdict turns on which axis is thinnest. The survey now
+   refuses `TriggerVolumeSurveyError::TransformedZone` by name, so the claim is
+   true by construction. Measured: all 80 zones carry
+   `Object3dCsC.flags == OBJECT3D_FLAGS_IDENTITY` (40), so the retail corpus is
+   unaffected — and its passing is now an assertion of that, not an observation.
+3. **A numbered zone of another kind was silently skipped.** `NodeKind::Object3d(_)`
+   with `_ => continue` omitted it, which contradicts the module's own rule that
+   "a measurement this survey silently omits is a gap a consumer cannot see".
+   Now refused as `TriggerVolumeSurveyError::UnexpectedKind`, naming the kind.
+   Both refusals are pinned in CI by the synthetic-container fixture, which grew
+   the two shapes needed to reach them (`SyntheticNode::transformed`,
+   `SyntheticNode::camera`).
+4. **A comment that described a branch the code does not contain.**
+   `tick_verdict`'s `UnitUnmeasured` arm carried a note about "a stored extent of
+   zero … the survey never reports such a zone as thinnest" — which is false: a
+   **plane** is a legitimate zone the survey keeps, so the arm does divide by
+   zero. The real answer there is `+inf`, which is the honest one (no finite
+   factor makes a zero-thickness zone one tick thick) and is now documented and
+   pinned by `accept_t427_a_zone_with_no_thickness_is_outrun_by_every_tick_and_never_flips`
+   at three factors.
+5. **`0 / 0` was reachable.** With the speed and tick rate only checked for
+   "not NaN" and "not zero", a **zero** speed returned
+   `EveryZoneSpansATick { travel_m_per_tick: 0.0 }` whose break-even is `NaN`,
+   and a **negative** tick rate or speed inverted the comparison. `travel_m_per_tick`
+   now refuses both directions — `NonPositiveSpeed` and `NonPositiveTickRate`,
+   the latter replacing `ZeroTickRate` — so no `NaN` reaches a caller and the one
+   refusal for a rate no tick fits in is a single variant.
+6. **The fixture wrote an object record the reader flags.** The synthetic object
+   record set `flags = 40` but left the stored `matrix` all zero, which is an
+   `ObjectIdentityNotIdentity` finding in the production reader. Harmless (the
+   survey reads no findings) but it made the fixture disagree with the shape it
+   claims to author; it now writes an identity matrix.
+
+Test count: **twelve** `accept_t427_` tests, nine unignored (CI) and three
+`#[ignore = "requires CS_GAME_DIR"]`. Two mutations from the matrix above were
+re-run by the review on the reviewed tree and reproduce exactly — re-pointing
+`ZONE_BOX_FIELD` at `unk164` and supplying `Some(1.0)` as the vertex scale are
+both caught by the **unignored** selection (three and one test respectively).
+
+The review added four mutations of its own, all against the **unignored**
+selection and all caught:
+
+| mutation | test that failed |
+| --- | --- |
+| the identity refusal (`stores_identity`) removed | `..._every_survey_refusal_names_the_container_it_could_not_measure` |
+| the `UnexpectedKind` refusal back to a silent `continue` | the same |
+| the `NonPositiveSpeed` guard removed | `..._every_trigger_volume_refusal_names_what_it_refused` |
+| `break_even_meters_per_unit` reporting `0.0` for a zero extent instead of `+inf` | `..._a_zone_with_no_thickness_is_outrun_by_every_tick_and_never_flips` |
+
+The first two matter more than their size: they are the substitutions that would
+produce a *plausible but wrong* corpus — an extent on the node's axis instead of
+the world's, or a missing zone in a shorter list that reads as the measurement.
+
+### What the review did not change, and why
+
+* **`unk140` remains a correlation.** Nothing here establishes that it is a
+  bounding box, that `[min, max]` is its order, or that it is in world space
+  rather than the parent's. The refusal added in (2) removes the one place this
+  stage *would* have depended on the parent-space question — it never composes —
+  but the meaning of the field is still F11-D's and F18's to establish.
+* **The break-even framing** is kept. It is the honest form of an answer whose
+  missing input is a single number another task owns, and the reading it supports
+  (no stored unit can be worth ten centimetres in a coordinate system whose
+  aircraft are metres long) does not need the factor itself.
+* **`dzones.zrd` stays undecoded** and a follow-up was filed for it. The review's
+  independent parse is corroboration, not a decode: a grammar that consumes none
+  of 23 members exactly is a grammar that is wrong, not one that is missing.
 
 ## Known limitations that gate later stages (not silently dropped)
 
@@ -307,9 +419,12 @@ cargo fmt --all -- --check                                        # exit 0
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings   # exit 0
 cargo test --workspace --locked                                   # exit 0
 cargo test --workspace --locked -- accept_t427_ --include-ignored
-#   11 tests run, 11 passed (crates/cs_app/tests/world)
-#   of which 8 unignored (CI) and 3 #[ignore = "requires CS_GAME_DIR"]
+#   12 tests run, 12 passed (crates/cs_app/tests/world)
+#   of which 9 unignored (CI) and 3 #[ignore = "requires CS_GAME_DIR"]
 ```
+
+The review re-ran all four on the reviewed tree, plus the two mutations noted
+above; the counts above are the reviewed tree's.
 
 ## Sources used
 

@@ -12,12 +12,14 @@
 //! number implies for a fast aircraft. F18-C's depot volume (1 m) and F18-A's
 //! arch volume (8 m) are fixture choices, so they cannot answer it.
 //!
-//! Three of the six tests here read no original data and CI runs them: they pin
-//! the contract — that a stored extent is never a length in metres, that the
+//! Nine of the twelve tests here read no original data and CI runs them: they
+//! pin the contract — that a stored extent is never a length in metres, that the
 //! one-tick verdict refuses to decide without a unit factor and reports the
-//! factor at which it would flip, and that the survey's own refusals are typed.
-//! The other three need `CS_GAME_DIR` and are ignored in CI: they measure the
-//! real corpus through the production node reader.
+//! factor at which it would flip, that a zone with no thickness cannot be
+//! thickened by any factor, and that the survey's own refusals are typed and
+//! name the zone they refused. The other three need `CS_GAME_DIR` and are
+//! ignored in CI: they measure the real corpus through the production node
+//! reader.
 //!
 //! Nothing here is `verified_original`: no original run happened, and reading
 //! the installation's files is not evidence of how the game behaves.
@@ -243,6 +245,104 @@ fn accept_t427_the_unit_factor_decides_the_verdict_and_only_the_unit_factor() {
     ));
 }
 
+/// A zone with **no thickness** is the one stored box a unit factor cannot
+/// change, and the API has to say so rather than report a finite number nobody
+/// could act on.
+///
+/// `StoredVolume::new` accepts a degenerate box because a plane is a real
+/// authored volume, and the survey keeps it — an all-zero box is a different
+/// state and is refused separately. So a zero-thickness zone is reachable, and
+/// `travel / 0` is `+inf`: a zone with no thickness is thinner than one tick
+/// under **every** factor, so no finite factor flips the verdict. `Some(inf)` and
+/// not `None`, because the zone was measured and the comparison was made; and
+/// `inf` and not a large finite number, because a consumer has to be able to see
+/// that there is no finite one.
+#[test]
+fn accept_t427_a_zone_with_no_thickness_is_outrun_by_every_tick_and_never_flips() {
+    let world = WorldId::from_key("c4").expect("a valid world key");
+    let plane = |scale| {
+        RetailTriggerVolumeSurvey::new(
+            "a".repeat(64),
+            scale,
+            vec![RetailTriggerVolume::new(
+                TriggerVolumeSpan::new(
+                    world.clone(),
+                    "ZBD/C4/gamez.zbd",
+                    "0".repeat(64),
+                    0,
+                    512,
+                    212,
+                ),
+                "dzpath1".to_owned(),
+                Some(949),
+                // A plane: zero along `y`, 40 units along `x`.
+                StoredVolume::new([0.0, 500.0, 0.0], [40.0, 500.0, 0.0])
+                    .expect("a flat box is a volume"),
+            )],
+        )
+        .expect("the plane survey is well formed")
+    };
+
+    // With no factor the survey is still undecided — it does not know how thick a
+    // stored unit is — and the factor it reports says there is no finite one.
+    let unmeasured = plane(None);
+    let verdict = unmeasured
+        .tick_verdict(FAST_M_S, TICK_HZ)
+        .expect("a finite speed and a positive rate");
+    assert!(!verdict.is_decided());
+    match &verdict {
+        TriggerTickVerdict::UnitUnmeasured {
+            thinnest_stored_extent,
+            break_even_meters_per_unit,
+            ..
+        } => {
+            assert_eq!(*thinnest_stored_extent, 0.0, "the plane has no thickness");
+            assert_eq!(
+                *break_even_meters_per_unit,
+                f64::INFINITY,
+                "no finite factor makes a zero-thickness zone one tick thick"
+            );
+        }
+        other => panic!("the verdict must be UnitUnmeasured, got {other:?}"),
+    }
+    assert_eq!(
+        verdict.break_even_meters_per_unit(),
+        Some(f64::INFINITY),
+        "and the same infinity through the accessor, rather than a finite stand-in"
+    );
+
+    // With a factor supplied the answer is the one the geometry already gives:
+    // a tick is thicker than the plane, so the plane is outrun. The break-even
+    // stays infinite because the verdict cannot be flipped back.
+    for scale in [1.0, 0.001, 1.0e-9] {
+        let decided = plane(Some(scale))
+            .tick_verdict(FAST_M_S, TICK_HZ)
+            .expect("a valid tick");
+        match &decided {
+            TriggerTickVerdict::ThinnestZoneOutrun {
+                thinnest_m,
+                travel_m_per_tick,
+                ..
+            } => {
+                assert_eq!(
+                    *thinnest_m, 0.0,
+                    "however large the factor, zero units are zero metres"
+                );
+                assert!(
+                    *travel_m_per_tick > *thinnest_m,
+                    "one tick of travel always exceeds a plane's thickness"
+                );
+            }
+            other => panic!("a plane is outrun at every factor, got {other:?}"),
+        }
+        assert_eq!(
+            decided.break_even_meters_per_unit(),
+            Some(f64::INFINITY),
+            "and no factor flips it back"
+        );
+    }
+}
+
 // ----------------------------------------------------- refusals are typed ---
 
 /// Every refusal the survey can produce is typed and names what it refused:
@@ -347,8 +447,36 @@ fn accept_t427_every_trigger_volume_refusal_names_what_it_refused() {
     );
     assert_eq!(
         survey.tick_verdict(FAST_M_S, 0.0).err(),
-        Some(TriggerVolumeError::ZeroTickRate),
+        Some(TriggerVolumeError::NonPositiveTickRate { tick_hz: 0.0 }),
         "a rate of zero has no tick in it"
+    );
+    assert_eq!(
+        survey.tick_verdict(FAST_M_S, -TICK_HZ).err(),
+        Some(TriggerVolumeError::NonPositiveTickRate { tick_hz: -TICK_HZ }),
+        "a negative rate would make one tick of travel a distance backwards, which compares \
+         nothing"
+    );
+    // NaN does not compare equal to itself, so the variant is matched rather
+    // than the value: a rate that is not a number is refused under the same
+    // variant that refuses a negative one, so a caller has one case to handle.
+    assert!(
+        matches!(
+            survey.tick_verdict(FAST_M_S, f64::NAN),
+            Err(TriggerVolumeError::NonPositiveTickRate { tick_hz }) if tick_hz.is_nan()
+        ),
+        "a rate that is not a number has no tick in it either"
+    );
+    assert_eq!(
+        survey.tick_verdict(0.0, TICK_HZ).err(),
+        Some(TriggerVolumeError::NonPositiveSpeed { speed_m_s: 0.0 }),
+        "a body that is not moving has no one tick of travel to be compared against"
+    );
+    assert_eq!(
+        survey.tick_verdict(-FAST_M_S, TICK_HZ).err(),
+        Some(TriggerVolumeError::NonPositiveSpeed {
+            speed_m_s: -FAST_M_S
+        }),
+        "a negative speed would invert the comparison rather than answer it"
     );
     assert_eq!(
         RetailTriggerVolumeSurvey::new("a".repeat(64), None, Vec::new())
@@ -449,7 +577,83 @@ fn accept_t427_the_measured_field_and_corner_order_are_named() {
 
 // --------------------------------------------- the survey over a real file ---
 
-/// A synthetic CS GameZ container holding exactly the nodes `zones` names.
+/// One authored node in a fixture container, so a test can decide the two things
+/// the survey refuses on: what kind of node a numbered zone is, and whether it
+/// stores a transform.
+///
+/// [`SyntheticNode::object`] is the measured shape — every one of the 80
+/// numbered zones in the owner's installation is an `object3d` record with
+/// `Object3dCsC.flags == OBJECT3D_FLAGS_IDENTITY`. The other constructors exist
+/// so those refusals are reachable in CI rather than only over `$CS_GAME_DIR`.
+struct SyntheticNode<'a> {
+    name: &'a str,
+    corners: [[f32; 3]; 2],
+    mesh_index: i32,
+    kind: u32,
+    object_flags: u32,
+}
+
+impl<'a> SyntheticNode<'a> {
+    /// `NODE_TYPE_OBJECT3D`.
+    const OBJECT3D: u32 = 5;
+    /// `NODE_TYPE_CAMERA`: a kind whose record is **not** an object record, so
+    /// its info record is not the one the survey's box field belongs to.
+    const CAMERA: u32 = 1;
+    /// `Object3dCsC.flags` for a record that stores no transform.
+    const IDENTITY: u32 = 40;
+    /// `Object3dCsC.flags` for a record that stores one.
+    const TRANSFORMED: u32 = 32;
+    /// `Object3dCsC` / `CameraC` record lengths, from the reader's constants.
+    const OBJECT3D_BYTES: usize = 144;
+    const CAMERA_BYTES: usize = 488;
+
+    /// The measured shape: an `object3d` node that stores no transform.
+    const fn object(name: &'a str, corners: [[f32; 3]; 2], mesh_index: i32) -> Self {
+        Self {
+            name,
+            corners,
+            mesh_index,
+            kind: Self::OBJECT3D,
+            object_flags: Self::IDENTITY,
+        }
+    }
+
+    /// An `object3d` node that stores a transform, so its box is in the node's
+    /// own space.
+    const fn transformed(name: &'a str, corners: [[f32; 3]; 2], mesh_index: i32) -> Self {
+        Self {
+            name,
+            corners,
+            mesh_index,
+            kind: Self::OBJECT3D,
+            object_flags: Self::TRANSFORMED,
+        }
+    }
+
+    /// A numbered zone that is not an object record at all.
+    const fn camera(name: &'a str, corners: [[f32; 3]; 2], mesh_index: i32) -> Self {
+        Self {
+            name,
+            corners,
+            mesh_index,
+            kind: Self::CAMERA,
+            object_flags: Self::IDENTITY,
+        }
+    }
+
+    /// How many bytes this node's own record occupies in the data section. Both
+    /// records have no parent word, because the fixture writes
+    /// `parent_count == 0` and only a LOD or light record reads one regardless.
+    const fn data_bytes(&self) -> usize {
+        match self.kind {
+            Self::OBJECT3D => Self::OBJECT3D_BYTES,
+            Self::CAMERA => Self::CAMERA_BYTES,
+            _ => panic!("the fixture writes no record for this node kind"),
+        }
+    }
+}
+
+/// A synthetic CS GameZ container holding exactly the nodes `nodes` names.
 ///
 /// Authored bytes: the header words, the 212-byte info slot and the object
 /// records are written from the field offsets the production reader documents,
@@ -461,28 +665,24 @@ fn accept_t427_the_measured_field_and_corner_order_are_named() {
 /// info field** and **which corner is the minimum** — are otherwise only
 /// observable over `$CS_GAME_DIR`, and a CI run would not notice either of them
 /// changing. Here they are observable over authored bytes.
-fn synthetic_world_container(zones: &[(&str, [[f32; 3]; 2], i32)]) -> Vec<u8> {
+fn synthetic_world_container(nodes: &[SyntheticNode<'_>]) -> Vec<u8> {
     /// The signature and version a CS GameZ archive stores.
     const SIGNATURE: u32 = 43_455_010;
     const VERSION: u32 = 42;
     /// Where the fixture's node array starts. Any value past the 40-byte header
     /// works; the reader reads the header's own word rather than assuming one.
     const NODES_OFFSET: u32 = 512;
-    /// `NODE_TYPE_OBJECT3D`.
-    const OBJECT3D: u32 = 5;
-    /// The object record's length, from the reader's constant.
-    const OBJECT3D_BYTES: usize = 144;
     /// The info slot's stride: a 208-byte record plus the 4-byte index word.
     const SLOT: usize = 212;
 
     // The data section starts where the info array ends, so each record's
     // offset is known before any byte is written.
-    let data_offset = NODES_OFFSET as usize + SLOT * zones.len();
-    let mut offsets = Vec::with_capacity(zones.len());
+    let data_offset = NODES_OFFSET as usize + SLOT * nodes.len();
+    let mut offsets = Vec::with_capacity(nodes.len());
     let mut cursor = data_offset;
-    for _ in zones {
+    for node in nodes {
         offsets.push(cursor);
-        cursor += OBJECT3D_BYTES;
+        cursor += node.data_bytes();
     }
 
     let mut bytes = vec![0_u8; cursor];
@@ -504,16 +704,16 @@ fn synthetic_world_container(zones: &[(&str, [[f32; 3]; 2], i32)]) -> Vec<u8> {
         (16, 40),
         (20, 248),
         (24, 256),
-        (28, zones.len() as u32),
+        (28, nodes.len() as u32),
         (32, 0),
         (36, NODES_OFFSET),
     ] {
         word(&mut bytes, field, value);
     }
 
-    for (index, (name, corners, mesh_index)) in zones.iter().enumerate() {
+    for (index, node) in nodes.iter().enumerate() {
         let at = NODES_OFFSET as usize + SLOT * index;
-        let name = name.as_bytes();
+        let name = node.name.as_bytes();
         assert!(
             name.len() < 36,
             "the fixture's names fit their 36-byte field"
@@ -525,9 +725,9 @@ fn synthetic_world_container(zones: &[(&str, [[f32; 3]; 2], i32)]) -> Vec<u8> {
         word(&mut bytes, at + 36, 0x0180_001c);
         word(&mut bytes, at + 44, 1);
         word(&mut bytes, at + 48, 255);
-        word(&mut bytes, at + 52, OBJECT3D);
+        word(&mut bytes, at + 52, node.kind);
         word(&mut bytes, at + 56, offsets[index] as u32);
-        word(&mut bytes, at + 60, *mesh_index as u32);
+        word(&mut bytes, at + 60, node.mesh_index as u32);
         word(&mut bytes, at + 68, 1);
         word(&mut bytes, at + 196, 160);
         word(&mut bytes, at + 208, 0x0200_0000 | index as u32);
@@ -535,19 +735,28 @@ fn synthetic_world_container(zones: &[(&str, [[f32; 3]; 2], i32)]) -> Vec<u8> {
         half(&mut bytes, at + 86, 0);
         // All three candidate boxes: only `unk140` is written, which is the
         // discrimination the retail measurement rests on.
-        for (axis, value) in corners[0].iter().enumerate() {
+        for (axis, value) in node.corners[0].iter().enumerate() {
             float(&mut bytes, at + 140 + 4 * axis, *value);
         }
-        for (axis, value) in corners[1].iter().enumerate() {
+        for (axis, value) in node.corners[1].iter().enumerate() {
             float(&mut bytes, at + 140 + 12 + 4 * axis, *value);
         }
-        // The object record: `OBJECT3D_FLAGS_IDENTITY`, so the reader reports it
-        // as storing no transform, which is what the measured corpus holds for
-        // every zone.
+        // The object record. `OBJECT3D_FLAGS_IDENTITY` with an identity
+        // rotation, scale, matrix and translation, so the reader reports the
+        // record as storing no transform **and** finds nothing to complain
+        // about — which is what the measured corpus holds for every zone, and
+        // what the survey's identity refusal reads.
         let data = offsets[index];
-        word(&mut bytes, data, 40);
-        for axis in 0..3 {
-            float(&mut bytes, data + 36 + 4 * axis, 1.0);
+        if node.kind == SyntheticNode::OBJECT3D {
+            word(&mut bytes, data, node.object_flags);
+            for axis in 0..3 {
+                float(&mut bytes, data + 36 + 4 * axis, 1.0);
+            }
+            for axis in 0..3 {
+                float(&mut bytes, data + 48 + 12 * axis, 1.0);
+                float(&mut bytes, data + 48 + 4 * axis + 4, 0.0);
+                float(&mut bytes, data + 48 + 4 * axis + 8, 0.0);
+            }
         }
     }
     bytes
@@ -599,11 +808,11 @@ fn accept_t427_the_survey_reads_the_box_out_of_the_field_and_order_it_measured()
     install.write(
         "ZBD/C5/gamez.zbd",
         &synthetic_world_container(&[
-            ("dzpaths", [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]], -1),
-            ("dzpath1", [[-10.0, 4.0, -20.0], [-2.0, 9.5, -1.0]], 949),
-            ("hangar", [[-500.0, 0.0, 0.0], [500.0, 60.0, 0.0]], 12),
-            ("dzpath2", [[0.0, 0.0, 0.0], [40.0, 12.0, 90.0]], 950),
-            ("dzpath1_backup", [[0.0, 0.0, 0.0], [9.0, 9.0, 9.0]], 7),
+            SyntheticNode::object("dzpaths", [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0]], -1),
+            SyntheticNode::object("dzpath1", [[-10.0, 4.0, -20.0], [-2.0, 9.5, -1.0]], 949),
+            SyntheticNode::object("hangar", [[-500.0, 0.0, 0.0], [500.0, 60.0, 0.0]], 12),
+            SyntheticNode::object("dzpath2", [[0.0, 0.0, 0.0], [40.0, 12.0, 90.0]], 950),
+            SyntheticNode::object("dzpath1_backup", [[0.0, 0.0, 0.0], [9.0, 9.0, 9.0]], 7),
         ]),
     );
 
@@ -740,7 +949,11 @@ fn accept_t427_every_survey_refusal_names_the_container_it_could_not_measure() {
     let inverted = TempInstallation::new("inverted");
     inverted.write(
         "ZBD/C2/gamez.zbd",
-        &synthetic_world_container(&[("dzpath1", [[10.0, 0.0, 0.0], [2.0, 5.0, 5.0]], 949)]),
+        &synthetic_world_container(&[SyntheticNode::object(
+            "dzpath1",
+            [[10.0, 0.0, 0.0], [2.0, 5.0, 5.0]],
+            949,
+        )]),
     );
     match survey_retail_trigger_volumes(&inverted.root) {
         Err(TriggerVolumeSurveyError::Volume {
@@ -765,7 +978,7 @@ fn accept_t427_every_survey_refusal_names_the_container_it_could_not_measure() {
     let empty = TempInstallation::new("empty");
     empty.write(
         "ZBD/C3/gamez.zbd",
-        &synthetic_world_container(&[("dzpath1", [[0.0; 3], [0.0; 3]], 949)]),
+        &synthetic_world_container(&[SyntheticNode::object("dzpath1", [[0.0; 3], [0.0; 3]], 949)]),
     );
     match survey_retail_trigger_volumes(&empty.root) {
         Err(TriggerVolumeSurveyError::NoBox { world, zone }) => {
@@ -781,7 +994,11 @@ fn accept_t427_every_survey_refusal_names_the_container_it_could_not_measure() {
     let plane = TempInstallation::new("plane");
     plane.write(
         "ZBD/C4/gamez.zbd",
-        &synthetic_world_container(&[("dzpath1", [[0.0, 500.0, 0.0], [40.0, 500.0, 0.0]], 949)]),
+        &synthetic_world_container(&[SyntheticNode::object(
+            "dzpath1",
+            [[0.0, 500.0, 0.0], [40.0, 500.0, 0.0]],
+            949,
+        )]),
     );
     let flat = survey_retail_trigger_volumes(&plane.root)
         .unwrap_or_else(|error| panic!("a flat zone box is a volume, not an absence: {error}"));
@@ -796,6 +1013,52 @@ fn accept_t427_every_survey_refusal_names_the_container_it_could_not_measure() {
         1,
         "the y axis, which is the degenerate one"
     );
+
+    // A numbered zone that is **not an object record**. Only an object record
+    // stores a transform, so only its info record is the one this stage's box
+    // field belongs to; a zone of any other kind is refused by name. A reader
+    // that skipped it instead would report a shorter list as if it were the
+    // measurement, which is the one outcome this survey exists to avoid.
+    let camera = TempInstallation::new("camera");
+    camera.write(
+        "ZBD/C5/gamez.zbd",
+        &synthetic_world_container(&[
+            SyntheticNode::object("dzpath1", [[0.0; 3], [64.0, 64.0, 64.0]], 949),
+            SyntheticNode::camera("dzpath2", [[0.0; 3], [64.0, 64.0, 64.0]], 950),
+        ]),
+    );
+    match survey_retail_trigger_volumes(&camera.root) {
+        Err(TriggerVolumeSurveyError::UnexpectedKind { world, zone, kind }) => {
+            assert_eq!(world, "c5", "the world it was measuring");
+            assert_eq!(zone, "dzpath2", "the zone it could not read");
+            assert_eq!(kind, "camera", "and the node kind it found instead");
+        }
+        other => panic!("a numbered zone of another kind must be refused, got {other:?}"),
+    }
+
+    // A numbered zone that stores a **transform**. The measured corpus holds
+    // none — every one of the 80 zones is an identity record — so this is the
+    // invariant being enforced rather than a case the retail corpus trips: a
+    // transformed node's box is in the node's own space, and reporting its
+    // extents per axis would put the thinnest one on the wrong axis. The one-tick
+    // verdict turns on exactly that axis, so the zone is refused rather than
+    // measured wrongly.
+    let rotated = TempInstallation::new("rotated");
+    rotated.write(
+        "ZBD/C5/gamez.zbd",
+        &synthetic_world_container(&[
+            SyntheticNode::object("dzpath1", [[0.0; 3], [64.0, 64.0, 64.0]], 949),
+            SyntheticNode::transformed("dzpath2", [[0.0; 3], [8.0, 64.0, 64.0]], 950),
+        ]),
+    );
+    match survey_retail_trigger_volumes(&rotated.root) {
+        Err(TriggerVolumeSurveyError::TransformedZone { world, zone, flags }) => {
+            assert_eq!(world, "c5", "the world it was measuring");
+            assert_eq!(zone, "dzpath2", "the zone whose box is in its own space");
+            assert_eq!(flags, 32, "`Object3dCsC.flags` as it stored it");
+        }
+        other => panic!("a zone that stores a transform must be refused, got {other:?}"),
+    }
 }
 
 // ------------------------------------------------------------------ retail ---
@@ -819,6 +1082,10 @@ fn retail_root() -> PathBuf {
 /// units and the thickest is about **860**. Every zone's node slot, byte offset,
 /// container key, container digest and installation fingerprint is carried, so
 /// each row is checkable against the bytes.
+///
+/// This test passing is also the assertion that all 80 are `object3d` records
+/// that store **no transform**: the survey refuses a zone of either kind by
+/// name, so a corpus that held one would error instead of measuring.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_t427_retail_every_detection_zone_extent_is_measured_with_its_span() {

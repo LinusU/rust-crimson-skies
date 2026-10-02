@@ -22,8 +22,10 @@
 //! [`DETECTION_ZONE_MEMBER`](cs_content::world::DETECTION_ZONE_MEMBER) which
 //! names their detection zones, and the world containers carry the zones
 //! themselves as nodes called `dzpath1`, `dzpath2`, … under a parent called
-//! `dzpaths`. The node is the *volume*: each one stores an axis-aligned box in
-//! its own info record and binds a mesh index. This module reads exactly that,
+//! `dzpaths`. The node is the *volume*: each one is an `object3d` record that
+//! stores **no transform** — so the box it carries needs no composition — and
+//! stores an axis-aligned box in its own info record, bound to a mesh index.
+//! This module reads exactly that,
 //! through the **production** F11-A node reader
 //! ([`cs_formats::gamez::read_gamez_nodes`]) and the **production** F02-B
 //! discovery pass, and hands
@@ -98,6 +100,36 @@ pub enum TriggerVolumeSurveyError {
         /// The refusal itself.
         reason: TriggerVolumeError,
     },
+    /// A numbered zone is a node whose `node_type` tag is not `object3d`, so its
+    /// info record is not the one this stage's box field belongs to. Reported
+    /// rather than skipped: a zone this survey cannot read is a gap, and a
+    /// measurement that silently omits one is exactly what the rest of this
+    /// module refuses to be.
+    UnexpectedKind {
+        /// The world the zone is in.
+        world: String,
+        /// The zone's name.
+        zone: String,
+        /// The node type tag the record stores, as the production reader labels
+        /// it.
+        kind: &'static str,
+    },
+    /// A numbered zone stores a **transform** (`Object3dCsC.flags` is not
+    /// `OBJECT3D_FLAGS_IDENTITY`), so its box is in the node's own space and the
+    /// axes the survey reports the extents on are the node's, not the world's.
+    ///
+    /// Every measured zone is an identity record, so this refusal is what makes
+    /// "the box needs no composition" true **by construction** rather than by
+    /// observation: a rotated zone is refused by name instead of being reported
+    /// with an extent on the wrong axis.
+    TransformedZone {
+        /// The world the zone is in.
+        world: String,
+        /// The zone's name.
+        zone: String,
+        /// The stored `Object3dCsC.flags` word.
+        flags: u32,
+    },
     /// A numbered zone stored no box at all: every axis of the measured field is
     /// zero. Distinct from [`Self::Volume`] because it is not a malformed box —
     /// it is an **absent** one, which is a different thing to report to a
@@ -136,6 +168,20 @@ impl fmt::Display for TriggerVolumeSurveyError {
                     "world {world} zone {zone} stored an unusable box: {reason}"
                 )
             }
+            Self::UnexpectedKind { world, zone, kind } => {
+                write!(
+                    f,
+                    "world {world} zone {zone} is a {kind} node, not the object record this \\
+                     survey reads a detection zone's box from"
+                )
+            }
+            Self::TransformedZone { world, zone, flags } => {
+                write!(
+                    f,
+                    "world {world} zone {zone} stores a transform (object flags {flags}), so \\
+                     its box is in the node's own space rather than the world's"
+                )
+            }
             Self::NoBox { world, zone } => {
                 write!(f, "world {world} zone {zone} stores no box at all")
             }
@@ -154,7 +200,7 @@ impl std::error::Error for TriggerVolumeSurveyError {}
 /// [`unk140`](cs_formats::gamez::nodes::RawNodeInfo::unk140) and
 /// [`unk164`](cs_formats::gamez::nodes::RawNodeInfo::unk164) — and calls all
 /// three unmeasured. Measured over the owner's installation, exactly one of
-/// them discriminates: across the eight world containers' 56 620 node records,
+/// them discriminates: across the eight world containers' 53 303 node records,
 /// `unk140` is non-zero in **30 161** and `unk164` in 15 289 and `unk116` in
 /// 1 330, while across the **80** numbered `dzpath<N>` zones `unk140` is
 /// non-zero in **all 80** and the other two are zero in **all 80**. So the zones
@@ -245,9 +291,17 @@ fn widen(corner: [f32; 3]) -> [f64; 3] {
 /// [`TriggerVolumeSurveyError`] in every case: [`TriggerVolumeSurveyError::Discovery`]
 /// when the installation cannot be inventoried, [`TriggerVolumeSurveyError::Read`]
 /// when a container is missing or unreadable, [`TriggerVolumeSurveyError::Nodes`]
-/// when a node array does not decode, [`TriggerVolumeSurveyError::Volume`] when
-/// a zone's stored box is not a box, and
+/// when a node array does not decode, [`TriggerVolumeSurveyError::UnexpectedKind`]
+/// and [`TriggerVolumeSurveyError::TransformedZone`] when a numbered zone is not
+/// the identity object record this stage reads, [`TriggerVolumeSurveyError::Volume`]
+/// when a zone's stored box is not a box, [`TriggerVolumeSurveyError::NoBox`] when
+/// a zone stores no box at all, and
 /// [`TriggerVolumeSurveyError::Refused`] for a survey the content layer refuses.
+///
+/// Every per-zone refusal **aborts** the survey rather than dropping the zone.
+/// That is deliberate and it is the module's one shape: a partial measurement
+/// presented as a measurement is the failure this stage exists to prevent, so a
+/// consumer sees "could not measure" instead of a shorter list.
 pub fn survey_retail_trigger_volumes(
     install_root: &Path,
 ) -> Result<RetailTriggerVolumeSurvey, TriggerVolumeSurveyError> {
@@ -312,15 +366,35 @@ pub fn survey_retail_trigger_volumes(
             if !is_detection_zone_name(&node.name) {
                 continue;
             }
-            let box_field = match &node.kind {
-                // Only an object record stores a transform, and therefore only an
-                // object record's info record is the one whose box this stage
-                // reads. A zone of any other kind is reported as absent rather
-                // than read through a record it does not have.
-                NodeKind::Object3d(_) => ZONE_BOX_FIELD.read(node),
-                _ => continue,
+            let NodeKind::Object3d(object) = &node.kind else {
+                // Only an object record's info record is the one whose box this
+                // stage reads. A numbered zone of any other kind is **refused by
+                // name**, not skipped: the corpus holds none, so a silent `continue`
+                // would hide the one that arrived and report a shorter list as if
+                // it were the measurement.
+                return Err(TriggerVolumeSurveyError::UnexpectedKind {
+                    world: world.key().to_owned(),
+                    zone: node.name.clone(),
+                    kind: node.kind.label(),
+                });
             };
-            let [first, second] = box_field;
+            if !object.stores_identity() {
+                // The box is read in the node's own axes, and the whole one-tick
+                // comparison turns on which axis is thinnest. A node that stores a
+                // transform would need that box composed into world space first,
+                // and nothing here measures what `unk140` is relative to — so a
+                // transformed zone is refused rather than reported on the wrong
+                // axis. Measured over the owner's installation every one of the 80
+                // numbered zones is an identity record (`Object3dCsC.flags` =
+                // `OBJECT3D_FLAGS_IDENTITY`), so this refusal is the invariant
+                // being enforced, not a case the retail corpus trips.
+                return Err(TriggerVolumeSurveyError::TransformedZone {
+                    world: world.key().to_owned(),
+                    zone: node.name.clone(),
+                    flags: object.flags,
+                });
+            }
+            let [first, second] = ZONE_BOX_FIELD.read(node);
             // The stored record is `f32`; the content layer carries `f64` so a
             // later unit factor multiplies in `f64` and cannot lose the low bits
             // of a stored corner. The widening is exact.
