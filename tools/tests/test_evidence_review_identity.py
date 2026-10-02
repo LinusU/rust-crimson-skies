@@ -11,9 +11,11 @@ back.
 Rally itself is not reachable from an offline check, so the review facts read
 out of the Rally activity log are committed in
 `docs/findings/2026-10-02-m16-a-fu2-rally-review-snapshot.json` (the campaign
-family, found while reviewing M16-A, work item M16-A-FU2 / #479) and
+family, found while reviewing M16-A, work item M16-A-FU2 / #479),
 `docs/findings/2026-10-02-m16-a-fu4-rally-review-snapshot.json` (the rest,
-#483), and this check resolves the reports against both.
+#483) and `docs/findings/2026-10-02-m16-a-fu5-rally-review-snapshot.json` (the
+three reports that named only one of the two agents, M16-A-FU5 / #484), and
+this check resolves the reports against all three.
 
 The reader discovers the harnesses instead of listing them.  A hand-maintained
 list of harness files is a list that rots: a new stage adds a file and a report,
@@ -53,6 +55,7 @@ import unittest
 ROOT = Path(__file__).resolve().parents[2]
 CAMPAIGN_SNAPSHOT = ROOT / 'docs/findings/2026-10-02-m16-a-fu2-rally-review-snapshot.json'
 NON_CAMPAIGN_SNAPSHOT = ROOT / 'docs/findings/2026-10-02-m16-a-fu4-rally-review-snapshot.json'
+FU5_SNAPSHOT = ROOT / 'docs/findings/2026-10-02-m16-a-fu5-rally-review-snapshot.json'
 REPORTS = ROOT / 'docs/findings/evidence'
 # Every evidence report is written by a Rust file, most of them by one under a
 # `tests/` directory.  A few harnesses live in a production `src/` file
@@ -413,7 +416,8 @@ class EvidenceReviewIdentityTests(unittest.TestCase):
     def setUpClass(cls):
         cls.snapshot = read_snapshot(CAMPAIGN_SNAPSHOT)
         cls.non_campaign = read_snapshot(NON_CAMPAIGN_SNAPSHOT)
-        cls.snapshots = [cls.snapshot, cls.non_campaign]
+        cls.single_agent = read_snapshot(FU5_SNAPSHOT)
+        cls.snapshots = [cls.snapshot, cls.non_campaign, cls.single_agent]
         cls.harnesses = read_harnesses()
         cls.reports = read_reports()
 
@@ -422,6 +426,9 @@ class EvidenceReviewIdentityTests(unittest.TestCase):
 
     def non_campaign_by_key(self):
         return {task['task_key']: task for task in self.non_campaign['tasks']}
+
+    def single_agent_by_key(self):
+        return {task['task_key']: task for task in self.single_agent['tasks']}
 
     # -- M16-A-FU2 (#479): the campaign-binding family ------------------------
 
@@ -709,6 +716,75 @@ class EvidenceReviewIdentityTests(unittest.TestCase):
             self.assertEqual(self.harnesses['M01-A']['source'],
                              'crates/cs_app/tests/campaign/evidence.rs',
                              'the reader found nothing in this checkout either')
+
+    # -- M16-A-FU5 (#484): the three reports that named only one agent --------
+
+    def test_accept_m16_a_fu5_snapshot_resolves_every_recorded_stage(self):
+        ids = [task['rally_task'] for task in self.single_agent['tasks']]
+        self.assertEqual(len(set(ids)), len(ids), 'two snapshot entries share a Rally task')
+        self.assertEqual(ids, sorted(ids), 'snapshot tasks are not in Rally task order')
+        self.assertFalse(set(self.single_agent_by_key())
+                         & (set(self.snapshot_by_key()) | set(self.non_campaign_by_key())),
+                         'a stage is recorded in more than one snapshot')
+        for key, task in self.single_agent_by_key().items():
+            self.assertIn(key, self.reports, task)
+            self.assertEqual(self.reports[key]['task_id'], key)
+            self.assertRegex(task['implementer']['claim_started'], r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$')
+            self.assertRegex(task['reviewer']['review_claim_started'], r'^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$')
+            self.assertLessEqual(task['implementer']['claim_started'],
+                                 task['reviewer']['review_claim_started'])
+            self.assertIn(task['reviewer']['merge_event']['type'],
+                          self.single_agent['review_event_types'])
+        self.assertLessEqual(set(self.single_agent_by_key()), set(self.reports))
+
+    def test_accept_m16_a_fu5_the_three_stages_are_no_longer_advisories(self):
+        """Naming both agents must clear the three reports out of the advisory list."""
+        problems, unrecorded = review_problems(self.snapshots, self.harnesses, self.reports)
+        self.assertEqual(problems, [])
+        for key in ('F05-D', 'F07-D', 'F31-D'):
+            self.assertIn(key, self.reports)
+            self.assertNotIn(key, unrecorded, f'{key} is still an advisory')
+            self.assertIn(self.single_agent_by_key()[key]['implementer']['actor'],
+                          self.reports[key]['review']['identity'])
+            self.assertIn(self.single_agent_by_key()[key]['reviewer']['actor'],
+                          self.reports[key]['review']['identity'])
+
+    def test_accept_m16_a_fu5_detects_drift_in_a_single_agent_report(self):
+        """Each of the three must fail if the agent, the context or the independence claim goes."""
+        for key, actor in (('F05-D', 'bunny-1/bunny-1'),
+                           ('F07-D', 'glm-1/deepseek-1'),
+                           ('F31-D', 'deepseek-1/deepseek-1')):
+            renamed = copy_reports(self.reports)
+            renamed[key]['review']['identity'] = renamed[key]['review']['identity'].replace(
+                actor, 'agent-9')
+            self.assertTrue(review_problems(self.snapshots, self.harnesses, renamed)[0], key)
+
+            reverted = copy_reports(self.reports)
+            reverted[key]['review']['identity'] = reverted[key]['review']['identity'].replace(
+                actor, 'none yet')
+            self.assertTrue(any("still says 'none yet'" in problem
+                                for problem in review_problems(self.snapshots, self.harnesses,
+                                                               reverted)[0]), key)
+
+            silent = copy_reports(self.reports)
+            silent[key]['review']['identity'] = re.sub(r'(?i)not independent', 'independent',
+                                                       silent[key]['review']['identity'])
+            self.assertTrue(review_problems(self.snapshots, self.harnesses, silent)[0], key)
+
+            quiet = copy_reports(self.reports)
+            quiet[key]['review']['identity'] = re.sub(r'(?i)context|fresh', 'that review',
+                                                      quiet[key]['review']['identity'])
+            self.assertNotIn('context', quiet[key]['review']['identity'].lower())
+            self.assertNotIn('fresh', quiet[key]['review']['identity'].lower())
+            self.assertTrue(any("whether the reviewer's context was fresh" in problem
+                                for problem in review_problems(self.snapshots, self.harnesses,
+                                                               quiet)[0]), key)
+
+            drifted = copy_reports(self.reports)
+            harnesses = dict(self.harnesses)
+            harnesses[key] = dict(harnesses.get(key, self.harnesses['F02-B']),
+                                  identity='implementer: nobody; reviewer: nobody')
+            self.assertTrue(review_problems(self.snapshots, harnesses, drifted)[0], key)
 
 
 def copy_reports(reports, **extra):
