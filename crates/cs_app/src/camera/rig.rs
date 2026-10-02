@@ -586,9 +586,11 @@ impl CameraRig {
                 CameraModeKind::Cockpit => ViewRig::Cockpit,
                 CameraModeKind::External => ViewRig::Chase,
                 CameraModeKind::Spyglass => ViewRig::Spyglass,
-                // Unreachable: `new` refuses an authored-sequence default and
-                // `set_rig` refuses an undeclared mode. Kept total so a future
-                // mode kind cannot fall through to a wrong answer.
+                // Unreachable: `new` refuses an authored-sequence default,
+                // `set_rig` has no rig that names one, and F21-C resolves an
+                // authored sequence in `camera::session`, which keeps the
+                // player's rigs here. Kept total so a future mode kind cannot
+                // fall through to a wrong answer.
                 CameraModeKind::AuthoredSequence => ViewRig::Chase,
             }
         }
@@ -633,6 +635,37 @@ impl CameraRig {
         self.smoother
     }
 
+    /// Whether `rig` could be selected right now.
+    ///
+    /// The same two rules [`set_rig`](Self::set_rig) enforces, asked without
+    /// mutating: a producer that has to validate a request *before* the moment
+    /// it applies it (F21-C's capture flags) can refuse at the boundary instead
+    /// of discovering the refusal at the frame it was going to draw.
+    #[must_use]
+    pub fn can_select(&self, rig: ViewRig) -> bool {
+        self.selection(rig).is_ok()
+    }
+
+    /// The mode kind `rig` selects, or `None` for the free-look rig.
+    ///
+    /// # Errors
+    ///
+    /// [`RigError::ModeNotDeclared`] when the owner's set declares no mode for
+    /// `rig`, and [`RigError::LookNotAvailable`] when a look is asked for while
+    /// the spyglass is up.
+    fn selection(&self, rig: ViewRig) -> Result<Option<CameraModeKind>, RigError> {
+        if let Some(kind) = rig.mode_kind() {
+            if self.modes.get(kind).is_none() {
+                return Err(RigError::ModeNotDeclared { rig, kind });
+            }
+            return Ok(Some(kind));
+        }
+        if self.mode == CameraModeKind::Spyglass {
+            return Err(RigError::LookNotAvailable { kind: self.mode });
+        }
+        Ok(None)
+    }
+
     /// Selects a rig.
     ///
     /// # Errors
@@ -641,18 +674,13 @@ impl CameraRig {
     /// the requested rig, and [`RigError::LookNotAvailable`] when a look is
     /// asked for while the spyglass is up. Nothing is mutated on error.
     pub fn set_rig(&mut self, rig: ViewRig) -> Result<(), RigError> {
-        if let Some(kind) = rig.mode_kind() {
-            if self.modes.get(kind).is_none() {
-                return Err(RigError::ModeNotDeclared { rig, kind });
+        match self.selection(rig)? {
+            Some(kind) => {
+                self.mode = kind;
+                self.looking = false;
             }
-            self.mode = kind;
-            self.looking = false;
-            return Ok(());
+            None => self.looking = true,
         }
-        if self.mode == CameraModeKind::Spyglass {
-            return Err(RigError::LookNotAvailable { kind: self.mode });
-        }
-        self.looking = true;
         Ok(())
     }
 
@@ -858,7 +886,12 @@ impl CameraRig {
 /// declared metres mean the same thing at every attitude — and the world
 /// position is derived from the pose the frame read, never from a value a
 /// previous frame cached.
-fn oriented_pose(
+///
+/// `pub(crate)` because F21-C's scripted camera places its eye from the *same*
+/// declared placement records, through this one function. Two copies of the
+/// `forward_m` sign convention would be two answers to one question, and the
+/// chase-view sign is exactly the kind of thing that has to be right once.
+pub(crate) fn oriented_pose(
     placement: &LoweredPlacement,
     aircraft: CameraPose,
 ) -> Result<(WorldPosition, Quaternion), RigError> {
