@@ -973,6 +973,69 @@ fn accept_f20_d_a_clip_evaluated_pose_reaches_a_distinct_rendered_frame() {
     );
 }
 
+/// A pose is drawn at its own orientation, not merely *framed* by it: two
+/// poses that put the mesh in the same posed AABB — so the capture computes
+/// the same camera for both — but orient it differently must still return two
+/// different frames.
+///
+/// This is the discriminating check for the pose reaching the render
+/// pipeline. If the pose is written somewhere the transform propagation
+/// overwrites (for example a bare `GlobalTransform` beside the identity
+/// `Transform` that `Mesh3d` requires), both captures draw the mesh at the
+/// origin and come back byte-identical even though the camera that framed
+/// them moved — so identical digests here are a failure, not a coincidence.
+#[test]
+#[ignore = "requires a GPU adapter: the capture renders on the real device"]
+fn accept_f20_d_a_pose_draws_its_orientation_even_when_the_bounds_are_unchanged() {
+    let dir = evidence_dir();
+    std::fs::create_dir_all(&dir).expect("the evidence directory exists");
+    let render = blade_mesh();
+    let unknowns: &[cs_content::mesh::MeshPresentationUnknown] = &[];
+
+    // `blade_mesh` is long on `x` and thin on `z`. A quarter turn either way
+    // about `UP` swaps those extents, so both poses share one posed AABB —
+    // identical centre and radius, hence identical camera framing — while the
+    // blade's thin edge tilts to opposite sides of the view.
+    let quarter_turn = |turn: f64| {
+        PoseSample::try_new(
+            Quaternion::from_axis_angle(UnitVec3::UP, Radians(turn))
+                .expect("a quarter turn about a unit axis"),
+            [0.0, 0.0, 0.0],
+            [1.0, 1.0, 1.0],
+        )
+        .expect("the fixture pose is finite")
+    };
+    let capture = |name: &str, pose: PoseSample| {
+        capture_animated_pose(&PoseCaptureRequest {
+            label: name,
+            render: &render,
+            unknowns,
+            pose,
+            png: &dir.join(format!("{name}.png")),
+        })
+        .unwrap_or_else(|error| panic!("{name} could not be captured: {error}"))
+    };
+
+    let up = capture(
+        "f20d-orientation-up",
+        quarter_turn(std::f64::consts::FRAC_PI_2),
+    );
+    let down = capture(
+        "f20d-orientation-down",
+        quarter_turn(-std::f64::consts::FRAC_PI_2),
+    );
+    assert!(up.drew_geometry() && down.drew_geometry());
+    assert_ne!(
+        up.png_sha256, down.png_sha256,
+        "opposite quarter turns frame the mesh identically but draw it in different \
+         orientations; identical digests mean the pose never reached the drawn frame"
+    );
+    println!(
+        "f20d gpu: adapter={} orientation up={}px down={}px",
+        up.adapter, up.covered_pixels, down.covered_pixels
+    );
+}
+
 /// The retail end of the `gpu` capability: a real mesh read out of the
 /// original installation, driven by a playing clip through the same
 /// production path, draws two measured frames that differ.

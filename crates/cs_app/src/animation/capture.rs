@@ -17,8 +17,8 @@
 //! same measured refusals, and the same production upload adapter
 //! ([`crate::render::bevy_mesh::upload_group_parts`]) — the difference is the
 //! pose. The mesh entity carries the sample's rotation, translation and scale
-//! as one [`GlobalTransform`], the same one-pose-owner convention
-//! [`crate::scene::NodeVisualTransform`] follows, so what the frame shows is
+//! as its own [`Transform`]; Bevy's transform propagation derives the
+//! `GlobalTransform` the renderer draws from it, so what the frame shows is
 //! exactly the pose the evaluator produced.
 //!
 //! Two captures of one mesh at two evaluated poses whose digests differ are
@@ -57,9 +57,8 @@ use bevy::image::{Image, ImageSampler};
 use bevy::math::{Mat4, Quat, Vec3};
 use bevy::mesh::Mesh;
 use bevy::prelude::{
-    App, Assets, Camera, Camera3d, Color, DefaultPlugins, DirectionalLight, GlobalTransform,
-    Handle, Mesh3d, MeshMaterial3d, On, Res, Resource, StandardMaterial, Transform, WindowPlugin,
-    default,
+    App, Assets, Camera, Camera3d, Color, DefaultPlugins, DirectionalLight, Handle, Mesh3d,
+    MeshMaterial3d, On, Res, Resource, StandardMaterial, Transform, WindowPlugin, default,
 };
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk};
@@ -301,19 +300,24 @@ struct FrameFacts {
     covered_pixels: usize,
 }
 
-/// The pose as the render affine: `T · R · S` over the sample's own values.
+/// The pose as a Bevy [`Transform`]: the sample's own translation, rotation
+/// and scale.
 ///
 /// `None` when a component does not survive the f64 → f32 cast — the pose is
 /// then unrepresentable rather than approximated.
-fn pose_matrix(pose: &PoseSample) -> Option<Mat4> {
+fn pose_transform(pose: &PoseSample) -> Option<Transform> {
     let [rx, ry, rz, rw] = pose.rotation().components();
     let t = pose.translation_m();
     let s = pose.scale();
-    let rotation = Quat::from_xyzw(rx as f32, ry as f32, rz as f32, rw as f32);
-    let translation = Vec3::new(t[0] as f32, t[1] as f32, t[2] as f32);
-    let scale = Vec3::new(s[0] as f32, s[1] as f32, s[2] as f32);
-    let matrix = Mat4::from_scale_rotation_translation(scale, rotation, translation);
-    matrix.is_finite().then_some(matrix)
+    let transform = Transform {
+        translation: Vec3::new(t[0] as f32, t[1] as f32, t[2] as f32),
+        rotation: Quat::from_xyzw(rx as f32, ry as f32, rz as f32, rw as f32),
+        scale: Vec3::new(s[0] as f32, s[1] as f32, s[2] as f32),
+    };
+    (transform.translation.is_finite()
+        && transform.rotation.is_finite()
+        && transform.scale.is_finite())
+    .then_some(transform)
 }
 
 /// The mesh's stored AABB pushed through the pose, in posed space.
@@ -375,9 +379,14 @@ pub fn capture_animated_pose(
     request: &PoseCaptureRequest<'_>,
 ) -> Result<PoseCapture, PoseCaptureError> {
     let uploads = upload_all(request)?;
-    let matrix = pose_matrix(&request.pose).ok_or(PoseCaptureError::UnrepresentablePose {
+    let transform = pose_transform(&request.pose).ok_or(PoseCaptureError::UnrepresentablePose {
         label: request.label.to_owned(),
     })?;
+    let matrix = Mat4::from_scale_rotation_translation(
+        transform.scale,
+        transform.rotation,
+        transform.translation,
+    );
     let Some((min, max)) = posed_bounds(request.render, matrix) else {
         return Err(PoseCaptureError::DegenerateBounds {
             label: request.label.to_owned(),
@@ -408,7 +417,7 @@ pub fn capture_animated_pose(
     app.finish();
     app.cleanup();
 
-    let target = spawn_scene(&mut app, &uploads, matrix, (min, max));
+    let target = spawn_scene(&mut app, &uploads, transform, (min, max));
     drive_capture(&mut app, target, request)?;
 
     // Every refusal from here on **removes the PNG the renderer already
@@ -506,7 +515,7 @@ fn upload_counts(uploads: &[Mesh]) -> (usize, usize) {
 fn spawn_scene(
     app: &mut App,
     uploads: &[Mesh],
-    matrix: Mat4,
+    transform: Transform,
     bounds: ([f32; 3], [f32; 3]),
 ) -> CaptureTarget {
     let (min, max) = bounds;
@@ -584,16 +593,14 @@ fn spawn_scene(
             .world_mut()
             .resource_mut::<Assets<Mesh>>()
             .add(mesh.clone());
-        // The pose is carried as the entity's `GlobalTransform` alone — the
-        // one-pose-owner convention `NodeVisualTransform` documents — so no
-        // `Transform` sits beside it for the propagation systems to rebuild
-        // it from, and the pose the evaluator produced is exactly the pose
-        // that is drawn.
-        app.world_mut().spawn((
-            Mesh3d(handle),
-            MeshMaterial3d(surface.clone()),
-            GlobalTransform::from(matrix),
-        ));
+        // The pose is carried as the entity's own `Transform`, which the
+        // render pipeline draws after Bevy's propagation derives its
+        // `GlobalTransform`. Spawning a bare `GlobalTransform` here instead
+        // would leave the `Transform` that `Mesh3d` requires at its identity
+        // default, and propagation would copy that identity over the pose —
+        // the frame would show the mesh at the origin, not at the pose.
+        app.world_mut()
+            .spawn((Mesh3d(handle), MeshMaterial3d(surface.clone()), transform));
     }
 
     CaptureTarget { image: handle }

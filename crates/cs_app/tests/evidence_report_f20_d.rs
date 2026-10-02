@@ -35,8 +35,8 @@
 //!
 //! The `capabilities` are checked, not assumed: `retail` and `gpu` are declared
 //! only because every test listed in [`CAPABILITY_TESTS`] — the two that read
-//! `$CS_GAME_DIR` and the two that need an adapter — is in the recorded log and
-//! passed.
+//! `$CS_GAME_DIR` and the three that need an adapter — is in the recorded log
+//! and passed.
 //!
 //! The report's `unknowns` are *this task's* blockers and are empty because the
 //! acceptance run passed. The product-incompleteness state the survey measured
@@ -57,13 +57,14 @@ use cs_assets::install::{content_fingerprint, discover, fingerprint};
 /// The acceptance tests whose capabilities this report declares.
 ///
 /// `retail` is carried by the first two — they read `$CS_GAME_DIR` — and `gpu`
-/// by the last two — the captures need a real adapter (the retail one needs
-/// both). All four must appear in the recorded log and pass, or the report is
-/// not written with those capabilities.
+/// by the last three — the captures need a real adapter (the retail one needs
+/// both). All must appear in the recorded log and pass, or the report is not
+/// written with those capabilities.
 const CAPABILITY_TESTS: &[&str] = &[
     "accept_f20_d_retail_every_animation_carrier_is_present_validated_and_fingerprinted",
     "accept_f20_d_retail_every_declared_campaign_mission_carries_its_animation",
     "accept_f20_d_a_clip_evaluated_pose_reaches_a_distinct_rendered_frame",
+    "accept_f20_d_a_pose_draws_its_orientation_even_when_the_bounds_are_unchanged",
     "accept_f20_d_retail_geometry_driven_by_a_playing_clip_draws_two_distinct_frames",
 ];
 
@@ -388,23 +389,28 @@ fn capture_artifacts(evidence_dir: &Path) -> Vec<(String, String, String)> {
 fn review_identity() -> String {
     String::from(
         "implementer: devin-1 (Rally claim clm_8z3ovohjd9t0dksr, SWE-2 High, session of \
-         2026-10-02); reviewer: devin-1 (Rally claim clm_14ulxlhho749fhw3, SWE-2 High, session \
-         of 2026-10-02, fresh context — a later session of the same agent label and model, not \
-         a different model). An agent review is not independent original-reference evidence and \
-         no agent review replaces the owner's human approval",
+         2026-10-02); reviewer: deepseek-1 (Rally claim clm_mjrv4ct0axwqor1j, DeepSeek V4.1 \
+         Flash, session of 2026-10-02, fresh context — a different agent and model from the \
+         implementer). The reviewer found and fixed a captured-pose defect (the pose was \
+         applied as a bare `GlobalTransform` that `Mesh3d`'s required default `Transform` and \
+         Bevy's transform propagation overwrote, so the capture drew the mesh at the origin) \
+         and added a discriminating orientation test; an agent review is not independent \
+         original-reference evidence and no agent review replaces the owner's human approval",
     )
 }
 
 fn review_method() -> String {
     String::from(
         "the acceptance suite run locally with the retail capability and a real GPU adapter \
-         (Apple M1 Max, Metal): `cargo test --workspace --locked -- accept_f20_d_ \
+         (Apple M3 Pro, Metal on the reviewer's machine; the implementer's original run was on \
+         an Apple M1 Max, Metal): `cargo test --workspace --locked -- accept_f20_d_ \
          --include-ignored`, every `accept_f20_d_*` test passing — run by the implementer and \
-         re-run by the reviewer on this commit after rebasing onto origin/main; this harness \
-         derives every field from the recorded log, production discovery of $CS_GAME_DIR, and \
-         the production animation-family survey run over that installation \
-         (`cs_app::animation::survey_animation_families`) with the posed GPU captures the suite \
-         wrote on the real adapter (`cs_app::animation::capture_animated_pose`); validated with \
+         re-run by the reviewer on this commit after rebasing onto origin/main and fixing the \
+         capture defect; this harness derives every field from the recorded log, production \
+         discovery of $CS_GAME_DIR, and the production animation-family survey run over that \
+         installation (`cs_app::animation::survey_animation_families`) with the posed GPU \
+         captures the suite wrote on the real adapter \
+         (`cs_app::animation::capture_animated_pose`); validated with \
          tools/validate_evidence.py --require-pass. The animation container payloads remain \
          undecoded — the survey validates signatures, versions, layouts, member pairings and \
          fingerprints only, which is what the findings record",

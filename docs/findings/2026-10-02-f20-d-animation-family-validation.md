@@ -101,9 +101,11 @@ claim the original's skip semantics, which are undecoded with the payloads.
 
 `cs_app::animation::capture::capture_animated_pose` draws a production
 `RenderMesh` at an evaluated `PoseSample` — the value `NodeAnimatedPose`
-carries, applied as the entity's `GlobalTransform` per the one-pose-owner
-convention — on the real renderer (Apple M1 Max, Metal), writing a measured
-PNG and refusing every non-evidentiary outcome by name
+carries, applied as the entity's own `Transform` (Bevy's transform propagation
+derives the `GlobalTransform` the renderer draws) — on the real renderer
+(Apple M3 Pro, Metal on the reviewer's re-run; the implementer's original run
+was an Apple M1 Max), writing a measured PNG and refusing every
+non-evidentiary outcome by name
 (`UnrepresentablePose`, `DegenerateBounds`, `EmptyMesh`, `NoAdapter`,
 `NoScreenshotCaptured`, `UniformFrame`, `GroupRefused`, `Io`).
 
@@ -111,13 +113,18 @@ PNG and refusing every non-evidentiary outcome by name
   the synthetic blade mesh at the propeller clip's tick-0 and tick-1
   (quarter-turn) poses — two distinct measured frames of the *playing
   instance's own applied pose*.
+- `accept_f20_d_a_pose_draws_its_orientation_even_when_the_bounds_are_unchanged`:
+  two opposite quarter turns about `UP` that share one posed AABB — so the
+  capture frames them identically — of the synthetic blade, which must still
+  draw two different frames. This is the test that fails if the pose does not
+  reach the drawn entity (see the review correction below).
 - `accept_f20_d_retail_geometry_driven_by_a_playing_clip_draws_two_distinct_frames`:
   the first surveyed world group's largest presentable **stored** mesh at the
   door clip's closed and open poses — retail geometry moved by the runtime's
   animation output.
 
-Both digests differ between poses, so the transform track's output is
-visible in the image rather than only in the component. The PNGs and the
+Every pair of digests differs between poses, so the transform track's output
+is visible in the image rather than only in the component. The PNGs and the
 survey census (`animation-families.json`) are the artifacts the evidence
 report references; see `private/evidence/F20-D/` and
 `docs/findings/evidence/F20-D.json`.
@@ -133,7 +140,7 @@ node had never been advanced exposes **no** `NodeAnimatedPose` at all — the
 GPU test's first draft read the pose before any advance and found the
 component absent, which is the designed contract (the evaluator applies
 state on its first advance, at tick 0). That failure is now pinned by the
-tests' structure rather than repeated: both capture tests advance through
+tests' structure rather than repeated: every capture test advances through
 the production path before reading.
 
 Survey contract failures are pinned on synthetic installations: a missing
@@ -141,6 +148,26 @@ carrier is `CarrierBlocker::MissingCarrier`, a wrong signature is
 `DispatchRefused` (`header_mismatch`), an absent paired member is
 `MemberAbsent`, a missing sibling reader is `MissingReader` — and the row is
 never dropped.
+
+## Review correction: the pose now reaches the drawn entity
+
+The review found — and this branch fixes — a defect in
+`capture_animated_pose`: it applied the evaluated pose as a bare
+`GlobalTransform` on the spawned mesh entity. `Mesh3d` requires a `Transform`,
+so spawning it without one auto-inserted the default identity `Transform`, and
+Bevy's transform-propagation pass then overwrote the `GlobalTransform` with
+that identity. The mesh was therefore drawn at the origin, not at the pose;
+the two original GPU tests passed only because the *camera* was framed from
+the posed bounds, so two poses with different bounds still produced different
+frames while the geometry itself never moved.
+
+The fix spawns the entity with the pose as its `Transform` and derives the
+framing matrix from that same transform. The regression is pinned by
+`accept_f20_d_a_pose_draws_its_orientation_even_when_the_bounds_are_unchanged`:
+two poses with an identical posed AABB but opposite orientations draw
+different frames. The test fails against the pre-review code because both old
+captures were byte-identical origin draws — the capture suite was silently
+under-constrained before, and this is the divergence the review added.
 
 ## Mutation sensitivity
 
@@ -152,6 +179,8 @@ never dropped.
   advancing on a repeated stamp would fail `advances()` staying constant.
 - A capture that wrote a PNG for an unrepresentable pose would fail the
   refusal tests' `!png.exists()` assertions.
+- Applying the pose as a bare `GlobalTransform` (the pre-review code) fails
+  the orientation test: both frames collapse to the identity-pose draw.
 
 ## Files
 
@@ -163,8 +192,8 @@ never dropped.
   `PoseCaptureError`.
 - `crates/cs_app/src/animation/mod.rs` (wiring only): the two module
   declarations, the re-exports and the `### F20-D` doc paragraph.
-- `crates/cs_app/tests/accept_f20_d_validation.rs` (**new**): the 14
-  acceptance tests (10 unignored synthetic, 2 `requires CS_GAME_DIR`, 2 GPU).
+- `crates/cs_app/tests/accept_f20_d_validation.rs` (**new**): the 15
+  acceptance tests (10 unignored synthetic, 2 `requires CS_GAME_DIR`, 3 GPU).
 - `crates/cs_app/tests/evidence_report_f20_d.rs` (**new**): the evidence
   harness — see its module doc for the invocation.
 - `docs/findings/evidence/F20-D.json`: the validated report copy.
