@@ -207,8 +207,9 @@
 //! [`physics::collider`], so the clip's half of the verdict now reaches the
 //! simulation and the animation path still writes nothing but its own record.
 //!
-//! [`camera`] is the F21-A camera boundary
-//! (`specs/F21-cameras-cockpit-views-and-spyglass.md`, stage `### F21-A`):
+//! [`camera`] is the F21-A/F21-B camera boundary
+//! (`specs/F21-cameras-cockpit-views-and-spyglass.md`, stages `### F21-A` and
+//! `### F21-B`):
 //! [`camera::lower_projection`], which lowers a declared
 //! `cs_content::cameras::ProjectionPolicy` into the
 //! [`camera::LoweredProjection`] a renderer consumes — normalizing the
@@ -217,10 +218,19 @@
 //! and the framing math that reports the vertical and horizontal field of
 //! view at any aspect and the normalized viewport coordinate of a
 //! world-space point; [`camera::CameraPose`] and [`camera::CameraBasis`],
-//! the read-only copy of the authoritative pose and its derived axes; and
+//! the read-only copy of the authoritative pose and its derived axes;
 //! [`camera::lower_camera_modes`], which lowers a declared
 //! `cs_content::cameras::DeclaredCameraModes` set into the
-//! [`camera::LoweredCameraModes`] a session's camera path consumes.
+//! [`camera::LoweredCameraModes`] a session's camera path consumes, keeping
+//! each mode's placement and its `cs_types::content::Origin` so a cockpit
+//! binding's provenance survives lowering; and stage `### F21-B` itself:
+//! [`camera::CameraRig`], the cockpit, chase, free-look and spyglass rigs that
+//! turn those records into the [`camera::RigFrame`] a renderer draws,
+//! [`camera::PoseSmoother`], whose law is frame-rate independent and which
+//! reseats only on a teleport or an aircraft swap, and the spyglass rules
+//! that drop a destroyed or switched target in the same frame instead of
+//! leaving a stale magnified actor behind. F21-C schedules the rig and wires
+//! script cameras and deterministic capture flags.
 //!
 //! [`input`] is the F22-A/F22-B/F22-C application boundary
 //! (`specs/F22-input-bindings-devices-and-control-ownership.md`):
