@@ -3,17 +3,17 @@
     {
       "kind": "log",
       "path": "cargo-test-selection.log",
-      "sha256": "c50a7d09adfc73b321382bbe98078012eaf46eb39202635e320d4595003be164"
+      "sha256": "f399aa0c619306535fca7f083f65a29fbdeb1e861e122953f543d4c6e9b1e14b"
     },
     {
       "kind": "log",
       "path": "cargo-test-without-data.log",
-      "sha256": "fb92385168397b6a1aee018b6a8ff893d8e60a5cee861d2103a2b2b9160733bd"
+      "sha256": "891fc0c4fa1738693334dcabf92503f17306b5298fd0b9d930b1ea5f073dd6e4"
     },
     {
       "kind": "log",
       "path": "cargo-test.log",
-      "sha256": "3985dae79d19990231fda233ae458f2409d2507dd854b42b1f6596e57c410e99"
+      "sha256": "6398e239be7feeed001826734a92646e4f5f56e5c26a9364ec10a2b1387ee44e"
     },
     {
       "kind": "json",
@@ -85,7 +85,7 @@
       "status": "pass"
     }
   ],
-  "candidate_tree": "b795c5114e580086a25b6aa720a99ed38b3aea4e",
+  "candidate_tree": "36d5723596652df7431a743eaa9b90fc23ac92ce",
   "capabilities": [
     "retail",
     "synthetic"
@@ -104,7 +104,7 @@
     "cwd": "/Users/linus/coding/rust-crimson-skies/bunny-alpha-2",
     "exit_code": 0
   },
-  "created_at": "2026-10-02T04:02:13Z",
+  "created_at": "2026-10-02T04:12:01Z",
   "engine": {
     "avian": "0.7.0",
     "bevy": "0.19.1",

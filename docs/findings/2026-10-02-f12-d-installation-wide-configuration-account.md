@@ -351,12 +351,12 @@ checks; the last two are the report generation and validation):
 | --- | --- |
 | `cargo fmt --all -- --check` | 0 |
 | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
-| `cargo test --workspace --locked` | 0 (2 432 passed, 0 failed, 226 ignored) |
+| `cargo test --workspace --locked` | 0 (2 436 passed, 0 failed, 239 ignored on the rebased candidate tree; 2 432/226 before the rebase brought in the upstream campaign stages) |
 | `cargo test --workspace --locked -- accept_f12_d_accounting_ --include-ignored` | 0 (10 tests, 10 passed, 0 failed — 8 synthetic and 2 retail) |
 | `env -u CS_GAME_DIR cargo test --workspace --locked --no-fail-fast -- accept_f12_d_accounting_ --include-ignored` | 101 — both retail tests fail loudly with `CS_GAME_DIR is not set` |
 | `cs-inspect inventory --cs-path "$CS_GAME_DIR" --out <private>/inventory.json` | 0 |
 | `cs-inspect config-account --cs-path "$CS_GAME_DIR" --out <private>/config-account.json` | 0 |
-| `CS_CANDIDATE_TREE=$(git rev-parse '018f628^{tree}') CS_ACCEPT_EXIT_CODE=0 CS_TEST_LOG_EXIT=0 CS_NODATA_EXIT=101 python3 private/evidence/F12-D-ACCOUNTING/harness.py` | 0 |
+| `CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') CS_ACCEPT_EXIT_CODE=0 CS_TEST_LOG_EXIT=0 CS_NODATA_EXIT=101 python3 private/evidence/F12-D-ACCOUNTING/harness.py` | 0 |
 | `python3 tools/validate_evidence.py private/evidence/F12-D-ACCOUNTING/acceptance.json --artifact-root private/evidence/F12-D-ACCOUNTING` | 0 (`structurally_valid: true`, 5 artifacts) |
 | the same command **with** `--require-pass` | **3** (`Unresolved issues`) — expected: the seven recorded unknowns are the pinned properties, not failed assertions |
 
