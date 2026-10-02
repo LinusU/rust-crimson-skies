@@ -114,7 +114,10 @@ extends this to each mode's magnification and `tracks_target`. This mirrors
 `FovOutOfRange` outside `(0, π)`, `NonPositiveNear`, `ClippingNotOrdered`,
 and `UnexpectedMagnification` when a non-spyglass mode declares a factor
 other than 1. A set refuses a non-`CameraTrack` subject, an empty mode list,
-a duplicated kind and a default that is not declared.
+a duplicated kind and a default that is not declared. (That subject rule was
+the stopgap this stage recorded; #431 replaced it with the airframe /
+launchable owner vocabulary — see
+`docs/findings/2026-10-02-f21-a-catalog-kind-camera-mode-owner-namespace.md`.)
 
 ## Test sensitivity
 
@@ -166,7 +169,7 @@ is named with the stage that resolves it:
 | The original near/far clipping planes | the fixture authors 0.1 m / 10 000 m (cockpit, external) and 1 m / 20 000 m (spyglass) as project design | F21-D |
 | The original spyglass magnification and target-tracking behavior | `Magnification` and `tracks_target` are typed homes; the fixture's 4x is authored | F21-D, then F21-B |
 | Whether the original stretches or letterboxes on non-4:3 aspects | `AspectFraming` models both correct rules; the original's choice is unmeasured | F21-D |
-| Where camera mode records belong in the canonical catalog (`ContentKind` has no camera-*mode* namespace; only `CameraTrack` exists) | F21-A used the `CameraTrack` namespace for the subject and filed the gap rather than inventing a kind | #431 `F21-A-CATALOG-KIND`; owner decision on the canonical `IDENTITY-CONTENT` catalog contract |
+| Where camera mode records belong in the canonical catalog (`ContentKind` has no camera-*mode* namespace; only `CameraTrack` exists) | F21-A used the `CameraTrack` namespace for the subject and filed the gap rather than inventing a kind | **resolved** by #431 `F21-A-CATALOG-KIND`: a mode set is a subordinate record owned by an `Airframe` or by a launchable kind, not a new namespace and not `camera_track` — see `docs/findings/2026-10-02-f21-a-catalog-kind-camera-mode-owner-namespace.md` |
 
 ## What is not claimed
 

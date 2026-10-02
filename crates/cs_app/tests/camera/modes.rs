@@ -9,10 +9,10 @@ use cs_app::camera::{
     CameraLowerError, ProjectionLowerError, lower_camera_mode, lower_camera_modes,
 };
 use cs_content::cameras::{
-    AspectFraming, AspectRatio, CameraModeKind, FovAxis, Magnification, ProjectionPolicy,
-    declared_synthetic_camera_modes,
+    AspectFraming, AspectRatio, CameraModeKind, DeclaredCameraModes, FovAxis, Magnification,
+    ProjectionPolicy, declared_synthetic_camera_modes,
 };
-use cs_types::content::Resolved;
+use cs_types::content::{ContentId, ContentKind, Provenance, Resolved};
 use cs_types::space::{Meters, Radians};
 
 use crate::common::{assert_close, claim, known};
@@ -120,4 +120,47 @@ fn accept_f21_a_unknown_mode_fields_refuse_to_lower() {
             }
         ))
     );
+}
+
+/// Task #431 (`F21-A-CATALOG-KIND`): the decided owner namespace reaches the
+/// runtime unchanged. A mode set is a subordinate record of the aircraft a
+/// session flies or of the launchable content it starts from, and
+/// `lower_camera_modes` — which never inspects the owner's kind — lowers a
+/// set declared for every one of those owner kinds. The lowering boundary
+/// must not depend on *which* element owns the views, only on the modes
+/// themselves.
+#[test]
+fn accept_f21_a_catalog_kind_a_mode_set_lowers_for_every_owner_kind() {
+    let fixture = declared_synthetic_camera_modes();
+
+    for kind in [
+        ContentKind::Airframe,
+        ContentKind::Mission,
+        ContentKind::IaScenario,
+        ContentKind::MultiplayerScenario,
+    ] {
+        let owner = ContentId::from_source(kind, "synthetic.camera-owner").expect("a valid id");
+        let declared = DeclaredCameraModes::try_new(
+            owner.clone(),
+            fixture.origin().clone(),
+            fixture.default_mode(),
+            fixture.modes().to_vec(),
+            Provenance::designed(claim()),
+        )
+        .expect("an owner kind of the decided vocabulary is accepted");
+
+        let lowered = lower_camera_modes(&declared).expect("the set lowers");
+        assert_eq!(declared.subject(), &owner);
+        assert_eq!(lowered.default_mode(), CameraModeKind::Cockpit);
+        assert_eq!(lowered.len(), 3, "{kind}: every declared mode lowers");
+        assert_eq!(
+            lowered
+                .get(CameraModeKind::Spyglass)
+                .expect("the spyglass lowers")
+                .magnification()
+                .value(),
+            4.0,
+            "{kind}: the owner's kind must not change a mode's declared values"
+        );
+    }
 }

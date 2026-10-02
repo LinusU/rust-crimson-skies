@@ -29,8 +29,37 @@
 //!   *usable* values; a declaration that asks for a stretch is refused at
 //!   the lowering boundary rather than honoured.
 //! * [`DeclaredCameraMode`] and [`DeclaredCameraModes`] — one mode, and one
-//!   subject's set with a declared default. A set names at most one mode of
+//!   owner's set with a declared default. A set names at most one mode of
 //!   each kind and its default must be present.
+//! * [`owns_camera_modes`] — the canonical rule for which catalog kind a mode
+//!   set may be attached to, decided in task #431 (`F21-A-CATALOG-KIND`).
+//!
+//! # The mode set's namespace: a subordinate record, not a catalog kind
+//!
+//! A mode set has **no namespace of its own**. It is a *subordinate* record
+//! addressed inside the catalog element that owns the camera — the aircraft a
+//! session flies, or the launchable content a session starts from — and
+//! [`owns_camera_modes`] is the total rule for those owners. It is deliberately
+//! not a catalog [`ContentId`] of its own and deliberately not stored under
+//! [`ContentKind::CameraTrack`], for two recorded reasons:
+//!
+//! 1. `IDENTITY-CONTENT`'s "Required catalog collections" reserves no
+//!    camera-mode collection, and `ContentKind` is documented as the union of
+//!    that list and spec F14's deliverable list. A new kind would therefore
+//!    claim a namespace the canonical contract does not reserve.
+//! 2. `camera_track` already means "an authored in-engine camera sequence":
+//!    `cs_content::cinematics` names a cinematic's `InEngine` presentation by
+//!    a [`ContentKind::CameraTrack`] id and accepts a camera track as a
+//!    cinematic subject. Storing a player's view set in the same namespace
+//!    would make one id address two unrelated records, and — because
+//!    `cs_content::mods::overrides` classifies `camera_track` as
+//!    [`OverrideEffect::Cosmetic`](crate::mods::OverrideEffect) —
+//!    would let a cosmetic-only mod change the player's camera modes without
+//!    marking a session, save, replay or handshake for gameplay reasons.
+//!
+//! The decision, the evidence behind it and what it deliberately leaves open
+//! are recorded in
+//! `docs/findings/2026-10-02-f21-a-catalog-kind-camera-mode-owner-namespace.md`.
 //!
 //! # Designed vocabulary, not original data
 //!
@@ -509,10 +538,44 @@ impl DeclaredCameraMode {
     }
 }
 
+/// Whether a catalog kind may own a declared camera mode set.
+///
+/// The rule is total over [`ContentKind::ALL`] — there is no fall-through and
+/// no "unknown owner" case — and it is deliberately two roles:
+///
+/// * [`ContentKind::Airframe`]: the aircraft a session flies. It owns the
+///   views it offers, which is where F21 non-negotiable behavior 1 ("cockpit
+///   viewpoint comes from verified model/config bindings") puts the cockpit
+///   view: an aircraft with no verified cockpit binding declares no `cockpit`
+///   mode at all.
+/// * every kind [`ContentKind::is_launchable`] accepts — a campaign mission,
+///   an instant-action scenario and a multiplayer scenario: the launchable
+///   content a session starts from, which owns the view a session begins in.
+///
+/// The launchable half is expressed as [`ContentKind::is_launchable`] rather
+/// than as a restated list, so the owner vocabulary cannot drift from the
+/// launchable baseline the catalog already measures readiness over. Every
+/// other kind is refused, including [`ContentKind::CameraTrack`]: a camera
+/// track is an authored sequence, which a mode of kind
+/// [`CameraModeKind::AuthoredSequence`] will reference (F21-C) — it is never
+/// the subject that owns a view set.
+#[must_use]
+pub const fn owns_camera_modes(kind: ContentKind) -> bool {
+    matches!(
+        kind,
+        ContentKind::Airframe
+            | ContentKind::Mission
+            | ContentKind::IaScenario
+            | ContentKind::MultiplayerScenario
+    )
+}
+
 /// Why a [`DeclaredCameraModes`] set was rejected.
 #[derive(Clone, Debug, PartialEq)]
 pub enum CameraModesError {
-    /// The subject id was not in the camera namespace.
+    /// The subject id is not a kind that may own a mode set, so the set has
+    /// no catalog element to be addressed inside. See
+    /// [`owns_camera_modes`].
     SubjectKindMismatch {
         /// The offending id.
         subject: ContentId,
@@ -534,9 +597,11 @@ pub enum CameraModesError {
 impl fmt::Display for CameraModesError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::SubjectKindMismatch { subject } => {
-                write!(f, "{subject} is not in the camera namespace")
-            }
+            Self::SubjectKindMismatch { subject } => write!(
+                f,
+                "a camera mode set belongs to the airframe a session flies or to the launchable content it starts from, so {} is not an owner",
+                subject
+            ),
             Self::Empty => write!(f, "a camera mode set must declare at least one mode"),
             Self::DuplicateKind { kind } => {
                 write!(f, "the {kind} mode is declared more than once")
@@ -553,12 +618,15 @@ impl fmt::Display for CameraModesError {
 
 impl std::error::Error for CameraModesError {}
 
-/// One subject's declared camera mode set.
+/// One owner's declared camera mode set.
 ///
-/// `subject` is a [`ContentKind::CameraTrack`] id — the canonical catalog's
-/// camera namespace — and `default_mode` names the mode a session starts
-/// in. The default must be present, at most one mode of each kind may be
-/// declared, and every mode must validate.
+/// `subject` is the catalog [`ContentId`] of the element that *owns* the
+/// camera — see [`owns_camera_modes`] for the kinds that may own one and for
+/// why a mode set is subordinate rather than a namespace of its own. The
+/// owner is how the set is addressed: nothing in this record gives the set
+/// an identity of its own. `default_mode` names the mode a session starts
+/// in, and it must be present; at most one mode of each kind may be
+/// declared and every mode must validate.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DeclaredCameraModes {
     subject: ContentId,
@@ -573,9 +641,9 @@ impl DeclaredCameraModes {
     ///
     /// # Errors
     ///
-    /// [`CameraModesError`] for a non-camera subject id, an empty set, a
-    /// duplicated kind, a default that is not a declared mode or an invalid
-    /// mode.
+    /// [`CameraModesError`] for a subject that is not a kind which may own a
+    /// mode set, an empty set, a duplicated kind, a default that is not a
+    /// declared mode or an invalid mode.
     pub fn try_new(
         subject: ContentId,
         origin: Origin,
@@ -583,7 +651,7 @@ impl DeclaredCameraModes {
         modes: Vec<DeclaredCameraMode>,
         provenance: Provenance,
     ) -> Result<Self, CameraModesError> {
-        if subject.kind() != ContentKind::CameraTrack {
+        if !owns_camera_modes(subject.kind()) {
             return Err(CameraModesError::SubjectKindMismatch { subject });
         }
         if modes.is_empty() {
@@ -607,7 +675,7 @@ impl DeclaredCameraModes {
         })
     }
 
-    /// The camera namespace id this set belongs to.
+    /// The owner id this set is addressed inside.
     #[must_use]
     pub fn subject(&self) -> &ContentId {
         &self.subject
@@ -692,6 +760,10 @@ fn validate_projection(projection: &ProjectionPolicy) -> Result<(), CameraModeEr
 
 // ----------------------------------------------------------- fixture ------
 
+/// The synthetic airframe that owns the declared camera modes
+/// (`airframe` kind). It is a design fixture key, not an original plane.
+pub const SYNTHETIC_CAMERA_MODE_OWNER_KEY: &str = "synthetic.camera-plane";
+
 fn claim() -> ClaimId {
     ClaimId::new("f21a.synthetic-camera-modes").expect("valid claim id")
 }
@@ -712,6 +784,12 @@ fn degrees(value: f64) -> Radians {
 /// view list, and it cannot stand in for it. The spyglass carries its own
 /// near/far planes and a 4x magnification to exercise the mode-specific
 /// fields; the cockpit and external views declare [`Magnification::ONE`].
+///
+/// The owner is a synthetic **airframe** (`airframe/synthetic.camera-plane`),
+/// because a view set is what an aircraft offers a session: the cockpit mode
+/// is only available to an aircraft with a verified cockpit binding (F21
+/// non-negotiable behavior 1), and this fixture owns no original plane.
+/// Nothing about the airframe is a claim that such a plane exists.
 #[must_use]
 pub fn declared_synthetic_camera_modes() -> DeclaredCameraModes {
     let cockpit = DeclaredCameraMode::try_new(
@@ -737,8 +815,8 @@ pub fn declared_synthetic_camera_modes() -> DeclaredCameraModes {
     .expect("the synthetic spyglass mode is valid");
 
     DeclaredCameraModes::try_new(
-        ContentId::from_source(ContentKind::CameraTrack, "synthetic.camera-modes")
-            .expect("fixture subject id is valid"),
+        ContentId::from_source(ContentKind::Airframe, SYNTHETIC_CAMERA_MODE_OWNER_KEY)
+            .expect("fixture owner id is valid"),
         Origin::SyntheticFixture,
         CameraModeKind::Cockpit,
         vec![cockpit, external, spyglass],
