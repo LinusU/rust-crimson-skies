@@ -110,6 +110,19 @@ def read_reports(directory=REPORTS):
                            for path in sorted(Path(directory).glob('*.json')))}
 
 
+def states_the_reviewer_context(identity):
+    """Does the identity say whether the reviewer's context was fresh?
+
+    `context` and `fresh` both answer the owner ruling's question — "whether
+    the reviewer's context was fresh" — in the words a report actually uses.
+    Matching one token rather than the other turned a correct report (M16-A-FU1
+    wrote "same agent and model, fresh session") into a failure, which is how a
+    check teaches its readers to distrust it.
+    """
+    said = identity.lower()
+    return 'context' in said or 'fresh' in said
+
+
 def claim_actors(task, role):
     """Every agent that held a claim of `role` on this task, latest first.
 
@@ -160,8 +173,9 @@ def review_problems(snapshot, harnesses, reports):
                     problems.append(f'{where}: `review.identity` still says {placeholder!r} while'
                                     f' Rally records a review claim for {key} by'
                                     f' {task["reviewer"]["actor"]}')
-        if 'context' not in identity.lower():
-            problems.append(f'{where}: `review.identity` says nothing about the reviewer\'s context')
+        if not states_the_reviewer_context(identity):
+            problems.append(f'{where}: `review.identity` says nothing about whether the'
+                            f' reviewer\'s context was fresh')
         if harness['identity'] != identity:
             problems.append(f'crates/cs_app/tests/campaign/evidence.rs: the {key} harness writes a'
                             f' different `review.identity` than {where}, so regenerating the report'
@@ -246,6 +260,28 @@ class EvidenceReviewIdentityTests(unittest.TestCase):
         awarded = copy_reports(self.reports)
         awarded[key]['claim'] = 'checked'
         self.assertTrue(review_problems(self.snapshot, self.harnesses, awarded)[0])
+
+        quiet = copy_reports(self.reports)
+        quiet[key]['review']['identity'] = re.sub(r'(?i)(no |not |none is claimed|was |is )?'
+                                                 r'(a )?(fresh|new) (session|context)|context',
+                                                 'that review', quiet[key]['review']['identity'])
+        self.assertNotIn('context', quiet[key]['review']['identity'].lower())
+        self.assertNotIn('fresh', quiet[key]['review']['identity'].lower())
+        self.assertTrue(any('whether the reviewer\'s context was fresh' in problem
+                            for problem in review_problems(self.snapshot, self.harnesses, quiet)[0]),
+                        quiet[key]['review']['identity'])
+
+    def test_accept_m16_a_fu2_the_context_rule_reads_either_word(self):
+        """"fresh session" answers the ruling; matching one token must not fail a correct report."""
+        for identity, expected in (
+                ('implementer: x/y; reviewer: x/y again, the same instance, not independent',
+                 False),
+                ('implementer: x/y; reviewer: x/y again, fresh context, not independent', True),
+                ('implementer: x/y; reviewer: x/y again, same agent and model, fresh session, '
+                 'not independent', True),
+                ('implementer: x/y; reviewer: y/z, a different instance, no fresh context claimed',
+                 True)):
+            self.assertIs(states_the_reviewer_context(identity), expected, identity)
 
     def test_accept_m16_a_fu2_a_new_stage_is_an_advisory_until_it_gaps(self):
         """A stage the snapshot has not caught up with must not fail, unless it really gaps."""

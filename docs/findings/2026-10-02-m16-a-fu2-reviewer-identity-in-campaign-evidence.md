@@ -168,20 +168,30 @@ lands stages continuously. A test pins both halves of that — a correct unrecor
 stage produces no problem, and the same stage claiming `reviewer: none yet`
 produces one.
 
-M17-A (#306) is the first stage to land with the check already on `main`, and it
-is what the two-level design is for: its report names its implementer and its
-reviewing agent and says in words that the review is not independent, so the
-check reports it as an advisory ("no Rally facts in the snapshot yet") and
-passes. It is deliberately left out of the snapshot, with its `reviewing agent:`
-wording and its bare agent name, rather than rewritten in a task about the
-records that were wrong. Normalizing it later is the same one-entry, one-line
-recipe as the rest.
+M17-A (#306) and M16-A-FU1 (#478) are the two stages that landed with the check
+already on `main`, and they are what the two-level design is for. Both name an
+implementer and a reviewer, both say in words that the review is not
+independent, and both use a bare agent name, so the check reports each as an
+advisory ("no Rally facts in the snapshot yet") and passes. M17-A is
+deliberately left out of the snapshot, with its `reviewing agent:` wording,
+rather than rewritten in a task about the records that were wrong. Normalizing
+either one later is the same one-entry, one-line recipe as the rest.
+
+M16-A-FU1 earned its advisory by exposing a false positive in the check itself.
+It wrote "same agent and model, fresh session", which answers the owner
+ruling's question — whether the reviewer's context was fresh — in the words a
+report actually uses, and the check failed it anyway because it looked for the
+literal token `context`. A check that fails an honest record teaches its readers
+to distrust it, so the rule now accepts `context` or `fresh`, with a test on
+each side of it. Nothing was changed in M16-A-FU1's report: it is task #478's
+file and #478 was still in review when this branch was rebased.
 
 The drift tests mutate a report back to `reviewer: none yet`, rename the
-implementer, delete the "not independent" clause, drift the harness literal and
-award `checked`, and require each mutation to be reported; one more parses the
-harness's Rust string literals out of the source so the reader itself is
-covered.
+implementer, delete the "not independent" clause, strip the statement about the
+reviewer's context, drift the harness literal and award `checked`, and require
+each mutation to be reported; others parse the harness's Rust string literals
+out of the source so the reader itself is covered, pin the pending-review
+template and pin both readings of the context rule.
 
 The check earned its place four times on its first day: M07-A, M19-A, M21-A and
 M24-A all merged during this task while their review had already run and merged
@@ -238,6 +248,12 @@ protected path is touched. The following were wrong and are fixed here:
   during this task actually shipped with (`an independent review is pending`), so
   a stage keeping that sentence but dropping `none yet` would have passed. Added,
   with a test.
+- The completeness rule that an identity must say something about the reviewer's
+  context matched the literal token `context`, and M16-A-FU1 (#478), which
+  landed on `main` during this rebase, writes "fresh session". That is a correct
+  report failing a check, so the rule now accepts either word, with a test on
+  each side of it and a drift assertion that it still fires when the statement
+  is gone.
 
 Judgement calls left as the implementer made them, because a report is the
 author's own account of their own session and rewriting it is a separate act:
