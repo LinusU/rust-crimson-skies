@@ -1103,7 +1103,6 @@ fn unpaired_mode_row(
         id,
     })
 }
-}
 
 /// Inserts one row, naming it if the catalog refuses it.
 fn insert(catalog: &mut Catalog, element: CatalogElement) -> Result<(), BaselineError> {
