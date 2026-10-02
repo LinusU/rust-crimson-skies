@@ -115,6 +115,7 @@ use crate::render::plan::DrawItemKey;
 use crate::render::profile::{
     Presentation, ProfileError, RenderProfile, bevy_tonemapping, msaa_for,
 };
+use crate::render::visibility::{VisibilityReport, row_draw};
 
 /// The generation of one render session.
 ///
@@ -363,6 +364,15 @@ pub struct FrameSync {
     pub withheld: usize,
     /// How far the applied presentation reached.
     pub presentation: PresentationReach,
+    /// What the composed visibility verdict decided for every row the frame
+    /// held, and how many of them were placed because of it.
+    ///
+    /// [`FrameSync::withheld`] is the *batcher*'s report, taken from a damage
+    /// snapshot before this consumer ran; this is the render path's own, taken
+    /// from the records the world holds at the moment of the sync. Both are
+    /// reported because they answer different questions — what the frame
+    /// planned, and what was drawn.
+    pub visibility: VisibilityReport,
 }
 
 /// What a teardown released.
@@ -849,6 +859,21 @@ pub fn sync_frame(
     let mut paint_handles = BTreeMap::<[u8; 32], Handle<Image>>::new();
 
     for (key, digest, batch, upload, paint) in prepared {
+        // The composed visibility verdict decides what is drawn, once per row,
+        // from the records the world holds right now. It is read before the
+        // first entity of this batch is written, so a withheld row leaves
+        // nothing behind: no placement, and no mesh or material added to a
+        // store for a draw that is not drawn.
+        let drawn_rows = drawn_rows(world, draws, batch, &mut report.visibility);
+        if drawn_rows.is_empty() {
+            // Every row of this batch is kept off the screen, so the batch has
+            // no draw at all: it is not spawned, and the entity a previous frame
+            // placed for it is released below with everything else this frame
+            // no longer claims. `previous` is deliberately not touched here —
+            // a released batch must go through the one release path, so the
+            // count in `released` and the live map cannot disagree.
+            continue;
+        }
         let existing = reuse_batch(&mut previous, key, world, &mut report.released);
         let reused = existing.is_some();
         let (entity, mesh) = match existing {
@@ -918,11 +943,11 @@ pub fn sync_frame(
             instances: batch.instances().to_vec(),
         });
         set_material(world, entity, material.clone());
-        // One placed entity per row. The batch key covers the rows, so a reused
-        // entity's placements are the same rows; they are only rebuilt when
-        // their count no longer matches, which catches placements removed behind
-        // this path's back.
-        report.placed += place_rows(world, entity, mesh, material, batch.instances());
+        // One placed entity per row the composed verdict draws. The batch key
+        // covers the rows, so a reused entity's placements are the same rows;
+        // they are only rebuilt when their count no longer matches, which
+        // catches placements removed behind this path's back.
+        report.placed += place_rows(world, entity, mesh, material, &drawn_rows);
         live.insert(key, entity);
     }
 
@@ -934,6 +959,34 @@ pub fn sync_frame(
     world.insert_resource(BatchEntities(live));
     report.presentation = apply_presentation(world, presentation, msaa);
     Ok(report)
+}
+
+/// The rows of `batch` the composed visibility verdict draws, counted.
+///
+/// Each row's decision is the composed verdict of the entity the live scene
+/// owns for that row's part ([`row_draw`]), so LOD, damage and a playing clip
+/// are ranked in exactly one place and this function only obeys it. Every row
+/// the batch holds is counted — including the ones that are placed because no
+/// record exists — so the report of what the renderer drew covers the whole
+/// frame rather than only the interesting rows.
+fn drawn_rows<'a>(
+    world: &World,
+    draws: &[SubmittedDraw<'a>],
+    batch: &'a InstanceBatch,
+    report: &mut VisibilityReport,
+) -> Vec<&'a BatchInstance> {
+    batch
+        .instances()
+        .iter()
+        .filter(|row| {
+            // Every row's submitted draw was resolved against this list above,
+            // so the index the row carries is one this list has.
+            let part = draws[row.item_index()].part;
+            let decision = row_draw(world, part);
+            report.record(decision);
+            decision.drawn()
+        })
+        .collect()
 }
 
 /// The material handle one batch and its placements draw with.
@@ -1065,6 +1118,12 @@ fn release_entity(entity: Entity, world: &mut World, released: &mut usize) {
 /// Puts one placed entity per row under `batch`, and returns how many rows are
 /// now placed.
 ///
+/// `rows` are the rows the composed visibility verdict drew, so a row the
+/// verdict withholds gets no placement — and a placement this call does not
+/// claim again (because the verdict changed between two frames) is despawned
+/// with the others, which is how a node a clip shows again comes back without a
+/// stale draw being left on screen.
+///
 /// Each placement carries the row it came from and a translation of the row's
 /// own `center_m`, so the *n* instances of a batch are *n* draws at *n* places
 /// of one geometry and one material.
@@ -1081,7 +1140,7 @@ fn place_rows(
     batch: Entity,
     mesh: Handle<Mesh>,
     material: BatchMaterial,
-    rows: &[BatchInstance],
+    rows: &[&BatchInstance],
 ) -> usize {
     // The placements this batch already has, by the draw item each one is.
     let mut existing = BTreeMap::new();
@@ -1103,7 +1162,9 @@ fn place_rows(
     for row in rows {
         // Two rows of one batch cannot share a draw-item index, so at most one
         // placement is reused per row.
-        let placement = BatchInstancePlacement { row: row.clone() };
+        let placement = BatchInstancePlacement {
+            row: (*row).clone(),
+        };
         let transform = Transform::from_translation(Vec3::from(row.center_m()));
         let child = match existing.remove(&row.item_index()) {
             Some(child) => {

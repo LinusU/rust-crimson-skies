@@ -26,3 +26,4 @@ mod frame_capture;
 mod golden_scene;
 mod paint;
 mod profiles;
+mod visibility_consumer;

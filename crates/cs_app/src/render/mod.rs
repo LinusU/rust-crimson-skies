@@ -77,6 +77,12 @@
 //!   batch's image, applies the presentation to the camera, light and window
 //!   that own it, releases what the frame no longer claims, and refuses a frame
 //!   whose profile nobody applied so the caller can apply it and retry.
+//! * [`visibility`] is the **draw decision** that consumer makes. A row is
+//!   placed from the composed visibility verdict
+//!   ([`animation::visibility::composed_visibility_verdict`], F20-C.03), which
+//!   is the one place LOD, damage and a playing clip are ranked; the render path
+//!   ranks nothing of its own and reports every row it kept off the screen in
+//!   [`sync::FrameSync::visibility`].
 //!
 //! # Acceptance tests
 //!
@@ -131,3 +137,4 @@ pub mod plan;
 pub mod profile;
 pub mod rgb565;
 pub mod sync;
+pub mod visibility;
