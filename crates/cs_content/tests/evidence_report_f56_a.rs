@@ -33,10 +33,10 @@ use cs_types::asset_id::SourceSpan;
 
 const RETAIL_TESTS: [&str; 2] = [
     "accept_f56_a_retail_the_installation_names_exactly_four_modes_each_with_a_briefing",
-    "accept_f56_a_retail_twenty_one_scenario_slots_with_an_unresolved_mode_binding",
+    "accept_f56_a_retail_every_scenario_slot_binds_to_a_mode_with_evidence",
 ];
 
-const REVIEW_METHOD: &str = "Acceptance suite run locally with the retail capability; the report is derived from the recorded log, production discovery of $CS_GAME_DIR and a second production run of discover_modes/discover_slots recorded in catalog.json. Claim is implemented only: the catalog (4 named modes, 21 slots) is measured, every per-mode rule and the slot-to-mode binding is listed under the limits below and gates F56-B and any fidelity claim. LIMITS OF WHAT WAS MEASURED, each outside F56-A's own scope and kept open in docs/findings/2026-10-02-f56-a-multiplayer-catalog.md: (1) the slot-to-mode binding of all 21 MP slots is unresolved because marker evidence is mixed (task #475); (2) per-mode spawn, respawn, lives, time/score limits, friendly fire, victory/draw, disconnect, late join, human scaling and component limits, and which event each printed briefing point value rewards, are unknown (task #476); (3) the simultaneity, tie and limit-expiry policy in cs_sim::multiplayer::result is engine design, not measured original behavior (task #476); (4) only language 1033 was read and a mode with no string would not be seen (F56-D). `unknowns` is empty because the catalog discovery itself has nothing unresolved; these limits gate F56-B and every fidelity or release claim. Validated with tools/validate_evidence.py --require-pass.";
+const REVIEW_METHOD: &str = "Acceptance suite run locally with the retail capability; the report is derived from the recorded log, production discovery of $CS_GAME_DIR and a second production run of discover_modes/discover_slots recorded in catalog.json. Claim is implemented only: the catalog (4 named modes, 21 slots) is measured and each slot's decoded targets.zrd binds it to a measured mode family; every per-mode rule is listed under the limits below and gates F56-B and any fidelity claim. LIMITS OF WHAT WAS MEASURED, each outside F56-A's own scope and kept open in docs/findings/2026-10-02-f56-a-multiplayer-catalog.md: (1) a slot's binding names a mode family, not one of the four named entries: the two deathmatch variants differ only in team play, and no reader-archive member of a slot states it, so a Deathmatch slot may launch under either deathmatch name (task #475 measured the family; F56-B must decide how the variant is chosen); (2) per-mode spawn, respawn, lives, time/score limits, friendly fire, victory/draw, disconnect, late join, human scaling and component limits, and which event each printed briefing point value rewards, are unknown (task #476); (3) the simultaneity, tie and limit-expiry policy in cs_sim::multiplayer::result is engine design, not measured original behavior (task #476); (4) only language 1033 was read and a mode with no string would not be seen (F56-D). `unknowns` is empty because the catalog discovery itself has nothing unresolved; these limits gate F56-B and every fidelity or release claim. Validated with tools/validate_evidence.py --require-pass.";
 
 #[test]
 #[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_EVIDENCE_REVIEWER, CS_GAME_DIR"]
@@ -119,12 +119,25 @@ fn evidence_report_f56_a_writes_the_acceptance_report() {
         .iter()
         .map(|slot| {
             let markers: Vec<String> = slot.markers.iter().map(|m| m.label().to_owned()).collect();
+            let mode = match slot.mode.clone().known() {
+                Some(mode) => mode.label(),
+                None => "unknown",
+            };
+            let class = slot.mode.provenance().map_or("unknown", |p| p.class.label());
+            let member = slot
+                .mode
+                .provenance()
+                .and_then(|p| p.source.as_ref())
+                .and_then(|span| span.member_key())
+                .unwrap_or("");
             format!(
-                "{{\"id\": {}, \"program_sha256\": {}, \"markers\": {}, \"mode_known\": {}}}",
+                "{{\"id\": {}, \"program_sha256\": {}, \"markers\": {}, \"mode\": {}, \"mode_class\": {}, \"mode_member\": {}}}",
                 jstr(slot.id.as_str()),
                 jstr(&slot.program.member_sha256().expect("hashed").to_hex()),
                 str_array(&markers),
-                slot.mode.is_known()
+                jstr(mode),
+                jstr(class),
+                jstr(member)
             )
         })
         .collect();
