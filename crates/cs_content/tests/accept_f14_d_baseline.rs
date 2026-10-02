@@ -387,6 +387,7 @@ fn accept_f14_d_synthetic_launchable_row_is_never_a_retail_catalog_entry() {
         },
         classified_reader_dirs: Vec::new(),
         unrecognized_program_dirs: Vec::<ProgramDirRecord>::new(),
+        collection_status: Vec::new(),
     });
     assert!(report.contains("\"retail\":false"));
     assert!(report.contains("\"is_fully_ready\":true"));
@@ -673,10 +674,24 @@ fn accept_f14_d_retail_baseline_inventory_is_complete_and_never_synthetic() {
         discovery.manifest.files.len(),
         "every inventoried file of the original installation is a catalog row"
     );
+    // F14-D.2 added the first of the collections this stage leaves open: the
+    // multiplayer modes the installation's string image names. They are not
+    // launchable, so the denominator asserted above is unchanged, but the row
+    // count is not, and this test states the new total instead of filtering
+    // the rows out.
+    let mode_rows = catalog
+        .elements()
+        .filter(|element| element.kind == ContentKind::MultiplayerRules)
+        .count();
+    assert_eq!(
+        mode_rows, 4,
+        "the measured mode-name run of the installation's string image"
+    );
     assert_eq!(
         catalog.len(),
-        discovery.manifest.files.len() + 2 * launchable,
-        "files plus one program row and one launchable row per mission and scenario"
+        discovery.manifest.files.len() + 2 * launchable + mode_rows,
+        "files plus one program row and one launchable row per mission and scenario, plus the \
+         multiplayer rules rows"
     );
 
     // Nothing authored reached the retail inventory, and every row is

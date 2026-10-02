@@ -25,7 +25,15 @@
 //!   launchable and part of the denominator. The world-group readers and the
 //!   top-level reader are classified as not launchable and get no such row; a
 //!   reader directory no rule classifies stays in
-//!   [`Baseline::unrecognized_program_dirs`], named and uncounted.
+//!   [`Baseline::unrecognized_program_dirs`], named and uncounted;
+//! * one [`ContentKind::MultiplayerRules`] row per multiplayer mode the
+//!   installation's string image names (F14-D.2), read by the producing
+//!   stage's own parser ([`crate::multiplayer::discover_modes`]) rather than a
+//!   reader derived here — including a name the parser could not pair with a
+//!   briefing, which stays a row with an explicit unknown instead of being
+//!   excluded from the collection. Those rules are **not** launchable, so they
+//!   add nothing to the denominator; what the producing parser could not answer
+//!   is reported in [`CollectionStatus`] instead of being dropped.
 //!
 //! Every row's [`Origin`] is [`Origin::Installation`] with a checked
 //! [`SourceSpan`] and the installation fingerprint of the bytes that were read,
@@ -47,15 +55,20 @@
 //! [`retail_baseline`] derives nothing twice: the campaign walk is
 //! [`crate::campaign_bindings::campaign_layout`], the same production
 //! derivation the per-mission bindings and the `cs-inspect campaign` report
-//! use, and the file inventory is `cs_assets::install::discover`.
+//! use, the file inventory is `cs_assets::install::discover`, and the
+//! multiplayer rows are F56-A's [`crate::multiplayer::discover_modes`] over
+//! the string rows `cs_content::config::StringCatalog` reads out of
+//! [`MODE_STRING_IMAGE`].
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::fmt::Write as _;
+use std::io;
 use std::path::Path;
 
 use cs_assets::vfs::SessionBuilder;
 use cs_assets::zbd::{ContainerVerdict, audit_containers};
+use cs_formats::LANG_ENGLISH_US;
 use cs_types::asset_id::{AssetKey, ResolveContext, SourceSpan, SourceSpanError};
 use cs_types::content::{
     CatalogElement, ContentId, ContentIdError, ContentKind, Dependency, DependencyKind,
@@ -63,6 +76,9 @@ use cs_types::content::{
 };
 use cs_types::evidence::{ClaimId, ClaimStatus, ContentHash, Fingerprint, FingerprintKind};
 use cs_types::install::InstallFileRecord;
+
+use crate::config::StringCatalog;
+use crate::multiplayer::{ModeEntry, discover_modes};
 
 use super::closure::{Closure, ClosureError, CompatibilityOptions, json_string};
 use super::reader_dirs::{ClassifiedReaderDir, ReaderDirRole, classify};
@@ -82,6 +98,32 @@ const CLAIM_SCENARIO_PROGRAM: &str = "f14.d.1.baseline.scenario_program";
 /// The claim id behind the observation that a mission program's bytes are
 /// the inventoried install file of the same span.
 const CLAIM_INSTALL_FILE: &str = "f14.d.baseline.install_file";
+
+/// The claim id behind the observation that a multiplayer mode's name and
+/// briefing live in the inventoried string image its row points at.
+const CLAIM_MODE_STRINGS: &str = "f14.d.2.baseline.mode_strings";
+
+/// The installation-relative spelling of the string image the multiplayer mode
+/// table is read from.
+///
+/// Measured in the original installation and recorded by stage F56-A
+/// (`docs/findings/2026-10-02-f56-a-multiplayer-catalog.md`): the mode-name
+/// run `7011..=7014` and the briefing blocks from `16600` live in
+/// `strings.dll`'s `RT_STRING` resources, not in the UI image
+/// (`GOSDATA/ASSETS/BINARIES/langui.dll`, which the campaign bindings read).
+/// The spelling is the installation's own and is compared case-insensitively,
+/// so a differently-cased install still resolves.
+pub const MODE_STRING_IMAGE: &str = "strings.dll";
+
+/// The language id the multiplayer mode table is read in.
+///
+/// Every surveyed image records `LANG_ENGLISH_US` (`0x0409`) for its
+/// third-level resource entries (`cs_formats::pe_resources`), and F56-A
+/// measured that this installation carries that language only; another
+/// localization could carry a different run, which is why the language is
+/// passed in rather than searched for. An image without this language yields a
+/// named [`CollectionStatus::diagnostic`] instead of rows.
+pub const MODE_STRING_LANGUAGE: u32 = LANG_ENGLISH_US;
 
 /// Encodes one installation-relative spelling into a `ContentId` key.
 ///
@@ -180,6 +222,17 @@ pub enum BaselineError {
         /// The archive the layout names.
         asset: String,
     },
+    /// An inventoried file could not be read. Installation discovery hashed
+    /// every regular file before this walk, so a read failure here means the
+    /// installation is no longer readable as inventoried: a collection's
+    /// bytes cannot be located at all, which is never a silently empty
+    /// collection.
+    Read {
+        /// The file that could not be read.
+        path: String,
+        /// The error.
+        source: io::Error,
+    },
     /// An installation-relative spelling has no valid id key.
     Key {
         /// The spelling that could not be keyed.
@@ -235,6 +288,7 @@ impl fmt::Display for BaselineError {
                 write!(f, "no content id key for {spelling:?}: {source}")
             }
             Self::Span { path, source } => write!(f, "no source span for {path}: {source}"),
+            Self::Read { path, source } => write!(f, "cannot read {path}: {source}"),
             Self::Row { id, source } => write!(f, "catalog refused the row {id}: {source}"),
             Self::Provenance { claim, reason } => {
                 write!(
@@ -261,6 +315,7 @@ impl std::error::Error for BaselineError {
             Self::Key { source, .. } => Some(source),
             Self::Span { source, .. } => Some(source),
             Self::Row { source, .. } => Some(source),
+            Self::Read { source, .. } => Some(source),
             Self::Closure(error) => Some(error),
             Self::MissingProgram { .. }
             | Self::UninventoriedProgram { .. }
@@ -322,6 +377,42 @@ pub struct Coverage {
     pub unreachable_needing_classification: usize,
 }
 
+/// What one source-derived collection of the inventory holds, and what the
+/// producing stage's parser could not answer about it.
+///
+/// `IDENTITY-CONTENT` requires a catalog collection per content family and
+/// forbids excluding failed entries. A collection whose producing parser
+/// cannot read its source therefore has no row to carry a diagnostic — there
+/// is no identity to attach one to, and inventing an id from a file name would
+/// be exactly the guess rule 4 rejects. This record is where such a gap stays
+/// visible instead: `rows` is zero, `diagnostic` says why, and the report
+/// renders both. A later collection stage fills its own record in the same
+/// shape rather than dropping the previous one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CollectionStatus {
+    /// The collection's content kind.
+    pub kind: ContentKind,
+    /// The installation-relative file whose bytes the rows come from, as the
+    /// collection's stage reads it.
+    pub source: String,
+    /// The language the rows were read in, for a localized table; `None` when
+    /// the source has no language dimension.
+    pub language: Option<u32>,
+    /// How many catalog rows the collection holds.
+    pub rows: usize,
+    /// Entries the producing parser read but could not turn into a row,
+    /// counted under its own stable label (the mode table's
+    /// `name_without_briefing` and `briefing_without_name` are the first).
+    pub gaps: BTreeMap<&'static str, usize>,
+    /// The id whose content ended the producing stage's measured walk, when
+    /// it reports one (the first briefing block outside the mode family).
+    pub boundary_id: Option<u32>,
+    /// Why the collection holds no rows, when it holds none: the source is
+    /// absent from the inventory, or the producing parser refused its bytes.
+    /// `None` when the parser read the source.
+    pub diagnostic: Option<String>,
+}
+
 /// The complete private baseline inventory of one installation.
 #[derive(Clone, Debug)]
 pub struct Baseline {
@@ -331,8 +422,9 @@ pub struct Baseline {
     pub install_sha256: String,
     /// The content fingerprint of the inventoried manifest (lowercase hex).
     pub content_sha256: String,
-    /// The rows: every inventoried file, every campaign mission and every
-    /// mission program archive.
+    /// The rows: every inventoried file, every campaign mission, every
+    /// mission program archive and every row of each source-derived
+    /// collection this stage can produce.
     pub catalog: Catalog,
     /// The declared launchable ids: every campaign mission, then every
     /// instant-action and multiplayer scenario directory
@@ -349,6 +441,8 @@ pub struct Baseline {
     /// Reader-archive directories neither the campaign layout nor the member
     /// evidence classifies. They are named, never counted and never dropped.
     pub unrecognized_program_dirs: Vec<ProgramDirRecord>,
+    /// What each source-derived collection contributed, in collection order.
+    pub collection_status: Vec<CollectionStatus>,
 }
 
 impl Baseline {
@@ -360,20 +454,27 @@ impl Baseline {
 
 /// Builds the complete private baseline inventory of `install_root`.
 ///
-/// The walk reads the installation three ways and nothing else: the F02
+/// The walk reads the installation four ways and nothing else: the F02
 /// inventory (`cs_assets::install::discover`) for every regular file, the
 /// shared campaign layout ([`crate::campaign_bindings::campaign_layout`]) for
-/// the mission directories, and each mission's reader archive for its span and
-/// digest. Rows are inserted in a fixed order and every report array is
-/// rendered from canonical id order, so the same installation yields the same
-/// bytes (spec F14 AC02).
+/// the mission directories, each mission's reader archive for its span and
+/// digest, and the string image F56-A reads the multiplayer mode table from
+/// ([`multiplayer_rules_rows`]). Rows are inserted in a fixed order and every
+/// report array is rendered from canonical id order, so the same installation
+/// yields the same bytes (spec F14 AC02).
 ///
 /// # Errors
 ///
 /// [`BaselineError`] — in particular [`BaselineError::MissingProgram`] when a
 /// declared mission has no reader archive (the denominator is refused, never
-/// shortened), [`BaselineError::Key`] when a spelling has no valid id and
+/// shortened), [`BaselineError::Read`] when an inventoried file cannot be
+/// read, [`BaselineError::Key`] when a spelling has no valid id and
 /// [`BaselineError::Row`] when two rows would collide.
+///
+/// A collection whose producing parser refuses its source is **not** an error
+/// here: it is reported in [`Baseline::collection_status`] with a diagnostic,
+/// because refusing the whole inventory would hide the collections that do
+/// read while a missing row would hide the failure.
 pub fn retail_baseline(install_root: &Path) -> Result<Baseline, BaselineError> {
     let discovery = cs_assets::install::discover(install_root).map_err(BaselineError::Discover)?;
     let manifest = &discovery.manifest;
@@ -549,6 +650,15 @@ pub fn retail_baseline(install_root: &Path) -> Result<Baseline, BaselineError> {
             })?;
     }
 
+    // The source-derived collections that are not launchable: one record each
+    // so an unreadable one is reported instead of vanishing.
+    let mut collection_status = Vec::new();
+    let (rules, rules_status) = multiplayer_rules_rows(install_root, install_hash, &files)?;
+    for element in rules {
+        insert(&mut catalog, element)?;
+    }
+    collection_status.push(rules_status);
+
     let coverage = coverage(&catalog, &roots)?;
 
     Ok(Baseline {
@@ -560,6 +670,179 @@ pub fn retail_baseline(install_root: &Path) -> Result<Baseline, BaselineError> {
         coverage,
         classified_reader_dirs,
         unrecognized_program_dirs,
+        collection_status,
+    })
+}
+
+/// The `multiplayer_rules` rows the installation's string image names, read
+/// by stage F56-A's own parser, plus the record of what that parser could not
+/// answer.
+///
+/// The rows are the [`ModeEntry`] list [`discover_modes`] produces from the
+/// string rows [`StringCatalog`] reads out of [`MODE_STRING_IMAGE`]. Each row
+/// is located by the span of the `RT_STRING` block its name was read from —
+/// a checked range inside the string image — and points at the inventory row
+/// of the image that holds its bytes, so the closure can walk from a mode to
+/// the file it came from. The ids are F56-A's: the mode's *name string id*,
+/// never its position in a walk.
+///
+/// Everything F56-A could not read stays on the row: each rule the mode leaves
+/// unknown becomes an [`UnsupportedReason::Unknown`] carrying F56-A's own claim
+/// id and reason, so the row is a faithful inventory of what is known about
+/// the mode rather than a claim that it is playable. Nothing here is
+/// normalized (the row holds no quantity to convert) and nothing claims a
+/// runtime consumer, so the row is unavailable, exactly like every other row
+/// of this baseline.
+///
+/// # Errors
+///
+/// [`BaselineError::Read`] when the inventoried image cannot be read and
+/// [`BaselineError::Span`] when its span does not validate. A source the
+/// parser refuses yields no rows and a [`CollectionStatus::diagnostic`]
+/// instead, which is a reported gap and not an error.
+fn multiplayer_rules_rows(
+    install_root: &Path,
+    install_hash: ContentHash,
+    files: &BTreeMap<String, &InstallFileRecord>,
+) -> Result<(Vec<CatalogElement>, CollectionStatus), BaselineError> {
+    let mut status = CollectionStatus {
+        kind: ContentKind::MultiplayerRules,
+        source: MODE_STRING_IMAGE.to_owned(),
+        language: Some(MODE_STRING_LANGUAGE),
+        rows: 0,
+        gaps: BTreeMap::new(),
+        boundary_id: None,
+        diagnostic: None,
+    };
+
+    let Some(record) = files.get(&MODE_STRING_IMAGE.to_ascii_lowercase()) else {
+        return Ok(unpopulated(
+            status,
+            format!(
+                "the installation inventories no {MODE_STRING_IMAGE}, so the multiplayer mode \
+                 table has no bytes to read"
+            ),
+        ));
+    };
+    let spelling = record.relative_spelling.as_str();
+    let path = install_root.join(spelling);
+    let bytes = std::fs::read(&path).map_err(|source| BaselineError::Read {
+        path: spelling.to_owned(),
+        source,
+    })?;
+    let span = SourceSpan::new(install_hash, spelling, None, 0, record.size_bytes, None).map_err(
+        |source| BaselineError::Span {
+            path: spelling.to_owned(),
+            source,
+        },
+    )?;
+
+    let mut context = cs_formats::ParseContext::with_defaults(MODE_STRING_IMAGE);
+    let strings = match StringCatalog::read(&mut context, span, &bytes) {
+        Ok(strings) => strings,
+        Err(error) => {
+            return Ok(unpopulated(
+                status,
+                format!(
+                    "the string image {spelling} does not read as the PE resource image the \
+                     multiplayer mode table is read from: {error}"
+                ),
+            ));
+        }
+    };
+    let modes = match discover_modes(strings.rows(), MODE_STRING_LANGUAGE) {
+        Ok(modes) => modes,
+        Err(error) => {
+            return Ok(unpopulated(
+                status,
+                format!(
+                    "the multiplayer mode table of {spelling} (language {MODE_STRING_LANGUAGE}) \
+                     does not read: {error}"
+                ),
+            ));
+        }
+    };
+
+    let file_id = ContentId::from_source(ContentKind::InstallFile, &install_file_key(spelling))
+        .map_err(|source| BaselineError::Key {
+            spelling: spelling.to_owned(),
+            source,
+        })?;
+    let rows: Vec<CatalogElement> = modes
+        .modes
+        .iter()
+        .map(|mode| mode_row(mode, &file_id, record.sha256))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    status.rows = rows.len();
+    status
+        .gaps
+        .insert("name_without_briefing", modes.names_without_briefing.len());
+    status
+        .gaps
+        .insert("briefing_without_name", modes.briefings_without_name.len());
+    status.boundary_id = modes.boundary.as_ref().map(|row| row.id);
+    Ok((rows, status))
+}
+
+/// The empty row set of a collection whose producing parser could not read its
+/// source, carrying the diagnostic that says so.
+///
+/// The collection keeps its record — kind, source and language stay visible —
+/// because a collection that silently held nothing would read like an
+/// installation that has none of that content.
+fn unpopulated(
+    mut status: CollectionStatus,
+    diagnostic: String,
+) -> (Vec<CatalogElement>, CollectionStatus) {
+    status.rows = 0;
+    status.diagnostic = Some(diagnostic);
+    (Vec::new(), status)
+}
+
+/// One multiplayer mode as a catalog row.
+///
+/// The span is the name row's own `RT_STRING` block, so the row names the
+/// bytes it was read from rather than the file as a whole; the fingerprint and
+/// the single dependency both point at the inventory row of the image, which is
+/// what makes the edge walkable from a mode to its file.
+fn mode_row(
+    mode: &ModeEntry,
+    file_id: &ContentId,
+    sha256: ContentHash,
+) -> Result<CatalogElement, BaselineError> {
+    // F56-A recorded one unknown per rule the installation does not state;
+    // each keeps that stage's claim id and reason, so the row says which rule
+    // is unknown instead of only that the mode is unusable.
+    let unsupported_reasons = mode
+        .unknown_rules
+        .iter()
+        .map(|rule| UnsupportedReason::Unknown {
+            claim_id: rule.claim.clone(),
+            reason: rule.reason.clone(),
+        })
+        .collect();
+    Ok(CatalogElement {
+        kind: ContentKind::MultiplayerRules,
+        id: mode.id.clone(),
+        display_name: Some(mode.name.text.clone()),
+        origin: Origin::Installation {
+            source: mode.name.span.clone(),
+        },
+        dependencies: vec![Dependency {
+            target: file_id.clone(),
+            kind: DependencyKind::Static,
+            provenance: observed(CLAIM_MODE_STRINGS, &mode.name.span)?,
+        }],
+        parse_state: cs_types::install::ParseState::Parsed,
+        normalize_state: NormalizeState::NotNormalized,
+        runtime_consumers: Vec::new(),
+        readiness: Readiness::Unavailable,
+        unsupported_reasons,
+        fingerprint: Some(Fingerprint {
+            kind: FingerprintKind::Installation,
+            sha256,
+        }),
     })
 }
 
@@ -893,7 +1176,14 @@ pub fn baseline_report_json(baseline: &Baseline) -> String {
         coverage.unreachable_needing_classification,
     );
     join_map(&coverage.unreachable_by_kind, &mut out);
-    out.push_str("}},\"unrecognized_program_dirs\":[");
+    out.push_str("}},\"collection_status\":[");
+    for (index, status) in baseline.collection_status.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        collection_status_json(status, &mut out);
+    }
+    out.push_str("],\"unrecognized_program_dirs\":[");
     for (index, record) in baseline.unrecognized_program_dirs.iter().enumerate() {
         if index > 0 {
             out.push(',');
@@ -934,6 +1224,40 @@ pub fn baseline_report_json(baseline: &Baseline) -> String {
     }
     out.push_str("]}");
     out
+}
+
+/// Renders one collection record: what it holds and, when it holds nothing,
+/// why.
+///
+/// The `rows` count is rendered beside the catalog's own `collections` map so
+/// the two cannot disagree silently, and `diagnostic` is a JSON string or
+/// `null` — a collection with rows has no diagnostic, and one without rows
+/// always has one.
+fn collection_status_json(status: &CollectionStatus, out: &mut String) {
+    let _ = write!(
+        out,
+        "{{\"kind\":{},\"source\":{},\"language\":{},\"rows\":{},\"gaps\":{{",
+        json_string(status.kind.label()),
+        json_string(&status.source),
+        match status.language {
+            Some(language) => language.to_string(),
+            None => "null".to_owned(),
+        },
+        status.rows,
+    );
+    join_map(&status.gaps, out);
+    let _ = write!(
+        out,
+        "}},\"boundary_id\":{},\"diagnostic\":{}}}",
+        match status.boundary_id {
+            Some(id) => id.to_string(),
+            None => "null".to_owned(),
+        },
+        match &status.diagnostic {
+            Some(diagnostic) => json_string(diagnostic),
+            None => "null".to_owned(),
+        },
+    );
 }
 
 /// Renders one `key":count` map with its keys in canonical order.
@@ -1150,6 +1474,67 @@ mod tests {
             .contains("no content id key"),
             "the refusal names the spelling"
         );
+    }
+
+    /// The mode table is read from the string image stage F56-A measured, and
+    /// a row of that collection joins to the inventory row of the image by
+    /// identity alone: the dependency the closure walks is derivable from the
+    /// spelling, with no second reader in between.
+    #[test]
+    fn accept_f14_d_2_mode_string_image_joins_its_inventory_row() {
+        assert_eq!(MODE_STRING_IMAGE, "strings.dll", "the measured spelling");
+        assert_eq!(
+            MODE_STRING_LANGUAGE,
+            cs_formats::LANG_ENGLISH_US,
+            "the only language the surveyed images record"
+        );
+        let id = Baseline::install_file_id(MODE_STRING_IMAGE).expect("the image is keyable");
+        assert_eq!(id.as_str(), "install_file/strings.dll");
+        assert_eq!(id.key(), install_file_key(MODE_STRING_IMAGE));
+    }
+
+    /// A collection record renders both of its states: rows with no
+    /// diagnostic, and no rows with the diagnostic that says why. A report that
+    /// dropped either half would read like a complete inventory.
+    #[test]
+    fn accept_f14_d_2_collection_status_renders_rows_and_diagnostics() {
+        let populated = CollectionStatus {
+            kind: ContentKind::MultiplayerRules,
+            source: MODE_STRING_IMAGE.to_owned(),
+            language: Some(MODE_STRING_LANGUAGE),
+            rows: 4,
+            gaps: BTreeMap::from([
+                ("briefing_without_name", 0usize),
+                ("name_without_briefing", 0usize),
+            ]),
+            boundary_id: Some(16_680),
+            diagnostic: None,
+        };
+        let mut out = String::new();
+        collection_status_json(&populated, &mut out);
+        assert_eq!(
+            out,
+            "{\"kind\":\"multiplayer_rules\",\"source\":\"strings.dll\",\"language\":1033,\
+             \"rows\":4,\"gaps\":{\"briefing_without_name\":0,\"name_without_briefing\":0},\
+             \"boundary_id\":16680,\"diagnostic\":null}"
+        );
+
+        let unread = CollectionStatus {
+            rows: 0,
+            diagnostic: Some("the installation inventories no strings.dll".to_owned()),
+            ..populated.clone()
+        };
+        let mut out = String::new();
+        collection_status_json(&unread, &mut out);
+        assert!(
+            out.contains("\"rows\":0")
+                && out.contains("\"diagnostic\":\"the installation inventories no strings.dll\""),
+            "{out}"
+        );
+        // Deterministic: the same record renders the same bytes.
+        let mut again = String::new();
+        collection_status_json(&unread, &mut again);
+        assert_eq!(out, again);
     }
 
     /// The published binding identity and this module's derivation agree, so
