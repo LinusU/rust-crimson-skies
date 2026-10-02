@@ -189,14 +189,17 @@ subject id. Reverted; the tree is back to the implementation above.
 ## Commands run (exit codes)
 
 ```text
-cargo fmt --all && cargo test -p cs_app --test camera -- accept_f21_a    → 0 (15 passed)
 cargo fmt --all -- --check                                            → 0
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings → 0
-cargo test --workspace --locked                                       → 0
-cargo test --workspace --locked -- accept_f21_a_ --include-ignored      → 0
+cargo test --workspace --locked                                       → 0 (255 test suites, 0 failed)
+cargo test --workspace --locked -- accept_f21_a_ --include-ignored    → 0 (15 tests, 0 failed)
+cargo test -p cs_app --test camera -- accept_f21_a                    → 0 (15 tests, 0 failed)
 ```
 
-Nothing in this task is `#[ignore]`d: it needs no `CS_GAME_DIR`.
+The selection discovers the 15 `accept_f21_a_*` tests in
+`crates/cs_app/tests/camera/` (13 from F21-A plus the two added here). None
+is `#[ignore]`d: this task needs no `CS_GAME_DIR`, so there is no retail
+evidence to run locally.
 
 ## What is not claimed
 

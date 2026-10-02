@@ -308,20 +308,31 @@ fn accept_f21_a_catalog_kind_mode_set_owner_vocabulary_is_an_airframe_or_launcha
             *kind == ContentKind::Airframe || kind.is_launchable(),
             "{kind}: the launchable half of the vocabulary must stay expressed as is_launchable"
         );
-        assert_eq!(
-            built.is_ok(),
-            OWNERS.contains(kind),
-            "{kind}: a mode set may only be owned by {OWNERS:?}"
-        );
-        if built.is_ok() {
-            assert_eq!(built.expect("an owned set is built").subject(), &subject);
-            accepted.push(*kind);
-        } else {
-            assert_eq!(
-                built,
-                Err(CameraModesError::SubjectKindMismatch { subject }),
-                "{kind}: a refused owner must be refused by name"
-            );
+        let decided_owner = OWNERS.contains(kind);
+        match built {
+            Ok(set) => {
+                assert!(
+                    decided_owner,
+                    "{kind}: an accepted owner must be one of {OWNERS:?}"
+                );
+                assert_eq!(
+                    set.subject(),
+                    &subject,
+                    "{kind}: the set keeps its owner id"
+                );
+                accepted.push(*kind);
+            }
+            Err(error) => {
+                assert!(
+                    !decided_owner,
+                    "{kind}: a decided owner ({OWNERS:?}) must never be refused"
+                );
+                assert_eq!(
+                    error,
+                    CameraModesError::SubjectKindMismatch { subject },
+                    "{kind}: a refused owner must be refused by name"
+                );
+            }
         }
     }
     assert_eq!(
