@@ -110,7 +110,7 @@ Nothing was re-pointed.
 
 Reviewer: **bunny-2/bunny-2**, the same agent instance that implemented #483, so
 per AGENTS.md this review is **not independent** and is not independent
-original-reference evidence. It found four defects and fixed them on this branch;
+original-reference evidence. It found five defects and fixed them on this branch;
 nothing was regenerated and no claim level moved.
 
 - **The reader's ignore list was matched against the absolute path.** `IGNORED`
@@ -128,6 +128,14 @@ nothing was regenerated and no claim level moved.
   harness would stop being cross-checked and nothing would say so. It is now
   keyed by its own offset and reported as a problem, with a test for each way it
   can happen.
+- **A harness could read its neighbour's `claim`.** The task id was taken from
+  everything before the marker and the `claim` from everything after it, so in a
+  file that writes several reports — `crates/cs_app/tests/campaign/evidence.rs`
+  writes seventeen — a harness whose own `claim` line is missing, or whose
+  `claim` sits on the other side of the marker, would be read with the value
+  belonging to a different stage. A harness that had self-awarded `checked`
+  would then pass. Each marker is now read inside the window between it and the
+  next one, and a test writes two harnesses into one file to pin it.
 - **`F10-D`'s identity had no full stop and repeated itself.** The sentence read
   "No agent review replaces the owner's human approval Per the owner directive of
   2026-09-28 … and no agent review replaces the owner's human approval". It now
@@ -186,7 +194,7 @@ moment and the check is not.
 ## The check
 
 `python3 -m unittest discover -s tools/tests -p 'test_evidence_review_identity.py' -v`
-— 14 tests, 20 with the whole `tools/tests`.
+— 15 tests, 21 with the whole `tools/tests`.
 
 **The reader now covers the family instead of one file.** It walks every `*.rs`
 under `crates/` and `tools/` and keeps the files that write a `"review"` object,

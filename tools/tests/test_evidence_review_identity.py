@@ -226,18 +226,24 @@ def read_harness(text):
     A `"review"` marker the reader cannot resolve to a task id and a `claim` is
     a hole, so it is keyed by its own offset and reported by
     `review_problems` instead of being skipped: a harness that is quietly
-    dropped is a harness that silently stops being cross-checked.
+    dropped is a harness that silently stops being cross-checked.  Each marker is
+    read inside the window between it and the next one, so a harness can never
+    borrow the task id or the `claim` of its neighbour in a file that writes
+    several reports.
     """
+    starts = [match.start() for match in re.finditer(re.escape(REVIEW_MARKER), text)]
     harnesses = {}
-    for marker in re.finditer(re.escape(REVIEW_MARKER), text):
-        ids = TASK_ID.findall(text[:marker.start()])
-        claim = CLAIM.search(text, marker.end())
+    for index, start in enumerate(starts):
+        before = starts[index - 1] if index else 0
+        after = starts[index + 1] if index + 1 < len(starts) else len(text)
+        ids = TASK_ID.findall(text[before:start])
+        claim = CLAIM.search(text, start, after)
         if not ids or not claim:
-            harnesses[UNRESOLVED.format(marker.start())] = {
+            harnesses[UNRESOLVED.format(start)] = {
                 'claim': None, 'identity': None, 'shape': 'unknown',
                 'via': 'no task id before the marker' if not ids else 'no claim after the marker'}
             continue
-        harnesses[ids[-1]] = {'claim': claim.group(1), **read_identity(text, marker.end())}
+        harnesses[ids[-1]] = {'claim': claim.group(1), **read_identity(text, start)}
     return harnesses
 
 
@@ -671,6 +677,22 @@ class EvidenceReviewIdentityTests(unittest.TestCase):
                                 for problem in review_problems(self.snapshots, harnesses,
                                                                self.reports)[0]),
                             harnesses)
+
+    def test_accept_m16_a_fu4_each_harness_reads_only_its_own_window(self):
+        """A harness must not borrow the task id or the `claim` of a neighbour in the same file."""
+        second = MINIMAL_HARNESS.replace('X99-A', 'X98-A').replace('implemented', 'checked')
+        self.assertEqual({key: harness['claim']
+                          for key, harness in read_harness(MINIMAL_HARNESS + second).items()},
+                         {'X99-A': 'implemented', 'X98-A': 'checked'})
+        # Drop the first harness's own `claim`: the second one's must not stand
+        # in for it, or a self-awarded `checked` would read as `implemented`.
+        silent = '\n'.join(line for line in MINIMAL_HARNESS.splitlines() if 'claim' not in line)
+        unresolved = read_harness(silent + second)
+        self.assertEqual([harness['claim'] for key, harness in unresolved.items()
+                          if not key.startswith('unresolved review marker')], ['checked'])
+        unresolved_keys = [key for key in unresolved if key.startswith('unresolved review marker')]
+        self.assertEqual(len(unresolved_keys), 1)
+        self.assertEqual(unresolved[unresolved_keys[0]]['via'], 'no claim after the marker')
 
     def test_accept_m16_a_fu4_discovery_ignores_only_paths_inside_the_checkout(self):
         """A checkout that lives under a directory named `private` is still read."""
