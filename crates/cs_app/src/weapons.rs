@@ -753,6 +753,13 @@ impl PartSweepCandidates {
 ///   allegiance vocabulary decides admission and an undeclared pair stays
 ///   `None` (the exact statement `FriendlyFireRule` needs).
 ///
+/// One read serves one tick, while the admission decision belongs to a
+/// `(shooter, target)` *pair*: a caller routing the rounds of several shooters
+/// from this single read should therefore pass a relation it can ignore here and
+/// bind the pair per round, as [`step_weapon_session`] does. A lookup that
+/// cannot see the firing actor would decide one shooter's rounds — and the
+/// player's own — under somebody else's allegiance.
+///
 /// `dt_s` is the tick length the previous centre is reconstructed over. A
 /// part with no pose, a non-finite pose, no reachable airframe velocity, or a
 /// box the shared geometry vocabulary refuses is named in
@@ -1041,6 +1048,12 @@ impl WeaponEffect {
 /// The log is the *only* effect source the step writes, so a consumer that
 /// drains it sees every accepted shot exactly once and can tell an effect that
 /// was emitted from one that was never produced.
+///
+/// It holds the **same records** as [`WeaponTick::effects`] — one
+/// [`WeaponEffect`] per accepted shot, recorded once and reported once. A
+/// consumer plays one view or the other (drain the log for a session-wide
+/// stream, read the per-tick report to stay in step with a tick), never both:
+/// playing both would sound every shot twice.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct WeaponEffectLog {
     effects: Vec<WeaponEffect>,
@@ -1099,8 +1112,12 @@ pub enum WeaponOrder {
     },
     /// Ask the named actor's selected bank to fire on this tick.
     ///
-    /// The intent's id is the once-only key: a duplicate packet is refused by
-    /// the resolver and consumes nothing.
+    /// The intent's id is the once-only key, so a replayed packet consumes
+    /// nothing. Through this step a replay is refused by the *tick* it names
+    /// first — the step only ever resolves `step.at`, so a packet carrying the
+    /// tick it was first sent on is refused as a foreign tick — and by the
+    /// once-only id itself when it names the tick being resolved. Either way it
+    /// fires nothing, spends nothing and emits no effect.
     Fire(FireIntent),
 }
 
@@ -1444,16 +1461,29 @@ impl WeaponSession {
     /// gate through [`WeaponSession::state_mut`]: disabling a mount under the
     /// gun's own [`DamageNodeKey`] is what makes a destroyed wing gun stop
     /// firing.
+    ///
+    /// A closed session holds no live weapon state: `None` after teardown, so a
+    /// consumer cannot read the ammunition of a session that no longer exists
+    /// (see [`WeaponSession::close`]).
     #[must_use]
     pub fn state(&self, shooter: &ActorId) -> Option<&WeaponState> {
+        if self.closed {
+            return None;
+        }
         self.cadence.state(shooter)
     }
 
     /// One actor's mutable live weapon state, if it has registered guns.
     ///
     /// An unregistered actor is `None`, never a panic: a damage event naming an
-    /// actor this session never armed has nothing to disable.
+    /// actor this session never armed has nothing to disable. A closed session
+    /// is `None` for the same reason — nothing may mutate a torn-down session's
+    /// mounts, so a late repair event cannot re-enable a gun whose session is
+    /// gone.
     pub fn state_mut(&mut self, shooter: &ActorId) -> Option<&mut WeaponState> {
+        if self.closed {
+            return None;
+        }
         self.cadence.state_mut(shooter)
     }
 
@@ -1663,11 +1693,14 @@ impl WeaponSession {
     }
 
     /// Ends the session: every live round is released and every mirror is
-    /// despawned, and no further order or step is accepted.
+    /// despawned, and no further order, step or registration is accepted.
     ///
-    /// The cooldown and ammunition tables go with the cadence, so a restart
-    /// begins from freshly registered guns rather than from a half-torn-down
-    /// state — the session-generation discipline `crate::targeting` and
+    /// What survives inside the cadence — the cooldown and ammunition tables of
+    /// the registered actors — becomes unreachable: [`Self::state`] and
+    /// [`Self::state_mut`] answer `None` once the session is closed and
+    /// [`Self::register`] refuses, so a restart must build a *new* session
+    /// rather than re-arm this one, and dropping the session frees the tables.
+    /// That is the session-generation discipline `crate::targeting` and
     /// `crate::scene` follow for their own authorities.
     pub fn close(&mut self, world: &mut World) -> TeardownReport {
         self.closed = true;
@@ -1744,12 +1777,19 @@ pub struct WeaponStep<'a> {
     /// The scene generation live entities carry, which is what makes a
     /// reloaded hierarchy's stale poses identifiable.
     pub generation: SceneGeneration,
-    /// The declared relation of the firing actor to a candidate actor, in the
+    /// The declared relation of a *shooting* actor to a candidate actor, in the
     /// F30-A [`Allegiance`] vocabulary. `None` is an *undeclared* pair, which
     /// is not the same statement as friendly: only
     /// [`FriendlyFireRule::Everyone`] admits it. The session's targeting
     /// authority supplies this; the weapon path never re-derives hostility.
-    pub relation: &'a dyn Fn(ActorId) -> Option<Allegiance>,
+    ///
+    /// It takes **both** actors because one tick routes the rounds of every
+    /// shooter in the session, and a relation belongs to a pair: the same
+    /// aircraft is an ally of one shooter and an enemy of another, so a lookup
+    /// that could not see the shooter would decide a wingman's rounds — and the
+    /// player's own — under somebody else's allegiance. The step binds this per
+    /// round, against the shot's own shooter.
+    pub relation: &'a dyn Fn(ActorId, ActorId) -> Option<Allegiance>,
 }
 
 /// One tick's whole weapon result.
@@ -1774,6 +1814,10 @@ pub struct WeaponTick {
     /// Live mount poses the hierarchy walk could not read.
     pub unreadable_mounts: Vec<UnreadableMount>,
     /// Live part boxes the swept query could not read.
+    ///
+    /// The world read that produces this exists to feed the sweep, so a tick
+    /// with no live round reports nothing here rather than walking the part
+    /// boxes for a query it will not run.
     pub unreadable_parts: Vec<PartSweepRefusal>,
     /// The effects the accepted shots produced.
     pub effects: Vec<WeaponEffect>,
@@ -1902,9 +1946,14 @@ pub fn step_weapon_session(
             tick.retired = rounds.expired.clone();
             if !rounds.segments.is_empty() {
                 // One read of the live part boxes per tick, shared by every
-                // round: the candidates are a property of the world at the end
-                // of the tick, not of one projectile.
-                let parts = part_sweep_candidates(world, step.dt_s, |actor| (step.relation)(actor));
+                // round: the boxes are a property of the world at the end of
+                // the tick, not of one projectile. The read carries no
+                // allegiance — the declared relation belongs to a
+                // (shooter, candidate) pair and this tick routes the rounds of
+                // *every* shooter, so `route_round` binds it per round
+                // against the shot's own shooter instead of baking one
+                // shooter's relations into a shared read.
+                let parts = part_sweep_candidates(world, step.dt_s, |_target| None);
                 tick.unreadable_parts = parts.refused;
                 for segment in &rounds.segments {
                     match route_round(session, damage, segment, &parts.candidates, step) {
@@ -1929,6 +1978,11 @@ pub fn step_weapon_session(
 /// Routes one live round's segment through its gun's declared rules and the
 /// damage authority.
 ///
+/// The declared relation is bound here, against the round's own shooter: the
+/// same candidate box is an ally of one shooter and an enemy of another, so a
+/// relation decided once per tick rather than once per round would filter
+/// somebody's rounds under the wrong shooter's allegiance.
+///
 /// # Errors
 ///
 /// [`RoutingRefusal::UnknownRound`] when the session does not hold the round's
@@ -1947,6 +2001,16 @@ fn route_round(
             projectile: segment.projectile,
         });
     };
+    let candidates: Vec<SweepCandidate> = candidates
+        .iter()
+        .map(|candidate| {
+            SweepCandidate::new(
+                candidate.target,
+                candidate.node.clone(),
+                (step.relation)(record.shot.shooter, candidate.target.actor),
+            )
+        })
+        .collect();
     Ok(RoutedRound {
         projectile: segment.projectile,
         outcome: resolve_swept_damage(
@@ -1955,7 +2019,7 @@ fn route_round(
             damage,
             &record.shot,
             segment,
-            candidates.iter().cloned(),
+            candidates,
             step.at,
         ),
     })
