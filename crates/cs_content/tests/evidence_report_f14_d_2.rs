@@ -250,9 +250,6 @@ fn evidence_report_f14_d_2_writes_the_acceptance_report() {
         artifact(&report_path, "json", &evidence_dir),
     ];
 
-    let review = review_identity();
-    let method = review_method();
-
     let report = format!(
         "{{\n\
          \x20\"schema_version\": 1,\n\
@@ -295,8 +292,8 @@ fn evidence_report_f14_d_2_writes_the_acceptance_report() {
         // artifact, `docs/findings/` and the follow-up tasks instead of being
         // deleted.
         "",
-        jstr(&review),
-        jstr(&method),
+        jstr(&review_identity()),
+        jstr(&review_method()),
     );
 
     let out = evidence_dir.join("acceptance.json");
