@@ -168,26 +168,28 @@ executed alone with `--exact --include-ignored`.
 
 ## Rebase
 
-`origin/main` moved twice while this stage was running: once to `6035707`
-(M07-A) and then to `8bff2a6` (M19-A). Both had touched three of this
-stage's files — `crates/cs_app/tests/campaign/main.rs`,
+`origin/main` moved three times while this stage was running: to `6035707`
+(M07-A), then `8bff2a6` (M19-A), then `9b6d955` (M21-A). Each of those
+touched three of this stage's files —
+`crates/cs_app/tests/campaign/main.rs`,
 `crates/cs_app/tests/campaign/evidence.rs` and
-`missions/bindings/README.md` — so the branch was rebased twice and the full
-check set above was re-run after each, because the owner directive of
+`missions/bindings/README.md` — so the branch was rebased each time and the
+full check set above was re-run afterwards, because the owner directive of
 2026-10-01 only allows the lighter check when the rebased-in commits touch
 none of the branch's files.
 
-Both conflicts were resolved by keeping both sides: main's M07-A and M19-A
-entries and harnesses, and this stage's M18-A ones. In `evidence.rs` the
-union was applied by restoring main's file and re-appending this stage's
-self-contained `M18-A` block, because a textual union of the two nearly
-identical harness bodies would have spliced two functions together. All 13
-evidence harnesses and all 26 harness constants are present after the
-resolution, with no duplicate. The evidence report was regenerated on the
-final rebased tree.
+Every conflict was resolved by keeping both sides: main's M07-A, M19-A and
+M21-A entries and harnesses, and this stage's M18-A ones. In `evidence.rs` a
+textual union of the two nearly identical harness bodies spliced two
+functions together, so that file was instead resolved by keeping main's
+version and re-appending this stage's self-contained `M18-A` block. After
+the last rebase all 14 evidence harnesses, all 28 harness constants and all
+`m*_a` module declarations are present with no duplicate, and the
+`missions/bindings/README.md` bullets for M16, M18, M19 and M21 all stand.
+The evidence report was regenerated on the final rebased tree.
 
 `candidate_tree` in `docs/findings/evidence/M18-A.json` is the tree of the
-commit the acceptance suite actually ran on, `89849b8b`. The only later delta
+commit the acceptance suite actually ran on, `09b83859`. The only later delta
 is this report's own copy under `docs/findings/evidence/` and the `Checks` and
 `Rebase` sections of this file, which record the run; no production code, no
 test and no binding record changed after it.
