@@ -1225,16 +1225,15 @@ fn evidence_report_t444_writes_the_acceptance_report() {
             affected: "every sound member at runtime",
         },
     ];
+    // The schema carries unresolved issues as plain strings, so each one names
+    // its status, its reason and the content it affects in the sentence itself.
     let unknown_json: Vec<String> = unknowns
         .iter()
         .map(|unknown| {
-            format!(
-                "{{\"item\": {}, \"status\": {}, \"why\": {}, \"affected_content\": {}}}",
-                jstr(unknown.item),
-                jstr(unknown.status),
-                jstr(unknown.why),
-                jstr(unknown.affected)
-            )
+            jstr(&format!(
+                "{} [status: {}; why: {}; affected content: {}]",
+                unknown.item, unknown.status, unknown.why, unknown.affected
+            ))
         })
         .collect();
 
