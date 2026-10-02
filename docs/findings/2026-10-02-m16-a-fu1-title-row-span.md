@@ -140,19 +140,22 @@ gain `title_enclosure: None`; M16-A's own suite
 
 ## Review follow-up (2026-10-02)
 
-The rebases onto `main` brought in two bindings that landed after this branch
-was cut: M07-A's and M19-A's. The production fix applies to both, so the
-review re-pinned
+The rebases onto `main` brought in three bindings that landed after this
+branch was cut: M07-A's, M19-A's and M21-A's. The production fix applies to
+all of them, so the review re-pinned
 
 - `missions/bindings/M07.json` — its confirmed row is `92592 + 60` inside
-  block 218, where the old record cited the whole `92088 + 610` block; and
+  block 218, where the old record cited the whole `92088 + 610` block;
 - `missions/bindings/M19.json` — its confirmed row is `95852 + 58` inside
+  block 219, where the old record cited the whole `95304 + 876` block; and
+- `missions/bindings/M21.json` — its confirmed row is `95964 + 52` inside
   block 219, where the old record cited the whole `95304 + 876` block.
 
-Both M07-A's and M19-A's synthetic `authored_binding` literals also gained the
-same `title_enclosure: None` field.
-`accept_m07_a_the_committed_record_is_what_the_installation_derives` and
-`accept_m19_a_the_committed_record_is_what_the_installation_derives` pass with
+M07-A's, M19-A's and M21-A's synthetic `authored_binding` literals also gained
+the same `title_enclosure: None` field.
+`accept_m07_a_the_committed_record_is_what_the_installation_derives`,
+`accept_m19_a_the_committed_record_is_what_the_installation_derives` and
+`accept_m21_a_the_committed_record_is_what_the_installation_derives` pass with
 the re-pinned records, and the M16-A-FU1 evidence report is regenerated on the
 reviewed tree per `docs/contracts/CLI-EVIDENCE.md`.
 
