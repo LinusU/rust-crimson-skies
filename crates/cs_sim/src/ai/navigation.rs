@@ -1372,7 +1372,12 @@ impl Navigator {
         } else {
             0.0
         };
-        let roll = turn_fraction * (self.envelope.max_bank_rad / std::f64::consts::FRAC_PI_2);
+        // A positive yaw step turns the nose left (canonical +Y, positive
+        // heading), which needs a left bank: `FlightInput.roll` is positive
+        // right-wing-down, so the bank that turns left is negative. See
+        // `docs/contracts/FLIGHT-PHYSICS.md` and
+        // `accept_f24_a_control_axes_map_to_their_body_axes`.
+        let roll = -turn_fraction * (self.envelope.max_bank_rad / std::f64::consts::FRAC_PI_2);
         let pitch = (step.climb_mps / self.envelope.max_climb_rate_mps).clamp(-1.0, 1.0);
         let throttle = (step.speed_mps / self.envelope.max_speed_mps).clamp(0.0, 1.0);
         FlightInput::try_new(pitch, roll, 0.0, throttle, false)
@@ -2192,7 +2197,21 @@ pub const SYNTHETIC_ARCH_START_SPEED_MPS: f64 = 40.0;
 /// The designed maneuver envelope of the synthetic arch fixture.
 ///
 /// Chosen so the 40 m turn radius at cruise is small relative to the route's
-/// node spacing, so the fixture is flyable rather than marginal.
+/// node spacing, so the fixture is flyable rather than marginal. The values are
+/// the F31 follower's **designed command contract**, not a model of any
+/// particular airframe: every command the follower emits is bounded by them
+/// (spec non-negotiable behavior 2), and the kinematic `follow_route` probe
+/// flies exactly that bound.
+///
+/// The F24 synthetic airframe (`cs_sim::flight::synthetic_fixed_wing`) is
+/// deliberately **not** this envelope's subject. That airframe is a fidelity
+/// model: its roll channel is a rate command with no bank holding, and it
+/// cannot hold altitude on a zero-pitch command without its cruise trim angle
+/// of attack. So a follower bounded by this envelope flies the *kinematic*
+/// route closure, not the F24 body; making the integrated Avian loop rejoin
+/// laterally needs new follower state (measured bank) or an assisted airframe.
+/// See `docs/findings/2026-10-02-t451-bank-sign-and-envelope-subject.md`
+/// (task #451) for the measured evidence and the filed follow-up, #526.
 #[must_use]
 pub fn synthetic_maneuver_envelope() -> ManeuverEnvelope {
     ManeuverEnvelope {
@@ -2890,5 +2909,63 @@ mod tests {
                 found: SYNTHETIC_PURSUIT_SESSION + 1,
             })
         );
+    }
+
+    /// Task #451: a positive heading step (a target to the left; canonical
+    /// `+Y`, positive heading) must command the bank that turns toward it. A
+    /// left turn needs a left bank, and `FlightInput.roll` is positive
+    /// right-wing-down, so the roll command must be **negative**; a target to
+    /// the right is the mirror. The pre-#451 code used the opposite sign and
+    /// banked away from the target.
+    #[test]
+    fn accept_t451_a_heading_error_commands_the_bank_that_turns_toward_it() {
+        let navigator = Navigator::new(
+            synthetic_maneuver_envelope(),
+            NavigationCadence::designed_default(),
+        )
+        .expect("valid navigator");
+        let route = synthetic_pursuit_route();
+
+        let decide = |position_m: [f64; 3]| {
+            navigator
+                .decide(&NavigationRequest {
+                    tick: Tick(0),
+                    generation: 1,
+                    state: NavState {
+                        position_m,
+                        heading_rad: 0.0, // forward -Z
+                        speed_mps: 40.0,
+                        climb_mps: 0.0,
+                    },
+                    route: &route,
+                    progress: RouteProgress::reached_nodes(1),
+                    frame: ReferenceFrameSample::IDENTITY,
+                    blockers: &[],
+                    dt_s: SYNTHETIC_PURSUIT_DT_S,
+                })
+                .expect("valid request")
+        };
+
+        // Node 1 of the pursuit route is at `[0, 0, -120]`, so an actor at
+        // `+X` has the marker to its left and one at `-X` to its right.
+        let left = decide([40.0, 0.0, 0.0]);
+        let right = decide([-40.0, 0.0, 0.0]);
+
+        let left_yaw = wrap_pi(left.step.heading_rad - 0.0);
+        let right_yaw = wrap_pi(right.step.heading_rad - 0.0);
+        assert!(left_yaw > 0.0, "the left target needs a nose-left step");
+        assert!(right_yaw < 0.0, "the right target needs a nose-right step");
+        assert!(
+            left.command.roll < 0.0,
+            "a nose-left step must command a left bank (negative roll), got {}",
+            left.command.roll
+        );
+        assert!(
+            right.command.roll > 0.0,
+            "a nose-right step must command a right bank (positive roll), got {}",
+            right.command.roll
+        );
+        assert!(left.command.roll.abs() <= 1.0);
+        assert!(right.command.roll.abs() <= 1.0);
     }
 }
