@@ -4327,8 +4327,9 @@ fn accept_t392_an_unknown_node_kind_is_refused_by_its_tag() {
                 assert_eq!(found, tag);
                 assert_eq!(
                     offset,
-                    // The `node_type` word sits at offset 52 of the 212-byte slot:
-                    // the 36-byte name field, then the eleven words before it.
+                    // The `node_type` word sits at offset 52 of the 212-byte
+                    // slot: the 36-byte name field, then `flags`, `unk040`,
+                    // `unk044` and `zone_id`.
                     u64::from(FIXTURE_NODES_OFFSET) + 212 + cs_formats::gamez::NODE_TYPE_OFFSET,
                     "the refusal is anchored at the node_type word it read"
                 );

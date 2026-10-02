@@ -218,7 +218,7 @@ node 1 of `planes.zbd`); and clamping an out-of-range mesh index instead of
 leaving it unknown
 (`a_mesh_index_past_the_catalog_stays_an_explicit_unknown`).
 
-The review added fifteen more, and every one is now killed by a test **CI can
+The review added sixteen more, and every one is now killed by a test **CI can
 run** (the two retail tests are `#[ignore]`d and are not):
 
 | mutation | killed by |
@@ -424,8 +424,9 @@ grid's own reason.
 was covered only by a `#[ignore]`d retail test, which CI never runs, so the one
 judgement call the handover asked reviewers to check was the one thing a
 mutation could remove silently. The world's own children-count check was covered
-by nothing at all. Both are now killed by synthetic tests. Fifteen mutations in
-total are listed above; each is killed by a test CI runs.
+by nothing at all. Both are now killed by synthetic tests. Sixteen mutations were
+added by the review on top of the implementer's seven; every one is killed by a
+test CI runs.
 
 **Not changed, and why.** The `brigturret2 ` refusal, the world containers'
 partial child lists and the un-range-checked `mesh_index` stand: they are facts
