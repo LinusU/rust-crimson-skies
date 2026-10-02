@@ -31,10 +31,11 @@
 //! test log, the environment, production discovery of `$CS_GAME_DIR`, the
 //! production baseline builder's own report over that installation (the
 //! consumer trace), `rustc --version` and `Cargo.lock`. The only texts this
-//! file holds are the [`review_identity`] literal the implementer's run
-//! records (a reviewing agent replaces it with their own through
-//! `CS_EVIDENCE_REVIEW`) and the product-coverage limitations quoted into
-//! `review.method`; everything else is measured.
+//! file holds are the [`review_identity`] literal the committed
+//! `docs/findings/evidence/F14-D.2.json` carries (a reviewing agent replaces
+//! it with their own through `CS_EVIDENCE_REVIEW`) and the
+//! product-coverage limitations quoted into `review.method`; everything else
+//! is measured.
 //!
 //! `unknowns` is `[]` and the report validates with `--require-pass`: the
 //! **task's** acceptance is complete — the `multiplayer_rules` collection is
@@ -327,12 +328,13 @@ fn evidence_report_f14_d_2_writes_the_acceptance_report() {
 
 /// The `review.identity` this harness records.
 ///
-/// The literal below is what the implementer's own run writes, and it is the
-/// first string in this function on purpose: `tools/tests/
-/// test_evidence_review_identity.py` reads a harness's recorded identity out
-/// of exactly this shape (`fn review_identity() -> String`, a literal) and
-/// cross-checks it against the committed report, so the text here and
-/// `docs/findings/evidence/F14-D.2.json` cannot drift apart silently.
+/// The literal below is the text this repository's committed
+/// `docs/findings/evidence/F14-D.2.json` carries, and it is the first string in
+/// this function on purpose: `tools/tests/test_evidence_review_identity.py`
+/// reads a harness's recorded identity out of exactly this shape
+/// (`fn review_identity() -> String`, a literal) and cross-checks it against the
+/// committed report, so the text here and the report cannot drift apart
+/// silently.
 ///
 /// A reviewing agent supplies their own text through `CS_EVIDENCE_REVIEW` and
 /// replaces the literal with it in the same commit, which is how the report
@@ -340,13 +342,17 @@ fn evidence_report_f14_d_2_writes_the_acceptance_report() {
 fn review_identity() -> String {
     let recorded = String::from(
         "implementer: bunny-alpha-1/bunny-alpha-1 (Rally #389, implement claim of \
-         2026-10-02T04:52:17Z). This report is the implementer's own run: it was written \
-         inside that implement claim, before Rally assigned a review claim for #389, so no \
-         reviewing agent has examined it and none is named here. The reviewing agent \
-         regenerates this report on the reviewed and rebased commit with CS_EVIDENCE_REVIEW \
-         set to their own identity and method and replaces the literal below with the same \
-         text. No agent review awards more than `checked`, and no agent review replaces the \
-         owner's human approval",
+         2026-10-02T04:52:17Z); reviewer: bunny-alpha-1/bunny-alpha-1 again (Rally #389, \
+         review claim of 2026-10-02T05:59:37Z), the same agent instance and the same model as \
+         the implementer, so this review is not independent evidence and not original-reference \
+         evidence of any kind. The reviewing session built its context from the branch diff, the \
+         feature sheet, the contracts and the Rally history, not from the implementing session; \
+         it read the changed code against IDENTITY-CONTENT and the task rules, fixed the two \
+         defects recorded in docs/findings/2026-10-02-f14-d-2-multiplayer-rules-collection.md \
+         (an unpaired mode name excluded from the collection, and a parse context labelled with a \
+         constant instead of the installation's own spelling), repeated the implementer's mutation \
+         probes, and regenerated this report on the reviewed and rebased commit. `checked` is the \
+         ceiling for an agent review and no agent review replaces the owner's human approval",
     );
     std::env::var("CS_EVIDENCE_REVIEW").unwrap_or(recorded)
 }
@@ -366,7 +372,11 @@ fn review_method() -> String {
          cs_content::catalog::baseline::retail_baseline + baseline_report_json, the same \
          functions `cs-inspect catalog --cs-path` writes. The mode rows are produced by \
          stage F56-A's own reader (cs_content::multiplayer::discover_modes over \
-         cs_content::config::StringCatalog), not by a reader derived for this task.",
+         cs_content::config::StringCatalog), not by a reader derived for this task. The \
+         reviewing agent repeated the implementer's mutation probes on this branch (removing \
+         the collection call, dropping the unpaired-name rows, removing F56-A's unknowns from \
+         the rows, and clearing the collection diagnostic) and confirmed that each one fails \
+         the acceptance tests named in the finding.",
     );
     recorded
         + &UNKNOWN_LIMITATIONS

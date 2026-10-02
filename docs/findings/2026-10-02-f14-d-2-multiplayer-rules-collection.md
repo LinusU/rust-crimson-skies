@@ -35,6 +35,13 @@ gaps the parser keeps visible, the id that ended its measured walk, and a
 diagnostic when it holds no rows. It renders into the report as
 `"collection_status"`.
 
+A name F56-A could not pair with a briefing gets a row of its own, with the
+same identity rule, the same span source (the name's own `RT_STRING` block) and
+one explicit `UnsupportedReason::Unknown` (claim `f14.d.2.baseline.mode_pairing`)
+saying that no briefing of the family answers it. A collection of a content
+family cannot exclude an entry it failed to complete, and this one did not
+exclude it: nothing was invented, because the name's bytes were read.
+
 ## Measured on this installation
 
 Four rows, ids `mode.name-7011` .. `mode.name-7014`, all
@@ -66,18 +73,33 @@ and digests.
    before this walk, so a file that cannot be read afterwards means the
    installation is no longer readable as inventoried — not a silently empty
    collection.
-4. **A named mode with no briefing is a gap, not a row.** F56-A pairs a name
-   with a briefing by its own comparison key; an unpaired name has no identity
-   this engine may mint, so it is counted in `collection_status.gaps`
-   (`name_without_briefing`, `briefing_without_name`) and the paired rows are
-   still built. A synthetic test drives that state too.
+4. **A named mode with no briefing is a row, not a gap that vanishes.**
+   F56-A pairs a name with a briefing by its own comparison key and keeps the
+   unpaired ones in `names_without_briefing`. Each of those names was *read* —
+   it has a string id, a text and a checked `RT_STRING` block — so its row is
+   built from those bytes under the producing stage's own identity
+   (`cs_content::multiplayer::mode_name_id`) and carries one explicit unknown
+   saying that no briefing of the family answers it. `IDENTITY-CONTENT` states
+   that a collection cannot exclude a failed entry; dropping the row and
+   counting it instead left a named entry of the installation out of the
+   collection, which is what the contract forbids. The **briefing** with no name
+   has no identity at all — F56-A's id is built from a name id — so it can only
+   be counted (`briefing_without_name`), and nothing mints a row for it. This
+   changes nothing on this installation, whose four names all pair; it changes
+   what happens on an installation where one does not. A synthetic test drives
+   that state.
 
 ## Files
 
 - `crates/cs_content/src/catalog/baseline.rs`: `CollectionStatus`,
   `Baseline::collection_status`, `multiplayer_rules_rows`, `mode_row`,
-  `MODE_STRING_IMAGE`, `MODE_STRING_LANGUAGE`, `BaselineError::Read`, the
-  `collection_status` report section and two unit tests.
+  `unpaired_mode_row`, `MODE_STRING_IMAGE`, `MODE_STRING_LANGUAGE`,
+  `BaselineError::Read`, `BaselineError::Identity`, the `collection_status`
+  report section and two unit tests.
+- `crates/cs_content/src/multiplayer.rs`: `mode_name_id`, the identity
+  derivation `discover_modes` already used inline, now named so the inventory
+  of an unpaired name asks the producing stage for the identity instead of
+  writing the formula out a second time.
 - `crates/cs_content/tests/accept_f14_d_2_multiplayer_rules.rs` (new): four
   synthetic tests and one retail test (`accept_f14_d_2_`).
 - `crates/cs_content/tests/accept_f14_d_baseline.rs`: the retail row-count
@@ -112,21 +134,50 @@ No wiring edit was needed: `catalog::baseline` was already public.
 5. **Nothing here is `verified_original`.** The rows are agent observations
    over the installation's bytes with `observed_tool` provenance; the ceiling
    for an agent review is `checked`.
+6. **A briefing with no name has no row and never will.** Its identity would
+   have to come from the block's base id rather than from a name, which is a
+   second identity rule this engine has no measurement for. It stays counted in
+   `collection_status.gaps.briefing_without_name`. Resolving task: F56-B, if a
+   capture shows what the original does with an undescribed briefing block.
 
 ## Reviewer notes
 
-- The committed `docs/findings/evidence/F14-D.2.json` is the implementer's
-  own run: its `review.identity` literal says so, and
-  `crates/cs_content/tests/evidence_report_f14_d_2.rs::review_identity` is the
-  text `tools/tests/test_evidence_review_identity.py` cross-checks against it.
-  Regenerate on the reviewed and rebased commit with `CS_EVIDENCE_REVIEW` set
-  to your own identity and method, and replace that literal with the same text
-  in the same commit (`docs/contracts/CLI-EVIDENCE.md`).
-- Mutation probes to repeat: remove the `multiplayer_rules_rows` call from
-  `retail_baseline` (four integration tests fail — verified), build the rows
-  without F56-A's unknowns (the reason assertions fail), and set
-  `CollectionStatus::diagnostic` to `None` on the unread paths (the two gap
-  tests fail).
+The review of this branch (Rally #389, review claim of 2026-10-02T05:59:37Z)
+was done by `bunny-alpha-1/bunny-alpha-1`, the same agent instance that
+implemented it, so it is **not independent evidence**. The reviewer worked from
+the diff, the specs and the contracts in a new session, found and fixed the
+items below, and regenerated the evidence report with `CS_EVIDENCE_REVIEW` set
+to that identity. `tools/tests/test_evidence_review_identity.py` cross-checks
+the committed report's `review.identity` against the literal in
+`crates/cs_content/tests/evidence_report_f14_d_2.rs::review_identity`, so the
+two cannot drift.
+
+- **Fixed in review:** a mode name F56-A could not pair with a briefing was
+  counted in `collection_status.gaps` and left out of the collection, which
+  `IDENTITY-CONTENT` forbids ("Collections cannot exclude failed entries") and
+  which the task's own rules ask for ("a row it cannot read stays an inventory
+  row with an explicit `UnsupportedReason`"). It is now a row built from the
+  name's read bytes, with the producing stage's identity and one typed unknown
+  (decision 4 above). Nothing on this installation changes: it has no unpaired
+  name, so the retail row count is still four.
+- **Fixed in review:** the PE reader's `ParseContext` was labelled with the
+  constant `MODE_STRING_IMAGE` instead of the installation's own spelling, so a
+  parse refusal named a file the walk had not read on an installation that
+  spells it differently.
+- Repeated mutation probes (all reverified by the reviewer): remove the
+  `multiplayer_rules_rows` call from `retail_baseline` (4 of the 4 synthetic
+  integration tests fail), drop the unpaired-name rows (the gap test fails),
+  build the rows without F56-A's unknowns (2 tests fail), and set
+  `CollectionStatus::diagnostic` to `None` on the unread paths (the two
+  diagnostic tests fail). The two unit tests are shape/render tests and do not
+  fail for any of these, which is what they are for.
+- Not fixed in review, filed instead: `tools/cs_inspect`'s `catalog` command
+  documentation (`tools/cs_inspect/src/catalog.rs`, `main.rs`) still describes
+  the baseline report as "one row per inventoried file, one row per campaign
+  mission program, one declared launchable row per campaign mission" and does
+  not mention the source-derived collections or `collection_status`. Those files
+  are another stage's owner paths, so the wording is a follow-up task rather
+  than an edit here.
 - All four mode rows of one installation share a span: the four mode names lie
   in one `RT_STRING` block, and `cs_content::config::StringCatalog` gives every
   row of a block that block's extent. That is the block the name was read

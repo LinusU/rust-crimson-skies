@@ -78,7 +78,7 @@ use cs_types::evidence::{ClaimId, ClaimStatus, ContentHash, Fingerprint, Fingerp
 use cs_types::install::InstallFileRecord;
 
 use crate::config::StringCatalog;
-use crate::multiplayer::{ModeEntry, discover_modes};
+use crate::multiplayer::{ModeEntry, TextRef, discover_modes, mode_name_id};
 
 use super::closure::{Closure, ClosureError, CompatibilityOptions, json_string};
 use super::reader_dirs::{ClassifiedReaderDir, ReaderDirRole, classify};
@@ -102,6 +102,11 @@ const CLAIM_INSTALL_FILE: &str = "f14.d.baseline.install_file";
 /// The claim id behind the observation that a multiplayer mode's name and
 /// briefing live in the inventoried string image its row points at.
 const CLAIM_MODE_STRINGS: &str = "f14.d.2.baseline.mode_strings";
+
+/// The claim id behind the observation that a mode name the string table
+/// carries pairs with no briefing block of the multiplayer family, so the
+/// name cannot be resolved to a mode this engine can read.
+const CLAIM_MODE_PAIRING: &str = "f14.d.2.baseline.mode_pairing";
 
 /// The installation-relative spelling of the string image the multiplayer mode
 /// table is read from.
@@ -240,6 +245,16 @@ pub enum BaselineError {
         /// Why the id grammar refused it.
         source: ContentIdError,
     },
+    /// An identity the producing stage derived for one of its entries is not a
+    /// valid catalog id. The identity itself came from the producing stage, so
+    /// the refusal is named here instead of being worked around by writing the
+    /// identity out a second time.
+    Identity {
+        /// The identity the producing stage refused.
+        identity: String,
+        /// Why it was refused.
+        reason: String,
+    },
     /// A source span could not be built from a file that was read.
     Span {
         /// The file the span locates.
@@ -287,6 +302,9 @@ impl fmt::Display for BaselineError {
             Self::Key { spelling, source } => {
                 write!(f, "no content id key for {spelling:?}: {source}")
             }
+            Self::Identity { identity, reason } => {
+                write!(f, "no content id for {identity:?}: {reason}")
+            }
             Self::Span { path, source } => write!(f, "no source span for {path}: {source}"),
             Self::Read { path, source } => write!(f, "cannot read {path}: {source}"),
             Self::Row { id, source } => write!(f, "catalog refused the row {id}: {source}"),
@@ -319,6 +337,7 @@ impl std::error::Error for BaselineError {
             Self::Closure(error) => Some(error),
             Self::MissingProgram { .. }
             | Self::UninventoriedProgram { .. }
+            | Self::Identity { .. }
             | Self::Provenance { .. }
             | Self::Session(_) => None,
         }
@@ -400,9 +419,14 @@ pub struct CollectionStatus {
     pub language: Option<u32>,
     /// How many catalog rows the collection holds.
     pub rows: usize,
-    /// Entries the producing parser read but could not turn into a row,
-    /// counted under its own stable label (the mode table's
+    /// Entries the producing parser read but could not turn into a complete
+    /// row, counted under its own stable label (the mode table's
     /// `name_without_briefing` and `briefing_without_name` are the first).
+    ///
+    /// A name that pairs with no briefing still has a row (its identity and
+    /// its bytes are both known), so its count here is not a count of missing
+    /// rows; a briefing with no name has no identity at all and cannot become
+    /// one, so its count is entries this collection can only account for.
     pub gaps: BTreeMap<&'static str, usize>,
     /// The id whose content ended the producing stage's measured walk, when
     /// it reports one (the first briefing block outside the mode family).
@@ -689,10 +713,12 @@ pub fn retail_baseline(install_root: &Path) -> Result<Baseline, BaselineError> {
 /// Everything F56-A could not read stays on the row: each rule the mode leaves
 /// unknown becomes an [`UnsupportedReason::Unknown`] carrying F56-A's own claim
 /// id and reason, so the row is a faithful inventory of what is known about
-/// the mode rather than a claim that it is playable. Nothing here is
-/// normalized (the row holds no quantity to convert) and nothing claims a
-/// runtime consumer, so the row is unavailable, exactly like every other row
-/// of this baseline.
+/// the mode rather than a claim that it is playable. A name F56-A could not
+/// pair with a briefing gets a row of its own (see [`unpaired_mode_row`]),
+/// because the collection of a content family cannot exclude an entry it failed
+/// to complete. Nothing here is normalized (the row holds no quantity to
+/// convert) and nothing claims a runtime consumer, so every row is unavailable,
+/// exactly like every other row of this baseline.
 ///
 /// # Errors
 ///
@@ -737,7 +763,7 @@ fn multiplayer_rules_rows(
         },
     )?;
 
-    let mut context = cs_formats::ParseContext::with_defaults(MODE_STRING_IMAGE);
+    let mut context = cs_formats::ParseContext::with_defaults(spelling);
     let strings = match StringCatalog::read(&mut context, span, &bytes) {
         Ok(strings) => strings,
         Err(error) => {
@@ -768,11 +794,26 @@ fn multiplayer_rules_rows(
             spelling: spelling.to_owned(),
             source,
         })?;
-    let rows: Vec<CatalogElement> = modes
+    let mut rows: Vec<CatalogElement> = modes
         .modes
         .iter()
         .map(|mode| mode_row(mode, &file_id, record.sha256))
         .collect::<Result<Vec<_>, _>>()?;
+
+    // A name F56-A could not pair with a briefing is still an entry of the
+    // collection: the name's own bytes were read, so its row is built from
+    // them and says, as an explicit unknown, that nothing describes it. A
+    // collection cannot exclude an entry it failed to complete
+    // (IDENTITY-CONTENT). The briefing with no name has no identity at all —
+    // F56-A's id is built from a name id — so it stays in the record's gap
+    // counts below and no row may be minted for it.
+    rows.extend(
+        modes
+            .names_without_briefing
+            .iter()
+            .map(|name| unpaired_mode_row(name, &file_id, record.sha256))
+            .collect::<Result<Vec<_>, _>>()?,
+    );
 
     status.rows = rows.len();
     status
@@ -997,6 +1038,71 @@ fn scenario_rows(
         )?,
     )?;
     Ok(scenario_id)
+}
+
+/// A mode **name** the producing parser could not pair with a briefing, as a
+/// catalog row.
+///
+/// The identity is F56-A's own ([`mode_name_id`]), so an unpaired name and a
+/// paired one can never disagree about what a mode is called; what differs is
+/// what the row can say. This row is built from bytes that were read — the name
+/// and its `RT_STRING` block — so it exists rather than being excluded from the
+/// collection, and its one explicit unknown says that no briefing of the
+/// multiplayer family answers it: no rule, no points, no team play, nothing
+/// that would let this engine say what the name refers to.
+///
+/// # Errors
+///
+/// [`BaselineError::Identity`] when the producing stage's identity is refused
+/// and [`BaselineError::Provenance`] when the claim id is refused.
+fn unpaired_mode_row(
+    name: &TextRef,
+    file_id: &ContentId,
+    sha256: ContentHash,
+) -> Result<CatalogElement, BaselineError> {
+    let identity = format!("mode.name-{}", name.id);
+    let id = mode_name_id(name.id).map_err(|error| BaselineError::Identity {
+        identity,
+        reason: error.to_string(),
+    })?;
+    Ok(CatalogElement {
+        kind: ContentKind::MultiplayerRules,
+        display_name: Some(name.text.clone()),
+        origin: Origin::Installation {
+            source: name.span.clone(),
+        },
+        dependencies: vec![Dependency {
+            target: file_id.clone(),
+            kind: DependencyKind::Static,
+            provenance: observed(CLAIM_MODE_STRINGS, &name.span)?,
+        }],
+        parse_state: cs_types::install::ParseState::Parsed,
+        normalize_state: NormalizeState::NotNormalized,
+        runtime_consumers: Vec::new(),
+        readiness: Readiness::Unavailable,
+        // The entry the collection failed to complete is recorded here rather
+        // than left out of it: one unknown that says the whole mode is
+        // unresolved, instead of a rule list this engine cannot fill in.
+        unsupported_reasons: vec![UnsupportedReason::Unknown {
+            claim_id: ClaimId::new(CLAIM_MODE_PAIRING).map_err(|error| {
+                BaselineError::Provenance {
+                    claim: CLAIM_MODE_PAIRING.to_owned(),
+                    reason: error.to_string(),
+                }
+            })?,
+            reason: format!(
+                "the string table names a mode at id {} but no briefing block of the \
+                 multiplayer family pairs with it, so no rule of the mode is known",
+                name.id
+            ),
+        }],
+        fingerprint: Some(Fingerprint {
+            kind: FingerprintKind::Installation,
+            sha256,
+        }),
+        id,
+    })
+}
 }
 
 /// Inserts one row, naming it if the catalog refuses it.

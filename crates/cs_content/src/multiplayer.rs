@@ -383,11 +383,27 @@ pub fn discover_modes(rows: &[StringRow], language: u32) -> Result<ModeCatalog, 
     })
 }
 
-fn entry(name: TextRef, briefing: Briefing) -> Result<ModeEntry, ModeError> {
-    let id = ContentId::from_source(
+/// The catalog identity of the mode the string table names at `name_id`.
+///
+/// A mode is identified by the string id its **name** was read from, never by
+/// its position in a walk, so the identity is the same whether the name paired
+/// with a briefing ([`discover_modes`]'s [`ModeEntry::id`]) or not: a caller
+/// that inventories the names the parser could not pair asks for the identity
+/// here instead of writing the formula out a second time.
+///
+/// # Errors
+///
+/// [`ModeError::Identity`] when the derived key is refused as a
+/// [`ContentId`].
+pub fn mode_name_id(name_id: u32) -> Result<ContentId, ModeError> {
+    Ok(ContentId::from_source(
         ContentKind::MultiplayerRules,
-        &format!("mode.name-{}", name.id),
-    )?;
+        &format!("mode.name-{name_id}"),
+    )?)
+}
+
+fn entry(name: TextRef, briefing: Briefing) -> Result<ModeEntry, ModeError> {
+    let id = mode_name_id(name.id)?;
     let lower = name.text.to_ascii_lowercase();
     let team_claim = claim(&format!("f56.mode.name-{}.team_play", name.id))?;
     let team_play = if lower.ends_with("without teams") {

@@ -34,7 +34,9 @@ use cs_content::catalog::baseline::{
     Baseline, MODE_STRING_IMAGE, MODE_STRING_LANGUAGE, baseline_report_json, install_file_key,
     retail_baseline,
 };
-use cs_content::multiplayer::{BRIEFING_FIRST_ID, BRIEFING_STRIDE, MODE_NAME_IDS, RULE_LABELS};
+use cs_content::multiplayer::{
+    BRIEFING_FIRST_ID, BRIEFING_STRIDE, MODE_NAME_IDS, RULE_LABELS, mode_name_id,
+};
 use cs_formats::{RT_STRING, STRING_UNITS_PER_BLOCK};
 use cs_types::content::{
     ContentId, ContentKind, NormalizeState, Origin, Readiness, UnsupportedReason,
@@ -369,11 +371,14 @@ fn accept_f14_d_2_a_synthetic_installation_yields_source_derived_mode_rows() {
     );
 }
 
-/// A named mode with no briefing is a **gap**, not a row and not a silent
-/// drop: the rows the parser did pair are present, the missing one is counted,
-/// and the briefing that pairs with nothing is counted beside it.
+/// A named mode with no briefing stays an **inventory row with an explicit
+/// unknown**: the three rows the parser did pair are present, the fourth name is
+/// a row too (its identity and its bytes are both known), it says in one typed
+/// unknown that no briefing of the family answers it, and the briefing that
+/// pairs with no name — which has no identity to be given — is counted beside
+/// it rather than becoming a row.
 #[test]
-fn accept_f14_d_2_a_named_mode_without_a_briefing_is_a_reported_gap_not_a_row() {
+fn accept_f14_d_2_a_named_mode_without_a_briefing_is_a_row_with_an_explicit_unknown() {
     let temp = tree("gap", &fixture_table_with_an_unpaired_name());
     let baseline = retail_baseline(&temp.0).expect("the fixture installation reads");
 
@@ -385,21 +390,74 @@ fn accept_f14_d_2_a_named_mode_without_a_briefing_is_a_reported_gap_not_a_row() 
         .collect::<Vec<_>>();
     assert_eq!(
         rules,
-        ["mode.name-7011", "mode.name-7012", "mode.name-7014"]
+        [
+            "mode.name-7011",
+            "mode.name-7012",
+            "mode.name-7013",
+            "mode.name-7014"
+        ],
+        "a collection cannot exclude an entry it failed to complete"
     );
+
+    // The unpaired name is a real row built from the name row's own bytes,
+    // with the identity the producing stage derives and no borrowed briefing.
+    let unpaired = rules_row(&baseline, 7013);
+    assert_eq!(
+        unpaired.id,
+        mode_name_id(7013).expect("the producing stage's identity"),
+        "the identity comes from the stage that owns it, so a paired and an unpaired name \
+         cannot disagree about what a mode is called"
+    );
+    assert_eq!(unpaired.display_name.as_deref(), Some("Flag Snatch"));
+    assert_eq!(unpaired.parse_state, ParseState::Parsed);
+    assert_eq!(unpaired.readiness, Readiness::Unavailable);
+    assert!(unpaired.runtime_consumers.is_empty());
+    let span = unpaired.origin.source().expect("an installation span");
+    assert_eq!(span.container_path(), MODE_STRING_IMAGE);
     assert!(
-        baseline
-            .catalog
-            .get(&cid(ContentKind::MultiplayerRules, "mode.name-7013"))
-            .is_none(),
-        "a name with no briefing has no row: inventing one would need an identity the parser \
-         never produced"
+        span.offset() > 0 && span.length() > 0,
+        "the name's own string block, not the image header"
+    );
+    assert_eq!(unpaired.dependencies.len(), 1);
+    assert_eq!(
+        unpaired.dependencies[0].target,
+        cid(
+            ContentKind::InstallFile,
+            &install_file_key(MODE_STRING_IMAGE)
+        )
+    );
+    // One unknown, and it says the whole mode is unresolved rather than
+    // listing rules that were never read.
+    assert_eq!(
+        unknown_claims(unpaired),
+        vec!["f14.d.2.baseline.mode_pairing".to_owned()],
+        "the unresolved pairing is this baseline's own claim, not a borrowed rule list"
+    );
+    let reason = unpaired
+        .unsupported_reasons
+        .iter()
+        .find_map(|reason| match reason {
+            UnsupportedReason::Unknown { reason, .. } => Some(reason.as_str()),
+            _ => None,
+        })
+        .expect("the unpaired name names what is not known");
+    assert!(reason.contains("7013"), "{reason}");
+    assert!(reason.contains("briefing"), "{reason}");
+
+    // The paired rows are untouched by the gap.
+    assert_eq!(
+        unknown_claims(rules_row(&baseline, 7011)).len(),
+        RULE_LABELS.len()
     );
 
     let status = &baseline.collection_status[0];
-    assert_eq!(status.rows, 3);
+    assert_eq!(status.rows, 4, "every name the table carries is a row");
     assert_eq!(status.gaps.get("name_without_briefing"), Some(&1));
-    assert_eq!(status.gaps.get("briefing_without_name"), Some(&1));
+    assert_eq!(
+        status.gaps.get("briefing_without_name"),
+        Some(&1),
+        "a briefing with no name has no identity, so it can only be counted"
+    );
     assert_eq!(
         status.boundary_id,
         Some(BRIEFING_FIRST_ID + 4 * BRIEFING_STRIDE),
