@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "T464",
+ "candidate_tree": "0801135adebec5c2f563c977efa00f6e87c388a7",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-10-02T20:59:30Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_f42_d_reward_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/deepseek-1", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 5, "executed": 5, "passed": 5, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_f42_d_reward_the_score_table_reads_only_score_keys_and_both_signs", "status": "pass", "evidence": ["cargo-test.log", "reward-census.json"]}, {"id": "accept_f42_d_reward_the_vocabulary_scan_finds_an_authored_payout_and_repeat_key", "status": "pass", "evidence": ["cargo-test.log", "reward-census.json"]}, {"id": "accept_f42_d_reward_the_survey_measures_the_reward_surface_of_every_reader", "status": "pass", "evidence": ["cargo-test.log", "reward-census.json"]}, {"id": "accept_f42_d_reward_every_reward_refusal_names_the_container_and_member", "status": "pass", "evidence": ["cargo-test.log", "reward-census.json"]}, {"id": "accept_f42_d_reward_retail_no_measured_file_records_a_stunt_payout_or_repeat", "status": "pass", "evidence": ["cargo-test.log", "reward-census.json"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "d709bb71668a1d110e343d7f00ff95e66675265e87bce44bda33ad130661b78f", "kind": "log"}, {"path": "reward-census.json", "sha256": "419546e132dfb11ae5daf5014bd268438e55596471952a5079dca715dd3e0147", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "deepseek-1/deepseek-1 (implementer; not an independent reviewer)", "method": "Acceptance suite run locally with the retail capability; this harness derives every field from the recorded log, production discovery of $CS_GAME_DIR, and a second production run of cs_app::stunts::survey_retail_stunt_reward over every reader archive of the installation (reward-census.json). Claim is implemented only: the reward/repeat SURFACE is measured, but no file records WHAT a stunt paid or WHETHER a repeat traversal pays again, so RetailStuntRewardSurvey::reward_is_measured() and repeat_is_measured() are false and no original rule is claimed. LIMITS OF WHAT WAS MEASURED, each outside this task's scope and recorded in docs/findings/2026-10-02-t464-stunt-reward-and-repeat.md: (1) no original executable was run, so nothing here is evidence of the original's runtime behaviour — whether a completed stunt paid anything and whether a second traversal paid again are unknown; (2) the zone-crossing predicate, the direction and clearance rules and the actor a crossing is credited to are unmeasured (tasks #465 and the F42 rule work); (3) the `score_*` table is a multiplayer match scoreboard, and whether any single-player stunt ever touched it is not recorded; (4) the `player.zrd` member name is carried twice in the global reader (the score table and an unrelated ANIMATION_DEFINITIONS record), and the score measurement is the declaration-order match the production reader selects; (5) fame/cash counters and linked scrapbook media are outside this task (F43/F47). `unknowns` is empty because the measurement itself has nothing unresolved: every objective key, every objective block key, every stunt-condition key and every score entry the survey reports was read to its end. Validated with tools/validate_evidence.py --require-pass."},
+ "claim": "implemented"
+}
