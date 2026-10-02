@@ -65,6 +65,7 @@ use std::fmt;
 use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind};
 use cs_types::evidence::ClaimId;
+use cs_types::net::SessionId;
 use cs_types::space::{UnitVec3, WorldPosition};
 
 use crate::damage::{ActorId, DamageChannel, DamageNodeKey, HitEvent, HitEventError, HitEventId};
@@ -2478,6 +2479,21 @@ pub enum SweepRefusal {
         /// The session the shot carried.
         found: u64,
     },
+    /// This router was opened on session generation zero.
+    ///
+    /// The routed [`HitEvent`]s carry the shared `cs_types::net::EventId`,
+    /// whose session is a nonzero `SessionId` — zero *is* "no session" in
+    /// that type — while this module's own ids still carry a `u64`
+    /// generation (F27-A; the migration is task #442). A router on zero
+    /// therefore has no session to stamp a hit into, and refuses whole rather
+    /// than routing damage into a generation that does not exist.
+    ///
+    /// Defensive for a session opened normally: `FireResolver::new` and this
+    /// constructor take the generation the session allocated, and
+    /// `SessionAllocator` issues from 1. The arm exists so a caller that
+    /// passed 0 is refused by name instead of getting a hit whose id cannot be
+    /// expressed.
+    NoSession,
 }
 
 impl SweepRefusal {
@@ -2489,6 +2505,7 @@ impl SweepRefusal {
             Self::InvalidDamage { .. } => "invalid_damage",
             Self::ForeignProjectile { .. } => "foreign_projectile",
             Self::ForeignSession { .. } => "foreign_session",
+            Self::NoSession => "no_session",
         }
     }
 }
@@ -2520,6 +2537,10 @@ impl fmt::Display for SweepRefusal {
             Self::ForeignSession { expected, found } => write!(
                 f,
                 "the accepted shot belongs to session {found}, but this routing is session {expected}"
+            ),
+            Self::NoSession => write!(
+                f,
+                "this routing is session generation zero, which is not a session a hit can be stamped into"
             ),
         }
     }
@@ -2700,6 +2721,16 @@ impl GunHitRouter {
             });
             return outcome;
         }
+        // A routed hit carries the shared `cs_types::net::EventId`, whose
+        // session is a nonzero `SessionId`, while this module's own ids still
+        // carry a `u64` generation (F27-A, and the `cs_types` migration task
+        // #442). Generation zero cannot become a `SessionId` — it *is* "no
+        // session" in that type — so a router opened on zero refuses whole
+        // rather than stamping a hit into a session that does not exist.
+        let Some(session) = SessionId::new(self.session) else {
+            outcome.refused.push(SweepRefusal::NoSession);
+            return outcome;
+        };
         if segment.projectile != shot.projectile.projectile {
             outcome.refused.push(SweepRefusal::ForeignProjectile {
                 expected: shot.projectile.projectile,
@@ -2727,7 +2758,7 @@ impl GunHitRouter {
                     continue;
                 }
                 match HitEvent::try_new(
-                    self.next_hit_id(at),
+                    self.next_hit_id(session, at),
                     Some(shot.shooter),
                     contact.hit.target,
                     candidate.node.clone(),
@@ -2770,9 +2801,9 @@ impl GunHitRouter {
     /// resolved. A session that routed more than `u32::MAX` hits would need a
     /// new producer serial, which is the schedule's decision and not a
     /// silent wrap here.
-    fn next_hit_id(&mut self, tick: Tick) -> HitEventId {
+    fn next_hit_id(&mut self, session: SessionId, tick: Tick) -> HitEventId {
         let id = HitEventId {
-            session: self.session,
+            session,
             tick,
             producer: self.producer,
             sequence: self.next_sequence,

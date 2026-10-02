@@ -42,9 +42,18 @@ use cs_sim::weapons::{
 use cs_types::Tick;
 use cs_types::content::{Known, Origin, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
+use cs_types::net::SessionId;
 use cs_types::space::{UnitVec3, WorldPosition};
 
+/// The session generation as the weapons module's own ids carry it: a `u64`
+/// (F27-A; the `cs_types` migration is task #442).
 const SESSION: u64 = 29;
+/// The same generation as the shared `cs_types::net` type the routed hits and
+/// the damage authority carry.
+const SESSION_ID: SessionId = match SessionId::new(SESSION) {
+    Some(id) => id,
+    None => panic!("the test session generation is nonzero"),
+};
 const ROUTER_PRODUCER: u32 = 77;
 const DAMAGE_PRODUCER: u32 = 78;
 const HULL_NODE: &str = "hull";
@@ -52,7 +61,7 @@ const WING_MOUNT: &str = "wing_mount_1";
 
 fn actor(serial: u64) -> ActorId {
     ActorId {
-        session: SESSION,
+        session: SESSION_ID,
         serial,
     }
 }
@@ -144,7 +153,7 @@ fn tick_segment(shot: &cs_sim::weapons::FireEvent) -> ProjectileSegment {
 }
 
 fn damage_resolver() -> DamageResolver {
-    let mut damage = DamageResolver::new(SESSION, DAMAGE_PRODUCER);
+    let mut damage = DamageResolver::new(SESSION_ID, DAMAGE_PRODUCER);
     damage
         .register_actor(
             actor(2),

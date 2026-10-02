@@ -27,7 +27,7 @@ render, no audio, so no `private/evidence/` report is produced.
   `SweptDamageOutcome` — the production caller that hands the routed hits to
   the session's `DamageResolver`. `lower_rules`'s doc updated.
 - `crates/cs_sim/tests/accept_f27_c_sweep_query_and_hit_routing.rs`
-  (**new**, 9 tests), `crates/cs_content/tests/accept_f27_c_interaction_rule_deferral.rs`
+  (**new**, 10 tests), `crates/cs_content/tests/accept_f27_c_interaction_rule_deferral.rs`
   (**new**, 4 tests),
   `crates/cs_app/tests/accept_f27_c_weapon_damage_wiring.rs` (**new**, 4
   tests). Task test prefix: `accept_f27_c_`.
@@ -176,6 +176,20 @@ Choices worth stating:
   within a session, so narrowing a shooter's serial into it could give two
   shooters the same producer (the same reason `FireEventId` widened its own
   producer to `u64` in F27-A).
+* **The session generation crosses into `cs_types::net::SessionId` at the
+  routing boundary, and generation zero is refused by name.** `main` unified
+  the damage identity onto `cs_types::net` (task #442), so a routed
+  `HitEventId` is the shared `EventId` whose `session` is a nonzero
+  `SessionId`, while this module's own ids (`FireIntentId`,
+  `FireEventId`, `ProjectileId`) still carry a `u64` generation. The router
+  keeps the `u64` it shares with `FireResolver` and converts once, where the
+  `HitEventId` is built. Zero cannot become a `SessionId` — it *is* "no
+  session" in that type — so a router opened on generation zero is refused
+  whole (`SweepRefusal::NoSession`) rather than panicking inside a tick. A
+  real session never reaches that arm (`SessionAllocator` issues from 1, and
+  an `ActorId` cannot be built for session 0 at all);
+  `accept_f27_c_a_router_on_session_zero_refuses_whole` reaches it
+  deliberately to prove it is a refusal and not a crash.
 * **A refused contact is named, never dropped.** `SweepOutcome` carries the
   admitted candidates, the hits *and* the refusals, so an empty hit list is
   readable as "this round crossed nothing" rather than "damage was lost".
@@ -207,7 +221,9 @@ projectile re-routed drains nothing further.
 ## Test sensitivity (measured, not asserted)
 
 Six mutations were applied to the production code, one at a time, and the new
-tests were re-run. Every one was caught:
+tests were re-run **twice** — once before the `GunHitRouter` took ownership of
+its `Ballistics` ledger, and once after, so the table below is measured
+against the signatures that were actually submitted. Every one was caught:
 
 | mutation | caught by |
 | --- | --- |

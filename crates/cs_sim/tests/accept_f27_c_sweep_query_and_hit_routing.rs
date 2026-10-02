@@ -38,9 +38,18 @@ use cs_sim::weapons::{
     synthetic_gun_definition,
 };
 use cs_types::Tick;
+use cs_types::net::SessionId;
 use cs_types::space::{UnitVec3, WorldPosition};
 
+/// The session generation, as the weapons module's own ids carry it: a `u64`
+/// (F27-A, and the `cs_types` migration task #442).
 const SESSION: u64 = 71;
+/// The same generation as the shared `cs_types::net` type the routed
+/// [`HitEvent`]s carry.
+const SESSION_ID: SessionId = match SessionId::new(SESSION) {
+    Some(id) => id,
+    None => panic!("the test session generation is nonzero"),
+};
 /// The routing system's producer serial, allocated by the session's schedule.
 const ROUTER_PRODUCER: u32 = 900;
 /// The damage resolver's producer serial.
@@ -51,7 +60,7 @@ const ARMOR_NODE: &str = "nose_armor";
 
 fn actor(serial: u64) -> ActorId {
     ActorId {
-        session: SESSION,
+        session: SESSION_ID,
         serial,
     }
 }
@@ -155,7 +164,7 @@ fn candidate(node: &str, relation: Option<Allegiance>) -> SweepCandidate {
 /// A damage resolver with the synthetic airframe graph registered for the
 /// target and for the shooter.
 fn damage_resolver() -> DamageResolver {
-    let mut damage = DamageResolver::new(SESSION, DAMAGE_PRODUCER);
+    let mut damage = DamageResolver::new(SESSION_ID, DAMAGE_PRODUCER);
     for serial in [1, 2] {
         damage
             .register_actor(
@@ -229,7 +238,7 @@ fn accept_f27_c_a_swept_hit_becomes_one_hit_event_per_declared_channel() {
         "every routed hit names the shooter as attacker and the swept actor as target"
     );
     assert!(
-        routed.damage.iter().all(|hit| hit.id.session == SESSION),
+        routed.damage.iter().all(|hit| hit.id.session == SESSION_ID),
         "every routed hit is stamped with the routing session"
     );
     assert!(
@@ -824,6 +833,69 @@ fn accept_f27_c_foreign_sessions_and_projectiles_are_refused_whole() {
         "another projectile's segment is refused: a round may not apply another round's damage"
     );
     assert!(refused.hits.is_empty());
+}
+
+/// A router opened on session generation zero refuses whole, by name rather
+/// than by panicking: the routed [`cs_sim::damage::HitEvent`]s carry the
+/// shared `cs_types::net::EventId`, whose session is a nonzero `SessionId` —
+/// zero *is* "no session" in that type — so a zero-generation router has
+/// nothing a hit could be stamped into.
+///
+/// A real session never produces this pair. The generation comes from
+/// `SessionAllocator`, which issues from 1, and an `ActorId` cannot be built
+/// for session 0 at all, so a `FireResolver` on generation zero can never
+/// even register a shooter. The test therefore restamps the accepted shot's
+/// generation to reach the arm deliberately — the point being that a caller
+/// who does the impossible gets a **named refusal**, not a panic from
+/// `SessionId::new(..).expect(..)` in the middle of a tick.
+#[test]
+fn accept_f27_c_a_router_on_session_zero_refuses_whole() {
+    let (_fire, shot) = armed_shooter();
+    let segment = tick_segment(&shot);
+    let mut router = GunHitRouter::new(0, ROUTER_PRODUCER);
+
+    // Reachable in production only as a caller error: the foreign-session
+    // refusal fires first for a real shot.
+    let foreign = router.route(
+        &shot,
+        &segment,
+        [candidate(HULL_NODE, Some(Allegiance::Hostile))],
+        &hostile_only(),
+        Tick(1),
+    );
+    assert_eq!(
+        foreign.refused,
+        vec![SweepRefusal::ForeignSession {
+            expected: 0,
+            found: SESSION,
+        }],
+        "a real shot belongs to a nonzero session, so the foreign-session \
+         refusal is what a session-zero router actually sees"
+    );
+    assert!(foreign.hits.is_empty());
+
+    // And the zero-generation arm itself, reached deliberately.
+    let mut zero_shot = shot.clone();
+    zero_shot.id.session = 0;
+    let refused = router.route(
+        &zero_shot,
+        &segment,
+        [candidate(HULL_NODE, Some(Allegiance::Hostile))],
+        &hostile_only(),
+        Tick(1),
+    );
+    assert_eq!(
+        refused.refused,
+        vec![SweepRefusal::NoSession],
+        "there is no session to stamp a hit into, and that is refused by name"
+    );
+    assert!(refused.hits.is_empty());
+    assert_eq!(
+        router.ballistics().len(),
+        0,
+        "a refused routing applies no geometry either"
+    );
+    assert_eq!(router.routed(), 0, "no hit identity was consumed");
 }
 
 /// The routed hit ids are unique and ordered within a session, so a resolver
