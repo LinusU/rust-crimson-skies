@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "T374",
+ "candidate_tree": "5de7b27dc2d42e5ddc23140c88a6287c6dffd722",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-10-02T04:15:32Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_string_id_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/deepseek-1", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 2, "executed": 2, "passed": 2, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_string_id_win32_sections_are_one_based", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_string_id_retail_langui_rows_use_the_win32_block_numbering", "status": "pass", "evidence": ["cargo-test.log"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "1f2cd56b364543e255493ac3f0269ba614b4ff7bd528e6bcf6195dd52f4f9c8b", "kind": "log"}, {"path": "string-id-langui-blocks.json", "sha256": "365cc980f27381531ce3109b23de86e31d90d79983ff90ec192e67f6ac4fd758", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "implementer: deepseek-1 (Rally #374, DeepSeek V4.1 Flash, session of 2026-10-02T03:03Z); reviewer: deepseek-1 — the same agent and model, as the Rally reviewing agent on the review claim of 2026-10-02T03:58Z. The reviewer's context was fresh (a new session that re-read the tree, the installation and the task history), but a fresh context does not make this independent: it is NOT independent review and is not independent original-reference evidence. No agent review replaces the owner's approval. The reviewer re-ran the acceptance suite and regenerated this report on the rebased commit.", "method": "acceptance suite run locally with the retail capability by the implementer and re-run by the reviewer on the rebased commit; this harness derives every field from the recorded log, production discovery of $CS_GAME_DIR, the production PE resource reader over the installation's langui.dll (string-id-langui-blocks.json, ids and counts only), rustc and Cargo.lock; validated with tools/validate_evidence.py --require-pass. No original string text is asserted or written. The runtime API the original engine uses to resolve these ids is not observed here and is recorded as a deferred boundary (not a blocker) in docs/findings/2026-10-02-t374-string-id-numbering.md: the numbering itself is settled by Microsoft's documented 16-strings-per-section rule and the measured sections."},
+ "claim": "implemented"
+}
