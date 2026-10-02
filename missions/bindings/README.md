@@ -124,6 +124,13 @@ directory is original game data — no assets, scripts or extracted bytes.
   shares `world/c4` with M16, which is the whole chapter (see
   `docs/findings/2026-10-02-m19-a-source-binding.md`). Same five resolved
   critical dependencies, same unverified status.
+- `M21.json` — the M21 binding output (stage M21-A), generated and pinned the
+  same way by `accept_m21_a_the_committed_record_is_what_the_installation_derives`.
+  No production code changed for it either: M21 is the twenty-first campaign
+  position and the first of chapter 5, whose four missions share `world/c5`,
+  so the world row identifies the chapter and not the mission (see
+  `docs/findings/2026-10-02-m21-a-source-binding.md`). Same five resolved
+  critical dependencies, same unverified status.
 
 The typed records those missions fill in — the seven required content
 categories, one unresolved dependency row per required subsystem, coverage
