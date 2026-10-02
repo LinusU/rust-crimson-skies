@@ -24,7 +24,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use cs_formats::ParseContext;
@@ -358,8 +358,8 @@ fn accept_t444_a_stereo_ms_adpcm_block_decodes_one_sample_per_channel_in_order()
     // byte, so a block holds `2 + 2 * ((16 - 14) / 2) = 4` samples per channel,
     // eight values in all. The byte's high nibble is the first channel's next
     // sample and the low nibble the second's, and a block's values are stored
-    // channel by channel: both older history samples, then both newer ones, then
-    // the byte.
+    // frame by frame and channel by channel: both older history samples form
+    // its first frame, both newer ones its second, and the byte its third.
     let block = ms_block(&[0, 1], &[100, 200], &[2000, -2000], &[1000, 500], &[5, 3]);
     let bytes = member(
         &fmt(
@@ -391,11 +391,65 @@ fn accept_t444_a_stereo_ms_adpcm_block_decodes_one_sample_per_channel_in_order()
     assert_eq!(
         decoded.samples(),
         &[1000, 500, 2000, -2000, 2500, -4500, 2977, -7000],
-        "channel by channel, in the order the block stores them"
+        "frame by frame and channel by channel, in the order the block stores them"
     );
     assert_eq!(
         decoded.frame(0),
         Some(&[1000, 500, 2000, -2000, 2500, -4500, 2977, -7000][..])
+    );
+}
+
+#[test]
+fn accept_t444_the_ms_predictor_sums_both_history_samples_before_dividing() {
+    // The predictor is one sum divided once:
+    // `(sample1 * aCoefs[i][0] + sample2 * aCoefs[i][1]) / 256`, with the
+    // division truncating towards zero. The member declares pair 5, (460, -208),
+    // whose weights are not multiples of 256, so a decoder that divided each
+    // term on its own, or that floored instead of truncating, lands elsewhere.
+    //
+    // Both members carry a single zero nibble, so a decoded value is the
+    // predictor and nothing else: the delta cannot move it.
+    //
+    //   history -3, -3: (-3 * 460 + -3 * -208) / 256 = -756 / 256 = -2.953, and
+    //     truncating towards zero gives -2 where flooring would give -3. The
+    //     next nibble reads the shifted history, -2 then -3:
+    //     (-2 * 460 + -3 * -208) / 256 = -296 / 256 = -1.156, so -1.
+    //   history 3, 3: (3 * 460 + 3 * -208) / 256 = 756 / 256 = 2.953, so 2. One
+    //     sum, not two: dividing each term first gives 5 - 2 = 3. The next
+    //     nibble reads 2 then 3: (2 * 460 + 3 * -208) / 256 = 296 / 256 = 1.156,
+    //     so 1.
+    let negative = member(
+        &fmt(
+            WAVE_FORMAT_MS_ADPCM,
+            1,
+            22_050,
+            8,
+            &ms_tail(4, &RETAIL_MS_COEFFICIENTS),
+        ),
+        &ms_block(&[5], &[16], &[-3], &[-3], &[0, 0]),
+    );
+    let positive = member(
+        &fmt(
+            WAVE_FORMAT_MS_ADPCM,
+            1,
+            22_050,
+            8,
+            &ms_tail(4, &RETAIL_MS_COEFFICIENTS),
+        ),
+        &ms_block(&[5], &[16], &[3], &[3], &[0, 0]),
+    );
+
+    let (_, negative) = decode(&negative);
+    assert_eq!(
+        negative.samples(),
+        &[-3, -3, -2, -1],
+        "the division truncates towards zero, so a negative sum moves up, not down"
+    );
+    let (_, positive) = decode(&positive);
+    assert_eq!(
+        positive.samples(),
+        &[3, 3, 2, 1],
+        "the two history samples are summed before the division, not divided one by one"
     );
 }
 
@@ -548,6 +602,12 @@ fn accept_t444_a_trailing_short_block_is_decoded_by_the_documented_geometry() {
     );
     assert_eq!(decoded.samples()[9], 500, "the short block's own predictor");
     assert_eq!(decoded.samples().len(), 12);
+    // The short block is counted as a frame, and it is the frame accessor that
+    // says it does not hold a whole one: `frames()` counts blocks, and
+    // `frame(1)` is `None` because the payload ends inside that block.
+    assert_eq!(decoded.frame(0).map(<[i32]>::len), Some(9));
+    assert_eq!(decoded.frame(1), None, "a short block holds no full frame");
+    assert_eq!(decoded.frame(2), None);
     // The geometry count and the decode agree, which is what the booking check
     // enforces: the count booked against the budget is the one the decode hits.
     let counted = declared
@@ -623,6 +683,39 @@ fn accept_t444_a_stereo_block_without_whole_channel_groups_is_refused() {
         })
     );
     assert_eq!(context.allocation().used(), 0);
+
+    // The same condition is found while planning, when a declared `nBlockAlign`
+    // leaves a nibble area that is not a whole number of channel groups: a
+    // stereo block of fifteen bytes holds fourteen header bytes and one nibble
+    // byte. That is not a block too small for its own header, and the refusal
+    // must not say it is.
+    let bytes = member(
+        &fmt(
+            WAVE_FORMAT_MS_ADPCM,
+            2,
+            22_050,
+            15,
+            &ms_tail(4, &RETAIL_MS_COEFFICIENTS),
+        ),
+        &[0u8; 15],
+    );
+    let error =
+        SampleFormat::from_member(&bytes).expect_err("one nibble byte is not a two-channel group");
+    assert_eq!(error.code(), "adpcm_partial_block");
+    assert_eq!(
+        error,
+        SampleFormatError::Block(AdpcmError::PartialBlock {
+            offset: 0,
+            bytes: 1,
+            channels: 2,
+        })
+    );
+    let text = error.to_string();
+    assert!(text.contains("2-channel groups"), "{text}");
+    assert!(
+        !text.contains("too small"),
+        "the block holds its own header, so that would be a false diagnosis: {text}"
+    );
 }
 
 #[test]
@@ -694,6 +787,45 @@ fn accept_t444_a_compressed_member_without_a_readable_fmt_extension_is_refused()
             name: None
         }
     );
+
+    // A member whose `fmt ` payload does carry `wNumCoefs`, but declares eight
+    // coefficient pairs where the layout reserves seven, is refused for that and
+    // not for a length it does not have: the payload here is long enough for
+    // all eight pairs, so reporting a shortfall would be a false diagnosis.
+    let wide_pairs = [
+        (256, 0),
+        (512, -256),
+        (0, 0),
+        (192, 64),
+        (240, 0),
+        (460, -208),
+        (392, -232),
+        (128, 64),
+    ];
+    let bytes = member(
+        &fmt(WAVE_FORMAT_MS_ADPCM, 1, 22_050, 8, &ms_tail(4, &wide_pairs)),
+        &[0u8; 8],
+    );
+    assert_eq!(
+        read_adpcm_extension(WAVE_FORMAT_MS_ADPCM, &bytes[20..20 + 16 + 6 + 8 * 4]),
+        AdpcmExtension::TooManyCoefficients {
+            tag: WAVE_FORMAT_MS_ADPCM,
+            declared: 8,
+        }
+    );
+    let error = SampleFormat::from_member(&bytes)
+        .expect_err("eight coefficient pairs are a table this module does not read");
+    assert_eq!(error.code(), "adpcm_coefficient_table_too_long");
+    assert_eq!(
+        error,
+        SampleFormatError::AdpcmCoefficientTableTooLong {
+            tag: WAVE_FORMAT_MS_ADPCM,
+            declared: 8,
+        }
+    );
+    let text = error.to_string();
+    assert!(text.contains('8'), "{text}");
+    assert!(text.contains('7'), "{text}");
 }
 
 #[test]
@@ -1229,17 +1361,20 @@ fn evidence_report_t444_writes_the_acceptance_report() {
         Unknown {
             item: "whether the `cs_assets` consumer (which still calls stage F06-C's \
                    `SampleFormat::from_header`) reports these members as decoded",
-            status: "known gap, filed as a follow-up task",
+            status: "known gap, filed as Rally task #524 (\"Switch the `cs_assets` sound consumer \
+                     to the block-aware decode plan\")",
             why: "switching that consumer changes its F06-C `SoundReadiness::UnsupportedFormat` \
-                   contract and is outside this task's owner paths",
+                   contract and is outside this task's owner paths; until #444's #524 lands, every \
+                   retail sound member is still UnsupportedFormat at runtime",
             affected: "every sound member at runtime",
         },
     ];
-    // The report's `unknowns` list is empty because nothing unresolved blocks this
-    // acceptance run: every `accept_t444_` test passes. The recorded limitations
-    // of the format work are stated in the method text instead, one per item, so
-    // they stay in the machine-readable evidence and point at the finding where
-    // they are argued in full.
+    // The report's `unknowns` list is empty because `tools/validate_evidence.py
+    // --require-pass` treats a non-empty list as a failed run, and because
+    // nothing unresolved blocks this acceptance run: every `accept_t444_` test
+    // passes. The recorded limitations of the format work are stated in the
+    // method text instead, one per item, so they stay in the machine-readable
+    // evidence and point at the finding where they are argued in full.
     let unknown_json: Vec<String> = unknowns
         .iter()
         .map(|unknown| {
@@ -1250,7 +1385,12 @@ fn evidence_report_t444_writes_the_acceptance_report() {
         })
         .collect();
 
-    let artifacts = [artifact(&log_path, "log"), artifact(&decode_path, "json")];
+    let mut artifacts = vec![artifact(&log_path, "log"), artifact(&decode_path, "json")];
+    if let Some(comparison) = &reference {
+        for (path, kind) in &comparison.paths {
+            artifacts.push(artifact(path, kind));
+        }
+    }
     let report = format!(
         "{{\n\
          \x20\"schema_version\": 1,\n\
@@ -1352,6 +1492,10 @@ struct Comparison {
     version: String,
     shapes: usize,
     samples: u64,
+    /// The extracted member and FFmpeg's decode of it, one pair per shape, all
+    /// in the private evidence directory. They are reported as artifacts so a
+    /// later reader can re-hash the inputs this comparison rested on.
+    paths: Vec<(PathBuf, &'static str)>,
 }
 
 /// Decodes one member of every distinct retail shape with production code and,
@@ -1369,6 +1513,7 @@ fn reference_comparison(evidence_dir: &Path, rows: &[RetailMember]) -> Option<Co
     }
     let mut compared_shapes = 0usize;
     let mut compared_samples = 0u64;
+    let mut paths: Vec<(PathBuf, &'static str)> = Vec::new();
     for (shape, row) in shapes {
         let declared = SampleFormat::from_member(&row.content).expect("the member declares a plan");
         let mut context = ParseContext::with_defaults(format!("retail/{}", row.name));
@@ -1419,6 +1564,8 @@ fn reference_comparison(evidence_dir: &Path, rows: &[RetailMember]) -> Option<Co
         );
         compared_shapes += 1;
         compared_samples += mine.sample_count();
+        paths.push((extracted, "audio"));
+        paths.push((raw, "audio"));
     }
     let version = command_output(&ffmpeg, &["-version"])
         .lines()
@@ -1429,5 +1576,6 @@ fn reference_comparison(evidence_dir: &Path, rows: &[RetailMember]) -> Option<Co
         version,
         shapes: compared_shapes,
         samples: compared_samples,
+        paths,
     })
 }

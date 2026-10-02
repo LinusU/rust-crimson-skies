@@ -52,10 +52,11 @@
 //! and a refused attempt leaves the ledger as it found it so the same member
 //! can be retried with a bigger budget. For a compressed member the booked
 //! count comes from the block geometry alone ([`AdpcmLayout::sample_count`]),
-//! and the decode is checked against it afterwards, so a block count that
-//! disagrees with the decode cannot pass. Nothing is resampled, filtered,
-//! normalised or mixed: the values are the decoded samples, widened to `i32`,
-//! and what an audio consumer does with them is F41's work.
+//! and a checked build compares the decode against that count, so a geometry
+//! that disagreed with the decode would fail there rather than pass silently.
+//! Nothing is resampled, filtered, normalised or mixed: the values are the
+//! decoded samples, widened to `i32`, and what an audio consumer does with them
+//! is F41's work.
 
 use std::fmt;
 use std::ops::Range;
@@ -225,6 +226,20 @@ pub enum SampleFormatError {
         /// included.
         needed: u32,
     },
+    /// The member declares an MS ADPCM `wNumCoefs` above the seven pairs the
+    /// layout reserves, so its coefficient table is one this module does not
+    /// read.
+    ///
+    /// Carries the member's own tag and count. It is deliberately not
+    /// [`Self::AdpcmExtensionShort`]: a payload can be long enough for the
+    /// pairs the member declares, and a length shortfall that does not exist is
+    /// a false diagnosis.
+    AdpcmCoefficientTableTooLong {
+        /// The `wFormatTag` the member declares.
+        tag: u16,
+        /// The `wNumCoefs` the member declares.
+        declared: u16,
+    },
     /// The header declares PCM at a `wBitsPerSample` this module does not
     /// decode.
     UnsupportedWidth {
@@ -272,6 +287,15 @@ pub enum SampleFormatError {
         /// Bytes the layout's block header needs for the declared channels.
         minimum: u64,
     },
+    /// A full block of the declared `nBlockAlign` holds no whole per-channel
+    /// group of nibble bytes, so the declaration contradicts itself before any
+    /// block is decoded.
+    ///
+    /// This is the same condition as [`AdpcmError::PartialBlock`], found while
+    /// planning rather than while decoding, and it is reported as that error
+    /// rather than as [`Self::BlockAlignTooSmall`] — the block is not too small
+    /// for its header, it cannot be split into the channels it declares.
+    Block(AdpcmError),
     /// The declared channel count is not one this block layout is read for: no
     /// retail member declares it, and the layouts documented for wider blocks
     /// differ, so it is refused rather than guessed at.
@@ -292,11 +316,13 @@ impl SampleFormatError {
             Self::UnreadableHeader { .. } => "unreadable_header",
             Self::UnsupportedFormat { .. } => "unsupported_format",
             Self::AdpcmExtensionShort { .. } => "adpcm_extension_short",
+            Self::AdpcmCoefficientTableTooLong { .. } => "adpcm_coefficient_table_too_long",
             Self::UnsupportedWidth { .. } => "unsupported_width",
             Self::UndeclaredField { .. } => "undeclared_field",
             Self::BlockAlignMismatch { .. } => "block_align_mismatch",
             Self::SamplesPerBlockMismatch { .. } => "samples_per_block_mismatch",
             Self::BlockAlignTooSmall { .. } => "block_align_too_small",
+            Self::Block(error) => error.code(),
             Self::AdpcmChannelsNotObserved { .. } => "adpcm_channels_not_observed",
             Self::ZeroChannels => "zero_channels",
         }
@@ -368,6 +394,13 @@ impl fmt::Display for SampleFormatError {
                 "the member declares `nBlockAlign` {declared}, too small for the {minimum}-byte \
                  block header its layout documents"
             ),
+            Self::AdpcmCoefficientTableTooLong { tag, declared } => write!(
+                f,
+                "the member declares an ADPCM format (`wFormatTag` 0x{tag:04X}) with {declared} \
+                 coefficient pairs; the layout this module reads reserves {}",
+                super::adpcm::MS_COEFFICIENT_PAIRS
+            ),
+            Self::Block(error) => write!(f, "{error}"),
             Self::AdpcmChannelsNotObserved { layout, channels } => write!(
                 f,
                 "the member declares {layout} with {channels} channels; no retail member does, \
@@ -479,10 +512,14 @@ impl SampleFormat {
     ///
     /// * [`SampleFormatError::AdpcmExtensionShort`] when its `fmt ` payload is
     ///   shorter than the fields that tag documents,
+    /// * [`SampleFormatError::AdpcmCoefficientTableTooLong`] when a MS ADPCM
+    ///   member declares more coefficient pairs than the layout reserves,
     /// * [`SampleFormatError::UnsupportedWidth`] for a `wBitsPerSample` that is
     ///   not 4, the only width the two block layouts store,
     /// * [`SampleFormatError::BlockAlignTooSmall`] when `nBlockAlign` cannot
-    ///   hold one block header of the declared layout, and
+    ///   hold one block header of the declared layout,
+    /// * [`SampleFormatError::Block`] when a full block of that size holds no
+    ///   whole per-channel group of nibble bytes, and
     /// * [`SampleFormatError::SamplesPerBlockMismatch`] when the declared
     ///   `wSamplesPerBlock` is not what a full block of the declared
     ///   `nBlockAlign` holds for one channel.
@@ -596,6 +633,9 @@ impl SampleFormat {
                     needed,
                 });
             }
+            AdpcmExtension::TooManyCoefficients { tag, declared } => {
+                return Err(SampleFormatError::AdpcmCoefficientTableTooLong { tag, declared });
+            }
             // No extension was read for this tag: the plan is uncompressed, and
             // a tag this crate does not decode is refused with the member's own.
             AdpcmExtension::Absent => None,
@@ -619,12 +659,20 @@ impl SampleFormat {
                 });
             }
             let declared = adpcm.declared_samples_per_block();
-            let implied = adpcm
-                .full_block_sample_count(channels, u64::from(block_align))
-                .map_err(|_| SampleFormatError::BlockAlignTooSmall {
-                    declared: block_align,
-                    minimum,
-                })?;
+            // A full block of the declared size has to hold a whole number of
+            // per-channel groups, and the refusal says which of the two ways it
+            // can fail it was: too small for the header, or not divisible into
+            // the declared channels.
+            let implied = match adpcm.full_block_sample_count(channels, u64::from(block_align)) {
+                Ok(implied) => implied,
+                Err(AdpcmError::ShortBlock { .. }) => {
+                    return Err(SampleFormatError::BlockAlignTooSmall {
+                        declared: block_align,
+                        minimum,
+                    });
+                }
+                Err(error) => return Err(SampleFormatError::Block(error)),
+            };
             if u64::from(declared) != implied {
                 return Err(SampleFormatError::SamplesPerBlockMismatch {
                     declared,
@@ -709,15 +757,17 @@ impl SampleFormat {
 
 /// One member's `data` payload, decoded.
 ///
-/// `frames` counts whole declared frames, which is what `nBlockAlign` names: one
-/// sample per channel for PCM, and one whole block for a block-coded member.
-/// `samples` counts the values in them, one per channel and frame, widened to
-/// `i32` and otherwise exactly as the format produces them. `byte_len` is the
-/// payload the decode accounted for: `frames * frame_bytes` for a payload that
-/// is a whole number of frames, which a PCM member must have
-/// ([`SampleError::PartialFrame`]), and the payload's own length for a
-/// block-coded member, whose trailing short block is part of the declaration
-/// rather than a contradiction.
+/// `frames` counts declared frames, which is what `nBlockAlign` names: one
+/// sample per channel for PCM, and one block for a block-coded member. A
+/// block-coded member's last block may be shorter than `nBlockAlign` — that is
+/// the format's own final block, not a contradiction — and it is counted as a
+/// frame like any other, which is why `byte_len` is the payload's own length
+/// rather than `frames * frame_bytes` there. `samples` counts the values in
+/// them, one per channel and frame, widened to `i32` and otherwise exactly as
+/// the format produces them. `byte_len` is the payload the decode accounted
+/// for: `frames * frame_bytes` for a PCM payload, which must be a whole number
+/// of frames ([`SampleError::PartialFrame`]), and the payload's own length for a
+/// block-coded member.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DecodedSound {
     format: SampleFormat,
@@ -732,8 +782,8 @@ impl DecodedSound {
         &self.format
     }
 
-    /// How many whole declared frames the payload holds: samples per channel for
-    /// PCM, blocks for a block-coded member.
+    /// How many declared frames the payload holds: samples per channel for
+    /// PCM, blocks for a block-coded member, a trailing short block included.
     pub const fn frames(&self) -> u64 {
         self.frames
     }
@@ -762,11 +812,17 @@ impl DecodedSound {
     }
 
     /// The values of one frame, in the order the frame stores them, or `None`
-    /// when the frame is past the end.
+    /// when the frame is past the end of the decode.
     ///
     /// A PCM frame holds one value per channel, in channel order. A block holds
-    /// `wSamplesPerBlock` values for each of its channels, channel by channel,
-    /// which is the order the block's own nibbles are read in.
+    /// `wSamplesPerBlock` values for each of its channels, **frame by frame and
+    /// channel by channel**, which is the order the block's own data is read in:
+    /// the two history values of every channel (the older one first) are its
+    /// first two frames, and each following byte is one frame.
+    ///
+    /// `None` therefore also covers an index whose frame the payload does not
+    /// hold in full: a block-coded member's trailing short block is counted by
+    /// [`Self::frames`] but holds fewer values than a full one.
     pub fn frame(&self, index: u64) -> Option<&[i32]> {
         let per_frame = self.samples_per_frame();
         if per_frame == 0 {
@@ -830,7 +886,13 @@ impl SampleError {
         }
     }
 
-    /// The byte offset inside the member the failure is anchored at.
+    /// The byte offset the failure is anchored at.
+    ///
+    /// A [`Self::Parse`] failure is anchored inside the member, and so is
+    /// [`Self::PartialFrame`]. A [`Self::Block`] failure carries the offset the
+    /// block decoder found, which counts from the start of the `data` payload:
+    /// add the plan's [`crate::zbd::SourceSpan::offset`] to place it in the
+    /// member.
     pub fn offset(&self) -> u64 {
         match self {
             Self::Format(_) => 0,

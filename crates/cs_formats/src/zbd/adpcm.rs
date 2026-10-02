@@ -3,11 +3,12 @@
 //!
 //! Task #344 read the RIFF/WAVE header of every member of `ZBD/sounds*.zbd` and
 //! found that nearly all of them declare a compressed sample format
-//! (`docs/findings/2026-09-28-t344-zbd-sound-member-wave-headers.md`): 2,510
+//! (`docs/findings/2026-09-28-t344-zbd-sound-member-wave-headers.md`): 4,464
 //! members carry `wFormatTag` `0x0002` (Microsoft ADPCM) and 555 carry
-//! `0x0011` (Intel/IMA, "DVI" ADPCM). Stage F06-C decoded uncompressed PCM
-//! only and refused every compressed member with the tag the member itself
-//! declares ([`crate::zbd::sound_sample::SampleFormatError::UnsupportedFormat`]).
+//! `0x0011` (Intel/IMA, "DVI" ADPCM), 5,019 of the archives' 5,041 members.
+//! Stage F06-C decoded uncompressed PCM only and refused every compressed
+//! member with the tag the member itself declares
+//! ([`crate::zbd::sound_sample::SampleFormatError::UnsupportedFormat`]).
 //! This module decodes the two block layouts those tags name, and nothing else.
 //!
 //! # What is read from the member and what is fixed by the format
@@ -20,9 +21,15 @@
 //! | Field | Read from |
 //! | --- | --- |
 //! | `nChannels`, `nBlockAlign` | the member's `fmt ` chunk |
-//! | `wSamplesPerBlock` | the member's `fmt ` extension (`cbSize` follows it) |
+//! | `wSamplesPerBlock` | the member's `fmt ` extension, the two bytes after its `cbSize` |
 //! | MS ADPCM `aCoefs` | the member's own `fmt ` coefficient table |
 //! | per-block predictor, step index, delta, history | the block's own bytes |
+//!
+//! The extension's fields are located by the offsets the two layouts document,
+//! not by the value `cbSize` itself: a member whose `cbSize` contradicts the
+//! ones measured in the retail corpus is still read from those offsets, and a
+//! payload too short to hold them is refused
+//! ([`AdpcmExtension::Short`]) rather than padded or read out of bounds.
 //!
 //! Nothing here is a tuning table of this project's own, and no loop point, no
 //! pitch and no volume is decided here: a loop point is a header fact no retail
@@ -68,10 +75,17 @@
 //! The two block layouts above were checked against FFmpeg's `adpcm_ima_wav`
 //! and `adpcm_ms` decoders — a separate implementation of the same two
 //! documented formats — by decoding one member of every distinct retail shape
-//! with both and comparing the sample sequences value for value. All eight
-//! shapes agree bit for bit (1,137,765 IMA samples and 4,550,460 MS samples in
-//! the largest members). The measurement, its private artifacts and its limits
-//! are in `docs/findings/2026-10-02-t444-ima-and-ms-adpcm-block-decoding.md`.
+//! with both and comparing the sample sequences value for value. All seven
+//! retail shapes agree bit for bit (6,091,417 samples across the seven members
+//! compared). The measurement, its private artifacts and its limits are in
+//! `docs/findings/2026-10-02-t444-ima-and-ms-adpcm-block-decoding.md`.
+//!
+//! One limit of that cross-check is worth stating here: FFmpeg's MS ADPCM
+//! decoder applies its own copy of the coefficient table, not the member's, so
+//! it confirms this decode only for a member that declares that same table.
+//! The retail members all declare it (task #444 measured one table across all
+//! 4,464 of them), and the decode below reads the member's own table, which is
+//! what the format says to do.
 //!
 //! # What stays unknown
 //!
@@ -173,10 +187,12 @@ pub const MIN_MS_DELTA: i32 = 16;
 
 /// Largest MS ADPCM delta this decoder keeps.
 ///
-/// Beyond it the `i16` predictor clip already decides the output on its own, so
-/// the exact value stops being observable; the bound is the one FFmpeg's
-/// `adpcm_ms` decoder applies for the same reason (`idelta overflow`), and it
-/// keeps `delta * nibble` inside `i32`.
+/// Beyond it two things are true at once: the `i16` predictor clip decides the
+/// output on its own (a nonzero nibble moves the predictor by at least this
+/// delta, which no `i16` can absorb), and `delta * nibble` would still have to
+/// fit `i32`. The bound is the one FFmpeg's `adpcm_ms` decoder applies for the
+/// same reason, to the same value, so a decode that reaches it agrees with that
+/// implementation instead of drifting from it.
 pub const MAX_MS_DELTA: i32 = i32::MAX / 768;
 
 /// One MS ADPCM coefficient pair: the two weights the predictor applies to the
@@ -281,6 +297,18 @@ pub enum AdpcmExtension {
         /// Bytes the tag's documented extension needs.
         needed: u32,
     },
+    /// The member declares more MS ADPCM coefficient pairs than the layout
+    /// reserves, so its table is one this module does not read.
+    ///
+    /// This is deliberately not [`Self::Short`]: the `fmt ` payload can be long
+    /// enough for the pairs the member declares, and reporting a length
+    /// shortfall that does not exist would be a false diagnosis.
+    TooManyCoefficients {
+        /// The `wFormatTag` the member declares.
+        tag: u16,
+        /// The `wNumCoefs` the member declares.
+        declared: u16,
+    },
     /// No ADPCM extension is declared or present.
     Absent,
 }
@@ -298,7 +326,7 @@ impl AdpcmExtension {
                 samples_per_block,
                 coefficients,
             }),
-            Self::Short { .. } | Self::Absent => None,
+            Self::Short { .. } | Self::TooManyCoefficients { .. } | Self::Absent => None,
         }
     }
 }
@@ -477,9 +505,13 @@ impl AdpcmLayout {
     /// Decodes the `data` payload of one member into `out`, one value per
     /// sample, and returns the number of blocks it decoded.
     ///
-    /// The values of a block are appended channel by channel, in the order the
-    /// layout stores that block's data, so a block holds
-    /// `block_sample_count * channels` consecutive values.
+    /// A block's values are appended in the order that block stores its data,
+    /// which is **frame by frame and channel by channel**: the two history
+    /// values of every channel (the older one first) are the block's first two
+    /// frames, and each following byte is one frame — the first channel's next
+    /// value in the high nibble, the second channel's in the low one. A block
+    /// therefore holds `block_sample_count * channels` consecutive values, and
+    /// a block-coded `DecodedSound`'s frames split that way.
     ///
     /// # Errors
     ///
@@ -519,7 +551,7 @@ impl AdpcmLayout {
             match self {
                 Self::Ima { .. } => decode_ima_block(block, offset, out)?,
                 Self::Ms { coefficients, .. } => {
-                    decode_ms_block(block, offset, channels, coefficients, out)?;
+                    decode_ms_block(block, offset, self, channels, coefficients, out)?;
                 }
             }
             blocks += 1;
@@ -699,7 +731,9 @@ fn clip_i16(value: i32) -> i16 {
 /// [`crate::zbd::wave::WaveHeader::fmt_span`]. A `wFormatTag` this module does
 /// not decode, or a payload with no extension bytes, is
 /// [`AdpcmExtension::Absent`]; a payload too short for its tag's documented
-/// fields is [`AdpcmExtension::Short`], which no decode plan can be built from.
+/// fields is [`AdpcmExtension::Short`], and a MS ADPCM payload declaring more
+/// coefficient pairs than the layout reserves is
+/// [`AdpcmExtension::TooManyCoefficients`]. No plan can be built from either.
 pub fn read_adpcm_extension(tag: u16, fmt: &[u8]) -> AdpcmExtension {
     let extension = fmt.len().saturating_sub(FMT_COMMON_BYTES);
     let short = |needed: usize| AdpcmExtension::Short {
@@ -731,11 +765,10 @@ pub fn read_adpcm_extension(tag: u16, fmt: &[u8]) -> AdpcmExtension {
             let samples_per_block = u16_at(fmt, FMT_COMMON_BYTES + CB_SIZE_BYTES);
             let count = u16_at(fmt, FMT_COMMON_BYTES + CB_SIZE_BYTES + 2);
             if usize::from(count) > MS_COEFFICIENT_PAIRS {
-                return short(
-                    MS_EXTENSION_BYTES
-                        + MS_COEFFICIENT_PAIRS * MS_COEFFICIENT_BYTES
-                        + usize::from(count - MS_COEFFICIENT_PAIRS as u16) * MS_COEFFICIENT_BYTES,
-                );
+                return AdpcmExtension::TooManyCoefficients {
+                    tag,
+                    declared: count,
+                };
             }
             let table = FMT_COMMON_BYTES + MS_EXTENSION_BYTES;
             let needed = table + usize::from(count) * MS_COEFFICIENT_BYTES;
@@ -856,6 +889,7 @@ fn decode_ima_block(block: &[u8], offset: u64, out: &mut Vec<i32>) -> Result<(),
 fn decode_ms_block(
     block: &[u8],
     offset: u64,
+    layout: AdpcmLayout,
     channels: u16,
     coefficients: MsAdpcmCoefficients,
     out: &mut Vec<i32>,
@@ -865,10 +899,7 @@ fn decode_ms_block(
         return Err(AdpcmError::UnsupportedChannels {
             offset,
             channels,
-            layout: AdpcmLayout::Ms {
-                samples_per_block: 0,
-                coefficients,
-            },
+            layout,
         });
     }
     let header = count * MS_BLOCK_HEADER_BYTES_PER_CHANNEL as usize;
@@ -909,14 +940,18 @@ fn decode_ms_block(
             coefficient,
         });
     }
-    // The two history values are the block's first two output values, in the
-    // order the layout stores them: the older sample, then the newer one.
+    // The two history values are the block's first two output frames, one value
+    // per channel each, in the order the layout stores them: the older sample
+    // of every channel, then the newer one.
     for channel in &state {
         out.push(i32::from(channel.sample2));
     }
     for channel in &state {
         out.push(i32::from(channel.sample1));
     }
+    // Every remaining byte is one frame: the first channel's next value in its
+    // high nibble and the second channel's in its low one. A mono byte carries
+    // the channel's next two values, high one first.
     for &byte in &block[header..] {
         if count == 1 {
             out.push(i32::from(state[0].expand(byte >> 4)));

@@ -26,14 +26,17 @@ Two entry points exist, and that is deliberate:
 | Entry point | Decodes | Used by |
 | --- | --- | --- |
 | `SampleFormat::from_header` (stage F06-C) | uncompressed PCM only; a compressed tag is refused as `UnsupportedFormat` carrying its own tag and RFC 2361 name | `crates/cs_assets/src/zbd.rs` (`SoundAsset::decode`, `SoundAssets::new`) |
-| `SampleFormat::from_member` (this task) | PCM, IMA ADPCM and MS ADPCM, including the `fmt ` extension | this task's tests; the runtime consumer switch is a follow-up task |
+| `SampleFormat::from_member` (this task) | PCM, IMA ADPCM and MS ADPCM, including the `fmt ` extension | this task's tests; the runtime consumer switch is task #524 |
 
 The F06-C entry point is unchanged, so `SoundReadiness::UnsupportedFormat` for a
 compressed member is still true in `cs_assets` and its F06-C tests still pass.
 That file is outside this task's owner paths, and switching the consumer changes
-a published contract of it, so the switch is filed as its own task rather than
-made here. Nothing in this task's code claims the runtime consumer already
-reports these members as decoded; the module documentation says so explicitly.
+a published contract of it, so the switch is filed as its own task (Rally #524,
+"Switch the `cs_assets` sound consumer to the block-aware decode plan") rather
+than made here. Nothing in this task's code claims the runtime consumer already
+reports these members as decoded; the module documentation says so explicitly,
+and until #524 lands every retail sound member is still `UnsupportedFormat` at
+runtime.
 
 ## Sources
 
@@ -55,10 +58,13 @@ reports these members as decoded; the module documentation says so explicitly.
   > FFmpeg, `libavcodec/adpcm_data.c` — `ff_adpcm_step_table` (89 entries),
   > `ff_adpcm_index_table` (16 entries), `ff_adpcm_AdaptCoeff1`/`AdaptCoeff2`
   > and `ff_adpcm_AdaptationTable`, and `libavcodec/adpcm.c` —
-  > `adpcm_ima_wav_expand_nibble`, `adpcm_ms_expand_nibble` and the block
-  > readers for `AV_CODEC_ID_ADPCM_MS` and `AV_CODEC_ID_ADPCM_IMA_WAV`
-  > (`https://ffmpeg.org/doxygen/trunk/adpcm_8c_source.html`, `adpcm__data_8c_source.html`,
-  > trunk 1.13.2). FFmpeg's own header lists its ADPCM reference sources.
+  > `adpcm_ima_wav_expand_nibble`, `ff_adpcm_ima_qt_expand_nibble` (the
+  > four-bit WAVE path), `adpcm_ms_expand_nibble`, `get_nb_samples` and the
+  > `CASE(ADPCM_MS, ...)`/`CASE(ADPCM_IMA_WAV, ...)` block readers
+  > (`https://ffmpeg.org/doxygen/trunk/adpcm_8c_source.html`,
+  > `adpcm__data_8c_source.html`). The reviewer re-read those files on the
+  > current trunk and the cross-check itself ran against FFmpeg 8.1.1;
+  > FFmpeg's own header lists its ADPCM reference sources.
 
   FFmpeg's `AdaptCoeff1`/`AdaptCoeff2` are the retail coefficient table divided
   by four, which is the same table the format stores undivided: `64, 128, 0,
@@ -91,7 +97,9 @@ reports these members as decoded; the module documentation says so explicitly.
   allocation; the decode is then checked against it with `debug_assert`, so the
   booked count and the decoded count cannot drift apart.
 - `decode` walks the payload block by block and appends each block's values to
-  the caller's buffer, channel by channel, in the order the block stores them.
+  the caller's buffer in the order the block stores its data: frame by frame and
+  channel by channel, which for a stereo MS block is the two history values of
+  every channel, then one frame per nibble byte.
 - `AdpcmError` names the block's byte offset, the sizes involved and, where one
   is named, the offending step index or coefficient index. It never carries
   sample bytes.
@@ -106,8 +114,15 @@ reports these members as decoded; the module documentation says so explicitly.
 - `SampleFormat::from_member` and `from_header_with_blocks`, which read the
   header and the `fmt ` extension out of the member's own bytes and check the
   declaration: four bits per sample, a block size that can hold the layout's
-  block header, a `wSamplesPerBlock` equal to what one full block of that size
-  holds, and a channel count the layout is read for.
+  block header, a block size that divides into whole per-channel nibble groups,
+  a `wSamplesPerBlock` equal to what one full block of that size holds, and a
+  channel count the layout is read for. Each refusal names the condition it
+  found: a block that cannot hold its own header is `BlockAlignTooSmall`, one
+  that cannot be split into the declared channels is the `PartialBlock` error
+  itself rather than a block size that is large enough, and a MS ADPCM
+  `wNumCoefs` above the seven the layout reserves is
+  `AdpcmCoefficientTableTooLong` rather than a `fmt ` length shortfall the
+  member does not have.
 - `SampleError::Block(AdpcmError)`. The typed block error is carried out of the
   `ParseContext::parse` attempt and reported as itself; the attempt still fails,
   which is what rolls the reservation back, so a corrupt member leaves no charge
@@ -116,9 +131,11 @@ reports these members as decoded; the module documentation says so explicitly.
   For PCM that is still `frames * frame_bytes` (a PCM payload must be a whole
   number of frames, or it is refused as `PartialFrame`); for a block codec it is
   the payload's own length, because the format's final block may be shorter than
-  `nBlockAlign`. `frames()` counts blocks for a block codec, and
-  `samples_per_frame()` is `wSamplesPerBlock * nChannels` there, so
-  `frame(index)` splits the values the same way for both layouts.
+  `nBlockAlign`. `frames()` counts blocks for a block codec, a trailing short
+  block included, and `samples_per_frame()` is `wSamplesPerBlock * nChannels`
+  there, so `frame(index)` splits the values the same way for both layouts —
+  except for a trailing short block, which `frames()` counts and `frame()`
+  answers `None` for, because the payload ends inside it.
 
 ## The two block layouts, as read and as measured
 
@@ -147,10 +164,13 @@ sample = (sample1 * aCoefs[index].predictor + sample2 * aCoefs[index].difference
 ```
 
 with the division truncating towards zero, the result clipped to `i16`, and then
-`delta = max(16, ADAPTATION_TABLE[nibble] * delta / 256)`. The delta is kept at
-or below `i32::MAX / 768`, which is where the `i16` predictor clip already
-decides the output on its own; it is the same bound FFmpeg's decoder applies, and
-it keeps `delta * nibble` inside `i32`.
+`delta = max(16, ADAPTATION_TABLE[nibble] * delta / 256)`. The delta is capped at
+`i32::MAX / 768`, the same bound to the same value FFmpeg's `adpcm_ms` applies
+as its `idelta overflow` guard, so a decode that reaches the cap agrees with
+that implementation instead of drifting from it; the cap also keeps
+`delta * nibble` inside `i32`, and while the delta sits at it a nonzero nibble
+moves the predictor further than any `i16` can hold, so the predictor clip is
+what decides the value.
 
 Both relations hold exactly for every retail member:
 
@@ -193,16 +213,24 @@ decoders — a separate implementation of the same two formats — on the real
 members, not on synthetic ones. For one member of every distinct retail shape
 the harness decodes the member with production code, extracts it into the
 private evidence directory, decodes the extracted file with FFmpeg to signed
-16-bit PCM, and compares the two sample sequences value for value. All seven
-shapes agree exactly; the numbers are in the evidence report's
-`independent_reference` field and the comparison runs again whenever the harness
-is run with `CS_FFMPEG` set.
+16-bit PCM, and compares the two sample sequences value for value, lengths
+included. All seven shapes agree exactly (6,091,417 samples over the seven
+members compared). The numbers are in the evidence report's `review.method`
+text, the extracted members and both decodes stay in the private evidence
+directory, and the comparison runs again whenever the harness is run with
+`CS_FFMPEG` set.
 
 This is a **format** cross-check, not original reference evidence: FFmpeg is
 another implementation of the same published layouts, and no original
 Crimson Skies decode was available to compare against. What it establishes is
 that this crate's decode of these files equals another implementation's, on the
-actual data, for every shape the installation contains.
+actual data, for every shape the installation contains. One limit of it is
+worth naming: FFmpeg's MS ADPCM decoder applies its own copy of the coefficient
+table rather than the member's, so it can only confirm a member that declares
+that same table. The retail members all declare it (one table across all 4,464
+of them, measured above); this crate reads the member's own table, which is what
+the format says to do, and a member declaring another table is decoded with it
+and is expected to differ from FFmpeg.
 
 ## Unusual and unobserved cases, recorded as found
 
@@ -227,13 +255,21 @@ actual data, for every shape the installation contains.
   about how the game played the sound.
 - **Two MS ADPCM first-block layouts are described in print.** Some references
   give the first block a two-byte initial predictor and a three-bit initial step
-  index per channel with two-byte deltas afterwards; the retail members fit the
-  other layout exactly (seven header bytes per channel, `wSamplesPerBlock` equal
-  to what that layout holds with no slack in the first block) and decode to real
-  audio under it, so that is the one this crate reads. A decoder that read the
-  other layout would produce different samples from the same bytes; nothing here
-  says which one the original executable used beyond the fact that it plays these
-  files.
+  index per channel with two-byte deltas afterwards; the layout read here gives
+  every block, the first included, seven header bytes per channel. What decides
+  it is evidence, not preference: the retail members declare
+  `wSamplesPerBlock` equal to what the seven-bytes-per-channel layout holds for
+  their `nBlockAlign` with no slack in the first block, `nAvgBytesPerSec` agrees
+  with that geometry, FFmpeg's `CASE(ADPCM_MS, ...)` reads exactly those seven
+  bytes per channel grouped by field in every block and its own sample-count
+  formula reduces to the same count, and decoding all 5,019 members under this
+  layout leaves 0.195% of samples at the `i16` clip (721,561 of 370,748,400
+  across both archives), which is what a decode of a real signal looks like
+  rather than one that has lost its predictor. A decoder reading the other
+  layout would produce different samples from the same bytes. What remains
+  unknown is what the original executable did: nothing here shows which layout
+  *it* read, only that the installed members fit this one and that this one
+  decodes them.
 - **No retail member carries a loop point** and none declares a `smpl` chunk
   (task #344), so this decode produces a whole member and nothing decides
   whether the game loops it.
@@ -250,12 +286,13 @@ actual data, for every shape the installation contains.
 | `an_ima_adpcm_member_decodes_the_blocks_its_header_declares` | the exact IMA ramp, worked out from the codebook and the quarter-step weights, plus counts and the frame split |
 | `an_ima_block_saturates_by_clipping_and_clamps_its_step_index` | clipping at `i16`, the index clamp at the codebook's end, and the refusal of a step index past it |
 | `an_ms_adpcm_member_decodes_the_blocks_its_header_declares` | the exact MS mono values from the member's own coefficients, delta and adaptation |
-| `a_stereo_ms_adpcm_block_decodes_one_sample_per_channel_in_order` | the grouped-by-field header, the per-channel nibble order and the channel-planar value order |
+| `a_stereo_ms_adpcm_block_decodes_one_sample_per_channel_in_order` | the grouped-by-field header, the per-channel nibble order and the frame-by-frame, channel-by-channel value order |
+| `the_ms_predictor_sums_both_history_samples_before_dividing` | one sum divided once, with the division truncating towards zero: a decoder that divided each term alone, or floored, lands elsewhere |
 | `the_block_decode_uses_the_coefficients_the_member_declares` | a member whose table is not the retail one, and the refusal of an index its table lacks |
 | `the_format_codebooks_are_the_ones_the_two_layouts_name` | the step, index and adaptation tables and the two block-header sizes |
-| `a_trailing_short_block_is_decoded_by_the_documented_geometry` | a short final block counted and decoded from the geometry, a block too short for its header refused, and the rollback |
-| `a_stereo_block_without_whole_channel_groups_is_refused` | the odd-nibble-byte refusal |
-| `a_compressed_member_without_a_readable_fmt_extension_is_refused` | `AdpcmExtensionShort` with the member's own tag and lengths, `Absent`, and an unnamed tag |
+| `a_trailing_short_block_is_decoded_by_the_documented_geometry` | a short final block counted and decoded from the geometry, `frame()` answering `None` for the frame the payload ends inside, a block too short for its header refused, and the rollback |
+| `a_stereo_block_without_whole_channel_groups_is_refused` | the odd-nibble-byte refusal, while decoding a block and while planning one — the plan-time refusal is the `PartialBlock` error, not a block size that is large enough |
+| `a_compressed_member_without_a_readable_fmt_extension_is_refused` | `AdpcmExtensionShort` with the member's own tag and lengths, `Absent`, an unnamed tag, and `AdpcmCoefficientTableTooLong` for a `wNumCoefs` the layout does not reserve |
 | `a_declaration_the_block_layouts_cannot_honour_is_refused` | `wSamplesPerBlock` against the block size, a block too small for its header, a width that is not 4, and both unobserved channel counts |
 | `the_block_decode_is_bounded_by_the_parse_allocation_budget` | the booked charge from the geometry, a refusal one byte short of it, and the funded retry |
 | `the_pcm_entry_point_still_refuses_a_compressed_member_with_its_own_tag` | the staged split between the two entry points, and an unreadable header refused by the new one |
@@ -269,5 +306,9 @@ corpus is far larger than one parse's allocation budget.
 
 The evidence harness `evidence_report_t444_writes_the_acceptance_report` is not
 an acceptance test; it writes `private/evidence/T444/acceptance.json` and the
-`zbd-adpcm-decode.json` artifact, and runs the FFmpeg comparison when
-`CS_FFMPEG` names a binary. Its doc comment gives the four commands.
+`zbd-adpcm-decode.json` artifact (per-archive counts, shapes, hashes and the
+number of samples at the clip), and runs the FFmpeg comparison when `CS_FFMPEG`
+names a binary. The extracted members and FFmpeg's decodes of them are written
+beside it and listed in the report as artifacts, so the comparison's inputs can
+be re-hashed; their contents stay in the private directory. Its doc comment
+gives the four commands.
