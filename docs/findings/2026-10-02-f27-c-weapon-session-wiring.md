@@ -189,6 +189,104 @@ restores it after each run, which is a one-off measurement, not a test.
   so the schedule registration is follow-up work rather than something guessed
   around.
 
+## Review pass (2026-10-03, reviewer `bunny-alpha-1`, task #119)
+
+Same agent instance as the implementer, with a **fresh context** for the
+review: the branch was read from `git diff origin/main...HEAD` rather than from
+the implementer's session, so this is not independent evidence and is recorded
+as such (AGENTS, "Reviewing").
+
+The stage's shape was accepted: the module is additive (`git diff --numstat`
+shows 1141 insertions and 5 deleted lines in `crates/cs_app/src/weapons.rs`,
+the deletions being the reformatted `use` list), nothing in `cs_sim` or
+`cs_content` changed, no protected path was touched, and the refusals are
+genuinely reported rather than swallowed. The review found and fixed three
+problems and one documentation error.
+
+### 1. A defect: the tick's allegiance lookup could not see the shooter
+
+`WeaponStep::relation` was `&dyn Fn(ActorId) -> Option<Allegiance>` and was
+evaluated **once per candidate per tick**, inside `part_sweep_candidates`, while
+the same tick routes the rounds of **every** shooter in the session. Allegiance
+is a property of a *pair*: the same aircraft is an ally of one shooter and an
+enemy of another, so under `FriendlyFireRule::HostileOnly` (what the declared
+fixture carries) a second shooter — a wingman, an AI, an enemy — had its rounds
+admitted or refused under the *first* shooter's relations. The visible failure
+is the mission case: the player's own relation to itself is *undeclared*, so an
+AI's rounds at the player were refused as friendly and the player could not be
+hit; symmetrically, an ally of the player was a valid target for a hostile
+shooter.
+
+Fixed by making the relation a pair lookup, `&dyn Fn(ActorId, ActorId) ->
+Option<Allegiance>`, bound per round in `route_round` against the routed shot's
+own shooter. The shared world read stays exactly as cheap as before (one read of
+the part boxes per tick) and now carries no allegiance at all: the geometry is
+read once, the pair is bound per round. `accept_f27_c_the_relation_follows_the_
+firing_actor_not_the_target` drives two registered shooters against one box that
+is hostile to the first and friendly to the second and asserts each round is
+admitted by *its own* shooter's relation, and that the contested aircraft took
+exactly one declared amount rather than two.
+
+### 2. A hole: a closed session still exposed its weapon state
+
+`WeaponSession::state`/`state_mut` reached straight into the cadence, so after
+`close` they still answered `Some` — a consumer could read the ammunition of a
+session that no longer existed, and `state_mut` could still re-enable a mount,
+while `close`'s doc claimed "the cooldown and ammunition tables go with the
+cadence". They do not go; they merely become unreachable. Both accessors now
+answer `None` once the session is closed, which makes the doc true in the
+observable sense (the tables themselves are freed by dropping the session), and
+`accept_f27_c_teardown_releases_the_rounds_and_refuses_later_orders` asserts it.
+The doc now says exactly what teardown does instead of claiming more.
+
+### 3. A coverage gap: order sensitivity was never exercised
+
+Every selection test switched to a bank whose mount was *still cooling down*, so
+the tick's outcome was "nothing fired" whether or not the `SelectBank` order was
+applied before the `Fire` order. The documented contract — "orders are applied in
+the order they are given, so a switch applies to this tick's shot" — was
+therefore untested, and mutating the step to iterate the orders in reverse
+(`orders.iter().rev()`) passed **all twelve** of the implementer's tests.
+`accept_f27_c_a_switched_bank_fires_its_ready_mount_once_and_refills_nothing`
+closes it: the nose mount keeps the fixture's four-tick cadence and the wing gun
+is declared with a one-tick gap, the bank is widened to both *before* the fire
+order, and the assertions are exactly one accepted shot (from the added mount),
+the still-cooling mount denied by name with its remaining ticks, one effect from
+the accepted mount only, one round drained from each mount and two live rounds.
+With the reversal mutation it fails, together with the two selection tests that
+also depend on the order.
+
+### 4. Documentation precision
+
+* `WeaponOrder::Fire` claimed the once-only intent id is what refuses a replayed
+  packet. Through this step a replay is refused by the **tick** it names first
+  (the step only ever resolves `step.at`), and by the id itself only when it
+  names the tick being resolved. Both paths consume nothing; the doc now says so.
+* `WeaponEffectLog` now states that it holds the same records as
+  `WeaponTick::effects`: a consumer drains the log *or* reads the per-tick report,
+  never both, or every accepted shot sounds twice.
+* `WeaponTick::unreadable_parts` now states that the read exists to feed the
+  sweep, so a tick with no live round reports nothing there instead of walking
+  the part boxes for a query it will not run.
+
+### Sensitivity re-measured by the reviewer
+
+The implementer's table is reproduced above as measured. Two rows were re-run and
+three were added, one mutation at a time, with the source restored after each:
+
+| mutation | caught by |
+| --- | --- |
+| the accepted shot's effect is not recorded in the **session log** (the tick report still carries it) | 1 test, not the 4 the implementer's table credits: `accept_f27_c_an_accepted_fire_emits_one_effect_and_mirrors_the_round`. The other three assert `WeaponTick::effects`, which is a different surface; the row as originally written conflates the two. |
+| the relation is looked up from the wrong side (`relation(target, shooter)`) | 3 tests: `accept_f27_c_the_relation_follows_the_firing_actor_not_the_target`, `accept_f27_c_the_declared_rules_admit_candidates_through_the_step`, `accept_f27_c_a_live_round_sweeps_its_declared_damage_into_the_authority` |
+| a closed session still exposes its weapon state (the `closed` gate removed from `state`) | `accept_f27_c_teardown_releases_the_rounds_and_refuses_later_orders` |
+| the step applies its orders in reverse (`orders.iter().rev()`) | 3 tests, including the two selection tests above — **all twelve of the implementer's tests passed this mutation** |
+| the live mount poses are not read from the hierarchy | 12 of 14 (only the generation-zero and the unknown-shooter tests survive) |
+| the advance runs but the sweep is skipped | 4 tests: the three the implementer's table lists, plus `accept_f27_c_the_relation_follows_the_firing_actor_not_the_target` |
+
+The relation pair lookup and the order-sensitivity test are the two substantive
+differences from the branch as submitted; neither is a change of stage scope, and
+both are in the owner paths.
+
 ## Not claimed
 
 No original-data verification, no claim that any gun, ammunition type, damage
