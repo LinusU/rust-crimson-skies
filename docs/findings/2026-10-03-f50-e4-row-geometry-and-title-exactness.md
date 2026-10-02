@@ -229,11 +229,11 @@ CI contract depends on was confirmed locally: a plain
 suite (63 passed) and reports these three as `ignored, requires CS_GAME_DIR`.
 
 `docs/findings/evidence/F50-E4.json` was generated on the tree of commit
-`8ddc10c3` (tree `fa406946…`) — the commit that pins the outcome classes and the
-weakened-matcher hauls — and validated with `--require-pass`. The only later
-delta is this report's own copy under `docs/findings/evidence/`, which is the
-commit `95b4bcfc`; a reviewer who re-runs the harness on the reviewed tree gets
-the same measurements and a fresh `candidate_tree`.
+`95f6940d` (tree `a46e38ce…`) — the last commit that changes a test or the
+harness — and validated with `--require-pass`. The only later delta is this
+report's own copy under `docs/findings/evidence/` (commit `52f98abc`); a
+reviewer who re-runs the harness on the reviewed tree gets the same
+measurements and a fresh `candidate_tree`.
 
 ## Sources
 
