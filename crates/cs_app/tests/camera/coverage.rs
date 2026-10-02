@@ -1069,6 +1069,19 @@ fn accept_f21_d_cockpit_coverage_resolves_each_binding_against_its_own_airframe_
         [("gungauge", 43)],
         "and the drawable geometry is the warhawk's own mesh, never the kestrel's 41"
     );
+    assert_eq!(
+        warhawk.verified_bindings(),
+        vec![CockpitBindingSource::ModelNode {
+            node: "gungauge".to_owned()
+        }],
+        "only a resolved binding is a *verified* one: a name the original addresses but this \
+         airframe does not carry must not become a viewpoint binding, which is exactly the \
+         substitution F21 non-negotiable behavior 1 forbids"
+    );
+    assert!(
+        kestrel.verified_bindings() != warhawk.verified_bindings(),
+        "and the two airframes' verified bindings are their own, not one shared list"
+    );
     assert!(
         !report.is_complete(),
         "the report is complete only when every airframe resolved every binding"
@@ -1747,7 +1760,8 @@ fn accept_f21_d_retail_every_declared_cockpit_binding_is_resolved_or_reported_by
     write_coverage_census(
         &report,
         &discover_view_controls(
-            &decode_interp(&mut ParseContext::with_defaults(container_label), &bytes).expect("re-reads"),
+            &decode_interp(&mut ParseContext::with_defaults(container_label), &bytes)
+                .expect("re-reads"),
             &retail_view_claims(install_sha256),
             container_label,
             retail_provenance(install_sha256, container_label, 0, 0),
@@ -1876,10 +1890,27 @@ fn write_coverage_census(
         })
         .collect();
 
+    // Built before the outer format so no `format!` is nested inside another
+    // one's argument list (a clippy `format_in_format_args` failure) and so each
+    // block reads as one value.
+    let camera_commands = format!(
+        "{{\"lines_walked\":{},\"occurrences\":{},\"unconsumed_occurrences\":{},\"rows\":[{}]}}",
+        census.lines_walked(),
+        census.occurrences(),
+        census.unconsumed().count(),
+        commands.join(",")
+    );
+    let cockpit_script = format!(
+        "{{\"script\":{},\"lines_walked\":{},\"clean\":{},\"findings\":{}}}",
+        quote(bindings.script()),
+        bindings.lines_walked(),
+        bindings.is_clean(),
+        bindings.findings().len()
+    );
     let document = format!(
         "{{\"schema\":\"cs-f21-d-view-cockpit-coverage/1\",\"candidate_tree\":{},\
           \"install_sha256\":{},\"content_sha256\":{},\"interp_container\":{},\
-          \"airframe_archive\":{},\"camera_commands\":{{{}}},\"cockpit_script\":{},\
+          \"airframe_archive\":{},\"camera_commands\":{},\"cockpit_script\":{},\
           \"declared_bindings\":[{}],\"airframes\":[{}],\"resolved_pairs\":{},\
           \"unresolved_pairs\":{},\"eye_placement\":{},\"eye_placement_resolves_in\":{},\
           \"view_control_runtime\":{},\"authored_camera_clips\":{}}}\n",
@@ -1888,28 +1919,25 @@ fn write_coverage_census(
         quote(&content_sha256.to_hex()),
         quote(bindings.container()),
         quote(report.archive()),
-        format!(
-            "\"lines_walked\":{},\"occurrences\":{},\"unconsumed_occurrences\":{},\"rows\":[{}]",
-            census.lines_walked(),
-            census.occurrences(),
-            census.unconsumed().count(),
-            commands.join(",")
-        ),
-        format!(
-            "{{\"script\":{},\"lines_walked\":{},\"clean\":{},\"findings\":{}}}",
-            quote(bindings.script()),
-            bindings.lines_walked(),
-            bindings.is_clean(),
-            bindings.findings().len()
-        ),
+        camera_commands,
+        cockpit_script,
         declared.join(","),
         airframes.join(","),
         resolved,
         unresolved,
         quote(report.eye().label()),
-        quote("an owner-supplied original run that shows a pilot's eye placement, or a bounded static analysis of the packed executable; no readable file declares it"),
-        quote("no shipped file holds a key/mouse/joystick to command map (F22-H measured the label vocabulary and found the bindings themselves native)"),
-        quote("the world's cam_anim carriers are fingerprinted by F20-D and the .zan/.zrd clips they reference are still an undecoded layout (F20-C/F40 own that)"),
+        quote(
+            "an owner-supplied original run that shows a pilot's eye placement, or a bounded \
+             static analysis of the packed executable; no readable file declares it"
+        ),
+        quote(
+            "no shipped file holds a key/mouse/joystick to command map (F22-H measured the label \
+             vocabulary and found the bindings themselves native)"
+        ),
+        quote(
+            "the world's cam_anim carriers are fingerprinted by F20-D and the .zan/.zrd clips they \
+             reference are still an undecoded layout (F20-C/F40 own that)"
+        ),
     );
     let path = directory.join("view-cockpit-coverage.json");
     std::fs::write(&path, &document)

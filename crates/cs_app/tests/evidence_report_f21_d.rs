@@ -19,7 +19,7 @@
 //!    CS_EVIDENCE_ARGV="cargo test --workspace --locked -- accept_f21_d_ --include-ignored" \
 //!    CS_EVIDENCE_EXIT_CODE=<status from step 1> \
 //!    CS_GAME_DIR="$CS_GAME_DIR" \
-//!      cargo test --locked -p cs_app --test camera evidence_report_f21_d -- --ignored
+//!      cargo test --locked -p cs_app --test evidence_report_f21_d -- --ignored
 //!    ```
 //!    (`CS_EVIDENCE_DIR` makes the retail coverage test write its derived
 //!    census into the evidence directory, so the artifact the report hashes is
@@ -403,8 +403,8 @@ fn locked_version(package: &str) -> String {
         .parent()
         .expect("workspace root")
         .join("Cargo.lock");
-    let lock =
-        fs::read_to_string(&lock_path).unwrap_or_else(|error| panic!("read {}: {error}", lock_path.display()));
+    let lock = fs::read_to_string(&lock_path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", lock_path.display()));
     let mut wanted = false;
     for line in lock.lines() {
         let line = line.trim();
@@ -531,8 +531,9 @@ fn artifact(source: &Path, kind: &str, evidence_dir: &Path) -> (String, String, 
         .into_owned();
     let target = evidence_dir.join(&name);
     if source != target {
-        fs::copy(source, &target)
-            .unwrap_or_else(|error| panic!("copy {} -> {}: {error}", source.display(), target.display()));
+        fs::copy(source, &target).unwrap_or_else(|error| {
+            panic!("copy {} -> {}: {error}", source.display(), target.display())
+        });
     }
     let bytes =
         fs::read(&target).unwrap_or_else(|error| panic!("read {}: {error}", target.display()));
