@@ -67,6 +67,7 @@ use std::fmt;
 
 use cs_types::Tick;
 use cs_types::evidence::ClaimId;
+use cs_types::net::SessionId;
 use cs_types::space::WorldPosition;
 
 use crate::damage::{ActorId, DamageNodeKey, HitEventId};
@@ -1281,7 +1282,7 @@ impl CombatPlanner {
     /// for a formation the planner does not carry. Each refuses rather than
     /// deciding on inconsistent input.
     pub fn decide(&self, request: &CombatRequest<'_>) -> Result<CombatDecision, CombatError> {
-        if request.observer.session != self.session {
+        if request.observer.session.get() != self.session {
             return Err(CombatError::ForeignSession {
                 actor: request.observer,
                 session: self.session,
@@ -1316,7 +1317,7 @@ impl CombatPlanner {
         // a stale generation past the check.
         let protected = request.assignment.protected();
         if let Some(actor) = protected
-            && actor.session != self.session
+            && actor.session.get() != self.session
         {
             return Err(CombatError::ForeignSession {
                 actor,
@@ -1339,7 +1340,7 @@ impl CombatPlanner {
                 .into_iter()
                 .flatten()
             {
-                if actor.session != self.session {
+                if actor.session.get() != self.session {
                     return Err(CombatError::ForeignSession {
                         actor,
                         session: self.session,
@@ -1437,14 +1438,14 @@ impl CombatPlanner {
         arsenal: Option<ArsenalReport>,
         candidate: &CandidateView,
     ) -> Result<CandidateTrace, CombatError> {
-        if candidate.actor.session != self.session {
+        if candidate.actor.session.get() != self.session {
             return Err(CombatError::ForeignSession {
                 actor: candidate.actor,
                 session: self.session,
             });
         }
         if let Some(threat) = &candidate.threat {
-            if threat.hit.session != self.session {
+            if threat.hit.session.get() != self.session {
                 return Err(CombatError::ForeignSession {
                     actor: threat.attacker,
                     session: self.session,
@@ -1808,11 +1809,17 @@ pub fn synthetic_combat_claim() -> ClaimId {
 /// The fixture's session generation.
 pub const SYNTHETIC_SESSION: u64 = 7;
 
+/// [`SYNTHETIC_SESSION`] as the shared nonzero session type.
+pub const SYNTHETIC_SESSION_ID: SessionId = match SessionId::new(SYNTHETIC_SESSION) {
+    Some(id) => id,
+    None => unreachable!(),
+};
+
 /// An actor of the synthetic session.
 #[must_use]
 pub const fn synthetic_actor(serial: u64) -> ActorId {
     ActorId {
-        session: SYNTHETIC_SESSION,
+        session: SYNTHETIC_SESSION_ID,
         serial,
     }
 }
@@ -1972,7 +1979,7 @@ pub const fn synthetic_threat(
         synthetic_actor(victim),
         at,
         HitEventId {
-            session: SYNTHETIC_SESSION,
+            session: SYNTHETIC_SESSION_ID,
             tick: at,
             producer,
             sequence,

@@ -51,6 +51,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use cs_types::content::{ContentId, ContentKind};
+use cs_types::net::SessionId;
 
 use crate::damage::ActorId;
 
@@ -412,10 +413,10 @@ impl AlliesRoster {
     /// session generation, [`AlliesError::DuplicateActor`] when it is already
     /// registered.
     pub fn register(&mut self, record: AllyRecord) -> Result<(), AlliesError> {
-        if record.actor.session != self.session {
+        if record.actor.session.get() != self.session {
             return Err(AlliesError::ForeignSession {
                 expected: self.session,
-                found: record.actor.session,
+                found: record.actor.session.get(),
             });
         }
         if self.records.contains_key(&record.actor) {
@@ -551,10 +552,10 @@ impl AlliesRoster {
     }
 
     fn entry_mut(&mut self, actor: ActorId) -> Result<&mut AllyRecord, AlliesError> {
-        if actor.session != self.session {
+        if actor.session.get() != self.session {
             return Err(AlliesError::ForeignSession {
                 expected: self.session,
-                found: actor.session,
+                found: actor.session.get(),
             });
         }
         self.records
@@ -597,7 +598,10 @@ fn ally(
     survivability: SurvivabilityPolicy,
 ) -> AllyRecord {
     AllyRecord {
-        actor: ActorId { session, serial },
+        actor: ActorId {
+            session: SessionId::new(session).expect("a nonzero session generation"),
+            serial,
+        },
         pilot: synthetic_pilot(pilot),
         faction: synthetic_faction(faction),
         geometry: synthetic_geometry(geometry),

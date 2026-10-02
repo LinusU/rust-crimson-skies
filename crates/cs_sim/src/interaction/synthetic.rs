@@ -7,6 +7,7 @@
 use cs_script::ir::ActorId as ScriptActorId;
 use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind};
+use cs_types::net::SessionId;
 
 use super::eligibility::EligibilityEnvelope;
 use super::state::{InteractionAuthorization, InteractionId, InteractionKind};
@@ -18,14 +19,19 @@ use crate::world_actors::trajectory::{Keyframe, Trajectory};
 
 /// The session generation the synthetic fixture belongs to.
 pub const SYNTHETIC_SESSION: u64 = 7;
+/// [`SYNTHETIC_SESSION`] as the shared nonzero session type.
+pub const SYNTHETIC_SESSION_ID: SessionId = match SessionId::new(SYNTHETIC_SESSION) {
+    Some(id) => id,
+    None => unreachable!(),
+};
 /// The initiator of the synthetic docking interaction.
 pub const SYNTHETIC_INITIATOR: ActorId = ActorId {
-    session: SYNTHETIC_SESSION,
+    session: SYNTHETIC_SESSION_ID,
     serial: 1,
 };
 /// The owner of the synthetic docking hook.
 pub const SYNTHETIC_HOOK_TARGET: ActorId = ActorId {
-    session: SYNTHETIC_SESSION,
+    session: SYNTHETIC_SESSION_ID,
     serial: 2,
 };
 /// The capture radius of the synthetic envelope, in metres.

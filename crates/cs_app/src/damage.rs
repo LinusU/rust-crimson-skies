@@ -936,7 +936,11 @@ pub fn apply_damage_state(
     let mut outcome = DamageConsumerOutcome::default();
 
     if actor.session != resolver.session() {
-        refusals::foreign_session(&mut outcome, resolver.session(), actor.session);
+        refusals::foreign_session(
+            &mut outcome,
+            resolver.session().get(),
+            actor.session.get(),
+        );
         return outcome;
     }
     let Some(graph) = resolver.graph(&actor) else {

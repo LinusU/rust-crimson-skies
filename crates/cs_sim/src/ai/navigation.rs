@@ -74,6 +74,7 @@ use std::collections::BTreeMap;
 use std::fmt;
 
 use cs_types::Tick;
+use cs_types::net::SessionId;
 use cs_types::random::SplitMix64;
 
 use crate::damage::ActorId;
@@ -1837,7 +1838,7 @@ impl NavigationSet {
     /// session, [`NavigationError::DuplicateActor`] when it is already
     /// registered.
     pub fn register(&mut self, actor: ActorId) -> Result<(), NavigationError> {
-        self.check_session(actor.session)?;
+        self.check_session(actor.session.get())?;
         if self.actors.contains_key(&actor) {
             return Err(NavigationError::DuplicateActor { actor });
         }
@@ -1856,7 +1857,7 @@ impl NavigationSet {
         actor: ActorId,
         reached: usize,
     ) -> Result<(), NavigationError> {
-        self.check_session(actor.session)?;
+        self.check_session(actor.session.get())?;
         if self.actors.contains_key(&actor) {
             return Err(NavigationError::DuplicateActor { actor });
         }
@@ -1912,7 +1913,7 @@ impl NavigationSet {
         &mut self,
         request: &PursuitRequest<'_>,
     ) -> Result<PursuitDecision, NavigationError> {
-        self.check_session(request.actor.session)?;
+        self.check_session(request.actor.session.get())?;
         self.check_session(request.generation)?;
         let mut state =
             self.actors
@@ -2044,7 +2045,7 @@ pub fn tie_break_draw(mission_seed: u64, actor: ActorId, tick: Tick) -> f64 {
 /// domain offset. It is a domain label, not an identity: two distinct actors
 /// that ever collide would merely share a tie-break stream, never a state.
 fn actor_stream_domain(actor: ActorId) -> u64 {
-    let mut value = actor.serial ^ actor.session.rotate_left(32);
+    let mut value = actor.serial ^ actor.session.get().rotate_left(32);
     value = (value ^ (value >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
     value = (value ^ (value >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
     value ^ (value >> 31)
@@ -2295,11 +2296,18 @@ pub const SYNTHETIC_PURSUIT_SEED: u64 = 0x4633_3142_5055_5253; // "F31B PURS"
 /// The session generation the F31-B synthetic fixture's actors belong to.
 pub const SYNTHETIC_PURSUIT_SESSION: u64 = 7;
 
+/// [`SYNTHETIC_PURSUIT_SESSION`] as the shared nonzero session type.
+pub const SYNTHETIC_PURSUIT_SESSION_ID: SessionId = match SessionId::new(SYNTHETIC_PURSUIT_SESSION)
+{
+    Some(id) => id,
+    None => unreachable!(),
+};
+
 /// The stable actor id of the `serial`-th F31-B fixture actor.
 #[must_use]
 pub const fn synthetic_pursuit_actor(serial: u64) -> ActorId {
     ActorId {
-        session: SYNTHETIC_PURSUIT_SESSION,
+        session: SYNTHETIC_PURSUIT_SESSION_ID,
         serial,
     }
 }

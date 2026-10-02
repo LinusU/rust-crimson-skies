@@ -187,7 +187,7 @@ pub fn fire_intent(request: &FireRequest) -> FireIntent {
             sequence: request.sequence,
         },
         shooter: cs_sim::damage::ActorId {
-            session: request.session.get(),
+            session: request.session,
             serial: request.actor.serial,
         },
     }

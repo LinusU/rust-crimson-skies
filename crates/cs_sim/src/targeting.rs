@@ -74,6 +74,7 @@ use std::fmt;
 
 use cs_types::Tick;
 use cs_types::content::ContentId;
+use cs_types::net::SessionId;
 use cs_types::space::{Meters, Radians, UnitVec3, WorldPosition};
 
 use crate::damage::{ActorId, HitEventId, LifecycleKind};
@@ -609,10 +610,10 @@ impl TargetStore {
     /// session generation, [`TargetError::DuplicateActor`] when it is
     /// already registered.
     pub fn register(&mut self, record: TargetRecord) -> Result<(), TargetError> {
-        if record.actor.session != self.session {
+        if record.actor.session.get() != self.session {
             return Err(TargetError::ForeignSession {
                 expected: self.session,
-                found: record.actor.session,
+                found: record.actor.session.get(),
             });
         }
         if self.records.contains_key(&record.actor) {
@@ -741,17 +742,17 @@ impl TargetStore {
     /// victim is unregistered.
     pub fn record_attack(&mut self, event: AttackEvent) -> Result<(), TargetError> {
         for actor in [event.attacker, event.victim] {
-            if actor.session != self.session {
+            if actor.session.get() != self.session {
                 return Err(TargetError::ForeignSession {
                     expected: self.session,
-                    found: actor.session,
+                    found: actor.session.get(),
                 });
             }
         }
-        if event.evidence.session != self.session {
+        if event.evidence.session.get() != self.session {
             return Err(TargetError::ForeignSession {
                 expected: self.session,
-                found: event.evidence.session,
+                found: event.evidence.session.get(),
             });
         }
         if !self.records.contains_key(&event.attacker) {
@@ -1051,10 +1052,10 @@ impl TargetStore {
     }
 
     fn entry_mut(&mut self, actor: ActorId) -> Result<&mut TargetEntry, TargetError> {
-        if actor.session != self.session {
+        if actor.session.get() != self.session {
             return Err(TargetError::ForeignSession {
                 expected: self.session,
-                found: actor.session,
+                found: actor.session.get(),
             });
         }
         self.records
@@ -1143,7 +1144,10 @@ fn record(
     objective: bool,
 ) -> TargetRecord {
     TargetRecord {
-        actor: ActorId { session, serial },
+        actor: ActorId {
+            session: SessionId::new(session).expect("a nonzero session generation"),
+            serial,
+        },
         faction,
         class,
         objective,

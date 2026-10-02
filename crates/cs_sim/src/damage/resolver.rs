@@ -51,6 +51,7 @@ use std::fmt;
 
 use cs_types::Tick;
 use cs_types::content::Resolved;
+use cs_types::net::SessionId;
 
 use super::events::{
     ActorId, AttributionRule, DamageEvent, DamageEventId, DamageEventKind, HitEvent, HitEventId,
@@ -79,9 +80,9 @@ pub enum DamageError {
     /// resolver's. State never leaks across generations.
     ForeignSession {
         /// The resolver's session.
-        expected: u64,
+        expected: SessionId,
         /// The session the input carried.
-        found: u64,
+        found: SessionId,
     },
     /// A hit carried a tick other than the tick being resolved; a batch
     /// resolves one tick only.
@@ -130,7 +131,7 @@ impl fmt::Display for DamageError {
         match self {
             Self::ForeignSession { expected, found } => write!(
                 f,
-                "input belongs to session {found}, but this resolver owns session {expected}"
+                "input belongs to {found}, but this resolver owns {expected}"
             ),
             Self::ForeignTick { expected, found } => write!(
                 f,
@@ -140,7 +141,7 @@ impl fmt::Display for DamageError {
             Self::DuplicateHit { id } => write!(
                 f,
                 "hit {}:{}:{}:{} appears twice in one batch",
-                id.session, id.tick.0, id.producer, id.sequence
+                id.session.get(), id.tick.0, id.producer, id.sequence
             ),
             Self::DuplicateActor { actor } => write!(f, "{actor} is already registered"),
             Self::UnknownActor { actor } => write!(f, "{actor} is not registered"),
@@ -273,7 +274,7 @@ struct VictimScratch {
 /// The per-session damage authority. See the module docs.
 #[derive(Clone, Debug)]
 pub struct DamageResolver {
-    session: u64,
+    session: SessionId,
     producer: u32,
     actors: BTreeMap<ActorId, ActorDamage>,
     sequence: u32,
@@ -286,9 +287,11 @@ impl DamageResolver {
     /// A restart or aircraft swap is a *new* resolver: prior part damage,
     /// lifecycle records and deferred events never carry into the next
     /// generation (F29 non-negotiable behavior 5;
-    /// `STATE-TRANSACTIONS` session generations).
+    /// `STATE-TRANSACTIONS` session generations). The nonzero
+    /// [`SessionId`] is the shared identity type, so a resolver can never
+    /// be built for the "no session" sentinel.
     #[must_use]
-    pub fn new(session: u64, producer: u32) -> Self {
+    pub fn new(session: SessionId, producer: u32) -> Self {
         Self {
             session,
             producer,
@@ -299,7 +302,7 @@ impl DamageResolver {
 
     /// The session generation this resolver owns.
     #[must_use]
-    pub const fn session(&self) -> u64 {
+    pub const fn session(&self) -> SessionId {
         self.session
     }
 

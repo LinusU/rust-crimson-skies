@@ -34,6 +34,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 
 use cs_types::content::{ContentId, ContentKind};
+use cs_types::net::SessionId;
 
 use crate::damage::ActorId;
 
@@ -580,14 +581,19 @@ impl CinematicPlayer {
 
 /// The session generation the synthetic fixture belongs to.
 pub const SYNTHETIC_SESSION: u64 = 9;
+/// [`SYNTHETIC_SESSION`] as the shared nonzero session type.
+pub const SYNTHETIC_SESSION_ID: SessionId = match SessionId::new(SYNTHETIC_SESSION) {
+    Some(id) => id,
+    None => unreachable!(),
+};
 /// The aircraft the player starts the synthetic scene in.
 pub const SYNTHETIC_PLAYER: ActorId = ActorId {
-    session: SYNTHETIC_SESSION,
+    session: SYNTHETIC_SESSION_ID,
     serial: 1,
 };
 /// The aircraft the player swaps to during the synthetic scene.
 pub const SYNTHETIC_SWAPPED_PLAYER: ActorId = ActorId {
-    session: SYNTHETIC_SESSION,
+    session: SYNTHETIC_SESSION_ID,
     serial: 2,
 };
 /// The synthetic scene length: 10 s at 10 ticks/s.

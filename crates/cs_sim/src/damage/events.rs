@@ -17,16 +17,15 @@
 //!
 //! # Identity
 //!
-//! [`ActorId`] is the damage-scoped realization of the `IDENTITY-CONTENT`
-//! `ActorId { session, serial }` and [`HitEventId`]/[`DamageEventId`] of
-//! `EventId(session, tick, producer, sequence)`: `cs_types` does not
-//! implement the shared types yet (recorded in
-//! `docs/findings/2026-09-30-f29-a-damage-graphs-hit-ordering-lifecycle.md`),
-//! so this module carries the same fields rather than guessing a shared
-//! one. Session qualification is load-bearing
+//! [`ActorId`] and [`EventId`] are the shared `IDENTITY-CONTENT` identity
+//! types `cs_types::net` owns; [`HitEventId`] and [`DamageEventId`] are the
+//! damage-facing names of the same [`EventId`] (task #442). Session
+//! qualification is load-bearing
 //! (`docs/contracts/STATE-TRANSACTIONS.md`: "Results, previous targets and
 //! delayed callbacks are always generation-qualified"): a hit or event from
-//! a previous session generation can never alias a live one.
+//! a previous session generation can never alias a live one, and the
+//! nonzero [`cs_types::net::SessionId`] expresses "no session" in the type
+//! rather than as a bare zero.
 //!
 //! # Lifecycle separation
 //!
@@ -40,65 +39,31 @@
 
 use std::fmt;
 
-use cs_types::Tick;
 use cs_types::evidence::ClaimId;
+pub use cs_types::net::{ActorId, EventId};
 
 use super::graph::{DamageChannel, DamageNodeKey, PartState, SystemKind};
 
-/// One actor inside one session generation: the contract's
-/// `ActorId { session, serial }` shape.
-///
-/// `serial` is never recycled inside a session (`docs/01-ARCHITECTURE.md`:
-/// "a non-recycled generation-qualified local id"), so an id always names
-/// exactly one actor of one session.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ActorId {
-    /// The session generation the actor belongs to.
-    pub session: u64,
-    /// The actor's serial within that session.
-    pub serial: u64,
-}
-
-impl fmt::Display for ActorId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "actor {}:{}", self.session, self.serial)
-    }
-}
-
-/// The identity of one [`HitEvent`]: `EventId(session, tick, producer,
-/// sequence)` applied to a damage input.
+// Damage identity is the shared `IDENTITY-CONTENT` identity `cs_types::net`
+// owns (task #442). `HitEventId` and `DamageEventId` are the damage-facing
+// names of the one [`EventId`]: the resolver's hit inputs, its emitted
+// events and any other consumer's events are the same type, so they
+// compare, order and hash together and cross a crate boundary unchanged.
+// The aliases keep the damage vocabulary without a second struct.
+/// The identity of one [`HitEvent`]: the shared [`EventId`] applied to a
+/// damage input.
 ///
 /// `producer` is the serial of the system that emitted the hit (a weapon
 /// mount, a collision reporter, a script) and `sequence` orders that
 /// producer's own hits. Ordering by the full id — session, tick, producer,
 /// sequence — is the declared deterministic hit order the resolver applies
 /// within a tick.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct HitEventId {
-    /// The session generation the hit was produced in.
-    pub session: u64,
-    /// The simulation tick the hit belongs to.
-    pub tick: Tick,
-    /// The producing system's serial.
-    pub producer: u32,
-    /// The hit's sequence within its producer.
-    pub sequence: u32,
-}
+pub type HitEventId = EventId;
 
-/// The identity of one [`DamageEvent`]: the same `EventId` shape stamped
+/// The identity of one [`DamageEvent`]: the same shared [`EventId`] stamped
 /// by the resolver. `producer` is the resolver's own serial, `sequence`
 /// orders the events it emits.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct DamageEventId {
-    /// The session generation the event was produced in.
-    pub session: u64,
-    /// The simulation tick the event was emitted at.
-    pub tick: Tick,
-    /// The resolver's producer serial.
-    pub producer: u32,
-    /// The event's sequence within the resolver.
-    pub sequence: u32,
-}
+pub type DamageEventId = EventId;
 
 /// Why a [`HitEvent`] was rejected.
 #[derive(Clone, Copy, Debug, PartialEq)]
