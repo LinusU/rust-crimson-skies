@@ -13,11 +13,11 @@ report required).
   `TargetStore::clear_reason` (new), `TargetStore::present` (new), and the
   `phase` rewrite that derives the clear reason before it prunes.
 - `crates/cs_app/src/targeting.rs`: `AssistanceOption`/`AssistanceOptions`
-  (new), `LoweredTargetRules::lead_indicator_evidence`/`aim_assistance_evidence`
+  (new), `LoweredTargetRules::lead_indicator_provenance`/`aim_assistance_provenance`
   (new fields), `TargetingSession::assistance` (new accessor), `ClearedTarget`
-  re-export through the views, `HudTargetReadout`/`SpyglassTarget`/
-  `SpyglassReadout`/`AssistanceOffer`/`WeaponGuidance`/`GuidanceReadout`/
-  `ConsumerViews`/`TargetConsumers` (new), `apply_target_consumers` and
+  carried through the views, `HudTargetReadout`/`SpyglassTarget`/
+  `SpyglassReadout`/`AssistanceOffer`/`GuidanceReadout`/`TargetConsumers`/
+  `ConsumerBinding` (new), `apply_target_consumers` and
   `teardown_target_consumers` (new entries).
 - `crates/cs_content/src/target_rules.rs`: documentation of the F30-C consumer
   contract only. The declared schema needed no new record: the two assistance
@@ -77,28 +77,38 @@ guessed.
   the dropped cues in `HudTargetReadout::withdrawn` rather than hiding them.
   It deliberately does **not** drop a cue for an attacker that merely lost
   sensor contact: a warning is exactly what a contact you cannot see is worth.
-- **Guidance publishes eligibility, never a correction.** `WeaponGuidance`
-  carries the selected actor, its distance and two separate
-  `AssistanceOffer`s (lead indicator, aim assistance), each with the declared
-  option's `Provenance`. An offer is `offered` only when the declared option is
-  on **and** the target is a *declared hostile*; a friendly, neutral or
-  undeclared pair is never offered either option. No lead point, aim offset,
-  correction magnitude or hit path exists in the record: targeting holds no
-  target velocity and no measured ballistics, so a lead point computed here
-  would be a fabricated value (AGENTS: unknown means unknown). The weapon path
-  that owns muzzle velocity and projectiles (F27-B) draws the point; this stage
-  only says whether it may.
+- **Guidance publishes eligibility, never a correction.** The store answers
+  whether an aid *may* apply here (`WeaponGuidance`: the selected actor, its
+  canonical position, the bearing toward it, its distance and the two live
+  verdicts), and the two declared options travel beside it as two separate
+  `AssistanceOffer`s on `GuidanceReadout`, each with the declared option's
+  `Provenance`. The two facts stay separate on purpose: `GuidanceReadout::aid`
+  is `None` only when the store *refused* the query (nothing selected, the target
+  is not a declared hostile, or the query could not be answered), never because
+  an option is off, and `offers_lead_indicator()` / `offers_aim_assistance()` are
+  what join "declared on and presentable" to "a target to apply it to". An aid
+  is offered for a **declared hostile** only: a friendly, neutral or undeclared
+  pair is refused by the store and reported as
+  `GuidanceWithheld::NotHostile`. No lead point, aim offset, correction
+  magnitude or hit path exists in any of the records: targeting holds no target
+  velocity and no measured ballistics, so a lead point computed here would be a
+  fabricated value (AGENTS: unknown means unknown). The weapon path that owns
+  muzzle velocity and projectiles (F27-B) draws the point; this stage only says
+  whether it may.
 - **Teardown is generation-qualified.** `TargetConsumers` is bound to
-  `(session, observer)`. A pass for a different session or observer rebinds and
-  reports `rebound`, dropping the previous binding's target instead of
-  carrying it across an aircraft swap. `teardown_target_consumers(world,
+  `(session, observer)`. A pass for a different observer rebinds and reports
+  `rebound`, dropping the previous binding's target instead of carrying it
+  across an aircraft swap; an `ActorId` is generation-qualified, so a replaced
+  session under the same serial rebinds as well. `teardown_target_consumers(world,
   session)` clears the views only when the bound session is the one tearing
   down, so a late teardown for a previous generation cannot clear a live view.
-- **Errors leave nothing stale.** A pass that cannot derive a record (no
-  session, an unregistered observer) unbinds the views before returning the
-  error, so a consumer that reads the resource after a failed pass finds
-  nothing to render. The next successful pass republishes — the retry path is
-  the same code path as the first pass.
+- **Errors leave nothing stale.** A pass that cannot derive a record (no session
+  at all, or an observer this session's store does not hold) unbinds the views
+  before returning the error, so a consumer that reads the resource after a
+  failed pass finds nothing to render. The `NoSession` case matters on its own:
+  the views outlive the `TargetingSession` resource that derived them, so a
+  refused pass has to take them down with it. The next successful pass
+  republishes — the retry path is the same code path as the first pass.
 
 ## Unknowns recorded (not guessed)
 
@@ -187,6 +197,66 @@ afterwards; the branch is byte-identical to the pushed commit afterwards.
 - **The original warning-list rule is unmeasured.** Keeping the cue for an
   attacker that merely lost sensor contact is the designed rule here; whether
   the original HUD does the same is F30-D's to measure.
+
+## Review pass (bunny-2, 2026-10-02)
+
+The reviewer of this branch is the same agent identity (`bunny-2`) that
+implemented it, but in a **fresh context**: it read the pushed commit, the sheet,
+the contract and the surrounding modules from scratch and shares no state with
+the implementing session. That is weaker than the independent review AGENTS.md
+prefers for format and mission semantics, so the notes below are recorded as a
+self-review with fresh context, not as independent evidence. F30-C claims no
+original behavior, so nothing here rests on it.
+
+### Defect found in review and fixed
+
+**A pass refused for `NoSession` left the previous session's views published.**
+`apply_target_consumers` borrowed the `TargetingSession`, so it could not call the
+`&mut World` unbind helper from inside that borrow and instead returned
+`Err(NoSession)` directly — while its own `# Errors` contract and the "Errors
+leave nothing stale" section above both promised that *every* refusal unbinds
+first. The observable failure: a world whose `TargetingSession` resource is
+removed without a `teardown_target_consumers` call (a mission teardown, a plugin
+reload, a restart path) keeps the last frame's target bound and visible, and the
+next consumer pass returns an error while leaving it up. This is the exact
+stale-state failure AC03 and the sheet's "clears safely" criterion are about, so
+it is a real defect and not a documentation nit.
+
+The fix restructures the entry so both refusals are *collected* inside the
+borrow and handled by one unbind after it, which removes the special case rather
+than adding a second one. Discriminated by the new
+`accept_f30_c_a_vanished_session_leaves_no_published_view`, which fails against
+the pushed implementation (probe 1 below).
+
+### Documentation corrected in review
+
+The file named three symbols and one behavior that the code does not have:
+`lead_indicator_evidence`/`aim_assistance_evidence` (the fields are
+`lead_indicator_provenance`/`aim_assistance_provenance`), `ConsumerViews` (the
+resource is `TargetConsumers`), and a `WeaponGuidance` carrying two
+`AssistanceOffer`s with a hostility gate in `offered()` (the offers are on
+`GuidanceReadout`, and `offered()` is evidence-class only). The prose now
+describes what the code does. No production behavior changed for any of these.
+
+### Reviewer probes (each applied, observed, reverted)
+
+| Probe | Result |
+| --- | --- |
+| 1. restore the `NoSession` early `return` that skips the unbind | `accept_f30_c_a_vanished_session_leaves_no_published_view` **failed**; the other 26 task tests passed, so this defect was previously uncovered |
+| 2. `apply_target_consumers` gates `aid` on the declared assistance options (`aid.filter(\|_\| lead_indicator.enabled \|\| aim_assistance.enabled)`) | `accept_f30_c_an_aid_is_the_store_verdict_not_the_declared_option` **failed**, confirming the store's verdict and the declared option are separate facts |
+| 3. compare the rebind on `bound.session` as well as `bound.observer` | no test changed: an `ActorId` is generation-qualified, so the observer comparison already covers a replaced session. The redundant comparison was **removed** rather than kept, and the cross-generation case is now pinned by `accept_f30_c_a_new_session_generation_rebinds_the_views` |
+
+Probe 3 is a note about a change the reviewer decided *not* to keep: the extra
+session comparison was dead weight, and the honest form of the claim is the
+comment now on `rebound`.
+
+### Reviewer checks
+
+`cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets
+--all-features --locked -- -D warnings`, `cargo test --workspace --locked` and
+`cargo test --workspace --locked -- accept_f30_c_ --include-ignored` (27 task
+tests: 18 in `cs_app`, 9 in `cs_sim`) all pass on the reviewed commit. CI green
+on the same commit.
 
 ## Not claimed
 

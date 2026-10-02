@@ -1114,9 +1114,14 @@ pub struct GuidanceReadout {
     /// The tick this readout was derived at.
     pub at: Tick,
     /// The aid the weapon path may offer, derived by the store from the same
-    /// selection the reticle describes; `None` when nothing is selected or the
-    /// declared options do not reach this target — read
-    /// [`withheld`](Self::withheld) to tell those apart.
+    /// selection the reticle describes. `None` when the store **refused** the
+    /// query — nothing is selected, or the selected actor is not a declared
+    /// hostile, or the query could not be answered — and read
+    /// [`withheld`](Self::withheld) to learn which. It is `None` never because a
+    /// declared option is off: the two options are separate records below, and
+    /// [`offers_lead_indicator`](Self::offers_lead_indicator) and
+    /// [`offers_aim_assistance`](Self::offers_aim_assistance) are what join
+    /// "the option is on and presentable" to "there is a target to apply it to".
     pub aid: Option<WeaponGuidance>,
     /// The lead-indicator option as it stands.
     pub lead_indicator: AssistanceOffer,
@@ -1245,8 +1250,8 @@ pub struct ConsumerReport {
 /// Teardown, rebinding and error propagation:
 ///
 /// * the views are bound to `(session, observer)`; a pass for a different pair
-///   rebinds and reports [`ConsumerReport::rebound`], so an aircraft swap
-///   cannot carry a target box across generations;
+///   rebinds and reports [`ConsumerReport::rebound`], so neither an aircraft
+///   swap nor a replaced session can carry a target box across generations;
 /// * a pass that cannot derive a record publishes nothing and unbinds instead
 ///   of leaving the previous pass's views up, so a failed render shows no
 ///   target rather than a stale one, and the next successful pass republishes
@@ -1257,9 +1262,11 @@ pub struct ConsumerReport {
 /// # Errors
 ///
 /// [`TargetingError::NoSession`] when no [`TargetingSession`] is installed,
-/// and [`TargetError::UnknownActor`] when `observer` is not registered with
-/// this session's store. In both cases the published views are unbound before
-/// the error is returned.
+/// and [`TargetingError::Store`] (carrying [`TargetError::UnknownActor`]) when
+/// `observer` is not registered with this session's store. In both cases the
+/// published views are unbound before the error is returned, including the
+/// `NoSession` case where the views outlive the session resource they were
+/// derived from.
 pub fn apply_target_consumers(
     world: &mut World,
     observer: ActorId,
@@ -1268,12 +1275,12 @@ pub fn apply_target_consumers(
     // Read the previous binding before the mutable borrow: a pass for a
     // different `(session, observer)` rebinds, and a rebind must drop the
     // previous binding's target rather than carry it across a generation.
-    // A rebind drops the previous binding's selection before anything is derived.
-    // The session's [`TargetSelection`] is one selection for the whole session, so
-    // a pass for a different observer is an aircraft swap: the target box on
-    // screen belongs to the aircraft that is gone, and carrying it would show one
-    // pilot another's target (the `STATE-TRANSACTIONS` rule that a previous
-    // aircraft's state never survives the swap).
+    //
+    // Comparing the observer alone *is* the pair comparison, because an
+    // [`ActorId`] is generation-qualified: a session replaced under the same
+    // serial is a different actor id and rebinds like an aircraft swap. A pass
+    // with no [`TargetingSession`] at all is not a rebind — it refuses, and the
+    // refusal unbinds the previous session's views.
     let rebound = world
         .get_resource::<TargetConsumers>()
         .and_then(TargetConsumers::bound)
@@ -1283,50 +1290,63 @@ pub fn apply_target_consumers(
     // the guidance all come from, and the guidance query reads the same
     // selection again immediately after — so the aid can never name a target
     // the reticle has already dropped.
-    let derived = {
-        let Some(mut targeting) = world.get_resource_mut::<TargetingSession>() else {
-            return Err(TargetingError::NoSession);
-        };
-        let session = targeting.session();
-        let assistance = targeting.assistance().clone();
-        let TargetingSession {
-            store,
-            selection,
-            last_phase,
-            ..
-        } = &mut *targeting;
-        if rebound && store.is_registered(&observer) {
-            // The held selection is the previous observer's, so it goes with
-            // the binding. A new aircraft starts with no target rather than
-            // with the last pilot's.
-            //
-            // The `is_registered` guard matters: a rebind to an observer the
-            // store does not hold is refused by the phase below, and a failed
-            // pass must not have mutated the session on its way out.
-            selection.clear();
-        }
-        let result = store.phase(observer, selection, at).map(|phase| {
-            // The guidance query reads the same selection again
-            // immediately after the phase, so the aid can never name a
-            // target the reticle has already dropped. Its refusals are the
-            // interesting part, not failures: `NotHostile` is the gate
-            // working, and it is carried into `withheld` rather than
-            // thrown.
-            let (aid, refused) = match store.guidance(observer, selection, at) {
-                Ok(aid) => (Some(aid), None),
-                Err(error) => (None, Some(error)),
-            };
-            let (threats, withdrawn) = split_threats(store, &phase.threats);
-            (phase, aid, refused, threats, withdrawn)
-        });
-        match result {
-            Ok(derived) => {
-                *last_phase = Some(derived.0.clone());
-                Ok((session, assistance, derived))
+    //
+    // Both refusals — no session at all, and a store that will not describe the
+    // observer — are collected here rather than returned from inside the borrow,
+    // so the single unbind below covers them both: the views already published
+    // belong to a session that cannot describe this observer any more, and a
+    // consumer reading the resource after either error must find no target
+    // rather than the previous pass's.
+    let derived = match world.get_resource_mut::<TargetingSession>() {
+        None => Err(TargetingError::NoSession),
+        Some(mut targeting) => {
+            let session = targeting.session();
+            let assistance = targeting.assistance().clone();
+            let TargetingSession {
+                store,
+                selection,
+                last_phase,
+                ..
+            } = &mut *targeting;
+            if rebound && store.is_registered(&observer) {
+                // The held selection is the previous observer's, so it goes
+                // with the binding. A new aircraft starts with no target rather
+                // than with the last pilot's. The session's [`TargetSelection`]
+                // is one selection for the whole session, so a pass for a
+                // different observer is an aircraft swap: the target box on
+                // screen belongs to the aircraft that is gone, and carrying it
+                // would show one pilot another's target (the
+                // `STATE-TRANSACTIONS` rule that a previous aircraft's state
+                // never survives the swap).
+                //
+                // The `is_registered` guard matters: a rebind to an observer
+                // the store does not hold is refused by the phase below, and a
+                // failed pass must not have mutated the session on its way out.
+                selection.clear();
             }
-            Err(error) => {
-                *last_phase = None;
-                Err(TargetingError::Store(error))
+            let result = store.phase(observer, selection, at).map(|phase| {
+                // The guidance query reads the same selection again
+                // immediately after the phase, so the aid can never name a
+                // target the reticle has already dropped. Its refusals are the
+                // interesting part, not failures: `NotHostile` is the gate
+                // working, and it is carried into `withheld` rather than
+                // thrown.
+                let (aid, refused) = match store.guidance(observer, selection, at) {
+                    Ok(aid) => (Some(aid), None),
+                    Err(error) => (None, Some(error)),
+                };
+                let (threats, withdrawn) = split_threats(store, &phase.threats);
+                (phase, aid, refused, threats, withdrawn)
+            });
+            match result {
+                Ok(derived) => {
+                    *last_phase = Some(derived.0.clone());
+                    Ok((session, assistance, derived))
+                }
+                Err(error) => {
+                    *last_phase = None;
+                    Err(TargetingError::Store(error))
+                }
             }
         }
     };
@@ -1335,7 +1355,8 @@ pub fn apply_target_consumers(
         Err(error) => {
             // A failed pass publishes nothing: unbind before reporting, so a
             // consumer reading the resource after the error finds no target
-            // rather than the previous pass's.
+            // rather than the previous pass's. The next successful pass
+            // republishes — the retry path is the same code as the first pass.
             unbind_consumers(world);
             return Err(error);
         }
@@ -1387,8 +1408,11 @@ pub fn apply_target_consumers(
         (None, Some(error)) => Some(GuidanceWithheld::Refused {
             reason: error.to_string(),
         }),
+        // Unreachable while `refused` is `Some` exactly when `aid` is `None`,
+        // and kept so that a future change to the query reports a missing
+        // answer as a refusal rather than quietly as "no aid".
         (None, None) => Some(GuidanceWithheld::Refused {
-            reason: "the store offered no guidance query result".to_owned(),
+            reason: "the store answered no guidance query".to_owned(),
         }),
     };
     let guidance = GuidanceReadout {

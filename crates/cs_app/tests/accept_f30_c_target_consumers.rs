@@ -816,6 +816,127 @@ fn accept_f30_c_entry_refuses_without_a_session() {
     assert!(!teardown_target_consumers(&mut world, session_id()));
 }
 
+/// A session that goes away must take its published views with it. The views
+/// outlive the [`TargetingSession`] resource that derived them, so a pass
+/// refused for `NoSession` has to unbind before reporting — otherwise the last
+/// frame's target stays on screen with no session behind it.
+#[test]
+fn accept_f30_c_a_vanished_session_leaves_no_published_view() {
+    let generation = SceneGeneration::default().next();
+    let mut world = bound_world(generation);
+    sync_targetable_roster(&mut world);
+    apply_selection_edges(
+        &mut world,
+        actor(1),
+        &edges(&[FlightCommand::TargetNext]),
+        cs_sim::targeting::SelectionFrame::at(Tick(20)),
+    )
+    .expect("registered");
+    let view = apply_target_consumers(&mut world, actor(1), Tick(21)).expect("registered");
+    assert!(view.spyglass.expect("a spyglass view").has_target());
+
+    // The session resource is removed, as a mission teardown that has not run
+    // `teardown_target_consumers` would leave it.
+    let session = world
+        .remove_resource::<TargetingSession>()
+        .expect("the session is installed");
+    assert_eq!(
+        apply_target_consumers(&mut world, actor(1), Tick(22)),
+        Err(TargetingError::NoSession)
+    );
+    let consumers = world.resource::<cs_app::targeting::TargetConsumers>();
+    assert!(
+        consumers.bound().is_none(),
+        "the refused pass unbound the views: nothing on screen belongs to a session that is gone"
+    );
+    assert!(consumers.hud().is_none());
+    assert!(consumers.spyglass().is_none());
+    assert!(consumers.guidance().is_none());
+
+    // Restoring the session republishes from scratch: the retry path is the
+    // first pass's, and the held selection came back with the resource.
+    world.insert_resource(session);
+    let view = apply_target_consumers(&mut world, actor(1), Tick(23)).expect("registered");
+    assert!(
+        view.spyglass.expect("a spyglass view").has_target(),
+        "the restored session republishes its own selection"
+    );
+}
+
+/// A new session generation under the same observer serial is a rebind, not a
+/// continuation. An `ActorId` is generation-qualified, so the new generation's
+/// observer is a different id and the old generation's target box must not
+/// follow it.
+#[test]
+fn accept_f30_c_a_new_session_generation_rebinds_the_views() {
+    let generation = SceneGeneration::default().next();
+    let mut world = bound_world(generation);
+    sync_targetable_roster(&mut world);
+    apply_selection_edges(
+        &mut world,
+        actor(1),
+        &edges(&[FlightCommand::TargetNext]),
+        cs_sim::targeting::SelectionFrame::at(Tick(20)),
+    )
+    .expect("registered");
+    let view = apply_target_consumers(&mut world, actor(1), Tick(21)).expect("registered");
+    assert!(!view.rebound);
+    let first = view.spyglass.expect("a spyglass view");
+    assert!(first.has_target(), "the first generation frames a raider");
+
+    // The next generation: a different `SessionId`, the same observer serial,
+    // and its own roster.
+    let next = SessionId::new(SESSION + 1).expect("a nonzero generation");
+    let next_actor = |serial: u64| ActorId {
+        session: next,
+        serial,
+    };
+    let declared = declared_synthetic_target_rules();
+    world.insert_resource(TargetingSession::new(
+        next,
+        lower_rules(&declared).expect("the fixture rules lower"),
+        lower_selection_actions(&declared_synthetic_selection_actions()).expect("actions lower"),
+        declared.subject().clone(),
+        generation,
+    ));
+    for (serial, faction, class, objective, position) in roster() {
+        let mut state = TargetableState::aircraft(faction, pos(position));
+        state.class = class;
+        state.objective = objective;
+        world.spawn((
+            TargetableBinding {
+                actor: next_actor(serial),
+                rules: declared.subject().clone(),
+                generation,
+            },
+            state,
+        ));
+    }
+    sync_targetable_roster(&mut world);
+
+    let view = apply_target_consumers(&mut world, next_actor(1), Tick(30)).expect("registered");
+    assert!(
+        view.rebound,
+        "an `ActorId` is generation-qualified, so a new session under the same serial is a \
+         different observer and rebinds"
+    );
+    assert_eq!(
+        view.spyglass.expect("a spyglass view").target,
+        None,
+        "the new generation starts with its own selection, not the old one's"
+    );
+    assert_eq!(
+        world
+            .resource::<cs_app::targeting::TargetConsumers>()
+            .bound(),
+        Some(ConsumerBinding {
+            session: next,
+            observer: next_actor(1)
+        }),
+        "and the views are attributed to the generation that derived them"
+    );
+}
+
 /// The two assistance options stay separate options with their own evidence
 /// classification, and a *measured* option is presentable where a designed one
 /// is not. Nothing here is a hit correction: an unknown option refuses to lower
@@ -959,6 +1080,85 @@ fn accept_f30_c_assistance_options_carry_their_own_evidence() {
         aid.target,
         actor(2),
         "the aid names a target and nothing else"
+    );
+}
+
+/// An aid is the store's *eligibility* answer, not the declared option, and the
+/// two are reported separately: a session that declares both assistance options
+/// off still gets the store's verdict for its selected declared hostile, so a
+/// weapon path reads "may an aid apply here" and "is an aid declared and
+/// evidenced" as two independent facts instead of one flag that hides a missing
+/// option.
+#[test]
+fn accept_f30_c_an_aid_is_the_store_verdict_not_the_declared_option() {
+    let declared = declared_synthetic_target_rules();
+    let mut rules = declared.rules().clone();
+    rules.lead_indicator = Resolved::Known(Known::new(
+        false,
+        Provenance::designed(claim("f30c.no-assistance")),
+    ));
+    rules.aim_assistance = Resolved::Known(Known::new(
+        false,
+        Provenance::designed(claim("f30c.no-assistance")),
+    ));
+    let declared = cs_content::target_rules::DeclaredTargetRules::try_new(
+        declared.subject().clone(),
+        declared.origin().clone(),
+        declared.factions().to_vec(),
+        declared.relations().to_vec(),
+        rules,
+        declared.provenance().clone(),
+    )
+    .expect("the record is structurally valid");
+
+    let generation = SceneGeneration::default().next();
+    let mut world = World::new();
+    world.insert_resource(TargetingSession::new(
+        session_id(),
+        lower_rules(&declared).expect("the rules lower"),
+        lower_selection_actions(&declared_synthetic_selection_actions()).expect("actions lower"),
+        declared.subject().clone(),
+        generation,
+    ));
+    for (serial, faction, class, objective, position) in roster() {
+        let mut state = TargetableState::aircraft(faction, pos(position));
+        state.class = class;
+        state.objective = objective;
+        world.spawn((
+            TargetableBinding {
+                actor: actor(serial),
+                rules: declared.subject().clone(),
+                generation,
+            },
+            state,
+        ));
+    }
+    sync_targetable_roster(&mut world);
+    apply_selection_edges(
+        &mut world,
+        actor(1),
+        &edges(&[FlightCommand::TargetNext]),
+        cs_sim::targeting::SelectionFrame::at(Tick(20)),
+    )
+    .expect("registered");
+
+    let view = apply_target_consumers(&mut world, actor(1), Tick(21)).expect("registered");
+    let guidance = view.guidance.expect("a guidance view");
+    assert_eq!(
+        guidance
+            .aid
+            .as_ref()
+            .expect("the store's verdict for the selected declared hostile")
+            .target,
+        actor(2),
+        "the aid is not withheld because an option is off"
+    );
+    assert_eq!(guidance.withheld, None, "and nothing is refused");
+    assert!(!guidance.lead_indicator.enabled);
+    assert!(!guidance.aim_assistance.enabled);
+    assert!(
+        !guidance.offers_lead_indicator() && !guidance.offers_aim_assistance(),
+        "but neither option is declared, so the weapon path is offered neither"
     );
 }
 
