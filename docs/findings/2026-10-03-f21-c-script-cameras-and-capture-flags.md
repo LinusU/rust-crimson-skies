@@ -23,7 +23,7 @@ GPU.
 * `crates/cs_app/src/camera/mod.rs`, `crates/cs_app/src/lib.rs`: module
   declarations, re-exports and doc paragraphs only. No logic.
 * `crates/cs_app/tests/camera/{script,capture,session}.rs` (new), the F21-C
-  helpers in `common.rs`, and the module list in `tests/camera/main.rs`: the 28
+  helpers in `common.rs`, and the module list in `tests/camera/main.rs`: the 33
   `accept_f21_c_*` tests.
 * This file.
 
@@ -121,8 +121,8 @@ Recorded here because they are choices, not findings:
 
 ## Test sensitivity
 
-Nine mutations, applied and reverted, all against production code, run as
-`cargo test -p cs_app --test camera -- accept_f21_c_` (28 tests):
+Eight mutations, applied and reverted, all against production code, run as
+`cargo test -p cs_app --test camera -- accept_f21_c_`:
 
 1. `CameraSession::scripted_view` stops emitting `SubjectRebound` → **1 fails**:
    `accept_f21_c_swapping_aircraft_during_a_scripted_capture_rebinds_to_the_new_body`.
@@ -149,17 +149,52 @@ the re-run.)
 
 All were reverted; the tree is back to the implementation under review.
 
+### Review pass (bunny-alpha-2, reviewing its own implementation)
+
+A reviewer read the branch against this sheet, `docs/contracts/UI-NETWORK.md` and
+`AGENTS.md`, and found four defects — three of them places where the code did not
+do what its own documentation promised. Each was reproduced with a failing test
+before it was fixed, and each fix was mutation-checked in turn (the test fails
+again when the fix is reverted). The implementer was
+`bunny-alpha-2/bunny-alpha-2`; the reviewer is the same agent instance, so this
+is **not** independent evidence, and nothing below is a claim about the original.
+
+| # | defect | how it was reached | fix |
+| --- | --- | --- | --- |
+| R1 | **An event earned before a refused frame died with it.** `CameraSession::frame` collected events in a local `Vec` and only attached them to a `SessionFrame` it could return; a refusal from the rig (`UnaimableTarget`, `StaleSpyglassReadout`) or from the capture's projection pin dropped them. For a `SubjectRebound` the loss was permanent: `report_rebound` had already moved `self.bound`, so the session could never report that swap again. | a player swap on a frame whose published spyglass target sits on the camera's own eye; a script whose span ran out on a frame with no published player pose | events the session has already earned wait in `CameraSession::pending_events` and are carried by the next frame that can be drawn, or returned by `reset` |
+| R2 | **`release_script` documented a `ScriptEnded { Released }` it never emitted.** A producer releasing a script mid-cinematic — the ordinary teardown — changed the camera's authority silently. | any release after the script's first frame | `release_script` queues the end when the released script had driven a frame; a request released before it ever drove reports nothing, so `ScriptStarted` is never left unmatched |
+| R3 | **`reset` dropped a pending capture without saying so**, while `CameraEvent`'s own documentation lists "a capture it had pending will never be taken" as something a consumer must learn about. | install a capture, then end the session generation | `CameraEvent::CaptureDiscarded { requested }`; `reset` also returns whatever a refused frame had queued |
+| R4 | **A capture that pinned a view leaked its mode into the live camera.** The override recorded the *rig* to put back, and `ViewRig::Look` names no mode: a pilot free-looking in the cockpit came back from a chase-view capture free-looking in the **chase** view. | `select_rig(ViewRig::Look)`, then a capture pinning `ViewRig::Chase` | `CameraRig::restore_view(mode, looking)` restores mode and free look together, and the session records the whole live view before switching |
+
+The review also found four places where a **documented claim was not what the
+code did**, all fixed here: `mod.rs` carried a malformed intra-doc link;
+`CaptureOverride::Rig`'s documentation described an `effective` field that does
+not exist (the pair is `requested`/`restored`); `apply_capture` claimed the
+capture frame's switch "cannot fail later", which is true for a declared mode
+but not for the free-look rig — a producer can raise the spyglass in between, and
+that refusal is reported at the capture frame as `SessionError::Rig` and retried;
+and `session.rs` had two redundant intra-doc link targets.
+
+R4 is worth one further note, because it is a **design** decision rather than a
+recovered intent: a free look is a rig layered on a mode, and this seam now
+treats "the whole view" as the thing a one-frame override borrows and returns.
+F21-B's own tests were not changed; `restore_view` is new and used by the session
+only.
+
 ## Commands run (exit codes)
+
+Run by the implementer for the branch as first submitted (28 tests), and again
+by the review pass after R1–R4 (33 tests):
 
 ```text
 cargo fmt --all -- --check                                          → 0
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings → 0
 cargo test --workspace --locked                                     → 0
-cargo test --workspace --locked -- accept_f21_c_ --include-ignored    → 0 (28 tests, all passed)
+cargo test --workspace --locked -- accept_f21_c_ --include-ignored    → 0 (33 tests, all passed)
 ```
 
-The task selection discovers exactly the 28 `accept_f21_c_*` tests in
-`crates/cs_app/tests/camera/` (`script.rs` 7, `capture.rs` 6, `session.rs` 15).
+The task selection discovers exactly the 33 `accept_f21_c_*` tests in
+`crates/cs_app/tests/camera/` (`script.rs` 7, `capture.rs` 6, `session.rs` 20).
 None is `#[ignore]`d: nothing here needs `CS_GAME_DIR`. The F21-A and F21-B
 tests in the same binary (15 and 26) still pass.
 
@@ -178,6 +213,7 @@ named with the stage that resolves it:
 | What the original's screenshot or capture mode accepts (world pose flags, tick flags, deterministic settings) | `cs_app::cli` still refuses every flag outside `--synthetic --headless`, so no original CLI was read or reproduced; `CaptureRequest` is the record a parser would build | a CLI stage (F00-C follow-up, filed below) and F21-D |
 | Whether a scripted camera follows a subject with the body's own axes or aims at it | the seam uses the declared placement and the body's axes; aiming at a subject would be a second placement convention | F40-B, F21-D |
 | Whether a capture should override the live camera or replace it | the stage overrides for one frame and reports every override; a "replace" policy is a producer decision this seam does not make | F17-C (`retail`, `gpu`) |
+| What the original does to the player's view state across a screenshot — whether a captured frame leaves the current camera, mode and free look exactly as they were | nothing measured; this stage borrows and returns the whole view (R4) because leaking an override into the frames around it would be a defect by this project's own rules, not because the original was observed doing so | F21-D (`gpu` + `retail`) |
 
 ### Follow-ups filed, not fixed here
 

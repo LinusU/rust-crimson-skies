@@ -18,20 +18,25 @@
 use std::time::Duration;
 
 use cs_app::camera::{
-    BodyPose, CameraAuthority, CameraEvent, CameraSession, CaptureError, CaptureOverride,
-    CaptureRequest, RigAimError, RigError, ScriptCameraRequest, ScriptEndReason, ScriptSubject,
-    SessionError, SessionFrameInputs, ViewRig,
+    BodyPose, CameraAuthority, CameraEvent, CameraRig, CameraSession, CaptureError,
+    CaptureOverride, CaptureRequest, ProjectionPinError, RigAimError, RigError,
+    ScriptCameraRequest, ScriptEndReason, ScriptSubject, SessionError, SessionFrameInputs, ViewRig,
+    lower_camera_modes,
 };
 use cs_app::origin::OriginChange;
 use cs_app::targeting::{SpyglassReadout, SpyglassTarget};
-use cs_content::cameras::{AspectRatio, CameraModeKind};
+use cs_content::cameras::{
+    AspectFraming, AspectRatio, CameraModeKind, DeclaredCameraMode, FovAxis, Magnification,
+    ProjectionPolicy,
+};
 use cs_sim::targeting::{Allegiance, TargetClass};
 use cs_types::Tick;
-use cs_types::space::{Meters, Quaternion};
+use cs_types::space::{Meters, Quaternion, Radians};
 
 use crate::common::{
     actor, aircraft_pose, assert_close, assert_close_position, authored_session, camera_track,
-    mission, origin_pose, spyglass_authored_session, world,
+    declared_set, fov_deg_f64, known, known_look_limits, mission, origin_pose, placement,
+    spyglass_authored_session, world,
 };
 
 /// The frame rate the scenario runs at. A fixed one keeps the smoothing law out
@@ -823,6 +828,90 @@ fn accept_f21_c_releasing_a_running_script_reports_the_end_it_caused() {
         "a script that never drove has no end to report: {:?}",
         frame.events
     );
+}
+
+#[test]
+fn accept_f21_c_a_capture_the_frame_cannot_pin_stays_installed_and_is_retried() {
+    // The third way a frame is refused: the frame draws, but its projection has
+    // no `f32` near it, so the comparison record a capture has to carry cannot
+    // be written. That is a refusal of the *report*, not a teardown: the capture
+    // is still pending, and the next frame tries it again with the same code. A
+    // session that dropped it here would lose the evidence run's shot.
+    let mut session = unpinnable_session();
+    let published = bodies(1, [0.0, 0.0, 0.0], None);
+    session
+        .apply_capture(CaptureRequest::new(mission("m01"), Tick(1)).expect("valid"))
+        .expect("installed");
+
+    let refusal = session
+        .frame(&inputs(1, 1, &published, None))
+        .expect_err("the declared far plane has no f32 near it");
+    assert_eq!(
+        refusal,
+        SessionError::ProjectionPin(ProjectionPinError::Unrepresentable {
+            field: "far_m",
+            exact: 1.0e300
+        }),
+        "the refusal names the field, so the fix is a declaration and not a guess"
+    );
+    assert_eq!(
+        session.capture().map(|capture| capture.tick()),
+        Some(Tick(1)),
+        "the capture is still installed: a refusal is not a teardown"
+    );
+
+    let again = session
+        .frame(&inputs(1, 1, &published, None))
+        .expect_err("the same frame, the same request, the same refusal");
+    assert_eq!(again, refusal, "and the retry is not a silent drop either");
+    assert!(session.pending_events().is_empty());
+
+    // Once the frame can be pinned the capture is taken, so the retry really is
+    // the same request rather than a new one the producer has to notice.
+    let mut pinnable = authored_session();
+    pinnable
+        .apply_capture(CaptureRequest::new(mission("m01"), Tick(1)).expect("valid"))
+        .expect("installed");
+    let taken = pinnable
+        .frame(&inputs(1, 1, &published, None))
+        .expect("the capture frame");
+    assert!(
+        taken.capture.is_some(),
+        "the same request on a pinnable frame is taken"
+    );
+    assert!(pinnable.capture().is_none());
+}
+
+/// A session whose cockpit mode declares a far plane with no `f32` near it.
+///
+/// The value is extreme but legal in the canonical `f64` world this project
+/// owns; it is here so the *capture* boundary's refusal is reachable through the
+/// session and not only by calling `pin` directly.
+fn unpinnable_session() -> CameraSession {
+    let modes = lower_camera_modes(&declared_set(
+        vec![
+            DeclaredCameraMode::try_new(
+                CameraModeKind::Cockpit,
+                ProjectionPolicy {
+                    fov: known(Radians(fov_deg_f64(60.0))),
+                    fov_axis: known(FovAxis::Vertical),
+                    reference_aspect: known(AspectRatio::FOUR_THREE),
+                    framing: known(AspectFraming::PreserveVertical),
+                    near_m: known(Meters(0.1)),
+                    far_m: known(Meters(1.0e300)),
+                },
+                known(Magnification::ONE),
+                known(false),
+                placement(CameraModeKind::Cockpit),
+                known_look_limits(),
+            )
+            .expect("the designed mode is valid"),
+        ],
+        CameraModeKind::Cockpit,
+    ))
+    .expect("the designed set lowers");
+    CameraSession::new(CameraRig::new(modes).expect("the default mode has a rig"))
+        .expect("the rig's response rate is finite and positive")
 }
 
 #[test]
