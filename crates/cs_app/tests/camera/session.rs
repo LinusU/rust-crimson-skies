@@ -19,17 +19,19 @@ use std::time::Duration;
 
 use cs_app::camera::{
     BodyPose, CameraAuthority, CameraEvent, CameraSession, CaptureError, CaptureOverride,
-    CaptureRequest, ScriptCameraRequest, ScriptEndReason, ScriptSubject, SessionError,
-    SessionFrameInputs, ViewRig,
+    CaptureRequest, RigAimError, RigError, ScriptCameraRequest, ScriptEndReason, ScriptSubject,
+    SessionError, SessionFrameInputs, ViewRig,
 };
 use cs_app::origin::OriginChange;
+use cs_app::targeting::{SpyglassReadout, SpyglassTarget};
 use cs_content::cameras::{AspectRatio, CameraModeKind};
+use cs_sim::targeting::{Allegiance, TargetClass};
 use cs_types::Tick;
-use cs_types::space::Quaternion;
+use cs_types::space::{Meters, Quaternion};
 
 use crate::common::{
     actor, aircraft_pose, assert_close, assert_close_position, authored_session, camera_track,
-    mission, origin_pose, world,
+    mission, origin_pose, spyglass_authored_session, world,
 };
 
 /// The frame rate the scenario runs at. A fixed one keeps the smoothing law out
@@ -67,7 +69,7 @@ fn inputs<'a>(
     at: u64,
     player: u64,
     bodies: &'a [BodyPose],
-    spyglass: Option<&'a cs_app::targeting::SpyglassReadout>,
+    spyglass: Option<&'a SpyglassReadout>,
 ) -> SessionFrameInputs<'a> {
     SessionFrameInputs {
         at: Tick(at),
@@ -78,6 +80,21 @@ fn inputs<'a>(
         look: None,
         spyglass,
         origin_change: OriginChange::Rebase,
+    }
+}
+
+/// A published spyglass target at `position`, which is how a producer's own
+/// published view says "this is what the spyglass would magnify".
+fn target_on(actor: cs_sim::damage::ActorId, position: [f64; 3]) -> SpyglassTarget {
+    SpyglassTarget {
+        actor,
+        class: TargetClass::Aircraft,
+        allegiance: Some(Allegiance::Hostile),
+        hostile: true,
+        threatening: false,
+        objective: false,
+        position: world(position),
+        distance: Meters(0.0),
     }
 }
 
@@ -548,6 +565,175 @@ fn accept_f21_c_a_frame_refusal_tears_down_nothing_and_the_next_frame_retries() 
 }
 
 #[test]
+fn accept_f21_c_a_frame_refusal_still_reports_the_rebound_the_swap_caused() {
+    // A frame can be refused *after* the session has already seen something the
+    // consumer must learn about. Here the player swaps aircraft and the rig then
+    // refuses the frame, because the target targeting published sits on the
+    // camera's own eye and cannot be aimed at (F21-B's rule, owned by the rig).
+    // The rebound is a fact about the world that has already happened and the
+    // session has already recorded it; dropping it with the refused frame would
+    // leave a consumer that skipped a frame — a load spike, a paused renderer —
+    // with a camera bound to a body it was never told about.
+    let mut session = spyglass_authored_session();
+    session
+        .select_rig(ViewRig::Spyglass)
+        .expect("the set declares a spyglass");
+    let first = bodies(1, [0.0, 0.0, 0.0], None);
+    let clear = SpyglassReadout {
+        at: Tick(5),
+        target: None,
+        cleared: None,
+    };
+    session
+        .frame(&inputs(5, 1, &first, Some(&clear)))
+        .expect("a spyglass frame with nothing selected");
+
+    // The swap, on a frame the rig refuses: the new body's eye is at the body's
+    // own position and the published target sits exactly there.
+    let second = bodies(2, [4_000.0, 0.0, 0.0], None);
+    let on_the_eye = SpyglassReadout {
+        at: Tick(6),
+        target: Some(target_on(actor(9), [4_000.0, 0.0, 0.0])),
+        cleared: None,
+    };
+    let refusal = session
+        .frame(&inputs(6, 2, &second, Some(&on_the_eye)))
+        .expect_err("a target on the camera's own eye cannot be aimed at");
+    assert_eq!(
+        refusal,
+        SessionError::Rig(RigError::UnaimableTarget {
+            actor: actor(9),
+            reason: RigAimError::CoincidentWithCamera,
+        }),
+        "the refusal is the rig's own and it tears down nothing"
+    );
+
+    // The rebound is not lost with the refused frame: the session has already
+    // moved its binding, so it cannot report it again later.
+    let recovered = session
+        .frame(&inputs(7, 2, &second, None))
+        .expect("the next frame retries with the same code");
+    assert_eq!(recovered.view.subject, Some(actor(2)));
+    assert!(
+        recovered.carries(&CameraEvent::SubjectRebound {
+            from: actor(1),
+            to: actor(2)
+        }),
+        "the swap the refused frame had already seen is reported once: {:?}",
+        recovered.events
+    );
+    let after = session
+        .frame(&inputs(8, 2, &second, None))
+        .expect("the frame after");
+    assert!(after.events.is_empty(), "and only once: {:?}", after.events);
+}
+
+#[test]
+fn accept_f21_c_a_script_that_ends_on_a_refused_frame_is_still_reported() {
+    // The second way a frame can lose an event: the script's span runs out, the
+    // session ends it and hands the camera back — and *then* the player's rig
+    // refuses the frame, because the producer published no pose for the body it
+    // says the player flies. The end has already happened and the script is
+    // already gone; if the event died with the refused frame, no consumer would
+    // ever learn that the camera came back.
+    let mut session = authored_session();
+    session.request_script(follow_request()).expect("installed");
+    let published = bodies(1, [0.0, 0.0, 0.0], None);
+    session
+        .frame(&inputs(39, 1, &published, None))
+        .expect("the last scripted frame");
+
+    let empty: Vec<BodyPose> = Vec::new();
+    let refusal = session
+        .frame(&inputs(40, 1, &empty, None))
+        .expect_err("no pose for the player body");
+    assert_eq!(refusal, SessionError::PlayerPoseMissing { actor: actor(1) });
+    assert!(
+        session.script().is_none(),
+        "the span is over whatever the frame could draw"
+    );
+
+    let after = session
+        .frame(&inputs(41, 1, &published, None))
+        .expect("the next frame");
+    assert_eq!(
+        after.authority,
+        CameraAuthority::Player {
+            rig: ViewRig::Cockpit
+        }
+    );
+    assert!(
+        after.carries(&CameraEvent::ScriptEnded {
+            camera: camera_track("synthetic.intro.pan"),
+            reason: ScriptEndReason::SpanEnded { at: Tick(40) },
+        }),
+        "the end is reported on the first frame that can report it, and it \
+         names the tick that discovered it: {:?}",
+        after.events
+    );
+    let next = session
+        .frame(&inputs(42, 1, &published, None))
+        .expect("the frame after");
+    assert!(next.events.is_empty(), "{:?}", next.events);
+}
+
+#[test]
+fn accept_f21_c_releasing_a_running_script_reports_the_end_it_caused() {
+    // The teardown path a producer uses mid-cinematic. It is reported on the
+    // next frame, because a camera that quietly stops being a script is exactly
+    // the silent handover this seam exists to rule out.
+    let mut session = authored_session();
+    session.request_script(follow_request()).expect("installed");
+    let published = bodies(1, [0.0, 0.0, 0.0], None);
+    session
+        .frame(&inputs(20, 1, &published, None))
+        .expect("a scripted frame");
+
+    let released = session.release_script().expect("something was released");
+    assert_eq!(
+        released,
+        follow_request(),
+        "the release hands the request back"
+    );
+    let after = session
+        .frame(&inputs(21, 1, &published, None))
+        .expect("the frame after the release");
+    assert_eq!(
+        after.authority,
+        CameraAuthority::Player {
+            rig: ViewRig::Cockpit
+        }
+    );
+    assert!(
+        after.carries(&CameraEvent::ScriptEnded {
+            camera: camera_track("synthetic.intro.pan"),
+            reason: ScriptEndReason::Released,
+        }),
+        "a release is an end like any other: {:?}",
+        after.events
+    );
+    let next = session
+        .frame(&inputs(22, 1, &published, None))
+        .expect("the frame after");
+    assert!(next.events.is_empty(), "{:?}", next.events);
+
+    // A request installed and released before it ever drew is not an end of
+    // anything: it never drove the camera, so there is no handover to report and
+    // `ScriptStarted` is not left unmatched.
+    let mut quiet = authored_session();
+    quiet.request_script(follow_request()).expect("installed");
+    assert!(quiet.release_script().is_some());
+    let frame = quiet
+        .frame(&inputs(20, 1, &published, None))
+        .expect("an ordinary player frame");
+    assert!(
+        frame.events.is_empty(),
+        "a script that never drove has no end to report: {:?}",
+        frame.events
+    );
+}
+
+#[test]
 fn accept_f21_c_the_session_writes_nothing_back_to_what_it_read() {
     // The camera is a consumer: the frame inputs are values, and drawing a
     // frame — scripted or captured — changes none of them. The published
@@ -602,15 +788,23 @@ fn accept_f21_c_a_session_reset_ends_the_script_and_drops_the_pending_capture() 
 
     // A new session generation must not open on the previous pilot's camera, a
     // script from a mission that has ended, or a capture for a tick in a
-    // mission that is no longer running — and the teardown names the script it
-    // forced, because a teardown nobody can see is not a teardown.
+    // mission that is no longer running — and the teardown names both what it
+    // forced and what it dropped, because a teardown nobody can see is not a
+    // teardown.
     let events = session.reset();
     assert_eq!(
         events,
-        vec![CameraEvent::ScriptEnded {
-            camera: camera_track("synthetic.intro.pan"),
-            reason: ScriptEndReason::SessionEnded
-        }]
+        vec![
+            CameraEvent::ScriptEnded {
+                camera: camera_track("synthetic.intro.pan"),
+                reason: ScriptEndReason::SessionEnded
+            },
+            CameraEvent::CaptureDiscarded {
+                requested: Tick(900)
+            },
+        ],
+        "the capture is named too: it is a promise the producer still believes \
+         in and this teardown will never keep"
     );
     assert!(session.script().is_none());
     assert!(session.capture().is_none());

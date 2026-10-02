@@ -430,10 +430,11 @@ pub enum CaptureOverride {
     /// The rig the capture drew through, and the rig the session went back to
     /// after the capture frame.
     ///
-    /// `requested` and `effective` are the same rig: the request is checked
-    /// against the mode set when it is installed, so the switch cannot fail
-    /// later. The pair is kept because a report that names only one of them
-    /// cannot answer "what was the capture taken through?".
+    /// `requested` *is* the rig the capture used: the request is checked
+    /// against the mode set when it is installed, so the switch cannot fail on
+    /// an undeclared mode later. The pair is kept because a report that named
+    /// only the view it drew through could not answer "what is the camera back
+    /// on now?", and a teardown is as much an override as the frame is.
     Rig {
         /// What the request asked for, and what the capture used.
         requested: ViewRig,

@@ -40,7 +40,12 @@
 //!    request can be retried. A script that *ends* — its span ran out, its body
 //!    is gone, the producer released it, the session was torn down — reports
 //!    [`CameraEvent::ScriptEnded`] with the reason on the frame the camera
-//!    returns, so nothing disappears silently.
+//!    returns, so nothing disappears silently. An event the session earned
+//!    before a frame it then *refused* waits in
+//!    [`pending_events`](CameraSession::pending_events) and is carried by the
+//!    next frame that can be drawn: the session's own state has already moved,
+//!    so it can never report that event a second time, and a frame that dropped
+//!    it would drop it for good.
 //! 3. **A capture is one frame and then it is gone.** A
 //!    [`CaptureRequest`] applies to exactly the frame at its tick and is
 //!    retired there. A pinned pose, a pinned rig and a pinned aspect cannot leak
@@ -329,6 +334,17 @@ pub enum CameraEvent {
         /// The tick the frame that found it late is at.
         at: Tick,
     },
+    /// A pending capture was dropped without being taken.
+    ///
+    /// The end-of-session teardown ([`CameraSession::reset`]) drops a capture
+    /// for a tick in a mission that is no longer running. The request is handed
+    /// back only when the caller itself asks for it
+    /// ([`CameraSession::clear_capture`]), so on this path the event is the only
+    /// record that a capture the producer believed in will never be taken.
+    CaptureDiscarded {
+        /// The tick the dropped capture asked for.
+        requested: Tick,
+    },
 }
 
 impl fmt::Display for CameraEvent {
@@ -346,6 +362,11 @@ impl fmt::Display for CameraEvent {
                 f,
                 "the capture for tick {} was missed: the session is at tick {}",
                 requested.0, at.0
+            ),
+            Self::CaptureDiscarded { requested } => write!(
+                f,
+                "the capture for tick {} was discarded; it will not be taken",
+                requested.0
             ),
         }
     }
@@ -503,6 +524,17 @@ pub struct CameraSession {
     capture: Option<CaptureRequest>,
     script_smoother: PoseSmoother,
     bound: Option<ActorId>,
+    /// Events that happened but have not reached a consumer yet.
+    ///
+    /// Everything the session does is a fact about the world that has already
+    /// happened: a script ended, the camera rebound, a capture was retired. A
+    /// frame that is *refused* produces no [`SessionFrame`] to carry them, so
+    /// they wait here until the next frame that can be drawn — or until
+    /// [`reset`](CameraSession::reset), which hands them back. Without this,
+    /// one incomplete producer frame would swallow the one event a consumer
+    /// needed, and the session would never report it again because its own state
+    /// has already moved on.
+    pending: Vec<CameraEvent>,
 }
 
 impl CameraSession {
@@ -526,6 +558,7 @@ impl CameraSession {
             capture: None,
             script_smoother,
             bound: None,
+            pending: Vec::new(),
         })
     }
 
@@ -566,6 +599,18 @@ impl CameraSession {
             Some(active) => active.subject,
             None => None,
         }
+    }
+
+    /// The events the session has reported but that have not reached a consumer
+    /// yet.
+    ///
+    /// Normally empty: [`frame`](Self::frame) carries the events of the frame it
+    /// produced. It is not empty after a frame that was **refused** — the events
+    /// that frame had already earned wait for the next one — so a caller that
+    /// wants them the moment they happen (a log, a test) can read them here.
+    #[must_use]
+    pub fn pending_events(&self) -> &[CameraEvent] {
+        &self.pending
     }
 
     /// The pending capture, when one is installed.
@@ -633,10 +678,24 @@ impl CameraSession {
     ///
     /// The teardown path: the returned request is what was released, and the
     /// next frame reports [`CameraEvent::ScriptEnded`] with
-    /// [`ScriptEndReason::Released`]. Releasing when no script is running is not
-    /// an error — it returns `None` and changes nothing.
+    /// [`ScriptEndReason::Released`], because a camera that quietly stops being
+    /// a script is exactly the silent handover this seam rules out.
+    ///
+    /// A request that is released before it ever drove a frame reports nothing:
+    /// there was no handover to announce, and an end with no
+    /// [`CameraEvent::ScriptStarted`] would leave a consumer counting a script
+    /// that never existed. Releasing when no script is running is not an error
+    /// either — it returns `None` and changes nothing.
     pub fn release_script(&mut self) -> Option<ScriptCameraRequest> {
-        self.script.take().map(|active| active.request)
+        self.script.take().map(|active| {
+            if active.started {
+                self.pending.push(CameraEvent::ScriptEnded {
+                    camera: active.request.camera().clone(),
+                    reason: ScriptEndReason::Released,
+                });
+            }
+            active.request
+        })
     }
 
     /// Installs a capture request for its tick.
@@ -645,7 +704,10 @@ impl CameraSession {
     ///
     /// * [`CaptureError::UndeclaredRig`] when the request pins a view the
     ///   owner's mode set has no rig for, checked **now** so the switch at the
-    ///   capture frame cannot fail later;
+    ///   capture frame cannot fail on an undeclared mode later. The free-look rig
+    ///   is the one a producer can still invalidate after this call — by raising
+    ///   the spyglass in between — and that refusal is reported at the capture
+    ///   frame as [`SessionError::Rig`] and retried like any other frame fault;
     /// * [`CaptureError::ScriptCoversTick`] when the request pins a view and a
     ///   running script covers its tick: a scripted camera is not a view a
     ///   capture can pin, and one of them must be released;
@@ -695,18 +757,25 @@ impl CameraSession {
     /// dropped and both smoothers are cleared, so the next generation's first
     /// frame cannot open on the previous pilot's camera position, on a script
     /// from a mission that has ended, or on a capture for a tick in a mission
-    /// that is no longer running. The events the caller must report are
-    /// returned, because a teardown that reports nothing is a teardown nobody
-    /// can see.
+    /// that is no longer running.
+    ///
+    /// Everything this drops that a consumer must learn about is returned —
+    /// the script's end, the discarded capture's tick, and whatever an earlier
+    /// refused frame had already earned — because a teardown that reports
+    /// nothing is a teardown nobody can see.
     pub fn reset(&mut self) -> Vec<CameraEvent> {
-        let mut events = Vec::new();
+        let mut events = std::mem::take(&mut self.pending);
         if let Some(active) = self.script.take() {
             events.push(CameraEvent::ScriptEnded {
                 camera: active.request.camera().clone(),
                 reason: ScriptEndReason::SessionEnded,
             });
         }
-        self.capture = None;
+        if let Some(capture) = self.capture.take() {
+            events.push(CameraEvent::CaptureDiscarded {
+                requested: capture.tick(),
+            });
+        }
         self.rig.reset();
         self.script_smoother.clear();
         self.bound = None;
@@ -725,9 +794,35 @@ impl CameraSession {
     /// behind is one frame of the rig's own smoothing — which is what a frame
     /// is — plus, when a capture pinned a view, the view being switched back to
     /// what it was before the capture frame.
+    ///
+    /// Anything the session learned *before* it refused is not lost with the
+    /// refused frame: the events stay in [`pending_events`](Self::pending_events)
+    /// and are carried by the next frame that can be drawn. A rebound the
+    /// session has already recorded cannot be reported twice, so a frame that
+    /// dropped it would drop it for good.
     pub fn frame(&mut self, inputs: &SessionFrameInputs<'_>) -> Result<SessionFrame, SessionError> {
-        let mut events = Vec::new();
+        // What an earlier refused frame had already earned comes first, so the
+        // order a consumer reads is the order things happened.
+        let mut events = std::mem::take(&mut self.pending);
+        let resolved = self.draw_frame(inputs, &mut events);
+        match resolved {
+            Ok(mut frame) => {
+                frame.events = events;
+                Ok(frame)
+            }
+            Err(error) => {
+                self.pending = events;
+                Err(error)
+            }
+        }
+    }
 
+    /// Draws one frame, appending what it learned to `events`.
+    fn draw_frame(
+        &mut self,
+        inputs: &SessionFrameInputs<'_>,
+        events: &mut Vec<CameraEvent>,
+    ) -> Result<SessionFrame, SessionError> {
         // A capture is for exactly one tick. One that is already behind can
         // never be taken, so it is retired with an event rather than held: a
         // pending capture is a promise about one frame, and a session that kept
@@ -762,7 +857,7 @@ impl CameraSession {
             .and_then(|pending| pending.aspect())
             .unwrap_or(inputs.aspect);
 
-        let resolved = self.resolve_frame(inputs, aspect, &mut events);
+        let resolved = self.resolve_frame(inputs, aspect, events);
         let restore = match capture_view {
             Some((_, previous)) => self.rig.set_rig(previous),
             None => Ok(()),
@@ -808,7 +903,8 @@ impl CameraSession {
         }
 
         frame.capture = report;
-        frame.events = events;
+        // The events are attached by `frame`, which is also what decides what
+        // happens to them if this frame is refused.
         Ok(frame)
     }
 

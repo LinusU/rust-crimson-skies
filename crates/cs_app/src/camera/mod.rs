@@ -45,7 +45,7 @@
 //!   pins — derived from the frame's own lowered policy, with the `f64 → f32`
 //!   narrowing kept visible rather than hidden behind a cast.
 //! * [`session`] is the integration: [`CameraSession`] owns the player's
-//!   [`CameraRig``, at most one scripted camera and at most one pending capture,
+//!   [`CameraRig`], at most one scripted camera and at most one pending capture,
 //!   and produces one [`SessionFrame`] per render frame naming the authority
 //!   that drew it. It is where AC03 — *swap aircraft during a scripted capture
 //!   and verify the camera binds to the new player body* — is decided.

@@ -183,6 +183,34 @@ pub fn mission(key: &str) -> ContentId {
     ContentId::from_source(ContentKind::Mission, key).expect("a valid mission id")
 }
 
+/// A mode set that declares an authored sequence **and** a spyglass.
+///
+/// The spyglass is the one rig F21-B can refuse a frame over for a reason the
+/// camera session does not own — a published view older than one the rig already
+/// consumed — so a session test that drives a refusal needs a set declaring both.
+pub fn spyglass_authored_set() -> LoweredCameraModes {
+    lowered_set(
+        vec![
+            declared_mode(CameraModeKind::Cockpit),
+            declared_mode(CameraModeKind::Spyglass),
+            declared_mode_with(
+                CameraModeKind::AuthoredSequence,
+                authored_placement(),
+                false,
+            ),
+        ],
+        CameraModeKind::Cockpit,
+    )
+}
+
+/// A session over [`spyglass_authored_set`].
+pub fn spyglass_authored_session() -> CameraSession {
+    CameraSession::new(
+        CameraRig::new(spyglass_authored_set()).expect("the spyglass set's default mode has a rig"),
+    )
+    .expect("the rig's response rate is finite and positive")
+}
+
 /// A rig over the synthetic fixture's own declared mode set.
 pub fn fixture_rig() -> CameraRig {
     CameraRig::new(
