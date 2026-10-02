@@ -116,6 +116,27 @@ directory is original game data — no assets, scripts or extracted bytes.
   identifies the chapter and not the mission (see
   `docs/findings/2026-10-02-m16-a-source-binding.md`). Same five resolved
   critical dependencies, same unverified status.
+- `M17.json` — the M17 binding output (stage M17-A), generated and pinned the
+  same way by `accept_m17_a_the_committed_record_is_what_the_installation_derives`.
+  No production code changed for it either: it runs M02-A's join and
+  corroboration at the seventeenth campaign position. Two things are measured
+  here that the earlier stages did not have to be. M17's declared title is
+  carried by the installation's bare short-name row and by **no** long name —
+  the region-prefixed form inserts `Nathan Zachary &` between the prefix and
+  the title — so unlike `M05.json` (whose declared title only the
+  region-prefixed long-name row carries) this record carries no
+  `title spelling` unknown. `M12.json` and `M16.json` also carry none, but for
+  the other reason: their titles are carried both verbatim and as a long-name
+  tail, so the verbatim form wins and the spelling arm is never reached. What
+  M17's own tail does resolve is the same campaign position, and therefore the
+  same three retail identities. And position 16 is the *second* mission of
+  chapter 4, one row past the boundary M16 measured, whose world group
+  `world/c4` holds all five chapter-4 missions while the mission number `2`
+  names one mission in every chapter: the program archive is the only
+  per-mission discriminator, and `ZBD/C4/M02/zrdr.zbd` is byte-length-distinct
+  from every sibling in its chapter (see
+  `docs/findings/2026-10-02-m17-a-source-binding.md`). Same five resolved
+  critical dependencies, same unverified status.
 - `M19.json` — the M19 binding output (stage M19-A), generated and pinned the
   same way by `accept_m19_a_the_committed_record_is_what_the_installation_derives`.
   No production code changed for it either: M19 is the nineteenth campaign
@@ -147,9 +168,12 @@ totals and closure reports — live in
 
 ## What is not here yet
 
-- `M09.json` … `M11.json`, `M14.json`, `M15.json` and `M17.json` … `M24.json` — the
-  per-mission binding outputs of M09-A … M11-A, M14-A, M15-A and M17-A … M24-A, created from original data the same way. Every one of them starts
-  unresolved.
+- `M09.json`, `M10.json`, `M11.json`, `M14.json`, `M15.json`, `M18.json`,
+  `M20.json`, `M22.json` and `M23.json` — the per-mission binding outputs of
+  M09-A, M10-A, M11-A, M14-A, M15-A, M18-A, M20-A, M22-A and M23-A, created from
+  original data the same way. Every one of them starts unresolved. (Listed
+  one by one rather than as ranges, because M19, M21 and M24 are bound while
+  M18, M20, M22 and M23 are not.)
 - Titles the installation spells differently again — M09, M11, M14, M15, M20,
   M22 and M23 — match neither display form and stay `Uncarried`. Which retail
   mission they name is not established here; see
