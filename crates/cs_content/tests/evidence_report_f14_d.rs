@@ -30,9 +30,17 @@
 //! F14-D.1 (#388) reuses this harness, because its acceptance suite is the
 //! same `accept_f14_d_` prefix: run the four steps with
 //! `private/evidence/F14-D.1` as `CS_EVIDENCE_DIR`, add
-//! `CS_EVIDENCE_TASK_ID=F14-D.1` to step 2 (it defaults to `F14-D`), pass
-//! `CS_EVIDENCE_REVIEW` to record the reviewing agent's identity and method,
-//! and commit `docs/findings/evidence/F14-D.1.json`.
+//! `CS_EVIDENCE_TASK_ID=F14-D.1` to step 2, pass `CS_EVIDENCE_REVIEW` to
+//! record the reviewing agent's identity and method, and commit
+//! `docs/findings/evidence/F14-D.1.json`.
+//!
+//! The report's task id is `\"task_id\": \"F14-D\"` unless `CS_EVIDENCE_TASK_ID`
+//! names a follow-up stage that reuses this harness, exactly as the template
+//! below writes it. The quoted `\"task_id\": \"F14-D\"` in the previous sentence
+//! is also what `tools/tests/test_evidence_review_identity.py` resolves this
+//! harness by — it reads the id the file writes before the report's `review`
+//! object — so a harness whose template only fills the id in at run time
+//! stops being cross-checked against its report. Keep the quoted id here.
 //!
 //! Every field of the report is derived here from real inputs: the recorded
 //! test log, the environment, production discovery of `$CS_GAME_DIR`, the
