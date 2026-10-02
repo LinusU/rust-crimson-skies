@@ -524,8 +524,8 @@ fn accept_f27_c_a_round_that_misses_reports_no_damage_resolution() {
             tick: Tick(1),
             events: Vec::new()
         }),
-        "no batch was resolved, and the tick is still named so a caller can \
-         tell a miss from a pass that never ran"
+        "the authority resolved an empty batch for this tick and applied nothing; \
+         the miss itself is readable in outcome.sweep, never in the resolution"
     );
     assert_eq!(
         damage.remaining_integrity(&actor(2), &key(HULL_NODE)),

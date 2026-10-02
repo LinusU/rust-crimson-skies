@@ -387,7 +387,13 @@ pub struct SweptDamageOutcome {
     /// The routing: which candidates were admitted, which hits they produced
     /// and which contacts were refused by name.
     pub sweep: SweepOutcome,
-    /// The resolver's output for the routed hits, when the batch resolved.
+    /// The resolver's output for the routed hits.
+    ///
+    /// A round that crossed nothing routed no hits, and an empty batch is what
+    /// the authority answers with: an empty resolution for `at`, with no state
+    /// advanced. A caller therefore reads [`SweptDamageOutcome::sweep`] to tell
+    /// a miss or a refused contact from damage that was applied, never the
+    /// emptiness of this field.
     pub damage: Result<TickResolution, DamageError>,
 }
 
@@ -436,19 +442,12 @@ pub fn resolve_swept_damage(
     at: Tick,
 ) -> SweptDamageOutcome {
     let sweep = router.route(shot, segment, candidates, rules, at);
-    let routed = sweep.damage();
-    let resolved = if routed.is_empty() {
-        // A round that crossed nothing resolves no batch: calling the resolver
-        // with an empty slice would still advance nothing but would report a
-        // `TickResolution` for a tick that had no weapon damage in it, which a
-        // caller could mistake for "the round hit and did nothing".
-        Ok(TickResolution {
-            tick: at,
-            events: Vec::new(),
-        })
-    } else {
-        damage.resolve(at, &routed)
-    };
+    // The whole batch goes to the authority in one call, empty or not:
+    // `DamageResolver::resolve` answers an empty batch with an empty
+    // `TickResolution` for `at` and changes nothing, so a round that crossed
+    // nothing needs no second code path here and this stays a single call site
+    // through which a gun's declared damage reaches the authority.
+    let resolved = damage.resolve(at, &sweep.damage());
     SweptDamageOutcome {
         sweep,
         damage: resolved,

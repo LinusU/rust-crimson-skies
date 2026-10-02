@@ -28,7 +28,7 @@ use std::collections::BTreeMap;
 
 use cs_sim::damage::{
     ActorId, AttributionRule, DamageChannel, DamageEventKind, DamageNodeKey, DamagePolicy,
-    DamageResolver, PartState, synthetic_airframe_graph,
+    DamageResolver, PartState, RefusalReason, synthetic_airframe_graph,
 };
 use cs_sim::targeting::Allegiance;
 use cs_sim::weapons::{
@@ -896,6 +896,67 @@ fn accept_f27_c_a_router_on_session_zero_refuses_whole() {
         "a refused routing applies no geometry either"
     );
     assert_eq!(router.routed(), 0, "no hit identity was consumed");
+}
+
+/// A candidate naming a node the target's damage graph does not declare is
+/// refused by the authority **by name**, with nothing applied anywhere. The
+/// routing takes the node from the collision feature rather than substituting
+/// one, so a part the graph lacks degrades into a visible refusal rather than
+/// damage landing on an invented part or a panic mid-tick.
+#[test]
+fn accept_f27_c_a_candidate_node_the_graph_lacks_is_refused_by_name() {
+    let (_fire, shot) = armed_shooter();
+    let mut router = GunHitRouter::new(SESSION, ROUTER_PRODUCER);
+    let outcome = router.route(
+        &shot,
+        &tick_segment(&shot),
+        // `tail_1` is a plausible part box that the synthetic airframe graph
+        // does not declare — the shape a collision feature reports when the
+        // part geometry and the damage graph disagree.
+        [candidate("tail_1", Some(Allegiance::Hostile))],
+        &hostile_only(),
+        Tick(1),
+    );
+    assert_eq!(outcome.hits.len(), 1, "the round still hit the actor");
+    assert!(
+        outcome.refused.is_empty(),
+        "the routing itself refused nothing: {outcome:?}"
+    );
+    assert_eq!(
+        outcome.hits[0].node,
+        key("tail_1"),
+        "the routing kept the candidate's own node rather than substituting a default"
+    );
+
+    let mut damage = damage_resolver();
+    let resolution = damage
+        .resolve(Tick(1), &outcome.damage())
+        .expect("the batch itself resolves; each hit is refused by the authority");
+    assert_eq!(
+        resolution.events.len(),
+        2,
+        "one refusal per routed channel: {resolution:?}"
+    );
+    assert!(
+        resolution.events.iter().all(|event| matches!(
+            event.kind,
+            DamageEventKind::HitRefused {
+                reason: RefusalReason::UnknownNode,
+                ..
+            }
+        )),
+        "both channels are refused by name, with nothing applied and no part transition"
+    );
+    assert_eq!(
+        damage.remaining_integrity(&actor(2), &key(HULL_NODE)),
+        Some(40.0),
+        "an unknown part damages nothing: no pool fell"
+    );
+    assert_eq!(
+        damage.part_state(&actor(2), &key(HULL_NODE)),
+        Some(PartState::Intact),
+        "the target is untouched"
+    );
 }
 
 /// The routed hit ids are unique and ordered within a session, so a resolver

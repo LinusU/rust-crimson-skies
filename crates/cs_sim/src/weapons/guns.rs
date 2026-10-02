@@ -748,8 +748,9 @@ impl fmt::Display for FriendlyFireRule {
 /// The declared interaction rules one gun's rounds run under.
 ///
 /// `self_hit` and `friendly_fire` are load-bearing here:
-/// [`WeaponRules::eligible`] is the query that assembles a
-/// [`Ballistics::sweep`] candidate list, so a gun cannot hit its own
+/// [`WeaponRules::admit_candidates`] is the query that assembles the
+/// [`Ballistics::sweep`] candidate list — [`WeaponRules::eligible`] is that same
+/// decision with the nodes and relations dropped — so a gun cannot hit its own
 /// shooter or an ally unless the *declared* rule admits it
 /// (non-negotiable 4).
 ///
@@ -763,13 +764,15 @@ impl fmt::Display for FriendlyFireRule {
 /// selection rule is unmeasured.
 ///
 /// The gap is therefore **deferred to F27-D, not silently left open**, and
-/// the deferral is visible in the schema rather than only in prose:
-/// `cs_content::weapons::InteractionOption::use_of` reports each option as
-/// [`Consumed`](cs_content::weapons::OptionUse::Consumed) or
-/// [`Deferred`](cs_content::weapons::OptionUse::Deferred) with the stage that
-/// must resolve it and why nothing reads it yet, so an audit can ask the
-/// content contract instead of trusting a findings file. F27-D closes it
-/// against the installation's ammunition data, or the options stay unknown.
+/// the deferral is visible in the declared schema rather than only in prose:
+/// `cs_content::weapons::InteractionOption::applied_by` names the production
+/// path that applies an option, and
+/// `cs_content::weapons::InteractionOption::deferred_to` returns the stage
+/// that must resolve an unapplied one together with the reason nothing reads
+/// it yet, so an audit asks the content contract instead of trusting a
+/// findings file. Those names are prose rather than links because `cs_sim` does
+/// not depend on `cs_content`. F27-D closes the gap against the
+/// installation's ammunition data, or the options stay unknown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WeaponRules {
     /// Whether a round may hit the airframe that fired it.

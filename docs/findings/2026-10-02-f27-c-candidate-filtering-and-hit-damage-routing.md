@@ -27,7 +27,7 @@ render, no audio, so no `private/evidence/` report is produced.
   `SweptDamageOutcome` — the production caller that hands the routed hits to
   the session's `DamageResolver`. `lower_rules`'s doc updated.
 - `crates/cs_sim/tests/accept_f27_c_sweep_query_and_hit_routing.rs`
-  (**new**, 10 tests), `crates/cs_content/tests/accept_f27_c_interaction_rule_deferral.rs`
+  (**new**, 11 tests), `crates/cs_content/tests/accept_f27_c_interaction_rule_deferral.rs`
   (**new**, 4 tests),
   `crates/cs_app/tests/accept_f27_c_weapon_damage_wiring.rs` (**new**, 4
   tests). Task test prefix: `accept_f27_c_`.
@@ -204,7 +204,18 @@ Choices worth stating:
   the production caller that hands the routed `HitEvent`s to the session's
   `DamageResolver`; it is the only consumer, and its `SweptDamageOutcome`
   returns the routing outcome *and* the resolver's result (or its error) so a
-  lost hit can never hide behind a successful resolution.
+  lost hit can never hide behind a successful resolution. It resolves the batch
+  in a single call whether or not the round crossed anything, because
+  `DamageResolver::resolve` answers an empty batch with an empty resolution for
+  the tick and changes nothing: a caller reads the *sweep* to tell a miss from
+  damage, never the emptiness of the resolution.
+* **A part the damage graph does not declare is refused, not repaired.** The
+  node comes from the candidate, so a collision feature can report a part the
+  target's graph has no node for. The routing stamps it unchanged — inventing a
+  fallback node would be exactly the proximity guess this stage refuses — and
+  the authority refuses each hit by name
+  (`DamageEventKind::HitRefused { reason: RefusalReason::UnknownNode }`),
+  applying nothing (`accept_f27_c_a_candidate_node_the_graph_lacks_is_refused_by_name`).
 
 ### AC03 end to end through a lowered declared gun
 
@@ -227,12 +238,50 @@ against the signatures that were actually submitted. Every one was caught:
 
 | mutation | caught by |
 | --- | --- |
-| `admit_candidates` filter disabled (`\|\| true`) | `accept_f27_c_the_declared_rules_decide_admission_through_the_boundary`, `accept_f27_c_a_round_that_misses_reports_no_damage_resolution` |
+| `admit_candidates` filter disabled (`\|\| true`) | 4 tests, incl. `accept_f27_c_the_declared_rules_decide_admission_through_the_boundary`, `accept_f27_c_a_round_that_misses_reports_no_damage_resolution` |
 | ledger filter removed from `sweep_with_sources` | `accept_f27_c_a_lowered_guns_swept_hit_applies_its_declared_damage`, `accept_f27_c_a_retry_of_the_same_segment_applies_no_further_damage`, `accept_f27_c_ac03_switching_bank_mid_cooldown_...` |
 | internal channel never routed | 5 tests, incl. `accept_f27_c_a_swept_hit_becomes_one_hit_event_per_declared_channel` |
 | node always taken from `admitted.first()` | `accept_f27_c_the_routed_node_is_the_part_the_round_reached_first` |
-| schema reports all five options as applied | all 4 `accept_f27_c_...deferral` tests |
+| schema reports all five options as applied | `accept_f27_c_penetration_ricochet_and_ammo_switching_are_deferred_to_f27_d`, `accept_f27_c_every_declared_option_is_either_applied_or_deferred` |
 | `resolve_swept_damage` never calls `damage.resolve` | `accept_f27_c_a_lowered_guns_swept_hit_applies_its_declared_damage`, `accept_f27_c_ac03_through_lowered_guns_switches_bank_mid_cooldown` |
+
+The reviewing agent re-measured all six mutations independently on the reviewed
+head, one at a time, with
+`cargo test --no-fail-fast -p cs_sim -p cs_content -p cs_app -- accept_f27_c_`
+so that every test binary runs even after one fails (plain `cargo test` stops at
+the first failing binary and under-reports). All six were caught, and two counts
+in the original table were wrong and are corrected above: the disabled rules
+filter is caught by 4 tests, not 2, and marking every option applied is caught
+by 2 of the 4 deferral tests, not all 4 (the other two assert on values that
+mutation does not change). The review also measured a seventh, unlisted
+mutation — replacing the router's session ledger with a fresh `Ballistics` per
+pass — which the retry guarantees catch (3 tests).
+
+## Review notes (2026-10-02, reviewing agent bunny-2)
+
+The decision above stands as recorded. The review changed four things, none of
+which alters the boundary:
+
+1. `cs_sim::weapons::WeaponRules`'s field docs pointed at a reporting API that
+   does not exist (`cs_content::weapons::InteractionOption::use_of` and an
+   `OptionUse` enum with `Consumed`/`Deferred` variants). The shipped report is
+   `InteractionOption::applied_by` plus `InteractionOption::deferred_to`, and
+   the docs now name that. A finding must not describe an API that was never
+   built.
+2. `cs_app::weapons::resolve_swept_damage` short-circuited an empty routed
+   batch and hand-built an empty `TickResolution` instead of calling the
+   resolver, with a comment claiming the resolver would have answered
+   differently. It does not: `DamageResolver::resolve` returns
+   `TickResolution { tick, events: [] }` for an empty batch and advances no
+   state, so the branch and its stated reason were both redundant. The single
+   call remains, so there is still exactly one path from a routed hit to the
+   authority.
+3. Added `accept_f27_c_a_candidate_node_the_graph_lacks_is_refused_by_name`
+   (cs_sim, 11 tests there now), pinning the error path where a collision
+   feature reports a part the target's damage graph does not declare: the hit
+   is refused by name and nothing is applied.
+4. Corrected the two sensitivity counts above, which the review measured
+   rather than inherited.
 
 ## Unknowns recorded (not guessed)
 
