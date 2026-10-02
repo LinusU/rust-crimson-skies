@@ -84,6 +84,49 @@
 //! `docs/findings/2026-10-02-f30-b-selection-actions-and-threat-state.md` and,
 //! for the F30-C consumer contract, in
 //! `docs/findings/2026-10-02-f30-c-hud-spyglass-and-weapon-guidance.md`.
+//!
+//! # What F30-D measured about the original's action vocabulary
+//!
+//! F30-D read the original's shipped string image (`strings.dll`: its
+//! `RT_STRING` label tree plus the `{name, id}` symbol table in its PE
+//! `.data` section) through the production readers, and recorded the result
+//! in `docs/findings/2026-10-02-f30-d-target-order-reveal-and-assistance.md`.
+//! The measurement is about **names**, because a label names a command and
+//! never says what it does:
+//!
+//! * The original names **eleven** target commands: a clear
+//!   (`MSG_CMD_TARGET_NOTHING`, 10 008), an under-reticule pick
+//!   (`MSG_CMD_TARGET_UNDER_RETICULE`, 10 009) and a next / previous /
+//!   nearest triple for each of three named classes — enemy, ally and
+//!   *ground*. So [`DeclaredAction::Clear`], [`DeclaredAction::UnderCrosshair`]
+//!   and the cycle/nearest actions have a name in the original; this schema's
+//!   spelling of the third class as `nearest_non_aircraft` is this project's
+//!   name for what the original calls `GROUND`, and the difference stays
+//!   visible rather than being papered over.
+//! * The original names **no** command for [`DeclaredAction::NearestAttacker`]
+//!   or [`DeclaredAction::NearestObjective`]. Both are in this project's
+//!   deliverable, so both stay; each carries designed provenance, and the
+//!   F30-C consumer gate (`cs_app::targeting::AssistanceOffer`) keeps a designed
+//!   value from ever being presented as original behavior. `absent` means
+//!   "absent from the shipped observation", never "the original cannot do it".
+//! * The assist-shaped vocabulary the original *does* name is the **padlock**
+//!   family: three mode commands (`MSG_CMD_PADLOCK_SNAP`, `_WATCH`, `_STICK`)
+//!   and nine directions. What a mode or a direction does is native code, so
+//!   this is evidence that an assist family exists and nothing more. The two
+//!   separate `Resolved<bool>` options above stay separate (F30
+//!   non-negotiable 3) and neither is given a padlock semantics.
+//! * The shipped string image names **no** reveal or visibility concept and
+//!   **no** lead-indicator or aim-assistance option: over all 1 023 named
+//!   entries, no name contains `REVEAL`, `VISIB`, `SENSOR`, `DETECT`,
+//!   `HIDDEN`, `STEALTH`, `LEAD` or `ASSIST`. The reveal rule this schema
+//!   carries is therefore project design, and its absence from the string
+//!   vocabulary is an absence measurement, not a licence to guess the
+//!   original's.
+//!
+//! None of this is a `verified_original` claim: the target **order** the
+//! original's cycle walks, its **reveal rules** and its **assistance
+//! behavior** remain unmeasured and are recorded as fidelity limitations in
+//! the F30-D finding.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -408,7 +451,11 @@ fn validate(
 /// deliverable's action list — the enemy/objective, ally, non-aircraft,
 /// nearest-attacker, under-crosshair and clear actions, plus the two cycle
 /// directions. Which of them the original game binds, and to which keys, is
-/// unmeasured (F30-D).
+/// unmeasured: F30-D measured which of them the original *names*
+/// ([`DeclaredAction::NearestAttacker`] and
+/// [`DeclaredAction::NearestObjective`] have no name in the shipped
+/// string image — see the module docs), and the binding of any of them to a
+/// key stays native data in the packed executable.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum DeclaredAction {
     /// Walk the declared-hostile cycle away from the observer.

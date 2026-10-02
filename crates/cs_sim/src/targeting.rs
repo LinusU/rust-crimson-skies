@@ -37,6 +37,14 @@
 //! The original-data verification of ordering, reveal and assistance rules is
 //! F30-D.
 //!
+//! Stage **F30-D** verified the original-side vocabulary and the rules AC04
+//! names, and changed no production behavior: the original's shipped string
+//! image *names* eleven target commands and a twelve-label padlock assist
+//! family, and names no reveal or lead/aim-assistance concept at all, while the
+//! original's target **order**, reveal rules and assistance *behavior* stayed
+//! unmeasured and are recorded as fidelity limitations in
+//! `docs/findings/2026-10-02-f30-d-target-order-reveal-and-assistance.md`.
+//!
 //! # Pieces
 //!
 //! * [`TargetStore`] is the per-session targeting authority, mirroring
@@ -103,6 +111,25 @@
 //! The declared, provenance-carrying half is
 //! `cs_content::target_rules`; the lowering boundary and ECS bindings are
 //! `cs_app::targeting`.
+//!
+//! ## What F30-D measured, and what stayed unknown
+//!
+//! F30-D measured the original's shipped **action vocabulary** — the original
+//! names eleven target commands (a clear, an under-reticule pick and a
+//! next/previous/nearest triple for each of three named classes) and a
+//! twelve-label *padlock* assist family, and names no reveal or visibility
+//! concept and no lead/aim-assistance option at all. The finding is
+//! `docs/findings/2026-10-02-f30-d-target-order-reveal-and-assistance.md`.
+//!
+//! What a name is **not** is a behavior, and the three things this module
+//! designs stayed unmeasured: the order the original's cycle walks, the
+//! original's reveal rules, and what the padlock modes do. Nothing here may be
+//! presented as measured original behavior: [`CrosshairQuery`]'s cone and
+//! occlusion report, [`TargetPolicy::crosshair_cone`],
+//! [`TargetPolicy::threat_window_ticks`] and every fixture number are project
+//! design, and the consumer gate
+//! (`cs_app::targeting::AssistanceOffer::presentable`) is what keeps a designed
+//! value from being drawn as an original one.
 //!
 //! `cs_sim` may depend only on [`cs_types`] and [`cs_script`]
 //! (`docs/01-ARCHITECTURE.md`): no Bevy, no renderer, no file access.
