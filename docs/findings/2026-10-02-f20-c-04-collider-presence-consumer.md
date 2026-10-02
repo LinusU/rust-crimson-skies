@@ -103,7 +103,17 @@ F20-A's rule exists to prevent, with a verdict that existed and no reader.
    the collider off. Writing `Live` unconditionally would reach the invisible
    obstacle from the other side; probe P7 removes that and the test fails.
 
-## What this layer deliberately does not read
+## What this layer takes no answer from
+
+The **collision half** of the composed verdict is computed from the clip's own
+record alone, so this layer takes **no** answer from the records below. It does
+read them transitively — `composed_visibility_verdict` composes all three and the
+collider half discards the other two — and the distinction matters to anyone
+auditing this: what is forbidden here is *deciding* from them, not *reading*
+them. (Review fix: the first draft of this section said the layer "does not
+read" `NodeDisabled` and `NodePresentation`, which is not true of the
+composition, and would have sent a future auditor looking for a violation that
+does not exist.)
 
 - **`NodeDisabled`** (F11-C's damage marker). F11-C states that `NodeDisabled`
   decides presentation and that "collision, weapon origins and damage identity
@@ -113,7 +123,9 @@ F20-A's rule exists to prevent, with a verdict that existed and no reader.
   Inferring collision from the marker would give the answer a second reader and
   turn the clip-vs-damage priority into a race.
 - **`NodePresentation`** (F11-C's LOD record), rewritten every LOD pass:
-  collision must not move with distance.
+  collision must not move with distance. The LOD acceptance test pins both
+  directions — a culled node is still an obstacle, and a clip that hides a
+  culled node still takes the collider away.
 - **`AirframeDamageState`**: `apply_airframe_damage` is its single owner and
   projects it onto the per-entity markers; reading the resource would re-decide
   a part identity that outlives a scene load.
@@ -127,6 +139,26 @@ re-enables a collider it did not remove" true for the rest of the engine, and it
 is why the damage seam refuses an unmanaged node by name
 (`ColliderDecisionError::UnmanagedNode`) rather than silently doing nothing.
 
+Two consequences of "the record is the answer, the marker is its projection", both
+added to the module docs at review because a caller has to know them:
+
+1. **The managed entity must be the one carrying the clip's record and the
+   engine's collider.** The pass reads `NodeAnimatedVisibility`, the presence
+   record and Avian's `Collider` from the **same** entity, so a spawner that put a
+   scene node's visibility on one entity and its Avian body on another would get
+   a policy that never sees the clip. This is the constraint the spawn wiring
+   below has to design against.
+2. **For a managed node the record outranks the marker.** A `Live` record
+   removes a `ColliderDisabled` marker another system put there, on the next
+   pass — so a system that wants a managed collider out of the simulation writes
+   this record, not the engine's component. Deliberate: there is no second writer
+   of the marker.
+
+`NodeColliderPresence` is deliberately **not** `Default` (review fix). `Live` is
+the permissive end of the opt-in, so a derived `Default` would let an
+`insert_default` adopt a node and re-enable its collider without a spawner
+having chosen to.
+
 The cost is real and is not hidden: **a clip-hidden node whose spawner never
 inserted the record keeps colliding.** That is a wiring requirement on the spawn
 path — F11-C's scene import, or F29's part colliders — and **neither attaches an
@@ -134,7 +166,7 @@ Avian collider to a scene node today**, so no production path can yet insert the
 record. The acceptance test asserts the boundary from both sides (the pass does
 not adopt an unmanaged node, and the damage seam refuses it) rather than letting
 the gap pass unnoticed. It is filed as a follow-up rather than solved here,
-because a scene-node collider is F11-C/F29's owner path, not this task's.
+because a scene-node collider is F11-C/F29's owner path, not to this task's.
 
 ## Where the pass runs, and the one-tick offset
 
@@ -149,6 +181,16 @@ runs after the step (F20-C.02's designed placement, and an unmeasured original
 one). A late change is a late update, never a wrong one: the record is the
 answer and the marker follows it every tick.
 
+**The `.after(advance_animation_on_session_tick)` constraint is not pinned by any
+test, and cannot be** (review finding, probe M4): deleting it leaves the whole
+acceptance selection green, because Bevy happens to run the animation advance
+before the presence pass in this world anyway. Losing it would make the *record*
+trail the clip by one tick — a latency rather than a wrong answer, since the pass
+converges on the next tick — so no acceptance criterion is unmet by its absence.
+It is documented in the module as **do not remove** instead of being papered over
+with a structural assertion on Bevy's schedule internals, which would be brittle
+and has no precedent in this crate.
+
 ## Tests
 
 | test | what it pins |
@@ -156,10 +198,20 @@ answer and the marker follows it every tick.
 | `accept_f20_c_04_a_clip_hidden_node_stops_colliding_and_its_show_restores_the_collider` (minimum) | the AC01 shape on the collision channel: a shown node stops a real probe and the production contact reporter reports the contact; the clip's hide tick takes the collider out and a second probe flies through with **no** contact reported; the show tick puts it back and a third probe is stopped again. The engine marker is asserted in every phase, and the observed writes are exactly one disable and one enable across ~120 fixed ticks |
 | `accept_f20_c_04_a_damage_removed_collider_is_never_restored_by_a_clip_loop_or_a_lod_pass` | non-negotiable 3: after the damage removal, four loop passes (re-shows **and** re-hides counted, so the loop really is driving the channel) leave the record `RemovedByDamage` and the marker in place; two distances, the real LOD pass and the instance teardown change nothing; a probe is not stopped while removed, and the repair puts the obstacle back |
 | `accept_f20_c_04_a_repair_under_a_still_hiding_clip_leaves_the_collider_off` | the other half of the merge: a repair under a still-hiding clip lands on `HiddenByAnimation` with the marker still present, confirmed by a probe flying through; the show tick then restores it |
+| `accept_f20_c_04_a_clip_teardown_returns_the_collider_a_hiding_clip_had_removed` (added at review) | the third arm of the merge — `Undecided` never removes anything — on the production release path: the instance teardown releases the clip's own record, the composed verdict goes back to `Undecided` (asserted), one more fixed step restores the record and the marker, the teardown cost **exactly one** engine write, and a probe is stopped again |
 | `accept_f20_c_04_the_merge_rule_never_lets_a_clip_leave_a_damage_removal` | the whole truth table as a pure function, including that **both** verdicts leave `RemovedByDamage` alone, and that `collider_enabled`/`label` agree with each state |
 | `accept_f20_c_04_applying_the_same_verdict_twice_changes_nothing_on_the_physics_side` | idempotence on three channels: the pass's own report (`is_noop`), the engine's add/remove hooks counted by Bevy observers, and the plugin's ledger totals; a repeated removal and a repeated repair are equally quiet. The engine counter is what makes it more than a value comparison |
 | `accept_f20_c_04_the_damage_seam_refuses_a_node_the_spawner_never_managed` | the opt-in boundary: an unmanaged body carrying a real collider and a hidden `NodeAnimatedVisibility` (the composed verdict **is** `NoCollider` there, asserted, so the pass declined rather than saw nothing) is not adopted and never written to; the damage seam returns `UnmanagedNode` and a despawned entity returns `UnknownEntity`; the managed node beside it is unaffected |
 | `accept_f20_c_04_an_lod_cull_keeps_the_collider_while_a_clip_hide_takes_it_away` | LOD is presentation only: at the far distance the real LOD pass really rewrites the record to `LodCulled` (asserted, so the rest means something) and the node still stops a probe; the clip's hide then takes the collider away **while culled**, so a render and a collision consumer cannot disagree about whether the clip hid it |
+
+Each phase that fires a probe **retires the probe it just used** (`retire`).
+`projectile`×`projectile` is a designed contact pair, so a probe left resting
+against the node exchanged momentum with the next one down the same lane: the
+first draft's second probe lost 40% of its speed to the leftover body and only
+reached the far face with 60% of the approach margin to spare. The measurement
+was sound — a slowdown cannot fake a "flew through" — but a phase whose observed
+speed is set by an unrelated body is not the clean observation it reads as, so
+every probe now flies into a lane holding nothing but the node.
 
 ## Mutation probes
 
@@ -184,6 +236,24 @@ P3 is the one worth noting: the boundary is only observable when the pass would
 otherwise act, so the test asserts the composed verdict *is* `NoCollider` on the
 unmanaged node before asserting that nothing happened to it.
 
+### The reviewer's own probes
+
+Run by the reviewer (bunny-2, reviewing its own implementation) against the
+submitted tree, each restored afterwards; `grep -rn "REVIEW PROBE" crates/`
+returns nothing and `git status` shows no probe edit.
+
+| probe | edit | result |
+| --- | --- | --- |
+| M1 the animation record leaves the collision decision | `apply_collider_presence` merges `ColliderVerdict::Undecided` instead of `verdict.collider()` (independently of P1) | selection FAILED, **5 of 7** — this is the acceptance criterion "removing the animation record from the world's collision decision fails the test" |
+| M5 the record is maintained but never reaches the engine | `apply_state`'s marker branch is short-circuited to `false`, so the record updates and Avian's marker is never written | selection FAILED, **5 of 8** — the tests observe the collision channel, not this layer's own record |
+| M4 the pass is no longer ordered after the animation advance | the plugin keeps `.after(StepSimulation)` and drops `.after(advance_animation_on_session_tick)` | selection **passed 7 of 7** — the constraint is unpinnable from a test; see the one-tick-offset section |
+| M6 the teardown leaks the clip's visibility record | `release_instance` no longer removes `NodeAnimatedVisibility` (F20's code, probed and restored) | selection FAILED, **2 of 8** — the new teardown test has teeth, alongside the destruction test |
+
+M5 is the probe that matters most for the stage's headline criterion: a design
+that published the verdict, maintained the record and stopped there would fail
+five of the tests, so the assertions are on the physics side and not on a
+component this layer owns.
+
 ## Checks run
 
 By the implementer, before handover:
@@ -204,8 +274,59 @@ By the implementer, before handover:
 - the eight mutation probes above — each probe's selection exited 101 and named
   at least one failing test; every file was restored.
 
+By the reviewer, after its own fixes (see "Review record" below): the full four
+checks again, plus `accept_f20` and the four reviewer probes.
+
 No command needed `CS_GAME_DIR`, and `CS_CAPABILITIES` was not exercised: this
 stage reads no original data.
+
+## Review record
+
+Reviewer: **bunny-2** — the same agent name that implemented the branch, in a new
+session, so the review context was fresh but it was **not** an independent
+reviewer**.** Recorded here and in the handover because the policy asks for the
+actual identities; nothing in this stage carries an original-fidelity claim, so
+the independent-review requirement (evidence machinery, format and mission
+semantics, fidelity claims) is not engaged, but the overlap is on the record.
+
+What the review checked, and what it changed. The decision itself, the merge
+rule, the terminal damage state, the opt-in boundary, the refusal of an
+unmanaged node and the honesty of the unknowns all held up: the record is a
+policy the physics layer owns, the animation path publishes only its verdict, no
+guessed constant or invented gameplay rule appeared, `crates/cs_app/src/animation/`
+was untouched, and no protected path is in the diff. The implementation is
+recorded as **checked**; it cannot be more, and nothing here should be read as
+`verified_original`.
+
+Fixes made during the review, all in the branch's own owner paths:
+
+1. **Probe cross-talk in three tests** (`retire`, see the Tests section): a
+   spent probe was left in the world and exchanged momentum with the next probe
+   in the same lane, because `projectile`×`projectile` is a designed contact pair.
+2. **A missing test for a documented claim**: the merge's third arm (`Undecided`
+   never removes) was only covered by the pure truth table, while the module
+   promised that a clip **teardown** returns the collider a hiding clip had
+   removed. Added `accept_f20_c_04_a_clip_teardown_returns_the_collider_a_hiding_clip_had_removed`,
+   driven through the real `stop_animation` and the real fixed loop, and shown to
+   have teeth by probe M6.
+3. **An overstated doc claim**: the module said it "does not read"
+   `NodeDisabled`/`NodePresentation`, which is false of the composition and would
+   have misled an auditor. Reworded to "takes no answer from", and the two
+   consequences of the record outranking the marker were added.
+4. **A `Default` footgun**: `NodeColliderPresence` derived `Default = Live`, the
+   permissive end of the opt-in, so an `insert_default` could adopt a node and
+   re-enable its collider. The derive is gone and the reason is documented.
+5. **Naming clarity on the damage seam**: "removed" now says in the function docs
+   that the Avian collider is left in place and disabled, not despawned, so a
+   repair re-enables the same collider.
+
+One thing the review could **not** close, stated rather than hidden: probe M4
+shows the plugin's `.after(advance_animation_on_session_tick)` is not pinned by
+any test, so the one-tick record latency it prevents is not currently guarded.
+It is documented as a do-not-remove instead of asserted structurally, and the
+spawn wiring's same-entity constraint is documented for the follow-up. Neither is
+an unmet acceptance criterion, and both are the kind of thing a future task that
+edits these files has to know.
 
 ## Unknowns
 
@@ -239,8 +360,15 @@ stage reads no original data.
   `NodeColliderPresence::Live` for every node whose authored
   `CollisionRole::Collider`, and must attach an Avian collider to that node. No
   production path does either today, which is why the boundary is opt-in and
-  why a clip-hidden node still collides without it. Filed as a follow-up task;
-  it belongs to F11-C's scene import or F29's part colliders, not to this stage.
+  why a clip-hidden node still collides without it. Filed as a follow-up task
+  (#510); it belongs to F11-C's scene import or F29's part colliders, not to
+  this stage. **Constraint the wiring must honour** (added at review): the
+  presence record, the Avian `Collider` and the clip's `NodeAnimatedVisibility`
+  all have to live on the **same** entity, because the pass reads all three from
+  one entity. Spawning a scene node's visibility somewhere other than its Avian
+  body would produce a policy that never sees the clip. If the engine has to keep
+  them apart, this pass needs a node→body linkage that does not exist yet, and
+  that is a design change for the spawn stage to make explicitly.
 - F29's damage zones must call `remove_collider_for_damage` /
   `restore_collider_after_repair`. Until they do, a destroyed part's collider
   state is the spawner's and the clip's, and this layer correctly does not infer

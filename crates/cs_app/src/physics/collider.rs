@@ -88,7 +88,14 @@
 //!   of which variant is active").
 //! * **A node with no record is never touched.** See "Who owns the record".
 //!
-//! # What this module deliberately does not read
+//! # What this layer takes no answer from
+//!
+//! The **collision half** of the composed verdict is computed from the clip's
+//! own record alone, so this layer takes **no** answer from the records below.
+//! It does read them transitively — [`composed_visibility_verdict`] composes
+//! all three and the collider half discards the other two — and the distinction
+//! matters to anyone auditing this: what is forbidden here is *deciding* from
+//! them, not *reading* them.
 //!
 //! * **`NodeDisabled`** (F11-C's damage marker). F11-C states that
 //!   `NodeDisabled` decides *presentation* and that "collision, weapon origins
@@ -99,7 +106,9 @@
 //!   would also put a second writer on the answer, and would make the
 //!   clip-vs-damage priority a race between two readers.
 //! * **`NodePresentation`** (F11-C's LOD record), for the same reason: it is
-//!   rewritten every LOD pass, and collision must not move with distance.
+//!   rewritten every LOD pass, and collision must not move with distance. A
+//!   node this pass culls is still an obstacle, and a clip that hides a culled
+//!   node still takes its collider away; the LOD test pins both.
 //! * **`AirframeDamageState`.** `apply_airframe_damage` is its single owner and
 //!   projects it onto the per-entity markers; reaching the resource would mean
 //!   re-deciding a part identity whose owner has already decided it.
@@ -115,6 +124,22 @@
 //! no record for is outside this policy, and the damage seam refuses such a
 //! node loudly ([`ColliderDecisionError::UnmanagedNode`]) rather than silently
 //! doing nothing.
+//!
+//! Two consequences a caller has to know, both following from "the record is
+//! the answer and the marker is its projection":
+//!
+//! * **The managed entity must be the one that carries the clip's record and
+//!   the engine's collider.** [`apply_collider_presence`] reads
+//!   `NodeAnimatedVisibility` (through the composition), `NodeColliderPresence`
+//!   and Avian's [`Collider`] all from the **same** entity, so a spawner that
+//!   puts a scene node's visibility on one entity and its Avian body on another
+//!   would get a policy that never sees the clip. Nothing in the engine does
+//!   that today; the spawn wiring below is where it is decided.
+//! * **For a managed node the record is authoritative over the marker.** A
+//!   `Live` record removes a `ColliderDisabled` marker some other system put
+//!   there, on the next pass. So a system that wants a managed node's collider
+//!   out of the simulation writes this record, not the engine's component —
+//!   there is deliberately no second writer of the marker.
 //!
 //! The cost of the opt-in is stated rather than hidden: a clip-hidden node
 //! whose spawner never inserted the record keeps colliding, which is the
@@ -132,12 +157,15 @@
 //! same fixed-tick slot as the animation advance
 //! ([`advance_animation_on_session_tick`]), and ordered **after** it, so the
 //! collision layer reads the verdict the animation produced in this tick rather
-//! than the previous tick's. The engine marker Avian inserts in response is
-//! honoured from the **next** tick's broad phase; that one-tick offset is the
-//! earliest the pinned engine can honour it, because the animation advance
-//! itself runs after the step (F20-C.02's designed placement, and an unmeasured
-//! original one). A late change is a late update, never a wrong one: the record
-//! is the answer, and the marker follows it every tick.
+//! than the previous tick's. Without that constraint the record would trail the
+//! clip by one tick; no test can tell the constraint apart from the executor's
+//! current default order, so **do not remove it** — the acceptance tests would
+//! keep passing with a one-tick-stale record. The engine marker Avian inserts
+//! in response is honoured from the **next** tick's broad phase; that one-tick
+//! offset is the earliest the pinned engine can honour it, because the
+//! animation advance itself runs after the step (F20-C.02's designed placement,
+//! and an unmeasured original one). A late change is a late update, never a
+//! wrong one: the record is the answer, and the marker follows it every tick.
 //!
 //! # What the original does here is still unknown
 //!
@@ -177,11 +205,14 @@ use crate::animation::{
 /// [`CollisionRole`](cs_content::scene::CollisionRole) is `Collider`; the
 /// animation path never writes it, and neither does the LOD or damage
 /// presentation pass.
-#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+///
+/// Deliberately **not** [`Default`]: the opt-in is a decision, and `Live` is the
+/// permissive end of it — a `Default` here would let an `insert_default` adopt a
+/// node and re-enable its collider without a spawner having chosen to.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NodeColliderPresence {
     /// The node's authored collider is live and nothing in this policy has
     /// removed it. The state a node is spawned with.
-    #[default]
     Live,
     /// A playing clip hides the node, so its collider is off (F20-A's designed
     /// `hidden ⇒ no collider`). The clip's own show lifts this and nothing
@@ -422,6 +453,11 @@ fn require_managed(world: &World, entity: Entity) -> Result<(), ColliderDecision
 /// [`apply_collider_presence`] can never leave: a clip that re-shows the node
 /// leaves the collider off (F20 non-negotiable behavior 3).
 ///
+/// "Removed" means **out of the simulation**, not despawned: the Avian
+/// [`Collider`] is left exactly where it is and the engine's own
+/// [`ColliderDisabled`] marker is put on the entity, so a repair re-enables the
+/// same collider instead of having to build another one.
+///
 /// Returns whether the physics-side state changed — the record, the engine
 /// marker, or both. A repeated call on an already-removed node returns `Ok(false)`
 /// and writes nothing.
@@ -447,7 +483,9 @@ pub fn remove_collider_for_damage(
 /// **off** ([`NodeColliderPresence::HiddenByAnimation`]) — a repair must not
 /// expose a node the animation has hidden — and the collider returns when the
 /// clip shows it again, or as soon as the clip stops hiding it. The repair never
-/// guesses: it hands the current verdict to [`NodeColliderPresence::merge`].
+/// guesses: it hands the current verdict to [`NodeColliderPresence::merge`]. The
+/// Avian [`Collider`] was never removed (see [`remove_collider_for_damage`]), so
+/// lifting the marker is all there is to do.
 ///
 /// Returns whether the physics-side state changed.
 ///

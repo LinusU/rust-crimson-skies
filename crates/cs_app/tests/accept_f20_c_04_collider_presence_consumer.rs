@@ -288,6 +288,18 @@ fn spawn_probe(app: &mut App) -> Entity {
     spawn_body(app.world_mut(), &probe_spec()).expect("a valid dynamic body spec")
 }
 
+/// Removes a probe that has served its assertion.
+///
+/// A spent probe is not inert: two `projectile`-layer bodies are a **designed
+/// contact pair** (`cs_sim::collision`, `Projectile`×`Projectile`), so a probe
+/// left resting against the node exchanges momentum with the next one fired down
+/// the same lane, and the phase under test becomes a contact between two probes
+/// rather than between a probe and the node. Each phase therefore fires into a
+/// lane that is empty but for the node.
+fn retire(app: &mut App, probe: Entity) {
+    app.world_mut().entity_mut(probe).despawn();
+}
+
 /// A second static body the spawner never put under the collision policy: a
 /// real collider, no [`NodeColliderPresence`].
 fn spawn_unmanaged(app: &mut App) -> Entity {
@@ -435,6 +447,7 @@ fn accept_f20_c_04_a_clip_hidden_node_stops_colliding_and_its_show_restores_the_
         "and the probe was stopped short of the node's far face (x = {})",
         position_x(app.world(), shown_probe)
     );
+    retire(&mut app, shown_probe);
 
     // The authored hide tick, through the wired fixed-tick entry. The
     // collision-presence pass runs after it in the same fixed step, so the
@@ -474,6 +487,7 @@ fn accept_f20_c_04_a_clip_hidden_node_stops_colliding_and_its_show_restores_the_
         "and the probe flew through the node's volume (x = {}), rather than being stopped",
         position_x(app.world(), hidden_probe)
     );
+    retire(&mut app, hidden_probe);
 
     // The clip's show tick puts the collider back, and a third probe is stopped
     // by it again.
@@ -717,6 +731,101 @@ fn accept_f20_c_04_a_repair_under_a_still_hiding_clip_leaves_the_collider_off() 
         Some(NodeColliderPresence::Live)
     );
     assert!(!engine_disabled(app.world(), hatch));
+}
+
+// ---------------------------------------- 2b. the teardown gives it back ---
+
+/// The instance teardown returns the collider a hiding clip had removed.
+///
+/// The third arm of the merge rule — `Undecided` never removes anything — has a
+/// production trigger of its own besides the clip's show key: the teardown
+/// releases the clip's own record, so a node stops being hidden without anything
+/// asking to be shown. That is the release path a scene load or a
+/// superseding-generation teardown uses, and it is the one way a node can come
+/// back here that the clip did not arrange, so it is pinned on the collision
+/// channel rather than left to the pure merge table. A visibility record that
+/// outlived its instance would leave a node nothing draws and nothing may hit,
+/// which is the invisible obstacle from the other end.
+#[test]
+fn accept_f20_c_04_a_clip_teardown_returns_the_collider_a_hiding_clip_had_removed() {
+    let at = generation();
+    let mut app = world_with_the_real_loop();
+    let hatch = spawn_hatch(&mut app, at);
+    play_breakable(&mut app, at);
+
+    commit_and_step(&mut app, SYNTHETIC_BREAKABLE_HIDDEN_TICK);
+    assert_eq!(
+        presence(app.world(), hatch),
+        Some(NodeColliderPresence::HiddenByAnimation)
+    );
+    assert!(engine_disabled(app.world(), hatch));
+    let hidden_probe = spawn_probe(&mut app);
+    assert!(
+        !run_ticks(
+            &mut app,
+            SYNTHETIC_BREAKABLE_HIDDEN_TICK,
+            APPROACH_TICKS,
+            hidden_probe,
+            hatch
+        ),
+        "the clip's hide really did take the collider out of the simulation"
+    );
+    assert!(position_x(app.world(), hidden_probe) > THROUGH_X_M);
+    retire(&mut app, hidden_probe);
+    let writes = marker_writes(app.world());
+
+    // The teardown, with no damage decision anywhere in this world: the only
+    // thing that changes is that the clip stopped driving the node.
+    assert!(
+        cs_app::animation::stop_animation(
+            app.world_mut(),
+            &track("synthetic.breakable"),
+            instance(1)
+        ),
+        "the instance is torn down"
+    );
+    assert!(
+        app.world().get::<NodeAnimatedVisibility>(hatch).is_none(),
+        "the teardown released the clip's own record, so the verdict is Undecided again"
+    );
+    assert_eq!(
+        cs_app::animation::composed_visibility_verdict(app.world(), hatch).collider(),
+        cs_app::animation::ColliderVerdict::Undecided
+    );
+
+    // One more fixed step, with the same committed tick so the clip cannot
+    // re-hide the node: the pass re-merges and the collider is back.
+    commit_and_step(&mut app, SYNTHETIC_BREAKABLE_HIDDEN_TICK);
+    assert_eq!(
+        presence(app.world(), hatch),
+        Some(NodeColliderPresence::Live),
+        "with no clip and no damage decision, the authored collider is what stands"
+    );
+    assert!(
+        !engine_disabled(app.world(), hatch),
+        "and the engine marker is off, so the collider re-enters the broad phase"
+    );
+    assert_eq!(
+        marker_writes(app.world()),
+        MarkerWrites {
+            disabled_inserted: writes.disabled_inserted,
+            disabled_removed: writes.disabled_removed + 1,
+        },
+        "the teardown cost exactly one engine write, the enable"
+    );
+
+    let restored_probe = spawn_probe(&mut app);
+    assert!(
+        run_ticks(
+            &mut app,
+            SYNTHETIC_BREAKABLE_HIDDEN_TICK,
+            APPROACH_TICKS,
+            restored_probe,
+            hatch
+        ),
+        "a probe is stopped again: the collider came back with the record"
+    );
+    assert!(position_x(app.world(), restored_probe) < THROUGH_X_M);
 }
 
 // ----------------------------------------------------- 3. the merge rule ---
@@ -979,6 +1088,7 @@ fn accept_f20_c_04_an_lod_cull_keeps_the_collider_while_a_clip_hide_takes_it_awa
         "an LOD-culled node is still an obstacle: culling is presentation only"
     );
     assert!(position_x(app.world(), culled_probe) < THROUGH_X_M);
+    retire(&mut app, culled_probe);
 
     // The clip's hide reaches collision even while the node is culled, so a
     // render consumer and a collision consumer cannot disagree about whether
