@@ -20,9 +20,12 @@ nine container blockers and nothing else.
 The F11-D retail run said: *9 containers audited, 9 blocked, 0 roots mapped, 0
 airframes discovered*. The F11-D2 run says: *9 containers audited, 9 blocked,
 **11 airframes discovered**, 0 roots mapped, 11 per-airframe blockers, each
-quoting the same measured `planes.zbd` facts, and two explicit unknowns*. The
-container verdict did not move — nothing yet converts `ZBD/planes.zbd` into a
-`SceneGraph` — but the roster is now real, checked, and auditable.
+quoting the container's own measured refusal, and two explicit unknowns*. The
+container verdict did not move in substance — nothing yet converts
+`ZBD/planes.zbd` into a `SceneGraph` — but the roster is now real, checked, and
+auditable, and the blocker it names is now the **measured** one (review fix: the
+first version of this test answered the audit's graph source with a hardcoded
+`ContainerBlocker::NodeArrayUndecoded`, which #392 had already made false).
 
 ## Where the roster lives
 
@@ -97,11 +100,25 @@ containers, the model spellings or the root cross-check moves.
   its own `Provenance`. A wrong idiom produces no rows, and the retail row
   count is pinned by a test — which is what makes the claim falsifiable rather
   than convenient.
-- **Includes are followed in place, against one variable table.** The corpus
-  re-includes the surgery script once per airframe and expects the *current*
-  `planeInput`/`planeOutput` values each time, so an include cannot be
-  "already read" and skipped. A chain that returns to a script already on it is
-  `IncludeCycle`, and a chain longer than `MAX_ROSTER_INCLUDE_DEPTH` stops.
+- **Includes are followed in place, against one variable table per
+  declaration.** The corpus re-includes the surgery script once per airframe
+  and expects the *current* `planeInput`/`planeOutput` values each time, so an
+  include cannot be "already read" and skipped. The table is **per declaration**,
+  because nothing measured says one declaring script's variables are visible to
+  another: leaking them could only ever manufacture a row (review fix, below). A
+  chain that returns to a script already on it is `IncludeCycle`, and a chain
+  longer than `MAX_ROSTER_INCLUDE_DEPTH` is `IncludeDepthExceeded` — a finding,
+  not a silent stop (review fix).
+- **An argument count the declaration does not spell is a finding.** The
+  declaration declares the shapes it reads (`set NAME VALUE`, `source TARGET`,
+  `GameZWriteZBDFile TARGET`, `NewObject3D NAME`). The container's own decoder
+  keeps arguments separate precisely because joining them destroys their
+  boundaries, so a line stored with a different count is reported with the count
+  it really has rather than joined into a value this stage would have invented
+  (review fix). A create line with the declared command and a **different
+  argument** — `NewObject3D cpilot_lookat` — is not a finding: the declaring
+  shape is the literal `%<root_variable>%` reference, so such a line is simply
+  not a declaration.
 - **A create line declares an airframe only when it names the root variable
   literally.** The same script runs `NewObject3D %playerName%` and
   `NewObject3D <literal name>` for other objects. Matching the literal
@@ -136,9 +153,11 @@ containers, the model spellings or the root cross-check moves.
   same included script, run eleven times — and differ in `declared_at`. A row
   that could only be located by its creation would not be distinguishable from
   its ten siblings.
-- **A line the walk cannot read is a finding, never a silent skip.** Ten
-  `RosterDiscoveryIssue` variants each carry the script and the byte offset;
-  the retail run's issue list is empty, and a synthetic run pins every variant.
+- **A line the walk cannot read is a finding, never a silent skip.** Thirteen
+  `RosterDiscoveryIssue` variants carry the script that **holds** the line — an
+  included script, never the declaring one, whenever the line came through an
+  include (review fix) — and the byte offset. The retail run's issue list is
+  empty, and a synthetic run pins every variant.
 - **Selectability is not discovered here, and the discovery says so.** Every
   row keeps `RosterEntry::undiscovered_availability()` (claim
   `f11d.roster-availability-undiscovered`), the forced-assignment set is empty,
@@ -170,12 +189,30 @@ are this project's own normalized identities.
 | `ForcedMissionAssignment`s | **0** |
 | rows proven `Selectable` | **0** |
 | node records in `ZBD/planes.zbd` | 3 317, all converting |
+| node records over all nine archives | 56 620, all converting |
 | declared roots that are parentless nodes of `planes.zbd` | **10 of 11** |
 | audit: containers / blocked / mapped | 9 / 9 / 0 |
 | audit: airframes / blocked / mapped | **11** / 11 / 0 |
 | audit blockers | 20 (9 container + 11 per-airframe `ContainerUndecoded`) |
 | audit gaps | 11 (`AvailabilityUndiscovered`, one per row) |
 | `report.is_complete()` / `discovery.is_complete()` | **false / false** |
+
+### The blocker is measured, not written down
+
+Since #392 the node array of every one of the nine archives **reads** and **every
+stored record converts** — 56 620 of them, checked in the acceptance test and in
+the evidence harness. What refuses is `SceneGraph::build`:
+
+| container | the refusal production code gives |
+| --- | --- |
+| `zbd/planes.zbd` | `node 640 cannot form a scene id: content id key contains disallowed character ' '` — its stored name is `brigturret2 `, with a trailing space |
+| the eight `gamez.zbd` world containers | `node N and parent slot 0 disagree on the link` — `InconsistentParentage`, because a child's list does not cover every node that names it as parent |
+
+The acceptance test and the harness both run those readers and hand the audit the
+resulting `ContainerBlocker::SceneRefused`, so the evidence artifact carries the
+nine refusals verbatim instead of a count of unmapped containers. The census's
+measured `node_array_size` and `nodes_offset` are still asserted, on the
+container verdicts where they belong.
 
 ### The one root that is not a root
 
@@ -222,8 +259,9 @@ which is the honest verdict. Repointing it at `player` would be exactly the
 | `declared_roots_become_checked_rows_the_audit_maps` (cs_content/tests/scene.rs) | the mapping arm over a synthetic container: two declared roots become two `airframe/<key>` rows with checked roots in the container the script writes; the visit order; the model spellings as provenance; `declared_at` distinct and `created_at` shared; every row's declared `Cockpit` requirement and explicit availability unknown; the empty assignment set; both unknowns; then the **audit** over the same rows with a convertible container, mapping both airframes (2 mapped, 0 blocked, 0 sockets) while each row still reports `AvailabilityUndiscovered` **and** `MissingRole { Cockpit }`, and the report is not complete | a row is bound by model name instead of by the root the script created, a root lands in a container other than the one written, the two rows become indistinguishable, an availability unknown becomes a value, a declared role stops being a gap, or the audit stops mapping a discovered airframe |
 | `an_included_script_runs_once_per_include_line` | the re-include property the measured corpus depends on: a fixture whose declaring script includes the same surgery script twice, with different variable values each time, produces two rows in declaration order with the two model spellings, one shared `created_at` and two distinct `declared_at` | a second visit is skipped, the values of the first visit are reused, or the rows become indistinguishable |
 | `every_unreadable_line_is_a_named_finding` | the negative arm, one per `RosterDiscoveryIssue` that a corpus can produce: an absent declaring script, a create line with an unbound root variable, a script that never writes a container, a declaration that yields no row, a root with no model spelling, a write line through an unbound variable, a root name the id grammar refuses (reported verbatim, never transliterated), two unresolved includes (absent target, and one spelled through an unbound variable), an include cycle, and two scripts of one declared name | a finding becomes a silently missing row, a name is transliterated into an id that passes, or an ambiguity is resolved by position |
-| `contradictory_declarations_are_refused_and_an_empty_table_finds_nothing` | two declarations naming one script are refused; two naming different scripts are accepted; an empty table finds nothing, reports nothing and is not complete; and `AirframeRoster::audit` over an empty roster is empty and not complete | a duplicate declaration is accepted, or an empty search reads as a complete roster |
-| `retail_the_installation_declares_the_shared_airframe_roster` (`#[ignore = "requires CS_GAME_DIR"]`) | **AC04 over the real installation with a real roster**: production discovery and fingerprint, production `decode_interp` of `ZBD/interp.zbd`, the 11 declared identities in order with their containers, model spellings, `observed_tool` provenance naming the container, distinct `declared_at` and shared `created_at`, the four followed scripts, the `3 317` converted node records with the root cross-check (ten parentless, `player_pfighter` nested under `player`), both unknowns, no selectable row, an empty assignment set, and the F11-D audit over the real nine-archive census reporting **11 per-airframe** `ContainerUndecoded` blockers that each quote the measured `planes.zbd` record count and offset | the corpus changes, the idiom stops finding an airframe or finds a non-airframe, a row's container stops matching the census, a declared root is not a node of the container, the pirate fighter's nesting is repaired, a row is promoted to selectable, or the report claims completeness |
+| `contradictory_declarations_are_refused_and_an_empty_table_finds_nothing` | two declarations naming one script are refused; two naming different scripts are accepted; an empty table finds nothing, reports nothing and is not complete; and `AirframeRoster::audit` over an empty roster is empty and not complete. Review fix added two arms: a second declaration does **not** inherit the first one's variables (so a row can never be bound by a value an unrelated script left behind, and the script that inherited nothing is told so by name and offset), and two idioms that declare the same root are a `RosterDiscoveryError::Roster` contradiction rather than a silent winner | a duplicate declaration is accepted, an empty search reads as a complete roster, one declaration's bindings leak into the next, or two idioms declaring one airframe resolve by order |
+| `a_line_the_walk_cannot_read_is_never_dropped` (review fix) | the remaining ways the walk comes back with less than it was given, one per arm: a `set` with no value and one with an extra value, a bare `source` and a three-argument `NewObject3D`, all reported as `LineUnreadable` with the count the container really stores; a two-argument create line that names something else is *not* a finding; an include chain one script past `MAX_ROSTER_INCLUDE_DEPTH`, whose unread script really does declare an airframe, reported as `IncludeDepthExceeded` naming its script, target and refused depth; a root name that fills the 128-byte scene-node key and one character more, which cannot be referenced and is refused verbatim; and a create line reached through an include, whose `RootUndeclared` / `ModelUndeclared` name the **included** script that holds the line | the depth limit silently drops a row, a wrong argument count is joined into an invented value, an unspellable reference is shortened, or a finding sends the reader to the declaring script instead of the one holding the line |
+| `retail_the_installation_declares_the_shared_airframe_roster` (`#[ignore = "requires CS_GAME_DIR"]`) | **AC04 over the real installation with a real roster**: production discovery and fingerprint, production `decode_interp` of `ZBD/interp.zbd`, the 11 declared identities in order with their containers, model spellings, `observed_tool` provenance naming the container, distinct `declared_at` and shared `created_at`, the four followed scripts, the `3 317` converted node records with the root cross-check (ten parentless, `player_pfighter` nested under `player`), both provenance spans checked against the container's own script extents and every row's two offsets checked to lie inside them, both unknowns, no selectable row, an empty assignment set, and the F11-D audit over the real nine-archive census reporting **11 per-airframe** blockers that each quote the container's own measured `SceneGraph::build` refusal while the container verdicts still carry the census's measured record counts and offsets | the corpus changes, the idiom stops finding an airframe or finds a non-airframe, a row's container stops matching the census, a declared root is not a node of the container, the pirate fighter's nesting is repaired, a row is promoted to selectable, a measured span stops covering the script it names, or the report claims completeness |
 
 The evidence harness (`evidence_report_f11_d_2_writes_the_acceptance_report`,
 deliberately **not** named with the task prefix) derives
@@ -259,6 +297,78 @@ assertion rather than by a row count, because the fixture's two extra
 raises a finding. The row-count arm is covered by mutation 11 and by the
 fixture's two non-declaring shapes being present at all.
 
+### The reviewer's own mutations
+
+The review pass re-derived the mutations for its five fixes and killed each one
+by a named test (each applied, run, reverted):
+
+| # | Mutation | Killed by |
+| --- | --- | --- |
+| R1 | the include-depth limit stops the walk silently again (no `IncludeDepthExceeded`) | `a_line_the_walk_cannot_read_is_never_dropped` |
+| R2 | `set` accepts any argument count and joins the rest with a space, the way the first version did | `a_line_the_walk_cannot_read_is_never_dropped` — `set with 4 stored argument(s) is a finding naming the count it has` |
+| R3 | the variable table is shared across declarations again (no per-declaration clear) | `contradictory_declarations_are_refused_and_an_empty_table_finds_nothing` |
+| R4 | `RootUndeclared` / `ModelUndeclared` name the declaring script instead of the included script holding the line | `a_line_the_walk_cannot_read_is_never_dropped` |
+| R5 | the retail graph source answers with the hardcoded `NodeArrayUndecoded` again | `retail_the_installation_declares_the_shared_airframe_roster` (it matches `ContainerBlocker::SceneRefused` and compares the verbatim refusal) |
+
+R4 needed a second attempt to die: the first version of that arm used a fixture
+whose declaring script *was* the included one, which made the two spellings
+identical. The fixture now separates them the way the measured corpus does —
+`support\planes.gw` declares, `support\util\planesurgery.gw` creates.
+
+## Review 2026-10-02 (Rally, task #399)
+
+Reviewed by **`bunny-alpha-2/bunny-alpha-2`** — the same agent identity that
+implemented the branch, in a later session. That is **not** independent review
+under AGENTS.md, and it is recorded here rather than glossed: the reviewer's
+context is a continuation of the implementer's, not a fresh one. No agent review
+awards more than `checked`, and none replaces the owner's approval.
+
+What the review changed (all inside the F11 owner paths, plus this file and the
+evidence copy):
+
+1. **The retail audit's blocker was stale and self-contradicting.** The test
+   proved every stored record converts and then answered the audit's graph
+   source with `ContainerBlocker::NodeArrayUndecoded` — "its node array is not
+   decoded" — which #392 had already made false, and the evidence artifact
+   recorded that wording. Both now run the production readers and report
+   `ContainerBlocker::SceneRefused` with the measured refusal, and the artifact
+   carries all nine refusals.
+2. **The include-depth limit dropped rows silently**, contradicting its own
+   documented contract and the "never a silent skip" claim. It is now
+   `IncludeDepthExceeded`.
+3. **Findings named the declaring script** for lines that live in an included
+   script — in the measured corpus every create line does. `RootUndeclared`,
+   `ModelUndeclared` and `ContainerUnresolved` now name the script that holds
+   the line.
+4. **A `set` line with an unexpected argument count was silently repaired** by
+   joining its tokens with a space, inventing a boundary the container never
+   stored — the one thing every decoder in this workspace refuses to do. It is
+   now `LineUnreadable` with the real count.
+5. **The variable table leaked across declarations**, so a second declaring
+   script could be bound by values an unrelated script left behind. It is now
+   per declaration, and the corpus's execution order for two declaring scripts
+   stays an explicit non-claim.
+6. **Two coverage gaps**: `RootRefRefused` and the `RosterDiscoveryError::Roster`
+   path had no test, the cockpit requirement's source span stopped 52 bytes
+   before the `NodeSetDescription cockpit1` line it rests on, and both provenance
+   spans plus every row's two offsets are now checked against the decoded
+   container's own script extents.
+
+Also checked and found sound: the eleven declared identities and their order, the
+`RelativePath` → `install_file_key` normalization, the `%ZBDFile%` interpolation
+through `support\init.gw`'s `set ZBD_DIR zbd`, the shared `created_at` and
+distinct `declared_at`, the `player_pfighter` nesting under `player` (node 44,
+parent 1418), the 3 317 / 56 620 record counts, and the two `SourceSpan`
+offsets. Two measured facts worth recording: no `%NAME%` reference anywhere in
+the 98-script container differs in case from the spelling that binds it, and the
+only references nothing binds are `%CAMPAIGN_DIR%` / `%MISSION_DIR%` (which the
+host process binds) and five node names spelled as references
+(`morph_root`, `morph_node`, `after_morph_node`, `lod_node_1`, `lod_node_2`) —
+none of which is in a declaring script's include chain. The case-insensitive
+comparison is therefore not *needed* by this corpus; it stays because it is the
+permissive direction and a matching rule that differed from a value rule is the
+safer of the two.
+
 ## Unknowns and limitations (all recorded, none guessed)
 
 - **Only the shared airframe archive is discovered.** Eleven rows; no
@@ -289,15 +399,17 @@ fixture's two non-declaring shapes being present at all.
   verdict for that one row. **Resolving task:** #398 (F11-E) plus a production
   path that converts `ZBD/planes.zbd`; `AirframeRoster::audit` then reports
   `RootMissing` for it on its own.
-- **`ZBD/planes.zbd` still does not convert.** `SceneGraph::build` refuses it at
-  node 640 (`brigturret2 `, a trailing space in the stored name), and all eight
-  world containers refuse with `InconsistentParentage`. This stage therefore
-  **did not** "turn today's nine `NodeArrayUndecoded` verdicts into per-airframe
-  mappings" in the sense of producing sockets: it turned nine container-level
-  verdicts into **eleven per-airframe verdicts**, each naming the same blocker.
+- **`ZBD/planes.zbd` still does not convert.** The node array reads and all 3 317
+  records convert; `SceneGraph::build` refuses it at node 640 (`brigturret2 `, a
+  trailing space in the stored name), and all eight world containers refuse with
+  `InconsistentParentage`. This stage therefore **did not** "turn today's nine
+  container-level verdicts into per-airframe mappings" in the sense of producing
+  sockets: it turned nine container-level verdicts into **eleven per-airframe
+  verdicts**, each naming the container's own measured refusal.
   **Affected content:** every airframe's socket mapping.
   **Resolving tasks:** the two follow-ups #392's findings file for the id
-  grammar's name rule and the world containers' partial child lists.
+  grammar's name rule and the world containers' partial child lists; the shared
+  archive's is already filed as #501 (F11-D2.2).
 - **The declaration table is caller data, and it is not committed.** It lives in
   the acceptance test with the measured offsets, which is what makes the claim
   auditable but also means the engine has no shipped idiom: a consumer other
@@ -326,10 +438,12 @@ fixture's two non-declaring shapes being present at all.
   reads (`set`, `source`, `NewObject3D`, `GameZWriteZBDFile`, `%NAME%`) are the
   corpus's own spelling and were not verified against the running engine. No
   original run happened and nothing claims `verified_original`.
-- **Independent review is outstanding for this work.** The F11 format work
-  (`#392`) and this roster discovery are both original-data semantics, which
-  AGENTS.md asks a different agent instance or model with a fresh context to
-  review. No agent review replaces the owner's approval, and no agent review
+- **Independent review is still outstanding for this work.** AGENTS.md asks a
+  different agent instance or model with a fresh context to review F11 format
+  work (`#392`) and this roster discovery. The 2026-10-02 review of this branch
+  was done by `bunny-alpha-2/bunny-alpha-2`, the identity that implemented it,
+  so it is a same-agent review and **not** the independent evidence the contract
+  asks for. No agent review replaces the owner's approval, and no agent review
   awards more than `checked`.
 - **Fixture scope.** The four unignored tests are synthetic and newly
   authored; only the `#[ignore]`d retail test reads original data. Nothing

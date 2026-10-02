@@ -121,6 +121,13 @@
 //! discovery records its own [`RosterDiscoveryUnknown`]s so an empty or partial
 //! roster can never read as a complete one (F11 non-negotiable behavior 3).
 //!
+//! What the walk *cannot* read is never dropped either: every line it does not
+//! understand — an include it cannot resolve, an argument count the declaration
+//! does not declare, a chain past [`MAX_ROSTER_INCLUDE_DEPTH`] — is a
+//! [`RosterDiscoveryIssue`] carrying the script that holds the line and its
+//! byte offset, so "this container declares nothing" and "this container
+//! declares something I could not read" stay different verdicts.
+//!
 //! # What is measured and what is designed
 //!
 //! The input record mirrors the pinned mech3ax v0.6.0 node layout
@@ -3629,10 +3636,12 @@ pub const FORCED_ASSIGNMENT_DISCOVERY_CLAIM: &str = "f11d.forced-assignment-undi
 /// The deepest include chain [`discover_airframe_roster`] will follow.
 ///
 /// Includes are followed **at the point of the include line**, sharing one
-/// variable table, because the corpus re-includes the same script once per
-/// declared airframe and expects the current variable values each time. A chain
-/// longer than this, or one that returns to a script already on the chain, is
-/// an [`RosterDiscoveryIssue`] rather than an unbounded walk.
+/// variable table per declaration, because the corpus re-includes the same
+/// script once per declared airframe and expects the current variable values
+/// each time. A chain longer than this, or one that returns to a script already
+/// on the chain, is an [`RosterDiscoveryIssue`] rather than an unbounded walk —
+/// and because it is a finding, a line the walk did not read is never a
+/// silently missing row.
 pub const MAX_ROSTER_INCLUDE_DEPTH: usize = 16;
 
 /// One gameplay role a declared airframe root is required to bind, with the
@@ -3832,14 +3841,17 @@ impl DiscoveredAirframe {
     }
 }
 
-/// A line the discovery could not turn into a roster row, with the two facts
-/// that say why.
+/// A line the discovery could not turn into a roster row, with the facts that
+/// say why.
 ///
 /// Every variant is a **finding about the corpus**, not a silent skip: an
 /// unreadable include, a container that is never written, a create line with no
 /// declared root name and a root name the id grammar refuses all appear here
 /// with their script and byte offset, so a caller can tell "this container
 /// declares nothing" from "this container declares something I could not read".
+/// A variant's `script` names the script that **holds the line the finding is
+/// about**, which is an included script rather than the declaring one whenever
+/// the line came through an include.
 #[derive(Clone, Debug, PartialEq)]
 pub enum RosterDiscoveryIssue {
     /// The declaring script is not in the container.
@@ -3858,7 +3870,7 @@ pub enum RosterDiscoveryIssue {
     /// The container the declared roots live in could not be resolved: the
     /// write command names a variable nothing binds.
     ContainerUnresolved {
-        /// The declaring script.
+        /// The script whose line writes the container.
         script: String,
         /// Byte offset of the write line.
         offset: u64,
@@ -3876,7 +3888,7 @@ pub enum RosterDiscoveryIssue {
     /// A create line arrived with nothing binding the root variable, so the
     /// line creates a root this stage cannot name.
     RootUndeclared {
-        /// The declaring script.
+        /// The script whose line creates the root.
         script: String,
         /// Byte offset of the create line.
         offset: u64,
@@ -3885,12 +3897,27 @@ pub enum RosterDiscoveryIssue {
     },
     /// A root name was declared with no source model spelling beside it.
     ModelUndeclared {
+        /// The script whose line creates the root.
+        script: String,
         /// The declared root name.
         root: String,
         /// Byte offset of the create line.
         offset: u64,
         /// The variable the declaration expects to hold the model spelling.
         variable: String,
+    },
+    /// A line spelled with one of the declaration's commands whose stored
+    /// arguments are not the shape the declaration declares, so the walk cannot
+    /// read it and refuses to invent the boundary that is missing.
+    LineUnreadable {
+        /// The script whose line it is.
+        script: String,
+        /// Byte offset of the line.
+        offset: u64,
+        /// The declared command spelling, as the declaration spells it.
+        command: String,
+        /// How many arguments the container really stores on that line.
+        stored_arguments: usize,
     },
     /// An include names a script that is not in the container, or spells its
     /// target with a variable nothing binds.
@@ -3909,6 +3936,17 @@ pub enum RosterDiscoveryIssue {
         script: String,
         /// The include target, as stored.
         target: String,
+    },
+    /// An include reaches past [`MAX_ROSTER_INCLUDE_DEPTH`], so the scripts
+    /// below it are not read and every airframe they would have declared is a
+    /// gap this stage reports rather than a row it lost.
+    IncludeDepthExceeded {
+        /// The including script.
+        script: String,
+        /// The include target, as stored.
+        target: String,
+        /// The depth the target would have been read at.
+        depth: usize,
     },
     /// The declared root name cannot form an `airframe` key. The name crosses
     /// over verbatim into the reason and is never transliterated.
@@ -3969,12 +4007,24 @@ impl fmt::Display for RosterDiscoveryIssue {
                 "{script}@{offset} creates a root while {variable:?} is unbound"
             ),
             Self::ModelUndeclared {
+                script,
                 root,
                 offset,
                 variable,
             } => write!(
                 f,
-                "root {root:?}@{offset} is declared with no source model: {variable:?} is unbound"
+                "{script}@{offset} declares root {root:?} with no source model: {variable:?} is \
+                 unbound"
+            ),
+            Self::LineUnreadable {
+                script,
+                offset,
+                command,
+                stored_arguments,
+            } => write!(
+                f,
+                "{script}@{offset} spells {command:?} with {stored_arguments} stored argument(s), \
+                 which is not a shape this stage reads"
             ),
             Self::IncludeUnresolved {
                 script,
@@ -3987,6 +4037,15 @@ impl fmt::Display for RosterDiscoveryIssue {
             Self::IncludeCycle { script, target } => write!(
                 f,
                 "{script} includes {target:?}, which is already on the include chain"
+            ),
+            Self::IncludeDepthExceeded {
+                script,
+                target,
+                depth,
+            } => write!(
+                f,
+                "{script} includes {target:?}, which is past the include depth this stage follows \
+                 ({depth} > {MAX_ROSTER_INCLUDE_DEPTH}), so nothing below it was read"
             ),
             Self::AirframeIdRefused {
                 root,
@@ -4176,12 +4235,12 @@ impl From<RosterError> for RosterDiscoveryError {
 ///
 /// The walk is driven entirely by `declarations`: for each one it reads the
 /// declaring script, follows that script's includes **at the point of each
-/// include line** against one shared variable table (the corpus re-includes the
-/// same surgery script once per declared airframe and expects the current
-/// values each time), reads the `set` lines that bind variables, and takes a
-/// create line whose single argument is literally `%<root_variable>%` as the
-/// declaration of one airframe. The container the roots live in comes from the
-/// script's own write line, resolved through the same
+/// include line** against one variable table per declaration (the corpus
+/// re-includes the same surgery script once per declared airframe and expects
+/// the current values each time), reads the `set` lines that bind variables, and
+/// takes a create line whose single argument is literally `%<root_variable>%` as
+/// the declaration of one airframe. The container the roots live in comes from
+/// the script's own write line, resolved through the same
 /// [`install_file_key`] normalizer every other installation path uses, so a
 /// relative spelling becomes a catalog key by the one production rule rather
 /// than by a path join.
@@ -4190,6 +4249,12 @@ impl From<RosterError> for RosterDiscoveryError {
 /// and a reference nothing binds is a finding rather than an empty string: the
 /// corpus's `%CAMPAIGN_DIR%` is bound by the host process and not by the
 /// container, and this stage says so instead of inventing it.
+///
+/// A line spelled with one of the declaration's commands but stored with a
+/// different argument count is a [`RosterDiscoveryIssue::LineUnreadable`]
+/// rather than a line the walk repairs: the declaration states the shape it
+/// reads, and a line outside it is a fact about the corpus, not a boundary this
+/// stage may invent.
 ///
 /// The availability of every row stays the explicit
 /// [`RosterEntry::undiscovered_availability`] unknown and the forced-assignment
@@ -4235,8 +4300,11 @@ struct RosterWalk<'a> {
     declarations: &'a RosterDeclarations,
     /// Folded script name to the container's script indexes carrying it.
     scripts_by_name: BTreeMap<String, Vec<usize>>,
-    /// One shared variable table, bound by the `set` lines of every script the
-    /// walk has read.
+    /// The variable table of the declaration being walked, bound by the `set`
+    /// lines of that declaration's declaring script and everything it includes.
+    /// It is **per declaration**: nothing measured says one declaring script's
+    /// variables are visible to another, so a row may never be bound by a value
+    /// an earlier, unrelated script left behind.
     variables: BTreeMap<String, ScriptBinding>,
     /// The container each declaration's roots land in, once its write line
     /// resolved.
@@ -4256,8 +4324,12 @@ impl<'a> RosterWalk<'a> {
             // A script name is stored bytes, so it is folded as bytes: two
             // names that differ only in case are one name for matching, and the
             // ambiguity two scripts of one name create is reported rather than
-            // resolved.
-            let folded = fold_bytes(script.name()).unwrap_or_default();
+            // resolved. A name that is not printable ASCII is left out of the
+            // lookup entirely: a declaration spells its script name as ASCII
+            // text, so no such script can be named and none is lost.
+            let Some(folded) = fold_bytes(script.name()) else {
+                continue;
+            };
             scripts_by_name.entry(folded).or_default().push(index);
         }
         Self {
@@ -4276,7 +4348,12 @@ impl<'a> RosterWalk<'a> {
     }
 
     /// Runs one declaration from its declaring script.
+    ///
+    /// Each declaration starts from an empty variable table: the corpus's own
+    /// execution order for two declaring scripts is unmeasured, so leaking one
+    /// declaration's bindings into the next could only ever manufacture a row.
     fn run_declaration(&mut self, declaration: usize) {
+        self.variables.clear();
         let rule = &self.declarations.declarations()[declaration];
         let folded = rule.script.to_ascii_lowercase();
         match self.scripts_by_name.get(&folded) {
@@ -4296,7 +4373,7 @@ impl<'a> RosterWalk<'a> {
             Some(indexes) => {
                 let start = indexes[0];
                 let mut chain = vec![start];
-                self.read_script(start, declaration, 0, &mut chain);
+                self.read_script(start, declaration, &mut chain);
                 if !self.containers.contains_key(&declaration) {
                     self.issues.push(RosterDiscoveryIssue::ContainerUnwritten {
                         script: rule.script.clone(),
@@ -4308,54 +4385,58 @@ impl<'a> RosterWalk<'a> {
     }
 
     /// Reads one script's lines, following its includes in place.
-    fn read_script(
-        &mut self,
-        index: usize,
-        declaration: usize,
-        depth: usize,
-        chain: &mut Vec<usize>,
-    ) {
-        if depth > MAX_ROSTER_INCLUDE_DEPTH {
-            return;
-        }
+    fn read_script(&mut self, index: usize, declaration: usize, chain: &mut Vec<usize>) {
         let script = &self.container.scripts()[index];
-        if self
-            .visited
-            .insert(fold_bytes(script.name()).unwrap_or_default())
+        if let Some(folded) = fold_bytes(script.name())
+            && self.visited.insert(folded)
         {
             self.followed
                 .push(String::from_utf8_lossy(script.name()).into_owned());
         }
         let rule = &self.declarations.declarations()[declaration];
+        let bind = fold_str(&rule.bind_command);
+        let include = fold_str(&rule.include_command);
+        let write = fold_str(&rule.write_command);
+        let create = fold_str(&rule.create_command);
         for line in script.lines() {
             let Some(head) = line.head() else { continue };
             let Some(head) = fold_bytes(head.bytes()) else {
                 continue;
             };
-            if head == fold_str(&rule.bind_command) {
-                self.bind_variable(line);
-            } else if head == fold_str(&rule.include_command) {
-                self.follow_include(line, declaration, depth, chain);
-            } else if head == fold_str(&rule.write_command) {
-                self.bind_container(line, declaration);
-            } else if head == fold_str(&rule.create_command) {
-                self.declare_root(line, declaration);
+            if head == bind {
+                self.bind_variable(line, declaration, chain);
+            } else if head == include {
+                self.follow_include(line, declaration, chain);
+            } else if head == write {
+                self.bind_container(line, declaration, chain);
+            } else if head == create {
+                self.declare_root(line, declaration, chain);
             }
         }
     }
 
-    /// Reads one `set NAME VALUE…` line into the shared variable table.
+    /// Reads one `set NAME VALUE` line into this declaration's variable table.
     ///
     /// The value is stored **as written** and interpolated at use, so a
     /// reference resolved from a variable bound later still reads the way the
     /// script would have had it.
-    fn bind_variable(&mut self, line: &InterpLine<'_>) {
+    ///
+    /// A line that stores anything other than a name and one value is
+    /// [`RosterDiscoveryIssue::LineUnreadable`]: the declaration declares the
+    /// two-argument shape, and joining a line's remaining tokens with a
+    /// separator would invent an argument boundary the container never stored
+    /// (the rule every decoder in this workspace follows).
+    fn bind_variable(&mut self, line: &InterpLine<'_>, declaration: usize, chain: &[usize]) {
+        let rule = &self.declarations.declarations()[declaration];
         let tokens = line.tokens();
-        if tokens.len() < 3 {
+        if tokens.len() != 3 {
+            self.unreadable(line, &rule.bind_command, tokens.len(), chain);
             return;
         }
-        let (Some(name), Some(value)) = (fold_bytes(tokens[1].bytes()), join_tokens(&tokens[2..]))
+        let (Some(name), Some(value)) =
+            (fold_bytes(tokens[1].bytes()), fold_bytes(tokens[2].bytes()))
         else {
+            self.unreadable(line, &rule.bind_command, tokens.len(), chain);
             return;
         };
         self.variables.insert(
@@ -4372,11 +4453,16 @@ impl<'a> RosterWalk<'a> {
         &mut self,
         line: &InterpLine<'_>,
         declaration: usize,
-        depth: usize,
         chain: &mut Vec<usize>,
     ) {
+        let rule = &self.declarations.declarations()[declaration];
         let tokens = line.tokens();
-        let Some(target) = tokens.get(1).and_then(|token| fold_bytes(token.bytes())) else {
+        if tokens.len() != 2 {
+            self.unreadable(line, &rule.include_command, tokens.len(), chain);
+            return;
+        }
+        let Some(target) = fold_bytes(tokens[1].bytes()) else {
+            self.unreadable(line, &rule.include_command, tokens.len(), chain);
             return;
         };
         let Some(spelling) = self.interpolate(&target, &mut Vec::new()) else {
@@ -4412,24 +4498,51 @@ impl<'a> RosterWalk<'a> {
             });
             return;
         }
+        // The chain holds the declaring script plus every script reached so
+        // far, so the target would be read one include deeper than the chain
+        // is long: the first include reads at depth 1, as before.
+        let depth = chain.len();
+        if depth > MAX_ROSTER_INCLUDE_DEPTH {
+            // The chain limit is a finding, not a silent stop: an airframe the
+            // unread scripts would have declared is a gap somebody has to see.
+            self.issues
+                .push(RosterDiscoveryIssue::IncludeDepthExceeded {
+                    script: self.script_name(chain),
+                    target: spelling,
+                    depth,
+                });
+            return;
+        }
         chain.push(next);
-        self.read_script(next, declaration, depth + 1, chain);
+        self.read_script(next, declaration, chain);
         chain.pop();
     }
 
     /// Reads one write line and records the container the roots land in.
-    fn bind_container(&mut self, line: &InterpLine<'_>, declaration: usize) {
+    ///
+    /// The first write line a declaration's chain spells resolves the
+    /// container; a later one is not a second answer, because a declaring
+    /// script that writes two containers has not been measured and the row's
+    /// reference must not be decided by which line the walk happened to reach
+    /// first.
+    fn bind_container(&mut self, line: &InterpLine<'_>, declaration: usize, chain: &[usize]) {
         if self.containers.contains_key(&declaration) {
             return;
         }
         let rule = &self.declarations.declarations()[declaration];
         let tokens = line.tokens();
-        let Some(argument) = tokens.get(1).and_then(|token| fold_bytes(token.bytes())) else {
+        if tokens.len() != 2 {
+            self.unreadable(line, &rule.write_command, tokens.len(), chain);
+            return;
+        }
+        let Some(argument) = fold_bytes(tokens[1].bytes()) else {
+            self.unreadable(line, &rule.write_command, tokens.len(), chain);
             return;
         };
+        let script = self.script_name(chain);
         let Some(spelling) = self.interpolate(&argument, &mut Vec::new()) else {
             self.issues.push(RosterDiscoveryIssue::ContainerUnresolved {
-                script: rule.script.clone(),
+                script,
                 offset: line.offset(),
                 variable: argument,
             });
@@ -4445,7 +4558,7 @@ impl<'a> RosterWalk<'a> {
             Ok(relative) => relative,
             Err(error) => {
                 self.issues.push(RosterDiscoveryIssue::ContainerUnresolved {
-                    script: rule.script.clone(),
+                    script: script.clone(),
                     offset: line.offset(),
                     variable: format!("{spelling:?} ({error})"),
                 });
@@ -4459,7 +4572,7 @@ impl<'a> RosterWalk<'a> {
             }
             Err(error) => {
                 self.issues.push(RosterDiscoveryIssue::ContainerUnresolved {
-                    script: rule.script.clone(),
+                    script,
                     offset: line.offset(),
                     variable: format!("{spelling:?} ({error})"),
                 });
@@ -4472,19 +4585,21 @@ impl<'a> RosterWalk<'a> {
     /// The line must name the root variable *literally* as `%<root_variable>%`.
     /// The same script creates unrelated objects with the same command and a
     /// different argument, and only the literal reference declares an airframe.
-    fn declare_root(&mut self, line: &InterpLine<'_>, declaration: usize) {
+    fn declare_root(&mut self, line: &InterpLine<'_>, declaration: usize, chain: &[usize]) {
         let rule = &self.declarations.declarations()[declaration];
         let tokens = line.tokens();
         if tokens.len() != 2 {
+            self.unreadable(line, &rule.create_command, tokens.len(), chain);
             return;
         }
         let Some(argument) = fold_bytes(tokens[1].bytes()) else {
+            self.unreadable(line, &rule.create_command, tokens.len(), chain);
             return;
         };
         if argument != format!("%{}%", fold_str(&rule.root_variable)) {
             return;
         }
-        let script = rule.script.clone();
+        let script = self.script_name(chain);
         let offset = line.offset();
         let Some(root_binding) = self.variables.get(&fold_str(&rule.root_variable)).cloned() else {
             self.issues.push(RosterDiscoveryIssue::RootUndeclared {
@@ -4497,6 +4612,7 @@ impl<'a> RosterWalk<'a> {
         let Some(model_binding) = self.variables.get(&fold_str(&rule.model_variable)).cloned()
         else {
             self.issues.push(RosterDiscoveryIssue::ModelUndeclared {
+                script,
                 root: root_binding.value,
                 offset,
                 variable: rule.model_variable.clone(),
@@ -4509,6 +4625,17 @@ impl<'a> RosterWalk<'a> {
             model: model_binding.value,
             declared_at: root_binding.offset,
             created_at: offset,
+        });
+    }
+
+    /// Records one line the walk could not read because its stored arguments
+    /// are not the shape the declaration declares.
+    fn unreadable(&mut self, line: &InterpLine<'_>, command: &str, stored: usize, chain: &[usize]) {
+        self.issues.push(RosterDiscoveryIssue::LineUnreadable {
+            script: self.script_name(chain),
+            offset: line.offset(),
+            command: command.to_owned(),
+            stored_arguments: stored,
         });
     }
 
@@ -4682,20 +4809,4 @@ fn fold_bytes(bytes: &[u8]) -> Option<String> {
 /// Folds an engine-supplied spelling for comparison.
 fn fold_str(text: &str) -> String {
     text.to_ascii_lowercase()
-}
-
-/// Joins a line's remaining tokens back into one spelling.
-///
-/// The container's own decoder keeps arguments as tokens because their
-/// encoding is unestablished; the roster shapes are single-token arguments, so
-/// a multi-token argument is not a shape this stage spells.
-fn join_tokens(tokens: &[cs_formats::interp::InterpToken<'_>]) -> Option<String> {
-    let mut out = String::new();
-    for (index, token) in tokens.iter().enumerate() {
-        if index > 0 {
-            out.push(' ');
-        }
-        out.push_str(&String::from_utf8_lossy(token.bytes()));
-    }
-    Some(out)
 }
