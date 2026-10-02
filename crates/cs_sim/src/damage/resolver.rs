@@ -349,6 +349,18 @@ impl DamageResolver {
         self.actors.get(actor).map(|state| state.policy)
     }
 
+    /// The damage graph the actor registered, for the consumers that map a
+    /// part identity to what it drives — the weapon mount key a destroyed
+    /// carrier disables and the visual scene binding a destroyed part
+    /// presents under (F29-C). `None` when the actor is unknown.
+    ///
+    /// This is a read of the registered model, not a second copy of it:
+    /// resolution and every consumer decide from the same graph.
+    #[must_use]
+    pub fn graph(&self, actor: &ActorId) -> Option<&DamageGraph> {
+        self.actors.get(actor).map(|state| &state.graph)
+    }
+
     /// The observable state of one of an actor's nodes; `None` when the
     /// actor or node is unknown.
     #[must_use]
