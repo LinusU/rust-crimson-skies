@@ -1,0 +1,206 @@
+{
+  "schema": "rally-review-snapshot/1",
+  "task": "M16-A-FU4 (#483)",
+  "purpose": "The evidence reports that the campaign family in docs/findings/2026-10-02-m16-a-fu2-rally-review-snapshot.json does not cover must name the implementer and the reviewer that actually ran, including whether the reviewer's context was fresh (docs/contracts/CLI-EVIDENCE.md, 'Evidence record minimum'; owner ruling 2026-09-28). Rally is not reachable from CI or from an offline check, so the review facts read out of the Rally activity log are committed here and enforced against the reports and against the harness that writes them by tools/tests/test_evidence_review_identity.py.",
+  "source": "Rally activity log of project crimson-skies, read with the `rally` MCP server (get_task history per task) on 2026-10-02T04:00Z by bunny-2/bunny-2, agent instance acting under M16-A-FU4 (#483).",
+  "read_at": "2026-10-02T04:00:00Z",
+  "read_by": "bunny-2/bunny-2",
+  "claim_started_source": "Rally's `task.started` event, or its `task.resumed` event where another agent's implement lease had expired and a different agent picked the stage up (F02-C, F10-D).",
+  "review_event_types": ["review.started", "task.approved", "task.merged"],
+  "actor_meaning": "Rally actor strings are `<agent instance>/<session label>`. Two claims from the same actor string are the same agent instance, so the second is not independent of the first (owner ruling 2026-09-28, review policy).",
+  "independent_is_derived": "The check derives independence from actor equality; this file records the actors and the event timestamps, not a verdict.",
+  "every_merged_stage_has_a_review_claim": "Rally only merges a stage through complete_review or its landing queue, so every stage listed here has at least one review claim and a reviewer to name.",
+  "scope": "Only the stages whose committed `review.identity` was still a hand-over placeholder when this file was written. Every other committed report is either already honest or names no reviewer at all without carrying a placeholder; the latter are filed as follow-up #484 rather than rewritten here.",
+  "report_written_by_meaning": "Derived from the report's own `created_at` against the claim windows in the Rally log: a `created_at` inside a review claim means the reviewer regenerated the report, one inside the implement claim means the committed copy is the implementer's. `report_regenerated_on_reviewed_commit` is `true` only when the reviewer's run wrote the copy that reached `main`.",
+  "tasks": [
+    {
+      "task_key": "F02-B",
+      "rally_task": 10,
+      "evidence_report": "docs/findings/evidence/F02-B.json",
+      "merged_sha": "48da095e1438ab3c101517e0921126ce27c45c1a",
+      "implementer": {
+        "actor": "opencode-1/opencode-1",
+        "claim_started": "2026-09-23T21:01:57Z",
+        "submitted": "2026-09-23T22:08:18Z"
+      },
+      "reviewer": {
+        "actor": "Jakob - Devin SWE-2/devin-1",
+        "review_claim_started": "2026-09-24T01:01:53Z",
+        "merge_event": {"type": "task.merged", "actor": "Jakob - Devin SWE-2/devin-1", "at": "2026-09-24T01:31:52Z"},
+        "earlier_review_claims": [
+          {"actor": "opencode-1/opencode-1", "review_claim_started": "2026-09-23T22:09:20Z", "outcome": "the implementer's own review lease expired on 2026-09-24T00:38:35Z without merging anything; it recorded no finding and the stage was reviewed again from scratch"}
+        ]
+      },
+      "report_written_by": "reviewer",
+      "report_regenerated_on_reviewed_commit": true
+    },
+    {
+      "task_key": "F02-C",
+      "rally_task": 11,
+      "evidence_report": "docs/findings/evidence/F02-C.json",
+      "merged_sha": "714f1e3a9a2e24fed4f0c0d0dced5c4db20fbff6",
+      "implementer": {
+        "actor": "Jakob - Devin SWE-2/devin-1",
+        "claim_started": "2026-09-24T03:50:01Z",
+        "submitted": "2026-09-24T04:10:44Z",
+        "earlier_implement_claims": [
+          {"actor": "opencode-1/opencode-1", "claim_started": "2026-09-24T01:59:10Z", "outcome": "the implement lease expired on 2026-09-24T03:50:01Z; devin-1 resumed the same branch and submitted it"}
+        ]
+      },
+      "reviewer": {
+        "actor": "Jakob - Devin SWE-2/devin-1",
+        "review_claim_started": "2026-09-24T04:10:58Z",
+        "merge_event": {"type": "task.merged", "actor": "Jakob - Devin SWE-2/devin-1", "at": "2026-09-24T04:38:34Z"}
+      },
+      "report_written_by": "implementer",
+      "report_regenerated_on_reviewed_commit": false
+    },
+    {
+      "task_key": "F02-D",
+      "rally_task": 12,
+      "evidence_report": "docs/findings/evidence/F02-D.json",
+      "merged_sha": "1214f4c53ba8c135e93520894b7b8b437e4f5bc4",
+      "implementer": {
+        "actor": "Jakob - Devin SWE-2/devin-1",
+        "claim_started": "2026-09-24T04:38:43Z",
+        "submitted": "2026-09-24T04:57:07Z"
+      },
+      "reviewer": {
+        "actor": "Jakob - Devin SWE-2/devin-1",
+        "review_claim_started": "2026-09-24T04:57:27Z",
+        "merge_event": {"type": "task.merged", "actor": "Jakob - Devin SWE-2/devin-1", "at": "2026-09-24T05:24:07Z"}
+      },
+      "report_written_by": "implementer",
+      "report_regenerated_on_reviewed_commit": false
+    },
+    {
+      "task_key": "F04-D",
+      "rally_task": 20,
+      "evidence_report": "docs/findings/evidence/F04-D.json",
+      "merged_sha": "cde31f6b38210681cba38aad48840806a459c8de",
+      "implementer": {
+        "actor": "claude-1/claude-1",
+        "claim_started": "2026-09-28T15:30:32Z",
+        "submitted": "2026-09-28T15:54:24Z"
+      },
+      "reviewer": {
+        "actor": "claude-1/claude-1",
+        "review_claim_started": "2026-09-28T15:54:42Z",
+        "merge_event": {"type": "task.merged", "actor": "claude-1/claude-1", "at": "2026-09-28T16:03:55Z"}
+      },
+      "report_written_by": "reviewer",
+      "report_regenerated_on_reviewed_commit": true
+    },
+    {
+      "task_key": "F10-D",
+      "rally_task": 44,
+      "evidence_report": "docs/findings/evidence/F10-D.json",
+      "merged_sha": "98d9dd354a36c7d1070191048d52b5626855b8fc",
+      "implementer": {
+        "actor": "mimo-1/mimo-1",
+        "claim_started": "2026-09-29T22:58:01Z",
+        "submitted": "2026-09-30T00:34:58Z",
+        "earlier_implement_claims": [
+          {"actor": "deepseek-1/deepseek-1", "claim_started": "2026-09-29T21:22:44Z", "outcome": "the implement lease expired on 2026-09-29T22:58:01Z; mimo-1 resumed the stage and rebuilt it from origin/main because the branch was never pushed"}
+        ]
+      },
+      "reviewer": {
+        "actor": "mimo-1/mimo-1",
+        "review_claim_started": "2026-09-30T00:36:04Z",
+        "merge_event": {"type": "task.merged", "actor": "mimo-1/mimo-1", "at": "2026-09-30T01:31:18Z"}
+      },
+      "report_written_by": "reviewer",
+      "report_regenerated_on_reviewed_commit": true
+    },
+    {
+      "task_key": "F51-D",
+      "rally_task": 207,
+      "evidence_report": "docs/findings/evidence/F51-D.json",
+      "merged_sha": "8646baaad50d83b72e20cf8c978a1794c3b38e0c",
+      "implementer": {
+        "actor": "deepseek-1/deepseek-1",
+        "claim_started": "2026-10-01T13:02:33Z",
+        "submitted": "2026-10-01T13:45:59Z"
+      },
+      "reviewer": {
+        "actor": "deepseek-1/deepseek-1",
+        "review_claim_started": "2026-10-01T13:46:16Z",
+        "merge_event": {"type": "task.merged", "actor": "deepseek-1/deepseek-1", "at": "2026-10-01T14:04:32Z"}
+      },
+      "report_written_by": "implementer",
+      "report_regenerated_on_reviewed_commit": false
+    },
+    {
+      "task_key": "T340",
+      "rally_task": 340,
+      "evidence_report": "docs/findings/evidence/T340.json",
+      "merged_sha": "1b521fa0b9e0505aaea79cab8567d5fa21928a07",
+      "implementer": {
+        "actor": "claude-1/claude-1",
+        "claim_started": "2026-09-28T16:48:36Z",
+        "submitted": "2026-09-28T17:07:42Z"
+      },
+      "reviewer": {
+        "actor": "claude-1/claude-1",
+        "review_claim_started": "2026-09-28T17:08:00Z",
+        "merge_event": {"type": "task.merged", "actor": "claude-1/claude-1", "at": "2026-09-28T17:09:37Z"}
+      },
+      "report_written_by": "implementer",
+      "report_regenerated_on_reviewed_commit": false
+    },
+    {
+      "task_key": "T343",
+      "rally_task": 343,
+      "evidence_report": "docs/findings/evidence/T343.json",
+      "merged_sha": "ba3ddc22c78645a29182a15c3d2e2f7b737e10f1",
+      "implementer": {
+        "actor": "claude-1/claude-1",
+        "claim_started": "2026-09-28T17:11:16Z",
+        "submitted": "2026-09-28T17:20:59Z"
+      },
+      "reviewer": {
+        "actor": "claude-1/claude-1",
+        "review_claim_started": "2026-09-28T17:21:15Z",
+        "merge_event": {"type": "task.merged", "actor": "claude-1/claude-1", "at": "2026-09-28T17:24:48Z"}
+      },
+      "report_written_by": "implementer",
+      "report_regenerated_on_reviewed_commit": false
+    },
+    {
+      "task_key": "T344",
+      "rally_task": 344,
+      "evidence_report": "docs/findings/evidence/T344.json",
+      "merged_sha": "f122a1e73ebab4f451fcacdfa50a12228a1e3e89",
+      "implementer": {
+        "actor": "claude-1/claude-1",
+        "claim_started": "2026-09-28T17:25:02Z",
+        "submitted": "2026-09-28T17:35:16Z"
+      },
+      "reviewer": {
+        "actor": "claude-1/claude-1",
+        "review_claim_started": "2026-09-28T17:35:32Z",
+        "merge_event": {"type": "task.merged", "actor": "claude-1/claude-1", "at": "2026-09-28T17:38:04Z"}
+      },
+      "report_written_by": "implementer",
+      "report_regenerated_on_reviewed_commit": false
+    },
+    {
+      "task_key": "F12-K",
+      "rally_task": 377,
+      "evidence_report": "docs/findings/evidence/F12-K.json",
+      "merged_sha": "da75170554257958e98db805c88a28b70c58e69e",
+      "implementer": {
+        "actor": "Jakob - Devin SWE-2/devin-1",
+        "claim_started": "2026-09-29T15:27:43Z",
+        "submitted": "2026-09-29T16:44:46Z"
+      },
+      "reviewer": {
+        "actor": "Jakob - Devin SWE-2/devin-1",
+        "review_claim_started": "2026-09-29T16:45:28Z",
+        "merge_event": {"type": "task.merged", "actor": "Jakob - Devin SWE-2/devin-1", "at": "2026-09-29T16:57:53Z"}
+      },
+      "report_written_by": "implementer",
+      "report_regenerated_on_reviewed_commit": false
+    }
+  ]
+}
