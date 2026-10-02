@@ -49,15 +49,21 @@
 //!   and produces one [`SessionFrame`] per render frame naming the authority
 //!   that drew it. It is where AC03 — *swap aircraft during a scripted capture
 //!   and verify the camera binds to the new player body* — is decided.
+//! * [`coverage`] is F21-D: it walks the installation's decoded loading scripts
+//!   and the airframe archive and reports what the original declares about the
+//!   pilot's view — the camera commands its scripts use, and the cockpit nodes
+//!   they bind — checked against what this contract consumes and can resolve.
 //!
-//! F21-D compares original view behavior and needs `gpu` + `retail`, which no
-//! stage here claims.
+//! F21-D's measurement and what it deliberately leaves unknown are written down
+//! in `docs/findings/2026-10-03-f21-d-original-view-controls-and-cockpit-coverage.md`.
 //!
-//! What is **not** claimed here: no original mode list, field of view,
-//! projection axis, near/far plane, magnification, target-tracking behavior,
-//! cockpit binding, look limit or smoothing rate was read or reproduced. Every
-//! fixture value is newly authored design. The unknowns this stage met are
-//! recorded in
+//! What is **not** claimed anywhere in this module: no original mode list,
+//! field of view, projection axis, near/far plane, magnification,
+//! target-tracking behavior, cockpit binding, look limit or smoothing rate was
+//! read or reproduced before F21-D, and F21-D read *declarations* — which
+//! commands and nodes the original's own files name — rather than its behavior.
+//! The fixture values in the earlier stages are newly authored design. The
+//! unknowns these stages met are recorded in
 //! `docs/findings/2026-09-30-f21-a-camera-modes-and-projection-policy.md` and
 //! `docs/findings/2026-10-03-f21-b-camera-rigs.md`.
 //!
@@ -65,6 +71,7 @@
 //! [`DeclaredCameraModes`]: cs_content::cameras::DeclaredCameraModes
 
 pub mod capture;
+pub mod coverage;
 pub mod modes;
 pub mod orientation;
 pub mod pose;
@@ -77,6 +84,14 @@ pub mod smoothing;
 pub use capture::{
     CaptureError, CaptureOverride, CaptureReport, CaptureRequest, CaptureTarget, MagnificationPin,
     Narrowing, PinnedProjection, ProjectionPinError, pin,
+};
+pub use coverage::{
+    AirframeCockpitCoverage, CameraOperation, CockpitAirframe, CockpitBinding, CockpitBindingClaim,
+    CockpitBindingCoverage, CockpitBindingDiscovery, CockpitCoverageError, CockpitCoverageReport,
+    CockpitEyeCoverage, CockpitFinding, CockpitNodeCoverage, ViewCommandClaim, ViewControlCensus,
+    ViewControlCoverage, ViewControlEffect, ViewControlError, ViewControlFinding,
+    ViewControlOccurrence, ViewControlRow, audit_cockpit_coverage, discover_cockpit_bindings,
+    discover_view_controls, eye_placement,
 };
 pub use modes::{
     CameraLowerError, LoweredCameraMode, LoweredCameraModes, LoweredCockpitViewpoint,

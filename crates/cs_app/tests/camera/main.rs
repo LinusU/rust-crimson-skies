@@ -33,6 +33,15 @@
 //! * `smoothing` owns frame-rate independence, the teleport/swap resets and
 //!   preservation through an origin rebase.
 //!
+//! Stage `### F21-D` — original view controls and cockpit coverage:
+//!
+//! * `coverage` owns the stage's minimum scenario over what the installation
+//!   **declares**: the camera commands the loading scripts write, the cockpit
+//!   nodes they bind, and how each resolves against the real airframe archive
+//!   (AC04's file-visible half), plus a real capture of a bound cockpit mesh.
+//!   The comparison against the original *running* needs an owner-supplied
+//!   original run and is recorded as an unknown, not asserted.
+//!
 //! Stage `### F21-C` — script cameras, deterministic capture flags and the
 //! session that runs them:
 //!
@@ -46,13 +55,16 @@
 //!   aircraft during a scripted capture and verify the camera binds to the new
 //!   player body* (AC03), together with teardown, retry and error propagation.
 //!
-//! No original data and no `CS_GAME_DIR` access: every value here is
-//! authored development content (`Origin::SyntheticFixture`), so these
-//! tests prove the interface and the camera contract, never the original
-//! game.
+//! Most of this file reads no original data: every value is authored
+//! development content (`Origin::SyntheticFixture`), so those tests prove the
+//! interface and the camera contract, never the original game. The F21-D half
+//! is the exception and says so test by test: its retail tests are marked
+//! `#[ignore = "requires CS_GAME_DIR"]` (and, for the capture, need an adapter
+//! too) and assert against measured installation bytes and a measured frame.
 
 mod capture;
 mod common;
+mod coverage;
 mod framing;
 mod modes;
 mod projection;
