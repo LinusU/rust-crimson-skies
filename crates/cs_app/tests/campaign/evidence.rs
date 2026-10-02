@@ -5004,8 +5004,10 @@ fn evidence_report_f50_e4_writes_the_acceptance_report() {
              string table, not original-game rules; the title-to-directory join stays an inference, \
              no original executable was run, and nothing here is verified_original. Claim is \
              implemented only; validated with tools/validate_evidence.py --require-pass. \
-             `candidate_tree` is the tree of the commit the suite ran on: the only later delta is \
-             this report's own copy under docs/findings/evidence/, whose bytes are this file"
+             `candidate_tree` is the tree of the commit the suite and this harness ran on; the only \
+             later delta is this report's own copy under docs/findings/evidence/ (whose bytes are \
+             this file) and the findings document that discusses it, neither of which the \
+             acceptance suite reads"
         ),
     );
 
