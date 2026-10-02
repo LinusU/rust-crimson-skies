@@ -1977,9 +1977,12 @@ pub struct SourceDependency {
 
 /// One byte range of one original asset a source-derived binding rests on.
 ///
-/// `sha256` is the digest of the whole asset named by `asset_id`;
-/// `offset`/`length` locate this span inside it. A span carries no bytes, so
-/// a binding record can cite original data without containing any.
+/// `sha256` is the digest of the **whole** asset named by `asset_id`, not of
+/// the cited range: every span of the same asset carries the same digest, so
+/// it pins the asset but not the bytes. `offset`/`length` alone locate the
+/// span; a reader that needs these exact bytes re-reads that range and a
+/// reader that needs the asset unchanged compares `sha256`. A span carries no
+/// bytes, so a binding record can cite original data without containing any.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SourceSpanRecord {
     /// The asset's logical path inside the installation.
@@ -2319,14 +2322,38 @@ impl SourceContext {
         let title_reason = confirmation.refusal();
 
         let mut title_source = None;
+        let mut title_enclosure = None;
+        let mut title_row_span_recovered = false;
         if let Some(row) = title_row {
-            title_source = Some(row.span.clone());
-            source_spans.push(SourceSpanRecord {
-                asset_id: self.string_asset.clone(),
-                offset: row.span.offset(),
-                length: row.span.length(),
-                sha256: self.string_asset_sha256.clone(),
-            });
+            let enclosure = row.span.clone();
+            title_enclosure = Some(enclosure.clone());
+            // `StringRow::span` locates the whole `RT_STRING` block, not the
+            // row; `SourceSpanRecord` must cite the row's own bytes so a
+            // reader can point at the string that was matched. The block stays
+            // as the named enclosing source.
+            match row_byte_span(&self.strings, row) {
+                Some(span) => {
+                    title_source = Some(span.clone());
+                    title_row_span_recovered = true;
+                    source_spans.push(SourceSpanRecord {
+                        asset_id: self.string_asset.clone(),
+                        offset: span.offset(),
+                        length: span.length(),
+                        sha256: self.string_asset_sha256.clone(),
+                    });
+                }
+                None => {
+                    // Only the bundle is recoverable: cite it and let the
+                    // unknown below say so instead of implying it is the row.
+                    title_source = Some(enclosure.clone());
+                    source_spans.push(SourceSpanRecord {
+                        asset_id: self.string_asset.clone(),
+                        offset: enclosure.offset(),
+                        length: enclosure.length(),
+                        sha256: self.string_asset_sha256.clone(),
+                    });
+                }
+            }
         }
 
         // --- campaign position: the localized titles form contiguous id
@@ -2519,6 +2546,18 @@ impl SourceContext {
             }
         }
 
+        // A confirmed title whose own bytes could not be located inside its
+        // decoded block is cited by the enclosing block; the record says so
+        // rather than implying the block is the row.
+        if title_row.is_some() && !title_row_span_recovered {
+            unknowns.push(
+                "title span: the confirmed row's own byte range could not be located inside its \
+                 decoded RT_STRING block, so the cited title span is the enclosing block, not the \
+                 row"
+                .to_owned(),
+            );
+        }
+
         Ok(SourceBinding {
             label,
             discovery_title: discovery_title.to_owned(),
@@ -2534,6 +2573,7 @@ impl SourceContext {
             source_spans,
             identity_source: program_source,
             title_source,
+            title_enclosure,
             closure_sha256: None,
             evidence_ids: Vec::new(),
             unknowns,
@@ -3059,6 +3099,41 @@ fn region_prefix(display: &str) -> Option<&str> {
     Some(prefix)
 }
 
+/// The byte range one decoded `RT_STRING` unit occupies inside its asset.
+///
+/// [`StringRow::span`] locates the whole `RT_STRING` block — up to sixteen
+/// unrelated strings — and names no single string. The block's units are
+/// encoded in order as a little-endian `u16` code-unit count followed by that
+/// many UTF-16 code units, so the row's own range starts at the block's
+/// `file_offset` plus the encoded lengths of every earlier unit and is
+/// `2 + 2 * code_units.len()` bytes long. [`StringCatalog`] keeps both the
+/// block extent and the decoded units, so this is arithmetic over bytes it
+/// already read, not a second parse of the image.
+///
+/// [`None`] when no decoded block carries this row's id, so a caller cites the
+/// enclosing block, says the row was not located, and never invents a range.
+fn row_byte_span(catalog: &StringCatalog, row: &StringRow) -> Option<SourceSpan> {
+    for block in catalog.resources().strings() {
+        let mut offset = block.data.file_offset;
+        for unit in &block.units {
+            let length = 2 + 2 * unit.code_units.len() as u64;
+            if unit.id == row.id {
+                return SourceSpan::new(
+                    row.span.install_sha256(),
+                    row.span.container_path(),
+                    row.span.member_key(),
+                    offset,
+                    length,
+                    row.span.member_sha256(),
+                )
+                .ok();
+            }
+            offset += length;
+        }
+    }
+    None
+}
+
 /// Reads one file, naming it in the error.
 fn read_file(path: &Path) -> Result<Vec<u8>, SourceBindingError> {
     fs::read(path).map_err(|source| SourceBindingError::Io {
@@ -3239,7 +3314,23 @@ pub struct SourceBinding {
     /// Provenance source for the identity rows, when a program was read.
     pub identity_source: Option<SourceSpan>,
     /// Provenance source for the confirmed title string.
+    ///
+    /// When the title row's own bytes are recoverable this is the row's range,
+    /// not the enclosing `RT_STRING` block: the block holds up to sixteen
+    /// unrelated strings and identifies none of them. See also
+    /// [`SourceBinding::title_enclosure`].
     pub title_source: Option<SourceSpan>,
+    /// The enclosing `RT_STRING` block the confirmed title row was decoded
+    /// from, when a title row exists.
+    ///
+    /// The localized UI image stores up to sixteen unrelated strings per
+    /// `RT_STRING` block, so the block encloses the title without being it:
+    /// [`SourceBinding::title_source`] (and the title entry of
+    /// [`SourceBinding::source_spans`]) cite the row's own bytes. Keeping the
+    /// enclosure distinct and named is what stops a reader from taking a
+    /// block span for a string. [`None`] when the title was not confirmed or
+    /// no title row exists.
+    pub title_enclosure: Option<SourceSpan>,
     /// The mission dependency closure hash, produced by a later stage.
     pub closure_sha256: Option<String>,
     /// Evidence claim ids this binding rests on.

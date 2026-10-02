@@ -1050,6 +1050,7 @@ fn authored_binding() -> SourceBinding {
         source_spans: Vec::new(),
         identity_source: None,
         title_source: None,
+        title_enclosure: None,
         closure_sha256: None,
         evidence_ids: Vec::new(),
         unknowns: vec![

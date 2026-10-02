@@ -269,17 +269,35 @@ fn accept_m05_a_source_derived_binding_has_no_unresolved_critical_dependencies()
             .any(|span| span.asset_id == entry.program_asset),
         "the record cites no span of the program archive it names"
     );
-    // The title span is the one the confirmed row itself reports, and it
-    // points inside the localized string table rather than at the program.
+    // The title span is the confirmed row's own bytes, and the block the row
+    // was decoded from is kept beside it as the named enclosure — a block
+    // holds up to sixteen unrelated strings, so it is not the title. Both
+    // point inside the localized string table, not at the program.
     let confirmed_row = context()
         .string_rows()
         .iter()
         .find(|row| Some(row.id) == binding.localized_title_id)
         .expect("the confirmed title row is in the table");
+    let title = binding
+        .title_source
+        .as_ref()
+        .expect("a confirmed title has a source span");
+    let enclosure = binding
+        .title_enclosure
+        .as_ref()
+        .expect("a confirmed title keeps the block it was decoded from");
     assert_eq!(
-        binding.title_source.as_ref(),
-        Some(&confirmed_row.span),
-        "the recorded title span is not the confirmed row's own span"
+        enclosure, &confirmed_row.span,
+        "the title enclosure is not the block the confirmed row reports"
+    );
+    assert_ne!(
+        title, enclosure,
+        "the recorded title span is still the whole enclosing RT_STRING block"
+    );
+    assert!(
+        title.offset() >= enclosure.offset()
+            && title.offset() + title.length() <= enclosure.offset() + enclosure.length(),
+        "the title span {title} is not inside the block it was decoded from {enclosure}"
     );
     assert_ne!(
         confirmed_row.span.container_path(),
@@ -1150,6 +1168,7 @@ fn authored_binding() -> SourceBinding {
         source_spans: Vec::new(),
         identity_source: None,
         title_source: None,
+        title_enclosure: None,
         closure_sha256: None,
         evidence_ids: Vec::new(),
         unknowns: vec![

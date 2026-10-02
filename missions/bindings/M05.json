@@ -9,7 +9,7 @@
  "program_id": "script/c1-m05-zrdr",
  "closure_sha256": null,
  "source_spans": [
-    {"asset_id": "GOSDATA/ASSETS/BINARIES/langui.dll", "offset": 86664, "length": 614, "sha256": "357e6bb05f1d2872a00e0976fdde44561cd5bb6a56d9f555d85d0ff1481faf49"},
+    {"asset_id": "GOSDATA/ASSETS/BINARIES/langui.dll", "offset": 87094, "length": 82, "sha256": "357e6bb05f1d2872a00e0976fdde44561cd5bb6a56d9f555d85d0ff1481faf49"},
     {"asset_id": "ZBD/C1/M05/zrdr.zbd", "offset": 0, "length": 115570, "sha256": "0ae0341cba2548a3d1cb9f10ec06cfae3ecf4c81513bd320d882f6a57f8c34fe"}
   ],
  "required_actor_ids": [],
