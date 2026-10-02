@@ -102,11 +102,12 @@ key vocabulary is **six** keys:
 
 `objective` and `other_target` are **marker** keys — a one-element list with no
 value. There is no key naming a subject, an owner, a team, a squadron, an
-aircraft or a pilot. **67** of the records are fly-through danger-zone targets
-(#463's selector), **46** are team-scoped (`MSG_OBJ_TEAM_1` / `MSG_OBJ_TEAM_2`,
-all of them in the multiplayer readers). So the original's objective *record*
-never says who may complete it, and where the original does have an owning
-authority in this layer it is a **team**, never an aircraft.
+aircraft or a pilot. **67** of the records are fly-through danger-zone targets by
+either measured label and **64** by #463's stricter selector (the three-record
+difference is corrected below), **46** are team-scoped (`MSG_OBJ_TEAM_1` /
+`MSG_OBJ_TEAM_2`, all of them in the multiplayer readers). So the original's
+objective *record* never says who may complete it, and where the original does
+have an owning authority in this layer it is a **team**, never an aircraft.
 
 ### 2. The objective state machine: 1 338 numbered blocks, 55 keys, one of them names an actor
 
@@ -203,6 +204,33 @@ condition is player-named or anonymous, and the reimplementation's AI refusal is
 a **designed** choice with a measured hazard behind it — never a measured
 original rule.
 
+## A correction this task found in #463's fly-through selector
+
+`cs_content::stunts::scenario_fly_through_targets` selects a fly-through target
+by reading **both** halves of the measured label pair and requiring both to be
+present (its `?` on `category_label` refuses a record that carries only the help
+label). Over the **eight instant-action scenarios** every fly-through record
+carries both labels, so the selector and the looser union read the same **54**
+rows — which is why #463's record could not see the difference. Over the **whole
+installation** they disagree by exactly **three** records, all of them campaign
+missions, all of them carrying `help_label = MSG_OBJ_FLYTHROUGH` and **no**
+`category_label` at all:
+
+| reader | objective | node |
+| --- | --- | --- |
+| `ZBD/C1/M02` | `MSG_OBJ_ZEPHANGER` | `h3_marker` |
+| `ZBD/C4/M03` | `MSG_TRGT_DEVILSHORN` | `dz2` |
+| `ZBD/C5/M02` | `MSG_TRGT_PHQ` | `dz1` |
+
+So the measured counts are **67** fly-through records by either label and **64**
+by #463's stricter selector. Both numbers are in this branch's survey
+(`fly_through_labelled_objectives()` and `fly_through_objectives()`), the
+retail test pins both and names the three readers, and **#463's selector is left
+unchanged**: which reading the reimplementation should use is a fidelity
+decision over content this task did not audit, and the risk is now recorded here
+and as a follow-up task rather than silently resolved in another task's
+measurement.
+
 ## What is **not** measured, and is therefore not a field
 
 - **The zone-crossing predicate itself** — whether a crossing is detected at all
@@ -251,6 +279,74 @@ unmeasured.
 - **The campaign `dzones.zrd` semantics remain unmeasured** (`objective_numbers`
   joins, `disable`, `nosnapshot`), as `docs/findings/2026-10-02-t463-stunt-encoding-and-gate-geometry.md`
   left them; task #513 owns that member's framing.
+
+## What was built
+
+* `crates/cs_content/src/stunts.rs` — the content half:
+  - `zrd_flat_fields`, the **flat-only** record reader (with the reason a
+    shape-agnostic walk would invent vocabulary out of values like
+    `INACTIVE1 ["fuel_truck01", "tank"]`);
+  - `objective_record_keys` / `objective_record_count` / `team_scoped_objectives` /
+    `is_fly_through_labelled` / `fly_through_labelled_objectives` — the objective
+    record census, including the looser fly-through reading that keeps #463's
+    three dropped records visible;
+  - `objective_record` (the measured one-element wrapper) and
+    `objective_state_machine`, with `ObjectiveStateMachine`,
+    `StuntCompletionCondition` (zones and a required count, **no subject**),
+    `TravellerSubject` (`Player` / `Named` / `Indexed` / `Unreadable`) and
+    `TravellerCondition`;
+  - `scenario_non_player_aircraft` with `ScenarioEnemyGroup`, `ScenarioAce` and
+    `ScenarioNonPlayerAircraft`;
+  - `RetailObjectiveAuthorityRow`, `RetailObjectiveCorpus`,
+    `RetailObjectiveMachine`, `RetailScenarioAuthority`, `TravellerSubjectCensus`
+    and `RetailStuntAuthoritySurvey` — with `objective_keys()` (the complete
+    vocabulary over both surfaces), `keys_naming_an_authority()` (derived from
+    that vocabulary against the declared `AUTHORITY_KEY_VOCABULARY`),
+    `stunt_conditions()`, `traveller_subject_census()`,
+    `non_player_subjects()`, `traveller_conditions_naming_a_danger_zone()`,
+    `non_player_danger_zone_conditions()`, `scenarios_declaring_non_player_aircraft()`,
+    `stunt_flying_scenarios()` and `earning_authority_is_measured()`.
+* `crates/cs_app/src/stunts.rs` — the boundary: `survey_retail_stunt_authority`
+  (one production discovery, every `*/zrdr.zbd` in the inventory,
+  `discover_container` per archive, the `.zrd` decoder, provenance spans per
+  member) and `StuntAuthoritySurveyError` with named refusals
+  (`Discovery`, `NoWorldGroups`, `NoScenarioReaders`, `Read`,
+  `Decode { container, member, code, offset }`).
+* `crates/cs_app/tests/accept_f42_d_ai_authority.rs` — six unignored tests and
+  one `#[ignore]`d retail test, all on the production path (authored `.zrd`
+  documents and reader archives through
+  `cs_app::stunts::survey_retail_stunt_authority`).
+* `crates/cs_app/tests/evidence_report_t465.rs` — the evidence harness, with a
+  **second production observation**: the survey re-run over the installation and
+  rendered as `authority-census.json` (every row with its key inventory, its
+  stunt conditions, its traveller conditions and its declared aircraft).
+
+## Test sensitivity (each mutation was applied, run and reverted)
+
+| Removed behaviour | Tests that failed |
+| --- | --- |
+| the authority scan (`keys_naming_an_authority` hard-wired to report none) | `..._the_survey_measures_the_authority_surface_of_every_reader` |
+| the subject discrimination (every `TRAVELERS` subject read as `player`) | `..._the_state_machine_reads_stunt_conditions_and_traveller_subjects`, `..._the_survey_measures_the_authority_surface_of_every_reader` |
+| the danger-zone label test (`target_is_danger_zone_label` always false) | the same two |
+| `ScenarioNonPlayerAircraft::is_declared` (always false) | `..._the_scenario_reads_its_declared_non_player_aircraft`, `..._the_survey_measures_the_authority_surface_of_every_reader` |
+| the flat-only rule (`zrd_flat_fields` reading a pair-shaped value as a key) | `..._the_flat_reader_reads_pairs_and_never_invents_a_key` |
+
+The first row is the reason the authored installation contains a `player_only`
+objective key: a scan that always answered "no authority is recorded" would pass
+every measured assertion over the retail corpus and still be worthless.
+
+## Checks run
+
+* `cargo fmt --all -- --check` = 0,
+  `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
+  = 0, `cargo test --workspace --locked` = 0, and
+  `cargo test --workspace --locked -- accept_f42_d_ai_ --include-ignored` = 0
+  (7 discovered, 7 passed: 6 unignored for CI and 1
+  `#[ignore] = "requires CS_GAME_DIR"]` run locally over `$CS_GAME_DIR`).
+* The evidence report is committed as `docs/findings/evidence/T465.json` and
+  validates with
+  `python3 tools/validate_evidence.py private/evidence/T465/acceptance.json
+  --artifact-root private/evidence/T465 --require-pass`.
 
 ## Sources used
 

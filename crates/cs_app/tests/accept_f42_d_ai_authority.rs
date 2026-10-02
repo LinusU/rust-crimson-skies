@@ -368,6 +368,26 @@ fn accept_f42_d_ai_the_flat_reader_reads_pairs_and_never_invents_a_key() {
         Some(2),
         "the value is still the whole two-element list"
     );
+    // A record whose value sits where a key belongs — here a list that looks
+    // exactly like a `[key, value]` pair — is skipped, not read as a pair. A
+    // shape-agnostic walk would invent the vocabulary the census reports.
+    let dangling = decode_zrd(&zrd_list(vec![
+        zrd_text("MISSION_TIMER"),
+        zrd_text("0.0"),
+        zrd_list(vec![zrd_text("fuel_truck01"), zrd_text("tank")]),
+        zrd_text("PLAYER_INIT"),
+        zrd_list(vec![zrd_int(1)]),
+    ]))
+    .expect("the dangling record decodes");
+    let dangling_keys: Vec<&str> = zrd_flat_fields(&dangling)
+        .iter()
+        .map(|(key, _)| *key)
+        .collect();
+    assert_eq!(
+        dangling_keys,
+        vec!["MISSION_TIMER", "PLAYER_INIT"],
+        "a value in a key position is never read as a key, and the pairing survives it"
+    );
     assert!(
         zrd_flat_fields(&decode_zrd(&zrd_text("not a record")).expect("a text node decodes"))
             .is_empty(),
@@ -701,6 +721,16 @@ fn accept_f42_d_ai_the_survey_measures_the_authority_surface_of_every_reader() {
                         ("category_label", zrd_text(FLY_THROUGH_CATEGORY_LABEL)),
                         ("help_label", zrd_text(FLY_THROUGH_HELP_LABEL)),
                     ]),
+                    // A record that scopes its completion to an authority. The
+                    // measured corpus carries none, and the survey has to be
+                    // able to *say so*: a scan hard-wired to report "none"
+                    // would pass every measured assertion and be worthless.
+                    target_document(vec![
+                        ("description", zrd_text("MSG_TRGT_GATED")),
+                        ("nodes", zrd_text1("dz2")),
+                        ("help_label", zrd_text(FLY_THROUGH_HELP_LABEL)),
+                        ("player_only", zrd_list(vec![zrd_int(1)])),
+                    ]),
                 ]),
             ),
             (
@@ -748,8 +778,8 @@ fn accept_f42_d_ai_the_survey_measures_the_authority_surface_of_every_reader() {
     // Objective records.
     assert_eq!(
         survey.objective_records(),
-        4,
-        "2 + 2, the empty reader has none"
+        5,
+        "2 + 3, the empty reader has none"
     );
     assert_eq!(
         survey.fly_through_objectives(),
@@ -758,8 +788,9 @@ fn accept_f42_d_ai_the_survey_measures_the_authority_surface_of_every_reader() {
     );
     assert_eq!(
         survey.fly_through_labelled_objectives(),
-        2,
-        "the authored records carry both labels, so the two readings agree here"
+        3,
+        "the gated record carries only the help label, so the looser reading sees one more - the \
+         shape of the three campaign records that differ in the measured installation"
     );
     assert_eq!(survey.team_scoped_objectives(), 1);
     assert_eq!(survey.objective_blocks(), 3);
@@ -783,9 +814,11 @@ fn accept_f42_d_ai_the_survey_measures_the_authority_surface_of_every_reader() {
     ] {
         assert!(keys.contains(&expected), "the vocabulary has {expected}");
     }
-    assert!(
-        survey.keys_naming_an_authority().is_empty(),
-        "no authored key is in the declared authority vocabulary"
+    assert_eq!(
+        survey.keys_naming_an_authority(),
+        vec![("zbd/c5/m01/zrdr.zbd".to_owned(), "player_only".to_owned())],
+        "the one authored authority key is found with its own row named, so the measured corpus \
+         carrying none is a measurement and not a hard-wired answer"
     );
 
     // The campaign reader's `dz2` target is a non-player subject on a zone
@@ -843,7 +876,12 @@ fn accept_f42_d_ai_the_survey_measures_the_authority_surface_of_every_reader() {
         .objectives()
         .expect("a mission declares objectives");
     assert_eq!(corpus.span().member(), SCENARIO_TARGETS_MEMBER);
-    assert_eq!(corpus.count(), 2);
+    assert_eq!(corpus.count(), 3);
+    assert_eq!(
+        corpus.authority_keys(),
+        vec!["player_only"],
+        "the corpus carries the authored authority key, and it is visible here"
+    );
     let machine = campaign.machine().expect("a mission declares objectives");
     assert_eq!(machine.span().member(), SCENARIO_OBJECTIVES_MEMBER);
     assert_eq!(machine.machine().blocks(), 2);
