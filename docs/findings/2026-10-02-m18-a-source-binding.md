@@ -154,13 +154,34 @@ without an installation.
 
 ## Checks
 
+Run on the rebased commit (see below), each `accept_m18_a_*` test also
+executed alone with `--exact --include-ignored`.
+
 | Command | Exit |
 | --- | --- |
 | `cargo test --workspace --locked -- accept_m18_a_ --include-ignored` | 0 (12 tests) |
+| each of the 12 tests alone with `--exact --include-ignored` | 0 |
 | `cargo fmt --all -- --check` | 0 |
 | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
-| `cargo test --workspace --locked` | 0 |
+| `cargo test --workspace --locked` | 0 (238 test binaries, 0 failed) |
 | `tools/validate_evidence.py … --require-pass` | 0 |
+
+## Rebase
+
+The branch was rebased onto `origin/main` at `6035707` (M07-A), which had
+touched three of this stage's files: `crates/cs_app/tests/campaign/main.rs`,
+`crates/cs_app/tests/campaign/evidence.rs` and `missions/bindings/README.md`.
+All three were resolved by keeping both sides — main's M07-A entry and this
+stage's M18-A one — and the full check set above was re-run afterwards,
+because the owner directive of 2026-10-01 only allows the lighter check when
+the rebased-in commits touch none of the branch's files. The evidence report
+was regenerated on the rebased tree.
+
+`candidate_tree` in `docs/findings/evidence/M18-A.json` is the tree of the
+commit the acceptance suite actually ran on, `06172e3b`. The only later delta
+is this report's own copy under `docs/findings/evidence/` and the `Checks` and
+`Rebase` sections of this file, which record the run; no production code, no
+test and no binding record changed after it.
 
 ## Recorded unknowns (not guessed)
 
