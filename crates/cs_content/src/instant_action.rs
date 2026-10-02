@@ -343,9 +343,7 @@ impl ScenarioRoster {
             .count()
             > 1
         {
-            return Err(ScenarioSchemaError::MultiplePlayers {
-                max: MAX_SCENARIO_PLAYERS,
-            });
+            return Err(ScenarioSchemaError::MultiplePlayers { max: 1 });
         }
         Ok(Self { actors })
     }
@@ -1028,17 +1026,18 @@ pub enum ScenarioProblemCode {
     UnsupportedAirframe,
     /// An actor's loadout is not in the supported option table.
     UnsupportedLoadout,
+    /// An actor's pilot is not in the supported option table.
+    UnsupportedPilot,
     /// An actor's airframe or loadout is `Resolved::Unknown`.
     UnmeasuredActorField,
     /// An actor's survivability is `Resolved::Unknown`.
     UnmeasuredSurvivability,
-    /// A faction id is not in the `faction` namespace.
-    FactionKindMismatch,
     /// The roster declares no actor on a side the scenario needs.
     MissingSide,
     /// The declared relations make the roster impossible to fight.
     ImpossibleFaction,
-    /// The declared seat count does not match the declared player slots.
+    /// The declared seat count is outside the supported range, or does not match
+    /// the player slots the roster declares.
     InvalidPlayerCount,
     /// The victory condition needs enemies and the roster declares none.
     ConditionUnsatisfiable,
@@ -1057,9 +1056,9 @@ impl ScenarioProblemCode {
             Self::UnsupportedEnvironment => "unsupported_environment",
             Self::UnsupportedAirframe => "unsupported_airframe",
             Self::UnsupportedLoadout => "unsupported_loadout",
+            Self::UnsupportedPilot => "unsupported_pilot",
             Self::UnmeasuredActorField => "unmeasured_actor_field",
             Self::UnmeasuredSurvivability => "unmeasured_survivability",
-            Self::FactionKindMismatch => "faction_kind_mismatch",
             Self::MissingSide => "missing_side",
             Self::ImpossibleFaction => "impossible_faction",
             Self::InvalidPlayerCount => "invalid_player_count",
@@ -1075,12 +1074,14 @@ impl ScenarioProblemCode {
     pub const fn dimension(self) -> &'static str {
         match self {
             Self::UnsupportedWorld => "world",
-            Self::UnmeasuredActorField => "roster",
             Self::UnsupportedEnvironment => "environment",
-            Self::UnsupportedAirframe | Self::UnsupportedLoadout => "roster",
-            Self::UnmeasuredSurvivability => "roster",
-            Self::FactionKindMismatch | Self::ImpossibleFaction => "roster",
-            Self::MissingSide => "roster",
+            Self::UnmeasuredActorField
+            | Self::UnmeasuredSurvivability
+            | Self::UnsupportedAirframe
+            | Self::UnsupportedLoadout
+            | Self::UnsupportedPilot
+            | Self::ImpossibleFaction
+            | Self::MissingSide => "roster",
             Self::InvalidPlayerCount => "players",
             Self::ConditionUnsatisfiable | Self::UnsupportedVictoryCondition => "rules",
             Self::UnsupportedDifficulty => "skill",
@@ -1279,6 +1280,7 @@ pub struct ScenarioOptions {
     factions: Vec<ContentId>,
     airframes: Vec<ContentId>,
     loadouts: Vec<ContentId>,
+    pilots: Vec<ContentId>,
     difficulty_tiers: Vec<DifficultyTier>,
     victory_conditions: Vec<VictoryCondition>,
     relations: Vec<DeclaredRelation>,
@@ -1292,8 +1294,9 @@ impl ScenarioOptions {
     ///
     /// [`ScenarioSchemaError::EmptyOptionTable`] naming every option list that
     /// is empty, [`ScenarioSchemaError::OptionKindMismatch`] for an id in the
-    /// wrong namespace, [`ScenarioSchemaError::DuplicateOption`] for an id held
-    /// twice, [`ScenarioSchemaError::InvalidPlayerLimit`] when `max_players` is
+    /// wrong namespace, [`ScenarioSchemaError::DuplicateOption`] for an id, a
+    /// vocabulary entry or a directed relation pair held twice,
+    /// [`ScenarioSchemaError::InvalidPlayerLimit`] when `max_players` is
     /// zero or above [`MAX_SCENARIO_PLAYERS`], and
     /// [`ScenarioSchemaError::UnknownDifficultyTier`] /
     /// [`ScenarioSchemaError::UnknownVictoryCondition`] for a tier or condition
@@ -1307,6 +1310,7 @@ impl ScenarioOptions {
         mut factions: Vec<ContentId>,
         mut airframes: Vec<ContentId>,
         mut loadouts: Vec<ContentId>,
+        mut pilots: Vec<ContentId>,
         mut difficulty_tiers: Vec<DifficultyTier>,
         mut victory_conditions: Vec<VictoryCondition>,
         relations: Vec<DeclaredRelation>,
@@ -1317,10 +1321,29 @@ impl ScenarioOptions {
         check_option_list("factions", &factions, ContentKind::Faction)?;
         check_option_list("airframes", &airframes, ContentKind::Airframe)?;
         check_option_list("loadouts", &loadouts, ContentKind::Loadout)?;
+        check_option_list("pilots", &pilots, ContentKind::Pilot)?;
         if difficulty_tiers.is_empty() || victory_conditions.is_empty() {
             return Err(ScenarioSchemaError::EmptyOptionTable {
                 what: "difficulty tiers or victory conditions",
             });
+        }
+        // A duplicated vocabulary entry is a duplicated row on a screen, and a
+        // duplicated directed pair is not a duplicate row at all: `relation`
+        // reads the first match, so a later `Friendly` row could hide behind an
+        // earlier `Hostile` one and silently switch the impossible-faction
+        // refusal off. Each entry and each ordered pair is declared once.
+        check_unique_list("difficulty tiers", &difficulty_tiers)?;
+        check_unique_list("victory conditions", &victory_conditions)?;
+        let mut pairs: Vec<(&ContentId, &ContentId)> =
+            relations.iter().map(|r| (&r.from, &r.to)).collect();
+        pairs.sort();
+        for pair in pairs.windows(2) {
+            if pair[0] == pair[1] {
+                return Err(ScenarioSchemaError::DuplicateOption {
+                    what: "relations",
+                    entry: format!("{} toward {}", pair[0].0, pair[1].1),
+                });
+            }
         }
         if max_players == 0 || max_players > MAX_SCENARIO_PLAYERS {
             return Err(ScenarioSchemaError::InvalidPlayerLimit {
@@ -1345,6 +1368,7 @@ impl ScenarioOptions {
         factions.sort();
         airframes.sort();
         loadouts.sort();
+        pilots.sort();
         difficulty_tiers.sort();
         victory_conditions.sort();
         Ok(Self {
@@ -1353,6 +1377,7 @@ impl ScenarioOptions {
             factions,
             airframes,
             loadouts,
+            pilots,
             difficulty_tiers,
             victory_conditions,
             relations,
@@ -1388,6 +1413,18 @@ impl ScenarioOptions {
     #[must_use]
     pub fn loadouts(&self) -> &[ContentId] {
         &self.loadouts
+    }
+
+    /// The selectable pilots, in canonical id order.
+    ///
+    /// A roster actor may name a pilot, so a pilot is a selection this table
+    /// closes like any other: an id outside the list is refused by
+    /// [`InstantActionCatalog::validate_custom`] rather than lowered into a
+    /// `cs_sim::allies::PilotId` the catalog cannot spawn. An actor that names
+    /// no pilot is unaffected — an uncrewed actor is a legal declaration.
+    #[must_use]
+    pub fn pilots(&self) -> &[ContentId] {
+        &self.pilots
     }
 
     /// The selectable difficulty tiers, in ascending order.
@@ -1507,8 +1544,8 @@ impl InstantActionCatalog {
     /// [`ScenarioSchemaError::DuplicatePreset`] when two presets share one
     /// `ia_preset` id, [`ScenarioSchemaError::DuplicateScenario`] when two
     /// presets launch the same `ia_scenario` id, and
-    /// [`ScenarioSchemaError::EmptyOptionTable`] when the option table is
-    /// empty.
+    /// [`ScenarioSchemaError::PresetWithoutPlayer`] when a preset's roster seats
+    /// nobody.
     pub fn try_new(
         presets: Vec<InstantActionPreset>,
         options: ScenarioOptions,
@@ -1522,6 +1559,20 @@ impl InstantActionCatalog {
         for preset in presets {
             if by_id.insert(preset.id().clone(), preset.clone()).is_some() {
                 return Err(ScenarioSchemaError::DuplicatePreset {
+                    id: preset.id().clone(),
+                });
+            }
+            // A preset is an authored, playable scenario (non-negotiable 1), so
+            // it must seat somebody. `lower_preset` reports one human seat, and a
+            // roster with no player-side actor would lower to a plan that seats
+            // a player in nothing.
+            if preset
+                .parameters()
+                .roster()
+                .actors_on(ScenarioSide::Player)
+                .is_empty()
+            {
+                return Err(ScenarioSchemaError::PresetWithoutPlayer {
                     id: preset.id().clone(),
                 });
             }
@@ -1661,19 +1712,56 @@ impl InstantActionCatalog {
                 ),
             ));
         }
-        if request.players() == 0 || request.players() > self.options.max_players() {
-            found.push(ScenarioProblem::new(
-                ScenarioProblemCode::InvalidPlayerCount,
-                format!(
-                    "{} seats is outside the supported 1..={} range",
-                    request.players(),
-                    self.options.max_players()
-                ),
-            ));
-        }
+        found.extend(self.check_seats(request));
         found.extend(self.check_roster(parameters.roster()));
         found.extend(self.check_victory_feasibility(parameters));
         ScenarioProblems::new(found)
+    }
+
+    /// Refuses a seat count the scenario cannot actually seat.
+    ///
+    /// Two independent reasons, because either alone leaves an unplayable
+    /// scenario. The declared count must be inside the catalog's range, **and**
+    /// it must equal the number of `Player` slots the roster declares: a request
+    /// claiming four human seats over a roster with one player-side actor has
+    /// nobody to put in three of them. That is the "invalid player
+    /// count/roster configuration" F49 non-negotiable 2 requires validation to
+    /// prevent, and the range check alone cannot see it — the catalog's ceiling
+    /// is a property of the table, not of this roster.
+    ///
+    /// When the roster declares no player slot at all, only the range is
+    /// reported, because `missing_side` already names that condition in full and
+    /// a second problem would only repeat it.
+    fn check_seats(&self, request: &CustomScenarioRequest) -> Vec<ScenarioProblem> {
+        let players = request.players();
+        let ceiling = self.options.max_players();
+        let slots = request
+            .parameters()
+            .roster()
+            .actors_on(ScenarioSide::Player)
+            .len();
+        let mut why = String::new();
+        if players == 0 || players > ceiling {
+            why = format!("{players} seats is outside the supported 1..={ceiling} range");
+        }
+        if slots > 0 && usize::from(players) != slots {
+            let noun = if slots == 1 { "slot" } else { "slots" };
+            if !why.is_empty() {
+                why.push_str("; ");
+            }
+            why.push_str(&format!(
+                "the roster declares {slots} player {noun}, so the scenario can seat {slots}, \
+                 not {players}"
+            ));
+        }
+        if why.is_empty() {
+            Vec::new()
+        } else {
+            vec![ScenarioProblem::new(
+                ScenarioProblemCode::InvalidPlayerCount,
+                why,
+            )]
+        }
     }
 
     /// Refuses a custom scenario that has at least one problem.
@@ -1748,17 +1836,24 @@ impl InstantActionCatalog {
                     reason,
                 ));
             }
-            if actor.faction().kind() != ContentKind::Faction {
+            if let Some(pilot) = actor.pilot()
+                && !self.options.pilots().contains(pilot)
+            {
                 found.push(ScenarioProblem::about(
-                    ScenarioProblemCode::FactionKindMismatch,
-                    actor.faction().clone(),
+                    ScenarioProblemCode::UnsupportedPilot,
+                    pilot.clone(),
                     format!(
-                        "{} slot {} does not name a faction",
+                        "{} slot {} names a pilot this catalog does not offer",
                         actor.side(),
                         actor.slot().index()
                     ),
                 ));
-            } else if !self.options.factions().contains(actor.faction()) {
+            }
+            // A non-faction id cannot reach here: `ScenarioActorSpec::try_new`
+            // refuses it where the actor is assembled, and a `ScenarioRoster`
+            // holds nothing else. So the only faction question left is whether
+            // this catalog can spawn it.
+            if !self.options.factions().contains(actor.faction()) {
                 found.push(ScenarioProblem::about(
                     ScenarioProblemCode::ImpossibleFaction,
                     actor.faction().clone(),
@@ -1947,8 +2042,14 @@ pub enum ScenarioSchemaError {
         max: usize,
     },
     /// More than one `Player` slot was declared.
+    ///
+    /// A roster seats exactly one human, so this is a bound of **one** player
+    /// slot rather than a seat *count*: [`MAX_SCENARIO_PLAYERS`] bounds the
+    /// `players` field a request declares, which a single-slot roster can never
+    /// reach. It is reported separately so a screen can say which of the two
+    /// limits was hit.
     MultiplePlayers {
-        /// The accepted maximum.
+        /// The accepted maximum number of player slots on one roster.
         max: u8,
     },
     /// A faction reference is not in the `faction` namespace.
@@ -2045,6 +2146,15 @@ pub enum ScenarioSchemaError {
     },
     /// The catalog declared no preset at all.
     NoPresets,
+    /// A preset's roster declares no player-side actor.
+    ///
+    /// A preset is an authored, playable scenario, so it must seat somebody:
+    /// `lower_preset` reports one human seat and would otherwise produce a plan
+    /// that seats a player in nothing.
+    PresetWithoutPlayer {
+        /// The offending preset id.
+        id: ContentId,
+    },
     /// Two presets share one `ia_preset` id.
     DuplicatePreset {
         /// The duplicated id.
@@ -2106,7 +2216,7 @@ impl fmt::Display for ScenarioSchemaError {
             Self::MultiplePlayers { max } => {
                 write!(
                     f,
-                    "a scenario declares more player slots than the {max} accepted"
+                    "a scenario declares more player slots than the {max} accepted on one roster"
                 )
             }
             Self::FactionKindMismatch { id } => {
@@ -2173,6 +2283,9 @@ impl fmt::Display for ScenarioSchemaError {
                 )
             }
             Self::NoPresets => f.write_str("the catalog declares no Instant Action preset"),
+            Self::PresetWithoutPlayer { id } => {
+                write!(f, "preset {id} declares no player-side actor to seat")
+            }
             Self::DuplicatePreset { id } => {
                 write!(f, "preset {id} is declared more than once")
             }
@@ -2326,6 +2439,9 @@ pub fn synthetic_opposition_faction() -> ContentId {
     fixture_faction(SYNTHETIC_IA_FACTION_OPPOSITION)
 }
 
+/// The synthetic pilot key every fixture actor flies.
+pub const SYNTHETIC_IA_PILOT: &str = "synthetic.fixture_pilot";
+
 /// A synthetic [`ScenarioActorSpec`] on the given side.
 ///
 /// The pilot is always the fixture pilot and the survivability always mortal:
@@ -2347,7 +2463,7 @@ pub fn synthetic_actor(
         },
         fixture_known(fixture_id(ContentKind::Airframe, airframe_key)),
         fixture_known(fixture_id(ContentKind::Loadout, loadout_key)),
-        Some(fixture_id(ContentKind::Pilot, "synthetic.fixture_pilot")),
+        Some(fixture_id(ContentKind::Pilot, SYNTHETIC_IA_PILOT)),
         fixture_known(DeclaredSurvivability::Mortal),
         synthetic_provenance(),
     )
@@ -2357,8 +2473,8 @@ pub fn synthetic_actor(
 /// The synthetic supported-dimension table of the fixture catalog.
 ///
 /// Three presets' worth of worlds, environments, planes and loadouts, plus one
-/// unlisted loadout and one unlisted faction so the "unsupported selection"
-/// refusals have something real to refuse.
+/// unlisted loadout, faction and pilot so the "unsupported selection" refusals
+/// have something real to refuse.
 #[must_use]
 pub fn synthetic_scenario_options() -> ScenarioOptions {
     let player_side = synthetic_player_faction();
@@ -2382,6 +2498,7 @@ pub fn synthetic_scenario_options() -> ScenarioOptions {
             fixture_id(ContentKind::Loadout, SYNTHETIC_IA_LOADOUT_LIGHT),
             fixture_id(ContentKind::Loadout, SYNTHETIC_IA_LOADOUT_HEAVY),
         ],
+        vec![fixture_id(ContentKind::Pilot, SYNTHETIC_IA_PILOT)],
         vec![DifficultyTier::Standard, DifficultyTier::Hard],
         vec![
             VictoryCondition::EliminateEnemies,
@@ -2635,6 +2752,15 @@ mod tests {
     /// A structurally valid custom request over an arbitrary roster, so a test
     /// can vary one dimension and keep everything else fixed.
     fn custom_request_with_roster(roster: &[ScenarioActorSpec]) -> CustomScenarioRequest {
+        custom_request_with_seats(roster, 1)
+    }
+
+    /// A structurally valid request over an arbitrary roster and seat count, so
+    /// a test can vary the seats and keep everything else fixed.
+    fn custom_request_with_seats(
+        roster: &[ScenarioActorSpec],
+        players: u8,
+    ) -> CustomScenarioRequest {
         let rules = VictoryRules::try_new(
             VictoryCondition::LastSideStanding,
             RespawnBudget::None,
@@ -2655,7 +2781,7 @@ mod tests {
             .with_difficulty(synthetic_difficulty(DifficultyTier::Standard))
             .with_rules(rules)
             .with_seed(ScenarioSeed::new(11))
-            .with_players(1)
+            .with_players(players)
             .with_provenance(synthetic_provenance())
             .resolve()
             .expect("the probe request is structurally valid")
@@ -3017,6 +3143,7 @@ mod tests {
                 factions,
                 airframes.clone(),
                 loadouts.clone(),
+                vec![fixture_id(ContentKind::Pilot, SYNTHETIC_IA_PILOT)],
                 vec![DifficultyTier::Standard],
                 vec![VictoryCondition::EliminateEnemies],
                 Vec::new(),
@@ -3331,6 +3458,7 @@ mod tests {
             vec![player_side.clone(), opposition.clone(), allies.clone()],
             synthetic_scenario_options().airframes().to_vec(),
             synthetic_scenario_options().loadouts().to_vec(),
+            synthetic_scenario_options().pilots().to_vec(),
             vec![DifficultyTier::Standard],
             vec![VictoryCondition::EliminateEnemies],
             vec![
@@ -3372,6 +3500,7 @@ mod tests {
             ],
             synthetic_scenario_options().airframes().to_vec(),
             synthetic_scenario_options().loadouts().to_vec(),
+            synthetic_scenario_options().pilots().to_vec(),
             vec![DifficultyTier::Standard],
             vec![VictoryCondition::EliminateEnemies],
             Vec::new(),
@@ -3561,6 +3690,12 @@ mod tests {
 
     /// A scenario's roster keeps its bounds: more than one player slot, and
     /// more than the accepted per-side count, are refused.
+    ///
+    /// The player-slot bound is **one**, not [`MAX_SCENARIO_PLAYERS`]: that
+    /// constant bounds the `players` field a *request* declares, which a roster
+    /// seating one human can never reach. Reporting the larger number would tell
+    /// a player a roster with two player slots was refused for exceeding a limit
+    /// it never approached.
     #[test]
     fn accept_f49_a_the_roster_bounds_players_and_per_side_counts() {
         let two_players = ScenarioRoster::try_new(vec![
@@ -3580,9 +3715,14 @@ mod tests {
         .expect_err("two player slots are refused");
         assert_eq!(
             two_players,
-            ScenarioSchemaError::MultiplePlayers {
-                max: MAX_SCENARIO_PLAYERS
-            }
+            ScenarioSchemaError::MultiplePlayers { max: 1 },
+            "a roster seats one human, and the refusal must say so"
+        );
+        assert!(
+            two_players
+                .to_string()
+                .contains("the 1 accepted on one roster"),
+            "the message names the real bound, not MAX_SCENARIO_PLAYERS: {two_players}"
         );
 
         let too_many: Vec<ScenarioActorSpec> = (0..=MAX_SCENARIO_ACTORS_PER_SIDE as u32)
@@ -3660,5 +3800,286 @@ mod tests {
         )
         .expect("an unknown plane is carried, not refused at construction");
         assert!(!unmeasured.airframe().is_known());
+    }
+
+    /// F49 non-negotiable 2 names "invalid player count/roster
+    /// configurations", so the declared seat count is checked against the roster
+    /// it must fill, not only against the catalog's range.
+    ///
+    /// A roster seats one human, so the catalog offering four seats is exactly
+    /// the case a range check alone cannot see: seats 2..=4 are all *inside* the
+    /// supported range, and all of them seat nobody. One seat for the one player
+    /// slot is the baseline a later stage may widen, so it must keep passing.
+    #[test]
+    fn accept_f49_a_a_seat_count_the_roster_cannot_seat_is_refused() {
+        let catalog = synthetic_instant_action_catalog();
+        let one_v_one = [
+            synthetic_actor(
+                ScenarioSide::Player,
+                0,
+                SYNTHETIC_IA_AIRFRAME_INTERCEPTOR,
+                SYNTHETIC_IA_LOADOUT_LIGHT,
+            ),
+            synthetic_actor(
+                ScenarioSide::Enemy,
+                0,
+                SYNTHETIC_IA_AIRFRAME_INTERCEPTOR,
+                SYNTHETIC_IA_LOADOUT_LIGHT,
+            ),
+        ];
+        assert_eq!(
+            catalog.options().max_players(),
+            SYNTHETIC_IA_MAX_PLAYERS,
+            "the catalog offers more seats than one roster can fill, which is exactly why \
+             the roster has to be consulted"
+        );
+
+        for seats in 2..=SYNTHETIC_IA_MAX_PLAYERS {
+            let problems = catalog.validate_custom(&custom_request_with_seats(&one_v_one, seats));
+            let seat_problems = problems.with_code(ScenarioProblemCode::InvalidPlayerCount);
+            assert_eq!(
+                seat_problems.len(),
+                1,
+                "{seats} seats over a one-player roster must be refused once: {problems}"
+            );
+            assert!(
+                seat_problems[0].detail().contains("player slot"),
+                "the refusal must name the roster the seats do not fit: {problems}"
+            );
+            assert_eq!(seat_problems[0].dimension(), "players");
+            assert!(
+                problems
+                    .with_code(ScenarioProblemCode::MissingSide)
+                    .is_empty(),
+                "the roster does have a player slot; only the seat count is wrong: {problems}"
+            );
+        }
+
+        assert!(
+            catalog
+                .validate_custom(&custom_request_with_seats(&one_v_one, 1))
+                .is_empty(),
+            "one seat for the one player slot is valid"
+        );
+    }
+
+    /// Every content id a custom scenario may select is closed by the option
+    /// table, and a roster actor's pilot is such an id: an unlisted one lowers
+    /// into a runtime `PilotId` the catalog cannot spawn.
+    #[test]
+    fn accept_f49_a_a_pilot_outside_the_option_table_is_refused() {
+        let catalog = synthetic_instant_action_catalog();
+        assert_eq!(
+            catalog.options().pilots().len(),
+            1,
+            "the fixture catalog offers exactly the pilot its own actors name"
+        );
+
+        let with_pilot = |pilot: Option<ContentId>| {
+            vec![
+                synthetic_actor(
+                    ScenarioSide::Player,
+                    0,
+                    SYNTHETIC_IA_AIRFRAME_INTERCEPTOR,
+                    SYNTHETIC_IA_LOADOUT_LIGHT,
+                ),
+                ScenarioActorSpec::try_new(
+                    ScenarioSide::Enemy,
+                    RosterSlot(0),
+                    synthetic_opposition_faction(),
+                    fixture_known(fixture_id(
+                        ContentKind::Airframe,
+                        SYNTHETIC_IA_AIRFRAME_INTERCEPTOR,
+                    )),
+                    fixture_known(fixture_id(ContentKind::Loadout, SYNTHETIC_IA_LOADOUT_LIGHT)),
+                    pilot,
+                    fixture_known(DeclaredSurvivability::Mortal),
+                    synthetic_provenance(),
+                )
+                .expect("the actor is structurally valid"),
+            ]
+        };
+
+        // The offered pilot, and no pilot at all, are both selectable: an actor
+        // the scenario leaves uncrewed is a legal declaration.
+        for pilot in [
+            Some(fixture_id(ContentKind::Pilot, SYNTHETIC_IA_PILOT)),
+            None,
+        ] {
+            let offered =
+                catalog.validate_custom(&custom_request_with_roster(&with_pilot(pilot.clone())));
+            assert!(
+                offered.is_empty(),
+                "a pilot the table offers, or none at all, is selectable: {pilot:?} -> {offered}"
+            );
+        }
+
+        let unlisted = fixture_id(ContentKind::Pilot, "synthetic.no_such_pilot");
+        let problems = catalog.validate_custom(&custom_request_with_roster(&with_pilot(Some(
+            unlisted.clone(),
+        ))));
+        let pilot_problems = problems.with_code(ScenarioProblemCode::UnsupportedPilot);
+        assert_eq!(
+            pilot_problems.len(),
+            1,
+            "a pilot outside the table must be named once: {problems}"
+        );
+        assert_eq!(pilot_problems[0].offender(), Some(unlisted.as_str()));
+        assert_eq!(pilot_problems[0].dimension(), "roster");
+        assert_eq!(
+            pilot_problems[0].code(),
+            ScenarioProblemCode::UnsupportedPilot
+        );
+    }
+
+    /// Every option list is closed, not just the id lists: a difficulty tier or
+    /// a victory condition declared twice would give a screen two identical
+    /// rows, and a repeated directed relation pair is worse than a duplicate row,
+    /// because `relation` reads only the first match — a later `Friendly` could
+    /// hide behind an earlier `Hostile` one and silently switch the
+    /// impossible-faction refusal off.
+    #[test]
+    fn accept_f49_a_the_option_table_refuses_a_duplicate_vocabulary_entry_or_relation() {
+        let base = synthetic_scenario_options();
+        let with_vocabulary = |tiers: Vec<DifficultyTier>, conditions: Vec<VictoryCondition>| {
+            ScenarioOptions::try_new(
+                base.worlds().to_vec(),
+                base.environments().to_vec(),
+                base.factions().to_vec(),
+                base.airframes().to_vec(),
+                base.loadouts().to_vec(),
+                base.pilots().to_vec(),
+                tiers,
+                conditions,
+                base.relations().to_vec(),
+                SYNTHETIC_IA_MAX_PLAYERS,
+            )
+        };
+
+        assert_eq!(
+            with_vocabulary(
+                vec![DifficultyTier::Standard, DifficultyTier::Standard],
+                vec![VictoryCondition::EliminateEnemies],
+            )
+            .expect_err("a difficulty tier twice is refused"),
+            ScenarioSchemaError::DuplicateOption {
+                what: "difficulty tiers",
+                entry: DifficultyTier::Standard.to_string(),
+            }
+        );
+        assert_eq!(
+            with_vocabulary(
+                vec![DifficultyTier::Standard],
+                vec![
+                    VictoryCondition::LastSideStanding,
+                    VictoryCondition::LastSideStanding,
+                ],
+            )
+            .expect_err("a victory condition twice is refused"),
+            ScenarioSchemaError::DuplicateOption {
+                what: "victory conditions",
+                entry: VictoryCondition::LastSideStanding.to_string(),
+            }
+        );
+
+        // One ordered pair declared twice is refused, whatever the two rows say.
+        let player_side = synthetic_player_faction();
+        let opposition = synthetic_opposition_faction();
+        let shadowed = ScenarioOptions::try_new(
+            base.worlds().to_vec(),
+            base.environments().to_vec(),
+            base.factions().to_vec(),
+            base.airframes().to_vec(),
+            base.loadouts().to_vec(),
+            base.pilots().to_vec(),
+            vec![DifficultyTier::Standard],
+            vec![VictoryCondition::EliminateEnemies],
+            vec![
+                fixture_relation(&player_side, &opposition, DeclaredAllegiance::Hostile),
+                fixture_relation(&player_side, &opposition, DeclaredAllegiance::Friendly),
+            ],
+            SYNTHETIC_IA_MAX_PLAYERS,
+        )
+        .expect_err("one ordered pair declared twice is refused");
+        let ScenarioSchemaError::DuplicateOption { what, entry } = &shadowed else {
+            panic!("expected a duplicate option, got {shadowed}");
+        };
+        assert_eq!(*what, "relations");
+        assert!(
+            entry.contains(player_side.as_str()) && entry.contains(opposition.as_str()),
+            "the refusal names the shadowed pair: {shadowed}"
+        );
+
+        // The same pair in the other direction is a different relation, so the
+        // reverse directions the fixture already declares are still accepted.
+        assert!(
+            base.relation(&player_side, &opposition).is_some()
+                && base.relation(&opposition, &player_side).is_some(),
+            "both directions are declared independently"
+        );
+    }
+
+    /// A preset is an authored, playable scenario (non-negotiable 1), so it must
+    /// seat somebody: `lower_preset` reports one human seat, and a roster with
+    /// no player-side actor lowers to a plan that seats a player in nothing.
+    #[test]
+    fn accept_f49_a_a_preset_nobody_can_fly_is_refused() {
+        let unplayable = InstantActionPreset::try_new(
+            fixture_id(ContentKind::IaPreset, "synthetic.fixture_ia_unplayable"),
+            fixture_id(
+                ContentKind::IaScenario,
+                "synthetic.fixture_ia_scenario_unplayable",
+            ),
+            fixture_known("synthetic fixture unplayable".to_owned()),
+            ScenarioParameters::new(
+                fixture_known(fixture_world(SYNTHETIC_IA_WORLD_COAST)),
+                fixture_known(fixture_environment(SYNTHETIC_IA_ENV_DAY_CLEAR)),
+                ScenarioRoster::try_new(vec![synthetic_actor(
+                    ScenarioSide::Enemy,
+                    0,
+                    SYNTHETIC_IA_AIRFRAME_INTERCEPTOR,
+                    SYNTHETIC_IA_LOADOUT_LIGHT,
+                )])
+                .expect("an enemy-only roster is structurally valid"),
+                synthetic_difficulty(DifficultyTier::Standard),
+                VictoryRules::try_new(
+                    VictoryCondition::LastSideStanding,
+                    RespawnBudget::None,
+                    None,
+                    TieOutcome::Draw,
+                )
+                .expect("the fixture rules are valid"),
+                ScenarioSeed::new(23),
+            ),
+            Origin::SyntheticFixture,
+            synthetic_provenance(),
+        )
+        .expect("the preset itself is structurally valid");
+
+        assert_eq!(
+            InstantActionCatalog::try_new(
+                vec![unplayable],
+                synthetic_scenario_options(),
+                synthetic_provenance(),
+            )
+            .expect_err("a preset nobody can fly is refused"),
+            ScenarioSchemaError::PresetWithoutPlayer {
+                id: fixture_id(ContentKind::IaPreset, "synthetic.fixture_ia_unplayable"),
+            }
+        );
+
+        // And the two presets the fixture does offer both seat a player, so the
+        // rule refuses nothing that the catalog is built from.
+        for preset in synthetic_instant_action_catalog().presets() {
+            assert!(
+                !preset
+                    .parameters()
+                    .roster()
+                    .actors_on(ScenarioSide::Player)
+                    .is_empty(),
+                "the catalog would not have accepted preset {}",
+                preset.id()
+            );
+        }
     }
 }

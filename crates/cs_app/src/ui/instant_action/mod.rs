@@ -270,7 +270,15 @@ impl fmt::Display for LowerError {
             Self::IncompleteDraft { missing, schema } => {
                 write!(f, "the custom scenario is incomplete: ")?;
                 if missing.is_empty() {
-                    write!(f, "{schema:?}")
+                    // The draft named every dimension, so the refusal is about
+                    // the roster or the rules rather than an unset field. It is
+                    // rendered through `Display` like every other message here:
+                    // `Debug` would print a variant name at a player, which is
+                    // the opposite of AC04's "actionable validation errors".
+                    match schema {
+                        Some(schema) => write!(f, "{schema}"),
+                        None => f.write_str("the scenario is not complete"),
+                    }
                 } else {
                     write!(f, "{} unset", missing.join(", "))
                 }

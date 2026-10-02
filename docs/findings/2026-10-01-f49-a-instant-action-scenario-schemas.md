@@ -55,6 +55,18 @@ respawn budget.
 - **Validation refuses what is impossible, not what is small.** A one-on-one is
   a valid, winnable scenario under every enemy-requiring condition, so only a
   roster with no enemy at all is `condition_unsatisfiable`.
+- **A seat count must be fillable, not merely in range.** A roster seats one
+  human. The catalog's ceiling bounds the `players` field a request declares and
+  is a property of the option table, so a request can sit inside that ceiling and
+  still name more seats than its own roster has player slots. Both are refused,
+  because either alone leaves an unplayable scenario.
+- **The option table is closed on every axis, and a duplicate is a hazard, not
+  a cosmetic slip.** A repeated tier or condition is a duplicated screen row; a
+  repeated *directed relation pair* would let a later `Friendly` hide behind an
+  earlier `Hostile` and disable the impossible-faction refusal outright.
+- **A preset must be flyable.** `lower_preset` reports one human seat, so a
+  preset with no player-side actor would seat a player in nothing. It is refused
+  where the catalog is built, not at launch.
 - **All problems, once.** `validate_custom` returns a sorted `ScenarioProblems`
   list rather than the first failure, and each problem names its dimension, the
   selection to replace (or the open claim for an unknown) and a detail. AC04's
@@ -136,6 +148,80 @@ No retail data was read for this task: F49-A's required capability is ordinary
 build/test only, and every value here is synthetic.
 
 ## Review corrections (reviewer pass)
+
+Two reviewer passes are recorded below. The first (bunny-alpha-1, the implementer
+reviewing its own work — **not** independent) fixed four defects and closed three
+coverage holes. The second (bunny-alpha-2, a different agent instance, fresh
+context) found six further defects, five of them in behaviour the first pass had
+explicitly certified.
+
+### Second reviewer pass (bunny-alpha-2)
+
+Every defect below was confirmed by **probe first** (a scratch test demonstrating
+the wrong behaviour, before any fix) and then by **mutation after** (the fix
+removed, a named `accept_f49_a_*` test observed failing). The probes were deleted;
+the mutation results are reproducible from this branch.
+
+- **The seat count was never checked against the roster.** F49 non-negotiable 2
+  requires validation to prevent "invalid player count/roster configurations",
+  but the only check was `players` against the catalog's ceiling. The fixture
+  catalog offers `SYNTHETIC_IA_MAX_PLAYERS` (4) seats while a roster seats one
+  human, so seats 2, 3 and 4 were all *inside* the supported range and all of
+  them were accepted — a request could fill every control on the form, ask for
+  four human seats, and lower to a plan with one player-side actor. The catalog
+  ceiling is a property of the option table, not of any one roster, so no range
+  check can see this. `check_seats` now reports both reasons in one
+  `invalid_player_count` problem, and only the range when the roster has no
+  player slot at all (`missing_side` already names that).
+  Pinned by `accept_f49_a_a_seat_count_the_roster_cannot_seat_is_refused` and, at
+  the lowering boundary, `accept_f49_a_a_seat_count_the_roster_cannot_fill_is_refused_before_anything_lowers`.
+- **A preset nobody can fly was accepted into the catalog.** `lower_preset`
+  reports one human seat, so a preset whose roster declares no player-side actor
+  lowered to a plan that seats a player in nothing — the one thing a preset is
+  not (non-negotiable 1: a preset is an authored, playable scenario).
+  `InstantActionCatalog::try_new` now refuses it as `PresetWithoutPlayer`.
+- **An unlisted pilot lowered into a runtime identity the catalog cannot spawn.**
+  Every other content id a custom scenario may select — world, environment,
+  faction, airframe, loadout — is closed by the option table, but a roster
+  actor's `pilot` was only checked for its *namespace*, so
+  `synthetic.no_such_pilot` lowered to a `cs_sim::allies::PilotId`. `ScenarioOptions`
+  now declares `pilots` and validation reports `unsupported_pilot`. An actor
+  naming *no* pilot stays legal: an uncrewed actor is a real declaration.
+- **A repeated difficulty tier, victory condition or directed relation pair was
+  accepted.** A repeated tier or condition gives a screen two identical rows. A
+  repeated *ordered pair* is worse: `relation` reads the first match, so a later
+  `Friendly` row could hide behind an earlier `Hostile` one and silently switch
+  the impossible-faction refusal off — the headline rule of non-negotiable 2
+  disabled by a data-entry slip the schema accepted. All three are now refused
+  as `DuplicateOption`.
+- **`MultiplePlayers` reported the wrong bound.** The roster's player-slot bound
+  is **one**; the message interpolated `MAX_SCENARIO_PLAYERS` (8), telling a
+  player their two player slots were refused for exceeding a limit of eight. The
+  two are different quantities — the constant bounds the `players` field a
+  *request* declares, which a one-slot roster can never reach — and the error now
+  names the real one. An existing test pinned the wrong value and was corrected
+  (the rule it asserted, not the sheet, changed).
+- **A user-facing refusal was rendered with `Debug`.**
+  `LowerError::IncompleteDraft` wrote `{schema:?}`, so a draft with an unbuildable
+  roster told the player `the custom scenario is incomplete: Some(EmptyRoster)` —
+  a variant name at exactly the moment AC04 asks for an actionable message. Every
+  other variant already used `Display`; this one now does too.
+
+Two dead branches were also removed: `ScenarioProblemCode::FactionKindMismatch`
+(unreachable — `ScenarioActorSpec::try_new` refuses a non-faction id where the
+actor is assembled, so a `ScenarioRoster` can hold nothing else) and the
+`MAX_SCENARIO_PLAYERS`-based `MultiplePlayers` payload described above.
+
+**A note on a discarded change.** An uncommitted work-in-progress from an
+expired review lease was found in a sibling worktree (`bunny-2`) on this same
+branch. It contained the `if false && pair[0] == pair[1]` shape: a check whose
+condition is dead, immediately after the comment explaining why the check
+matters. It was mid-edit and would not compile against the current tree. It was
+discarded and the six defects above were found and fixed independently; the
+`pair[0] == pair[1]` relation check this review does ship is live, covered, and
+mutation-verified.
+
+### First reviewer pass (bunny-alpha-1, same agent as the implementer)
 
 The reviewer fixed four defects and closed three coverage holes. Each defect was
 confirmed by mutation testing — the mutation was applied, the suite was run, and

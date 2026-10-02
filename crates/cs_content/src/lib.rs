@@ -332,6 +332,16 @@
 //! tagged designed or original-verified. The instrument projection that uses it
 //! is `cs_app::ui::hud`.
 //!
+//! [`instant_action`] is the F49-A declared preset and custom-scenario schema
+//! (`specs/F49-instant-action-presets-and-custom-scenarios.md`, stage
+//! `### F49-A`): the [`instant_action::InstantActionCatalog`] with its presets
+//! and the closed [`instant_action::ScenarioOptions`] a custom scenario may
+//! select, the shared parameter set a preset and a
+//! [`instant_action::CustomScenarioRequest`] both carry, and
+//! [`instant_action::InstantActionCatalog::validate_custom`]'s full list of
+//! actionable problems for an impossible roster. The lowering boundary to the
+//! simulation is `cs_app::ui::instant_action`.
+//!
 //! [`campaign_bindings`] holds the engine-independent mission binding and
 //! campaign coverage records (`specs/F50-per-mission-compatibility-and-
 //! full-campaign-closure.md`, stage F50-A): the seven required content
@@ -410,17 +420,6 @@
 //! into a blocked claim rather than a silent pass (AC04). It simulates,
 //! renders and opens nothing: the capture path is `cs_app::capture` (F59-B) and
 //! the commands are `cs-inspect`/`cs_xtask` (F59-C).
-//!
-//!
-//! [`instant_action`] is the F49-A declared preset and custom-scenario schema
-//! (`specs/F49-instant-action-presets-and-custom-scenarios.md`, stage
-//! `### F49-A`): the [`instant_action::InstantActionCatalog`] with its presets
-//! and the closed [`instant_action::ScenarioOptions`] a custom scenario may
-//! select, the shared parameter set a preset and a
-//! [`instant_action::CustomScenarioRequest`] both carry, and
-//! [`instant_action::InstantActionCatalog::validate_custom`]'s full list of
-//! actionable problems for an impossible roster. The lowering boundary to the
-//! simulation is `cs_app::ui::instant_action`.
 //!
 //! [`legacy_import`] is the F64-A legacy-import contract
 //! (`specs/F64-legacy-custom-aircraft-and-optional-save-import.md`, stage

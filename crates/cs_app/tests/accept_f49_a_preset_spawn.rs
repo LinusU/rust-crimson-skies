@@ -22,8 +22,9 @@
 //! F49-D verifies it.
 
 use cs_app::ui::instant_action::{
-    CustomDimension, LowerError, ScenarioSelection, VictoryCondition, custom_dimensions,
-    lower_custom, lower_preset, preset_rows, report_problems, resolve_custom, wingmate_slot,
+    CustomDimension, LowerError, ProblemCode, ScenarioSelection, VictoryCondition,
+    custom_dimensions, lower_custom, lower_preset, preset_rows, report_problems, resolve_custom,
+    wingmate_slot,
 };
 use cs_content::ai::DifficultyTier;
 use cs_content::instant_action::{
@@ -1162,6 +1163,192 @@ fn accept_f49_a_a_reporting_screen_reads_every_problem_from_one_error() {
         })
         .is_empty()
     );
+}
+
+/// A seat count the roster cannot fill is refused **through the production
+/// lowering path**, not only by the catalog's validator, and the refusal names
+/// the roster rather than asking for a dimension that is already set.
+///
+/// This is F49 non-negotiable 2's "invalid player count/roster configuration".
+/// A draft can fill every control on the form and still ask for four human
+/// seats over a roster with one player-side actor; the catalog's ceiling of four
+/// is a property of the option table, not of this roster, so a range check
+/// alone would accept it and the session would then seat three players in
+/// nothing.
+#[test]
+fn accept_f49_a_a_seat_count_the_roster_cannot_fill_is_refused_before_anything_lowers() {
+    let catalog = synthetic_instant_action_catalog();
+    let with_seats = |players: u8| {
+        CustomScenarioDraft::new()
+            .with_subject(id(
+                ContentKind::IaScenario,
+                "synthetic.fixture_ia_scenario_seats",
+            ))
+            .with_world(known(
+                cs_content::world::WorldId::from_key("synthetic.fixture_ia_coastal")
+                    .expect("world key is valid"),
+            ))
+            .with_environment(known(
+                cs_content::environment::EnvironmentId::new("synthetic.fixture_ia_day_clear")
+                    .expect("environment key is valid"),
+            ))
+            .with_roster(vec![
+                synthetic_actor(
+                    ScenarioSide::Player,
+                    0,
+                    "synthetic.fixture_ia_interceptor",
+                    "synthetic.fixture_ia_light_guns",
+                ),
+                synthetic_actor(
+                    ScenarioSide::Enemy,
+                    0,
+                    "synthetic.fixture_ia_interceptor",
+                    "synthetic.fixture_ia_light_guns",
+                ),
+            ])
+            .with_difficulty(cs_content::instant_action::synthetic_difficulty(
+                DifficultyTier::Standard,
+            ))
+            .with_rules(
+                VictoryRules::try_new(
+                    VictoryCondition::EliminateEnemies,
+                    RespawnBudget::None,
+                    None,
+                    TieOutcome::Draw,
+                )
+                .expect("the rules are valid"),
+            )
+            .with_seed(cs_content::instant_action::ScenarioSeed::new(41))
+            .with_players(players)
+            .with_provenance(Provenance::designed(
+                ClaimId::new("f49a.test").expect("claim is valid"),
+            ))
+    };
+
+    // One seat for the one player slot: the baseline a later stage may widen.
+    let valid = lower_custom(&catalog, with_seats(1)).expect("one seat lowers");
+    assert_eq!(valid.players(), 1);
+
+    for seats in 2..=catalog.options().max_players() {
+        let error = lower_custom(&catalog, with_seats(seats))
+            .expect_err("a seat count the roster cannot fill is refused");
+        let reported = report_problems(&error);
+        assert_eq!(
+            reported.len(),
+            1,
+            "{seats} seats over a one-player roster is one problem: {error}"
+        );
+        assert_eq!(reported[0].code(), ProblemCode::InvalidPlayerCount);
+        assert_eq!(reported[0].dimension(), "players");
+        assert!(
+            reported[0].detail().contains("player slot"),
+            "the message names the roster the seats do not fit, so a screen can act on it: {error}"
+        );
+        // The draft named every dimension, so nothing is "unset" and the
+        // refusal is not misfiled as an incomplete form.
+        assert!(
+            !matches!(error, LowerError::IncompleteDraft { .. }),
+            "a complete draft with a wrong seat count is a validation problem: {error}"
+        );
+    }
+}
+
+/// Every user-facing refusal a screen shows is a sentence, not a debug dump.
+///
+/// `LowerError` renders the schema refusal inside `IncompleteDraft`; rendering
+/// it with `Debug` would put a variant name and field list in front of a player
+/// at exactly the moment AC04 asks for an actionable message. Each variant is
+/// rendered here and checked for the `Debug` shape of the type it carries.
+#[test]
+fn accept_f49_a_every_refusal_a_screen_renders_is_a_sentence_not_a_debug_dump() {
+    let catalog = synthetic_instant_action_catalog();
+    let complete_but_unbuildable = CustomScenarioDraft::new()
+        .with_subject(id(
+            ContentKind::IaScenario,
+            "synthetic.fixture_ia_scenario_empty_roster",
+        ))
+        .with_world(known(
+            cs_content::world::WorldId::from_key("synthetic.fixture_ia_coastal")
+                .expect("world key is valid"),
+        ))
+        .with_environment(known(
+            cs_content::environment::EnvironmentId::new("synthetic.fixture_ia_day_clear")
+                .expect("environment key is valid"),
+        ))
+        .with_roster(Vec::new())
+        .with_difficulty(cs_content::instant_action::synthetic_difficulty(
+            DifficultyTier::Standard,
+        ))
+        .with_rules(
+            VictoryRules::try_new(
+                VictoryCondition::EliminateEnemies,
+                RespawnBudget::None,
+                None,
+                TieOutcome::Draw,
+            )
+            .expect("the rules are valid"),
+        )
+        .with_seed(cs_content::instant_action::ScenarioSeed::new(43))
+        .with_players(1)
+        .with_provenance(Provenance::designed(
+            ClaimId::new("f49a.test").expect("claim is valid"),
+        ));
+
+    let errors = vec![
+        lower_custom(&catalog, complete_but_unbuildable).expect_err("an empty roster is refused"),
+        lower_preset(
+            &catalog,
+            &id(ContentKind::IaPreset, "synthetic.fixture_ia_absent"),
+        )
+        .expect_err("an unknown preset is refused"),
+        lower_custom(
+            &catalog,
+            CustomScenarioDraft::new()
+                .with_world(known(
+                    cs_content::world::WorldId::from_key("synthetic.fixture_ia_coastal")
+                        .expect("world key is valid"),
+                ))
+                .with_roster(vec![synthetic_actor(
+                    ScenarioSide::Player,
+                    0,
+                    "synthetic.fixture_ia_interceptor",
+                    "synthetic.fixture_ia_light_guns",
+                )]),
+        )
+        .expect_err("an incomplete draft is refused"),
+    ];
+
+    for error in &errors {
+        let rendered = error.to_string();
+        assert!(
+            !rendered.is_empty(),
+            "every refusal must render something a screen can show: {error:?}"
+        );
+        // `Debug` on these types always names the variant in PascalCase and, for
+        // the schema-carrying one, wraps the payload in `Some(...)`.
+        for leak in ["IncompleteDraft", "UnknownPreset", "Some(", "None"] {
+            assert!(
+                !rendered.contains(leak),
+                "the rendered refusal leaks a debug shape ({leak:?}): {rendered}"
+            );
+        }
+        // A `Display` refusal is prose and carries no Rust type syntax. A
+        // `Debug` dump always does: braces around the variant's fields, and a
+        // `PascalCase` variant name. Both are rejected above and here, so this
+        // pins the shape without over-specifying punctuation or phrasing.
+        assert!(
+            !rendered.contains('{') && !rendered.contains('}'),
+            "a rendered refusal carries no struct braces: {rendered}"
+        );
+        assert!(
+            rendered.chars().any(char::is_whitespace),
+            "a refusal is prose, not a single value dump: {rendered}"
+        );
+        assert!(
+            !rendered.contains("= "),
+            "a rendered refusal carries no field assignment: {rendered}"
+        );
+    }
 }
 
 /// The known value a test needs, panicking with the field name when the value
