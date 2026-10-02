@@ -196,26 +196,46 @@ fn evidence_report_f14_d_2_writes_the_acceptance_report() {
         );
     }
 
-    // The denominator did not move: the campaign missions are still the only
-    // launchable rows, which is what makes the coverage claim honest.
+    // This collection added no launchable row: the denominator is still the
+    // campaign missions plus the scenario directories another stage declared,
+    // and no mode rule set is a root. That is what makes the coverage claim
+    // honest, so it is measured here rather than asserted from memory.
+    assert!(
+        !ContentKind::MultiplayerRules.is_launchable(),
+        "a mode rule set is not launchable content; if this ever changes the denominator moved \
+         and this report must say so"
+    );
     let layout = campaign_layout(&game_dir).expect("the shared campaign walk reads the layout");
+    let scenarios = baseline
+        .classified_reader_dirs
+        .iter()
+        .filter(|dir| dir.role.is_launchable())
+        .count();
     assert_eq!(
         baseline.roots.len(),
-        layout.len(),
-        "the denominator declares exactly the campaign missions the shared walk finds"
+        layout.len() + scenarios,
+        "the denominator declares exactly the campaign missions the shared walk finds plus the \
+         scenario directories F14-D.1 classified; this collection declares no root"
     );
     let inventory_path = workspace_root().join("missions/bindings/campaign-inventory.tsv");
     let inventory = CampaignInventory::load(&inventory_path)
         .unwrap_or_else(|error| panic!("{} reads: {error}", inventory_path.display()));
     assert_eq!(
-        baseline.roots.len(),
+        layout.len(),
         inventory.len(),
-        "the retail denominator equals the frozen F50 campaign denominator"
+        "the campaign part of the denominator equals the frozen F50 campaign denominator"
+    );
+    assert!(
+        baseline
+            .roots
+            .iter()
+            .all(|id| !id.as_str().starts_with("multiplayer_rules/")),
+        "no multiplayer rules row is a closure root"
     );
     assert_eq!(
         baseline.catalog.launchable_count(),
-        inventory.len(),
-        "a rule set is not launchable content, so the denominator is unchanged"
+        baseline.roots.len(),
+        "every launchable row is a declared root, and this collection declares none"
     );
 
     let report = baseline_report_json(&baseline);
@@ -226,8 +246,9 @@ fn evidence_report_f14_d_2_writes_the_acceptance_report() {
         "\"retail\":true",
         "\"synthetic_launchable\":0",
         &format!("\"install_sha256\":\"{install_sha256}\""),
-        &format!("\"launchable\":{}", inventory.len()),
+        &format!("\"launchable\":{}", baseline.roots.len()),
         "\"multiplayer_rules\":4",
+        "\"collection_status\":[",
         "\"unrecognized_program_dirs\":[",
     ] {
         assert!(
@@ -389,27 +410,28 @@ fn review_method() -> String {
 /// affected content and the task that resolves it (AGENTS owner directive,
 /// 2026-09-28: a limitation must survive into machine-readable evidence).
 const UNKNOWN_LIMITATIONS: &[&str] = &[
-    "Four of the collections IDENTITY-CONTENT requires are now populated: install files, \
-     campaign missions, mission programs and multiplayer rules. Affected content: worlds, \
-     airframes, loadouts, factions, weapons, sounds, dialogue, media, stunts, scrapbook items and \
-     instant-action scenarios, which still have no source-derived row. Resolving tasks: the \
-     follow-up tasks created from #389, one per collection, each adding at most the rows its \
-     producing stage's parser can honestly produce; the report's collections and \
-     collection_status objects state what exists today.",
+    "Five of the collections IDENTITY-CONTENT requires are now populated: install files, \
+     campaign missions, mission programs, the instant-action and multiplayer scenario \
+     directories (F14-D.1) and multiplayer rules (this stage). Affected content: worlds, \
+     airframes, loadouts, factions, weapons, sounds, dialogue, media, stunts and scrapbook \
+     items, which still have no source-derived row. Resolving tasks: the follow-up tasks \
+     created from #389, one per collection, each adding at most the rows its producing \
+     stage's parser can honestly produce; the report's collections and collection_status \
+     objects state what exists today.",
     "A multiplayer mode row is unavailable and carries one typed unknown per rule F56-A could \
      not resolve (every rule but team play on this installation). Affected content: the rule \
      sets of all four modes. Resolving tasks: #476 (measure per-mode rules against an original \
      capture) and F56-B; the rows are the honest place those answers will land.",
     "Nothing references a multiplayer mode yet, so the mode rows are unreachable from the \
-     campaign roots and stay counted in coverage.unreachable_by_kind and \
+     declared roots and stay counted in coverage.unreachable_by_kind and \
      unreachable_needing_classification. Affected content: the reachability accounting of the \
      multiplayer collection. Resolving task: F56-B, when a scenario row points at the mode it \
      runs.",
     "No row claims a runtime consumer and no mission program is decoded, so the coverage \
-     accounting reports 0 ready and every launchable mission as unsupported. Affected content: \
-     every campaign mission's readiness. Resolving tasks: F37 (mission IR) and F38 (native \
-     behavior bindings), then the closure_sha256 field the published M01 binding still reports \
-     as null.",
+     accounting reports 0 ready and every launchable row as unsupported. Affected content: \
+     every campaign mission's and scenario directory's readiness. Resolving tasks: F37 \
+     (mission IR) and F38 (native behavior bindings), then the closure_sha256 field the \
+     published M01 binding still reports as null.",
 ];
 
 // ---------------------------------------------------------------- inputs ---

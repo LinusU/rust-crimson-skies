@@ -9,7 +9,8 @@ Evidence report: `docs/findings/evidence/F14-D.2.json`.
 
 `cs_content::catalog::baseline::retail_baseline` populated three of the
 collections `docs/contracts/IDENTITY-CONTENT.md` requires (install files,
-campaign missions, mission programs). It now populates a fourth:
+campaign missions, mission programs). It now populates a fourth (F14-D.1
+populated the scenario directories while this branch was in review):
 
 * one `ContentKind::MultiplayerRules` row per multiplayer mode the
   installation's string image names, read by **stage F56-A's own parser** —
@@ -56,12 +57,20 @@ and digests.
 
 ## Decisions a reviewer should check
 
-1. **The denominator did not move.** `ContentKind::MultiplayerRules::is_launchable`
-   is false, so the coverage denominator is still the 24 campaign missions.
+1. **This collection did not move the denominator.**
+   `ContentKind::MultiplayerRules::is_launchable` is false and no mode row is
+   declared a root, so populating the collection added no launchable row. The
+   denominator that F14-D.1 (scenario rows) widened underneath this branch is
+   53 launchable rows: 24 campaign missions plus 8 instant-action and 21
+   multiplayer scenario directories; the acceptance test measures that against
+   the frozen F50 campaign inventory and the classified scenario directories
+   instead of pinning a literal, so a later stage's launchable content does not
+   break this stage's assertion. The retail inventory holds 338 rows: 228
+   inventoried files, 24 campaign missions, 53 program rows, 8 + 21 scenario
+   rows and the 4 mode rows.
    `accept_f14_d_retail_baseline_inventory_is_complete_and_never_synthetic`
-   (F14-D) was updated because the **row count** changed (280 rows = 228 files
-   + 48 campaign rows + 4 mode rows), and it now asserts the mode rows
-   explicitly instead of filtering them out.
+   (F14-D) was updated because the **row count** changed, and it now asserts
+   the mode rows explicitly instead of filtering them out.
 2. **An unreadable or absent mode table is reported, not fatal.** A missing
    `strings.dll`, a file that is not a PE resource image, or a table the F56-A
    walk refuses produces no rows **and** a `collection_status` diagnostic that
@@ -116,21 +125,26 @@ No wiring edit was needed: `catalog::baseline` was already public.
    whose team play the table does not state, eleven for the others). Resolving
    task: #476 (per-mode rule measurement against an original capture), then
    F56-B.
-2. **The rows are unreachable** from the campaign roots — nothing references a
-   mode yet — so they stay counted in `coverage.unreachable_by_kind` and
+2. **The rows are unreachable** from the declared roots (the campaign missions
+   and the scenario directories) — nothing references a mode yet — so they stay
+   counted in `coverage.unreachable_by_kind` and
    `unreachable_needing_classification`. Resolving task: F56-B, when a
    scenario row points at the mode it runs.
 3. **The collection is read in one language** (`LANG_ENGLISH_US`, the only one
    this installation carries). Another localization could hold a different run;
    `discover_modes` takes the language as input, so this is a decision, not a
    search.
-4. **Only four of the required collections are populated.** Not yet populated
+4. **Only five of the required collections are populated.** Not yet populated
    here: worlds (F14-D.3, #486), scene nodes/meshes/materials (#487, blocked on
    #392), factions and paint masks (#488), airframes and flight equipment
    (#489), sounds/music/dialogue/video (#490), stunts, scrapbook items and
-   legacy custom planes (#491). Instant-action and multiplayer **scenario**
-   rows are task #388's work (in review at the time of writing), not this
-   stage's.
+   legacy custom planes (#491). The instant-action and multiplayer **scenario**
+   rows joined the inventory while this branch was in review (F14-D.1, #388,
+   merged into `main` and rebased under here), so the denominator this stage
+   asserts against is no longer only the 24 campaign missions: it is the
+   campaign missions plus the classified scenario directories. This
+   collection's rows add none of it, and the acceptance test now measures that
+   rather than pinning a total another stage is free to move.
 5. **Nothing here is `verified_original`.** The rows are agent observations
    over the installation's bytes with `observed_tool` provenance; the ceiling
    for an agent review is `checked`.

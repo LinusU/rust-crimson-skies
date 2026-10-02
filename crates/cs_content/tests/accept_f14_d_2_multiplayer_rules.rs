@@ -27,9 +27,10 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use cs_content::campaign_bindings::CampaignInventory;
 use cs_content::catalog::baseline::{
     Baseline, MODE_STRING_IMAGE, MODE_STRING_LANGUAGE, baseline_report_json, install_file_key,
     retail_baseline,
@@ -629,14 +630,43 @@ fn accept_f14_d_2_retail_the_installation_names_four_modes_with_checked_spans() 
     );
     assert_eq!(status.diagnostic, None);
 
-    // The denominator did not move: mode rules are not launchable content.
-    assert_eq!(
-        baseline.roots.len(),
-        24,
-        "the frozen F50 campaign denominator"
+    // The denominator did not move: mode rules are not launchable content, so
+    // this collection adds no root. The campaign part of the denominator is
+    // still the frozen F50 inventory (F14-D.1 added the scenario directories on
+    // top of it; that is its stage's denominator, not this collection's).
+    assert!(
+        !ContentKind::MultiplayerRules.is_launchable(),
+        "the rule set a mode row names is not launchable content, so the denominator \
+         cannot move when the collection is populated"
     );
-    assert_eq!(baseline.coverage.roots, 24);
-    assert_eq!(baseline.catalog.launchable_count(), 24);
+    assert!(
+        baseline
+            .roots
+            .iter()
+            .all(|id| !id.as_str().starts_with("multiplayer_rules/")),
+        "no multiplayer rules row is a closure root"
+    );
+    let campaign_roots = baseline
+        .roots
+        .iter()
+        .filter(|id| id.as_str().starts_with("mission/"))
+        .count();
+    let inventory = CampaignInventory::load(
+        &Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../missions/bindings/campaign-inventory.tsv"),
+    )
+    .expect("the frozen F50 campaign inventory reads");
+    assert_eq!(
+        campaign_roots,
+        inventory.len(),
+        "the campaign part of the denominator is the frozen F50 inventory"
+    );
+    assert_eq!(baseline.coverage.roots, baseline.roots.len());
+    assert_eq!(
+        baseline.catalog.launchable_count(),
+        baseline.roots.len(),
+        "every launchable row is a declared root, and this collection declares none"
+    );
     assert_eq!(
         baseline
             .coverage
