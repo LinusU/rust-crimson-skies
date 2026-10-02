@@ -5051,7 +5051,9 @@ fn f50_e4_assertion_array(assertions: &[(String, &'static str)]) -> String {
             )
         })
         .collect();
-    format!("[{}]", items.join(", "))
+    // The report's own `"assertions": [{}]` supplies the brackets, exactly as
+    // `assertion_array` leaves them to be supplied.
+    items.join(", ")
 }
 
 /// [`parse_suite_prefixed`] with this task's test prefix.
