@@ -29,6 +29,13 @@
 //!   [`HitEvent`]s to the authoritative [`DamageResolver`], so a gun's
 //!   declared per-channel damage becomes applied damage through the one
 //!   authority that owns it. Every refusal is returned, never swallowed.
+//! * [`WeaponSession`] and [`step_weapon_session`] — the F27-C wiring proper:
+//!   one session generation's authority over the cadence, the router, the
+//!   interaction rules, the live rounds and the effects, and the one
+//!   per-tick step that runs selection, fire, the accepted-shot effects,
+//!   the sweep into damage and the retirement of spent rounds, plus
+//!   [`sync_round_mirrors`], the ECS mirror of the authoritative rounds.
+//!
 //!
 //! Nothing here owns weapon state: the selection, cooldowns, ammunition and
 //! disabled mounts are the [`FireResolver`]'s; these are the conversion,
@@ -39,9 +46,11 @@
 //! [`DamageResolver`]: cs_sim::damage::DamageResolver
 //! [`HitEvent`]: cs_sim::damage::HitEvent
 
+use std::collections::BTreeMap;
+
 use avian3d::prelude::LinearVelocity;
 use bevy::ecs::component::Component;
-use bevy::prelude::{ChildOf, Entity, World};
+use bevy::prelude::{ChildOf, Entity, Transform, World};
 use cs_content::scene::SceneNodeId;
 use cs_content::weapons::{
     AmmunitionId as DeclaredAmmunitionId, DeclaredAmmunition, DeclaredFriendlyFireRule,
@@ -53,10 +62,12 @@ use cs_sim::damage::{
 };
 use cs_sim::targeting::Allegiance;
 use cs_sim::weapons::{
-    AmmunitionId, AmmunitionIdError, FireEvent, FriendlyFireRule, GunDefinition,
-    GunDefinitionError, GunHitRouter, GunMountKind, GunRate, InheritanceRule, MountTransform,
-    ProjectileSegment, SelfHitRule, SpreadCone, SweepCandidate, SweepOutcome, SweepRefusal,
-    SweepTarget, SweepTargetError, WeaponDamage, WeaponRules,
+    AmmunitionId, AmmunitionIdError, CadenceRefusal, FireDenialReason, FireError, FireEvent,
+    FireIntent, FriendlyFireRule, GunBank, GunCadence, GunDefinition, GunDefinitionError,
+    GunHitRouter, GunMountKind, GunRate, GunStateError, InheritanceRule, MountTransform,
+    ProjectileId, ProjectileRuntimeError, ProjectileSegment, SelfHitRule, SpreadCone,
+    SweepCandidate, SweepOutcome, SweepRefusal, SweepTarget, SweepTargetError, WeaponDamage,
+    WeaponRules, WeaponState,
 };
 use cs_types::Tick;
 use cs_types::content::{ContentId, Known, Resolved};
@@ -915,4 +926,1068 @@ pub fn resolve_swept_damage(
         sweep,
         damage: resolved,
     }
+}
+
+// ------------------------------------------- the weapon session and its step ---
+//
+// F27-C's application half. F27-A owned the resolver, F27-B the cadence and the
+// two live-ECS producers, and #443 the swept-hit → `HitEvent` seam
+// (`docs/findings/2026-10-02-f27-c-candidate-filtering-and-hit-damage-routing.md`).
+// What none of them owns is the *sequence*: no production code advanced the
+// cooldowns and the live rounds together, carried an accepted shot forward so a
+// round's later ticks could be routed, derived a sound or a muzzle effect from
+// an accepted event, applied a bank selection, or made a round visible to the
+// ECS.
+//
+// This section is that sequence. [`WeaponSession`] is the authority one session
+// generation holds over it — the cadence (which owns the resolver and the live
+// rounds), the router, the per-mount interaction rules, the accepted-shot
+// records and the effect log — and [`step_weapon_session`] is the one function
+// that runs a tick's commands through the whole path.
+//
+// Three ownership rules decide what this section is allowed to do:
+//
+// * **The cadence is the only thing that consumes a round**, starts a cooldown
+//   or spawns a projectile. The step feeds it live mount poses and reports what
+//   it answered; it never touches the weapon state itself, which is why a
+//   denied input cannot drain ammunition (non-negotiable 5).
+// * **The damage authority is borrowed, not owned.** `DamageResolver` belongs
+//   to F29 and is shared with collision, crash and script producers, so the
+//   step takes it as a caller-supplied authority and applies nothing outside it.
+// * **The ECS mirror is a mirror.** Its `Transform` is written from the
+//   authoritative [`cs_sim::weapons::LiveProjectile`] every tick and it carries
+//   no collider, so Avian never integrates a round and there is no second
+//   contact authority (FLIGHT-PHYSICS, "one physics pose owner").
+//
+// [`cs_sim::weapons::LiveProjectile`]: cs_sim::weapons::LiveProjectile
+
+/// Component: the ECS face of one live authoritative round.
+///
+/// The entity exists so rendering, effects and the HUD have something to read;
+/// it is not the round. Its [`Transform`] is **written** by
+/// [`sync_round_mirrors`] from the authoritative
+/// [`cs_sim::weapons::LiveProjectile`], never integrated, and it carries no
+/// collider. `generation` is the scene generation the mirror was stamped under,
+/// so a reloaded scene's orphan is identifiable by mismatch rather than by a
+/// surviving pointer (the same rule [`crate::scene::SceneNodeBinding`] and
+/// [`crate::damage::DamageActorBinding`] follow).
+#[derive(Component, Clone, Debug, PartialEq)]
+pub struct WeaponRoundMirror {
+    /// The authoritative round this entity mirrors.
+    pub projectile: ProjectileId,
+    /// Who fired the round.
+    pub shooter: ActorId,
+    /// Which mount fired it.
+    pub mount: DamageNodeKey,
+    /// The scene generation the mirror was stamped under.
+    pub generation: SceneGeneration,
+}
+
+/// One accepted shot's effects, derived from an accepted [`FireEvent`] alone.
+///
+/// This is the muzzle-effect and sound record the presentation side consumes.
+/// It exists **only** for a shot that happened: a denied mount, a refused whole
+/// intent and a duplicate network packet produce none of these, which is
+/// non-negotiable 5's rule ("consumption, sound and muzzle effects derive from
+/// accepted fire events") made observable. The catalog ids are the gun
+/// definition's own [`cs_sim::weapons::GunDefinition::effect`] and
+/// [`cs_sim::weapons::GunDefinition::sound`] carried through unchanged — this
+/// stage names them, it does not load, pick or play them.
+///
+/// [`cs_sim::weapons::GunDefinition::effect`]: cs_sim::weapons::GunDefinition::effect
+/// [`cs_sim::weapons::GunDefinition::sound`]: cs_sim::weapons::GunDefinition::sound
+#[derive(Clone, Debug, PartialEq)]
+pub struct WeaponEffect {
+    /// The round this effect belongs to.
+    pub projectile: ProjectileId,
+    /// Who fired it.
+    pub shooter: ActorId,
+    /// Which mount fired it.
+    pub mount: DamageNodeKey,
+    /// The gun's declared muzzle-effect catalog id.
+    pub effect: ContentId,
+    /// The gun's declared shot-sound catalog id.
+    pub sound: ContentId,
+    /// The muzzle's world position at the tick the shot was accepted on.
+    pub origin: WorldPosition,
+    /// The tick the shot was accepted on.
+    pub at: Tick,
+}
+
+/// The effects one session has emitted, drained by the presentation side.
+///
+/// The log is the *only* effect source the step writes, so a consumer that
+/// drains it sees every accepted shot exactly once and can tell an effect that
+/// was emitted from one that was never produced.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WeaponEffectLog {
+    effects: Vec<WeaponEffect>,
+}
+
+impl WeaponEffectLog {
+    /// Records one accepted shot's effect.
+    fn record(&mut self, effect: WeaponEffect) {
+        self.effects.push(effect);
+    }
+
+    /// The effects emitted so far, oldest first.
+    #[must_use]
+    pub fn effects(&self) -> &[WeaponEffect] {
+        &self.effects
+    }
+
+    /// Takes every effect emitted so far, leaving the log empty.
+    #[must_use]
+    pub fn drain(&mut self) -> Vec<WeaponEffect> {
+        std::mem::take(&mut self.effects)
+    }
+
+    /// How many effects are waiting.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.effects.len()
+    }
+
+    /// Whether no effect is waiting.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.effects.is_empty()
+    }
+}
+
+/// One authoritative weapon command for a tick.
+///
+/// Orders are the *input* boundary: the cockpit control that sends them is
+/// F46's and the original's bank names and cycle order are unmeasured
+/// (F27-D), so a bank is the set of mounts it names and nothing more. They are
+/// applied in the order they are given, so a caller that wants a switch to
+/// apply to this tick's shot puts it first.
+#[derive(Clone, Debug, PartialEq)]
+pub enum WeaponOrder {
+    /// Switch the named actor's selected gun bank.
+    ///
+    /// The switch reaches [`WeaponState::select`], which owns the selected set
+    /// alone: it cannot refill a magazine, restart a cooldown or re-enable a
+    /// mount, because it never touches those tables (AC03).
+    SelectBank {
+        /// The actor whose selection changes.
+        shooter: ActorId,
+        /// The mounts to select.
+        bank: GunBank,
+    },
+    /// Ask the named actor's selected bank to fire on this tick.
+    ///
+    /// The intent's id is the once-only key: a duplicate packet is refused by
+    /// the resolver and consumes nothing.
+    Fire(FireIntent),
+}
+
+/// Why one order was refused, changing no state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OrderRefusal {
+    /// The session has been closed by teardown.
+    Closed,
+    /// The order names a session generation other than the session's.
+    ForeignSession {
+        /// The session's generation.
+        expected: u64,
+        /// The generation the order carried.
+        found: u64,
+    },
+    /// The selection names an actor this session has no registered guns for.
+    UnknownShooter {
+        /// The actor that was named.
+        shooter: ActorId,
+    },
+}
+
+impl OrderRefusal {
+    /// The stable label used in reports.
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::Closed => "closed",
+            Self::ForeignSession { .. } => "foreign_session",
+            Self::UnknownShooter { .. } => "unknown_shooter",
+        }
+    }
+}
+
+impl std::fmt::Display for OrderRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Closed => write!(f, "the weapon session is closed"),
+            Self::ForeignSession { expected, found } => {
+                write!(
+                    f,
+                    "the order is for session {found}, but this session is {expected}"
+                )
+            }
+            Self::UnknownShooter { shooter } => {
+                write!(f, "{shooter} has no guns registered in this session")
+            }
+        }
+    }
+}
+
+impl std::error::Error for OrderRefusal {}
+
+/// Why a whole tick was refused before any order was read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StepRefusal {
+    /// The session has been closed by teardown.
+    Closed,
+    /// The tick is not strictly after the last tick this session resolved.
+    ///
+    /// A step consumes its tick: cooldowns walked, rounds moved and, where an
+    /// order fired, ammunition spent. Re-running the same tick would do that
+    /// work twice, so the repeat is refused rather than made idempotent — and
+    /// because the refusal is the honest statement (the first pass really did
+    /// happen), a caller that lost a step's result cannot use the retry to undo
+    /// it either.
+    StaleTick {
+        /// The last tick the session resolved.
+        resolved_through: Tick,
+        /// The tick the step was asked for.
+        at: Tick,
+    },
+}
+
+impl StepRefusal {
+    /// The stable label used in reports.
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::Closed => "closed",
+            Self::StaleTick { .. } => "stale_tick",
+        }
+    }
+}
+
+impl std::fmt::Display for StepRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Closed => write!(f, "the weapon session is closed"),
+            Self::StaleTick {
+                resolved_through,
+                at,
+            } => {
+                write!(f, "tick {at:?} was refused after tick {resolved_through:?}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for StepRefusal {}
+
+/// Why a live round's segment could not even be routed.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RoutingRefusal {
+    /// The session holds a live round whose accepted shot it does not know.
+    ///
+    /// Routing needs the shot for the attacker, the projectile identity and the
+    /// declared damage profile, so a round whose shot was lost is reported here
+    /// instead of being swept with a guessed profile.
+    UnknownRound {
+        /// The round whose shot is missing.
+        projectile: ProjectileId,
+    },
+    /// The round's mount has no lowered interaction rules.
+    ///
+    /// The rules decide admission, so a round without them is refused by name
+    /// rather than swept against a default hostility test.
+    MissingInteractionRules {
+        /// The round that cannot be routed.
+        projectile: ProjectileId,
+        /// The mount whose rules are missing.
+        mount: DamageNodeKey,
+    },
+}
+
+impl RoutingRefusal {
+    /// The stable label used in reports.
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::UnknownRound { .. } => "unknown_round",
+            Self::MissingInteractionRules { .. } => "missing_interaction_rules",
+        }
+    }
+}
+
+impl std::fmt::Display for RoutingRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownRound { projectile } => {
+                write!(f, "round {projectile} has no accepted shot to route with")
+            }
+            Self::MissingInteractionRules { projectile, mount } => {
+                write!(
+                    f,
+                    "round {projectile} has no interaction rules for mount {mount}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for RoutingRefusal {}
+
+/// One mounted gun the session registered, in the runtime form the ECS binds.
+///
+/// Registration returns these because the scene wiring needs the *lowered*
+/// mount key, mount kind and the two catalog ids an accepted shot will name —
+/// the declared records are not reachable from the cadence, and re-deriving
+/// them from the mount key would be a second lowering.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RegisteredWeapon {
+    /// The lowered damage-node key the gun is mounted on.
+    pub mount: DamageNodeKey,
+    /// Where the mount sits on the airframe.
+    pub kind: GunMountKind,
+    /// The gun's declared muzzle-effect catalog id.
+    pub effect: ContentId,
+    /// The gun's declared shot-sound catalog id.
+    pub sound: ContentId,
+}
+
+/// Why a declared loadout could not be registered.
+#[derive(Clone, Debug, PartialEq)]
+pub enum WeaponRegistrationError {
+    /// The session has been closed by teardown.
+    Closed,
+    /// The actor belongs to another session generation.
+    ForeignSession {
+        /// The session's generation.
+        expected: u64,
+        /// The generation the actor carried.
+        found: u64,
+    },
+    /// A declared gun or its declared rules could not be lowered: an unknown
+    /// field refuses rather than inventing a ballistic parameter or an
+    /// interaction rule.
+    Lower(WeaponLowerError),
+    /// The weapon state the session would register was refused, for example a
+    /// selected bank naming a mount the loadout does not carry.
+    State(GunStateError),
+    /// The cadence refused the registration itself.
+    Fire(FireError),
+}
+
+impl std::fmt::Display for WeaponRegistrationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Closed => write!(f, "the weapon session is closed"),
+            Self::ForeignSession { expected, found } => {
+                write!(
+                    f,
+                    "the actor belongs to session {found}, but this session is {expected}"
+                )
+            }
+            Self::Lower(source) => write!(f, "the declared gun could not be lowered: {source}"),
+            Self::State(source) => write!(f, "the weapon state was refused: {source}"),
+            Self::Fire(source) => write!(f, "the cadence refused the registration: {source}"),
+        }
+    }
+}
+
+impl std::error::Error for WeaponRegistrationError {}
+
+/// Why a session could not be opened.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionRefusal {
+    /// Session generation zero cannot be a weapon session.
+    ///
+    /// Zero *is* "no session" in [`cs_types::net::SessionId`] and no
+    /// [`ActorId`] can be built for it, so a session-0 weapon session could
+    /// never register a shooter and would only exist to refuse. It is refused
+    /// at the door instead.
+    NoSession,
+}
+
+impl std::fmt::Display for SessionRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoSession => write!(f, "session generation zero is not a weapon session"),
+        }
+    }
+}
+
+impl std::error::Error for SessionRefusal {}
+
+/// One session generation's authority over the weapon path.
+///
+/// The session owns the [`GunCadence`] (which in turn owns the
+/// [`cs_sim::weapons::FireResolver`] and the live rounds), the
+/// [`GunHitRouter`] and its once-per-`(projectile, actor)` ledger, the
+/// lowered per-mount [`WeaponRules`], the accepted [`FireEvent`] every live
+/// round is routed with, and the effect log. It does **not** own the
+/// [`DamageResolver`]: that authority belongs to F29 and is shared with every
+/// other damage producer, so [`step_weapon_session`] takes it from its caller.
+///
+/// The accepted-shot records are the reason a round can be routed at all: a
+/// round is fired on one tick and lands on another, and the router needs the
+/// shooter, the projectile identity and the gun's declared damage profile — all
+/// of which live on the shot, not on the moving round.
+///
+/// Dropping the session is the teardown; [`WeaponSession::close`] is the
+/// explicit one, and it releases every live round and every mirror with it.
+#[derive(Clone, Debug)]
+pub struct WeaponSession {
+    session: u64,
+    cadence: GunCadence,
+    router: GunHitRouter,
+    rules: BTreeMap<ActorId, BTreeMap<DamageNodeKey, WeaponRules>>,
+    rounds: BTreeMap<ProjectileId, FireEvent>,
+    effects: WeaponEffectLog,
+    resolved_through: Option<Tick>,
+    closed: bool,
+}
+
+impl WeaponSession {
+    /// Opens a weapon session for one session generation, positioned at `tick`.
+    ///
+    /// `router_producer` is the serial the routed [`HitEvent`]s are stamped
+    /// with; the session's schedule allocates one serial for this stage, exactly
+    /// as it does for `DamageResolver::new`'s producer.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionRefusal::NoSession`] for session generation zero.
+    pub fn new(session: u64, tick: Tick, router_producer: u32) -> Result<Self, SessionRefusal> {
+        if session == 0 {
+            return Err(SessionRefusal::NoSession);
+        }
+        Ok(Self {
+            session,
+            cadence: GunCadence::new(session, tick),
+            router: GunHitRouter::new(session, router_producer),
+            rules: BTreeMap::new(),
+            rounds: BTreeMap::new(),
+            effects: WeaponEffectLog::default(),
+            resolved_through: None,
+            closed: false,
+        })
+    }
+
+    /// The session generation this session is confined to.
+    #[must_use]
+    pub const fn session(&self) -> u64 {
+        self.session
+    }
+
+    /// The tick the cadence has advanced to.
+    #[must_use]
+    pub fn tick(&self) -> Tick {
+        self.cadence.tick()
+    }
+
+    /// The cadence: the authority over weapon state and the live rounds.
+    #[must_use]
+    pub const fn cadence(&self) -> &GunCadence {
+        &self.cadence
+    }
+
+    /// The hit router and its once-per-`(projectile, actor)` ledger.
+    #[must_use]
+    pub const fn router(&self) -> &GunHitRouter {
+        &self.router
+    }
+
+    /// Whether teardown has closed this session.
+    #[must_use]
+    pub const fn is_closed(&self) -> bool {
+        self.closed
+    }
+
+    /// One actor's live weapon state, if it has registered guns.
+    ///
+    /// The damage consumer's `SystemDisabled` transition reaches the weapon
+    /// gate through [`WeaponSession::state_mut`]: disabling a mount under the
+    /// gun's own [`DamageNodeKey`] is what makes a destroyed wing gun stop
+    /// firing.
+    #[must_use]
+    pub fn state(&self, shooter: &ActorId) -> Option<&WeaponState> {
+        self.cadence.state(shooter)
+    }
+
+    /// One actor's mutable live weapon state, if it has registered guns.
+    ///
+    /// # Panics
+    ///
+    /// Never: an unregistered actor is `None`, not a panic.
+    pub fn state_mut(&mut self, shooter: &ActorId) -> Option<&mut WeaponState> {
+        self.cadence.state_mut(shooter)
+    }
+
+    /// The effects emitted so far, oldest first.
+    #[must_use]
+    pub fn effects(&self) -> &[WeaponEffect] {
+        self.effects.effects()
+    }
+
+    /// Takes every effect emitted so far, leaving the log empty.
+    #[must_use]
+    pub fn drain_effects(&mut self) -> Vec<WeaponEffect> {
+        self.effects.drain()
+    }
+
+    /// The live round ids, in ascending serial order.
+    #[must_use]
+    pub fn round_ids(&self) -> Vec<ProjectileId> {
+        self.cadence
+            .projectiles()
+            .iter()
+            .map(|live| live.projectile())
+            .collect()
+    }
+
+    /// The accepted shot a live round is routed with, if the session holds it.
+    #[must_use]
+    pub fn shot(&self, projectile: &ProjectileId) -> Option<&FireEvent> {
+        self.rounds.get(projectile)
+    }
+
+    /// The lowered interaction rules one mounted gun runs under.
+    #[must_use]
+    pub fn rules(&self, shooter: &ActorId, mount: &DamageNodeKey) -> Option<&WeaponRules> {
+        self.rules.get(shooter)?.get(mount)
+    }
+
+    /// Registers one actor's declared loadout.
+    ///
+    /// This is the stage's *producer* boundary: the guns arrive as the declared
+    /// records `cs_content::weapons` describes, each one is lowered here (so an
+    /// unknown ballistic field or an unmeasured interaction rule refuses by name
+    /// instead of being invented), the weapon state is built from the lowered
+    /// definitions, and the per-mount rules are kept beside them so a round can
+    /// be routed for its whole life.
+    ///
+    /// The returned [`RegisteredWeapon`]s are what the scene wiring binds: the
+    /// lowered mount key and the two catalog ids an accepted shot will name.
+    ///
+    /// # Errors
+    ///
+    /// [`WeaponRegistrationError`] for a closed session, an actor from another
+    /// generation, a gun whose declared record refuses to lower, a state the
+    /// selected bank does not fit, or a registration the cadence refused.
+    pub fn register(
+        &mut self,
+        shooter: ActorId,
+        guns: &[DeclaredGunDefinition],
+        bank: GunBank,
+        starting_rounds: u64,
+    ) -> Result<Vec<RegisteredWeapon>, WeaponRegistrationError> {
+        if self.closed {
+            return Err(WeaponRegistrationError::Closed);
+        }
+        if shooter.session.get() != self.session {
+            return Err(WeaponRegistrationError::ForeignSession {
+                expected: self.session,
+                found: shooter.session.get(),
+            });
+        }
+
+        let mut lowered = Vec::with_capacity(guns.len());
+        let mut rules = BTreeMap::new();
+        let mut registered = Vec::with_capacity(guns.len());
+        for declared in guns {
+            let gun = lower_gun(declared).map_err(WeaponRegistrationError::Lower)?;
+            let interaction =
+                lower_rules(declared.rules()).map_err(WeaponRegistrationError::Lower)?;
+            let mount = gun.mount().clone();
+            rules.insert(mount.clone(), interaction);
+            registered.push(RegisteredWeapon {
+                mount: mount.clone(),
+                kind: gun.kind(),
+                effect: gun.effect().clone(),
+                sound: gun.sound().clone(),
+            });
+            lowered.push(gun);
+        }
+
+        let state = WeaponState::try_new(&lowered, bank, starting_rounds)
+            .map_err(WeaponRegistrationError::State)?;
+        self.cadence
+            .register(shooter, lowered, state)
+            .map_err(WeaponRegistrationError::Fire)?;
+        self.rules.insert(shooter, rules);
+        Ok(registered)
+    }
+
+    /// Switches one actor's selected gun bank.
+    ///
+    /// The switch reaches [`WeaponState::select`] and nothing else, which is
+    /// what makes AC03 hold by construction: no ammunition is added back and no
+    /// cooldown is cleared, so the switched-to mount still serves the cooldown
+    /// it was serving.
+    ///
+    /// # Errors
+    ///
+    /// [`OrderRefusal`] for a closed session, an actor from another generation
+    /// or a shooter with no registered guns.
+    pub fn select(&mut self, shooter: ActorId, bank: GunBank) -> Result<(), OrderRefusal> {
+        if self.closed {
+            return Err(OrderRefusal::Closed);
+        }
+        if shooter.session.get() != self.session {
+            return Err(OrderRefusal::ForeignSession {
+                expected: self.session,
+                found: shooter.session.get(),
+            });
+        }
+        let Some(state) = self.cadence.state_mut(&shooter) else {
+            return Err(OrderRefusal::UnknownShooter { shooter });
+        };
+        state.select(bank);
+        Ok(())
+    }
+
+    /// Records one accepted shot: the round's own record for later ticks, and
+    /// the effect a consumer plays.
+    fn accept(&mut self, event: &FireEvent, at: Tick) -> WeaponEffect {
+        let projectile = event.projectile.projectile;
+        let effect = WeaponEffect {
+            projectile,
+            shooter: event.shooter,
+            mount: event.mount.clone(),
+            effect: event.effect.clone(),
+            sound: event.sound.clone(),
+            origin: event.projectile.origin,
+            at,
+        };
+        self.rounds.insert(projectile, event.clone());
+        self.effects.record(effect.clone());
+        effect
+    }
+
+    /// Releases one retired round's accepted-shot record.
+    fn release(&mut self, projectile: &ProjectileId) -> Option<FireEvent> {
+        self.rounds.remove(projectile)
+    }
+
+    /// Opens a tick, refusing a closed session or a tick that is not after the
+    /// last one resolved.
+    fn begin_tick(&mut self, at: Tick) -> Option<StepRefusal> {
+        if self.closed {
+            return Some(StepRefusal::Closed);
+        }
+        if let Some(resolved_through) = self.resolved_through
+            && at <= resolved_through
+        {
+            return Some(StepRefusal::StaleTick {
+                resolved_through,
+                at,
+            });
+        }
+        self.resolved_through = Some(at);
+        None
+    }
+
+    /// Ends the session: every live round is released and every mirror is
+    /// despawned, and no further order or step is accepted.
+    ///
+    /// The cooldown and ammunition tables go with the cadence, so a restart
+    /// begins from freshly registered guns rather than from a half-torn-down
+    /// state — the session-generation discipline `crate::targeting` and
+    /// `crate::scene` follow for their own authorities.
+    pub fn close(&mut self, world: &mut World) -> TeardownReport {
+        self.closed = true;
+        let mut rounds = self.round_ids();
+        for projectile in &rounds {
+            self.cadence.remove_projectile(*projectile);
+        }
+        rounds.sort_unstable();
+        self.rounds.clear();
+        let despawned = despawn_round_mirrors(world);
+        TeardownReport {
+            rounds,
+            mirrors: despawned,
+        }
+    }
+}
+
+/// What one session teardown released.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TeardownReport {
+    /// The live rounds the session released, in ascending serial order.
+    pub rounds: Vec<ProjectileId>,
+    /// How many ECS mirrors were despawned with them.
+    pub mirrors: usize,
+}
+
+/// One mount that did not fire, with the reason the resolver gave.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeniedShot {
+    /// The intent the mount answered.
+    pub intent: cs_sim::weapons::FireIntentId,
+    /// Why the mount did not fire.
+    pub reason: FireDenialReason,
+}
+
+/// One live mount pose the hierarchy walk could not read.
+#[derive(Clone, Debug, PartialEq)]
+pub struct UnreadableMount {
+    /// The actor whose mount was unreadable.
+    pub shooter: ActorId,
+    /// Why the pose could not be read.
+    pub refusal: MountPoseRefusal,
+}
+
+/// One live round's routing and damage outcome.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RoutedRound {
+    /// The round that was swept.
+    pub projectile: ProjectileId,
+    /// The routing outcome and the damage resolution for its segment.
+    pub outcome: SweptDamageOutcome,
+}
+
+/// What the ECS mirror pass changed.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct MirrorReport {
+    /// Mirrors spawned for rounds that had none.
+    pub spawned: Vec<ProjectileId>,
+    /// Mirrors despawned because no live round backs them.
+    pub despawned: Vec<ProjectileId>,
+    /// Mirrors written onto this tick's authoritative position.
+    pub moved: usize,
+    /// Live rounds with no accepted shot, which therefore have no mirror.
+    pub unmirrored: Vec<ProjectileId>,
+}
+
+/// The world inputs one weapon step needs.
+pub struct WeaponStep<'a> {
+    /// The tick being resolved.
+    pub at: Tick,
+    /// The tick's length in seconds, used to move the rounds and to
+    /// reconstruct each part's previous centre.
+    pub dt_s: f64,
+    /// The session's authoritative wind velocity in world m/s.
+    pub wind_velocity_m_s: [f64; 3],
+    /// The scene generation live entities carry, which is what makes a
+    /// reloaded hierarchy's stale poses identifiable.
+    pub generation: SceneGeneration,
+    /// The declared relation of the firing actor to a candidate actor, in the
+    /// F30-A [`Allegiance`] vocabulary. `None` is an *undeclared* pair, which
+    /// is not the same statement as friendly: only
+    /// [`FriendlyFireRule::Everyone`] admits it. The session's targeting
+    /// authority supplies this; the weapon path never re-derives hostility.
+    pub relation: &'a dyn Fn(ActorId) -> Option<Allegiance>,
+}
+
+/// One tick's whole weapon result.
+///
+/// Every list is a report of something that happened, not a summary of what
+/// should have: an absent entry is never "swallowed", it is either a miss, a
+/// denial or a refusal, and each of those has its own list.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct WeaponTick {
+    /// The tick that was resolved.
+    pub at: Tick,
+    /// The step was refused whole: nothing advanced and no order was read.
+    pub refused: Option<StepRefusal>,
+    /// Orders refused on their own, each changing nothing.
+    pub orders_refused: Vec<OrderRefusal>,
+    /// The shots that happened, in the order the orders resolved them.
+    pub accepted: Vec<FireEvent>,
+    /// Mounts that did not fire, with the resolver's reason.
+    pub denied: Vec<DeniedShot>,
+    /// Whole intents the cadence refused, changing no state.
+    pub fire_refused: Vec<CadenceRefusal>,
+    /// Live mount poses the hierarchy walk could not read.
+    pub unreadable_mounts: Vec<UnreadableMount>,
+    /// Live part boxes the swept query could not read.
+    pub unreadable_parts: Vec<PartSweepRefusal>,
+    /// The effects the accepted shots produced.
+    pub effects: Vec<WeaponEffect>,
+    /// One entry per live round whose segment was routed and resolved.
+    pub routed: Vec<RoutedRound>,
+    /// Live rounds whose damage could not even be routed.
+    pub routing_refused: Vec<RoutingRefusal>,
+    /// The round advance refused the whole tick.
+    ///
+    /// The advance is all-or-nothing inside the runtime, so this means no round
+    /// moved and no contact was tested: the ticks before it (selection, fire,
+    /// effects) really did happen and are reported above.
+    pub advance_refused: Option<ProjectileRuntimeError>,
+    /// The rounds whose declared lifetime was spent this tick.
+    pub retired: Vec<ProjectileId>,
+    /// What the ECS mirror pass changed.
+    pub mirrors: MirrorReport,
+}
+
+impl WeaponTick {
+    /// The tick report starts empty at `at`.
+    fn new(at: Tick) -> Self {
+        Self {
+            at,
+            ..Self::default()
+        }
+    }
+
+    /// Whether the tick produced no shot, no routed contact and no retirement.
+    #[must_use]
+    pub fn is_quiet(&self) -> bool {
+        self.accepted.is_empty() && self.routed.is_empty() && self.retired.is_empty()
+    }
+}
+
+/// Runs one tick of the weapon path: selection, fire, effects, motion, swept
+/// damage and retirement, plus the ECS mirror pass.
+///
+/// `orders` are applied in the order they are given, so a caller that wants a
+/// bank switch to apply to this tick's shot puts it first. `damage` is the
+/// session's damage authority, borrowed rather than owned: F29 owns that
+/// lifecycle and every routed contact reaches it through
+/// [`resolve_swept_damage`], so no weapon damage is applied anywhere else.
+///
+/// # What a refusal means here
+///
+/// A whole-tick refusal ([`StepRefusal`]) means nothing at all happened. An
+/// order refusal means that order changed nothing while the rest of the tick
+/// ran. A fire refusal is the cadence's: no round consumed, no cooldown started
+/// and no round spawned (F27-B). A denied mount is per mount, so a disabled
+/// wing gun emits no projectile, no sound and no effect while its enabled
+/// sibling still fires (AC02). An unreadable mount or part is named rather than
+/// dropped, and an advance refusal leaves every round exactly where it was.
+/// None of them is swallowed, and the accepted shots that did happen are
+/// reported beside them.
+///
+/// # Ordering
+///
+/// Selection, then fire, then motion, then the sweep, then retirement. A round
+/// fired on this tick is moved by the same step, so its first segment is swept
+/// here; a round that lands several ticks later is routed from the accepted shot
+/// this session has been keeping for it.
+#[must_use]
+pub fn step_weapon_session(
+    world: &mut World,
+    session: &mut WeaponSession,
+    damage: &mut DamageResolver,
+    orders: &[WeaponOrder],
+    step: &WeaponStep<'_>,
+) -> WeaponTick {
+    let mut tick = WeaponTick::new(step.at);
+    if let Some(refusal) = session.begin_tick(step.at) {
+        tick.refused = Some(refusal);
+        return tick;
+    }
+    session.cadence.advance_to(step.at);
+
+    for order in orders {
+        match order {
+            WeaponOrder::SelectBank { shooter, bank } => {
+                if let Err(refusal) = session.select(*shooter, bank.clone()) {
+                    tick.orders_refused.push(refusal);
+                }
+            }
+            WeaponOrder::Fire(intent) => {
+                // The live read first, so a mount with no readable pose is
+                // named here as well as refused by the resolver: a gun never
+                // fires from the world origin because a walk skipped it.
+                let mounts = live_mount_transforms(world, intent.shooter, step.generation);
+                tick.unreadable_mounts
+                    .extend(mounts.refused.into_iter().map(|refusal| UnreadableMount {
+                        shooter: intent.shooter,
+                        refusal,
+                    }));
+                match session
+                    .cadence
+                    .fire(intent, &mounts.transforms, step.wind_velocity_m_s)
+                {
+                    Ok(resolution) => {
+                        tick.denied
+                            .extend(resolution.refused.iter().map(|reason| DeniedShot {
+                                intent: resolution.intent,
+                                reason: reason.clone(),
+                            }));
+                        for event in &resolution.accepted {
+                            tick.effects.push(session.accept(event, step.at));
+                        }
+                        tick.accepted.extend(resolution.accepted);
+                    }
+                    Err(refusal) => tick.fire_refused.push(refusal),
+                }
+            }
+        }
+    }
+
+    match session
+        .cadence
+        .advance_projectiles(step.dt_s, step.wind_velocity_m_s)
+    {
+        Err(source) => tick.advance_refused = Some(source),
+        Ok(rounds) => {
+            tick.retired = rounds.expired.clone();
+            if !rounds.segments.is_empty() {
+                // One read of the live part boxes per tick, shared by every
+                // round: the candidates are a property of the world at the end
+                // of the tick, not of one projectile.
+                let parts = part_sweep_candidates(world, step.dt_s, |actor| (step.relation)(actor));
+                tick.unreadable_parts = parts.refused;
+                for segment in &rounds.segments {
+                    match route_round(session, damage, segment, &parts.candidates, step) {
+                        Ok(routed) => tick.routed.push(routed),
+                        Err(refusal) => tick.routing_refused.push(refusal),
+                    }
+                }
+            }
+        }
+    }
+
+    // A round whose lifetime is spent has no segment to sweep next tick, so its
+    // accepted shot goes with it: the session keeps a record only while the
+    // round that needs it is live.
+    for projectile in &tick.retired {
+        session.release(projectile);
+    }
+    tick.mirrors = sync_round_mirrors(world, session, step.generation);
+    tick
+}
+
+/// Routes one live round's segment through the declared rules and the damage
+/// authority.
+///
+/// # Errors
+///
+/// [`RoutingRefusal`] when the session no longer holds the round's accepted shot
+/// or the round's mount has no lowered rules — both reported by name, because a
+/// round swept with a guessed attacker or a default hostility test would apply
+/// damage no rule stands behind.
+fn route_round(
+    session: &mut WeaponSession,
+    damage: &mut DamageResolver,
+    segment: &ProjectileSegment,
+    candidates: &[SweepCandidate],
+    step: &WeaponStep<'_>,
+) -> Result<RoutedRound, RoutingRefusal> {
+    let Some(shot) = session.shot(&segment.projectile).cloned() else {
+        return Err(RoutingRefusal::UnknownRound {
+            projectile: segment.projectile,
+        });
+    };
+    let Some(rules) = session.rules(&shot.shooter, &shot.mount).cloned() else {
+        return Err(RoutingRefusal::MissingInteractionRules {
+            projectile: segment.projectile,
+            mount: shot.mount.clone(),
+        });
+    };
+    Ok(RoutedRound {
+        projectile: segment.projectile,
+        outcome: resolve_swept_damage(
+            &mut session.router,
+            &rules,
+            damage,
+            &shot,
+            segment,
+            candidates.iter().cloned(),
+            step.at,
+        ),
+    })
+}
+
+/// Reconciles the ECS mirror of the authoritative rounds.
+///
+/// Every live round gets a [`WeaponRoundMirror`] entity whose [`Transform`] is
+/// written from the runtime's own position, and a mirror whose round is gone —
+/// retired this tick, removed by a hit, released by teardown, or left behind by
+/// a reloaded scene — is despawned. The pass *reconciles* rather than tracks:
+/// it looks for what is there and for what is live, so no entity id is stored
+/// and a stale mirror cannot survive a reload by pointing at the past.
+///
+/// A round the session cannot name — live without an accepted shot, which the
+/// session's own API cannot produce — is reported in
+/// [`MirrorReport::unmirrored`] rather than mirrored under an invented
+/// identity.
+///
+/// The mirror carries no collider and is never integrated: the authoritative
+/// position lives in [`cs_sim::weapons::LiveProjectile`], so Avian never
+/// becomes a second contact authority for a round (FLIGHT-PHYSICS, "one physics
+/// pose owner").
+///
+/// [`cs_sim::weapons::LiveProjectile`]: cs_sim::weapons::LiveProjectile
+#[must_use]
+pub fn sync_round_mirrors(
+    world: &mut World,
+    session: &WeaponSession,
+    generation: SceneGeneration,
+) -> MirrorReport {
+    let mut report = MirrorReport::default();
+    let live: BTreeMap<ProjectileId, WorldPosition> = session
+        .cadence
+        .projectiles()
+        .iter()
+        .map(|round| (round.projectile(), round.current()))
+        .collect();
+
+    let mut present: BTreeMap<ProjectileId, Entity> = BTreeMap::new();
+    let mut stale: Vec<Entity> = Vec::new();
+    for entity_ref in world.iter_entities() {
+        let Some(mirror) = entity_ref.get::<WeaponRoundMirror>() else {
+            continue;
+        };
+        if mirror.generation != generation || !live.contains_key(&mirror.projectile) {
+            stale.push(entity_ref.id());
+            continue;
+        }
+        present.insert(mirror.projectile, entity_ref.id());
+    }
+    for entity in stale {
+        let Some(mirror) = world.get::<WeaponRoundMirror>(entity).cloned() else {
+            continue;
+        };
+        world.entity_mut(entity).despawn();
+        report.despawned.push(mirror.projectile);
+    }
+
+    for (projectile, position) in &live {
+        match present.get(projectile) {
+            Some(entity) => {
+                world.entity_mut(*entity).insert(transform_of(*position));
+                report.moved += 1;
+            }
+            None => {
+                let Some(shot) = session.shot(projectile).cloned() else {
+                    report.unmirrored.push(*projectile);
+                    continue;
+                };
+                world.spawn((
+                    WeaponRoundMirror {
+                        projectile: *projectile,
+                        shooter: shot.shooter,
+                        mount: shot.mount.clone(),
+                        generation,
+                    },
+                    transform_of(*position),
+                ));
+                report.spawned.push(*projectile);
+            }
+        }
+    }
+    report
+}
+
+/// The mirror [`Transform`] for an authoritative round position.
+///
+/// Position only: no orientation is measured for a round in the original data,
+/// so the mirror carries none rather than a default rotation that would read as
+/// a claim. The f32 conversion is the ECS's own precision — the authoritative
+/// position stays f64 in the runtime, and every mirror write comes from it.
+fn transform_of(position: WorldPosition) -> Transform {
+    let [x, y, z] = position.to_array();
+    Transform::from_translation(bevy::prelude::Vec3::new(x as f32, y as f32, z as f32))
+}
+
+/// Despawns every [`WeaponRoundMirror`] entity, returning the round ids released.
+fn despawn_round_mirrors(world: &mut World) -> usize {
+    let mirrors: Vec<Entity> = world
+        .iter_entities()
+        .filter(|entity_ref| entity_ref.contains::<WeaponRoundMirror>())
+        .map(|entity_ref| entity_ref.id())
+        .collect();
+    for entity in &mirrors {
+        world.entity_mut(*entity).despawn();
+    }
+    mirrors.len()
 }
