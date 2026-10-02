@@ -47,9 +47,10 @@ use bevy::prelude::{
 use bevy::time::{Fixed, Time, TimeUpdateStrategy};
 use cs_app::animation::{
     AnimatedNodeBinding, AnimationInstance, AnimationLog, AnimationPlayError, AnimationPlayback,
-    AnimationRefusal, AnimationSchedulePlugin, AppliedAttachment, CommittedSessionTick,
-    InstanceKey, NodeAnimatedAttachment, NodeAnimatedMaterial, NodeAnimatedPose, advance_animation,
-    play_animation, release_superseded_instances, stop_animation,
+    AnimationRefusal, AnimationSchedulePlugin, AppliedAttachment, AttachmentRecord,
+    CommittedSessionTick, InstanceKey, NodeAnimatedAttachment, NodeAnimatedMaterial,
+    NodeAnimatedPose, VelocitySkipReason, advance_animation, play_animation,
+    release_superseded_instances, stop_animation,
 };
 use cs_app::scene::{NodeVisualTransform, SceneGeneration, SceneGenerations, SceneNodeBinding};
 use cs_app::synthetic::SyntheticScene;
@@ -492,9 +493,12 @@ fn accept_f20_c_02_a_repeated_or_reversed_stamp_publishes_nothing_new() {
             refusals[0],
             AnimationRefusal::Held {
                 ref clip,
+                instance: held,
                 from,
                 to: 3
-            } if *clip == track("synthetic.door_open") && from == SYNTHETIC_DOOR_OPEN_TICK
+            } if *clip == track("synthetic.door_open")
+                && held == instance(1)
+                && from == SYNTHETIC_DOOR_OPEN_TICK
         ));
         assert_eq!(
             applied_pose(world, door),
@@ -1015,6 +1019,83 @@ fn accept_f20_c_02_a_superseded_scene_generation_releases_what_its_instances_app
 
     // A second call is a no-op: nothing superseded is left to release.
     assert!(release_superseded_instances(&mut world).is_empty());
+}
+
+/// A teardown propagates what its release could not measure instead of
+/// dropping it: a cargo released from a chain that carries no velocity at all
+/// publishes one `VelocityNotInherited` naming the reason, while the other
+/// instance of the same track — still playing — publishes nothing.
+#[test]
+fn accept_f20_c_02_the_teardown_reports_a_release_it_could_not_inherit_a_velocity_for() {
+    let mut world = World::new();
+    world.insert_resource(AnimationPlayback::new(session(11)));
+    let generation = SceneGeneration::default().next();
+
+    let clip = declared_synthetic_cargo_clip();
+    let clip_id = clip.id().clone();
+    let cargo_node = node(SYNTHETIC_CARGO_NODE);
+
+    // The bay is a scene node that never moved: it carries no velocity
+    // component at all, so nothing measurable can be inherited from it.
+    let bay = spawn_node(&mut world, SYNTHETIC_CARGO_BAY_NODE, generation, Vec3::ZERO);
+    let spawn_cargo = |world: &mut World, at: Vec3| {
+        let entity = spawn_node(world, SYNTHETIC_CARGO_NODE, generation, at);
+        world
+            .entity_mut(entity)
+            .insert((ChildOf(bay), Position(at), LinearVelocity(Vec3::ZERO)));
+        entity
+    };
+    let released = spawn_cargo(&mut world, Vec3::new(4.0, 0.0, 0.0));
+    let kept = spawn_cargo(&mut world, Vec3::new(-3.0, 0.0, 0.0));
+    for (entity, which) in [(released, instance(1)), (kept, instance(2))] {
+        world.entity_mut(entity).insert(AnimatedNodeBinding {
+            clip: clip_id.clone(),
+            node: cargo_node.clone(),
+            instance: which,
+            generation,
+        });
+    }
+
+    play_animation(&mut world, &clip, instance(1), generation, Tick(0))
+        .expect("the first instance starts");
+    play_animation(&mut world, &clip, instance(2), generation, Tick(0))
+        .expect("the second instance starts");
+    advance_animation(&mut world, Tick(1));
+    drain(&mut world);
+
+    assert!(stop_animation(&mut world, &clip_id, instance(1)));
+
+    let published = drain(&mut world);
+    assert_eq!(
+        published.attachments(),
+        &[AttachmentRecord::VelocityNotInherited {
+            clip: clip_id.clone(),
+            node: cargo_node.clone(),
+            reason: VelocitySkipReason::NoVelocitySource,
+        }],
+        "the teardown publishes what its release could not inherit, and only for \
+         the instance it tore down"
+    );
+    assert_eq!(
+        world.get::<ChildOf>(released),
+        None,
+        "the link is released either way"
+    );
+    assert_eq!(
+        world.get::<ChildOf>(kept).map(ChildOf::parent),
+        Some(bay),
+        "the surviving instance keeps its hierarchy"
+    );
+
+    // A second teardown of a chain that inherits nothing publishes once: the
+    // log grows with transitions, never with frames.
+    assert!(stop_animation(&mut world, &clip_id, instance(2)));
+    let again = drain(&mut world);
+    assert_eq!(
+        again.attachments().len(),
+        1,
+        "each instance's teardown publishes its own single record"
+    );
 }
 
 /// The lowering boundary still produces exactly the runtime twin the

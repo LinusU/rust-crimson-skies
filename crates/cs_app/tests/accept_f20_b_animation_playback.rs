@@ -556,6 +556,7 @@ fn accept_f20_b_holding_the_head_never_replays_a_one_shot_marker() {
         held.refusals(),
         &[AnimationRefusal::Held {
             clip: clip_id.clone(),
+            instance: instance(1),
             from: 10,
             to: 3,
         }],

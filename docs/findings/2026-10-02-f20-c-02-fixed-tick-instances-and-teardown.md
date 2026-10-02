@@ -135,6 +135,19 @@ keeps the original-family validation gate.
    instance)` again after a stop starts a fresh evaluator with a fresh
    producer serial, so its one-shot gameplay marker fires again exactly once
    and its event ids cannot collide with the earlier activation's.
+8. **A refusal names the instance, not just the track.**
+   `AnimationRefusal::Held` gained an `instance` field. One track played by
+   two instances reports two holds, and a record that named only the track
+   could not tell them apart — the same instance-identity requirement the live
+   map key and `AlreadyPlaying` follow. The F20-B hold test's expectation grew
+   the field; the assertion it makes (one hold, from 10 to 3, re-reported
+   never) is unchanged.
+9. **A teardown propagates its release's refusals.** Everything
+   `release_animated_attachment` could not measure is appended to the
+   `AnimationLog` by the teardown, one `AttachmentRecord` per transition.
+   Dropping them would repeat the silent-branch defect F20-C.01's second
+   review pass removed from the release walk: a hierarchy change plus a
+   missing inheritance with nothing on record.
 
 ## What is still not wired, and who owns it
 
@@ -165,6 +178,9 @@ Call-site only, plus exactly one expectation that encoded the *old* rule:
   stop), which is what `accept_f20_c_02_stopping_one_instance_releases_only_its_own_entities`
   pins in the multi-instance case. No other F20-B expectation encodes it.
 - `accept_f20_a_animation_boundary.rs` fills the new binding field only.
+- `accept_f20_b_holding_the_head_never_replays_a_one_shot_marker`'s expected
+  `AnimationRefusal::Held` literal grew the new `instance` field (decision 8).
+  The assertion it makes is unchanged.
 
 ## Tests
 
@@ -177,6 +193,7 @@ Call-site only, plus exactly one expectation that encoded the *old* rule:
 | `accept_f20_c_02_stopping_one_instance_releases_only_its_own_entities` | the teardown: the stopped instance's entity loses its applied values, its released `ChildOf` (with the parent velocity it inherits and its unchanged composed world pose) and its binding; the other instance keeps playing, keeps its hierarchy and keeps swapping its material; a hand-written state on an entity bound to another track survives; the clip's own later detach does not inherit a second time |
 | `accept_f20_c_02_a_second_play_of_the_same_identity_is_refused_and_a_new_one_starts_after_a_stop` | `AlreadyPlaying` naming the identity, a different identity playing beside it, and a replay after the stop with a fresh producer serial whose one-shot marker fires once under an id the first activation could not have used |
 | `accept_f20_c_02_a_superseded_scene_generation_releases_what_its_instances_applied` | `release_superseded_instances` against `SceneGenerations::latest()`: exactly the older instance is released, the live generation's instance keeps its state, and a second call is a no-op |
+| `accept_f20_c_02_the_teardown_reports_a_release_it_could_not_inherit_a_velocity_for` | error propagation through the teardown: a cargo released from a bay that carries no velocity publishes exactly one `AttachmentRecord::VelocityNotInherited { NoVelocitySource }` for the instance it tore down, the surviving instance publishes nothing, and the link is released either way |
 | `accept_f20_c_02_the_propeller_fixture_drives_the_production_lowering` | the pose the multi-instance scenarios assert is the one `lower_clip` really produces: the declared fixture lowers to the `cs_sim` runtime twin (same id, duration, channels and markers) rather than to a test-authored clip |
 
 ## Mutation probes
@@ -187,13 +204,14 @@ ran the full selection `cargo test --workspace --locked -- accept_f20_c_02_
 `grep -rn "MUTATION PROBE" crates/` returns nothing, `git status` shows no
 probe edit, and the selection is green again.
 
-| probe | edit | tests that fail (of 8) |
+| probe | edit | tests that fail (of 9) |
 | --- | --- | --- |
 | P1 repeat rule off | `if already && false` in `advance_animation_on_session_tick` | `..._the_fixed_tick_advance_runs_once_per_committed_session_tick` (1) |
 | P2 the stamp is not required | the missing-`CommittedSessionTick` early return replaced by `unwrap_or_default()` | `..._the_schedule_advances_nothing_without_a_committed_tick` (1) |
 | P3 the live map keyed by track alone | `InstanceKey::new` drops its `instance` argument and always keys by instance 1 | `..._two_instances_of_one_track_each_drive_their_own_entity`, `..._stopping_one_instance_releases_only_its_own_entities`, `..._a_second_play_of_the_same_identity_is_refused_...`, `..._a_superseded_scene_generation_releases_what_its_instances_applied` (4) |
 | P4 the teardown clears every animated entity | `release_instance` drops its `(clip, instance)` filter | `..._stopping_one_instance_releases_only_its_own_entities`, `..._a_superseded_scene_generation_releases_what_its_instances_applied` (2) |
 | P5 the teardown leaves the binding | `release_instance` stops removing `AnimatedNodeBinding` | `..._stopping_one_instance_releases_only_its_own_entities`, `..._a_second_play_of_the_same_identity_is_refused_...`, `..._a_superseded_scene_generation_releases_what_its_instances_applied` (3) |
+| P6 the teardown drops the release's records | `release_instance` calls `release_animated_attachment` for its effect and throws the returned records away | `..._the_teardown_reports_a_release_it_could_not_inherit_a_velocity_for` (1) |
 
 ## Checks run
 
@@ -206,10 +224,10 @@ probe edit, and the selection is green again.
   the `accept_f20_a_*` tests are unchanged except at the call sites listed
   above, and still pass.
 - `cargo test --workspace --locked -- accept_f20_c_02_ --include-ignored` —
-  exit 0, **8 tests matched** in
+  exit 0, **9 tests matched** in
   `crates/cs_app/tests/accept_f20_c_02_fixed_tick_instances_and_teardown.rs`,
   all passing.
-- the five mutation probes above — each probe's selection exited 101 and the
+- the six mutation probes above — each probe's selection exited 101 and the
   files were restored.
 
 No command needed `CS_GAME_DIR`, and no `accept_f20_c_02_` test is

@@ -229,10 +229,15 @@ pub enum AnimationRefusal {
     ///
     /// `from` is the clip time the instance sits at and `to` the one the
     /// session tick asked for. Reported once per occurrence, not once per
-    /// tick while the session stays behind.
+    /// tick while the session stays behind. The `instance` names *which* live
+    /// instance was held: one `animation_track` played by two instances
+    /// reports two holds, and a refusal that named only the track could not
+    /// tell them apart.
     Held {
         /// The clip whose head was held.
         clip: ContentId,
+        /// The live instance of that clip whose head was held.
+        instance: AnimationInstance,
         /// The clip time the instance sits at.
         from: u64,
         /// The clip time the session tick asked for.
@@ -766,11 +771,16 @@ pub(crate) fn release_instance(world: &mut World, clip: &ContentId, instance: An
         .map(|(entity, _)| entity)
         .collect();
 
+    let mut records: Vec<AttachmentRecord> = Vec::new();
     for entity in bound {
         // 2. The hierarchy link first, by the authored detach's rule, so a
         //    parent despawned later in this step cannot take the node with
-        //    it and the inherited velocity is written once.
-        super::attachment::release_animated_attachment(world, entity);
+        //    it and the inherited velocity is written once. Everything the
+        //    release could not inherit is published, never dropped in
+        //    silence — the same rule F20-C.01's review pinned.
+        records.extend(
+            super::attachment::release_animated_attachment(world, entity).unwrap_or_default(),
+        );
 
         // 3. Then the applied values, the consumers' bookkeeping and the
         //    binding itself.
@@ -782,6 +792,12 @@ pub(crate) fn release_instance(world: &mut World, clip: &ContentId, instance: An
             .remove::<super::attachment::AppliedAttachment>()
             .remove::<super::attachment::RefusedAttachment>()
             .remove::<AnimatedNodeBinding>();
+    }
+
+    if !records.is_empty() {
+        let mut log = world.remove_resource::<AnimationLog>().unwrap_or_default();
+        log.push_attachments(records);
+        world.insert_resource(log);
     }
 }
 
@@ -832,6 +848,7 @@ pub fn advance_animation(world: &mut World, at: Tick) {
                 playing.held_reported = true;
                 refused.push(AnimationRefusal::Held {
                     clip: key.clip.clone(),
+                    instance: key.instance,
                     from: playing.object.time(),
                     to: target,
                 });
