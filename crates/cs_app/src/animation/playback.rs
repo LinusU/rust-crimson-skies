@@ -76,6 +76,7 @@ use cs_sim::animated_object::{
 use cs_types::Tick;
 use cs_types::content::{ContentId, Resolved};
 use cs_types::evidence::ClaimId;
+use cs_types::net::SessionId;
 
 use crate::scene::SceneGeneration;
 
@@ -345,17 +346,18 @@ struct PlayingClip {
 /// anything without it, so an animation can never play in no session at all.
 #[derive(Resource, Debug)]
 pub struct AnimationPlayback {
-    session: u64,
+    session: SessionId,
     next_producer: u32,
     playing: BTreeMap<ContentId, PlayingClip>,
 }
 
 impl AnimationPlayback {
-    /// A playback for `session`: its events are stamped with that session
-    /// generation, so a restarted session can never collide with the
-    /// previous one's ids (`IDENTITY-CONTENT` session generations).
+    /// A playback for `session`: its events are stamped with that shared
+    /// nonzero [`SessionId`] generation, so a restarted session can never
+    /// collide with the previous one's ids (`IDENTITY-CONTENT` session
+    /// generations; F20-A follow-up 1, resolved by task #397).
     #[must_use]
-    pub fn new(session: u64) -> Self {
+    pub fn new(session: SessionId) -> Self {
         Self {
             session,
             next_producer: 0,
@@ -365,7 +367,7 @@ impl AnimationPlayback {
 
     /// The session generation every event id carries.
     #[must_use]
-    pub const fn session(&self) -> u64 {
+    pub const fn session(&self) -> SessionId {
         self.session
     }
 

@@ -22,11 +22,12 @@
 //! nothing here consumes wall time.
 //!
 //! A marker that reaches its tick produces an [`AnimationEvent`] stamped with
-//! an [`AnimationEventId`], the animation-scoped realization of the contract's
-//! `EventId(session, tick, producer, sequence)` shape — `cs_types` does not
-//! implement the shared `SessionId`/`EventId` types yet (recorded in
-//! `docs/findings/2026-09-30-f20-a-animation-channels-and-event-markers.md`),
-//! so this module carries its own fields rather than guessing a shared one.
+//! the shared contract event id, [`cs_types::net::EventId`] (re-exported under
+//! its animation-facing name [`AnimationEventId`]), and the session is the
+//! shared nonzero [`cs_types::net::SessionId`]. Event identity is therefore
+//! defined once in `cs_types` rather than mirrored here
+//! (`docs/contracts/IDENTITY-CONTENT.md`; F20-A follow-up 1, resolved by
+//! task #397).
 //!
 //! # Dedup and blocking semantics
 //!
@@ -68,6 +69,7 @@ use std::fmt;
 use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind, Resolved};
 use cs_types::evidence::ClaimId;
+use cs_types::net::{EventId, SessionId};
 use cs_types::space::{Quaternion, SpaceError};
 
 // --------------------------------------------------------------- pose -----
@@ -631,26 +633,19 @@ impl AnimatedClip {
 
 // -------------------------------------------------------------- events ----
 
-/// The identity of one fired animation event: the animation-scoped
-/// realization of `EventId(session, tick, producer, sequence)` from
-/// `docs/contracts/IDENTITY-CONTENT.md`.
+/// The identity of one fired animation event: the shared contract `EventId`
+/// from `docs/contracts/IDENTITY-CONTENT.md`, re-exported under its
+/// animation-facing name.
 ///
-/// `session` is the session generation the playing object belongs to and
-/// `tick` the simulation tick the event fired at — both supplied by the
-/// caller, so a replayed or restarted session can never collide with the
-/// previous one's events. `producer` distinguishes the playing objects of a
-/// session and `sequence` orders this object's own events.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct AnimationEventId {
-    /// The session generation (`IDENTITY-CONTENT` session generations).
-    pub session: u64,
-    /// The simulation tick the event fired at.
-    pub tick: Tick,
-    /// The playing object's producer serial within the session.
-    pub producer: u32,
-    /// The event's sequence within this producer.
-    pub sequence: u32,
-}
+/// This is the shared [`EventId`] itself, not a second struct: its fields —
+/// session generation, simulation tick, producer serial and
+/// producer-relative sequence — are exactly the contract's
+/// `EventId(session, tick, producer, sequence)`, so event identity is defined
+/// once and an animation event can be compared, ordered and deduplicated as
+/// the shared type (F20-A follow-up 1, resolved by task #397). `session` is a
+/// nonzero [`SessionId`], supplied by the caller, so a replayed or restarted
+/// session can never collide with the previous one's events.
+pub type AnimationEventId = EventId;
 
 /// One event a marker crossing produced.
 #[derive(Clone, Debug, PartialEq)]
@@ -719,7 +714,7 @@ pub struct TickOutcome {
 #[derive(Clone, Debug)]
 pub struct AnimatedObject {
     clip: AnimatedClip,
-    session: u64,
+    session: SessionId,
     producer: u32,
     time: u64,
     sequence: u32,
@@ -731,11 +726,15 @@ pub struct AnimatedObject {
 impl AnimatedObject {
     /// Activates a clip for `session`, producing events under `producer`.
     ///
+    /// `session` is the shared nonzero [`SessionId`] the object belongs to;
+    /// every fired event's id carries it
+    /// (`docs/contracts/IDENTITY-CONTENT.md`).
+    ///
     /// Activation lands the head at clip time 0 and evaluates that state;
     /// markers at tick 0 fire on the first advance that includes 0 (any
     /// `advance_to`), never spontaneously at construction.
     #[must_use]
-    pub fn new(clip: AnimatedClip, session: u64, producer: u32) -> Self {
+    pub fn new(clip: AnimatedClip, session: SessionId, producer: u32) -> Self {
         Self {
             clip,
             session,
