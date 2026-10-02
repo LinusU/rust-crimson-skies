@@ -138,6 +138,17 @@ The 9 other synthetic `SourceBinding` literals
 gain `title_enclosure: None`; M16-A's own suite
 `accept_m16_a_` still passes unchanged.
 
+## Review follow-up (2026-10-02)
+
+The rebase onto `main` brought in M07-A's binding, which landed after this
+branch was cut. The production fix applies to it as well, so the review
+re-pinned `missions/bindings/M07.json` (its confirmed row is `92592 + 60`
+inside block 218, where the old record cited the whole `92088 + 610` block)
+and gave M07-A's synthetic `authored_binding` the same `title_enclosure: None`
+field. `accept_m07_a_the_committed_record_is_what_the_installation_derives`
+passes with the re-pinned record, and the M16-A-FU1 evidence report is
+regenerated on the reviewed tree per `docs/contracts/CLI-EVIDENCE.md`.
+
 ## What is not claimed
 
 - Only the *span* changed. The title-to-directory join is still an inference
