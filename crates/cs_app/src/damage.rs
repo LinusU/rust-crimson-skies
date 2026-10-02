@@ -727,8 +727,10 @@ pub enum DamageConsumerRefusal {
         /// The unknown actor.
         actor: ActorId,
     },
-    /// A weapon carrier is destroyed but the actor has no weapon state in the
-    /// firing gate, so the mount cannot be taken out of the simulation.
+    /// The actor has a weapon carrier in its damage graph but no weapon state
+    /// in the firing gate, so the carrier's mount cannot be named there at
+    /// all. Reported whether the carrier is destroyed or intact: the gap is
+    /// the missing gate registration, not the part's state.
     UnarmedActor {
         /// The actor with no registered weapons.
         actor: ActorId,
@@ -822,8 +824,10 @@ pub enum DamageConsumerEvent {
 /// first.
 ///
 /// A log entry is written only for a real change or a refusal, never for a
-/// consumer that already agreed with the state, so the log is how idempotence
-/// is observed: running the pass twice logs nothing the second time.
+/// consumer that already agreed with the state. Re-running over an unchanged
+/// state logs nothing more for a consumer that has converged; a refusal is
+/// reported again on every pass, because the gap it names is still unresolved
+/// and [`apply_damage_state`] holds no "already reported" set of its own.
 #[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
 pub struct DamageConsumerLog {
     events: Vec<DamageConsumerEvent>,
