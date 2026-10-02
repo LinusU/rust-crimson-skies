@@ -35,11 +35,22 @@
 //!   a material index finally resolves to a texture **name** — the material
 //!   record stores an index into the container's texture table, not a name.
 //!
-//! What this does **not** read: the node array (F11-A) and anything past the
-//! two sections above. Which archive a texture name is looked up in, and
-//! whether the lookup succeeds, is the dependency audit in
-//! `cs_content::mesh`, which is fed the two values above; neither reader picks
-//! an archive, folds case or falls back to another one.
+//! * [`nodes`] is the last section: the node array, which is **two passes over
+//!   two sections** — `node_array_size` × (a 208-byte info record followed by a
+//!   4-byte `node_index` word), then a variable-length data section holding one
+//!   kind-specific record per node in node order and running to the container's
+//!   end. `read_gamez_nodes` walks the data section sequentially and *checks*
+//!   each record's stored `data_ptr` against the offset it reached, so the
+//!   pointer is a cross-check rather than a second way to address the same
+//!   bytes. All nine GameZ archives of the original installation read and every
+//!   data section ends exactly at its container's end; the worksheet and the
+//!   measurements are in
+//!   `docs/findings/2026-10-02-gamez-node-array-layout.md`. Which archive a
+//!   texture name is looked up in, and whether the lookup succeeds, is the
+//!   dependency audit in `cs_content::mesh`, which is fed the values above;
+//!   no reader here picks an archive, folds case or falls back to another one.
+//!
+//! Nothing here reads past the node array: it runs to the end of the container.
 //!
 //! The lossless raw mesh IR ([`RawMesh`], [`RawPolygon`], [`RawCorner`]) is stage
 //! F10-A's published contract and its shape is unchanged. A stored polygon's
@@ -64,6 +75,7 @@
 pub mod census;
 pub mod materials;
 pub mod mesh;
+pub mod nodes;
 pub mod polygon;
 pub mod reader;
 pub mod strip;
@@ -81,6 +93,17 @@ pub use materials::{
 pub use mesh::{
     FaceIssue, FaceStatus, MeshTopology, MeshTriangle, PrimitiveKind, RawCorner, RawMesh,
     RawPolygon,
+};
+pub use nodes::{
+    CAMERA_DATA_BYTES, DISPLAY_DATA_BYTES, GameZNodeError, GameZNodes, LIGHT_DATA_BYTES,
+    LOD_DATA_BYTES, MATRIX_AGREEMENT_TOLERANCE, MeshIndexBounds, NODE_INDEX_BOT_MASK,
+    NODE_INDEX_BYTES, NODE_INDEX_INVALID, NODE_INDEX_TOP, NODE_INDEX_TOP_MASK, NODE_INFO_BYTES,
+    NODE_NAME_BYTES, NODE_SLOT_BYTES, NODE_TYPE_CAMERA, NODE_TYPE_DISPLAY, NODE_TYPE_EMPTY,
+    NODE_TYPE_LIGHT, NODE_TYPE_LOD, NODE_TYPE_OBJECT3D, NODE_TYPE_WINDOW, NODE_TYPE_WORLD,
+    NODES_ENTRYPOINT, NodeFinding, NodeKind, OBJECT3D_DATA_BYTES, OBJECT3D_FLAGS_IDENTITY,
+    OBJECT3D_FLAGS_TRANSFORMED, RawLodData, RawNode, RawNodeInfo, RawObject3dData, RawWorldData,
+    WINDOW_DATA_BYTES, WORLD_DATA_BYTES, WORLD_PARTITION_BYTES, WORLD_PARTITION_VALUE_BYTES,
+    read_gamez_nodes,
 };
 pub use polygon::{NgonIssue, triangulate_polygon};
 pub use reader::{
