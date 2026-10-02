@@ -673,9 +673,20 @@ pub enum SoundReadiness {
         /// Sample values one frame holds (one per declared channel).
         samples_per_frame: u64,
     },
-    /// The member's WAVE header declares a format tag nothing in this stage
-    /// reads. `tag` and `name` are the member's own, so a diagnostic can
-    /// say what the member is; the row is never silently passed through.
+    /// Nothing this stage can read stands behind the member's own `wFormatTag`,
+    /// so no plan was built for it. `tag` and `name` are the member's own, so a
+    /// diagnostic can say what the member is; the row is never silently passed
+    /// through.
+    ///
+    /// A member lands here in either of two ways, and the variant does not
+    /// pretend to tell them apart: a tag nothing in this stage decodes at all
+    /// (`cs_formats`' `SampleFormat::UnsupportedFormat`), and a block codec this
+    /// stage **does** decode whose `fmt ` payload carries no extension bytes, so
+    /// no `wSamplesPerBlock` can be read and no block layout can be planned
+    /// (`cs_formats` reports an absent extension for a tag it does not read as
+    /// `UnsupportedFormat` too). Both keep the member's tag; a consumer that
+    /// needs to tell an unknown tag from a codec with no geometry must re-read
+    /// the member's `fmt ` payload, not this row alone.
     UnsupportedFormat {
         /// The `wFormatTag` the member declares.
         tag: u16,
@@ -1409,7 +1420,8 @@ fn sound_verdict(context: &mut ParseContext, asset: &SoundAsset<'_>) -> MemberVe
         }
         SoundReadiness::UnsupportedFormat { tag, name } => MemberVerdict::Readable {
             reason: format!(
-                "the member declares format tag {tag:#06x} ({}), which this stage does not decode",
+                "the member declares format tag {tag:#06x} ({}), which this stage cannot decode \
+                 from the declaration it carries",
                 name.unwrap_or("unnamed")
             ),
         },
@@ -1472,11 +1484,12 @@ mod tests {
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use super::{SoundReadiness, ZbdContainer, ZbdError};
+    use super::{MemberVerdict, SoundReadiness, ZbdContainer, ZbdError, audit_container};
     use cs_formats::ParseContext;
     use cs_formats::zbd::{
         ContainerStatus, INDEX_ENTRY_BYTES, INDEX_NAME_BYTES, INDEX_UNEXPLAINED_BYTES,
         TRAILER_VERSION_ONE, WAVE_FORMAT_IMA_ADPCM, WAVE_FORMAT_MS_ADPCM, WAVE_FORMAT_PCM,
+        ZbdFamily,
     };
     use cs_types::asset_id::{AssetKey, WorldGroup};
 
@@ -2533,6 +2546,48 @@ mod tests {
                 i32::from(*expected),
                 "sample {index}"
             );
+        }
+    }
+
+    #[test]
+    fn accept_t524_an_audit_row_counts_a_block_coded_member_in_blocks_not_frames() {
+        // The corpus audit's detail string is the one place a human reads a
+        // decoded row, so it has to count a block-coded member in the unit its
+        // own declaration uses. Calling a 256-byte block a "frame" and putting
+        // a channel count beside it would describe a frame this format does
+        // not have: `wSamplesPerBlock` is samples **per block**, and the block
+        // count is what the payload holds.
+        let tree = installation();
+        let session = session(tree.0.as_path());
+        let audit = audit_container(&session, &key("install", "ZBD/soundsl.zbd"));
+        assert_eq!(audit.family, Some(ZbdFamily::Sound));
+        assert_eq!(audit.decoded_members(), 3);
+        assert_eq!(audit.uninterpreted(), 0, "nothing is left unread");
+        let details: Vec<&str> = audit
+            .members
+            .iter()
+            .map(|row| match &row.verdict {
+                MemberVerdict::Decoded { detail } => detail.as_str(),
+                other => panic!("{other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            details,
+            [
+                // The uncompressed member keeps the wording it always had.
+                "pcm tag 0x0001, 22050 Hz, 16 bits, 1 channel(s), 8 frames",
+                // The IMA member: two blocks of 505 samples each, at the rate
+                // and tag its own `fmt ` declares.
+                "ima_adpcm tag 0x0011, 11025 Hz, 4 bits, 505 sample(s) per block, 2 block(s)",
+                // And the Microsoft one, whose table and block size differ.
+                "ms_adpcm tag 0x0002, 22050 Hz, 4 bits, 500 sample(s) per block, 2 block(s)",
+            ]
+        );
+        // No block-coded row says "frames" or "channel(s)", which is what the
+        // wording above is for.
+        for detail in &details[1..] {
+            assert!(!detail.contains("frames"), "{detail}");
+            assert!(!detail.contains("channel(s)"), "{detail}");
         }
     }
 
