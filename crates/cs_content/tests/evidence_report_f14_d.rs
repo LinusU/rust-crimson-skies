@@ -41,7 +41,7 @@
 //! rejects a report whose `unknowns` hold unresolved *task* issues, so the
 //! product-incompleteness state is moved, never deleted (the 2026-09-28
 //! owner directive, and the same split `M01-A` documents): it lives in the
-//! baseline report artifact this report hashes (`unrecognized_program_dirs`
+//! baseline report artifact this report hashes (`classified_reader_dirs`
 //! and `collections`), in `review.method`, in `docs/findings/` and in the
 //! follow-up tasks #388 and #389, and it keeps `is_retail_ready` false.
 //! A failing run produces a failing report, which the validator rejects.
@@ -156,18 +156,29 @@ fn evidence_report_f14_d_writes_the_acceptance_report() {
         "the baseline's installation fingerprint is production discovery's"
     );
     let layout = campaign_layout(&game_dir).expect("the shared campaign walk reads the layout");
+    let scenarios = baseline
+        .classified_reader_dirs
+        .iter()
+        .filter(|dir| dir.role.is_launchable())
+        .count();
     assert_eq!(
         baseline.roots.len(),
-        layout.len(),
-        "the denominator declares exactly the campaign missions the shared walk finds"
+        layout.len() + scenarios,
+        "the denominator declares exactly the campaign missions the shared walk finds plus \
+         the scenario directories F14-D.1 classified"
+    );
+    assert!(
+        baseline.unrecognized_program_dirs.is_empty(),
+        "F14-D.1 classifies every reader directory of the owner's installation; unclassified: {:?}",
+        baseline.unrecognized_program_dirs
     );
     let inventory_path = workspace_root().join("missions/bindings/campaign-inventory.tsv");
     let inventory = CampaignInventory::load(&inventory_path)
         .unwrap_or_else(|error| panic!("{} reads: {error}", inventory_path.display()));
     assert_eq!(
-        baseline.roots.len(),
+        layout.len(),
         inventory.len(),
-        "the retail denominator equals the frozen F50 campaign denominator"
+        "the campaign part of the denominator equals the frozen F50 campaign denominator"
     );
     let report = baseline_report_json(&baseline);
     fs::write(&report_path, &report)
@@ -177,8 +188,9 @@ fn evidence_report_f14_d_writes_the_acceptance_report() {
         "\"retail\":true",
         "\"synthetic_launchable\":0",
         &format!("\"install_sha256\":\"{install_sha256}\""),
-        &format!("\"launchable\":{}", inventory.len()),
+        &format!("\"launchable\":{}", baseline.roots.len()),
         "\"unrecognized_program_dirs\":[",
+        "\"classified_reader_dirs\":[",
     ] {
         assert!(
             report.contains(needle),
@@ -210,7 +222,7 @@ fn evidence_report_f14_d_writes_the_acceptance_report() {
          $CS_GAME_DIR, the consumer trace is the production baseline builder's report, and \
          tools/validate_evidence.py --require-pass checks it. Product-completeness limits this \
          report does not claim away: they are quoted here, hashed inside the baseline-report \
-         artifact's unrecognized_program_dirs and collections, written up in docs/findings/ and \
+         artifact's classified_reader_dirs and collections, written up in docs/findings/ and \
          filed as the follow-up tasks #388 and #389."
             .to_owned()
             + &UNKNOWN_LIMITATIONS
@@ -219,10 +231,13 @@ fn evidence_report_f14_d_writes_the_acceptance_report() {
                 .collect::<String>()
     });
 
+    // F14-D.1 reuses this harness (`CS_EVIDENCE_TASK_ID=F14-D.1`): its acceptance
+    // suite is the `accept_f14_d_` prefix too.
+    let task_id = std::env::var("CS_EVIDENCE_TASK_ID").unwrap_or_else(|_| "F14-D".to_owned());
     let report = format!(
         "{{\n\
          \x20\"schema_version\": 1,\n\
-         \x20\"task_id\": \"F14-D\",\n\
+         \x20\"task_id\": {},\n\
          \x20\"candidate_tree\": {},\n\
          \x20\"engine\": {},\n\
          \x20\"created_at\": {},\n\
@@ -239,6 +254,7 @@ fn evidence_report_f14_d_writes_the_acceptance_report() {
          \x20\"review\": {{\"identity\": {}, \"method\": {}}},\n\
          \x20\"claim\": \"implemented\"\n\
          }}\n",
+        jstr(&task_id),
         jstr(&candidate_tree),
         engine_json(&engine),
         jstr(&iso_utc_now()),
@@ -281,7 +297,7 @@ fn evidence_report_f14_d_writes_the_acceptance_report() {
     let written = fs::read_to_string(&out).expect("the report reads back");
     for needle in [
         "\"schema_version\": 1",
-        "\"task_id\": \"F14-D\"",
+        &format!("\"task_id\": {}", jstr(&task_id)),
         "\"claim\": \"implemented\"",
         "\"install_sha256\"",
         "\"assertions\": [",
@@ -306,16 +322,20 @@ fn evidence_report_f14_d_writes_the_acceptance_report() {
 /// affected content and the task that resolves it (AGENTS owner directive,
 /// 2026-09-28: a limitation must survive into machine-readable evidence).
 const UNKNOWN_LIMITATIONS: &[&str] = &[
-    "Reader-archive directories no campaign mission claims (the top-level ZBD reader, the \
-     world-group readers and the IA*/MP* slots) are recorded in baseline-report.json as \
-     unrecognized_program_dirs with their digests. Affected content: instant-action and \
-     multiplayer scenarios, world reader archives. Resolving tasks: F49 (instant-action \
-     presets), F56 (original multiplayer scenarios), F18/F06 (world readers); until one of \
-     them classifies them, the denominator holds campaign missions only and does not claim to \
-     cover them.",
+    "F14-D.1 classified every reader-archive directory of the owner's installation from the \
+     archive's own member index (baseline-report.json, classified_reader_dirs): 8 IA1 \
+     instant-action and 21 MP1-MP3 multiplayer scenario directories are declared launchable \
+     rows of the denominator; the 8 world-group readers and the top-level reader are recorded \
+     as not launchable. Still unmeasured: how many player-selectable presets one IA1 \
+     directory holds (its ia.zrd record is not decoded), and which of the four multiplayer \
+     modes a slot is launched under (F56-A records the slot-to-mode binding as unknown), so \
+     the denominator unit is the scenario directory and may undercount launch \
+     configurations. Affected content: instant-action presets, multiplayer slot/mode pairs. \
+     Resolving tasks: F49 (instant-action presets), F56-B (mode rules and slot binding); until \
+     they land no claim may read the denominator as every launch configuration.",
     "Only three collections are populated: install files, campaign missions and mission \
      programs. Affected content: worlds, airframes, loadouts, factions, weapons, sounds, \
-     dialogue, media, stunts, scrapbook items, IA scenarios and multiplayer rules, which have \
+     dialogue, media, stunts, scrapbook items, instant-action presets and multiplayer rules, which have \
      no source-derived row yet. Resolving tasks: the F09-F13, F18-F21 and F42-F49/F56 stages \
      that read those formats; the report's collections object states what exists today.",
     "Mission rows carry no display name: the localized title is bound per work order by the \
