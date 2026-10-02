@@ -97,6 +97,30 @@
 //! mission-only type stays mission-only and an undiscovered roster stays
 //! unknown (F11 non-negotiable behavior 3).
 //!
+//! # Roster discovery (F11-D2)
+//!
+//! [`discover_airframe_roster`] is how the declared roster of
+//! [`AirframeRoster::audit`] gets its rows at all. The audit's input is
+//! declared; this is the one production path that *derives* it, and it derives
+//! it from the loading-script container: a caller states, as caller data, one
+//! measured [`AirframeDeclaration`] per idiom that declares airframes — which
+//! script declares them, which command creates a root, which variable names it,
+//! which variable holds its source model, and which container the declaring
+//! script writes — and the walk over [`cs_formats::interp::DecodedInterp`]
+//! answers with one [`RosterEntry`] per declared airframe.
+//!
+//! Three things stay out of it, on purpose. A **model name is not an
+//! airframe**: a row exists only where the container's own script creates a
+//! named root, never because a mesh, a model file or a mission directory
+//! mentions a plane. A **root reference is checked, never positional**: the
+//! root id is derived from the container the script writes plus the root's own
+//! authored name, and [`SceneRootRef::new`] refuses a reference that does not
+//! live directly under it. And **selectability is not discovered here**: where a
+//! mode lets a player choose an airframe is unmeasured, so every row keeps the
+//! explicit [`RosterEntry::undiscovered_availability`] unknown and the
+//! discovery records its own [`RosterDiscoveryUnknown`]s so an empty or partial
+//! roster can never read as a complete one (F11 non-negotiable behavior 3).
+//!
 //! # What is measured and what is designed
 //!
 //! The input record mirrors the pinned mech3ax v0.6.0 node layout
@@ -113,14 +137,17 @@
 //! flag-bit semantics, roster selectability, LOD `level` meaning — are in
 //! `docs/findings/2026-09-29-f11-a-node-hierarchy-bindings.md`.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
 
 use cs_formats::gamez::{GameZNodes, NodeKind as StoredNodeKind, RawLodData, RawNode};
+use cs_formats::interp::{DecodedInterp, InterpLine};
 use cs_types::content::{ContentId, ContentIdError, ContentKind, Known, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
+use cs_types::install::RelativePath;
 use cs_types::space::{Meters, SpaceError};
 
+use crate::catalog::baseline::install_file_key;
 use crate::coordinates::SourceAdapter;
 
 /// The zone id CS node records use for "no zone", per the pinned reference
@@ -3580,4 +3607,1095 @@ pub fn scene_graph_from_gamez(
 ) -> Result<SceneGraph, GameZSceneError> {
     let nodes = parsed_nodes_from_gamez(records, meshes)?;
     Ok(SceneGraph::build(container, &nodes, adapter, bindings)?)
+}
+
+// ------------------------------------------------- roster discovery ---
+
+/// The claim id a roster-discovery record refuses roster availability under.
+///
+/// No discovery in this module can state that a player may choose an airframe
+/// anywhere: where a mode's selection list lives in the original data is
+/// unmeasured, and a script that creates a player geometry root is not a mode's
+/// selection list (F11 non-negotiable behavior 3).
+pub const AVAILABILITY_DISCOVERY_CLAIM: &str = "f11d.roster-availability-undiscovered";
+
+/// The claim id the empty forced-assignment set is recorded under.
+///
+/// Nothing in this module reads a mission program, so "no mission forces an
+/// airframe" is exactly as unknown as "a mission forces one airframe" — the set
+/// is empty because the discovery is *not done*, and the record says so.
+pub const FORCED_ASSIGNMENT_DISCOVERY_CLAIM: &str = "f11d.forced-assignment-undiscovered";
+
+/// The deepest include chain [`discover_airframe_roster`] will follow.
+///
+/// Includes are followed **at the point of the include line**, sharing one
+/// variable table, because the corpus re-includes the same script once per
+/// declared airframe and expects the current variable values each time. A chain
+/// longer than this, or one that returns to a script already on the chain, is
+/// an [`RosterDiscoveryIssue`] rather than an unbounded walk.
+pub const MAX_ROSTER_INCLUDE_DEPTH: usize = 16;
+
+/// One gameplay role a declared airframe root is required to bind, with the
+/// evidence that declares it.
+///
+/// Roles are **declared, never inferred**: the audit checks that each declared
+/// role really is bound to a node and says nothing about a role nobody claimed,
+/// so this record carries its own [`Provenance`] and the name-path rules that
+/// would supply the mapping belong to F11-C/F29, not to a roster discovery.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RosterRoleRule {
+    /// The role the airframe must bind.
+    pub role: PartRole,
+    /// Where the requirement comes from.
+    pub provenance: Provenance,
+}
+
+/// One measured line shape that declares airframes in a loading script.
+///
+/// The table is **input**, exactly like [`BindingMap`] and F07-D's
+/// [`OpcodeClassTable`](https://docs.rs) analogue: this module ships none, so
+/// "which lines declare an airframe, and which roles each declared airframe
+/// must bind" is a claim somebody made against fingerprinted bytes and carries
+/// its own [`Provenance`] — never a rule invented here. That is what keeps the
+/// discovery falsifiable: a wrong idiom produces no rows, and the retail run's
+/// row count is pinned by a test.
+///
+/// Every spelling in the declaration is compared **case-insensitively**: the
+/// original scripts are not case-consistent about their own identifiers
+/// (`set ZBD_DIR zbd` and `%ZBD_DIR%`), and a matching rule that differed from
+/// a value rule is the safer of the two.
+///
+/// The declared shape, as the measured corpus spells it:
+///
+/// ```text
+/// set <container_variable> <relative container spelling>
+/// set <model_variable>    <source model spelling>
+/// set <root_variable>     <root name>
+/// <create_command> %<root_variable>%
+/// <write_command> %<container_variable>%
+/// ```
+///
+/// The create line must name the root variable **literally** as `%<name>%`, not
+/// as a value: the same script creates unrelated objects with
+/// `<create_command> %playerName%` and with bare names, and only the literal
+/// reference is a declaration of an airframe.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AirframeDeclaration {
+    /// The script that declares airframes, matched case-insensitively against
+    /// the container's own script names.
+    pub script: String,
+    /// The command that binds a variable, e.g. `set`.
+    pub bind_command: String,
+    /// The command that includes another script of the same container, e.g.
+    /// `source`.
+    pub include_command: String,
+    /// The command that writes the container the declared roots live in.
+    pub write_command: String,
+    /// The command that creates a root, e.g. `NewObject3D`.
+    pub create_command: String,
+    /// The variable whose value is the container the declaring script writes.
+    pub container_variable: String,
+    /// The variable whose value is a declared airframe's authored root name.
+    pub root_variable: String,
+    /// The variable whose value is a declared airframe's source model spelling.
+    pub model_variable: String,
+    /// The roles every airframe this declaration discovers must bind.
+    pub required_roles: Vec<RosterRoleRule>,
+    /// Where the idiom itself was measured.
+    pub provenance: Provenance,
+}
+
+impl AirframeDeclaration {
+    /// Whether the declaration names the container script `name`, compared
+    /// case-insensitively.
+    #[must_use]
+    pub fn declares(&self, name: &str) -> bool {
+        self.script.eq_ignore_ascii_case(name)
+    }
+}
+
+/// The caller-supplied roster idioms, collected as one set.
+///
+/// Two declarations naming the same script would make "which idiom declared
+/// this airframe" ambiguous, so [`RosterDeclarations::new`] refuses the
+/// duplicate instead of letting order decide.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RosterDeclarations {
+    declarations: Vec<AirframeDeclaration>,
+}
+
+impl RosterDeclarations {
+    /// Collects the declarations, refusing two that name one script.
+    ///
+    /// # Errors
+    ///
+    /// [`RosterDiscoveryError::DuplicateDeclaration`] naming the script both
+    /// declarations claim.
+    pub fn new(declarations: Vec<AirframeDeclaration>) -> Result<Self, RosterDiscoveryError> {
+        let mut seen: BTreeSet<String> = BTreeSet::new();
+        for declaration in &declarations {
+            let folded = declaration.script.to_ascii_lowercase();
+            if !seen.insert(folded.clone()) {
+                return Err(RosterDiscoveryError::DuplicateDeclaration { script: folded });
+            }
+        }
+        Ok(Self { declarations })
+    }
+
+    /// The declarations, in supplied order.
+    #[must_use]
+    pub fn declarations(&self) -> &[AirframeDeclaration] {
+        &self.declarations
+    }
+
+    /// Whether no idiom has been declared, in which case a discovery finds
+    /// nothing by construction.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.declarations.is_empty()
+    }
+}
+
+/// One airframe the loading-script container declared.
+///
+/// The row is exactly what the script stated: the `airframe/<key>` catalog
+/// element ([`Self::airframe`]), the checked reference to the root the script
+/// created ([`Self::root`]), the source model spelling the script loaded
+/// ([`Self::model_spelling`], provenance, never identity — the airframe is named
+/// by the root the original bound, not by the model it came from) and the
+/// container byte offset of the line that declared it ([`Self::declared_at`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct DiscoveredAirframe {
+    airframe: ContentId,
+    root: SceneRootRef,
+    model_spelling: String,
+    declared_at: u64,
+    created_at: u64,
+    provenance: Provenance,
+}
+
+impl DiscoveredAirframe {
+    /// The `airframe/<key>` element this row audits.
+    #[must_use]
+    pub fn airframe(&self) -> &ContentId {
+        &self.airframe
+    }
+
+    /// The checked reference to the root the declaring script created.
+    #[must_use]
+    pub fn root(&self) -> &SceneRootRef {
+        &self.root
+    }
+
+    /// The container the root lives in.
+    #[must_use]
+    pub fn container(&self) -> &ContentId {
+        self.root.container()
+    }
+
+    /// The root's authored name inside that container.
+    #[must_use]
+    pub fn root_name(&self) -> &str {
+        self.root.root().key()
+    }
+
+    /// The source model spelling the declaring script loaded, as stored. This
+    /// is where the airframe came from, never what it is called: a model name is
+    /// not a roster row (F11 non-negotiable behavior 3).
+    #[must_use]
+    pub fn model_spelling(&self) -> &str {
+        &self.model_spelling
+    }
+
+    /// Byte offset, inside the loading-script container, of the line that
+    /// **named** this root.
+    ///
+    /// Two airframes created by one line of an included script share
+    /// [`Self::created_at`] and differ here, so the offset that distinguishes
+    /// two rows of the same shape is the one this reports.
+    #[must_use]
+    pub const fn declared_at(&self) -> u64 {
+        self.declared_at
+    }
+
+    /// Byte offset, inside the loading-script container, of the line that
+    /// **created** this root.
+    #[must_use]
+    pub const fn created_at(&self) -> u64 {
+        self.created_at
+    }
+
+    /// Where the idiom that declared this airframe was measured.
+    #[must_use]
+    pub fn provenance(&self) -> &Provenance {
+        &self.provenance
+    }
+}
+
+/// A line the discovery could not turn into a roster row, with the two facts
+/// that say why.
+///
+/// Every variant is a **finding about the corpus**, not a silent skip: an
+/// unreadable include, a container that is never written, a create line with no
+/// declared root name and a root name the id grammar refuses all appear here
+/// with their script and byte offset, so a caller can tell "this container
+/// declares nothing" from "this container declares something I could not read".
+#[derive(Clone, Debug, PartialEq)]
+pub enum RosterDiscoveryIssue {
+    /// The declaring script is not in the container.
+    DeclaringScriptAbsent {
+        /// The script the declaration names.
+        script: String,
+    },
+    /// Two scripts of the container share the declared name, so a reference to
+    /// it is ambiguous and is never resolved by position.
+    DeclaringScriptAmbiguous {
+        /// The script name.
+        script: String,
+        /// How many scripts carry it.
+        found: usize,
+    },
+    /// The container the declared roots live in could not be resolved: the
+    /// write command names a variable nothing binds.
+    ContainerUnresolved {
+        /// The declaring script.
+        script: String,
+        /// Byte offset of the write line.
+        offset: u64,
+        /// The variable the write line referenced.
+        variable: String,
+    },
+    /// The declaring script never writes a container, so no discovered root has
+    /// a container to be referenced from.
+    ContainerUnwritten {
+        /// The declaring script.
+        script: String,
+        /// The variable whose value would have named the container.
+        variable: String,
+    },
+    /// A create line arrived with nothing binding the root variable, so the
+    /// line creates a root this stage cannot name.
+    RootUndeclared {
+        /// The declaring script.
+        script: String,
+        /// Byte offset of the create line.
+        offset: u64,
+        /// The variable the declaration expects to hold the root name.
+        variable: String,
+    },
+    /// A root name was declared with no source model spelling beside it.
+    ModelUndeclared {
+        /// The declared root name.
+        root: String,
+        /// Byte offset of the create line.
+        offset: u64,
+        /// The variable the declaration expects to hold the model spelling.
+        variable: String,
+    },
+    /// An include names a script that is not in the container, or spells its
+    /// target with a variable nothing binds.
+    IncludeUnresolved {
+        /// The including script.
+        script: String,
+        /// Byte offset of the include line.
+        offset: u64,
+        /// The include target, as stored.
+        target: String,
+    },
+    /// An include returns to a script already on the chain, so following it
+    /// would not terminate.
+    IncludeCycle {
+        /// The including script.
+        script: String,
+        /// The include target, as stored.
+        target: String,
+    },
+    /// The declared root name cannot form an `airframe` key. The name crosses
+    /// over verbatim into the reason and is never transliterated.
+    AirframeIdRefused {
+        /// The declared root name, as stored.
+        root: String,
+        /// Byte offset of the create line.
+        offset: u64,
+        /// The id rejection.
+        source: ContentIdError,
+    },
+    /// The container plus the declared root name cannot form a
+    /// [`SceneRootRef`].
+    RootRefRefused {
+        /// The declared root name, as stored.
+        root: String,
+        /// Byte offset of the create line.
+        offset: u64,
+        /// The refusal, verbatim.
+        error: SceneError,
+    },
+    /// The declaring script declares no airframe at all.
+    NoAirframesDeclared {
+        /// The declaring script.
+        script: String,
+    },
+}
+
+impl fmt::Display for RosterDiscoveryIssue {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DeclaringScriptAbsent { script } => {
+                write!(f, "the container holds no script named {script:?}")
+            }
+            Self::DeclaringScriptAmbiguous { script, found } => write!(
+                f,
+                "{found} scripts of the container are named {script:?}, so a reference to one is \
+                 ambiguous"
+            ),
+            Self::ContainerUnresolved {
+                script,
+                offset,
+                variable,
+            } => write!(
+                f,
+                "{script}@{offset} writes a container through {variable:?}, which nothing binds"
+            ),
+            Self::ContainerUnwritten { script, variable } => write!(
+                f,
+                "{script} never writes a container, so {variable:?} names no container for its roots"
+            ),
+            Self::RootUndeclared {
+                script,
+                offset,
+                variable,
+            } => write!(
+                f,
+                "{script}@{offset} creates a root while {variable:?} is unbound"
+            ),
+            Self::ModelUndeclared {
+                root,
+                offset,
+                variable,
+            } => write!(
+                f,
+                "root {root:?}@{offset} is declared with no source model: {variable:?} is unbound"
+            ),
+            Self::IncludeUnresolved {
+                script,
+                offset,
+                target,
+            } => write!(
+                f,
+                "{script}@{offset} includes {target:?}, which this container does not hold"
+            ),
+            Self::IncludeCycle { script, target } => write!(
+                f,
+                "{script} includes {target:?}, which is already on the include chain"
+            ),
+            Self::AirframeIdRefused {
+                root,
+                offset,
+                source,
+            } => write!(
+                f,
+                "root {root:?}@{offset} cannot form an airframe id: {source}"
+            ),
+            Self::RootRefRefused {
+                root,
+                offset,
+                error,
+            } => {
+                write!(
+                    f,
+                    "root {root:?}@{offset} is not a usable scene root: {error}"
+                )
+            }
+            Self::NoAirframesDeclared { script } => {
+                write!(f, "{script} declares no airframe")
+            }
+        }
+    }
+}
+
+/// Something a roster discovery explicitly does not know.
+///
+/// An empty set of unknowns is not a pass either: [`Self::is_complete`] on the
+/// discovery is false while any unknown stands, so a roster that cannot say
+/// which mode selects which airframe never reads as the real roster.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RosterDiscoveryUnknown {
+    /// No mode's selection list has been located, so no row can carry
+    /// [`RosterAvailability::Selectable`].
+    AvailabilityUndiscovered {
+        /// The airframes whose availability is unknown.
+        airframes: Vec<ContentId>,
+        /// The claim the unknown is recorded under.
+        claim_id: ClaimId,
+        /// Why it is unknown.
+        reason: String,
+    },
+    /// No mission program has been read, so the forced-assignment set is empty
+    /// because the discovery is not done.
+    ForcedAssignmentsUndiscovered {
+        /// The claim the unknown is recorded under.
+        claim_id: ClaimId,
+        /// Why it is unknown.
+        reason: String,
+    },
+}
+
+impl fmt::Display for RosterDiscoveryUnknown {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AvailabilityUndiscovered {
+                airframes,
+                claim_id,
+                reason,
+            } => write!(
+                f,
+                "roster availability is undiscovered for {} airframe(s) under {claim_id}: {reason}",
+                airframes.len()
+            ),
+            Self::ForcedAssignmentsUndiscovered { claim_id, reason } => {
+                write!(
+                    f,
+                    "forced mission assignments are undiscovered under {claim_id}: {reason}"
+                )
+            }
+        }
+    }
+}
+
+/// What a roster discovery found: the roster to audit, the rows that produced
+/// it, the lines it could not read and the facts it explicitly does not know.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AirframeRosterDiscovery {
+    roster: AirframeRoster,
+    discovered: Vec<DiscoveredAirframe>,
+    issues: Vec<RosterDiscoveryIssue>,
+    unknowns: Vec<RosterDiscoveryUnknown>,
+    followed: Vec<String>,
+}
+
+impl AirframeRosterDiscovery {
+    /// The roster [`AirframeRoster::audit`] takes.
+    #[must_use]
+    pub fn roster(&self) -> &AirframeRoster {
+        &self.roster
+    }
+
+    /// One row per discovered airframe, in roster order.
+    #[must_use]
+    pub fn discovered(&self) -> &[DiscoveredAirframe] {
+        &self.discovered
+    }
+
+    /// The row for one airframe.
+    #[must_use]
+    pub fn row(&self, airframe: &ContentId) -> Option<&DiscoveredAirframe> {
+        self.discovered.iter().find(|row| &row.airframe == airframe)
+    }
+
+    /// How many airframes were discovered.
+    #[must_use]
+    pub fn airframe_count(&self) -> usize {
+        self.discovered.len()
+    }
+
+    /// The lines the discovery could not turn into rows.
+    #[must_use]
+    pub fn issues(&self) -> &[RosterDiscoveryIssue] {
+        &self.issues
+    }
+
+    /// The facts the discovery explicitly does not know.
+    #[must_use]
+    pub fn unknowns(&self) -> &[RosterDiscoveryUnknown] {
+        &self.unknowns
+    }
+
+    /// The scripts the walk actually read, in first-visit order.
+    #[must_use]
+    pub fn followed_scripts(&self) -> &[String] {
+        &self.followed
+    }
+
+    /// Whether the discovery is complete: at least one airframe, no unreadable
+    /// line and nothing unknown.
+    ///
+    /// A retail discovery is deliberately **not** complete — roster
+    /// availability and forced mission assignments are undiscovered — and this
+    /// is where that says so instead of leaving an audit of eleven rows to look
+    /// finished.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        !self.discovered.is_empty() && self.issues.is_empty() && self.unknowns.is_empty()
+    }
+}
+
+/// Why a roster discovery could not run at all.
+///
+/// A line it cannot read is an [`RosterDiscoveryIssue`] and a discovery that
+/// cannot be stated is an error: a contradictory declaration table, or a roster
+/// whose rows contradict each other.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RosterDiscoveryError {
+    /// Two declarations name one script, so which idiom declared a root would
+    /// be decided by order.
+    DuplicateDeclaration {
+        /// The script both declarations claim.
+        script: String,
+    },
+    /// The discovered rows contradict each other.
+    Roster(RosterError),
+}
+
+impl fmt::Display for RosterDiscoveryError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DuplicateDeclaration { script } => {
+                write!(f, "two roster declarations name the script {script:?}")
+            }
+            Self::Roster(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for RosterDiscoveryError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Roster(error) => Some(error),
+            Self::DuplicateDeclaration { .. } => None,
+        }
+    }
+}
+
+impl From<RosterError> for RosterDiscoveryError {
+    fn from(error: RosterError) -> Self {
+        Self::Roster(error)
+    }
+}
+
+/// Derives the real [`AirframeRoster`] from a decoded loading-script container.
+///
+/// The walk is driven entirely by `declarations`: for each one it reads the
+/// declaring script, follows that script's includes **at the point of each
+/// include line** against one shared variable table (the corpus re-includes the
+/// same surgery script once per declared airframe and expects the current
+/// values each time), reads the `set` lines that bind variables, and takes a
+/// create line whose single argument is literally `%<root_variable>%` as the
+/// declaration of one airframe. The container the roots live in comes from the
+/// script's own write line, resolved through the same
+/// [`install_file_key`] normalizer every other installation path uses, so a
+/// relative spelling becomes a catalog key by the one production rule rather
+/// than by a path join.
+///
+/// `%NAME%` references are interpolated from the variable table, recursively,
+/// and a reference nothing binds is a finding rather than an empty string: the
+/// corpus's `%CAMPAIGN_DIR%` is bound by the host process and not by the
+/// container, and this stage says so instead of inventing it.
+///
+/// The availability of every row stays the explicit
+/// [`RosterEntry::undiscovered_availability`] unknown and the forced-assignment
+/// set stays empty with a recorded [`RosterDiscoveryUnknown`] — nothing here
+/// reads a mode's selection list or a mission program, and a model name, a
+/// model file or a mission directory never becomes a roster row (F11
+/// non-negotiable behavior 3).
+///
+/// # Errors
+///
+/// [`RosterDiscoveryError::Roster`] when the discovered rows contradict each
+/// other, which [`AirframeRoster::new`] refuses.
+pub fn discover_airframe_roster(
+    container: &DecodedInterp<'_>,
+    declarations: &RosterDeclarations,
+) -> Result<AirframeRosterDiscovery, RosterDiscoveryError> {
+    let mut walk = RosterWalk::new(container, declarations);
+    for index in 0..declarations.declarations().len() {
+        walk.run_declaration(index);
+    }
+    walk.finish()
+}
+
+/// One declared root, before the container it lands in is known.
+struct PendingRoot {
+    declaration: usize,
+    name: String,
+    model: String,
+    declared_at: u64,
+    created_at: u64,
+}
+
+/// One variable binding: the value as written and the line that wrote it.
+#[derive(Clone)]
+struct ScriptBinding {
+    value: String,
+    offset: u64,
+}
+
+/// The state the walk carries across scripts.
+struct RosterWalk<'a> {
+    container: &'a DecodedInterp<'a>,
+    declarations: &'a RosterDeclarations,
+    /// Folded script name to the container's script indexes carrying it.
+    scripts_by_name: BTreeMap<String, Vec<usize>>,
+    /// One shared variable table, bound by the `set` lines of every script the
+    /// walk has read.
+    variables: BTreeMap<String, ScriptBinding>,
+    /// The container each declaration's roots land in, once its write line
+    /// resolved.
+    containers: BTreeMap<usize, ContentId>,
+    pending: Vec<PendingRoot>,
+    entries: Vec<RosterEntry>,
+    discovered: Vec<DiscoveredAirframe>,
+    issues: Vec<RosterDiscoveryIssue>,
+    followed: Vec<String>,
+    visited: BTreeSet<String>,
+}
+
+impl<'a> RosterWalk<'a> {
+    fn new(container: &'a DecodedInterp<'a>, declarations: &'a RosterDeclarations) -> Self {
+        let mut scripts_by_name: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+        for (index, script) in container.scripts().iter().enumerate() {
+            // A script name is stored bytes, so it is folded as bytes: two
+            // names that differ only in case are one name for matching, and the
+            // ambiguity two scripts of one name create is reported rather than
+            // resolved.
+            let folded = fold_bytes(script.name()).unwrap_or_default();
+            scripts_by_name.entry(folded).or_default().push(index);
+        }
+        Self {
+            container,
+            declarations,
+            scripts_by_name,
+            variables: BTreeMap::new(),
+            containers: BTreeMap::new(),
+            pending: Vec::new(),
+            entries: Vec::new(),
+            discovered: Vec::new(),
+            issues: Vec::new(),
+            followed: Vec::new(),
+            visited: BTreeSet::new(),
+        }
+    }
+
+    /// Runs one declaration from its declaring script.
+    fn run_declaration(&mut self, declaration: usize) {
+        let rule = &self.declarations.declarations()[declaration];
+        let folded = rule.script.to_ascii_lowercase();
+        match self.scripts_by_name.get(&folded) {
+            None => {
+                self.issues
+                    .push(RosterDiscoveryIssue::DeclaringScriptAbsent {
+                        script: rule.script.clone(),
+                    });
+            }
+            Some(indexes) if indexes.len() > 1 => {
+                self.issues
+                    .push(RosterDiscoveryIssue::DeclaringScriptAmbiguous {
+                        script: rule.script.clone(),
+                        found: indexes.len(),
+                    });
+            }
+            Some(indexes) => {
+                let start = indexes[0];
+                let mut chain = vec![start];
+                self.read_script(start, declaration, 0, &mut chain);
+                if !self.containers.contains_key(&declaration) {
+                    self.issues.push(RosterDiscoveryIssue::ContainerUnwritten {
+                        script: rule.script.clone(),
+                        variable: rule.container_variable.clone(),
+                    });
+                }
+            }
+        }
+    }
+
+    /// Reads one script's lines, following its includes in place.
+    fn read_script(
+        &mut self,
+        index: usize,
+        declaration: usize,
+        depth: usize,
+        chain: &mut Vec<usize>,
+    ) {
+        if depth > MAX_ROSTER_INCLUDE_DEPTH {
+            return;
+        }
+        let script = &self.container.scripts()[index];
+        if self
+            .visited
+            .insert(fold_bytes(script.name()).unwrap_or_default())
+        {
+            self.followed
+                .push(String::from_utf8_lossy(script.name()).into_owned());
+        }
+        let rule = &self.declarations.declarations()[declaration];
+        for line in script.lines() {
+            let Some(head) = line.head() else { continue };
+            let Some(head) = fold_bytes(head.bytes()) else {
+                continue;
+            };
+            if head == fold_str(&rule.bind_command) {
+                self.bind_variable(line);
+            } else if head == fold_str(&rule.include_command) {
+                self.follow_include(line, declaration, depth, chain);
+            } else if head == fold_str(&rule.write_command) {
+                self.bind_container(line, declaration);
+            } else if head == fold_str(&rule.create_command) {
+                self.declare_root(line, declaration);
+            }
+        }
+    }
+
+    /// Reads one `set NAME VALUE…` line into the shared variable table.
+    ///
+    /// The value is stored **as written** and interpolated at use, so a
+    /// reference resolved from a variable bound later still reads the way the
+    /// script would have had it.
+    fn bind_variable(&mut self, line: &InterpLine<'_>) {
+        let tokens = line.tokens();
+        if tokens.len() < 3 {
+            return;
+        }
+        let (Some(name), Some(value)) = (fold_bytes(tokens[1].bytes()), join_tokens(&tokens[2..]))
+        else {
+            return;
+        };
+        self.variables.insert(
+            name,
+            ScriptBinding {
+                value,
+                offset: line.offset(),
+            },
+        );
+    }
+
+    /// Follows one `source TARGET` line into the same container.
+    fn follow_include(
+        &mut self,
+        line: &InterpLine<'_>,
+        declaration: usize,
+        depth: usize,
+        chain: &mut Vec<usize>,
+    ) {
+        let tokens = line.tokens();
+        let Some(target) = tokens.get(1).and_then(|token| fold_bytes(token.bytes())) else {
+            return;
+        };
+        let Some(spelling) = self.interpolate(&target, &mut Vec::new()) else {
+            self.issues.push(RosterDiscoveryIssue::IncludeUnresolved {
+                script: self.script_name(chain),
+                offset: line.offset(),
+                target,
+            });
+            return;
+        };
+        let folded = spelling.to_ascii_lowercase();
+        let Some(indexes) = self.scripts_by_name.get(&folded) else {
+            self.issues.push(RosterDiscoveryIssue::IncludeUnresolved {
+                script: self.script_name(chain),
+                offset: line.offset(),
+                target,
+            });
+            return;
+        };
+        if indexes.len() > 1 {
+            self.issues
+                .push(RosterDiscoveryIssue::DeclaringScriptAmbiguous {
+                    script: spelling,
+                    found: indexes.len(),
+                });
+            return;
+        }
+        let next = indexes[0];
+        if chain.contains(&next) {
+            self.issues.push(RosterDiscoveryIssue::IncludeCycle {
+                script: self.script_name(chain),
+                target: spelling,
+            });
+            return;
+        }
+        chain.push(next);
+        self.read_script(next, declaration, depth + 1, chain);
+        chain.pop();
+    }
+
+    /// Reads one write line and records the container the roots land in.
+    fn bind_container(&mut self, line: &InterpLine<'_>, declaration: usize) {
+        if self.containers.contains_key(&declaration) {
+            return;
+        }
+        let rule = &self.declarations.declarations()[declaration];
+        let tokens = line.tokens();
+        let Some(argument) = tokens.get(1).and_then(|token| fold_bytes(token.bytes())) else {
+            return;
+        };
+        let Some(spelling) = self.interpolate(&argument, &mut Vec::new()) else {
+            self.issues.push(RosterDiscoveryIssue::ContainerUnresolved {
+                script: rule.script.clone(),
+                offset: line.offset(),
+                variable: argument,
+            });
+            return;
+        };
+        // The same production normalizers every installation path uses: the
+        // stored spelling is first a validated installation-relative path
+        // (which folds the Windows `\` the scripts spell into the `/` every
+        // lookup compares against, and refuses an absolute or escaping
+        // spelling), and only then a catalog key. A spelling that is not a
+        // relative path names no container and is a finding, never a guess.
+        let relative = match RelativePath::new(&spelling) {
+            Ok(relative) => relative,
+            Err(error) => {
+                self.issues.push(RosterDiscoveryIssue::ContainerUnresolved {
+                    script: rule.script.clone(),
+                    offset: line.offset(),
+                    variable: format!("{spelling:?} ({error})"),
+                });
+                return;
+            }
+        };
+        let key = install_file_key(&relative.logical_key());
+        match ContentId::from_source(ContentKind::InstallFile, &key) {
+            Ok(container) => {
+                self.containers.insert(declaration, container);
+            }
+            Err(error) => {
+                self.issues.push(RosterDiscoveryIssue::ContainerUnresolved {
+                    script: rule.script.clone(),
+                    offset: line.offset(),
+                    variable: format!("{spelling:?} ({error})"),
+                });
+            }
+        }
+    }
+
+    /// Takes one create line as the declaration of one airframe.
+    ///
+    /// The line must name the root variable *literally* as `%<root_variable>%`.
+    /// The same script creates unrelated objects with the same command and a
+    /// different argument, and only the literal reference declares an airframe.
+    fn declare_root(&mut self, line: &InterpLine<'_>, declaration: usize) {
+        let rule = &self.declarations.declarations()[declaration];
+        let tokens = line.tokens();
+        if tokens.len() != 2 {
+            return;
+        }
+        let Some(argument) = fold_bytes(tokens[1].bytes()) else {
+            return;
+        };
+        if argument != format!("%{}%", fold_str(&rule.root_variable)) {
+            return;
+        }
+        let script = rule.script.clone();
+        let offset = line.offset();
+        let Some(root_binding) = self.variables.get(&fold_str(&rule.root_variable)).cloned() else {
+            self.issues.push(RosterDiscoveryIssue::RootUndeclared {
+                script,
+                offset,
+                variable: rule.root_variable.clone(),
+            });
+            return;
+        };
+        let Some(model_binding) = self.variables.get(&fold_str(&rule.model_variable)).cloned()
+        else {
+            self.issues.push(RosterDiscoveryIssue::ModelUndeclared {
+                root: root_binding.value,
+                offset,
+                variable: rule.model_variable.clone(),
+            });
+            return;
+        };
+        self.pending.push(PendingRoot {
+            declaration,
+            name: root_binding.value,
+            model: model_binding.value,
+            declared_at: root_binding.offset,
+            created_at: offset,
+        });
+    }
+
+    /// The name of the script currently on the include chain.
+    fn script_name(&self, chain: &[usize]) -> String {
+        chain
+            .last()
+            .map(|index| {
+                String::from_utf8_lossy(self.container.scripts()[*index].name()).into_owned()
+            })
+            .unwrap_or_default()
+    }
+
+    /// Expands `%NAME%` references from the shared variable table.
+    ///
+    /// `None` when a referenced variable is unbound or when the references form
+    /// a cycle: both are facts about the corpus, and neither becomes an empty
+    /// string or a guessed value.
+    fn interpolate(&self, raw: &str, stack: &mut Vec<String>) -> Option<String> {
+        let mut out = String::with_capacity(raw.len());
+        let mut rest = raw;
+        while let Some(start) = rest.find('%') {
+            let after = &rest[start + 1..];
+            let Some(end) = after.find('%') else {
+                // A `%` with no closing `%` is not a reference this stage
+                // spells: refusing is honest, guessing is not.
+                return None;
+            };
+            out.push_str(&rest[..start]);
+            let name = after[..end].to_ascii_lowercase();
+            if stack.contains(&name) {
+                return None;
+            }
+            let value = self.variables.get(&name)?;
+            stack.push(name);
+            out.push_str(&self.interpolate(&value.value, stack)?);
+            stack.pop();
+            rest = &after[end + 1..];
+        }
+        out.push_str(rest);
+        Some(out)
+    }
+
+    /// Turns the pending roots into roster rows and the discovery itself.
+    fn finish(mut self) -> Result<AirframeRosterDiscovery, RosterDiscoveryError> {
+        // Container order is the declaration order, and roots are taken in the
+        // order the script created them, so the roster is a deterministic
+        // function of the container and the declaration table.
+        self.pending.sort_by_key(|pending| pending.declaration);
+        let mut found: BTreeMap<usize, usize> = BTreeMap::new();
+        for pending in &self.pending {
+            let rule = &self.declarations.declarations()[pending.declaration];
+            let Some(container) = self.containers.get(&pending.declaration).cloned() else {
+                continue;
+            };
+            let airframe = match ContentId::from_source(ContentKind::Airframe, &pending.name) {
+                Ok(airframe) => airframe,
+                Err(source) => {
+                    self.issues.push(RosterDiscoveryIssue::AirframeIdRefused {
+                        root: pending.name.clone(),
+                        offset: pending.created_at,
+                        source,
+                    });
+                    continue;
+                }
+            };
+            let node = match SceneNodeId::for_path(&container, &pending.name, 0) {
+                Ok(node) => node,
+                Err(error) => {
+                    self.issues.push(RosterDiscoveryIssue::RootRefRefused {
+                        root: pending.name.clone(),
+                        offset: pending.created_at,
+                        error,
+                    });
+                    continue;
+                }
+            };
+            let root = match SceneRootRef::new(container.clone(), node) {
+                Ok(root) => root,
+                Err(error) => {
+                    self.issues.push(RosterDiscoveryIssue::RootRefRefused {
+                        root: pending.name.clone(),
+                        offset: pending.created_at,
+                        error,
+                    });
+                    continue;
+                }
+            };
+            let mut entry = match RosterEntry::new(airframe.clone(), rule.provenance.clone()) {
+                Ok(entry) => entry,
+                Err(error) => return Err(RosterDiscoveryError::Roster(error)),
+            };
+            entry = entry.with_root(root.clone());
+            for required in &rule.required_roles {
+                entry = match entry.requiring(required.role) {
+                    Ok(entry) => entry,
+                    Err(error) => return Err(RosterDiscoveryError::Roster(error)),
+                };
+            }
+            self.discovered.push(DiscoveredAirframe {
+                airframe: airframe.clone(),
+                root,
+                model_spelling: pending.model.clone(),
+                declared_at: pending.declared_at,
+                created_at: pending.created_at,
+                provenance: rule.provenance.clone(),
+            });
+            self.entries.push(entry);
+            *found.entry(pending.declaration).or_default() += 1;
+        }
+
+        for (index, rule) in self.declarations.declarations().iter().enumerate() {
+            if found.get(&index).copied().unwrap_or(0) == 0 {
+                self.issues.push(RosterDiscoveryIssue::NoAirframesDeclared {
+                    script: rule.script.clone(),
+                });
+            }
+        }
+
+        // Availability is never discovered here: a mode's selection list is
+        // unmeasured, so the standing explicit unknown stands for every row and
+        // the discovery says so once, naming the rows it covers.
+        let mut unknowns = Vec::new();
+        if !self.entries.is_empty() {
+            unknowns.push(RosterDiscoveryUnknown::AvailabilityUndiscovered {
+                airframes: self
+                    .entries
+                    .iter()
+                    .map(RosterEntry::airframe)
+                    .cloned()
+                    .collect(),
+                claim_id: ClaimId::new(AVAILABILITY_DISCOVERY_CLAIM)
+                    .expect("the claim id is valid"),
+                reason: "no mode's selection list has been located in the original data, so \
+                         nothing establishes that a player may choose any of these airframes"
+                    .to_owned(),
+            });
+        }
+        unknowns.push(RosterDiscoveryUnknown::ForcedAssignmentsUndiscovered {
+            claim_id: ClaimId::new(FORCED_ASSIGNMENT_DISCOVERY_CLAIM)
+                .expect("the claim id is valid"),
+            reason: "no mission program has been read for a forced airframe assignment, so the \
+                     empty set is an unfinished discovery and not a measurement"
+                .to_owned(),
+        });
+
+        let roster = AirframeRoster::new(self.entries, Vec::new())?;
+        Ok(AirframeRosterDiscovery {
+            roster,
+            discovered: self.discovered,
+            issues: self.issues,
+            unknowns,
+            followed: self.followed,
+        })
+    }
+}
+
+/// Folds ASCII bytes for a case-insensitive comparison, or `None` when a byte
+/// is not printable ASCII.
+///
+/// A token that is not ASCII cannot equal an ASCII command spelling, so
+/// refusing it is exact rather than a silent skip: nothing the corpus stores is
+/// lost, and nothing is transliterated into a spelling it never had.
+fn fold_bytes(bytes: &[u8]) -> Option<String> {
+    if bytes.is_empty() || !bytes.iter().all(|byte| (0x20..=0x7e).contains(byte)) {
+        return None;
+    }
+    Some(String::from_utf8_lossy(bytes).to_ascii_lowercase())
+}
+
+/// Folds an engine-supplied spelling for comparison.
+fn fold_str(text: &str) -> String {
+    text.to_ascii_lowercase()
+}
+
+/// Joins a line's remaining tokens back into one spelling.
+///
+/// The container's own decoder keeps arguments as tokens because their
+/// encoding is unestablished; the roster shapes are single-token arguments, so
+/// a multi-token argument is not a shape this stage spells.
+fn join_tokens(tokens: &[cs_formats::interp::InterpToken<'_>]) -> Option<String> {
+    let mut out = String::new();
+    for (index, token) in tokens.iter().enumerate() {
+        if index > 0 {
+            out.push(' ');
+        }
+        out.push_str(&String::from_utf8_lossy(token.bytes()));
+    }
+    Some(out)
 }

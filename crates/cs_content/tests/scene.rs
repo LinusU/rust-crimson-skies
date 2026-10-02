@@ -26,11 +26,13 @@ use std::collections::BTreeMap;
 
 use cs_content::coordinates::SourceAdapter;
 use cs_content::scene::{
-    AirframeBlocker, AirframeRoster, AnimationBinding, AuditGap, AuthoredTransform, BindingMap,
-    CollisionRole, ContainerBlocker, ContainerOutcome, ForcedMissionAssignment, GameZSceneError,
-    LodChoice, LodCoverage, LodInfo, LodSelectError, MeshBinding, MeshSlot, NodeKind, ParsedNode,
-    ParsedNodeKind, PartRole, RosterAvailability, RosterEntry, RosterError, SceneContainerRef,
-    SceneError, SceneGraph, SceneNodeId, SceneRootRef, SemanticBinding, parsed_nodes_from_gamez,
+    AirframeBlocker, AirframeDeclaration, AirframeRoster, AnimationBinding, AuditGap,
+    AuthoredTransform, BindingMap, CollisionRole, ContainerBlocker, ContainerOutcome,
+    ForcedMissionAssignment, GameZSceneError, LodChoice, LodCoverage, LodInfo, LodSelectError,
+    MeshBinding, MeshSlot, NodeKind, ParsedNode, ParsedNodeKind, PartRole, RosterAvailability,
+    RosterDeclarations, RosterDiscoveryError, RosterDiscoveryIssue, RosterDiscoveryUnknown,
+    RosterEntry, RosterError, RosterRoleRule, SceneContainerRef, SceneError, SceneGraph,
+    SceneNodeId, SceneRootRef, SemanticBinding, discover_airframe_roster, parsed_nodes_from_gamez,
     scene_graph_from_gamez, select_lod_variant,
 };
 use cs_types::content::{ContentId, ContentKind, Known, Provenance, Resolved};
@@ -4755,4 +4757,927 @@ fn accept_t392_retail_every_gamez_archive_walks_to_its_container_end() {
         ]),
         "every kind the CS layout defines occurs, and the split is the measured one"
     );
+}
+
+// ==================== F11-D2: the roster discovery ======================
+
+/// The authored line shapes of the synthetic loading-script container the
+/// roster-discovery tests read: one variable binding, one include, one write
+/// and one create, plus the three shapes that must **not** declare an airframe.
+///
+/// The fixture is newly authored and mirrors the measured retail idiom
+/// (`ZBD/interp.zbd`, `support\planes.gw` and `support\util\planesurgery.gw`)
+/// in structure only: the model spellings, the root names and the offsets are
+/// all new, so nothing here is derived from original data.
+fn synthetic_roster_interp() -> Vec<u8> {
+    use cs_formats::interp::{INDEX_ENTRY_BYTES, INTERP_HEADER_BYTES, NAME_FIELD_BYTES};
+
+    /// One authored script: its name and its line data.
+    struct Fixture<'a> {
+        name: &'a [u8],
+        lines: Vec<Vec<u8>>,
+    }
+
+    /// One line's stored bytes: NUL-terminated arguments with their declared
+    /// count, which is the shape the container's own decoder splits tokens on.
+    fn line(tokens: &[&[u8]]) -> Vec<u8> {
+        let mut data = Vec::new();
+        let mut count = 0u32;
+        for token in tokens {
+            data.extend_from_slice(token);
+            data.push(0);
+            count += 1;
+        }
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&count.to_le_bytes());
+        bytes.extend_from_slice(&data);
+        bytes
+    }
+
+    let scripts = [
+        Fixture {
+            name: b"support\\init.gw",
+            lines: vec![line(&[b"set", b"zbd_dir", b"zbd"])],
+        },
+        Fixture {
+            name: b"support\\planes.gw",
+            lines: vec![
+                line(&[b"source", b"support\\init.gw"]),
+                line(&[b"set", b"zdBFile", b"%zbd_dir%\\planes.zbd"]),
+                line(&[
+                    b"set",
+                    b"planeInput",
+                    b"common\\planes\\fixture\\kestrel.kestrel.flt",
+                ]),
+                line(&[b"set", b"planeOutput", b"player_kestrel"]),
+                line(&[b"source", b"support\\util\\surgery.gw"]),
+                line(&[
+                    b"set",
+                    b"planeInput",
+                    b"common\\planes\\fixture\\autogyro.autogyro.flt",
+                ]),
+                line(&[b"set", b"planeOutput", b"player_autogyro"]),
+                line(&[b"source", b"support\\util\\surgery.gw"]),
+                // Neither of these names the declared root variable, so neither
+                // declares an airframe.
+                line(&[b"NewObject3D", b"%playerName%"]),
+                line(&[b"NewObject3D", b"player_kestrel"]),
+                line(&[b"GameZWriteZBDFile", b"%zdBFile%"]),
+            ],
+        },
+        Fixture {
+            name: b"support\\util\\surgery.gw",
+            lines: vec![
+                line(&[b"LoadGameGen", b"%planeInput%", b"unique5698"]),
+                line(&[b"NewObject3D", b"%planeOutput%"]),
+            ],
+        },
+    ];
+
+    let body_start = INTERP_HEADER_BYTES + scripts.len() * INDEX_ENTRY_BYTES;
+    let mut body = Vec::new();
+    let mut offsets = Vec::new();
+    for script in &scripts {
+        offsets.push((body_start + body.len()) as u32);
+        for data in &script.lines {
+            body.extend_from_slice(data);
+        }
+        body.extend_from_slice(&0u32.to_le_bytes());
+    }
+    let mut bytes = Vec::new();
+    for word in [0x0897_1119u32, 7, scripts.len() as u32] {
+        bytes.extend_from_slice(&word.to_le_bytes());
+    }
+    for (script, offset) in scripts.iter().zip(&offsets) {
+        let mut name = [0u8; NAME_FIELD_BYTES];
+        name[..script.name.len()].copy_from_slice(script.name);
+        bytes.extend_from_slice(&name);
+        bytes.extend_from_slice(&1_000u32.to_le_bytes());
+        bytes.extend_from_slice(&offset.to_le_bytes());
+    }
+    bytes.extend_from_slice(&body);
+    bytes
+}
+
+/// The authored declaration table the synthetic tests discover with: one
+/// measured idiom over `support\planes.gw`, requiring a cockpit binding on
+/// every airframe it declares.
+fn synthetic_roster_declarations() -> RosterDeclarations {
+    RosterDeclarations::new(vec![AirframeDeclaration {
+        script: "support\\planes.gw".to_owned(),
+        bind_command: "set".to_owned(),
+        include_command: "source".to_owned(),
+        write_command: "GameZWriteZBDFile".to_owned(),
+        create_command: "NewObject3D".to_owned(),
+        container_variable: "ZBDFile".to_owned(),
+        root_variable: "planeOutput".to_owned(),
+        model_variable: "planeInput".to_owned(),
+        required_roles: vec![RosterRoleRule {
+            role: PartRole::Cockpit,
+            provenance: designed("f11d2.test.cockpit-required"),
+        }],
+        provenance: designed("f11d2.test.declaration"),
+    }])
+    .expect("one declaration naming one script is valid")
+}
+
+/// AC04's mapping arm, driven by a real roster: two airframes the container
+/// declared become two checked rows, and the audit that took an empty roster
+/// maps both of them instead of reporting nothing.
+#[test]
+fn accept_f11_d_2_declared_roots_become_checked_rows_the_audit_maps() {
+    use cs_formats::interp::decode_interp;
+    use cs_formats::io::ParseContext;
+
+    let bytes = synthetic_roster_interp();
+    let decoded = decode_interp(
+        &mut ParseContext::with_defaults("synthetic/f11d2.interp"),
+        &bytes,
+    )
+    .expect("the authored container decodes");
+    let discovery = discover_airframe_roster(&decoded, &synthetic_roster_declarations())
+        .expect("two distinct roots are not a contradiction");
+
+    assert_eq!(
+        discovery.airframe_count(),
+        2,
+        "only the two literal `%planeOutput%` create lines declare an airframe"
+    );
+    assert!(
+        discovery.issues().is_empty(),
+        "the authored container reads completely: {:?}",
+        discovery.issues()
+    );
+    assert_eq!(
+        discovery.followed_scripts(),
+        [
+            "support\\planes.gw".to_owned(),
+            "support\\init.gw".to_owned(),
+            "support\\util\\surgery.gw".to_owned(),
+        ],
+        "the walk reads the declaring script and both scripts it includes, in visit order"
+    );
+
+    let container_id = cid(ContentKind::InstallFile, "zbd_2f_planes.zbd");
+    let rows = discovery.discovered();
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.airframe().as_str())
+            .collect::<Vec<_>>(),
+        ["airframe/player_kestrel", "airframe/player_autogyro"],
+        "each row is the `airframe/<key>` element named by the root the container created"
+    );
+    assert!(
+        rows.iter().all(|row| row.container() == &container_id
+            && row.root_name().starts_with("zbd_2f_planes.zbd.")),
+        "every row references a root under the container the declaring script writes, through the \
+         production installation key normalizer"
+    );
+    assert_eq!(
+        rows.iter()
+            .map(|row| row.model_spelling())
+            .collect::<Vec<_>>(),
+        [
+            "common\\planes\\fixture\\kestrel.kestrel.flt",
+            "common\\planes\\fixture\\autogyro.autogyro.flt",
+        ],
+        "the model spelling travels as provenance, never as identity"
+    );
+    assert!(
+        rows[0].declared_at() < rows[1].declared_at(),
+        "the two rows are told apart by the line that named each root ({} against {})",
+        rows[0].declared_at(),
+        rows[1].declared_at()
+    );
+    assert!(
+        rows[0].created_at() == rows[1].created_at(),
+        "both roots are created by the same line of the same included script, once per airframe"
+    );
+
+    // The roster the audit takes: two rows, each with its root and the role the
+    // declaration says it must bind.
+    let roster = discovery.roster();
+    assert_eq!(roster.entries().len(), 2);
+    for entry in roster.entries() {
+        assert_eq!(entry.required_roles(), [PartRole::Cockpit]);
+        assert!(
+            !entry.availability().is_known(),
+            "nothing in a loading script establishes that a player may choose an airframe"
+        );
+        assert!(
+            matches!(
+                entry.availability(),
+                Resolved::Unknown { claim_id, .. }
+                    if claim_id.as_str() == "f11d.roster-availability-undiscovered"
+            ),
+            "the standing availability unknown is the one the audit reports: {:?}",
+            entry.availability()
+        );
+    }
+    assert!(
+        roster.assignments().is_empty(),
+        "no mission program has been read, so no forced assignment exists"
+    );
+    assert_eq!(
+        discovery.unknowns().len(),
+        2,
+        "availability and forced assignments are both recorded as not discovered"
+    );
+    assert!(!discovery.is_complete());
+
+    // The audit, over the same rows, with a container the caller could convert.
+    let mut nodes = Vec::new();
+    for (index, name) in ["player_kestrel", "player_autogyro"]
+        .into_iter()
+        .enumerate()
+    {
+        let base = (index * 2) as u32;
+        let mut root = ParsedNode::new(base, name, ParsedNodeKind::Object3d);
+        root.children = vec![base + 1];
+        let mut child = ParsedNode::new(base + 1, "wing_l", ParsedNodeKind::Object3d);
+        child.parent = Some(base);
+        nodes.push(root);
+        nodes.push(child);
+    }
+    let graph = SceneGraph::build(
+        &container_id,
+        &nodes,
+        &radian_adapter(),
+        &BindingMap::default(),
+    )
+    .expect("the two-root fixture is a valid hierarchy");
+    let containers = [SceneContainerRef::new(container_id.clone(), 4, 512)];
+    let report = roster.audit(&containers, |asked| {
+        assert_eq!(
+            asked, &container_id,
+            "the audit only asks about the container it was given"
+        );
+        Ok(&graph)
+    });
+
+    assert_eq!(report.container_count(), 1);
+    assert_eq!(report.airframe_count(), 2, "the roster is no longer empty");
+    assert_eq!(report.mapped_containers().count(), 1);
+    assert_eq!(
+        report.mapped_airframes().count(),
+        2,
+        "every discovered airframe is mapped instead of inheriting a container blocker"
+    );
+    assert_eq!(report.blocked_airframes().count(), 0);
+    assert_eq!(report.mapped_root_count(), 2);
+    assert_eq!(report.mapped_socket_count(), 0, "no rule bound a socket");
+    assert!(
+        !report.is_complete(),
+        "two gaps per airframe keep the audit incomplete"
+    );
+
+    for audit in report.airframes() {
+        assert!(audit.first_blocker().is_none(), "{audit:?}");
+        let mapping = audit.mapping().expect("the airframe was mapped");
+        assert_eq!(
+            mapping.node_count(),
+            2,
+            "the root's own subtree, and nothing else"
+        );
+        let gaps: Vec<&AuditGap> = audit.gaps().collect();
+        assert!(
+            gaps.contains(&&AuditGap::AvailabilityUndiscovered {
+                airframe: audit.airframe().clone(),
+            }),
+            "roster availability is still undiscovered: {gaps:?}"
+        );
+        assert!(
+            gaps.contains(&&AuditGap::MissingRole {
+                root: mapping.root().clone(),
+                role: PartRole::Cockpit,
+            }),
+            "the declared cockpit role is not bound, and that is a gap rather than a pass: {gaps:?}"
+        );
+        assert!(!audit.is_proven_selectable());
+        assert!(audit.forced_missions().is_empty());
+    }
+}
+
+/// The negative arm: a shape the declaration does not spell is a named finding
+/// with its script and byte offset, never a silently missing row.
+#[test]
+fn accept_f11_d_2_every_unreadable_line_is_a_named_finding() {
+    use cs_formats::interp::INDEX_ENTRY_BYTES;
+    use cs_formats::interp::INTERP_HEADER_BYTES;
+    use cs_formats::interp::NAME_FIELD_BYTES;
+    use cs_formats::interp::decode_interp;
+    use cs_formats::io::ParseContext;
+
+    /// One authored container: its bytes and the absolute offset of every line.
+    struct Fixture {
+        bytes: Vec<u8>,
+        offsets: Vec<u64>,
+    }
+
+    /// One line's stored bytes: NUL-terminated arguments with their declared
+    /// count, which is the shape the container's own decoder splits on.
+    fn line(tokens: &[&[u8]]) -> Vec<u8> {
+        let mut data = Vec::new();
+        let mut count = 0u32;
+        for token in tokens {
+            data.extend_from_slice(token);
+            data.push(0);
+            count += 1;
+        }
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&count.to_le_bytes());
+        bytes.extend_from_slice(&data);
+        bytes
+    }
+
+    /// Builds a container from `(script name, lines)`, recording every line's
+    /// absolute offset.
+    fn container(fixtures: &[(&[u8], Vec<Vec<u8>>)]) -> Fixture {
+        let body_start = (INTERP_HEADER_BYTES + fixtures.len() * INDEX_ENTRY_BYTES) as u64;
+        let mut body = Vec::new();
+        let mut line_offsets = Vec::new();
+        let mut script_offsets = Vec::new();
+        for (_, lines) in fixtures {
+            script_offsets.push(body_start + body.len() as u64);
+            for data in lines {
+                line_offsets.push(body_start + body.len() as u64);
+                body.extend_from_slice(data);
+            }
+            body.extend_from_slice(&0u32.to_le_bytes());
+        }
+        let mut bytes = Vec::new();
+        for word in [0x0897_1119u32, 7, fixtures.len() as u32] {
+            bytes.extend_from_slice(&word.to_le_bytes());
+        }
+        for ((name, _), offset) in fixtures.iter().zip(&script_offsets) {
+            let mut field = [0u8; NAME_FIELD_BYTES];
+            field[..name.len()].copy_from_slice(name);
+            bytes.extend_from_slice(&field);
+            bytes.extend_from_slice(&1_000u32.to_le_bytes());
+            bytes.extend_from_slice(&(*offset as u32).to_le_bytes());
+        }
+        bytes.extend_from_slice(&body);
+        Fixture {
+            bytes,
+            offsets: line_offsets,
+        }
+    }
+
+    /// One declared script whose lines are the given token lists.
+    fn declaring(lines: &[Vec<u8>]) -> Fixture {
+        container(&[(b"support\\planes.gw", lines.to_vec())])
+    }
+
+    fn issues_of(
+        fixture: &Fixture,
+        declarations: &RosterDeclarations,
+    ) -> Vec<RosterDiscoveryIssue> {
+        let decoded = decode_interp(
+            &mut ParseContext::with_defaults("synthetic/f11d2.interp"),
+            &fixture.bytes,
+        )
+        .expect("the authored container decodes");
+        discover_airframe_roster(&decoded, declarations)
+            .expect("a refused row is a finding, not a contradiction")
+            .issues()
+            .to_vec()
+    }
+
+    let declarations = synthetic_roster_declarations();
+
+    // A container that holds no script named by the declaration.
+    let issues = issues_of(
+        &container(&[(b"other.gw", vec![line(&[b"set", b"x", b"y"])])]),
+        &declarations,
+    );
+    assert!(
+        issues.contains(&RosterDiscoveryIssue::DeclaringScriptAbsent {
+            script: "support\\planes.gw".to_owned(),
+        }),
+        "{issues:?}"
+    );
+
+    // A declaring script that never writes a container and creates its root
+    // with nothing bound: three findings, because "unreadable", "unwritable"
+    // and "empty" are different facts about the corpus.
+    let fixture = declaring(&[
+        line(&[
+            b"set",
+            b"planeInput",
+            b"common\\planes\\fixture\\kestrel.flt",
+        ]),
+        line(&[b"NewObject3D", b"%planeOutput%"]),
+    ]);
+    let create_offset = fixture.offsets[1];
+    let issues = issues_of(&fixture, &declarations);
+    assert!(
+        issues.contains(&RosterDiscoveryIssue::RootUndeclared {
+            script: "support\\planes.gw".to_owned(),
+            offset: create_offset,
+            variable: "planeOutput".to_owned(),
+        }),
+        "a create line with nothing binding the root variable names the variable: {issues:?}"
+    );
+    assert!(
+        issues.contains(&RosterDiscoveryIssue::ContainerUnwritten {
+            script: "support\\planes.gw".to_owned(),
+            variable: "ZBDFile".to_owned(),
+        }),
+        "{issues:?}"
+    );
+    assert!(
+        issues.contains(&RosterDiscoveryIssue::NoAirframesDeclared {
+            script: "support\\planes.gw".to_owned(),
+        }),
+        "{issues:?}"
+    );
+
+    // A root named with no model spelling beside it.
+    let fixture = declaring(&[
+        line(&[b"set", b"planeOutput", b"player_kestrel"]),
+        line(&[b"NewObject3D", b"%planeOutput%"]),
+    ]);
+    let create_offset = fixture.offsets[1];
+    let issues = issues_of(&fixture, &declarations);
+    assert!(
+        issues.contains(&RosterDiscoveryIssue::ModelUndeclared {
+            root: "player_kestrel".to_owned(),
+            offset: create_offset,
+            variable: "planeInput".to_owned(),
+        }),
+        "{issues:?}"
+    );
+
+    // A write line whose argument names a variable nothing binds.
+    let fixture = declaring(&[line(&[b"GameZWriteZBDFile", b"%MissingFile%"])]);
+    let write_offset = fixture.offsets[0];
+    let issues = issues_of(&fixture, &declarations);
+    assert!(
+        issues.contains(&RosterDiscoveryIssue::ContainerUnresolved {
+            script: "support\\planes.gw".to_owned(),
+            offset: write_offset,
+            variable: "%missingfile%".to_owned(),
+        }),
+        "a container spelled through an unbound variable is a finding, not an empty one: {issues:?}"
+    );
+
+    // A root name the id grammar refuses crosses over verbatim and is refused.
+    let fixture = declaring(&[
+        line(&[
+            b"set",
+            b"planeInput",
+            b"common\\planes\\fixture\\kestrel.flt",
+        ]),
+        line(&[b"set", b"planeOutput", b"player kestrel"]),
+        line(&[b"NewObject3D", b"%planeOutput%"]),
+        line(&[b"GameZWriteZBDFile", b"zbd\\planes.zbd"]),
+    ]);
+    let issues = issues_of(&fixture, &declarations);
+    assert!(
+        matches!(
+            issues
+                .iter()
+                .find(|issue| matches!(issue, RosterDiscoveryIssue::AirframeIdRefused { .. })),
+            Some(RosterDiscoveryIssue::AirframeIdRefused { root, .. }) if root == "player kestrel"
+        ),
+        "a name the id grammar refuses is reported, never transliterated: {issues:?}"
+    );
+
+    // An include the container does not hold, one spelled through an unbound
+    // variable, and one that returns to the including script.
+    let fixture = declaring(&[
+        line(&[b"source", b"support\\missing.gw"]),
+        line(&[b"source", b"%ZBD_DIR%\\support\\init.gw"]),
+        line(&[b"source", b"support\\planes.gw"]),
+    ]);
+    let issues = issues_of(&fixture, &declarations);
+    assert_eq!(
+        issues
+            .iter()
+            .filter(|issue| matches!(issue, RosterDiscoveryIssue::IncludeUnresolved { .. }))
+            .count(),
+        2,
+        "both an absent target and a target spelled with an unbound variable are findings: {issues:?}"
+    );
+    assert!(
+        issues.contains(&RosterDiscoveryIssue::IncludeCycle {
+            script: "support\\planes.gw".to_owned(),
+            target: "support\\planes.gw".to_owned(),
+        }),
+        "{issues:?}"
+    );
+
+    // Two scripts of one declared name: a reference to that name is ambiguous
+    // and is never resolved by position.
+    let fixture = container(&[
+        (b"support\\planes.gw", vec![line(&[b"set", b"x", b"y"])]),
+        (b"support\\planes.gw", vec![line(&[b"set", b"x", b"z"])]),
+    ]);
+    let issues = issues_of(&fixture, &declarations);
+    assert!(
+        issues.iter().any(|issue| matches!(
+            issue,
+            RosterDiscoveryIssue::DeclaringScriptAmbiguous { found: 2, .. }
+        )),
+        "two scripts of one declared name are reported, not chosen between: {issues:?}"
+    );
+}
+
+/// Two declarations naming one script, and an empty table: neither can be read
+/// as a roster that was searched and came back whole.
+#[test]
+fn accept_f11_d_2_contradictory_declarations_are_refused_and_an_empty_table_finds_nothing() {
+    use cs_formats::interp::decode_interp;
+    use cs_formats::io::ParseContext;
+
+    let mut declarations = synthetic_roster_declarations().declarations().to_vec();
+    declarations.push(declarations[0].clone());
+    assert_eq!(
+        RosterDeclarations::new(declarations.clone()).unwrap_err(),
+        RosterDiscoveryError::DuplicateDeclaration {
+            script: "support\\planes.gw".to_owned(),
+        },
+        "which idiom declared a root must not be decided by order"
+    );
+
+    // Two declarations naming two different scripts *are* valid, and neither
+    // script being in the container is a finding rather than an empty pass.
+    let mut other = declarations[0].clone();
+    other.script = "support\\autogyro.gw".to_owned();
+    assert!(RosterDeclarations::new(vec![declarations[0].clone(), other]).is_ok());
+
+    let bytes = synthetic_roster_interp();
+    let decoded = decode_interp(
+        &mut ParseContext::with_defaults("synthetic/f11d2.interp"),
+        &bytes,
+    )
+    .expect("the authored container decodes");
+    let empty = RosterDeclarations::default();
+    assert!(empty.is_empty());
+    let discovery =
+        discover_airframe_roster(&decoded, &empty).expect("an empty table is valid input");
+    assert_eq!(discovery.airframe_count(), 0);
+    assert!(discovery.issues().is_empty(), "no idiom, nothing to find");
+    assert!(
+        !discovery.is_complete(),
+        "a search that read nothing must not read as a complete roster"
+    );
+    assert!(discovery.roster().audit(&[], |_| unreachable!()).is_empty());
+
+    // And the roster's own audit over the empty table still refuses to be a
+    // pass: `is_complete` requires an airframe.
+    assert!(
+        !discovery
+            .roster()
+            .audit(&[], |_| unreachable!())
+            .is_complete()
+    );
+}
+
+/// The retail roster idiom, measured from `ZBD/interp.zbd` over
+/// `support\planes.gw` and `support\util\planesurgery.gw`.
+///
+/// This is the caller-supplied table the discovery takes: which script
+/// declares airframes, which command creates a root, which variables name the
+/// root, the model and the container, and which role each declared airframe
+/// must bind. Nothing in `cs_content` ships it, so the claim that these shapes
+/// declare the roster is the caller's and the row count below is what makes it
+/// falsifiable.
+///
+/// The cockpit requirement is evidence-backed: `support\util\planesurgery.gw`
+/// runs for **every** declared airframe and ends by naming the node it re-added
+/// `cockpit1`, so the container's own build script states that each declared
+/// airframe root carries a cockpit binding.
+fn retail_roster_declarations(
+    install_sha256: cs_types::evidence::ContentHash,
+) -> RosterDeclarations {
+    use cs_types::asset_id::SourceSpan;
+
+    let container = "ZBD/interp.zbd";
+    let span = |offset: u64, length: u64| {
+        SourceSpan::new(install_sha256, container, None, offset, length, None)
+            .expect("a container span over real bytes is valid")
+    };
+    let measured = |id: &str, offset: u64, length: u64| {
+        Provenance::new(
+            claim(id),
+            cs_types::evidence::ClaimStatus::ObservedTool,
+            Some(span(offset, length)),
+        )
+        .expect("an observed_tool claim with a source span is valid")
+    };
+    RosterDeclarations::new(vec![AirframeDeclaration {
+        script: "support\\planes.gw".to_owned(),
+        bind_command: "set".to_owned(),
+        include_command: "source".to_owned(),
+        write_command: "GameZWriteZBDFile".to_owned(),
+        create_command: "NewObject3D".to_owned(),
+        container_variable: "ZBDFile".to_owned(),
+        root_variable: "planeOutput".to_owned(),
+        model_variable: "planeInput".to_owned(),
+        required_roles: vec![RosterRoleRule {
+            role: PartRole::Cockpit,
+            // `support\util\planesurgery.gw`, the script every declared
+            // airframe's surgery block includes.
+            provenance: measured("f11d2.retail.planesurgery-cockpit", 187_904, 300),
+        }],
+        // `support\planes.gw` itself, from its first to its last line.
+        provenance: measured("f11d2.retail.planes-gw-idiom", 37_838, 8_650),
+    }])
+    .expect("one declaration naming one script is valid")
+}
+
+/// The eleven airframes `ZBD/interp.zbd`'s `support\planes.gw` declares, in the
+/// order the script creates them, with the source model each one loads.
+///
+/// This is a transcription of the measured container, and the test below pins
+/// it: a discovery that stopped finding an airframe, or found one twice, fails
+/// against this list rather than against a count.
+const RETAIL_DECLARED_AIRFRAMES: [(&str, &str); 11] = [
+    (
+        "player_pfighter",
+        "common\\planes\\piratefighter\\piratefighter.flt",
+    ),
+    ("player_bhawk", "common\\planes\\bloodhawk\\bloodhawk.flt"),
+    ("player_fbrand", "common\\planes\\firebrand\\firebrand.flt"),
+    ("player_brigand", "common\\planes\\brigand\\brigand.flt"),
+    ("player_fury", "common\\planes\\fury\\fury.flt"),
+    ("player_autogyro", "common\\planes\\autogyro\\autogyro.flt"),
+    ("player_avenger", "common\\planes\\avenger\\avenger.flt"),
+    ("player_kestrel", "common\\planes\\kestrel\\kestrel.flt"),
+    (
+        "player_peacemaker",
+        "common\\planes\\peacemaker\\peacemaker.flt",
+    ),
+    ("player_warhawk", "common\\planes\\warhawk\\warhawk.flt"),
+    ("player_balmoral", "common\\planes\\balmoral\\balmoral.flt"),
+];
+
+/// AC04 over the real installation, with a **real** roster: the eleven airframes
+/// the loading-script container declares, each with the root its own build
+/// script created inside `ZBD/planes.zbd`, audited against the same nine
+/// GameZ archives F11-D measured.
+///
+/// What this test changes about the previous verdict is stated exactly: the
+/// roster the audit takes is no longer empty, so the audit now reports one
+/// verdict **per airframe** instead of nine container blockers and nothing
+/// else — and each of those verdicts still says the same thing, because no
+/// production path has yet turned the shared airframe archive into a
+/// `SceneGraph`. Every declared root is additionally cross-checked against the
+/// real node array of `ZBD/planes.zbd`, so the `SceneRootRef` each row carries
+/// names a root the container really holds rather than a name the script wrote.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_f11_d_2_retail_the_installation_declares_the_shared_airframe_roster() {
+    use cs_assets::install as install_api;
+    use cs_content::catalog::baseline::install_file_key;
+    use cs_formats::gamez::read_gamez_nodes;
+    use cs_formats::interp::decode_interp;
+    use cs_formats::io::ParseContext;
+
+    let game_dir = retail_dir();
+    let discovery = install_api::discover(&game_dir).expect("production discovery must read it");
+    let install_sha256 = install_api::fingerprint(&discovery.manifest);
+    let interp_bytes = std::fs::read(game_dir.join("ZBD").join("interp.zbd"))
+        .expect("the container must be there");
+    let decoded = decode_interp(
+        &mut ParseContext::with_defaults("zbd/interp.zbd"),
+        &interp_bytes,
+    )
+    .expect("the loading-script container must decode");
+
+    let found = discover_airframe_roster(&decoded, &retail_roster_declarations(install_sha256))
+        .expect("eleven distinct roots are not a contradiction");
+
+    assert!(
+        found.issues().is_empty(),
+        "the measured declaring script and everything it includes read completely: {:?}",
+        found.issues()
+    );
+    assert_eq!(
+        found.airframe_count(),
+        RETAIL_DECLARED_AIRFRAMES.len(),
+        "every airframe the container declares becomes one row, and nothing else does"
+    );
+    assert_eq!(
+        found.followed_scripts(),
+        [
+            "support\\planes.gw".to_owned(),
+            "support\\init.gw".to_owned(),
+            "support\\util\\planesurgery.gw".to_owned(),
+            "support\\cockpit.gw".to_owned(),
+        ],
+        "the walk reads the declaring script and the three scripts it includes; nothing else in \
+         the ninety-eight-script container is a roster idiom"
+    );
+
+    let container_id = cid(ContentKind::InstallFile, "zbd_2f_planes.zbd");
+    for (row, (root, model)) in found.discovered().iter().zip(RETAIL_DECLARED_AIRFRAMES) {
+        assert_eq!(
+            row.airframe().as_str(),
+            format!("airframe/{root}"),
+            "each row is the `airframe/<key>` element named by the root the container's own script \
+             created"
+        );
+        assert_eq!(row.container(), &container_id);
+        assert_eq!(row.model_spelling(), model);
+        assert_eq!(
+            row.provenance().class,
+            cs_types::evidence::ClaimStatus::ObservedTool,
+            "the idiom is measured-tool evidence, never original-verified: `retail` is file access"
+        );
+        assert_eq!(
+            row.provenance()
+                .source
+                .as_ref()
+                .map(|span| span.container_path()),
+            Some("ZBD/interp.zbd")
+        );
+    }
+    let rows = found.discovered();
+    assert!(
+        rows.windows(2)
+            .all(|pair| pair[0].declared_at() < pair[1].declared_at()),
+        "each row is located by the line that named it, so the rows are ordered and distinct"
+    );
+    assert!(
+        rows.windows(2)
+            .all(|pair| pair[0].created_at() == pair[1].created_at()),
+        "all eleven roots are created by the same line of the included surgery script, once per \
+         airframe"
+    );
+
+    // Every discovered root name is a node the real container holds, so the
+    // references are checked against the bytes rather than transcribed from the
+    // script. Ten of the eleven are parentless nodes; the eleventh is not, and
+    // the reason is in the same script: after creating every airframe it
+    // creates the `player` node and adds `player_pfighter` to it, so the pirate
+    // fighter's geometry is nested under `player` rather than standing as its
+    // own root. That row therefore carries a reference the container does not
+    // hold **as a root**, and the audit will report `RootMissing` for it once a
+    // production path converts the archive. This test records the fact instead
+    // of working around it: a root is referenced, never resolved to the nearest
+    // match (F11 deliverable).
+    let planes_bytes =
+        std::fs::read(game_dir.join("ZBD").join("planes.zbd")).expect("planes.zbd must be there");
+    let records = read_gamez_nodes(
+        &mut ParseContext::with_defaults("zbd/planes.zbd"),
+        &planes_bytes,
+    )
+    .expect("the shared airframe archive's node array must read");
+    let parsed = parsed_nodes_from_gamez(&records, &[]).expect("every record converts");
+    assert_eq!(parsed.len(), 3_317);
+    let mut parentless = 0usize;
+    for (root, _) in RETAIL_DECLARED_AIRFRAMES {
+        let matching: Vec<&ParsedNode> = parsed.iter().filter(|node| node.name == root).collect();
+        assert_eq!(
+            matching.len(),
+            1,
+            "zbd/planes.zbd holds exactly one node named {root:?}, so the reference names a node \
+             the container really has"
+        );
+        if root == "player_pfighter" {
+            let parent = matching[0]
+                .parent
+                .expect("the one declared airframe the script nests still names its parent");
+            let holder = parsed
+                .iter()
+                .find(|node| node.index == parent)
+                .expect("the parent slot names a record");
+            assert_eq!(
+                (holder.name.as_str(), holder.parent.is_none()),
+                ("player", true),
+                "the pirate fighter is nested under the script's own parentless `player` node"
+            );
+        } else {
+            assert!(
+                matching[0].parent.is_none(),
+                "{root} stands as a root of the shared archive"
+            );
+            parentless += 1;
+        }
+    }
+    assert_eq!(
+        parentless, 10,
+        "ten of the eleven declared airframes are roots"
+    );
+
+    // Nothing about the roster is complete, and it says which two facts.
+    assert_eq!(found.unknowns().len(), 2);
+    assert!(
+        matches!(
+            found.unknowns()[0],
+            RosterDiscoveryUnknown::AvailabilityUndiscovered { ref airframes, .. }
+                if airframes.len() == RETAIL_DECLARED_AIRFRAMES.len()
+        ),
+        "roster availability is undiscovered for every row: {:?}",
+        found.unknowns()
+    );
+    assert!(matches!(
+        found.unknowns()[1],
+        RosterDiscoveryUnknown::ForcedAssignmentsUndiscovered { .. }
+    ));
+    assert!(!found.is_complete());
+    assert!(
+        found.roster().assignments().is_empty(),
+        "no mission program has been read, so the empty assignment set is not a measurement"
+    );
+    assert!(
+        found
+            .roster()
+            .entries()
+            .iter()
+            .all(|entry| !entry.availability().is_known()),
+        "no loading-script line proves a player may choose an airframe, so no row is selectable"
+    );
+
+    // The F11-D audit, over the real roster and the real nine-archive census.
+    let census = retail_gamez_census(&game_dir);
+    assert_eq!(census.len(), 9);
+    let planes_row = census
+        .iter()
+        .find(|row| row.logical == "zbd/planes.zbd")
+        .expect("the shared airframe archive is in the census");
+    assert_eq!(planes_row.catalog_key, "zbd_2f_planes.zbd");
+    let containers: Vec<SceneContainerRef> = census
+        .iter()
+        .map(|row| {
+            SceneContainerRef::new(
+                cid(ContentKind::InstallFile, &install_file_key(&row.logical)),
+                row.stored_nodes,
+                row.nodes_offset,
+            )
+        })
+        .collect();
+    let report = found.roster().audit(&containers, |container| {
+        let reference = containers
+            .iter()
+            .find(|reference| reference.container() == container)
+            .expect("the audit only asks about the containers it was given");
+        // The honest graph source for this stage: the node array **reads** and
+        // every record converts, but `SceneGraph::build` refuses the shared
+        // archive because node 640's stored name carries a trailing space, and
+        // the eight world containers because their child lists do not cover
+        // every node that names a parent. Both refusals are the recorded F11-D
+        // limitations, and neither is worked around here.
+        Err(ContainerBlocker::NodeArrayUndecoded {
+            container: container.clone(),
+            stored_nodes: reference.stored_nodes(),
+            nodes_offset: reference.nodes_offset(),
+        })
+    });
+
+    assert_eq!(report.container_count(), 9);
+    assert_eq!(report.mapped_containers().count(), 0);
+    assert_eq!(
+        report.airframe_count(),
+        RETAIL_DECLARED_AIRFRAMES.len(),
+        "the audit now reports a verdict per discovered airframe, which is what an empty roster \
+         could never do"
+    );
+    assert_eq!(report.mapped_airframes().count(), 0);
+    assert_eq!(report.blocked_airframes().count(), 11);
+    assert!(!report.is_complete());
+    for audit in report.airframes() {
+        assert!(
+            !audit.is_proven_selectable(),
+            "{} is not selectable: nothing discovered a mode's selection list",
+            audit.airframe()
+        );
+        assert!(audit.forced_missions().is_empty());
+        let blocker = audit
+            .first_blocker()
+            .expect("a blocked airframe names its blocker")
+            .clone();
+        match blocker {
+            AirframeBlocker::ContainerUndecoded {
+                airframe,
+                blocker:
+                    ContainerBlocker::NodeArrayUndecoded {
+                        container,
+                        stored_nodes,
+                        nodes_offset,
+                    },
+            } => {
+                assert_eq!(airframe, *audit.airframe());
+                assert_eq!(
+                    container, container_id,
+                    "every row's root lives in planes.zbd"
+                );
+                assert_eq!(stored_nodes, planes_row.stored_nodes);
+                assert_eq!(nodes_offset, planes_row.nodes_offset);
+            }
+            other => panic!("{other} is not the measured container blocker"),
+        }
+        // The declared cockpit role is still an unmet requirement, and the
+        // audit says so rather than passing the row.
+        assert!(
+            audit
+                .gaps()
+                .any(|gap| matches!(gap, AuditGap::AvailabilityUndiscovered { .. })),
+            "{audit:?}"
+        );
+    }
 }
