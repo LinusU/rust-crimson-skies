@@ -249,7 +249,8 @@ audio.
   at the world origin, in addition to its placed rows. That predates this slice
   and is untouched by it; a withheld batch now has no batch entity at all, so the
   extra copy disappears with the batch, but a batch with at least one drawn row
-  still has it. Filed as a follow-up rather than fixed here.
+  still has it. Filed as **#506** (`F17-C-batch-entity-extra-draw`) rather than
+  fixed here.
 * Nothing produces `AnimatedNodeBinding`, nothing writes `CommittedSessionTick`,
   and the gameplay-marker consumer of `AnimationLog` is still F20-C's — unchanged
   by this slice (a note on #75 carries them).
