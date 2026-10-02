@@ -214,7 +214,7 @@ const RETAIL_TESTS_M16_A: &[&str] = &[
     "accept_m16_a_the_committed_record_is_what_the_installation_derives",
     "accept_m16_a_the_original_name_is_confirmed_against_the_local_strings",
     "accept_m16_a_the_join_is_corroborated_by_the_long_name_rows",
-    "accept_m16_a_the_position_is_the_first_row_of_the_fifth_chapter_and_region_group",
+    "accept_m16_a_the_position_is_the_first_row_of_the_fourth_chapter_and_region_group",
     "accept_m16_a_the_world_group_is_the_whole_chapter_and_not_the_mission",
     "accept_m16_a_the_campaign_keeps_everything_else_unresolved_and_unready",
 ];
