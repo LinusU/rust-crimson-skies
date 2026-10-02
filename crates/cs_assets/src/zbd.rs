@@ -20,7 +20,9 @@
 //! * **the consumer — audio assets.** [`ZbdContainer::sound_assets`] is the
 //!   F06-B sound reader plus the F06-C decode: every readable entry becomes
 //!   a [`SoundAsset`] carrying its identity, its span, the WAVE header its
-//!   member declares, and its [`SoundReadiness`].
+//!   member declares, and its [`SoundReadiness`]. The samples a member yields
+//!   come from its **own** declaration, the two block codecs the retail
+//!   archives use included (task #444).
 //!
 //! * **the corpus audit (stage F06-D).** [`audit_container`] and
 //!   [`audit_containers`] run the producer over every ZBD container of a
@@ -33,10 +35,15 @@
 //!
 //! # What this stage does not do
 //!
-//! * It does not decode ADPCM. Task #344 measured that every retail member is
-//!   IMA ADPCM, MS ADPCM or 8-bit PCM; an ADPCM member is an
-//!   [`SoundReadiness::UnsupportedFormat`] row carrying its **declared** tag,
-//!   never an approximation and never a silent pass-through.
+//! * It does not decode anything `cs_formats` does not read, and it never
+//!   approximates. Task #344 measured that every retail member is IMA ADPCM, MS
+//!   ADPCM or PCM; task #444 added the two block layouts, and this stage plans
+//!   a member with [`SampleFormat::from_member`] /
+//!   [`SampleFormat::from_header_with_blocks`], so a compressed member is
+//!   decoded under the block geometry its own `fmt ` payload declares. A member
+//!   that declares a tag nothing here reads, or a declaration the block
+//!   geometry contradicts, is refused with that refusal's own stable code —
+//!   never passed through as if it were PCM.
 //! * It does not mix, resample, filter or play anything. The values are the
 //!   stored samples widened to `i32`; what an audio consumer does with them is
 //!   F41's work.
@@ -66,10 +73,10 @@ use std::fmt;
 use cs_formats::ParseContext;
 use cs_formats::zbd::{
     ArchiveListing, ContainerStatus, DispatchBasis, HeaderStatus, IndexError, MemberStatus,
-    MemberTable, ReaderArchive, ReaderError, RoleStatus, RoutableFamily, SampleError, SoundArchive,
-    SoundEntry, SoundError, UnsupportedRecord, VersionOneIndex, WaveError, WaveHeader, ZbdDispatch,
-    ZbdDispatchError, ZbdFamily, ZbdProbe, ZbdReaderId, decode_sound_sample, dispatch,
-    read_reader_archive, read_sound_archive, read_version_one_index,
+    MemberTable, ReaderArchive, ReaderError, RoleStatus, RoutableFamily, SampleError, SampleFormat,
+    SampleFormatError, SoundArchive, SoundEntry, SoundError, UnsupportedRecord, VersionOneIndex,
+    WaveError, WaveHeader, ZbdDispatch, ZbdDispatchError, ZbdFamily, ZbdProbe, ZbdReaderId,
+    decode_sound_sample, dispatch, read_reader_archive, read_sound_archive, read_version_one_index,
 };
 use cs_types::asset_id::{AssetKey, MountId, SourceSpan};
 use cs_types::evidence::SourceSpan as ByteSpan;
@@ -652,16 +659,22 @@ fn installation_path(span: &SourceSpan) -> Result<RelativePath, ZbdError> {
 pub enum SoundReadiness {
     /// The member's own WAVE header declares a format this stage decodes, and
     /// its `data` payload is a whole number of declared frames: the member
-    /// holds `frames` frames of `samples_per_frame` samples, accounting for
-    /// every byte of the payload.
+    /// holds `frames` frames of `samples_per_frame` samples.
+    ///
+    /// For an uncompressed member a frame is one sample per declared channel.
+    /// For a **block-coded** member — what task #344 measured for almost every
+    /// retail member — a frame is one whole block: `frames` counts the blocks
+    /// the payload holds and `samples_per_frame` is that block's own
+    /// `wSamplesPerBlock` for each of its channels. Both numbers are the
+    /// declaration's, never this stage's.
     Decoded {
         /// Whole declared frames the payload holds.
         frames: u64,
         /// Sample values one frame holds (one per declared channel).
         samples_per_frame: u64,
     },
-    /// The member's WAVE header declares a format tag this stage does not
-    /// decode. `tag` and `name` are the member's own, so a diagnostic can
+    /// The member's WAVE header declares a format tag nothing in this stage
+    /// reads. `tag` and `name` are the member's own, so a diagnostic can
     /// say what the member is; the row is never silently passed through.
     UnsupportedFormat {
         /// The `wFormatTag` the member declares.
@@ -676,10 +689,12 @@ pub enum SoundReadiness {
         reason: &'static str,
     },
     /// The member's header declares a format this stage could plan for, but
-    /// its `data` payload does not match it. `code` is the decode failure's
-    /// stable code.
+    /// its `data` payload does not match it. `code` is the refusal's stable
+    /// code: a declaration the block geometry contradicts, a block that cannot
+    /// be read, or a payload that is not a whole number of declared frames.
     Undecodable {
-        /// The decode failure's stable code ([`SampleError::code`]).
+        /// The refusal's stable code ([`SampleFormatError::code`] for a
+        /// declaration, [`SampleError::code`] for a payload).
         code: &'static str,
     },
 }
@@ -769,22 +784,62 @@ impl<'a> SoundAsset<'a> {
         &self.readiness
     }
 
-    /// Decodes this member's samples under the format **its own** WAVE
-    /// header declares.
+    /// Decodes this member's samples under the format **its own** WAVE header
+    /// declares, the `fmt ` extension a block-coded member carries included.
     ///
     /// # Errors
     ///
-    /// [`SampleError`] for a header that did not read, a format this stage
-    /// does not decode, or a `data` payload that is not a whole number of
-    /// declared frames.
+    /// [`SampleError`] for a header that did not read, a format nothing in this
+    /// stage reads, a declaration the block geometry contradicts, or a `data`
+    /// payload the declaration does not account for.
     pub fn decode(
         &self,
         context: &mut ParseContext,
     ) -> Result<cs_formats::zbd::DecodedSound, SampleError> {
         let header = self.entry.wave().map_err(SampleError::from_wave_header)?;
-        let format = cs_formats::zbd::SampleFormat::from_header(&header)?;
+        let format = sample_plan(&header, self.entry.content())?;
         decode_sound_sample(context, self.entry.content(), &format)
     }
+}
+
+/// The decode plan `header` and the `fmt ` payload it located declare.
+///
+/// Task #444 taught `cs_formats` the two block layouts the retail archives
+/// declare, and their per-member values (`wSamplesPerBlock`, and the Microsoft
+/// coefficient table) live in the `fmt ` extension rather than in the header's
+/// sixteen common fields. This is where a member of this stage gets its plan:
+/// the header is the one its own bytes were read into, and the payload that
+/// header located is sliced out of those same bytes, so no value and no extent
+/// comes from a caller.
+fn sample_plan(header: &WaveHeader, member: &[u8]) -> Result<SampleFormat, SampleFormatError> {
+    match fmt_payload(member, header) {
+        Some(fmt) => SampleFormat::from_header_with_blocks(header, fmt),
+        // A header whose `fmt ` span no slice of the member holds: the member's
+        // own entry point reports that with its own typed reason, so the row
+        // keeps it instead of guessing at one.
+        None => SampleFormat::from_member(member),
+    }
+}
+
+/// The `fmt ` payload `header` located, in the member's own bytes.
+///
+/// `None` when the header did not read a span that slice can hold, which is the
+/// same condition [`SampleFormat::from_member`] refuses on.
+fn fmt_payload<'m>(member: &'m [u8], header: &WaveHeader) -> Option<&'m [u8]> {
+    let span = header.fmt_span();
+    let start = usize::try_from(span.offset).ok()?;
+    let length = usize::try_from(span.length).ok()?;
+    member.get(start..start.checked_add(length)?)
+}
+
+/// Whether the member's own declaration is one of the block codecs.
+///
+/// A member only reaches this with a plan that built, so the `false` arm is
+/// unreachable for a decoded row; it exists so the caller keeps a total match.
+fn is_block_coded(header: &WaveHeader, member: &[u8]) -> bool {
+    sample_plan(header, member)
+        .map(|format| format.layout().is_block_coded())
+        .unwrap_or(false)
 }
 
 /// The sound assets of one container, plus the strict status of the listing
@@ -801,7 +856,7 @@ pub struct SoundAssets<'a> {
 
 impl<'a> SoundAssets<'a> {
     /// Builds the assets of `archive`, decoding each member under its own
-    /// WAVE header.
+    /// WAVE header and its own `fmt ` extension.
     ///
     /// Each entry is decoded on its own with one shared [`ParseContext`], so
     /// they share its budget and a starved one refuses them all without
@@ -824,13 +879,17 @@ impl<'a> SoundAssets<'a> {
                 Err(error) => SoundReadiness::UnreadableHeader {
                     reason: error.reason(),
                 },
-                Ok(header) => match cs_formats::zbd::SampleFormat::from_header(&header) {
-                    Err(error) => match error {
-                        cs_formats::zbd::SampleFormatError::UnsupportedFormat { tag, name } => {
-                            SoundReadiness::UnsupportedFormat { tag, name }
-                        }
-                        other => SoundReadiness::Undecodable { code: other.code() },
-                    },
+                Ok(header) => match sample_plan(&header, entry.content()) {
+                    // A tag nothing in this stage reads keeps the member's own
+                    // tag and RFC 2361 name, so a diagnostic can say what it is.
+                    Err(SampleFormatError::UnsupportedFormat { tag, name }) => {
+                        SoundReadiness::UnsupportedFormat { tag, name }
+                    }
+                    // Every other refusal is a declaration this stage cannot
+                    // honour: a `fmt ` extension too short for the tag it names,
+                    // a block size no block fits, a `wSamplesPerBlock` the
+                    // geometry contradicts. The code is that refusal's own.
+                    Err(other) => SoundReadiness::Undecodable { code: other.code() },
                     Ok(format) => match decode_sound_sample(context, entry.content(), &format) {
                         Ok(sample) => SoundReadiness::Decoded {
                             frames: sample.frames(),
@@ -1300,6 +1359,17 @@ fn sound_verdict(context: &mut ParseContext, asset: &SoundAsset<'_>) -> MemberVe
             samples_per_frame,
         } => {
             let detail = match asset.wave() {
+                // A block-coded member's unit is the block, so the row says how
+                // many blocks it holds and how many samples each of them holds,
+                // never "N channel(s)" beside a block count.
+                Ok(header) if is_block_coded(&header, asset.content()) => format!(
+                    "{} tag {:#06x}, {} Hz, {} bits, {samples_per_frame} sample(s) per block, \
+                     {frames} block(s)",
+                    header.format_name().unwrap_or("unnamed"),
+                    header.format_tag(),
+                    header.rate_hz(),
+                    header.bits_per_sample(),
+                ),
                 Ok(header) => format!(
                     "{} tag {:#06x}, {} Hz, {} bits, {samples_per_frame} channel(s), {frames} \
                      frames",
@@ -1372,6 +1442,7 @@ mod tests {
     //! `tools/cs_inspect/src/resolve.rs` keeps the tests next to the code they
     //! exercise.
 
+    use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -1454,11 +1525,17 @@ mod tests {
     // --- authored RIFF/WAVE members ----------------------------------------
 
     /// One member's `fmt ` fields, as the Microsoft/IBM RIFF spec states them.
+    ///
+    /// `extension` is the tag's own `fmt ` tail, kept beside the sixteen common
+    /// fields exactly as the specification orders it: `cbSize` and, for the two
+    /// block codecs, the values that locate and read a block.
     struct Fmt {
         tag: u16,
         channels: u16,
         rate_hz: u32,
         bits_per_sample: u16,
+        block_align: u16,
+        extension: Vec<u8>,
     }
 
     impl Fmt {
@@ -1469,46 +1546,115 @@ mod tests {
                 channels: 1,
                 rate_hz: 22_050,
                 bits_per_sample: 16,
+                block_align: 2,
+                extension: Vec::new(),
             }
         }
 
-        /// The IMA ADPCM shape task #344 measured most often in retail.
-        const fn ima() -> Self {
+        /// A block-coded member: four bits per sample, the block size the retail
+        /// archives use, and the `fmt ` extension that declares its geometry.
+        fn adpcm(tag: u16, rate_hz: u32, block_align: u16, extension: Vec<u8>) -> Self {
             Self {
-                tag: WAVE_FORMAT_IMA_ADPCM,
+                tag,
                 channels: 1,
-                rate_hz: 11_025,
+                rate_hz,
                 bits_per_sample: 4,
+                block_align,
+                extension,
             }
         }
 
-        /// The Microsoft ADPCM shape task #344 measured in retail.
-        const fn ms() -> Self {
-            Self {
-                tag: WAVE_FORMAT_MS_ADPCM,
-                channels: 1,
-                rate_hz: 22_050,
-                bits_per_sample: 4,
-            }
+        /// The IMA ADPCM shape task #344 measured most often in retail: mono at
+        /// 11_025 Hz with `nBlockAlign` 256. A block of that size holds its four
+        /// header bytes and two nibbles per remaining byte, and starts from the
+        /// predictor it declares, so the `wSamplesPerBlock` such a member
+        /// declares is `1 + 2 * (256 - 4)` = 505.
+        fn ima() -> Self {
+            let block_align = 256;
+            Self::adpcm(
+                WAVE_FORMAT_IMA_ADPCM,
+                11_025,
+                block_align,
+                ima_extension(1 + 2 * (block_align - 4)),
+            )
         }
 
-        /// `nBlockAlign` the fields imply.
-        const fn block_align(&self) -> u16 {
-            self.channels * (self.bits_per_sample / 8)
+        /// The Microsoft ADPCM shape task #344 measured: mono at 22_050 Hz with
+        /// `nBlockAlign` 256. A block holds seven header bytes per channel and
+        /// two nibbles per remaining byte, and starts from the two history
+        /// samples it declares, so the `wSamplesPerBlock` it declares is
+        /// `2 + 2 * (256 - 7)` = 500.
+        fn ms() -> Self {
+            let block_align = 256;
+            Self::adpcm(
+                WAVE_FORMAT_MS_ADPCM,
+                22_050,
+                block_align,
+                ms_extension(2 + 2 * (block_align - 7)),
+            )
         }
 
-        /// A format-specific `fmt ` tail, as ADPCM carries its coefficients.
-        fn fmt_tail(&self) -> Vec<u8> {
-            if self.tag == WAVE_FORMAT_PCM {
-                Vec::new()
-            } else {
-                let mut tail = Vec::with_capacity(4);
-                tail.extend_from_slice(&2u16.to_le_bytes());
-                tail.extend_from_slice(&1u16.to_le_bytes());
-                tail
-            }
+        /// An IMA ADPCM member that declares no `fmt ` extension at all, so no
+        /// `wSamplesPerBlock` can be read out of it.
+        fn ima_without_extension() -> Self {
+            Self::adpcm(WAVE_FORMAT_IMA_ADPCM, 11_025, 256, Vec::new())
+        }
+
+        /// A Microsoft ADPCM member whose `fmt ` payload stops after `cbSize`,
+        /// four bytes short of the `wSamplesPerBlock` the tag documents.
+        fn ms_with_short_extension() -> Self {
+            Self::adpcm(
+                WAVE_FORMAT_MS_ADPCM,
+                22_050,
+                256,
+                32u16.to_le_bytes().to_vec(),
+            )
+        }
+
+        /// An IMA ADPCM member whose declared `wSamplesPerBlock` is not what a
+        /// full block of its own `nBlockAlign` holds, so the header contradicts
+        /// itself.
+        fn ima_with_wrong_samples_per_block() -> Self {
+            Self::adpcm(WAVE_FORMAT_IMA_ADPCM, 11_025, 256, ima_extension(7))
         }
     }
+
+    /// The IMA ADPCM `fmt ` extension: `cbSize` 2 and `wSamplesPerBlock`.
+    fn ima_extension(samples_per_block: u16) -> Vec<u8> {
+        let mut bytes = 2u16.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&samples_per_block.to_le_bytes());
+        bytes
+    }
+
+    /// The Microsoft ADPCM `fmt ` extension: `cbSize` 32, `wSamplesPerBlock`,
+    /// `wNumCoefs` and that many coefficient pairs.
+    ///
+    /// The table is the one every retail member declares
+    /// (`docs/findings/2026-09-28-t344-zbd-sound-member-wave-headers.md`), so
+    /// the fixture members carry the values the original data carries rather
+    /// than a table invented here.
+    fn ms_extension(samples_per_block: u16) -> Vec<u8> {
+        let mut bytes = 32u16.to_le_bytes().to_vec();
+        bytes.extend_from_slice(&samples_per_block.to_le_bytes());
+        bytes.extend_from_slice(&(RETAIL_MS_COEFFICIENTS.len() as u16).to_le_bytes());
+        for (predictor, difference) in RETAIL_MS_COEFFICIENTS {
+            bytes.extend_from_slice(&predictor.to_le_bytes());
+            bytes.extend_from_slice(&difference.to_le_bytes());
+        }
+        bytes
+    }
+
+    /// The Microsoft ADPCM coefficient table every retail member declares, in
+    /// the order `aCoefs` lists it.
+    const RETAIL_MS_COEFFICIENTS: [(i16, i16); 7] = [
+        (256, 0),
+        (512, -256),
+        (0, 0),
+        (192, 64),
+        (240, 0),
+        (460, -208),
+        (392, -232),
+    ];
 
     /// Assembles a complete RIFF/WAVE member around `fmt` and a `data` payload.
     fn wave_member(fmt: &Fmt, data: &[u8]) -> Vec<u8> {
@@ -1516,10 +1662,10 @@ mod tests {
         fmt_payload.extend_from_slice(&fmt.tag.to_le_bytes());
         fmt_payload.extend_from_slice(&fmt.channels.to_le_bytes());
         fmt_payload.extend_from_slice(&fmt.rate_hz.to_le_bytes());
-        fmt_payload.extend_from_slice(&(fmt.rate_hz * u32::from(fmt.block_align())).to_le_bytes());
-        fmt_payload.extend_from_slice(&fmt.block_align().to_le_bytes());
+        fmt_payload.extend_from_slice(&(fmt.rate_hz * u32::from(fmt.block_align)).to_le_bytes());
+        fmt_payload.extend_from_slice(&fmt.block_align.to_le_bytes());
         fmt_payload.extend_from_slice(&fmt.bits_per_sample.to_le_bytes());
-        fmt_payload.extend_from_slice(&fmt.fmt_tail());
+        fmt_payload.extend_from_slice(&fmt.extension);
 
         let mut chunks = Vec::new();
         chunks.extend_from_slice(b"fmt ");
@@ -1543,6 +1689,52 @@ mod tests {
         member
     }
 
+    /// One IMA ADPCM block: the documented four header bytes — an `i16`
+    /// predictor, a `u8` step index and one reserved byte — and then the
+    /// nibbles, low one first.
+    fn ima_block(predictor: i16, step_index: u8, nibble_bytes: &[u8]) -> Vec<u8> {
+        let mut bytes = predictor.to_le_bytes().to_vec();
+        bytes.push(step_index);
+        bytes.push(0);
+        bytes.extend_from_slice(nibble_bytes);
+        bytes
+    }
+
+    /// One Microsoft ADPCM block: the seven header bytes of a mono channel —
+    /// a `u8` coefficient index, an `i16` delta, an `i16` sample1 and an `i16`
+    /// sample2 — and then the nibbles, already packed two to a byte with the
+    /// high one first, as the layout stores them.
+    fn ms_block(
+        coefficient: u8,
+        delta: i16,
+        sample1: i16,
+        sample2: i16,
+        nibble_bytes: &[u8],
+    ) -> Vec<u8> {
+        let mut bytes = vec![coefficient];
+        bytes.extend_from_slice(&delta.to_le_bytes());
+        bytes.extend_from_slice(&sample1.to_le_bytes());
+        bytes.extend_from_slice(&sample2.to_le_bytes());
+        bytes.extend_from_slice(nibble_bytes);
+        bytes
+    }
+
+    /// `count` bytes of IMA nibbles walking the small magnitudes 1 to 8, low one
+    /// first, so a decoded block moves instead of sitting at its predictor.
+    fn ima_nibbles(count: usize) -> Vec<u8> {
+        (0..count)
+            .map(|index| ((index % 8 + 1) as u8) | (((index % 8 + 2) as u8) << 4))
+            .collect()
+    }
+
+    /// `count` bytes of Microsoft ADPCM nibbles walking the small magnitudes 1
+    /// to 8, high one first, as that layout stores them.
+    fn ms_nibbles(count: usize) -> Vec<u8> {
+        (0..count)
+            .map(|index| (((index % 8 + 1) as u8) << 4) | ((index % 8 + 2) as u8))
+            .collect()
+    }
+
     /// A 16-bit mono member holding `RAMP`.
     const RAMP: [i16; 8] = [0, 1, 2, 3, -1, -2, -3, -4];
 
@@ -1552,6 +1744,34 @@ mod tests {
             data.extend_from_slice(&sample.to_le_bytes());
         }
         wave_member(&Fmt::pcm16(), &data)
+    }
+
+    /// A mono IMA ADPCM member of two full 256-byte blocks.
+    ///
+    /// The blocks declare different predictors, so a decode that carried state
+    /// from one block into the next — or that read the block header from the
+    /// wrong offset — cannot produce both.
+    fn ima_member() -> Vec<u8> {
+        let block_align = 256;
+        let mut data = ima_block(1000, 0, &ima_nibbles(block_align - 4));
+        data.extend_from_slice(&ima_block(-2000, 3, &ima_nibbles(block_align - 4)));
+        wave_member(&Fmt::ima(), &data)
+    }
+
+    /// A mono Microsoft ADPCM member of two full 256-byte blocks, with
+    /// different history samples in each.
+    fn ms_member() -> Vec<u8> {
+        let block_align = 256;
+        let mut data = ms_block(0, 100, 300, 200, &ms_nibbles(block_align - 7));
+        data.extend_from_slice(&ms_block(0, 50, 100, 60, &ms_nibbles(block_align - 7)));
+        wave_member(&Fmt::ms(), &data)
+    }
+
+    /// A block-coded member whose payload is one full block of bytes, for the
+    /// refusal cases: the member is a real RIFF/WAVE file, only its declaration
+    /// is unusable.
+    fn declared_member(fmt: &Fmt) -> Vec<u8> {
+        wave_member(fmt, &ima_nibbles(256))
     }
 
     // --- authored version-one archives -------------------------------------
@@ -1598,14 +1818,15 @@ mod tests {
     /// The sound archive the fixtures mount, and a reader archive beside it.
     fn installation() -> Temp {
         let tree = Temp::new("install");
-        // An observed sound archive name (task #340): three members, a
-        // decodable PCM one and two compressed ones this stage refuses.
+        // An observed sound archive name (task #340): three members, an
+        // uncompressed PCM one and two block-coded ones, each declaring the
+        // block geometry its own payload has.
         tree.write(
             "ZBD/soundsl.zbd",
             &archive(&[
                 (b"ramp.wav".as_slice(), pcm16_member()),
-                (b"gun.wav".as_slice(), wave_member(&Fmt::ima(), &[0u8; 256])),
-                (b"loop.wav".as_slice(), wave_member(&Fmt::ms(), &[0u8; 512])),
+                (b"gun.wav".as_slice(), ima_member()),
+                (b"loop.wav".as_slice(), ms_member()),
             ]),
         );
         // An observed reader archive name, whose body is not WAVE at all: it
@@ -1936,37 +2157,31 @@ mod tests {
             );
         }
 
-        // The two compressed members are refused with the tag **they**
-        // declare, so the rows are visible and honest rather than passed
-        // through as if they were PCM.
+        // The two block-coded members decode under the block geometry their own
+        // `fmt ` payload declares: a frame is a whole block, so the row carries
+        // the block count and the samples one block holds.
         let ima = assets.entry(1).expect("row 1 is an asset");
         assert_eq!(ima.name(), b"gun.wav");
         assert_eq!(
             ima.readiness(),
-            &SoundReadiness::UnsupportedFormat {
-                tag: WAVE_FORMAT_IMA_ADPCM,
-                name: Some("ima_adpcm")
+            &SoundReadiness::Decoded {
+                frames: 2,
+                samples_per_frame: 505
             }
         );
         let ms = assets.entry(2).expect("row 2 is an asset");
         assert_eq!(ms.name(), b"loop.wav");
         assert_eq!(
             ms.readiness(),
-            &SoundReadiness::UnsupportedFormat {
-                tag: WAVE_FORMAT_MS_ADPCM,
-                name: Some("ms_adpcm")
+            &SoundReadiness::Decoded {
+                frames: 2,
+                samples_per_frame: 500
             }
         );
-        // And decoding one directly refuses with the same typed error.
-        let error = ima
-            .decode(&mut context)
-            .expect_err("a compressed member is not decoded by this stage");
-        assert_eq!(error.code(), "unsupported_format");
-
         assert_eq!(
             assets.decoded().count(),
-            1,
-            "only the PCM member is decoded"
+            3,
+            "every fixture member is decoded under its own declaration"
         );
     }
 
@@ -2110,7 +2325,7 @@ mod tests {
         let assets = container
             .sound_assets(&mut context, &index, &table)
             .expect("the sound archive is read");
-        assert_eq!(assets.decoded().count(), 1);
+        assert_eq!(assets.decoded().count(), 3, "every member is decoded");
 
         // The teardown.
         let teardown = session.close();
@@ -2127,6 +2342,15 @@ mod tests {
             .decode(&mut context)
             .expect("and still decodes");
         assert_eq!(decoded.sample_count(), 8);
+        // The block-coded members decode after teardown too: their blocks are
+        // in the container's own bytes, not behind a live file handle.
+        let decoded = assets
+            .entry(1)
+            .expect("the block-coded asset survives teardown")
+            .decode(&mut context)
+            .expect("and still decodes its blocks");
+        assert_eq!(decoded.frames(), 2);
+        assert_eq!(decoded.sample_count(), 1010);
 
         // But a *replacement* session refuses it: the world switched, so an
         // archive resolved for the old one is not a member of the new one.
@@ -2185,5 +2409,353 @@ mod tests {
             funded.allocation().used() > 0,
             "a successful index is charged"
         );
+    }
+
+    // --- task #524: the block-aware decode plan reaches the runtime ----------
+
+    #[test]
+    fn accept_t524_a_block_coded_member_decodes_the_blocks_its_own_header_declares() {
+        // The switch this task makes: a compressed member is planned from the
+        // `fmt ` extension **its own bytes** carry and decoded block by block,
+        // so the row's counts are its declaration's, not PCM's.
+        let tree = installation();
+        let session = session(tree.0.as_path());
+        let container =
+            ZbdContainer::open(&session, &key("install", "ZBD/soundsl.zbd")).expect("it opens");
+        let mut context = ParseContext::with_defaults(container.label());
+        let index = container.index(&mut context).expect("its trailer reads");
+        let table = index.member_table();
+        let assets = container
+            .sound_assets(&mut context, &index, &table)
+            .expect("the sound archive is read");
+
+        // The IMA member: two 256-byte blocks, so two frames, and the 505
+        // samples one such block holds.
+        let ima = assets.entry(1).expect("row 1 is an asset");
+        assert_eq!(ima.name(), b"gun.wav");
+        assert_eq!(
+            ima.readiness(),
+            &SoundReadiness::Decoded {
+                frames: 2,
+                samples_per_frame: 505
+            }
+        );
+        let ima_header = ima.wave().expect("its header reads");
+        assert_eq!(ima_header.format_tag(), WAVE_FORMAT_IMA_ADPCM);
+        assert_eq!(ima_header.block_align(), 256);
+        let mut context = ParseContext::with_defaults(container.label());
+        let decoded = ima.decode(&mut context).expect("its blocks decode");
+        assert_eq!(decoded.frames(), 2, "a frame is a whole block");
+        assert_eq!(decoded.samples_per_frame(), 505);
+        assert_eq!(decoded.sample_count(), 2 * 505);
+        assert_eq!(
+            decoded.byte_len(),
+            512,
+            "the decode accounts for the whole payload"
+        );
+        assert_eq!(decoded.byte_len(), ima_header.data_span().length);
+        // Every block starts from the predictor **it** declares, so the second
+        // block's value is not a continuation of the first one's.
+        assert_eq!(
+            decoded.samples()[0],
+            1000,
+            "the first block's own predictor is its first sample"
+        );
+        assert_eq!(
+            decoded.samples()[505],
+            -2000,
+            "the second block restates its own predictor"
+        );
+        assert_eq!(decoded.frame(1), Some(&decoded.samples()[505..1010]));
+
+        // The Microsoft member: two 256-byte blocks of 500 samples each, and
+        // the two history values each block starts from.
+        let ms = assets.entry(2).expect("row 2 is an asset");
+        assert_eq!(ms.name(), b"loop.wav");
+        assert_eq!(
+            ms.readiness(),
+            &SoundReadiness::Decoded {
+                frames: 2,
+                samples_per_frame: 500
+            }
+        );
+        let mut context = ParseContext::with_defaults(container.label());
+        let decoded = ms.decode(&mut context).expect("its blocks decode");
+        assert_eq!(decoded.frames(), 2);
+        assert_eq!(decoded.samples_per_frame(), 500);
+        assert_eq!(decoded.sample_count(), 1000);
+        assert_eq!(decoded.byte_len(), 512);
+        assert_eq!(decoded.samples()[0], 200, "the older history sample");
+        assert_eq!(decoded.samples()[1], 300, "then the newer one");
+        assert_eq!(decoded.samples()[500], 60);
+        assert_eq!(decoded.samples()[501], 100);
+
+        // The PCM sibling still reports what it reported before: a frame is one
+        // sample per channel, and the values are its stored samples.
+        let ramp = assets.entry(0).expect("row 0 is an asset");
+        assert_eq!(
+            ramp.readiness(),
+            &SoundReadiness::Decoded {
+                frames: 8,
+                samples_per_frame: 1
+            }
+        );
+        let mut context = ParseContext::with_defaults(container.label());
+        let decoded = ramp.decode(&mut context).expect("its declared PCM decodes");
+        for (index, expected) in RAMP.iter().enumerate() {
+            assert_eq!(
+                decoded.samples()[index],
+                i32::from(*expected),
+                "sample {index}"
+            );
+        }
+    }
+
+    #[test]
+    fn accept_t524_a_block_coded_member_without_a_readable_fmt_extension_is_refused() {
+        // Spec F06 non-negotiable #4: a member that declares a block codec but
+        // cannot say how its blocks are laid out is refused with **that**
+        // refusal's own code, and its siblings stay decoded.
+        let tree = Temp::new("install");
+        tree.write(
+            "ZBD/soundsl.zbd",
+            &archive(&[
+                (b"ramp.wav".as_slice(), pcm16_member()),
+                (
+                    b"noext.wav".as_slice(),
+                    declared_member(&Fmt::ima_without_extension()),
+                ),
+                (
+                    b"short.wav".as_slice(),
+                    declared_member(&Fmt::ms_with_short_extension()),
+                ),
+                (
+                    b"lying.wav".as_slice(),
+                    declared_member(&Fmt::ima_with_wrong_samples_per_block()),
+                ),
+                (b"gun.wav".as_slice(), ima_member()),
+            ]),
+        );
+        let session = session(tree.0.as_path());
+        let container =
+            ZbdContainer::open(&session, &key("install", "ZBD/soundsl.zbd")).expect("it opens");
+        let mut context = ParseContext::with_defaults(container.label());
+        let index = container.index(&mut context).expect("its trailer reads");
+        let table = index.member_table();
+        let assets = container
+            .sound_assets(&mut context, &index, &table)
+            .expect("three unusable declarations do not fail the listing");
+
+        assert_eq!(assets.len(), 5);
+        assert_eq!(
+            assets.wave_failures(),
+            0,
+            "every member is a readable WAVE file"
+        );
+
+        // An IMA member with no `fmt ` extension has no `wSamplesPerBlock` to
+        // read, so it keeps its own tag rather than a row that says nothing.
+        let no_extension = assets.entry(1).expect("row 1 is an asset");
+        assert_eq!(no_extension.name(), b"noext.wav");
+        assert_eq!(
+            no_extension.readiness(),
+            &SoundReadiness::UnsupportedFormat {
+                tag: WAVE_FORMAT_IMA_ADPCM,
+                name: Some("ima_adpcm")
+            }
+        );
+
+        // The other two are declarations this stage read and cannot honour.
+        for (position, name, code) in [
+            (2usize, &b"short.wav"[..], "adpcm_extension_short"),
+            (3, &b"lying.wav"[..], "samples_per_block_mismatch"),
+        ] {
+            let asset = assets.entry(position).expect("the member has bytes");
+            assert_eq!(asset.name(), name);
+            assert_eq!(asset.readiness(), &SoundReadiness::Undecodable { code });
+            // And decoding it directly reports the same typed refusal.
+            let mut context = ParseContext::with_defaults(container.label());
+            let error = asset
+                .decode(&mut context)
+                .expect_err("the declaration cannot be honoured");
+            assert_eq!(error.code(), code);
+        }
+
+        // Every sibling is untouched: the PCM member and the well-declared
+        // block-coded one both decode.
+        assert_eq!(assets.decoded().count(), 2);
+        assert_eq!(
+            assets.entry(0).expect("row 0").readiness(),
+            &SoundReadiness::Decoded {
+                frames: 8,
+                samples_per_frame: 1
+            }
+        );
+        assert_eq!(
+            assets.entry(4).expect("row 4").readiness(),
+            &SoundReadiness::Decoded {
+                frames: 2,
+                samples_per_frame: 505
+            }
+        );
+    }
+
+    /// The read-only original installation, or a loud failure naming what a
+    /// retail test needs.
+    fn game_dir() -> PathBuf {
+        let value = std::env::var_os("CS_GAME_DIR").expect(
+            "CS_GAME_DIR must point at the read-only original installation (capability `retail`)",
+        );
+        assert!(!value.is_empty(), "CS_GAME_DIR must not be empty");
+        PathBuf::from(value)
+    }
+
+    /// A member's declared `wFormatTag`, `nChannels`, `nBlockAlign` and
+    /// `wSamplesPerBlock`, read from the bytes at the offsets the RIFF
+    /// specification fixes (task #344 measured every retail member's `fmt `
+    /// payload there). Independent of the production readers.
+    fn declared_fields(member: &[u8]) -> (u16, u16, u16, Option<u16>) {
+        let u16_at = |at: usize| -> u16 { u16::from_le_bytes([member[at], member[at + 1]]) };
+        let u32_at = |at: usize| -> u32 {
+            u32::from_le_bytes([member[at], member[at + 1], member[at + 2], member[at + 3]])
+        };
+        let fmt_length = u32_at(16) as usize;
+        let fmt = 20..20 + fmt_length;
+        let tag = u16_at(fmt.start);
+        let channels = u16_at(fmt.start + 2);
+        let block_align = u16_at(fmt.start + 12);
+        let samples_per_block = match tag {
+            WAVE_FORMAT_PCM => None,
+            WAVE_FORMAT_IMA_ADPCM | WAVE_FORMAT_MS_ADPCM => Some(u16_at(fmt.start + 18)),
+            _ => None,
+        };
+        (tag, channels, block_align, samples_per_block)
+    }
+
+    /// A member's `data` chunk length, found by walking the chunks from the
+    /// `WAVE` form type. Independent of the production reader.
+    fn data_chunk_len(member: &[u8]) -> u64 {
+        let u32_at = |at: usize| -> u64 {
+            u64::from(u32::from_le_bytes([
+                member[at],
+                member[at + 1],
+                member[at + 2],
+                member[at + 3],
+            ]))
+        };
+        let mut at = 12usize;
+        while at + 8 <= member.len() {
+            let id = &member[at..at + 4];
+            let length = u32_at(at + 4) as usize;
+            if id == b"data" {
+                return length as u64;
+            }
+            // Chunks are padded to an even length.
+            at += 8 + length + (length % 2);
+        }
+        panic!("the member has no `data` chunk")
+    }
+
+    #[test]
+    #[ignore = "requires CS_GAME_DIR"]
+    fn accept_t524_retail_every_compressed_sound_member_decodes_to_its_declared_counts() {
+        // The criterion this task exists for: through the production path —
+        // `ZbdContainer::open`, `sound_assets` — every member of both retail
+        // sound archives is a decoded row, and its counts are the ones its own
+        // `fmt ` payload implies. The counts are recomputed here from the
+        // member's raw bytes at the offsets the RIFF specification fixes, so
+        // this is an independent read and not a restatement of the verdict.
+        let root = game_dir();
+        let found = crate::install::discover(&root).expect("the installation is discoverable");
+        let resolve_context =
+            cs_types::asset_id::ResolveContext::new(crate::install::fingerprint(&found.manifest));
+        let mut builder = crate::vfs::SessionBuilder::new(resolve_context);
+        builder
+            .mount_installation(&root, &found.diagnosis)
+            .expect("the installation mounts");
+        let session = builder.open();
+
+        let mut per_tag: BTreeMap<u16, usize> = BTreeMap::new();
+        let mut decoded_per_tag: BTreeSet<u16> = BTreeSet::new();
+        let mut members = 0usize;
+        for spelling in ["ZBD/soundsl.zbd", "ZBD/soundsh.zbd"] {
+            let container =
+                ZbdContainer::open(&session, &key("install", spelling)).expect("it opens");
+            assert_eq!(container.family(), cs_formats::zbd::ZbdFamily::Sound);
+            let mut context = ParseContext::with_defaults(container.label());
+            let index = container.index(&mut context).expect("its trailer reads");
+            let table = index.member_table();
+            let assets = container
+                .sound_assets(&mut context, &index, &table)
+                .expect("the sound archive is read");
+            assert_eq!(assets.status(), ContainerStatus::Clean, "{spelling}");
+            assert_eq!(assets.failures(), 0, "{spelling}");
+
+            for position in 0..assets.len() {
+                let asset = assets.entry(position).expect("every member has bytes");
+                let name = String::from_utf8_lossy(asset.name()).into_owned();
+                let (tag, channels, block_align, samples_per_block) =
+                    declared_fields(asset.content());
+                let data_len = data_chunk_len(asset.content());
+                let block_align = u64::from(block_align);
+                let (frames, samples_per_frame) = match samples_per_block {
+                    // A block-coded member's frame is a whole block, and its
+                    // final block may be shorter than `nBlockAlign`.
+                    Some(samples_per_block) => (
+                        data_len.div_ceil(block_align),
+                        u64::from(samples_per_block) * u64::from(channels),
+                    ),
+                    // An uncompressed one must be a whole number of frames.
+                    None => (data_len / block_align, u64::from(channels)),
+                };
+                let SoundReadiness::Decoded {
+                    frames: decoded_frames,
+                    samples_per_frame: decoded_samples_per_frame,
+                } = asset.readiness()
+                else {
+                    panic!(
+                        "{spelling} member {position} ({name}) is {:?}, not decoded",
+                        asset.readiness()
+                    )
+                };
+                assert_eq!(
+                    (*decoded_frames, *decoded_samples_per_frame),
+                    (frames, samples_per_frame),
+                    "{spelling} member {position} ({name})"
+                );
+                *per_tag.entry(tag).or_default() += 1;
+                members += 1;
+
+                // One member of each declared format is also decoded through
+                // the public entry point, which plans it from the member's own
+                // bytes rather than from the row the listing produced.
+                if decoded_per_tag.insert(tag) {
+                    let mut context = ParseContext::with_defaults(container.label());
+                    let decoded = asset.decode(&mut context).expect("it decodes");
+                    assert_eq!(decoded.frames(), frames, "{spelling} {name}");
+                    assert_eq!(decoded.samples_per_frame(), samples_per_frame);
+                    assert_eq!(decoded.byte_len(), data_len, "{spelling} {name}");
+                    assert!(decoded.sample_count() > 0, "{spelling} {name}");
+                }
+            }
+        }
+        assert_eq!(
+            decoded_per_tag,
+            BTreeSet::from([WAVE_FORMAT_PCM, WAVE_FORMAT_IMA_ADPCM, WAVE_FORMAT_MS_ADPCM]),
+            "every declared format was decoded through SoundAsset::decode"
+        );
+
+        // The census tasks #344 and #444 measured on this installation:
+        // 5,019 compressed members (555 IMA, 4,464 Microsoft) and 22 PCM ones.
+        assert_eq!(
+            per_tag,
+            BTreeMap::from([
+                (WAVE_FORMAT_PCM, 22),
+                (WAVE_FORMAT_IMA_ADPCM, 555),
+                (WAVE_FORMAT_MS_ADPCM, 4_464),
+            ]),
+            "every retail sound member declares one of the three measured formats"
+        );
+        assert_eq!(members, 5_041);
     }
 }
