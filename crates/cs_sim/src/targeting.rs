@@ -1053,6 +1053,33 @@ impl TargetStore {
         Ok(())
     }
 
+    /// Updates the actor's classification.
+    ///
+    /// Classification is a property of *what the actor is*, not of a phase:
+    /// a scripted action that reclassifies an airframe as a capital ship, or
+    /// a loadout change that turns a gun mount into ordnance, changes what
+    /// the class and non-aircraft actions select. It is a typed transaction
+    /// like every other record field, so a reclassification reaches the next
+    /// query through the same path as a faction change.
+    ///
+    /// # Errors
+    ///
+    /// [`TargetError::ForeignSession`] or [`TargetError::UnknownActor`].
+    pub fn set_class(&mut self, actor: ActorId, class: TargetClass) -> Result<(), TargetError> {
+        self.entry_mut(actor)?.record.class = class;
+        Ok(())
+    }
+
+    /// Updates whether mission rules flag the actor as an objective target.
+    ///
+    /// # Errors
+    ///
+    /// [`TargetError::ForeignSession`] or [`TargetError::UnknownActor`].
+    pub fn set_objective(&mut self, actor: ActorId, objective: bool) -> Result<(), TargetError> {
+        self.entry_mut(actor)?.record.objective = objective;
+        Ok(())
+    }
+
     /// Records a lifecycle transition for the actor.
     ///
     /// Destruction, despawn and mission removal end targetability;
@@ -1548,13 +1575,13 @@ impl TargetStore {
         let observer_record = self
             .record(&observer)
             .ok_or(TargetError::UnknownActor { actor: observer })?;
-        let observer_record_faction = observer_record.faction.clone();
+        let observer_faction = &observer_record.faction;
+        let observer_position = observer_record.position;
         self.prune(selection);
         let threats = self.threats(observer, now);
         let reticle = selection.current().and_then(|target| {
-            let observer_position = self.record(&observer)?.position;
             let record = self.record(&target)?;
-            let allegiance = self.allegiance(&observer_record_faction, &record.faction);
+            let allegiance = self.allegiance(observer_faction, &record.faction);
             let threatening = threats.iter().any(|cue| cue.attacker == target);
             Some(Reticle {
                 target,

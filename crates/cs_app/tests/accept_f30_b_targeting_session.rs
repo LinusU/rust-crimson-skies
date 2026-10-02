@@ -700,6 +700,59 @@ fn accept_f30_b_damage_tick_feeds_threats_and_lifecycle() {
     );
 }
 
+/// A reclassification and an objective flag written on an entity's record
+/// reach the store through the pass that observes them: the non-aircraft
+/// and objective actions select differently on the next phase, so a
+/// reported update is an applied one.
+#[test]
+fn accept_f30_b_reclassification_on_an_entity_reaches_the_actions() {
+    let generation = SceneGeneration::default().next();
+    let mut world = bound_world(generation);
+    sync_targetable_roster(&mut world);
+
+    // The wingman becomes a capital ship and the objective flag moves to the
+    // raider at 100 m.
+    let wingman = entity_of(&mut world, actor(3));
+    let raider = entity_of(&mut world, actor(9));
+    {
+        let mut state = world.get_mut::<TargetableState>(wingman).expect("bound");
+        state.class = TargetClass::CapitalShip;
+    }
+    {
+        let mut state = world.get_mut::<TargetableState>(raider).expect("bound");
+        state.objective = true;
+    }
+    let report = sync_targetable_roster(&mut world);
+    assert_eq!(report.updated, 6);
+    assert_eq!(report.registered, 0);
+
+    let store = world.resource::<TargetingSession>().store();
+    assert_eq!(
+        store.record(&actor(3)).expect("registered").class,
+        TargetClass::CapitalShip,
+        "the store holds the entity's new class"
+    );
+    assert!(
+        store.record(&actor(9)).expect("registered").objective,
+        "and the new objective flag"
+    );
+    assert_eq!(
+        store
+            .ordered(actor(1), TargetFilter::Objective)
+            .expect("registered"),
+        vec![actor(4), actor(9)],
+        "the objective action now finds both: the trader at 60 m, the \\
+         reclassified objective at 100 m"
+    );
+    assert_eq!(
+        store
+            .ordered(actor(1), TargetFilter::NotClass(TargetClass::Aircraft))
+            .expect("registered"),
+        vec![actor(3), actor(4)],
+        "the non-aircraft action now includes the reclassified actor"
+    );
+}
+
 /// The entries refuse to run without a session rather than panicking or
 /// quietly doing nothing.
 #[test]

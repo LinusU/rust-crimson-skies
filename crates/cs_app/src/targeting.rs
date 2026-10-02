@@ -592,25 +592,37 @@ pub fn sync_targetable_roster(world: &mut World) -> RosterReport {
         }
         // The pose and the classification are written through the store's
         // own transactions, so no consumer can observe a half-updated
-        // record: a capture, a reveal or a phase change reaches the store
-        // in the same pass that observes it.
+        // record: a capture, a reclassification, a reveal or a phase change
+        // reaches the store in the same pass that observes it, and every
+        // field of the entity's record has a transaction to travel through.
         store
             .set_pose(actor, record.position)
             .expect("a registered actor accepts a pose");
-        let changed = store.record(&actor).is_some_and(|held| {
-            held.faction != record.faction
-                || held.class != record.class
-                || held.objective != record.objective
-                || held.revealed != record.revealed
-                || held.phase_eligible != record.phase_eligible
-        });
-        if changed {
+        let held = store
+            .record(&actor)
+            .cloned()
+            .expect("the actor is registered");
+        if held.class != record.class {
+            store
+                .set_class(actor, record.class)
+                .expect("a registered actor accepts a class");
+        }
+        if held.objective != record.objective {
+            store
+                .set_objective(actor, record.objective)
+                .expect("a registered actor accepts an objective flag");
+        }
+        if held.faction != record.faction {
             store
                 .set_faction(actor, record.faction)
                 .expect("a registered actor accepts a faction");
+        }
+        if held.revealed != record.revealed {
             store
                 .set_revealed(actor, record.revealed)
                 .expect("a registered actor accepts a reveal state");
+        }
+        if held.phase_eligible != record.phase_eligible {
             store
                 .set_phase_eligible(actor, record.phase_eligible)
                 .expect("a registered actor accepts a phase state");

@@ -12,9 +12,10 @@ evidence report required).
   `SelectionFrame`, `TargetFilter::label`, `CycleDirection::label`,
   `AttackEvent::from_hit`, `ThreatFeed`, `TargetStore::record_hits`,
   `TargetStore::registered`/`unregister`, `TargetStore::act`,
-  `TargetStore::crosshair_query`, `Reticle`, `TargetPhase`,
-  `TargetStore::phase`, `TargetError::MissingCrosshair` and the
-  `synthetic_selection_binding` fixture.
+  `TargetStore::crosshair_query`, `TargetStore::set_class`/`set_objective`,
+  `Reticle`, `TargetPhase`, `TargetStore::phase`,
+  `TargetError::MissingCrosshair` and the `synthetic_selection_binding`
+  fixture.
 - `crates/cs_content/src/target_rules.rs`: the F30-B declared action table —
   `DeclaredAction`, `DeclaredSelectionAction`, `DeclaredSelectionActions`,
   `SelectionActionsError` validation and
@@ -28,7 +29,7 @@ evidence report required).
   `crates/cs_app/src/lib.rs` (wiring only): module documentation.
 - `crates/cs_sim/tests/accept_f30_b_selection_actions.rs` (7 tests),
   `crates/cs_content/tests/accept_f30_b_target_actions.rs` (3 tests),
-  `crates/cs_app/tests/accept_f30_b_targeting_session.rs` (7 tests).
+  `crates/cs_app/tests/accept_f30_b_targeting_session.rs` (8 tests).
 - This file.
 
 **One observable failure:** without the single phase record, the reticle and
@@ -85,8 +86,14 @@ allegiance, or an AI gate reading the store directly, fails the second half.
   registers/updates from `(TargetableBinding, TargetableState)`, unregisters
   actors whose entity is gone, ignores another scene generation or another
   session generation, and reports a binding with no record as `incomplete`
-  rather than registering a guessed position. `apply_selection_edges` runs
-  each bound edge in arrival order and derives the phase once at the end.
+  rather than registering a guessed position. Every mutable record field has
+  a store transaction to travel through — including F30-B's
+  `set_class`/`set_objective`, added because a reclassification written on
+  an entity would otherwise be *reported* as an update and silently *not
+  applied*, which would make the roster sync's own report a lie. A class or
+  objective change is a scripted statement, not a pose, so it reaches the
+  next query the same way a capture does. `apply_selection_edges` runs each
+  bound edge in arrival order and derives the phase once at the end.
   `apply_target_damage` records every `Lifecycle` event and mints attacks
   only for hits the resolver reported `HitApplied`.
 - **Declared actions.** `DeclaredSelectionActions` maps a typed command edge
@@ -140,3 +147,13 @@ pushed commit afterwards):
 | 4. the threat ledger purged on `record_lifecycle` instead of on `unregister` | `accept_f30_b_destroyed_selection_clears_in_the_phase_record` **failed** on the surviving-evidence assertion |
 | 5. repeated edges coalesced within one frame | `accept_f30_b_session_runs_edges_and_publishes_the_phase_record` **failed** |
 | 6. the whole F30-B production path removed from `cs_sim::targeting` | the three acceptance files fail to compile — the tests call production code, not a parallel test-only implementation |
+
+A defect the implementer found by reviewing the diff rather than by a
+probe: the roster sync compared the entity's class and objective flag
+against the store's record and counted an "updated" pass, but F30-A's store
+had no transaction to apply either one — so a scripted reclassification
+would have been reported as applied and silently dropped. `set_class` and
+`set_objective` were added, the sync writes through every field's
+transaction, and `accept_f30_b_reclassification_on_an_entity_reaches_the_actions`
+discriminates it (drop either transaction and the ordered queries keep the
+old answers).
