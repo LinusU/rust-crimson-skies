@@ -1255,6 +1255,104 @@ fn accept_f21_d_a_node_name_an_airframe_reuses_is_reported_ambiguous_not_resolve
     );
 }
 
+/// The subtree walk is the root's children closure and never leaves it, even
+/// when the root's own node names a parent: a world node above every airframe
+/// must not drag the *other* airframes' nodes into one aircraft's coverage row.
+#[test]
+fn accept_f21_d_a_subtree_walk_never_leaves_the_aircraft_it_started_from() {
+    let bytes = synthetic_cockpit_script();
+    let discovery =
+        discover_cockpit_bindings(&decode(&bytes), &cockpit_claim(), FIXTURE, observed(0, 16))
+            .expect("the authored container declares bindings");
+    // A world node owns both airframe roots and one unrelated child, and the
+    // kestrel root names the world as its parent — a shape the corpus's parent
+    // and child words can both produce.
+    let specs = [
+        Node {
+            name: "world1",
+            parent: None,
+            children: vec![1, 2, 3],
+            mesh_index: -1,
+        },
+        Node {
+            name: "player_kestrel",
+            parent: Some(0),
+            children: vec![4, 5],
+            mesh_index: -1,
+        },
+        Node {
+            name: "player_warhawk",
+            parent: Some(0),
+            children: vec![6],
+            mesh_index: -1,
+        },
+        Node {
+            name: "unrelated",
+            parent: Some(0),
+            children: Vec::new(),
+            mesh_index: 9,
+        },
+        Node {
+            name: "gungauge",
+            parent: Some(1),
+            children: Vec::new(),
+            mesh_index: 41,
+        },
+        Node {
+            name: "missilegauge",
+            parent: Some(1),
+            children: Vec::new(),
+            mesh_index: 42,
+        },
+        Node {
+            name: "gungauge",
+            parent: Some(2),
+            children: Vec::new(),
+            mesh_index: 43,
+        },
+    ];
+    let archive = cs_formats::gamez::GameZNodes {
+        nodes: specs
+            .iter()
+            .enumerate()
+            .map(|(index, spec)| raw_node(spec, index as u32))
+            .collect(),
+        ..synthetic_archive()
+    };
+    let report = audit_cockpit_coverage(
+        &discovery,
+        &[airframe("synthetic.kestrel", "player_kestrel")],
+        &archive,
+        &archive_id(),
+    )
+    .expect("the root exists");
+    let row = report
+        .row("airframe/synthetic.kestrel")
+        .expect("the airframe has a row");
+
+    assert_eq!(
+        row.subtree_nodes(),
+        3,
+        "the root and its two children, and nothing else: not the world node above it, not the \
+     warhawk under it, not the world's unrelated child"
+    );
+    assert_eq!(
+        row.drawable_meshes(),
+        [("gungauge", 41), ("missilegauge", 42)],
+        "and the geometry resolved is the kestrel's own, never the warhawk's 43"
+    );
+    assert!(
+        row.bindings().iter().all(|binding| {
+            binding
+                .coverage()
+                .node_index()
+                .is_none_or(|index| index == 4 || index == 5)
+        }),
+        "every resolved node index lies inside the kestrel's own subtree: {:?}",
+        row.bindings()
+    );
+}
+
 /// However complete the bindings are, the pilot's eye stays undeclared: no
 /// verified binding means a cockpit mode may be declared, not that a viewpoint
 /// may be invented.

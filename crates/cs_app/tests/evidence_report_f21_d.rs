@@ -88,6 +88,7 @@ const SYNTHETIC_TESTS: &[&str] = &[
     "accept_f21_d_a_cockpit_claim_the_container_does_not_back_is_refused",
     "accept_f21_d_cockpit_coverage_resolves_each_binding_against_its_own_airframe_subtree",
     "accept_f21_d_a_node_name_an_airframe_reuses_is_reported_ambiguous_not_resolved_by_position",
+    "accept_f21_d_a_subtree_walk_never_leaves_the_aircraft_it_started_from",
     "accept_f21_d_the_eye_placement_stays_undeclared_however_complete_the_bindings_are",
 ];
 

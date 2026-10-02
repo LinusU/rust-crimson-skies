@@ -1662,6 +1662,11 @@ fn stored_root_name(airframe: &CockpitAirframe) -> Result<(&str, &str), CockpitC
 /// in the parent/child arrays stops at the already-visited set instead of
 /// looping forever. A node whose stored index is past the array is skipped and
 /// counted nowhere, because there is no node to attribute it to.
+///
+/// The walk is the root's **children closure**, plus a repair from each node's
+/// own parent word when that parent is already inside the closure; it never
+/// leaves the closure. That is what keeps one aircraft's coverage row from
+/// reaching another's nodes.
 fn subtree_indices(archive: &GameZNodes, root: u32) -> Vec<u32> {
     let mut visited: BTreeSet<u32> = BTreeSet::new();
     let mut queue = vec![root];
@@ -1672,8 +1677,20 @@ fn subtree_indices(archive: &GameZNodes, root: u32) -> Vec<u32> {
         let Some(node) = archive.get(index) else {
             continue;
         };
-        queue.extend(node.children.iter().copied());
-        if let Some(parent) = node.parent {
+        for child in node.children.iter().copied() {
+            queue.push(child);
+        }
+        // A node's parent is followed **only** when that parent is already in the
+        // subtree. The corpus's child lists do not always cover every node that
+        // names a parent — F11-D2 measured eight world containers refusing to
+        // convert for exactly that reason — so a missing child edge is repaired
+        // from the child's own parent word, and the root's own parent word is
+        // never followed: a root that names a parent must not drag the rest of
+        // the container into "this aircraft's subtree".
+        if let Some(parent) = node.parent
+            && index != root
+            && visited.contains(&parent)
+        {
             queue.push(parent);
         }
     }

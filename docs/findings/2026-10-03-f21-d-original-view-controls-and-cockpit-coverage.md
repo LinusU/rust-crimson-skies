@@ -49,7 +49,7 @@ and a follow-up task is filed for it.
 - `crates/cs_app/src/camera/mod.rs`: the module declaration, the re-exports and
   the doc paragraphs naming this stage. No logic.
 - `crates/cs_app/tests/camera/coverage.rs` (new) and the module list in
-  `crates/cs_app/tests/camera/main.rs`: the 12 `accept_f21_d_*` tests.
+  `crates/cs_app/tests/camera/main.rs`: the 13 `accept_f21_d_*` tests.
 - `crates/cs_app/tests/evidence_report_f21_d.rs` (new): the CLI-EVIDENCE
   harness. Deliberately **not** named `accept_f21_d_*`.
 - `docs/findings/2026-10-03-f21-d-original-view-controls-and-cockpit-coverage.md`
@@ -251,9 +251,23 @@ geometry a coverage row vouches for, drawn by the real renderer, measured for
 coverage. Placing a camera *inside* the original's cockpit needs the eye
 placement this stage could not find, so this stage does not fake one.
 
+## Review pass (self-review of this branch, same agent instance)
+
+The implementer re-read its own diff against the sheet, `UI-NETWORK` and
+`AGENTS.md` before handing over and found one defect, which it fixed and
+mutation-checked:
+
+| # | defect | how it was reached | fix |
+| --- | --- | --- | --- |
+| R1 | **`subtree_indices` followed every parent word, including a root's own.** A root that names a parent (the corpus's parent and child words can both produce that) would pull the parent in and from there its whole subtree, so one aircraft's coverage row could resolve another aircraft's nodes. The retail run never hit it — all eleven declared roots have no parent — which is exactly why it needed a test rather than a rerun. | a synthetic archive with a `world1` node above both airframe roots, the kestrel root naming it as its parent | the walk is the root's **children closure**, plus a repair from a node's own parent word only when that parent is already inside the closure (which is what makes an incomplete child list recoverable, per F11-D2's measurement); the root's own parent is never followed. `accept_f21_d_a_subtree_walk_never_leaves_the_aircraft_it_started_from` pins it |
+
+Same-agent review is **not** independent evidence: it says the branch has no
+known defect, not that the numbers describe the original. The reviewer Rally
+assigns should re-measure the corpus itself.
+
 ## Test sensitivity
 
-Seven mutations, applied and reverted against production code, run as
+Eight mutations, applied and reverted against production code, run as
 `cargo test -p cs_app --test camera -- accept_f21_d_ --include-ignored`:
 
 | # | mutation | tests that died |
@@ -265,6 +279,7 @@ Seven mutations, applied and reverted against production code, run as
 | 5 | `discover_cockpit_bindings` stops deduplicating by node name | **4** (binding order, coverage, eye, retail census) |
 | 6 | `stored_root_name` stops deriving the bare node name | **4** (coverage, ambiguity, eye, retail coverage) |
 | 7 | `verified_bindings` includes unresolved bindings | **1** (coverage) |
+| 8 | `subtree_indices` follows the root's own parent word again | **1** (`a_subtree_walk_never_leaves_the_aircraft_it_started_from`) |
 
 Mutation 7 did **not** fail on the first pass: the coverage test asserted the
 verified list only for the airframe whose bindings all resolved, so a
@@ -279,11 +294,11 @@ is back to the implementation under review.
 cargo fmt --all -- --check                                                   → 0
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings → 0
 cargo test --workspace --locked                                              → 0
-cargo test --workspace --locked -- accept_f21_d_ --include-ignored           → 0 (12 tests, all passed)
+cargo test --workspace --locked -- accept_f21_d_ --include-ignored           → 0 (13 tests, all passed)
 ```
 
-The task selection discovers exactly the 12 `accept_f21_d_*` tests in
-`crates/cs_app/tests/camera/coverage.rs`: eight unignored (CI runs them) and
+The task selection discovers exactly the 13 `accept_f21_d_*` tests in
+`crates/cs_app/tests/camera/coverage.rs`: nine unignored (CI runs them) and
 four marked — two `#[ignore = "requires CS_GAME_DIR"]`, one
 `#[ignore = "requires a GPU …"]` and one
 `#[ignore = "requires CS_GAME_DIR and a GPU adapter"]`. All four pass locally
