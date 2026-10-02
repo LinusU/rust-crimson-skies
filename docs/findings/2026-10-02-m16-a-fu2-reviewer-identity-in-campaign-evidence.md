@@ -123,7 +123,9 @@ A drift test mutates a report back to `reviewer: none yet`, renames the
 implementer, deletes the "not independent" clause, drifts the harness literal
 and awards `checked`, and requires each mutation to be reported.
 
-Known limitation, filed as a follow-up rather than fixed here: the CI workflow
-runs the Rust checks, the synthetic-fixture comparison and the binary-file scan
-only, so this check runs when an agent runs it, not on every push.
-`.github/workflows/ci.yml` is a protected path and this task did not touch it.
+Known limitation, filed as follow-up #480 (M16-A-FU3) rather than fixed here:
+the CI workflow runs the Rust checks, the synthetic-fixture comparison and the
+binary-file scan only, so this check runs when an agent runs it, not on every
+push. `.github/workflows/ci.yml` is a protected path and this task did not touch
+it. The same applies to `tools/tests/test_plan_sync.py` from AUDIT-PLAN-SYNC
+(#356).
