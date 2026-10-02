@@ -40,8 +40,11 @@ files declare.
   `crates/cs_content/tests/accept_f27_d_ammo_audit.rs` (**new**),
   `crates/cs_content/tests/accept_f27_d_retail_ammo_catalogue.rs` (**new**,
   `#[ignore]`), `crates/cs_app/tests/accept_f27_d_session_ammo_audit.rs`
-  (**new**), `crates/cs_content/tests/evidence_report_f27_d.rs` (**new**,
-  evidence harness, not an acceptance test).
+  (**new**), `crates/cs_content/tests/f27_d_support/mod.rs` (**new**, the shared
+  retail read, included by the two `cs_content` targets above and by the
+  evidence harness so all three describe one installation),
+  `crates/cs_content/tests/evidence_report_f27_d.rs` (**new**, evidence harness,
+  not an acceptance test).
 - This file and `docs/findings/evidence/F27-D.json`.
 
 No protected path, no `Cargo.toml`/`Cargo.lock` change, no original data, no
@@ -252,30 +255,46 @@ missing those positions; it was missing the wing-station and side distinctions.
 
 ## Test sensitivity
 
-The audit's whole value is that it can fail, so each of its verdicts has a test
-that removes exactly that decision. Measured by mutating the production source in
-place, one mutation at a time, restoring after each; the counts are what the run
-reported.
+The audit's whole value is that it can fail, so each of its decisions has a test
+that removes exactly that decision. **Nineteen** mutations were applied to the
+three production files, one at a time, restoring the source after each, and each
+selected test was re-run **alone with `--exact`**. Every mutation was caught. The
+"caught by" column is what the run reported, not an estimate.
 
 | mutation | caught by |
 | --- | --- |
-| the closure check against the measured surface is dropped | `accept_f27_d_a_catalogue_that_under_counts_the_installation_is_incomplete`, `accept_f27_d_an_empty_catalogue_is_incomplete`, `accept_f27_d_retail_the_ammo_audit_reports_every_type_it_cannot_map` |
-| `is_complete` ignores `findings` | the same three |
-| a type with no known amount is reported as consumed | `accept_f27_d_a_type_with_no_measured_damage_has_no_damage_consumer` |
-| a known zero is treated as unmeasured | `accept_f27_d_a_known_zero_amount_is_not_reported_as_unmeasured` |
-| an unmeasured interaction option is not reported | `accept_f27_d_an_unmeasured_interaction_rule_is_named_by_option` |
-| `covers_group` is widened to claim every group | `accept_f27_d_the_measured_gun_group_vocabulary_is_larger_than_the_mount_kinds`, `accept_f27_d_every_uncovered_gun_group_is_reported_once_by_name`, `accept_f27_d_retail_the_ammo_audit_reports_every_type_it_cannot_map` |
-| `covers_group` is narrowed to claim none | the same three |
-| the dangling-reference checks walk `pairings()` instead of `guns()`/`ammunition()` | `accept_f27_d_a_dangling_loadout_reference_is_reported_both_ways` |
-| the registry overwrites the profile on a divergent registration | `accept_f27_d_two_mounts_disagreeing_about_one_type_are_refused_by_name`, `accept_f27_d_two_mounts_disagreeing_about_one_type_are_reported` |
-| the registry folds a refused mount in anyway | the same two, plus `accept_f27_d_two_mounts_disagreeing_about_one_type_are_one_row`'s sibling in `cs_app` |
-| `AmmunitionDamageConsumer::amount` returns `Some(0.0)` for a zero channel | `accept_f27_d_a_type_with_no_delivering_channel_is_consumed_by_nothing` |
-| the session audit ignores a closed session | `accept_f27_d_an_empty_or_closed_session_audits_to_nothing` |
-| the retail test's committed group table is compared only against itself | `accept_f27_d_retail_the_resource_header_declares_every_measured_gun_group`, `..._four_ammunition_name_blocks`, `..._the_loadout_screens_state_four_ammunition_types`, `..._the_engine_dictionary_names_the_ammunition_identifiers` |
+| the closure check against the measured surface is dropped | 3/3: `accept_f27_d_a_catalogue_that_under_counts_the_installation_is_incomplete`, `accept_f27_d_an_empty_catalogue_is_incomplete`, `accept_f27_d_retail_the_ammo_audit_reports_every_type_it_cannot_map` |
+| `is_complete` ignores the findings | 3/4 — the three above. `accept_f27_d_a_fully_declared_catalogue_is_complete` survives, correctly: with no findings it *is* complete |
+| a type with no known amount is never reported as unconsumed | 1/1: `accept_f27_d_a_type_with_no_measured_damage_has_no_damage_consumer` |
+| `AmmoDamageConsumer::is_consumed` counts an unknown amount as known | 1/2 — `..._has_no_damage_consumer`. `accept_f27_d_an_empty_catalogue_is_incomplete` is unaffected, correctly |
+| `AmmoDamageConsumer::consumer` names a path even for an unmeasured type | 1/2 — `..._has_no_damage_consumer` |
+| an unmeasured interaction option is never reported | 1/1: `accept_f27_d_an_unmeasured_interaction_rule_is_named_by_option` |
+| an unmeasured caliber is never reported | 1/1: `accept_f27_d_an_unmeasured_caliber_is_reported` |
+| an unpaired type is never reported | 1/1: `accept_f27_d_an_unpaired_type_is_reported` |
+| `AmmoBehavior` reports every option as applied | 1/1: `accept_f27_d_a_fully_declared_catalogue_is_complete` |
+| the audit's rows are not deduplicated by type id | 1/1: `accept_f27_d_a_repeated_type_record_is_audited_once` |
+| `covers_group` is widened to claim every measured group | 3/4: `accept_f27_d_every_uncovered_gun_group_is_reported_once_by_name`, `accept_f27_d_a_mount_kind_the_installation_never_names_is_reported`, `accept_f27_d_retail_the_ammo_audit_reports_every_type_it_cannot_map` |
+| `covers_group` is narrowed to claim nothing | 4/5 — those three plus `accept_f27_d_a_fully_declared_catalogue_is_complete`, whose synthetic surface is built from the covered groups and so then has none |
+| the dangling-reference checks walk `pairings()` instead of `guns()`/`ammunition()` | 1/1: `accept_f27_d_a_dangling_loadout_reference_is_reported_both_ways` |
+| the registry overwrites the profile on a divergent registration | 2/2: `accept_f27_d_two_mounts_disagreeing_about_one_type_are_refused_by_name`, `accept_f27_d_two_mounts_disagreeing_about_one_type_are_reported` |
+| the registry folds a refused mount in anyway | 4/4: the same two plus `accept_f27_d_two_mounts_agreeing_about_one_type_are_one_row` and `accept_f27_d_two_mounts_of_one_type_audit_to_one_row` |
+| `AmmunitionDamageConsumer::amount` returns `Some(0.0)` for a zero channel | 1/2: `accept_f27_d_a_type_with_no_delivering_channel_is_consumed_by_nothing` |
+| `AmmunitionDamageConsumer::delivering` counts zero channels | 2/2: `..._consumed_by_nothing` and `accept_f27_d_a_one_channel_profile_consumes_only_that_channel` |
+| `session_ammunition_audit` audits only the first registered actor | 1/1: `accept_f27_d_the_session_audit_spans_every_registered_actor` |
+| `session_ammunition_audit` ignores a closed session | 1/1: `accept_f27_d_an_empty_or_closed_session_audits_to_nothing` |
 
-The mutation harness was a scratch script under the session's temporary directory,
-not a committed tool: it rewrites production source in place and restores it after
-each run, which is a one-off measurement rather than a test.
+Three rows report fewer catches than selected tests, and each is a test that
+*should* survive because it does not exercise the removed decision — a complete
+catalogue with no findings, an empty catalogue with no rows, and a synthetic
+surface built from the covered groups. That is the correct reading of those
+mutations, not a gap.
+
+The harness that applied them was a scratch script under the session's temporary
+directory, not a committed tool: it rewrites production source in place and
+restores it after each run, which is a one-off measurement rather than a test.
+Two of its first patches had an anchor that no longer matched after `cargo fmt`
+reflowed the source; those two were re-measured with corrected anchors before the
+table above was written, and no row above rests on an unmeasured patch.
 
 ## Unknowns recorded (not guessed)
 
@@ -308,6 +327,41 @@ each run, which is a one-off measurement rather than a test.
   behavior, no audio or visual verification of the emitted effects, no Avian
   projectile body, no cockpit input device, and `crates/cs_app/src/run.rs` still
   does not schedule `step_weapon_session` (not an owner path for this task).
+
+## Evidence
+
+`private/evidence/F27-D/acceptance.json`, committed as
+`docs/findings/evidence/F27-D.json`, validates with
+`tools/validate_evidence.py --require-pass`. What it records:
+
+- `capabilities: ["retail", "synthetic"]`, `claim: "implemented"`;
+- `tests: {discovered: 41, executed: 41, passed: 41, failed: 0, ignored: 0}` — the 41
+  `accept_f27_d_` tests, six of them retail and all run with `--include-ignored`;
+- `install_sha256 b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978` and
+  `content_sha256 a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d`, both
+  measured by production `cs_assets::install` discovery, never typed in;
+- two hashed artifacts: `cargo-test.log` (the recorded acceptance run) and
+  `ammunition-surface.json` — a **second** production pass of the same reader over
+  the same installation, carrying each member's decoded length and SHA-256, the
+  resource header's `#define` count, the measured gun-group and ammunition-block
+  identifier lists, the engine dictionary's identifier names, the screen loop
+  bound each count is read from with what it states, and the six fidelity
+  limitations under their `f27.d.limit.*` claim ids.
+
+**`unknowns` is empty and that is a claim worth checking.** The validator's
+`--require-pass` rejects a nonempty `unknowns` list. The six limitations are
+therefore recorded in the four places above the validator does not read for that
+field — the report's `review.method`, the hashed artifact, this file, and
+follow-up task #545 (F27-E) — rather than removed. They are *unmeasured original
+behavior*, not failures of this stage's assertions: every assertion here is a
+measured fact about shipped files or a production behavior the suite exercised,
+and all of them pass. `claim` is `implemented`, never `verified_original`: what
+was verified is what the installation's **files** declare, and `retail` here is
+read access, not evidence that the original executable ran.
+
+The reviewer should regenerate the report on the rebased commit and compare it.
+The tree hash is in the report and is checked against `HEAD^{tree}` by the
+harness itself, so a report from another commit cannot be reused.
 
 ## Not claimed
 
