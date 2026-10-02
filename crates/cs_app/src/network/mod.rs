@@ -16,5 +16,10 @@
 //! connection state (F54-C, F55-A), the bounded interpolation buffer and local
 //! prediction (F57-B), and the wiring of reconciliation, projectile
 //! confirmation and origin epochs into the running app (F57-C).
+//!
+//! F58-A adds [`recovery`]: the host-side receive boundary that admits a
+//! decoded client packet through the session identity gate and turns an
+//! admitted fire packet into the F27 requests weapon acceptance consumes.
 
 pub mod physics;
+pub mod recovery;
