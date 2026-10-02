@@ -443,19 +443,50 @@ because adjudicating rows this task did not measure would be a guess.
 
 The fix landed as `66835918` at 2026-09-30T18:52:45Z — 25 minutes after the
 last failure in the table above. Snapshot taken 2026-10-02T12:41Z, 41.8 h
-later (`gh run list --branch main --created '>=2026-09-30T18:52:45Z'`):
+later (`gh run list --branch main --created '>=2026-09-30T18:52:45Z' --limit
+1000`, with the end bound applied client-side — see the correction below):
 
 * `main`: **151 runs, no failure.** 111 of them are pushes that carry the
   `rust` job — 109 success, 2 cancelled (`36761712081` and `36856635509`,
   both superseded re-pushes of a commit that landed through a `rally-land`
   run, not test failures) — and 40 are `rally-land` runs, which have no
   `rust` job at all.
-* All branches in the same window: 300 runs, 3 failures, **none of them this
-  signature**. `36998537888` (rally/510) and `36977817705` (rally/415) fail
-  in `cargo test` on real assertions — `crates/cs_app/src/scene.rs` and
-  `crates/cs_app/tests/accept_doclib_conflict.rs` respectively — and
-  `37005795167` (rally/431) fails in `cargo clippy`, so it never reaches a
-  link. Each is tracked by its own task.
+* All branches in the same window: **600 runs, 7 failures, none of them this
+  signature.** All seven are ordinary quality failures, and every one was
+  checked by downloading its log and searching for the two strings this fault
+  prints — `signal 7 [Bus error]` and
+  `livery.rs - livery (line 49) ... FAILED` — and none contains either:
+
+  | run | branch | failed step | on |
+  |---|---|---|---|
+  | 36832902856 | rally/173 | `cargo clippy` | — |
+  | 36842017486 | rally/129 | `cargo fmt` | — |
+  | 36865101088 | rally/129 | `cargo test` | `tools/cs_xtask/tests/accept_t437_runtime_workspace_root.rs:249` |
+  | 36874371066 | rally/172 | `cargo fmt` | — |
+  | 36977817705 | rally/415 | `cargo test` | `crates/cs_app/tests/accept_doclib_conflict.rs` |
+  | 36998537888 | rally/510 | `cargo test` | `crates/cs_app/src/scene.rs` (4 assertions) |
+  | 37005795167 | rally/431 | `cargo clippy` | — |
+
+  Three of the seven never reach a link at all (`cargo fmt` and `cargo clippy`
+  stop first), and the four that do reach `cargo test` fail on real assertions
+  with a `test result: FAILED` — none is a linker fault.
+
+  > **Correction (2026-10-02, review pass).** This bullet first read "300
+  > runs, 3 failures" and listed only the three most recent failures. That was
+  > a **`--limit 300` artifact, not a measurement**: `gh run list` returns at
+  > most `--limit` rows, and 300 happened to be the number of runs in the
+  > window at the time of an earlier query, so the three failures listed were
+  > simply the three the truncated page happened to contain. Re-run with
+  > `--limit 1000` and an explicit end bound, the window holds 600 runs and 7
+  > failures (`Counter({success: 541, cancelled: 52, failure: 7})`). The
+  > *conclusion* — no recurrence of this signature on any branch — is
+  > unchanged and now rests on all seven logs rather than three, but the
+  > counts as first published were wrong and would have let a future reader
+  > believe a third of the window was never examined. Anyone recounting a
+  > window with `gh run list` must set `--limit` above the expected number and
+  > filter the end bound client-side: a second `--created '<=...'` flag is
+  > **silently ignored** (`gh` keeps the first), which is what first put two
+  > pre-window `main` failures inside this window.
 * The doctest still links and runs rather than being skipped: `test
   crates/cs_app/src/livery.rs - livery (line 49) ... ok` appears in the
   `cargo test` logs of nine runs sampled across the window
@@ -466,6 +497,15 @@ later (`gh run list --branch main --created '>=2026-09-30T18:52:45Z'`):
   only code fence in the file, so nothing was weakened to make this green;
   it is still the doctest that has to link the whole `cs_app` + Bevy/Avian
   graph, which is why it is the one that reported the disk pressure.
+
+Two windows in that window are normally invisible to a census keyed on a
+run's *final* conclusion, so both were checked directly and both are clean:
+the 52 cancelled `CI` runs (whose logs were downloaded and searched for the
+same two strings — a cancellation can truncate a log *after* the crash), and
+the runs with more than one attempt, since a run that crashed on attempt 1 and
+was re-run to green is exactly the `36753936929` shape above. The window
+contains one such run, `36767208737` (rally/420, cancelled); its attempt-1
+`rust` log reaches `cargo test` and contains neither string.
 
 **What this does not establish.** 41.8 h and 111 `rust` jobs with no
 recurrence is consistent with the fix holding; it is not a proof, and the
