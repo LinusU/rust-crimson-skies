@@ -36,6 +36,7 @@ mod closure;
 mod common;
 mod coverage;
 mod evidence;
+mod f50_e4;
 mod identity;
 mod inventory;
 mod m01_a;
