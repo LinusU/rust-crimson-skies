@@ -34,14 +34,19 @@ use cs_sim::targeting::{
 use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind};
 use cs_types::input::FlightCommand;
+use cs_types::net::SessionId;
 use cs_types::space::{Radians, UnitVec3, WorldPosition};
 
 /// The session generation the fixture roster and the combat planner share.
 const SESSION: u64 = 7;
 
+fn session(value: u64) -> SessionId {
+    SessionId::new(value).expect("a nonzero session generation")
+}
+
 fn actor(serial: u64) -> ActorId {
     ActorId {
-        session: SESSION,
+        session: session(SESSION),
         serial,
     }
 }
@@ -75,7 +80,7 @@ fn fixture_hit(
 ) -> HitEvent {
     HitEvent::try_new(
         HitEventId {
-            session: SESSION,
+            session: session(SESSION),
             tick,
             producer,
             sequence,
@@ -414,7 +419,7 @@ fn accept_f30_b_threat_state_feeds_from_authoritative_hits() {
     // The whole batch is refused when any part of it belongs to another
     // generation, rather than half-recording the rest.
     let mut foreign = hit(Some(actor(5)), actor(1), 4);
-    foreign.id.session = SESSION + 1;
+    foreign.id.session = session(SESSION + 1);
     assert_eq!(
         store.record_hits(&[foreign]),
         Err(TargetError::ForeignSession {
@@ -554,7 +559,7 @@ fn accept_f30_b_unregistered_actor_leaves_roster_and_ledger() {
     store.unregister(actor(5));
     store.unregister(actor(99));
     store.unregister(ActorId {
-        session: SESSION + 1,
+        session: session(SESSION + 1),
         serial: 5,
     });
     assert_eq!(store.registered().len(), 6);

@@ -61,7 +61,7 @@ const PRODUCER: u32 = 3;
 
 fn actor(serial: u64) -> ActorId {
     ActorId {
-        session: SESSION,
+        session: session_id(),
         serial,
     }
 }
@@ -552,7 +552,7 @@ fn accept_f30_b_damage_tick_feeds_threats_and_lifecycle() {
     let mut world = bound_world(generation);
     sync_targetable_roster(&mut world);
 
-    let mut resolver = DamageResolver::new(SESSION, PRODUCER);
+    let mut resolver = DamageResolver::new(session_id(), PRODUCER);
     for serial in [1_u64, 2, 5, 9] {
         resolver
             .register_actor(
@@ -579,7 +579,7 @@ fn accept_f30_b_damage_tick_feeds_threats_and_lifecycle() {
                tick: u64| {
         HitEvent::try_new(
             HitEventId {
-                session: SESSION,
+                session: session_id(),
                 tick: Tick(tick),
                 producer: PRODUCER,
                 sequence,
@@ -712,7 +712,7 @@ fn accept_f30_b_damage_tick_ignores_lifecycle_for_an_untracked_actor() {
     let mut world = bound_world(generation);
     sync_targetable_roster(&mut world);
 
-    let mut resolver = DamageResolver::new(SESSION, PRODUCER);
+    let mut resolver = DamageResolver::new(session_id(), PRODUCER);
     // Raider 5 and the player are bound entities; raider 77 is an airframe
     // the damage system knows and the target roster never listed.
     for serial in [1_u64, 5, 77] {
@@ -731,7 +731,7 @@ fn accept_f30_b_damage_tick_ignores_lifecycle_for_an_untracked_actor() {
     let hit = |sequence: u32, node: &DamageNodeKey, attacker: ActorId, victim: ActorId, damage| {
         HitEvent::try_new(
             HitEventId {
-                session: SESSION,
+                session: session_id(),
                 tick: Tick(50),
                 producer: PRODUCER,
                 sequence,

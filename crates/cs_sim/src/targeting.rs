@@ -1180,9 +1180,9 @@ impl TargetStore {
     pub fn record_hits(&mut self, hits: &[HitEvent]) -> Result<ThreatFeed, TargetError> {
         for hit in hits {
             for session in [
-                Some(hit.id.session),
-                Some(hit.target.session),
-                hit.attacker.map(|attacker| attacker.session),
+                Some(hit.id.session.get()),
+                Some(hit.target.session.get()),
+                hit.attacker.map(|attacker| attacker.session.get()),
             ]
             .into_iter()
             .flatten()
@@ -1241,7 +1241,7 @@ impl TargetStore {
     /// Unregistering an actor that is not registered is a no-op, so two
     /// systems noticing the same departure cannot fail each other.
     pub fn unregister(&mut self, actor: ActorId) {
-        if actor.session != self.session {
+        if actor.session.get() != self.session {
             return;
         }
         self.records.remove(&actor);

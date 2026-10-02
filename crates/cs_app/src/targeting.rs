@@ -552,7 +552,7 @@ pub fn sync_targetable_roster(world: &mut World) -> RosterReport {
     let mut candidates = Vec::new();
     let mut query = world.query::<(Entity, &TargetableBinding, Option<&TargetableState>)>();
     for (entity, binding, state) in query.iter(world) {
-        if binding.generation != scene_generation || binding.actor.session != session {
+        if binding.generation != scene_generation || binding.actor.session.get() != session {
             report.ignored.push(binding.actor);
             continue;
         }
