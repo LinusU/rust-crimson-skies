@@ -564,13 +564,13 @@ fn accept_t428_a_body_struck_against_world_geometry_comes_to_rest_and_holds_its_
 ///
 /// Two halves, both about the rule's scope:
 ///
-/// * A body **struck from behind**, still touching the wall, is held at rest
-///   while the wall touches it — the wall is what is holding it, and the rule
-///   does not add a force of its own. It is not a brake: the measured pose
-///   change under 3 kN is 3 cm over half a second and the body never comes to a
-///   stop while the force is on it, so the force reaches the body every tick.
-///   A rule that zeroed the velocity of a body being pushed would stop it dead
-///   at the wall's surface, and this is the assertion that would catch that.
+/// * A body **held by the wall** — spawned already against it, so that it is
+///   marked and *still touching*, which is the state the other fixture in this
+///   file is not — moves when gameplay pushes it along the face. Measured:
+///   1.37 m over sixty ticks under 3 kN of tangential force, with the mark
+///   withdrawn. The alternative to this assertion is a rule that freezes a body
+///   the game is pushing: measured, an unconditional hold left the body's speed
+///   at exactly zero for sixty ticks and moved its pose by 0.12 mm.
 /// * A body whose geometry **moves away** is unmarked on the next tick and left
 ///   entirely alone. This is the case the whole task exists for: the body was
 ///   never held by the panel, so the panel leaving must not be an event the
@@ -583,23 +583,38 @@ fn accept_t428_the_resting_rule_holds_only_what_geometry_holds_and_lets_go_when_
  {
     use cs_app::physics::ForceRequest;
 
-    // Half 1: a force reaches a body the wall is holding.
-    let mut pushed = production_fixture();
+    // Half 1: a force reaches a body the wall is *holding*. The premise is
+    // asserted, because a 30 m/s striker comes to rest clear of the wall and is
+    // therefore not a body this rule holds at all — measuring "the rule is not a
+    // brake" on that one would assert nothing at all.
+    let mut pushed = production_fixture_at(0.0, -0.44);
     spawn_wall(pushed.world_mut());
     for _ in 0..SETTLE_TICKS {
         pushed.step(1);
     }
     let body = pushed.body();
+    assert!(
+        is_resting(pushed.world(), body),
+        "premise: the body is at rest *and* still touching the wall, which is \
+         the state the rule holds: {:?}",
+        resting_reports(pushed.world())
+    );
     let before = pushed.sample().position_m;
+    // Tangential: the wall is not what stops a body pushed along its face.
     for _ in 0..60 {
-        pushed.submit(ForceRequest::new(body, [3_000.0, 0.0, 0.0], [0.0; 3]).expect("finite"));
+        pushed.submit(ForceRequest::new(body, [0.0, 0.0, 3_000.0], [0.0; 3]).expect("finite"));
         pushed.step(1);
     }
     let after = pushed.sample().position_m;
     assert!(
-        (after[0] - before[0]).abs() > 1.0e-3,
-        "a sustained 3 kN force must reach a body the wall is holding — the \
-         rule is not a brake: {before:?} -> {after:?}"
+        after[2] - before[2] > 0.1,
+        "a sustained 3 kN force along the wall must move a body the wall is \
+         holding — the rule is not a brake: {before:?} -> {after:?}"
+    );
+    assert!(
+        !is_resting(pushed.world(), body),
+        "and the mark goes once the body is moving again: {:?}",
+        resting_reports(pushed.world())
     );
 
     // Half 2: the geometry leaves, and the body is released and untouched.
@@ -650,6 +665,96 @@ fn accept_t428_the_resting_rule_holds_only_what_geometry_holds_and_lets_go_when_
         pose,
         "and the released body is left exactly where it was: the geometry going \
          away is not an event the body reacts to"
+    );
+}
+
+/// **The release mechanism: a marked body that gameplay starts driving is let
+/// go, and a marked body nobody is driving is never let go by mistake.**
+///
+/// These are the two halves of one mechanism and they are the reason the rule
+/// carries [`RESTING_RELEASE_TICKS`]. Holding a marked body at zero for as long
+/// as it touches geometry is not a stronger claim about rest, it is a body the
+/// game cannot move: measured, that hold left a body pressed by 3 kN at exactly
+/// zero speed for sixty ticks and moved its pose by 0.12 mm, and swallowed a
+/// steady 0.5 m/s velocity write outright.
+///
+/// The release signal is velocity **change**, not speed, and that choice is
+/// forced by a measurement rather than preferred: a resting body in contact is
+/// handed a non-zero speed every tick by the solver's own soft-constraint bias
+/// (0.0638 m/s on the depot panel), so a speed test would release every resting
+/// body and restore the drift. The bias *decays* over nineteen ticks and then
+/// stops changing; a driven body changes every tick by `a·dt`. So the dwell has
+/// to outlast the decay, and the body must not be released one tick early.
+///
+/// Observable failure: a driven body still marked after
+/// `RESTING_RELEASE_TICKS` ticks, or a body left alone losing its mark and its
+/// resting pose to a release the decay should have outlasted.
+#[test]
+fn accept_t428_a_marked_body_is_released_when_gameplay_drives_it_and_held_while_nothing_does() {
+    use cs_app::physics::{ForceRequest, RESTING_RELEASE_TICKS};
+
+    // Half 1: the body is *wedged* — pressed into the wall, so the contact
+    // cannot be lost — and driven along the face hard enough to beat the
+    // wall's friction. This is the case a held body freezes in: with an
+    // unconditional hold it reaches 0.010 m in sixty ticks and stays at zero
+    // speed for all of them.
+    let mut driven = production_fixture_at(0.0, -0.44);
+    spawn_wall(driven.world_mut());
+    for _ in 0..SETTLE_TICKS {
+        driven.step(1);
+    }
+    let body = driven.body();
+    assert!(is_resting(driven.world(), body), "premise: at rest");
+    let pose = driven.sample().position_m;
+    let mut released_at = None;
+    for tick in 1..=(RESTING_RELEASE_TICKS as u64 + 40) {
+        // 3 kN into the wall keeps the contact; 2 kN along it beats the
+        // 0.3 friction coefficient's 0.9 kN budget.
+        driven.submit(ForceRequest::new(body, [3_000.0, 0.0, 0.0], [0.0; 3]).expect("finite"));
+        driven.submit(ForceRequest::new(body, [0.0, 0.0, 2_000.0], [0.0; 3]).expect("finite"));
+        driven.step(1);
+        if released_at.is_none() && !is_resting(driven.world(), body) {
+            released_at = Some(tick);
+        }
+    }
+    let released_at = released_at.expect("a body gameplay drives is released");
+    assert!(
+        released_at >= RESTING_RELEASE_TICKS as u64,
+        "the mark must outlast the solver's decaying bias, measured at 19 \
+         consecutive ticks on the depot panel: released after {released_at} ticks \
+         with RESTING_RELEASE_TICKS = {RESTING_RELEASE_TICKS}"
+    );
+    assert!(
+        driven.sample().position_m[2] - pose[2] > 0.05,
+        "and the body slides once it is free, which an unconditional hold \
+         prevents: {pose:?} -> {:?}",
+        driven.sample().position_m
+    );
+
+    // Half 2: left alone, it keeps its mark and its pose. This is the half a
+    // release rule breaks first, and it is why the dwell exists at all.
+    let mut quiet = production_fixture_at(0.0, -0.44);
+    spawn_wall(quiet.world_mut());
+    for _ in 0..SETTLE_TICKS {
+        quiet.step(1);
+    }
+    let body = quiet.body();
+    assert!(is_resting(quiet.world(), body), "premise: at rest");
+    let pose = quiet.sample().position_m;
+    for _ in 0..(SETTLE_TICKS * 3) {
+        quiet.step(1);
+    }
+    assert!(
+        is_resting(quiet.world(), body),
+        "a body nothing is driving must keep its mark for {} ticks: {:?}",
+        SETTLE_TICKS * 3,
+        resting_reports(quiet.world())
+    );
+    assert_eq!(
+        quiet.sample().position_m,
+        pose,
+        "and its pose must not move by so much as a float: a resting body that \
+         drifts is the defect this task exists to close"
     );
 }
 
