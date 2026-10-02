@@ -272,12 +272,13 @@ fn accept_f21_a_aspect_ratio_and_magnification_reject_unusable_values() {
 /// owns the camera — and the only kinds that may own one are the aircraft a
 /// session flies and the launchable content a session starts from.
 ///
-/// The vocabulary is pinned three ways, so a later silent change to any of
-/// them fails: `owns_camera_modes` is total over `ContentKind::ALL` and
-/// agrees with `is_launchable`, `try_new` accepts and refuses exactly the
-/// documented kinds, and `camera_track` keeps the owner it already had
-/// (an authored in-engine camera sequence, `cs_content::cinematics`) instead
-/// of becoming a view set's namespace.
+/// Each way the vocabulary could drift fails here independently:
+/// `owns_camera_modes` is total over `ContentKind::ALL` and agrees with
+/// `is_launchable`; `try_new` accepts and refuses exactly the documented
+/// kinds; `camera_track` keeps the owner it already had (an authored
+/// in-engine camera sequence, `cs_content::cinematics`) instead of becoming a
+/// view set's namespace; and no label a future camera-mode kind would claim
+/// resolves to a kind today.
 #[test]
 fn accept_f21_a_catalog_kind_mode_set_owner_vocabulary_is_an_airframe_or_launchable_content() {
     /// The decided vocabulary, restated so a drift in the production rule
