@@ -17,7 +17,15 @@
 //! * one [`ContentKind::Mission`] row per `ZBD/<chapter><variant>/<mission>`
 //!   directory the shared campaign walk declares, each **declared launchable**:
 //!   those launchable missions are the coverage denominator, and every one of
-//!   them is declared even though none of them is ready yet.
+//!   them is declared even though none of them is ready yet;
+//! * one [`ContentKind::IaScenario`] or [`ContentKind::MultiplayerScenario`]
+//!   row (plus its [`ContentKind::Script`] row) per instant-action or
+//!   multiplayer scenario directory whose reader archive's own member index
+//!   classifies it as one (F14-D.1, [`super::reader_dirs`]), also declared
+//!   launchable and part of the denominator. The world-group readers and the
+//!   top-level reader are classified as not launchable and get no such row; a
+//!   reader directory no rule classifies stays in
+//!   [`Baseline::unrecognized_program_dirs`], named and uncounted.
 //!
 //! Every row's [`Origin`] is [`Origin::Installation`] with a checked
 //! [`SourceSpan`] and the installation fingerprint of the bytes that were read,
@@ -46,15 +54,18 @@ use std::fmt;
 use std::fmt::Write as _;
 use std::path::Path;
 
-use cs_types::asset_id::{SourceSpan, SourceSpanError};
+use cs_assets::vfs::SessionBuilder;
+use cs_assets::zbd::{ContainerVerdict, audit_containers};
+use cs_types::asset_id::{AssetKey, ResolveContext, SourceSpan, SourceSpanError};
 use cs_types::content::{
     CatalogElement, ContentId, ContentIdError, ContentKind, Dependency, DependencyKind,
     NormalizeState, Origin, Provenance, Readiness, UnsupportedReason,
 };
-use cs_types::evidence::{ClaimId, ClaimStatus, Fingerprint, FingerprintKind};
+use cs_types::evidence::{ClaimId, ClaimStatus, ContentHash, Fingerprint, FingerprintKind};
 use cs_types::install::InstallFileRecord;
 
 use super::closure::{Closure, ClosureError, CompatibilityOptions, json_string};
+use super::reader_dirs::{ClassifiedReaderDir, ReaderDirRole, classify};
 use super::{Catalog, CatalogError};
 
 /// The report format version of [`baseline_report_json`].
@@ -63,6 +74,10 @@ pub const BASELINE_REPORT_VERSION: &str = "cs-content-baseline/1";
 /// The claim id behind the observation that a campaign mission's reader
 /// archive is the file its directory names.
 const CLAIM_MISSION_PROGRAM: &str = "f14.d.baseline.mission_program";
+
+/// The claim id behind the observation that a scenario directory's reader
+/// archive is the file its directory holds (F14-D.1).
+const CLAIM_SCENARIO_PROGRAM: &str = "f14.d.1.baseline.scenario_program";
 
 /// The claim id behind the observation that a mission program's bytes are
 /// the inventoried install file of the same span.
@@ -196,6 +211,9 @@ pub enum BaselineError {
     },
     /// The dependency closure over the declared roots could not be computed.
     Closure(ClosureError),
+    /// The installation could not be mounted to list the reader archives the
+    /// campaign layout leaves over.
+    Session(String),
 }
 
 impl fmt::Display for BaselineError {
@@ -225,6 +243,12 @@ impl fmt::Display for BaselineError {
                 )
             }
             Self::Closure(error) => write!(f, "cannot compute the baseline closure: {error}"),
+            Self::Session(reason) => {
+                write!(
+                    f,
+                    "cannot mount the installation to classify its readers: {reason}"
+                )
+            }
         }
     }
 }
@@ -240,7 +264,8 @@ impl std::error::Error for BaselineError {
             Self::Closure(error) => Some(error),
             Self::MissingProgram { .. }
             | Self::UninventoriedProgram { .. }
-            | Self::Provenance { .. } => None,
+            | Self::Provenance { .. }
+            | Self::Session(_) => None,
         }
     }
 }
@@ -250,13 +275,13 @@ impl std::error::Error for BaselineError {
 ///
 /// The installation stores reader archives outside the `M<nn>` mission
 /// directories (the world-group readers, the top-level reader and the
-/// directories whose names look like instant-action or multiplayer slots).
-/// Their role is **unmeasured**: F49 and F56 own discovering instant-action
-/// and multiplayer scenarios, F18/F06 own the world readers. This record
-/// keeps them visible in the inventory instead of either counting them in the
-/// denominator or filtering them out (spec F14 non-negotiable behavior 4 and
-/// the `IDENTITY-CONTENT` rule that unreachable unknowns stay in the global
-/// accounting report).
+/// instant-action and multiplayer scenario directories). Those whose archive
+/// member index decides their role are [`ClassifiedReaderDir`]s; this record
+/// is what remains when it does not (an unreadable archive, or members that
+/// fit no rule). It keeps such a directory visible in the inventory instead of
+/// either counting it in the denominator or filtering it out (spec F14
+/// non-negotiable behavior 4 and the `IDENTITY-CONTENT` rule that unreachable
+/// unknowns stay in the global accounting report).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ProgramDirRecord {
     /// The directory's spelling inside the installation.
@@ -309,12 +334,20 @@ pub struct Baseline {
     /// The rows: every inventoried file, every campaign mission and every
     /// mission program archive.
     pub catalog: Catalog,
-    /// The declared launchable mission ids, in canonical order: the coverage
+    /// The declared launchable ids: every campaign mission, then every
+    /// instant-action and multiplayer scenario directory
+    /// ([`Baseline::classified_reader_dirs`]). This is the coverage
     /// denominator.
     pub roots: Vec<ContentId>,
     /// Reachable/unreachable accounting over [`Baseline::roots`].
     pub coverage: Coverage,
-    /// Reader-archive directories the campaign layout does not classify.
+    /// Reader-archive directories the campaign layout does not claim and
+    /// whose role the archive's own member index decides (F14-D.1). The
+    /// launchable ones are rows of the denominator; the rest are recorded as
+    /// not launchable.
+    pub classified_reader_dirs: Vec<ClassifiedReaderDir>,
+    /// Reader-archive directories neither the campaign layout nor the member
+    /// evidence classifies. They are named, never counted and never dropped.
     pub unrecognized_program_dirs: Vec<ProgramDirRecord>,
 }
 
@@ -480,6 +513,33 @@ pub fn retail_baseline(install_root: &Path) -> Result<Baseline, BaselineError> {
         insert(&mut catalog, element)?;
         roots.push(mission_id);
     }
+
+    // The reader archives the campaign layout leaves over: classified from
+    // their own member index, the launchable ones join the denominator.
+    let candidates = unrecognized_program_dirs(manifest, &layout);
+    let world_groups: BTreeSet<String> = layout
+        .iter()
+        .map(|entry| entry.mission.world_group.to_ascii_lowercase())
+        .collect();
+    let (classified_reader_dirs, unrecognized_program_dirs) = classify_reader_dirs(
+        install_root,
+        &discovery,
+        install_hash,
+        candidates,
+        &world_groups,
+    )?;
+    for dir in classified_reader_dirs
+        .iter()
+        .filter(|dir| dir.role.is_launchable())
+    {
+        let Some(record) = files.get(&dir.program.to_ascii_lowercase()) else {
+            return Err(BaselineError::UninventoriedProgram {
+                mission: dir.path.clone(),
+                asset: dir.program.clone(),
+            });
+        };
+        roots.push(scenario_rows(&mut catalog, install_hash, dir, record)?);
+    }
     for root in &roots {
         catalog
             .declare_launchable(root)
@@ -490,7 +550,6 @@ pub fn retail_baseline(install_root: &Path) -> Result<Baseline, BaselineError> {
     }
 
     let coverage = coverage(&catalog, &roots)?;
-    let unrecognized_program_dirs = unrecognized_program_dirs(manifest, &layout);
 
     Ok(Baseline {
         source: install_root.display().to_string(),
@@ -499,8 +558,162 @@ pub fn retail_baseline(install_root: &Path) -> Result<Baseline, BaselineError> {
         catalog,
         roots,
         coverage,
+        classified_reader_dirs,
         unrecognized_program_dirs,
     })
+}
+
+/// Reads the member index of every candidate reader archive and splits the
+/// candidates into the classified and the still-unknown.
+///
+/// A candidate whose archive cannot be listed is **unknown**, not an error:
+/// the evidence is not there, so the directory stays named in the
+/// unrecognized list instead of being guessed from its spelling.
+fn classify_reader_dirs(
+    install_root: &Path,
+    discovery: &cs_assets::install::Discovery,
+    install_hash: ContentHash,
+    candidates: Vec<ProgramDirRecord>,
+    world_groups: &BTreeSet<String>,
+) -> Result<(Vec<ClassifiedReaderDir>, Vec<ProgramDirRecord>), BaselineError> {
+    let mut builder = SessionBuilder::new(ResolveContext::new(install_hash));
+    builder
+        .mount_installation(install_root, &discovery.diagnosis)
+        .map_err(|error| BaselineError::Session(error.to_string()))?;
+    let session = builder.open();
+
+    let present: BTreeSet<String> = discovery
+        .manifest
+        .files
+        .iter()
+        .map(|record| record.relative_spelling.logical_key())
+        .collect();
+    let mut classified = Vec::new();
+    let mut unknown = Vec::new();
+    for record in candidates {
+        let members = AssetKey::from_spelling("install", &record.program, "default")
+            .ok()
+            .map(|key| audit_containers(&session, [&key]))
+            .and_then(|audit| audit.containers.into_iter().next())
+            .filter(|row| matches!(row.verdict, ContainerVerdict::Listed))
+            .map(|row| {
+                row.members
+                    .iter()
+                    .map(|member| String::from_utf8_lossy(&member.name).to_ascii_lowercase())
+                    .collect::<BTreeSet<String>>()
+            });
+        let Some(members) = members else {
+            unknown.push(record);
+            continue;
+        };
+        let mis_anim = format!("{}/mis_anim.zbd", record.path).to_ascii_lowercase();
+        let decision = classify(
+            &record.path,
+            &members,
+            present.contains(&mis_anim),
+            world_groups,
+        );
+        match decision {
+            Some((role, evidence)) => classified.push(ClassifiedReaderDir {
+                path: record.path,
+                program: record.program,
+                program_sha256: record.program_sha256,
+                role,
+                members: members.len(),
+                evidence,
+            }),
+            None => unknown.push(record),
+        }
+    }
+    Ok((classified, unknown))
+}
+
+/// The id key of one scenario directory's content id: `<world group>-<leaf>`
+/// (`c1c-ia1`), lowercased.
+fn scenario_key(dir: &ClassifiedReaderDir) -> String {
+    let mut segments = dir.path.rsplit(['/', '\\']);
+    let leaf = segments.next().unwrap_or_default();
+    let group = segments.next().unwrap_or_default();
+    format!("{group}-{leaf}").to_ascii_lowercase()
+}
+
+/// Inserts the program row and the scenario row of one launchable reader
+/// directory and returns the scenario id (the root to declare).
+///
+/// The shape mirrors a campaign mission: scenario → script → install file,
+/// every row `Origin::Installation` over the reader archive's own span.
+fn scenario_rows(
+    catalog: &mut Catalog,
+    install_hash: ContentHash,
+    dir: &ClassifiedReaderDir,
+    record: &InstallFileRecord,
+) -> Result<ContentId, BaselineError> {
+    let kind = match dir.role {
+        ReaderDirRole::InstantActionScenario => ContentKind::IaScenario,
+        _ => ContentKind::MultiplayerScenario,
+    };
+    let key = scenario_key(dir);
+    let spelling = record.relative_spelling.as_str();
+    let span = SourceSpan::new(install_hash, spelling, None, 0, record.size_bytes, None).map_err(
+        |source| BaselineError::Span {
+            path: spelling.to_owned(),
+            source,
+        },
+    )?;
+    let id_of = |kind: ContentKind, key: &str| {
+        ContentId::from_source(kind, key).map_err(|source| BaselineError::Key {
+            spelling: key.to_owned(),
+            source,
+        })
+    };
+    let program_id = id_of(ContentKind::Script, &format!("{key}-zrdr"))?;
+    let file_id = id_of(ContentKind::InstallFile, &install_file_key(spelling))?;
+    let scenario_id = id_of(kind, &key)?;
+    let row = |kind: ContentKind, id: ContentId, target: ContentId, claim: &str, name| {
+        Ok::<_, BaselineError>(CatalogElement {
+            kind,
+            id,
+            display_name: name,
+            origin: Origin::Installation {
+                source: span.clone(),
+            },
+            dependencies: vec![Dependency {
+                target,
+                kind: DependencyKind::Static,
+                provenance: observed(claim, &span)?,
+            }],
+            parse_state: cs_types::install::ParseState::Unparsed,
+            normalize_state: NormalizeState::NotNormalized,
+            runtime_consumers: Vec::new(),
+            readiness: Readiness::Unavailable,
+            unsupported_reasons: vec![UnsupportedReason::NotParsed],
+            fingerprint: Some(Fingerprint {
+                kind: FingerprintKind::Installation,
+                sha256: record.sha256,
+            }),
+        })
+    };
+    insert(
+        catalog,
+        row(
+            ContentKind::Script,
+            program_id.clone(),
+            file_id,
+            CLAIM_INSTALL_FILE,
+            Some(dir.program.clone()),
+        )?,
+    )?;
+    insert(
+        catalog,
+        row(
+            kind,
+            scenario_id.clone(),
+            program_id,
+            CLAIM_SCENARIO_PROGRAM,
+            None,
+        )?,
+    )?;
+    Ok(scenario_id)
 }
 
 /// Inserts one row, naming it if the catalog refuses it.
@@ -691,6 +904,25 @@ pub fn baseline_report_json(baseline: &Baseline) -> String {
             json_string(&record.path),
             json_string(&record.program),
             json_string(&record.program_sha256),
+        );
+    }
+    out.push_str("],\"classified_reader_dirs\":[");
+    for (index, dir) in baseline.classified_reader_dirs.iter().enumerate() {
+        if index > 0 {
+            out.push(',');
+        }
+        let evidence: Vec<String> = dir.evidence.iter().map(|name| json_string(name)).collect();
+        let _ = write!(
+            out,
+            "{{\"path\":{},\"program\":{},\"program_sha256\":{},\"role\":{},\
+             \"launchable\":{},\"members\":{},\"evidence\":[{}]}}",
+            json_string(&dir.path),
+            json_string(&dir.program),
+            json_string(&dir.program_sha256),
+            json_string(dir.role.label()),
+            dir.role.is_launchable(),
+            dir.members,
+            evidence.join(","),
         );
     }
     out.push_str("],\"elements\":[");

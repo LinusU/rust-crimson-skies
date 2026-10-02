@@ -29,7 +29,10 @@
 //! every campaign mission program and one declared launchable row per
 //! campaign mission — plus the reachable/unreachable coverage accounting, so
 //! the denominator is fixed by the installation and never by a filtered list
-//! of supported rows.
+//! of supported rows. [`reader_dirs`] (F14-D.1) classifies the reader-archive
+//! directories the campaign walk leaves over from their own member index: the
+//! instant-action and multiplayer scenario directories join the denominator,
+//! the shared readers are recorded as not launchable.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -39,6 +42,7 @@ use cs_types::content::{CatalogElement, ContentId, ContentKind, ElementError};
 pub mod baseline;
 pub mod closure;
 pub mod normalize;
+pub mod reader_dirs;
 
 /// The canonical content catalog: every row by identity plus the declared
 /// launchable baseline readiness is measured against.

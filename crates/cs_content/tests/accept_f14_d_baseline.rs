@@ -27,6 +27,10 @@ use cs_content::catalog::Catalog;
 use cs_content::catalog::baseline::{
     Baseline, Coverage, ProgramDirRecord, baseline_report_json, install_file_key, retail_baseline,
 };
+use cs_content::catalog::reader_dirs::ReaderDirRole;
+use cs_formats::zbd::{
+    INDEX_ENTRY_BYTES, INDEX_NAME_BYTES, INDEX_UNEXPLAINED_BYTES, TRAILER_VERSION_ONE,
+};
 use cs_types::content::{
     CatalogElement, ConsumerKind, ContentId, ContentKind, NormalizeState, Origin, Provenance,
     Readiness, RuntimeConsumer,
@@ -373,6 +377,7 @@ fn accept_f14_d_synthetic_launchable_row_is_never_a_retail_catalog_entry() {
             unreachable_by_kind: std::collections::BTreeMap::new(),
             unreachable_needing_classification: 0,
         },
+        classified_reader_dirs: Vec::new(),
         unrecognized_program_dirs: Vec::<ProgramDirRecord>::new(),
     });
     assert!(report.contains("\"retail\":false"));
@@ -380,6 +385,125 @@ fn accept_f14_d_synthetic_launchable_row_is_never_a_retail_catalog_entry() {
     assert!(report.contains("\"is_retail_ready\":false"));
     assert!(report.contains("\"original_launchable\":0"));
     assert!(report.contains("\"synthetic_launchable\":1"));
+}
+
+/// One version-one reader archive whose member index lists `names` (each
+/// member holds a few filler bytes), written exactly as the pinned reader
+/// expects: member data, 148-byte index entries, then the trailer.
+fn reader_archive(names: &[&str]) -> Vec<u8> {
+    let mut data = Vec::new();
+    let mut entries = Vec::new();
+    for name in names {
+        let start = u32::try_from(data.len()).expect("fits");
+        entries.extend_from_slice(&start.to_le_bytes());
+        entries.extend_from_slice(&4u32.to_le_bytes());
+        let mut field = vec![0u8; INDEX_NAME_BYTES];
+        field[..name.len()].copy_from_slice(name.as_bytes());
+        entries.extend_from_slice(&field);
+        entries.extend_from_slice(&[0xA5; INDEX_UNEXPLAINED_BYTES]);
+        data.extend_from_slice(b"zrd\0");
+    }
+    assert_eq!(entries.len(), names.len() * INDEX_ENTRY_BYTES as usize);
+    data.extend_from_slice(&entries);
+    data.extend_from_slice(&TRAILER_VERSION_ONE.to_le_bytes());
+    data.extend_from_slice(&u32::try_from(names.len()).expect("fits").to_le_bytes());
+    data
+}
+
+/// F14-D.1: reader-archive directories are classified from their own member
+/// index. Scenario directories become launchable rows of the denominator,
+/// the shared readers are classified as not launchable, and a directory whose
+/// members do not corroborate its name stays unrecognized.
+#[test]
+fn accept_f14_d_1_reader_directories_are_classified_from_their_member_index() {
+    const MISSION: [&str; 3] = ["map.zrd", "aiv.zrd", "objectives.zrd"];
+    let temp = TempInstall::new("f14-d-1");
+    let write_reader = |dir: &str, extra: &[&str], mission_members: bool| {
+        let mut names: Vec<&str> = extra.to_vec();
+        if mission_members {
+            names.extend_from_slice(&MISSION);
+        }
+        temp.write(&format!("{dir}/zrdr.zbd"), &reader_archive(&names));
+    };
+    write_reader("ZBD/C1C/M01", &["net.zrd"], true);
+    temp.write("ZBD/C1C/M01/mis_anim.zbd", b"mission animation bytes");
+    write_reader("ZBD/C1C/IA1", &["ia.zrd"], true);
+    temp.write("ZBD/C1C/IA1/mis_anim.zbd", b"ia animation bytes");
+    write_reader("ZBD/C1C/MP1", &["net.zrd"], true);
+    temp.write("ZBD/C1C/MP1/mis_anim.zbd", b"mp animation bytes");
+    // Named like a scenario, but its members say otherwise: unknown.
+    write_reader("ZBD/C1C/MP2", &["templates.zrd"], true);
+    temp.write("ZBD/C1C/MP2/mis_anim.zbd", b"mp animation bytes");
+    write_reader("ZBD/C1C", &["templates.zrd", "cam_anim.zrd"], false);
+    write_reader(
+        "ZBD",
+        &["instantaction.zrd", "multiplayer_setup.zrd"],
+        false,
+    );
+    temp.write("ZBD/C1C/gamez.zbd", b"world mesh bytes");
+
+    let baseline = retail_baseline(&temp.0).expect("the fixture installation reads");
+    let catalog = &baseline.catalog;
+
+    let role = |path: &str| {
+        baseline
+            .classified_reader_dirs
+            .iter()
+            .find(|dir| dir.path == path)
+            .map(|dir| dir.role)
+    };
+    assert_eq!(
+        role("ZBD/C1C/IA1"),
+        Some(ReaderDirRole::InstantActionScenario)
+    );
+    assert_eq!(
+        role("ZBD/C1C/MP1"),
+        Some(ReaderDirRole::MultiplayerScenario)
+    );
+    assert_eq!(role("ZBD/C1C"), Some(ReaderDirRole::WorldGroupReader));
+    assert_eq!(role("ZBD"), Some(ReaderDirRole::SharedReader));
+    assert_eq!(role("ZBD/C1C/MP2"), None, "the members do not corroborate");
+    let unknown: Vec<&str> = baseline
+        .unrecognized_program_dirs
+        .iter()
+        .map(|record| record.path.as_str())
+        .collect();
+    assert_eq!(unknown, vec!["ZBD/C1C/MP2"]);
+
+    // The denominator: the mission plus the two scenario directories, every
+    // row original and located by a span, none of the shared readers.
+    let ia = cid(ContentKind::IaScenario, "c1c-ia1");
+    let mp = cid(ContentKind::MultiplayerScenario, "c1c-mp1");
+    assert_eq!(catalog.launchable_count(), 3);
+    assert_eq!(catalog.original_launchable_count(), 3);
+    assert_eq!(baseline.roots.len(), 3);
+    assert!(baseline.roots.contains(&ia) && baseline.roots.contains(&mp));
+    for id in [&ia, &mp] {
+        let row = catalog.get(id).expect("the scenario row");
+        assert!(row.origin.is_original());
+        assert_eq!(row.dependencies.len(), 1);
+        assert_eq!(
+            row.dependencies[0].target,
+            cid(ContentKind::Script, &format!("{}-zrdr", id.key()))
+        );
+        assert_eq!(
+            row.dependencies[0].provenance.class,
+            ClaimStatus::ObservedTool
+        );
+        assert!(!row.is_ready(), "nothing is playable yet");
+    }
+    assert_eq!(baseline.coverage.roots, 3);
+    assert_eq!(baseline.coverage.reachable, 9);
+    assert_eq!(baseline.coverage.unresolved_references, 0);
+
+    let report = baseline_report_json(&baseline);
+    assert!(report.contains("\"role\":\"instant_action_scenario\""));
+    assert!(report.contains("\"role\":\"shared_reader\""));
+    assert!(report.contains("\"launchable\":3"));
+    assert_eq!(
+        report,
+        baseline_report_json(&retail_baseline(&temp.0).expect("re-read"))
+    );
 }
 
 /// Failure cases: the baseline is refused rather than built over a hole.
@@ -451,17 +575,55 @@ fn accept_f14_d_retail_baseline_inventory_is_complete_and_never_synthetic() {
         24,
         "the frozen F50 denominator holds one work order per original campaign mission"
     );
+    // F14-D.1: the reader-archive directories the campaign walk leaves over
+    // are classified from their own member index. The scenario directories
+    // join the denominator; the expected count is measured by a separate walk
+    // of the directory tree, not by the production classifier.
+    let (ia_dirs, mp_dirs) = scenario_directories(&game_dir);
+    assert_eq!(ia_dirs, 8, "one IA1 directory per world group");
+    assert_eq!(mp_dirs, 21, "MP1 and MP3 in every world group, MP2 in five");
+    let scenarios = ia_dirs + mp_dirs;
+    let launchable = inventory.len() + scenarios;
     assert_eq!(
         catalog.launchable_count(),
-        inventory.len(),
-        "every campaign mission the installation declares is a declared launchable row"
+        launchable,
+        "every campaign mission and scenario directory is a declared launchable row"
     );
-    assert_eq!(baseline.roots.len(), inventory.len());
-    assert_eq!(baseline.coverage.roots, inventory.len());
+    assert_eq!(catalog.original_launchable_count(), launchable);
+    assert_eq!(baseline.roots.len(), launchable);
+    assert_eq!(baseline.coverage.roots, launchable);
     assert_eq!(
         catalog.unsupported_count(),
-        inventory.len(),
+        launchable,
         "no launchable row is filtered out of the count, however unsupported it is"
+    );
+    for (kind, expected) in [
+        (ContentKind::Mission, inventory.len()),
+        (ContentKind::IaScenario, ia_dirs),
+        (ContentKind::MultiplayerScenario, mp_dirs),
+    ] {
+        let rows = catalog
+            .elements()
+            .filter(|element| element.kind == kind)
+            .count();
+        assert_eq!(rows, expected, "{} rows", kind.label());
+    }
+    // Every reader directory is accounted for: 29 launchable scenarios, the
+    // eight world-group readers and the shared reader are classified and
+    // nothing is left unrecognized.
+    assert_eq!(baseline.classified_reader_dirs.len(), scenarios + 8 + 1);
+    assert!(
+        baseline.unrecognized_program_dirs.is_empty(),
+        "unclassified: {:?}",
+        baseline.unrecognized_program_dirs
+    );
+    assert_eq!(
+        baseline
+            .classified_reader_dirs
+            .iter()
+            .filter(|dir| dir.role.is_launchable())
+            .count(),
+        scenarios
     );
     assert!(
         !catalog.is_fully_ready(),
@@ -482,8 +644,8 @@ fn accept_f14_d_retail_baseline_inventory_is_complete_and_never_synthetic() {
     );
     assert_eq!(
         catalog.len(),
-        discovery.manifest.files.len() + 2 * inventory.len(),
-        "files plus one program row and one mission row per campaign mission"
+        discovery.manifest.files.len() + 2 * launchable,
+        "files plus one program row and one launchable row per mission and scenario"
     );
 
     // Nothing authored reached the retail inventory, and every row is
@@ -523,7 +685,11 @@ fn accept_f14_d_retail_baseline_inventory_is_complete_and_never_synthetic() {
     // Every mission id follows the published binding identity and every
     // mission reaches its program and its inventory row, with no orphaned
     // reference anywhere in the closure.
-    for root in &baseline.roots {
+    for root in baseline
+        .roots
+        .iter()
+        .filter(|root| root.kind() == ContentKind::Mission)
+    {
         assert!(
             root.key().starts_with("ch") && root.key().contains("-m"),
             "the published mission identity is ch<chapter>-m<nn>, got {}",
@@ -533,8 +699,8 @@ fn accept_f14_d_retail_baseline_inventory_is_complete_and_never_synthetic() {
     assert_eq!(baseline.coverage.unresolved_references, 0);
     assert_eq!(
         baseline.coverage.reachable,
-        3 * inventory.len(),
-        "each mission reaches its program and the file holding its bytes"
+        3 * launchable,
+        "each launchable reaches its program and the file holding its bytes"
     );
     assert_eq!(
         baseline.coverage.unreachable,
@@ -570,7 +736,7 @@ fn accept_f14_d_retail_baseline_inventory_is_complete_and_never_synthetic() {
         .expect("a mission is launchable");
     assert_eq!(
         mixed.original_launchable_count(),
-        inventory.len(),
+        launchable,
         "the retail denominator is the installation's, not the catalog's"
     );
     assert_eq!(mixed.synthetic_launchable_count(), 1);
@@ -581,12 +747,42 @@ fn accept_f14_d_retail_baseline_inventory_is_complete_and_never_synthetic() {
     let report = baseline_report_json(&baseline);
     assert!(report.contains("\"retail\":true"));
     assert!(report.contains(&format!("\"install_sha256\":\"{install_sha}\"")));
-    assert!(report.contains(&format!("\"launchable\":{}", inventory.len())));
+    assert!(report.contains(&format!("\"launchable\":{launchable}")));
     assert!(report.contains("\"synthetic_launchable\":0"));
     assert!(
         !report.contains("\"origin\":\"synthetic_fixture\""),
         "the retail report holds no authored row"
     );
+}
+
+/// Counts the `IA<n>` and `MP<n>` directories under each world-group
+/// directory of `ZBD/` by walking the tree directly, independent of the
+/// production classifier.
+fn scenario_directories(game_dir: &Path) -> (usize, usize) {
+    let (mut ia, mut mp) = (0, 0);
+    for group in fs::read_dir(game_dir.join("ZBD"))
+        .expect("ZBD reads")
+        .flatten()
+    {
+        if !group.path().is_dir() {
+            continue;
+        }
+        for leaf in fs::read_dir(group.path())
+            .expect("a world group reads")
+            .flatten()
+        {
+            let name = leaf.file_name().to_string_lossy().to_ascii_lowercase();
+            if !leaf.path().is_dir() || !leaf.path().join("zrdr.zbd").is_file() {
+                continue;
+            }
+            if name.starts_with("ia") {
+                ia += 1;
+            } else if name.starts_with("mp") {
+                mp += 1;
+            }
+        }
+    }
+    (ia, mp)
 }
 
 /// The workspace root, for reading the frozen denominator beside the tests.
