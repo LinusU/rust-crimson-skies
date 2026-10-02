@@ -3661,13 +3661,26 @@ fn accept_t392_a_mesh_index_past_the_catalog_stays_an_explicit_unknown() {
     }
 
     // A catalog element in the wrong namespace is refused where it is declared.
+    let error = MeshSlot::new(
+        cid(ContentKind::Airframe, "fixture.synthetic.wrong"),
+        designed("t392.test.mesh-slot"),
+    )
+    .expect_err("a catalog element that is not a mesh cannot be a mesh slot");
     assert!(matches!(
-        MeshSlot::new(
-            cid(ContentKind::Airframe, "fixture.synthetic.wrong"),
-            designed("t392.test.mesh-slot")
-        ),
-        Err(GameZSceneError::MeshKind { kind, .. }) if kind == ContentKind::Airframe
+        error,
+        GameZSceneError::MeshKind { kind, .. } if kind == ContentKind::Airframe
     ));
+    // No node has used the slot yet, so the refusal names no node rather than
+    // passing a sentinel a caller could mistake for a real array slot.
+    assert_eq!(
+        error.node(),
+        None,
+        "a construction refusal is not about a node"
+    );
+    assert!(
+        error.to_string().contains("airframe"),
+        "and it still says what the element really is: {error}"
+    );
 }
 
 /// **The build sees the store's hierarchy, and its rejections stay typed.**

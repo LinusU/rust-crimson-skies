@@ -232,6 +232,7 @@ run** (the two retail tests are `#[ignore]`d and are not):
 | the world's own children-count check dropped | `records_outside_…` (before the review nothing caught it) |
 | each of the object-flags, object-identity, LOD-level, LOD-far-square, LOD-near-square, `unk196`, `parent_count` and `mesh_index`-sentinel findings suppressed | `records_outside_the_asserted_profile_are_reported_not_dropped` |
 | the stored matrix dropped even where it disagrees | `typed_records_keep_the_stored_transform_and_resolve_meshes` |
+| a `MeshKind` refused at construction reporting a node | `a_mesh_index_past_the_catalog_stays_an_explicit_unknown` |
 | the LOD near bound left unresolved from its stored square | `scene_graph_is_built_from_a_decoded_node_array` (before the review only `range_max` was asserted) |
 | the LOD level boolean inverted | `scene_graph_is_built_from_a_decoded_node_array` |
 | a node's name trimmed instead of crossing over verbatim | the graph test and the retail `planes.zbd` test |
@@ -400,12 +401,24 @@ disagreement counts, `unk196`, `parent_count`, the LOD ranges and levels. The
 new retail test pins all of it, so the table is now falsifiable rather than
 prose.
 
-**One production fix.** The conversion substituted
+**Two production fixes.** The conversion substituted
 `AuthoredTransform::IDENTITY` for every record flagged as holding no transform.
 The reader reports `ObjectIdentityNotIdentity` for a flagged record that stores
 something else — but the conversion then discarded exactly the numbers that
 disagreed, so the disagreement was unreportable through the typed record. It now
 substitutes the identity only when the record really is the identity.
+`GameZSceneError::node()` reported a node array slot for a `MeshKind` refused
+when a `MeshSlot` was constructed, at which point no node has used the slot: it
+passed the variant's `u32::MAX` sentinel straight through, so a caller logging
+the node would have reported a slot no container can contain. It now reports the
+absence that case is.
+
+Two smaller reader fixes: an unknown `node_type` refusal was anchored 36 bytes
+past the word it had read (`NODE_NAME_BYTES` added twice), and a world cell whose
+own value count does not fit what is left of the data section surfaced as a bare
+truncation rather than as `PartitionGrid`. The first is now the named
+`NODE_TYPE_OFFSET` constant, pinned by a test; the second is refused with the
+grid's own reason.
 
 **Two coverage fixes that mattered.** The light node's unconditional parent word
 was covered only by a `#[ignore]`d retail test, which CI never runs, so the one

@@ -3351,11 +3351,19 @@ impl GameZSceneError {
     }
 
     /// The node's stored array slot, when the failure is about one node.
+    ///
+    /// `None` for a [`Self::Build`] refusal, which is about the hierarchy rather
+    /// than a record, and for a [`Self::MeshKind`] refused when a
+    /// [`MeshSlot`] was **constructed**: at that point no node has used the slot
+    /// yet, so there is no node to name. That case carries [`u32::MAX`] in the
+    /// variant rather than a real slot, and this reports it as the absence it
+    /// is instead of passing a number no container can contain.
     #[must_use]
     pub const fn node(&self) -> Option<u32> {
         match self {
-            Self::MeshKind { node, .. } | Self::LodNearBound { node, .. } => Some(*node),
-            Self::Build(_) => None,
+            Self::MeshKind { node, .. } if *node != u32::MAX => Some(*node),
+            Self::LodNearBound { node, .. } => Some(*node),
+            Self::MeshKind { .. } | Self::Build(_) => None,
         }
     }
 }
