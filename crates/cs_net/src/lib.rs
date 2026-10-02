@@ -40,9 +40,16 @@
 //! before launch, where an unknown field blocks the mode instead of defaulting,
 //! and the start-time check of human count, custom planes and component limit.
 //!
+//! F58-A adds [`validation`] and [`recovery`]: the threat model, the session
+//! epoch/replay gate and the peer-to-actor ownership table ([`validation`]),
+//! and the reconnect, fresh-epoch, one-pilot-per-aircraft and award-once rules
+//! ([`recovery`]). The rate/resource caps (F58-B) and the runtime
+//! disconnect/recovery flow (F58-C) build on them.
+//!
 //! Not here yet: the pinned transport and its codec (F54-B), connection and
-//! lifecycle wiring (F54-C), and session threat/reconnect rules (F58-A). The F57-B interpolation buffer
-//! and bounded local prediction consume [`snapshot`] rather than extending it.
+//! lifecycle wiring (F54-C), and the F58-B rate caps / F58-C recovery flow.
+//! The F57-B interpolation buffer and bounded local prediction consume
+//! [`snapshot`] rather than extending it.
 
 pub mod authority;
 pub mod bounds;
@@ -50,5 +57,7 @@ pub mod compat;
 pub mod fixture;
 pub mod lobby;
 pub mod message;
+pub mod recovery;
 pub mod rules;
 pub mod snapshot;
+pub mod validation;
