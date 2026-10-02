@@ -387,11 +387,11 @@ fn capture_artifacts(evidence_dir: &Path) -> Vec<(String, String, String)> {
 
 fn review_identity() -> String {
     String::from(
-        "implementer: Devin (Cognition, devin CLI session, Rally claim clm_8z3ovohjd9t0dksr, \
-         session of 2026-10-02). Reviewer: pending — the Rally reviewer who takes task 76's \
-         review claim; this report is regenerated or amended after review. Neither agent \
-         review is independent original-reference evidence and neither replaces the owner's \
-         human approval",
+        "implementer: devin-1 (Rally claim clm_8z3ovohjd9t0dksr, SWE-2 High, session of \
+         2026-10-02); reviewer: devin-1 (Rally claim clm_14ulxlhho749fhw3, SWE-2 High, session \
+         of 2026-10-02, fresh context — a later session of the same agent label and model, not \
+         a different model). An agent review is not independent original-reference evidence and \
+         no agent review replaces the owner's human approval",
     )
 }
 
@@ -399,9 +399,10 @@ fn review_method() -> String {
     String::from(
         "the acceptance suite run locally with the retail capability and a real GPU adapter \
          (Apple M1 Max, Metal): `cargo test --workspace --locked -- accept_f20_d_ \
-         --include-ignored`, every `accept_f20_d_*` test passing; this harness derives every \
-         field from the recorded log, production discovery of $CS_GAME_DIR, and the production \
-         animation-family survey run over that installation \
+         --include-ignored`, every `accept_f20_d_*` test passing — run by the implementer and \
+         re-run by the reviewer on this commit after rebasing onto origin/main; this harness \
+         derives every field from the recorded log, production discovery of $CS_GAME_DIR, and \
+         the production animation-family survey run over that installation \
          (`cs_app::animation::survey_animation_families`) with the posed GPU captures the suite \
          wrote on the real adapter (`cs_app::animation::capture_animated_pose`); validated with \
          tools/validate_evidence.py --require-pass. The animation container payloads remain \
