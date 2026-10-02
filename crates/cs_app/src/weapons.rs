@@ -1451,9 +1451,8 @@ impl WeaponSession {
 
     /// One actor's mutable live weapon state, if it has registered guns.
     ///
-    /// # Panics
-    ///
-    /// Never: an unregistered actor is `None`, not a panic.
+    /// An unregistered actor is `None`, never a panic: a damage event naming an
+    /// actor this session never armed has nothing to disable.
     pub fn state_mut(&mut self, shooter: &ActorId) -> Option<&mut WeaponState> {
         self.cadence.state_mut(shooter)
     }
@@ -1801,12 +1800,6 @@ impl WeaponTick {
             at,
             ..Self::default()
         }
-    }
-
-    /// Whether the tick produced no shot, no routed contact and no retirement.
-    #[must_use]
-    pub fn is_quiet(&self) -> bool {
-        self.accepted.is_empty() && self.routed.is_empty() && self.retired.is_empty()
     }
 }
 
