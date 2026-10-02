@@ -281,12 +281,18 @@ its own evidence rather than on the implementer's word.
 
 ### What the review changed
 
-1. **A wrong measured number.** The denominator of the field-discrimination
-   table was **56 620**; the eight containers hold **53 303** node records
-   (`C1` 7 064, `C1B` 5 603, `C1C` 5 644, `C2` 4 956, `C2B` 4 901, `C3` 5 408,
-   `C4` 8 289, `C5` 11 438 — the `node_array_size` header word, which is what the
-   production reader iterates). The three non-zero counts were right, so only the
-   denominator moved; corrected here and in the `ZONE_BOX_FIELD` doc comment.
+1. **A wrong measured number, and where it came from.** The denominator of the
+   field-discrimination table was **56 620**; the eight world containers hold
+   **53 303** node records (`C1` 7 064, `C1B` 5 603, `C1C` 5 644, `C2` 4 956,
+   `C2B` 4 901, `C3` 5 408, `C4` 8 289, `C5` 11 438 — each one's
+   `node_array_size` header word, which is what the production reader iterates).
+   **56 620 is the corpus total over *nine* containers**, quoted correctly by
+   #392's and F11-D.2's records: it adds `ZBD/planes.zbd`'s 3 317 records
+   (53 303 + 3 317 = 56 620), and the airframe archive is not a world group, so
+   this survey never reads it. The three non-zero counts were measured over the
+   eight world containers and are right — only the denominator was carried over
+   from the nine-archive figure. Corrected here and in the `ZONE_BOX_FIELD` doc
+   comment.
 2. **The survey did not enforce the identity transform it relied on.** The
    record and the module header both said every zone is an `object3d` record that
    stores no transform "so the box needs no composition", but the loop matched
