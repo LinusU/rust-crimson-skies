@@ -144,6 +144,30 @@ COMMANDS
         or refused, or a requested lookup or field does not resolve, and 1 on
         a runtime failure.
 
+    config-account [--cs-path <dir>] [--out <file>]
+        Account for every referenced configuration field and string id across
+        one whole installation (F12-D). The member list comes from the dialect
+        inventory, not from hand-typed names: every routed keyed-list member
+        is decoded from its container and rolled up into one account with the
+        member's own source span -- per declared record kind, per declared
+        field position, how many records reached it, how many values the
+        declared kind describes, how many stay a recorded unknown, and how
+        many the shipped bytes do not spell like the declared kind at all.
+        Every entry is attributed to the one declaration that covers it (a
+        record schema, a <NAME> placeholder definition, or nothing), and the
+        ones nothing covers are listed with their line, section and key.
+        The two resource-header members are read through the production header
+        reader and crossed with the ids the three string images actually
+        carry, in both directions: the ids a header names whose block an
+        image lacks, and the blocks of an image no header value names. The
+        report carries counts, ids, digests and byte extents only, never
+        original text. Exits 0 when no gameplay-critical entry is
+        unconsumed, 3 when one is or a member could not be read, 2 on invalid
+        input (including an --out inside the installation), 4 when no
+        installation is selected and 1 on a runtime failure. A member this
+        command has not classified is treated as gameplay-critical, so an
+        unconsumed entry blocks rather than passing.
+
     scripts [--cs-path <dir>] [--coverage] [--signatures <file>]
             [--word-bytes <n>] [--budget <n>] [--out <file>]
         Route every ZBD container of the installation (F13-B) and locate and
@@ -285,6 +309,7 @@ fn main() -> ExitCode {
         Some("interp") => cs_inspect::interp::interp_command(&args[1..]),
         Some("texture-audit") => cs_inspect::textures::texture_audit_command(&args[1..]),
         Some("config") => cs_inspect::config::config_command(&args[1..]),
+        Some("config-account") => cs_inspect::config::account_command(&args[1..]),
         Some("scripts") => cs_inspect::script_discovery::scripts_command(&args[1..]),
         Some("catalog") => cs_inspect::catalog::catalog_command(&args[1..]),
         Some("closure") => cs_inspect::catalog::closure_command(&args[1..]),

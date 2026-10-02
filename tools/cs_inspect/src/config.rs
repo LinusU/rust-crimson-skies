@@ -84,7 +84,44 @@
 //! `--install-sha256` its provenance carries
 //! [`UNAFFILIATED_INSTALL_SHA256`], a documented sentinel rather than an
 //! invented digest.
+//!
+//! # The `config-account` command
+//!
+//! ```text
+//! cs-inspect config-account [--cs-path <dir>] [--out <file>]
+//! ```
+//!
+//! `config` reads one member per run, which is the right shape for a question
+//! about a single file and the wrong one for "what does the installation
+//! reference?". [`account_command`] is the whole-installation census (stage
+//! F12-D) and reads only what the dialect inventory routes:
+//!
+//! * every **keyed-list** member the inventory names is decoded out of its
+//!   container through the production mount, resolve and bounded member
+//!   reader, then rolled up by
+//!   [`cs_content::config::ConfigDocument::member_account`]: the declared
+//!   record kinds, every declared field position with how many records
+//!   reached it, how many values the declared kind describes, how many stay
+//!   a recorded unknown and how many the shipped bytes do not spell like the
+//!   declared kind;
+//! * every **resource-header** member is read through
+//!   [`read_resource_header`] and crossed with the ids each **string image**
+//!   actually carries ([`cs_content::config::account_string_ids`]), in both
+//!   directions — the ids a header names whose block an image lacks, and the
+//!   blocks of an image no header value names;
+//! * every **string image** is read as inert PE data into a
+//!   [`StringCatalog`], never loaded.
+//!
+//! Nothing is written inside the installation, no original text reaches the
+//! report (counts, ids, digests and byte extents only), and the exit code
+//! follows `docs/contracts/CLI-EVIDENCE.md`: `0` when no gameplay-critical
+//! entry is unconsumed, `3` when one is, or a member/image could not be read,
+//! `2` invalid input, `4` no installation selected, `1` a runtime failure. A
+//! gameplay-critical entry is one whose member the command declares
+//! gameplay-critical ([`GAMEPLAY_CRITICAL_MEMBERS`]) **or** one it has not
+//! classified, which fails closed.
 
+use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::fmt::{self, Write as _};
 use std::fs;
@@ -92,14 +129,21 @@ use std::io;
 use std::path::{Component, Path, PathBuf};
 use std::process::ExitCode;
 
+use cs_assets::rof::{RofSource, mount_rof_with_limits};
+use cs_assets::vfs::{ContentSession, MountBuilder, SessionBuilder};
 use cs_content::config::{
-    ConfigDocument, ConfigError, FieldBinding, FieldSpec, StringCatalog, StringCatalogError,
-    StringLookup, TuningOutcome, TuningReport, ValueWidth, resolve_tunings,
+    ConfigDocument, ConfigError, FieldBinding, FieldSpec, Parity, StringCatalog,
+    StringCatalogError, StringLookup, TuningOutcome, TuningReport, ValueWidth, resolve_tunings,
 };
 use cs_formats::ParseContext;
-use cs_formats::text::{TextDialect, dialect_for_member};
-use cs_types::asset_id::SourceSpan;
-use cs_types::evidence::ContentHash;
+use cs_formats::RofLimits;
+use cs_formats::text::{
+    MemberRule, ResourceHeader, TextDialect, dialect_for_member, read_resource_header,
+};
+use cs_types::asset_id::{
+    AssetKey, MAX_LABEL_LEN, MountId, MountNamespace, PrecedenceClass, ResolveContext, SourceSpan,
+};
+use cs_types::evidence::{ClaimStatus, ContentHash};
 use cs_types::install::RelativePath;
 
 /// The report format version.
@@ -1012,6 +1056,820 @@ fn jstr(value: &str) -> String {
     out
 }
 
+// ---------------------------------------------------------------------------
+// The `config-account` command (F12-D)
+// ---------------------------------------------------------------------------
+
+/// Runs the `config-account` command and returns its exit code.
+///
+/// `CS_GAME_DIR` selects the installation, as in every other command of this
+/// binary; `--cs-path` wins over it.
+pub fn account_command(args: &[String]) -> ExitCode {
+    let run = account_command_result(args, std::env::var_os("CS_GAME_DIR"));
+    for line in &run.diagnostics {
+        eprintln!("cs-inspect: {line}");
+    }
+    match (&run.report, &run.out) {
+        (Some(_), Some(path)) => {
+            eprintln!("cs-inspect: wrote config account to {}", path.display());
+        }
+        (Some(report), None) => print!("{report}"),
+        (None, _) => {}
+    }
+    ExitCode::from(run.exit_code)
+}
+
+/// The body of [`account_command`]. `env_cs_path` is the `CS_GAME_DIR` value,
+/// passed in so a test decides the environment instead of inheriting the
+/// machine's.
+pub fn account_command_result(args: &[String], env_cs_path: Option<OsString>) -> ConfigRun {
+    let parsed = match parse_account_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => return ConfigRun::failed(EXIT_INVALID_INPUT, &error),
+    };
+    let cs_path = parsed.cs_path.clone().or_else(|| {
+        env_cs_path
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from)
+    });
+    let Some(cs_path) = cs_path else {
+        return ConfigRun::failed(
+            EXIT_NO_INSTALL,
+            &ConfigCommandError::Usage(
+                "cs-inspect config-account: no installation selected: pass --cs-path <dir> or set \
+                 CS_GAME_DIR"
+                    .to_owned(),
+            ),
+        );
+    };
+    if let Some(out) = &parsed.out
+        && inside(out, &cs_path)
+    {
+        return ConfigRun::failed(
+            EXIT_INVALID_INPUT,
+            &ConfigCommandError::Usage(format!(
+                "cs-inspect config-account: {} lies inside the installation; cs-inspect never \
+                 writes there",
+                out.display()
+            )),
+        );
+    }
+    let found = match cs_assets::install::discover(&cs_path) {
+        Ok(found) => found,
+        Err(error) => {
+            return ConfigRun::failed(
+                EXIT_RUNTIME,
+                &ConfigCommandError::Usage(format!(
+                    "cs-inspect config-account: cannot discover the installation: {error}"
+                )),
+            );
+        }
+    };
+
+    let mut diagnostics: Vec<String> = Vec::new();
+    let mut exit_code = 0u8;
+
+    // ------------------------------------------------- the configuration members
+    //
+    // The member list comes from the dialect inventory, not from a hand-typed
+    // pair of names: a member the inventory learns about is accounted by the
+    // next run, and a member it drops stops being claimed.
+    let keyed_rules = inventory_members(TextDialect::KeyedList);
+    let header_rules = inventory_members(TextDialect::ResourceHeader);
+    let image_rules = inventory_loose_paths(TextDialect::PeResources);
+    let install_sha256 = cs_assets::install::fingerprint(&found.manifest);
+
+    let containers = match mount_containers(
+        &cs_path,
+        install_sha256,
+        keyed_rules.iter().chain(header_rules.iter()),
+    ) {
+        Ok(containers) => containers,
+        Err((code, message)) => {
+            diagnostics.push(message);
+            return ConfigRun {
+                exit_code: code,
+                report: None,
+                out: None,
+                diagnostics,
+            };
+        }
+    };
+
+    let mut member_json: Vec<String> = Vec::new();
+    let mut blocking = 0usize;
+    for (_, member) in &keyed_rules {
+        let Some(source) = containers.source_of(member) else {
+            exit_code = EXIT_REFUSED;
+            let message =
+                format!("{member}: the inventory routes it but the container does not hold it");
+            diagnostics.push(message.clone());
+            member_json.push(refused_json("keyed_list", &message));
+            continue;
+        };
+        match keyed_member(containers.session(), source, install_sha256, member) {
+            Ok((json, blockers, entries)) => {
+                blocking += blockers;
+                if entries == 0 {
+                    exit_code = EXIT_REFUSED;
+                    diagnostics.push(format!(
+                        "{member}: no entry at all, so the account covers nothing"
+                    ));
+                }
+                member_json.push(json);
+            }
+            Err(message) => {
+                exit_code = EXIT_REFUSED;
+                diagnostics.push(message.clone());
+                member_json.push(refused_json("keyed_list", &message));
+            }
+        }
+    }
+
+    // ----------------------------------------------------- the string-id account
+    //
+    // The two resource headers are read first and held, because every image's
+    // account is a cross-reference of *all* of them against that one image.
+    let mut header_bytes: Vec<(String, Vec<u8>)> = Vec::new();
+    for (_, member) in &header_rules {
+        let Some(source) = containers.source_of(member) else {
+            exit_code = exit_code.max(EXIT_REFUSED);
+            diagnostics.push(format!(
+                "{member}: the inventory routes it but the container does not hold it"
+            ));
+            continue;
+        };
+        match read_member(containers.session(), source, install_sha256, member) {
+            Ok(decoded) => {
+                if decoded.trailing_len != 0 {
+                    exit_code = exit_code.max(EXIT_REFUSED);
+                    diagnostics.push(format!(
+                        "{member}: {} bytes sit unread after the end of the stream inside the \
+                         stored extent",
+                        decoded.trailing_len
+                    ));
+                    continue;
+                }
+                header_bytes.push(((*member).to_owned(), decoded.bytes))
+            }
+            Err(message) => {
+                exit_code = exit_code.max(EXIT_REFUSED);
+                diagnostics.push(message);
+            }
+        }
+    }
+    let mut parsed_headers: Vec<ResourceHeader<'_>> = Vec::with_capacity(header_bytes.len());
+    for (member, bytes) in &header_bytes {
+        let mut context = ParseContext::with_defaults((*member).to_owned());
+        match read_resource_header(&mut context, bytes) {
+            Ok(header) => parsed_headers.push(header),
+            Err(error) => {
+                exit_code = exit_code.max(EXIT_REFUSED);
+                diagnostics.push(format!("{member}: the resource header is refused: {error}"));
+            }
+        }
+    }
+    if parsed_headers.len() != header_bytes.len() {
+        // A header that did not read would silently shrink every image's
+        // account, so the run is refused rather than reported as complete.
+        return ConfigRun {
+            exit_code: EXIT_REFUSED,
+            report: None,
+            out: None,
+            diagnostics,
+        };
+    }
+    let headers: Vec<(&str, &ResourceHeader<'_>)> = header_bytes
+        .iter()
+        .zip(&parsed_headers)
+        .map(|((member, _), header)| (member.as_str(), header))
+        .collect();
+
+    let mut image_json: Vec<String> = Vec::new();
+    for spelling in &image_rules {
+        let host = cs_path.join(spelling);
+        let bytes = match fs::read(&host) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                exit_code = exit_code.max(EXIT_RUNTIME);
+                diagnostics.push(format!("cannot read {}: {error}", host.display()));
+                image_json.push(refused_json("pe_resources", "unreadable"));
+                continue;
+            }
+        };
+        let digest = cs_assets::install::sha256(&bytes);
+        let span = match SourceSpan::new(
+            install_sha256,
+            spelling,
+            None,
+            0,
+            bytes.len() as u64,
+            Some(digest),
+        ) {
+            Ok(span) => span,
+            Err(error) => {
+                exit_code = exit_code.max(EXIT_INVALID_INPUT);
+                diagnostics.push(format!("cannot build provenance for {spelling}: {error}"));
+                continue;
+            }
+        };
+        let mut context = ParseContext::with_defaults((*spelling).to_owned());
+        match StringCatalog::read(&mut context, span, &bytes) {
+            Ok(catalog) => image_json.push(image_account_json(&catalog, &headers)),
+            Err(error) => {
+                exit_code = exit_code.max(EXIT_REFUSED);
+                diagnostics.push(format!("{spelling}: the image is refused: {error}"));
+                image_json.push(refused_json("pe_resources", error.code()));
+            }
+        }
+    }
+    let report = format!(
+        "{{\"version\":{},\"host_root\":{},\"install_sha256\":{},\"content_sha256\":{},\
+         \"dialects\":{{\"keyed_list\":[{}],\"resource_header\":[{}],\"pe_resources\":[{}]}},\
+         \"parity\":{{\"gameplay_critical_unconsumed\":{blocking},\"holds\":{}}}}}\n",
+        jstr(ACCOUNT_REPORT_VERSION),
+        jstr(&cs_path.to_string_lossy()),
+        jstr(&install_sha256.to_hex()),
+        jstr(&cs_assets::install::content_fingerprint(&found.manifest).to_hex()),
+        member_json.join(","),
+        header_json(&header_bytes, &headers),
+        image_json.join(","),
+        bool_json(blocking == 0),
+    );
+    if blocking > 0 {
+        // A gameplay-critical entry no declaration consumed is the spec's
+        // parity blocker; the report is still written, because it is the
+        // evidence of what is missing.
+        exit_code = exit_code.max(EXIT_REFUSED);
+    }
+    let generation = containers.session().generation();
+    let teardown = containers.close();
+    debug_assert_eq!(teardown.generation, generation);
+    finish(report, exit_code, parsed.out.as_deref(), diagnostics)
+}
+
+/// The report format version.
+pub const ACCOUNT_REPORT_VERSION: &str = "cs-inspect-config-account/1";
+
+/// Exit code for "no installation selected" (CLI-EVIDENCE: missing
+/// capability).
+const EXIT_NO_INSTALL: u8 = 4;
+
+/// The keyed-list members this command declares gameplay-critical, with the
+/// reason each is.
+///
+/// `ASSETS/LAYOUT.CSV` holds the object records the campaign's UI scripts bind
+/// by name — task #372 measured that none of the 402 hand-written names in the
+/// 34 scripts matches a layout key until ASCII case is ignored — and
+/// `ASSETS/SCRIPBOOK.CSV` holds the scrapbook reward table. Both are required
+/// catalog collections in `docs/contracts/IDENTITY-CONTENT.md` ("UI/font/string
+/// resources", "stunts and scrapbook rewards").
+const GAMEPLAY_CRITICAL_MEMBERS: [(&str, Parity); 2] = [
+    ("ASSETS/LAYOUT.CSV", Parity::GameplayCritical),
+    ("ASSETS/SCRAPBOOK.CSV", Parity::GameplayCritical),
+];
+
+/// The declared parity of a keyed-list member.
+///
+/// A member this command has not classified is treated as
+/// [`Parity::GameplayCritical`]: spec F12 non-negotiable #5 makes an
+/// unconsumed gameplay-critical key a parity blocker, so a missing
+/// classification must block, never pass.
+fn member_parity(member: &str) -> Parity {
+    GAMEPLAY_CRITICAL_MEMBERS
+        .iter()
+        .find(|(known, _)| known.eq_ignore_ascii_case(member))
+        .map_or(Parity::GameplayCritical, |(_, parity)| *parity)
+}
+
+/// Parsed `config-account` arguments.
+#[derive(Debug, Default)]
+struct AccountArgs {
+    cs_path: Option<PathBuf>,
+    out: Option<PathBuf>,
+}
+
+fn parse_account_args(args: &[String]) -> Result<AccountArgs, ConfigCommandError> {
+    let mut parsed = AccountArgs::default();
+    let mut cursor = args.iter();
+    while let Some(arg) = cursor.next() {
+        let flag = arg.as_str();
+        if !matches!(flag, "--cs-path" | "--out") {
+            return Err(ConfigCommandError::Usage(format!(
+                "cs-inspect config-account: unsupported argument {flag:?}; expected --cs-path or \
+                 --out"
+            )));
+        }
+        let Some(value) = cursor.next() else {
+            return Err(ConfigCommandError::Usage(format!(
+                "cs-inspect config-account: {flag} needs a value"
+            )));
+        };
+        match flag {
+            "--cs-path" => parsed.cs_path = Some(PathBuf::from(value)),
+            _ => parsed.out = Some(PathBuf::from(value)),
+        }
+    }
+    Ok(parsed)
+}
+
+/// The `(container, member)` pairs the inventory routes one dialect to,
+/// archive members only, in inventory order.
+fn inventory_members(dialect: TextDialect) -> Vec<(&'static str, &'static str)> {
+    dialect
+        .record()
+        .members
+        .iter()
+        .filter_map(|rule| match rule {
+            MemberRule::Member {
+                container, member, ..
+            } => Some((*container, *member)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The installation-relative spellings the inventory routes one dialect to as
+/// loose files, in inventory order.
+fn inventory_loose_paths(dialect: TextDialect) -> Vec<&'static str> {
+    dialect
+        .record()
+        .members
+        .iter()
+        .filter_map(|rule| match rule {
+            MemberRule::Loose { path, .. } => Some(*path),
+            _ => None,
+        })
+        .collect()
+}
+
+/// The namespace the containers' members are mounted under. It is the
+/// `install` namespace, as in the `rof` command, so a member's key is its
+/// spelling inside the container.
+const ACCOUNT_ROF_NAMESPACE: &str = "install";
+
+/// Every container the census reads: the session its members resolve in and
+/// the sources they are decoded from.
+///
+/// The sources own the container bytes, so they are kept beside the session
+/// rather than borrowed out of a local, and one mount failure refuses the
+/// whole run: an account that silently skipped a container would report a
+/// census of a different installation.
+struct MountedContainers {
+    session: ContentSession,
+    sources: Vec<RofSource>,
+    index: BTreeMap<String, usize>,
+}
+
+impl MountedContainers {
+    /// The session its members resolve in.
+    fn session(&self) -> &ContentSession {
+        &self.session
+    }
+
+    /// The source holding `member`, or `None` when no mounted container does.
+    /// The spelling is folded the way the VFS keys members, so the inventory's
+    /// rule and the container's own spelling agree.
+    fn source_of(&self, member: &str) -> Option<&RofSource> {
+        self.index
+            .get(&member.to_ascii_lowercase())
+            .map(|index| &self.sources[*index])
+    }
+
+    /// Releases the session, proving the generation did not change under the
+    /// census.
+    fn close(self) -> cs_assets::vfs::SessionTeardown {
+        self.session.close()
+    }
+}
+
+/// Mounts every container the `(container, member)` rules name.
+fn mount_containers<'a, I>(
+    cs_path: &Path,
+    install_sha256: ContentHash,
+    rules: I,
+) -> Result<MountedContainers, (u8, String)>
+where
+    I: Iterator<Item = &'a (&'a str, &'a str)>,
+{
+    let mut spellings: Vec<&str> = Vec::new();
+    for (container, _) in rules {
+        if !spellings.contains(container) {
+            spellings.push(container);
+        }
+    }
+    let context = ResolveContext::new(install_sha256);
+    let mut builder = SessionBuilder::new(context);
+    let mut sources: Vec<RofSource> = Vec::with_capacity(spellings.len());
+    let mut index: BTreeMap<String, usize> = BTreeMap::new();
+    for container in spellings {
+        let host = cs_path.join(container);
+        let mount = MountBuilder::new(
+            account_mount_id(container),
+            MountNamespace::new(ACCOUNT_ROF_NAMESPACE).expect("a valid namespace"),
+            PrecedenceClass::Shared,
+            container,
+        )
+        .retail();
+        let mounted = mount_rof_with_limits(mount, &host, RofLimits::default())
+            .map_err(|error| (EXIT_REFUSED, format!("{container}: {error}")))?;
+        builder.mount(mounted.mount).map_err(|error| {
+            (
+                EXIT_RUNTIME,
+                format!("{container}: the container cannot join the session: {error}"),
+            )
+        })?;
+        let at = sources.len();
+        for member in mounted.source.members() {
+            // A later container that carries a spelling an earlier one already
+            // holds is a collision the session itself refuses; the index keeps
+            // the first and the resolve reports the conflict, so neither
+            // container's bytes are silently preferred here.
+            index
+                .entry(member.spelling.to_ascii_lowercase())
+                .or_insert(at);
+        }
+        sources.push(mounted.source);
+    }
+    let session = builder.open();
+    Ok(MountedContainers {
+        session,
+        sources,
+        index,
+    })
+}
+
+/// The mount id a container spelling becomes, as in the `rof` command.
+fn account_mount_id(container: &str) -> MountId {
+    let mut id = String::from("acct-");
+    for character in container.chars() {
+        if id.len() >= MAX_LABEL_LEN {
+            break;
+        }
+        let character = character.to_ascii_lowercase();
+        if character.is_ascii_lowercase()
+            || character.is_ascii_digit()
+            || matches!(character, '.' | '-' | '_')
+        {
+            id.push(character);
+        } else {
+            id.push('-');
+        }
+    }
+    MountId::new(&id).unwrap_or_else(|_| MountId::new("acct").expect("a valid fallback id"))
+}
+
+/// One decoded archive member: its bytes, its provenance and the stored
+/// extent it was compressed out of.
+struct DecodedMember {
+    bytes: Vec<u8>,
+    span: SourceSpan,
+    stored_len: u64,
+    compressed: bool,
+    trailing_len: u64,
+}
+
+/// Decodes `member` through the production mount, resolve and bounded member
+/// reader, or returns the message explaining why not.
+fn read_member(
+    session: &ContentSession,
+    source: &RofSource,
+    install_sha256: ContentHash,
+    member: &str,
+) -> Result<DecodedMember, String> {
+    let key = AssetKey::from_spelling(ACCOUNT_ROF_NAMESPACE, member, "default")
+        .map_err(|error| format!("{member}: not a member key: {error}"))?;
+    let asset = session
+        .resolve(&key)
+        .map_err(|error| format!("{member}: {error}"))?;
+    let read = source
+        .read(&asset.resolved().key)
+        .map_err(|error| format!("{member}: {error}"))?;
+    let info = source
+        .member(&asset.resolved().key)
+        .ok_or_else(|| format!("{member}: the source no longer holds the member"))?;
+    // The provenance of a decoded archive member: the member's **stored**
+    // offset in its container with the **decoded** length and digest, because
+    // the bytes the readers parse are the decoded ones. A member of this
+    // installation is compressed, so a span whose length were the stored count
+    // would not describe the bytes a document was read from; the stored
+    // extent is carried beside it in `DecodedMember::stored_len` and reported
+    // in the JSON, so neither number is lost.
+    let span = SourceSpan::new(
+        install_sha256,
+        source.container(),
+        Some(info.spelling.as_str()),
+        info.offset,
+        read.data.len() as u64,
+        Some(cs_assets::install::sha256(&read.data)),
+    )
+    .map_err(|error| format!("{member}: cannot build provenance: {error}"))?;
+    Ok(DecodedMember {
+        bytes: read.data,
+        span,
+        stored_len: info.stored_len,
+        compressed: info.compressed,
+        trailing_len: read.trailing_len,
+    })
+}
+
+/// One keyed-list member's account, as JSON, with the blocking and entry
+/// counts the census adds up.
+fn keyed_member(
+    session: &ContentSession,
+    source: &RofSource,
+    install_sha256: ContentHash,
+    member: &str,
+) -> Result<(String, usize, usize), String> {
+    let decoded = read_member(session, source, install_sha256, member)?;
+    if decoded.trailing_len != 0 {
+        return Err(format!(
+            "{member}: {} bytes sit unread after the end of the stream inside the stored extent",
+            decoded.trailing_len
+        ));
+    }
+    let mut context = ParseContext::with_defaults(member.to_owned());
+    let document = ConfigDocument::read(&mut context, decoded.span, &decoded.bytes)
+        .map_err(|error| format!("{member}: the member is refused: {error}"))?;
+    let parity = member_parity(member);
+    let blocking = document.member_account(parity).blocking();
+    let entries = document.accounting().entries;
+    let json = member_account_json(
+        &document,
+        parity,
+        Some((decoded.stored_len, u64::from(decoded.compressed))),
+    );
+    Ok((json, blocking, entries))
+}
+
+/// One member's whole account, as JSON.
+fn member_account_json(
+    document: &ConfigDocument,
+    parity: Parity,
+    stored: Option<(u64, u64)>,
+) -> String {
+    let account = document.member_account(parity);
+    let keys = account.keys();
+    // Every declaration code is always present, so the row is a census of the
+    // three possibilities rather than a set that grows and shrinks with the
+    // member.
+    let declared = |code: &str| {
+        account
+            .entries()
+            .iter()
+            .filter(|entry| entry.declaration.code() == code)
+            .count()
+    };
+    let entries = ["record", "placeholder_definition", "undeclared"]
+        .into_iter()
+        .map(|code| format!("{}:{}", jstr(code), declared(code)))
+        .collect::<Vec<String>>()
+        .join(",");
+    let schemas: Vec<String> = account
+        .schemas()
+        .iter()
+        .map(|schema| {
+            let positions: Vec<String> = schema
+                .positions()
+                .iter()
+                .map(|position| {
+                    format!(
+                        "{{\"position\":{},\"name\":{},\"kind\":{},\"evidence\":{},\
+                         \"observed\":{},\"typed\":{},\"untyped\":{},\"placeholders\":{},\
+                         \"empty\":{},\"off_kind\":{}}}",
+                        position.position,
+                        opt_str(position.name),
+                        jstr(position.kind.code()),
+                        jstr(claim_code(position.evidence)),
+                        position.observed,
+                        position.typed,
+                        position.untyped(),
+                        position.placeholders,
+                        position.empty,
+                        position.off_kind,
+                    )
+                })
+                .collect();
+            format!(
+                "{{\"schema\":{},\"records\":{},\"fields\":{},\"unsplit\":{},\"beyond_schema\":{},\
+                 \"untyped\":{},\"off_kind\":{},\"unnamed\":{},\"positions\":[{}]}}",
+                jstr(schema.label),
+                schema.records,
+                schema.fields,
+                schema.unsplit(),
+                schema.beyond_schema,
+                schema.untyped(),
+                schema.off_kind(),
+                schema.unnamed(),
+                positions.join(","),
+            )
+        })
+        .collect();
+    let unclassified: Vec<String> = account
+        .unclassified()
+        .iter()
+        .map(|line| {
+            format!(
+                "{{\"line\":{},\"reason\":{}}}",
+                line.line,
+                jstr(line.reason.code())
+            )
+        })
+        .collect();
+    let unconsumed: Vec<String> = account
+        .unconsumed()
+        .map(|entry| {
+            format!(
+                "{{\"line\":{},\"section\":{},\"key\":{},\"parity\":{}}}",
+                entry.line,
+                opt_str(entry.section.map(bytes_text).as_deref()),
+                jstr(&bytes_text(entry.key)),
+                jstr(entry.parity.code()),
+            )
+        })
+        .collect();
+    let placeholders = account.placeholders();
+    format!(
+        "{{\"source\":{},\"stored\":{},\"dialect\":{},\"parity\":{},\
+         \"accounting\":{{\"entries\":{},\"consumed\":{},\"unconsumed\":{},\
+         \"unclassified_lines\":{},\"unsplit_values\":{}}},\"entries\":{{{}}},\
+         \"schemas\":[{}],\"placeholders\":{{\"definitions\":{},\"local_definitions\":{},\
+         \"global_definitions\":{},\"references\":{},\"resolved_local\":{},\
+         \"resolved_global\":{},\"unresolved\":{}}},\"unclassified\":[{}],\
+         \"unconsumed\":[{}],\"blocking\":{},\"parity_holds\":{}}}",
+        source_json(account.source()),
+        stored.map_or_else(
+            || "null".to_owned(),
+            |(length, compressed)| format!("{{\"length\":{length},\"compressed\":{compressed}}}")
+        ),
+        jstr(account.dialect().code()),
+        jstr(account.parity().code()),
+        keys.entries,
+        keys.consumed,
+        keys.unconsumed,
+        keys.unclassified_lines,
+        keys.unsplit_values,
+        entries,
+        schemas.join(","),
+        placeholders.definitions,
+        placeholders.local_definitions,
+        placeholders.global_definitions,
+        placeholders.references,
+        placeholders.resolved_local,
+        placeholders.resolved_global,
+        placeholders.unresolved,
+        unclassified.join(","),
+        unconsumed.join(","),
+        account.blocking(),
+        bool_json(account.parity_holds()),
+    )
+}
+
+/// The resource-header members of the census: what each declares, read
+/// through the production header reader.
+fn header_json(headers: &[(String, Vec<u8>)], parsed: &[(&str, &ResourceHeader<'_>)]) -> String {
+    let rows: Vec<String> = headers
+        .iter()
+        .zip(parsed)
+        .map(|((member, bytes), (_, header))| {
+            let defines: Vec<String> = header
+                .defines()
+                .map(|define| {
+                    format!(
+                        "{{\"line\":{},\"name\":{},\"value\":{},\"id\":{}}}",
+                        define.line,
+                        jstr(&bytes_text(define.name)),
+                        jstr(&bytes_text(define.value.text())),
+                        opt_num(define.resource_id().map(u64::from)),
+                    )
+                })
+                .collect();
+            format!(
+                "{{\"member\":{},\"bytes\":{},\"sha256\":{},\"defines\":{},\"unclassified_lines\":{},\
+                 \"names\":[{}]}}",
+                jstr(member),
+                bytes.len(),
+                jstr(&cs_assets::install::sha256(bytes).to_hex()),
+                header.defines().count(),
+                header.unclassified().count(),
+                defines.join(","),
+            )
+        })
+        .collect();
+    rows.join(",")
+}
+
+/// One string image's whole id account, as JSON.
+fn image_account_json(catalog: &StringCatalog, headers: &[(&str, &ResourceHeader<'_>)]) -> String {
+    let account = cs_content::config::account_string_ids(catalog, headers);
+    let strings = catalog.accounting();
+    let rows: Vec<String> = account
+        .headers
+        .iter()
+        .map(|row| {
+            format!(
+                "{{\"member\":{},\"defines\":{},\"undecoded\":{},\"distinct\":{},\"present\":{},\
+                 \"absent\":[{}],\"string_defines\":{},\"string_distinct\":{},\"string_present\":{},\
+                 \"string_absent\":[{}]}}",
+                jstr(&row.member),
+                row.defines,
+                row.undecoded,
+                row.distinct.len(),
+                row.present,
+                u32_list(&row.absent),
+                row.string_defines,
+                row.string_distinct.len(),
+                row.string_present,
+                u32_list(&row.string_absent),
+            )
+        })
+        .collect();
+    format!(
+        "{{\"source\":{},\"accounting\":{{\"strings\":{},\"undecodable\":{},\"other_leaves\":{},\
+         \"duplicate_ids\":{}}},\"blocks\":{},\"units\":{},\"named_ids\":{},\
+         \"unnamed_blocks\":[{}],\"absent_ids\":[{}],\"headers\":[{}]}}",
+        source_json(&account.source),
+        strings.strings,
+        strings.undecodable,
+        strings.other_leaves,
+        strings.duplicate_ids,
+        account.blocks,
+        account.units,
+        account.named_ids,
+        u32_list(&account.unnamed_blocks),
+        u32_list(&account.absent_ids()),
+        rows.join(","),
+    )
+}
+
+/// A member that could not be read, as a refusal row rather than a census.
+fn refused_json(dialect: &str, reason: &str) -> String {
+    format!(
+        "{{\"status\":\"refused\",\"dialect\":{},\"reason\":{}}}",
+        jstr(dialect),
+        jstr(reason)
+    )
+}
+
+fn u32_list(values: &[u32]) -> String {
+    values
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<String>>()
+        .join(",")
+}
+
+fn bool_json(value: bool) -> &'static str {
+    if value { "true" } else { "false" }
+}
+
+/// Stable labels for the [`ClaimStatus`] values a record field can carry.
+fn claim_code(status: ClaimStatus) -> &'static str {
+    match status {
+        ClaimStatus::Documented => "documented",
+        ClaimStatus::ObservedTool => "observed_tool",
+        ClaimStatus::VerifiedOriginal => "verified_original",
+        ClaimStatus::Inferred => "inferred",
+        ClaimStatus::Designed => "designed",
+        ClaimStatus::Unknown => "unknown",
+        ClaimStatus::Contradicted => "contradicted",
+    }
+}
+
+/// Whether `path` lies inside `root`, so a report is never written into the
+/// read-only installation.
+///
+/// The path need not exist: the deepest ancestor that does is canonicalized
+/// and the remaining components are appended, so a `…/inside.json` under a
+/// root whose own spelling differs only in a symlink (`/var` against
+/// `/private/var` on macOS) is still inside it.
+fn inside(path: &Path, root: &Path) -> bool {
+    let Ok(root) = fs::canonicalize(root) else {
+        return false;
+    };
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir().unwrap_or_default().join(path)
+    };
+    let mut existing = absolute.as_path();
+    let mut rest: Vec<&OsStr> = Vec::new();
+    loop {
+        if let Ok(canonical) = fs::canonicalize(existing) {
+            let mut full = canonical;
+            full.extend(rest.iter().rev());
+            return full.starts_with(&root);
+        }
+        match (existing.parent(), existing.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name);
+                existing = parent;
+            }
+            _ => return false,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -1789,5 +2647,584 @@ mod tests {
             !lookups.contains("\"text\":null") && !lookups.contains("\"text\":\"\""),
             "the recorded row carries the localized title: {lookups}"
         );
+    }
+
+    // ------------------------------------- F12-D the whole-installation census
+    //
+    // Every byte below is authored: the container is written by
+    // [`authored_rof`] and the images by the fixture builders above, with ids,
+    // names and texts invented for the test. No original byte is used.
+
+    /// One authored ROF container holding `files`, whose members are named by
+    /// `/`-separated spellings.
+    ///
+    /// Directory blocks come first in the order the tree is walked, then the
+    /// payloads in the order they were given, and every record's start offset
+    /// is that layout. The member payloads are stored uncompressed, so the
+    /// stored and decoded length words of every record are equal.
+    fn authored_rof(files: &[(&str, &[u8])]) -> Vec<u8> {
+        /// One directory of the authored tree.
+        struct Node {
+            files: Vec<(String, usize)>,
+            dirs: Vec<(String, usize)>,
+        }
+        let mut nodes = vec![Node {
+            files: Vec::new(),
+            dirs: Vec::new(),
+        }];
+        for (index, (spelling, _)) in files.iter().enumerate() {
+            let segments: Vec<&str> = spelling.split('/').collect();
+            let mut at = 0usize;
+            for (depth, segment) in segments.iter().enumerate() {
+                if depth + 1 == segments.len() {
+                    nodes[at].files.push(((*segment).to_owned(), index));
+                    break;
+                }
+                // A directory already opened under this name is reused, so two
+                // members of one directory share one block.
+                let existing = nodes[at]
+                    .dirs
+                    .iter()
+                    .find(|(name, _)| name == segment)
+                    .map(|(_, node)| *node);
+                let child = match existing {
+                    Some(child) => child,
+                    None => {
+                        nodes.push(Node {
+                            files: Vec::new(),
+                            dirs: Vec::new(),
+                        });
+                        let child = nodes.len() - 1;
+                        nodes[at].dirs.push(((*segment).to_owned(), child));
+                        child
+                    }
+                };
+                at = child;
+            }
+        }
+        let block_len = |node: &Node| {
+            8 + 24 * (node.files.len() + node.dirs.len())
+                + node
+                    .files
+                    .iter()
+                    .chain(node.dirs.iter())
+                    .map(|(name, _)| name.len() + 1)
+                    .sum::<usize>()
+        };
+        let mut cursor: u32 = 0;
+        let mut starts = Vec::with_capacity(nodes.len());
+        for node in &nodes {
+            starts.push(cursor);
+            cursor += block_len(node) as u32;
+        }
+        let mut payload_starts = Vec::with_capacity(files.len());
+        for (_, bytes) in files {
+            payload_starts.push(cursor);
+            cursor += bytes.len() as u32;
+        }
+
+        let mut out = Vec::new();
+        for (at, node) in nodes.iter().enumerate() {
+            let mut names = Vec::new();
+            let mut id = 1u32;
+            for (name, _) in node.dirs.iter().chain(node.files.iter()) {
+                names.extend_from_slice(name.as_bytes());
+                names.push(0);
+            }
+            out.extend_from_slice(&((node.files.len() + node.dirs.len()) as u32).to_le_bytes());
+            out.extend_from_slice(&(names.len() as u32).to_le_bytes());
+            for (name, child) in node.dirs.iter() {
+                push_record(&mut out, starts[*child], 0, 0, 1, name, id);
+                id += 1;
+            }
+            for (name, index) in &node.files {
+                let length = files[*index].1.len() as u32;
+                push_record(
+                    &mut out,
+                    payload_starts[*index],
+                    length,
+                    length,
+                    0,
+                    name,
+                    id,
+                );
+                id += 1;
+            }
+            out.extend_from_slice(&names);
+            debug_assert_eq!(
+                out.len() - starts[at] as usize,
+                block_len(node),
+                "the block's declared length is the bytes it occupies"
+            );
+        }
+        for (_, bytes) in files {
+            out.extend_from_slice(bytes);
+        }
+        debug_assert_eq!(out.len(), cursor as usize, "every payload placed once");
+        out
+    }
+
+    fn push_record(
+        out: &mut Vec<u8>,
+        start: u32,
+        raw: u32,
+        stored: u32,
+        flags: u32,
+        name: &str,
+        id: u32,
+    ) {
+        out.extend_from_slice(&start.to_le_bytes());
+        out.extend_from_slice(&raw.to_le_bytes());
+        out.extend_from_slice(&stored.to_le_bytes());
+        out.extend_from_slice(&flags.to_le_bytes());
+        out.extend_from_slice(&(name.len() as u32 + 1).to_le_bytes());
+        out.extend_from_slice(&id.to_le_bytes());
+    }
+
+    /// The census's two keyed-list members: three `T` records, one `P` record
+    /// and one `V`/`G` definition pair, every entry declared.
+    const CENSUS_LAYOUT: &[u8] = b"; authored\r\n\
+[GLOBALVARS]\r\n\
+G1=WIDE,64\r\n\
+[PANEL]\r\n\
+V1=BACK,0xff112233\r\n\
+TITLE_A=T,IDS_TITLE,1,2,3,4,5,0xAABBCCDD,0\r\n\
+TITLE_B=T,IDS_OTHER,1,2,3,4,5,oxff1E283C,0\r\n\
+TITLE_C=T,IDS_THIRD,<WIDE>,3,4,5,0,0x00FF00FF,0\r\n\
+PANE_1=P,back.png,-1,-2,3,4,0,1,1\r\n";
+
+    /// The same member with one entry no declaration covers.
+    const CENSUS_LAYOUT_UNDECLARED: &[u8] = b"; authored\r\n\
+[GLOBALVARS]\r\n\
+G1=WIDE,64\r\n\
+[PANEL]\r\n\
+V1=BACK,0xff112233\r\n\
+TITLE_A=T,IDS_TITLE,1,2,3,4,5,0xAABBCCDD,0\r\n\
+LOOSE=not,declared,anywhere\r\n";
+
+    /// One sixteen-field scrapbook item, the shape every entry of the shipped
+    /// member uses.
+    const CENSUS_SCRAPBOOK: &[u8] = b"; authored\r\n\
+[SCRAPBOOK]\r\n\
+0_1_1=0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15\r\n";
+
+    /// The two resource headers of the census: five defines naming ids 0, 16,
+    /// 32 and 900 plus one whose value is not a plain decimal.
+    const CENSUS_RESOURCE: &[u8] = b"//{{NO_DEPENDENCIES}}\r\n\
+#define IDS_A 0\r\n\
+#define IDS_B 16\r\n\
+#define IDS_MISSING 32\r\n\
+#define IDS_HEX 0x10\r\n\
+#define FONT_MAIN 900\r\n";
+
+    /// The second header: two defines, one of them naming block 5.
+    const CENSUS_RESRC1: &[u8] = b"#define SB_A 0\r\n\
+#define SB_C 64\r\n";
+
+    /// A synthetic installation carrying the four routed archive members and
+    /// the three routed string images, with the given layout member.
+    fn census_tree(label: &str, layout: &[u8]) -> Temp {
+        let temp = Temp::new(label);
+        temp.write(
+            "GOSDATA/ASSETS/crimson.rof",
+            &authored_rof(&[
+                ("ASSETS/LAYOUT.CSV", layout),
+                ("ASSETS/SCRAPBOOK.CSV", CENSUS_SCRAPBOOK),
+                ("ASSETS/SCRIPTS/RESOURCE.H", CENSUS_RESOURCE),
+                ("ASSETS/SCRIPTS/RESRC1.H", CENSUS_RESRC1),
+            ]),
+        );
+        // `langui.dll` carries two blocks (ids 0 and 16) and the other two
+        // images one each, so a report says which file it read.
+        temp.write("strings.dll", &one_block_image());
+        temp.write("GOSDATA/ASSETS/BINARIES/langui.dll", &two_block_image());
+        temp.write("GOSDATA/ASSETS/BINARIES/language.dll", &one_block_image());
+        temp
+    }
+
+    /// The command with no installation selected, so a test routes by
+    /// `--cs-path` alone and never inherits the machine's `CS_GAME_DIR`.
+    fn account_run(tree: &Temp) -> ConfigRun {
+        account_command_result(
+            &args(&["--cs-path", tree.0.to_str().expect("utf-8 root")]),
+            None,
+        )
+    }
+
+    /// The census over a synthetic installation: both routed keyed-list
+    /// members are rolled up against the declared schemas, both resource
+    /// headers are crossed with all three string images in both directions, and
+    /// no gameplay-critical entry is left unconsumed — so the run exits 0.
+    #[test]
+    fn accept_f12_d_accounting_command_reports_the_whole_installation_census() {
+        let tree = census_tree("census", CENSUS_LAYOUT);
+        let run = account_run(&tree);
+        assert_eq!(run.exit_code, 0, "{:?}", run.diagnostics);
+        let report = run.report.expect("a report");
+        assert!(report.contains(ACCOUNT_REPORT_VERSION), "{report}");
+        assert!(
+            report.contains("\"dialect\":\"text.keyed_list\""),
+            "{report}"
+        );
+        assert!(
+            report.contains("\"parity\":{\"gameplay_critical_unconsumed\":0,\"holds\":true}"),
+            "{report}"
+        );
+
+        // The installation's own fingerprints, so the census says which one it
+        // is about.
+        assert!(report.contains("\"install_sha256\":\""), "{report}");
+        assert!(report.contains("\"content_sha256\":\""), "{report}");
+
+        // Both members, each with the member's own provenance and the entry and
+        // declaration counts of the account.
+        for member in ["ASSETS/LAYOUT.CSV", "ASSETS/SCRAPBOOK.CSV"] {
+            assert!(
+                report.contains(&format!("\"member\":\"{member}\"")),
+                "{member}: {report}"
+            );
+        }
+        assert!(
+            report.contains("\"entries\":6,\"consumed\":0,\"unconsumed\":6"),
+            "the layout member's six entries: {report}"
+        );
+        assert!(
+            report.contains(
+                "\"entries\":{\"record\":4,\"placeholder_definition\":2,\"undeclared\":0}"
+            ),
+            "every entry of the layout member is declared: {report}"
+        );
+        assert!(
+            report.contains("\"blocking\":0,\"parity_holds\":true"),
+            "{report}"
+        );
+        // The declared position census travels with the member: the text
+        // colour position types two of the three records and counts the
+        // misspelt one apart from them.
+        assert!(
+            report.contains(
+                "\"position\":7,\"name\":\"Color\",\"kind\":\"color\",\
+                 \"evidence\":\"documented\",\"observed\":3,\"typed\":2,\"untyped\":0,\
+                 \"placeholders\":0,\"empty\":0,\"off_kind\":1"
+            ),
+            "the text colour position: {report}"
+        );
+        // The scrapbook item is sixteen fields whose three positions no kind
+        // covers.
+        assert!(
+            report.contains("\"schema\":\"Mission_Spread_Item\",\"records\":1,\"fields\":16"),
+            "{report}"
+        );
+        assert!(report.contains("\"untyped\":3"), "{report}");
+
+        // Both headers, with every define and its parsed id.
+        for member in ["ASSETS/SCRIPTS/RESOURCE.H", "ASSETS/SCRIPTS/RESRC1.H"] {
+            assert!(
+                report.contains(&format!("\"member\":\"{member}\"")),
+                "{member}: {report}"
+            );
+        }
+        assert!(
+            report.contains("\"name\":\"IDS_MISSING\",\"value\":\"32\""),
+            "{report}"
+        );
+        assert!(
+            report.contains("\"name\":\"IDS_HEX\",\"value\":\"0x10\",\"id\":null"),
+            "a value that is not a plain decimal has no id and is kept as bytes: {report}"
+        );
+
+        // All three images, each with its own block count so a report can be
+        // told apart, and the ids each header names that it lacks.
+        for (container, blocks) in [
+            ("strings.dll", 1),
+            ("GOSDATA/ASSETS/BINARIES/langui.dll", 2),
+            ("GOSDATA/ASSETS/BINARIES/language.dll", 1),
+        ] {
+            let image = image_report(&report, container);
+            assert!(
+                image.contains(&format!("\"blocks\":{blocks}")),
+                "{container}: {image}"
+            );
+        }
+        // The two-block image: `IDS_MISSING`'s block 3, `SB_C`'s block 5 and
+        // `FONT_MAIN`'s block 57 are absent, and both of the image's blocks are
+        // named.
+        let langui = image_report(&report, "GOSDATA/ASSETS/BINARIES/langui.dll");
+        assert!(langui.contains("\"unnamed_blocks\":[]"), "{langui}");
+        assert!(langui.contains("\"absent_ids\":[32,64,900]"), "{langui}");
+        assert!(
+            langui.contains("\"string_present\":2,\"string_absent\":[32]"),
+            "{langui}"
+        );
+        assert!(langui.contains("\"undecoded\":1"), "{langui}");
+        // The one-block image: `IDS_B`'s block 2 is absent too, and its single
+        // block is named.
+        let strings = image_report(&report, "strings.dll");
+        assert!(
+            strings.contains("\"absent_ids\":[16,32,64,900]"),
+            "{strings}"
+        );
+        assert!(strings.contains("\"unnamed_blocks\":[]"), "{strings}");
+    }
+
+    /// The spec's own rule, through the command: a gameplay-critical entry no
+    /// declaration consumed blocks parity, the run exits nonzero, and the
+    /// report still names the entry rather than dropping it.
+    #[test]
+    fn accept_f12_d_accounting_command_exits_three_on_an_unconsumed_gameplay_key() {
+        let tree = census_tree("census-loose", CENSUS_LAYOUT_UNDECLARED);
+        let run = account_run(&tree);
+        assert_eq!(run.exit_code, EXIT_REFUSED, "{:?}", run.diagnostics);
+        let report = run.report.expect("a report even when parity fails");
+        assert!(
+            report.contains("\"parity\":{\"gameplay_critical_unconsumed\":1,\"holds\":false}"),
+            "{report}"
+        );
+        // The entry is listed with its line, its section and its key.
+        assert!(
+            report.contains("\"unconsumed\":[{\"line\":7,\"section\":\"PANEL\",\"key\":\"LOOSE\""),
+            "{report}"
+        );
+        assert!(
+            report.contains(
+                "\"entries\":{\"record\":1,\"placeholder_definition\":2,\"undeclared\":1}"
+            ),
+            "{report}"
+        );
+        assert!(
+            report.contains("\"blocking\":1,\"parity_holds\":false"),
+            "{report}"
+        );
+        // The other member is still accounted, so the blocker is named, not the
+        // whole census.
+        assert!(
+            report.contains("\"schema\":\"Mission_Spread_Item\""),
+            "{report}"
+        );
+    }
+
+    /// The command's own refusals: a member the inventory routes but the
+    /// container does not hold is a refusal, not a silently shorter census, and
+    /// the run reports it on a nonzero exit.
+    #[test]
+    fn accept_f12_d_accounting_command_refuses_a_member_the_container_does_not_hold() {
+        let temp = Temp::new("census-missing");
+        temp.write(
+            "GOSDATA/ASSETS/crimson.rof",
+            &authored_rof(&[("ASSETS/LAYOUT.CSV", CENSUS_LAYOUT)]),
+        );
+        temp.write("strings.dll", &one_block_image());
+        temp.write("GOSDATA/ASSETS/BINARIES/langui.dll", &two_block_image());
+        temp.write("GOSDATA/ASSETS/BINARIES/language.dll", &one_block_image());
+        let run = account_run(&temp);
+        assert_eq!(run.exit_code, EXIT_REFUSED, "{:?}", run.diagnostics);
+        for member in [
+            "ASSETS/SCRAPBOOK.CSV",
+            "ASSETS/SCRIPTS/RESOURCE.H",
+            "ASSETS/SCRIPTS/RESRC1.H",
+        ] {
+            assert!(
+                run.diagnostics.iter().any(|line| line.contains(&format!(
+                    "{member}: the inventory routes it but the container does not hold it"
+                ))),
+                "{member}: {:?}",
+                run.diagnostics
+            );
+        }
+        // The report is still written, and it says the member was refused
+        // rather than reporting a shorter census as complete.
+        let report = run.report.expect("a report even when a member is refused");
+        assert!(report.contains("\"status\":\"refused\""), "{report}");
+    }
+
+    /// The argument surface: an unsupported flag and an `--out` inside the
+    /// installation are invalid input, and no installation at all is the
+    /// missing-capability code — never a report and never zero.
+    #[test]
+    fn accept_f12_d_accounting_command_refuses_invalid_input_and_no_installation() {
+        let tree = census_tree("census-args", CENSUS_LAYOUT);
+        let root = tree.0.to_str().expect("utf-8 root").to_owned();
+
+        for (arguments, expected) in [
+            (
+                vec!["--nope".to_owned(), "x".to_owned()],
+                EXIT_INVALID_INPUT,
+            ),
+            (vec!["--cs-path".to_owned()], EXIT_INVALID_INPUT),
+            (
+                vec![
+                    "--cs-path".to_owned(),
+                    root.clone(),
+                    "--out".to_owned(),
+                    tree.0.join("inside.json").to_string_lossy().into_owned(),
+                ],
+                EXIT_INVALID_INPUT,
+            ),
+        ] {
+            let run = account_command_result(&arguments, None);
+            assert_eq!(run.exit_code, expected, "{arguments:?}");
+            assert!(run.report.is_none(), "{arguments:?}: no report on refusal");
+        }
+
+        // No installation selected: the missing-capability code, with a
+        // diagnostic naming both ways of selecting one.
+        let run = account_command_result(&[], None);
+        assert_eq!(run.exit_code, EXIT_NO_INSTALL);
+        assert!(run.report.is_none());
+        assert!(
+            run.diagnostics
+                .iter()
+                .any(|line| line.contains("no installation selected")),
+            "{:?}",
+            run.diagnostics
+        );
+        // An exported but empty CS_GAME_DIR selects nothing either.
+        let run = account_command_result(&[], Some(OsString::new()));
+        assert_eq!(run.exit_code, EXIT_NO_INSTALL);
+    }
+
+    /// Retail: the production command over the installed data reports the
+    /// census the F12 findings recorded, and exits 0 because no
+    /// gameplay-critical entry is unconsumed.
+    #[test]
+    #[ignore = "requires CS_GAME_DIR"]
+    fn accept_f12_d_accounting_retail_command_reports_the_installed_census() {
+        let dir = std::env::var_os("CS_GAME_DIR")
+            .expect("CS_GAME_DIR is not set: this test needs the original installation");
+        let dir = PathBuf::from(dir);
+        assert!(dir.is_dir(), "CS_GAME_DIR is not a directory");
+        let out = dir.join("cs-inspect-config-account.json");
+        assert!(
+            !out.exists(),
+            "the installation must never be written to, and nothing may be left there"
+        );
+
+        let run = account_command_result(
+            &args(&["--cs-path", dir.to_str().expect("utf-8 root")]),
+            Some(dir.clone().into_os_string()),
+        );
+        assert_eq!(run.exit_code, 0, "{:?}", run.diagnostics);
+        let report = run.report.expect("a report");
+        assert!(
+            report.contains("\"parity\":{\"gameplay_critical_unconsumed\":0,\"holds\":true}"),
+            "no gameplay-critical entry is unconsumed: {report}"
+        );
+
+        // The installation fingerprint, from the production discovery.
+        let found = cs_assets::install::discover(&dir).expect("the installation is discovered");
+        assert!(
+            report.contains(&format!(
+                "\"install_sha256\":\"{}\"",
+                cs_assets::install::fingerprint(&found.manifest).to_hex()
+            )),
+            "{report}"
+        );
+        assert!(
+            report.contains(&format!(
+                "\"content_sha256\":\"{}\"",
+                cs_assets::install::content_fingerprint(&found.manifest).to_hex()
+            )),
+            "{report}"
+        );
+
+        // The per-member numbers the F12-I and F12-E findings recorded.
+        assert!(
+            report.contains("\"member\":\"ASSETS/LAYOUT.CSV\""),
+            "{report}"
+        );
+        assert!(
+            report.contains("\"entries\":822,\"consumed\":0,\"unconsumed\":822"),
+            "{report}"
+        );
+        assert!(
+            report.contains(
+                "\"entries\":{\"record\":636,\"placeholder_definition\":186,\"undeclared\":0}"
+            ),
+            "every entry of the shipped layout member is declared: {report}"
+        );
+        assert!(
+            report.contains("\"definitions\":186,\"local_definitions\":157"),
+            "{report}"
+        );
+        assert!(report.contains("\"references\":1313"), "{report}");
+        assert!(
+            report.contains("\"unclassified\":[{\"line\":101,\"reason\":\"no_separator\"}]"),
+            "{report}"
+        );
+        assert!(
+            report.contains("\"schema\":\"Button\",\"records\":119,\"fields\":1975"),
+            "{report}"
+        );
+        assert!(
+            report.contains("\"schema\":\"Mission_Spread_Item\",\"records\":461,\"fields\":7376"),
+            "{report}"
+        );
+        // The three recorded unknowns of the button schema and the four
+        // misspelt colours of the text schema.
+        assert!(
+            report.contains("\"untyped\":137,\"off_kind\":0,\"unnamed\":1072"),
+            "{report}"
+        );
+        assert!(
+            report.contains("\"untyped\":0,\"off_kind\":4,\"unnamed\":0"),
+            "{report}"
+        );
+        assert!(
+            report.contains("\"untyped\":1377,\"off_kind\":0,\"unnamed\":0"),
+            "{report}"
+        );
+
+        // The two headers and the three images, with the numbers #368 recorded.
+        assert!(
+            report.contains("\"member\":\"ASSETS/SCRIPTS/RESOURCE.H\",\"bytes\":29579"),
+            "{report}"
+        );
+        assert!(
+            report.contains("\"member\":\"ASSETS/SCRIPTS/RESRC1.H\",\"bytes\":8922"),
+            "{report}"
+        );
+        let langui = image_report(&report, "GOSDATA/ASSETS/BINARIES/langui.dll");
+        assert!(langui.contains("\"blocks\":101"), "{langui}");
+        assert!(langui.contains("\"units\":1616"), "{langui}");
+        assert!(langui.contains("\"named_ids\":782"), "{langui}");
+        assert!(
+            langui.contains(
+                "\"unnamed_blocks\":[2,3,4,5,190,195,196,197,198,200,201,202,204,205,206,217,\
+                 219,227]"
+            ),
+            "the eighteen blocks neither header addresses: {langui}"
+        );
+        assert!(
+            langui.contains("\"absent_ids\":[600,620,2002,2050,2054,3510,3540]"),
+            "the seven string-table ids langui.dll has no block for: {langui}"
+        );
+        let strings = image_report(&report, "strings.dll");
+        assert!(strings.contains("\"blocks\":112"), "{strings}");
+        assert!(strings.contains("\"strings\":1792"), "{strings}");
+        assert!(strings.contains("\"other_leaves\":2"), "{strings}");
+        let language = image_report(&report, "GOSDATA/ASSETS/BINARIES/language.dll");
+        assert!(language.contains("\"blocks\":3"), "{language}");
+        assert!(language.contains("\"strings\":48"), "{language}");
+
+        // No original text and no `#define` name reached the report: the
+        // define names the test itself authored appear, and the retail ones do
+        // not spell a display string.
+        assert!(!report.contains("\\u0000"), "{report}");
+    }
+
+    /// The JSON of one image's row, sliced out of the whole report so a
+    /// per-image assertion reads that image and not the next one: the row runs
+    /// from its own `"container"` to the next row's `"source"` (or to the
+    /// closing `parity` object when it is the last).
+    fn image_report<'a>(report: &'a str, container: &str) -> &'a str {
+        let at = report
+            .find(&format!("\"container\":\"{container}\""))
+            .unwrap_or_else(|| panic!("the census has no row for {container}: {report}"));
+        let tail = &report[at..];
+        let end = tail[1..]
+            .find("\"source\":{\"install_sha256\"")
+            .or_else(|| tail.find("\"parity\":{\"gameplay_critical_unconsumed\""))
+            .unwrap_or(tail.len());
+        &tail[..end]
     }
 }

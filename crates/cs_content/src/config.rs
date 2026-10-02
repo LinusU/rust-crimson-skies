@@ -53,15 +53,17 @@
 //! data does *not* match, and why, is recorded in
 //! `docs/findings/2026-09-29-f12-i-record-kind-schemas.md`.
 
+use std::collections::BTreeSet;
 use std::fmt;
 
 use cs_formats::AllocationBudget;
 use cs_formats::ParseContext;
 use cs_formats::error::ParseError;
 use cs_formats::text::{
-    DialectReader, DocumentedField, Fields, KeyedList, LineKind, LineTerminator, PlaceholderTable,
-    QuoteIssue, RecordKind, TextDialect, Unclassified, dialect_for_member, documented_fields,
-    documented_scrapbook_fields, read_keyed_list, read_placeholders,
+    DialectReader, DocumentedField, Fields, KeyedList, LineKind, LineTerminator,
+    PlaceholderAccounting, PlaceholderScope, PlaceholderTable, QuoteIssue, RecordKind,
+    ResourceHeader, TextDialect, Unclassified, definition_scope, dialect_for_member,
+    documented_fields, documented_scrapbook_fields, read_keyed_list, read_placeholders,
 };
 use cs_formats::{PeError, PeResources, RT_STRING, ResourceKey, ResourceLeaf, read_pe_resources};
 use cs_types::asset_id::SourceSpan;
@@ -1530,6 +1532,25 @@ pub enum RecordSchema {
 }
 
 impl RecordSchema {
+    /// Every schema, in the order the member's comments name the record
+    /// kinds and the scrapbook's own list last. An account's schema roll-up
+    /// walks this order, so the rows it reports are deterministic rather
+    /// than in whatever order the entries happened to appear.
+    pub const ALL: [Self; 12] = [
+        Self::Layout(RecordKind::Button),
+        Self::Layout(RecordKind::Pane),
+        Self::Layout(RecordKind::Text),
+        Self::Layout(RecordKind::EditBox),
+        Self::Layout(RecordKind::Movie),
+        Self::Layout(RecordKind::TextList),
+        Self::Layout(RecordKind::ScrollingText),
+        Self::Layout(RecordKind::Dropdown),
+        Self::Layout(RecordKind::Listbox),
+        Self::Layout(RecordKind::Slider),
+        Self::Layout(RecordKind::SoundObject),
+        Self::Scrapbook,
+    ];
+
     /// The observed positions' specs, `0` being the record letter / first
     /// field. The slice covers every position the member's records use, so
     /// a field beyond it cannot occur.
@@ -2069,6 +2090,746 @@ fn spell(text: &[u8]) -> FieldSpelling {
     FieldSpelling::Text
 }
 
+/// Whether the bytes of one observed field can carry the kind its schema
+/// declares, which is the production form of the check task #371 measured
+/// only in a test.
+///
+/// A `<NAME>` placeholder and an empty field fit every kind — the F12-E pass
+/// resolves the one and the shipped data leaves the other empty — and a
+/// `0x…` literal is an integer notation wherever an integer is declared.
+/// Everything else must look like the kind it is declared to be, so a
+/// declared kind the bytes never spell is counted as
+/// [`PositionAccount::off_kind`] rather than silently accepted.
+///
+/// An unknown kind accepts everything: it claims nothing the bytes could
+/// contradict, which is the whole point of a recorded unknown.
+pub fn spells_kind(kind: FieldKind, spelling: FieldSpelling) -> bool {
+    match kind {
+        FieldKind::Unknown => true,
+        FieldKind::Integer { .. } => {
+            matches!(
+                spelling,
+                FieldSpelling::Integer
+                    | FieldSpelling::Hex
+                    | FieldSpelling::Placeholder
+                    | FieldSpelling::Empty
+            )
+        }
+        FieldKind::Bool => matches!(
+            spelling,
+            FieldSpelling::Integer | FieldSpelling::Placeholder | FieldSpelling::Empty
+        ),
+        FieldKind::Color => matches!(
+            spelling,
+            FieldSpelling::Color | FieldSpelling::Placeholder | FieldSpelling::Empty
+        ),
+        FieldKind::Name | FieldKind::Path => {
+            matches!(
+                spelling,
+                FieldSpelling::Text
+                    | FieldSpelling::Integer
+                    | FieldSpelling::Placeholder
+                    | FieldSpelling::Empty
+            )
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The whole-installation account (stage F12-D)
+// ---------------------------------------------------------------------------
+//
+// Task #482 finishes what stage F12-D owes. Everything above it reads **one
+// member at a time**: [`ConfigDocument::accounting`] counts that member's
+// entries, [`RecordView::accounting`] counts that record's fields, and the
+// `config` command reports one of them per run. What did not exist is an
+// account over the *installation*:
+//
+// * [`ConfigDocument::member_account`] rolls a whole member up — which field
+//   positions of which declared schema the member's records actually reach,
+//   which of those positions stay a recorded unknown, and which entries no
+//   declaration consumed at all — with the member's own [`SourceSpan`], and
+//   classifies each unconsumed entry as a parity blocker or not (spec F12,
+//   non-negotiable #5).
+// * [`account_string_ids`] crosses the ids the original **names** (the
+//   `IDS_`/`STR_`/`SB_` defines of the two resource headers) with the ids the
+//   string images actually **carry**, and reports the difference in both
+//   directions as a first-class account instead of a one-off measurement.
+//
+// Neither half guesses. A position whose kind is not established stays
+// [`FieldKind::Unknown`] and is counted; a header value that is not a plain
+// decimal is counted as undecoded and dropped from the id sets; an entry no
+// declaration covers is listed with its line and bytes, never silently
+// discarded. The numbers this stage measures over the installed data are
+// written down in
+// `docs/findings/2026-10-02-f12-d-installation-wide-configuration-account.md`.
+
+/// What an entry no declaration consumed means for parity.
+///
+/// Spec F12 non-negotiable #5: "unknown configuration keys are retained and
+/// counted; gameplay-critical unconsumed keys block parity rather than being
+/// discarded". Which of the two a member is comes from its **consumer**, not
+/// from its file name, so it is a declared argument ([`MemberAccount::parity`])
+/// and never inferred here.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Parity {
+    /// The member feeds gameplay, so an entry no declaration consumed is a
+    /// parity blocker: the account reports it and a caller must fail.
+    GameplayCritical,
+    /// The member does not feed gameplay. The entry is still retained and
+    /// counted, but it does not block parity.
+    NonGameplay,
+}
+
+impl Parity {
+    /// Stable, machine-matchable label.
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::GameplayCritical => "gameplay_critical",
+            Self::NonGameplay => "non_gameplay",
+        }
+    }
+
+    /// Whether an unconsumed entry of such a member blocks parity.
+    pub const fn blocks(self) -> bool {
+        matches!(self, Self::GameplayCritical)
+    }
+}
+
+/// What a declaration covers of one entry of a routed keyed-list member.
+///
+/// Exactly one of these answers an entry, and the answer is a declaration —
+/// a schema, the placeholder pass — or the recorded fact that nothing
+/// declares it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EntryDeclaration {
+    /// A declared record schema reads the entry's fields
+    /// ([`RecordSchema::for_entry`]).
+    Record(RecordSchema),
+    /// The `<NAME>` pass owns the entry as a `V`/`G` definition. This is the
+    /// F12-E pass's own rule (`cs_formats::text::definition_scope` plus the
+    /// two-field value shape it measured), not a second one.
+    Placeholder(PlaceholderScope),
+    /// Nothing declared reads the entry. It is retained and listed
+    /// ([`MemberAccount::unconsumed`]); a gameplay-critical one is a parity
+    /// blocker.
+    Undeclared,
+}
+
+impl EntryDeclaration {
+    /// Stable, machine-matchable label.
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Record(_) => "record",
+            Self::Placeholder(_) => "placeholder_definition",
+            Self::Undeclared => "undeclared",
+        }
+    }
+}
+
+/// One entry of a member, with the declaration that covers it and what its
+/// unconsumed state means.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AccountedEntry<'a> {
+    /// The 1-based line the entry came from.
+    pub line: u64,
+    /// The section header the entry follows, `None` before the first one.
+    pub section: Option<&'a [u8]>,
+    /// The key, as written.
+    pub key: &'a [u8],
+    /// What covers it.
+    pub declaration: EntryDeclaration,
+    /// The member's declared parity, so a caller can filter without
+    /// re-reading the member's declaration.
+    pub parity: Parity,
+}
+
+/// One line of a member no observed rule explains, kept with its reason so a
+/// caller can see that the member is not fully accounted for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AccountedLine {
+    /// The 1-based line number.
+    pub line: u64,
+    /// Why the line is not accounted for.
+    pub reason: Unclassified,
+}
+
+/// One declared field position of one record schema, against the member's
+/// records.
+///
+/// The four value columns partition [`Self::observed`]: every value at the
+/// position is empty, a `<NAME>` reference, or a value, and a value is
+/// either described by the position's declared kind
+/// ([`Self::typed`]), not described because the kind is **not established**
+/// ([`Self::untyped`], the recorded unknown spec F12 non-negotiable #5 asks
+/// to be counted), or not describable because the bytes do not look like the
+/// kind that *is* declared ([`Self::off_kind`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PositionAccount {
+    /// The observed position, `0` being the record letter / first field.
+    pub position: usize,
+    /// The documented field name, or `None` for a recorded unknown.
+    pub name: Option<&'static str>,
+    /// The declared kind, or [`FieldKind::Unknown`].
+    pub kind: FieldKind,
+    /// How the name and the kind were established.
+    pub evidence: ClaimStatus,
+    /// Records of this kind that reached the position.
+    pub observed: usize,
+    /// Values a **declared** kind describes: the position's kind is
+    /// established and the value's bytes spell it.
+    pub typed: usize,
+    /// Values whose kind is **not** established — the recorded unknown. The
+    /// value stays raw and is never converted.
+    pub untyped: usize,
+    /// Records whose value is a `<NAME>` reference. The spelling is
+    /// compatible with any kind, so it is counted here and is **not** a
+    /// mismatch.
+    pub placeholders: usize,
+    /// Records whose value is empty.
+    pub empty: usize,
+    /// Records whose value's bytes do not look like the declared kind
+    /// ([`spells_kind`]). A non-zero count means the schema's declaration and
+    /// the shipped data disagree, which is a defect of the declaration, not
+    /// of the data.
+    pub off_kind: usize,
+}
+
+impl PositionAccount {
+    /// Values at this position a declared kind actually describes.
+    pub const fn described(&self) -> usize {
+        self.typed
+    }
+
+    /// Values at this position whose kind is not established.
+    pub const fn untyped(&self) -> usize {
+        self.untyped
+    }
+}
+
+/// One record schema's roll-up over a member.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SchemaAccount {
+    /// The schema these records were read against.
+    pub schema: RecordSchema,
+    /// The schema's report label.
+    pub label: &'static str,
+    /// Records of this kind in the member.
+    pub records: usize,
+    /// Fields the member's records of this kind split into.
+    pub fields: usize,
+    /// Records whose value did not split at all, so the whole value stayed
+    /// raw and no field was classified.
+    pub unsplit: usize,
+    /// Fields at a position **beyond** the declared schema's slice. A schema
+    /// slice covers every position the surveyed members use, so a non-zero
+    /// count means a new record shape appeared.
+    pub beyond_schema: usize,
+    /// One row per declared position, in position order.
+    pub positions: Vec<PositionAccount>,
+}
+
+impl SchemaAccount {
+    /// The declared positions the member's records of this kind reached, in
+    /// position order.
+    pub fn positions(&self) -> &[PositionAccount] {
+        &self.positions
+    }
+
+    /// Records whose whole value stayed raw.
+    pub fn unsplit(&self) -> usize {
+        self.unsplit
+    }
+
+    /// Every field at this schema's positions whose kind is not established.
+    pub fn untyped(&self) -> usize {
+        self.positions.iter().map(PositionAccount::untyped).sum()
+    }
+
+    /// Every field at this schema's positions whose bytes do not look like
+    /// the declared kind.
+    pub fn off_kind(&self) -> usize {
+        self.positions
+            .iter()
+            .map(|position| position.off_kind)
+            .sum()
+    }
+
+    /// Fields at a position with **no** documented name, whether or not the
+    /// kind is established: the identities the shipped data and the
+    /// documented list between them leave open.
+    pub fn unnamed(&self) -> usize {
+        self.positions
+            .iter()
+            .filter(|position| position.name.is_none())
+            .map(|position| position.observed)
+            .sum()
+    }
+}
+
+/// One routed keyed-list member's whole account: every entry, which
+/// declaration covers it, the position census of the declared schemas and
+/// the lines nothing explains — all against the member's own
+/// [`SourceSpan`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MemberAccount<'a> {
+    source: SourceSpan,
+    dialect: TextDialect,
+    parity: Parity,
+    keys: KeyAccounting,
+    entries: Vec<AccountedEntry<'a>>,
+    schemas: Vec<SchemaAccount>,
+    placeholders: PlaceholderAccounting,
+    unclassified: Vec<AccountedLine>,
+}
+
+impl<'a> MemberAccount<'a> {
+    /// The member's provenance: installation, container, member, offset,
+    /// length and digest as the caller supplied it.
+    pub fn source(&self) -> &SourceSpan {
+        &self.source
+    }
+
+    /// The dialect the inventory routed the member to.
+    pub fn dialect(&self) -> TextDialect {
+        self.dialect
+    }
+
+    /// The declared parity of the member, which decides whether an
+    /// unconsumed entry blocks.
+    pub fn parity(&self) -> Parity {
+        self.parity
+    }
+
+    /// The document's own entry/consumption counts.
+    pub fn keys(&self) -> KeyAccounting {
+        self.keys
+    }
+
+    /// Every entry, in member order, with the declaration that covers it.
+    pub fn entries(&self) -> &[AccountedEntry<'a>] {
+        &self.entries
+    }
+
+    /// The declarations the member's records were read against, in
+    /// [`RecordSchema::ALL`] order and only for the schemas at least one
+    /// record follows, so the roll-up is deterministic and holds no
+    /// empty row.
+    pub fn schemas(&self) -> &[SchemaAccount] {
+        &self.schemas
+    }
+
+    /// The roll-up of one schema, or `None` when no record follows it.
+    pub fn schema(&self, schema: RecordSchema) -> Option<&SchemaAccount> {
+        self.schemas.iter().find(|row| row.schema == schema)
+    }
+
+    /// What the `<NAME>` pass read in the member.
+    pub fn placeholders(&self) -> PlaceholderAccounting {
+        self.placeholders
+    }
+
+    /// The lines no observed rule explains, in member order.
+    pub fn unclassified(&self) -> &[AccountedLine] {
+        &self.unclassified
+    }
+
+    /// The entries no declaration consumed, in member order. They are
+    /// retained in the document, never dropped; the list is the parity
+    /// blocker set.
+    pub fn unconsumed(&self) -> impl Iterator<Item = &AccountedEntry<'a>> {
+        self.entries
+            .iter()
+            .filter(|entry| entry.declaration == EntryDeclaration::Undeclared)
+    }
+
+    /// How many unconsumed entries of this member block parity.
+    pub fn blocking(&self) -> usize {
+        if self.parity.blocks() {
+            self.unconsumed().count()
+        } else {
+            0
+        }
+    }
+
+    /// Whether the member is accounted for: no gameplay-critical entry
+    /// without a declaration. `true` does **not** mean the member is
+    /// understood — the recorded unknowns it names are still open.
+    pub fn parity_holds(&self) -> bool {
+        self.blocking() == 0
+    }
+}
+
+impl ConfigDocument {
+    /// Accounts the whole member against the declared record schemas and the
+    /// `<NAME>` pass, with `parity` as the member's declared gameplay
+    /// criticality.
+    ///
+    /// Every entry gets exactly one declaration
+    /// ([`EntryDeclaration`]): a declared record schema, the placeholder
+    /// pass, or [`EntryDeclaration::Undeclared`]. Nothing is dropped and
+    /// nothing is converted — a position whose kind is not established stays
+    /// unknown and is counted, and a value the schema's kind does not accept
+    /// is counted in [`PositionAccount::off_kind`] rather than coerced.
+    pub fn member_account(&self, parity: Parity) -> MemberAccount<'_> {
+        let definitions: BTreeSet<u64> = self
+            .placeholders
+            .definitions()
+            .iter()
+            .map(|definition| definition.line)
+            .collect();
+
+        let mut records: Vec<(RecordSchema, Vec<RecordView<'_>>)> = Vec::new();
+        let mut entries: Vec<AccountedEntry<'_>> = Vec::with_capacity(self.keys_len());
+        for entry in self.entries() {
+            let placeholder = definition_scope(&entry.key)
+                .filter(|_| is_placeholder_definition(&definitions, entry.line));
+            let declaration = match (placeholder, RecordSchema::for_entry(entry)) {
+                (Some(scope), _) => EntryDeclaration::Placeholder(scope),
+                (None, Some(schema)) => EntryDeclaration::Record(schema),
+                (None, None) => EntryDeclaration::Undeclared,
+            };
+            if let EntryDeclaration::Record(schema) = declaration {
+                let view = RecordView::new(schema, entry);
+                match records.iter_mut().find(|(known, _)| *known == schema) {
+                    Some((_, views)) => views.push(view),
+                    None => records.push((schema, vec![view])),
+                }
+            }
+            entries.push(AccountedEntry {
+                line: entry.line,
+                section: entry.section.as_deref(),
+                key: &entry.key,
+                declaration,
+                parity,
+            });
+        }
+
+        // `RecordSchema::ALL` order, not the order the entries arrived in, so
+        // two runs over the same member report the same rows in the same
+        // sequence.
+        let schemas = RecordSchema::ALL
+            .iter()
+            .filter_map(|schema| {
+                records
+                    .iter()
+                    .find(|(known, _)| known == schema)
+                    .map(|(known, views)| roll_up(*known, views))
+            })
+            .collect();
+        let unclassified = self
+            .nodes
+            .iter()
+            .filter_map(|node| match node.kind {
+                ConfigNodeKind::Unclassified { reason } => Some(AccountedLine {
+                    line: node.line,
+                    reason,
+                }),
+                _ => None,
+            })
+            .collect();
+
+        MemberAccount {
+            source: self.source.clone(),
+            dialect: self.dialect,
+            parity,
+            keys: self.accounting(),
+            entries,
+            schemas,
+            placeholders: self.placeholders.accounting(),
+            unclassified,
+        }
+    }
+
+    /// How many entries the document holds, used to size the account.
+    fn keys_len(&self) -> usize {
+        self.accounting().entries
+    }
+}
+
+/// Whether the entry at `line` is one the `<NAME>` pass actually read as a
+/// definition.
+///
+/// The pass's own rule is a `V`/`G` key **and** a value of exactly two
+/// fields; this repeats neither of those predicates, it asks the pass's own
+/// table, so the account and the placeholder pass cannot disagree about what
+/// a definition is.
+fn is_placeholder_definition(definitions: &BTreeSet<u64>, line: u64) -> bool {
+    definitions.contains(&line)
+}
+
+/// The position census of one schema over the member's records of it.
+fn roll_up(schema: RecordSchema, views: &[RecordView<'_>]) -> SchemaAccount {
+    let specs = schema.fields();
+    let positions: Vec<PositionAccount> = specs
+        .iter()
+        .map(|spec| PositionAccount {
+            position: spec.position,
+            name: spec.name,
+            kind: spec.kind,
+            evidence: spec.evidence,
+            observed: 0,
+            typed: 0,
+            untyped: 0,
+            placeholders: 0,
+            empty: 0,
+            off_kind: 0,
+        })
+        .collect();
+    let mut account = SchemaAccount {
+        schema,
+        label: schema.label(),
+        records: views.len(),
+        fields: 0,
+        unsplit: 0,
+        beyond_schema: 0,
+        positions,
+    };
+    for view in views {
+        if view.unsplit() {
+            account.unsplit += 1;
+            continue;
+        }
+        for field in view.fields() {
+            account.fields += 1;
+            let Some(position) = account
+                .positions
+                .iter_mut()
+                .find(|position| position.position == field.position)
+            else {
+                // A position the declared slice does not cover: a record shape
+                // the schema has not been told about. Counted, never guessed.
+                account.beyond_schema += 1;
+                continue;
+            };
+            position.observed += 1;
+            match field.spelling {
+                FieldSpelling::Empty => position.empty += 1,
+                FieldSpelling::Placeholder => position.placeholders += 1,
+                _ => {
+                    if !field.kind().is_known() {
+                        // A kind nothing establishes is a recorded unknown, not
+                        // a value of any kind: it is counted here and never
+                        // converted.
+                        position.untyped += 1;
+                    } else if spells_kind(field.kind(), field.spelling) {
+                        position.typed += 1;
+                    } else {
+                        // The kind is declared and the bytes do not spell it,
+                        // so the declaration is what is wrong here.
+                        position.off_kind += 1;
+                    }
+                }
+            }
+        }
+    }
+    account
+}
+
+// ---------------------------------------------------------------------------
+// The referenced string ids (stage F12-D)
+// ---------------------------------------------------------------------------
+
+/// The define-name prefixes the survey found carrying a string-table id.
+///
+/// `ObservedTool` from one English installation: task #368 counted 351
+/// `RESOURCE.H` and 181 `RESRC1.H` defines under these three prefixes and
+/// found the rest of the defines to be font ids, multiplayer control ids and
+/// resource-compiler bookkeeping. A define whose name starts with one of
+/// them is a **string** id for the account's `string_*` rows; a define whose
+/// name starts with none is still counted, and still crosses the images, in
+/// the member's own rows. The prefixes are not a claim that no other prefix
+/// can ever name a string, and [`account_string_ids`] does not treat them as
+/// one: both scopes are reported.
+pub const STRING_NAME_PREFIXES: [&[u8]; 3] = [b"IDS_", b"STR_", b"SB_"];
+
+/// Whether `name` is one of the observed string-table define names.
+pub fn is_string_name(name: &[u8]) -> bool {
+    STRING_NAME_PREFIXES
+        .iter()
+        .any(|prefix| name.starts_with(prefix))
+}
+
+/// One resource-header member's ids, crossed against one string image.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HeaderIdAccount {
+    /// The member's spelling, so a report can name the source.
+    pub member: String,
+    /// `#define` lines in the member, duplicates included.
+    pub defines: usize,
+    /// Defines whose value is not a plain decimal in the 16-bit id space.
+    /// They keep their raw bytes in the reader and are **not** in either id
+    /// set here: an id nobody can read must not silently become a
+    /// coincidence.
+    pub undecoded: usize,
+    /// Distinct ids the member's defines name, ascending.
+    pub distinct: Vec<u32>,
+    /// Of [`Self::distinct`], the ones whose block this image has.
+    pub present: usize,
+    /// Of [`Self::distinct`], the ones whose block this image has **not**,
+    /// ascending.
+    pub absent: Vec<u32>,
+    /// Defines whose name carries an observed string-table prefix.
+    pub string_defines: usize,
+    /// Distinct ids those string-name defines name, ascending.
+    pub string_distinct: Vec<u32>,
+    /// Of [`Self::string_distinct`], the ones whose block this image has.
+    pub string_present: usize,
+    /// Of [`Self::string_distinct`], the ones whose block this image has
+    /// **not**, ascending.
+    pub string_absent: Vec<u32>,
+}
+
+/// One string image's `RT_STRING` blocks against every header's ids.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StringIdAccount {
+    /// The image's provenance.
+    pub source: SourceSpan,
+    /// `RT_STRING` blocks the image has.
+    pub blocks: usize,
+    /// String units the image's blocks count, empty ones included — the same
+    /// population [`StringCatalog::accounting`] reports as `strings`.
+    pub units: usize,
+    /// Distinct ids **any** header names, ascending.
+    pub named_ids: usize,
+    /// Blocks no header value names, ascending. A block can be reached by a
+    /// name the headers do not carry, by a resource the `.rc` referenced but
+    /// did not define, or by a second `.rc` that is not in the installation;
+    /// this account reports the set and does not choose between the three.
+    pub unnamed_blocks: Vec<u32>,
+    /// One row per header member, in the order they were supplied.
+    pub headers: Vec<HeaderIdAccount>,
+}
+
+impl StringIdAccount {
+    /// Blocks no header names.
+    pub fn unnamed_blocks(&self) -> &[u32] {
+        &self.unnamed_blocks
+    }
+
+    /// The one header's row, or `None` when that member was not supplied.
+    pub fn header(&self, member: &str) -> Option<&HeaderIdAccount> {
+        self.headers
+            .iter()
+            .find(|row| row.member.eq_ignore_ascii_case(member))
+    }
+
+    /// Every distinct id the headers name that this image has no block for,
+    /// across all of them, ascending and de-duplicated.
+    pub fn absent_ids(&self) -> Vec<u32> {
+        let mut every: Vec<u32> = self
+            .headers
+            .iter()
+            .flat_map(|row| row.absent.iter().copied())
+            .collect();
+        every.sort_unstable();
+        every.dedup();
+        every
+    }
+}
+
+/// Crosses the ids `headers` name with the ids `catalog` actually carries.
+///
+/// A define's value is a **block** id under the numbering this project
+/// reports ([`cs_formats::string_id`], `id = (block - 1) * 16 + index`), so
+/// the block a named id lives in is `(id / 16) + 1`; an id whose block the
+/// image does not have is [`HeaderIdAccount::absent`], and a block no header
+/// value names is [`StringIdAccount::unnamed_blocks`]. Both directions are
+/// reported, because a difference in one direction alone cannot say which
+/// side is wrong.
+///
+/// Task #368 measured this once by hand with an independent walk of the
+/// resource directories; this is the production derivation of the same
+/// numbers, and the finding records the agreement.
+pub fn account_string_ids<'header, 'bytes>(
+    catalog: &StringCatalog,
+    headers: &[(&str, &'header ResourceHeader<'bytes>)],
+) -> StringIdAccount {
+    let blocks: BTreeSet<u32> = catalog
+        .resources()
+        .strings()
+        .iter()
+        .map(|block| u32::from(block.block_id))
+        .collect();
+    let units: usize = catalog
+        .resources()
+        .strings()
+        .iter()
+        .map(|block| block.units.len())
+        .sum();
+
+    let mut named: BTreeSet<u32> = BTreeSet::new();
+    let mut rows = Vec::with_capacity(headers.len());
+    for (member, header) in headers {
+        let mut distinct = BTreeSet::new();
+        let mut string_distinct = BTreeSet::new();
+        let mut undecoded = 0usize;
+        let mut string_defines = 0usize;
+        for define in header.defines() {
+            if is_string_name(define.name) {
+                string_defines += 1;
+            }
+            match define.resource_id() {
+                Some(id) => {
+                    distinct.insert(id);
+                    named.insert(id);
+                    if is_string_name(define.name) {
+                        string_distinct.insert(id);
+                    }
+                }
+                None => undecoded += 1,
+            }
+        }
+        let split = |ids: &BTreeSet<u32>| -> (usize, Vec<u32>) {
+            let mut present = 0usize;
+            let mut absent = Vec::new();
+            for id in ids {
+                if blocks.contains(&block_of(*id)) {
+                    present += 1;
+                } else {
+                    absent.push(*id);
+                }
+            }
+            (present, absent)
+        };
+        let (present, absent) = split(&distinct);
+        let (string_present, string_absent) = split(&string_distinct);
+        rows.push(HeaderIdAccount {
+            member: (*member).to_owned(),
+            defines: header.defines().count(),
+            undecoded,
+            present,
+            absent,
+            distinct: distinct.into_iter().collect(),
+            string_defines,
+            string_present,
+            string_absent,
+            string_distinct: string_distinct.into_iter().collect(),
+        });
+    }
+
+    let unnamed_blocks = blocks
+        .iter()
+        .copied()
+        .filter(|block| !named.iter().any(|id| block_of(*id) == *block))
+        .collect();
+    StringIdAccount {
+        source: catalog.source().clone(),
+        blocks: blocks.len(),
+        units,
+        named_ids: named.len(),
+        unnamed_blocks,
+        headers: rows,
+    }
+}
+
+/// The `RT_STRING` block the string id `id` lives in under the numbering
+/// [`cs_formats::string_id`] reports, which is `(id / 16) + 1` — the inverse
+/// of `id = (block - 1) * 16 + index`.
+const fn block_of(id: u32) -> u32 {
+    id / cs_formats::STRING_UNITS_PER_BLOCK as u32 + 1
+}
+
 #[cfg(test)]
 mod tests {
     use std::collections::BTreeMap;
@@ -2077,6 +2838,7 @@ mod tests {
     use cs_types::evidence::ContentHash;
 
     use super::*;
+    use cs_formats::text::read_resource_header;
 
     const LAYOUT: &str = "ASSETS/LAYOUT.CSV";
 
@@ -4257,25 +5019,6 @@ SBROW=1,IDS_IMG,thumb.png,PNG,10,20,255,64,64,0,\"0,0,64,64\",1,1,1,TITLE,TEXT\r
             .expect("an observed keyed list member reads")
     }
 
-    /// Whether the bytes of one field can carry the kind its schema
-    /// declares. A `<NAME>` placeholder and an empty field fit every kind —
-    /// the F12-E pass resolves the one and the shipped data leaves the other
-    /// empty — and a `0x…` literal is an integer notation wherever an
-    /// integer is declared. Everything else must look like the kind it is
-    /// declared to be, so a declared kind the bytes never spell is caught.
-    fn spells_kind(kind: FieldKind, spelling: FieldSpelling) -> bool {
-        use FieldSpelling::*;
-        match kind {
-            FieldKind::Unknown => true,
-            FieldKind::Integer { .. } => matches!(spelling, Integer | Hex | Placeholder | Empty),
-            FieldKind::Bool => matches!(spelling, Integer | Placeholder | Empty),
-            FieldKind::Color => matches!(spelling, Color | Placeholder | Empty),
-            FieldKind::Name | FieldKind::Path => {
-                matches!(spelling, Text | Integer | Placeholder | Empty)
-            }
-        }
-    }
-
     /// Retail: the shipped `ASSETS/LAYOUT.CSV` has exactly the 636 object
     /// records the survey measured — one per record letter but the absent
     /// sound object — every observed field position covered by its schema,
@@ -4563,5 +5306,518 @@ SBROW=1,IDS_IMG,thumb.png,PNG,10,20,255,64,64,0,\"0,0,64,64\",1,1,1,TITLE,TEXT\r
                 .eq_ignore_ascii_case("ASSETS/SCRIPTS/SCRAPBOOKZOOM.SCRIPT")
         });
         assert!(bound, "SCRAPBOOKZOOM.SCRIPT is in the retail container");
+    }
+    // -------------------------------------------------- F12-D the census
+    //
+    // The synthetic cases below author every byte: a keyed-list member with
+    // two record kinds, a `V`/`G` definition, an entry nothing declares and a
+    // misspelt colour, and a PE image plus resource headers whose ids cross
+    // it in both directions. No original byte is used.
+
+    /// An authored keyed-list member: three `T` records (one with the
+    /// misspelt colour F12-J measured, one with a `<NAME>` placeholder), a
+    /// `P` record, a `V`/`G` definition pair the placeholder pass owns, and an
+    /// entry nothing declares.
+    const CENSUS: &[u8] = b"; authored\r\n\
+[GLOBALVARS]\r\n\
+G1=WIDE,64\r\n\
+[PANEL]\r\n\
+V1=BACK,0xff112233\r\n\
+TITLE_A=T,IDS_TITLE,1,2,3,4,5,0xAABBCCDD,0\r\n\
+TITLE_B=T,IDS_OTHER,1,2,3,4,5,oxff1E283C,0\r\n\
+TITLE_C=T,IDS_THIRD,<WIDE>,3,4,5,0,0x00FF00FF,0\r\n\
+PANE_1=P,back.png,-1,-2,3,4,0,1,1\r\n\
+LOOSE=not,declared,anywhere\r\n";
+
+    fn census_document() -> ConfigDocument {
+        let mut context = ParseContext::with_defaults(LAYOUT);
+        ConfigDocument::read(&mut context, source(LAYOUT, CENSUS.len()), CENSUS)
+            .expect("the authored member reads")
+    }
+
+    /// A whole member is accounted for: every entry is attributed to the one
+    /// declaration that covers it, the position census separates what a
+    /// declared kind describes from what stays a recorded unknown, and the
+    /// entry nothing declares is listed and — on a gameplay-critical member —
+    /// blocks parity.
+    #[test]
+    fn accept_f12_d_accounting_member_account_attributes_every_entry_and_position() {
+        let document = census_document();
+        let account = document.member_account(Parity::GameplayCritical);
+
+        // The member's own provenance comes back with the account, so a caller
+        // can name where in the installation the numbers are from.
+        assert_eq!(account.source(), document.source());
+        assert_eq!(account.dialect(), TextDialect::KeyedList);
+        assert_eq!(account.parity(), Parity::GameplayCritical);
+
+        // Seven entries: one `G` definition, one `V` definition, three `T`
+        // records, one `P` record and one entry nothing declares.
+        let entries = account.entries();
+        assert_eq!(entries.len(), 7);
+        assert_eq!(account.keys().entries, 7);
+        let declared = |code: &str| {
+            entries
+                .iter()
+                .filter(|entry| entry.declaration.code() == code)
+                .count()
+        };
+        assert_eq!(declared("placeholder_definition"), 2, "V1 and G1");
+        assert_eq!(declared("record"), 4, "three T records and one P record");
+        assert_eq!(declared("undeclared"), 1, "LOOSE names nothing");
+        assert_eq!(
+            entries
+                .iter()
+                .find(|entry| entry.declaration == EntryDeclaration::Undeclared)
+                .map(|entry| entry.key.to_vec()),
+            Some(b"LOOSE".to_vec()),
+            "the undeclared entry is listed, not dropped"
+        );
+        // The placeholder pass is the one that decides what a definition is,
+        // so the account cannot disagree with it about `V1`/`G1`.
+        assert_eq!(
+            entries[0].declaration,
+            EntryDeclaration::Placeholder(PlaceholderScope::Global)
+        );
+        assert_eq!(
+            entries[1].declaration,
+            EntryDeclaration::Placeholder(PlaceholderScope::Local)
+        );
+        assert_eq!(account.placeholders().definitions, 2);
+        assert_eq!(account.placeholders().references, 1);
+        assert_eq!(account.placeholders().unresolved, 0);
+
+        // The `Text` roll-up: the documented colour position types the two
+        // well-spelled values, counts the misspelt one as *off kind* (the
+        // declaration is what is wrong there, not the value) and never
+        // converts any of them.
+        let text = account
+            .schema(RecordSchema::Layout(RecordKind::Text))
+            .expect("the member holds text records");
+        assert_eq!(text.records, 3);
+        assert_eq!(text.fields, 27, "three nine-field records");
+        assert_eq!(text.unsplit(), 0);
+        assert_eq!(text.beyond_schema, 0);
+        let colour = text.positions()[7];
+        assert_eq!(colour.name, Some("Color"));
+        assert_eq!(colour.kind, FieldKind::Color);
+        assert_eq!(colour.evidence, ClaimStatus::Documented);
+        assert_eq!(colour.observed, 3);
+        assert_eq!(colour.described(), 2);
+        assert_eq!(colour.off_kind, 1, "oxff1E283C is not a colour spelling");
+        assert_eq!(colour.untyped(), 0);
+        assert_eq!(text.off_kind(), 1);
+        assert_eq!(text.untyped(), 0);
+        // Position 2 of `TITLE_C` is `<WIDE>`, the one global definition the
+        // F12-E pass resolves, so it is a placeholder rather than a value.
+        assert_eq!(text.positions()[2].placeholders, 1);
+        // Every position partitions its observations.
+        for position in text.positions() {
+            assert_eq!(
+                position.observed,
+                position.described()
+                    + position.untyped()
+                    + position.off_kind
+                    + position.placeholders
+                    + position.empty,
+                "position {} partitions its values",
+                position.position
+            );
+        }
+
+        // The `Pane` roll-up carries the signed coordinates, so its position 2
+        // is the schema's only signed integer.
+        let pane = account
+            .schema(RecordSchema::Layout(RecordKind::Pane))
+            .expect("the member holds pane records");
+        assert_eq!(pane.records, 1);
+        assert_eq!(
+            pane.positions()[2].kind,
+            FieldKind::Integer { signed: true }
+        );
+        assert_eq!(pane.positions()[2].described(), 1);
+
+        // A schema no record follows contributes no row at all, so the roll-up
+        // never carries an empty one; and the rows follow `RecordSchema::ALL`
+        // order rather than the order the entries arrived in — the first
+        // record read is a `T`, and the first row is the pane's.
+        assert!(
+            account.schema(RecordSchema::Scrapbook).is_none(),
+            "no scrapbook item in a layout member"
+        );
+        let labels: Vec<&str> = account.schemas().iter().map(|row| row.label).collect();
+        assert_eq!(labels, vec!["Pane", "Text"]);
+        assert!(account.schemas().iter().all(|row| row.records > 0));
+
+        // The one unconsumed entry is a parity blocker on a gameplay-critical
+        // member, and the count is what a caller fails on.
+        assert_eq!(account.unconsumed().count(), 1);
+        assert_eq!(account.blocking(), 1);
+        assert!(!account.parity_holds());
+    }
+
+    /// The same member under a non-gameplay declaration still retains and
+    /// counts the undeclared entry and still lists it, but does not block: the
+    /// two halves of spec F12 non-negotiable #5 are separate decisions.
+    #[test]
+    fn accept_f12_d_accounting_a_non_gameplay_member_counts_without_blocking() {
+        let document = census_document();
+        let account = document.member_account(Parity::NonGameplay);
+        assert_eq!(account.parity(), Parity::NonGameplay);
+        assert!(!account.parity().blocks());
+        // Retained, not discarded: the entry is still in the account and still
+        // enumerable.
+        assert_eq!(account.unconsumed().count(), 1);
+        assert_eq!(account.blocking(), 0);
+        assert!(account.parity_holds());
+        // The position census is the member's, not the declaration's: the
+        // misspelt colour is still counted wherever the member lives.
+        assert_eq!(
+            account
+                .schema(RecordSchema::Layout(RecordKind::Text))
+                .map(SchemaAccount::off_kind),
+            Some(1)
+        );
+    }
+
+    /// Every value at a position whose kind nothing establishes is counted as
+    /// a recorded unknown, apart from the empty ones, and the count is
+    /// per value rather than per record.
+    #[test]
+    fn accept_f12_d_accounting_a_recorded_unknown_position_is_counted_per_value() {
+        // One `B` record: the letter, an art path, three coordinates, one
+        // value at the position whose kind nothing establishes, a name the
+        // schema measures without documenting, the two slider counts it also
+        // measures, the four positions the shipped data leaves empty, a flag
+        // and the four documented colours.
+        const BUTTON: &[u8] = b"; authored\r\n\
+[PANEL]\r\n\
+B1=B,back.png,1,2,3,0,SB_1,7,8,,,,,10,1,0x11111111,0x22222222,0x33333333,0x44444444,\r\n";
+        let mut context = ParseContext::with_defaults(LAYOUT);
+        let document = ConfigDocument::read(&mut context, source(LAYOUT, BUTTON.len()), BUTTON)
+            .expect("the authored button reads");
+        let account = document.member_account(Parity::GameplayCritical);
+        let button = account
+            .schema(RecordSchema::Layout(RecordKind::Button))
+            .expect("the member holds a button");
+        assert_eq!(button.records, 1);
+        assert_eq!(button.positions().len(), 20, "the whole declared slice");
+        // Position 5 is the one whose kind nothing establishes and the record
+        // spells `0` there: one recorded unknown, retained and never converted.
+        let unresolved = button.positions()[5];
+        assert_eq!(unresolved.kind, FieldKind::Unknown);
+        assert_eq!(unresolved.evidence, ClaimStatus::Unknown);
+        assert_eq!(unresolved.observed, 1);
+        assert_eq!(unresolved.untyped(), 1);
+        assert_eq!(unresolved.described(), 0);
+        assert_eq!(unresolved.off_kind, 0, "an unknown kind claims nothing");
+        assert_eq!(button.off_kind(), 0, "every value spells its declared kind");
+        assert_eq!(button.untyped(), 1);
+        // Position 6 is a name the schema measures without documenting, so it
+        // is typed, and the `unnamed` roll-up counts it separately.
+        assert_eq!(button.positions()[6].kind, FieldKind::Name);
+        assert_eq!(button.positions()[6].described(), 1);
+        assert_eq!(button.positions()[6].name, None);
+        assert!(button.unnamed() > 0, "the button's unnamed positions exist");
+        assert_eq!(button.positions()[0].name, Some("ID"));
+    }
+
+    /// The string-id account crosses the ids a header names with the blocks an
+    /// image actually has, in **both** directions, and counts a define whose
+    /// value is not a plain decimal instead of letting it coincide with one.
+    #[test]
+    fn accept_f12_d_accounting_string_ids_cross_names_and_blocks_both_ways() {
+        // One image with blocks 1, 3 and 5: block 2 is missing, so the ids of
+        // blocks 2 and 4 are named with no block behind them, and block 5
+        // carries ids nobody names.
+        let blocks: Vec<Block> = [1u32, 3, 5]
+            .into_iter()
+            .map(|block_id| Block {
+                block_id,
+                language: 1033,
+                code_page: 1252,
+                entries: &[],
+            })
+            .collect();
+        let image = fixture_image(&rsrc_section(&blocks, false));
+        let mut context = ParseContext::with_defaults("strings.dll");
+        let catalog = StringCatalog::read(&mut context, image_source(image.len()), &image)
+            .expect("the authored image reads");
+        assert_eq!(
+            catalog.accounting().strings,
+            48,
+            "three counted blocks of sixteen units"
+        );
+
+        // Ids 0, 16 and 32 are the first unit of blocks 1, 2 and 3 under
+        // `(block - 1) * 16 + index`; 48 and 64 are blocks 4 and 5.
+        const HEADER: &[u8] = b"//{{NO_DEPENDENCIES}}\r\n\
+#define IDS_ALPHA 0\r\n\
+#define IDS_BETA 16\r\n\
+#define IDS_GAMMA 32\r\n\
+#define STR_DELTA 48\r\n\
+#define SB_ALPHA 0\r\n\
+#define FONT_MAIN 900\r\n\
+#define IDS_BROKEN 0x20\r\n";
+        let mut header_context = ParseContext::with_defaults("ASSETS/SCRIPTS/RESOURCE.H");
+        let header =
+            read_resource_header(&mut header_context, HEADER).expect("the authored header reads");
+
+        let account = account_string_ids(&catalog, &[("ASSETS/SCRIPTS/RESOURCE.H", &header)]);
+        assert_eq!(account.blocks, 3, "blocks 1, 3 and 5");
+        assert_eq!(account.units, 48);
+        let row = account
+            .header("assets/scripts/resource.h")
+            .expect("a row is found whatever the spelling's case");
+        assert_eq!(row.member, "ASSETS/SCRIPTS/RESOURCE.H");
+        assert_eq!(row.defines, 7);
+        // The `0x20` value is not a plain decimal, so it is counted and kept
+        // out of both id sets rather than silently becoming id 32 a second
+        // time.
+        assert_eq!(row.undecoded, 1);
+        assert_eq!(row.distinct, vec![0, 16, 32, 48, 900]);
+        // Blocks 1 and 3 are present; ids 16 (block 2), 48 (block 4) and 900
+        // (block 57) name blocks the image lacks.
+        assert_eq!(row.present, 2);
+        assert_eq!(row.absent, vec![16, 48, 900]);
+        // The string-name scope: `IDS_`/`STR_`/`SB_` only, so the six of the
+        // seven defines that carry one are in it and `FONT_MAIN` is out.
+        assert_eq!(row.string_defines, 6);
+        assert_eq!(row.string_distinct, vec![0, 16, 32, 48]);
+        assert_eq!(row.string_present, 2);
+        assert_eq!(row.string_absent, vec![16, 48]);
+        // The image side: blocks 1 and 3 are named, block 5 is not.
+        assert_eq!(account.unnamed_blocks, vec![5]);
+        assert_eq!(account.named_ids, 5);
+        assert_eq!(account.absent_ids(), vec![16, 48, 900]);
+        assert_eq!(
+            account
+                .header("ASSETS/SCRIPTS/RESOURCE.H")
+                .map(|row| row.absent.clone()),
+            Some(vec![16, 48, 900])
+        );
+
+        // A second header naming only id 0: blocks 3 and 5 are then unnamed
+        // and the account says so rather than passing.
+        const SECOND: &[u8] = b"#define IDS_ONLY 0\r\n";
+        let mut second_context = ParseContext::with_defaults("ASSETS/SCRIPTS/RESRC1.H");
+        let second =
+            read_resource_header(&mut second_context, SECOND).expect("the authored header reads");
+        let account = account_string_ids(&catalog, &[("ASSETS/SCRIPTS/RESRC1.H", &second)]);
+        assert_eq!(account.unnamed_blocks, vec![3, 5]);
+        assert_eq!(
+            account
+                .header("ASSETS/SCRIPTS/RESRC1.H")
+                .map(|row| row.present),
+            Some(1)
+        );
+        // Both headers at once: the account is over the union of what they
+        // name, and every header keeps its own row.
+        let both = account_string_ids(
+            &catalog,
+            &[
+                ("ASSETS/SCRIPTS/RESOURCE.H", &header),
+                ("ASSETS/SCRIPTS/RESRC1.H", &second),
+            ],
+        );
+        assert_eq!(both.unnamed_blocks, vec![5]);
+        assert_eq!(both.absent_ids(), vec![16, 48, 900]);
+        assert_eq!(both.headers.len(), 2);
+    }
+
+    /// Retail: the census over the installed member reproduces the per-member
+    /// counts task #371 measured, the recorded-unknown positions it named, the
+    /// four misspelt colours task #369 measured and the string-id difference
+    /// task #368 measured — through the production readers, not a re-derivation.
+    #[test]
+    #[ignore = "requires CS_GAME_DIR"]
+    fn accept_f12_d_accounting_retail_census_matches_the_recorded_measurements() {
+        let rof = retail_rof();
+
+        // ASSETS/LAYOUT.CSV: 822 entries, 636 object records, 186 `V`/`G`
+        // definitions, one unclassified line, nothing undeclared.
+        let layout_bytes = retail_member(&rof, "ASSETS/LAYOUT.CSV");
+        let layout = read_member_document("ASSETS/LAYOUT.CSV", &layout_bytes);
+        let account = layout.member_account(Parity::GameplayCritical);
+        assert_eq!(account.source().member_key(), Some("ASSETS/LAYOUT.CSV"));
+        assert_eq!(account.keys().entries, 822);
+        assert_eq!(account.keys().unclassified_lines, 1);
+        assert_eq!(account.unconsumed().count(), 0);
+        assert_eq!(account.blocking(), 0);
+        assert!(account.parity_holds());
+        assert_eq!(account.placeholders().definitions, 186);
+        assert_eq!(account.placeholders().local_definitions, 157);
+        assert_eq!(account.placeholders().global_definitions, 29);
+        assert_eq!(account.placeholders().references, 1313);
+        assert_eq!(account.placeholders().unresolved, 0);
+        assert_eq!(account.unclassified()[0].line, 101);
+        assert_eq!(account.unclassified()[0].reason, Unclassified::NoSeparator);
+        assert_eq!(
+            account.schemas().len(),
+            10,
+            "the ten record letters present"
+        );
+
+        // The record-kind table #371 measured, position census included.
+        let expected: [(RecordKind, usize, usize, usize, usize); 10] = [
+            (RecordKind::Button, 119, 1975, 137, 0),
+            (RecordKind::Pane, 106, 954, 0, 0),
+            (RecordKind::Text, 297, 2673, 0, 4),
+            (RecordKind::EditBox, 4, 44, 0, 0),
+            (RecordKind::Movie, 6, 54, 0, 0),
+            (RecordKind::TextList, 16, 144, 0, 0),
+            (RecordKind::ScrollingText, 8, 104, 0, 0),
+            (RecordKind::Dropdown, 70, 840, 0, 0),
+            (RecordKind::Listbox, 6, 60, 0, 0),
+            (RecordKind::Slider, 4, 52, 0, 0),
+        ];
+        let mut records = 0usize;
+        for (kind, count, fields, untyped, off_kind) in expected {
+            let row = account
+                .schema(RecordSchema::Layout(kind))
+                .unwrap_or_else(|| panic!("the member holds {} records", kind.documented_name()));
+            assert_eq!(row.records, count, "{kind:?} records");
+            assert_eq!(row.fields, fields, "{kind:?} fields");
+            assert_eq!(row.untyped(), untyped, "{kind:?} recorded unknowns");
+            assert_eq!(row.off_kind(), off_kind, "{kind:?} off-kind values");
+            assert_eq!(row.unsplit(), 0, "{kind:?} unsplit values");
+            assert_eq!(row.beyond_schema, 0, "{kind:?} fields past the schema");
+            records += row.records;
+        }
+        assert_eq!(records, 636, "the 636 object records of the member");
+
+        // The button's five underdetermined positions: position 5 spells a
+        // value in every record, positions 9, 11 and 12 in six each, and
+        // position 10 is a `<NAME>` in those same six.
+        let button = account
+            .schema(RecordSchema::Layout(RecordKind::Button))
+            .expect("the button roll-up");
+        assert_eq!(button.positions()[5].untyped(), 119);
+        assert_eq!(button.positions()[9].untyped(), 6);
+        assert_eq!(button.positions()[10].placeholders, 6);
+        assert_eq!(button.positions()[11].untyped(), 6);
+        assert_eq!(button.positions()[12].untyped(), 6);
+        assert_eq!(button.positions()[5].empty, 0);
+
+        // The text colour position: 199 well-spelled values, 94 placeholders
+        // and the four records #369 measured as misspelt.
+        let text = account
+            .schema(RecordSchema::Layout(RecordKind::Text))
+            .expect("the text roll-up");
+        let colour = text.positions()[7];
+        assert_eq!(colour.observed, 297);
+        assert_eq!(colour.described(), 199);
+        assert_eq!(colour.placeholders, 94);
+        assert_eq!(colour.off_kind, 4);
+
+        // ASSETS/SCRAPBOOK.CSV: 461 sixteen-field items whose positions 3, 10
+        // and 11 no kind covers.
+        let scrapbook_bytes = retail_member(&rof, "ASSETS/SCRAPBOOK.CSV");
+        let scrapbook = read_member_document("ASSETS/SCRAPBOOK.CSV", &scrapbook_bytes);
+        let account = scrapbook.member_account(Parity::GameplayCritical);
+        assert_eq!(account.keys().entries, 461);
+        assert_eq!(account.unconsumed().count(), 0);
+        assert_eq!(account.placeholders().definitions, 0);
+        let item = account
+            .schema(RecordSchema::Scrapbook)
+            .expect("the scrapbook roll-up");
+        assert_eq!(item.records, 461);
+        assert_eq!(item.fields, 7376, "461 items of sixteen fields");
+        assert_eq!(item.positions().len(), 16);
+        assert_eq!(item.untyped(), 1377, "455 + 461 + 461");
+        assert_eq!(item.positions()[3].untyped(), 455);
+        assert_eq!(item.positions()[10].untyped(), 461);
+        assert_eq!(item.positions()[11].untyped(), 461);
+        assert_eq!(item.off_kind(), 0);
+
+        // The string-id account: the two headers against the three images,
+        // reproducing #368's numbers through the production readers.
+        let resource = retail_member(&rof, "ASSETS/SCRIPTS/RESOURCE.H");
+        let resrc1 = retail_member(&rof, "ASSETS/SCRIPTS/RESRC1.H");
+        let mut context = ParseContext::with_defaults("ASSETS/SCRIPTS/RESOURCE.H");
+        let first = read_resource_header(&mut context, &resource).expect("RESOURCE.H reads");
+        let mut context = ParseContext::with_defaults("ASSETS/SCRIPTS/RESRC1.H");
+        let second = read_resource_header(&mut context, &resrc1).expect("RESRC1.H reads");
+        assert_eq!(first.defines().count(), 635);
+        assert_eq!(second.defines().count(), 185);
+        let headers = [
+            ("ASSETS/SCRIPTS/RESOURCE.H", &first),
+            ("ASSETS/SCRIPTS/RESRC1.H", &second),
+        ];
+
+        for (path, blocks, units, named, absent) in [
+            ("strings.dll", 112usize, 1792usize, 123usize, 782usize - 123),
+            ("GOSDATA/ASSETS/BINARIES/language.dll", 3, 48, 2, 782 - 2),
+            ("GOSDATA/ASSETS/BINARIES/langui.dll", 101, 1616, 775, 7),
+        ] {
+            let bytes = std::fs::read(
+                std::path::PathBuf::from(
+                    std::env::var_os("CS_GAME_DIR").expect("CS_GAME_DIR is set"),
+                )
+                .join(path),
+            )
+            .unwrap_or_else(|error| panic!("{path}: {error}"));
+            let span = SourceSpan::new(
+                ContentHash::from_bytes([3; 32]),
+                path,
+                None,
+                0,
+                bytes.len() as u64,
+                None,
+            )
+            .expect("valid span");
+            let mut context = ParseContext::with_defaults(path.to_owned());
+            let catalog = StringCatalog::read(&mut context, span, &bytes).expect("the image reads");
+            let account = account_string_ids(&catalog, &headers);
+            assert_eq!(account.blocks, blocks, "{path}: blocks");
+            assert_eq!(account.units, units, "{path}: counted units");
+            assert_eq!(
+                account.named_ids - account.absent_ids().len(),
+                named,
+                "{path}: distinct header ids this image carries"
+            );
+            assert_eq!(account.absent_ids().len(), absent, "{path}: absent ids");
+            assert_eq!(
+                account
+                    .header("ASSETS/SCRIPTS/RESOURCE.H")
+                    .map(|row| row.undecoded),
+                Some(0),
+                "{path}: every shipped value is a plain decimal"
+            );
+        }
+
+        // The seven string-table ids #368 recorded as naming no `langui.dll`
+        // block, and the eighteen of its blocks no header value names.
+        let bytes = std::fs::read(
+            std::path::PathBuf::from(std::env::var_os("CS_GAME_DIR").expect("CS_GAME_DIR is set"))
+                .join("GOSDATA/ASSETS/BINARIES/langui.dll"),
+        )
+        .expect("langui.dll reads");
+        let span = SourceSpan::new(
+            ContentHash::from_bytes([3; 32]),
+            "GOSDATA/ASSETS/BINARIES/langui.dll",
+            None,
+            0,
+            bytes.len() as u64,
+            None,
+        )
+        .expect("valid span");
+        let mut context = ParseContext::with_defaults("langui".to_owned());
+        let catalog = StringCatalog::read(&mut context, span, &bytes).expect("the image reads");
+        let account = account_string_ids(&catalog, &headers);
+        assert_eq!(
+            account
+                .header("ASSETS/SCRIPTS/RESOURCE.H")
+                .map(|row| row.string_absent.clone()),
+            Some(vec![600, 620, 2002, 2050, 2054, 3510, 3540]),
+            "the seven string-table ids RESOURCE.H names that langui.dll has no block for"
+        );
+        assert_eq!(
+            account.unnamed_blocks,
+            vec![
+                2, 3, 4, 5, 190, 195, 196, 197, 198, 200, 201, 202, 204, 205, 206, 217, 219, 227
+            ],
+            "the eighteen langui.dll blocks neither header addresses"
+        );
     }
 }
