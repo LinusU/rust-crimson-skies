@@ -1448,8 +1448,15 @@ fn evidence_report_t444_writes_the_acceptance_report() {
             .join(", "),
         jstr(
             "implementer: bunny-alpha-1/bunny-alpha-1 (Rally #444, implement claim of \
-             2026-10-02T14:16:39Z); reviewer: none yet. The implementer did not review this \
-             work, and no agent review replaces the owner's human approval"
+             2026-10-02T14:16:39Z). reviewer: bunny-alpha-1/bunny-alpha-1 again (Rally #444 \
+             review claim of 2026-10-02T16:06:20Z) — the same agent identity as the implementer, \
+             in a later session with fresh context. It re-ran the full four checks on the rebased \
+             tree, added one acceptance test, corrected four diagnostics and documentation \
+             defects, re-read FFmpeg's libavcodec/adpcm.c and adpcm_data.c to confirm the two \
+             block layouts and the three codebooks, mutation-checked the decode (IMA nibble \
+             order, the predictor division, the summed term), and regenerated this report with \
+             CS_FFMPEG set. A review by the same agent identity as the implementer is not \
+             independent evidence, and no agent review replaces the owner's human approval"
         ),
         jstr(&format!(
             "acceptance suite run locally with the retail capability; this harness derives every \
@@ -1519,10 +1526,11 @@ fn reference_comparison(evidence_dir: &Path, rows: &[RetailMember]) -> Option<Co
         let mut context = ParseContext::with_defaults(format!("retail/{}", row.name));
         let mine = decode_sound_sample(&mut context, &row.content, &declared).expect("decodes");
         let stem = format!(
-            "reference-{tag:04x}-{channels}ch-{align}",
+            "reference-{tag:04x}-{channels}ch-{align}b-{rate}",
             tag = shape.tag,
             channels = shape.channels,
-            align = shape.block_align
+            align = shape.block_align,
+            rate = shape.rate_hz
         );
         let extracted = evidence_dir.join(format!("{stem}.wav"));
         fs::write(&extracted, &row.content)
