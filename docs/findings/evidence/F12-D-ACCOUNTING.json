@@ -3,17 +3,17 @@
     {
       "kind": "log",
       "path": "cargo-test-selection.log",
-      "sha256": "98f97dd23ec28f9ad438526980f9ce6fda03b330b761f940268562b7267c31dc"
+      "sha256": "520d7213c69347dd880059aaf5278a0fe746da0e90db76373d9f27dc1c149245"
     },
     {
       "kind": "log",
       "path": "cargo-test-without-data.log",
-      "sha256": "e1738accf2e9ddd26942660e49a2b1568bbdf2627ce9fcd5d231b4e07bb534ec"
+      "sha256": "f8679809f7fc4e69ee2612cc40b109e62fd1bfaa36cbe4658d1fe166a2bc59b0"
     },
     {
       "kind": "log",
       "path": "cargo-test.log",
-      "sha256": "9e74d32707ad8ad667fe058fef82245f4f32d785fac0832c61809134bbd8e9f0"
+      "sha256": "6118d8d067429ac554798323c19d1c423a8d96430d9b7c38335a40f7bbf981de"
     },
     {
       "kind": "json",
@@ -62,7 +62,8 @@
     {
       "evidence": [
         "config-account.json",
-        "langui.dll: 101 blocks, 782 distinct header ids, absent [600, 620, 2002, 2050, 2054, 3510, 3540], unnamed blocks 18; the same numbers the independent walk of task #368 recorded"
+        "langui.dll: 101 blocks, 782 distinct header ids, absent [600, 620, 2002, 2050, 2054, 3510, 3540], unnamed blocks 18; the same numbers the independent walk of task #368 recorded",
+        "the crossing is under cs_formats::string_id's (block - 1) * 16 + index, whose block_of inverse is id / 16 + 1; task #374 pinned that numbering as the Win32 string-table numbering (docs/findings/2026-10-02-t374-string-id-numbering.md), so this crossing is pinned rather than merely reproducible"
       ],
       "id": "the_string_id_difference_is_reproduced_in_both_directions",
       "status": "pass"
@@ -85,7 +86,7 @@
       "status": "pass"
     }
   ],
-  "candidate_tree": "004b614c4b5e732c11e211cb1bd5a80704438fec",
+  "candidate_tree": "b9829d1cfabba256760f9220a60454e6a5c1ebf9",
   "capabilities": [
     "retail",
     "synthetic"
@@ -104,7 +105,7 @@
     "cwd": "/Users/linus/coding/rust-crimson-skies/bunny-alpha-2",
     "exit_code": 0
   },
-  "created_at": "2026-10-02T04:39:13Z",
+  "created_at": "2026-10-02T04:49:53Z",
   "engine": {
     "avian": "0.7.0",
     "bevy": "0.19.1",
@@ -138,8 +139,7 @@
     "The four off-kind colour values (a `T` record whose colour field is not spelled `0x\u2026`) are counted, not interpreted. The schema declares Color at that position and the shipped bytes contradict the spelling; the original reader's rule for it stays unmeasured.",
     "18 of langui.dll's 101 RT_STRING blocks (2, 3, 4, 5, 190, 195, 196, 197, 198, 200, 201, 202, 204, 205, 206, 217, 219, 227) are addressed by no header value. A block can be reached by a name the headers do not carry, by a resource the .rc referenced but did not define, or by a second .rc the installation does not contain; the account reports the set and chooses between none of them.",
     "The seven string-table ids RESOURCE.H names that langui.dll has no block for (600, 620, 2002, 2050, 2054, 3510, 3540) are still unexplained: dead defines, ids for another image, or evidence that the two headers are not one .rc set. Inherited from task #368 and open.",
-    "F12-D's AC04 (a localized installation preserving stable ids) is not attempted: it needs a second, differently localized installation, which this machine does not have. Task #48 records the blocking evidence and the owner input. `parity_holds: true` is a statement about the unconsumed-entry rule on one installation, not a localization claim.",
-    "Which RT_STRING numbering the original addresses strings with is unsettled (cs_formats::string_id's (block - 1) * 16 + index versus block * 16 + index). The account uses the numbering this project reports; task #374 owns the choice.",
+    "F12-D's AC04 (a localized installation preserving stable ids) is not attempted: it needs a second, differently localized installation, which this machine does not have. Task #48 records the blocking evidence and the owner input. `parity_holds: true` is a statement about the undeclared-entry rule on one run in which every routed member was accounted (unaccounted_members 0), not a localization claim.",
     "The gameplay-critical classification of a member is a declared argument (LAYOUT.CSV and SCRAPBOOK.CSV, with the reasons in the command's source comment), not a measurement. A member the command has not classified fails closed, so a missing classification blocks rather than passes."
   ]
 }

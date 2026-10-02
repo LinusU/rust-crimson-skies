@@ -371,13 +371,13 @@ the report on the rebased commit and compares it, per
 
 Run on this branch's candidate tree (the first four are this repo's required
 checks; the last two are the report generation and validation). The reviewer
-re-ran all of them on the corrected tree after the rebase onto `2b8b0f4`:
+re-ran all of them on the corrected tree after the rebase onto `e2b93ab`:
 
 | Command | Exit |
 | --- | --- |
 | `cargo fmt --all -- --check` | 0 |
 | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
-| `cargo test --workspace --locked` | 0 (2 436 passed, 0 failed, 239 ignored) — the reviewer's rerun on the rebased, corrected tree, and the tree the committed report names |
+| `cargo test --workspace --locked` | 0 (2 437 passed, 0 failed, 241 ignored) — the reviewer's rerun on the tree rebased onto `e2b93ab`, which is the tree the committed report names |
 | `cargo test --workspace --locked -- accept_f12_d_accounting_ --include-ignored` | 0 (10 tests, 10 passed, 0 failed — 8 synthetic and 2 retail) |
 | `env -u CS_GAME_DIR cargo test --workspace --locked --no-fail-fast -- accept_f12_d_accounting_ --include-ignored` | 101 — both retail tests fail loudly with `CS_GAME_DIR is not set` |
 | `cs-inspect inventory --cs-path "$CS_GAME_DIR" --out <private>/inventory.json` | 0 |
