@@ -44,6 +44,15 @@
 //! `docs/findings/`, which is where the product-incompleteness state lives
 //! (`AUDIT-PLAN-SYNC`: keep the states separate). The claim is `implemented`,
 //! never `checked` or `verified_original`.
+//!
+//! Every `review.identity` literal below names the implementer and the reviewer
+//! as the two Rally actor strings (`<agent instance>/<session label>`) that
+//! really ran, and says whether the reviewer's context was fresh. A stage added
+//! to this file must add its own Rally implementer and reviewer to
+//! `docs/findings/2026-10-02-m16-a-fu2-rally-review-snapshot.json` in the same
+//! change: `tools/tests/test_evidence_review_identity.py` resolves every
+//! literal in this file against that snapshot and fails until a new stage is
+//! there.
 
 use std::collections::VecDeque;
 use std::fs;
