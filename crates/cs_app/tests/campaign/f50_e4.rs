@@ -102,19 +102,21 @@ fn declared_titles() -> Vec<(String, String)> {
 /// text, and a row that holds nothing comparable reads as empty.
 ///
 /// Deliberately *not* `cs_content`'s private `strip_font_tag`, because the rules
-/// under test are measured over this function's output.
+/// under test are measured over this function's output. Where the two could
+/// differ — a tag followed by more than one space — this one drops every space
+/// and tab after the closing bracket, and the difference is measured rather than
+/// assumed: this installation carries no row written either way, so both
+/// readings name the same 1207 rows.
 fn display(row: &StringRow) -> &str {
     let Some(text) = row.text.as_deref() else {
         return "";
     };
-    let Some(end) = text.strip_prefix('[').and_then(|rest| {
-        rest.find(']')
-            .map(|close| close + 1)
-            .filter(|&close| text[close..].starts_with(']'))
-    }) else {
-        return text;
-    };
-    text[end + 1..].trim_start_matches([' ', '\t'])
+    match text.strip_prefix('[').and_then(|rest| rest.find(']')) {
+        // `close` counts from the character after the opening bracket, so the
+        // closing bracket itself sits at `close + 1`.
+        Some(close) => text[close + 2..].trim_start_matches([' ', '\t']),
+        None => text,
+    }
 }
 
 /// The ids of the rows that carry display text, ascending and deduplicated.
@@ -155,8 +157,8 @@ fn width(run: (u32, u32)) -> usize {
     usize::try_from(run.1 - run.0 + 1).expect("a run's width fits in usize")
 }
 
-/// Whether the display text of row `id` carries display text of its own, read
-/// from the table rather than from any reader of runs.
+/// Whether row `id` carries comparable text of its own, read from the table
+/// rather than from any reader of runs.
 fn carries(rows: &[StringRow], id: u32) -> bool {
     rows.iter()
         .any(|row| row.id == id && !display(row).is_empty())

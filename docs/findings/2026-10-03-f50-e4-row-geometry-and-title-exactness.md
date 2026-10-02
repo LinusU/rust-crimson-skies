@@ -228,12 +228,12 @@ CI contract depends on was confirmed locally: a plain
 `cargo test --locked -p cs_app --test campaign` runs the rest of the campaign
 suite (63 passed) and reports these three as `ignored, requires CS_GAME_DIR`.
 
-`docs/findings/evidence/F50-E4.json` was written on the commit
-`5d9ca646` and validated with `--require-pass`; its `candidate_tree` is that
-commit's tree. The delta after it is this document and the pinning of the class
-counts and weakened-matcher hauls, which are measurements of the same
-installation, not new production code — a reviewer who re-runs the harness on
-the reviewed tree gets the same numbers and a fresh `candidate_tree`.
+`docs/findings/evidence/F50-E4.json` was generated on the tree of commit
+`8ddc10c3` (tree `fa406946…`) — the commit that pins the outcome classes and the
+weakened-matcher hauls — and validated with `--require-pass`. The only later
+delta is this report's own copy under `docs/findings/evidence/`, which is the
+commit `95b4bcfc`; a reviewer who re-runs the harness on the reviewed tree gets
+the same measurements and a fresh `candidate_tree`.
 
 ## Sources
 

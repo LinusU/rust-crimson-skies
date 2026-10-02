@@ -31,6 +31,14 @@
 //! `evidence.rs` writes those tasks' evidence reports; it is deliberately not
 //! named with an acceptance prefix, so a task selection never picks it up as
 //! an acceptance test.
+//!
+//! `f50_e4.rs` is a third kind of member: work order `F50-E4` binds no mission
+//! and claims nothing about the campaign, but its `accept_f50_e4_*` tests are
+//! retail too — they read `$CS_GAME_DIR` to re-derive the localized table's row
+//! geometry and the title exactness of `campaign_bindings` a second time,
+//! independently of the code under test, because those two rules were otherwise
+//! proved only on authored values. See
+//! `docs/findings/2026-10-03-f50-e4-row-geometry-and-title-exactness.md`.
 
 mod closure;
 mod common;
