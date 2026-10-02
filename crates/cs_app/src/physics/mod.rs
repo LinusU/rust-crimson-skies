@@ -90,7 +90,8 @@ pub use fixture::{
 };
 pub use flight::{
     FlightAircraft, FlightAircraftError, FlightForcesPlugin, FlightRefusal, FlightRefusalReason,
-    FlightSpawnError, FlightSpawnSpec, FlightTickReport, spawn_flight_body,
+    FlightSpawnError, FlightSpawnSpec, FlightTickReport, spawn_exceptional_flight_body,
+    spawn_flight_body,
 };
 pub use preflight::{
     SPAWN_CONTACT_OVERLAP_M, SpawnPreflight, SpawnPreflightEvent, SpawnPreflightLog,

@@ -73,6 +73,30 @@
 //!   derived from the tuning's [`Origin`], so a synthetic-model trace can never
 //!   be published as an original-reference result.
 //!
+//! # F25-E dispatch
+//!
+//! The driver dispatches on the tuning's declared [`ModelKind`] rather than on
+//! a filename or a component marker (the F25 deliverable's "use
+//! `FlightModelKind`, not filename conditionals scattered through gameplay"):
+//!
+//! * [`ModelKind::FixedWing`] flies the F24-B [`FlightModel`] exactly as
+//!   before.
+//! * [`ModelKind::Exceptional`] flies the F25-B
+//!   [`ExceptionalControlLaw`](cs_sim::flight::ExceptionalControlLaw) through
+//!   [`FlightAircraft::exceptional`] / [`spawn_exceptional_flight_body`], with
+//!   the F25-A [`RotorDrive`](cs_sim::flight::RotorDrive) advanced by exactly
+//!   one fixed tick per drive and the F25-A
+//!   [`TelemetryFrame`](cs_sim::flight::TelemetryFrame) exposed by
+//!   [`FlightAircraft::telemetry`].
+//! * A non-fixed-wing tuning handed to [`FlightAircraft::new`], which cannot
+//!   carry an exceptional law, is refused by name
+//!   ([`FlightAircraftError::UnsupportedModelKind`]) and the refusal is
+//!   recorded in the tick report like any other.
+//!
+//! One gravity and one integrator still hold for both kinds: the exceptional
+//! law reuses the same shared flight boundary and adds only rotor terms, and
+//! the driver still only reads the pose and submits forces.
+//!
 //! **Designed wiring, not original data.** Nothing here is an extracted
 //! original behavior; the tick ordering is project design and the calibration
 //! against original reference traces is F24-D.
@@ -95,11 +119,13 @@ use bevy::{
 use cs_sim::collision::{CollisionLayer, ShapeClass};
 use cs_sim::flight::{
     AirframeTuning, AirframeTuningError, AngularResponse, AssistProfile, BoostParameters,
-    DamageState, DamageStateError, DragParameters, EngineCurve, EngineState, FlightEnvironment,
-    FlightError, FlightInput, FlightInputError, FlightModel, FlightOutput, FlightState,
-    HandlingProfile, InstrumentState, LiftCurve, LoadoutMass, LoadoutMassError, MassProperties,
-    ModelKind, StallBehavior,
+    DamageState, DamageStateError, DragParameters, EngineCurve, EngineState, ExceptionalControlLaw,
+    ExceptionalLawError, ExceptionalProfile, FlightEnvironment, FlightError, FlightInput,
+    FlightInputError, FlightModel, FlightOutput, FlightState, HandlingProfile, InstrumentState,
+    LiftCurve, LoadoutMass, LoadoutMassError, MassProperties, ModelKind, RotorDrive,
+    RotorSpeedMapping, StallBehavior, TelemetryError, TelemetryFrame,
 };
+use cs_types::Tick;
 use cs_types::content::Origin;
 use cs_types::space::{Quaternion, SpaceError};
 
@@ -113,12 +139,19 @@ use super::body::{BodyError, BodyMode, BodySpec, spawn_body};
 pub enum FlightAircraftError {
     /// The tuning failed validation.
     Tuning(AirframeTuningError),
-    /// The tuning is not for a fixed-wing airframe; exceptional airframes have
-    /// their own control law (F25) and this driver never guesses one.
+    /// The model kind has no declared control law on this path.
+    ///
+    /// A [`ModelKind::Exceptional`] airframe is not flown by the fixed-wing
+    /// model; it needs the F25-B exceptional law and its declared profile, and
+    /// this is the refusal [`FlightAircraft::new`] returns when only a
+    /// [`FlightModel`] (which cannot carry one) was supplied. The caller
+    /// declares the law explicitly with [`FlightAircraft::exceptional`].
     UnsupportedModelKind {
         /// The kind that was refused.
         found: ModelKind,
     },
+    /// The declared exceptional control law was refused at its own boundary.
+    Exceptional(ExceptionalLawError),
     /// The environment was rejected; the payload is the offending field.
     Environment(&'static str),
     /// The loadout mass was rejected.
@@ -156,9 +189,10 @@ impl fmt::Display for FlightAircraftError {
             Self::Tuning(error) => write!(f, "{error}"),
             Self::UnsupportedModelKind { found } => write!(
                 f,
-                "the fixed-wing flight driver cannot fly a {} airframe",
+                "the fixed-wing flight driver cannot fly a {} airframe without a declared control law",
                 found.label()
             ),
+            Self::Exceptional(error) => write!(f, "{error}"),
             Self::Environment(field) => write!(f, "{field} is not a usable environment"),
             Self::Loadout(error) => write!(f, "{error}"),
             Self::Damage(error) => write!(f, "{error}"),
@@ -198,6 +232,12 @@ impl From<DamageStateError> for FlightAircraftError {
 impl From<FlightInputError> for FlightAircraftError {
     fn from(error: FlightInputError) -> Self {
         Self::Input(error)
+    }
+}
+
+impl From<ExceptionalLawError> for FlightAircraftError {
+    fn from(error: ExceptionalLawError) -> Self {
+        Self::Exceptional(error)
     }
 }
 
@@ -517,17 +557,20 @@ impl FlightEquipment {
     }
 }
 
-/// A dynamic rigid body flown by the fixed-wing model.
+/// A dynamic rigid body flown by the declared control law of its
+/// [`ModelKind`].
 ///
-/// The component is the per-aircraft record the fixed tick consumes: the
-/// model, the air it flies in, the loadout and damage the forces see, the
-/// engine spool, the boost reserve and the held command. Every setter
+/// The component is the per-aircraft record the fixed tick consumes: the law
+/// (fixed-wing or exceptional), the air it flies in, the loadout and damage the
+/// forces see, the engine spool, the boost reserve and the held command. The
+/// driver chooses the law from the tuning's declared [`ModelKind`] at
+/// construction, never from a filename or a component marker, and every setter
 /// re-validates its value, so a corrupt record can never sit inside a live
 /// aircraft and produce half-valid forces (`FLIGHT-PHYSICS`: "Reject nonfinite
 /// inputs at boundaries").
 #[derive(Component, Clone, Debug, PartialEq)]
 pub struct FlightAircraft {
-    model: FlightModel,
+    law: FlightLaw,
     environment: FlightEnvironment,
     loadout: LoadoutMass,
     damage: DamageState,
@@ -539,9 +582,50 @@ pub struct FlightAircraft {
     last_equipment: Option<FlightEquipment>,
 }
 
+/// The control law one [`FlightAircraft`] actually evaluates.
+///
+/// The F25 deliverable is to dispatch on the declared model kind, "not filename
+/// conditionals scattered through gameplay": this enum is that dispatch, and it
+/// is the only place the production driver decides which law a body flies.
+#[derive(Clone, Debug, PartialEq)]
+enum FlightLaw {
+    /// The F24-B fixed-wing model.
+    ///
+    /// Boxed so the two variants stay close in size; the component is ECS
+    /// storage, so the indirection costs nothing per tick.
+    FixedWing(Box<FlightModel>),
+    /// The F25-B exceptional control law, with the F25-A rotor drive the fixed
+    /// tick advances and the explicit visual speed mapping (which may be
+    /// absent, in which case no visual rate is invented).
+    ///
+    /// The law is boxed because it is far larger than the fixed-wing variant;
+    /// the component is ECS storage, so the indirection costs nothing per tick
+    /// and keeps every [`FlightAircraft`] compact.
+    Exceptional {
+        /// The declared exceptional control law.
+        law: Box<ExceptionalControlLaw>,
+        /// The authoritative rotor state, advanced by exactly one fixed tick
+        /// per [`FlightAircraft::compute_tick`].
+        rotor: RotorDrive,
+        /// The explicit physical-to-visual rotor rate mapping, if declared.
+        mapping: Option<RotorSpeedMapping>,
+    },
+}
+
+impl FlightLaw {
+    /// The declared tuning the law evaluates.
+    fn tuning(&self) -> &AirframeTuning {
+        match self {
+            Self::FixedWing(model) => model.tuning(),
+            Self::Exceptional { law, .. } => law.tuning(),
+        }
+    }
+}
+
 impl FlightAircraft {
-    /// An aircraft that flies `model` in `environment`, parked: empty loadout,
-    /// pristine damage, engine stopped, no boost reserve, neutral command.
+    /// An aircraft that flies the fixed-wing `model` in `environment`, parked:
+    /// empty loadout, pristine damage, engine stopped, no boost reserve,
+    /// neutral command.
     ///
     /// # Errors
     ///
@@ -559,11 +643,53 @@ impl FlightAircraft {
             });
         }
         model.tuning().validate()?;
+        Self::parked(FlightLaw::FixedWing(Box::new(model)), environment)
+    }
+
+    /// An aircraft that flies the F25-B exceptional control law in
+    /// `environment`, parked like [`FlightAircraft::new`].
+    ///
+    /// This is the declared entry point for [`ModelKind::Exceptional`]: the
+    /// tuning and the provenance-carrying [`ExceptionalProfile`] are the two
+    /// records the law needs, and `mapping` is the explicit physical-to-visual
+    /// rotor rate the F25-A telemetry reports (or `None`, which reports no
+    /// visual rate at all).
+    ///
+    /// # Errors
+    ///
+    /// [`FlightAircraftError::Exceptional`] for a tuning that does not declare
+    /// the exceptional kind or a profile that fails its own boundary,
+    /// [`FlightAircraftError::Tuning`] for a tuning that fails validation, and
+    /// [`FlightAircraftError::Environment`] for a rejected environment.
+    pub fn exceptional(
+        tuning: AirframeTuning,
+        profile: ExceptionalProfile,
+        environment: FlightEnvironment,
+        mapping: Option<RotorSpeedMapping>,
+    ) -> Result<Self, FlightAircraftError> {
+        let law = ExceptionalControlLaw::new(tuning, profile)?;
+        law.tuning().validate()?;
+        Self::parked(
+            FlightLaw::Exceptional {
+                law: Box::new(law),
+                rotor: RotorDrive::stopped(),
+                mapping,
+            },
+            environment,
+        )
+    }
+
+    /// The common parked construction both kinds share.
+    ///
+    /// # Errors
+    ///
+    /// [`FlightAircraftError::Environment`] for a rejected environment.
+    fn parked(law: FlightLaw, environment: FlightEnvironment) -> Result<Self, FlightAircraftError> {
         environment
             .validate()
             .map_err(FlightAircraftError::Environment)?;
         Ok(Self {
-            model,
+            law,
             environment,
             loadout: LoadoutMass::EMPTY,
             damage: DamageState::PRISTINE,
@@ -576,9 +702,14 @@ impl FlightAircraft {
         })
     }
 
-    /// The model this aircraft flies.
-    pub const fn model(&self) -> &FlightModel {
-        &self.model
+    /// The declared model kind this aircraft flies.
+    pub fn model_kind(&self) -> ModelKind {
+        self.law.tuning().model_kind
+    }
+
+    /// The declared tuning this aircraft flies.
+    pub fn tuning(&self) -> &AirframeTuning {
+        self.law.tuning()
     }
 
     /// The environment the equations see.
@@ -614,7 +745,7 @@ impl FlightAircraft {
     /// mass with the same number the gravity force is computed from
     /// (non-negotiable behavior 4: there is exactly one mass).
     pub fn total_mass_kg(&self) -> Result<f64, LoadoutMassError> {
-        self.loadout.total_mass_kg(self.model.tuning().mass.mass_kg)
+        self.loadout.total_mass_kg(self.tuning().mass.mass_kg)
     }
 
     /// Replaces the loadout mass, validating it.
@@ -775,12 +906,18 @@ impl FlightAircraft {
     }
 
     /// Reads the body's authoritative state, advances the engine spool by the
-    /// held throttle command and computes one tick of forces.
+    /// held throttle command and computes one tick of forces with the law the
+    /// declared [`ModelKind`] selected.
     ///
     /// The engine spool moves *before* the equations run so the tick's thrust
     /// is the response to the command the tick holds, and boost capacity is
     /// consumed by exactly what the output reports as accepted — a press while
     /// empty consumes nothing (`FLIGHT-PHYSICS`, "Boost and special models").
+    ///
+    /// An exceptional airframe additionally advances its F25-A [`RotorDrive`]
+    /// by exactly this one fixed tick: `tick` is the strictly increasing driver
+    /// tick, so a second computation inside one tick is refused by the drive
+    /// rather than integrating the rotor twice.
     fn compute_tick(
         &mut self,
         tick: u64,
@@ -793,7 +930,7 @@ impl FlightAircraft {
         let angular_body = world_to_body(orientation, angular.0.to_array().map(f64::from));
         self.engine.advance(
             self.command.throttle,
-            self.model.tuning().engine.throttle_response_per_s,
+            self.law.tuning().engine.throttle_response_per_s,
             dt_s,
         );
         let state = FlightState {
@@ -803,22 +940,75 @@ impl FlightAircraft {
             engine: self.engine,
             boost_available: self.boost_capacity_units > 0.0,
         };
-        let output = self
-            .model
-            .compute(
-                &self.environment,
-                &self.loadout,
-                &self.damage,
-                &state,
-                &self.command,
-                dt_s,
-            )
-            .map_err(FlightRefusalReason::Model)?;
+        let output = match &mut self.law {
+            FlightLaw::FixedWing(model) => model
+                .compute(
+                    &self.environment,
+                    &self.loadout,
+                    &self.damage,
+                    &state,
+                    &self.command,
+                    dt_s,
+                )
+                .map_err(FlightRefusalReason::Model)?,
+            FlightLaw::Exceptional { law, rotor, .. } => {
+                law.compute(
+                    &self.environment,
+                    &self.loadout,
+                    &self.damage,
+                    &state,
+                    &self.command,
+                    dt_s,
+                    Tick(tick),
+                    rotor,
+                )
+                .map_err(FlightRefusalReason::Exceptional)?
+                .output
+            }
+        };
         self.boost_capacity_units =
             (self.boost_capacity_units - output.accepted_boost_consumption).max(0.0);
         self.last_output = Some(output);
         self.last_output_tick = Some(tick);
         Ok(output)
+    }
+
+    /// The F25-A telemetry frame for the most recent measured tick, when there
+    /// is one.
+    ///
+    /// The shared channel is model-agnostic: a fixed-wing aircraft returns a
+    /// standard frame and an exceptional aircraft returns an exceptional frame
+    /// carrying its rotor channel. `None` before the first driven tick — no
+    /// tick has measured anything — and the frame is built from the *last*
+    /// output, so a refused tick never fabricates a fresh sample.
+    ///
+    /// # Errors
+    ///
+    /// [`TelemetryError`] from the telemetry boundary: a non-finite reading, a
+    /// value outside its declared bound, or a rotor mapping that produces a
+    /// non-finite drawn rate.
+    pub fn telemetry(
+        &self,
+        state: &FlightState,
+        tick: Tick,
+    ) -> Result<Option<TelemetryFrame>, TelemetryError> {
+        let Some(output) = self.last_output else {
+            return Ok(None);
+        };
+        let frame = match &self.law {
+            FlightLaw::FixedWing(_) => {
+                TelemetryFrame::standard(self.model_kind(), state, &output, tick)?
+            }
+            FlightLaw::Exceptional { rotor, mapping, .. } => TelemetryFrame::exceptional(
+                self.model_kind(),
+                state,
+                &output,
+                tick,
+                rotor,
+                mapping.as_ref(),
+            )?,
+        };
+        Ok(Some(frame))
     }
 }
 
@@ -857,6 +1047,10 @@ pub enum FlightRefusalReason {
     Rotation(SpaceError),
     /// The flight model refused the tick.
     Model(FlightError),
+    /// The exceptional control law refused the tick (a rejected profile,
+    /// environment, state, input, timestep or rotor advance, or a produced tick
+    /// its own check rejected).
+    Exceptional(ExceptionalLawError),
     /// The computed force could not enter the adapter's one-tick queue.
     Request(ForceRequestError),
 }
@@ -880,6 +1074,7 @@ impl fmt::Display for FlightRefusalReason {
             }
             Self::Rotation(error) => write!(f, "{error}"),
             Self::Model(error) => write!(f, "{error}"),
+            Self::Exceptional(error) => write!(f, "{error}"),
             Self::Request(error) => write!(f, "{error}"),
         }
     }
@@ -1023,7 +1218,7 @@ impl From<BodyError> for FlightSpawnError {
     }
 }
 
-/// Spawns one flight body through the production creation path.
+/// Spawns one fixed-wing flight body through the production creation path.
 ///
 /// Validation runs before anything spawns — a rejected spec leaves no half a
 /// body behind. The spawned body is dynamic, carries the layer bindings
@@ -1036,13 +1231,66 @@ impl From<BodyError> for FlightSpawnError {
 /// loadout: there is exactly one mass, and it is the same number the flight
 /// model uses for its gravity force and a UI performance bar reads
 /// (non-negotiable behavior 4).
+///
+/// # Errors
+///
+/// [`FlightSpawnError::Aircraft`] for a rejected aircraft record (including a
+/// non-fixed-wing tuning, which [`FlightAircraft::new`] refuses by name),
+/// [`FlightSpawnError::Inertia`] for unusable declared inertia and
+/// [`FlightSpawnError::Body`] for a rejected body spec; nothing spawns on any
+/// error.
 pub fn spawn_flight_body(
     world: &mut World,
     model: FlightModel,
     spec: &FlightSpawnSpec,
 ) -> Result<Entity, FlightSpawnError> {
     let tuning = model.tuning().clone();
-    let mut aircraft = FlightAircraft::new(model, spec.environment)?;
+    let aircraft = FlightAircraft::new(model, spec.environment)?;
+    spawn_bound_flight_body(world, &tuning, aircraft, spec)
+}
+
+/// Spawns one exceptional flight body through the same production creation
+/// path as [`spawn_flight_body`].
+///
+/// `tuning` and `profile` are the F25-B records the exceptional law needs, and
+/// `mapping` is the explicit physical-to-visual rotor rate the F25-A telemetry
+/// reports (a `None` mapping reports no visual rate at all). The aircraft is
+/// refused by name before anything spawns if the tuning does not declare the
+/// exceptional kind or the profile fails its own boundary, so a fixed-wing
+/// body can never be flown by the exceptional law and vice versa.
+///
+/// # Errors
+///
+/// [`FlightSpawnError::Aircraft`] for a rejected exceptional record,
+/// [`FlightSpawnError::Inertia`] for unusable declared inertia and
+/// [`FlightSpawnError::Body`] for a rejected body spec; nothing spawns on any
+/// error.
+pub fn spawn_exceptional_flight_body(
+    world: &mut World,
+    tuning: AirframeTuning,
+    profile: ExceptionalProfile,
+    spec: &FlightSpawnSpec,
+    mapping: Option<RotorSpeedMapping>,
+) -> Result<Entity, FlightSpawnError> {
+    let binding = tuning.clone();
+    let aircraft = FlightAircraft::exceptional(tuning, profile, spec.environment, mapping)?;
+    spawn_bound_flight_body(world, &binding, aircraft, spec)
+}
+
+/// The body creation path [`spawn_flight_body`] and
+/// [`spawn_exceptional_flight_body`] share: bind the spec's producer values
+/// into an already-constructed aircraft, then enter the world through
+/// [`spawn_body`] with the tuning's declared mass and inertia.
+///
+/// The one-mass rule lives here: the body's mass is the tuning's airframe mass
+/// plus the declared loadout, the same number the model's gravity force is
+/// computed from.
+fn spawn_bound_flight_body(
+    world: &mut World,
+    tuning: &AirframeTuning,
+    mut aircraft: FlightAircraft,
+    spec: &FlightSpawnSpec,
+) -> Result<Entity, FlightSpawnError> {
     aircraft.set_loadout(spec.loadout)?;
     aircraft.set_damage(spec.damage)?;
     aircraft.set_engine(spec.engine)?;
@@ -1335,7 +1583,7 @@ fn publish_flight_instruments(
         }
         if let Some(output) = aircraft.last_output() {
             panel.state = output.instrument_state;
-            panel.evidence = FlightEvidenceClass::from_origin(&aircraft.model().tuning().origin);
+            panel.evidence = FlightEvidenceClass::from_origin(&aircraft.tuning().origin);
             panel.tick = tick;
             report.instrumented += 1;
         }
@@ -1446,9 +1694,12 @@ mod tests {
         }
     }
 
-    /// The component boundary refuses a non-fixed-wing tuning, a corrupt
-    /// engine spool, a negative boost reserve and an out-of-range command by
-    /// name.
+    /// The component boundary refuses a corrupt engine spool, a negative boost
+    /// reserve and an out-of-range command by name. It also refuses a
+    /// non-fixed-wing tuning passed to [`FlightAircraft::new`] — the
+    /// undeclared path where no exceptional profile was supplied — while the
+    /// declared exceptional entry point is [`FlightAircraft::exceptional`]
+    /// (covered by `accept_f25_e_*`).
     #[test]
     fn accept_f24_b_component_boundary_refuses_by_name() {
         let model = FlightModel::new(cs_sim::flight::synthetic_fixed_wing());
