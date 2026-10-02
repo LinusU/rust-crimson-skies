@@ -89,6 +89,16 @@ is a streaming decision, and the policy that would own it
 guessed, and it is a limitation for F18-C's streaming work, not a claim about the
 original.
 
+One release gap this change does **not** close: `load_world` propagates a
+`spawn_object` failure with `?` rather than through the `rollback` `load_sector`
+uses, so a world load that fails part-way leaves both the objects it had already
+spawned **and** the `WorldMeshAssets` handles they took, with no residency record
+and therefore no `unload_world` to release either. The entity half of that leak
+is pre-existing on `main` and outside this stage's owner paths; the asset half
+follows from it. It is filed as task #502
+(`F18-residency-failed-world-load-rollback`) rather than folded in here, so the
+gap is visible rather than implied complete.
+
 ## The twin harbor fixture
 
 `fixture::twin_harbor_world` and `twin_harbor_meshes` exist because the existing
@@ -142,16 +152,18 @@ cache lookup in `shared_mesh` (so every spawn re-adds a mesh) was applied, the
 
 | mutation | tests that fail |
 | --- | --- |
-| `shared_mesh` always adds a fresh asset (cache lookup removed) | `shared_asset::..._records_naming_one_mesh_share_one_engine_asset_and_others_do_not`, `shared_asset::..._unloading_a_world_releases_the_shared_mesh_assets_and_a_reload_rebuilds_them` (2) |
+| `shared_mesh` always adds a fresh asset (cache lookup removed) | `shared_asset::..._records_naming_one_mesh_share_one_engine_asset_and_others_do_not`, `shared_asset::..._a_replaced_upload_under_one_reference_gets_its_own_engine_asset`, `shared_asset::..._unloading_a_world_releases_the_shared_mesh_assets_and_a_reload_rebuilds_them` (3) |
 | `unload_world` stops removing `WorldMeshAssets` | `shared_asset::..._unloading_a_world_releases_the_shared_mesh_assets_and_a_reload_rebuilds_them` (1) |
 | the cache keys on the reference alone, ignoring the fingerprint | `shared_asset::..._a_replaced_upload_under_one_reference_gets_its_own_engine_asset` (1) |
+| the cache keeps only its first entry, so every record gets that one handle | the three tests above that count assets (3) |
 
 Each mutation was applied, the `accept_f18_b_` selection was run, and the source
-was restored. The first is the one that matters: the other 39 `accept_f18_b_`
-tests stay green under it, which is the measurement worth recording — the
-pre-existing suite could not see this bug at all, because no fixture had two
-records on one reference. The new tests fail with `asset_count` 4 instead of 2
-(three copies of the shell plus the panel), which is the whole claim.
+was restored; the reviewer re-ran all four. The first is the one that matters: the
+other 39 `accept_f18_b_` tests stay green under it, which is the measurement worth
+recording — the pre-existing suite could not see this bug at all, because no
+fixture had two records on one reference. The new tests fail with `asset_count`
+**5** instead of 2 (four copies of the shell — one per record naming it — plus
+the panel), which is the whole claim.
 
 The four new tests:
 
