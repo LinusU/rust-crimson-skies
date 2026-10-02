@@ -167,7 +167,9 @@ class EvidenceReviewIdentityTests(unittest.TestCase):
 
     def test_accept_m16_a_fu2_snapshot_covers_every_campaign_binding_stage(self):
         self.assertEqual(sorted(self.harnesses), sorted(t['task_key'] for t in self.snapshot['tasks']))
-        self.assertEqual(len(self.snapshot['tasks']), 9)
+        ids = [task['rally_task'] for task in self.snapshot['tasks']]
+        self.assertEqual(len(set(ids)), len(ids), 'two snapshot entries share a Rally task')
+        self.assertEqual(ids, sorted(ids), 'snapshot tasks are not in Rally task order')
         for task in self.snapshot['tasks']:
             self.assertIn(task['task_key'], self.reports, task)
             report = self.reports[task['task_key']]

@@ -2074,11 +2074,11 @@ fn evidence_report_m16_a_writes_the_acceptance_report() {
         assertion_array(&suite.assertions),
         artifact_array(&artifacts),
         jstr(
-            "implementer: claude-1 (Rally #303, Claude Sonnet 5.5, session of 2026-10-02T00:23Z); \
-             reviewer: bunny-alpha-1 (OpenCode, Space Bunny Alpha, session of 2026-10-02T00:58Z, \
-             fresh context and a different agent instance from the implementer's). An agent review \
-             is not independent original-reference evidence and no agent review replaces the \
-             owner's human approval"
+            "implementer: claude-2/claude-1 (Rally #303, Claude Sonnet 5.5, session of \
+             2026-10-02T00:23Z); reviewer: bunny-alpha-1/bunny-alpha-1 (OpenCode, Space Bunny \
+             Alpha, review claim of 2026-10-02T00:58Z, fresh context and a different agent \
+             instance from the implementer's). An agent review is not independent \
+             original-reference evidence and no agent review replaces the owner's human approval"
         ),
         jstr(
             "acceptance suite run locally with the retail capability by the implementer and \

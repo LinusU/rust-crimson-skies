@@ -14,7 +14,8 @@ Implementer: **bunny-2/bunny-2** (session of 2026-10-02T01:14Z).
 
 Every campaign-binding report under `docs/findings/evidence/` is written by
 `crates/cs_app/tests/campaign/evidence.rs` and puts a `review.identity` string
-into the report. Five of the nine named no reviewer at all:
+into the report. Five of the nine stages that existed when this task started
+named no reviewer at all:
 
 | report | committed `review.identity` said |
 | --- | --- |
@@ -29,7 +30,10 @@ merge event for every one of them, so "no reviewer" was not true at merge time.
 `M01-A`, `M02-A`, `M05-A` and `M06-A` already named their reviewer but wrote
 the implementer as a bare agent name (`opencode-1`, `bunny-alpha-2`,
 `deepseek-1`) rather than the Rally actor string, so the two halves of the
-sentence used two different naming conventions for the same agent.
+sentence used two different naming conventions for the same agent. M16-A
+(#303) landed on `main` while this task was running; its report already named a
+reviewer from a different agent instance, so it only needed the same naming
+normalization, and it is covered from then on.
 
 ## What the Rally log actually says
 
@@ -50,16 +54,23 @@ the same agent instance and the second is not independent of the first.
 | M08-A (#279) | `claude-2/claude-1` 23:16:51Z | `claude-2/claude-1` 23:50:00Z | same instance, not independent |
 | M12-A (#291) | `claude-2/claude-1` 23:58:58Z | `claude-2/claude-1` 00:05:28Z | same instance, not independent |
 | M13-A (#294) | `claude-2/claude-1` 00:10:14Z | `claude-2/claude-1` 00:15:25Z | same instance, not independent |
+| M16-A (#303) | `claude-2/claude-1` 00:23:41Z | `bunny-alpha-1/bunny-alpha-1` 00:58:00Z | different instance, fresh context |
 
-Not one of the nine campaign-binding stages was reviewed by a different agent
-instance. That is the honest state of the record and it is now what the reports
-say. Five reviews (`M01-A`, `M02-A`, `M05-A`, `M06-A` and, per the log, the
-reviewers of the others) follow their own `submit_for_review` by 7 to 64
+Nine of the ten campaign-binding stages were reviewed by the same agent instance
+that implemented them. That is the honest state of the record and it is now what
+the reports say. M16-A is the exception: it was reviewed by
+`bunny-alpha-1/bunny-alpha-1` in a fresh context, a different instance from its
+implementer, and its report already said so when it merged; it is in the table
+because this check now covers it too, and its two actor strings were normalized
+to the `<instance>/<session>` form.
+
+Every review claim in the table follows its own `submit_for_review` by 7 to 64
 seconds, so the log shows a second *claim* but cannot prove a fresh *context*;
 the rewritten identities for M03-A, M04-A, M08-A, M12-A and M13-A therefore
 state that a fresh context is not claimed. `M01-A`'s existing wording ("a
-separate session with fresh context") and `M02-A`'s ("the reviewer's context
-was fresh … but a fresh context does not make a reviewer independent") were
+separate session with fresh context"), `M02-A`'s ("the reviewer's context was
+fresh … but a fresh context does not make a reviewer independent") and M16-A's
+("fresh context and a different agent instance from the implementer's") were
 left as their authors wrote them, and `M02-A`'s explicit statement that a fresh
 context is not independence is the model the new wording follows.
 
@@ -71,10 +82,14 @@ context is not independence is the model the new wording follows.
   now name the implementer and the reviewer as the two Rally actor strings,
   say that the review is not independent, and say what is and is not claimed
   about the reviewer's context. Each keeps the sentence that the implementer's
-  own run is not independent evidence.
-- `docs/findings/evidence/{M01-A,M02-A,M03-A,M04-A,M08-A,M12-A,M13-A}.json`:
+  own run is not independent evidence. M16-A landed on `main` while this task
+  was running, so its literal was normalized the same way (its wording and its
+  reviewer are otherwise unchanged).
+- `docs/findings/evidence/{M01-A,M02-A,M03-A,M04-A,M08-A,M12-A,M13-A,M16-A}.json`:
   the `review.identity` value, changed to exactly the bytes the matching
-  harness writes. Nothing else in those files moved.
+  harness writes. Nothing else in those files moved. M16-A's report was written
+  by its reviewer and its `candidate_tree` is the reviewed commit; only the two
+  actor strings in the identity changed.
 - `docs/findings/2026-10-02-m16-a-fu2-rally-review-snapshot.json`: the review
   facts above, committed because Rally is not reachable from an offline check.
 - `tools/tests/test_evidence_review_identity.py`: the check described below.
@@ -87,7 +102,7 @@ code, so re-running the four-step sequence would have invalidated
 `candidate_tree` and the recorded test counts for nothing. The recorded trees
 are therefore left exactly as their runs produced them. For the record:
 
-- All nine `candidate_tree` objects are still present in the object store
+- All ten `candidate_tree` objects are still present in the object store
   (`git cat-file -t <tree>`), so no recorded hash is dangling.
 - The commits whose trees are `M03-A` (`77bfbbfc…`), `M08-A` (`e7003e77…`) and
   `M13-A` (`0f944b4d…`) are no longer reachable from any ref: the lander
@@ -96,7 +111,7 @@ are therefore left exactly as their runs produced them. For the record:
   reviewer who wants the report to describe a reachable commit must follow the
   four-step sequence in `evidence.rs` on the reviewed commit; that is a
   separate, deliberate act, not a side effect of this text fix.
-- `claim` stays `implemented` in all nine. A merge awards `checked` only, and
+- `claim` stays `implemented` in all ten. A merge awards `checked` only, and
   no agent self-awards a level; the check enforces this.
 - `review.method` is untouched: it describes the run these reports record,
   which for the five rewrites is still the implementer's own run. What each
