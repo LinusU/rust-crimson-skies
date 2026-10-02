@@ -79,7 +79,8 @@
 //!   whose profile nobody applied so the caller can apply it and retry.
 //! * [`visibility`] is the **draw decision** that consumer makes. A row is
 //!   placed from the composed visibility verdict
-//!   ([`animation::visibility::composed_visibility_verdict`], F20-C.03), which
+//!   ([`crate::animation::visibility::composed_visibility_verdict`],
+//!   F20-C.03), which
 //!   is the one place LOD, damage and a playing clip are ranked; the render path
 //!   ranks nothing of its own and reports every row it kept off the screen in
 //!   [`sync::FrameSync::visibility`].

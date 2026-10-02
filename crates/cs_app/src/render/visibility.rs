@@ -60,6 +60,16 @@
 //! where a reload has committed the new one and not yet released the old, so a
 //! row is never decided from a node entity that is about to be torn down.
 //!
+//! F11-C publishes exactly **one** live scene (that resource is its ownership
+//! record, not a registry), so a frame that carries parts of a second airframe
+//! resolves none of them here and every such row is counted in
+//! [`VisibilityReport::no_record`] and drawn. That is the direction that fails
+//! safe — a frame with more than one airframe draws the other one's culled
+//! bands rather than deleting them — but it means LOD, damage and clip hiding
+//! are not enforced for any part outside the one live scene. Resolving several
+//! scenes at once is F11-C's to change, and it has not been asked to; until it
+//! is, the count is what makes the gap visible instead of the cull.
+//!
 //! # Not a collider
 //!
 //! Nothing here writes collision. [`VisibilityVerdict::collider`] is the

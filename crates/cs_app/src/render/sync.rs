@@ -262,6 +262,14 @@ impl RenderProfileRequest {
 /// `instances` is the point of the type: a batched draw keeps one row per
 /// instance, with that instance's identity, paint and place, and the rows are
 /// not folded into the shared material.
+///
+/// `instances` is the **batch's** rows, which is not always the set that is on
+/// screen: a row the composed visibility verdict withholds
+/// ([`crate::render::visibility`]) keeps its per-instance state here and has
+/// **no placement** under this entity. The record therefore answers "which
+/// instances does this batch carry state for", and
+/// [`FrameSync::visibility`] answers "which of them were drawn"; a row's
+/// placement, not this list, is what the renderer draws.
 #[derive(Component, Clone, Debug, PartialEq)]
 pub struct BatchDraw {
     key: ContentHash,
@@ -289,12 +297,20 @@ impl BatchDraw {
         self.image.as_ref()
     }
 
-    /// The per-instance rows, in draw order.
+    /// The batch's per-instance rows, in draw order.
+    ///
+    /// Every row the batcher produced, whether the composed visibility verdict
+    /// drew it or not: this is the per-instance state record, and a withheld
+    /// row's state is kept here even though it has no placement.
     pub fn instances(&self) -> &[BatchInstance] {
         &self.instances
     }
 
     /// The row of `instance`, when it is one of them.
+    ///
+    /// A row the composed visibility verdict withheld is still one of them —
+    /// this answers which state the batch carries, not whether the row is on
+    /// screen.
     pub fn row(&self, instance: ModelInstanceId) -> Option<&BatchInstance> {
         self.instances.iter().find(|row| row.instance() == instance)
     }
@@ -954,9 +970,10 @@ pub fn sync_frame(
         });
         set_material(world, entity, material.clone());
         // One placed entity per row the composed verdict draws. The batch key
-        // covers the rows, so a reused entity's placements are the same rows;
-        // they are only rebuilt when their count no longer matches, which
-        // catches placements removed behind this path's back.
+        // covers the rows, so a reused entity is the same batch; the
+        // placements are reconciled by draw-item index, so a row the verdict
+        // stops drawing loses its placement and a row it starts drawing gets
+        // one, without respawning the ones that stayed.
         report.placed += place_rows(world, entity, mesh, material, &drawn_rows);
         live.insert(key, entity);
     }

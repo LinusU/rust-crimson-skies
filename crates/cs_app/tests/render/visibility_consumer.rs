@@ -419,7 +419,6 @@ fn live_generation(world: &World) -> cs_app::scene::SceneGeneration {
 }
 
 fn node_entity(world: &World, path: &str) -> Entity {
-    live_generation(world);
     world
         .get_resource::<LiveAirframeScene>()
         .expect("the fixture scene is live")
