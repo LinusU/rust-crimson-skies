@@ -78,6 +78,18 @@ entries exist.
 Nothing about what is drawn or which rows are placed changed. The batch key, the
 material selection, the reuse rule and the placement reconciliation are untouched.
 
+## The #503 path is this path
+
+The visibility consumer (rule 6 in the module docs, merged on `main` after this
+branch was cut) does not release a batch itself. When the composed verdict
+withholds every row of a batch it `continue`s past that batch, which leaves its
+key in `previous`, and the tail loop at the end of `sync_frame` releases it —
+the same loop a frame that no longer names the batch releases through. So the
+gameplay-frequency release the reviewer's probe reached is the tail loop this
+change fixes, not a fourth call site: `release_entity` still has exactly three
+callers, and the tests drive two of them by name and the third one (the tail
+loop) through the `accept_t512_` cycles.
+
 ## How "a still-referenced handle survives" is established
 
 Two halves, because the module can produce the case in one form only, and the

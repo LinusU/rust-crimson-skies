@@ -38,7 +38,7 @@
 //!    previous frame spawned and this one does not claim is despawned — with
 //!    the per-instance entities below it, which a recursive despawn takes with
 //!    it. Reloading a frame a hundred times leaves the live entity count
-//!    unchanged — and, by rule 6, the store counts unchanged with it.
+//!    unchanged — and, by rule 7, the store counts unchanged with it.
 //! 4. **Nothing is drawn from nothing.** A world with no asset store is
 //!    refused ([`SyncError::NoAssetStore`]) rather than drawn with unbound
 //!    textures, and every batch draws with the material its own render state
@@ -1369,12 +1369,15 @@ fn release_entity(entity: Entity, world: &mut World, released: &mut usize) -> Re
 /// whose stores are absent, and it refuses such a world before writing anything
 /// ([`SyncError::NoAssetStore`]).
 fn reclaim_store_entries(world: &mut World, owned: BatchAssets) -> ReclaimedAssets {
-    let mut refs = world
-        .remove_resource::<BatchAssetRefs>()
-        .unwrap_or_default();
-    let mesh_unowned = refs.drop_mesh(owned.mesh);
-    let material_unowned = refs.drop_material(owned.material);
-    world.insert_resource(refs);
+    // Scoped so the resource borrow ends before the stores are touched: the
+    // counter and the assets are one transaction, not two overlapping ones.
+    let (mesh_unowned, material_unowned) = {
+        let mut refs = world.get_resource_or_insert_with(BatchAssetRefs::default);
+        (
+            refs.drop_mesh(owned.mesh),
+            refs.drop_material(owned.material),
+        )
+    };
     let mut reclaimed = ReclaimedAssets::default();
     if mesh_unowned && let Some(mut meshes) = world.get_resource_mut::<Assets<Mesh>>() {
         reclaimed.meshes = usize::from(meshes.remove(owned.mesh).is_some());
@@ -1545,6 +1548,8 @@ pub fn teardown(world: &mut World) -> RenderTeardown {
 
 #[cfg(test)]
 mod tests {
+    use bevy::asset::Asset;
+
     use super::*;
 
     /// A store entry two live batches name is handed back by neither of them
@@ -1558,10 +1563,21 @@ mod tests {
     /// [`BatchAssetRefs`] the production [`release_entity`] consults. A counter
     /// that reported "unowned" for the first of two releases would remove a
     /// handle a live entity still draws with.
+    /// An asset id for the counter, never handed to an [`Assets`] store.
+    ///
+    /// Not [`AssetId::invalid`]: that one is documented as an id that must never
+    /// be given to a store, and a fixture that leaned on it would be one edit
+    /// away from doing exactly that.
+    fn test_id<A: Asset>(nibble: u128) -> AssetId<A> {
+        AssetId::Uuid {
+            uuid: bevy::asset::uuid::Uuid::from_u128(nibble),
+        }
+    }
+
     #[test]
     fn accept_t512_a_store_entry_two_live_batches_name_is_handed_back_once() {
-        let mesh = AssetId::<Mesh>::invalid();
-        let material = OwnedMaterial::Standard(AssetId::<StandardMaterial>::invalid());
+        let mesh = test_id::<Mesh>(1);
+        let material = OwnedMaterial::Standard(test_id::<StandardMaterial>(2));
         let owned = BatchAssets { mesh, material };
         let mut refs = BatchAssetRefs::default();
 
@@ -1589,8 +1605,8 @@ mod tests {
 
         // The two material stores are counted apart, so dropping one standard
         // entry cannot free the additive store's.
-        let other = OwnedMaterial::Standard(AssetId::<StandardMaterial>::invalid());
-        let additive = OwnedMaterial::Additive(AssetId::<AdditiveMaterial>::invalid());
+        let other = OwnedMaterial::Standard(test_id::<StandardMaterial>(3));
+        let additive = OwnedMaterial::Additive(test_id::<AdditiveMaterial>(4));
         refs.own(BatchAssets {
             mesh,
             material: additive,
