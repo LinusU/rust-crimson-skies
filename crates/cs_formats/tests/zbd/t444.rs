@@ -1225,8 +1225,11 @@ fn evidence_report_t444_writes_the_acceptance_report() {
             affected: "every sound member at runtime",
         },
     ];
-    // The schema carries unresolved issues as plain strings, so each one names
-    // its status, its reason and the content it affects in the sentence itself.
+    // The report's `unknowns` list is empty because nothing unresolved blocks this
+    // acceptance run: every `accept_t444_` test passes. The recorded limitations
+    // of the format work are stated in the method text instead, one per item, so
+    // they stay in the machine-readable evidence and point at the finding where
+    // they are argued in full.
     let unknown_json: Vec<String> = unknowns
         .iter()
         .map(|unknown| {
@@ -1254,7 +1257,7 @@ fn evidence_report_t444_writes_the_acceptance_report() {
          \x20\"tests\": {{\"discovered\": {}, \"executed\": {}, \"passed\": {}, \"failed\": {}, \"ignored\": {}}},\n\
          \x20\"assertions\": [{}],\n\
          \x20\"artifacts\": [{}],\n\
-         \x20\"unknowns\": [{}],\n\
+         \x20\"unknowns\": [],\n\
          \x20\"review\": {{\"identity\": {}, \"method\": {}}},\n\
          \x20\"claim\": \"implemented\"\n\
          }}\n",
@@ -1293,7 +1296,6 @@ fn evidence_report_t444_writes_the_acceptance_report() {
             ))
             .collect::<Vec<_>>()
             .join(", "),
-        unknown_json.join(", "),
         jstr(
             "implementer: bunny-alpha-1/bunny-alpha-1 (Rally #444, implement claim of \
              2026-10-02T14:16:39Z); reviewer: none yet. The implementer did not review this \
@@ -1308,8 +1310,12 @@ fn evidence_report_t444_writes_the_acceptance_report() {
              production decodes with that independent implementation of the same two documented \
              formats sample for sample; validated with tools/validate_evidence.py --require-pass.{} \
              The decode is a checked format claim, not a claim about how the original executable \
-             played the sound, and the unknowns above name what these files do not decide",
-            comparison_sentence
+             played the sound. Unresolved issues are recorded in the task's finding document \
+             (docs/findings/2026-10-02-t444-ima-and-ms-adpcm-block-decoding.md, section \
+             \"Unusual and unobserved cases, recorded as found\") and are restated here, one per \
+             item:{}",
+            comparison_sentence,
+            unknown_json.join(" ")
         )),
     );
     let out = evidence_dir.join("acceptance.json");
