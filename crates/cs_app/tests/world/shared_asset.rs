@@ -36,15 +36,21 @@ use bevy::prelude::{App, Entity, Transform, Vec3, World};
 use cs_app::world::{
     HARBOR_HANGAR_TRIANGLES, MESH_SETTLE_UPDATES, TWIN_OBJECT_BANNER, TWIN_OBJECT_GROUND,
     TWIN_OBJECT_PANEL, TWIN_OBJECT_SHELL_A, TWIN_OBJECT_SHELL_B, TWIN_OBJECT_TRIGGER,
-    WorldMeshAssets, harbor_world, load_world, residency, spawn_world, twin_harbor_meshes,
-    twin_harbor_world, unload_world, world_app, world_instance,
+    WorldMeshAssets, harbor_world, load_world, mesh_reference, residency, spawn_world,
+    twin_harbor_meshes, twin_harbor_world, unload_world, world_app, world_instance,
 };
+use cs_content::mesh::{MeshPresentationUnknown, RenderMesh};
 use cs_content::world::{WorldDefinition, WorldObjectId};
+use cs_formats::gamez::{PrimitiveKind, RawCorner, RawMesh, RawPolygon};
 
 /// The panel mesh is a plain box: six quad faces, twelve triangles. It is here so
 /// the "different mesh, different asset" assertion can name a triangle count of
 /// its own instead of relying on "not the same handle".
 const PANEL_TRIANGLES: usize = 12;
+
+/// The replacement upload a reference-replacement test registers: also a box, so
+/// the geometry is simple and the count is the same twelve.
+const REPLACEMENT_TRIANGLES: usize = PANEL_TRIANGLES;
 
 /// The twin harbor world, built by production code.
 fn twin() -> WorldDefinition {
@@ -354,6 +360,179 @@ fn accept_f18_b_records_naming_one_mesh_share_one_engine_asset_and_others_do_not
             reference,
             "`{key}` names the same authored reference the first shell does"
         );
+    }
+}
+
+/// **The shared asset is keyed by the upload's fingerprint, not by the reference
+/// alone.** A reference says *which* mesh; it does not say *which upload of it*.
+/// `WorldMeshes::insert_render_mesh` replaces an entry, so a caller may well
+/// register different geometry under a reference it used before, and a cache
+/// keyed on the id alone would hand the second spawn the first spawn's asset and
+/// silently present the wrong geometry.
+///
+/// This is measured by spawning the twin world twice in one Bevy world: first
+/// with the shell, then with a **box** registered under the very same authored
+/// reference. The second spawn's objects must present and collide from the box's
+/// own triangles, and the engine must hold three assets — the original shell, the
+/// replacement box and the panel — rather than re-using the shell's.
+///
+/// Observable failure if the cache is keyed on the reference alone: the second
+/// spawn's shell records present a handle whose asset still has 36 triangles, and
+/// the count stays 2, which is the stale-geometry bug stated in the module docs.
+#[test]
+fn accept_f18_b_a_replaced_upload_under_one_reference_gets_its_own_engine_asset() {
+    let definition = twin();
+    let mut app = world_app();
+    let first =
+        spawn_world(&mut app, &definition, &twin_harbor_meshes()).expect("the twin world spawns");
+    for _ in 0..MESH_SETTLE_UPDATES {
+        app.update();
+    }
+    assert_eq!(
+        asset_count(&app),
+        2,
+        "the first spawn put two assets in place"
+    );
+
+    // The same authored reference, different geometry: a plain box, registered
+    // through the same production insert path the catalog feeds.
+    let mut replaced = twin_harbor_meshes();
+    let reference = mesh_reference(TWIN_OBJECT_SHELL_A)
+        .known()
+        .expect("the fixture's mesh reference is known")
+        .clone();
+    let stored = box_mesh([1.0, 2.0, 0.25]);
+    let render = RenderMesh::build(&stored).expect("the box's outline is decodable");
+    replaced
+        .insert_render_mesh(reference, &render, &replacement_unknowns())
+        .expect("the replacement box uploads through every material group");
+
+    let second =
+        spawn_world(&mut app, &definition, &replaced).expect("the twin world spawns again");
+    for _ in 0..MESH_SETTLE_UPDATES {
+        app.update();
+    }
+    assert_eq!(
+        asset_count(&app),
+        3,
+        "the replacement upload is a third asset: the shell, the box registered \
+         under the shell's own reference, and the panel"
+    );
+
+    // The first spawn's objects still draw the shell they were built from: a new
+    // upload replaces the cache entry, it does not mutate an asset other objects
+    // are holding.
+    let original = first
+        .visual_for(&object(TWIN_OBJECT_SHELL_A))
+        .expect("the first spawn presented the first shell");
+    assert_eq!(
+        asset_triangles(&app, &presented(&app, original)),
+        HARBOR_HANGAR_TRIANGLES,
+        "the objects already holding the original asset keep it"
+    );
+
+    // And the second spawn's objects hold the replacement, and collide from it.
+    let fresh = second
+        .visual_for(&object(TWIN_OBJECT_SHELL_A))
+        .expect("the second spawn presented a shell");
+    assert_ne!(
+        fresh, original,
+        "the second spawn is a new entity, not a rewrite of the first"
+    );
+    let fresh_handle = presented(&app, fresh);
+    assert_ne!(
+        fresh_handle,
+        presented(&app, original),
+        "and it presents the replacement asset, not the one already in the stack"
+    );
+    for key in [
+        TWIN_OBJECT_SHELL_A,
+        TWIN_OBJECT_SHELL_B,
+        TWIN_OBJECT_TRIGGER,
+    ] {
+        let entity = second
+            .visual_for(&object(key))
+            .unwrap_or_else(|| panic!("`{key}` was presented by the second spawn"));
+        assert_eq!(
+            presented(&app, entity),
+            fresh_handle,
+            "`{key}` shares the replacement asset across the second spawn's records"
+        );
+        assert_eq!(
+            collider_triangles(app.world(), entity),
+            REPLACEMENT_TRIANGLES,
+            "`{key}` collides from the replacement's own triangles, so no stale \
+             geometry is presented as if it were this upload"
+        );
+    }
+    // The panel is untouched: a different reference in both sources.
+    assert_eq!(
+        asset_triangles(
+            &app,
+            &presented(
+                &app,
+                second
+                    .visual_for(&object(TWIN_OBJECT_PANEL))
+                    .expect("the panel was presented")
+            )
+        ),
+        PANEL_TRIANGLES,
+        "a reference neither source replaced keeps its own asset"
+    );
+}
+
+/// The presentation questions a stored mesh leaves open; they travel with the
+/// upload and settle nothing.
+fn replacement_unknowns() -> [MeshPresentationUnknown; 2] {
+    [
+        MeshPresentationUnknown::FrontFaceWinding,
+        MeshPresentationUnknown::UvOrigin,
+    ]
+}
+
+/// A stored mesh of one box, in metres, on stored material `0`.
+fn box_mesh(half: [f32; 3]) -> RawMesh {
+    let mut positions = Vec::new();
+    for corner in [
+        [-half[0], -half[1], -half[2]],
+        [half[0], -half[1], -half[2]],
+        [half[0], half[1], -half[2]],
+        [-half[0], half[1], -half[2]],
+        [-half[0], -half[1], half[2]],
+        [half[0], -half[1], half[2]],
+        [half[0], half[1], half[2]],
+        [-half[0], half[1], half[2]],
+    ] {
+        positions.push(corner);
+    }
+    let polygons = [
+        [0, 1, 2, 3],
+        [4, 5, 6, 7],
+        [0, 1, 5, 4],
+        [1, 2, 6, 5],
+        [2, 3, 7, 6],
+        [3, 0, 4, 7],
+    ]
+    .into_iter()
+    .map(|face| RawPolygon {
+        kind: PrimitiveKind::Polygon,
+        raw_flags: 0,
+        material: 0,
+        corners: face
+            .into_iter()
+            .map(|corner| RawCorner {
+                position: corner,
+                normal: None,
+                uv: None,
+                color: None,
+            })
+            .collect(),
+    })
+    .collect();
+    RawMesh {
+        positions,
+        normals: Vec::new(),
+        polygons,
     }
 }
 
