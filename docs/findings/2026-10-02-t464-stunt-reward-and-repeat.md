@@ -40,9 +40,9 @@ halves and only one is answerable from files:
    on?** Also measurable, and it decides what a reimplementation may safely
    assume and what it may not.
 
-Both halves are measured below, and the answer is deliberately narrow: the
-installation's files record **no** payout and **no** repeat policy for a stunt.
-That is a statement about the data, not about the original's runtime.
+Both halves are measured below, and the answer is deliberately narrow: no
+original data file this task read records a payout or a repeat policy for a
+stunt. That is a statement about the data, not about the original's runtime.
 
 ## Files and the one observable failure (listed before editing)
 
@@ -176,7 +176,8 @@ the only near-miss.
 ## The answer, in one paragraph
 
 What the original paid for a stunt, and whether a second traversal paid again,
-is **not recorded anywhere in the installation**. The objective records and the
+is **not recorded in any of the 1 293 `.zrd` members of the 62 reader archives
+this task read**. The objective records and the
 objective state machine carry no payout and no repeat key; the 31 blocks that
 carry the original's own stunt completion condition have a closed 11-key surface
 with neither; the installation's only numeric score table is a five-key
