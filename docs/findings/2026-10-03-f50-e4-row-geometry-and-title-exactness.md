@@ -7,9 +7,10 @@ the M18-A review of Rally #309, recorded in
 `docs/findings/2026-10-02-m18-a-source-binding.md`. Capabilities used:
 `retail` (`$CS_GAME_DIR` read-only, never written), `synthetic` (nothing
 executed). Implementer: **bunny-2** (OpenCode, Space Bunny Free, Rally #481
-implement claim of 2026-10-02T22:04Z). Reviewer: the agent Rally assigns to
-#481's review claim; this document is written before that review, so it records
-the implementer's own run and no reviewer identity — see *Review identity*.
+implement claim of 2026-10-02T22:04Z). Reviewer: **bunny-2** (Rally #481 review
+claim of 2026-10-02T23:25Z) — *the same agent*, with a fresh context. This is
+therefore **not an independent review** and claims nothing of the kind; see
+*Review* near the end, and *Review identity* for how the report names the two.
 
 ## What changed
 
@@ -18,7 +19,8 @@ the stage adds `crates/cs_app/tests/campaign/f50_e4.rs` (three
 `accept_f50_e4_*` retail tests), `mod f50_e4;` in
 `crates/cs_app/tests/campaign/main.rs` (wiring), the F50-E4 harness and its
 test-name constant in `crates/cs_app/tests/campaign/evidence.rs`, this document
-and `docs/findings/evidence/F50-E4.json`.
+and `docs/findings/evidence/F50-E4.json`. The review added no production change
+either: it strengthened `f50_e4.rs` and this document.
 
 ## The gap this closes
 
@@ -178,6 +180,11 @@ match therefore reported "ok" — that run was of unmutated code and counts for
 nothing; both mutations were then applied by hand and observed failing as the
 table says.
 
+The reviewer repeated five of them against the strengthened suite — the two
+`title_form` rows, `campaign_title_blocks`' dropped length filter, and
+`present_string_ids` in both directions — and every one failed the test the table
+names. See *Review* below.
+
 ## What is not claimed
 
 - The row geometry and the title comparison are **measured facts about this
@@ -185,8 +192,9 @@ table says.
   and `title_form` remain heuristics that this stage has checked against one
   installation, and an edition with a different campaign length would need a new
   measurement.
-- The pins (1207 present rows, 76 runs, the two campaign-length runs, the
-  widths, the 24 mission titles and their outcomes, the four outcome classes and
+- The pins (1207 present rows, the 76 runs listed above, the two
+  campaign-length runs, the widths, the 27 rows the two tag strips disagree
+  about, the 24 mission titles and their outcomes, the four outcome classes and
   the three weakened-matcher hauls) are properties of *this* installation. A
   different retail edition will need them re-derived; that is a deliberate cost,
   because a retail acceptance test that adapts to whatever it reads proves
@@ -205,9 +213,13 @@ table says.
 
 The evidence harness reads `CS_EVIDENCE_REVIEWER` at run time instead of
 carrying a literal, so the committed report cannot contain a hand-over
-placeholder: `docs/findings/evidence/F50-E4.json` records the implementer's run,
-and the reviewing agent regenerates it on the reviewed tree with its own
-identity. `tools/tests/test_evidence_review_identity.py` reads this report's
+placeholder. The committed `docs/findings/evidence/F50-E4.json` is now the
+**reviewer's** run on the reviewed tree, with the reviewer's own identity and an
+explicit statement that implementer and reviewer are the same agent and that this
+is not an independent review. The implementer's run is preserved in this
+document's history.
+
+`tools/tests/test_evidence_review_identity.py` reads this report's
 harness as the `runtime` shape and checks it against
 `CS_EVIDENCE_REVIEWER`; note that this check is already red on `main` for six
 other stages (T463, T464, T465, F30-D, F11-D2, F22-H), which is **not** this
@@ -215,6 +227,59 @@ task's slice and is not filed here as fixed. F50-E4 adds no Rally review facts t
 `docs/findings/2026-10-02-m16-a-fu2-rally-review-snapshot.json`: that file
 belongs to another task, and adding a `merge_event` for #481 before the merge
 would be writing a review fact that does not exist yet.
+
+## Review (bunny-2, Rally #481 review claim of 2026-10-02T23:25Z)
+
+Implementer and reviewer are the **same agent name** (`bunny-2`), so this is
+**not an independent review** and is recorded as such: no agent review replaces
+the owner's approval. The reviewer's context *was* fresh — a new session that
+read the branch, the production code and this document, with no memory of the
+implementation session — which is why it could re-derive the measurements rather
+than recognise them.
+
+What the reviewer did, independently of the implementer's run:
+
+- **Re-derived every pin from `$CS_GAME_DIR`**, with a throwaway Python PE
+  `RT_STRING` reader written from the format and sharing nothing with this
+  crate: 1616 rows, 1207 carrying display text, the same 76 runs run for run,
+  campaign 24 and chapter sizes `[5, 5, 5, 5, 4]`, campaign-length runs
+  `3450..3473` and `3480..3503`, longest run `40081..40170`, the width multiset
+  as documented, 219 candidate titles splitting 27 / 19 / 2 / 171, weakened
+  hauls 27 / 72 / 48, the 17 carried and seven refused declared titles with
+  M05 the only long-name-only one, and `Northwest` / `Hollywood` /
+  `Rocky Mountains` confirmed against `Hawaii` and `Manhattan` ambiguous.
+  **Every pin in the tests and in this document is confirmed.**
+- **Repeated five mutations** of `campaign_bindings.rs`, applied and reverted one
+  at a time: `title_form`'s tail `starts_with` (caught by tests 2 and 3 — the
+  mutation M18-A's suite missed), `title_form`'s verbatim arm removed (test 2),
+  `campaign_title_blocks`' length filter dropped (test 1), and
+  `present_string_ids` keeping every row and inverting its emptiness test (test
+  1 both ways). All caught; production code is unchanged on the branch.
+- **Found and fixed two problems** (commit "Pin the whole row geometry and
+  measure the two tag-strip readings"):
+  1. the geometry test pinned the present-row count, the run count and the
+     longest run but not the seventy-six runs themselves, so a boundary that
+     moved without changing the count would have passed — they are now pinned run
+     for run as `MEASURED_RUNS`, after maximality and disjointness are checked;
+  2. the doc comment on the independent tag strip claimed this installation
+     carries no row written so that the two strips could differ. It carries
+     **27** (a tag followed by two or more spaces, or a tab). They cannot move a
+     run boundary, because all 27 carry text under both readings — but that is
+     now measured rather than asserted in prose: the test counts them, holds the
+     present set to the same 1207 ids under both strips, and feeds `title_form`
+     both readings of those rows against every candidate title.
+  Also: the near-miss truncation drops one *character* instead of one *byte*, and
+  the row accounting is corrected to 1616 = 1207 + 369 zero-length units + 40
+  bare presentation tags.
+- **Regenerated the evidence report** on the reviewed tree with the reviewer's
+  own identity in `CS_EVIDENCE_REVIEWER`, validated it with `--require-pass`
+  (exit 0) and committed that copy. Compared against the implementer's copy, the
+  measurements are identical; `candidate_tree`, `created_at`, the artifact
+  digests and the review line differ, as they must.
+
+Not re-checked by the reviewer, and still true: the pins are properties of this
+one installation, and nothing here is `verified_original` — see *What is not
+claimed*.
 
 ## Checks
 
