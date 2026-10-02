@@ -905,16 +905,18 @@ fn evidence_report_m02_t3_writes_the_acceptance_report() {
         assertion_array(&suite.assertions),
         artifact_array(&artifacts),
         jstr(
-            "implementer: deepseek-1 (Rally #450, DeepSeek V4.1 Flash, session of \
-             2026-10-02T14:33Z); reviewer: Rally had not assigned the review claim when this \
-             report was first written, so the reviewing agent must regenerate this report on the \
-             rebased commit and name the actual implementer and reviewer. If Rally assigns the \
-             same agent, that review is NOT independent evidence and no agent review replaces \
-             the owner's human approval"
+            "implementer: deepseek-1/deepseek-1 (Rally #450, DeepSeek V4.1 Flash, session of \
+             2026-10-02T14:33Z); reviewer: deepseek-1/deepseek-1 again, as the Rally reviewing \
+             agent on the review claim (2026-10-02T15:07Z). Same agent instance and model, so \
+             this is NOT independent review and is not independent original-reference evidence; \
+             the reviewer's context was fresh (a new session that re-read the tree, the task \
+             history and the installation) but a fresh context does not make a reviewer \
+             independent. No agent review replaces the owner's human approval"
         ),
         jstr(
-            "acceptance suite run locally with the retail and synthetic capabilities by the \
-             implementer; this harness derives every field from the recorded log, production \
+            "acceptance suite re-run locally with the retail and synthetic capabilities by the \
+             reviewer on the reviewed commit, and the reviewer regenerated this report from that \
+             run; this harness derives every field from the recorded log, production \
              discovery of $CS_GAME_DIR and the join `SourceContext::read` + \
              `SourceContext::join_agreement` + `blocks_correspond` derive from it. Production \
              code changed: the join is now checked a third time, by the row-to-row \
