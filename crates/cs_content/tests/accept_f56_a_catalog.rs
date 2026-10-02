@@ -14,12 +14,12 @@ use std::path::PathBuf;
 
 use cs_content::config::StringRow;
 use cs_content::multiplayer::{
-    BRIEFING_FIRST_ID, BRIEFING_STRIDE, ModeError, RULE_LABELS, SlotMarker, TeamPlay,
+    BRIEFING_FIRST_ID, BRIEFING_STRIDE, ModeError, RULE_LABELS, ScenarioMode, SlotMarker, TeamPlay,
     discover_modes, discover_slots, scan_markers,
 };
 use cs_types::asset_id::SourceSpan;
 use cs_types::content::{ContentKind, Resolved};
-use cs_types::evidence::ContentHash;
+use cs_types::evidence::{ClaimStatus, ContentHash};
 use cs_types::install::{FileRole, InstallFileRecord, ParseState, RelativePath};
 
 const LANGUAGE: u32 = 1033;
@@ -354,6 +354,241 @@ fn accept_f56_a_an_unreadable_slot_archive_is_an_error_not_a_skipped_slot() {
     assert!(result.is_err());
 }
 
+// -------------------------------------------------- .zrd / archive authors ---
+//
+// The synthetic slot tests author a real version-one reader archive whose
+// `targets.zrd` is written with the measured `.zrd` grammar, so the production
+// `discover_slots` locates and decodes the member through the same container
+// discovery the installation walk uses. The writer is independent of the
+// decoder: the decoder's own accepted shape is what the test proves.
+
+/// A `.zrd` integer node: tag `1` and the value.
+fn zrd_int(value: u32) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(8);
+    bytes.extend_from_slice(&1_u32.to_le_bytes());
+    bytes.extend_from_slice(&value.to_le_bytes());
+    bytes
+}
+
+/// A `.zrd` text node: tag `3`, the byte length and the bytes.
+fn zrd_text(text: &str) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(8 + text.len());
+    bytes.extend_from_slice(&3_u32.to_le_bytes());
+    bytes.extend_from_slice(&(text.len() as u32).to_le_bytes());
+    bytes.extend_from_slice(text.as_bytes());
+    bytes
+}
+
+/// A `.zrd` list node: tag `4`, then **`children.len() + 1`** as the count, then
+/// the children (the measured grammar: the profiler stores one more than the
+/// child count).
+fn zrd_list(children: Vec<Vec<u8>>) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(8 + children.iter().map(Vec::len).sum::<usize>());
+    bytes.extend_from_slice(&4_u32.to_le_bytes());
+    bytes.extend_from_slice(&((children.len() as u32) + 1).to_le_bytes());
+    for child in children {
+        bytes.extend_from_slice(&child);
+    }
+    bytes
+}
+
+/// One authored `targets.zrd` objective in the measured pair shape.
+fn target_record(description: &str) -> Vec<u8> {
+    zrd_list(vec![zrd_list(vec![
+        zrd_text("description"),
+        zrd_text(description),
+    ])])
+}
+
+/// An authored `targets.zrd` root: one child per objective.
+fn targets_document(records: Vec<Vec<u8>>) -> Vec<u8> {
+    zrd_list(records)
+}
+
+/// A version-one reader archive holding `members` in order: the member data,
+/// then one 148-byte index entry each (u32 start, u32 length, a 64-byte
+/// NUL-padded name and 76 bytes), then the u32 version `1` and u32 count.
+fn reader_archive(members: &[(&str, Vec<u8>)]) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let mut entries = Vec::with_capacity(members.len());
+    for (name, member) in members {
+        let start = bytes.len() as u32;
+        bytes.extend_from_slice(member);
+        entries.push((start, member.len() as u32, *name));
+    }
+    for (start, length, name) in &entries {
+        bytes.extend_from_slice(&start.to_le_bytes());
+        bytes.extend_from_slice(&length.to_le_bytes());
+        let name = name.as_bytes();
+        assert!(name.len() < 64, "a fixture member name fits its field");
+        let mut field = [0_u8; 64];
+        field[..name.len()].copy_from_slice(name);
+        bytes.extend_from_slice(&field);
+        bytes.extend_from_slice(&[0_u8; 76]);
+    }
+    bytes.extend_from_slice(&1_u32.to_le_bytes());
+    bytes.extend_from_slice(&(members.len() as u32).to_le_bytes());
+    bytes
+}
+
+#[test]
+fn accept_f56_a_a_slot_binds_to_the_mode_its_targets_member_names() {
+    // `net.zrd` first so the `targets.zrd` member starts at a non-zero offset
+    // the span must record.
+    let deathmatch = reader_archive(&[
+        ("net.zrd", zrd_int(1)),
+        (
+            "targets.zrd",
+            targets_document(vec![target_record("MSG_TRGT_REARM_BASE")]),
+        ),
+    ]);
+    let empty = reader_archive(&[
+        ("net.zrd", zrd_int(1)),
+        ("targets.zrd", targets_document(vec![])),
+    ]);
+    let flag = reader_archive(&[
+        ("net.zrd", zrd_int(1)),
+        (
+            "targets.zrd",
+            targets_document(vec![
+                target_record("MSG_TRGT_FLAGBASE"),
+                target_record("MSG_TRGT_FLAG"),
+            ]),
+        ),
+    ]);
+    let zeppelin = reader_archive(&[
+        ("net.zrd", zrd_int(1)),
+        (
+            "targets.zrd",
+            targets_document(vec![
+                target_record("MSG_TRGT_ZEP_ENEMY"),
+                target_record("MSG_TRGT_ZEP_FRIEND"),
+            ]),
+        ),
+    ]);
+    let files = vec![
+        record("ZBD/C1/MP1/zrdr.zbd", 10, 1),
+        record("ZBD/C1/MP2/zrdr.zbd", 10, 2),
+        record("ZBD/C1/MP3/zrdr.zbd", 10, 3),
+        record("ZBD/C1B/MP1/zrdr.zbd", 10, 4),
+    ];
+    let catalog = discover_slots(hash(1), &files, |record| {
+        Ok(match record.relative_spelling.as_str() {
+            "ZBD/C1/MP1/zrdr.zbd" => deathmatch.clone(),
+            "ZBD/C1/MP2/zrdr.zbd" => flag.clone(),
+            "ZBD/C1/MP3/zrdr.zbd" => zeppelin.clone(),
+            _ => empty.clone(),
+        })
+    })
+    .expect("the slots read");
+
+    let modes: Vec<(String, ScenarioMode)> = catalog
+        .slots
+        .iter()
+        .map(|slot| {
+            (
+                format!("{}/MP{}", slot.world_group, slot.slot),
+                slot.mode
+                    .clone()
+                    .known()
+                    .expect("the targets member names a mode"),
+            )
+        })
+        .collect();
+    assert_eq!(
+        modes,
+        [
+            ("C1/MP1".to_owned(), ScenarioMode::Deathmatch),
+            ("C1/MP2".to_owned(), ScenarioMode::CaptureTheFlag),
+            ("C1/MP3".to_owned(), ScenarioMode::ZeppelinVsZeppelin),
+            // A `targets.zrd` with no objective names neither a flag nor a
+            // zeppelin, so it is deathmatch too.
+            ("C1B/MP1".to_owned(), ScenarioMode::Deathmatch),
+        ]
+    );
+
+    // The binding carries the member's own span and the observed-tool class.
+    for slot in &catalog.slots {
+        let Resolved::Known(known) = &slot.mode else {
+            panic!("{} is unresolved", slot.id);
+        };
+        assert_eq!(known.provenance.class, ClaimStatus::ObservedTool);
+        let span = known.provenance.source.as_ref().expect("a source span");
+        assert_eq!(span.container_path(), slot.program.container_path());
+        assert_eq!(span.member_key(), Some("targets.zrd"));
+        assert!(span.length() > 0);
+        assert!(span.member_sha256().is_some());
+    }
+    // `net.zrd` is one 8-byte int node, so the first `targets.zrd` starts at 8.
+    let span = catalog.slots[0]
+        .mode
+        .provenance()
+        .and_then(|provenance| provenance.source.as_ref())
+        .expect("a span");
+    assert_eq!(span.offset(), 8);
+    assert_eq!(
+        span.member_sha256(),
+        Some(cs_assets::install::sha256(&targets_document(vec![
+            target_record("MSG_TRGT_REARM_BASE")
+        ])))
+    );
+}
+
+#[test]
+fn accept_f56_a_a_slot_without_a_usable_targets_member_stays_unknown() {
+    let no_member = reader_archive(&[("net.zrd", zrd_int(1))]);
+    let undecodable = reader_archive(&[("targets.zrd", b"not a .zrd".to_vec())]);
+    let not_a_list = reader_archive(&[("targets.zrd", zrd_text("MSG_TRGT_FLAG"))]);
+    let contradictory = reader_archive(&[(
+        "targets.zrd",
+        targets_document(vec![
+            target_record("MSG_TRGT_FLAGBASE"),
+            target_record("MSG_TRGT_ZEP_ENEMY"),
+        ]),
+    )]);
+    let files = vec![
+        record("ZBD/C1/MP1/zrdr.zbd", 10, 1),
+        record("ZBD/C1/MP2/zrdr.zbd", 10, 2),
+        record("ZBD/C1/MP3/zrdr.zbd", 10, 3),
+        record("ZBD/C1B/MP1/zrdr.zbd", 10, 4),
+    ];
+    let catalog = discover_slots(hash(1), &files, |record| {
+        Ok(match record.relative_spelling.as_str() {
+            "ZBD/C1/MP1/zrdr.zbd" => no_member.clone(),
+            "ZBD/C1/MP2/zrdr.zbd" => undecodable.clone(),
+            "ZBD/C1/MP3/zrdr.zbd" => not_a_list.clone(),
+            _ => contradictory.clone(),
+        })
+    })
+    .expect("the slots read");
+    for slot in &catalog.slots {
+        let Resolved::Unknown { reason, .. } = &slot.mode else {
+            panic!("{} must stay unknown", slot.id);
+        };
+        assert!(!reason.is_empty(), "{}", slot.id);
+    }
+}
+
+#[test]
+fn accept_f56_a_each_scenario_mode_covers_only_named_modes() {
+    use cs_content::multiplayer::MODE_NAME_IDS;
+
+    for mode in [
+        ScenarioMode::Deathmatch,
+        ScenarioMode::CaptureTheFlag,
+        ScenarioMode::ZeppelinVsZeppelin,
+    ] {
+        let ids = mode.mode_name_ids();
+        assert!(!ids.is_empty(), "{}", mode.label());
+        for id in ids {
+            assert!(MODE_NAME_IDS.contains(id), "{} covers {id}", mode.label());
+        }
+    }
+    assert_eq!(ScenarioMode::Deathmatch.mode_name_ids(), [7011, 7012]);
+    assert_eq!(ScenarioMode::CaptureTheFlag.mode_name_ids(), [7013]);
+    assert_eq!(ScenarioMode::ZeppelinVsZeppelin.mode_name_ids(), [7014]);
+}
+
 #[test]
 fn accept_f56_a_marker_scan_is_case_insensitive_and_exact() {
     assert_eq!(scan_markers(b"a Flag Base 2"), [SlotMarker::FlagBase]);
@@ -489,7 +724,7 @@ fn accept_f56_a_retail_the_installation_names_exactly_four_modes_each_with_a_bri
 
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_f56_a_retail_twenty_one_scenario_slots_with_an_unresolved_mode_binding() {
+fn accept_f56_a_retail_every_scenario_slot_binds_to_a_mode_with_evidence() {
     let dir = game_dir();
     let found = cs_assets::install::discover(&dir).expect("discovery reads the installation");
     let install = cs_assets::install::fingerprint(&found.manifest);
@@ -516,8 +751,73 @@ fn accept_f56_a_retail_twenty_one_scenario_slots_with_an_unresolved_mode_binding
             "C4/MP2", "C4/MP3", "C5/MP1", "C5/MP2", "C5/MP3",
         ]
     );
-    // The marker evidence that keeps the binding unknown: it is not one
-    // marker per slot number.
+
+    // The decoded `targets.zrd` binds every slot. The binding is exactly the
+    // mode family the objective descriptions name: a flag objective is
+    // Capture the Flag, a zeppelin objective is Zeppelin vs. Zeppelin, and no
+    // such objective is Deathmatch. No slot is unresolved in this
+    // installation; the synthetic suite pins what keeps a slot unknown.
+    let bindings: Vec<(String, ScenarioMode)> = catalog
+        .slots
+        .iter()
+        .map(|slot| {
+            let Resolved::Known(known) = &slot.mode else {
+                panic!("{} has an unresolved mode: {:?}", slot.id, slot.mode);
+            };
+            (format!("{}/MP{}", slot.world_group, slot.slot), known.value)
+        })
+        .collect();
+    assert_eq!(
+        bindings,
+        [
+            ("C1/MP1".to_owned(), ScenarioMode::Deathmatch),
+            ("C1/MP2".to_owned(), ScenarioMode::CaptureTheFlag),
+            ("C1/MP3".to_owned(), ScenarioMode::ZeppelinVsZeppelin),
+            ("C1B/MP1".to_owned(), ScenarioMode::Deathmatch),
+            ("C1B/MP3".to_owned(), ScenarioMode::ZeppelinVsZeppelin),
+            ("C1C/MP1".to_owned(), ScenarioMode::Deathmatch),
+            ("C1C/MP3".to_owned(), ScenarioMode::ZeppelinVsZeppelin),
+            ("C2/MP1".to_owned(), ScenarioMode::Deathmatch),
+            ("C2/MP2".to_owned(), ScenarioMode::CaptureTheFlag),
+            ("C2/MP3".to_owned(), ScenarioMode::ZeppelinVsZeppelin),
+            ("C2B/MP1".to_owned(), ScenarioMode::Deathmatch),
+            ("C2B/MP3".to_owned(), ScenarioMode::ZeppelinVsZeppelin),
+            ("C3/MP1".to_owned(), ScenarioMode::Deathmatch),
+            ("C3/MP2".to_owned(), ScenarioMode::CaptureTheFlag),
+            ("C3/MP3".to_owned(), ScenarioMode::ZeppelinVsZeppelin),
+            ("C4/MP1".to_owned(), ScenarioMode::Deathmatch),
+            ("C4/MP2".to_owned(), ScenarioMode::CaptureTheFlag),
+            ("C4/MP3".to_owned(), ScenarioMode::ZeppelinVsZeppelin),
+            ("C5/MP1".to_owned(), ScenarioMode::Deathmatch),
+            ("C5/MP2".to_owned(), ScenarioMode::CaptureTheFlag),
+            ("C5/MP3".to_owned(), ScenarioMode::ZeppelinVsZeppelin),
+        ]
+    );
+
+    // Every binding cites the slot's own `targets.zrd` member and the
+    // observed-tool class.
+    for slot in &catalog.slots {
+        let Resolved::Known(known) = &slot.mode else {
+            panic!("{} is unresolved", slot.id);
+        };
+        assert_eq!(known.provenance.class, ClaimStatus::ObservedTool);
+        let span = known.provenance.source.as_ref().expect("a source span");
+        assert_eq!(span.container_path(), slot.program.container_path());
+        assert_eq!(
+            slot.program.container_path().rsplit('/').next(),
+            Some("zrdr.zbd")
+        );
+        assert_eq!(span.member_key(), Some("targets.zrd"));
+        assert!(span.offset() > 0);
+        assert!(span.length() > 0);
+        assert!(span.member_sha256().is_some());
+        assert!(slot.program.member_sha256().is_some());
+    }
+
+    // The whole-archive markers stay recorded, but they are the weaker,
+    // mixed evidence: they are not one marker per mode family and disagree
+    // with the decoded binding for several slots (for example C2/MP3 carries
+    // the `Flag base` text while its objectives are zeppelins).
     let with = |marker: SlotMarker| -> Vec<String> {
         catalog
             .slots
@@ -534,12 +834,4 @@ fn accept_f56_a_retail_twenty_one_scenario_slots_with_an_unresolved_mode_binding
             "C4/MP1", "C4/MP2", "C4/MP3", "C5/MP3",
         ]
     );
-    for slot in &catalog.slots {
-        assert!(matches!(slot.mode, Resolved::Unknown { .. }), "{}", slot.id);
-        assert_eq!(
-            slot.program.container_path().rsplit('/').next(),
-            Some("zrdr.zbd")
-        );
-        assert!(slot.program.member_sha256().is_some());
-    }
 }
