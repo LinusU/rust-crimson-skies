@@ -331,9 +331,31 @@ impl fmt::Display for ContentIdError {
 
 impl std::error::Error for ContentIdError {}
 
-/// Validates and normalizes a [`ContentId`] key: lowercased ASCII
+/// Maximum byte length of a graph-local [`DamageNodeKey`].
+///
+/// The graph-local node identity uses the same bound as a [`ContentId`]
+/// key, and this constant is that one bound: the two public names cannot
+/// drift apart.
+pub const MAX_NODE_KEY_LEN: usize = MAX_CONTENT_KEY_LEN;
+
+/// The internal outcome of the one key-grammar implementation.
+enum KeyGrammarError {
+    /// The key was empty.
+    Empty,
+    /// The key exceeded the caller's byte bound.
+    TooLong { len: usize },
+    /// The key contained a character outside `[a-z0-9._-]`.
+    BadCharacter { ch: char },
+    /// The key had no ASCII alphanumeric character.
+    NoAlphanumeric,
+}
+
+/// Validates and normalizes a content-style key: lowercased ASCII
 /// alphanumerics plus `.`, `_` and `-`, at least one of them alphanumeric.
 ///
+/// This is the single implementation of the `IDENTITY-CONTENT` key grammar.
+/// [`ContentId`] applies it to a namespaced catalog key and
+/// [`DamageNodeKey`] to a graph-local identity; neither re-implements it.
 /// The grammar deliberately excludes `/`, `\`, `:`, requires at least one
 /// alphanumeric character and so refuses the `.`/`..`/blank path components,
 /// meaning a key can never be joined to a filesystem path or escape a
@@ -341,23 +363,120 @@ impl std::error::Error for ContentIdError {}
 /// path join"). Uppercase input is folded rather than rejected: a semantic
 /// source key such as `M01` and `m01` name the same content, and identity is
 /// normalized centrally while the original display name stays outside it.
-fn normalize_key(source_key: &str) -> Result<String, ContentIdError> {
+fn normalize_grammar(source_key: &str, max_len: usize) -> Result<String, KeyGrammarError> {
     if source_key.is_empty() {
-        return Err(ContentIdError::EmptyKey);
+        return Err(KeyGrammarError::Empty);
     }
     let key = source_key.to_ascii_lowercase();
-    if key.len() > MAX_CONTENT_KEY_LEN {
-        return Err(ContentIdError::KeyTooLong { len: key.len() });
+    if key.len() > max_len {
+        return Err(KeyGrammarError::TooLong { len: key.len() });
     }
     for ch in key.chars() {
         if !ch.is_ascii_lowercase() && !ch.is_ascii_digit() && !matches!(ch, '.' | '_' | '-') {
-            return Err(ContentIdError::BadKeyCharacter { ch });
+            return Err(KeyGrammarError::BadCharacter { ch });
         }
     }
     if !key.bytes().any(|byte| byte.is_ascii_alphanumeric()) {
-        return Err(ContentIdError::NoAlphanumeric);
+        return Err(KeyGrammarError::NoAlphanumeric);
     }
     Ok(key)
+}
+
+fn normalize_key(source_key: &str) -> Result<String, ContentIdError> {
+    normalize_grammar(source_key, MAX_CONTENT_KEY_LEN).map_err(|error| match error {
+        KeyGrammarError::Empty => ContentIdError::EmptyKey,
+        KeyGrammarError::TooLong { len } => ContentIdError::KeyTooLong { len },
+        KeyGrammarError::BadCharacter { ch } => ContentIdError::BadKeyCharacter { ch },
+        KeyGrammarError::NoAlphanumeric => ContentIdError::NoAlphanumeric,
+    })
+}
+
+/// Why a graph-local [`DamageNodeKey`] was rejected.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DamageNodeKeyError {
+    /// The key was empty.
+    Empty,
+    /// The key exceeded [`MAX_NODE_KEY_LEN`] bytes.
+    TooLong {
+        /// Its length in bytes.
+        len: usize,
+    },
+    /// The key contained a character outside `[a-z0-9._-]` (after ASCII
+    /// lowercasing).
+    BadCharacter {
+        /// The offending character.
+        ch: char,
+    },
+    /// The key had no ASCII alphanumeric character.
+    NoAlphanumeric,
+}
+
+impl fmt::Display for DamageNodeKeyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Empty => write!(f, "a damage node key must not be empty"),
+            Self::TooLong { len } => {
+                write!(
+                    f,
+                    "a damage node key is {len} bytes, max is {MAX_NODE_KEY_LEN}"
+                )
+            }
+            Self::BadCharacter { ch } => {
+                write!(f, "a damage node key contains disallowed character {ch:?}")
+            }
+            Self::NoAlphanumeric => {
+                write!(f, "a damage node key must contain an ASCII alphanumeric")
+            }
+        }
+    }
+}
+
+impl std::error::Error for DamageNodeKeyError {}
+
+/// The stable identity of one node inside one damage graph.
+///
+/// Keys are graph-local: `engine_1` inside one airframe's graph and
+/// `engine_1` inside another's are different nodes because the owning actor
+/// differs. The key is semantic — an authored part name — never the node's
+/// position in any list.
+///
+/// The grammar is the [`ContentId`] key grammar applied to a graph-local
+/// identity instead of a catalog id: the "same identity discipline" F29
+/// requires for every damage graph. One definition serves `cs_sim` and
+/// `cs_content` (task #442), so the two crates can no longer apply the
+/// grammar independently and drift; a declared key lowers to a runtime key
+/// unchanged.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DamageNodeKey(String);
+
+impl DamageNodeKey {
+    /// Validates and wraps a node key. Uppercase input is folded, matching
+    /// [`ContentId`] normalization.
+    ///
+    /// # Errors
+    ///
+    /// [`DamageNodeKeyError`] when the key is empty, too long, carries a
+    /// character outside `[a-z0-9._-]` or has no alphanumeric.
+    pub fn new(key: &str) -> Result<Self, DamageNodeKeyError> {
+        normalize_grammar(key, MAX_NODE_KEY_LEN).map(Self).map_err(|error| match error {
+            KeyGrammarError::Empty => DamageNodeKeyError::Empty,
+            KeyGrammarError::TooLong { len } => DamageNodeKeyError::TooLong { len },
+            KeyGrammarError::BadCharacter { ch } => DamageNodeKeyError::BadCharacter { ch },
+            KeyGrammarError::NoAlphanumeric => DamageNodeKeyError::NoAlphanumeric,
+        })
+    }
+
+    /// The normalized key text.
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for DamageNodeKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
 }
 
 /// The stable identity of one catalog element: a namespace plus a semantic

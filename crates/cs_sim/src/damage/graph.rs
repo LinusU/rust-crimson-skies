@@ -34,107 +34,15 @@ use std::fmt;
 
 use cs_types::content::{ContentId, Resolved};
 
-/// Maximum byte length of a [`DamageNodeKey`], matching the
-/// `IDENTITY-CONTENT` key bound.
-pub const MAX_NODE_KEY_LEN: usize = 128;
+// The graph-local node identity and its validation are owned by `cs_types`
+// (task #442): `cs_sim` and `cs_content` share one definition instead of
+// each applying the `IDENTITY-CONTENT` key grammar, so a declared key and
+// its runtime key are the same type and cannot drift.
+pub use cs_types::content::{DamageNodeKey, DamageNodeKeyError, MAX_NODE_KEY_LEN};
 
-/// Why a [`DamageNodeKey`] was rejected.
-///
-/// The grammar is the `IDENTITY-CONTENT` content-key grammar — lowercased
-/// ASCII alphanumerics plus `.`, `_` and `-` with at least one
-/// alphanumeric — applied to a graph-local identity instead of a catalog id:
-/// the "same identity discipline" the sheet requires for every damage
-/// graph. `cs_types` owns no shared key type yet (recorded in the findings
-/// file), so this module validates its own.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum NodeKeyError {
-    /// The key was empty.
-    Empty,
-    /// The key exceeded [`MAX_NODE_KEY_LEN`] bytes.
-    TooLong {
-        /// Its length in bytes.
-        len: usize,
-    },
-    /// The key contained a character outside `[a-z0-9._-]` (after ASCII
-    /// lowercasing).
-    BadCharacter {
-        /// The offending character.
-        ch: char,
-    },
-    /// The key had no ASCII alphanumeric character.
-    NoAlphanumeric,
-}
-
-impl fmt::Display for NodeKeyError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Empty => write!(f, "a damage node key must not be empty"),
-            Self::TooLong { len } => {
-                write!(
-                    f,
-                    "a damage node key is {len} bytes, max is {MAX_NODE_KEY_LEN}"
-                )
-            }
-            Self::BadCharacter { ch } => {
-                write!(f, "a damage node key contains disallowed character {ch:?}")
-            }
-            Self::NoAlphanumeric => {
-                write!(f, "a damage node key must contain an ASCII alphanumeric")
-            }
-        }
-    }
-}
-
-impl std::error::Error for NodeKeyError {}
-
-/// The stable identity of one node inside one [`DamageGraph`].
-///
-/// Keys are graph-local: `engine_1` inside one airframe's graph and
-/// `engine_1` inside another's are different nodes because the owning actor
-/// differs. The key is semantic — an authored part name — never the node's
-/// position in any list.
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct DamageNodeKey(String);
-
-impl DamageNodeKey {
-    /// Validates and wraps a node key. Uppercase input is folded, matching
-    /// [`ContentId`] normalization.
-    ///
-    /// # Errors
-    ///
-    /// [`NodeKeyError`] when the key is empty, too long, carries a character
-    /// outside `[a-z0-9._-]` or has no alphanumeric.
-    pub fn new(key: &str) -> Result<Self, NodeKeyError> {
-        let key = key.to_ascii_lowercase();
-        if key.is_empty() {
-            return Err(NodeKeyError::Empty);
-        }
-        if key.len() > MAX_NODE_KEY_LEN {
-            return Err(NodeKeyError::TooLong { len: key.len() });
-        }
-        for ch in key.chars() {
-            if !ch.is_ascii_lowercase() && !ch.is_ascii_digit() && !matches!(ch, '.' | '_' | '-') {
-                return Err(NodeKeyError::BadCharacter { ch });
-            }
-        }
-        if !key.bytes().any(|byte| byte.is_ascii_alphanumeric()) {
-            return Err(NodeKeyError::NoAlphanumeric);
-        }
-        Ok(Self(key))
-    }
-
-    /// The normalized key text.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for DamageNodeKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
+/// The historical name `cs_sim` gave the shared key error; it now denotes
+/// the one [`DamageNodeKeyError`] `cs_types` owns.
+pub type NodeKeyError = DamageNodeKeyError;
 
 /// What kind of part a damage node models (F29 deliverable).
 ///

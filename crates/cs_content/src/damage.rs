@@ -52,97 +52,11 @@ use cs_types::content::{ContentId, Origin, Provenance, Resolved};
 
 use crate::scene::SceneNodeId;
 
-/// Maximum byte length of a [`DamageNodeKey`].
-pub const MAX_NODE_KEY_LEN: usize = 128;
-
-/// Why a [`DamageNodeKey`] was rejected.
-///
-/// Same grammar as `cs_sim::damage::NodeKeyError`: the two crates apply
-/// the one identity discipline independently because `cs_types` does not
-/// yet own a shared key type (recorded in the findings file).
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum DamageNodeKeyError {
-    /// The key was empty.
-    Empty,
-    /// The key exceeded [`MAX_NODE_KEY_LEN`] bytes.
-    TooLong {
-        /// Its length in bytes.
-        len: usize,
-    },
-    /// The key contained a character outside `[a-z0-9._-]` (after ASCII
-    /// lowercasing).
-    BadCharacter {
-        /// The offending character.
-        ch: char,
-    },
-    /// The key had no ASCII alphanumeric character.
-    NoAlphanumeric,
-}
-
-impl fmt::Display for DamageNodeKeyError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Empty => write!(f, "a damage node key must not be empty"),
-            Self::TooLong { len } => {
-                write!(
-                    f,
-                    "a damage node key is {len} bytes, max is {MAX_NODE_KEY_LEN}"
-                )
-            }
-            Self::BadCharacter { ch } => {
-                write!(f, "a damage node key contains disallowed character {ch:?}")
-            }
-            Self::NoAlphanumeric => {
-                write!(f, "a damage node key must contain an ASCII alphanumeric")
-            }
-        }
-    }
-}
-
-impl std::error::Error for DamageNodeKeyError {}
-
-/// The declared identity of one node inside a [`DeclaredDamageGraph`].
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct DamageNodeKey(String);
-
-impl DamageNodeKey {
-    /// Validates and wraps a node key.
-    ///
-    /// # Errors
-    ///
-    /// [`DamageNodeKeyError`] when the key is empty, too long, carries a
-    /// character outside `[a-z0-9._-]` or has no alphanumeric.
-    pub fn new(key: &str) -> Result<Self, DamageNodeKeyError> {
-        let key = key.to_ascii_lowercase();
-        if key.is_empty() {
-            return Err(DamageNodeKeyError::Empty);
-        }
-        if key.len() > MAX_NODE_KEY_LEN {
-            return Err(DamageNodeKeyError::TooLong { len: key.len() });
-        }
-        for ch in key.chars() {
-            if !ch.is_ascii_lowercase() && !ch.is_ascii_digit() && !matches!(ch, '.' | '_' | '-') {
-                return Err(DamageNodeKeyError::BadCharacter { ch });
-            }
-        }
-        if !key.bytes().any(|byte| byte.is_ascii_alphanumeric()) {
-            return Err(DamageNodeKeyError::NoAlphanumeric);
-        }
-        Ok(Self(key))
-    }
-
-    /// The normalized key text.
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-impl fmt::Display for DamageNodeKey {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
+// The graph-local node identity and its validation are owned by `cs_types`
+// (task #442). The declared schema and `cs_sim`'s runtime graph name the
+// same [`DamageNodeKey`], so a declared key lowers to a runtime key with no
+// re-validation and the `IDENTITY-CONTENT` grammar has one implementation.
+pub use cs_types::content::{DamageNodeKey, DamageNodeKeyError, MAX_NODE_KEY_LEN};
 
 /// What kind of part a declared damage node models (F29 deliverable).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
