@@ -484,7 +484,7 @@ fn the_two_campaign_runs(rows: &[StringRow]) -> Vec<(u32, u32)> {
         assert!(
             tail.is_some_and(|tail| !tail.is_empty()),
             "row {id} ({:?}) is not a region-prefixed long name",
-            &text.chars().take(40).collect::<String>()
+            text.chars().take(40).collect::<String>()
         );
     }
     for id in campaign_runs[1].0..=campaign_runs[1].1 {
@@ -492,7 +492,7 @@ fn the_two_campaign_runs(rows: &[StringRow]) -> Vec<(u32, u32)> {
         assert!(
             !text.contains(SEPARATOR),
             "row {id} ({:?}) is not a bare short name",
-            &text.chars().take(40).collect::<String>()
+            text.chars().take(40).collect::<String>()
         );
     }
     campaign_runs
@@ -821,18 +821,19 @@ fn accept_f50_e4_the_confirmed_rows_are_exactly_the_exact_byte_matches() {
             })
             .or_default() += 1;
     }
-    // The set has to exercise every arm, or the comparison above is a formality.
-    for (class, minimum) in [
-        ("confirmed verbatim", 20),
-        ("confirmed through a long name", 10),
+    // Every arm has to be exercised, or the comparison above is a formality, and
+    // the counts are pinned so a candidate set that quietly stopped covering an
+    // arm cannot pass as one that still does.
+    for (class, expected) in [
+        ("confirmed verbatim", 27),
+        ("confirmed through a long name", 19),
         ("ambiguous", 2),
-        ("uncarried", 100),
+        ("uncarried", 171),
     ] {
         let seen = classes.get(class).copied().unwrap_or(0);
-        assert!(
-            seen >= minimum,
-            "the near-miss set exercises {class} only {seen} times, which is too few to compare \
-             anything: {classes:?}"
+        assert_eq!(
+            seen, expected,
+            "the near-miss set no longer splits the way it was measured: {classes:?}"
         );
     }
 
@@ -1052,6 +1053,7 @@ fn accept_f50_e4_a_fuzzy_matcher_would_confirm_a_near_miss_this_table_refuses() 
             wrongly.len(),
             titles.len()
         );
+
         for title in &wrongly {
             let actual = context.confirm_title(title);
             assert_eq!(
@@ -1064,7 +1066,18 @@ fn accept_f50_e4_a_fuzzy_matcher_would_confirm_a_near_miss_this_table_refuses() 
         }
         *counted.entry(name).or_default() += wrongly.len();
     }
-    assert_eq!(counted.len(), 3, "not every weakened matcher was exercised");
+    // The measured size of the set each weakened matcher would take, pinned: a
+    // table that stopped offering near misses must fail here rather than leave
+    // the arm vacuously satisfied.
+    assert_eq!(
+        counted,
+        BTreeMap::from([
+            ("a comparison that ignores case", 48),
+            ("a display that merely contains the title", 72),
+            ("a tail that merely starts with the title", 27),
+        ]),
+        "the weakened matchers' hauls over this table changed: {counted:?}"
+    );
 
     // The seven declared titles the installation does not carry are near misses
     // of real rows, not empty space: for each, some row of the table is within a
