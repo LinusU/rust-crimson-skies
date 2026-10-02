@@ -41,7 +41,7 @@ use bevy::app::{App, Plugin};
 use bevy::ecs::schedule::IntoScheduleConfigs;
 use bevy::prelude::{FixedUpdate, PreUpdate, Update};
 use cs_content::audio::AudioCatalog;
-use cs_sim::audio_events::{AudioDevice, Listener, SpatialPolicy};
+use cs_sim::audio_events::AudioDevice;
 
 use super::engine::{EngineVoices, smooth_engine_voices};
 use super::handoff::{AudioHandoffLog, DeclaredAudioCatalog, insert_audio_session};
@@ -116,16 +116,4 @@ impl Plugin for AudioPlugin {
             (sync_emitter_loops, advance_radio, mix_session).chain(),
         );
     }
-}
-
-/// The designed spatial configuration the fixture worlds use: full gain inside
-/// 10 m, inverse distance to 100 m, silence beyond, and a listener at the
-/// world origin facing canonical `+X` as right.
-///
-/// Designed, not measured: the original attenuation curve is unmeasured (see
-/// `docs/findings/2026-10-01-f41-b-loops-and-spatial-emitters.md`), so this is
-/// a fixture convenience, not a claim about the original game.
-#[must_use]
-pub fn designed_spatial(policy: SpatialPolicy, listener: Listener) -> AudioSpatial {
-    AudioSpatial::new(policy, listener)
 }

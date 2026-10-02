@@ -427,7 +427,16 @@
 //! unknown bus, level or playback mode by claim instead of inventing one; and
 //! the generation-stamped [`audio::AudioEmitterBinding`] tying an entity to its
 //! session-qualified emitter, bus and asset. F41-B adds [`audio::sync_emitter_loops`],
-//! which starts, swaps and stops loops as those bindings spawn and despawn.
+//! which starts, swaps and stops loops as those bindings spawn and despawn;
+//! [`audio::smooth_engine_voices`], which smooths engine pitch and volume from
+//! the flight model's fixed-tick throttle spool; [`audio::mix_session`] and the
+//! [`audio::device_lost`] / [`audio::device_restored`] pair, the consumer that
+//! carries the session's outcomes and the spatial law to an output device while
+//! simulation stays independent of it; and [`audio::AudioPlugin`], whose
+//! [`audio::insert_audio_session`] lets the F15 loading handoff own the session
+//! a delivered load implies. Loop regions stay unknown and the attenuation law
+//! is designed rather than measured; see
+//! `docs/findings/2026-10-01-f41-b-loops-and-spatial-emitters.md`.
 //!
 //! [`ui::front_end`] is the F45-A front-end state table
 //! (`specs/F45-main-menu-pandora-cabin-briefing-and-flight-check.md`, stage

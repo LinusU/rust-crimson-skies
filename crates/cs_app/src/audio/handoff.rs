@@ -94,6 +94,11 @@ pub struct AudioInstall {
 
 /// Why a delivered load could not install an audio session, or a delivered
 /// audio record could not be lowered.
+///
+/// A load that is **already** installed is not a refusal: this system runs every
+/// frame, so recording "already installed" would add one entry per frame to a
+/// log nobody wants. [`AudioHandoffLog::installs`] and
+/// [`AudioHandoffLog::installed`] are the record of what the world holds.
 #[derive(Clone, Debug, PartialEq)]
 pub enum AudioHandoffRefusal {
     /// The world has no declared audio catalog, so nothing could be lowered.
@@ -118,11 +123,6 @@ pub enum AudioHandoffRefusal {
     NotLowerable {
         /// The refused record.
         error: AudioLowerError,
-    },
-    /// A session for this load is already installed; nothing was repeated.
-    AlreadyInstalled {
-        /// The load already installed.
-        load: LoadIdentity,
     },
 }
 
@@ -171,8 +171,8 @@ pub fn insert_audio_session(world: &mut World) {
         .as_ref()
         .is_some_and(|install| install.load == newest)
     {
-        log.refusals
-            .push(AudioHandoffRefusal::AlreadyInstalled { load: newest });
+        // Already the installed session: this frame changes nothing, and saying
+        // so on every frame would grow the log without telling anyone anything.
         world.insert_resource(log);
         return;
     }

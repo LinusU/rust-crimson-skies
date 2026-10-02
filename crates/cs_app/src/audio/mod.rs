@@ -59,7 +59,7 @@ pub use lower::{
 pub use mixer::{
     AudioMixReport, AudioOutput, AudioSpatial, device_lost, device_restored, mix_session,
 };
-pub use plugin::{AudioPlugin, designed_spatial};
+pub use plugin::AudioPlugin;
 
 use bevy::ecs::component::Component;
 use cs_sim::audio_events::{AudioBus, AudioEmitterId};

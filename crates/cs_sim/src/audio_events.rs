@@ -1786,7 +1786,7 @@ impl AudioMixer {
         for outcome in outcomes {
             match outcome {
                 LoopOutcome::Started { emitter } => {
-                    if let Some(refusal) = self.foreign(*emitter, &mut report) {
+                    if let Some(refusal) = self.foreign(*emitter) {
                         report.refusals.push(refusal);
                         continue;
                     }
@@ -1795,7 +1795,7 @@ impl AudioMixer {
                     }
                 }
                 LoopOutcome::Swapped { emitter, .. } => {
-                    if let Some(refusal) = self.foreign(*emitter, &mut report) {
+                    if let Some(refusal) = self.foreign(*emitter) {
                         report.refusals.push(refusal);
                         continue;
                     }
@@ -1810,7 +1810,7 @@ impl AudioMixer {
                     }
                 }
                 LoopOutcome::Stopped { emitter, reason } => {
-                    if let Some(refusal) = self.foreign(*emitter, &mut report) {
+                    if let Some(refusal) = self.foreign(*emitter) {
                         report.refusals.push(refusal);
                         continue;
                     }
@@ -1825,7 +1825,7 @@ impl AudioMixer {
                     }
                 }
                 LoopOutcome::NotActive { emitter, reason } => {
-                    if let Some(refusal) = self.foreign(*emitter, &mut report) {
+                    if let Some(refusal) = self.foreign(*emitter) {
                         report.refusals.push(refusal);
                         continue;
                     }
@@ -1942,7 +1942,7 @@ impl AudioMixer {
         device.open()
     }
 
-    fn foreign(&self, emitter: AudioEmitterId, _report: &mut MixerReport) -> Option<MixerRefusal> {
+    fn foreign(&self, emitter: AudioEmitterId) -> Option<MixerRefusal> {
         (emitter.session != self.session).then_some(MixerRefusal::ForeignSession {
             emitter,
             session: self.session,

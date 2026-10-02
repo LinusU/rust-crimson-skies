@@ -219,17 +219,20 @@ pub fn mix_session(
 ///
 /// Total and idempotent: losing a device that is already gone changes nothing.
 pub fn device_lost(world: &mut World) {
-    let Some(mut session) = world.remove_resource::<AudioSession>() else {
-        return;
-    };
-    session.device_lost();
+    // The two halves are independent, and each is applied even if the other is
+    // absent: a session with no mixer (nothing loaded) must still forget its
+    // loops, and a mixer with no session must still stop what it is sounding.
+    let session = world.remove_resource::<AudioSession>();
+    if let Some(mut session) = session {
+        session.device_lost();
+        world.insert_resource(session);
+    }
     let mut mixing = world.remove_resource::<AudioMixing>();
     let mut output = world.remove_resource::<AudioOutput>();
     let lost = match (mixing.as_mut(), output.as_mut()) {
         (Some(mixing), Some(output)) => Some(mixing.mixer_mut().device_lost(output.device_mut())),
         _ => None,
     };
-    world.insert_resource(session);
     if let Some(mixing) = mixing {
         world.insert_resource(mixing);
     }
