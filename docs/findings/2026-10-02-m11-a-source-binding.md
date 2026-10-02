@@ -208,12 +208,25 @@ Every test calls production code (`SourceContext`, `SourceBinding`,
 
 `private/evidence/M11-A/acceptance.json`, written by
 `evidence_report_m11_a_writes_the_acceptance_report` from the recorded
-acceptance log, production discovery of `$CS_GAME_DIR` and the derived binding.
-It lists the four unresolved critical dependencies in `unknowns` and is
-therefore **expected not to validate** under
-`tools/validate_evidence.py --require-pass`, which rejects a report with
-unresolved issues. That is the honest state: removing them to make a validator
-pass is forbidden. No report is written by hand.
+acceptance log, production discovery of `$CS_GAME_DIR` and the derived binding;
+committed as `docs/findings/evidence/M11-A.json`. Measured result:
+
+| Command | Exit |
+| --- | --- |
+| `cargo test --workspace --locked -- accept_m11_a_ --include-ignored` (tee'd to `private/evidence/M11-A/cargo-test.log`) | 0 (8 passed, 0 failed) |
+| `cargo test --locked --test campaign evidence_report_m11_a -- --ignored` | 0 |
+| `python3 tools/validate_evidence.py private/evidence/M11-A/acceptance.json --artifact-root private/evidence/M11-A` | 0 — `{"structurally_valid": true, "artifact_count": 2, "claims_semantically_verified": false}` |
+| `python3 tools/validate_evidence.py … --require-pass` | **3 — `Invalid evidence: Unresolved issues`**, and this is the expected result |
+
+The report lists the four unresolved critical dependencies in `unknowns`, so
+`--require-pass` — which rejects a report with unresolved issues — fails. That
+is the honest state: the stage's minimum scenario is unmet, and removing the
+entries to make a validator pass is forbidden
+(`docs/contracts/CLI-EVIDENCE.md`; owner directive 2026-09-28). The report's
+`claim` is `implemented`, never `checked` or `verified_original`, and its
+`review.identity` says plainly that no review has taken place. The committed
+`docs/findings/evidence/M11-A.json` therefore does **not** satisfy the task's
+"passes `--require-pass`" line and cannot until #470 is decided.
 
 ## Sources
 

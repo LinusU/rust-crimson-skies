@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "M11-A",
+ "candidate_tree": "f82abd52720dc1f226e73403dc89672d2f8982cb",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-10-02T00:35:42Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_m11_a_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/bunny-alpha-1", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 8, "executed": 8, "passed": 8, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_m11_a_only_an_exact_title_or_an_exact_long_name_tail_confirms", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m11_a_an_unresolved_critical_dependency_is_named_in_the_records_unknowns", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m11_a_the_position_the_declared_order_would_select_is_read_from_the_installation", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m11_a_the_committed_record_is_what_the_installation_derives", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m11_a_the_campaign_keeps_everything_else_unresolved_and_unready", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m11_a_the_declared_title_is_carried_by_no_retail_row", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m11_a_the_declared_order_agrees_with_the_retail_campaign_order_where_it_is_carried", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m11_a_the_source_derived_binding_keeps_m11_unresolved_and_says_why", "status": "pass", "evidence": ["cargo-test.log"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "c8ee683938cce84a901e66e2451ad30d8ebb6455742a00c0ca8fcb892305c2b5", "kind": "log"}, {"path": "m11-binding.json", "sha256": "bfb80f491adeda5b44811805a736dbc2e7290a8134b220191855c16014d3a7ae", "kind": "json"}],
+ "unknowns": ["mission_id: unresolved — the discovery title is carried by no single localized row", "title_string: unresolved — no localized string carries the discovery title, neither verbatim nor as the title part of a region-prefixed long name", "program_source_map: unresolved — the discovery title is carried by no single localized row", "world_group_variant: unresolved — the discovery title is carried by no single localized row"],
+ "review": {"identity": "implementer: bunny-alpha-1/bunny-alpha-1 (Rally #288, session of 2026-10-02T00:00Z); reviewer: none yet — this report was written by the implementing session, so no review has taken place. No agent review replaces the owner's human approval, and no agent may self-award checked, verified_original or release_approved", "method": "acceptance suite run locally with the retail capability; this harness derives every field from the recorded log, production discovery of $CS_GAME_DIR and the binding `SourceContext::read` + `SourceContext::bind` derive from it. The suite passes and M11 is still UNBOUND: the declared discovery title is carried by no localized row, so four of the five critical dependencies are unresolved and the mission, world and program identities are null. This report is therefore expected NOT to validate under tools/validate_evidence.py --require-pass, which rejects a report with unresolved issues; removing them to make it pass is forbidden. Resolving them needs Rally #470 M05-A-GUIDE-TITLES, an owner decision. M11-A's production change names every unresolved critical dependency in the record's own unknowns; claim is implemented only. `candidate_tree` is the tree of the commit the suite ran on"},
+ "claim": "implemented"
+}
