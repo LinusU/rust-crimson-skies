@@ -6,10 +6,11 @@ Date: 2026-10-02. Task: M18-A "Bind original mission data and branches"
 `docs/contracts/IDENTITY-CONTENT.md`. Capabilities used: `retail`
 (`$CS_GAME_DIR` read-only, never written), `synthetic`. Implementer:
 **bunny-alpha-2** (OpenCode, Space Bunny Alpha, session of
-2026-10-02T01:27Z). Reviewer: not yet assigned at hand-over. The
-implementer's own run is not independent review and is not independent
-original-reference evidence; no agent review replaces the owner's human
-approval.
+2026-10-02T01:27Z). Reviewer: **bunny-alpha-1** (OpenCode, Space Bunny Alpha,
+Rally #309 review claim, session of 2026-10-02T03:05Z, fresh context that did
+not write the implementation). A different agent instance from the
+implementer, so this is agent review, not independent original-reference
+evidence; no agent review replaces the owner's human approval.
 
 The minimum acceptance scenario, *"Source-derived binding has no unresolved
 critical dependencies"*, holds for M18.
@@ -111,7 +112,7 @@ the discrepancy is not observable in the installation's English string table.
 Which mission the guide's label names is therefore established by the
 inventory's title matching the retail short-name row, not by the cue.
 
-## Test inventory (`accept_m18_a_*`, 12 tests: 8 retail, 4 synthetic)
+## Test inventory (`accept_m18_a_*`, 13 tests: 8 retail, 5 synthetic)
 
 The M13-A shape (interior position, whole-chapter world group) with M18's own
 facts, plus two arms no earlier stage had:
@@ -130,6 +131,7 @@ facts, plus two arms no earlier stage had:
 | `…_a_confirmed_row_outside_every_campaign_block_selects_no_position` | synthetic: the M18 refusal arm, arm by arm |
 | `…_a_near_miss_title_is_never_confirmed` | synthetic: `title_form`'s exactness |
 | `…_a_contradicted_corroboration_establishes_no_position` | synthetic: the contradiction guard |
+| `…_a_verified_needs_every_condition_and_not_only_the_dependencies` | synthetic, **added in review**: each of `is_verified`'s four conditions, dropped on its own |
 
 ## Mutation checks
 
@@ -151,6 +153,55 @@ miss that would expose a fuzzy comparison, so the eight retail tests all
 passed against a fuzzy matcher. `accept_m18_a_a_near_miss_title_is_never_confirmed`
 was added in response, on the pure `title_form` predicate, and now catches it
 without an installation.
+
+## Review (bunny-alpha-1, fresh context)
+
+The reviewer re-derived M18's retail facts from `$CS_GAME_DIR` through
+production code without reading the binding's own output, and every claim in
+the table above held: the title is carried by exactly one row, 3497; the
+second display form is 3467, `Rocky Mountains - Deceit at Devil's Horn`; the
+region prefix is a standalone row, 1223; the two campaign-length row blocks
+are `3450..3473` (the region-prefixed one) and `3480..3503` (the short names,
+which is where 3497 sits); the chapter sizes are `[5, 5, 5, 5, 4]`; and
+`ZBD/C4/M03/zrdr.zbd` hashes to `0eff1e94…`, the digest the record cites.
+
+The reviewer also repeated the mutation work independently and **found one
+more surviving mutation**: dropping only the `unknowns.is_empty()` condition
+from `SourceBinding::is_verified` left all twelve tests green, because M18's
+own record is unverified for four separate reasons at once — its unknowns, its
+null `closure_sha256` and its empty `evidence_ids` — so any one condition
+dropping was masked by the other two. `SourceBinding::validate` does not close
+it either: it compares `is_verified()` against
+`unresolved_critical().is_empty() && unknowns.is_empty()`, which a record with
+an empty `closure_sha256` and no evidence claims satisfies either way. The
+implementer's `is_verified` mutation was the stronger one (reduce it to the
+critical dependencies alone), which *is* caught, so the reported gap was
+narrower than the real one. The reviewer closed it with
+`accept_m18_a_a_verified_needs_every_condition_and_not_only_the_dependencies`,
+which starts from a record satisfying all four conditions and drops each one
+in turn; re-checked, it now catches the mutation that survived.
+
+Three smaller things were also fixed in review:
+
+- `crates/cs_app/tests/campaign/evidence.rs` had a stray blank line inside its
+  own module doc comment, left by a textually spliced conflict resolution
+  during the fourth rebase. Removed.
+- The M18-A evidence harness recorded `reviewer: not yet assigned at
+  hand-over`. It now records the actual reviewer, the implementer, and the
+  review's own mutation and verification work, as
+  `docs/contracts/CLI-EVIDENCE.md`'s minimum record requires and the owner
+  directive of 2026-10-01 asks for.
+- The rebase onto main's M17-A conflicted in three files. All three were
+  resolved by keeping both sides; the "not here yet" list in
+  `missions/bindings/README.md` was re-derived from the directory rather than
+  accepted from either side, and now names exactly `M09`, `M10`, `M11`,
+  `M14`, `M15`, `M20`, `M22` and `M23`. After the resolution there are 16
+  evidence harnesses, 30 test-name constants and 16 `m*_a` module
+  declarations, with no duplicate.
+
+Nothing the reviewer found contradicts the stage's claims, and nothing in the
+record is over-claimed: `verified` is still `false`, the join is still an
+inference, and no cell but the mission identity reads as complete.
 
 ## Checks
 

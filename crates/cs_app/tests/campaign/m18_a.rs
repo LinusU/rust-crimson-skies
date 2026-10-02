@@ -41,6 +41,15 @@
 //!   mission's title.
 //!   [`accept_m18_a_a_near_miss_title_is_never_confirmed`] proves
 //!   [`title_form`]'s exactness arm by arm on authored values.
+//! * **`is_verified` is a conjunction, and M18's own record cannot tell its
+//!   conditions apart.** M18 is unverified for four separate reasons, and its
+//!   closure hash and evidence list are empty as well as its unknowns, so an
+//!   `is_verified` that had dropped the unknowns condition would still leave
+//!   every other assertion in this file true. Found by review: that mutation
+//!   survived the whole suite.
+//!   [`accept_m18_a_a_verified_needs_every_condition_and_not_only_the_dependencies`]
+//!   drops each of the four conditions on its own, from a record where the
+//!   other three hold.
 //!
 //! The retail tests are `#[ignore = "requires CS_GAME_DIR"]`, so CI (which
 //! has no original data) skips them; they are run with `--include-ignored`
@@ -1556,11 +1565,123 @@ fn accept_m18_a_a_contradicted_corroboration_establishes_no_position() {
     );
 }
 
+#[test]
+fn accept_m18_a_a_verified_needs_every_condition_and_not_only_the_dependencies() {
+    // `SourceBinding::is_verified` is a conjunction of four conditions — no
+    // unresolved critical dependency, no unknown checklist entry, a closure
+    // hash and at least one evidence claim — and M18's own record cannot tell
+    // them apart: its closure hash and its evidence list are empty *as well*
+    // as its unknowns, so an `is_verified` that had forgotten the unknowns
+    // condition would still leave every other M18-A assertion true. This is
+    // the review-found gap that closed: each condition is dropped on its own,
+    // from a record where the other three are satisfied.
+    let complete = synthetic_binding(
+        Vec::new(),
+        Some("c".repeat(64)),
+        vec!["m18.a.synthetic.complete".to_owned()],
+    );
+    complete
+        .validate()
+        .expect("a record with nothing left unknown and all four conditions met is consistent");
+    assert!(
+        complete.is_verified(),
+        "a record whose four verification conditions are all met must read as verified"
+    );
+
+    // One unknown checklist entry is enough to stop it, and it stays a
+    // *consistent* record: refusing to read as finished is the point, and the
+    // entry is carried rather than dropped.
+    let mut unknown_entry = complete.clone();
+    unknown_entry
+        .unknowns
+        .push("objective graph: not bound from original data at this stage".to_owned());
+    unknown_entry
+        .validate()
+        .expect("an unverified record that names what is still unknown is internally consistent");
+    assert!(
+        !unknown_entry.is_verified(),
+        "an unknown checklist entry must block verification on its own"
+    );
+    assert_eq!(unknown_entry.unresolved_critical(), Vec::new());
+    // Two entries and one entry agree: the rule is not a count.
+    let mut two_entries = complete.clone();
+    two_entries.unknowns = unknown_entry.unknowns.clone();
+    two_entries
+        .unknowns
+        .push("difficulty branches: not bound from original data at this stage".to_owned());
+    assert!(!two_entries.is_verified());
+
+    // The closure hash and the evidence claims are conditions in their own
+    // right, and with nothing else unknown a record missing either is
+    // *inconsistent* rather than merely unverified — the record claims to be
+    // unfinished while naming nothing unfinished.
+    let mut no_closure = complete.clone();
+    no_closure.closure_sha256 = None;
+    assert!(
+        !no_closure.is_verified(),
+        "a record with no dependency closure hash must not read as verified"
+    );
+    no_closure
+        .validate()
+        .expect_err("nothing is left unknown, so a missing closure hash is inconsistent");
+
+    let mut no_evidence = complete.clone();
+    no_evidence.evidence_ids.clear();
+    assert!(
+        !no_evidence.is_verified(),
+        "a record with no evidence claim must not read as verified"
+    );
+    no_evidence
+        .validate()
+        .expect_err("nothing is left unknown, so an absent evidence claim is inconsistent");
+
+    // And an unresolved critical dependency blocks it even with everything
+    // else present, which is the state M18 itself is in for the three
+    // position-dependent identities the refusal arm leaves open.
+    let mut unresolved = complete.clone();
+    unresolved.catalog_id = None;
+    unresolved.dependencies[0].state = DependencyState::unresolved(
+        ClaimId::new("m18.a.synthetic.unresolved").expect("claim"),
+        SHORT_ROW_BLOCK_REFUSAL,
+    )
+    .expect("an unresolved state always validates");
+    unresolved
+        .validate()
+        .expect("an unverified record with an unresolved dependency is consistent");
+    assert!(
+        !unresolved.is_verified(),
+        "an unresolved critical dependency must block verification on its own"
+    );
+    assert_eq!(
+        unresolved.unresolved_critical(),
+        vec![CriticalDependency::MissionId]
+    );
+}
+
 /// A source binding with every critical dependency resolved but the checklist
 /// entries a source binding does not bind still unknown, built here from
 /// authored values. It proves only the predicates of
 /// [`SourceBinding::unresolved_critical`] and [`SourceBinding::is_verified`].
 fn authored_binding() -> SourceBinding {
+    synthetic_binding(
+        vec![
+            "objective graph: not bound from original data at this stage".to_owned(),
+            "closure_sha256: the mission dependency closure hash is not measured".to_owned(),
+        ],
+        None,
+        Vec::new(),
+    )
+}
+
+/// A source binding built from authored values, with its critical dependencies
+/// all resolved and its three *other* verification conditions — the unknown
+/// checklist entries, the closure hash and the evidence claims — supplied by
+/// the caller so each can be varied on its own.
+fn synthetic_binding(
+    unknowns: Vec<String>,
+    closure_sha256: Option<String>,
+    evidence_ids: Vec<String>,
+) -> SourceBinding {
     let claim = |suffix: &str| ClaimId::new(&format!("m18.a.synthetic.{suffix}")).expect("claim");
     let provenance = |suffix: &str| {
         Provenance::new(claim(suffix), ClaimStatus::Designed, None)
@@ -1587,11 +1708,11 @@ fn authored_binding() -> SourceBinding {
         source_spans: Vec::new(),
         identity_source: None,
         title_source: None,
-        closure_sha256: None,
-        evidence_ids: Vec::new(),
-        unknowns: vec![
-            "objective graph: not bound from original data at this stage".to_owned(),
-            "closure_sha256: the mission dependency closure hash is not measured".to_owned(),
-        ],
+        closure_sha256,
+        evidence_ids: evidence_ids
+            .into_iter()
+            .map(|id| ClaimId::new(&id).expect("evidence claim id"))
+            .collect(),
+        unknowns,
     }
 }

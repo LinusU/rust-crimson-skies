@@ -355,6 +355,7 @@ const SYNTHETIC_TESTS_M18_A: &[&str] = &[
     "accept_m18_a_a_confirmed_row_outside_every_campaign_block_selects_no_position",
     "accept_m18_a_a_near_miss_title_is_never_confirmed",
     "accept_m18_a_a_contradicted_corroboration_establishes_no_position",
+    "accept_m18_a_a_verified_needs_every_condition_and_not_only_the_dependencies",
 ];
 
 /// The synthetic predicate tests M02-A's report must also record.
@@ -4188,7 +4189,10 @@ fn civil_from_unix(seconds: i64) -> (i64, u32, u32, u32, u32, u32) {
 ///   exercises on real data the refusal arm no earlier stage reached: a
 ///   *confirmed* localized row that names no campaign position, because it
 ///   sits outside every campaign-length row block. M18's own region prefix is
-///   such a row.
+///   such a row. The reviewing agent added a fifth synthetic entry: M18's own
+///   record is unverified for four separate reasons, so no `is_verified`
+///   assertion in the suite could tell the conditions apart, and dropping one
+///   of them survived the suite.
 ///
 /// Everything else — the toolchain versions, the installation hashes, the
 /// candidate tree, the counts, the digests and the timestamps — is derived
@@ -4324,9 +4328,12 @@ fn evidence_report_m18_a_writes_the_acceptance_report() {
         artifact_array(&artifacts),
         jstr(
             "implementer: bunny-alpha-2 (OpenCode, Space Bunny Alpha, Rally #309, session of \
-             2026-10-02T01:27Z); reviewer: not yet assigned at hand-over. The implementer's own \
-             run is not independent review and is not independent original-reference evidence; \
-             no agent review replaces the owner's human approval"
+             2026-10-02T01:27Z); reviewing agent: bunny-alpha-1 (OpenCode, Space Bunny Alpha, \
+             Rally #309 review claim, session of 2026-10-02T03:05Z, fresh context that did not \
+             write the implementation and re-derived M18's retail facts from the installation \
+             independently of the binding code). A different agent instance from the implementer, \
+             so this is agent review, not independent original-reference evidence; no agent review \
+             replaces the owner's human approval, and the claim stays `implemented`"
         ),
         jstr(
             "acceptance suite run locally with the retail capability, each test also executed \
@@ -4349,16 +4356,29 @@ fn evidence_report_m18_a_writes_the_acceptance_report() {
              guard, removing the campaign-length block filter, relaxing `is_verified`, shifting \
              the campaign position by one, and making `title_form`'s tail comparison a prefix \
              match — and every one was caught; the last was initially missed and closed by adding \
-             `accept_m18_a_a_near_miss_title_is_never_confirmed`. This report was regenerated on \
-             the rebased commit, and the rebase touched three of this stage's files \
-             (`crates/cs_app/tests/campaign/main.rs`, `crates/cs_app/tests/campaign/evidence.rs` \
-             and `missions/bindings/README.md`), so the full check set was re-run rather than the \
-             lighter one the owner directive of 2026-10-01 allows when it does not. Claim is \
-             implemented only; validated with tools/validate_evidence.py --require-pass. \
-             `candidate_tree` is the tree of the commit the suite ran on: the only later delta is \
-             this report's own copy under docs/findings/evidence/ and the Checks and Rebase \
-             sections of docs/findings/2026-10-02-m18-a-source-binding.md, which record the run; \
-             no production code, test or binding record changed after it"
+             `accept_m18_a_a_near_miss_title_is_never_confirmed`. The reviewing agent re-ran the \
+             full check set on the rebased commit and repeated the mutation work independently: \
+             `title_form`'s tail comparison made a prefix match, `campaign_position_for` made to \
+             refuse nothing, `campaign_title_blocks` made to drop the campaign-length filter, \
+             `JoinAgreement::establishes` made always true, and `is_verified` reduced to the \
+             critical dependencies alone were each caught by the suite. A sixth mutation, dropping \
+             only the `unknowns.is_empty()` condition from `is_verified`, was NOT caught — M18's \
+             own record has no closure hash and no evidence claims either, so the three conditions \
+             hid each other — and the reviewing agent closed it with \
+             `accept_m18_a_a_verified_needs_every_condition_and_not_only_the_dependencies`, which \
+             drops each of the four conditions on its own. The reviewer also re-derived M18's \
+             retail facts from the installation without the binding code (title row 3497, long-name \
+             row 3467, region-prefix row 1223, blocks 3450..3473 and 3480..3503, chapter sizes \
+             [5,5,5,5,4], `ZBD/C4/M03/zrdr.zbd` 0eff1e94…) and confirmed them, repaired a stray \
+             blank line inside this module's doc comment and the three rebase conflicts against \
+             main's M17-A, and re-ran the suite after the rebase, which touched three of this \
+             stage's files, so the full check set was re-run rather than the lighter one the owner \
+             directive of 2026-10-01 allows when it does not. Claim is implemented only; validated \
+             with tools/validate_evidence.py --require-pass. `candidate_tree` is the tree of the \
+             commit the suite ran on: the only later delta is this report's own copy under \
+             docs/findings/evidence/ and the Checks, Rebase and Review sections of \
+             docs/findings/2026-10-02-m18-a-source-binding.md, which record the run; no production \
+             code, test or binding record changed after it"
         ),
     );
 
