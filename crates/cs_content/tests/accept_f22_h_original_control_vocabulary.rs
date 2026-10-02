@@ -249,13 +249,12 @@ fn accept_f22_h_retail_the_game_executable_and_control_scripts_expose_the_key_vo
         );
     }
     let prefs = &decoded["ASSETS/SCRIPTS/CONTROLSPREFS.SCRIPT"];
-    for callback in [b"2120"] {
-        assert!(
-            contains(prefs, callback),
-            "CONTROLSPREFS.SCRIPT must fetch its rows through native callback {}",
-            std::str::from_utf8(callback).unwrap()
-        );
-    }
+    let prefs_callback: &[u8] = b"2120";
+    assert!(
+        contains(prefs, prefs_callback),
+        "CONTROLSPREFS.SCRIPT must fetch its rows through native callback {}",
+        std::str::from_utf8(prefs_callback).unwrap()
+    );
 }
 
 /// A single production-path regression test that runs in CI: the comparison
