@@ -349,7 +349,12 @@ sibling task **#498** (`F18-trigger-swept-crossing`) filed by #401.
    body that crossed a trigger and then hit a wall crossed the trigger. Whether
    gameplay consumes that field as a trigger crossing is a rule this stage does
    not invent; it is **#415** to decide, with **F24-C** as the consumer and
-   **F26** for the calibrated values.
+   **F26** for the calibrated values. **Decided:** #415 delivers the record as a
+   gameplay crossing rather than a diagnostic — see
+   `docs/findings/2026-10-02-t415-spawn-tick-trigger-crossing.md`, which
+   re-measured this table's engine-reports column on the current tree (identical:
+   0 episodes everywhere except 240 Hz at 60 m/s, first report on tick 2) and
+   states the crossing rule the ordinary-flight path (#498) is to adopt.
 2. **The substep policy is a measured value, not a derived one.** It is
    sufficient for the probed envelope at the declared probe geometry; the
    threshold is a function of obstacle thickness and body size, so content
