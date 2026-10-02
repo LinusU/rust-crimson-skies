@@ -40,6 +40,7 @@ mod identity;
 mod inventory;
 mod m01_a;
 mod m02_a;
+mod m02_t3;
 mod m03_a;
 mod m04_a;
 mod m05_a;

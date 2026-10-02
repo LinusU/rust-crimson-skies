@@ -89,6 +89,18 @@
 //! and yields no campaign position at all, so a binding can never read as
 //! resolved while the two structures disagree about the campaign.
 //!
+//! The installation also carries the same 24 missions a second time as bare
+//! short names, and the two campaign-length runs name the same position in the
+//! same order. [`SourceContext::join_agreement`] measures that row-to-row
+//! correspondence as a further check ([`blocks_correspond`],
+//! [`classify_correspondence`], [`join_state`]): every pair of
+//! campaign-length blocks must agree by a mutual strict argmax of shared
+//! content tokens — a rule that holds for all 24 retail rows and rejects every
+//! non-zero rotation, and that is not tuned to any one spelling because it
+//! compares no whole string. A pair that does not correspond is a
+//! [`JoinCorroboration::Disagreed`] exactly like a contradicting grouping, so
+//! the join is refused, not merely doubted.
+//!
 //! The decision itself is [`campaign_position_for`], a pure function over a
 //! confirmed row and that agreement, so every arm — including the
 //! contradiction no retail installation produces — is reachable without an
@@ -2696,6 +2708,12 @@ impl SourceContext {
     /// into groups of the layout's per-chapter sizes describes a campaign laid
     /// out the way this one is. When such a block disagrees, the join is not
     /// established and no mission identity is derived from a title at all.
+    ///
+    /// A second check is available whenever the installation carries more than
+    /// one campaign-length row block: the blocks must name the same missions in
+    /// the same order ([`blocks_correspond`]). The two checks are combined by
+    /// [`join_state`], so a disagreement from either one refuses the join and
+    /// an installation that offers neither keeps the inference.
     pub fn join_agreement(&self) -> JoinAgreement {
         let layout_chapters = self.chapter_sizes();
         let blocks = self.campaign_title_blocks();
@@ -2705,7 +2723,11 @@ impl SourceContext {
                 grouped.push(GroupedTitleBlock { block, groups });
             }
         }
-        let state = classify_join(&layout_chapters, &grouped);
+        let state = join_state(
+            &layout_chapters,
+            &grouped,
+            &self.block_correspondences(&blocks),
+        );
         JoinAgreement {
             layout_chapters,
             blocks,
@@ -2764,6 +2786,51 @@ impl SourceContext {
         }
         Some(groups)
     }
+
+    /// The display text of every row of `block`, in row order, with the
+    /// presentation tag stripped — the text [`blocks_correspond`] compares.
+    ///
+    /// [`None`] when a row of the block does not decode or holds no text after
+    /// its tag. A block from [`Self::campaign_title_blocks`] always has a
+    /// display text on every row, so this is total for those; the option keeps
+    /// the comparison from assuming it and from silently comparing an empty
+    /// text against another.
+    fn block_displays(&self, block: &TitleBlock) -> Option<Vec<&str>> {
+        let mut displays = Vec::with_capacity(block.len());
+        for id in block.first_id..=block.last_id() {
+            let row = self.strings.rows().iter().find(|row| row.id == id)?;
+            let display = strip_font_tag(row.text.as_deref()?);
+            if display.is_empty() {
+                return None;
+            }
+            displays.push(display);
+        }
+        Some(displays)
+    }
+
+    /// One [`blocks_correspond`] measurement per unordered pair of the given
+    /// campaign-length blocks, in block order.
+    ///
+    /// An empty vector means there were fewer than two blocks, so the
+    /// installation offers no second block to check the first against —
+    /// *unavailable*, not a disagreement. A pair whose rows cannot all be read
+    /// as text does not correspond.
+    fn block_correspondences(&self, blocks: &[TitleBlock]) -> Vec<bool> {
+        let displays: Vec<Option<Vec<&str>>> = blocks
+            .iter()
+            .map(|block| self.block_displays(block))
+            .collect();
+        let mut correspondences = Vec::new();
+        for (index, left) in displays.iter().enumerate() {
+            for right in displays.iter().skip(index + 1) {
+                correspondences.push(match (left, right) {
+                    (Some(left), Some(right)) => blocks_correspond(left, right),
+                    _ => false,
+                });
+            }
+        }
+        correspondences
+    }
 }
 
 /// Why a confirmed localized row selects no campaign position: the row it was
@@ -2773,9 +2840,10 @@ pub const NO_CONFIRMED_ROW_REFUSAL: &str =
 
 /// Why a confirmed localized row selects no campaign position when the
 /// localized table contradicts the campaign layout the join would follow.
-pub const CONTRADICTED_JOIN_REFUSAL: &str = "the localized mission-name rows group into chapter \
-     sizes the campaign directory layout does not declare, so the campaign order they imply \
-     contradicts the layout and no position was derived from the title";
+pub const CONTRADICTED_JOIN_REFUSAL: &str = "the localized mission-name rows do not fall into the \
+     campaign directory layout — either their region groups do not match its chapter sizes, or two \
+     campaign-length row blocks do not name the same missions in the same order — so the localized \
+     table contradicts the layout and no position was derived from the title";
 
 /// Why a confirmed localized row selects no campaign position when its row
 /// block is not as long as the campaign.
@@ -3006,15 +3074,20 @@ pub struct GroupedTitleBlock {
 /// layout declares.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JoinCorroboration {
-    /// No campaign-length block carries a region prefix on every row, so this
-    /// installation offers no second structure to check the join against. The
-    /// join stays an inference and is recorded as one.
+    /// Neither check is available: no campaign-length block carries a region
+    /// prefix on every row, and there is no second campaign-length block to
+    /// compare the first against. The join stays an inference and is recorded
+    /// as one.
     Unavailable,
-    /// Every campaign-length block that carries region prefixes groups its
-    /// rows exactly as the layout groups the campaign's chapters.
+    /// At least one check is available and every available check agrees: every
+    /// region-prefixed campaign-length block groups its rows exactly as the
+    /// layout groups the campaign's chapters, and every pair of
+    /// campaign-length blocks corresponds row to row. A check that is
+    /// unavailable on its own is not a disagreement.
     Agreed,
-    /// At least one such block groups its rows differently, so the join is not
-    /// established and no position is derived from a title.
+    /// At least one check disagrees: a region-prefixed block groups its rows
+    /// differently, or a pair of campaign-length blocks does not correspond.
+    /// The join is not established and no position is derived from a title.
     Disagreed,
 }
 
@@ -3028,7 +3101,7 @@ pub struct JoinAgreement {
     pub blocks: Vec<TitleBlock>,
     /// The campaign-length blocks whose every row carries a region prefix.
     pub grouped: Vec<GroupedTitleBlock>,
-    /// Whether the two structures agree.
+    /// Whether every available check of the join agrees.
     pub state: JoinCorroboration,
 }
 
@@ -3058,6 +3131,119 @@ pub fn classify_join(
     } else {
         JoinCorroboration::Disagreed
     }
+}
+
+/// Whether two equally long blocks of display texts name the same entries in
+/// the same order.
+///
+/// The rule is a *mutual strict argmax of shared content tokens*: both blocks
+/// must be non-empty and equally long, every
+/// row of one must share at least one content token with its own row of the
+/// other, and that own pairing must share strictly more tokens than any other
+/// row of the opposite block — checked from both sides, so neither a row nor a
+/// column is allowed to tie. A tie, a missing pairing or a length difference is
+/// `false`: a permutation that ties carries no order information, and this
+/// function guards the join, so it errs toward refusing.
+///
+/// Pure over the texts, so the arm a retail installation never produces is
+/// reachable without one. The rule was measured to hold for all 24 retail rows
+/// of `langui.dll` and to reject every non-zero rotation of the short-name
+/// block; see `docs/findings/2026-10-02-m02-t3-title-row-correspondence.md`.
+pub fn blocks_correspond(left: &[&str], right: &[&str]) -> bool {
+    if left.is_empty() || left.len() != right.len() {
+        return false;
+    }
+    let left_tokens: Vec<BTreeSet<String>> = left.iter().map(|text| content_tokens(text)).collect();
+    let right_tokens: Vec<BTreeSet<String>> =
+        right.iter().map(|text| content_tokens(text)).collect();
+    let shared = |i: usize, j: usize| left_tokens[i].intersection(&right_tokens[j]).count();
+    let rows = (0..left.len()).all(|i| {
+        let own = shared(i, i);
+        own > 0 && (0..left.len()).all(|j| j == i || shared(i, j) < own)
+    });
+    let columns = (0..left.len()).all(|j| {
+        let own = shared(j, j);
+        (0..left.len()).all(|i| i == j || shared(i, j) < own)
+    });
+    rows && columns
+}
+
+/// Decides how far a set of per-pair block-correspondence measurements
+/// corroborates the join.
+///
+/// Pure and total: no measurement at all (fewer than two campaign-length
+/// blocks, so there is no pair to measure) is
+/// [`JoinCorroboration::Unavailable`]; every measured pair corresponding is
+/// [`JoinCorroboration::Agreed`]; and any pair that does not correspond is
+/// [`JoinCorroboration::Disagreed`] — a contradiction the guard acts on, never
+/// a soft warning.
+pub fn classify_correspondence(correspondences: &[bool]) -> JoinCorroboration {
+    if correspondences.is_empty() {
+        JoinCorroboration::Unavailable
+    } else if correspondences.iter().all(|&corresponds| corresponds) {
+        JoinCorroboration::Agreed
+    } else {
+        JoinCorroboration::Disagreed
+    }
+}
+
+/// Combines two corroborations of the same join.
+///
+/// A contradiction decides on its own ([`JoinCorroboration::Disagreed`]); an
+/// available agreement corroborates ([`JoinCorroboration::Agreed`]); and only
+/// when neither check offers anything does the join stay
+/// [`JoinCorroboration::Unavailable`]. The arguments are symmetric.
+pub fn merge_corroboration(
+    region_groups: JoinCorroboration,
+    correspondence: JoinCorroboration,
+) -> JoinCorroboration {
+    match (region_groups, correspondence) {
+        (JoinCorroboration::Disagreed, _) | (_, JoinCorroboration::Disagreed) => {
+            JoinCorroboration::Disagreed
+        }
+        (JoinCorroboration::Agreed, _) | (_, JoinCorroboration::Agreed) => {
+            JoinCorroboration::Agreed
+        }
+        (JoinCorroboration::Unavailable, JoinCorroboration::Unavailable) => {
+            JoinCorroboration::Unavailable
+        }
+    }
+}
+
+/// The corroboration of the join over every structure the installation offers.
+///
+/// Pure and total, so the combination is reachable without an installation:
+/// [`classify_join`] judges the region grouping, [`classify_correspondence`]
+/// judges the row-to-row correspondence, and [`merge_corroboration`] decides
+/// between them. A contradiction from either side is
+/// [`JoinCorroboration::Disagreed`]; otherwise an available agreement is
+/// [`JoinCorroboration::Agreed`]; and only two unavailable checks stay
+/// [`JoinCorroboration::Unavailable`].
+pub fn join_state(
+    layout_chapters: &[usize],
+    grouped: &[GroupedTitleBlock],
+    correspondences: &[bool],
+) -> JoinCorroboration {
+    merge_corroboration(
+        classify_join(layout_chapters, grouped),
+        classify_correspondence(correspondences),
+    )
+}
+
+/// The content tokens of a display text: the lowercase alphanumeric runs with
+/// apostrophes kept inside a token, minus the articles `a`, `an` and `the`.
+///
+/// This is the unit [`blocks_correspond`] compares. It drops only what the
+/// retail display convention varies on its own — capitalization and a leading
+/// article — so it never invents a word either text does not carry, and it
+/// keeps an apostrophe inside a token (`jack's` is not `jacks`) so two
+/// genuinely different spellings cannot collapse.
+fn content_tokens(text: &str) -> BTreeSet<String> {
+    text.split(|ch: char| !(ch.is_alphanumeric() || ch == '\''))
+        .filter(|token| !token.is_empty())
+        .map(str::to_lowercase)
+        .filter(|token| !matches!(token.as_str(), "a" | "an" | "the"))
+        .collect()
 }
 
 /// One campaign mission's canonical mission id key.
