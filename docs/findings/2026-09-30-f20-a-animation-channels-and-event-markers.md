@@ -92,12 +92,14 @@ value here is **newly authored project design**. Unknown and not guessed:
 
 ## Follow-ups that gate later stages
 
-1. **`cs_types` has no `SessionId`/`EventId`/`ActorId` types** although
-   `IDENTITY-CONTENT` specifies them. `AnimationEventId` carries the same
-   fields animation-scoped (`session`, `tick`, `producer`, `sequence`) as
-   designed types in `cs_sim` because `cs_types` is outside this task's
-   owner paths. Filed a follow-up task to add the shared types; F20-B/C
-   should migrate to them when they exist.
+1. **Resolved by #397 (`T-IDENTITY-IDS`).** `cs_types::net` gained the shared
+   `SessionId`/`ActorId`/`EventId` types in F54-A, and #397 migrated
+   `AnimationEventId` onto them: it is now `pub type AnimationEventId =
+   cs_types::net::EventId`, and `AnimatedObject`/`AnimationPlayback` carry a
+   nonzero `SessionId`. The animation event id is the shared contract type, not
+   a second struct (`docs/findings/2026-10-02-t397-shared-identity-ids.md`).
+   (The damage and audio realizations of the same shape are still open; see
+   #442 and the audio follow-up filed by #397.)
 2. **TRS-only transform keys.** `PoseSample`/`TransformSample` hold
    rotation + translation + scale (negative scale mirrors). Authored shear
    or full-affine tracks — if the original formats carry them — have no

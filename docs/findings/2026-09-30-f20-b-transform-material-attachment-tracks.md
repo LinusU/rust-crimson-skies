@@ -188,9 +188,11 @@ tests still pass; with the fix restored they pass again.
   are still undecoded (F13), and this stage reads no original data: every
   record, fixture value and rule above is **designed**, and no original
   behavior is claimed. F20-D keeps the original-family validation gate.
-- `cs_types` still has no shared `SessionId`/`EventId`/`ActorId` types
-  (F20-A follow-up); `AnimationEventId` keeps its animation-scoped fields
-  until they exist.
+- `cs_types::net` now carries the shared `SessionId`/`EventId`/`ActorId`
+  types, and #397 migrated `AnimationEventId` onto `EventId` and the playback
+  onto `SessionId` (F20-A follow-up 1 resolved;
+  `docs/findings/2026-10-02-t397-shared-identity-ids.md`). The damage and audio
+  realizations of the same shape (#442 and the audio follow-up) are still open.
 - The four boundaries above are F20-C's; they are handed over in a note on
   task #75 (F20-C) as well as here, so they survive this stage being done.
 
