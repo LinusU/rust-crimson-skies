@@ -292,3 +292,276 @@ impl std::error::Error for StuntLowerError {}
 /// Re-exported so a caller can attribute a lowering refusal to its declared
 /// record without naming two crates' error types.
 pub use cs_sim::stunts::StuntError as StuntRuntimeError;
+
+// ------------------------------------------- the retail encoding survey ----
+//
+// F42-D (task #463) has to audit the original's mission-scoped stunts. The
+// content half (`cs_content::stunts`) decodes one `.zrd` scenario member and
+// extracts its encoding; this half walks the installation, finds each instant
+// action scenario, and joins each fly-through target to the world detection
+// zone task #427 measured. The join is where the two measurements meet: the
+// scenario says *which* zone, and #427's node survey says *where* it is.
+//
+// The survey never invents a rule. A direction rule, a clearance rule, a
+// payout and a repeat policy are not in the scenario bytes, so the record
+// reports them as unmeasured (`RetailStuntEncodingSurvey::direction_rule_is_
+// measured()` and friends) rather than filling them in.
+
+use std::fs;
+use std::path::Path;
+
+use cs_assets::install::{self, DiscoveryError};
+use cs_content::stunts::{
+    RetailStuntEncodingSurvey, RetailStuntGate, SCENARIO_MEMBER, SCENARIO_TARGETS_MEMBER,
+    StuntEncodingSpan, decode_zrd, scenario_fly_through_targets, scenario_mission_type,
+    scenario_zone_bindings,
+};
+use cs_content::world::{RetailTriggerVolume, WorldId};
+use cs_formats::script_raw::{ContainerDiscovery, LocatedProgram, discover_container};
+use cs_types::install::RelativePath;
+
+use crate::world::triggers::{TriggerVolumeSurveyError, survey_retail_trigger_volumes};
+
+/// The world-group subdirectory an instant-action scenario lives in.
+const INSTANT_ACTION_DIR: &str = "ia1";
+
+/// The reader archive an instant-action scenario lives in.
+const SCENARIO_ARCHIVE: &str = "zrdr.zbd";
+
+/// Why a retail stunt-encoding survey could not be produced.
+#[derive(Debug)]
+pub enum StuntEncodingSurveyError {
+    /// The installation could not be discovered.
+    Discovery(DiscoveryError),
+    /// The installation declares no world group, so no scenario can be placed.
+    NoWorldGroups,
+    /// A scenario container could not be read from disk or is missing from the
+    /// inventory.
+    Read {
+        /// The container's logical key.
+        container: String,
+        /// Why the read failed.
+        reason: String,
+    },
+    /// The world groups' own geometry could not be measured, so a target's box
+    /// cannot be resolved.
+    Geometry(TriggerVolumeSurveyError),
+    /// A scenario container does not carry one of the two members the encoding
+    /// lives in. Reported by name rather than skipped: a scenario that says
+    /// nothing would otherwise look like a scenario with no targets.
+    MissingMember {
+        /// The container's logical key.
+        container: String,
+        /// The member that was not found.
+        member: &'static str,
+    },
+    /// A scenario member did not decode as `.zrd`.
+    Decode {
+        /// The container's logical key.
+        container: String,
+        /// The member's name.
+        member: String,
+        /// The decoder's refusal code.
+        code: &'static str,
+        /// Offset of the refusal inside the member.
+        offset: u64,
+    },
+    /// A world group's name is not a usable world id.
+    WorldId {
+        /// The container's logical key.
+        container: String,
+        /// The id grammar's own reason.
+        reason: String,
+    },
+}
+
+impl fmt::Display for StuntEncodingSurveyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Discovery(error) => write!(f, "the installation is undiscoverable: {error}"),
+            Self::NoWorldGroups => write!(f, "the installation declares no world group"),
+            Self::Read { container, reason } => {
+                write!(f, "container {container} could not be read: {reason}")
+            }
+            Self::Geometry(error) => write!(f, "the world geometry could not be measured: {error}"),
+            Self::MissingMember { container, member } => {
+                write!(f, "container {container} carries no {member}")
+            }
+            Self::Decode {
+                container,
+                member,
+                code,
+                offset,
+            } => write!(
+                f,
+                "container {container} member {member} is not decodable at {offset} ({code})"
+            ),
+            Self::WorldId { container, reason } => {
+                write!(f, "container {container} is not in a world group: {reason}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for StuntEncodingSurveyError {}
+
+/// Measures every instant-action scenario's fly-through stunt encoding, joined
+/// to the world geometry task #427 measured.
+///
+/// One production discovery, one production reader-archive discovery per world
+/// group, the `.zrd` decoder, and #427's own production node survey for the
+/// geometry. Every row carries its container key, that container's SHA-256, the
+/// member's byte span and the installation fingerprint, so each number can be
+/// traced back to the bytes.
+///
+/// # Errors
+///
+/// [`StuntEncodingSurveyError`] in every case, naming the container and member
+/// it could not read or decode. The survey does **not** turn a failed read into
+/// a shorter list: a scenario that cannot be measured is a refusal, so a
+/// consumer never mistakes "measured fewer targets" for "the installation has
+/// fewer".
+pub fn survey_retail_stunt_encoding(
+    install_root: &Path,
+) -> Result<RetailStuntEncodingSurvey, StuntEncodingSurveyError> {
+    let found = install::discover(install_root).map_err(StuntEncodingSurveyError::Discovery)?;
+    let install_sha256 = install::fingerprint(&found.manifest).to_hex();
+    let groups = found.diagnosis.world_groups.clone();
+    if groups.is_empty() {
+        return Err(StuntEncodingSurveyError::NoWorldGroups);
+    }
+
+    // The world geometry is #427's measurement, used as-is. Its refusal is
+    // this survey's refusal: a target whose world box cannot be measured cannot
+    // be reported as measured.
+    let geometry =
+        survey_retail_trigger_volumes(install_root).map_err(StuntEncodingSurveyError::Geometry)?;
+
+    let mut gates = Vec::new();
+    for group in &groups {
+        let container_key = format!(
+            "{}/{INSTANT_ACTION_DIR}/{SCENARIO_ARCHIVE}",
+            group.logical_key()
+        );
+        let world_name = group
+            .logical_key()
+            .rsplit('/')
+            .next()
+            .unwrap_or_default()
+            .to_owned();
+        let world =
+            WorldId::from_key(&world_name).map_err(|error| StuntEncodingSurveyError::WorldId {
+                container: container_key.clone(),
+                reason: error.to_string(),
+            })?;
+
+        let Some(record) = found
+            .manifest
+            .files
+            .iter()
+            .find(|record| record.relative_spelling.logical_key() == container_key)
+        else {
+            return Err(StuntEncodingSurveyError::Read {
+                container: container_key,
+                reason: "production discovery inventoried no such file".to_owned(),
+            });
+        };
+        let container_sha256 = record.sha256.to_hex();
+        let bytes = fs::read(
+            found
+                .manifest
+                .host_root
+                .join(record.relative_spelling.as_str()),
+        )
+        .map_err(|error| StuntEncodingSurveyError::Read {
+            container: container_key.clone(),
+            reason: error.to_string(),
+        })?;
+        let path = RelativePath::new(record.relative_spelling.as_str()).map_err(|error| {
+            StuntEncodingSurveyError::Read {
+                container: container_key.clone(),
+                reason: error.to_string(),
+            }
+        })?;
+
+        let discovery = discover_container(&container_key, &path, &bytes);
+        let scenario = scenario_member(&discovery, SCENARIO_MEMBER, &container_key)?;
+        let targets = scenario_member(&discovery, SCENARIO_TARGETS_MEMBER, &container_key)?;
+
+        let scenario_root =
+            decode_zrd(scenario.bytes()).map_err(|error| StuntEncodingSurveyError::Decode {
+                container: container_key.clone(),
+                member: SCENARIO_MEMBER.to_owned(),
+                code: error.code(),
+                offset: error.offset(),
+            })?;
+        let targets_root =
+            decode_zrd(targets.bytes()).map_err(|error| StuntEncodingSurveyError::Decode {
+                container: container_key.clone(),
+                member: SCENARIO_TARGETS_MEMBER.to_owned(),
+                code: error.code(),
+                offset: error.offset(),
+            })?;
+
+        let mission_type = scenario_mission_type(&scenario_root).unwrap_or_default();
+        let bindings = scenario_zone_bindings(&scenario_root);
+        let targets_span = span_of(&container_key, &container_sha256, targets);
+
+        for target in scenario_fly_through_targets(&targets_root) {
+            let world_zone = bindings
+                .iter()
+                .find(|(_, label)| *label == target.zone_label)
+                .map(|(node, _)| (*node).to_owned());
+            let resolved: Option<RetailTriggerVolume> = world_zone.as_deref().and_then(|zone| {
+                geometry
+                    .volumes()
+                    .iter()
+                    .find(|volume| volume.world() == &world && volume.zone() == zone)
+                    .cloned()
+            });
+            gates.push(RetailStuntGate::new(
+                world.clone(),
+                mission_type,
+                &target.zone_label,
+                world_zone,
+                &target,
+                targets_span.clone(),
+                resolved,
+            ));
+        }
+    }
+
+    Ok(RetailStuntEncodingSurvey::new(install_sha256, gates))
+}
+
+/// The located member with `name`, or a named refusal.
+fn scenario_member<'d, 'a>(
+    discovery: &'d ContainerDiscovery<'a>,
+    name: &'static str,
+    container: &str,
+) -> Result<&'d LocatedProgram<'a>, StuntEncodingSurveyError> {
+    discovery
+        .programs()
+        .iter()
+        .find(|program| program.locator().member() == Some(name))
+        .ok_or_else(|| StuntEncodingSurveyError::MissingMember {
+            container: container.to_owned(),
+            member: name,
+        })
+}
+
+/// One located member's provenance span.
+fn span_of(
+    container: &str,
+    container_sha256: &str,
+    program: &LocatedProgram<'_>,
+) -> StuntEncodingSpan {
+    let locator = program.locator();
+    StuntEncodingSpan::new(
+        container,
+        container_sha256,
+        locator.member().unwrap_or_default(),
+        locator.span().offset,
+        locator.span().len,
+    )
+}
