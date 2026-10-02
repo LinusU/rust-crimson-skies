@@ -511,6 +511,35 @@ struct ActiveScript {
     started: bool,
 }
 
+/// The player's live view: the mode that is up, and whether a free look is
+/// layered on it.
+///
+/// [`ViewRig`] alone is not enough to put a view back. [`ViewRig::Look`] names
+/// no mode — it is "whatever is up, turned" — so a capture that switched a
+/// one-frame override in and out by rig alone would come back with the free look
+/// up over the mode the *capture* named. This is the whole view, and
+/// [`restore`](Self::restore) puts all of it back.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct LiveView {
+    mode: CameraModeKind,
+    looking: bool,
+}
+
+impl LiveView {
+    /// The view `rig` is showing right now.
+    fn of(rig: &CameraRig) -> Self {
+        Self {
+            mode: rig.mode(),
+            looking: rig.is_looking(),
+        }
+    }
+
+    /// Puts this view back on `rig`.
+    fn restore(self, rig: &mut CameraRig) -> Result<(), RigError> {
+        rig.restore_view(self.mode, self.looking)
+    }
+}
+
 /// One session's camera: the player's rig, at most one scripted camera and at
 /// most one pending capture.
 ///
@@ -844,10 +873,14 @@ impl CameraSession {
         // and the rig is switched back before this function returns — on the
         // error paths too, which is why the restore happens between resolving
         // and propagating rather than at the end.
+        //
+        // What is recorded is the whole view, not just the rig that is up: a free
+        // look is a rig layered on a mode, and restoring only the rig would
+        // leave the player looking around in the mode the capture named.
         let capture_view = capture
             .as_ref()
             .and_then(|pending| pending.rig())
-            .map(|requested| (requested, self.rig.rig()));
+            .map(|requested| (requested, LiveView::of(&self.rig)));
         if let Some((requested, _)) = capture_view {
             self.rig.set_rig(requested)?;
         }
@@ -859,7 +892,7 @@ impl CameraSession {
 
         let resolved = self.resolve_frame(inputs, aspect, events);
         let restore = match capture_view {
-            Some((_, previous)) => self.rig.set_rig(previous),
+            Some((_, previous)) => previous.restore(&mut self.rig),
             None => Ok(()),
         };
         let mut frame = resolved?;
@@ -879,10 +912,10 @@ impl CameraSession {
             }
         }
 
-        // The view the session goes back to once this frame is drawn. It is
-        // always available: a capture that pins no view switches nothing, so
-        // the session is already in the view it will report.
-        let restore_to = capture_view.map_or_else(|| self.rig.rig(), |(_, previous)| previous);
+        // The view the session goes back to once this frame is drawn. The restore
+        // has already run, so this is the live view whether the capture switched
+        // anything or not.
+        let restore_to = self.rig.rig();
         let report = match &capture {
             Some(pending) => Some(
                 pending.apply(

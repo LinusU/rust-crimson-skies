@@ -666,6 +666,42 @@ impl CameraRig {
         Ok(None)
     }
 
+    /// Restores a view this rig was switched away from, mode and free look
+    /// included.
+    ///
+    /// [`set_rig`](Self::set_rig) restores a *rig*, and
+    /// [`ViewRig::Look`] names no mode: selecting it puts the free look back up
+    /// over whatever mode the last selection left in place. A caller that
+    /// switched a one-frame override in and out with `set_rig` alone would come
+    /// back with the free look up **and the override's mode underneath it** — a
+    /// player left looking around in a view they never chose. A one-frame
+    /// override therefore records the mode and the free-look flag as they were
+    /// ([`mode`](Self::mode), [`is_looking`](Self::is_looking)) and puts them
+    /// back whole, which is what F21-C's capture flags do.
+    ///
+    /// # Errors
+    ///
+    /// [`RigError::ModeNotDeclared`] when `mode` is not in the owner's declared
+    /// set. Nothing is mutated on error.
+    pub(crate) fn restore_view(
+        &mut self,
+        mode: CameraModeKind,
+        looking: bool,
+    ) -> Result<(), RigError> {
+        if self.modes.get(mode).is_none() {
+            return Err(RigError::ModeNotDeclared {
+                rig: self.rig(),
+                kind: mode,
+            });
+        }
+        self.mode = mode;
+        // The one rule `set_rig` keeps for the free look: it is refused while the
+        // spyglass is up, so restoring one over a spyglass would leave the rig in
+        // a state it refuses to resolve.
+        self.looking = looking && mode != CameraModeKind::Spyglass;
+        Ok(())
+    }
+
     /// Selects a rig.
     ///
     /// # Errors

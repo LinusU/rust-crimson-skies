@@ -153,6 +153,11 @@ fn accept_f21_c_swapping_aircraft_during_a_scripted_capture_rebinds_to_the_new_b
     }));
     assert_eq!(frame.view.subject, Some(actor(1)));
     assert_eq!(frame.view.mode, CameraModeKind::AuthoredSequence);
+    assert_eq!(
+        frame.authority.camera(),
+        Some(&camera_track("synthetic.intro.pan")),
+        "a scripted frame names the authored camera that drew it"
+    );
 
     // The swap: the player now flies body 2, far from body 1, and body 1 is
     // gone from the frame. An `ActorId` is generation-qualified, so this is a
@@ -165,6 +170,11 @@ fn accept_f21_c_swapping_aircraft_during_a_scripted_capture_rebinds_to_the_new_b
         rebound.view.subject,
         Some(actor(2)),
         "the camera is bound to the body the player flies now"
+    );
+    assert_eq!(
+        session.script_subject(),
+        Some(actor(2)),
+        "and the session says so without drawing a frame for it"
     );
     assert!(
         rebound.carries(&CameraEvent::SubjectRebound {
@@ -497,6 +507,71 @@ fn accept_f21_c_a_capture_that_pins_a_view_switches_it_for_one_frame_and_restore
 }
 
 #[test]
+fn accept_f21_c_a_capture_that_pins_a_view_hands_the_whole_view_back() {
+    // The view a capture overrides is a *view*, and a free look is a view with a
+    // mode underneath it: "looking around in the cockpit" is not the same record
+    // as "the cockpit". A capture that pinned the chase view for one frame must
+    // put both back, or the player is left looking around in a chase camera they
+    // never selected — a capture leaking into the frames around it, which is
+    // exactly what rule 3 of the seam forbids.
+    let mut session = authored_session();
+    session
+        .select_rig(ViewRig::Look)
+        .expect("look is available in the cockpit");
+    assert_eq!(session.view_rig(), ViewRig::Look);
+    assert_eq!(session.rig().mode(), CameraModeKind::Cockpit);
+    let published = bodies(1, [0.0, 0.0, 0.0], None);
+    session
+        .apply_capture(
+            CaptureRequest::with_rig(mission("m01"), Tick(1), ViewRig::Chase, None).expect("valid"),
+        )
+        .expect("installed");
+
+    let taken = session
+        .frame(&inputs(1, 1, &published, None))
+        .expect("the capture frame");
+    assert_eq!(
+        taken.authority,
+        CameraAuthority::Player {
+            rig: ViewRig::Chase
+        },
+        "the capture drew through the view it pinned"
+    );
+    // The session has already put the free look back by the time it returns —
+    // the capture's own override lasts exactly one frame — but the mode it named
+    // is still in place underneath it.
+    assert!(
+        session.rig().is_looking(),
+        "the free look is restored with the rest of the view"
+    );
+    assert_eq!(
+        session.rig().mode(),
+        CameraModeKind::Cockpit,
+        "and it is layered on the cockpit again, not on the mode the capture pinned"
+    );
+
+    // And the whole view comes back: the free look is still up, and it is still
+    // the cockpit underneath it.
+    let after = session
+        .frame(&inputs(2, 1, &published, None))
+        .expect("the frame after");
+    assert_eq!(
+        after.authority,
+        CameraAuthority::Player { rig: ViewRig::Look },
+        "the free look the player was holding is still up"
+    );
+    assert_eq!(
+        session.rig().mode(),
+        CameraModeKind::Cockpit,
+        "and it is still layered on the cockpit, not on the mode the capture pinned"
+    );
+    assert!(
+        session.rig().is_looking(),
+        "a capture does not end a free look the player is holding"
+    );
+}
+
+#[test]
 fn accept_f21_c_a_capture_pinning_an_undeclared_view_is_refused_at_the_boundary() {
     let mut session = authored_session();
     // The session has no spyglass view, so a capture that pins one is refused
@@ -557,6 +632,15 @@ fn accept_f21_c_a_frame_refusal_tears_down_nothing_and_the_next_frame_retries() 
         session.script().is_some(),
         "a frame error is not a teardown"
     );
+    assert!(
+        inputs(22, 1, &published, None).contains(actor(1)),
+        "and the producer that publishes the pose again is the only thing that \
+         has to change"
+    );
+    assert!(
+        !inputs(22, 1, &empty, None).contains(actor(1)),
+        "a body the frame does not publish is a body the camera cannot see"
+    );
     let recovered = session
         .frame(&inputs(22, 1, &published, None))
         .expect("the next frame retries with the same code");
@@ -610,6 +694,14 @@ fn accept_f21_c_a_frame_refusal_still_reports_the_rebound_the_swap_caused() {
 
     // The rebound is not lost with the refused frame: the session has already
     // moved its binding, so it cannot report it again later.
+    assert_eq!(
+        session.pending_events(),
+        [CameraEvent::SubjectRebound {
+            from: actor(1),
+            to: actor(2),
+        }],
+        "the event the refused frame had already earned is held, not dropped"
+    );
     let recovered = session
         .frame(&inputs(7, 2, &second, None))
         .expect("the next frame retries with the same code");
