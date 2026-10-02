@@ -200,7 +200,9 @@ fn accept_f18_a_every_collision_role_decides_what_is_spawned() {
         "role `None` must be reported, not silently dropped"
     );
 
-    // `Sensor`: a collider, marked as a sensor, and reported with its role.
+    // `Sensor`: a collider, marked as a sensor, and reported with its role — and
+    // on an entity with **no** rigid body, so Avian's swept CCD cannot hold a
+    // body at its face (task #401; measured in `trigger.rs`).
     let trigger = object("trigger.sensor");
     let trigger_entity = spawned
         .collider_for(&trigger)
@@ -210,8 +212,10 @@ fn accept_f18_a_every_collision_role_decides_what_is_spawned() {
         "role `Sensor` must be marked as a sensor so Avian never solves it"
     );
     assert!(
-        fixture.world().get::<RigidBody>(trigger_entity) == Some(&RigidBody::Static),
-        "the sensor is static world geometry"
+        fixture.world().get::<RigidBody>(trigger_entity).is_none(),
+        "and a trigger volume must carry no rigid body at all: with one, Avian binds \
+         the collider to it, `solve_swept_ccd` resolves that body and a swept body is \
+         held at the volume's near face for the crossing frame"
     );
     let reported = fixture
         .spawned()
@@ -224,6 +228,10 @@ fn accept_f18_a_every_collision_role_decides_what_is_spawned() {
         WorldCollisionRole::Sensor,
         "the report must carry the role the record declared"
     );
+    assert_eq!(
+        reported.body, None,
+        "and no body to name, because there is none"
+    );
 
     // `Solid`: the same spawn must not make it a sensor.
     let leg = object("arch.leg_right");
@@ -233,6 +241,11 @@ fn accept_f18_a_every_collision_role_decides_what_is_spawned() {
     assert!(
         fixture.world().get::<Sensor>(leg_entity).is_none(),
         "a `Solid` role must never be marked as a sensor: it has to stop bodies"
+    );
+    assert_eq!(
+        fixture.world().get::<RigidBody>(leg_entity),
+        Some(&RigidBody::Static),
+        "and solid world geometry is a static body, which is what stops them"
     );
     assert!(
         spawned.visual_for(&leg).is_some(),
@@ -294,12 +307,14 @@ fn accept_f18_a_spawned_bodies_carry_the_designed_collision_layers() {
 /// trigger volume is named in the contact log, and the volume does not stop
 /// it (F18's "reports an overlap and never blocks motion").
 ///
-/// The probe is spawned **without** [`avian3d::prelude::SweptCcd`] on
-/// purpose: measured on the pinned pair, Avian's swept CCD stops a body at
-/// the first time of impact against any collider, a `Sensor` volume
-/// included, so a swept body would be held at the sensor's near face for the
-/// crossing frame. That interaction is recorded in the findings doc; the
-/// role's own claim is what this test measures.
+/// This is the **discrete** body, kept as the control: the role's own claim does
+/// not depend on how the body is detected. The *swept* body — the configuration
+/// F23's aircraft use, and the one F18-A found held at the volume's near face — is
+/// measured in `trigger.rs`, which is where task #401's decision is pinned.
+///
+/// Observable failure if a sensor volume is spawned as solid geometry, or its
+/// Avian `Sensor` marker is dropped: the probe is stopped by the volume it was
+/// supposed to pass through, or the contact log never names it.
 #[test]
 fn accept_f18_a_a_sensor_reports_the_probe_and_never_blocks_it() {
     let mut fixture = WorldFixture::builder(arch_world().expect("the arch world is well formed"))

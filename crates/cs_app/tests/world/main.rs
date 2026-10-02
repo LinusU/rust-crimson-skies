@@ -62,4 +62,5 @@ mod residency;
 mod shear;
 mod spawn;
 mod sweep;
+mod trigger;
 mod visibility;

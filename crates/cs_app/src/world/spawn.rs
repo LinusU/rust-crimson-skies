@@ -33,6 +33,32 @@
 //! would be skipped by `SweptCcdBodyQuery` and every swept body would pass
 //! through the world's geometry, which is the measured failure task #420
 //! recorded and task #424 turned into an invariant.
+//!
+//! **A `Sensor` role is the one exception, and it is the point of the rule
+//! rather than a violation of it** (task #401). A trigger volume reports an
+//! overlap and never blocks motion, so it must not be something a swept body
+//! can be *stopped* by. Avian's `solve_swept_ccd` reaches its candidates
+//! through `Query<(&Collider, &ColliderOf)>`
+//! (`avian3d-0.7.0/src/dynamics/ccd/mod.rs`), and a collider with no rigid
+//! body on itself or an ancestor is given **no** `ColliderOf` at all
+//! (`ColliderHierarchyPlugin` only inserts it for a body). A sensor volume is
+//! therefore spawned on an entity that carries **no** `RigidBody`: the sweep
+//! never sees it, while the narrow phase still does — a standalone collider is
+//! a first-class broad-phase citizen (`ColliderTreeType::Standalone`), and
+//! `CollisionStart` names a body on neither side of a pair. Measured on the
+//! pinned pair (`bevy 0.19.1` / `avian3d 0.7.0`, `SubstepCount(1)`, 120 Hz):
+//! see the decision record
+//! `docs/findings/2026-10-02-t401-trigger-volume-and-swept-ccd.md` and
+//! `accept_f18_b_a_swept_body_crosses_a_world_trigger_volume_untouched`.
+//!
+//! The one place this module is deliberately *not* the single conversion is the
+//! mesh path's body-less bundle, which is spawned here rather than through
+//! [`crate::asset_stack::spawn_static_mesh_collider_on_body`]: that helper *is*
+//! the collider-on-body layout, and a trigger volume must not use it. Adding
+//! the body-less layout beside the one that needs it would have meant editing
+//! `asset_stack`, which is F00-A's path, so the trigger bundle is written here
+//! and the two layouts are held against each other by
+//! `accept_f18_b_the_trigger_and_solid_mesh_paths_differ_only_in_the_body`.
 
 //! What this stage deliberately does *not* do, and where it goes:
 //!
@@ -56,10 +82,10 @@
 
 use avian3d::parry::shape::{Cuboid, SharedShape};
 use avian3d::prelude::{
-    Collider, CollisionEventsEnabled, CollisionLayers as AvianCollisionLayers, Position, RigidBody,
-    Rotation, Sensor,
+    Collider, ColliderConstructor, CollisionEventsEnabled, CollisionLayers as AvianCollisionLayers,
+    Position, RigidBody, Rotation, Sensor,
 };
-use bevy::asset::Assets;
+use bevy::asset::{Assets, Handle};
 use bevy::mesh::{Mesh, Mesh3d};
 use bevy::prelude::{App, Entity, GlobalTransform, Mat4, Quat, Transform, Vec3, Vec4};
 use cs_content::scene::CanonicalTransform;
@@ -180,14 +206,23 @@ pub struct SpawnedCollider {
     /// object, and the collider does not exist until Avian's
     /// `init_collider_constructors` has run.
     pub entity: Entity,
-    /// The static rigid body the collider hangs from. For a hand-built cuboid
-    /// and for a mesh-derived object alike this is `entity` itself: a collider
-    /// that is not attached to a body collides with nothing, and a body that
-    /// carries no collider of its own is skipped by Avian's swept CCD
+    /// The static rigid body the collider hangs from, when it hangs from one.
+    ///
+    /// For world geometry it is `entity` itself: a body that carries no
+    /// `Collider` of its own is skipped by Avian's swept CCD
     /// (`crate::asset_stack`, the collider-on-body rule). It is reported
     /// separately because a consumer asking *where is the body* must not have
     /// to know that the two happen to be one entity.
-    pub body: Entity,
+    ///
+    /// It is `None` for exactly one role: [`WorldCollisionRole::Sensor`], whose
+    /// collider is deliberately spawned on an entity with **no** rigid body so
+    /// Avian's swept CCD cannot stop a body there (task #401; the module docs
+    /// and [`trigger_volume_layout`] carry the measurement). A standalone
+    /// collider is not a broken collider — Avian gives it its own broad-phase
+    /// tree and still reports its overlaps — but a consumer that needs a body
+    /// entity to stamp, move or despawn must be told there is none rather than
+    /// handed an entity that carries no body.
+    pub body: Option<Entity>,
     /// The role the record declared for it.
     pub role: WorldCollisionRole,
 }
@@ -226,6 +261,9 @@ impl SpawnedObject {
     /// Every entity this object owns, visual first, then the collider and its
     /// body when they are separate entities. The load transaction despawns
     /// exactly this list, so a despawn can never leave half an object behind.
+    ///
+    /// A body-less trigger volume contributes its collider entity once: there is
+    /// no second entity to despawn, and nothing here can invent one.
     #[must_use]
     pub fn entities(&self) -> Vec<Entity> {
         let mut entities = vec![self.visual];
@@ -233,8 +271,10 @@ impl SpawnedObject {
             if !entities.contains(&collider.entity) {
                 entities.push(collider.entity);
             }
-            if !entities.contains(&collider.body) {
-                entities.push(collider.body);
+            if let Some(body) = collider.body
+                && !entities.contains(&body)
+            {
+                entities.push(body);
             }
         }
         entities
@@ -723,30 +763,14 @@ pub fn spawn_object(
                     source,
                 }
             })?;
-            let entity = app
-                .world_mut()
-                .spawn((
-                    WorldColliderInstance::new(role),
-                    binding(),
-                    transform,
-                    Position(instance.translation),
-                    Rotation(instance.rotation),
-                    RigidBody::Static,
-                    Collider::from(geometry),
-                    avian_layers(static_world_membership()),
-                    CollisionEventsEnabled,
-                ))
-                .id();
-            if role == WorldCollisionRole::Sensor {
-                app.world_mut().entity_mut(entity).insert(Sensor);
-            }
+            let entity = spawn_cuboid_collider(app, geometry, instance, transform, role, binding());
             Ok(SpawnedObject {
                 object: object.id().clone(),
                 visual: present(app, object, &placement, binding(), resolved),
                 collider: Some(SpawnedCollider {
                     object: object.id().clone(),
                     entity,
-                    body: entity,
+                    body: (!is_trigger_volume(role)).then_some(entity),
                     role,
                 }),
                 mesh: resolved.map(ResolvedUpload::reference),
@@ -777,7 +801,7 @@ pub fn spawn_object(
                 collider: Some(SpawnedCollider {
                     object: object.id().clone(),
                     entity,
-                    body: entity,
+                    body: (!is_trigger_volume(role)).then_some(entity),
                     role,
                 }),
                 mesh: Some(upload.reference()),
@@ -905,6 +929,43 @@ fn spawn_mesh_presentation(
     }
 }
 
+/// Spawns one hand-built cuboid collider at `instance`'s pose, on the layers
+/// [`cs_sim::collision`] declares for world geometry.
+///
+/// The bundle is the same whichever role the record declared, except for the
+/// [`RigidBody`]: a `Solid` cuboid is static world geometry, so it gets
+/// [`RigidBody::Static`] and is therefore something a swept body is stopped by
+/// (the collider-on-body rule, [`crate::asset_stack`]); a `Sensor` cuboid is a
+/// trigger volume, so it gets **no** rigid body at all and Avian's swept CCD
+/// cannot reach it — see [`trigger_volume_layout`] and the module docs. The
+/// event opt-in and the [`Sensor`] marker are on the collider's own entity,
+/// which is where Avian reads both from.
+fn spawn_cuboid_collider(
+    app: &mut App,
+    geometry: SharedShape,
+    instance: InstanceTransform,
+    transform: Transform,
+    role: WorldCollisionRole,
+    binding: WorldObjectBinding,
+) -> Entity {
+    let mut entity = app.world_mut().spawn((
+        WorldColliderInstance::new(role),
+        binding,
+        transform,
+        Position(instance.translation),
+        Rotation(instance.rotation),
+        Collider::from(geometry),
+        avian_layers(static_world_membership()),
+        CollisionEventsEnabled,
+    ));
+    if is_trigger_volume(role) {
+        entity.insert(Sensor);
+    } else {
+        entity.insert(RigidBody::Static);
+    }
+    entity.id()
+}
+
 /// Builds a mesh-derived static collider and the node that presents it.
 ///
 /// The node Avian derives the collider onto is the same entity that holds the
@@ -914,7 +975,7 @@ fn spawn_mesh_presentation(
 /// `ColliderConstructor::TrimeshFromMesh` — the constructor that keeps every
 /// stored triangle, so nothing here can close a traversable opening.
 ///
-/// **That node is also the rigid body.** The entity carries
+/// **For `Solid`, that node is also the rigid body.** The entity carries
 /// [`RigidBody::Static`], the [`Mesh3d`] and the constructor together, so the
 /// derived [`Collider`] lands on the body entity itself rather than on a child
 /// of it. This is the collider-on-body rule
@@ -938,24 +999,94 @@ fn spawn_mesh_collider(
     role: WorldCollisionRole,
     binding: WorldObjectBinding,
 ) -> Entity {
+    if is_trigger_volume(role) {
+        // A trigger volume: the same bundle with the rigid body left off, so the
+        // derived collider is a standalone one. Spawned here rather than by
+        // removing a body afterwards, so the entity never exists as a body
+        // Avian's `ColliderOf` observer may already have bound a collider to.
+        return spawn_mesh_trigger_volume(
+            app,
+            upload.upload.mesh().clone(),
+            transform,
+            static_world_membership(),
+            binding,
+        );
+    }
     let entity = crate::asset_stack::spawn_static_mesh_collider_on_body(
         app,
         upload.upload.mesh().clone(),
         transform,
         static_world_membership(),
     );
-    // The `Sensor` marker and the event opt-in are read from the collider's own
-    // entity, and the derived collider lands there, so marking it now is enough.
+    // The event opt-in is read from the collider's own entity, and the derived
+    // collider lands there, so marking it now is enough.
     app.world_mut().entity_mut(entity).insert((
         WorldVisual,
         WorldColliderInstance::new(role),
         binding,
         CollisionEventsEnabled,
     ));
-    if role == WorldCollisionRole::Sensor {
-        app.world_mut().entity_mut(entity).insert(Sensor);
-    }
     entity
+}
+
+/// Spawns a mesh-derived **trigger volume**: presentation, binding, layers,
+/// event opt-in and [`Sensor`] marker on one entity that carries **no**
+/// [`RigidBody`].
+///
+/// This is [`crate::asset_stack::spawn_static_mesh_collider_on_body`] minus the
+/// rigid body, and the difference is the whole decision (task #401): with a
+/// body on the entity, Avian's `ColliderHierarchyPlugin` binds the derived
+/// collider to it through `ColliderOf`, `solve_swept_ccd` resolves that body
+/// through `SweptCcdBodyQuery`, and a swept body is stopped at the volume's
+/// near face — measured, 2.416 m of a 400 m/s probe's tick. Without a body the
+/// collider is never bound, the sweep skips the pair before it casts anything,
+/// and the narrow phase still reports the overlap the volume exists for. The
+/// bundle is written out here rather than reached for in `asset_stack`,
+/// because that helper is the collider-on-body layout and this is its opposite;
+/// `accept_f18_b_the_trigger_and_solid_mesh_paths_differ_only_in_the_body` is
+/// what holds the two to each other.
+fn spawn_mesh_trigger_volume(
+    app: &mut App,
+    mesh: Mesh,
+    transform: Transform,
+    membership: CollisionLayers,
+    binding: WorldObjectBinding,
+) -> Entity {
+    let handle: Handle<Mesh> = app.world_mut().resource_mut::<Assets<Mesh>>().add(mesh);
+    // `ColliderConstructor::TrimeshFromMesh` derives from the `Mesh3d` on the
+    // *same* entity, and the constructor resolves no body, so the collider lands
+    // here as a standalone one. Every stored triangle is kept, exactly as on
+    // the solid path: this changes where the collider sits, never what it is.
+    app.world_mut()
+        .spawn((
+            WorldVisual,
+            WorldColliderInstance::new(WorldCollisionRole::Sensor),
+            binding,
+            Mesh3d(handle),
+            ColliderConstructor::TrimeshFromMesh,
+            avian_layers(membership),
+            Sensor,
+            CollisionEventsEnabled,
+            transform,
+            Position(transform.translation),
+            Rotation(transform.rotation),
+        ))
+        .id()
+}
+
+/// Whether a record's role asked for a **trigger volume**: a sensor the world
+/// reports an overlap for and that must never hold a body still.
+///
+/// The role is the record's own claim about whether a body can *enter* the
+/// volume, and this predicate is the single place that couples that claim to
+/// the entity layout: a rigid body is exactly what gives Avian's swept CCD
+/// something to stop a body against, so a trigger volume is spawned without
+/// one. Both spawn paths and the report's `body` field ask this, so they cannot
+/// disagree about which objects a swept body may be held by.
+const fn is_trigger_volume(role: WorldCollisionRole) -> bool {
+    // Written here rather than as `role == Sensor` at each call site, so a
+    // fourth role has one place to be decided and one place to be measured.
+    matches!(role, WorldCollisionRole::Sensor)
 }
 
 /// Spawns every instance of `definition` into `app`.

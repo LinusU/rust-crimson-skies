@@ -284,21 +284,25 @@ fn accept_f18_b_a_mesh_collision_is_the_geometry_the_object_draws_and_keeps_its_
     // (the collider-on-body rule, task #424), so a mesh object that split the
     // collider onto a child node would be invisible to every swept body.
     assert_eq!(
-        collider.body, collider.entity,
+        collider.body,
+        Some(collider.entity),
         "a mesh object's body *is* its collider node: the derived collider must \
          land on the rigid body or swept bodies pass through the geometry"
     );
     let world = app.world_mut();
     assert!(world.get::<WorldVisual>(spawned.visual).is_some());
+    let body = collider
+        .body
+        .expect("a `Solid` object hangs from a static rigid body of its own entity");
     assert_eq!(
         world
-            .get::<RigidBodyColliders>(collider.body)
+            .get::<RigidBodyColliders>(body)
             .map(|colliders| colliders.len()),
         Some(1),
         "the body must own exactly the one derived collider"
     );
     assert!(
-        world.get::<RigidBody>(collider.body).is_some(),
+        world.get::<RigidBody>(body).is_some(),
         "and it must be the body that owns it, not a marker entity beside it"
     );
 
@@ -1193,7 +1197,8 @@ fn accept_f18_b_a_mesh_object_lands_where_its_record_puts_it() {
         .collider
         .as_ref()
         .expect("the hangar is collided")
-        .body;
+        .body
+        .expect("a `Solid` object hangs from a static rigid body of its own entity");
 
     let authored = cs_app::world::canonical_matrix(hangar.transform());
     let position = app

@@ -82,6 +82,7 @@ use cs_app::world::{
     HARBOR_OBJECT_SENSOR, HARBOR_OBJECT_WATER, ProbeSpec, harbor_meshes, harbor_world, load_world,
     spawn_swept_probe, static_world_layers, static_world_membership, world_app, world_instance,
 };
+use cs_content::world::WorldCollisionRole;
 use cs_sim::collision::{CollisionLayer, ShapeClass};
 
 /// The probe's start, size and flight line — the same numbers the F18-A/B
@@ -295,17 +296,21 @@ fn accept_t424_a_collider_on_the_body_is_what_a_swept_body_stops_against() {
 }
 
 /// **The production world-import path holds the invariant.** Every body the
-/// harbor world spawns — a `FromMesh` hangar, a `FromMesh` trigger volume, the
-/// cuboid ground slab and the cuboid water patch — is reachable by a swept body,
-/// and `undeclared_swept_invisible_bodies` is empty after the load has settled.
+/// harbor world spawns — a `FromMesh` hangar, the cuboid ground slab and the
+/// cuboid water patch — is reachable by a swept body, and
+/// `undeclared_swept_invisible_bodies` is empty after the load has settled.
 ///
-/// Four bodies with four roles is the whole population: the banner is role
+/// Four colliders with four roles is the whole population: the banner is role
 /// `None` and the absent object has no upload, so neither has a body at all.
 /// Asserting the count means the empty audit cannot pass on a world that
-/// silently failed to spawn its geometry.
+/// silently failed to spawn its geometry. The `FromMesh` trigger volume is the
+/// one object in the four that is deliberately **not** a body (task #401: a
+/// volume a body may not be stopped by must not carry a rigid body, or Avian's
+/// swept CCD holds one at its face), and it is outside the audit's query for
+/// exactly that reason.
 ///
-/// Observable failure: an undeclared entry, or a count below four, means an
-/// imported object is invisible to a fast body.
+/// Observable failure: an undeclared entry, a count below four, or a trigger
+/// volume that acquired a body.
 #[test]
 fn accept_t424_the_world_import_path_leaves_no_body_invisible_to_a_sweep() {
     let definition = harbor_world().expect("the synthetic harbor world is well formed");
@@ -340,12 +345,35 @@ fn accept_t424_the_world_import_path_leaves_no_body_invisible_to_a_sweep() {
          is not an audit of nothing"
     );
     for collider in report.colliders() {
-        assert!(
-            app.world().get::<Collider>(collider.body).is_some(),
-            "`{}` is a body a swept body must be able to stop against, so its \
-             collider must be on the body entity",
-            collider.object
-        );
+        match collider.body {
+            Some(body) => assert!(
+                app.world().get::<Collider>(body).is_some(),
+                "`{}` is a body a swept body must be able to stop against, so its \
+                 collider must be on the body entity",
+                collider.object
+            ),
+            // A **trigger volume** is the one deliberate exception, and it is not
+            // an exception to this rule: it is not a body a swept body must stop
+            // against, so it must *not* be one (task #401 — a `Sensor` object is
+            // spawned on an entity with no rigid body, because a resolvable body
+            // is exactly what lets Avian's swept CCD hold a body at the volume's
+            // face). The invariant still holds: an undeclared swept-invisible body
+            // is what the audit above reports, and a trigger volume cannot be one.
+            None => {
+                assert_eq!(
+                    collider.role,
+                    WorldCollisionRole::Sensor,
+                    "`{}` reports no rigid body, which only a trigger volume may do",
+                    collider.object
+                );
+                assert!(
+                    app.world().get::<RigidBody>(collider.entity).is_none(),
+                    "`{}` must carry no rigid body at all, or a swept body is held at \
+                     its face",
+                    collider.object
+                );
+            }
+        }
     }
 }
 

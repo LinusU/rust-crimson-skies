@@ -37,10 +37,10 @@ use cs_app::world::AppliedOverlay;
 use cs_app::world::{
     DEPOT_DOOR_HALF_M, DEPOT_DOOR_OPEN_OFFSET_M, DEPOT_OBJECT_CRATE, DEPOT_OBJECT_DOOR,
     DEPOT_OBJECT_GROUND, DEPOT_OBJECT_HANGAR, DEPOT_OBJECT_TRIGGER, DEPOT_SECTOR_YARD,
-    MESH_SETTLE_UPDATES, OverlayError, OverlayOutcome, ProbeSpec, SpawnedWorld, WorldContacts,
-    WorldObjectBinding, apply_overlay, depot_meshes, depot_mission, depot_world, load_sector,
-    load_world, overlay_log, request_overlay, spawn_discrete_probe, spawn_swept_probe,
-    unload_sector, unload_world, world_app,
+    DEPOT_TRIGGER_HALF_M, DEPOT_TRIGGER_POS_M, MESH_SETTLE_UPDATES, OverlayError, OverlayOutcome,
+    ProbeSpec, SpawnedWorld, WorldContacts, WorldObjectBinding, apply_overlay, depot_meshes,
+    depot_mission, depot_world, load_sector, load_world, overlay_log, request_overlay,
+    spawn_discrete_probe, spawn_swept_probe, unload_sector, unload_world, world_app,
 };
 use cs_content::world::{
     MissionOverlay, OverlayEffect, WorldDefinition, WorldError, WorldObjectId,
@@ -67,6 +67,11 @@ const TICKS: u64 = 120;
 /// The speed the swept measurement is taken at: 400 m/s is 3.33 m per tick, more
 /// than the trigger volume is thick.
 const SWEPT_SPEED_M_S: f64 = 400.0;
+
+/// The speed the overlay measurement is taken at, in m/s: 60 m/s is 0.5 m per
+/// tick, half the depot trigger volume's thickness, so a discrete sample is
+/// guaranteed to land inside it and the crossing is a real overlap.
+const OVERLAY_SPEED_M_S: f64 = 60.0;
 
 /// The door panel's own half extents, as the runtime's vector.
 fn door_half_extents() -> Vec3 {
@@ -415,65 +420,58 @@ fn accept_f18_c_a_load_with_no_overlay_keeps_its_door_shut() {
     );
 }
 
-/// **The production body configuration: a swept body, and what it does at a
-/// trigger volume — the check task #401 asked this stage for.**
+/// **The production body configuration: a swept body at a trigger volume, after
+/// task #401 — the check the F18-A review asked this stage for, re-measured for
+/// the layout the world now spawns.**
 ///
 /// F23's aircraft bodies carry [`SweptCcd`](avian3d::prelude::SweptCcd), and
 /// F18-A measured that Avian's swept CCD stops a body at a *sensor* volume's near
 /// face with no `Sensor` filter in the sweep
-/// (`avian3d-0.7.0/src/dynamics/ccd/mod.rs`, `solve_swept_ccd`). Task #401 owns
-/// that interaction. What this stage owes it is the overlay half, and this is the
-/// measurement:
+/// (`avian3d-0.7.0/src/dynamics/ccd/mod.rs`, `solve_swept_ccd`). Task #401
+/// resolved that by spawning every `WorldCollisionRole::Sensor` object on an
+/// entity with no rigid body, which the sweep cannot resolve
+/// (`crates/cs_app/src/world/spawn.rs`,
+/// `docs/findings/2026-10-02-t401-trigger-volume-and-swept-ccd.md`). This test is
+/// what that stage owes this one, measured on the door flight:
 ///
-/// * the swept body **does** reach the volume closely enough for the narrow phase
-///   to report the contact, so **the overlay fires for the production body**;
-/// * the CCD **does** cost it travel: on the crossing tick the body is clamped at
-///   the volume's near face instead of continuing. Measured here, 0.58 m of the
-///   3.33 m it would otherwise have covered, with the loss being the distance from
-///   its previous sample to the face — the same rule F18-A measured on an 8 m
-///   volume, scaled to a 1 m one;
-/// * the volume is **not** a wall: on the next tick the body is through it and
-///   covers the full 3.33 m again.
+/// * a swept body **covers a full tick on every tick that spans the volume** —
+///   nothing is held, at either speed, and the body reaches the panel on time;
+/// * and the overlay still fires for a swept body, is applied once, and moves both
+///   halves of the door.
 ///
-/// The hold is asserted rather than left out. A stage that verified only "the
-/// overlay fires" would leave a mission whose every trigger volume costs an
-/// aircraft part of a second of travel looking like a finished feature.
+/// The "still fires" half is flown at [`OVERLAY_SPEED_M_S`], whose 0.5 m tick
+/// cannot outrun the 1 m volume, because that is the question the mission layer
+/// answers. At [`SWEPT_SPEED_M_S`] no discrete sample lands inside a 1 m volume at
+/// all, so nothing is reported of it — not a property of the role, and recorded as
+/// a limitation with its measured reason in `trigger.rs`.
 ///
-/// The panel is 4 m ahead of the volume — 1.2 ticks at this speed — so a body
-/// this fast still meets the *closed* panel on the tick after the volume and is
-/// stopped by it before the effect lands. That is a property of where the fixture
-/// put the volume, not of the overlay, and it is why the AC03 traversal
-/// assertion uses a speed whose sampling cannot outrun the distance between a
-/// trigger and the geometry it opens.
-///
-/// If #401's fix lands, the clamp assertion fails, and that failure is the signal
-/// to re-measure and update the finding — not a bug in this stage.
+/// Observable failure: a rigid body back on a trigger volume (the body's crossing
+/// tick short, and the door never opening in time), or the producer no longer
+/// reading the contact stream (nothing fires and the door stays shut).
 #[test]
-fn accept_f18_c_a_swept_body_fires_the_overlay_and_pays_for_the_sensor_face() {
+fn accept_f18_c_a_swept_body_crosses_a_trigger_volume_and_the_overlay_still_fires() {
+    // The mission question: does the overlay still fire for a swept body?
     let (mut app, report) = loaded(true);
     let body = spawn_swept_probe(
         &mut app,
         &ProbeSpec {
             position_m: [PROBE_START_X_M, PROBE_Y_M, 0.0],
-            velocity_m_s: [SWEPT_SPEED_M_S, 0.0, 0.0],
+            velocity_m_s: [OVERLAY_SPEED_M_S, 0.0, 0.0],
             half_extents_m: [0.25, 0.25, 0.25],
             mass_kg: 250.0,
         },
     )
     .expect("valid probe");
-
-    // The body's per-tick travel across the volume, one step at a time: the
-    // clamp is a single tick's worth of travel, so only the trace can show it.
     let dt = app
         .world()
         .resource::<bevy::time::Time<bevy::time::Fixed>>()
         .timestep()
         .as_secs_f32();
-    let free = SWEPT_SPEED_M_S as f32 * dt;
-    let mut positions: Vec<f32> = Vec::new();
-    for _ in 0..6 {
+    let free = OVERLAY_SPEED_M_S as f32 * dt;
+    let mut trace = Vec::new();
+    for _ in 0..TICKS {
         app.update();
-        positions.push(
+        trace.push(
             app.world()
                 .get::<Position>(body)
                 .expect("the body still exists")
@@ -481,37 +479,12 @@ fn accept_f18_c_a_swept_body_fires_the_overlay_and_pays_for_the_sensor_face() {
                 .x,
         );
     }
-    let face = cs_app::world::DEPOT_TRIGGER_POS_M[0] as f32
-        - cs_app::world::DEPOT_TRIGGER_HALF_M[0] as f32
-        - 0.25;
-    let travel: Vec<f32> = positions.windows(2).map(|pair| pair[1] - pair[0]).collect();
-    assert!(
-        travel.iter().any(|step| *step < free - 0.5),
-        "a swept body must be clamped at a sensor volume's near face on the pinned \
-         pair (task #401): the free tick is {free} m and the body covered {travel:?} \
-         from {positions:?}, with the face at x = {face}. If every tick is now \
-         free, #401 has been resolved: re-measure and update \
-         docs/findings/2026-09-30-f18-c-mission-overlays-and-visibility-streaming.md"
-    );
-    let clamped = positions[2];
-    assert!(
-        (clamped - face).abs() < 0.05,
-        "and the clamp is at the volume's face, not somewhere else: {clamped} against \
-         {face}"
-    );
-    assert!(
-        (travel[2] - free).abs() < 0.05,
-        "while the volume is not a wall: the next tick is free travel again ({})",
-        travel[2]
-    );
 
-    // The overlay fired, and both halves moved, once.
     let log = contacts(&app);
     assert!(
         log.iter().any(|name| name == DEPOT_OBJECT_TRIGGER),
-        "a swept body must still reach the trigger volume closely enough to fire \
-         the overlay, which is what the F18-A review asked this stage to verify: \
-         {log:?}"
+        "a swept body must still reach the trigger volume closely enough for the \
+         producer to see it, so the overlay fires for the production body: {log:?}"
     );
     assert_eq!(
         applied_count(&app),
@@ -524,6 +497,106 @@ fn accept_f18_c_a_swept_body_fires_the_overlay_and_pays_for_the_sensor_face() {
         (collided.z - DEPOT_DOOR_OPEN_OFFSET_M[2] as f32).abs() < 1e-5,
         "the panel's collision moved, so the overlay reached both halves: {collided:?}"
     );
+    let end = *trace.last().expect("the body was flown");
+    assert!(
+        end > DEPOT_TRIGGER_POS_M[0] as f32,
+        "and the body went on through the volume rather than being held in it: it \
+         ended at x = {end}"
+    );
+    assert_the_volume_crossing_is_free(&trace, free, OVERLAY_SPEED_M_S);
+
+    // The speed the hold was measured at: the same statement, where a hold would
+    // be several metres of a single tick.
+    let (mut app, _) = loaded(true);
+    let body = spawn_swept_probe(
+        &mut app,
+        &ProbeSpec {
+            position_m: [PROBE_START_X_M, PROBE_Y_M, 0.0],
+            velocity_m_s: [SWEPT_SPEED_M_S, 0.0, 0.0],
+            half_extents_m: [0.25, 0.25, 0.25],
+            mass_kg: 250.0,
+        },
+    )
+    .expect("valid probe");
+    let free = SWEPT_SPEED_M_S as f32 * dt;
+    let mut trace = Vec::new();
+    for _ in 0..TICKS {
+        app.update();
+        trace.push(
+            app.world()
+                .get::<Position>(body)
+                .expect("the body still exists")
+                .0
+                .x,
+        );
+    }
+    assert_the_volume_crossing_is_free(&trace, free, SWEPT_SPEED_M_S);
+}
+
+/// Asserts that **every tick the body spends crossing the depot trigger volume**
+/// was a full one — that the volume held nothing.
+///
+/// Exactly the crossing, and not the whole flight, for two reasons that are
+/// themselves measured rather than assumed:
+///
+/// * the flight continues through the depot's *mesh* arch, whose tunnel mouth
+///   costs a body 0.15 m of a tick on the pinned pair whether or not a trigger
+///   volume is near it (the identical 0.350 m step appears through the harbor
+///   world's arch, with no sensor in the flight at all);
+/// * at the tunnelling speed the overlay never fires, so the **door stays shut**
+///   and stops the body on the tick after the volume — a stop the record asked
+///   for, which this assertion must not read as a hold.
+fn assert_the_volume_crossing_is_free(trace: &[f32], free: f32, speed_m_s: f64) {
+    let near = DEPOT_TRIGGER_POS_M[0] as f32 - DEPOT_TRIGGER_HALF_M[0] as f32;
+    let far = DEPOT_TRIGGER_POS_M[0] as f32 + DEPOT_TRIGGER_HALF_M[0] as f32;
+    let half = 0.25_f32;
+    let mut positions = vec![PROBE_START_X_M as f32];
+    positions.extend_from_slice(trace);
+    // The tick that first brings the body's own box to the volume, and the ticks
+    // after it while the body is still making way eastwards. Eight is a bound, not
+    // a budget: at these speeds the volume is two to four ticks across, and a body
+    // that is still inside it after eight has been stopped, not passed.
+    const MAX_CROSSING_TICKS: usize = 8;
+    let first = (0..positions.len())
+        .find(|i| positions[*i] + half > near)
+        .unwrap_or_else(|| {
+            panic!(
+                "the fixture must fly the body to the volume at {speed_m_s} m/s: the \
+                 trace never reaches x = {near} m"
+            )
+        })
+        .saturating_sub(1);
+    for (index, crossing_tick) in (first..positions.len()).zip(0..) {
+        assert!(
+            crossing_tick < MAX_CROSSING_TICKS,
+            "the body did not clear the volume within {MAX_CROSSING_TICKS} ticks at \
+             {speed_m_s} m/s: {trace:?}"
+        );
+        let step = positions[index + 1] - positions[index];
+        assert!(
+            step > 0.0,
+            "the body stopped advancing at tick {index}, {crossing_tick} ticks into the \
+             volume (x = {} to {}, free {free} m): something other than the volume's \
+             passability ended this crossing. At the tunnelling speed the overlay does \
+             not fire, so the door is still shut and stops the body — the record asked \
+             for that, and it is why the window is closed at the first lost tick \
+             instead of running to the end of the flight",
+            positions[index],
+            positions[index + 1]
+        );
+        assert!(
+            (step - free).abs() < 0.01,
+            "tick {index} carries the body across the trigger volume (x = {} to {}) and \
+             must not be held by it: it covered {step} m of a free {free} m. A short tick \
+             here means a rigid body is back on the sensor (task #401)",
+            positions[index],
+            positions[index + 1]
+        );
+        if positions[index + 1] - half > far {
+            return;
+        }
+    }
+    panic!("the body never cleared the volume at {speed_m_s} m/s: {trace:?}");
 }
 
 /// **Every refusal names what it refused, and none of them changed anything.**
