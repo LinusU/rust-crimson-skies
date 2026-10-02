@@ -256,8 +256,9 @@ The implementer's run was on the fourth rebase, described below. The
 | each test alone with `--exact --include-ignored` | 0 (12/12) | 0 (13/13) |
 | `cargo fmt --all -- --check` | 0 | 0 |
 | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 | 0 |
-| `cargo test --workspace --locked` | 0 (238 test binaries, 0 failed) | 0 (238 test binaries, 0 failed, 2429 tests passed) |
+| `cargo test --workspace --locked` | 0 (238 test binaries, 0 failed) | 0 (239 test binaries, 0 failed, 2433 tests passed) |
 | `tools/validate_evidence.py … --require-pass` | 0 | 0 |
+| `python3 -m unittest discover -s tools/tests -p 'test_evidence_review_identity.py'` | not present then | 0 (M18-A an advisory note, as for M10-A, M16-A-FU1 and M17-A) |
 
 The reviewer additionally confirmed the split the CI contract depends on: in a
 plain `cargo test --locked --test campaign` the five synthetic `accept_m18_a_*`
