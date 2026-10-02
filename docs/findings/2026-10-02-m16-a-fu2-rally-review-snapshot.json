@@ -230,6 +230,24 @@
       },
       "report_written_by": "implementer",
       "report_regenerated_on_reviewed_commit": false
+    },
+    {
+      "task_key": "M21-A",
+      "rally_task": 318,
+      "evidence_report": "docs/findings/evidence/M21-A.json",
+      "merged_sha": "9b6d9555270809dd090c57d05ad3a2189e8ce441",
+      "implementer": {
+        "actor": "claude-2/claude-1",
+        "claim_started": "2026-10-02T02:17:45Z",
+        "submitted": "2026-10-02T02:22:41Z"
+      },
+      "reviewer": {
+        "actor": "claude-2/claude-1",
+        "review_claim_started": "2026-10-02T02:22:50Z",
+        "merge_event": {"type": "task.merged", "actor": "claude-2/claude-1", "at": "2026-10-02T02:29:12Z"}
+      },
+      "report_written_by": "implementer",
+      "report_regenerated_on_reviewed_commit": false
     }
   ]
 }

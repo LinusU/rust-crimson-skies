@@ -2905,10 +2905,14 @@ fn evidence_report_m21_a_writes_the_acceptance_report() {
         assertion_array(&suite.assertions),
         artifact_array(&artifacts),
         jstr(
-            "implementer: claude-1 (Rally #318, Claude Sonnet 5.5, session of 2026-10-02T02:17Z); \
-             reviewer: none yet (the implementer's own run only; an independent review is \
-             pending). An agent review is not independent original-reference evidence and no \
-             agent review replaces the owner's human approval"
+            "implementer: claude-2/claude-1 (Rally #318, Claude Sonnet 5.5, session of \
+             2026-10-02T02:17Z); reviewer: claude-2/claude-1 again, as the Rally reviewing agent \
+             on the review claim of 2026-10-02T02:22Z — the same agent instance that implemented \
+             the stage, so this is NOT independent review; the claim started nine seconds after \
+             the hand-over, which is the same session continuing, so no fresh context is claimed \
+             either. This report still describes the implementer's own run only. An agent review \
+             is not independent original-reference evidence and no agent review replaces the \
+             owner's human approval"
         ),
         jstr(
             "acceptance suite run locally with the retail capability by the implementer; \
