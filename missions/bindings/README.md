@@ -91,6 +91,16 @@ directory is original game data — no assets, scripts or extracted bytes.
   structures must place it strictly inside a group. It shares `world/c2` with
   M06 (see `docs/findings/2026-10-02-m08-a-source-binding.md`). Same five
   resolved critical dependencies, same unverified status.
+- `M10.json` — the M10 binding output (stage M10-A), generated and pinned the
+  same way by `accept_m10_a_the_committed_record_is_what_the_installation_derives`.
+  No production code changed for it either: M10 is the tenth campaign position
+  and the *last* mission of chapter 2, so it is the first binding stage to pin
+  a trailing boundary — the chapter and the localized region group both end
+  immediately after it. Inside that chapter the campaign order is not the
+  directory order: position 8 lives in `C2B` while position 9 is back in `C2`,
+  which sorts earlier (see
+  `docs/findings/2026-10-02-m10-a-source-binding.md`). Same five resolved
+  critical dependencies, same unverified status.
 - `M12.json` — the M12 binding output (stage M12-A), generated and pinned the
   same way by `accept_m12_a_the_committed_record_is_what_the_installation_derives`.
   No production code changed for it either: M12 is the twelfth campaign
@@ -168,9 +178,9 @@ totals and closure reports — live in
 
 ## What is not here yet
 
-- `M09.json`, `M10.json`, `M11.json`, `M14.json`, `M15.json`, `M18.json`,
+- `M09.json`, `M11.json`, `M14.json`, `M15.json`, `M18.json`,
   `M20.json`, `M22.json` and `M23.json` — the per-mission binding outputs of
-  M09-A, M10-A, M11-A, M14-A, M15-A, M18-A, M20-A, M22-A and M23-A, created from
+  M09-A, M11-A, M14-A, M15-A, M18-A, M20-A, M22-A and M23-A, created from
   original data the same way. Every one of them starts unresolved. (Listed
   one by one rather than as ranges, because M19, M21 and M24 are bound while
   M18, M20, M22 and M23 are not.)
