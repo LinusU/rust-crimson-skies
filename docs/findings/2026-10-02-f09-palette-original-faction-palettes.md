@@ -233,7 +233,12 @@ colors and decals. The comparison was changed to values only
 was regenerated on the corrected tree (candidate tree
 `38700addf43de3a5203e99f9648531c898c69885`, two `pattern_without_colors`
 findings, palette fingerprint
-`a221fa9b1583d1a92041bc325da21abbbb4e02331857d57b99e53d98fae8ed5d`).
+`a221fa9b1583d1a92041bc325da21abbbb4e02331857d57b99e53d98fae8ed5d`). The
+review session rebased onto the current main, corrected the harness invocation
+documented at the top of the F09-PALETTE section (the form with an extra `--`
+did not run the ignored harness), and regenerated the report on the rebased code
+tree `be4352174e78f53fdb7b9cc0bc41ef971171487a`; the palette fingerprint is
+unchanged.
 
 ## Boundaries
 
