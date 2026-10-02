@@ -20,7 +20,10 @@
 //! selection in `release_assets.rs` covers the store lifetime of a released
 //! batch (Rally #512): what a spawn adds to `Assets<Mesh>` and to a material
 //! store, what a release hands back, and what a frame that reuses every batch
-//! adds.
+//! adds. The `accept_f17_c_reused_` selection in the same file extends that rule
+//! (Rally #516) to a reused batch whose material component went missing: it is
+//! released and respawned rather than given a replacement entry no owner record
+//! names, so neither material store grows.
 
 mod adapters;
 mod additive_material;

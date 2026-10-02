@@ -21,6 +21,16 @@
 //! reuse guard that already existed — a frame that reuses every batch adds no
 //! material — neither path grows a store.
 //!
+//! The `accept_f17_c_reused_` selection extends the same rule to the one path
+//! #512 left unfinished (Rally #516): a **reused** batch entity whose material
+//! component went missing. The material is an entry this module owns, so a reused
+//! entity that took a replacement would hold an entry no owner record names while
+//! the record it kept named the entry it no longer draws with. `reuse_batch` now
+//! treats a missing matching material component as "not usable" — the same
+//! release-and-respawn the lost-`BatchDraw` repair path already used — so a
+//! replacement is always added by a spawn that records it and the stores stay
+//! flat.
+//!
 //! Every input is newly authored synthetic content decoded through the
 //! production readers and driven through the production `sync_frame`. No
 //! `CS_GAME_DIR` and no original-behavior claim: nothing here is
@@ -445,6 +455,205 @@ fn accept_t512_the_repair_of_a_damaged_batch_entity_hands_back_what_the_dead_one
     }
 }
 
+/// A batch that lost its **material** component — not its [`BatchDraw`] — is
+/// not repaired in place either. The material is one of the entries this module
+/// owns, so a reused entity that took a replacement would hold an entry no
+/// record names (nothing to hand back) while the record it kept naming the entry
+/// it no longer draws with. The repair path treats the entity as not usable, so
+/// it goes through the same release-and-respawn as the lost-`BatchDraw` case and
+/// neither store grows.
+///
+/// Against the `sync.rs` before this change the first cycle reuses the damaged
+/// entity, adds one `StandardMaterial` that no owner record names, and reports
+/// `reused: 1` / `released: 0`; the material count climbs by one per damaged
+/// frame.
+#[test]
+fn accept_f17_c_reused_a_damaged_material_component_is_released_not_orphaned() {
+    let scene = fleet_scene();
+    let mut world = open_world();
+    let drawn = &scene.drawn_frame;
+
+    sync_frame(
+        &mut world,
+        &scene.drawn_submitted(),
+        drawn,
+        SESSION,
+        &scene.runtime,
+    )
+    .expect("the drawn frame syncs");
+    assert_eq!(meshes(&world), 1);
+    assert_eq!(standard_materials(&world), 1);
+    every_handle_resolves(&world);
+    let (first_mesh, first_material) = live_batch_handles(&world);
+
+    for cycle in 1..=3 {
+        // The entity under the batch key loses the material component the sync
+        // path itself owns, behind the sync path's back. Nothing else in the
+        // workspace removes it; this is the one way in, exactly as the
+        // lost-`BatchDraw` case is for the repair path.
+        world
+            .entity_mut(batch_entity(&world))
+            .remove::<MeshMaterial3d<StandardMaterial>>();
+        let report = sync_frame(
+            &mut world,
+            &scene.drawn_submitted(),
+            drawn,
+            SESSION,
+            &scene.runtime,
+        )
+        .expect("the drawn frame syncs again");
+        assert_eq!(report.spawned, 1, "cycle {cycle}: a fresh entity draws it");
+        assert_eq!(
+            report.reused, 0,
+            "cycle {cycle}: an entity without its material is not this draw"
+        );
+        assert_eq!(
+            report.released, 1,
+            "cycle {cycle}: the damaged entity goes through the one release path"
+        );
+        assert_eq!(report.placed, 4);
+        assert_eq!(
+            report.reclaimed,
+            ReclaimedAssets {
+                meshes: 1,
+                materials: 1,
+                additive_materials: 0,
+            },
+            "cycle {cycle}: exactly the entries the damaged entity owned went back"
+        );
+        assert_eq!(
+            meshes(&world),
+            1,
+            "cycle {cycle}: no mesh per damaged frame"
+        );
+        assert_eq!(
+            standard_materials(&world),
+            1,
+            "cycle {cycle}: no material per damaged frame"
+        );
+        assert_eq!(additive_materials(&world), 0);
+        assert_eq!(placed_draws(&world), 4);
+        every_handle_resolves(&world);
+
+        // The replacement really is a fresh spawn: the live entity draws with
+        // entries that were not the damaged entity's, and the record it carries
+        // names them.
+        let (mesh, material) = live_batch_handles(&world);
+        assert_ne!(
+            mesh.id(),
+            first_mesh.id(),
+            "cycle {cycle}: the replacement is a new mesh entry"
+        );
+        assert_ne!(
+            material.id(),
+            first_material.id(),
+            "cycle {cycle}: and a new material entry"
+        );
+    }
+
+    // The record names the entry the live entity draws with: the teardown hands
+    // back exactly one of each and leaves the stores empty, so nothing the
+    // replacements added was left behind.
+    let ended = teardown(&mut world);
+    assert_eq!(ended.entities, 1);
+    assert_eq!(
+        ended.reclaimed,
+        ReclaimedAssets {
+            meshes: 1,
+            materials: 1,
+            additive_materials: 0,
+        },
+        "the last spawned batch owned exactly the entries it added"
+    );
+    assert_eq!(meshes(&world), 0);
+    assert_eq!(standard_materials(&world), 0);
+    assert_eq!(placed_draws(&world), 0);
+    every_handle_resolves(&world);
+}
+
+/// The same rule for the additive class, whose material entry lives in its own
+/// store: a live additive batch that loses its component is released and
+/// respawned, and `Assets<AdditiveMaterial>` does not grow.
+#[test]
+fn accept_f17_c_reused_the_additive_classes_damaged_material_is_released_not_orphaned() {
+    let scene = additive_scene();
+    let mut world = open_world();
+    let drawn = &scene.drawn_frame;
+
+    let first = sync_frame(
+        &mut world,
+        &scene.drawn_submitted(),
+        drawn,
+        SESSION,
+        &scene.runtime,
+    )
+    .expect("the additive frame syncs");
+    assert_eq!(first.spawned, 1);
+    assert_eq!(first.placed, 1);
+    assert_eq!(meshes(&world), 1);
+    assert_eq!(additive_materials(&world), 1);
+    assert_eq!(standard_materials(&world), 0);
+    every_handle_resolves(&world);
+    let first_material = live_additive_material(&world);
+
+    for cycle in 1..=3 {
+        world
+            .entity_mut(batch_entity(&world))
+            .remove::<MeshMaterial3d<AdditiveMaterial>>();
+        let report = sync_frame(
+            &mut world,
+            &scene.drawn_submitted(),
+            drawn,
+            SESSION,
+            &scene.runtime,
+        )
+        .expect("the additive frame syncs again");
+        assert_eq!(report.spawned, 1, "cycle {cycle}: a fresh entity draws it");
+        assert_eq!(
+            report.reused, 0,
+            "cycle {cycle}: an entity without its additive material is not this draw"
+        );
+        assert_eq!(report.released, 1, "cycle {cycle}: released once");
+        assert_eq!(report.placed, 1);
+        assert_eq!(
+            report.reclaimed,
+            ReclaimedAssets {
+                meshes: 1,
+                materials: 0,
+                additive_materials: 1,
+            },
+            "cycle {cycle}: the additive entry went back to its own store"
+        );
+        assert_eq!(meshes(&world), 1);
+        assert_eq!(
+            additive_materials(&world),
+            1,
+            "cycle {cycle}: no additive entry per damaged frame"
+        );
+        assert_eq!(standard_materials(&world), 0);
+        assert_eq!(placed_draws(&world), 1);
+        every_handle_resolves(&world);
+        assert_ne!(
+            live_additive_material(&world).id(),
+            first_material.id(),
+            "cycle {cycle}: the replacement is a new additive entry"
+        );
+    }
+
+    let ended = teardown(&mut world);
+    assert_eq!(
+        ended.reclaimed,
+        ReclaimedAssets {
+            meshes: 1,
+            materials: 0,
+            additive_materials: 1,
+        }
+    );
+    assert_eq!(meshes(&world), 0);
+    assert_eq!(additive_materials(&world), 0);
+    every_handle_resolves(&world);
+}
+
 /// A frame that is refused before anything is written leaves the stores exactly
 /// as it found them: a refusal that handed an entry back would leave a live batch
 /// drawing a removed asset.
@@ -857,6 +1066,15 @@ fn live_batch_handles(world: &World) -> (Handle<Mesh>, Handle<StandardMaterial>)
         .0
         .clone();
     (mesh, material)
+}
+
+/// The additive material the one live batch draws with.
+fn live_additive_material(world: &World) -> Handle<AdditiveMaterial> {
+    world
+        .get::<MeshMaterial3d<AdditiveMaterial>>(batch_entity(world))
+        .expect("the batch draws an additive material")
+        .0
+        .clone()
 }
 
 /// Asserts that every asset handle any entity in `world` draws with still
