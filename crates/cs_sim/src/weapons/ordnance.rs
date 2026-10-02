@@ -1,8 +1,9 @@
 //! Rockets, special ordnance, counter-effects and nitro: the typed
-//! behavior and effect registry (F28-A).
+//! behavior and effect registry (F28-A) and the per-tick ordnance runtime
+//! (F28-B).
 //!
 //! Spec: `specs/F28-rockets-special-ordnance-counter-effects-and-nitro.md`,
-//! stage `### F28-A`. Shared contract:
+//! stages `### F28-A` and `### F28-B`. Shared contract:
 //! `docs/contracts/FLIGHT-PHYSICS.md`, sections "Boost and special models"
 //! and "Collision and ballistic tests".
 //!
@@ -52,15 +53,19 @@
 //!   [`crate::time::TickRate`]. No method takes a [`std::time::Duration`],
 //!   and no output carries a pose, so no caller can move an airframe or
 //!   scale a render frame through nitro (AC04).
+//! * [`OrdnanceRuntime`] — the F28-B per-tick production path that owns the
+//!   live items and drives every mechanism above: launch geometry and swept
+//!   motion, the direct and proximity fuse decisions, the once-only routing
+//!   of a triggered item into [`crate::damage::HitEvent`]s, the
+//!   destruct/session-safe guidance loss, the status ledger and nitro. It is
+//!   session-confined, and dropping it is the whole teardown.
 //!
-//! What F28-B, F28-C and F28-D own, and what is therefore deliberately
-//! absent: the per-tick ordnance system and its Avian body, the launch
-//! gesture and hardpoint firing order in the cockpit, the routing of a fuse
-//! trigger into [`crate::damage::HitEvent`], the status-effect consumer in
-//! the flight model, the nitro consumer of
-//! [`crate::flight::BoostParameters`], the ECS bindings, the loadout/shop
-//! validation that consumes [`EquipmentRules`], and the original ordnance
-//! catalogue audit.
+//! What F28-C and F28-D still own, and what is therefore deliberately
+//! absent: the launch gesture and hardpoint firing order in the cockpit, the
+//! ECS/Avian binding of an in-flight item, the status-effect consumer in the
+//! flight model, the nitro consumer of
+//! [`crate::flight::BoostParameters`], the loadout/shop validation that
+//! consumes [`EquipmentRules`], and the original ordnance catalogue audit.
 //!
 //! # Designed vocabulary, not original data
 //!
@@ -81,12 +86,15 @@ use std::fmt;
 use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind};
 use cs_types::evidence::ClaimId;
+use cs_types::net::SessionId;
 use cs_types::space::{SpaceError, WorldPosition};
 
-use crate::damage::{ActorId, DamageNodeKey, SystemKind};
+use crate::damage::{ActorId, DamageNodeKey, HitEvent, HitEventError, HitEventId, SystemKind};
+use crate::environment::{air_relative_velocity_m_s, world_velocity_from_air_m_s};
 use crate::time::TickRate;
 use crate::weapons::guns::{
-    InheritanceRule, MountTransform, ProjectileId, ProjectileSegment, SweptHit, WeaponDamage,
+    InheritanceRule, MountTransform, ProjectileId, ProjectileSegment, SweptHit,
+    WEAPON_DAMAGE_CHANNELS, WeaponDamage,
 };
 
 // ---------------------------------------------------------------- identity ----
@@ -2513,6 +2521,12 @@ impl OrdnanceState {
         paths: &[TargetPath],
         impacts: &[SweptHit],
     ) -> FuseDecision {
+        if self.destroyed {
+            // A retired item has ended: it is a dud, not a live fuse. This
+            // makes `retire`'s own contract real — it reports
+            // `AlreadyTriggered` rather than pretending a detonation happened.
+            return FuseDecision::Inert(FuseInert::AlreadyTriggered);
+        }
         if self.triggered.is_some() {
             return FuseDecision::Inert(FuseInert::AlreadyTriggered);
         }
@@ -3674,6 +3688,815 @@ impl NitroLedger {
     pub fn burn_running(&self) -> bool {
         self.burn_active_at(self.tick)
     }
+}
+
+// ------------------------------------------------------------ ordnance runtime ----
+//
+// F28-A defined the records and the pure decisions above. This is the F28-B
+// per-tick production path that owns the live items and drives those
+// decisions in one session-confined runtime: launch geometry, swept motion,
+// fuse resolution, guidance loss, status application and nitro. It is
+// deliberately platform-independent — no Bevy, no Avian, no renderer — so the
+// geometry and the accounting stay in the simulation and an ECS body can only
+// mirror them (the same split F27-B made for gun rounds).
+
+/// Why an [`OrdnanceRuntime`] operation was refused.
+#[derive(Clone, Debug, PartialEq)]
+pub enum OrdnanceRuntimeError {
+    /// The item, observation or event belongs to another session generation.
+    ForeignSession {
+        /// The runtime's session.
+        expected: u64,
+        /// The generation the caller presented.
+        found: u64,
+    },
+    /// An item with this identity is already live. An item is launched once.
+    DuplicateProjectile {
+        /// The repeated projectile.
+        projectile: ProjectileId,
+    },
+    /// The runtime holds no live item with this identity.
+    UnknownProjectile {
+        /// The item that was named.
+        projectile: ProjectileId,
+    },
+    /// The runtime holds no booster for this actor.
+    UnknownBooster {
+        /// The actor that was named.
+        shooter: ActorId,
+    },
+    /// The item is live but its fuse has not triggered, so it has no damage
+    /// to route. Only a fired item delivers damage.
+    NotTriggered {
+        /// The item whose damage was asked for.
+        projectile: ProjectileId,
+    },
+    /// This item's damage has already been routed. A fuse trigger latches
+    /// once, and routing follows the same rule.
+    AlreadyRouted {
+        /// The already-routed item.
+        projectile: ProjectileId,
+    },
+    /// A wind velocity had a non-finite component.
+    NonFiniteWind {
+        /// The offending axis: `0` X, `1` Y, `2` Z.
+        component: usize,
+    },
+    /// A launch velocity had a non-finite component.
+    NonFiniteVelocity {
+        /// The offending axis.
+        component: usize,
+    },
+    /// The tick length was negative, NaN or infinite.
+    NonFiniteExtent {
+        /// The field that was refused (`dt_s`).
+        field: &'static str,
+    },
+    /// Advancing an item produced a non-finite position.
+    NonFinitePosition {
+        /// The item whose position left the representable range.
+        projectile: ProjectileId,
+    },
+    /// An item declared a zero-tick lifetime, so it could never exist as a
+    /// projectile.
+    ZeroLifetime {
+        /// The item with no life.
+        projectile: ProjectileId,
+    },
+    /// The status ledger refused the application or the advance.
+    Status(StatusEffectError),
+    /// A routed damage amount could not form a [`HitEvent`].
+    Hit(HitEventError),
+    /// The nitro ledger refused the request.
+    Nitro(NitroError),
+    /// The runtime is session generation zero, which is not a session a
+    /// [`HitEvent`] can be stamped into.
+    NoSession,
+}
+
+impl OrdnanceRuntimeError {
+    /// The stable label used in reports.
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::ForeignSession { .. } => "foreign_session",
+            Self::DuplicateProjectile { .. } => "duplicate_projectile",
+            Self::UnknownProjectile { .. } => "unknown_projectile",
+            Self::UnknownBooster { .. } => "unknown_booster",
+            Self::NotTriggered { .. } => "not_triggered",
+            Self::AlreadyRouted { .. } => "already_routed",
+            Self::NonFiniteWind { .. } => "non_finite_wind",
+            Self::NonFiniteVelocity { .. } => "non_finite_velocity",
+            Self::NonFiniteExtent { .. } => "non_finite_extent",
+            Self::NonFinitePosition { .. } => "non_finite_position",
+            Self::ZeroLifetime { .. } => "zero_lifetime",
+            Self::Status(_) => "status",
+            Self::Hit(_) => "hit",
+            Self::Nitro(_) => "nitro",
+            Self::NoSession => "no_session",
+        }
+    }
+}
+
+impl fmt::Display for OrdnanceRuntimeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ForeignSession { expected, found } => write!(
+                f,
+                "this ordnance belongs to session {expected}, but the caller presented session {found}"
+            ),
+            Self::DuplicateProjectile { projectile } => {
+                write!(f, "{projectile} is already live")
+            }
+            Self::UnknownProjectile { projectile } => {
+                write!(f, "no ordnance item {projectile} is live in this runtime")
+            }
+            Self::UnknownBooster { shooter } => {
+                write!(f, "{shooter} has no nitro booster registered")
+            }
+            Self::NotTriggered { projectile } => {
+                write!(
+                    f,
+                    "{projectile} has not triggered, so it has no damage to route"
+                )
+            }
+            Self::AlreadyRouted { projectile } => {
+                write!(f, "{projectile}'s triggered damage has already been routed")
+            }
+            Self::NonFiniteWind { component } => {
+                write!(f, "a wind component {component} must be finite")
+            }
+            Self::NonFiniteVelocity { component } => {
+                write!(f, "a launch velocity component {component} must be finite")
+            }
+            Self::NonFiniteExtent { field } => write!(f, "{field} must be finite and non-negative"),
+            Self::NonFinitePosition { projectile } => {
+                write!(f, "{projectile} left the representable position range")
+            }
+            Self::ZeroLifetime { projectile } => {
+                write!(f, "{projectile} was declared with a zero-tick lifetime")
+            }
+            Self::Status(source) => write!(f, "the status ledger refused the call: {source}"),
+            Self::Hit(source) => write!(f, "a routed damage amount was refused: {source}"),
+            Self::Nitro(source) => write!(f, "the nitro ledger refused the request: {source}"),
+            Self::NoSession => write!(
+                f,
+                "this runtime is session generation zero, which is not a session a hit can be stamped into"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for OrdnanceRuntimeError {}
+
+impl From<StatusEffectError> for OrdnanceRuntimeError {
+    fn from(source: StatusEffectError) -> Self {
+        Self::Status(source)
+    }
+}
+
+impl From<NitroError> for OrdnanceRuntimeError {
+    fn from(source: NitroError) -> Self {
+        Self::Nitro(source)
+    }
+}
+
+/// One live ordnance item's authoritative motion and behavior state.
+///
+/// The declared [`ProjectileOrdnance`] travels with the item so the runtime
+/// can answer what the item *is* (its guidance, its status effects, its
+/// damage channels) without a second registry lookup, while the moving
+/// [`OrdnanceState`] keeps the fuse, arming and lifetime accounting F28-A
+/// defined. `previous` and `current` are the authoritative swept segment of
+/// the current tick; an ECS body is a mirror, never a second integrator.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LiveOrdnance {
+    projectile: ProjectileId,
+    shooter: ActorId,
+    definition: ProjectileOrdnance,
+    state: OrdnanceState,
+    previous: WorldPosition,
+    current: WorldPosition,
+    air_velocity_m_s: [f64; 3],
+}
+
+impl LiveOrdnance {
+    /// The item's stable identity.
+    #[must_use]
+    pub const fn projectile(&self) -> ProjectileId {
+        self.projectile
+    }
+
+    /// The actor that launched it.
+    #[must_use]
+    pub const fn shooter(&self) -> ActorId {
+        self.shooter
+    }
+
+    /// The declared component this item is.
+    #[must_use]
+    pub const fn definition(&self) -> &ProjectileOrdnance {
+        &self.definition
+    }
+
+    /// The item's fuse, arming and lifetime state.
+    #[must_use]
+    pub const fn state(&self) -> &OrdnanceState {
+        &self.state
+    }
+
+    /// Where the item was at the start of the current tick.
+    #[must_use]
+    pub const fn previous(&self) -> WorldPosition {
+        self.previous
+    }
+
+    /// Where the item is now.
+    #[must_use]
+    pub const fn current(&self) -> WorldPosition {
+        self.current
+    }
+
+    /// The constant air-relative velocity the item flies with.
+    #[must_use]
+    pub const fn air_velocity_m_s(&self) -> [f64; 3] {
+        self.air_velocity_m_s
+    }
+
+    /// The swept segment the item covered over the current tick.
+    #[must_use]
+    pub const fn segment(&self) -> ProjectileSegment {
+        ProjectileSegment {
+            projectile: self.projectile,
+            previous: self.previous,
+            current: self.current,
+        }
+    }
+
+    /// The world velocity the item has in `wind`: the shared conversion of
+    /// its constant air-relative velocity into the world frame. The wind is
+    /// subtracted exactly once, at launch, and added back here.
+    #[must_use]
+    pub fn world_velocity_m_s(&self, wind_velocity_m_s: [f64; 3]) -> [f64; 3] {
+        world_velocity_from_air_m_s(self.air_velocity_m_s, wind_velocity_m_s)
+    }
+}
+
+/// One tick's accounting of the live ordnance items.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct OrdnanceTick {
+    /// The swept segment each live item covered over the tick, in ascending
+    /// id order (the map's own stable order).
+    pub segments: Vec<ProjectileSegment>,
+    /// Items whose declared lifetime ended this tick, *after* their final
+    /// segment was produced.
+    pub expired: Vec<ProjectileId>,
+    /// Items removed because their fuse had already triggered on an earlier
+    /// tick and their damage had a tick to be routed.
+    pub triggered: Vec<ProjectileId>,
+}
+
+impl OrdnanceTick {
+    /// Whether the tick moved no item and retired nothing.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.segments.is_empty() && self.expired.is_empty() && self.triggered.is_empty()
+    }
+}
+
+/// The outcome of one guidance tick.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct GuidanceTick {
+    /// Every tracker's update, in ascending item id order.
+    pub updates: BTreeMap<ProjectileId, GuidanceUpdate>,
+    /// The items that ended by losing their target with a `Detonate`
+    /// behavior. Their tracker and their live record are already gone; the
+    /// caller applies the blast at the last recorded position.
+    pub detonated: Vec<ProjectileId>,
+}
+
+impl GuidanceTick {
+    /// The update for one item, if it was tracked by this runtime.
+    #[must_use]
+    pub fn update_for(&self, projectile: &ProjectileId) -> Option<GuidanceUpdate> {
+        self.updates.get(projectile).copied()
+    }
+}
+
+/// The per-session runtime of live ordnance.
+///
+/// This is the production path F28-A left unowned: [`launch`](Self::launch)
+/// turns a declared [`ProjectileOrdnance`] and a supplied [`MountTransform`]
+/// into a moving item, [`advance`](Self::advance) moves every live item and
+/// produces the swept segments the direct and proximity fuses test,
+/// [`decide`](Self::decide) runs the item's own fuse decision,
+/// [`guidance_tick`](Self::guidance_tick) drives the lost-target contract,
+/// [`apply_statuses`](Self::apply_statuses) and
+/// [`advance_status`](Self::advance_status) drive the bounded status ledger,
+/// and [`register_nitro`](Self::register_nitro) /
+/// [`request_nitro`](Self::request_nitro) drive one actor's booster.
+///
+/// Every piece of durable state is session-confined and keyed by a stable id:
+/// a [`ProjectileId`] for an item, an [`ActorId`] for a booster, a
+/// [`StatusEffectInstanceId`] for an effect. Teardown is dropping the
+/// runtime. There is no pose on any output and no method takes a
+/// [`std::time::Duration`], so nothing here can teleport an airframe or scale
+/// a render frame.
+#[derive(Clone, Debug)]
+pub struct OrdnanceRuntime {
+    session: u64,
+    tick: Tick,
+    rate: TickRate,
+    producer: u32,
+    next_hit_sequence: u32,
+    live: BTreeMap<ProjectileId, LiveOrdnance>,
+    routed: BTreeSet<ProjectileId>,
+    guidance: GuidanceSet,
+    status: StatusEffectLedger,
+    nitro: BTreeMap<ActorId, NitroLedger>,
+}
+
+impl OrdnanceRuntime {
+    /// Opens a runtime for one session generation, positioned at `tick` and
+    /// stamping the [`HitEvent`]s it routes with producer serial `producer`.
+    #[must_use]
+    pub fn new(session: u64, tick: Tick, rate: TickRate, producer: u32) -> Self {
+        Self {
+            session,
+            tick,
+            rate,
+            producer,
+            next_hit_sequence: 0,
+            live: BTreeMap::new(),
+            routed: BTreeSet::new(),
+            guidance: GuidanceSet::new(session),
+            status: StatusEffectLedger::new(session, tick),
+            nitro: BTreeMap::new(),
+        }
+    }
+
+    /// The session generation this runtime is confined to.
+    #[must_use]
+    pub const fn session(&self) -> u64 {
+        self.session
+    }
+
+    /// The tick this runtime is positioned at.
+    #[must_use]
+    pub const fn tick(&self) -> Tick {
+        self.tick
+    }
+
+    /// The declared tick rate capacity and time are converted with.
+    #[must_use]
+    pub const fn rate(&self) -> TickRate {
+        self.rate
+    }
+
+    /// How many items are live.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.live.len()
+    }
+
+    /// Whether no item is live.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.live.is_empty()
+    }
+
+    /// One live item, if it is still flying.
+    #[must_use]
+    pub fn get(&self, projectile: &ProjectileId) -> Option<&LiveOrdnance> {
+        self.live.get(projectile)
+    }
+
+    /// Every live item, in ascending id order.
+    pub fn iter(&self) -> impl Iterator<Item = &LiveOrdnance> {
+        self.live.values()
+    }
+
+    /// Every live item's current swept segment, in ascending id order.
+    #[must_use]
+    pub fn segments(&self) -> Vec<ProjectileSegment> {
+        self.live.values().map(LiveOrdnance::segment).collect()
+    }
+
+    /// The session's guidance trackers.
+    #[must_use]
+    pub const fn guidance(&self) -> &GuidanceSet {
+        &self.guidance
+    }
+
+    /// The session's bounded status-effect ledger.
+    #[must_use]
+    pub const fn status(&self) -> &StatusEffectLedger {
+        &self.status
+    }
+
+    /// One actor's nitro ledger, if a booster is registered for it.
+    #[must_use]
+    pub fn nitro(&self, shooter: &ActorId) -> Option<&NitroLedger> {
+        self.nitro.get(shooter)
+    }
+
+    /// Launches one declared item from a supplied mount pose.
+    ///
+    /// The world release velocity is composed by the *declared*
+    /// [`LaunchGeometry`] through F27's [`MountTransform::world_velocity_mps`]
+    /// (never a second composition rule), and the wind is removed from it
+    /// once by the shared [`air_relative_velocity_m_s`], exactly as F27-B does
+    /// for a gun round. A targeted component registers its guidance tracker at
+    /// launch, with `target` as the designated target; `None` is a launch that
+    /// cannot be tracked and is resolved by the rule's own lost-target
+    /// behavior on the first guidance tick (F28-A).
+    ///
+    /// # Errors
+    ///
+    /// [`OrdnanceRuntimeError`] when the item or the shooter is from another
+    /// session, a projectile with the same id is already live, a release
+    /// velocity or wind component is non-finite, or the declared lifetime is
+    /// zero.
+    pub fn launch(
+        &mut self,
+        shooter: ActorId,
+        projectile: ProjectileId,
+        definition: &ProjectileOrdnance,
+        transform: &MountTransform,
+        target: Option<ActorId>,
+        wind_velocity_m_s: [f64; 3],
+    ) -> Result<ProjectileId, OrdnanceRuntimeError> {
+        if projectile.session != self.session {
+            return Err(OrdnanceRuntimeError::ForeignSession {
+                expected: self.session,
+                found: projectile.session,
+            });
+        }
+        if shooter.session.get() != self.session {
+            return Err(OrdnanceRuntimeError::ForeignSession {
+                expected: self.session,
+                found: shooter.session.get(),
+            });
+        }
+        if self.live.contains_key(&projectile) {
+            return Err(OrdnanceRuntimeError::DuplicateProjectile { projectile });
+        }
+        if definition.lifetime_ticks() == 0 {
+            return Err(OrdnanceRuntimeError::ZeroLifetime { projectile });
+        }
+        check_finite_wind(wind_velocity_m_s)?;
+        let release = definition.launch().release_velocity_mps(transform);
+        for (component, value) in release.iter().enumerate() {
+            if !value.is_finite() {
+                return Err(OrdnanceRuntimeError::NonFiniteVelocity { component });
+            }
+        }
+        let air_velocity_m_s = air_relative_velocity_m_s(release, wind_velocity_m_s);
+        let origin = transform.origin;
+        self.live.insert(
+            projectile,
+            LiveOrdnance {
+                projectile,
+                shooter,
+                definition: definition.clone(),
+                state: OrdnanceState::launch(
+                    projectile,
+                    definition.ordnance().clone(),
+                    definition.family(),
+                    definition.arming(),
+                    definition.fuse(),
+                    definition.lifetime_ticks(),
+                    self.tick,
+                ),
+                previous: origin,
+                current: origin,
+                air_velocity_m_s,
+            },
+        );
+        if definition.guidance().is_targeted() {
+            self.guidance.insert(GuidanceTracker::new(
+                self.session,
+                projectile,
+                definition.guidance(),
+                target,
+            ));
+        }
+        Ok(projectile)
+    }
+
+    /// Advances every live item by one tick of `dt_s` seconds.
+    ///
+    /// The returned [`OrdnanceTick`] names each item's swept segment, the
+    /// items whose lifetime ended, and the items removed because their fuse
+    /// had already triggered. Expired and triggered items are removed from the
+    /// runtime *after* their final segment is recorded, and their guidance
+    /// trackers are dropped with them, so no stale tracker can outlive its
+    /// item.
+    ///
+    /// The tick is **all-or-nothing**: the next positions are validated
+    /// before any item moves, so an item whose next position is not
+    /// representable refuses the whole tick and leaves every item exactly
+    /// where it was.
+    ///
+    /// # Errors
+    ///
+    /// [`OrdnanceRuntimeError::NonFiniteExtent`] when `dt_s` is NaN, infinite
+    /// or negative, [`OrdnanceRuntimeError::NonFiniteWind`] when a wind
+    /// component is not finite, and
+    /// [`OrdnanceRuntimeError::NonFinitePosition`] when an item's next
+    /// position is not representable.
+    pub fn advance(
+        &mut self,
+        dt_s: f64,
+        wind_velocity_m_s: [f64; 3],
+    ) -> Result<OrdnanceTick, OrdnanceRuntimeError> {
+        if !dt_s.is_finite() || dt_s < 0.0 {
+            return Err(OrdnanceRuntimeError::NonFiniteExtent { field: "dt_s" });
+        }
+        check_finite_wind(wind_velocity_m_s)?;
+        let mut moved = Vec::with_capacity(self.live.len());
+        for live in self.live.values() {
+            let velocity = world_velocity_from_air_m_s(live.air_velocity_m_s, wind_velocity_m_s);
+            let mut position = live.current.to_array();
+            for axis in 0..3 {
+                position[axis] += velocity[axis] * dt_s;
+            }
+            let current = WorldPosition::try_new(position).map_err(|_| {
+                OrdnanceRuntimeError::NonFinitePosition {
+                    projectile: live.projectile,
+                }
+            })?;
+            moved.push((live.projectile, current));
+        }
+        let mut tick = OrdnanceTick::default();
+        for (projectile, current) in moved {
+            let Some(live) = self.live.get_mut(&projectile) else {
+                continue;
+            };
+            live.previous = live.current;
+            live.current = current;
+            let segment = live.segment();
+            live.state.advance(&segment);
+            tick.segments.push(segment);
+        }
+        for live in self.live.values() {
+            if live.state.is_expired() {
+                tick.expired.push(live.projectile);
+            } else if live.state.is_triggered() {
+                tick.triggered.push(live.projectile);
+            }
+        }
+        for projectile in tick.expired.iter().chain(tick.triggered.iter()) {
+            self.remove_internal(projectile);
+        }
+        self.tick = Tick(self.tick.0.saturating_add(1));
+        Ok(tick)
+    }
+
+    /// Runs one live item's fuse decision against this tick's geometry.
+    ///
+    /// `paths` are the eligible targets' swept paths for the proximity test
+    /// and `impacts` are the swept contacts the caller's ballistics query
+    /// reported, in ascending time of impact (F27-C's ordering). The item's
+    /// own current segment is the geometry; the arming gate and the trigger
+    /// latch are [`OrdnanceState::fuse_decision`]'s, unchanged.
+    ///
+    /// # Errors
+    ///
+    /// [`OrdnanceRuntimeError::UnknownProjectile`] when the item is not live.
+    pub fn decide(
+        &mut self,
+        projectile: &ProjectileId,
+        paths: &[TargetPath],
+        impacts: &[SweptHit],
+    ) -> Result<FuseDecision, OrdnanceRuntimeError> {
+        let live =
+            self.live
+                .get_mut(projectile)
+                .ok_or(OrdnanceRuntimeError::UnknownProjectile {
+                    projectile: *projectile,
+                })?;
+        let segment = live.segment();
+        Ok(live.state.fuse_decision(&segment, paths, impacts))
+    }
+
+    /// Drives every guidance tracker with one tick's target observation.
+    ///
+    /// The session check runs first: an observation stamped with another
+    /// generation loses every target, because no id from one session may be
+    /// resolved in another. A `Coast` loss leaves the item flying its last
+    /// vector; a `Disarm` loss retires the item so it deals nothing; a
+    /// `Detonate` loss ends the item here — it is removed from the live set
+    /// and reported in [`GuidanceTick::detonated`] so the caller applies the
+    /// blast — and its spent tracker is dropped either way. There is no
+    /// re-acquisition and no second announcement.
+    pub fn guidance_tick(&mut self, session: u64, observation: TargetObservation) -> GuidanceTick {
+        let updates = self.guidance.session_tick(session, observation);
+        let mut detonated = Vec::new();
+        for (projectile, update) in &updates {
+            match update {
+                GuidanceUpdate::Lost {
+                    behavior: LostTargetBehavior::Detonate,
+                    ..
+                } => detonated.push(*projectile),
+                GuidanceUpdate::Disarmed => {
+                    if let Some(live) = self.live.get_mut(projectile) {
+                        live.state.retire();
+                    }
+                }
+                _ => {}
+            }
+        }
+        for projectile in &detonated {
+            self.remove_internal(projectile);
+        }
+        GuidanceTick { updates, detonated }
+    }
+
+    /// Applies one live item's declared status effects to a recipient.
+    ///
+    /// This is the bridge from a component's declared
+    /// [`OrdnanceStatusEffect`] list to the session's bounded ledger: the
+    /// recipient is a stable [`StatusEffectTarget`] and the source is the
+    /// item's own [`OrdnanceId`], so an effect survives a reload and names
+    /// what applied it. The item stays live; a caller that triggered it
+    /// decides whether it also ends.
+    ///
+    /// # Errors
+    ///
+    /// [`OrdnanceRuntimeError::UnknownProjectile`] when the item is not live,
+    /// or [`OrdnanceRuntimeError::Status`] when the ledger refuses the call.
+    pub fn apply_statuses(
+        &mut self,
+        session: u64,
+        tick: Tick,
+        projectile: &ProjectileId,
+        target: StatusEffectTarget,
+    ) -> Result<Vec<StatusEffectInstanceId>, OrdnanceRuntimeError> {
+        let Some(live) = self.live.get(projectile) else {
+            return Err(OrdnanceRuntimeError::UnknownProjectile {
+                projectile: *projectile,
+            });
+        };
+        let source = live.definition.ordnance().clone();
+        let effects = live.definition.status().to_vec();
+        let mut applied = Vec::with_capacity(effects.len());
+        for effect in &effects {
+            applied.push(self.status.apply(session, tick, target, &source, effect)?);
+        }
+        Ok(applied)
+    }
+
+    /// Advances the status ledger to `tick`, reporting every expiry once.
+    ///
+    /// # Errors
+    ///
+    /// [`OrdnanceRuntimeError::Status`] when the
+    /// ledger refuses the call.
+    pub fn advance_status(
+        &mut self,
+        session: u64,
+        tick: Tick,
+    ) -> Result<Vec<ExpiredStatusEffect>, OrdnanceRuntimeError> {
+        Ok(self.status.advance_to(session, tick)?)
+    }
+
+    /// Routes one already-triggered item's declared damage into
+    /// [`HitEvent`]s on one damage node.
+    ///
+    /// Only a triggered item routes, and each item routes **once**: a second
+    /// call is [`OrdnanceRuntimeError::AlreadyRouted`], which is how "apply
+    /// damage once even if several collision features report the same hit"
+    /// becomes structural at the ordnance layer too. The caller supplies the
+    /// target actor and the damage node its part geometry reached; this
+    /// function invents no node and no multiplier, and emits one hit per
+    /// non-zero declared channel.
+    ///
+    /// # Errors
+    ///
+    /// [`OrdnanceRuntimeError`] for a foreign session, an unknown or
+    /// un-triggered item, an item already routed, a hit amount the damage
+    /// layer refuses, or a session generation zero that cannot stamp a hit.
+    pub fn route_trigger(
+        &mut self,
+        session: u64,
+        tick: Tick,
+        projectile: &ProjectileId,
+        target: ActorId,
+        node: DamageNodeKey,
+    ) -> Result<Vec<HitEvent>, OrdnanceRuntimeError> {
+        if session != self.session {
+            return Err(OrdnanceRuntimeError::ForeignSession {
+                expected: self.session,
+                found: session,
+            });
+        }
+        let Some(live) = self.live.get(projectile) else {
+            return Err(OrdnanceRuntimeError::UnknownProjectile {
+                projectile: *projectile,
+            });
+        };
+        if !live.state.is_triggered() {
+            return Err(OrdnanceRuntimeError::NotTriggered {
+                projectile: *projectile,
+            });
+        }
+        if !self.routed.insert(*projectile) {
+            return Err(OrdnanceRuntimeError::AlreadyRouted {
+                projectile: *projectile,
+            });
+        }
+        let Some(session_id) = SessionId::new(self.session) else {
+            return Err(OrdnanceRuntimeError::NoSession);
+        };
+        let attacker = live.shooter;
+        let damage = *live.definition.channels();
+        let mut hits = Vec::new();
+        for channel in WEAPON_DAMAGE_CHANNELS {
+            let amount = damage.amount_on(channel);
+            if amount == 0.0 {
+                continue;
+            }
+            let id = self.next_hit_id(session_id, tick);
+            hits.push(
+                HitEvent::try_new(id, Some(attacker), target, node.clone(), channel, amount)
+                    .map_err(OrdnanceRuntimeError::Hit)?,
+            );
+        }
+        Ok(hits)
+    }
+
+    /// Registers one actor's booster, starting it at full capacity.
+    pub fn register_nitro(&mut self, shooter: ActorId, parameters: NitroParameters) {
+        self.nitro.insert(
+            shooter,
+            NitroLedger::new(self.session, self.tick, self.rate, parameters),
+        );
+    }
+
+    /// Resolves one actor's nitro activation request for one tick.
+    ///
+    /// The ledger is the authority on accepted activation; a refused request
+    /// consumes nothing. `requested` is the held control, never an elapsed
+    /// duration, so no render-frame-scaled burn can be expressed here.
+    ///
+    /// # Errors
+    ///
+    /// [`OrdnanceRuntimeError::UnknownBooster`] when the actor has no booster
+    /// registered, or [`OrdnanceRuntimeError::Nitro`] when the ledger refuses
+    /// the session or the tick.
+    pub fn request_nitro(
+        &mut self,
+        shooter: &ActorId,
+        tick: Tick,
+        requested: bool,
+    ) -> Result<NitroTick, OrdnanceRuntimeError> {
+        let session = self.session;
+        let ledger = self
+            .nitro
+            .get_mut(shooter)
+            .ok_or(OrdnanceRuntimeError::UnknownBooster { shooter: *shooter })?;
+        Ok(ledger.request(session, tick, requested)?)
+    }
+
+    /// Removes one item, dropping its guidance tracker with it.
+    ///
+    /// Idempotent, and a removed id is never reissued: the item is gone and
+    /// its tracker is gone, so a later guidance query cannot resurrect it.
+    pub fn remove(&mut self, projectile: &ProjectileId) -> Option<LiveOrdnance> {
+        self.guidance.remove(projectile);
+        self.routed.remove(projectile);
+        self.live.remove(projectile)
+    }
+
+    /// Removes an item and its tracker without returning it.
+    fn remove_internal(&mut self, projectile: &ProjectileId) {
+        self.guidance.remove(projectile);
+        self.routed.remove(projectile);
+        self.live.remove(projectile);
+    }
+
+    /// Allocates the next hit id of this session.
+    fn next_hit_id(&mut self, session: SessionId, tick: Tick) -> HitEventId {
+        let id = HitEventId {
+            session,
+            tick,
+            producer: self.producer,
+            sequence: self.next_hit_sequence,
+        };
+        self.next_hit_sequence = self.next_hit_sequence.wrapping_add(1);
+        id
+    }
+}
+
+/// Refuses a non-finite wind component with the runtime's own error type.
+fn check_finite_wind(wind_velocity_m_s: [f64; 3]) -> Result<(), OrdnanceRuntimeError> {
+    for (component, value) in wind_velocity_m_s.iter().enumerate() {
+        if !value.is_finite() {
+            return Err(OrdnanceRuntimeError::NonFiniteWind { component });
+        }
+    }
+    Ok(())
 }
 
 // ------------------------------------------------------------------ fixture ----
