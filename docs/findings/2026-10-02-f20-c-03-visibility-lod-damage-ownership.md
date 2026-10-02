@@ -63,31 +63,32 @@ The original `mis_anim.zbd` / `cam_anim.zbd` layouts are still undecoded (F13):
 every rule below is **designed**, and no original behavior is claimed. F20-D
 keeps the original-family validation gate.
 
-1. **Two records, one composed verdict; no second writer.** The clip's fact is
-   the new component `NodeAnimatedVisibility`; LOD/damage's fact is F11-C's
-   existing `NodePresentation`; the answer a consumer reads is
-   `VisibilityVerdict`, composed **at read time** by
-   `composed_visibility_verdict`. The composition is *not* stored as a
-   component, and the animation never writes `NodePresentation`. That is the
-   whole ordering decision, and it is why it needs no schedule constraint:
-   because the verdict is computed from the two records as they are at the
-   moment of the read, the LOD pass cannot lose the animation's verdict (it
-   never touches it) and the animation cannot override LOD or damage (it never
-   touches their field), whatever order the two run in. A stored verdict would
-   reintroduce exactly the race this stage exists to settle: it would have to
-   be ordered after `select_lod_presentation` in a schedule, and
-   `crates/cs_app/src/scene.rs` — which registers the LOD system — is outside
-   this task's owner paths, so no honest constraint could be placed there.
+1. **Three records, one composed verdict; no second writer.** The clip's fact is
+   the new component `NodeAnimatedVisibility`; damage's own per-entity fact is
+   F11-C's `NodeDisabled` marker and the LOD/damage record is F11-C's existing
+   `NodePresentation`; the answer a consumer reads is `VisibilityVerdict`,
+   composed **at read time** by `composed_visibility_verdict`. The composition
+   is *not* stored as a component, and the animation never writes
+   `NodePresentation` or `NodeDisabled`. That is the whole ordering decision,
+   and it is why it needs no schedule constraint: because the verdict is
+   computed from the records as they are at the moment of the read, the LOD pass
+   cannot lose the animation's verdict (it never touches it) and the animation
+   cannot override LOD or damage (it never touches their records), whatever
+   order the two run in. A stored verdict would reintroduce exactly the race
+   this stage exists to settle: it would have to be ordered after
+   `select_lod_presentation` in a schedule, and `crates/cs_app/src/scene.rs` —
+   which registers the LOD system — is outside this task's owner paths, so no
+   honest constraint could be placed there.
 2. **The priority, combination by combination** (the draw half):
 
-   | `NodePresentation` (LOD/damage) | clip visibility | composed `draw` |
-   | --- | --- | --- |
-   | `Disabled` (self or ancestor `NodeDisabled`) | `Visible` or `Hidden` | `Disabled` |
-   | `LodCulled` | `Visible` or `Hidden` | `LodCulled` |
-   | `Drawn` | `Hidden` | `HiddenByAnimation` |
-   | `Drawn` | `Visible` or no channel | `Drawn` |
-   | no presentation record | `Hidden` | `HiddenByAnimation` |
-   | no presentation record | `Visible` or no channel | `Drawn` |
+   | the node carries `NodeDisabled`, or the record is `Disabled` | `NodePresentation` | clip visibility | composed `draw` |
+   | --- | --- | --- | --- |
+   | yes (self, or self-or-ancestor through the record) | `Disabled` | `Visible` or `Hidden` | `Disabled` |
+   | no | `LodCulled` | `Visible` or `Hidden` | `LodCulled` |
+   | no | `Drawn` | `Hidden` | `HiddenByAnimation` |
+   | no | `Drawn` | `Visible` or no channel | `Drawn` |
+   | no | no presentation record | `Hidden` | `HiddenByAnimation` |
+   | no | no presentation record | `Visible` or no channel | `Drawn` |
 
    - **Damage wins over everything.** It is F11-C's own rule one level up
      ("`Disabled` wins over `LodCulled` at any depth, so a destroyed wing stays
@@ -97,16 +98,44 @@ keeps the original-family validation gate.
      therefore both leave a destroyed node not drawn — non-negotiable
      behavior 3, asserted tick by tick.
    - **LOD's reason outranks the clip's**, but the clip's *fact* is not lost:
-     a culled variant is reported culled, because at that distance it is not
-     the band the group chose and blaming the clip for a distance decision
-     would be a lie. The clip's own record still reads `Hidden` and still
-     reaches collision (decision 3).
+     a culled variant is reported culled, because at that distance it is not the
+     band the group chose and blaming the clip for a distance decision would be
+     a lie. The clip's own record still reads `Hidden` and still reaches
+     collision (decision 5).
    - **The clip decides only against `Drawn`.** Nothing in LOD/damage opposes
      the node, so the clip's own verdict is the answer.
    - **No presentation record is not a cull.** An entity the LOD pass has
      never written for carries no evidence of a distance decision, so the
      composition reports what the clip says; it does not invent a cull.
-3. **Collision is composed on the clip's own record, not on the draw
+3. **The damage window, and why the node's own marker is read directly (added
+   in review).** F11-C chains its three systems
+   (`process_airframe_scene_request` → `apply_airframe_damage` →
+   `select_lod_presentation`) and calls the consequence of any other order "a
+   late update, never a wrong one". That is true of the **presentation record**,
+   whose own pass recomputes it every frame. It is not true of a verdict a
+   consumer *reads* in the frame the damage landed: between
+   `apply_airframe_damage` writing `NodeDisabled` and that frame's
+   `select_lod_presentation` folding it, the record still says `Drawn`, so a
+   composition reading only the record reports a node destroyed earlier in the
+   same frame as **drawn** — the very frame in which a looping clip's re-show
+   tick does most of its damage, and a violation of non-negotiable behavior 3.
+   The composition therefore also reads the node's own `NodeDisabled`: one
+   component read, no writer, no schedule constraint, and immediate in the
+   direction that must never be late. The **ancestor** fold stays F11-C's
+   hierarchy walk, so a descendant of a destroyed part reads `Disabled` from
+   the record once that frame's pass has run — the same one-frame window F11-C
+   already accepts for its own field. The repair direction is deliberately left
+   to that recompute: a repair one frame late is F11-C's accepted late update,
+   and this composition does not recompute another stage's record.
+4. **`AirframeDamageState` is deliberately not read (added in review).** That
+   resource holds the destroyed part identities as stable `SceneNodeId`s and
+   survives a scene reload; `apply_airframe_damage` is its single owner and
+   projects it onto the per-entity markers. The composition reads that
+   projection instead: reaching the resource would mean looking the node's
+   `SceneNodeBinding` up to re-decide a decision another stage has already made,
+   and would make a second consumer of a record whose lifetime differs from the
+   verdict's. Reading a marker is not writing one, so this adds no second owner.
+5. **Collision is composed on the clip's own record, not on the draw
    reason.** `ColliderVerdict::NoCollider` exactly when a playing clip hides
    the node — F20-A's designed rule, carried from
    `AnimatedNodeState::collider_enabled()` — and `Undecided` otherwise, because
@@ -121,7 +150,7 @@ keeps the original-family validation gate.
    reason, a node the clip hides carries no collider whether or not LOD culls
    it — a render consumer and a collision consumer cannot disagree about
    whether the clip hid it.
-4. **The channel has no blocked-track case, and that is stated, not
+6. **The channel has no blocked-track case, and that is stated, not
    forgotten.** A visibility key carries a `NodeVisibility`, not a
    `Resolved<_>`, so there is nothing to be unknown: `TrackKind` has no
    `Visibility` variant and no `BlockedTrack` is ever published for it. The
@@ -130,25 +159,25 @@ keeps the original-family validation gate.
    the base state the spawned object has), and an entity whose
    `AnimatedNodeBinding` does not verify is never written, so an animation that
    is not playing cannot hide anything.
-5. **The applied record is the clip's, the verdict is the world's.** A hidden
+7. **The applied record is the clip's, the verdict is the world's.** A hidden
    node keeps `NodeAnimatedVisibility(Hidden)` on a damaged node, because the
    component records what the clip evaluates and the verdict records what the
    world does. That is why the destruction rule lives in the composition and
    not in the write: the write is idempotent, verified-binding-gated and
    teardown-released like the other three channels, and none of that needs to
    know about damage.
-6. **The teardown releases the visibility with the rest.** `release_instance`
+8. **The teardown releases the visibility with the rest.** `release_instance`
    (F20-C.02) removes `NodeAnimatedVisibility` for the entities of the instance
    it tore down, so a stopped instance cannot leave a node hidden forever, and
    a node that is **also** damaged stays `Disabled` after the teardown — which
    is the non-negotiable-3 assertion that distinguishes the two.
-7. **The hidden verdict is per node; no subtree fold is designed.** The clip
+9. **The hidden verdict is per node; no subtree fold is designed.** The clip
    names one node. Whether the original's visibility swap hides the node's whole
    subtree — the way `NodeDisabled` and a culled band both propagate — is
    unmeasured, so nothing here folds ancestors for the animation half. A
    consumer that needs subtree visibility must fold it explicitly and record
    that decision; this stage does not guess one.
-8. **`BlockedTrack`-style reporting is unchanged** by this stage: the three
+10. **`BlockedTrack`-style reporting is unchanged** by this stage: the three
    `Resolved` channels keep publishing once per `(clip, node, track)`, and the
    visibility write is the fourth channel of the same verified path, so a gap in
    the clip's content is reported exactly as before.
@@ -185,6 +214,7 @@ extension removes a component that no earlier test's entity carries.
 | `accept_f20_c_03_a_hidden_node_stays_hidden_across_a_lod_selection_pass` (minimum) | the wired fixed-tick entry at the hide tick applies `Hidden` and the composed verdict is not drawn with `NoCollider`, the gameplay cue fired once; then the **real** `select_lod_presentation` rewrites `NodePresentation` (asserted: `LodCulled` at a far distance, `Drawn` again at a near one) and the verdict stays not drawn with `NoCollider` both times, reporting LOD's own reason at the far distance |
 | `accept_f20_c_03_showing_the_node_again_is_the_symmetric_verdict` | at the show tick the record is `Visible`, the verdict is `Drawn`/`Undecided`, the loop's second pass re-fires nothing, and a far-distance LOD pass culls it with `Undecided` again: the clip stops deciding collision the moment it stops hiding |
 | `accept_f20_c_03_a_destroyed_node_is_never_restored_by_a_loop_pass_or_an_lod_pass` | damage's `NodeDisabled` marker outranks the clip: over four loop passes — every re-show tick included, and the count of those re-shows is asserted so the test cannot pass vacuously — the verdict is `Disabled` and never drawn, the marker is never touched, the one-shot cue still fires once, a mesh under the destroyed part is not drawn, two distances change nothing, and the teardown does not either |
+| `accept_f20_c_03_a_destroyed_node_is_never_drawn_before_the_lod_pass_folds_it` (added in review) | the damage window (decisions 3 and 4): with the marker set and **no** LOD pass since, the verdict is `Disabled` although the record still says `Drawn`, at the clip's show key, at its hide key (with the collider half still `NoCollider`) and at the next pass's re-show key; the pass then folds the marker and the ancestor agrees; a repair is late until the record is recomputed (F11-C's own late update) and the clip's hide is the answer again afterwards |
 | `accept_f20_c_03_a_released_instance_hands_a_live_node_back_to_lod` | the mirror: the teardown releases the record, an undamaged node returns to LOD's `Drawn`/`Undecided`, and a later advance of the same track drives nothing |
 | `accept_f20_c_03_the_visibility_verdict_is_written_only_when_it_changes` | idempotence observed through a real `On<Insert, NodeAnimatedVisibility>` counter: the break tick inserts once, a second advance of the same tick inserts nothing, the real LOD pass inserts nothing, and the show tick inserts again (2) — a value comparison could not have told "written again" from "not written" |
 | `accept_f20_c_03_an_unbound_or_stale_generation_entity_is_never_written` | of four entities, only the verified binding receives the record: a superseded generation, an entity with no binding and a binding to a node the clip does not drive keep `None` and stay drawn |
@@ -204,8 +234,11 @@ crates/` returns nothing, `git status` shows no probe edit, and the selection is
 | P4 the teardown keeps the record | `release_instance` no longer removes `NodeAnimatedVisibility` | 2: `..._a_released_instance_hands_a_live_node_back_to_lod`, `..._a_destroyed_node_is_never_restored_...` |
 | P5 the collider half ignores the hide | `VisibilityVerdict::compose` always answers `ColliderVerdict::Undecided` | 2: `..._a_hidden_node_stays_hidden_across_a_lod_selection_pass`, `..._the_visibility_verdict_is_written_only_when_it_changes` |
 | P6 the write is not idempotent | `apply_write` inserts the visibility record unconditionally instead of through `insert_changed` | 1: `..._the_visibility_verdict_is_written_only_when_it_changes` |
+| P7 the node's own damage marker is not read (review) | `composed_visibility_verdict` passes `false` instead of `world.get::<NodeDisabled>(entity).is_some()` | 1: `..._a_destroyed_node_is_never_drawn_before_the_lod_pass_folds_it` — and nothing else, which is why the window needed its own test |
 
 ## Checks run
+
+By the implementer, before handover:
 
 - `cargo fmt --all -- --check` — exit 0.
 - `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
@@ -221,8 +254,57 @@ crates/` returns nothing, `git status` shows no probe edit, and the selection is
 - the six mutation probes above — each probe's selection exited 101 and the
   files were restored.
 
+By the reviewer, after the review fixes (decisions 3 and 4, the eighth test and
+probe P7):
+
+- `cargo fmt --all -- --check` — exit 0.
+- `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
+  — exit 0.
+- `cargo test --workspace --locked` — exit 0, 2509 tests passed, 0 failed.
+- `cargo test --workspace --locked -- accept_f20_c_03_ --include-ignored` —
+  exit 0, **8 tests matched**, all passing, none `#[ignore]`d.
+- probe P7 — the selection exited 101 on exactly the new test; the file was
+  restored and `grep -rn "MUTATION PROBE" crates/` is empty.
+
 No command needed `CS_GAME_DIR`, and `CS_CAPABILITIES`
 (`retail,gpu,audio`) was not exercised: this stage reads no original data.
+
+## Review record (reviewer: bunny-2, 2026-10-02)
+
+**Identities, stated plainly:** the implementer of this stage and the reviewer
+are the same agent (`bunny-2`), and Rally assigned the review to that same
+agent. Per AGENTS.md this review is therefore **not independent evidence**; the
+stage can still only be *checked*, never `verified_original` or
+`release_approved`. A second, fresh-context subagent was launched to read the
+diff with empty context as a partial substitute; it returned no report, so
+nothing from it is claimed here.
+
+What the review changed (both findings are in the ownership decision the task
+asked for, and both were found by reading `scene.rs` against the new
+composition):
+
+1. **The destruction half of the verdict had a one-frame hole (decisions 3,
+   8).** The composition read only `NodePresentation`, so between F11-C's
+   `apply_airframe_damage` writing `NodeDisabled` and that frame's
+   `select_lod_presentation` folding it, a destroyed node read `Drawn` — the
+   frame in which a looping clip's re-show tick fires. `composed_visibility_verdict`
+   now reads the node's own marker, and
+   `accept_f20_c_03_a_destroyed_node_is_never_drawn_before_the_lod_pass_folds_it`
+   pins it (probe P7: only that test fails without the read). The ancestor fold
+   and the repair direction stay F11-C's, and the doc now says so instead of
+   leaving it unstated.
+2. **`AirframeDamageState` was absent from the decision (decision 4).** The task
+   named it explicitly and the stage neither read it nor explained why not; it
+   now states that `apply_airframe_damage` is its single owner and that the
+   composition reads the projection rather than re-deciding a part identity
+   whose record outlives a scene load.
+
+Everything else in the branch was checked and kept: the fixture is the only
+declared clip with a visibility channel, the four applied channels share one
+verified-binding path, the teardown releases the new record, no `accept_f20_a_*`
+/ `accept_f20_b_*` / `accept_f20_c_0[12]_*` assertion was touched,
+`crates/cs_app/src/scene.rs` and every protected path are untouched, and the
+two missing consumers remain filed (#503, #504) rather than invented.
 
 ## Unknowns
 
@@ -231,7 +313,7 @@ No command needed `CS_GAME_DIR`, and `CS_CAPABILITIES`
   engine's designed rule, adopted unchanged here, with no original evidence.
   F20-D measures it or nothing may claim it.
 - Whether an original visibility swap hides the node's **subtree** (decision
-  7) and whether the original ever paired a destruction transition with a
+  9) and whether the original ever paired a destruction transition with a
   gameplay marker at the same tick are unmeasured with the container layouts
   (F13).
 - The original tick rate an animation ran at, and whether its markers ran

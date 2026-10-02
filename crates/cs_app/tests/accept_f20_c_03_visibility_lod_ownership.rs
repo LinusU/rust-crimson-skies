@@ -28,7 +28,10 @@
 //!   With the damage marker set, the verdict must be `Disabled` and never drawn
 //!   at every tick of four passes, at two distances, and after the instance is
 //!   torn down — while the same teardown on an undamaged node does release the
-//!   record and hand the node back (F20 non-negotiable behavior 3).
+//!   record and hand the node back (F20 non-negotiable behavior 3). It must also
+//!   hold in the frame the damage lands, before the LOD pass has folded the
+//!   marker: F11-C's chained order leaves that window, and a verdict read inside
+//!   it is a wrong answer rather than a late one.
 //! * **A write that never verified.** Of four entities — the bound one, one
 //!   stamped by a superseded scene load, one with no binding and one bound to a
 //!   node the clip does not drive — exactly the bound one receives the record
@@ -603,7 +606,128 @@ fn accept_f20_c_03_a_destroyed_node_is_never_restored_by_a_loop_pass_or_an_lod_p
     );
 }
 
-/// The mirror of that teardown: a node nothing has destroyed returns to LOD's
+/// The destruction half of the verdict does not wait for the LOD pass.
+///
+/// F11-C's own systems are chained damage-then-LOD in one frame, and it calls
+/// the consequence of any other order "a late update, never a wrong one" — true
+/// of the presentation record, which its own pass recomputes every frame, but
+/// not of a verdict a consumer **reads** in the frame the damage landed. Between
+/// `apply_airframe_damage` writing the marker and that frame's
+/// `select_lod_presentation` folding it, the record still says `Drawn`, so a
+/// composition that read only the record would report a node destroyed earlier
+/// in the same frame as drawn. This is the frame in which a looping clip's
+/// re-show tick does most of its damage, and it is asserted here **without**
+/// running the LOD pass in between.
+#[test]
+fn accept_f20_c_03_a_destroyed_node_is_never_drawn_before_the_lod_pass_folds_it() {
+    let at = generation();
+    let mut world = world_at(NEAR_METRES);
+    let hatch = spawn_hatch_group(&mut world, at);
+    bind_node(&mut world, hatch, &node(SYNTHETIC_BREAKABLE_NODE), at);
+    play_breakable(&mut world, at);
+    run_lod_pass(&mut world);
+
+    // The clip shows the node (tick 0's key), so without damage the verdict is
+    // "drawn" — the state a stale record would keep reporting.
+    commit(&mut world, 0);
+    assert_eq!(verdict(&world, hatch).draw(), DrawVerdict::Drawn);
+    let _ = drain(&mut world);
+
+    // Damage lands in this frame; the LOD pass has not run since.
+    world.entity_mut(hatch).insert(NodeDisabled);
+    assert_eq!(
+        presentation(&world, hatch),
+        Some(PresentationState::Drawn),
+        "the presentation record is still last frame's, which is the window under test"
+    );
+    assert_eq!(
+        verdict(&world, hatch).draw(),
+        DrawVerdict::Disabled,
+        "a node destroyed in this frame is not drawn in this frame"
+    );
+
+    // And the same window with the clip hiding it: damage still outranks the
+    // clip's own reason, and the clip's hidden fact still reaches collision.
+    commit(&mut world, SYNTHETIC_BREAKABLE_HIDDEN_TICK);
+    let hidden_and_destroyed = verdict(&world, hatch);
+    assert_eq!(applied_visibility(&world, hatch), Some(Visibility::Hidden));
+    assert_eq!(hidden_and_destroyed.draw(), DrawVerdict::Disabled);
+    assert_eq!(hidden_and_destroyed.collider(), ColliderVerdict::NoCollider);
+    let _ = drain(&mut world);
+
+    // The loop's re-show tick, still inside the window: the clip asks for the
+    // node back and the verdict refuses.
+    commit(&mut world, SYNTHETIC_BREAKABLE_SHOWN_TICK);
+    assert_eq!(applied_visibility(&world, hatch), Some(Visibility::Visible));
+    assert_eq!(
+        verdict(&world, hatch).draw(),
+        DrawVerdict::Disabled,
+        "the re-show key is applied to the record and refused by the verdict"
+    );
+
+    // Once the pass does run, the fold agrees with what the marker already said,
+    // and the mesh under the part is disabled with it.
+    let frame = spawn_child(&mut world, CHILD_NODE, hatch, at);
+    run_lod_pass(&mut world);
+    assert_eq!(
+        presentation(&world, hatch),
+        Some(PresentationState::Disabled)
+    );
+    assert_eq!(
+        presentation(&world, frame),
+        Some(PresentationState::Disabled),
+        "the ancestor fold is F11-C's, and it reaches the same verdict"
+    );
+    assert_eq!(verdict(&world, hatch).draw(), DrawVerdict::Disabled);
+
+    // The repair direction is deliberately not the same, and the difference is
+    // the point: a marker removal is F11-C's own convergent recompute, so the
+    // presentation record still says `Disabled` until that pass runs again. A
+    // destruction may never wait for a pass (a destroyed node that is drawn for
+    // a frame is a wrong frame), while a repair one frame late is the late
+    // update F11-C already accepts for its own field. The composition reports
+    // what the records say and invents neither.
+    world.entity_mut(hatch).remove::<NodeDisabled>();
+    assert_eq!(
+        verdict(&world, hatch).draw(),
+        DrawVerdict::Disabled,
+        "the record has not been recomputed since the repair, and this composition does not \\
+         recompute another stage's record"
+    );
+    assert!(
+        world.get::<NodeDisabled>(hatch).is_none(),
+        "the repair is the damage pass's to make; the animation never removes the marker"
+    );
+    run_lod_pass(&mut world);
+    let repaired = verdict(&world, hatch);
+    assert_eq!(presentation(&world, hatch), Some(PresentationState::Drawn));
+    assert_eq!(
+        applied_visibility(&world, hatch),
+        Some(Visibility::Visible),
+        "the clip's last reached key is the re-show, so it no longer hides the node"
+    );
+    assert_eq!(
+        repaired.draw(),
+        DrawVerdict::Drawn,
+        "a repaired node is presented again once its record is recomputed"
+    );
+    assert_eq!(repaired.collider(), ColliderVerdict::Undecided);
+
+    // One more commit into the next pass's hidden key with the marker gone:
+    // the clip's own hide is what decides, which is the whole ownership
+    // decision in one line.
+    commit(
+        &mut world,
+        SYNTHETIC_BREAKABLE_HIDDEN_TICK + SYNTHETIC_BREAKABLE_DURATION,
+    );
+    assert_eq!(
+        verdict(&world, hatch).draw(),
+        DrawVerdict::HiddenByAnimation,
+        "with no damage and no cull, the clip's own verdict is the answer"
+    );
+}
+
+/// The mirror of the teardown: a node nothing has destroyed returns to LOD's
 /// own verdict when the instance that hid it is released. Without this half the
 /// destruction test could pass with a teardown that never released anything.
 #[test]

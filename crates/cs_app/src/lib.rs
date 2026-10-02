@@ -175,13 +175,15 @@
 //! evaluated visibility applied on the same verified path as the other
 //! channels, and [`animation::composed_visibility_verdict`] returns the
 //! single [`animation::VisibilityVerdict`] a render or collision consumer
-//! reads — composed on read out of that record and F11-C's
+//! reads — composed on read out of that record, the node's own
+//! [`scene::NodeDisabled`] marker and F11-C's
 //! [`scene::NodePresentation`], with damage outranking LOD, LOD's cull
 //! outranking the clip's reason, and a clip-hidden node carrying no collider
 //! whatever the draw verdict says. Nothing in the animation path writes
 //! [`scene::NodePresentation`] or [`scene::NodeDisabled`], so neither the LOD
-//! pass nor an animation pass can silently lose the other's decision and a
-//! destroyed node is never re-drawn by a loop pass or a distance change
+//! pass nor an animation pass can silently lose the other's decision, and a
+//! destroyed node is never re-drawn by a loop pass or a distance change — not
+//! even in the frame between damage's marker and that frame's LOD pass
 //! (non-negotiable behavior 3).
 //!
 //! [`camera`] is the F21-A camera boundary

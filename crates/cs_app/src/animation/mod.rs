@@ -67,12 +67,14 @@
 //! [`visibility::NodeAnimatedVisibility`] is the clip's evaluated visibility
 //! applied through the same verified-binding path as the other three channels,
 //! and [`visibility::VisibilityVerdict`] is the single **composed** verdict
-//! that [`visibility::composed_visibility_verdict`] reads out of that record
-//! and F11-C's `NodePresentation` — damage outranks LOD, LOD's own cull
-//! outranks the clip's reason, and a hidden node carries no collider whatever
-//! the draw verdict says. The composition is computed on read and nothing
-//! writes `NodePresentation`, so neither the LOD pass nor an animation pass
-//! can silently lose the other's decision (F20 non-negotiable behavior 3).
+//! that [`visibility::composed_visibility_verdict`] reads out of that record,
+//! the node's own `NodeDisabled` marker and F11-C's `NodePresentation` — damage
+//! outranks LOD, LOD's own cull outranks the clip's reason, and a hidden node
+//! carries no collider whatever the draw verdict says. The composition is
+//! computed on read and nothing writes `NodePresentation` or `NodeDisabled`, so
+//! neither the LOD pass nor an animation pass can silently lose the other's
+//! decision, and a destroyed node stays destroyed in the frame its marker
+//! appears (F20 non-negotiable behavior 3).
 
 use std::fmt;
 
