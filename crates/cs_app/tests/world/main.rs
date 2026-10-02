@@ -48,6 +48,13 @@
 //! undecoded — plus the real offscreen GPU capture that shows each group's
 //! stored geometry is drawable as stored.
 //!
+//! **#427** (`accept_t427_`) measures the **original's** trigger volumes instead
+//! of the fixtures': `triggers` owns the survey that reads every world
+//! container's node array through the production node reader, and pins the
+//! contract that a stored extent is never read as a length in metres — the
+//! one-tick verdict refuses to decide while the stored-vertex unit is
+//! unmeasured and reports the factor at which it would flip.
+//!
 //! **F18-C** (`accept_f18_c_`) is the mission layer on top of that transaction:
 //! `overlays` owns AC03 — a body reaching a trigger volume opens an authored
 //! door, and both the drawn and the collided half of the door move, once — and
@@ -67,4 +74,5 @@ mod shear;
 mod spawn;
 mod sweep;
 mod trigger;
+mod triggers;
 mod visibility;

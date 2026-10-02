@@ -3099,6 +3099,729 @@ impl WorldGroupAuditReport {
     }
 }
 
+// --------------------------------------------- the retail trigger-volume survey ---
+
+/// The member of a campaign mission's reader archive that names the mission's
+/// detection zones.
+///
+/// A **measured** name, over the owner's installation: 23 of the 53 campaign
+/// mission readers list a member of exactly this name, and no other member in
+/// any reader carries the [`DETECTION_ZONE_PREFIX`] vocabulary. What the member
+/// declares, and whether it declares any geometry at all, is **undecoded** — see
+/// [`RetailTriggerVolumeSurvey::zone_declarations_are_decoded`].
+pub const DETECTION_ZONE_MEMBER: &str = "dzones.zrd";
+
+/// The name prefix the original's own world nodes give a detection zone.
+///
+/// A measured name: the world containers carry nodes called `dzpath1`,
+/// `dzpath2`, … under a parent node called `dzpaths`, and the campaign's own
+/// mission members name the same strings. The suffix is a **decimal index**, not
+/// a guess: every measured node name after the prefix is digits, and
+/// [`DETECTION_ZONE_PARENT`] is the one measured name that is not.
+pub const DETECTION_ZONE_PREFIX: &str = "dzpath";
+
+/// The measured parent node name of a world container's detection zones.
+///
+/// It is **not** a zone: [`is_detection_zone_name`] refuses it, and the survey
+/// never counts it. It is stated as a constant because the survey and a reader
+/// of this record must agree about which node is the container of the others.
+pub const DETECTION_ZONE_PARENT: &str = "dzpaths";
+
+/// Whether a world node's stored name is one **numbered** detection zone.
+///
+/// The rule is the measured one and nothing else: the [`DETECTION_ZONE_PREFIX`]
+/// followed by at least one decimal digit and by nothing else. The parent node
+/// ([`DETECTION_ZONE_PARENT`]) is refused, because it carries no zone of its own,
+/// and a name with a suffix that is not digits is refused rather than truncated
+/// — a rule that accepted `dzpath1_backup` would be reading a name the store
+/// never used.
+#[must_use]
+pub fn is_detection_zone_name(name: &str) -> bool {
+    let Some(index) = name.strip_prefix(DETECTION_ZONE_PREFIX) else {
+        return false;
+    };
+    !index.is_empty() && index.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+/// Why a measured stored volume was refused.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TriggerVolumeError {
+    /// A stored corner was NaN or infinite, so the extent it would produce is
+    /// not a number a comparison could trust.
+    NonFiniteCorner {
+        /// Which corner: `0` the minimum, `1` the maximum.
+        corner: usize,
+        /// The axis the non-finite value was on.
+        axis: usize,
+    },
+    /// The stored minimum was above the stored maximum on some axis, so the
+    /// record is not a box.
+    Inverted {
+        /// The axis the record is inverted on.
+        axis: usize,
+    },
+    /// A stored-unit-to-metre factor was NaN or infinite.
+    NonFiniteScale {
+        /// The factor that was refused.
+        scale: f64,
+    },
+    /// A stored-unit-to-metre factor was zero or negative, which would make a
+    /// length either vanish or flip.
+    NonPositiveScale {
+        /// The factor that was refused.
+        scale: f64,
+    },
+    /// A speed was NaN or infinite, so one tick of travel is not a number.
+    NonFiniteSpeed {
+        /// The speed that was refused.
+        speed_m_s: f64,
+    },
+    /// A tick rate was zero, which has no tick in it.
+    ZeroTickRate,
+    /// Two zones of the same world claimed the same name.
+    DuplicateZone {
+        /// The world the duplicate is in.
+        world: String,
+        /// The zone name both records claim.
+        zone: String,
+    },
+}
+
+impl fmt::Display for TriggerVolumeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NonFiniteCorner { corner, axis } => {
+                let which = if *corner == 0 { "minimum" } else { "maximum" };
+                write!(
+                    f,
+                    "the stored {which} corner on axis {axis} is not a number"
+                )
+            }
+            Self::Inverted { axis } => write!(
+                f,
+                "the stored minimum is above the stored maximum on axis {axis}"
+            ),
+            Self::NonFiniteScale { scale } => {
+                write!(f, "the stored-unit-to-metre factor {scale} is not a number")
+            }
+            Self::NonPositiveScale { scale } => write!(
+                f,
+                "the stored-unit-to-metre factor {scale} is not greater than zero"
+            ),
+            Self::NonFiniteSpeed { speed_m_s } => {
+                write!(f, "the speed {speed_m_s} m/s is not a number")
+            }
+            Self::ZeroTickRate => write!(f, "a tick rate of zero has no tick in it"),
+            Self::DuplicateZone { world, zone } => {
+                write!(f, "two zones of world {world} claim the name {zone}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for TriggerVolumeError {}
+
+/// One axis-aligned box a world node stores, in the container's **stored units**.
+///
+/// The stored units are not metres and their scale is **unmeasured**: the same
+/// statement [`RepresentativeGeometry`] makes about a stored mesh extent. A
+/// consumer that needs a length in canonical metres must go through
+/// [`RetailTriggerVolumeSurvey::tick_verdict`], which refuses to compare at all
+/// while the scale is unknown — this type exists so a reader cannot reach a
+/// number and mistake it for one.
+#[derive(Clone, Debug, PartialEq)]
+pub struct StoredVolume {
+    min: [f64; 3],
+    max: [f64; 3],
+}
+
+impl StoredVolume {
+    /// Validates and wraps the two stored corners, in stored units.
+    ///
+    /// # Errors
+    ///
+    /// [`TriggerVolumeError::NonFiniteCorner`] for a corner no arithmetic can
+    /// use, and [`TriggerVolumeError::Inverted`] for a minimum above its
+    /// maximum. A degenerate box — a minimum equal to its maximum on one axis —
+    /// is **accepted**: it is a flat plane, and a plane is a real authored
+    /// volume. What the survey counts is the thickness, not the volume.
+    pub fn new(min: [f64; 3], max: [f64; 3]) -> Result<Self, TriggerVolumeError> {
+        for (corner, values) in [(0usize, min), (1usize, max)] {
+            for (axis, value) in values.iter().enumerate() {
+                if !value.is_finite() {
+                    return Err(TriggerVolumeError::NonFiniteCorner { corner, axis });
+                }
+            }
+        }
+        for axis in 0..3 {
+            if min[axis] > max[axis] {
+                return Err(TriggerVolumeError::Inverted { axis });
+            }
+        }
+        Ok(Self { min, max })
+    }
+
+    /// The stored minimum corner.
+    #[must_use]
+    pub const fn min(&self) -> [f64; 3] {
+        self.min
+    }
+
+    /// The stored maximum corner.
+    #[must_use]
+    pub const fn max(&self) -> [f64; 3] {
+        self.max
+    }
+
+    /// The stored extent along one axis, in stored units.
+    ///
+    /// # Panics
+    ///
+    /// If `axis` is not `0`, `1` or `2`. The three axes are the whole of what a
+    /// stored box has, so an out-of-range index is a programming error rather
+    /// than untrusted input.
+    #[must_use]
+    pub fn extent(&self, axis: usize) -> f64 {
+        self.max[axis] - self.min[axis]
+    }
+
+    /// The **smallest** stored extent over the three axes, in stored units.
+    ///
+    /// This is the number the one-tick question turns on: a body crossing the
+    /// volume has to get through its thinnest direction to be outrun by a
+    /// sample, so the thinnest axis is the axis that decides it.
+    #[must_use]
+    pub fn thinnest_extent(&self) -> f64 {
+        (0..3)
+            .map(|axis| self.extent(axis))
+            .fold(f64::INFINITY, f64::min)
+    }
+
+    /// Which axis [`Self::thinnest_extent`] is on, the first of a tie.
+    #[must_use]
+    pub fn thinnest_axis(&self) -> usize {
+        let mut axis = 0;
+        let mut thinnest = self.extent(0);
+        for candidate in 1..3 {
+            let extent = self.extent(candidate);
+            if extent < thinnest {
+                thinnest = extent;
+                axis = candidate;
+            }
+        }
+        axis
+    }
+
+    /// Whether every axis is zero, which is a record that stores no box at all.
+    ///
+    /// Deliberately **not** the same test as `thinnest_extent() == 0.0`: a box
+    /// whose minimum equals its maximum on one axis is a plane, and a plane is a
+    /// real authored volume. A reader that conflated the two would refuse every
+    /// flat trigger the original authored and call it an absent one.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        (0..3).all(|axis| self.extent(axis) == 0.0)
+    }
+}
+
+/// Where one measured zone's bytes are, so a reader can go back to them.
+///
+/// This is the **source span** a trigger-volume measurement is required to
+/// carry. It is a value rather than four fields on the zone for one reason: a
+/// measurement whose numbers cannot be traced to a byte range is a number in a
+/// document, and the difference is exactly what task #427's first acceptance
+/// criterion asks for.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TriggerVolumeSpan {
+    world: WorldId,
+    container: String,
+    container_sha256: String,
+    node_slot: u32,
+    node_offset: u64,
+    node_bytes: u64,
+}
+
+impl TriggerVolumeSpan {
+    /// Assembles the span of one node's own record inside one container.
+    ///
+    /// `container_sha256` is the SHA-256 of the **whole** container file as
+    /// production discovery hashed it, so a rerun over a different installation
+    /// reports different digests instead of the same numbers.
+    #[must_use]
+    pub fn new(
+        world: WorldId,
+        container: impl Into<String>,
+        container_sha256: impl Into<String>,
+        node_slot: u32,
+        node_offset: u64,
+        node_bytes: u64,
+    ) -> Self {
+        Self {
+            world,
+            container: container.into(),
+            container_sha256: container_sha256.into(),
+            node_slot,
+            node_offset,
+            node_bytes,
+        }
+    }
+
+    /// The world container the node lives in.
+    #[must_use]
+    pub const fn world(&self) -> &WorldId {
+        &self.world
+    }
+
+    /// The logical key of the container the bytes came from.
+    #[must_use]
+    pub fn container(&self) -> &str {
+        &self.container
+    }
+
+    /// SHA-256 of that whole container file, from production discovery.
+    #[must_use]
+    pub fn container_sha256(&self) -> &str {
+        &self.container_sha256
+    }
+
+    /// The node's slot in the container's node array, in stored order.
+    #[must_use]
+    pub const fn node_slot(&self) -> u32 {
+        self.node_slot
+    }
+
+    /// Absolute container offset of the node's own record.
+    #[must_use]
+    pub const fn node_offset(&self) -> u64 {
+        self.node_offset
+    }
+
+    /// How many bytes the node's own record occupies.
+    #[must_use]
+    pub const fn node_bytes(&self) -> u64 {
+        self.node_bytes
+    }
+}
+
+/// One retail detection zone, measured out of a world container's node array.
+///
+/// The volume is the box the node's own info record stores — not a box this
+/// workspace inferred, sized, or assumed. Its **unit is the container's stored
+/// vertex unit, which is unmeasured**, so nothing here is a length in metres.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RetailTriggerVolume {
+    span: TriggerVolumeSpan,
+    zone: String,
+    mesh_index: Option<i32>,
+    volume: StoredVolume,
+}
+
+impl RetailTriggerVolume {
+    /// Assembles one measured zone from its span, its name, its mesh binding and
+    /// its stored box.
+    #[must_use]
+    pub const fn new(
+        span: TriggerVolumeSpan,
+        zone: String,
+        mesh_index: Option<i32>,
+        volume: StoredVolume,
+    ) -> Self {
+        Self {
+            span,
+            zone,
+            mesh_index,
+            volume,
+        }
+    }
+
+    /// Where this zone's bytes are.
+    #[must_use]
+    pub const fn span(&self) -> &TriggerVolumeSpan {
+        &self.span
+    }
+
+    /// The world container the node lives in.
+    #[must_use]
+    pub const fn world(&self) -> &WorldId {
+        self.span.world()
+    }
+
+    /// The logical key of the container the bytes came from.
+    #[must_use]
+    pub fn container(&self) -> &str {
+        self.span.container()
+    }
+
+    /// SHA-256 of that whole container file, from production discovery.
+    #[must_use]
+    pub fn container_sha256(&self) -> &str {
+        self.span.container_sha256()
+    }
+
+    /// The node's slot in the container's node array, in stored order.
+    #[must_use]
+    pub const fn node_slot(&self) -> u32 {
+        self.span.node_slot()
+    }
+
+    /// Absolute container offset of the node's own record.
+    #[must_use]
+    pub const fn node_offset(&self) -> u64 {
+        self.span.node_offset()
+    }
+
+    /// How many bytes the node's own record occupies.
+    #[must_use]
+    pub const fn node_bytes(&self) -> u64 {
+        self.span.node_bytes()
+    }
+
+    /// The node's stored name, which is the zone's own identity.
+    #[must_use]
+    pub fn zone(&self) -> &str {
+        &self.zone
+    }
+
+    /// The mesh slot the node binds, or `None` when it stores `-1`.
+    ///
+    /// This matters for what the zone **is**: a measured corpus binds a mesh to
+    /// every zone, which is the difference between a region of the world that
+    /// carries geometry and a bare marker. What the original does *with* that
+    /// geometry is unmeasured; see the findings record.
+    #[must_use]
+    pub const fn mesh_index(&self) -> Option<i32> {
+        self.mesh_index
+    }
+
+    /// The stored box this node carries.
+    #[must_use]
+    pub const fn volume(&self) -> &StoredVolume {
+        &self.volume
+    }
+
+    /// The smallest stored extent of this zone, in stored units.
+    #[must_use]
+    pub fn thinnest_stored_extent(&self) -> f64 {
+        self.volume.thinnest_extent()
+    }
+}
+
+/// What the survey can say about "is a fast aircraft's tick longer than the
+/// original's thinnest trigger volume".
+///
+/// The three variants are the three honest states, and the survey never picks
+/// one it has not earned: with no stored-unit-to-metre factor established, the
+/// answer is [`Self::UnitUnmeasured`] carrying the **break-even factor** — the
+/// factor at which the verdict would flip — so the missing measurement is a
+/// number a later stage can go and get rather than a shrug.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TriggerTickVerdict {
+    /// The survey measured no zone, so there is nothing to compare.
+    NoZones,
+    /// The stored-vertex unit is unmeasured, so a stored extent cannot be turned
+    /// into a length and the comparison cannot be made.
+    ///
+    /// `break_even_meters_per_unit` is what one stored unit would have to be
+    /// worth, in metres, for the thinnest measured zone to be **exactly** one
+    /// tick of travel thick: at or above that factor every zone is thicker than
+    /// a tick, and below it the thinnest zone can be outrun.
+    UnitUnmeasured {
+        /// The tick the comparison is about.
+        speed_m_s: f64,
+        /// The tick rate the travel is divided by.
+        tick_hz: f64,
+        /// How far the body travels in one tick, in canonical metres.
+        travel_m_per_tick: f64,
+        /// The thinnest measured zone, in stored units.
+        thinnest_stored_extent: f64,
+        /// The zone that measurement came from.
+        thinnest_zone: String,
+        /// One stored unit's worth in metres at which the thinnest zone is
+        /// exactly one tick thick.
+        break_even_meters_per_unit: f64,
+    },
+    /// Every measured zone is at least as thick as one tick of travel, so a
+    /// discrete per-tick sample cannot step over the thinnest of them.
+    EveryZoneSpansATick {
+        /// The tick the comparison is about.
+        speed_m_s: f64,
+        /// The tick rate the travel was divided by.
+        tick_hz: f64,
+        /// How far the body travels in one tick, in canonical metres.
+        travel_m_per_tick: f64,
+        /// The thinnest measured zone, in canonical metres.
+        thinnest_m: f64,
+        /// The zone that measurement came from.
+        thinnest_zone: String,
+    },
+    /// At least one measured zone is thinner than one tick of travel, so a
+    /// discrete per-tick sample can step over it.
+    ThinnestZoneOutrun {
+        /// The tick the comparison is about.
+        speed_m_s: f64,
+        /// The tick rate the travel was divided by.
+        tick_hz: f64,
+        /// How far the body travels in one tick, in canonical metres.
+        travel_m_per_tick: f64,
+        /// The thinnest measured zone, in canonical metres.
+        thinnest_m: f64,
+        /// The zone that measurement came from.
+        thinnest_zone: String,
+    },
+}
+
+impl TriggerTickVerdict {
+    /// The factor at which the verdict would flip, whatever the verdict is.
+    ///
+    /// `None` when there is no thinnest zone to flip on, which is the
+    /// [`Self::NoZones`] state and nothing else.
+    #[must_use]
+    pub fn break_even_meters_per_unit(&self) -> Option<f64> {
+        match self {
+            Self::NoZones => None,
+            Self::UnitUnmeasured {
+                break_even_meters_per_unit,
+                ..
+            } => Some(*break_even_meters_per_unit),
+            Self::EveryZoneSpansATick {
+                travel_m_per_tick,
+                thinnest_m,
+                ..
+            } => Some(*travel_m_per_tick / *thinnest_m),
+            Self::ThinnestZoneOutrun {
+                travel_m_per_tick,
+                thinnest_m,
+                ..
+            } => Some(*travel_m_per_tick / *thinnest_m),
+        }
+    }
+
+    /// Whether the survey could answer the question at all.
+    #[must_use]
+    pub const fn is_decided(&self) -> bool {
+        matches!(
+            self,
+            Self::EveryZoneSpansATick { .. } | Self::ThinnestZoneOutrun { .. }
+        )
+    }
+
+    /// How far the body travels in one tick, in canonical metres, when the
+    /// comparison got that far.
+    #[must_use]
+    pub fn travel_m_per_tick(&self) -> Option<f64> {
+        match self {
+            Self::NoZones => None,
+            Self::UnitUnmeasured {
+                travel_m_per_tick, ..
+            }
+            | Self::EveryZoneSpansATick {
+                travel_m_per_tick, ..
+            }
+            | Self::ThinnestZoneOutrun {
+                travel_m_per_tick, ..
+            } => Some(*travel_m_per_tick),
+        }
+    }
+}
+
+/// Every retail detection zone the survey measured, with the fingerprints that
+/// make the measurement checkable.
+///
+/// The survey deliberately carries **no** mission-side declaration. The
+/// campaign's own detection-zone member names the same strings, but its framing
+/// is undecoded (see [`Self::zone_declarations_are_decoded`]), so a name a
+/// mission declares is not a fact this record can carry without guessing.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RetailTriggerVolumeSurvey {
+    install_sha256: String,
+    vertex_scale_to_m: Option<f64>,
+    volumes: Vec<RetailTriggerVolume>,
+}
+
+impl RetailTriggerVolumeSurvey {
+    /// Assembles the survey from the zones a measurement produced.
+    ///
+    /// `vertex_scale_to_m` is the factor from the containers' stored vertex
+    /// units to canonical metres. It is `None` for every measurement this
+    /// workspace has made, and passing `None` is what makes
+    /// [`Self::tick_verdict`] refuse rather than guess.
+    ///
+    /// # Errors
+    ///
+    /// [`TriggerVolumeError::NonFiniteScale`] / [`TriggerVolumeError::NonPositiveScale`]
+    /// for a factor no comparison could use, and
+    /// [`TriggerVolumeError::DuplicateZone`] for two zones of one world
+    /// claiming one name — a real state a duplicate-only store would produce,
+    /// and not something a consumer should have to break a tie on.
+    pub fn new(
+        install_sha256: impl Into<String>,
+        vertex_scale_to_m: Option<f64>,
+        volumes: Vec<RetailTriggerVolume>,
+    ) -> Result<Self, TriggerVolumeError> {
+        if let Some(scale) = vertex_scale_to_m {
+            if !scale.is_finite() {
+                return Err(TriggerVolumeError::NonFiniteScale { scale });
+            }
+            if scale <= 0.0 {
+                return Err(TriggerVolumeError::NonPositiveScale { scale });
+            }
+        }
+        for (index, volume) in volumes.iter().enumerate() {
+            for other in &volumes[index + 1..] {
+                if other.world().key() == volume.world().key() && other.zone() == volume.zone() {
+                    return Err(TriggerVolumeError::DuplicateZone {
+                        world: volume.world().key().to_owned(),
+                        zone: volume.zone().to_owned(),
+                    });
+                }
+            }
+        }
+        Ok(Self {
+            install_sha256: install_sha256.into(),
+            vertex_scale_to_m,
+            volumes,
+        })
+    }
+
+    /// SHA-256 of the installation fingerprint the measurement was taken over.
+    #[must_use]
+    pub fn install_sha256(&self) -> &str {
+        &self.install_sha256
+    }
+
+    /// The factor from the containers' stored vertex units to canonical metres,
+    /// or `None` while it is unmeasured.
+    #[must_use]
+    pub const fn vertex_scale_to_m(&self) -> Option<f64> {
+        self.vertex_scale_to_m
+    }
+
+    /// Every zone, in the order the survey measured them.
+    #[must_use]
+    pub fn volumes(&self) -> &[RetailTriggerVolume] {
+        &self.volumes
+    }
+
+    /// The zones of one world container, in the order they were measured.
+    #[must_use]
+    pub fn volumes_in(&self, world: &WorldId) -> Vec<&RetailTriggerVolume> {
+        self.volumes
+            .iter()
+            .filter(|volume| volume.world().key() == world.key())
+            .collect()
+    }
+
+    /// The zones that bind no mesh, which is the shape a bare marker would have.
+    #[must_use]
+    pub fn meshless_zones(&self) -> Vec<&RetailTriggerVolume> {
+        self.volumes
+            .iter()
+            .filter(|volume| volume.mesh_index().is_none())
+            .collect()
+    }
+
+    /// The thinnest measured zone, in stored units, and which zone it was.
+    #[must_use]
+    pub fn thinnest(&self) -> Option<(&RetailTriggerVolume, f64)> {
+        self.volumes
+            .iter()
+            .map(|volume| (volume, volume.thinnest_stored_extent()))
+            .min_by(|left, right| {
+                left.1
+                    .partial_cmp(&right.1)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then_with(|| left.0.zone().cmp(right.0.zone()))
+            })
+    }
+
+    /// Whether the campaign's own detection-zone member has been decoded.
+    ///
+    /// It has **not**, and this is the survey saying so rather than a consumer
+    /// having to remember. The member exists and is located with an exact byte
+    /// span (see [`crate::world`]'s findings record); its framing is not a
+    /// length-prefixed value list, because its second word is not an item count
+    /// — the same word precedes a list of four strings in one member and a list
+    /// of one in another — so reading it as one is a guess, and a guess here
+    /// would be a guess about what a mission says a trigger is.
+    #[must_use]
+    pub const fn zone_declarations_are_decoded(&self) -> bool {
+        false
+    }
+
+    /// How far a body travelling at `speed_m_s` moves in one tick at `tick_hz`,
+    /// in canonical metres.
+    ///
+    /// # Errors
+    ///
+    /// [`TriggerVolumeError::NonFiniteSpeed`] for a speed no arithmetic can use
+    /// and [`TriggerVolumeError::ZeroTickRate`] for a rate with no tick in it.
+    pub fn travel_m_per_tick(speed_m_s: f64, tick_hz: f64) -> Result<f64, TriggerVolumeError> {
+        if !speed_m_s.is_finite() {
+            return Err(TriggerVolumeError::NonFiniteSpeed { speed_m_s });
+        }
+        if tick_hz == 0.0 || !tick_hz.is_finite() {
+            return Err(TriggerVolumeError::ZeroTickRate);
+        }
+        Ok(speed_m_s / tick_hz)
+    }
+
+    /// Whether one tick of travel at `speed_m_s` and `tick_hz` can step over the
+    /// thinnest zone this survey measured.
+    ///
+    /// The answer is a [`TriggerTickVerdict`], not a `bool`, because there are
+    /// three states and the interesting one is currently
+    /// [`TriggerTickVerdict::UnitUnmeasured`]. That variant carries the factor
+    /// at which the answer would change, so the unmeasured quantity is a number
+    /// a later stage can go and measure rather than an open question.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`Self::travel_m_per_tick`] refuses.
+    pub fn tick_verdict(
+        &self,
+        speed_m_s: f64,
+        tick_hz: f64,
+    ) -> Result<TriggerTickVerdict, TriggerVolumeError> {
+        let travel_m_per_tick = Self::travel_m_per_tick(speed_m_s, tick_hz)?;
+        let Some((thinnest, thinnest_stored_extent)) = self.thinnest() else {
+            return Ok(TriggerTickVerdict::NoZones);
+        };
+        let thinnest_zone = thinnest.zone().to_owned();
+        let Some(scale) = self.vertex_scale_to_m else {
+            // A stored extent of zero is a record that stores no box; dividing
+            // by it would be an infinity dressed as a break-even factor. The
+            // survey never reports such a zone as thinnest, so this is the
+            // `NoZones`-adjacent case the caller gets told about honestly.
+            return Ok(TriggerTickVerdict::UnitUnmeasured {
+                speed_m_s,
+                tick_hz,
+                travel_m_per_tick,
+                thinnest_stored_extent,
+                thinnest_zone,
+                break_even_meters_per_unit: travel_m_per_tick / thinnest_stored_extent,
+            });
+        };
+        let thinnest_m = thinnest_stored_extent * scale;
+        Ok(if thinnest_m >= travel_m_per_tick {
+            TriggerTickVerdict::EveryZoneSpansATick {
+                speed_m_s,
+                tick_hz,
+                travel_m_per_tick,
+                thinnest_m,
+                thinnest_zone,
+            }
+        } else {
+            TriggerTickVerdict::ThinnestZoneOutrun {
+                speed_m_s,
+                tick_hz,
+                travel_m_per_tick,
+                thinnest_m,
+                thinnest_zone,
+            }
+        })
+    }
+}
+
 // ------------------------------------------------------------------- tests ---
 
 #[cfg(test)]

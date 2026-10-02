@@ -58,6 +58,37 @@
 //! ([`super::residency::load_sector`]), and the door is still open. An
 //! [`unload_world`](super::residency::unload_world) takes it with everything
 //! else, so the next load's door is shut and its overlay unapplied.
+//!
+//! # What is **not** claimed about an original mission's triggers
+//!
+//! This layer is written against an **authored** trigger: a
+//! [`WorldCollisionRole::Sensor`] cuboid in the same
+//! [`WorldDefinition`](cs_content::world::WorldDefinition) as everything else,
+//! sized by whoever authored the load. Task #427 measured what the original's
+//! own triggers look like, and two things about them must not be read as though
+//! this layer had measured them:
+//!
+//! * **No claim is made that a mission's trigger opens its geometry before a
+//!   fast aircraft reaches it.** The effect lands in the update *after* the
+//!   contact that triggered it, so a trigger placed closer to the geometry it
+//!   opens than one tick of travel at the body's speed is crossed first, and the
+//!   body meets the closed panel. The depot fixture's panel is 4 m ahead of its
+//!   1 m trigger — 1.2 ticks at 400 m/s — and the fixture test says so rather
+//!   than reading the resulting stop as a hold.
+//! * **No claim is made that an original trigger is a thin authored box.** Over
+//!   the owner's installation the original's own detection zones are world nodes
+//!   (`dzpath<N>`) whose stored extent is **32 to 860 stored units** on their
+//!   thinnest axis and whose unit this workspace has not measured; they are
+//!   large regions of the world, not sheets a sample can step over. Which of
+//!   them a given mission uses, and what the original does when one is entered,
+//!   are unmeasured. [`super::triggers`] is the measurement, and
+//!   `docs/findings/2026-10-02-t427-retail-trigger-volume-thickness.md` is its
+//!   record.
+//!
+//! So the discretely-reported overlap this producer consumes is the mechanism
+//! **this project** uses for the volumes **this project** authors. Whether the
+//! original detected its own zones that way is F13/F39's open question, and an
+//! overlay bound to an original zone must not assume it was.
 
 use std::collections::BTreeSet;
 

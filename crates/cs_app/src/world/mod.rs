@@ -47,6 +47,15 @@
 //!   cannot end up in different places (acceptance scenario AC03). Which
 //!   overlays have been applied lives in the load record, so it survives a
 //!   sector unload and is gone with the world.
+//! * [`triggers`] measures the **original's** trigger volumes rather than the
+//!   fixtures': it reads every world container's node array through the
+//!   production F11-A node reader and reports one measured detection-zone
+//!   extent per numbered `dzpath<N>` node, with the container key, the
+//!   container's SHA-256, the installation fingerprint and the node's own byte
+//!   span. It supplies **no** stored-unit-to-metre factor, because the
+//!   original's world-vertex unit is unmeasured, so the one-tick question comes
+//!   back as `UnitUnmeasured` carrying the factor at which it would flip rather
+//!   than as a verdict (task #427).
 //! * [`visibility`] is the streaming policy: which sectors a focus holds, which
 //!   it holds *anyway* because gameplay requires an object in them, and what a
 //!   streamed-out sector's state is summarized as when it comes back.
@@ -86,6 +95,7 @@ pub mod meshes;
 pub mod overlays;
 pub mod residency;
 pub mod spawn;
+pub mod triggers;
 pub mod visibility;
 
 pub use affine::{AffinePlacement, AffinePlacementError, bake_shape, shear_residual};
@@ -137,6 +147,9 @@ pub use spawn::{
     SpawnedCollider, SpawnedObject, SpawnedWorld, WorldMeshAssets, WorldSpawnError, avian_layers,
     canonical_matrix, instance_placement, instance_placements, spawn_object, spawn_world,
     static_world_membership,
+};
+pub use triggers::{
+    TriggerVolumeSurveyError, ZONE_PREFIX, survey_retail_trigger_volumes, zone_box_field,
 };
 pub use visibility::{
     VisibilityError, VisibilityRequest, VisibilityUpdate, holds_sector, retained_sectors,
