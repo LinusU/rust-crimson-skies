@@ -40,9 +40,18 @@
 //!   [`apply_selection_edges`] (which action a command edge runs) and
 //!   [`apply_target_damage`] (which hits became attacks and which
 //!   lifecycle transitions ended targetability).
+//! * The F30-C consumer half: [`TargetConsumers`] and its three views —
+//!   [`HudTargetReadout`] (the reticle and the threat list the HUD reads),
+//!   [`SpyglassReadout`] (the target the spyglass magnifies) and
+//!   [`GuidanceReadout`] (what the weapon path may offer an aid for) — plus
+//!   the entry [`apply_target_consumers`] that derives all three from one
+//!   phase record, and [`teardown_target_consumers`] that drops them when a
+//!   session ends.
 //!
-//! The HUD, spyglass and weapon consumers of the phase record are F30-C:
-//! nothing here draws a reticle.
+//! Nothing here draws a reticle. The views are the *data* each consumer needs
+//! from targeting; the HUD's glyphs, the spyglass rig and the weapon path are
+//! owned by F46-B, F21-B and F27-B respectively, and a view carries no draw
+//! call and no combat authority.
 
 use std::collections::BTreeSet;
 
@@ -56,15 +65,17 @@ use cs_content::target_rules::{
 };
 use cs_sim::damage::{ActorId, DamageEvent, DamageEventKind, HitEvent, HitEventId, LifecycleKind};
 use cs_sim::targeting::{
-    Allegiance, AllegianceTable, CycleDirection, SelectionAction, SelectionBinding, SelectionFrame,
-    TargetClass, TargetError, TargetFilter, TargetPhase, TargetPolicy, TargetRecord,
-    TargetSelection, TargetStore, ThreatFeed,
+    Allegiance, AllegianceTable, CycleDirection, Reticle, SelectionAction, SelectionBinding,
+    SelectionClearReason, SelectionFrame, TargetClass, TargetError, TargetFilter, TargetPhase,
+    TargetPolicy, TargetRecord, TargetSelection, TargetStore, ThreatCue, ThreatFeed,
+    WeaponGuidance,
 };
-use cs_types::content::{ContentId, Resolved};
-use cs_types::evidence::ClaimId;
+use cs_types::Tick;
+use cs_types::content::{ContentId, Provenance, Resolved};
+use cs_types::evidence::{ClaimId, ClaimStatus};
 use cs_types::input::{Action, FlightCommand};
 use cs_types::net::SessionId;
-use cs_types::space::WorldPosition;
+use cs_types::space::{Meters, WorldPosition};
 
 use crate::scene::SceneGeneration;
 
@@ -83,6 +94,36 @@ pub struct LoweredTargetRules {
     /// Whether aim assistance is offered. An option with declared
     /// evidence, never an automatic hit correction.
     pub aim_assistance: bool,
+    /// Where `lead_indicator` was declared. Carried so the F30-C guidance
+    /// consumer can present the option's evidence class rather than a bare
+    /// flag (F30 non-negotiable 3).
+    pub lead_indicator_provenance: Provenance,
+    /// Where `aim_assistance` was declared, for the same reason.
+    pub aim_assistance_provenance: Provenance,
+}
+
+impl LoweredTargetRules {
+    /// The session's two assistance options, each paired with the
+    /// [`Provenance`] of its declared value.
+    ///
+    /// This is the only place the raw booleans become an assistance record:
+    /// from here on the guidance consumer reads
+    /// [`AssistanceOption::presentable`] instead of a bare flag, so the
+    /// evidence classification reaches the consumer instead of being dropped
+    /// at the lowering boundary.
+    #[must_use]
+    pub fn assistance(&self) -> AssistanceOptions {
+        AssistanceOptions {
+            lead_indicator: AssistanceOption {
+                enabled: self.lead_indicator,
+                provenance: self.lead_indicator_provenance.clone(),
+            },
+            aim_assistance: AssistanceOption {
+                enabled: self.aim_assistance,
+                provenance: self.aim_assistance_provenance.clone(),
+            },
+        }
+    }
 }
 
 /// Why declared target rules could not be lowered to the runtime records.
@@ -171,8 +212,24 @@ fn lower_rule<T>(field: &'static str, value: &Resolved<T>) -> Result<T, TargetLo
 where
     T: Clone,
 {
+    lower_rule_with_provenance(field, value).map(|(value, _)| value)
+}
+
+/// Lowers a declared value and keeps its [`Provenance`] beside it.
+///
+/// The F30-C guidance consumer needs the evidence classification of each
+/// assistance option, so the lowering boundary hands the pair on instead of
+/// discarding it. The unknown branch is identical to [`lower_rule`]'s: an
+/// unevidenced option still refuses rather than defaulting.
+fn lower_rule_with_provenance<T>(
+    field: &'static str,
+    value: &Resolved<T>,
+) -> Result<(T, Provenance), TargetLowerError>
+where
+    T: Clone,
+{
     match value {
-        Resolved::Known(known) => Ok(known.value.clone()),
+        Resolved::Known(known) => Ok((known.value.clone(), known.provenance.clone())),
         Resolved::Unknown { claim_id, reason } => Err(TargetLowerError::UnknownRule {
             field,
             claim_id: claim_id.clone(),
@@ -204,8 +261,10 @@ fn lower_rule_set(rules: &TargetRuleSet) -> Result<TargetPolicy, TargetLowerErro
 /// [`TargetLowerError::UnknownRelation`] on any unresolved declared value.
 pub fn lower_rules(rules: &DeclaredTargetRules) -> Result<LoweredTargetRules, TargetLowerError> {
     let policy = lower_rule_set(rules.rules())?;
-    let lead_indicator = lower_rule("lead_indicator", &rules.rules().lead_indicator)?;
-    let aim_assistance = lower_rule("aim_assistance", &rules.rules().aim_assistance)?;
+    let (lead_indicator, lead_indicator_provenance) =
+        lower_rule_with_provenance("lead_indicator", &rules.rules().lead_indicator)?;
+    let (aim_assistance, aim_assistance_provenance) =
+        lower_rule_with_provenance("aim_assistance", &rules.rules().aim_assistance)?;
 
     let mut allegiance = AllegianceTable::new();
     for (index, relation) in rules.relations().iter().enumerate() {
@@ -231,6 +290,8 @@ pub fn lower_rules(rules: &DeclaredTargetRules) -> Result<LoweredTargetRules, Ta
         allegiance,
         lead_indicator,
         aim_assistance,
+        lead_indicator_provenance,
+        aim_assistance_provenance,
     })
 }
 
@@ -295,6 +356,58 @@ pub fn lower_selection_actions(
         binding.bind(declared.command, action);
     }
     Ok(binding)
+}
+
+/// One assistance option as a session holds it: the lowered value and where
+/// the value came from.
+///
+/// The two options are separate records because they are separate features
+/// (F30 non-negotiable 3). The [`Provenance`] travels with the option all the
+/// way to the guidance consumer, so a consumer that draws a lead indicator or
+/// an assistance cue can see that the flag is `designed` project vocabulary
+/// and never present it as measured original behavior. Neither option carries
+/// a magnitude: an option is on or off, and the aid itself belongs to the
+/// weapon path that owns ballistics (F27-B), not to targeting.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AssistanceOption {
+    /// The lowered declared value.
+    pub enabled: bool,
+    /// Where the declared value came from.
+    pub provenance: Provenance,
+}
+
+impl AssistanceOption {
+    /// Whether a consumer may act on this option at all: the declared value
+    /// is on **and** the evidence behind it is a class that can be presented
+    /// (`verified_original`, `documented`, `observed_tool` or `inferred`).
+    ///
+    /// A `designed`, `unknown`, `contradicted` or `synthetic_fixture` value is
+    /// deliberately *not* presentable: the engine's own defaults exist to make
+    /// the engine playable, and a consumer that drew them as original behavior
+    /// would be making a fidelity claim no evidence supports. The bit is
+    /// available on the record so a consumer can show or hide it; it is not a
+    /// statement that the flag is wrong.
+    #[must_use]
+    pub const fn presentable(&self) -> bool {
+        self.enabled
+            && matches!(
+                self.provenance.class,
+                ClaimStatus::VerifiedOriginal
+                    | ClaimStatus::Documented
+                    | ClaimStatus::ObservedTool
+                    | ClaimStatus::Inferred
+            )
+    }
+}
+
+/// The session's two assistance options, kept apart.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AssistanceOptions {
+    /// Whether a lead indicator is offered — a display aid.
+    pub lead_indicator: AssistanceOption,
+    /// Whether aim assistance is offered — aim correction, an option with its
+    /// own evidence, never an automatic hit correction.
+    pub aim_assistance: AssistanceOption,
 }
 
 /// Component: marks an entity as targetable under one session's rules.
@@ -383,6 +496,7 @@ pub struct TargetingSession {
     subject: ContentId,
     generation: SceneGeneration,
     last_phase: Option<TargetPhase>,
+    assistance: AssistanceOptions,
 }
 
 impl TargetingSession {
@@ -399,6 +513,7 @@ impl TargetingSession {
         generation: SceneGeneration,
     ) -> Self {
         Self {
+            assistance: lowered.assistance(),
             session,
             store: TargetStore::new(session.get(), lowered.policy, lowered.allegiance),
             selection: TargetSelection::new(),
@@ -463,6 +578,14 @@ impl TargetingSession {
     #[must_use]
     pub const fn last_phase(&self) -> Option<&TargetPhase> {
         self.last_phase.as_ref()
+    }
+
+    /// The session's two assistance options with their declared provenance —
+    /// what the F30-C guidance consumer reads to decide whether it may offer
+    /// either aid.
+    #[must_use]
+    pub const fn assistance(&self) -> &AssistanceOptions {
+        &self.assistance
     }
 }
 
@@ -812,4 +935,547 @@ pub fn apply_target_damage(
     }
     report.feed = store.record_hits(&landed)?;
     Ok(report)
+}
+
+// ------------------------------------------------------------ consumers ----
+
+/// One threat cue the HUD view does not draw, and which one it was.
+///
+/// The ledger keeps a cue whose attacker left the world — the attack itself is
+/// evidence, and `cs_sim::targeting` deliberately does not purge it — but a
+/// warning drawn over a wreck is a lie, so the view withdraws the cue and
+/// names it here rather than dropping it silently (F30 non-negotiable 4:
+/// cues are for actual attacks, by actors that still exist).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WithdrawnCue {
+    /// The attacker whose cue is no longer displayed.
+    pub attacker: ActorId,
+    /// The tick it last attacked at, as the ledger recorded it.
+    pub last_attack: Tick,
+}
+
+/// One actor the consumers' previous target was and no longer is.
+///
+/// This is the F30-C half of AC03: `cs_sim::targeting::TargetPhase` reports
+/// that the selection went and why, and every view carries it, so a consumer
+/// that had the actor framed learns it in the same read that tells it there is
+/// nothing to frame. A consumer that only saw `target: None` could not tell a
+/// cleared target from one that was never there.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ClearedTarget {
+    /// The actor the observer had selected.
+    pub actor: ActorId,
+    /// Why it stopped being eligible.
+    pub reason: SelectionClearReason,
+}
+
+/// The HUD's target readout for one phase: the reticle it draws and the
+/// threat cues it warns about.
+///
+/// `reticle` is the phase's own [`cs_sim::targeting::Reticle`], so the HUD
+/// draws exactly the record the AI's hostility gate was decided from. It is a
+/// copy: mutating it changes nothing in the store, and a HUD that wants to
+/// *select* something goes through [`apply_selection_edges`], never through
+/// this view.
+#[derive(Clone, Debug, PartialEq)]
+pub struct HudTargetReadout {
+    /// The tick this readout was derived at.
+    pub at: Tick,
+    /// The reticle record, when a target is selected.
+    pub reticle: Option<Reticle>,
+    /// The live threat cues whose attackers are still in the world, in the
+    /// ledger's own order (most recent attack first).
+    pub threats: Vec<ThreatCue>,
+    /// Cues the ledger still holds whose attackers are no longer in the
+    /// world: reported, never drawn.
+    pub withdrawn: Vec<WithdrawnCue>,
+    /// The selection this readout cleared, when it cleared one.
+    pub cleared: Option<ClearedTarget>,
+}
+
+impl HudTargetReadout {
+    /// Whether this readout warns about anything.
+    #[must_use]
+    pub fn is_threatening(&self) -> bool {
+        !self.threats.is_empty()
+    }
+}
+
+/// What the spyglass would magnify for one phase.
+///
+/// The spyglass is a *view*, and its target is the session's selection: it
+/// never picks one. That is why the record carries
+/// [`cleared`](Self::cleared) — a rig that had the actor framed must be told
+/// the actor went away in the same read that says there is nothing to frame,
+/// so it cannot leave the last magnification up (AC03).
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpyglassReadout {
+    /// The tick this readout was derived at.
+    pub at: Tick,
+    /// The actor the spyglass would magnify; `None` when nothing is selected
+    /// or the selected actor stopped being eligible.
+    pub target: Option<SpyglassTarget>,
+    /// The selection this readout cleared, when it cleared one.
+    pub cleared: Option<ClearedTarget>,
+}
+
+impl SpyglassReadout {
+    /// Whether there is anything to frame.
+    #[must_use]
+    pub fn has_target(&self) -> bool {
+        self.target.is_some()
+    }
+}
+
+/// The target the spyglass frames: its canonical position and its live
+/// classification.
+///
+/// `position` is canonical f64 world space — the same value the ordering
+/// ranked on — so the rig's magnification is computed from the same point and
+/// a world rebase cannot shift it (F30 non-negotiable 5). `hostile` is the
+/// reticle's own verdict, not a second read of the allegiance table, so the
+/// view cannot disagree with the AI gate.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpyglassTarget {
+    /// The selected actor.
+    pub actor: ActorId,
+    /// What kind of actor it is.
+    pub class: TargetClass,
+    /// The declared relation to the observer's faction, re-derived this phase.
+    pub allegiance: Option<Allegiance>,
+    /// Whether the combat AI may engage: a declared hostile relation.
+    pub hostile: bool,
+    /// Whether this actor attacked the observer inside the threat window.
+    pub threatening: bool,
+    /// Whether mission rules flag the actor as an objective target.
+    pub objective: bool,
+    /// The actor's canonical world position.
+    pub position: WorldPosition,
+    /// Its distance from the observer.
+    pub distance: Meters,
+}
+
+/// One declared assistance option as a consumer sees it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AssistanceOffer {
+    /// The declared option's lowered value.
+    pub enabled: bool,
+    /// Whether a consumer may act on it — see
+    /// [`AssistanceOption::presentable`]. A designed default is not
+    /// presentable, so the engine's own flag can never be drawn as original
+    /// behavior.
+    pub presentable: bool,
+    /// Where the declared value came from.
+    pub provenance: Provenance,
+}
+
+impl AssistanceOffer {
+    /// Whether this option is on **and** a consumer may act on it.
+    #[must_use]
+    pub const fn offered(&self) -> bool {
+        self.enabled && self.presentable
+    }
+}
+
+/// Why no aid is offered this phase.
+///
+/// Named rather than collapsed into an empty aid: "no target", "the declared
+/// options do not cover this" and "the target is not one we assist against"
+/// are different statements, and a weapon path that cannot tell them apart
+/// defaults to firing unassisted at a target it never had.
+#[derive(Clone, Debug, PartialEq)]
+pub enum GuidanceWithheld {
+    /// Nothing is selected, so there is no target to aid.
+    NoTarget,
+    /// A target is selected, but it is not a *declared* hostile: friendly,
+    /// neutral or an undeclared pair. An aid toward an ally is never offered,
+    /// and an undeclared pair is never treated as hostile for the purpose of
+    /// offering one — that gate is the store's, so no consumer can widen it.
+    NotHostile,
+    /// The store refused the guidance query — the observer is unregistered, or
+    /// the selected actor sits on the observer and has no bearing. Carried
+    /// with the store's own message so the reason is never lost.
+    Refused {
+        /// The store's refusal, rendered.
+        reason: String,
+    },
+}
+
+/// The weapon path's readout for one phase: the aid it may offer, if any.
+///
+/// This is the **eligibility** record, not the aid. The two declared options
+/// stay separate (F30 non-negotiable 3), each carries its own [`Provenance`]
+/// so a consumer knows whether the option behind it is measured or designed,
+/// and neither carries a magnitude: a lead point or an aim correction belongs
+/// to the weapon path that owns ballistics (F27-B), and the original assistance
+/// behavior is unmeasured (F30-D). Nothing in this record can change a shot.
+#[derive(Clone, Debug, PartialEq)]
+pub struct GuidanceReadout {
+    /// The tick this readout was derived at.
+    pub at: Tick,
+    /// The aid the weapon path may offer, derived by the store from the same
+    /// selection the reticle describes; `None` when nothing is selected or the
+    /// declared options do not reach this target — read
+    /// [`withheld`](Self::withheld) to tell those apart.
+    pub aid: Option<WeaponGuidance>,
+    /// The lead-indicator option as it stands.
+    pub lead_indicator: AssistanceOffer,
+    /// The aim-assistance option, the same three fields.
+    pub aim_assistance: AssistanceOffer,
+    /// Why no aid is offered, when none is.
+    pub withheld: Option<GuidanceWithheld>,
+    /// The selection this readout cleared, when it cleared one.
+    pub cleared: Option<ClearedTarget>,
+}
+
+impl GuidanceReadout {
+    /// Whether an aid is offered at all this phase.
+    #[must_use]
+    pub fn has_aid(&self) -> bool {
+        self.aid.is_some()
+    }
+
+    /// Whether the declared lead-indicator option is on, presentable and has a
+    /// target to apply to.
+    #[must_use]
+    pub fn offers_lead_indicator(&self) -> bool {
+        self.lead_indicator.offered() && self.aid.is_some()
+    }
+
+    /// Whether the declared aim-assistance option is on, presentable and has a
+    /// target to apply to.
+    #[must_use]
+    pub fn offers_aim_assistance(&self) -> bool {
+        self.aim_assistance.offered() && self.aid.is_some()
+    }
+}
+
+/// The three consumer views a session publishes, as one record.
+///
+/// They are **one record derived together**, not three independent queries,
+/// because the failure they share is disagreement: a reticle that says hostile
+/// while the weapon path sees friendly, or a spyglass framing a target the
+/// reticle has already dropped. [`apply_target_consumers`] is the only writer,
+/// and it publishes all three or none.
+///
+/// The binding is the `(session, observer)` the views describe. A view read
+/// without a binding cannot be attributed to a session, which is why a rebound
+/// or cleared pass drops the binding rather than leaving a stale pairing.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct TargetConsumers {
+    bound: Option<ConsumerBinding>,
+    hud: Option<HudTargetReadout>,
+    spyglass: Option<SpyglassReadout>,
+    guidance: Option<GuidanceReadout>,
+}
+
+/// The session generation and observer the published views describe.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConsumerBinding {
+    /// The session generation the views were derived in.
+    pub session: SessionId,
+    /// The observer they describe.
+    pub observer: ActorId,
+}
+
+impl TargetConsumers {
+    /// The `(session, observer)` the published views belong to; `None` when
+    /// nothing is published.
+    #[must_use]
+    pub const fn bound(&self) -> Option<ConsumerBinding> {
+        self.bound
+    }
+
+    /// The HUD's target readout, when one is published.
+    #[must_use]
+    pub const fn hud(&self) -> Option<&HudTargetReadout> {
+        self.hud.as_ref()
+    }
+
+    /// The spyglass's readout, when one is published.
+    #[must_use]
+    pub const fn spyglass(&self) -> Option<&SpyglassReadout> {
+        self.spyglass.as_ref()
+    }
+
+    /// The weapon path's readout, when one is published.
+    #[must_use]
+    pub const fn guidance(&self) -> Option<&GuidanceReadout> {
+        self.guidance.as_ref()
+    }
+
+    /// Drops every published view and the binding, so no consumer can read a
+    /// record belonging to a session or observer that no longer exists.
+    pub fn clear(&mut self) {
+        self.bound = None;
+        self.hud = None;
+        self.spyglass = None;
+        self.guidance = None;
+    }
+}
+
+/// What one [`apply_target_consumers`] pass published.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ConsumerReport {
+    /// The HUD view published.
+    pub hud: Option<HudTargetReadout>,
+    /// The spyglass view published.
+    pub spyglass: Option<SpyglassReadout>,
+    /// The weapon-guidance view published.
+    pub guidance: Option<GuidanceReadout>,
+    /// The views were rebound to a different `(session, observer)` this pass,
+    /// so the previous binding's target was dropped rather than carried over.
+    pub rebound: bool,
+}
+
+/// Derives the HUD, spyglass and weapon-guidance views from one phase record.
+///
+/// This is the F30-C consumer entry, and it exists separately from
+/// [`apply_selection_edges`] for one reason: it derives its **own**
+/// [`cs_sim::targeting::TargetPhase`] at `at` instead of reading the selection
+/// pass's record. Consumers render after the tick's damage and roster work, so
+/// a target destroyed between the selection pass and the render must not be
+/// described by a record that predates its own death (AC03).
+///
+/// Everything else follows from deriving once: the reticle the HUD draws, the
+/// target the spyglass frames and the aid the weapon path may offer are three
+/// views of **one** read of the roster, so this design cannot produce a HUD
+/// that says hostile while the weapon path sees friendly.
+///
+/// Teardown, rebinding and error propagation:
+///
+/// * the views are bound to `(session, observer)`; a pass for a different pair
+///   rebinds and reports [`ConsumerReport::rebound`], so an aircraft swap
+///   cannot carry a target box across generations;
+/// * a pass that cannot derive a record publishes nothing and unbinds instead
+///   of leaving the previous pass's views up, so a failed render shows no
+///   target rather than a stale one, and the next successful pass republishes
+///   from scratch — the retry path is the same code as the first pass;
+/// * [`teardown_target_consumers`] is the explicit end-of-session path and
+///   refuses to clear views bound to a *different* session.
+///
+/// # Errors
+///
+/// [`TargetingError::NoSession`] when no [`TargetingSession`] is installed,
+/// and [`TargetError::UnknownActor`] when `observer` is not registered with
+/// this session's store. In both cases the published views are unbound before
+/// the error is returned.
+pub fn apply_target_consumers(
+    world: &mut World,
+    observer: ActorId,
+    at: Tick,
+) -> Result<ConsumerReport, TargetingError> {
+    // Read the previous binding before the mutable borrow: a pass for a
+    // different `(session, observer)` rebinds, and a rebind must drop the
+    // previous binding's target rather than carry it across a generation.
+    // A rebind drops the previous binding's selection before anything is derived.
+    // The session's [`TargetSelection`] is one selection for the whole session, so
+    // a pass for a different observer is an aircraft swap: the target box on
+    // screen belongs to the aircraft that is gone, and carrying it would show one
+    // pilot another's target (the `STATE-TRANSACTIONS` rule that a previous
+    // aircraft's state never survives the swap).
+    let rebound = world
+        .get_resource::<TargetConsumers>()
+        .and_then(TargetConsumers::bound)
+        .is_some_and(|bound| bound.observer != observer);
+
+    // One read of the store produces the phase the reticle, the spyglass and
+    // the guidance all come from, and the guidance query reads the same
+    // selection again immediately after — so the aid can never name a target
+    // the reticle has already dropped.
+    let derived = {
+        let Some(mut targeting) = world.get_resource_mut::<TargetingSession>() else {
+            return Err(TargetingError::NoSession);
+        };
+        let session = targeting.session();
+        let assistance = targeting.assistance().clone();
+        let TargetingSession {
+            store,
+            selection,
+            last_phase,
+            ..
+        } = &mut *targeting;
+        if rebound && store.is_registered(&observer) {
+            // The held selection is the previous observer's, so it goes with
+            // the binding. A new aircraft starts with no target rather than
+            // with the last pilot's.
+            //
+            // The `is_registered` guard matters: a rebind to an observer the
+            // store does not hold is refused by the phase below, and a failed
+            // pass must not have mutated the session on its way out.
+            selection.clear();
+        }
+        let result = store.phase(observer, selection, at).map(|phase| {
+            // The guidance query reads the same selection again
+            // immediately after the phase, so the aid can never name a
+            // target the reticle has already dropped. Its refusals are the
+            // interesting part, not failures: `NotHostile` is the gate
+            // working, and it is carried into `withheld` rather than
+            // thrown.
+            let (aid, refused) = match store.guidance(observer, selection, at) {
+                Ok(aid) => (Some(aid), None),
+                Err(error) => (None, Some(error)),
+            };
+            let (threats, withdrawn) = split_threats(store, &phase.threats);
+            (phase, aid, refused, threats, withdrawn)
+        });
+        match result {
+            Ok(derived) => {
+                *last_phase = Some(derived.0.clone());
+                Ok((session, assistance, derived))
+            }
+            Err(error) => {
+                *last_phase = None;
+                Err(TargetingError::Store(error))
+            }
+        }
+    };
+    let (session, assistance, (phase, aid, refused, threats, withdrawn)) = match derived {
+        Ok(derived) => derived,
+        Err(error) => {
+            // A failed pass publishes nothing: unbind before reporting, so a
+            // consumer reading the resource after the error finds no target
+            // rather than the previous pass's.
+            unbind_consumers(world);
+            return Err(error);
+        }
+    };
+    let cleared = phase.cleared.map(|cleared| ClearedTarget {
+        actor: cleared.actor,
+        reason: cleared.reason,
+    });
+
+    let offer = |option: &AssistanceOption| AssistanceOffer {
+        enabled: option.enabled,
+        presentable: option.presentable(),
+        provenance: option.provenance.clone(),
+    };
+    let lead_indicator = offer(&assistance.lead_indicator);
+    let aim_assistance = offer(&assistance.aim_assistance);
+
+    let hud = HudTargetReadout {
+        at,
+        reticle: phase.reticle.clone(),
+        threats,
+        withdrawn,
+        cleared,
+    };
+    let spyglass = SpyglassReadout {
+        at,
+        target: phase.reticle.as_ref().map(|reticle| SpyglassTarget {
+            actor: reticle.target,
+            class: reticle.class,
+            allegiance: reticle.allegiance,
+            hostile: reticle.hostile,
+            threatening: reticle.threatening,
+            objective: reticle.objective,
+            position: reticle.position,
+            distance: reticle.distance,
+        }),
+        cleared,
+    };
+    // The store's own refusal is the first thing reported, because it is the
+    // roster speaking: a selected actor that is not a declared hostile is
+    // `NotHostile`, and no declared option changes that.
+    let withheld = match (&aid, &refused) {
+        (Some(_), _) => None,
+        (None, Some(TargetError::NotHostile { .. })) => Some(GuidanceWithheld::NotHostile),
+        (None, _) if phase.reticle.is_none() => Some(GuidanceWithheld::NoTarget),
+        // Any other refusal — a degenerate bearing, an orphaned selection — is
+        // a broken query rather than a decision about the target, and it is
+        // carried verbatim so the weapon path can report it.
+        (None, Some(error)) => Some(GuidanceWithheld::Refused {
+            reason: error.to_string(),
+        }),
+        (None, None) => Some(GuidanceWithheld::Refused {
+            reason: "the store offered no guidance query result".to_owned(),
+        }),
+    };
+    let guidance = GuidanceReadout {
+        at,
+        aid,
+        lead_indicator,
+        aim_assistance,
+        withheld,
+        cleared,
+    };
+
+    let report = ConsumerReport {
+        hud: Some(hud.clone()),
+        spyglass: Some(spyglass.clone()),
+        guidance: Some(guidance.clone()),
+        rebound,
+    };
+    world.insert_resource(TargetConsumers {
+        bound: Some(ConsumerBinding { session, observer }),
+        hud: Some(hud),
+        spyglass: Some(spyglass),
+        guidance: Some(guidance),
+    });
+    Ok(report)
+}
+
+/// Splits the phase's threat cues into the ones a HUD may draw and the ones it
+/// may not, in the ledger's own order.
+///
+/// The split is [`TargetStore::present`], not
+/// [`TargetStore::eligible`]: an attacker that lost sensor contact or whose
+/// script phase closed is still flying and still dangerous, and a warning is
+/// exactly what an unseen attacker is worth. Only an attacker that left the
+/// world — destroyed, despawned, removed from mission accounting, or
+/// unregistered entirely — is withdrawn. Both halves are reported, so a cue is
+/// never silently lost and the ledger keeps the evidence either way.
+fn split_threats(store: &TargetStore, cues: &[ThreatCue]) -> (Vec<ThreatCue>, Vec<WithdrawnCue>) {
+    let mut live = Vec::with_capacity(cues.len());
+    let mut withdrawn = Vec::new();
+    for cue in cues {
+        if store.present(&cue.attacker) {
+            live.push(*cue);
+        } else {
+            withdrawn.push(WithdrawnCue {
+                attacker: cue.attacker,
+                last_attack: cue.last_attack,
+            });
+        }
+    }
+    (live, withdrawn)
+}
+
+/// Unbinds the published views, installing an empty resource if none exists,
+/// so a reader never finds a resource it cannot tell from a live one.
+fn unbind_consumers(world: &mut World) {
+    match world.get_resource_mut::<TargetConsumers>() {
+        Some(mut consumers) => consumers.clear(),
+        None => {
+            world.insert_resource(TargetConsumers::default());
+        }
+    }
+}
+
+/// Drops the published HUD, spyglass and guidance views for `session`.
+///
+/// This is the explicit end-of-session path: a caller that knows a generation
+/// is over — a mission restart, an aircraft swap, a disconnect — calls it so
+/// no consumer reads a record from a store that no longer exists. It refuses
+/// to clear views bound to a **different** session, so a late teardown for the
+/// previous generation cannot blank the current one, and reports whether it
+/// cleared anything.
+pub fn teardown_target_consumers(world: &mut World, session: SessionId) -> bool {
+    let Some(mut consumers) = world.get_resource_mut::<TargetConsumers>() else {
+        return false;
+    };
+    if consumers
+        .bound()
+        .is_some_and(|bound| bound.session != session)
+    {
+        return false;
+    }
+    if consumers.bound().is_none() {
+        // Nothing is published for this session (or for any), so there is
+        // nothing to clear and the caller is told so rather than being given a
+        // teardown that appears to have done work.
+        return false;
+    }
+    consumers.clear();
+    true
 }

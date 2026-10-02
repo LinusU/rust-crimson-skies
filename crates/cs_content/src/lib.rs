@@ -233,9 +233,9 @@
 //! Its runtime counterpart is `cs_sim::damage`; the conversion boundary is
 //! `cs_app::damage`.
 //!
-//! [`target_rules`] is the F30-A/F30-B declared targeting schema
+//! [`target_rules`] is the F30-A/F30-B/F30-C declared targeting schema
 //! (`specs/F30-targeting-classification-aim-assistance-and-threat-cues.md`,
-//! stages `### F30-A`/`### F30-B`): the provenance-carrying
+//! stages `### F30-A`/`### F30-B`/`### F30-C`): the provenance-carrying
 //! [`target_rules::DeclaredTargetRules`] of a subject's faction set,
 //! directed [`target_rules::DeclaredRelation`]s and the
 //! [`target_rules::TargetRuleSet`] policy knobs — threat window, crosshair
@@ -243,8 +243,11 @@
 //! [`Resolved`] known with provenance or an explicit unknown, never a
 //! silent default, plus F30-B's
 //! [`target_rules::DeclaredSelectionActions`], the command-edge table an IA
-//! preset declares and the runtime binding lowers from. Its runtime
-//! counterpart is `cs_sim::targeting`; the conversion boundary is
+//! preset declares and the runtime binding lowers from. F30-C adds no record
+//! here: the guidance consumer reads these same two options, and the
+//! [`Provenance`] each carries is the evidence classification F30
+//! non-negotiable 3 requires. Its runtime counterpart is `cs_sim::targeting`;
+//! the conversion boundary and the HUD/spyglass/guidance views are
 //! `cs_app::targeting`.
 //!
 //! [`routes`] is the F31-A declared route graph

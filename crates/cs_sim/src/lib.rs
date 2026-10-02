@@ -130,9 +130,15 @@
 //! [`targeting::TargetStore::act`], the [`targeting::TargetStore::phase`]
 //! record whose reticle and AI hostility gate are one read, and
 //! [`targeting::TargetStore::record_hits`] as the threat state's only feed.
+//! F30-C adds the consumer contract those records need:
+//! [`targeting::TargetPhase::cleared`] with
+//! [`targeting::SelectionClearReason`], so a consumer learns from one read
+//! that its target went away and why, and [`targeting::TargetStore::present`],
+//! which separates "still in the world" from
+//! [`targeting::TargetStore::eligible`] for a threat cue's attacker.
 //! The declared schema is `cs_content::target_rules`; the conversion
-//! boundary and ECS bindings are `cs_app::targeting`; the HUD/spyglass/
-//! weapon consumers are F30-C and verification is F30-D.
+//! boundary, ECS bindings and the HUD/spyglass/guidance consumer views are
+//! `cs_app::targeting`; verification is F30-D.
 //!
 //! [`ai`] is the F31-A/F31-B navigation contract
 //! (`specs/F31-ai-navigation-routes-and-obstacle-avoidance.md`, stages

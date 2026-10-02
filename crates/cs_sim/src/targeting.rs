@@ -28,8 +28,14 @@
 //!   state, so the reticle the HUD draws and the hostility the combat AI
 //!   reads cannot straddle a boundary (AC02's production half).
 //!
-//! The HUD/spyglass/weapon consumers are F30-C and the original-data
-//! verification of ordering, reveal and assistance rules is F30-D.
+//! Stage **F30-C** adds what those consumers need to be told, and only that:
+//! [`TargetPhase::cleared`] carries the [`ClearedSelection`] a consumer
+//! otherwise could only infer by comparing two records — which actor went away
+//! and [`SelectionClearReason`] why — and [`TargetStore::present`] separates
+//! "still in the world" from [`TargetStore::eligible`], so a consumer can warn
+//! about an attacker that lost sensor contact without warning about a wreck.
+//! The original-data verification of ordering, reveal and assistance rules is
+//! F30-D.
 //!
 //! # Pieces
 //!
@@ -65,6 +71,13 @@
 //!   vocabulary and the command-edge table that reaches it, and
 //!   [`TargetStore::phase`] is the one call a session's consumers make per
 //!   phase boundary.
+//! * [`ClearedSelection`]/[`SelectionClearReason`] are the F30-C vocabulary
+//!   for why a held selection went away, derived by
+//!   [`TargetStore::phase`] in the same read as the reticle, and
+//!   [`TargetStore::present`] is the "still in the world" question a
+//!   consumer asks of a threat cue's attacker — distinct from
+//!   [`TargetStore::eligible`], which also requires contact and phase
+//!   eligibility.
 //!
 //! # Determinism
 //!
@@ -84,7 +97,9 @@
 //! authored engine design, recorded in
 //! `docs/findings/2026-09-30-f30-a-target-queries-and-allegiance-contracts.md`
 //! and, for the F30-B action table and threat feed, in
-//! `docs/findings/2026-10-02-f30-b-selection-actions-and-threat-state.md`.
+//! `docs/findings/2026-10-02-f30-b-selection-actions-and-threat-state.md`,
+//! and, for the F30-C consumer contract, in
+//! `docs/findings/2026-10-02-f30-c-hud-spyglass-and-weapon-guidance.md`.
 //! The declared, provenance-carrying half is
 //! `cs_content::target_rules`; the lowering boundary and ECS bindings are
 //! `cs_app::targeting`.
@@ -554,6 +569,44 @@ pub enum SelectionRequest {
     Clear,
 }
 
+/// What a weapon-guidance consumer is told about the selected target.
+///
+/// Guidance is *derived from* the reticle and confers no combat authority: it
+/// names the target the session selected and the bearing a consumer would draw
+/// an aid toward, and it holds no aim correction, no damage and no way to
+/// influence a shot. The weapon path (F27-B) owns ballistics; this record only
+/// says which target the session is pointing at and where it is.
+///
+/// The record is produced by [`TargetStore::guidance`] from the *same* phase
+/// read that produced the reticle, so guidance and reticle cannot disagree
+/// about allegiance or about whether the target is still eligible.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WeaponGuidance {
+    /// The tick the guidance was derived at.
+    pub at: Tick,
+    /// The selected actor the aid would be drawn for.
+    pub target: ActorId,
+    /// The target's canonical world position.
+    pub position: WorldPosition,
+    /// The unit vector from the observer to the target: the bearing a lead
+    /// indicator or assistance cue points along. It is a *direction to the
+    /// target*, not a lead solution — computing one needs the target's
+    /// velocity and the projectile's ballistics, which targeting does not own
+    /// and which are unmeasured (F30-D).
+    pub bearing: UnitVec3,
+    /// The target's distance from the observer.
+    pub distance: Meters,
+    /// The target's live declared allegiance to the observer's faction.
+    pub allegiance: Option<Allegiance>,
+    /// Whether the target is a declared hostile. Guidance eligibility is gated
+    /// on this: a friendly, neutral or *undeclared* pair is never offered an
+    /// aid, so the weapon path cannot be nudged toward an ally by a default.
+    pub hostile: bool,
+    /// Whether this actor produced an authoritative attack against the
+    /// observer inside the declared threat window.
+    pub threatening: bool,
+}
+
 /// One observer's selection state.
 ///
 /// The state carries no eligibility of its own: [`TargetStore::prune`]
@@ -842,13 +895,66 @@ pub struct Reticle {
     pub distance: Meters,
 }
 
-/// One phase boundary's targeting state: the selection after pruning, the
-/// reticle record for it and the observer's live threat cues.
+/// Why a held selection stopped being eligible (F30-C).
+///
+/// The reason is a statement about the roster, not about a display: every
+/// variant is a fact the store already holds, read in the order the actor can
+/// lose eligibility. Which of these the original game shows a reason for is
+/// unmeasured; the vocabulary is designed engine semantics, and a consumer is
+/// free to display none of it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SelectionClearReason {
+    /// A lifecycle transition ended the actor's targetability: the
+    /// [`LifecycleKind`] that was recorded.
+    Ended(LifecycleKind),
+    /// The actor is no longer revealed to sensors/HUD.
+    NotRevealed,
+    /// The current script phase no longer makes the actor eligible.
+    PhaseIneligible,
+    /// The actor is no longer registered: its entity left the world.
+    LeftWorld,
+}
+
+impl SelectionClearReason {
+    /// The stable label used in reports.
+    #[must_use]
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::Ended(kind) => kind.label(),
+            Self::NotRevealed => "not_revealed",
+            Self::PhaseIneligible => "phase_ineligible",
+            Self::LeftWorld => "left_world",
+        }
+    }
+}
+
+impl fmt::Display for SelectionClearReason {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+/// A selection this phase boundary dropped, and the reason.
+///
+/// Carried on [`TargetPhase`] so the reticle, the spyglass and the guidance
+/// consumer learn *that* a target went away and *why* in the same single read
+/// of the roster, before any of them renders (AC03).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ClearedSelection {
+    /// The actor the observer had selected before this boundary.
+    pub actor: ActorId,
+    /// Why it stopped being eligible.
+    pub reason: SelectionClearReason,
+}
+
+/// One phase boundary's targeting state: the selection after pruning, why it
+/// changed, the reticle record for it and the observer's live threat cues.
 ///
 /// [`TargetStore::phase`] is the single call a session's consumers make per
 /// boundary, and every field is derived in it. A consumer therefore never
 /// reads the selection and the allegiance in two calls that a faction change
-/// could come between.
+/// could come between, and never has to compare two records to learn that its
+/// target is gone.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TargetPhase {
     /// The tick the phase ran at.
@@ -857,10 +963,19 @@ pub struct TargetPhase {
     /// or when the held target stopped being eligible (AC03's contract
     /// half, applied before any consumer reads the record).
     pub selection: Option<ActorId>,
+    /// The selection this boundary dropped, when it dropped one: `None` when
+    /// there was no selection, when the selection is unchanged, or when the
+    /// boundary moved to a different eligible target. A re-selection is not a
+    /// clear — the consumer's previous target simply changed.
+    pub cleared: Option<ClearedSelection>,
     /// The reticle record for [`selection`](Self::selection); `None` when
     /// there is no selection.
     pub reticle: Option<Reticle>,
     /// The live threat cues against the observer, most recent first.
+    ///
+    /// A cue is recorded evidence of an attack, so it survives its attacker
+    /// leaving the world; a consumer that *displays* cues decides with
+    /// [`TargetStore::present`] whether the attacker can still be one.
     pub threats: Vec<ThreatCue>,
 }
 
@@ -890,6 +1005,34 @@ pub enum TargetError {
     /// than answered: a frame without a ray is missing evidence, not
     /// evidence that nothing is under the crosshair.
     MissingCrosshair,
+    /// A guidance query needs a selected target and the phase carries none.
+    /// Refused rather than answered with a default aid: "no target" and "an
+    /// aid that silently corrects nothing" are different statements, and the
+    /// consumer decides which it can render.
+    NoSelection,
+    /// The selected actor is not a **declared** hostile — it is friendly,
+    /// neutral, or its faction relation was never declared. The query is
+    /// refused rather than answered, so no consumer can offer an aid toward
+    /// an ally on the strength of a default (F30 non-negotiable 1 and 3).
+    NotHostile {
+        /// The selected actor the aid would have been drawn for.
+        actor: ActorId,
+        /// Its declared relation to the observer's faction, `None` when the
+        /// pair was never declared.
+        allegiance: Option<Allegiance>,
+    },
+    /// A guidance query asked for a target that is not registered.
+    UnknownSelection {
+        /// The actor the caller named.
+        actor: ActorId,
+    },
+    /// The selected actor sits exactly on the observer, so the guidance
+    /// bearing has no direction to report. Refused rather than defaulted: a
+    /// consumer would otherwise draw an aid toward an arbitrary axis.
+    DegenerateBearing {
+        /// The selected actor whose bearing is undefined.
+        actor: ActorId,
+    },
 }
 
 impl fmt::Display for TargetError {
@@ -904,6 +1047,27 @@ impl fmt::Display for TargetError {
             Self::MissingCrosshair => write!(
                 f,
                 "the under-crosshair action needs a crosshair ray, and this phase carries none"
+            ),
+            Self::NoSelection => write!(
+                f,
+                "weapon guidance needs a selected target, and this phase carries none"
+            ),
+            Self::NotHostile { actor, allegiance } => match allegiance {
+                Some(allegiance) => write!(
+                    f,
+                    "weapon guidance refuses {actor}: it is a declared {allegiance}, not a declared hostile"
+                ),
+                None => write!(
+                    f,
+                    "weapon guidance refuses {actor}: its faction relation to the observer was never declared"
+                ),
+            },
+            Self::UnknownSelection { actor } => {
+                write!(f, "weapon guidance names {actor}, which is not registered")
+            }
+            Self::DegenerateBearing { actor } => write!(
+                f,
+                "weapon guidance for {actor} has no bearing: the target is on the observer"
             ),
         }
     }
@@ -1297,6 +1461,48 @@ impl TargetStore {
         })
     }
 
+    /// Whether the actor is still **in the world**: registered and not ended
+    /// by a lifecycle transition.
+    ///
+    /// This is deliberately weaker than [`TargetStore::eligible`]. An actor
+    /// that lost sensor contact or whose script phase closed is still a thing
+    /// in the sky that can shoot at the observer; one whose entity left the
+    /// world or that was destroyed is not. A consumer that must not warn about
+    /// a wreck reads this, and one that must not select a hidden actor reads
+    /// [`TargetStore::eligible`] (F30-C).
+    #[must_use]
+    pub fn present(&self, actor: &ActorId) -> bool {
+        self.records
+            .get(actor)
+            .is_some_and(|entry| entry.gone.is_none())
+    }
+
+    /// Why the actor stopped being eligible, or `None` when it is still
+    /// eligible.
+    ///
+    /// An actor the roster does not hold reports
+    /// [`SelectionClearReason::LeftWorld`]: the roster forgets an actor only
+    /// through [`TargetStore::unregister`], so a selection naming an unknown
+    /// actor can only mean that its entity left the world. The variants are
+    /// tested in a fixed order — lifecycle transition, then reveal, then
+    /// script phase — so one store always reports one reason for one actor.
+    #[must_use]
+    pub fn clear_reason(&self, actor: &ActorId) -> Option<SelectionClearReason> {
+        let Some(entry) = self.records.get(actor) else {
+            return Some(SelectionClearReason::LeftWorld);
+        };
+        if let Some(kind) = entry.gone {
+            return Some(SelectionClearReason::Ended(kind));
+        }
+        if !entry.record.revealed {
+            return Some(SelectionClearReason::NotRevealed);
+        }
+        if !entry.record.phase_eligible {
+            return Some(SelectionClearReason::PhaseIneligible);
+        }
+        None
+    }
+
     /// Whether `record` matches `filter` as seen by `observer_faction`.
     fn matches(
         &self,
@@ -1558,10 +1764,17 @@ impl TargetStore {
     ///
     /// The pruning runs *before* the record is derived, so a destroyed,
     /// hidden or phase-gated target is never described by a phase that
-    /// reports it (AC03's contract half). The reticle's allegiance and its
-    /// hostility verdict are two fields of one read of the roster, so a
-    /// faction change applied before this call reaches both in the same
-    /// boundary and no consumer can see one without the other (AC02).
+    /// reports it (AC03's contract half). The reason the selection went is
+    /// read from the roster *before* the prune, so the record says why as
+    /// well as that — a consumer learns its target is gone from this one call
+    /// instead of comparing two records across the boundary. The reticle's
+    /// allegiance and its hostility verdict are two fields of one read of the
+    /// roster, so a faction change applied before this call reaches both in
+    /// the same boundary and no consumer can see one without the other
+    /// (AC02).
+    ///
+    /// Calling it twice for one boundary is safe and the second call reports
+    /// no clear: the first already applied it.
     ///
     /// # Errors
     ///
@@ -1577,6 +1790,11 @@ impl TargetStore {
             .ok_or(TargetError::UnknownActor { actor: observer })?;
         let observer_faction = &observer_record.faction;
         let observer_position = observer_record.position;
+        let held = selection.current();
+        let cleared = held.and_then(|actor| {
+            self.clear_reason(&actor)
+                .map(|reason| ClearedSelection { actor, reason })
+        });
         self.prune(selection);
         let threats = self.threats(observer, now);
         let reticle = selection.current().and_then(|target| {
@@ -1599,8 +1817,88 @@ impl TargetStore {
         Ok(TargetPhase {
             at: now,
             selection: selection.current(),
+            cleared,
             reticle,
             threats,
+        })
+    }
+
+    /// Derives the weapon-guidance record for `observer`'s current selection
+    /// at `now`.
+    ///
+    /// Guidance is derived from the same reads as [`TargetStore::phase`] — the
+    /// same pruning, the same reticle — and carries no authority: it names a
+    /// target and a bearing toward it, and there is deliberately no field here
+    /// for a lead solution, an aim correction or a damage amount. Computing a
+    /// lead point needs the target's velocity and the projectile's measured
+    /// ballistics, neither of which targeting owns and neither of which is
+    /// measured (F30-D), so producing one here would be a fabricated value
+    /// wearing the appearance of original behavior (F30 non-negotiable 3).
+    ///
+    /// The eligibility gate is the reticle's own `hostile` verdict, applied
+    /// here rather than in a consumer: an aid is offered for a **declared**
+    /// hostile only, so a friendly, neutral or *undeclared* pair can never
+    /// receive one however the consumer reads the record. Refusing rather than
+    /// returning a record with `hostile: false` keeps the refusal with the
+    /// roster fact that produced it.
+    ///
+    /// # Errors
+    ///
+    /// [`TargetError::UnknownActor`] when `observer` is unregistered,
+    /// [`TargetError::NoSelection`] when nothing is selected (a cleared or
+    /// absent selection is not a target to assist),
+    /// [`TargetError::UnknownSelection`] when `selection` names an actor the
+    /// roster does not hold — which only an already-orphaned selection can do —
+    /// and [`TargetError::NotHostile`] when the selected actor is not a
+    /// declared hostile.
+    pub fn guidance(
+        &self,
+        observer: ActorId,
+        selection: &mut TargetSelection,
+        now: Tick,
+    ) -> Result<WeaponGuidance, TargetError> {
+        let observer_record = self
+            .record(&observer)
+            .ok_or(TargetError::UnknownActor { actor: observer })?;
+        let observer_position = observer_record.position;
+        self.prune(selection);
+        let Some(target) = selection.current() else {
+            return Err(TargetError::NoSelection);
+        };
+        let Some(record) = self.record(&target) else {
+            return Err(TargetError::UnknownSelection { actor: target });
+        };
+        let allegiance = self.allegiance(&observer_record.faction, &record.faction);
+        if allegiance != Some(Allegiance::Hostile) {
+            return Err(TargetError::NotHostile {
+                actor: target,
+                allegiance,
+            });
+        }
+        let threatening = self
+            .threats(observer, now)
+            .iter()
+            .any(|cue| cue.attacker == target);
+        let [ox, oy, oz] = observer_position.to_array();
+        let [tx, ty, tz] = record.position.to_array();
+        let [x, y, z] = [tx - ox, ty - oy, tz - oz];
+        let length = x.hypot(y).hypot(z);
+        // A target sitting exactly on the observer has no bearing, and
+        // `UnitVec3::try_new` validates finiteness and unit length — the
+        // normalized offset is both, so this cannot fail for a validated
+        // position. Refused rather than defaulted: the consumer would
+        // otherwise draw an aid toward an arbitrary axis.
+        let bearing = UnitVec3::try_new([x / length, y / length, z / length])
+            .map_err(|_| TargetError::DegenerateBearing { actor: target })?;
+        Ok(WeaponGuidance {
+            at: now,
+            target,
+            position: record.position,
+            bearing,
+            distance: Meters(distance_squared(observer_position, record.position).sqrt()),
+            allegiance,
+            hostile: true,
+            threatening,
         })
     }
 

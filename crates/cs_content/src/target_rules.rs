@@ -54,6 +54,24 @@
 //! edge to a guess; the table is validated so one command binds at most one
 //! action and no continuous axis is ever bound to a target action.
 //!
+//! # The assistance options reach the F30-C guidance consumer (F30-C)
+//!
+//! The F30-C guidance consumer is the last reader of
+//! [`TargetRuleSet::lead_indicator`] and [`TargetRuleSet::aim_assistance`],
+//! and it reads them as two separate [`Resolved<bool>`] values, each with its
+//! own [`Provenance`] — which is exactly the separation and the evidence
+//! classification non-negotiable 3 asks for. `cs_app::targeting::lower_rules`
+//! carries each provenance across the lowering boundary and
+//! `cs_app::targeting::AssistanceOption::presentable` reads it, so a consumer
+//! that draws an aid can tell a measured option from a designed default.
+//!
+//! F30-C deliberately adds **no** declared record to this module: the guidance
+//! consumer's declared inputs are the two options this record already carries.
+//! In particular there is no declared aid magnitude, no lead point and no aim
+//! correction anywhere in the schema, because a lead solution needs the
+//! target's velocity and the projectile's measured ballistics — neither of which
+//! this schema has evidence for, and neither of which is measured (F30-D).
+//!
 //! # Designed vocabulary, not original data
 //!
 //! The original game's faction matrix, target-cycle order, selection
@@ -62,8 +80,10 @@
 //! retail stage). Every value in the synthetic fixtures is newly authored
 //! project design carrying `Origin::SyntheticFixture` and designed
 //! provenance, recorded in
-//! `docs/findings/2026-09-30-f30-a-target-queries-and-allegiance-contracts.md`
-//! and `docs/findings/2026-10-02-f30-b-selection-actions-and-threat-state.md`.
+//! `docs/findings/2026-09-30-f30-a-target-queries-and-allegiance-contracts.md`,
+//! `docs/findings/2026-10-02-f30-b-selection-actions-and-threat-state.md` and,
+//! for the F30-C consumer contract, in
+//! `docs/findings/2026-10-02-f30-c-hud-spyglass-and-weapon-guidance.md`.
 
 use std::collections::BTreeSet;
 use std::fmt;

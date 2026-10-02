@@ -334,8 +334,20 @@
 //! entities), [`targeting::apply_selection_edges`] (command edges to
 //! selections) and [`targeting::apply_target_damage`] (the damage system's
 //! applied hits and lifecycle transitions to threat state and eligibility)
-//! drive it. The HUD, spyglass and weapon consumers of the phase record are
-//! F30-C.
+//! drive it.
+//!
+//! F30-C adds the consumer half:
+//! [`targeting::apply_target_consumers`] derives the three views a session
+//! publishes — [`targeting::HudTargetReadout`] (the reticle and the threat
+//! list the HUD draws),
+//! [`targeting::SpyglassReadout`] (the target the spyglass magnifies) and
+//! [`targeting::GuidanceReadout`] (what aid the weapon path may offer) — from
+//! one phase record at the tick the consumers render, publishing them through
+//! the [`targeting::TargetConsumers`] resource, and
+//! [`targeting::teardown_target_consumers`] drops them at the end of a
+//! session generation. Each view carries its evidence and its refusal: a
+//! destroyed or withdrawn target clears before any consumer describes it, and
+//! no view confers combat authority.
 //!
 //!
 //! [`ai`] is the F31-C mission-ECS binding
