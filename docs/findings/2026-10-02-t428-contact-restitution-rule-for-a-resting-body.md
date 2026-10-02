@@ -120,8 +120,9 @@ geometry: a per-tick change in linear velocity at or below
 `RESTING_STILL_EPSILON_M_S` extends an unchanged run; any larger change resets
 it. `RESTING_STILL_TICKS` consecutive unchanged ticks retire the body's linear
 and angular velocity and mark it `RestingContact`. A marked body is held at zero
-on every tick it is still touching, and unmarked the moment it is touching
-nothing.
+on every tick it is still touching, and leaves the mark when it is touching
+nothing or when something is measurably driving it
+(`RESTING_RELEASE_TICKS` consecutive ticks of *changing* velocity).
 
 It writes **velocity only**. The pose is never touched: a crashed body stops
 where the contact left it, which is the whole point of the rule and the reason
@@ -171,6 +172,77 @@ mistaken for a settled state. A reviewer preferring one or two has this table to
 check against, and the pinned test's fast arm reports a wrong-long count
 immediately.
 
+**`RESTING_RELEASE_TICKS = 24`.** Added by review; see "The defect review found"
+below. It is the dwell after which a marked body stops being held because
+something is measurably driving it.
+
+## The defect review found: the hold could freeze a body the game is driving
+
+**Found in review, not in the first pass, and it was in the rule this task
+ships rather than in the measurement it rests on.**
+
+The rule as first written held a marked body at zero for as long as it kept
+touching geometry, with no way out while the contact lasted. The module
+documentation described a release path (`RESTING_RELEASE_TICKS`) that the code
+did not contain, and the one test that claimed to check "the rule is not a
+brake" ran on a body that was **not marked and not touching** — a 30 m/s striker
+comes to rest 1.3 cm clear of the wall, so it was never held by the rule at all.
+The assertion passed and proved nothing.
+
+### Measured, with the unconditional hold
+
+| case (a body marked at rest against a wall) | measured |
+| --- | --- |
+| 3 kN into the wall | speed stays exactly `0.0` for 60 ticks, pose moves `0.12 mm` — correct: the wall holds it |
+| 3 kN along the face | released on tick 4, because the body leaves the contact — not the rule |
+| 0.5 m/s velocity write every tick | pose advances at 0.5 m/s while `LinearVelocity` reads `0.0` for all 60 ticks |
+| **3 kN into the wall and 2 kN along it (wedged)** | **frozen: `0.010 m` in 60 ticks, speed `0.0` throughout, mark never withdrawn** |
+
+The last row is the defect. A body pressed into geometry cannot lose the
+contact, so the unconditional hold has no exit at all: the game pushes, the rule
+rewrites the velocity every tick, and the body never moves.
+
+### The release signal is velocity *change*, and that is forced, not preferred
+
+The obvious test — "is the body's speed above the epsilon?" — **cannot work**,
+and the failure is measured. A resting body in contact is handed a non-zero
+speed every tick by the solver's own soft-constraint bias: `0.0638 m/s` on the
+depot's door panel, constant in the plain wall fixture. A speed test releases
+every resting body on its next tick. Measured directly: with a speed-based
+release the depot probe cycled mark → drift → re-mark and the `retired`
+counter reached three for one body.
+
+Velocity **change** separates the two, because the bias does not stay constant
+— it *decays*. On the depot panel it falls `0.0638 → 0.0036 m/s` over **19
+consecutive ticks** as the soft constraint bleeds the initial overlap off, and
+only then stops changing at all (the plain wall fixture is 1 tick, because its
+overlap is shallow). Anything actually driving the body changes its velocity
+every tick by `a·dt`: 3 kN on 250 kg at 120 Hz is `0.1 m/s` per tick, a hundred
+times the epsilon.
+
+**So the dwell has to outlast the decay, and 24 is 19 plus five ticks of margin.**
+The margin exists because the decay's length is a property of how deeply the pair
+overlaps and this repository has not measured every geometry that could overlap
+more deeply. The cost of the margin is named rather than hidden: a marked body
+that gameplay starts driving is released after 24 ticks, **1/5 s** of simulated
+time.
+
+Measured after the fix: the wedged body is released at tick 24 and slides
+`0.104 m` over the same 60 ticks, ten times the frozen pose change.
+
+### Two corrections to this finding, found in the same review
+
+* **"The resting mark was withdrawn exactly once, on the tick the panel left"**,
+  below, is wrong: it is never withdrawn for the depot pair. Measured — after the
+  overlay applies, the probe keeps its mark, `released` stays `0`, and the world
+  contact log still reports the probe against `depot.door`. The panel keeps a
+  speculative contact with the body after it has slid 2 m along `z`, so the mark
+  is still resting *on the record*. The pinned test already asserted this
+  correctly; only this prose was wrong.
+* **The "3 cm" figure** quoted by the "the rule is not a brake" test was measured
+  on a body the rule was not holding (1.3 cm, in fact). The test now asserts its
+  premise and drives a body that is genuinely held.
+
 ## The F18-C pair: what the door opening actually does
 
 Measured on the depot world with the world composition, the production probe, and
@@ -184,10 +256,16 @@ After the door opens and 240 ticks pass:
 
 * the overlay log reports one `Applied`;
 * the panel's **collided** half moved by the authored offset `[0, 0, 2]`;
-* the body **did not move at all** — 0.0006 m of drift, 0.0009 m in a longer
-  run, both of it the residual's last few millimetres before the rule caught it,
-  and **zero** velocity throughout;
-* the resting mark was withdrawn exactly once, on the tick the panel left.
+* the body **did not move at all** — its pose is bit-identical to the pose it had
+  before the overlay, and its velocity stays below `3.2e-6 m/s` throughout;
+* the resting mark is **not** withdrawn. This corrects an earlier draft of this
+  section, which claimed it was "withdrawn exactly once, on the tick the panel
+  left": measured, `released` stays `0` and the mark survives, because the panel
+  keeps a speculative contact with the body after sliding 2 m along `z` and the
+  world contact log still reports the pair. The body is held by nothing and
+  moves by nothing either way; the mark records that its residual was retired
+  and nothing has given it a velocity since, which is what its own doc says it
+  means.
 
 **This is the answer to "the door opened and the body on it moved."** The two
 facts are now separately recorded and they agree: the door opened (the overlay
@@ -207,7 +285,7 @@ because it had already come to rest and was never held by the panel.
   `RestingBodiesPlugin`, with the reason it does so in a comment — eight lines,
   no logic.
 * `crates/cs_app/tests/physics/resting.rs` (new) and
-  `crates/cs_app/tests/physics/main.rs` (edited): the eight `accept_t428_`
+  `crates/cs_app/tests/physics/main.rs` (edited): the nine `accept_t428_`
   acceptance tests and their module declaration.
 * This file.
 
@@ -220,9 +298,9 @@ and it is the failure this task exists to make impossible.
 
 ## Test sensitivity (mutation matrix)
 
-Seven mutations were applied, `cargo test -p cs_app --test physics --
+Nine mutations were applied, `cargo test -p cs_app --test physics --
 accept_t428_ --include-ignored` was run, and the source was restored each time.
-**Five of the seven are caught.** The two that survive are recorded below rather
+**Seven of the nine are caught.** The two that survive are recorded below rather
 than papered over.
 
 | mutation | tests that failed |
@@ -234,6 +312,8 @@ than papered over.
 | the pruning pass and its counter decrement are deleted (M6) | `..._covers_only_live_dynamic_bodies_and_never_disturbs_a_sleeping_one` |
 | **`ContactPairFlags::TOUCHING` is ignored (M4)** | **none — see below** |
 | **`RESTING_STILL_TICKS` is raised to 6 or 8 (M7)** | `..._comes_to_rest_and_holds_its_pose` (6 and 8 caught; 1 and 2 are not) |
+| **the release-on-drive branch is removed (M10)** | `..._a_marked_body_is_released_when_gameplay_drives_it...` — added by review |
+| **`RESTING_RELEASE_TICKS` is lowered to 4 (M11)** | `..._a_door_opening_does_not_move_a_body_that_already_came_to_rest` — added by review; 4 is inside the measured 19-tick decay, so the depot probe is released while it is resting |
 
 ### The one that survives
 
@@ -269,6 +349,13 @@ built to match rather than to flatter:
   see the table above — and the constant's own doc comment says so and calls the
   lower bound a judgement. A reviewer who wants the count pinned to one tick
   would be asking for a measurement that does not exist.
+
+`RESTING_RELEASE_TICKS` is the asymmetric case that shows the measurement doing
+real work: **4 fails and 24 passes**, and the reason is measured rather than
+tuned. The depot pair's solver bias takes 19 ticks to stop changing, so a dwell
+inside that window releases a body that is in fact resting and hands back the
+drift the rule exists to remove. There is no value below 20 that the pinned door
+test accepts, which is the constant's lower bound earned.
 
 ## Designed rule, not original data
 
@@ -313,6 +400,24 @@ resting rule is newly authored project design, and nothing here is
 * **The `TOUCHING` filter's failure case is not covered by a test** (M4 above).
   Affected content: a slow body approaching geometry it has not yet reached.
   Documented in the source and above.
+* **A *constant* external velocity write on a marked, still-touching body is not
+  released**, because the release signal is velocity *change* and a constant
+  write produces none. Measured: a 0.5 m/s write every tick moves the body at
+  0.5 m/s while `LinearVelocity` reads `0.0` for all 60 ticks. The write cannot
+  be told apart from the solver's own constant bias, which is the same signal
+  the rule must not mistake for gameplay — this is the deliberate cost of the
+  choice above, not an oversight. Affected content: any later stage that drives a
+  resting dynamic body by writing velocity rather than through the force queue
+  (`ForceRequest`, which the rule does release — measured at the dwell). The
+  declared drive path in this repository is the force queue; kinematic movers are
+  excluded from the rule by design. A drive-side signal (a flag the drive path
+  sets) would close it and is not written here.
+* **The decay the release dwell must outlast is 19 ticks on the pair measured
+  here.** A geometry whose overlap is deeper would decay for longer and would
+  need a larger dwell; the constant carries five ticks of margin and no
+  measurement of a deeper overlap. Affected content: any future world whose
+  contact pairs overlap more deeply than the depot panel. The count is declared
+  and measured, not derived.
 
 ## Evidence
 
@@ -324,10 +429,10 @@ cargo fmt --all -- --check                                        # exit 0
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings   # exit 0
 cargo test --workspace --locked                                   # 254 binaries, 0 failed
 cargo test --workspace --locked -- accept_t428_ --include-ignored
-#   8 tests run, 8 passed (crates/cs_app/tests/physics)
+#   9 tests run, 9 passed (crates/cs_app/tests/physics)
 ```
 
-The eight acceptance tests are listed with their failure sensitivity in the
+The nine acceptance tests are listed with their failure sensitivity in the
 mutation matrix above.
 
 ## Sources
