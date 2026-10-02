@@ -1182,15 +1182,16 @@ fn evidence_report_t444_writes_the_acceptance_report() {
     .unwrap_or_else(|error| panic!("write {}: {error}", decode_path.display()));
 
     let reference = reference_comparison(&evidence_dir, &rows);
-    let reference_json = match &reference {
+    // The schema has no field for a reference comparison, so its outcome is
+    // stated in the method text rather than added to the report's shape.
+    let comparison_sentence = match &reference {
         Some(comparison) => format!(
-            "{{\"implementation\": \"ffmpeg\", \"version\": {}, \"shapes_compared\": {}, \
-             \"samples_compared\": {}, \"mismatching_samples\": 0}}",
-            jstr(&comparison.version),
-            comparison.shapes,
-            comparison.samples
+            " The independent cross-check ran: {} decoded one member of each of the {} distinct \
+             retail shapes ({} samples in total) and every sample equalled the production \
+             decode.",
+            comparison.version, comparison.shapes, comparison.samples
         ),
-        None => "null".to_owned(),
+        None => String::new(),
     };
     let unknowns = [
         Unknown {
@@ -1254,7 +1255,6 @@ fn evidence_report_t444_writes_the_acceptance_report() {
          \x20\"tests\": {{\"discovered\": {}, \"executed\": {}, \"passed\": {}, \"failed\": {}, \"ignored\": {}}},\n\
          \x20\"assertions\": [{}],\n\
          \x20\"artifacts\": [{}],\n\
-         \x20\"independent_reference\": {reference_json},\n\
          \x20\"unknowns\": [{}],\n\
          \x20\"review\": {{\"identity\": {}, \"method\": {}}},\n\
          \x20\"claim\": \"implemented\"\n\
@@ -1300,17 +1300,18 @@ fn evidence_report_t444_writes_the_acceptance_report() {
              2026-10-02T14:16:39Z); reviewer: none yet. The implementer did not review this \
              work, and no agent review replaces the owner's human approval"
         ),
-        jstr(
+        jstr(&format!(
             "acceptance suite run locally with the retail capability; this harness derives every \
              field from the recorded log, production discovery of $CS_GAME_DIR, and the \
              production index reader, sound reader, WAVE header reader and block decoder over \
              every compressed member of both retail sound archives \
              (zbd-adpcm-decode.json); when CS_FFMPEG names an ffmpeg binary it also compares \
              production decodes with that independent implementation of the same two documented \
-             formats sample for sample; validated with tools/validate_evidence.py --require-pass. \
+             formats sample for sample; validated with tools/validate_evidence.py --require-pass.{} \
              The decode is a checked format claim, not a claim about how the original executable \
-             played the sound, and the unknowns above name what these files do not decide"
-        ),
+             played the sound, and the unknowns above name what these files do not decide",
+            comparison_sentence
+        )),
     );
     let out = evidence_dir.join("acceptance.json");
     fs::write(&out, &report).unwrap_or_else(|error| panic!("write {}: {error}", out.display()));
