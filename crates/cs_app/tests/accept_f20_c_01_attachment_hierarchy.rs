@@ -48,6 +48,7 @@ use cs_sim::animated_object::{AttachmentState, PosePolicy};
 use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind, Known, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
+use cs_types::net::SessionId;
 
 /// Tolerance for one f32 affine composition over this fixture's small
 /// integer offsets: the composed translations here round to well under
@@ -65,6 +66,11 @@ const VELOCITY_TOLERANCE_M_S: f32 = 1.0e-5;
 
 fn node(key: &str) -> ContentId {
     ContentId::from_source(ContentKind::SceneNode, key).expect("the fixture key is a scene node")
+}
+
+/// The shared nonzero session generation the playback stamps into event ids.
+fn session(value: u64) -> SessionId {
+    SessionId::new(value).expect("a nonzero session generation")
 }
 
 /// Spawns one scene node: its stable binding, its composed world pose.
@@ -118,7 +124,7 @@ fn accept_f20_c_01_detaching_cargo_from_a_moving_parent_inherits_the_parent_velo
     let generation = SceneGeneration::default().next();
 
     let mut world = World::new();
-    world.insert_resource(AnimationPlayback::new(3));
+    world.insert_resource(AnimationPlayback::new(session(3)));
 
     // The bay: a scene node of this generation that is moving — 10 m/s
     // along +x and spinning at 2 rad/s about +z. It is a scene node, so its
@@ -253,7 +259,7 @@ fn accept_f20_c_01_attaching_with_keep_local_pose_keeps_the_local_pose_and_moves
     let generation = SceneGeneration::default().next();
 
     let mut world = World::new();
-    world.insert_resource(AnimationPlayback::new(5));
+    world.insert_resource(AnimationPlayback::new(session(5)));
 
     // The bay sits three metres up: attaching to it must move the cargo's
     // world pose while its parent-relative pose survives.
@@ -383,7 +389,7 @@ fn accept_f20_c_01_unresolved_parent_and_stale_binding_reparent_nothing_and_repo
 
     // --- a known parent id that names no entity of this generation -------
     let mut world = World::new();
-    world.insert_resource(AnimationPlayback::new(6));
+    world.insert_resource(AnimationPlayback::new(session(6)));
     // The bay exists — but of another generation, so it is not *this*
     // generation's parent (the `Resolved::Unknown` variant never reaches a
     // component at all: F20-B blocks and reports it).
@@ -445,7 +451,7 @@ fn accept_f20_c_01_unresolved_parent_and_stale_binding_reparent_nothing_and_repo
     let superseded = SceneGeneration::default().next();
     let live = superseded.next();
     let mut world = World::new();
-    world.insert_resource(AnimationPlayback::new(7));
+    world.insert_resource(AnimationPlayback::new(session(7)));
     let bay = spawn_node(&mut world, SYNTHETIC_CARGO_BAY_NODE, superseded, Vec3::ZERO);
     let cargo = spawn_node(
         &mut world,
@@ -510,7 +516,7 @@ fn accept_f20_c_01_the_same_advance_never_writes_the_transition_twice() {
     let generation = SceneGeneration::default().next();
 
     let mut world = World::new();
-    world.insert_resource(AnimationPlayback::new(8));
+    world.insert_resource(AnimationPlayback::new(session(8)));
     let bay = spawn_node(&mut world, SYNTHETIC_CARGO_BAY_NODE, generation, Vec3::ZERO);
     world.entity_mut(bay).insert((
         LinearVelocity(Vec3::new(10.0, 0.0, 0.0)),
@@ -618,7 +624,7 @@ fn accept_f20_c_01_attachments_are_released_before_a_parent_is_despawned() {
     let clip = declared.id().clone();
     let generation = SceneGeneration::default().next();
     let mut world = World::new();
-    world.insert_resource(AnimationPlayback::new(9));
+    world.insert_resource(AnimationPlayback::new(session(9)));
 
     let bay = spawn_node(&mut world, SYNTHETIC_CARGO_BAY_NODE, generation, Vec3::ZERO);
     world.entity_mut(bay).insert((
@@ -717,7 +723,7 @@ fn accept_f20_c_01_release_reaches_an_animated_attachment_below_an_unmanaged_chi
     let generation = SceneGeneration::default().next();
 
     let mut world = World::new();
-    world.insert_resource(AnimationPlayback::new(11));
+    world.insert_resource(AnimationPlayback::new(session(11)));
 
     // The doomed node despawns a whole subtree. Its direct child is the bay,
     // which the animation never touches (it is only the clip's attachment
@@ -839,7 +845,7 @@ fn accept_f20_c_01_an_unmeasurable_spin_term_still_inherits_the_linear_source() 
 
     // --- an authored detach under a source with no reference point --------
     let mut world = World::new();
-    world.insert_resource(AnimationPlayback::new(13));
+    world.insert_resource(AnimationPlayback::new(session(13)));
     // The hull the bay hangs from: it carries a world linear velocity but no
     // composed scene pose and no Avian `Position`, so the offset `r` from it
     // to the cargo cannot be measured — and nothing in the chain spins.
@@ -904,7 +910,7 @@ fn accept_f20_c_01_an_unmeasurable_spin_term_still_inherits_the_linear_source() 
     let declared = declared_synthetic_cargo_clip();
     let clip = declared.id().clone();
     let mut world = World::new();
-    world.insert_resource(AnimationPlayback::new(14));
+    world.insert_resource(AnimationPlayback::new(session(14)));
     // A moving, spinning parent of a managed attachment that has neither a
     // composed pose nor an Avian `Position`: the parent's reference point is
     // known, the child's is not, so `r` has a missing end.
@@ -979,7 +985,7 @@ fn accept_f20_c_01_a_parent_inside_the_nodes_own_subtree_is_refused() {
     let generation = SceneGeneration::default().next();
 
     let mut world = World::new();
-    world.insert_resource(AnimationPlayback::new(12));
+    world.insert_resource(AnimationPlayback::new(session(12)));
 
     let cargo = spawn_node(&mut world, SYNTHETIC_CARGO_NODE, generation, Vec3::ZERO);
     // The bay the clip attaches the cargo to is itself a child of the cargo:

@@ -55,12 +55,18 @@ use cs_sim::animated_object::{
 use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind, Origin, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
+use cs_types::net::SessionId;
 use cs_types::space::{Quaternion, Radians, UnitVec3};
 
 // -------------------------------------------------------------- helpers ---
 
 fn claim(id: &str) -> ClaimId {
     ClaimId::new(id).expect("a valid claim id")
+}
+
+/// The shared nonzero session generation the playback stamps into event ids.
+fn session(value: u64) -> SessionId {
+    SessionId::new(value).expect("a nonzero session generation")
 }
 
 fn content_id(kind: ContentKind, key: &str) -> ContentId {
@@ -152,7 +158,7 @@ fn accept_f20_b_looping_propeller_never_repeats_one_shot_gameplay_event() {
     );
 
     let mut world = World::new();
-    world.insert_resource(AnimationPlayback::new(2));
+    world.insert_resource(AnimationPlayback::new(session(2)));
     let generation = SceneGeneration::default().next();
     let clip_id = declared.id().clone();
     let rotor = node(SYNTHETIC_PROPELLER_NODE);
@@ -231,7 +237,7 @@ fn accept_f20_b_looping_propeller_never_repeats_one_shot_gameplay_event() {
     assert_eq!(unique.len(), ids.len(), "event ids never repeat");
     assert!(
         ids.iter()
-            .all(|id| id.session == 2 && id.producer == producer)
+            .all(|id| id.session == session(2) && id.producer == producer)
     );
 
     // Four passes later the instance is still one live instance: the clip
@@ -250,7 +256,7 @@ fn accept_f20_b_looping_propeller_never_repeats_one_shot_gameplay_event() {
 #[test]
 fn accept_f20_b_transform_track_applies_to_verified_bindings_only() {
     let mut world = World::new();
-    world.insert_resource(AnimationPlayback::new(7));
+    world.insert_resource(AnimationPlayback::new(session(7)));
     let live = SceneGeneration::default().next();
     let superseded = SceneGeneration::default();
 
@@ -331,7 +337,7 @@ fn accept_f20_b_material_and_attachment_tracks_apply_and_block_unknown_reference
     // --- known references from the declared fixture -----------------------
     let declared = declared_synthetic_cargo_clip();
     let mut world = World::new();
-    world.insert_resource(AnimationPlayback::new(3));
+    world.insert_resource(AnimationPlayback::new(session(3)));
     let generation = SceneGeneration::default().next();
     let clip_id = declared.id().clone();
     let cargo = node(SYNTHETIC_CARGO_NODE);
@@ -388,7 +394,7 @@ fn accept_f20_b_material_and_attachment_tracks_apply_and_block_unknown_reference
     // --- unknown references block one track each --------------------------
     let unknown = unknown_tracks_clip();
     let mut world = World::new();
-    world.insert_resource(AnimationPlayback::new(4));
+    world.insert_resource(AnimationPlayback::new(session(4)));
     let generation = SceneGeneration::default().next();
     let clip_id = unknown.id().clone();
     let panel = node("synthetic.unknown_panel");
@@ -512,7 +518,7 @@ fn unknown_tracks_clip() -> AnimationClip {
 #[test]
 fn accept_f20_b_holding_the_head_never_replays_a_one_shot_marker() {
     let mut world = World::new();
-    world.insert_resource(AnimationPlayback::new(5));
+    world.insert_resource(AnimationPlayback::new(session(5)));
     let generation = SceneGeneration::default().next();
     let declared = declared_synthetic_door_clip();
     let clip_id = declared.id().clone();
@@ -599,7 +605,7 @@ fn accept_f20_b_play_requires_a_session_and_refuses_a_second_instance() {
         "stopping with no session reports nothing"
     );
 
-    world.insert_resource(AnimationPlayback::new(9));
+    world.insert_resource(AnimationPlayback::new(session(9)));
     play_animation(&mut world, &declared, generation, Tick(0)).expect("the first instance starts");
     assert_eq!(
         play_animation(&mut world, &declared, generation, Tick(0)),
@@ -640,7 +646,7 @@ fn accept_f20_b_play_requires_a_session_and_refuses_a_second_instance() {
 #[test]
 fn accept_f20_b_a_clip_never_plays_before_its_start_tick() {
     let mut world = World::new();
-    world.insert_resource(AnimationPlayback::new(11));
+    world.insert_resource(AnimationPlayback::new(session(11)));
     let generation = SceneGeneration::default().next();
     let declared = declared_synthetic_propeller_clip();
     let clip_id = declared.id().clone();
@@ -706,7 +712,7 @@ fn accept_f20_b_a_clip_never_plays_before_its_start_tick() {
 fn accept_f20_b_an_unknown_reference_is_reported_without_a_bound_entity() {
     let unknown = unknown_tracks_clip();
     let mut world = World::new();
-    world.insert_resource(AnimationPlayback::new(12));
+    world.insert_resource(AnimationPlayback::new(session(12)));
     let generation = SceneGeneration::default().next();
     let clip_id = unknown.id().clone();
     // Deliberately no AnimatedNodeBinding anywhere in this world.

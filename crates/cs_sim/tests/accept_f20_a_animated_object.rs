@@ -32,10 +32,16 @@ use cs_sim::animated_object::{
 use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind, Known, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
+use cs_types::net::SessionId;
 use cs_types::space::{Quaternion, Radians, UnitVec3};
 
 fn claim(id: &str) -> ClaimId {
     ClaimId::new(id).expect("a valid claim id")
+}
+
+/// The shared nonzero session generation the evaluator stamps into event ids.
+fn session(value: u64) -> SessionId {
+    SessionId::new(value).expect("a nonzero session generation")
 }
 
 fn designed() -> Provenance {
@@ -73,7 +79,7 @@ fn turn(axis: UnitVec3, quarter_turns: u8) -> PoseSample {
 fn accept_f20_a_door_opens_at_fixed_tick_changing_collider_and_mesh_coherently() {
     let clip = synthetic_door_clip();
     let door = scene_node("synthetic.hangar.door");
-    let mut object = AnimatedObject::new(clip, 1, 7);
+    let mut object = AnimatedObject::new(clip, session(1), 7);
 
     let before = object.states();
     let closed = before.get(&door).expect("the door node has a state");
@@ -111,7 +117,7 @@ fn accept_f20_a_door_opens_at_fixed_tick_changing_collider_and_mesh_coherently()
     assert_eq!(
         event.id,
         cs_sim::animated_object::AnimationEventId {
-            session: 1,
+            session: session(1),
             tick: Tick(10),
             producer: 7,
             sequence: 0,
@@ -144,7 +150,7 @@ fn accept_f20_a_door_opens_at_fixed_tick_changing_collider_and_mesh_coherently()
 /// once across the whole activation.
 #[test]
 fn accept_f20_a_looping_propeller_never_repeats_one_shot_gameplay_event() {
-    let mut object = AnimatedObject::new(synthetic_propeller_clip(), 2, 3);
+    let mut object = AnimatedObject::new(synthetic_propeller_clip(), session(2), 3);
 
     // Three full passes: clip time 0 -> 12 with the head wrapping each 4.
     let mut gameplay = Vec::new();
@@ -195,7 +201,10 @@ fn accept_f20_a_looping_propeller_never_repeats_one_shot_gameplay_event() {
         .collect();
     let unique: std::collections::BTreeSet<_> = ids.iter().collect();
     assert_eq!(unique.len(), ids.len(), "event ids never repeat");
-    assert!(ids.iter().all(|id| id.session == 2 && id.producer == 3));
+    assert!(
+        ids.iter()
+            .all(|id| id.session == session(2) && id.producer == 3)
+    );
 
     // The rotor pose keeps wrapping with the clip position.
     let rotor = scene_node("synthetic.plane.prop");
@@ -236,7 +245,7 @@ fn accept_f20_a_unknown_marker_effect_blocks_the_transition() {
     )
     .expect("a clip may carry unknown markers");
 
-    let mut object = AnimatedObject::new(clip, 5, 1);
+    let mut object = AnimatedObject::new(clip, session(5), 1);
     let outcome = object.advance_to(6, Tick(6)).expect("crossing the marker");
     assert!(
         outcome.events.is_empty(),
@@ -259,7 +268,7 @@ fn accept_f20_a_unknown_marker_effect_blocks_the_transition() {
 #[test]
 fn accept_f20_a_skip_to_end_reaches_final_state_once() {
     let door = scene_node("synthetic.hangar.door");
-    let mut object = AnimatedObject::new(synthetic_door_clip(), 3, 2);
+    let mut object = AnimatedObject::new(synthetic_door_clip(), session(3), 2);
 
     let outcome = object
         .advance_to(30, Tick(99))
@@ -302,7 +311,7 @@ fn accept_f20_a_hidden_node_loses_its_collider_coherently() {
     )
     .expect("valid clip");
 
-    let mut object = AnimatedObject::new(clip, 1, 1);
+    let mut object = AnimatedObject::new(clip, session(1), 1);
     assert_eq!(
         object.states()[&node].visibility(),
         Some(Visibility::Visible)
@@ -350,7 +359,7 @@ fn accept_f20_a_attachment_channel_records_parent_change_explicitly() {
     )
     .expect("valid clip");
 
-    let mut object = AnimatedObject::new(clip, 1, 1);
+    let mut object = AnimatedObject::new(clip, session(1), 1);
     let states = object.states();
     let attached = states[&cargo].attachment().expect("attached from tick 0");
     assert_eq!(attached.parent, Some(known(parent)));
@@ -394,7 +403,7 @@ fn accept_f20_a_linear_channel_interpolates_at_whole_ticks() {
     )
     .expect("valid clip");
 
-    let mut object = AnimatedObject::new(clip, 1, 1);
+    let mut object = AnimatedObject::new(clip, session(1), 1);
     object.advance_to(5, Tick(5)).expect("halfway");
     let states = object.states();
     let midway = states[&node].mesh_pose().expect("a pose is sampled");
@@ -409,7 +418,7 @@ fn accept_f20_a_linear_channel_interpolates_at_whole_ticks() {
 /// clips fail construction instead of reaching the evaluator.
 #[test]
 fn accept_f20_a_regression_and_malformed_clips_are_refused() {
-    let mut object = AnimatedObject::new(synthetic_door_clip(), 1, 1);
+    let mut object = AnimatedObject::new(synthetic_door_clip(), session(1), 1);
     object.advance_to(4, Tick(4)).expect("forward");
     assert_eq!(
         object.advance_to(2, Tick(5)),

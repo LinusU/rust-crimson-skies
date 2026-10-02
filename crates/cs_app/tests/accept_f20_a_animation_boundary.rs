@@ -27,9 +27,15 @@ use cs_sim::animated_object::{
 };
 use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind};
+use cs_types::net::SessionId;
 
 fn content_id(kind: ContentKind, key: &str) -> ContentId {
     ContentId::from_source(kind, key).expect("valid content id")
+}
+
+/// The shared nonzero session generation the evaluator stamps into event ids.
+fn session(value: u64) -> SessionId {
+    SessionId::new(value).expect("a nonzero session generation")
 }
 
 /// The full path: the declared door clip lowers to a runtime clip, plays to
@@ -61,7 +67,7 @@ fn accept_f20_a_door_clip_lowers_and_opens_coherently() {
         "lowering keeps the marker effect known and unchanged"
     );
 
-    let mut object = AnimatedObject::new(clip, 1, 1);
+    let mut object = AnimatedObject::new(clip, session(1), 1);
     let door = content_id(ContentKind::SceneNode, "synthetic.hangar.door");
 
     // Bound entity record: the node's entity tracks clip + generation.
