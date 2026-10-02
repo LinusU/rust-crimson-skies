@@ -279,13 +279,21 @@ census names them, and naming is the deliverable.**
    needs a second, differently localized installation, which this machine does
    not have, and task #48 records the blocking evidence and the owner input
    that unblocks it. `parity_holds: true` in this report is a statement about
-   the *unconsumed-entry* rule on one installation and is **not** an
-   original-verified localization claim.
-7. **Which `RT_STRING` numbering the original addresses strings with.** The
-   account uses `cs_formats::string_id`'s `(block - 1) * 16 + index` because
-   that is the numbering this project reports; the account does not settle the
-   question, and #368's boundary measurement is evidence for #374, which owns
-   it. A different numbering would change which ids the headers match.
+   the *undeclared-entry* rule over one run in which every routed member was
+   accounted, and is **not** an original-verified localization claim.
+
+**Settled while this task was in review, not an open unknown.** Which
+`RT_STRING` numbering the original addresses strings with — this account used
+`cs_formats::string_id`'s `(block - 1) * 16 + index` and left the question
+open for #374 — was answered by **#374** while the review was in flight
+(`docs/findings/2026-10-02-t374-string-id-numbering.md`, merged as `5c647f5`
+and `e2b93ab`): the production formula is the Win32 string-table numbering,
+`block_of(id) = id / 16 + 1` is its exact inverse, and the `40000..=40170`
+run of `RESRC1.H` sits under `langui.dll` sections `2501..=2511`, which the
+zero-based reading could not produce. Affected content is the whole
+`absent`/`unnamed_blocks` crossing in **The referenced string ids**; the
+numbers in this file are therefore *pinned*, and they would only move if #374's
+measurement were re-opened.
 
 ## Tests
 
@@ -400,8 +408,8 @@ re-ran all of them on the corrected tree after the rebase onto `2b8b0f4`:
 - The `IDS_`/`STR_`/`SB_` prefixes are `ObservedTool` from one English
   installation, and the account reports both scopes rather than treating them
   as a filter.
-- The `string_id` numbering is used, not settled; see the seventh recorded
-  unknown.
+- The `string_id` numbering is **pinned** by #374, not chosen by this task;
+  see the settled note under Recorded unknowns.
 
 **Identities.** Implementer: `bunny-alpha-2` (Space Bunny Alpha), in the
 session that produced this file. Reviewer: `bunny-alpha-2/bunny-alpha-2` (Space

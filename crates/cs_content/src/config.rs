@@ -2731,12 +2731,12 @@ impl StringIdAccount {
 /// Crosses the ids `headers` name with the ids `catalog` actually carries.
 ///
 /// A define's value is a **block** id under the numbering this project
-/// reports ([`cs_formats::string_id`], `id = (block - 1) * 16 + index`), so
-/// the block a named id lives in is `(id / 16) + 1`; an id whose block the
-/// image does not have is [`HeaderIdAccount::absent`], and a block no header
-/// value names is [`StringIdAccount::unnamed_blocks`]. Both directions are
-/// reported, because a difference in one direction alone cannot say which
-/// side is wrong.
+/// reports ([`cs_formats::string_id`], `id = (block - 1) * 16 + index`, pinned
+/// by task #374), so the block a named id lives in is `(id / 16) + 1`; an id
+/// whose block the image does not have is [`HeaderIdAccount::absent`], and a
+/// block no header value names is [`StringIdAccount::unnamed_blocks`]. Both
+/// directions are reported, because a difference in one direction alone cannot
+/// say which side is wrong.
 ///
 /// Task #368 measured this once by hand with an independent walk of the
 /// resource directories; this is the production derivation of the same
@@ -2826,6 +2826,10 @@ pub fn account_string_ids<'header, 'bytes>(
 /// The `RT_STRING` block the string id `id` lives in under the numbering
 /// [`cs_formats::string_id`] reports, which is `(id / 16) + 1` — the inverse
 /// of `id = (block - 1) * 16 + index`.
+///
+/// That formula is pinned, not assumed: task #374 measured the `RT_STRING`
+/// directory entries of `langui.dll` and recorded the numbering as the Win32
+/// string-table numbering (`docs/findings/2026-10-02-t374-string-id-numbering.md`).
 const fn block_of(id: u32) -> u32 {
     id / cs_formats::STRING_UNITS_PER_BLOCK as u32 + 1
 }
