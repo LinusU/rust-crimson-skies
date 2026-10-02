@@ -951,8 +951,8 @@ mod tests {
         /// Members declaring `0x0002` under task #444's Microsoft block layout.
         ms_adpcm: usize,
         /// Members this census cannot count as decoded: no `fmt ` chunk, a tag
-        /// outside the three, or a declaration without the geometry its tag
-        /// needs.
+        /// outside the three, a declaration without the geometry its tag needs,
+        /// or an extent reaching past the archive.
         undecodable: usize,
     }
 
@@ -977,8 +977,11 @@ mod tests {
     /// A tag alone is not a decodable declaration: a block codec needs the
     /// `fmt ` extension behind it (`wSamplesPerBlock`, and for Microsoft the
     /// coefficient count in front of the table), and a member needs a nonzero
-    /// `nBlockAlign` and a `data` payload holding at least one block. `None` is
-    /// a member that carries no readable `fmt ` chunk at all.
+    /// `nBlockAlign` and a nonempty `data` payload. That is one byte rather than
+    /// a whole block, because a block-coded member's trailing block may be
+    /// shorter than `nBlockAlign` — the format's own final block, not a
+    /// contradiction. `None` is a member that carries no readable `fmt ` chunk
+    /// at all.
     fn declared_wave_layout(member: &[u8]) -> Option<(u16, bool)> {
         if member.len() < 12 || member[..4] != *b"RIFF" || member[8..12] != *b"WAVE" {
             return None;
@@ -1013,7 +1016,14 @@ mod tests {
         let data = u64::try_from(data).unwrap_or(u64::MAX);
         let usable = block_align > 0 && data > 0;
         let layout = match tag {
-            // An uncompressed member must be a whole number of frames.
+            // An uncompressed member must be a whole number of frames: for PCM
+            // `nBlockAlign` is the frame size, so a payload that does not divide
+            // by it is truncated. The runtime additionally demands
+            // `nBlockAlign == nChannels * bytesPerSample`, and every retail PCM
+            // member satisfies that (12 mono 8-bit, 8 mono 16-bit and one
+            // 2-channel member of each width), so the two rules agree on this
+            // corpus; this census keeps the simpler, format-level one so it
+            // stays an independent read of the bytes.
             WAVE_FORMAT_PCM => usable && data % block_align == 0,
             // 4 and 6 bytes of `fmt ` extension behind the 16 common ones.
             WAVE_FORMAT_IMA_ADPCM => usable && length >= 20,
@@ -1043,7 +1053,10 @@ mod tests {
             let length = le_u32(bytes, at + 4) as usize;
             let Some(member) = bytes.get(start..start + length) else {
                 // A member reaching past the file is a row for the audit, not a
-                // declaration this census can read.
+                // declaration this census can read. It is counted as undecodable
+                // rather than skipped, so the census still covers every member
+                // the trailer declares and the rows beside it stay countable.
+                census.undecodable += 1;
                 continue;
             };
             match declared_wave_layout(member) {
@@ -1054,6 +1067,159 @@ mod tests {
             }
         }
         (count, census)
+    }
+
+    /// A sound member declaring `tag` with `block_align`, a `fmt ` payload of
+    /// `extension` bytes behind the 16 common ones and a `data` payload of
+    /// `data` bytes. The census reads all three from these bytes, so pinning
+    /// the rules needs no original data.
+    fn declared(tag: u16, block_align: u16, extension: usize, data: usize) -> Vec<u8> {
+        let mut fmt = Vec::new();
+        fmt.extend_from_slice(&tag.to_le_bytes());
+        fmt.extend_from_slice(&1u16.to_le_bytes());
+        fmt.extend_from_slice(&11_025u32.to_le_bytes());
+        fmt.extend_from_slice(&11_025u32.to_le_bytes());
+        fmt.extend_from_slice(&block_align.to_le_bytes());
+        fmt.extend_from_slice(&4u16.to_le_bytes());
+        fmt.extend_from_slice(&vec![0; extension]);
+        let mut chunks = b"fmt ".to_vec();
+        chunks.extend_from_slice(&(fmt.len() as u32).to_le_bytes());
+        chunks.extend_from_slice(&fmt);
+        chunks.extend_from_slice(b"data");
+        chunks.extend_from_slice(&(data as u32).to_le_bytes());
+        chunks.extend_from_slice(&vec![0; data]);
+        let mut member = b"RIFF".to_vec();
+        member.extend_from_slice(&((chunks.len() + 4) as u32).to_le_bytes());
+        member.extend_from_slice(b"WAVE");
+        member.extend_from_slice(&chunks);
+        member
+    }
+
+    /// The census is the retail test's independent read of the archives, so its
+    /// own rules need a test that runs without the original installation: a
+    /// mutation that dropped a tag or a geometry check would otherwise only be
+    /// visible on a machine with `CS_GAME_DIR`.
+    #[test]
+    fn accept_f06_d_the_census_counts_each_decoded_tag_and_needs_its_own_geometry() {
+        // The three tags the runtime decodes, each with the geometry it needs:
+        // 16 common `fmt ` bytes plus 4 for IMA (`cbSize`, `wSamplesPerBlock`)
+        // and 6 for Microsoft (and `wNumCoefficients`), a nonzero `nBlockAlign`
+        // and a nonempty `data`.
+        assert_eq!(
+            declared_wave_layout(&declared(WAVE_FORMAT_PCM, 256, 0, 512)),
+            Some((WAVE_FORMAT_PCM, true))
+        );
+        assert_eq!(
+            declared_wave_layout(&declared(WAVE_FORMAT_IMA_ADPCM, 256, 4, 512)),
+            Some((WAVE_FORMAT_IMA_ADPCM, true))
+        );
+        assert_eq!(
+            declared_wave_layout(&declared(WAVE_FORMAT_MS_ADPCM, 256, 6, 512)),
+            Some((WAVE_FORMAT_MS_ADPCM, true))
+        );
+        // A block-coded payload shorter than one block is still the format's own
+        // final block, so it reads as a layout.
+        assert_eq!(
+            declared_wave_layout(&declared(WAVE_FORMAT_MS_ADPCM, 256, 6, 7)),
+            Some((WAVE_FORMAT_MS_ADPCM, true))
+        );
+
+        // No geometry, no decoded row: the 16 common bytes carry a tag and
+        // nothing for a codec to read, which is the synthetic `readable` row of
+        // `strict_fails_on_uninterpreted_content_and_passes_a_decoded_corpus`.
+        for (tag, extension) in [
+            (WAVE_FORMAT_IMA_ADPCM, 0),
+            (WAVE_FORMAT_IMA_ADPCM, 2),
+            (WAVE_FORMAT_MS_ADPCM, 0),
+            (WAVE_FORMAT_MS_ADPCM, 4),
+        ] {
+            assert_eq!(
+                declared_wave_layout(&declared(tag, 256, extension, 512)),
+                Some((tag, false)),
+                "tag {tag:#06x} with {extension} extension bytes"
+            );
+        }
+        // A tag this crate does not decode keeps its own value and no layout,
+        // so the census counts it undecodable rather than mislabelling it.
+        assert_eq!(
+            declared_wave_layout(&declared(0x0011 + 1, 256, 4, 512)),
+            Some((0x0012, false))
+        );
+        assert_eq!(
+            declared_wave_layout(&declared(0x0003, 256, 0, 512)),
+            Some((0x0003, false))
+        );
+        // A zero `nBlockAlign` or an empty payload is no geometry at all.
+        assert_eq!(
+            declared_wave_layout(&declared(WAVE_FORMAT_PCM, 0, 0, 512)),
+            Some((WAVE_FORMAT_PCM, false))
+        );
+        assert_eq!(
+            declared_wave_layout(&declared(WAVE_FORMAT_IMA_ADPCM, 256, 4, 0)),
+            Some((WAVE_FORMAT_IMA_ADPCM, false))
+        );
+        // PCM must be a whole number of frames.
+        assert_eq!(
+            declared_wave_layout(&declared(WAVE_FORMAT_PCM, 256, 0, 511)),
+            Some((WAVE_FORMAT_PCM, false))
+        );
+
+        // A member that is not a readable RIFF/WAVE file is no declaration.
+        assert_eq!(
+            declared_wave_layout(b"this member is not a RIFF file"),
+            None
+        );
+        assert_eq!(declared_wave_layout(b"RIFF"), None);
+        let mut no_data = declared(WAVE_FORMAT_IMA_ADPCM, 256, 4, 512);
+        let data_at = no_data
+            .windows(4)
+            .position(|window| window == b"data")
+            .expect("the fixture has a data chunk");
+        no_data.drain(data_at..);
+        assert_eq!(
+            declared_wave_layout(&no_data),
+            Some((WAVE_FORMAT_IMA_ADPCM, false)),
+            "a member with no `data` chunk carries no payload"
+        );
+
+        // And the census over a whole archive counts each tag beside the one
+        // member it cannot read at all, so nothing drops out of the arithmetic.
+        let stretched = {
+            let mut bytes = declared(WAVE_FORMAT_PCM, 256, 0, 512);
+            // The index entry after it stretches past the archive, so that
+            // member's extent reaches past the file.
+            bytes.truncate(bytes.len() - 64);
+            bytes
+        };
+        let sound = archive(
+            &[
+                (b"pcm.wav", declared(WAVE_FORMAT_PCM, 256, 0, 512)),
+                (b"ima.wav", declared(WAVE_FORMAT_IMA_ADPCM, 256, 4, 512)),
+                (b"ms.wav", declared(WAVE_FORMAT_MS_ADPCM, 256, 6, 512)),
+                (b"broken.wav", stretched),
+            ],
+            None,
+        );
+        let (count, census) = independent_counts(&sound, true);
+        assert_eq!(count, 4);
+        assert_eq!(
+            census,
+            SoundCensus {
+                pcm: 1,
+                ima_adpcm: 1,
+                ms_adpcm: 1,
+                undecodable: 1
+            }
+        );
+        assert_eq!(census.decoded(), 3);
+        assert_eq!(census.decoded() + census.undecodable, count);
+        // The reader family is not member-read at all, so only its trailer is
+        // counted and the census stays empty.
+        let reader = archive(&[(b"a.zrd", b"alpha".to_vec())], None);
+        assert_eq!(
+            independent_counts(&reader, false),
+            (1, SoundCensus::default())
+        );
     }
 
     #[test]
@@ -1109,9 +1275,17 @@ mod tests {
                     assert_eq!(row.members.len(), count, "{spelling}");
                     assert_eq!(row.decoded_members(), census.decoded(), "{spelling}");
                     if sound {
-                        // The census counts every member of a sound archive, so
-                        // the rows it did not call decoded are the readable and
-                        // failed ones beside it.
+                        // The census accounts for every member the trailer
+                        // declares, decoded or not: a member it could not read
+                        // at all lands in `undecodable` rather than vanishing
+                        // from the arithmetic.
+                        assert_eq!(
+                            census.decoded() + census.undecodable,
+                            count,
+                            "{spelling}: the census covers every declared member"
+                        );
+                        // So the rows it did not call decoded are the readable
+                        // and failed ones beside it.
                         assert_eq!(
                             row.readable_members() + row.failed_members().count(),
                             census.undecodable,
@@ -1579,12 +1753,14 @@ mod tests {
             artifact(&log_path, "log"),
             artifact(&audit_path, "json"),
             super::jstr(
-                "implementer: bunny-alpha-1/bunny-alpha-1 (Rally task #525, the implement claim \
-                 of 2026-10-02T18:16:34Z). No independent review has been made yet: this \
-                 report is the implementer's own evidence run over the candidate tree, so the \
-                 Rally reviewer for #525 has to re-run the harness and record their own \
-                 identity here (and the findings' review section) before this may be read as \
-                 reviewed. No agent review replaces the owner's approval"
+                "implementer: bunny-alpha-1/bunny-alpha-1 (Rally task #525, implement claim of \
+                 2026-10-02T18:16:34Z). reviewer: bunny-alpha-1/bunny-alpha-1 again (Rally \
+                 task #525, review claim of 2026-10-02T18:58:20Z, a fresh session over the \
+                 implementer's branch) — the same agent instance wrote and reviewed this change, \
+                 so this is a self-review and NOT independent evidence; an independent reviewer \
+                 is still wanted before any fidelity claim rests on it. This report is a checked \
+                 corpus census, not verified_original: no original executable was run, and no \
+                 agent review replaces the owner's approval"
             ),
             super::jstr(&method),
         );

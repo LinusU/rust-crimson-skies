@@ -132,6 +132,7 @@ installation is never written.
 | `strict_fails_on_uninterpreted_content_and_passes_a_decoded_corpus` | an all-PCM corpus passes strict; a member that declares a tag with no `fmt ` extension to read it under is `readable` with its tag (exit 0, strict 3); a GameZ container is `not_listed` naming F10 |
 | `a_corrupt_container_is_a_row_beside_the_others` | a version-2 trailer (`unsupported_trailer_version`) and a GameZ header at the interp role (`dispatch`) are failed rows beside a listed archive |
 | `cli_refuses_bad_input_and_a_missing_installation` | exit 4 without an installation, 2 for bad flags and for `--out` inside the installation (nothing written) |
+| `the_census_counts_each_decoded_tag_and_needs_its_own_geometry` (added in the #525 review) | the census helper's own rules on authored members: each of the three decoded tags with the geometry it needs, a tag with no geometry, a tag this crate does not decode, a zero `nBlockAlign`, an empty payload, a partial PCM frame, a short trailing block, a member that is not RIFF, a member with no `data` chunk, and an archive whose fourth member reaches past the file (counted `undecodable`, so nothing drops out of `decoded() + undecodable`) |
 | `retail_every_zbd_container_is_audited_family_by_family` (ignored without `CS_GAME_DIR`) | the retail result above |
 | `retail_a_corrupted_copy_fails_beside_its_valid_siblings` (ignored without `CS_GAME_DIR`) | AC04 on retail bytes |
 
@@ -146,6 +147,9 @@ Mutation probes (applied, `accept_f06_d_` run, restored):
 | failed containers dropped from the audit | `a_corrupt_container_…` |
 | exit code always 0 | three synthetic tests |
 | the re-read census stops counting Microsoft ADPCM members as decoded (task #525) | `retail_every_zbd_container_…` (`left: 2521 right: 11` on `soundsh`) |
+| the runtime consumer refuses a block-coded member again (the pre-#524 state), in the #525 review | `retail_every_zbd_container_…` (`left: 11 right: 2521` on `soundsh`) |
+| the census drops the PCM whole-frames rule (review of #525) | `the_census_counts_each_decoded_tag_…` |
+| the census drops the Microsoft `fmt ` extension check (review of #525) | `the_census_counts_each_decoded_tag_…` |
 
 ## Recorded unknowns (not guessed)
 
@@ -182,9 +186,49 @@ described as what it is (a `fmt ` chunk with a tag and no `fmt ` extension,
 which no retail member declares) instead of as "ADPCM is not decoded", and the
 independent census counts every tag the runtime decodes rather than PCM alone.
 
-The implementer of #525 is `bunny-alpha-1/bunny-alpha-1`. No independent
-review has been made yet; the Rally reviewer for #525 has to re-run the
-evidence harness and record their own identity in
-`docs/findings/evidence/F06-D.json` and here. Nothing in this document is a
-`verified_original` or `release_approved` claim, and no agent review replaces
-the owner's approval.
+### Review of #525 (self-review, not independent)
+
+**Identities.** Implementer: `bunny-alpha-1/bunny-alpha-1` (implement claim of
+2026-10-02T18:16:34Z). Reviewer: **the same agent instance**
+`bunny-alpha-1/bunny-alpha-1`, in a fresh session over the implementer's branch
+(review claim of 2026-10-02T18:58:20Z). A review by the agent that wrote the
+change is **not** independent evidence, so the numbers below are checked but
+unwitnessed; an independent reviewer is still wanted before any fidelity claim
+rests on them. Nothing here is a `verified_original` or `release_approved`
+claim, and no agent review replaces the owner's approval.
+
+**What the reviewer checked, on the installation itself.**
+
+- Re-read both sound archives with a from-scratch Python probe sharing no code
+  with the workspace (`private/review/f06d_probe.py`, Git-ignored): trailer,
+  index, `fmt ` and `data` chunks. It gives `soundsl` 11 PCM / 555 IMA / 1,954
+  Microsoft and `soundsh` 11 / 0 / 2,510 — the same numbers the test helper,
+  the finding table and task #444 record.
+- All seven `accept_f06_d_` tests pass with `CS_GAME_DIR` set; the retail test
+  fails loudly (`CS_GAME_DIR is not set`) when it is not.
+- Production-side mutation probe: refusing a block-coded member in
+  `cs_assets::zbd`'s `sound_verdict` (the pre-#524 state) makes the retail test
+  fail loudly with `left: 11, right: 2521` on `soundsh` — the assertion really
+  pins the consumer's verdict, it does not merely restate the census.
+- `--strict` still exits 3, and `passes(strict)` is untouched.
+
+**Three fixes the review made**, all in `tools/cs_inspect/src/zbd.rs`:
+
+1. The census skipped a member whose extent reached past the archive, so such a
+   member vanished from `decoded() + undecodable` while the production row
+   counted it `failed`. It is now counted `undecodable`, and the retail test
+   asserts `census.decoded() + census.undecodable == count` per sound archive.
+2. A comment claimed the ADPCM arms needed "a `data` payload holding at least
+   one block". That is wrong: a block-coded member's trailing block may be
+   shorter than `nBlockAlign`, which `decode_payload` accepts as the format's
+   own final block. The rule (a nonempty payload) and its comment now agree,
+   and `declared_wave_layout`'s PCM comment states that the runtime's stronger
+   `nBlockAlign == nChannels * bytesPerSample` rule agrees with the census's
+   simpler whole-frames rule on every retail PCM member (12 mono 8-bit, 8 mono
+   16-bit, and one 2-channel member of each width).
+3. Added `accept_f06_d_the_census_counts_each_decoded_tag_and_needs_its_own_geometry`,
+   a synthetic test pinning every branch of the census helper. Before it, each
+   geometry rule was reachable only from the retail test, so a mutation in the
+   census itself was invisible to CI. Dropping the PCM whole-frames rule or the
+   Microsoft `fmt ` extension check each fail it loudly.
+
