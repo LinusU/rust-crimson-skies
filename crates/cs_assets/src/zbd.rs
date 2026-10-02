@@ -858,11 +858,29 @@ impl<'a> SoundAssets<'a> {
     /// Builds the assets of `archive`, decoding each member under its own
     /// WAVE header and its own `fmt ` extension.
     ///
-    /// Each entry is decoded on its own with one shared [`ParseContext`], so
-    /// they share its budget and a starved one refuses them all without
-    /// leaving a charge behind. One entry whose bytes contradict its header
-    /// becomes [`SoundReadiness::Undecodable`] while its siblings stay
-    /// decoded (spec F06 non-negotiable #4).
+    /// Each entry is decoded on its own under a [`ParseContext`] that carries
+    /// the caller's own limits, and one entry whose bytes contradict its header
+    /// becomes [`SoundReadiness::Undecodable`] while its siblings stay decoded
+    /// (spec F06 non-negotiable #4).
+    ///
+    /// # Why one context per member and not one for the listing
+    ///
+    /// A listing only keeps each member's **counts**; the decoded values are
+    /// dropped as soon as they have been accounted for, while a charge on a
+    /// shared ledger is only ever released by a failed attempt. Charging every
+    /// member of a container to one ledger therefore makes a listing cost the
+    /// sum of every member's decoded samples, which no per-parse budget is meant
+    /// to cover. Measured on the installation task #344 fingerprinted: the two
+    /// retail sound archives hold 5,041 members whose decoded values come to
+    /// 1,418 MiB, 22x the 64 MiB per-parse default, while the **largest single
+    /// member** decodes to 22 MiB and fits. So each member is bounded by the
+    /// caller's own per-parse ceiling, exactly as before, and the listing's own
+    /// cost stays proportional to the archive's stored bytes rather than to a
+    /// budget a caller has to keep enlarging.
+    ///
+    /// The limits are inherited, never widened: a caller that starves its
+    /// context still starves every member, and a refused member still leaves no
+    /// charge behind.
     fn new(context: &mut ParseContext, archive: SoundArchive<'a>) -> Self {
         let listing = archive.listing();
         let mut entries = Vec::with_capacity(listing.len());
@@ -875,6 +893,11 @@ impl<'a> SoundAssets<'a> {
             let row = listing
                 .row(index)
                 .expect("a listed index always has its own row");
+            let mut member_context = ParseContext::new(
+                context.container(),
+                context.allocation().limit(),
+                context.recursion().max_depth(),
+            );
             let readiness = match entry.wave() {
                 Err(error) => SoundReadiness::UnreadableHeader {
                     reason: error.reason(),
@@ -890,13 +913,15 @@ impl<'a> SoundAssets<'a> {
                     // a block size no block fits, a `wSamplesPerBlock` the
                     // geometry contradicts. The code is that refusal's own.
                     Err(other) => SoundReadiness::Undecodable { code: other.code() },
-                    Ok(format) => match decode_sound_sample(context, entry.content(), &format) {
-                        Ok(sample) => SoundReadiness::Decoded {
-                            frames: sample.frames(),
-                            samples_per_frame: sample.samples_per_frame(),
-                        },
-                        Err(error) => SoundReadiness::Undecodable { code: error.code() },
-                    },
+                    Ok(format) => {
+                        match decode_sound_sample(&mut member_context, entry.content(), &format) {
+                            Ok(sample) => SoundReadiness::Decoded {
+                                frames: sample.frames(),
+                                samples_per_frame: sample.samples_per_frame(),
+                            },
+                            Err(error) => SoundReadiness::Undecodable { code: error.code() },
+                        }
+                    }
                 },
             };
             entries.push(SoundAsset {
@@ -2597,6 +2622,92 @@ mod tests {
                 frames: 2,
                 samples_per_frame: 505
             }
+        );
+    }
+
+    /// 16-bit mono PCM with `count` samples, a ramp that stays inside `i16`.
+    fn pcm16_samples(count: usize) -> Vec<u8> {
+        let mut data = Vec::with_capacity(count * 2);
+        for index in 0..count {
+            let sample = i16::try_from(index % 512).expect("a ramp inside i16");
+            data.extend_from_slice(&sample.to_le_bytes());
+        }
+        wave_member(&Fmt::pcm16(), &data)
+    }
+
+    #[test]
+    fn accept_t524_a_listing_bounds_each_member_by_the_callers_own_budget() {
+        // A listing keeps counts, not samples: one member's decode must not
+        // spend the next member's budget. Two members that each fit the
+        // caller's ceiling decode even when their sum does not, which is what
+        // makes a real archive readable at all — the 5,041 members of the two
+        // retail sound archives decode to 1,418 MiB against a 64 MiB per-parse
+        // ceiling, while the largest single member needs 22 MiB.
+        const SAMPLES: usize = 12_000;
+        // 12,000 samples of `i32` is 48,000 bytes: each member fits the 64 KiB
+        // ceiling, and the pair does not.
+        const MEMBER_BYTES: u64 = 48_000;
+        const CEILING: u64 = 64 * 1024;
+        let member = pcm16_samples(SAMPLES);
+        let tree = Temp::new("install");
+        tree.write(
+            "ZBD/soundsl.zbd",
+            &archive(&[
+                (b"first.wav".as_slice(), member.clone()),
+                (b"second.wav".as_slice(), member),
+            ]),
+        );
+        let session = session(tree.0.as_path());
+        let container =
+            ZbdContainer::open(&session, &key("install", "ZBD/soundsl.zbd")).expect("it opens");
+
+        let mut context = ParseContext::new(container.label(), CEILING, 32);
+        let index = container.index(&mut context).expect("its trailer reads");
+        let table = index.member_table();
+        let assets = container
+            .sound_assets(&mut context, &index, &table)
+            .expect("both members fit the caller's ceiling");
+        assert_eq!(assets.len(), 2);
+        for position in 0..2 {
+            assert_eq!(
+                assets.entry(position).expect("row").readiness(),
+                &SoundReadiness::Decoded {
+                    frames: SAMPLES as u64,
+                    samples_per_frame: 1
+                }
+            );
+        }
+
+        // The limits are inherited, never widened: a ceiling no member fits
+        // refuses every member, each with the budget's own code, and its
+        // siblings are unaffected.
+        let mut starved = ParseContext::new(container.label(), 1024, 32);
+        let starved_index = container
+            .index(&mut starved)
+            .expect("a ceiling that fits the index still reads it");
+        let starved_table = starved_index.member_table();
+        let refused = container
+            .sound_assets(&mut starved, &starved_index, &starved_table)
+            .expect("a refused decode is a row, not a failed listing");
+        assert_eq!(refused.len(), 2);
+        for position in 0..2 {
+            let asset = refused.entry(position).expect("row");
+            assert_eq!(
+                asset.readiness(),
+                &SoundReadiness::Undecodable {
+                    code: "allocation_budget_exceeded"
+                }
+            );
+            let mut context = ParseContext::new(container.label(), 1024, 32);
+            assert_eq!(
+                asset.decode(&mut context).expect_err("refused").code(),
+                "allocation_budget_exceeded"
+            );
+        }
+        assert!(
+            starved.allocation().used() < MEMBER_BYTES,
+            "a refused member's buffer is never charged to the caller's ledger: {} bytes booked",
+            starved.allocation().used()
         );
     }
 
