@@ -252,11 +252,15 @@ class EvidenceReviewIdentityTests(unittest.TestCase):
         stage = self.harnesses['M13-A']
         harnesses = dict(self.harnesses, **{key: dict(stage, identity=identity)})
         clean = copy_reports(self.reports, **{key: report(key, identity)})
-        self.assertEqual(review_problems(self.snapshot, harnesses, clean), ([], [key]))
+        problems, unrecorded = review_problems(self.snapshot, harnesses, clean)
+        self.assertEqual(problems, [])
+        self.assertIn(key, unrecorded)
         gapped = copy_reports(self.reports, **{key: report(key, 'implementer: x/y; reviewer: none yet')})
         problems, unrecorded = review_problems(self.snapshot, harnesses, gapped)
-        self.assertEqual(unrecorded, [key])
-        self.assertIn('every merged stage has had a reviewer', ' '.join(problems))
+        self.assertIn(key, unrecorded)
+        self.assertIn(f'docs/findings/evidence/{key}.json: `review.identity` still says '
+                      f"'none yet'; every merged stage has had a reviewer, so add {key}'s Rally "
+                      'implementer and reviewer to the snapshot and name them here', problems)
 
     def test_accept_m16_a_fu2_harness_reader_joins_rust_line_continuations(self):
         chunk = '''fn evidence_report_x99_a() {

@@ -165,6 +165,15 @@ lands stages continuously. A test pins both halves of that — a correct unrecor
 stage produces no problem, and the same stage claiming `reviewer: none yet`
 produces one.
 
+M17-A (#306) is the first stage to land with the check already on `main`, and it
+is what the two-level design is for: its report names its implementer and its
+reviewing agent and says in words that the review is not independent, so the
+check reports it as an advisory ("no Rally facts in the snapshot yet") and
+passes. It is deliberately left out of the snapshot, with its `reviewing agent:`
+wording and its bare agent name, rather than rewritten in a task about the
+records that were wrong. Normalizing it later is the same one-entry, one-line
+recipe as the rest.
+
 The drift tests mutate a report back to `reviewer: none yet`, rename the
 implementer, delete the "not independent" clause, drift the harness literal and
 award `checked`, and require each mutation to be reported; one more parses the
