@@ -91,9 +91,13 @@ submitted at 21:17:41Z.
 - **`claim` stays `implemented` everywhere.** A merge awards `checked` only and
   no agent self-awards a level; the check enforces this.
 - **`review.method` is untouched.** It describes the run each report records.
-- **The eight reports that are legitimately outside the snapshots and the seven
-  `CS_EVIDENCE_REVIEW` harnesses** are untouched. They remain advisories or
-  `runtime`-shaped, as #483 recorded.
+- **The seven `CS_EVIDENCE_REVIEW` harnesses and the other reports with no
+  committed evidence harness** are untouched. The `runtime` harnesses stay
+  exempt from the harness-agreement rule; a report without a harness is covered
+  by the report-side rules only, as #483 recorded. F05-D is one of those
+  no-harness reports, which is why only its text moved. Being snapshot-backed
+  and having a harness are independent: F05-D and F12-K are snapshot-backed,
+  the other no-harness reports stay advisories until a snapshot covers them.
 
 ## The check
 
@@ -121,6 +125,29 @@ each is missing the implementer or the reviewer, the statement about the
 reviewer's context and the `not independent` statement - so
 `test_accept_m16_a_fu5_the_three_stages_are_no_longer_advisories` fails; with
 the fix it passes.
+
+## Review
+
+Reviewer: **deepseek-1/deepseek-1**, the same agent instance that implemented
+#484, so per AGENTS.md this review is **not independent** and is not independent
+original-reference evidence. It re-read the Rally histories of #24, #32 and #128
+and confirmed each actor string, claim window, hand-over and merge event against
+the snapshot; confirmed each `candidate_tree` belongs to a commit reachable from
+a ref and is carried by the branch that merged the stage; confirmed that only
+`review.identity` changed in the three reports (`candidate_tree`, `claim`,
+artifacts, assertions and test counts are byte-identical to `main`); and ran the
+Python selection (18/18, 24/24 with the whole `tools/tests`) plus
+`cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets
+--all-features --locked -- -D warnings` and `cargo test --workspace --locked`
+(all green).
+
+It found one defect and fixed it on this branch: this note's "did not change"
+bullet called the eight no-harness reports "outside the snapshots" and said they
+"remain advisories". That is false — the snapshot is what decides advisories, and
+F05-D (now in this task's snapshot) and F12-K (in FU4's) are snapshot-backed,
+while the other no-harness reports are advisories. The bullet now says what
+the no-harness treatment actually is. Nothing else changed: no report was
+regenerated and no claim level moved.
 
 ## Sources
 
