@@ -54,8 +54,8 @@ So the composed verdict existed, was tested, and changed nothing on screen.
 * `crates/cs_app/src/render/sync.rs` — `sync_frame` asks `row_draw` for every
   row before it places anything, places only the drawn rows, and counts the rest
   in a new `FrameSync::visibility`. `place_rows` takes the drawn rows.
-* `crates/cs_app/src/render/mod.rs` — **wiring only**: the module declaration,
-  re-exports and one doc paragraph.
+* `crates/cs_app/src/render/mod.rs` — **wiring only**: the module declaration
+  and one doc paragraph.
 * `crates/cs_app/tests/render/visibility_consumer.rs` (**new**) and the one
   module line in `crates/cs_app/tests/render/main.rs`.
 * this finding.
@@ -187,24 +187,39 @@ the verdict can keep one off screen.
 
 ### Mutation probes (each fails ≥ 1 test; every file restored afterwards)
 
-| probe | mutation | result |
-| --- | --- | --- |
-| P1 | the draw decision composes from the LOD/damage record only, ignoring the clip's | 4 of 8 fail |
-| P2 | the composition drops LOD and damage, keeping the clip's record | 6 of 8 fail |
-| P3 | `RowDraw::drawn()` returns `true` for every verdict (default to a draw) | 6 of 8 fail |
-| P4 | no record defaults to withheld | 15 fail across the whole render suite, the existing `accept_f17_c_*` ones included |
-| P5 | a wholly withheld batch is spawned anyway | 1 of 8 fails (test 3) |
-| P6 | a row resolves through *any* live `SceneNodeBinding` instead of the ownership record | 1 of 8 fails (test 8, added for this) |
+| probe | mutation | result as written | reviewer re-run |
+| --- | --- | --- | --- |
+| P1 | the draw decision composes from the LOD/damage record only, ignoring the clip's | 4 of 8 fail | 4 of 8 fail |
+| P2 | the composition drops LOD and damage, keeping the clip's record | 6 of 8 fail | 7 of 8 fail |
+| P3 | `RowDraw::drawn()` returns `true` for every verdict (default to a draw) | 6 of 8 fail | 6 of 8 fail |
+| P4 | no record defaults to withheld | 15 fail across the whole render suite, the existing `accept_f17_c_*` ones included | 11 fail in `--test render` |
+| P5 | a wholly withheld batch is spawned anyway | 1 of 8 fails (test 3) | 1 of 8 fails (test 3) |
+| P6 | a row resolves through *any* live `SceneNodeBinding` instead of the ownership record | 1 of 8 fails (test 8, added for this) | 1 of 8 fails (test 8) |
 
 P1 and P3 were re-run against the final base (after F20-C.03's review fix added
 the `NodeDisabled` read to the composition) with the same outcome.
 `grep -rn "MUTATION PROBE" crates/` is empty.
 
-## Checks (all exit 0, on the rebased branch, base `20586b7`)
+The **review** column is the #503 reviewer's own re-run of all six probes on
+this base (`1505dbd`), each mutated file restored afterwards and the tree
+confirmed clean. P1 is the acceptance criterion "removing the animation's
+record from the world's draw decision fails the test", and it holds: dropping
+`NodeAnimatedVisibility` from the consumer's composition fails 4 of the 8
+tests, two of them on the placement itself rather than on a reason code.
+
+**Identities.** Implementer and reviewer are the same agent instance
+(`bunny-alpha-2`); the review is therefore **not independent evidence**. The
+review context was fresh in the sense that it re-derived the behaviour from the
+tree and re-ran every check and every probe rather than trusting this
+document, but a same-agent review is not a second opinion and no agent review
+replaces the owner's human approval.
+
+## Checks (all exit 0, on the pushed tree, base `1505dbd`)
 
 * `cargo fmt --all -- --check`
 * `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
-* `cargo test --workspace --locked` — **2523 passed, 0 failed**
+* `cargo test --workspace --locked` — **2524 passed, 0 failed, 261 ignored**
+  (the ignored ones are the `#[ignore = "requires CS_GAME_DIR"]` retail tests)
 * `cargo test --workspace --locked -- accept_f20_c_draw_ --include-ignored` —
   **8 matched, 8 passed**, none `#[ignore]`d
 * `cargo test --test render` — 69 passed, 0 failed (the whole F17 render suite,
@@ -214,6 +229,50 @@ the `NodeDisabled` read to the composition) with the same outcome.
 
 No evidence report: ordinary build/test only, no `CS_GAME_DIR`, no render, no
 audio.
+
+## Review fixes applied by the reviewer
+
+* `BatchDraw::instances`/`row` are documented as the batch's **per-instance
+  state** rows rather than the set on screen: a row the composed verdict
+  withholds keeps its state there and has no placement. Left the data alone —
+  the field is F17-C's per-instance record (non-negotiable 4) and the row's
+  absence from the placements is what the draw consumer changed.
+* The inline comment above the `place_rows` call said placements are "rebuilt
+  when their count no longer matches", which is not what `place_rows` does: it
+  reconciles by draw-item index. Corrected to say that.
+* `crates/cs_app/tests/render/visibility_consumer.rs`: dropped a dead
+  `live_generation(world);` call at the top of `node_entity`.
+* This finding: probe table re-measured, checks updated, the one live scene and
+  the store-growth consequences below recorded.
+
+## One measured consequence: a released batch's assets stay in the stores
+
+`release_entity` despawns the batch entity but never removes the
+`Assets<Mesh>` entry or the `Assets<StandardMaterial>` entry `add_material`
+created, so every release/respawn cycle of a batch leaks one of each. Measured
+on this base with a temporary probe through the production `sync_frame` (one
+batch of four synthetic rows, alternating between "every row withheld" and
+"every row drawn"):
+
+| after | released | spawned | `Assets<Mesh>::len()` | `Assets<StandardMaterial>::len()` |
+| --- | --- | --- | --- | --- |
+| first withheld sync | 0 | 0 | 0 | 0 |
+| first drawn sync | 0 | 1 | 1 | 1 |
+| second withheld sync | 1 | 0 | 1 | 1 |
+| second drawn sync | 0 | 1 | 2 | 2 |
+| third withheld sync | 1 | 0 | 2 | 2 |
+| third drawn sync | 0 | 1 | 3 | 3 |
+
+Growth is monotone and exactly one mesh + one material per cycle. The leak
+itself predates this slice (the reload path reached it), but the release
+condition is new: a batch is now released whenever the composed verdict
+withholds **all** of its rows, so a clip that hides a whole batch, or a
+damage/repair cycle over every row of one batch, reaches it on a gameplay-rate
+path. Filed as **#512** (`F17-C-release-returns-store-assets`) rather than fixed
+here: it is the release path's asset lifetime, not this consumer's rule.
+
+A batch that keeps **one** drawn row is reused and leaks nothing — an LOD band
+crossing despawns and respawns the one placement and adds nothing to a store.
 
 ## Unknowns, recorded and not guessed
 
@@ -235,6 +294,17 @@ audio.
 * **What the original drew for a part that is both LOD-culled and clip-hidden.**
   The composed verdict reports LOD's reason, which is a presentation-reporting
   choice, not a measurement of the original's.
+* **Only one live airframe scene exists.** `LiveAirframeScene` is F11-C's
+  ownership record for **the** live scene, not a registry of scenes, and a row
+  resolves its part identity through it exactly as F11-C's own `damage_plan`
+  does. So a frame carrying parts of a second airframe resolves none of them:
+  every such row is counted in `VisibilityReport::no_record` and **drawn**, and
+  LOD, damage and clip hiding are not enforced for it. That fails in the safe
+  direction (an extra band on screen rather than missing geometry) and the count
+  makes it visible, but the enforcement gap is real. Widening the record to
+  several live scenes is F11-C's decision and has not been asked for; until it
+  is, a frame must not be read as evidence that culling works for every
+  airframe in it.
 
 ## Unmet criteria, gaps and follow-ups
 
@@ -251,6 +321,10 @@ audio.
   extra copy disappears with the batch, but a batch with at least one drawn row
   still has it. Filed as **#506** (`F17-C-batch-entity-extra-draw`) rather than
   fixed here.
+* **Pre-existing leak, measured above and filed as #512**
+  (`F17-C-release-returns-store-assets`): a released batch's mesh and material
+  stay in the asset stores. This slice adds the release condition that makes it
+  reachable on a gameplay-rate path and does not fix the leak itself.
 * Nothing produces `AnimatedNodeBinding`, nothing writes `CommittedSessionTick`,
   and the gameplay-marker consumer of `AnimationLog` is still F20-C's — unchanged
   by this slice (a note on #75 carries them).
