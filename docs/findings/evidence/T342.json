@@ -1,9 +1,9 @@
 {
  "schema_version": 1,
  "task_id": "T342",
- "candidate_tree": "932066807613719a47fa067f639cfd232397b140",
+ "candidate_tree": "1f9c9bda2c7ca2c79f71472a877a719488ea75a2",
  "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
- "created_at": "2026-10-02T02:57:07Z",
+ "created_at": "2026-10-02T03:04:55Z",
  "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_f04_d_member_collisions_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/agent-2", "exit_code": 0},
  "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
  "seed": 0,
@@ -12,8 +12,8 @@
  "capabilities": ["retail", "synthetic"],
  "tests": {"discovered": 3, "executed": 3, "passed": 3, "failed": 0, "ignored": 0},
  "assertions": [{"id": "accept_f04_d_member_collisions_each_kind_keeps_its_verdict_in_one_session", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f04_d_member_collisions_worlds_stay_isolated_with_every_kind_mounted", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f04_d_member_collisions_retail_every_member_collision_is_blocked_or_distinct", "status": "pass", "evidence": ["cargo-test.log"]}],
- "artifacts": [{"path": "cargo-test.log", "sha256": "18fa63f9c28e1f3e2c742b0ea5d38d6d65abf4c91fc73946ce0f42a9efdd7ca0", "kind": "log"}, {"path": "member-collisions.json", "sha256": "a3ef63d68f25ad5e6c902fecec34c08f1fdecce0360758e41eef62fbc69b7111", "kind": "json"}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "165c4d337797b4c4dfe2346aa14cc0a3013ac1c5d3e244022338de779b24a500", "kind": "log"}, {"path": "member-collisions.json", "sha256": "07a6b593dfe460bd23a560b2b7deab639142592b36e8a6074f8490786d4a43b4", "kind": "json"}],
  "unknowns": [],
- "review": {"identity": "claude-1 (implementer; self-review, not independent)", "method": "acceptance suite run locally with the retail capability; this harness derives every field from the recorded log, production discovery of $CS_GAME_DIR, the production collision comparison of installation, ROF and texture-archive mounts in one session, rustc and Cargo.lock; the original lookup order stays unmeasured (recorded in member-collisions.json and docs/findings) and the claim is only implemented"},
+ "review": {"identity": "claude-1 (Sonnet 5.5; reviewer, not the implementer claude-2/claude-1 session; fresh context)", "method": "acceptance suite run locally with the retail capability; this harness derives every field from the recorded log, production discovery of $CS_GAME_DIR, the production collision comparison of installation, ROF and texture-archive mounts in one session, rustc and Cargo.lock; the original lookup order stays unmeasured (recorded in member-collisions.json and docs/findings) and the claim is only implemented"},
  "claim": "implemented"
 }
