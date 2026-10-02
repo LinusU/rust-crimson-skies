@@ -29,7 +29,8 @@ evidence report required).
   `crates/cs_app/src/lib.rs` (wiring only): module documentation.
 - `crates/cs_sim/tests/accept_f30_b_selection_actions.rs` (7 tests),
   `crates/cs_content/tests/accept_f30_b_target_actions.rs` (3 tests),
-  `crates/cs_app/tests/accept_f30_b_targeting_session.rs` (8 tests).
+  `crates/cs_app/tests/accept_f30_b_targeting_session.rs` (8 tests, 9 after
+  review — see the review section below).
 - This file.
 
 **One observable failure:** without the single phase record, the reticle and
@@ -157,3 +158,54 @@ would have been reported as applied and silently dropped. `set_class` and
 transaction, and `accept_f30_b_reclassification_on_an_entity_reaches_the_actions`
 discriminates it (drop either transaction and the ordered queries keep the
 old answers).
+
+## Defect found and fixed in review
+
+`apply_target_damage` propagated **every** store error from
+`record_lifecycle`, including `TargetError::UnknownActor`. The damage
+resolver and the target roster are separate registries — an actor can be
+registered with the resolver (and destroyed) without ever presenting a
+`TargetableBinding` — so one such transition made the whole entry return
+`Err` and skipped `record_hits`, throwing away that tick's threat feed, and
+every later tick too, for an actor nothing could ever have selected. It is
+also inconsistent with the rule the same function's neighbour follows:
+`record_hits` *counts* a hit naming an untracked actor rather than refusing
+the batch.
+
+The fix counts a lifecycle transition with nothing to record in the new
+`TargetDamageReport::ignored` and keeps `ForeignSession` refusing the batch
+(a foreign generation means a session that was not torn down, which is a
+real error). `accept_f30_b_damage_tick_ignores_lifecycle_for_an_untracked_actor`
+drives the real resolver: raider 77 is destroyed in the same batch in which
+raider 5 lands a hit on the player, and the tick's attack is still recorded
+and still reaches the phase record. Restoring the `?` makes that test fail.
+
+## Reviewer sensitivity probes
+
+The reviewer re-ran probes on the submitted commit (each reverted
+afterwards; the branch is byte-identical to `885a8ce` afterwards apart from
+the fix above):
+
+| Probe | Result |
+| --- | --- |
+| 1. `Reticle::threatening` hardcoded `false` | `accept_f30_b_threat_state_feeds_from_authoritative_hits` and `accept_f30_b_damage_tick_feeds_threats_and_lifecycle` **failed** |
+| 2. `TargetStore::phase` no longer prunes the selection before deriving the record | `accept_f30_b_destroyed_selection_clears_in_the_phase_record` and `accept_f30_b_damage_tick_feeds_threats_and_lifecycle` **failed** |
+| 3. `Reticle::hostile` treats an *undeclared* pair as hostile (`!= Friendly`) | `accept_f30_b_faction_change_updates_reticle_and_ai_hostility_in_one_phase` and `accept_f30_b_declared_filters_reach_the_bound_actions` **failed** |
+| 4. the roster sync stops writing `set_class` | `accept_f30_b_reclassification_on_an_entity_reaches_the_actions` **failed** |
+| 5. `unregister` no longer purges the ledgers in both directions | `accept_f30_b_unregistered_actor_leaves_roster_and_ledger` **failed** |
+| 6. `apply_target_damage` refuses an unknown actor's lifecycle transition (the pre-fix behaviour) | `accept_f30_b_damage_tick_ignores_lifecycle_for_an_untracked_actor` **failed** |
+
+## Known limits left for later stages
+
+- Two entities in one scene generation presenting the **same** `ActorId`
+  through `TargetableBinding` is a producer bug the roster sync does not yet
+  report; the record that survives is whichever entity ECS iteration order
+  reached last, so it is not one of the stable orders F30 non-negotiable 2
+  asks for. Filed as a follow-up task; the producer that can be held
+  responsible owns the duplicate.
+- A binding whose entity carries a `TargetableBinding` but no
+  `TargetableState` is reported as `incomplete` **and** not counted as
+  present, so an actor whose record component is removed after registration
+  is unregistered on the next pass. That is reported rather than silent, and
+  whether a transiently unrecordable actor should keep its roster entry is a
+  decision for the F30-C schedule that owns the producer order.

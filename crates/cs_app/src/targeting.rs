@@ -724,6 +724,11 @@ pub struct TargetDamageTick<'a> {
 pub struct TargetDamageReport {
     /// Lifecycle transitions recorded for the target store.
     pub lifecycle: usize,
+    /// Lifecycle transitions this roster had nothing to record, because the
+    /// damage resolver and the target roster are separate registries: an
+    /// actor can be destroyed without ever having been targetable. Counted,
+    /// never refused — see [`apply_target_damage`].
+    pub ignored: Vec<ActorId>,
     /// The hits the resolver actually applied, which are the only ones that
     /// can evidence an attack.
     pub applied: usize,
@@ -740,7 +745,13 @@ pub struct TargetDamageReport {
 /// * every [`DamageEventKind::Lifecycle`] is recorded through
 ///   [`cs_sim::targeting::TargetStore::record_lifecycle`], so a destroyed
 ///   actor stops being eligible and the next phase clears a selection that
-///   held it (AC03's contract half);
+///   held it (AC03's contract half). A transition naming an actor this roster
+///   never listed is **counted** in [`TargetDamageReport::ignored`] instead
+///   of refused: the damage resolver and the target roster are separate
+///   registries, so an unregistered actor can be destroyed without anything
+///   ever having been able to select it, and refusing the batch over it
+///   would discard the whole tick's threat feed — every tick, for an actor
+///   no consumer could see;
 /// * a hit that the resolver *applied* becomes an attack, evidenced by the
 ///   hit's own [`HitEventId`] — while a refused or blocked hit mints
 ///   nothing, because an attack that did not land is not an attack
@@ -749,10 +760,14 @@ pub struct TargetDamageReport {
 ///
 /// # Errors
 ///
-/// [`TargetingError::NoSession`] when no session is installed, and any
-/// [`TargetError`] from the store's transactions: a foreign session in the
-/// batch refuses it, an unknown actor is reported by
-/// [`ThreatFeed::untracked`] rather than refused.
+/// [`TargetingError::NoSession`] when no session is installed, and
+/// [`TargetError::ForeignSession`] when an event or a hit carries another
+/// generation: that is a session that was not torn down, and it refuses the
+/// batch rather than half-applying it. An *unknown* actor is never an error
+/// here — a lifecycle transition with nothing to record is counted in
+/// [`TargetDamageReport::ignored`] and a hit naming an untracked actor or
+/// victim is counted in [`ThreatFeed::untracked`], exactly as
+/// [`cs_sim::targeting::TargetStore::record_hits`] decides.
 pub fn apply_target_damage(
     world: &mut World,
     tick: &TargetDamageTick<'_>,
@@ -789,8 +804,11 @@ pub fn apply_target_damage(
             // recording it twice is not a second death.
             continue;
         }
-        store.record_lifecycle(*actor, *kind)?;
-        report.lifecycle += 1;
+        match store.record_lifecycle(*actor, *kind) {
+            Ok(()) => report.lifecycle += 1,
+            Err(TargetError::UnknownActor { .. }) => report.ignored.push(*actor),
+            Err(error) => return Err(error.into()),
+        }
     }
     report.feed = store.record_hits(&landed)?;
     Ok(report)

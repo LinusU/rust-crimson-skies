@@ -700,6 +700,105 @@ fn accept_f30_b_damage_tick_feeds_threats_and_lifecycle() {
     );
 }
 
+/// A lifecycle transition for an actor the target roster never listed has
+/// nothing to record: the damage resolver and the target roster are separate
+/// registries, so an actor can be destroyed without ever having been
+/// targetable. Counting it keeps the rest of the tick — including the threat
+/// feed the resolver's landed hits produced — instead of refusing the batch
+/// over an actor no consumer could have selected.
+#[test]
+fn accept_f30_b_damage_tick_ignores_lifecycle_for_an_untracked_actor() {
+    let generation = SceneGeneration::default().next();
+    let mut world = bound_world(generation);
+    sync_targetable_roster(&mut world);
+
+    let mut resolver = DamageResolver::new(SESSION, PRODUCER);
+    // Raider 5 and the player are bound entities; raider 77 is an airframe
+    // the damage system knows and the target roster never listed.
+    for serial in [1_u64, 5, 77] {
+        resolver
+            .register_actor(
+                actor(serial),
+                synthetic_airframe_graph(),
+                DamagePolicy {
+                    attribution: AttributionRule::FirstLethalHit,
+                },
+            )
+            .expect("the actor registers in the resolver's session");
+    }
+    let mount = DamageNodeKey::new(SYNTHETIC_MOUNT_NODE).expect("a valid node key");
+    let hull = DamageNodeKey::new(SYNTHETIC_HULL_NODE).expect("a valid node key");
+    let hit = |sequence: u32, node: &DamageNodeKey, attacker: ActorId, victim: ActorId, damage| {
+        HitEvent::try_new(
+            HitEventId {
+                session: SESSION,
+                tick: Tick(50),
+                producer: PRODUCER,
+                sequence,
+            },
+            Some(attacker),
+            victim,
+            node.clone(),
+            DamageChannel::Internal,
+            damage,
+        )
+        .expect("the fixture hit is well-formed")
+    };
+    // One batch: raider 5 lands a mount hit on the player, and raider 77 is
+    // destroyed by raider 2 — an actor targeting never listed.
+    let hits = [
+        hit(0, &mount, actor(5), actor(1), 4.0),
+        hit(
+            1,
+            &hull,
+            actor(2),
+            actor(77),
+            SYNTHETIC_HULL_INTEGRITY + 1.0,
+        ),
+    ];
+    let resolution = resolver
+        .resolve(Tick(50), &hits)
+        .expect("the resolver accepts the batch");
+    assert!(
+        resolution
+            .events
+            .iter()
+            .any(|event| matches!(&event.kind, DamageEventKind::Lifecycle { .. })),
+        "the resolver really did destroy the unlisted actor"
+    );
+
+    let report = apply_target_damage(
+        &mut world,
+        &TargetDamageTick {
+            hits: &hits,
+            events: &resolution.events,
+        },
+    )
+    .expect("an untracked actor's lifecycle transition is not an error");
+    assert_eq!(report.lifecycle, 0, "there was nothing to record");
+    assert_eq!(
+        report.ignored,
+        vec![actor(77)],
+        "and the transition is reported by name instead of aborting the tick"
+    );
+    assert_eq!(report.applied, 2, "the resolver applied both hits");
+    assert_eq!(
+        report.feed.recorded, 1,
+        "raider 5's landed hit is the tick's one attack"
+    );
+    assert_eq!(
+        report.feed.untracked, 1,
+        "the hit naming the unlisted victim is counted, not refused"
+    );
+
+    let phase = apply_selection_edges(&mut world, actor(1), &[], SelectionFrame::at(Tick(51)))
+        .expect("registered")
+        .phase
+        .expect("a phase record");
+    assert_eq!(phase.threats.len(), 1, "the tick's threat feed survived");
+    assert_eq!(phase.threats[0].attacker, actor(5));
+}
+
 /// A reclassification and an objective flag written on an entity's record
 /// reach the store through the pass that observes them: the non-aircraft
 /// and objective actions select differently on the next phase, so a
