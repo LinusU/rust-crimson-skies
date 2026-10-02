@@ -506,12 +506,16 @@ impl AdpcmLayout {
     /// sample, and returns the number of blocks it decoded.
     ///
     /// A block's values are appended in the order that block stores its data,
-    /// which is **frame by frame and channel by channel**: the two history
-    /// values of every channel (the older one first) are the block's first two
-    /// frames, and each following byte is one frame — the first channel's next
-    /// value in the high nibble, the second channel's in the low one. A block
-    /// therefore holds `block_sample_count * channels` consecutive values, and
-    /// a block-coded `DecodedSound`'s frames split that way.
+    /// which is **frame by frame and channel by channel**. An IMA block is one
+    /// channel: its header's initial predictor is the first value and each byte
+    /// holds the next two, low nibble first. An MS block opens with its two
+    /// history values of every channel — the older one first, so the block's
+    /// first two frames — and every byte after that is one frame, the first
+    /// channel's next value in its high nibble and the second channel's in its
+    /// low one, while a mono byte carries the channel's next two values, high
+    /// one first. A block therefore holds `block_sample_count * channels`
+    /// consecutive values, and a block-coded `DecodedSound`'s frames split that
+    /// way.
     ///
     /// # Errors
     ///
