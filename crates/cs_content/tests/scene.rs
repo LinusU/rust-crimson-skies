@@ -2487,12 +2487,14 @@ const F11_D_LIMITATIONS: &[&str] = &[
      Resolving task: #392 (Read the GameZ node array into ParsedNode records), which needs the \
      owner to grant crates/cs_formats/ owner paths. This limitation gates every scene-hierarchy \
      and roster fidelity claim and survives this task being marked done.",
-    "No airframe catalog element has been discovered from original data, so the roster the audit \
-     takes is empty and no roster row can be audited. Affected content: the player-selectable \
-     roster, the forced mission assignments and every airframe's mount and cockpit bindings. \
-     Resolving task: #399 (Discover the airframe roster and its selectability from original \
-     data), which depends on #392 and needs a decoded node array before a node name can be bound \
-     to an airframe element.",
+    "No airframe catalog element had been discovered from original data when this stage ran, so \
+     the roster the audit took was empty and no roster row could be audited. Affected content: the \
+     player-selectable roster, the forced mission assignments and every airframe's mount and \
+     cockpit bindings. Resolving task: #399 (Discover the airframe roster and its selectability \
+     from original data), which derived the SHARED airframe archive's eleven rows from \
+     ZBD/interp.zbd's support\\planes.gw. Partly resolved: mission-only airframes, roster \
+     availability and forced assignments remain undiscovered and are tracked by #399's own \
+     findings and follow-ups.",
     "Roster availability is a designed vocabulary with no measured original meaning: which modes \
      let a player choose which airframe has not been observed, and a model name is still not \
      proof. Affected content: the selectable roster in every mode. Resolving tasks: #399 together \
@@ -5680,4 +5682,515 @@ fn accept_f11_d_2_retail_the_installation_declares_the_shared_airframe_roster() 
             "{audit:?}"
         );
     }
+}
+
+/// The F11-D2 evidence harness.
+///
+/// This test is deliberately **not** named `accept_f11_d_2_*`: it is not part
+/// of the acceptance suite, and it fails loudly when its inputs are missing
+/// instead of passing vacuously. Run from the workspace root, after the
+/// acceptance suite, exactly as:
+///
+/// 1. ```sh
+///    mkdir -p private/evidence/F11-D2
+///    cargo test --workspace --locked -- accept_f11_d_2_ --include-ignored \
+///      2>&1 | tee private/evidence/F11-D2/cargo-test.log
+///    ```
+///    (record the pipeline's exit status; it is passed to this harness as
+///    `CS_EVIDENCE_EXIT_CODE`.)
+/// 2. ```sh
+///    CS_EVIDENCE_DIR=private/evidence/F11-D2 \
+///    CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') \
+///    CS_EVIDENCE_ARGV="cargo test --workspace --locked -- accept_f11_d_2_ --include-ignored" \
+///    CS_EVIDENCE_EXIT_CODE=<status from step 1> \
+///      cargo test --locked -p cs_content --test scene -- evidence_report_f11_d_2_ --ignored
+///    ```
+/// 3. ```sh
+///    python3 tools/validate_evidence.py private/evidence/F11-D2/acceptance.json \
+///      --artifact-root private/evidence/F11-D2 --require-pass
+///    ```
+/// 4. Commit a copy of `acceptance.json` as
+///    `docs/findings/evidence/F11-D2.json`.
+///
+/// Every field is derived here from real inputs: the recorded test log, the
+/// environment, production discovery of `$CS_GAME_DIR`, the production
+/// `discover_airframe_roster` run over the real loading-script container, the
+/// same [`retail_gamez_census`] F11-D measured, `rustc --version` and
+/// `Cargo.lock`. Nothing is typed in by hand except the `review` block (which
+/// `CS_EVIDENCE_REVIEW` fills in for the reviewing agent) and the
+/// product-coverage limitations it quotes.
+///
+/// `unknowns` is `[]` and the report validates with `--require-pass`: the
+/// **task's** acceptance is complete — a production path derives the shared
+/// airframe roster from the original installation's own loading script, checks
+/// every derived root against the real node array, and hands the resulting
+/// roster to the F11-D audit, which now reports per airframe instead of
+/// reporting nothing. `tools/validate_evidence.py` rejects a report whose
+/// `unknowns` hold unresolved *task* issues, so the
+/// product-incompleteness state is moved, never deleted (2026-09-28 owner
+/// directive): it lives in the `roster-discovery.json` artifact this report
+/// hashes, in `review.method`, in `docs/findings/` and in the follow-up tasks
+/// it names. A failing run produces a failing report, which the validator
+/// rejects.
+#[test]
+#[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_GAME_DIR"]
+fn evidence_report_f11_d_2_writes_the_acceptance_report() {
+    use std::path::PathBuf;
+
+    use cs_assets::install as install_api;
+    use cs_formats::interp::decode_interp;
+    use cs_formats::io::ParseContext;
+
+    let evidence_dir = workspace_path(&env_var("CS_EVIDENCE_DIR"));
+    let candidate_tree = env_var("CS_CANDIDATE_TREE");
+    let argv: Vec<String> = env_var("CS_EVIDENCE_ARGV")
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+    assert!(
+        !argv.is_empty(),
+        "CS_EVIDENCE_ARGV must hold the acceptance command (space-separated)"
+    );
+    let exit_code: i32 = env_var("CS_EVIDENCE_EXIT_CODE")
+        .parse()
+        .expect("CS_EVIDENCE_EXIT_CODE must be the exit status of the acceptance run");
+    let game_dir = PathBuf::from(env_var("CS_GAME_DIR"));
+
+    let head_tree = git(&["rev-parse", "HEAD^{tree}"]);
+    assert_eq!(
+        candidate_tree, head_tree,
+        "CS_CANDIDATE_TREE must be `git rev-parse 'HEAD^{{tree}}'` of the tested commit; old \
+         reports cannot be reused for new code"
+    );
+
+    let log_path = evidence_dir.join("cargo-test.log");
+    let log = fs::read_to_string(&log_path).unwrap_or_else(|error| {
+        panic!(
+            "cannot read the acceptance log {}: {error} (step 1 must tee its output there)",
+            log_path.display()
+        )
+    });
+    let suite = parse_f11_d_suite(&log);
+    let assertions: Vec<(String, &'static str)> = suite
+        .assertions
+        .iter()
+        .filter(|(name, _)| name.contains("accept_f11_d_2_"))
+        .cloned()
+        .collect();
+    assert!(
+        !assertions.is_empty() && suite.passed > 0,
+        "no `accept_f11_d_2_` tests were recorded in {}",
+        log_path.display()
+    );
+    let retail = assertions
+        .iter()
+        .find(|(name, _)| name.contains("accept_f11_d_2_retail_"))
+        .unwrap_or_else(|| {
+            panic!(
+                "the retail acceptance test did not run: F11-D2 requires capability `retail`, run \
+                 step 1 with `--include-ignored` and CS_GAME_DIR set"
+            )
+        });
+    assert_eq!(retail.1, "pass", "the retail acceptance test must pass");
+    assert!(
+        assertions
+            .iter()
+            .any(|(name, _)| !name.contains("accept_f11_d_2_retail_")),
+        "synthetic task tests must be present alongside the retail one"
+    );
+
+    let found = install_api::discover(&game_dir)
+        .expect("production discovery must read the original installation for the evidence record");
+    let install_sha256 = install_api::fingerprint(&found.manifest).to_hex();
+    let content_sha256 = install_api::content_fingerprint(&found.manifest).to_hex();
+
+    // The consumer trace: the production discovery over the real loading-script
+    // container, plus the audit's verdict over the real census. The rerun
+    // re-checks everything the retail acceptance test measured, so the artifact
+    // cannot be written from numbers nobody verified.
+    let census = retail_gamez_census(&game_dir);
+    assert_eq!(
+        census.len(),
+        RETAIL_GAMEZ_NODES_OFFSET.len(),
+        "the census must cover every measured GameZ archive"
+    );
+    let containers: Vec<SceneContainerRef> = census
+        .iter()
+        .map(|row| {
+            SceneContainerRef::new(
+                cid(ContentKind::InstallFile, &row.catalog_key),
+                row.stored_nodes,
+                row.nodes_offset,
+            )
+        })
+        .collect();
+    let interp_bytes =
+        std::fs::read(game_dir.join("ZBD").join("interp.zbd")).expect("interp.zbd must be there");
+    let decoded = decode_interp(
+        &mut ParseContext::with_defaults("zbd/interp.zbd"),
+        &interp_bytes,
+    )
+    .expect("the loading-script container must decode");
+    let install_hash = install_api::fingerprint(&found.manifest);
+    let roster = discover_airframe_roster(&decoded, &retail_roster_declarations(install_hash))
+        .expect("eleven distinct roots are not a contradiction");
+    let report = roster.roster().audit(&containers, |container| {
+        let reference = containers
+            .iter()
+            .find(|reference| reference.container() == container)
+            .expect("the audit only asks about the containers it was given");
+        Err(ContainerBlocker::NodeArrayUndecoded {
+            container: container.clone(),
+            stored_nodes: reference.stored_nodes(),
+            nodes_offset: reference.nodes_offset(),
+        })
+    });
+
+    let total_nodes: u32 = census.iter().map(|row| row.stored_nodes).sum();
+    let discovery_path = evidence_dir.join("roster-discovery.json");
+    let discovery_json = roster_discovery_json(&roster, &report, total_nodes, &install_sha256);
+    fs::write(&discovery_path, &discovery_json)
+        .unwrap_or_else(|error| panic!("write {}: {error}", discovery_path.display()));
+    for needle in [
+        "\"schema\":\"cs-scene-roster-discovery/1\"",
+        "\"retail\":true",
+        "\"airframes_discovered\":11",
+        "\"forced_assignments\":0",
+        "\"forced_assignments_undiscovered\":true",
+        "\"selectable_rows\":0",
+        "\"availability_undiscovered\":true",
+        "\"audit_airframes\":11",
+        "\"mapped_roots\":0",
+        "\"mapped_sockets\":0",
+        "\"blockers\":20",
+        "\"complete\":false",
+        "\"discovery_complete\":false",
+        &format!("\"install_sha256\":\"{install_sha256}\""),
+        &format!("\"total_stored_nodes\":{total_nodes}"),
+    ] {
+        assert!(
+            discovery_json.contains(needle),
+            "the consumer report is missing {needle:?}:\n{discovery_json}"
+        );
+    }
+
+    let engine = format!(
+        "{{\"rust\": {}, \"bevy\": {}, \"avian\": {}}}",
+        jstr(&rustc_version()),
+        jstr(&locked_version("bevy")),
+        jstr(&locked_version("avian3d"))
+    );
+    let artifacts = vec![
+        artifact(&log_path, "log", &evidence_dir),
+        artifact(&discovery_path, "json", &evidence_dir),
+    ];
+
+    let review = std::env::var("CS_EVIDENCE_REVIEW").unwrap_or_else(|_| {
+        "pending: written by the implementing agent bunny-alpha-2. Rally assigns the reviewing \
+         agent, who must regenerate this report on the reviewed and rebased commit and replace this \
+         text with their own identity and method (CS_EVIDENCE_REVIEW); the reviewer should be a \
+         different agent identity from the implementer, and no agent review awards more than \
+         `checked`. Method: the acceptance suite ran locally with the retail capability over \
+         $CS_GAME_DIR, the consumer trace is the production roster discovery over the original \
+         loading-script container plus the production GameZ census and roster audit over the same \
+         installation, and tools/validate_evidence.py --require-pass checks the report."
+            .to_owned()
+            + &F11_D2_LIMITATIONS
+                .iter()
+                .map(|limitation| format!(" LIMITATION: {limitation}"))
+                .collect::<String>()
+    });
+
+    let report_json = format!(
+        "{{\n\
+         \x20\"schema_version\": 1,\n\
+         \x20\"task_id\": \"F11-D2\",\n\
+         \x20\"candidate_tree\": {},\n\
+         \x20\"engine\": {},\n\
+         \x20\"created_at\": {},\n\
+         \x20\"command\": {{\"argv\": {}, \"cwd\": {}, \"exit_code\": {}}},\n\
+         \x20\"source\": {{\"install_sha256\": {}, \"content_sha256\": {}}},\n\
+         \x20\"seed\": 0,\n\
+         \x20\"ticks\": {{\"start\": 0, \"end\": 0}},\n\
+         \x20\"overrides\": [],\n\
+         \x20\"capabilities\": [\"retail\", \"synthetic\"],\n\
+         \x20\"tests\": {{\"discovered\": {}, \"executed\": {}, \"passed\": {}, \"failed\": {}, \
+         \"ignored\": {}}},\n\
+         \x20\"assertions\": [{}],\n\
+         \x20\"artifacts\": [{}],\n\
+         \x20\"unknowns\": [{}],\n\
+         \x20\"review\": {{\"identity\": {}, \"method\": {}}},\n\
+         \x20\"claim\": \"implemented\"\n\
+         }}\n",
+        jstr(&candidate_tree),
+        engine,
+        jstr(&iso_utc_now()),
+        str_array(&argv),
+        jstr(&git(&["rev-parse", "--show-toplevel"])),
+        exit_code,
+        jstr(&install_sha256),
+        jstr(&content_sha256),
+        suite.discovered,
+        suite.executed,
+        suite.passed,
+        suite.failed,
+        suite.ignored,
+        assertion_array(&assertions),
+        artifact_array(&artifacts),
+        "",
+        jstr(&review),
+        jstr(
+            "acceptance suite run locally with the retail capability; this harness derives every \
+             field from the recorded log, production discovery of $CS_GAME_DIR, the production \
+             cs_content::scene::discover_airframe_roster run over ZBD/interp.zbd, the production \
+             GameZ census and roster audit over that installation, rustc and Cargo.lock; validated \
+             with tools/validate_evidence.py --require-pass. The consumer trace is a library path: \
+             cs_content::scene::discover_airframe_roster fed to cs_content::scene::AirframeRoster::\
+             audit over the containers cs_formats::gamez's two production readers measured, with \
+             cs_types::install::RelativePath and cs_content::catalog::baseline::install_file_key as \
+             the container identity; no cs-inspect subcommand wraps it yet. Regenerated by the \
+             reviewing agent on the reviewed and rebased commit, as \
+             docs/contracts/CLI-EVIDENCE.md requires."
+        ),
+    );
+
+    let out = evidence_dir.join("acceptance.json");
+    fs::write(&out, &report_json)
+        .unwrap_or_else(|error| panic!("write {}: {error}", out.display()));
+    let written = fs::read_to_string(&out).expect("the report reads back");
+    for needle in [
+        "\"schema_version\": 1",
+        "\"task_id\": \"F11-D2\"",
+        "\"claim\": \"implemented\"",
+        "\"install_sha256\"",
+        "\"assertions\": [",
+        "\"artifacts\": [",
+        "\"unknowns\": [],",
+    ] {
+        assert!(
+            written.contains(needle),
+            "the written report is missing {needle:?}:\n{written}"
+        );
+    }
+    assert!(
+        suite.failed == 0 && exit_code == 0,
+        "the acceptance run failed (exit {exit_code}, {} failed): the report was written honestly \
+         and must NOT validate; fix the tests first",
+        suite.failed
+    );
+    println!("wrote {}", out.display());
+}
+
+/// The consumer-trace artifact: the discovered roster and the audit's verdict
+/// over the real container census. Structural facts only — ids, counts,
+/// offsets and digests, never original bytes or localizable text.
+fn roster_discovery_json(
+    discovery: &cs_content::scene::AirframeRosterDiscovery,
+    report: &cs_content::scene::RosterAuditReport,
+    total_nodes: u32,
+    install_sha256: &str,
+) -> String {
+    let rows: Vec<String> = discovery
+        .discovered()
+        .iter()
+        .map(|row| {
+            format!(
+                "{{\"airframe\": {}, \"container\": {}, \"root\": {}, \"declared_at\": {}, \
+                  \"created_at\": {}}}",
+                jstr(row.airframe().as_str()),
+                jstr(row.container().as_str()),
+                jstr(row.root().root().key()),
+                row.declared_at(),
+                row.created_at()
+            )
+        })
+        .collect();
+    let selectable = discovery
+        .roster()
+        .entries()
+        .iter()
+        .filter(|entry| entry.availability().is_known())
+        .count();
+    format!(
+        "{{\"schema\":\"cs-scene-roster-discovery/1\",\"retail\":true,\"install_sha256\":{},\
+         \"airframes_discovered\":{},\"forced_assignments\":{},\
+         \"forced_assignments_undiscovered\":{},\"selectable_rows\":{},\
+         \"availability_undiscovered\":{},\"issues\":{},\"audit_airframes\":{},\
+         \"audit_containers\":{},\"mapped_roots\":{},\"mapped_sockets\":{},\"blockers\":{},\
+         \"gaps\":{},\"complete\":{},\"discovery_complete\":{},\"total_stored_nodes\":{},\
+         \"rows\":[{}]}}",
+        jstr(install_sha256),
+        discovery.airframe_count(),
+        discovery.roster().assignments().len(),
+        discovery.unknowns().iter().any(|unknown| matches!(
+            unknown,
+            RosterDiscoveryUnknown::ForcedAssignmentsUndiscovered { .. }
+        )),
+        selectable,
+        discovery.unknowns().iter().any(|unknown| matches!(
+            unknown,
+            RosterDiscoveryUnknown::AvailabilityUndiscovered { .. }
+        )),
+        discovery.issues().len(),
+        report.airframe_count(),
+        report.container_count(),
+        report.mapped_root_count(),
+        report.mapped_socket_count(),
+        report.blocker_count(),
+        report.gap_count(),
+        report.is_complete(),
+        discovery.is_complete(),
+        total_nodes,
+        rows.join(",")
+    )
+}
+
+/// The product-coverage limits this stage records instead of guessing, each
+/// naming the affected content and the task that resolves it (2026-09-28 owner
+/// directive: a limitation must survive into machine-readable evidence). They
+/// are quoted in `review.method` and hashed inside the `roster-discovery.json`
+/// artifact, never deleted to make a validator pass.
+const F11_D2_LIMITATIONS: &[&str] = &[
+    "Only the SHARED airframe archive is discovered. ZBD/interp.zbd declares the eleven airframes \
+     its support\\planes.gw builds into ZBD/planes.zbd, and nothing else: the per-chapter mission \
+     archives hold 53,303 of the installation's 56,620 stored node records, and no idiom in the \
+     container declares an airframe that lives in one of them. Affected content: every mission-only \
+     airframe, and every airframe a mission spawns. Resolving task: a follow-up roster-discovery \
+     task over the per-chapter load scripts, filed with this stage.",
+    "Roster availability is undiscovered: no mode's selection list has been located in the \
+     original data, so all eleven rows carry the explicit unknown f11d.\
+     roster-availability-undiscovered and zero rows are Selectable. Affected content: the \
+     selectable roster in every mode. Resolving tasks: the F22 mode stages and the F49 \
+     instant-action preset stage. A forced mission assignment must never be promoted to Selectable \
+     (F11 non-negotiable behavior 3).",
+    "Forced mission assignments are undiscovered: no mission program has been read, so the \
+     assignment set is empty because the discovery is not done, not because no mission forces an \
+     airframe. Affected content: mission-only airframe identification and every mission's forced \
+     configuration. Resolving tasks: the F39 mission-language stage and the F13 mission-opcode \
+     stage.",
+    "player_pfighter is declared as a root by its own build script but ZBD/planes.zbd nests it \
+     under the script's parentless `player` node, so that row's SceneRootRef names a node the \
+     container does not hold as a root. Affected content: the pirate fighter's scene root. \
+     Resolving task: the F11-E producer (#398) together with a production path that converts ZBD/\
+     planes.zbd into a SceneGraph, after which AirframeRoster::audit reports AirframeBlocker::\
+     RootMissing for it. The row is not repointed at `player`.",
+    "ZBD/planes.zbd still does not convert: SceneGraph::build refuses node 640 because its stored \
+     name carries a trailing space, and all eight world containers refuse with \
+     InconsistentParentage. Affected content: every airframe's socket mapping. Resolving task: a \
+     follow-up for the id grammar's name rule and one for the world containers' partial child \
+     lists; neither is worked around here.",
+    "discover_airframe_roster is a library path: the acceptance suite and this harness drive it, \
+     and no cs-inspect subcommand and nothing in the running binary invokes it yet, so there is no \
+     reachability evidence beyond the tests. Affected content: the discovery's own reachability. \
+     Resolving task: #398 (F11-E) plus a cs-inspect surface when the owner wants one.",
+    "Evidence class: the roster is derived from the original bytes by production readers, which \
+     makes it ObservedTool. No original run happened, so nothing here claims verified_original and \
+     no original-execution semantics are asserted.",
+];
+
+/// An included script runs **once per include line**, against the variable
+/// values current at that point: the measured corpus re-includes the surgery
+/// script once per declared airframe, and skipping a second visit would
+/// discover one airframe instead of eleven.
+#[test]
+fn accept_f11_d_2_an_included_script_runs_once_per_include_line() {
+    use cs_formats::interp::decode_interp;
+    use cs_formats::interp::{INDEX_ENTRY_BYTES, INTERP_HEADER_BYTES, NAME_FIELD_BYTES};
+    use cs_formats::io::ParseContext;
+
+    /// One line's stored bytes: NUL-terminated arguments with their count.
+    fn line(tokens: &[&[u8]]) -> Vec<u8> {
+        let mut data = Vec::new();
+        let mut count = 0u32;
+        for token in tokens {
+            data.extend_from_slice(token);
+            data.push(0);
+            count += 1;
+        }
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(data.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(&count.to_le_bytes());
+        bytes.extend_from_slice(&data);
+        bytes
+    }
+
+    let scripts: [(&[u8], Vec<Vec<u8>>); 2] = [
+        (
+            b"support\\planes.gw",
+            vec![
+                line(&[b"set", b"ZBDFile", b"zbd\\planes.zbd"]),
+                line(&[b"set", b"planeInput", b"common\\fixture\\first.flt"]),
+                line(&[b"set", b"planeOutput", b"player_first"]),
+                line(&[b"source", b"support\\util\\surgery.gw"]),
+                line(&[b"set", b"planeInput", b"common\\fixture\\second.flt"]),
+                line(&[b"set", b"planeOutput", b"player_second"]),
+                line(&[b"source", b"support\\util\\surgery.gw"]),
+                line(&[b"GameZWriteZBDFile", b"%ZBDFile%"]),
+            ],
+        ),
+        (
+            b"support\\util\\surgery.gw",
+            vec![line(&[b"NewObject3D", b"%planeOutput%"])],
+        ),
+    ];
+
+    let body_start = INTERP_HEADER_BYTES + scripts.len() * INDEX_ENTRY_BYTES;
+    let mut body = Vec::new();
+    let mut offsets = Vec::new();
+    for (_, lines) in &scripts {
+        offsets.push((body_start + body.len()) as u32);
+        for data in lines {
+            body.extend_from_slice(data);
+        }
+        body.extend_from_slice(&0u32.to_le_bytes());
+    }
+    let mut bytes = Vec::new();
+    for word in [0x0897_1119u32, 7, scripts.len() as u32] {
+        bytes.extend_from_slice(&word.to_le_bytes());
+    }
+    for ((name, _), offset) in scripts.iter().zip(&offsets) {
+        let mut field = [0u8; NAME_FIELD_BYTES];
+        field[..name.len()].copy_from_slice(name);
+        bytes.extend_from_slice(&field);
+        bytes.extend_from_slice(&1_000u32.to_le_bytes());
+        bytes.extend_from_slice(&offset.to_le_bytes());
+    }
+    bytes.extend_from_slice(&body);
+
+    let decoded = decode_interp(
+        &mut ParseContext::with_defaults("synthetic/f11d2.interp"),
+        &bytes,
+    )
+    .expect("the authored container decodes");
+    let discovery = discover_airframe_roster(&decoded, &synthetic_roster_declarations())
+        .expect("two distinct roots are not a contradiction");
+
+    assert!(discovery.issues().is_empty(), "{:?}", discovery.issues());
+    assert_eq!(
+        discovery
+            .discovered()
+            .iter()
+            .map(|row| row.airframe().as_str())
+            .collect::<Vec<_>>(),
+        ["airframe/player_first", "airframe/player_second"],
+        "the included script runs once per include line, so each visit declares the airframe that \
+         was current when the include ran"
+    );
+    assert_eq!(
+        discovery
+            .discovered()
+            .iter()
+            .map(|row| row.model_spelling())
+            .collect::<Vec<_>>(),
+        ["common\\fixture\\first.flt", "common\\fixture\\second.flt"],
+        "each visit reads the variable values current at that include, not the ones of the first"
+    );
+    assert!(
+        discovery
+            .discovered()
+            .windows(2)
+            .all(|pair| pair[0].created_at() == pair[1].created_at()
+                && pair[0].declared_at() < pair[1].declared_at()),
+        "both rows are created by the same line and are told apart by the line that named them"
+    );
 }
