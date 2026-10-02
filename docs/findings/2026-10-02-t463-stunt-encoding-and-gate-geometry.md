@@ -129,8 +129,12 @@ that reads the word after the `4` tag as an item **count** (= number of children
 fits the first four values and then breaks. That grammar is the wrong list
 convention: F09 measured the count as `children + 1`. Re-tested with the
 measured `count - 1` grammar, **all 23** `dzones.zrd` members parse exactly to
-their last byte (measured over the same 23 campaign mission readers, 155–826
-bytes each). So the framing of `dzones.zrd` *is* consistent with the same
+their last byte. The 23 reader archives that carry one are the 22 campaign
+missions (`ZBD/<group>/M<NN>/zrdr.zbd`) **plus** `ZBD/C5/IA1/zrdr.zbd`, an
+instant-action scenario; they run 155–826 bytes each, 9 197 bytes in total. The
+alternative grammar that reads the word after a `4` tag as the child count
+consumes **0 of the 23** exactly, so #427's own review result reproduces on this
+corpus. So the framing of `dzones.zrd` *is* consistent with the same
 value-list grammar as the instant-action `ia.zrd`; what is still unmeasured is
 its **semantics** — which zones a mission uses and what its objective numbers
 mean — which remains the follow-up task's question (owner `crates/cs_formats/`,
@@ -192,6 +196,71 @@ the payout are not.
 - **The campaign `dzones.zrd` semantics are unmeasured** (the framing
   correction above does not read a mission's zone set).
 
+## Review (2026-10-02)
+
+Reviewer: **`deepseek-1/deepseek-1`, the same agent identity that implemented
+the task**, in a later Rally session with a fresh context (the implement claim
+of 2026-10-02T16:49Z, this review claim of 2026-10-02T17:28Z). Per AGENTS.md a
+same-agent review is **not independent evidence**, and no agent review replaces
+the owner's approval. What follows is a fresh-session check of the code, the
+corpus and the evidence, nothing more.
+
+The review re-ran all four checks on the branch before these review commits
+(the code tree `6608b55122f33ad981d5b13aad266cb81878eb47`, the tree of code
+commit `0104487`; the review changed no code):
+`cargo fmt --all -- --check` = 0,
+`cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
+= 0, `cargo test --workspace --locked` = 0, and
+`cargo test --workspace --locked -- accept_f42_d_ --include-ignored` = 0
+(5 discovered, 5 passed, 0 failed, 0 ignored). The evidence report was
+regenerated on this reviewed tree and validates with
+`tools/validate_evidence.py --require-pass`; its two artifacts' SHA-256 match
+`private/evidence/T463/`.
+
+The corpus was re-measured with a **from-scratch parser written for the review
+and sharing no code with the workspace** (reader-archive trailer index and a
+recursive `count - 1` `.zrd` reader). Every number the record asserts
+reproduces:
+
+| assertion | record | review's own parse |
+| --- | --- | --- |
+| fly-through danger-zone targets | 54 | 54 |
+| of them `stunt_flying` | 45 | 45 |
+| per world | `c1` 5, `c1b` 5, `c1c` 0, `c2` 9, `c2b` 0, `c3` 4, `c4` 14, `c5` 17 | identical |
+| mission types | `c1`/`c3` `dogfight_squadron`, `c1c`/`c2b` `zeppelin_run`, else `stunt_flying` | identical |
+| label→node direction | `[world node, label]`, every target resolved | 54 of 54 |
+| `dzones.zrd` members | 23, 155–826 bytes, 9 197 total | identical |
+| `dzones.zrd` under `count - 1` | 23 of 23 parse exactly | identical |
+| `dzones.zrd` under `count = children` | 0 of 23 parse exactly | identical |
+
+The direction row matters most: **every** selected target's `nodes` label
+matches a `dzones` entry whose *first* element is a `dzpath<N>` world node (and
+not the reverse), so the join #427's world boxes are looked up through is the
+measured one, not an assumed one.
+
+### What the review changed
+
+1. **A clarification, not a correction, to the `dzones.zrd` count.** The "23
+   campaign mission readers" are really **22 campaign missions plus
+   `ZBD/C5/IA1/zrdr.zbd`**; the member count, byte total and grammar result are
+   unchanged and the correction above is unaffected. A reader reproducing the
+   count from `M*/` alone would otherwise find 22 and think the record wrong.
+
+### What the review did not change, and why
+
+* **The target selector that unions the two labels.** It is deliberately the
+  union of `MSG_OBJ_DZ` and `MSG_OBJ_FLYTHROUGH`, and the retail corpus carries
+  no target with only one of them (the `#[ignore]`d test asserts every selected
+  row has both), so the union and the intersection select the same 54. A union
+  is the looser reading; it is kept because the retail bytes do not discriminate
+  between them and the selector is not what this stage measures.
+* **The two unmeasured rules and the payout stay unmeasured.** Nothing in the
+  scenario bytes carries a direction rule, a clearance rule, a reward or a
+  repeat policy; the survey reports them as unmeasured rather than filling a
+  guess.
+* **No `verified_original`.** No original run happened, so nothing here is
+  evidence of the original's runtime behaviour.
+
 ## Sources used
 
 - `specs/F42-stunts-fame-photos-and-optional-achievement-events.md` (F42-D) and
@@ -206,8 +275,9 @@ the payout are not.
   `crates/cs_app/src/world/triggers.rs` (the production reader-archive
   discovery and the node survey the join uses).
 - The owner's installation, read-only, over `$CS_GAME_DIR`: the eight
-  `ZBD/<group>/ia1/zrdr.zbd` reader archives and all 23 campaign
-  `dzones.zrd` members. Installation fingerprint above.
+  `ZBD/<group>/ia1/zrdr.zbd` reader archives and all 23 `dzones.zrd` members
+  (the 22 campaign mission readers and `ZBD/C5/IA1/zrdr.zbd`). Installation
+  fingerprint above.
 
 **No original data is committed.** The numbers here are counts, offsets, spans
 and digests; no extracted `.zrd`, no string table, no mesh and no screenshot is
