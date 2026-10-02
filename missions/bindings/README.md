@@ -98,6 +98,15 @@ directory is original game data — no assets, scripts or extracted bytes.
   rows away. It shares `world/c3` with M12, which is the whole chapter (see
   `docs/findings/2026-10-02-m13-a-source-binding.md`). Same five resolved
   critical dependencies, same unverified status.
+- `M16.json` — the M16 binding output (stage M16-A), generated and pinned the
+  same way by `accept_m16_a_the_committed_record_is_what_the_installation_derives`.
+  No production code changed for it either: M16 is the sixteenth campaign
+  position and the first mission of chapter 4, so — as at M06 — the layout's
+  chapter boundary and the localized region boundary fall on the same row.
+  Its world group, `world/c4`, is the whole chapter, so the world row
+  identifies the chapter and not the mission (see
+  `docs/findings/2026-10-02-m16-a-source-binding.md`). Same five resolved
+  critical dependencies, same unverified status.
 
 The typed records those missions fill in — the seven required content
 categories, one unresolved dependency row per required subsystem, coverage
@@ -106,8 +115,8 @@ totals and closure reports — live in
 
 ## What is not here yet
 
-- `M07.json`, `M09.json` … `M11.json` and `M14.json` … `M24.json` — the
-  per-mission binding outputs of M07-A, M09-A … M11-A and M14-A … M24-A, created from original data the same way. Every one of them starts
+- `M07.json`, `M09.json` … `M11.json`, `M14.json`, `M15.json` and `M17.json` … `M24.json` — the
+  per-mission binding outputs of M07-A, M09-A … M11-A, M14-A, M15-A and M17-A … M24-A, created from original data the same way. Every one of them starts
   unresolved.
 - Titles the installation spells differently again — M09, M11, M14, M15, M20,
   M22 and M23 — match neither display form and stay `Uncarried`. Which retail
