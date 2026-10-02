@@ -211,8 +211,14 @@ fn evidence_report_f04_d_writes_the_acceptance_report() {
         assertion_array(&suite.assertions),
         artifact_array(&artifacts),
         jstr(
-            "claude-1 (implementing agent, self-check; the Rally reviewer regenerates this \
-              report on the rebased commit)"
+            "implementer: claude-1/claude-1 (Rally #20, implement claim of 2026-09-28T15:30:32Z, \
+            handed over at 15:54:24Z); reviewer: claude-1/claude-1 again, on the review claim of \
+            2026-09-28T15:54:42Z, which regenerated this report on the reviewed tree and merged \
+            it at 16:03:55Z. The same agent instance is on both sides, so this review is not \
+            independent and is not independent original-reference evidence; the review claim \
+            started seventeen seconds after the hand-over, so the activity log cannot prove a \
+            fresh context and none is claimed. No agent review replaces the owner's human \
+            approval"
         ),
         jstr(
             "acceptance suite run locally with the retail capability; this harness derives \

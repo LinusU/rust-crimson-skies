@@ -181,8 +181,16 @@ fn evidence_report_f02_b_writes_the_acceptance_report() {
         assertion_array(&suite.assertions),
         artifact_array(&artifacts),
         jstr(
-            "opencode-1 (implementing agent, self-check; the Rally reviewer regenerates this \
-              report on the rebased commit)"
+            "implementer: opencode-1/opencode-1 (Rally #10, implement claim of \
+            2026-09-23T21:01:57Z, handed over at 22:08:18Z); the reviewer of record is Jakob - \
+            Devin SWE-2/devin-1 (Rally #10 review claim of 2026-09-24T01:01:53Z), a different \
+            agent instance that wrote none of the implementation, which regenerated this report \
+            on the reviewed tree and merged it at 01:31:52Z. An earlier review claim by \
+            opencode-1/opencode-1 (2026-09-23T22:09:20Z) lapsed on 2026-09-24T00:38:35Z without \
+            merging anything and recorded no finding. The activity log does not record whether \
+            either reviewer's context was fresh and none is claimed. An agent review is not \
+            independent original-reference evidence and no agent review replaces the owner's \
+            human approval"
         ),
         jstr(
             "acceptance suite run locally with the retail capability; this harness derives \

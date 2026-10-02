@@ -702,8 +702,13 @@ fn evidence_report_t343_writes_the_acceptance_report() {
             .collect::<Vec<_>>()
             .join(", "),
         jstr(
-            "claude-1 (implementing agent, self-check; the Rally reviewer regenerates this \
-             report on the rebased commit)"
+            "implementer: claude-1/claude-1 (Rally #343, implement claim of \
+            2026-09-28T17:11:16Z, handed over at 17:20:59Z); reviewer: claude-1/claude-1 again, \
+            on the review claim of 2026-09-28T17:21:15Z, which merged it at 17:24:48Z. The same \
+            agent instance is on both sides, so this review is not independent and is not \
+            independent original-reference evidence; the review claim started fifteen seconds \
+            after the hand-over, so the activity log cannot prove a fresh context and none is \
+            claimed. No agent review replaces the owner's human approval"
         ),
         jstr(
             "acceptance suite run locally with the retail capability; this harness derives \

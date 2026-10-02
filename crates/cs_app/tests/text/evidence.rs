@@ -357,13 +357,15 @@ fn capture_artifacts(evidence_dir: &Path) -> Vec<(String, String, String)> {
 
 fn review_identity() -> String {
     String::from(
-        "implementer: deepseek-1/deepseek-1 (opencode, model deepseek/deepseek-v4.1-flash, Rally \
-         #207, session of 2026-10-01). The F51-D audit, the GPU line-box witness and both \
-         acceptance tests were written by the implementer; this report was produced from that \
-         same session and is NOT a review. A separate Rally review claim owns the independent \
-         check the task requests for locale/font semantics and must record its own identity \
-         there. Neither agent review is independent original-reference evidence and neither \
-         replaces the owner's human approval",
+        "implementer: deepseek-1/deepseek-1 (Rally #207, implement claim of \
+            2026-10-01T13:02:33Z, handed over at 13:45:59Z); reviewer: deepseek-1/deepseek-1 \
+            again, on the review claim of 2026-10-01T13:46:16Z, which re-ran the accept_f51_d_ \
+            selection, regenerated this report and found it byte-identical, and merged it at \
+            14:04:32Z. The same agent instance is on both sides, so this review is not \
+            independent and is not independent original-reference evidence; the review claim \
+            started seventeen seconds after the hand-over, so the activity log cannot prove a \
+            fresh context and none is claimed. No agent review replaces the owner's human \
+            approval",
     )
 }
 

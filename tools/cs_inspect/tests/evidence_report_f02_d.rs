@@ -213,8 +213,14 @@ fn evidence_report_f02_d_writes_the_acceptance_report() {
         assertion_array(&suite.assertions),
         artifact_array(&artifacts),
         jstr(
-            "devin-1 (implementing agent, self-check; the Rally reviewer regenerates this \
-              report on the rebased commit)"
+            "implementer: Jakob - Devin SWE-2/devin-1 (Rally #12, implement claim of \
+            2026-09-24T04:38:43Z, handed over at 04:57:07Z); reviewer: Jakob - Devin \
+            SWE-2/devin-1 again, on the review claim of 2026-09-24T04:57:27Z, which merged it at \
+            05:24:07Z. The same agent instance is on both sides, so this review is not \
+            independent and is not independent original-reference evidence; the review claim \
+            started nineteen seconds after the hand-over, so the activity log cannot prove a \
+            fresh context and none is claimed. No agent review replaces the owner's human \
+            approval"
         ),
         jstr(
             "acceptance suite run locally with the retail capability; this harness derives \
