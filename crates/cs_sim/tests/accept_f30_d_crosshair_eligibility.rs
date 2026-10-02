@@ -189,8 +189,9 @@ fn accept_f30_d_crosshair_selection_needs_eligibility_and_free_sight_together() 
     store
         .record_lifecycle(actor(3), LifecycleKind::PilotBailout)
         .expect("a registered actor accepts a lifecycle transition");
-    // Destruction is not undone by a bailout: `record_lifecycle` keeps the first
-    // transition that ended targetability, so the airframe stays gone.
+    // Destruction is not undone by a bailout: only a transition that ends
+    // targetability writes the recorded ending, so a non-terminal report
+    // leaves the airframe gone.
     assert!(
         !store.eligible(&actor(3)),
         "a bailout after a destruction does not resurrect the actor"

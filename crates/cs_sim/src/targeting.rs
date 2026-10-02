@@ -1278,6 +1278,12 @@ impl TargetStore {
     /// idempotent — two authoritative reporters may observe the same
     /// transition.
     ///
+    /// A transition that does **not** end targetability never touches a
+    /// recorded ending: a `PilotBailout` or a `Captured` reported after a
+    /// destruction leaves the actor out of the world rather than bringing it
+    /// back into the selectable set (F30-D, pinned by
+    /// `accept_f30_d_crosshair_selection_needs_eligibility_and_free_sight_together`).
+    ///
     /// # Errors
     ///
     /// [`TargetError::ForeignSession`] or [`TargetError::UnknownActor`].

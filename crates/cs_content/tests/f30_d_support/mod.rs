@@ -221,6 +221,13 @@ pub fn game_dir() -> PathBuf {
 /// map is the deduplicated union. A row whose id is below [`NAME_ID_MIN`] is
 /// not an `RT_STRING` label (`strings.dll` also holds one printable `PDT`
 /// pair with id 0) and is dropped.
+///
+/// A virtual address is not a file offset in general, so the parse asserts the
+/// image's layout instead of assuming it: every section of this image has
+/// `VirtualAddress == PointerToRawData`, so subtracting `ImageBase` yields the
+/// file offset of a name directly. The digest of this exact image is pinned
+/// anyway, but a layout the parse could not read must fail loudly here instead
+/// of silently resolving to fewer names.
 pub fn parse_name_id_table(strings: &[u8]) -> BTreeMap<String, u32> {
     let e_lfanew = u32::from_le_bytes(strings[0x3c..0x40].try_into().unwrap()) as usize;
     assert_eq!(
@@ -244,13 +251,18 @@ pub fn parse_name_id_table(strings: &[u8]) -> BTreeMap<String, u32> {
         let name = strings[section..section + 8]
             .split(|byte| *byte == 0)
             .next();
+        let virtual_address =
+            u32::from_le_bytes(strings[section + 12..section + 16].try_into().unwrap());
+        let raw_offset =
+            u32::from_le_bytes(strings[section + 20..section + 24].try_into().unwrap());
+        assert_eq!(
+            virtual_address, raw_offset,
+            "this parse reads a name at its virtual address as a file offset, which \
+             needs VirtualAddress == PointerToRawData for every section"
+        );
         if name == Some(&b".data"[..]) {
-            let virtual_address =
-                u32::from_le_bytes(strings[section + 12..section + 16].try_into().unwrap());
             let raw_size =
                 u32::from_le_bytes(strings[section + 16..section + 20].try_into().unwrap());
-            let raw_offset =
-                u32::from_le_bytes(strings[section + 20..section + 24].try_into().unwrap());
             data_extent = Some((virtual_address, raw_offset, raw_size));
         }
     }

@@ -202,27 +202,48 @@ is in neither the cycle nor the crosshair, a held selection on one is cleared
 with `SelectionClearReason::NotRevealed`, the actor is still `present`, and
 re-revealing it restores both queries in the same boundary.
 
-## Defects found and fixed while writing the acceptance tests
+## Defects found while writing the acceptance tests
 
-**A lifecycle transition reported after a destruction resurrected a destroyed
-actor.** `TargetStore::record_lifecycle` keeps the first transition that ends
-targetability — but the *first* was decided by an `if` that a later,
-non-terminal transition (`PilotBailout`) could have written around. The
-observable failure: a damage tick that reports `Destroyed` and a second report
-that reports `PilotBailout` for the same actor leaves the actor **eligible
-again** — selectable by the cycle, pickable under the crosshair, and described
-by a reticle — after the damage system destroyed it. No F30-A/B/C test caught
-it (they record the bailout *before* the destruction, so both orders pass);
+**A lifecycle transition reported after a destruction can resurrect a destroyed
+actor.** The rule that prevents it is one line of `TargetStore::record_lifecycle`
+— only a kind that `ends_targeting` writes the recorded ending — and the test
+now pins it, so that line cannot be edited away silently.
+
+The observable failure the pin guards against: a damage tick that reports
+`Destroyed` and a second report that reports `PilotBailout` for the same actor
+leaves the actor **eligible again** if `record_lifecycle` also *clears* the
+recorded ending for a non-terminal kind — selectable by the cycle, pickable
+under the crosshair, and described by a reticle — after the damage system
+destroyed it. **No F30-A/B/C test caught it**: the rebase confirms all **60**
+of them still pass with that branch added, because they record the bailout
+*before* the destruction, so both orders pass for them.
 `accept_f30_d_crosshair_selection_needs_eligibility_and_free_sight_together`
 catches it (probe 3 in the table below).
 
 The production code is **unchanged**: the shipped `record_lifecycle` already
-refuses to clear a recorded ending, because it only writes `gone` for a
-terminal kind. The defect the probe found is a *regression* the current code
-does not have, and the test now pins the behavior so a future edit cannot
-introduce it. Nothing else in F30-A/B/C needed repair: the crosshair query,
-the reveal gate, the phase record and the assistance gate behaved as their own
-contracts say under every probe below.
+refuses to clear a recorded ending. The defect the probe finds is a *regression*
+the current code does not have, so this is a pin, not a repair.
+Nothing else in F30-A/B/C needed repair: the crosshair query, the reveal gate,
+the phase record and the assistance gate behaved as their own contracts say
+under every probe below.
+
+## Repairs applied in review
+
+Recorded so the next reader knows which edits the reviewing agent made, as
+distinct from the implementing agent's work (see "Review" at the end).
+
+1. `parse_name_id_table` now **asserts** the layout it relies on
+   (`VirtualAddress == PointerToRawData` for every section) instead of
+   assuming it. It reads a name's virtual address as a file offset, which is
+   true of this image and false of PE images in general; the assertion makes the
+   dependency explicit and fails loudly rather than resolving fewer names.
+2. The `record_lifecycle` doc comment now states the pinned rule (a transition
+   that does not end targetability never touches a recorded ending) and names
+   the test that pins it.
+3. The test's own comment no longer describes the rule as "keeps the first
+   transition that ended targetability": the code keeps the **last** terminal
+   kind and ignores non-terminal ones. The pinned behavior is unchanged and the
+   probe still fails without it; only the description was wrong.
 
 ## Reviewer sensitivity probes
 
@@ -233,7 +254,7 @@ the pushed commit afterwards.
 | --- | --- | --- |
 | 1 | the crosshair query filters on `present` instead of `eligible` | both F30-D tests **fail** (and F30-A's crosshair test fails too) |
 | 2 | the occlusion filter is dropped from the crosshair query | `accept_f30_d_crosshair_selection_needs_eligibility_and_free_sight_together` **fails** |
-| 3 | `record_lifecycle` lets a non-terminal transition clear the recorded ending | `accept_f30_d_crosshair_selection_needs_eligibility_and_free_sight_together` **fails**; **all 23 F30-A/B/C tests still pass** — the regression this stage found |
+| 3 | `record_lifecycle` clears the recorded ending for a non-terminal transition | `accept_f30_d_crosshair_selection_needs_eligibility_and_free_sight_together` **fails**; **all 60 F30-A/B/C tests still pass** — the regression this stage found |
 | 4 | the eligibility filter is removed from the crosshair query entirely | both F30-D tests **fail** |
 | 5 | `ABSENT_NAME_FRAGMENTS` gains a fragment the table does match (`TARGET`) | `accept_f30_d_retail_names_no_reveal_or_assistance_option` **fails** with the sixteen matching names |
 | 6 | `nearest_attacker` is reclassified `observed` | `accept_f30_d_retail_names_no_reveal_or_assistance_option` **fails** |
@@ -313,3 +334,50 @@ agent review and green CI. Nothing here is `verified_original`: the measured
 facts are the original's *names*, ids and counts, and the three behaviors that
 would make targeting original are explicitly unmeasured. No agent review
 replaces the owner's human approval.
+
+## Review
+
+Reviewer: **bunny-2** (`bunny-2/bunny-2`, Rally #124 review claim of
+2026-10-02T20:51Z), workspace
+`/Users/linus/coding/rust-crimson-skies/bunny-2`.
+
+**This review is not independent.** The same agent identity both implemented
+F30-D and reviewed it, in the same continuous session: the reviewer read the
+implementer's own diff, and its memory of the reasoning that produced the
+constants above is not fresh. Under AGENTS.md and the owner's 2026-09-28
+directive this is **not independent evidence** for format or mission semantics,
+and the next reviewer should treat the sensitivity probes below as one
+agent's work, not two. What the reviewer did add was a from-scratch
+reproduction of the measurement and its own probe runs; see the commit log for
+the repairs.
+
+**The measurement was reproduced independently** rather than taken on trust. A
+reviewer-written Python re-implementation of the PE `.data` walk (not the Rust
+support module, which is under test) re-derived from `$CS_GAME_DIR`: the
+`strings.dll` digest `7582feca…` and 131 072-byte length, a 1 023-entry table
+with ids 100 … 17 142, **all 27** claimed name/id pairs correct, the target
+family exactly the 11 `MSG_CMD_TARGET_*` names the finding lists (no twelfth),
+the padlock family exactly 12, and **zero** hits for each of the eight absent
+fragments. Every numeric and name claim in Observations 1–4 checked out.
+
+**Reviewer probes.** Probes 1–6 of the implementer's table were re-run and
+reproduced. Three further probes were added:
+
+| # | Probe | Result |
+| --- | --- | --- |
+| R1 | `parse_name_id_table` assumes a name's virtual address is a file offset, and the image does satisfy `VirtualAddress == PointerToRawData` | verified against the image; **fixed in review** by asserting the layout instead of assuming it |
+| R2 | a duplicated classification row leaves one declared action unclassified | `accept_f30_d_retail_names_no_reveal_or_assistance_option` **fails** (`nearest_objective is declared but not classified`) — the completeness check discriminates |
+| R3 | `record_lifecycle` clears the recorded ending for a non-terminal transition, re-measured after the "Repairs applied in review" edits | `accept_f30_d_crosshair_selection_needs_eligibility_and_free_sight_together` **fails**, and **all 60** F30-A/B/C tests still pass, so the pin still stands after the review's edits |
+
+R3 also corrected a factual error in the implementer's table: probe 3 as first
+written recorded **23** F30-A/B/C tests, and the workspace selection contains
+**60**. The count was under-reported, so the claim's direction was not
+flattered, but it was wrong and is now measured.
+
+**Not verified by this review:** anything requiring an original run. The
+limitations in the table above are unchanged and still gate the fidelity
+claims they name; the empty `unknowns` list in the report is the reading
+argued in the section above, and this reviewer accepts it for the reason given
+(the limitations are recorded in machine-readable form in the hashed
+`targeting-vocabulary.json`, in `review.method`, and in tasks #534 / #505), not
+because the original behaviors were measured.
