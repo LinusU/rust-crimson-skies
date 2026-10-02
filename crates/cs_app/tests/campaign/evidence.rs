@@ -48,11 +48,13 @@
 //! Every `review.identity` literal below names the implementer and the reviewer
 //! as the two Rally actor strings (`<agent instance>/<session label>`) that
 //! really ran, and says whether the reviewer's context was fresh. A stage added
-//! to this file must add its own Rally implementer and reviewer to
+//! to this file should add its own Rally implementer and reviewer to
 //! `docs/findings/2026-10-02-m16-a-fu2-rally-review-snapshot.json` in the same
-//! change: `tools/tests/test_evidence_review_identity.py` resolves every
-//! literal in this file against that snapshot and fails until a new stage is
-//! there.
+//! change: `tools/tests/test_evidence_review_identity.py` resolves every literal
+//! in this file against that snapshot, and a stage the snapshot has not caught
+//! up with is reported as an advisory note, not a failure.  A literal carrying a
+//! hand-over placeholder such as `reviewer: none yet` is a failure whether or not
+//! the snapshot knows the stage, so a new stage must not paste one.
 
 use std::collections::VecDeque;
 use std::fs;
@@ -1272,12 +1274,13 @@ fn evidence_report_m06_a_writes_the_acceptance_report() {
         assertion_array(&suite.assertions),
         artifact_array(&artifacts),
         jstr(
-            "implementer: deepseek-1 (Rally #273, DeepSeek V4.1 Flash, session of 2026-10-01T20:41Z); \
+            "implementer: deepseek-1/deepseek-1 (Rally #273, DeepSeek V4.1 Flash, session of \
+             2026-10-01T20:41Z); \
              reviewer: deepseek-1/deepseek-1 — a separate session with fresh context (the review \
              claim of 2026-10-01T21:12Z) that did not take part in the implementation — \
-             regenerating this report on the rebased commit. Same agent name and model, different \
-             context: this review is not independent original-reference evidence and no agent \
-             review replaces the owner's human approval"
+             regenerating this report on the rebased commit. Same agent instance and model, \
+             different context: this review is not independent \
+             original-reference evidence and no agent review replaces the owner's human approval"
         ),
         jstr(
             "acceptance suite re-run locally with the retail capability by the reviewer; this \
@@ -2707,7 +2710,7 @@ fn evidence_report_m24_a_writes_the_acceptance_report() {
             "implementer: claude-2/claude-1 (Rally #327, Claude Sonnet 5.5, session of \
              2026-10-02T02:30Z); reviewer: claude-2/claude-1 again, as the Rally reviewing agent \
              on the review claim of 2026-10-02T02:38Z — the same agent instance that implemented \
-             the stage, so this is NOT independent review; the claim started ten seconds after \
+             the stage, so this is NOT independent review; the claim started nine seconds after \
              the hand-over, which is the same session continuing, so no fresh context is claimed \
              either. This report still describes the implementer's own run only. An agent review \
              is not independent original-reference evidence and no agent review replaces the \
@@ -3535,11 +3538,11 @@ fn evidence_report_m07_a_writes_the_acceptance_report() {
              2026-10-01T22:49Z); reviewer: claude-2/claude-1, on the Rally review claims of \
              2026-10-02T00:57Z and 2026-10-02T01:39Z, the second of which approved the merge — a \
              different agent instance from the implementer, in a separate session with fresh \
-             context, the only campaign-binding stage reviewed by another instance, and still not \
-             independent original-reference evidence; the implementer's own earlier review claim of \
-             2026-10-01T23:36Z (deepseek-1/deepseek-1) is its own instance and not independent. \
-             The implementer's own run is not independent review and is not independent \
-             original-reference evidence; no agent review replaces the owner's human approval"
+             context, and still not independent original-reference evidence; the implementer's \
+             own earlier review claim of 2026-10-01T23:36Z (deepseek-1/deepseek-1) is its own \
+             instance and not independent. The implementer's own run is not independent review \
+             and is not independent original-reference evidence; no agent review replaces the \
+             owner's human approval"
         ),
         jstr(
             "acceptance suite run locally with the retail capability; this harness derives every \

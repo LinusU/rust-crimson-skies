@@ -40,9 +40,12 @@ HARNESS = ROOT / 'crates/cs_app/tests/campaign/evidence.rs'
 REPORTS = ROOT / 'docs/findings/evidence'
 
 # The placeholder wording the reports used while they claimed that no review had
-# happened.  None of it survives once the real reviewer is named.
+# happened.  None of it survives once the real reviewer is named.  The last two
+# are the wording M19-A, M21-A and M24-A shipped with; a stage that keeps
+# "an independent review is pending" but drops the "none yet" must fail too.
 PLACEHOLDERS = ('none yet', 'not yet assigned', 'not yet known', 'not yet independent',
-                'to be recorded', 'self-check', 'the rally reviewer regenerates')
+                'to be recorded', 'self-check', 'the rally reviewer regenerates',
+                'independent review is pending')
 
 TASK_ID = re.compile(r'\\"task_id\\": \\"([^"\\]+)\\"')
 CLAIM = re.compile(r'\\"claim\\": \\"([a-z_]+)\\"')
@@ -261,6 +264,20 @@ class EvidenceReviewIdentityTests(unittest.TestCase):
         self.assertIn(f'docs/findings/evidence/{key}.json: `review.identity` still says '
                       f"'none yet'; every merged stage has had a reviewer, so add {key}'s Rally "
                       'implementer and reviewer to the snapshot and name them here', problems)
+
+    def test_accept_m16_a_fu2_the_pending_review_template_is_a_gap_too(self):
+        """`… an independent review is pending` is the same gap, with or without `none yet`."""
+        key = 'M98-A'
+        gapped = ('implementer: x/y (Rally #998); reviewer: x/y again, the same agent instance, so '
+                  'this is not independent review; an independent review is pending')
+        harnesses = dict(self.harnesses, **{key: dict(self.harnesses['M13-A'],
+                                                      identity=gapped)})
+        problems, unrecorded = review_problems(self.snapshot, harnesses,
+                                               copy_reports(self.reports, **{key: report(key, gapped)}))
+        self.assertIn(key, unrecorded)
+        self.assertTrue(any(f'docs/findings/evidence/{key}.json: `review.identity` still says '
+                            "'independent review is pending'" in problem for problem in problems),
+                        problems)
 
     def test_accept_m16_a_fu2_harness_reader_joins_rust_line_continuations(self):
         chunk = '''fn evidence_report_x99_a() {
