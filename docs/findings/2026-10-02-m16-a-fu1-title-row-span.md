@@ -140,14 +140,21 @@ gain `title_enclosure: None`; M16-A's own suite
 
 ## Review follow-up (2026-10-02)
 
-The rebase onto `main` brought in M07-A's binding, which landed after this
-branch was cut. The production fix applies to it as well, so the review
-re-pinned `missions/bindings/M07.json` (its confirmed row is `92592 + 60`
-inside block 218, where the old record cited the whole `92088 + 610` block)
-and gave M07-A's synthetic `authored_binding` the same `title_enclosure: None`
-field. `accept_m07_a_the_committed_record_is_what_the_installation_derives`
-passes with the re-pinned record, and the M16-A-FU1 evidence report is
-regenerated on the reviewed tree per `docs/contracts/CLI-EVIDENCE.md`.
+The rebases onto `main` brought in two bindings that landed after this branch
+was cut: M07-A's and M19-A's. The production fix applies to both, so the
+review re-pinned
+
+- `missions/bindings/M07.json` — its confirmed row is `92592 + 60` inside
+  block 218, where the old record cited the whole `92088 + 610` block; and
+- `missions/bindings/M19.json` — its confirmed row is `95852 + 58` inside
+  block 219, where the old record cited the whole `95304 + 876` block.
+
+Both M07-A's and M19-A's synthetic `authored_binding` literals also gained the
+same `title_enclosure: None` field.
+`accept_m07_a_the_committed_record_is_what_the_installation_derives` and
+`accept_m19_a_the_committed_record_is_what_the_installation_derives` pass with
+the re-pinned records, and the M16-A-FU1 evidence report is regenerated on the
+reviewed tree per `docs/contracts/CLI-EVIDENCE.md`.
 
 ## What is not claimed
 
