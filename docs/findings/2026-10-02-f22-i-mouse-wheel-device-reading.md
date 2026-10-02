@@ -69,9 +69,13 @@ fail while the wheel is not in the calibration pass.
 
 **No.** Verified, not assumed:
 
-- `grep -rn "DeviceEvent" --include="*.rs" crates/` finds the type only in
-  `crates/cs_app/src/input/{devices,mod,session}.rs` and in
-  `crates/cs_app/tests/`; there is no producer outside the test fixtures.
+- `grep -rn "DeviceEvent" --include="*.rs" crates/` finds the type only inside
+  `crates/cs_app/` — doc comments, the re-export in `input/mod.rs`, its
+  definition in `input/devices.rs`, its uses in `input/{devices,session}.rs` and
+  inline unit tests — and in `crates/cs_app/tests/`. No `DeviceEvent` is
+  **constructed** outside a test fixture: every construction in
+  `crates/cs_app/src/` is inside an inline `#[cfg(test)]` module, so there is no
+  producer outside the test fixtures.
 - `grep -rln "bevy::input" --include="*.rs" crates/` matches nothing:
   `cs_app` depends on `bevy` (workspace) but no code reads `ButtonInput`,
   `MouseMotion`, `MouseWheel` or `AccumulatedMouseMotion` yet.

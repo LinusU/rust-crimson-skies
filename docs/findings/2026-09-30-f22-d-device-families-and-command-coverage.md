@@ -144,6 +144,13 @@ guessed here:
   the designed map — F22-B pins that, and this stage did not weaken it — so
   no declared command is unreachable because of it, but a declared channel of
   a declared family has no producer. Resolving task: **#412 `F22-I`**.
+  **Resolved by F22-I** (`#412`): `DeviceEvent::MouseFrame` now carries a
+  `wheel` reading and `calibrated_readings` calibrates it like any other
+  relative channel, so the statement above describes this stage's tree and no
+  longer the repository's; see
+  `docs/findings/2026-10-02-f22-i-mouse-wheel-device-reading.md`. No runtime
+  path reports a wheel yet (no Bevy input producer exists), which is F22-F's
+  work, and the wheel is still unbound by design.
 
 ## Observations recorded rather than hidden
 
