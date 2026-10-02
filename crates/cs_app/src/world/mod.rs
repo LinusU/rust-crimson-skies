@@ -107,11 +107,11 @@ pub use fixture::{
     MESH_SETTLE_UPDATES, NON_COLLIDING_HALF_M, NON_COLLIDING_POS_M, OBJECT_GROUND, OBJECT_LEG_LEFT,
     OBJECT_LEG_RIGHT, OBJECT_LINTEL, OBJECT_NON_COLLIDING, OBJECT_SENSOR, OBJECT_UNEVIDENCED_ROLE,
     OBJECT_UNEVIDENCED_SHAPE, OBJECT_WATER, ProbeError, ProbeSpec, SECTOR_APPROACH, SECTOR_ARCH,
-    SECTOR_BEYOND, SENSOR_HALF_M, SENSOR_POS_M, WORLD_KEY, WorldFixture, WorldFixtureBuilder,
-    WorldFixtureError, arch_world, depot_meshes, depot_mission, depot_population, depot_world,
-    door_overlay, fixture_provenance, harbor_meshes, harbor_world, mesh_reference, object_set,
-    probe_layers, spawn_discrete_probe, spawn_swept_probe, static_world_layers, world_app,
-    world_instance,
+    SECTOR_BEYOND, SENSOR_HALF_M, SENSOR_POS_M, WORLD_FIXTURE_SUBSTEP_COUNT, WORLD_KEY,
+    WorldFixture, WorldFixtureBuilder, WorldFixtureError, arch_world, depot_meshes, depot_mission,
+    depot_population, depot_world, door_overlay, fixture_provenance, harbor_meshes, harbor_world,
+    mesh_reference, object_set, probe_layers, spawn_discrete_probe, spawn_swept_probe,
+    static_world_layers, world_app, world_instance,
 };
 pub use gpu_capture::{
     CAPTURE_HEIGHT, CAPTURE_WIDTH, CaptureRequest, FRAMING_DISTANCE_FACTOR, GpuCapture,

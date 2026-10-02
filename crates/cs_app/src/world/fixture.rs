@@ -73,8 +73,7 @@ use std::time::Duration;
 
 use avian3d::prelude::{
     AngularVelocity, Collider, CollisionEventsEnabled, CollisionLayers as AvianCollisionLayers,
-    Gravity, LinearVelocity, Mass, Position, RigidBody, Rotation, SpeculativeMargin, SubstepCount,
-    SweptCcd,
+    Gravity, LinearVelocity, Mass, Position, RigidBody, Rotation, SpeculativeMargin, SweptCcd,
 };
 use bevy::prelude::{App, Entity, Transform, Vec3};
 use bevy::time::{Real, Time, TimeUpdateStrategy};
@@ -1323,6 +1322,22 @@ pub fn object_set(keys: &[&str]) -> BTreeSet<WorldObjectId> {
 
 // ---------------------------------------------------------------- harness ---
 
+/// The solver substep count the world bootstrap runs on: **one**, a measured
+/// divergence from [`crate::physics::DECLARED_SUBSTEP_COUNT`].
+///
+/// On the pinned engine (`avian3d 0.7.0`), `SubstepCount(2)` makes a
+/// `SpeculativeMargin::ZERO` body — the shape every swept production layer
+/// carries — pass through a static *trimesh* wall with contacts logged but
+/// zero solver response, at ordinary speeds (measured: 30 and 60 m/s into the
+/// 1 m mesh leg at 120 Hz). The failure is specific to trimeshes and
+/// non-monotonic in the count (1, 3, 4 and 6 substeps stop or embed the same
+/// bodies; cuboid statics are unaffected at every count). F23-D froze the
+/// declared count against cuboid obstacles only, so the declared policy
+/// cannot be adopted here until the trimesh interaction is resolved — the
+/// measurement and the ruling this constant waits on are recorded in
+/// `docs/findings/2026-10-02-t416-world-substep-policy.md` (task #416).
+pub const WORLD_FIXTURE_SUBSTEP_COUNT: u32 = 1;
+
 /// Builds the headless Bevy world every world fixture runs on: the real pinned
 /// plugin group through [`crate::asset_stack::headless_app`], the real F23-A
 /// fixed-rate adapter, gravity zero, and a manually driven clock seeded so the
@@ -1344,10 +1359,14 @@ pub fn world_app() -> App {
         // all.
         super::contacts::WorldPlugin,
         super::overlays::WorldOverlayPlugin,
-        crate::physics::PhysicsAdapterPlugin::new(crate::physics::BASELINE_FIXED_HZ),
+        // The substep count is declared through the plugin seam, not by
+        // overwriting `SubstepCount` afterwards: a later `insert_resource`
+        // cannot silently diverge from what the adapter was configured to
+        // install.
+        crate::physics::PhysicsAdapterPlugin::new(crate::physics::BASELINE_FIXED_HZ)
+            .with_substeps(WORLD_FIXTURE_SUBSTEP_COUNT),
     ));
     app.insert_resource(TimeUpdateStrategy::ManualDuration(frame));
-    app.insert_resource(SubstepCount(1));
     app.insert_resource(Gravity::ZERO);
 
     let startup = app.world().resource::<Time<Real>>().startup();
