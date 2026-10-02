@@ -120,14 +120,17 @@ keeps the original-family validation gate.
    requirement that a release and the despawn happen in one step).
 6. **A superseded scene load releases the same way.**
    `release_superseded_instances(world)` stops every live instance whose
-   `SceneGeneration` is older than `SceneGenerations::latest()` (the scene load
+   `SceneGeneration` is not `SceneGenerations::latest()` (the scene load
    path's own monotone counter — generations only count up, so "older" is
    "not the latest") and releases what each of them applied. It is a
    directly callable entry, **not** a system: the load path must call it in the
    same step in which it despawns the superseded scene, together with
    `release_attachments_before_despawn` (non-negotiable behavior 4), and a
    fixed-tick system could not be ordered against a despawn that happens in
-   `Update`.
+   `Update`. A world with **no** `SceneGenerations` resource releases nothing:
+   without the counter there is no evidence that any generation was
+   superseded, and tearing every instance down on absent evidence would be a
+   guess.
 7. **Retry works because the teardown is complete.** Playing `(clip,
    instance)` again after a stop starts a fresh evaluator with a fresh
    producer serial, so its one-shot gameplay marker fires again exactly once
@@ -168,24 +171,49 @@ Call-site only, plus exactly one expectation that encoded the *old* rule:
 | test | what it pins |
 | --- | --- |
 | `accept_f20_c_02_the_fixed_tick_advance_runs_once_per_committed_session_tick` (minimum) | the plugin's system in the **real** Avian `FixedPostUpdate` loop: one advance per fixed tick, a repeated stamp advances nothing (`advances()` unchanged, log unchanged), a changed stamp advances exactly once, and a world with no `CommittedSessionTick` never advances at all |
-| `accept_f20_c_02_a_repeated_or_reversed_stamp_publishes_nothing_new` | the repeat rule and the hold rule on the schedule path: a repeat publishes nothing, a backwards stamp is forwarded and publishes exactly one `AnimationRefusal::Held` while the applied pose stays, a second repeat publishes nothing, and a forward stamp resumes |
-| `accept_f20_c_02_two_instances_of_one_track_each_drive_their_own_entity` | two entities bound to one playing `animation_track` as two instances: both receive their own pose every tick, each fires `engine_started` once, and the two instances' event ids differ (distinct producer serials, same session/tick) |
-| `accept_f20_c_02_stopping_one_instance_releases_only_its_own_entities` | the teardown: the stopped instance's entity loses its applied pose, its released `ChildOf` and its binding, the other instance keeps playing and keeps its hierarchy untouched, and an entity bound to another track keeps everything |
-| `accept_f20_c_02_a_second_play_of_the_same_identity_is_refused_and_a_new_one_starts_after_a_stop` | `AlreadyPlaying` for the same identity, a different identity playing beside it, and a replay after the stop with a fresh producer serial whose first marker fires once |
-| `accept_f20_c_02_a_superseded_scene_generation_releases_what_its_instances_applied` | `release_superseded_instances` against `SceneGenerations::latest()`: the older instance is stopped and released, an instance of the live generation is untouched |
+| `accept_f20_c_02_the_schedule_advances_nothing_without_a_committed_tick` | the same loop with no driver: the plugin alone advances nothing, applies nothing and publishes nothing, however many fixed ticks run |
+| `accept_f20_c_02_a_repeated_or_reversed_stamp_publishes_nothing_new` | the repeat rule and the hold rule on the schedule path: a repeat publishes nothing, a backwards stamp is forwarded and publishes exactly one `AnimationRefusal::Held` while the applied pose stays, a second repeat publishes nothing, and a forward stamp resumes without re-offering the marker |
+| `accept_f20_c_02_two_instances_of_one_track_each_drive_their_own_entity` | two entities bound to one playing `animation_track` as two instances: both receive their own pose on every tick, each fires `engine_started` once, and the two instances' event ids differ (distinct producer serials, same session and tick) |
+| `accept_f20_c_02_stopping_one_instance_releases_only_its_own_entities` | the teardown: the stopped instance's entity loses its applied values, its released `ChildOf` (with the parent velocity it inherits and its unchanged composed world pose) and its binding; the other instance keeps playing, keeps its hierarchy and keeps swapping its material; a hand-written state on an entity bound to another track survives; the clip's own later detach does not inherit a second time |
+| `accept_f20_c_02_a_second_play_of_the_same_identity_is_refused_and_a_new_one_starts_after_a_stop` | `AlreadyPlaying` naming the identity, a different identity playing beside it, and a replay after the stop with a fresh producer serial whose one-shot marker fires once under an id the first activation could not have used |
+| `accept_f20_c_02_a_superseded_scene_generation_releases_what_its_instances_applied` | `release_superseded_instances` against `SceneGenerations::latest()`: exactly the older instance is released, the live generation's instance keeps its state, and a second call is a no-op |
+| `accept_f20_c_02_the_propeller_fixture_drives_the_production_lowering` | the pose the multi-instance scenarios assert is the one `lower_clip` really produces: the declared fixture lowers to the `cs_sim` runtime twin (same id, duration, channels and markers) rather than to a test-authored clip |
 
 ## Mutation probes
 
-Run locally, reverted afterwards; `grep -rn "MUTATION PROBE" crates/` returns
-nothing and the suite is green again.
+Run locally with a rerunnable driver: each probe edited one production file,
+ran the full selection `cargo test --workspace --locked -- accept_f20_c_02_
+--include-ignored` (exit 101 each time), then restored the file byte for byte.
+`grep -rn "MUTATION PROBE" crates/` returns nothing, `git status` shows no
+probe edit, and the selection is green again.
 
-| probe | tests that fail |
-| --- | --- |
-| the schedule system ignores the repeat rule (always forwards) | `accept_f20_c_02_the_fixed_tick_advance_runs_once_per_committed_session_tick` |
-| the schedule system does not require the stamp (advances with a `Tick(0)` of its own) | `..._the_fixed_tick_advance_runs_once_per_committed_session_tick` (the no-stamp world advances) |
-| the live map is keyed by track alone (the instance is dropped from the key) | `..._two_instances_of_one_track_each_drive_their_own_entity`, `..._stopping_one_instance_releases_only_its_own_entities`, `..._a_second_play_of_the_same_identity_is_refused_...` |
-| the teardown clears every entity carrying an animated component | `..._stopping_one_instance_releases_only_its_own_entities` |
-| the teardown clears the applied values but leaves the `AnimatedNodeBinding` | `..._stopping_one_instance_releases_only_its_own_entities`, `..._a_superseded_scene_generation_releases_what_its_instances_applied` |
+| probe | edit | tests that fail (of 8) |
+| --- | --- | --- |
+| P1 repeat rule off | `if already && false` in `advance_animation_on_session_tick` | `..._the_fixed_tick_advance_runs_once_per_committed_session_tick` (1) |
+| P2 the stamp is not required | the missing-`CommittedSessionTick` early return replaced by `unwrap_or_default()` | `..._the_schedule_advances_nothing_without_a_committed_tick` (1) |
+| P3 the live map keyed by track alone | `InstanceKey::new` drops its `instance` argument and always keys by instance 1 | `..._two_instances_of_one_track_each_drive_their_own_entity`, `..._stopping_one_instance_releases_only_its_own_entities`, `..._a_second_play_of_the_same_identity_is_refused_...`, `..._a_superseded_scene_generation_releases_what_its_instances_applied` (4) |
+| P4 the teardown clears every animated entity | `release_instance` drops its `(clip, instance)` filter | `..._stopping_one_instance_releases_only_its_own_entities`, `..._a_superseded_scene_generation_releases_what_its_instances_applied` (2) |
+| P5 the teardown leaves the binding | `release_instance` stops removing `AnimatedNodeBinding` | `..._stopping_one_instance_releases_only_its_own_entities`, `..._a_second_play_of_the_same_identity_is_refused_...`, `..._a_superseded_scene_generation_releases_what_its_instances_applied` (3) |
+
+## Checks run
+
+- `cargo fmt --all -- --check` — exit 0.
+- `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
+  — exit 0.
+- `cargo test --workspace --locked` — exit 0 (246 test binaries/suites ok, 0
+  failed; the retail tests stay `#[ignore]`d and are run below with
+  `--include-ignored`). The 7 `accept_f20_b_*`, the 8 `accept_f20_c_01_*` and
+  the `accept_f20_a_*` tests are unchanged except at the call sites listed
+  above, and still pass.
+- `cargo test --workspace --locked -- accept_f20_c_02_ --include-ignored` —
+  exit 0, **8 tests matched** in
+  `crates/cs_app/tests/accept_f20_c_02_fixed_tick_instances_and_teardown.rs`,
+  all passing.
+- the five mutation probes above — each probe's selection exited 101 and the
+  files were restored.
+
+No command needed `CS_GAME_DIR`, and no `accept_f20_c_02_` test is
+`#[ignore]`d; `CS_CAPABILITIES` (`retail,gpu,audio`) was not exercised.
 
 ## Evidence
 

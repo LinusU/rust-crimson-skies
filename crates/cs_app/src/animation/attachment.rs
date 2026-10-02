@@ -37,10 +37,11 @@
 //! # Verification and error propagation
 //!
 //! The consumer attempts a transition only for an entity whose
-//! [`AnimatedNodeBinding`] verifies: a **playing** clip, a node that clip
-//! **drives**, and a [`SceneNodeBinding`] naming that node of that
-//! generation. Everything else keeps its state silently — a stopped instance
-//! leaves its components to their owner (F20-B's teardown rule).
+//! [`AnimatedNodeBinding`] verifies: a **playing** instance of that track, a
+//! node that instance **drives**, and a [`SceneNodeBinding`] naming that node
+//! of that generation. Everything else keeps its state silently — the record
+//! of a stopped instance is a leftover its teardown releases
+//! (F20-C.02, [`release_animated_attachment`]).
 //!
 //! What is verified but cannot be applied is **refused instead of guessed**:
 //! a parent id that resolves to no live entity of that generation (or to
@@ -64,10 +65,15 @@
 //!
 //! [`release_attachments_before_despawn`] is the rule non-negotiable
 //! behavior 4 states — "release attachments before despawning parents" — for
-//! the stage that despawns a parent (F20-C.02's teardown). It releases the
-//! animated attachments anywhere in the subtree that despawn takes, keeps
-//! their composed world pose by construction, and inherits the departing
-//! parent's velocity by the same rule an authored detach uses.
+//! whoever despawns a parent. It releases the animated attachments anywhere in
+//! the subtree that despawn takes, keeps their composed world pose by
+//! construction, and inherits the departing parent's velocity by the same rule
+//! an authored detach uses.
+//!
+//! [`release_animated_attachment`] is the same release for **one** named
+//! entity, which is what the F20-C.02 instance teardown needs: a stopped
+//! instance unparents what it applied, for its own entities only, before the
+//! caller despawns anything.
 
 use std::collections::{HashMap, HashSet, VecDeque};
 
@@ -258,14 +264,13 @@ pub fn apply_attachment_transitions(world: &mut World) {
 /// The children released are the ones whose attachment this consumer
 /// manages: a child carrying [`AppliedAttachment`] (the consumer
 /// applied a transition for it) or [`NodeAnimatedAttachment`] (the clip
-/// records an attachment for it). Their [`ChildOf`] link is removed, their
-/// [`AppliedAttachment`] becomes a detach, and they inherit the velocity of
-/// the parent they were linked to by exactly the rule an authored detach
-/// uses; the composed world pose of a released child is untouched by
-/// construction, so nothing jumps when its parent disappears. A child the
-/// animation never touched keeps its authored `ChildOf` and stays part of
-/// the parent's subtree — that link belongs to the scene graph, not to the
-/// animation.
+/// records an attachment for it). Each is released on its own by
+/// [`release_animated_attachment`], so the composed world pose is preserved
+/// by construction — it is simply not touched, so nothing jumps when a parent
+/// disappears — and the departing parent's velocity is inherited exactly once
+/// by the rule an authored detach uses. A child the animation never touched
+/// keeps its authored `ChildOf` and stays part of the parent's subtree — that
+/// link belongs to the scene graph, not to the animation.
 ///
 /// The walk covers the **whole subtree** the despawn reaches, not one level:
 /// `despawn` is recursive over `Children` (measured below), so an animated
@@ -299,30 +304,20 @@ pub fn release_attachments_before_despawn(world: &mut World, parent: Entity) -> 
                 .collect()
         };
         for child in children {
-            let managed = world.get::<AppliedAttachment>(child).is_some()
-                || world.get::<NodeAnimatedAttachment>(child).is_some();
-            if !managed {
+            if !is_managed(world, child) {
+                // The animation never touched this link, so it belongs to the
+                // scene graph and goes down with the parent.
                 pending.push_back(child);
                 continue;
             }
-            // The velocity is read from the chain the link is about to leave,
-            // so before the link goes away — and it never needs the child's
-            // composed world pose (the release does not move it), so a child
-            // without one is released the same way and says so if its
-            // velocity could not be measured.
-            let skip = detached_velocity(world, child, Some(current));
-            world.entity_mut(child).remove::<ChildOf>();
-            mark_released(world, child);
-            if let Some(binding) = world.get::<AnimatedNodeBinding>(child).cloned() {
-                records.extend(
-                    skip.iter()
-                        .map(|reason| AttachmentRecord::VelocityNotInherited {
-                            clip: binding.clip.clone(),
-                            node: binding.node.clone(),
-                            reason: *reason,
-                        }),
-                );
-            }
+            // A managed child that carries no link has nothing to release;
+            // it is treated as an untouched scene link and the walk descends
+            // through it, so nothing below it is missed.
+            let Some(published) = release_animated_attachment(world, child) else {
+                pending.push_back(child);
+                continue;
+            };
+            records.extend(published);
             released.push(child);
         }
     }
@@ -333,6 +328,66 @@ pub fn release_attachments_before_despawn(world: &mut World, parent: Entity) -> 
         world.insert_resource(log);
     }
     released
+}
+
+/// Releases the animated attachment this consumer applied to **one** entity,
+/// by the rule an authored detach uses.
+///
+/// The link goes, the composed world pose stays, the departing parent's world
+/// velocity is inherited, and the applied record becomes a detach so the
+/// clip's own detach finds it and does not inherit twice. Returns what it
+/// published, or `None` when there was no animation-managed link to release:
+/// an entity with no [`ChildOf`], or one this consumer never touched, is left
+/// exactly as it is and nothing is published.
+///
+/// This is the one-entity form the F20-C.02 instance teardown uses. A stopped
+/// instance must unparent what it applied **before** the caller's despawn
+/// removes the parent (non-negotiable behavior 4), and
+/// `docs/findings/2026-09-30-f20-c-01-attachment-hierarchy-and-detach-velocity.md`
+/// requires the release and the despawn to happen in one step — which the
+/// teardown guarantees by taking the instance out of the live map first, so
+/// the next advance cannot re-attach what the release unparented.
+pub fn release_animated_attachment(
+    world: &mut World,
+    entity: Entity,
+) -> Option<Vec<AttachmentRecord>> {
+    if !is_managed(world, entity) {
+        return None;
+    }
+    let parent = world
+        .get::<ChildOf>(entity)
+        .map(|child_of| child_of.parent())?;
+
+    // The velocity is read from the chain the link is about to leave, so
+    // before the link goes away — and it never needs the node's composed
+    // world pose (the release does not move it), so a node without one is
+    // released the same way and says so if its velocity could not be measured.
+    let skipped = detached_velocity(world, entity, Some(parent));
+    world.entity_mut(entity).remove::<ChildOf>();
+    mark_released(world, entity);
+
+    // The records carry the animated identity, so only a released entity that
+    // still has its binding contributes one.
+    let Some(binding) = world.get::<AnimatedNodeBinding>(entity).cloned() else {
+        return Some(Vec::new());
+    };
+    Some(
+        skipped
+            .iter()
+            .map(|reason| AttachmentRecord::VelocityNotInherited {
+                clip: binding.clip.clone(),
+                node: binding.node.clone(),
+                reason: *reason,
+            })
+            .collect(),
+    )
+}
+
+/// Whether this consumer owns the entity's hierarchy link: it applied a
+/// transition for it, or the clip records an attachment for it.
+fn is_managed(world: &World, entity: Entity) -> bool {
+    world.get::<AppliedAttachment>(entity).is_some()
+        || world.get::<NodeAnimatedAttachment>(entity).is_some()
 }
 
 /// Records a released detach: the consumer applied no pose change (the world
@@ -442,12 +497,12 @@ fn apply_one(
     let Some(playback) = world.get_resource::<AnimationPlayback>() else {
         return Vec::new();
     };
-    let Some(serving) = playback.generation(&binding.clip) else {
-        // That clip is not playing: the record is a leftover of a stopped
+    let Some(serving) = playback.generation(&binding.clip, binding.instance) else {
+        // That instance is not playing: the record is a leftover of a stopped
         // instance, and its teardown owns it (F20-C.02).
         return Vec::new();
     };
-    if !playback.drives(&binding.clip, &binding.node) {
+    if !playback.drives(&binding.clip, binding.instance, &binding.node) {
         return Vec::new();
     }
 

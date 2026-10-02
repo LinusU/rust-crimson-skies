@@ -32,6 +32,7 @@
 use bevy::ecs::entity::Entity;
 use bevy::ecs::world::World;
 use cs_app::animation::AnimatedNodeBinding;
+use cs_app::animation::AnimationInstance;
 use cs_app::animation::{
     AnimationLog, AnimationPlayError, AnimationPlayback, AnimationRefusal, NodeAnimatedAttachment,
     NodeAnimatedMaterial, NodeAnimatedPose, TrackKind, advance_animation, lower, play_animation,
@@ -85,6 +86,12 @@ fn scene_node(key: &str) -> SceneNodeId {
     SceneNodeId::from_content_id(node(key)).expect("the fixture key names a scene node")
 }
 
+/// One live instance identity; F20-B's scenarios each play a single instance,
+/// and F20-C.02 is where several instances of one track are exercised.
+fn instance(value: u32) -> AnimationInstance {
+    AnimationInstance::new(value).expect("a nonzero instance identity")
+}
+
 /// Binds one entity to one node of one clip under `generation`.
 fn bind(
     world: &mut World,
@@ -96,6 +103,7 @@ fn bind(
         .spawn(AnimatedNodeBinding {
             clip: clip.clone(),
             node: bound_node.clone(),
+            instance: instance(1),
             generation,
         })
         .id()
@@ -163,7 +171,8 @@ fn accept_f20_b_looping_propeller_never_repeats_one_shot_gameplay_event() {
     let clip_id = declared.id().clone();
     let rotor = node(SYNTHETIC_PROPELLER_NODE);
     let entity = bind(&mut world, &clip_id, &rotor, generation);
-    play_animation(&mut world, &declared, generation, Tick(0)).expect("the playback starts");
+    play_animation(&mut world, &declared, instance(1), generation, Tick(0))
+        .expect("the playback starts");
 
     let mut gameplay = Vec::new();
     let mut presentation = Vec::new();
@@ -226,8 +235,8 @@ fn accept_f20_b_looping_propeller_never_repeats_one_shot_gameplay_event() {
     // instance's producer serial.
     let producer = world
         .resource::<AnimationPlayback>()
-        .producer(&clip_id)
-        .expect("the track is still playing");
+        .producer(&clip_id, instance(1))
+        .expect("the instance is still playing");
     let ids: Vec<_> = gameplay
         .iter()
         .chain(&presentation)
@@ -243,7 +252,7 @@ fn accept_f20_b_looping_propeller_never_repeats_one_shot_gameplay_event() {
     // Four passes later the instance is still one live instance: the clip
     // time kept counting instead of restarting per pass.
     let playback = world.resource::<AnimationPlayback>();
-    assert_eq!(playback.time(&clip_id), Some(16));
+    assert_eq!(playback.time(&clip_id, instance(1)), Some(16));
     assert_eq!(playback.len(), 1, "one live instance per playing track");
 }
 
@@ -269,9 +278,11 @@ fn accept_f20_b_transform_track_applies_to_verified_bindings_only() {
     let undriven_node = bind(&mut world, &clip_id, &node("synthetic.hangar.ramp"), live);
     let unplayed = bind(&mut world, &track("synthetic.never_started"), &door, live);
 
-    play_animation(&mut world, &declared, live, Tick(0)).expect("the playback starts");
+    play_animation(&mut world, &declared, instance(1), live, Tick(0)).expect("the playback starts");
     assert_eq!(
-        world.resource::<AnimationPlayback>().generation(&clip_id),
+        world
+            .resource::<AnimationPlayback>()
+            .generation(&clip_id, instance(1)),
         Some(live),
         "the instance serves the scene generation it was started under"
     );
@@ -342,7 +353,8 @@ fn accept_f20_b_material_and_attachment_tracks_apply_and_block_unknown_reference
     let clip_id = declared.id().clone();
     let cargo = node(SYNTHETIC_CARGO_NODE);
     let entity = bind(&mut world, &clip_id, &cargo, generation);
-    play_animation(&mut world, &declared, generation, Tick(0)).expect("the playback starts");
+    play_animation(&mut world, &declared, instance(1), generation, Tick(0))
+        .expect("the playback starts");
 
     advance_animation(&mut world, Tick(0));
     assert_eq!(
@@ -399,7 +411,7 @@ fn accept_f20_b_material_and_attachment_tracks_apply_and_block_unknown_reference
     let clip_id = unknown.id().clone();
     let panel = node("synthetic.unknown_panel");
     let entity = bind(&mut world, &clip_id, &panel, generation);
-    play_animation(&mut world, &unknown, generation, Tick(0))
+    play_animation(&mut world, &unknown, instance(1), generation, Tick(0))
         .expect("unknowns are data, not errors");
 
     advance_animation(&mut world, Tick(8));
@@ -524,7 +536,8 @@ fn accept_f20_b_holding_the_head_never_replays_a_one_shot_marker() {
     let clip_id = declared.id().clone();
     let door = node("synthetic.hangar.door");
     let entity = bind(&mut world, &clip_id, &door, generation);
-    play_animation(&mut world, &declared, generation, Tick(0)).expect("the playback starts");
+    play_animation(&mut world, &declared, instance(1), generation, Tick(0))
+        .expect("the playback starts");
 
     advance_animation(&mut world, Tick(10));
     let opened = drain(&mut world);
@@ -571,7 +584,9 @@ fn accept_f20_b_holding_the_head_never_replays_a_one_shot_marker() {
     );
     assert!(caught_up.refusals().is_empty());
     assert!(
-        world.resource::<AnimationPlayback>().is_playing(&clip_id),
+        world
+            .resource::<AnimationPlayback>()
+            .is_playing(&clip_id, instance(1)),
         "a held instance keeps playing"
     );
 }
@@ -579,8 +594,8 @@ fn accept_f20_b_holding_the_head_never_replays_a_one_shot_marker() {
 // ----------------------------------------------------------- lifecycle ----
 
 /// The playback refuses what it cannot honestly do instead of guessing: no
-/// session, a second instance of one track, an advance with nothing to
-/// advance, and a stop that leaves the applied state to its owner.
+/// session, a second instance of the *same* identity, an advance with nothing
+/// to advance, and a stop that releases what the instance applied.
 #[test]
 fn accept_f20_b_play_requires_a_session_and_refuses_a_second_instance() {
     let mut world = World::new();
@@ -591,7 +606,7 @@ fn accept_f20_b_play_requires_a_session_and_refuses_a_second_instance() {
     let entity = bind(&mut world, &clip_id, &rotor, generation);
 
     assert_eq!(
-        play_animation(&mut world, &declared, generation, Tick(0)),
+        play_animation(&mut world, &declared, instance(1), generation, Tick(0)),
         Err(AnimationPlayError::NoSession),
         "an animation never plays in no session at all"
     );
@@ -601,18 +616,20 @@ fn accept_f20_b_play_requires_a_session_and_refuses_a_second_instance() {
         "with no session there is nothing to advance"
     );
     assert!(
-        !stop_animation(&mut world, &clip_id),
+        !stop_animation(&mut world, &clip_id, instance(1)),
         "stopping with no session reports nothing"
     );
 
     world.insert_resource(AnimationPlayback::new(session(9)));
-    play_animation(&mut world, &declared, generation, Tick(0)).expect("the first instance starts");
+    play_animation(&mut world, &declared, instance(1), generation, Tick(0))
+        .expect("the first instance starts");
     assert_eq!(
-        play_animation(&mut world, &declared, generation, Tick(0)),
+        play_animation(&mut world, &declared, instance(1), generation, Tick(0)),
         Err(AnimationPlayError::AlreadyPlaying {
-            clip: clip_id.clone()
+            clip: clip_id.clone(),
+            instance: instance(1),
         }),
-        "a second instance is refused, not silently substituted"
+        "a second instance of the same identity is refused, not silently substituted"
     );
     assert_eq!(world.resource::<AnimationPlayback>().len(), 1);
 
@@ -623,16 +640,24 @@ fn accept_f20_b_play_requires_a_session_and_refuses_a_second_instance() {
         "one presentation and one gameplay marker crossed at clip time 1"
     );
 
-    assert!(stop_animation(&mut world, &clip_id));
-    assert!(!world.resource::<AnimationPlayback>().is_playing(&clip_id));
+    assert!(stop_animation(&mut world, &clip_id, instance(1)));
+    assert!(
+        !world
+            .resource::<AnimationPlayback>()
+            .is_playing(&clip_id, instance(1))
+    );
     advance_animation(&mut world, Tick(2));
     assert!(
         drain(&mut world).is_empty(),
         "a stopped instance publishes nothing"
     );
     assert!(
-        world.get::<NodeAnimatedPose>(entity).is_some(),
-        "the applied state stays with its entity: teardown is the owner's work (F20-C)"
+        world.get::<NodeAnimatedPose>(entity).is_none(),
+        "the stop released the state the instance applied (F20-C.02 teardown)"
+    );
+    assert!(
+        world.get::<AnimatedNodeBinding>(entity).is_none(),
+        "the binding named an instance that no longer plays, so it goes with it"
     );
 }
 
@@ -653,7 +678,8 @@ fn accept_f20_b_a_clip_never_plays_before_its_start_tick() {
     let rotor = node(SYNTHETIC_PROPELLER_NODE);
     let entity = bind(&mut world, &clip_id, &rotor, generation);
 
-    play_animation(&mut world, &declared, generation, Tick(10)).expect("the playback starts");
+    play_animation(&mut world, &declared, instance(1), generation, Tick(10))
+        .expect("the playback starts");
 
     // The session is one tick before the instance's own start tick.
     advance_animation(&mut world, Tick(9));
@@ -666,7 +692,9 @@ fn accept_f20_b_a_clip_never_plays_before_its_start_tick() {
         "no state is applied before the clip starts"
     );
     assert_eq!(
-        world.resource::<AnimationPlayback>().time(&clip_id),
+        world
+            .resource::<AnimationPlayback>()
+            .time(&clip_id, instance(1)),
         Some(0),
         "the head has not moved"
     );
@@ -716,7 +744,7 @@ fn accept_f20_b_an_unknown_reference_is_reported_without_a_bound_entity() {
     let generation = SceneGeneration::default().next();
     let clip_id = unknown.id().clone();
     // Deliberately no AnimatedNodeBinding anywhere in this world.
-    play_animation(&mut world, &unknown, generation, Tick(0))
+    play_animation(&mut world, &unknown, instance(1), generation, Tick(0))
         .expect("unknowns are data, not errors");
 
     advance_animation(&mut world, Tick(8));

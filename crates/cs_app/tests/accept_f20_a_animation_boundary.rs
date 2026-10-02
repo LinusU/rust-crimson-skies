@@ -18,6 +18,7 @@
 //! data.
 
 use cs_app::animation::AnimatedNodeBinding;
+use cs_app::animation::AnimationInstance;
 use cs_app::animation::lower::lower_clip;
 use cs_app::animation::presentation::interpolated_pose;
 use cs_app::scene::SceneGeneration;
@@ -70,13 +71,16 @@ fn accept_f20_a_door_clip_lowers_and_opens_coherently() {
     let mut object = AnimatedObject::new(clip, session(1), 1);
     let door = content_id(ContentKind::SceneNode, "synthetic.hangar.door");
 
-    // Bound entity record: the node's entity tracks clip + generation.
+    // Bound entity record: the node's entity tracks clip + instance +
+    // generation.
     let binding = AnimatedNodeBinding {
         clip: content_id(ContentKind::AnimationTrack, "synthetic.door_open"),
         node: door.clone(),
+        instance: AnimationInstance::new(1).expect("a nonzero instance identity"),
         generation: SceneGeneration::default().next(),
     };
     assert_eq!(binding.generation, SceneGeneration(1));
+    assert_eq!(binding.instance.get(), 1);
 
     let closed = object.states()[&door].pose().copied();
     assert_eq!(closed, Some(PoseSample::IDENTITY));

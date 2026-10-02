@@ -140,16 +140,18 @@
 //! [`animation::presentation::interpolated_pose`] is the render-side
 //! fractional-alpha sampler that changes presentation only, and
 //! [`animation::AnimatedNodeBinding`] is the generation-stamped ECS record
-//! tying an entity to one animated node. Stage `### F20-B` adds
+//! tying an entity to one animated node of one playing
+//! [`animation::AnimationInstance`]. Stage `### F20-B` adds
 //! [`animation::playback`]: [`animation::play_animation`] starts one
 //! lowered instance of a declared clip in the [`animation::AnimationPlayback`]
 //! resource, [`animation::advance_animation`] is the fixed-tick entry that
 //! advances every instance, publishes its markers into the
 //! [`animation::AnimationLog`] and applies the transform, material and
 //! attachment tracks to the entities whose binding verifies — a playing
-//! clip, the live scene generation and a node the clip actually drives —
+//! instance, the live scene generation and a node the clip actually drives —
 //! while an unknown material or parent is blocked and reported instead of
-//! applied, and [`animation::stop_animation`] ends an instance.
+//! applied, and [`animation::stop_animation`] ends one instance and releases
+//! what that instance applied, for its own entities only.
 //! Stage `### F20-C` adds [`animation::attachment`], the consumer half of
 //! that record: [`animation::apply_attachment_transitions`] (run at the end
 //! of every fixed-tick advance) turns it into the parent change itself —
@@ -158,7 +160,15 @@
 //! node given the world velocity its parent had at that tick, exactly once
 //! per change — while [`animation::release_attachments_before_despawn`]
 //! releases an animated attachment before its parent is despawned
-//! (non-negotiable behavior 4, AC03).
+//! (non-negotiable behavior 4, AC03). Stage `### F20-C.02` adds
+//! [`animation::schedule`], the producer wiring: the session driver's
+//! [`animation::CommittedSessionTick`] stamp is the only clock input, and
+//! [`animation::advance_animation_on_session_tick`] — installed by
+//! [`animation::AnimationSchedulePlugin`] in `FixedPostUpdate` after the
+//! physics step — advances the playback once per **committed tick change**,
+//! nothing without the stamp and nothing for a repeated one, while
+//! [`animation::release_superseded_instances`] releases what the instances of
+//! a superseded scene generation had applied.
 //!
 //! [`camera`] is the F21-A camera boundary
 //! (`specs/F21-cameras-cockpit-views-and-spyglass.md`, stage `### F21-A`):

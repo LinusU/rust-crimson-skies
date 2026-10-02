@@ -1,8 +1,10 @@
 //! The fixed-tick animation playback: verified transform, material and
-//! attachment tracks (F20-B).
+//! attachment tracks (F20-B), with per-instance identity and teardown
+//! (F20-C.02).
 //!
 //! Spec: `specs/F20-object-animation-and-authored-destruction-states.md`,
-//! stage `### F20-B`. Shared contract: `docs/contracts/IDENTITY-CONTENT.md`.
+//! stages `### F20-B` and `### F20-C`. Shared contract:
+//! `docs/contracts/IDENTITY-CONTENT.md`.
 //!
 //! F20-A defined the declared IR
 //! ([`cs_content::animation`](cs_content::animation)) and the fixed-tick
@@ -14,23 +16,38 @@
 //!   [`AnimationClip`](cs_content::animation::AnimationClip), lowers it
 //!   through [`lower::lower_clip`] and starts **one live instance** of it in
 //!   the [`AnimationPlayback`] resource — refused when the world has no
-//!   session, when that `animation_track` already plays, or when the clip
-//!   does not survive the boundary;
+//!   session, when that `(track, instance)` identity already plays, or when
+//!   the clip does not survive the boundary;
 //! * [`advance_animation`] is the fixed-tick entry: once per committed
 //!   session tick it advances every playing instance, publishes the markers
 //!   it crossed into the [`AnimationLog`], and applies the three track kinds
-//!   this stage owns to the entities bound to them;
-//! * [`stop_animation`] ends an instance (the applied components stay until
-//!   their owner tears them down — spawn/despawn wiring is F20-C).
+//!   this stage owns to the entities bound to them. F20-C.02 places it on the
+//!   schedule: see [`super::schedule`];
+//! * [`stop_animation`] ends one instance **and releases what that instance
+//!   applied** — its animation-managed hierarchy links first, then its applied
+//!   components and its bindings, for that instance's entities only.
+//!
+//! # Instance identity
+//!
+//! One `animation_track` can have several live instances: two aircraft spin
+//! their propellers with the same authored clip, so the live map is keyed by
+//! [`InstanceKey`] — the `(track, [`AnimationInstance`])` pair every
+//! [`AnimatedNodeBinding`] names. Each instance owns its own evaluator (so
+//! each fires its one-shot gameplay marker once, independently), its own
+//! producer serial (so two instances' events of one tick never share an
+//! [`AnimationEventId`](cs_sim::animated_object::AnimationEventId)) and its
+//! own applied state. `play_animation` refuses a second instance of the
+//! *same identity* with [`AnimationPlayError::AlreadyPlaying`] and never
+//! silently replaces a live one.
 //!
 //! # Verified application
 //!
 //! A track value reaches an entity only when the binding verifies:
 //!
-//! * the entity's [`AnimatedNodeBinding`] names a **playing** clip,
-//! * and the **scene generation** that clip was started under — a binding
-//!   stamped by a superseded scene load is never driven (F11/F20 session
-//!   generation ownership), and
+//! * the entity's [`AnimatedNodeBinding`] names a **playing** instance,
+//! * and the **scene generation** that instance serves — a binding stamped by
+//!   a superseded scene load is never driven (F11/F20 session generation
+//!   ownership), and
 //! * the binding's node is one the clip actually drives, with an aspect that
 //!   has a reached key.
 //!
@@ -47,8 +64,8 @@
 //! published once as a [`BlockedTrack`] carrying the unknown's claim id and
 //! reason (F20 non-negotiable behavior 2 — an unknown retains its locator and
 //! blocks the transition it gates). The report is a property of the playing
-//! clip, so it is published whether or not an entity happens to be bound to
-//! that node — the same way a blocked marker is — while the binding decides
+//! instance, so it is published whether or not an entity happens to be bound
+//! to that node — the same way a blocked marker is — while the binding decides
 //! only whether a *value* is applied. The *other* tracks of the same node keep
 //! applying, and marker effects keep firing, so one undecoded reference
 //! cannot silently stop a whole clip — it is visible in the log instead.
@@ -60,11 +77,15 @@
 //! can diverge (the F20-A `mesh_pose`/`collider_pose` rule carried into the
 //! ECS). Recomposing descendants' world poses from it, reparenting entities,
 //! inherited detach velocity, visibility/`NodePresentation` ordering with LOD
-//! selection, mission-marker consumption and the schedule placement of the
-//! advance are F20-C's wiring — see
-//! `docs/findings/2026-09-30-f20-b-transform-material-attachment-tracks.md`.
+//! selection and mission-marker consumption are F20-C's other consumers; the
+//! hierarchy half of that is [`super::attachment`], and the schedule placement
+//! of the advance is [`super::schedule`]. See
+//! `docs/findings/2026-09-30-f20-b-transform-material-attachment-tracks.md`
+//! and
+//! `docs/findings/2026-10-02-f20-c-02-fixed-tick-instances-and-teardown.md`.
 
 use std::collections::{BTreeMap, HashSet};
+use std::fmt;
 
 use bevy::ecs::component::Component;
 use bevy::ecs::world::World;
@@ -81,6 +102,7 @@ use cs_types::net::SessionId;
 use crate::scene::SceneGeneration;
 
 use super::AnimatedNodeBinding;
+use super::AnimationInstance;
 use super::attachment::AttachmentRecord;
 use super::lower::{LowerError, lower_clip};
 
@@ -226,10 +248,12 @@ pub enum AnimationRefusal {
 /// presentation), markers blocked by an unknown effect, tracks blocked by an
 /// unknown reference and the advances that were refused — plus, since F20-C,
 /// the attachment transitions that were refused or could not inherit a
-/// velocity ([`AttachmentRecord`]). It grows with the
-/// number of *published entries* — never one per tick — and is meant to be
-/// drained by the layer that consumes them (the mission marker consumer is
-/// F20-C's wiring), so [`Self::drain`] is how that consumer takes its batch.
+/// velocity ([`AttachmentRecord`]), including the ones an instance teardown
+/// and a release before a despawn caused. It grows with the number of
+/// *published entries* — never one per tick, and never one per teardown pass
+/// that changed nothing — and is meant to be drained by the layer that
+/// consumes them (the mission marker consumer is F20-C's wiring), so
+/// [`Self::drain`] is how that consumer takes its batch.
 #[derive(Resource, Clone, Debug, Default, PartialEq)]
 pub struct AnimationLog {
     events: Vec<AnimationEvent>,
@@ -315,6 +339,38 @@ impl AnimationLog {
 
 // ------------------------------------------------------------ playback ----
 
+/// The identity of one live instance: the `animation_track` it plays and the
+/// [`AnimationInstance`] within it.
+///
+/// This is the key of [`AnimationPlayback`]'s live map, and it is what an
+/// [`AnimatedNodeBinding`] names when it asks to be driven. Two keys are
+/// different instances even when they share a track, which is what keeps two
+/// aircraft from sharing one propeller track.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct InstanceKey {
+    /// The `animation_track` the instance plays.
+    pub clip: ContentId,
+    /// Which instance of that track.
+    pub instance: AnimationInstance,
+}
+
+impl InstanceKey {
+    /// The key of one instance of `clip`.
+    #[must_use]
+    pub fn new(clip: &ContentId, instance: AnimationInstance) -> Self {
+        Self {
+            clip: clip.clone(),
+            instance,
+        }
+    }
+}
+
+impl fmt::Display for InstanceKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} as {}", self.clip, self.instance)
+    }
+}
+
 /// One live instance of a playing clip: the evaluator plus the identity its
 /// events are stamped with.
 #[derive(Debug)]
@@ -336,19 +392,31 @@ struct PlayingClip {
 }
 
 /// Resource: the session's animation playback — its session id, the next
-/// producer serial, and the live instance of every playing `animation_track`.
+/// producer serial, and the live instances of every playing
+/// `animation_track`.
 ///
-/// One live instance per clip id at this stage: the spawn wiring that runs
-/// several instances of one track (one propeller per aircraft) is F20-C's,
-/// and [`Self::play`] refuses a second instance instead of silently
-/// replacing the first. The producer inserts this resource once per session
-/// (`AnimationPlayback::new(session)`); [`play_animation`] refuses to start
-/// anything without it, so an animation can never play in no session at all.
+/// The live map is keyed by [`InstanceKey`], so several entities may play one
+/// track as separate instances (one propeller per aircraft); each entry owns
+/// its own evaluator, producer serial and applied state, and
+/// [`play_animation`] refuses a second instance of the *same* identity instead
+/// of silently replacing the first. The producer inserts this resource once
+/// per session (`AnimationPlayback::new(session)`); [`play_animation`] refuses
+/// to start anything without it, so an animation can never play in no session
+/// at all.
+///
+/// It also holds the two schedule counters the fixed-tick wiring needs:
+/// [`Self::advanced_through`] (the session tick the playback was last advanced
+/// to — the repeat rule of
+/// [`super::schedule::advance_animation_on_session_tick`] reads it) and
+/// [`Self::advances`] (how many advance passes ran, so a schedule placement can
+/// be observed rather than inferred from a side effect).
 #[derive(Resource, Debug)]
 pub struct AnimationPlayback {
     session: SessionId,
     next_producer: u32,
-    playing: BTreeMap<ContentId, PlayingClip>,
+    playing: BTreeMap<InstanceKey, PlayingClip>,
+    advanced_through: Option<Tick>,
+    advances: u64,
 }
 
 impl AnimationPlayback {
@@ -356,12 +424,17 @@ impl AnimationPlayback {
     /// nonzero [`SessionId`] generation, so a restarted session can never
     /// collide with the previous one's ids (`IDENTITY-CONTENT` session
     /// generations; F20-A follow-up 1, resolved by task #397).
+    ///
+    /// The playback starts with no committed tick behind it, so the first tick
+    /// a driver commits is always a change and is therefore advanced.
     #[must_use]
     pub fn new(session: SessionId) -> Self {
         Self {
             session,
             next_producer: 0,
             playing: BTreeMap::new(),
+            advanced_through: None,
+            advances: 0,
         }
     }
 
@@ -371,40 +444,48 @@ impl AnimationPlayback {
         self.session
     }
 
-    /// Whether this `animation_track` currently plays.
+    /// Whether this exact instance of this `animation_track` currently plays.
+    ///
+    /// The identity is the whole question: a *different* instance of the same
+    /// track is a different live entry and is never reported here.
     #[must_use]
-    pub fn is_playing(&self, clip: &ContentId) -> bool {
-        self.playing.contains_key(clip)
+    pub fn is_playing(&self, clip: &ContentId, instance: AnimationInstance) -> bool {
+        self.playing.contains_key(&InstanceKey::new(clip, instance))
     }
 
-    /// The playing clips, in stable id order.
-    pub fn playing(&self) -> impl Iterator<Item = &ContentId> + '_ {
+    /// The live instances, in stable `(track, instance)` order.
+    pub fn playing(&self) -> impl Iterator<Item = &InstanceKey> + '_ {
         self.playing.keys()
     }
 
-    /// The clip time one playing instance has reached; `None` when the track
-    /// is not playing.
+    /// The clip time one playing instance has reached; `None` when that
+    /// instance is not playing.
     #[must_use]
-    pub fn time(&self, clip: &ContentId) -> Option<u64> {
-        self.playing.get(clip).map(|playing| playing.object.time())
+    pub fn time(&self, clip: &ContentId, instance: AnimationInstance) -> Option<u64> {
+        self.get(clip, instance)
+            .map(|playing| playing.object.time())
     }
 
-    /// The scene generation a playing instance serves.
+    /// The scene generation one playing instance serves.
     #[must_use]
-    pub fn generation(&self, clip: &ContentId) -> Option<SceneGeneration> {
-        self.playing.get(clip).map(|playing| playing.generation)
+    pub fn generation(
+        &self,
+        clip: &ContentId,
+        instance: AnimationInstance,
+    ) -> Option<SceneGeneration> {
+        self.get(clip, instance).map(|playing| playing.generation)
     }
 
-    /// Whether the live instance of `clip` has a channel on `node`.
+    /// Whether that live instance has a channel on `node`.
     ///
     /// This is the "driven node" half of the verified binding, read the same
     /// way the track application reads it (a node the clip drives is one it
     /// has a channel on), so the F20-C attachment consumer can verify a
-    /// binding without reaching into the evaluator. A track that is not
+    /// binding without reaching into the evaluator. An instance that is not
     /// playing drives nothing and returns `false`.
     #[must_use]
-    pub fn drives(&self, clip: &ContentId, node: &ContentId) -> bool {
-        self.playing.get(clip).is_some_and(|playing| {
+    pub fn drives(&self, clip: &ContentId, instance: AnimationInstance, node: &ContentId) -> bool {
+        self.get(clip, instance).is_some_and(|playing| {
             playing
                 .object
                 .clip()
@@ -414,44 +495,97 @@ impl AnimationPlayback {
         })
     }
 
-    /// The producer serial a playing instance stamps its event ids with.
+    /// The producer serial one playing instance stamps its event ids with.
+    ///
+    /// The serial is what keeps two instances of one track from ever sharing
+    /// an event id on the same session tick.
     #[must_use]
-    pub fn producer(&self, clip: &ContentId) -> Option<u32> {
-        self.playing.get(clip).map(|playing| playing.producer)
+    pub fn producer(&self, clip: &ContentId, instance: AnimationInstance) -> Option<u32> {
+        self.get(clip, instance).map(|playing| playing.producer)
     }
 
-    /// Whether a [`LoopMode::Once`](cs_sim::animated_object::LoopMode) track
-    /// has reached its end; `None` when the track is not playing.
+    /// Whether a [`LoopMode::Once`](cs_sim::animated_object::LoopMode)
+    /// instance has reached its end; `None` when that instance is not
+    /// playing.
     #[must_use]
-    pub fn is_finished(&self, clip: &ContentId) -> Option<bool> {
-        self.playing
-            .get(clip)
+    pub fn is_finished(&self, clip: &ContentId, instance: AnimationInstance) -> Option<bool> {
+        self.get(clip, instance)
             .map(|playing| playing.object.is_finished())
     }
 
-    /// How many clips are playing.
+    /// How many instances are playing, across every track.
+    ///
+    /// This counts **live instances**, not tracks: one track played by two
+    /// aircraft is `2`.
     #[must_use]
     pub fn len(&self) -> usize {
         self.playing.len()
     }
 
-    /// Whether no clip is playing.
+    /// Whether no instance is playing.
     #[must_use]
     pub fn is_empty(&self) -> bool {
         self.playing.is_empty()
+    }
+
+    /// The session tick this playback was last advanced to; `None` while it
+    /// has never been advanced.
+    ///
+    /// The schedule's repeat rule is a comparison against this: a committed
+    /// tick equal to it is not a new tick, so nothing is advanced and nothing
+    /// is published. It is written by [`advance_animation`], so a direct call
+    /// and the scheduled system agree on what "already advanced" means.
+    #[must_use]
+    pub const fn advanced_through(&self) -> Option<Tick> {
+        self.advanced_through
+    }
+
+    /// How many advance passes have run.
+    ///
+    /// A pass is counted even when it published nothing, so this is the
+    /// observable that distinguishes "the schedule advanced" from "the
+    /// evaluator had nothing new to say".
+    #[must_use]
+    pub const fn advances(&self) -> u64 {
+        self.advances
+    }
+
+    fn get(&self, clip: &ContentId, instance: AnimationInstance) -> Option<&PlayingClip> {
+        self.playing.get(&InstanceKey::new(clip, instance))
+    }
+
+    /// Takes one live instance out of the map, reporting whether it played.
+    ///
+    /// `pub(crate)`: removing an instance is only ever half of a teardown, and
+    /// the teardown belongs to [`stop_animation`] and
+    /// [`super::schedule::release_superseded_instances`], which release the
+    /// applied state with it. Keeping it private here is what makes it
+    /// impossible to stop an instance and leave its applied components behind.
+    pub(crate) fn remove(&mut self, key: &InstanceKey) -> bool {
+        self.playing.remove(key).is_some()
+    }
+
+    /// Records that an advance pass committed `at`.
+    fn record_advance(&mut self, at: Tick) {
+        self.advanced_through = Some(at);
+        self.advances += 1;
     }
 
     /// Starts one instance of an already validated runtime clip.
     fn start(
         &mut self,
         clip: &AnimationClip,
+        instance: AnimationInstance,
         generation: SceneGeneration,
         at: Tick,
     ) -> Result<(), AnimationPlayError> {
         let runtime = lower_clip(clip).map_err(AnimationPlayError::Lower)?;
-        let id = runtime.id().clone();
-        if self.playing.contains_key(&id) {
-            return Err(AnimationPlayError::AlreadyPlaying { clip: id });
+        let key = InstanceKey::new(runtime.id(), instance);
+        if self.playing.contains_key(&key) {
+            return Err(AnimationPlayError::AlreadyPlaying {
+                clip: key.clip,
+                instance,
+            });
         }
         // The serial space stops one short of `u32::MAX`, so a wrap can
         // never hand out an id an earlier event of this session already
@@ -463,7 +597,7 @@ impl AnimationPlayback {
         self.next_producer += 1;
         let object = AnimatedObject::new(runtime, self.session, producer);
         self.playing.insert(
-            id,
+            key,
             PlayingClip {
                 generation,
                 started_at: at,
@@ -475,6 +609,22 @@ impl AnimationPlayback {
         );
         Ok(())
     }
+
+    /// Every live instance whose scene generation is **not** the one the
+    /// scene load path currently serves, in stable key order.
+    ///
+    /// The scene load path is the only writer of
+    /// [`SceneGenerations`](crate::scene::SceneGenerations) and generations
+    /// only ever count up, so "older than the latest" and "not the latest" are
+    /// the same set; the comparison is written as `!=` so a future generation
+    /// is not torn down by a rule about superseded ones.
+    pub fn superseded(&self, latest: SceneGeneration) -> Vec<InstanceKey> {
+        self.playing
+            .iter()
+            .filter(|(_, playing)| playing.generation != latest)
+            .map(|(key, _)| key.clone())
+            .collect()
+    }
 }
 
 /// Why a declared clip was not started.
@@ -483,12 +633,17 @@ pub enum AnimationPlayError {
     /// The world carries no [`AnimationPlayback`]: there is no session to
     /// play in, so nothing was started.
     NoSession,
-    /// That `animation_track` already has a live instance in this session.
-    /// A second instance is refused rather than silently replacing the
-    /// first; multi-instance spawn wiring is F20-C.
+    /// That exact instance of that `animation_track` already has a live
+    /// instance in this session.
+    ///
+    /// A second instance of the *same* [`AnimationInstance`] is refused rather
+    /// than silently replacing the first; a *different* instance of the same
+    /// track is a different live entry and is not this error.
     AlreadyPlaying {
         /// The track that is already playing.
         clip: ContentId,
+        /// The instance identity that is already playing it.
+        instance: AnimationInstance,
     },
     /// The declared clip did not survive the lowering boundary. Unreachable
     /// for a clip that passed [`AnimationClip::try_new`] (the runtime
@@ -503,7 +658,9 @@ impl std::fmt::Display for AnimationPlayError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::NoSession => write!(f, "the world holds no animation playback to play in"),
-            Self::AlreadyPlaying { clip } => write!(f, "the track {clip} is already playing"),
+            Self::AlreadyPlaying { clip, instance } => {
+                write!(f, "{clip} is already playing as {instance}")
+            }
             Self::Lower(source) => write!(f, "the declared clip did not lower: {source}"),
             Self::ProducerExhausted => {
                 write!(f, "no producer serial is left in this session")
@@ -523,7 +680,8 @@ impl std::error::Error for AnimationPlayError {
 
 // ------------------------------------------------------- entry points -----
 
-/// Starts one declared clip in the world's [`AnimationPlayback`].
+/// Starts one declared clip in the world's [`AnimationPlayback`], as one
+/// [`AnimationInstance`] of that `animation_track`.
 ///
 /// The clip is lowered and re-validated at the boundary
 /// ([`lower::lower_clip`]), so a playback can only ever drive the track
@@ -531,39 +689,100 @@ impl std::error::Error for AnimationPlayError {
 /// instance's event ids are stamped with the playback's session and a fresh
 /// producer serial, and its clip time starts at `at`.
 ///
+/// `instance` names *which* live instance of that track this is — one per
+/// animated node the spawn wiring spawns, so two aircraft may spin the same
+/// propeller track as two independent instances. Reusing a live identity is
+/// refused, never substituted.
+///
 /// # Errors
 ///
 /// [`AnimationPlayError::NoSession`] when the world holds no
-/// [`AnimationPlayback`], [`AnimationPlayError::AlreadyPlaying`] when the
-/// track already plays, [`AnimationPlayError::Lower`] when the declared clip
-/// does not survive the boundary, [`AnimationPlayError::ProducerExhausted`]
-/// when no producer serial is left.
+/// [`AnimationPlayback`], [`AnimationPlayError::AlreadyPlaying`] when that
+/// exact instance is already live, [`AnimationPlayError::Lower`] when the
+/// declared clip does not survive the boundary,
+/// [`AnimationPlayError::ProducerExhausted`] when no producer serial is left.
 pub fn play_animation(
     world: &mut World,
     clip: &AnimationClip,
+    instance: AnimationInstance,
     generation: SceneGeneration,
     at: Tick,
 ) -> Result<(), AnimationPlayError> {
     let Some(mut playback) = world.remove_resource::<AnimationPlayback>() else {
         return Err(AnimationPlayError::NoSession);
     };
-    let started = playback.start(clip, generation, at);
+    let started = playback.start(clip, instance, generation, at);
     world.insert_resource(playback);
     started
 }
 
-/// Stops the instance of one `animation_track`, reporting whether it played.
+/// Stops one instance of an `animation_track` and releases what **that
+/// instance** applied; reports whether it was playing.
 ///
-/// The components the tracks already applied stay on their entities: who owns
-/// them after a stop (teardown, a destroyed node, a reloaded scene) is F20-C's
-/// spawn/despawn wiring, and this stage never despawns an entity.
-pub fn stop_animation(world: &mut World, clip: &ContentId) -> bool {
+/// The teardown is scoped to the entities whose [`AnimatedNodeBinding`] names
+/// exactly this `(clip, instance)` pair:
+///
+/// 1. the animation-managed hierarchy link is released first, by the same
+///    rule an authored detach uses ([`super::attachment::release_animated_attachment`]),
+///    so the departing parent cannot take the node with it when it is
+///    despawned (non-negotiable behavior 4) and the release inherits the
+///    parent's velocity exactly once;
+/// 2. then the values that instance applied — [`NodeAnimatedPose`],
+///    [`NodeAnimatedMaterial`], [`NodeAnimatedAttachment`] — and the
+///    bookkeeping the consumers kept ([`AppliedAttachment`](super::attachment::AppliedAttachment),
+///    [`RefusedAttachment`](super::attachment::RefusedAttachment)) go;
+/// 3. and the binding itself, which named a live instance that no longer
+///    exists.
+///
+/// Nothing else is touched: another instance of the same track, an entity
+/// bound to a different track, and an entity carrying an animated component
+/// with no binding at all all keep their state. The instance is removed from
+/// the live map *before* the release, so the next advance cannot re-attach
+/// what the release unparented.
+pub fn stop_animation(world: &mut World, clip: &ContentId, instance: AnimationInstance) -> bool {
     let Some(mut playback) = world.remove_resource::<AnimationPlayback>() else {
         return false;
     };
-    let stopped = playback.playing.remove(clip).is_some();
+    let stopped = playback.remove(&InstanceKey::new(clip, instance));
     world.insert_resource(playback);
+    if stopped {
+        release_instance(world, clip, instance);
+    }
     stopped
+}
+
+/// Releases what one instance applied to its own entities.
+///
+/// The instance is expected to be out of the live map already: releasing an
+/// instance that still plays would let the next advance undo the teardown.
+pub(crate) fn release_instance(world: &mut World, clip: &ContentId, instance: AnimationInstance) {
+    // 1. The bound entities, collected before anything is removed: the
+    //    release publishes records stamped with the binding's identity, so
+    //    the binding must still be there when it runs.
+    let mut query = world.query::<(Entity, &AnimatedNodeBinding)>();
+    let bound: Vec<Entity> = query
+        .iter(world)
+        .filter(|(_, binding)| binding.clip == *clip && binding.instance == instance)
+        .map(|(entity, _)| entity)
+        .collect();
+
+    for entity in bound {
+        // 2. The hierarchy link first, by the authored detach's rule, so a
+        //    parent despawned later in this step cannot take the node with
+        //    it and the inherited velocity is written once.
+        super::attachment::release_animated_attachment(world, entity);
+
+        // 3. Then the applied values, the consumers' bookkeeping and the
+        //    binding itself.
+        world
+            .entity_mut(entity)
+            .remove::<NodeAnimatedPose>()
+            .remove::<NodeAnimatedMaterial>()
+            .remove::<NodeAnimatedAttachment>()
+            .remove::<super::attachment::AppliedAttachment>()
+            .remove::<super::attachment::RefusedAttachment>()
+            .remove::<AnimatedNodeBinding>();
+    }
 }
 
 /// Advances every playing clip to the session tick `at`, publishes what it
@@ -586,6 +805,10 @@ pub fn advance_animation(world: &mut World, at: Tick) {
     let Some(mut playback) = world.remove_resource::<AnimationPlayback>() else {
         return;
     };
+    // The pass is recorded whatever it publishes, so a schedule placement can
+    // be observed (`advances`) and a repeated committed tick can be refused
+    // (`advanced_through`) without inferring either from a side effect.
+    playback.record_advance(at);
 
     // 1. Advance every instance and collect the markers it crossed. The
     //    evaluator keeps the per-activation dedup, so a looping clip keeps
@@ -593,7 +816,7 @@ pub fn advance_animation(world: &mut World, at: Tick) {
     let mut events: Vec<AnimationEvent> = Vec::new();
     let mut blocked_markers: Vec<BlockedMarker> = Vec::new();
     let mut refused: Vec<AnimationRefusal> = Vec::new();
-    for (id, playing) in playback.playing.iter_mut() {
+    for (key, playing) in playback.playing.iter_mut() {
         if at.0 < playing.started_at.0 {
             // The instance's own start tick has not arrived: it has not
             // played a single tick yet, so no marker is offered, no state is
@@ -608,7 +831,7 @@ pub fn advance_animation(world: &mut World, at: Tick) {
             if !playing.held_reported {
                 playing.held_reported = true;
                 refused.push(AnimationRefusal::Held {
-                    clip: id.clone(),
+                    clip: key.clip.clone(),
                     from: playing.object.time(),
                     to: target,
                 });
@@ -630,11 +853,14 @@ pub fn advance_animation(world: &mut World, at: Tick) {
     //    reported whether or not an entity happens to be bound to that node
     //    (the same way a blocked marker is, without consulting the world);
     //    the binding decides only whether a *value* is applied, never
-    //    whether a gap is visible.
-    let mut states: BTreeMap<ContentId, (SceneGeneration, BTreeMap<ContentId, AnimatedNodeState>)> =
-        BTreeMap::new();
+    //    whether a gap is visible. The map is keyed by instance, so two
+    //    instances of one track never read each other's state.
+    let mut states: BTreeMap<
+        InstanceKey,
+        (SceneGeneration, BTreeMap<ContentId, AnimatedNodeState>),
+    > = BTreeMap::new();
     let mut blocked_tracks: Vec<BlockedTrack> = Vec::new();
-    for (id, playing) in playback.playing.iter_mut() {
+    for (key, playing) in playback.playing.iter_mut() {
         if at.0 < playing.started_at.0 {
             // Not started yet: the instance contributes no state, so its
             // tracks apply to nothing and its gaps are not offered either.
@@ -646,7 +872,7 @@ pub fn advance_animation(world: &mut World, at: Tick) {
                 Some(Resolved::Unknown { claim_id, reason }) => publish_blocked(
                     playing,
                     &mut blocked_tracks,
-                    id,
+                    &key.clip,
                     node,
                     TrackKind::Material,
                     claim_id,
@@ -662,7 +888,7 @@ pub fn advance_animation(world: &mut World, at: Tick) {
                 publish_blocked(
                     playing,
                     &mut blocked_tracks,
-                    id,
+                    &key.clip,
                     node,
                     TrackKind::Attachment,
                     claim_id,
@@ -670,7 +896,7 @@ pub fn advance_animation(world: &mut World, at: Tick) {
                 );
             }
         }
-        states.insert(id.clone(), (playing.generation, node_states));
+        states.insert(key.clone(), (playing.generation, node_states));
     }
 
     // 3. The candidate bindings, collected from the world before any write.
@@ -684,8 +910,9 @@ pub fn advance_animation(world: &mut World, at: Tick) {
     //    verified binding, and an unknown reference is never written.
     let mut writes: Vec<(Entity, NodeWrite)> = Vec::new();
     for (entity, binding) in bindings {
-        let Some((generation, node_states)) = states.get(&binding.clip) else {
-            // That track is not playing: the entity keeps its state.
+        let key = InstanceKey::new(&binding.clip, binding.instance);
+        let Some((generation, node_states)) = states.get(&key) else {
+            // That instance is not playing: the entity keeps its state.
             continue;
         };
         if *generation != binding.generation {

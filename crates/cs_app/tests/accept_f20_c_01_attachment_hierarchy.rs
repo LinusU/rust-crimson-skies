@@ -35,9 +35,9 @@ use bevy::ecs::world::World;
 use bevy::math::Mat4;
 use bevy::prelude::{ChildOf, GlobalTransform, Vec3};
 use cs_app::animation::{
-    AnimatedNodeBinding, AnimationLog, AnimationPlayback, AppliedAttachment, AttachmentRecord,
-    AttachmentRefusalReason, NodeAnimatedAttachment, RefusedAttachment, VelocitySkipReason,
-    advance_animation, play_animation, release_attachments_before_despawn,
+    AnimatedNodeBinding, AnimationInstance, AnimationLog, AnimationPlayback, AppliedAttachment,
+    AttachmentRecord, AttachmentRefusalReason, NodeAnimatedAttachment, RefusedAttachment,
+    VelocitySkipReason, advance_animation, play_animation, release_attachments_before_despawn,
 };
 use cs_app::scene::{NodeVisualTransform, SceneGeneration, SceneNodeBinding};
 use cs_content::animation::{
@@ -71,6 +71,13 @@ fn node(key: &str) -> ContentId {
 /// The shared nonzero session generation the playback stamps into event ids.
 fn session(value: u64) -> SessionId {
     SessionId::new(value).expect("a nonzero session generation")
+}
+
+/// One live instance identity: every scenario of this stage plays a single
+/// instance, and F20-C.02 is where several instances of one track are
+/// exercised.
+fn instance(value: u32) -> AnimationInstance {
+    AnimationInstance::new(value).expect("a nonzero instance identity")
 }
 
 /// Spawns one scene node: its stable binding, its composed world pose.
@@ -148,6 +155,7 @@ fn accept_f20_c_01_detaching_cargo_from_a_moving_parent_inherits_the_parent_velo
         AnimatedNodeBinding {
             clip: clip.clone(),
             node: node(SYNTHETIC_CARGO_NODE),
+            instance: instance(1),
             generation,
         },
         ChildOf(bay),
@@ -156,7 +164,8 @@ fn accept_f20_c_01_detaching_cargo_from_a_moving_parent_inherits_the_parent_velo
         AngularVelocity(Vec3::ZERO),
     ));
 
-    play_animation(&mut world, &declared, generation, Tick(0)).expect("the playback starts");
+    play_animation(&mut world, &declared, instance(1), generation, Tick(0))
+        .expect("the playback starts");
     let carried_pose = pose(&world, cargo);
 
     // ω × r for a cargo four metres along +x of the spinning bay: the term
@@ -279,6 +288,7 @@ fn accept_f20_c_01_attaching_with_keep_local_pose_keeps_the_local_pose_and_moves
         AnimatedNodeBinding {
             clip: clip.clone(),
             node: node(SYNTHETIC_CARGO_NODE),
+            instance: instance(1),
             generation,
         },
         // A body that already moves in its own right: an attach inherits
@@ -295,7 +305,8 @@ fn accept_f20_c_01_attaching_with_keep_local_pose_keeps_the_local_pose_and_moves
     );
     world.entity_mut(crate_node).insert(ChildOf(cargo));
 
-    play_animation(&mut world, &declared, generation, Tick(0)).expect("the playback starts");
+    play_animation(&mut world, &declared, instance(1), generation, Tick(0))
+        .expect("the playback starts");
     advance_animation(&mut world, Tick(0));
 
     assert_eq!(
@@ -408,10 +419,12 @@ fn accept_f20_c_01_unresolved_parent_and_stale_binding_reparent_nothing_and_repo
     world.entity_mut(cargo).insert(AnimatedNodeBinding {
         clip: clip.clone(),
         node: node(SYNTHETIC_CARGO_NODE),
+        instance: instance(1),
         generation,
     });
 
-    play_animation(&mut world, &declared, generation, Tick(0)).expect("the playback starts");
+    play_animation(&mut world, &declared, instance(1), generation, Tick(0))
+        .expect("the playback starts");
     for at in 0..3 {
         advance_animation(&mut world, Tick(at));
         assert!(
@@ -463,6 +476,7 @@ fn accept_f20_c_01_unresolved_parent_and_stale_binding_reparent_nothing_and_repo
         AnimatedNodeBinding {
             clip: clip.clone(),
             node: node(SYNTHETIC_CARGO_NODE),
+            instance: instance(1),
             generation: superseded,
         },
         ChildOf(bay),
@@ -474,7 +488,7 @@ fn accept_f20_c_01_unresolved_parent_and_stale_binding_reparent_nothing_and_repo
         }),
     ));
 
-    play_animation(&mut world, &declared, live, Tick(0)).expect("the playback starts");
+    play_animation(&mut world, &declared, instance(1), live, Tick(0)).expect("the playback starts");
     advance_animation(&mut world, Tick(SYNTHETIC_CARGO_DETACH_TICK));
     assert!(
         world.get::<ChildOf>(cargo).is_some(),
@@ -532,6 +546,7 @@ fn accept_f20_c_01_the_same_advance_never_writes_the_transition_twice() {
         AnimatedNodeBinding {
             clip: clip.clone(),
             node: node(SYNTHETIC_CARGO_NODE),
+            instance: instance(1),
             generation,
         },
         ChildOf(bay),
@@ -539,7 +554,8 @@ fn accept_f20_c_01_the_same_advance_never_writes_the_transition_twice() {
         AngularVelocity(Vec3::ZERO),
     ));
 
-    play_animation(&mut world, &declared, generation, Tick(0)).expect("the playback starts");
+    play_animation(&mut world, &declared, instance(1), generation, Tick(0))
+        .expect("the playback starts");
     advance_animation(&mut world, Tick(SYNTHETIC_CARGO_DETACH_TICK));
     assert!(world.get::<ChildOf>(cargo).is_none());
 
@@ -642,6 +658,7 @@ fn accept_f20_c_01_attachments_are_released_before_a_parent_is_despawned() {
         AnimatedNodeBinding {
             clip: clip.clone(),
             node: node(SYNTHETIC_CARGO_NODE),
+            instance: instance(1),
             generation,
         },
         ChildOf(bay),
@@ -650,7 +667,8 @@ fn accept_f20_c_01_attachments_are_released_before_a_parent_is_despawned() {
         AngularVelocity(Vec3::ZERO),
     ));
 
-    play_animation(&mut world, &declared, generation, Tick(0)).expect("the playback starts");
+    play_animation(&mut world, &declared, instance(1), generation, Tick(0))
+        .expect("the playback starts");
     for at in 0..SYNTHETIC_CARGO_DETACH_TICK {
         advance_animation(&mut world, Tick(at));
     }
@@ -748,6 +766,7 @@ fn accept_f20_c_01_release_reaches_an_animated_attachment_below_an_unmanaged_chi
         AnimatedNodeBinding {
             clip: clip.clone(),
             node: node(SYNTHETIC_CARGO_NODE),
+            instance: instance(1),
             generation,
         },
         ChildOf(bay),
@@ -755,7 +774,8 @@ fn accept_f20_c_01_release_reaches_an_animated_attachment_below_an_unmanaged_chi
     ));
     let carried_pose = pose(&world, cargo);
 
-    play_animation(&mut world, &declared, generation, Tick(0)).expect("the playback starts");
+    play_animation(&mut world, &declared, instance(1), generation, Tick(0))
+        .expect("the playback starts");
     advance_animation(&mut world, Tick(SYNTHETIC_CARGO_ATTACH_TICK));
     assert!(
         world.get::<AppliedAttachment>(cargo).is_some(),
@@ -862,6 +882,7 @@ fn accept_f20_c_01_an_unmeasurable_spin_term_still_inherits_the_linear_source() 
         AnimatedNodeBinding {
             clip: clip.clone(),
             node: node(SYNTHETIC_CARGO_NODE),
+            instance: instance(1),
             generation,
         },
         LinearVelocity(Vec3::ZERO),
@@ -871,7 +892,8 @@ fn accept_f20_c_01_an_unmeasurable_spin_term_still_inherits_the_linear_source() 
         AngularVelocity(Vec3::new(0.0, 1.0, 0.0)),
     ));
 
-    play_animation(&mut world, &declared, generation, Tick(0)).expect("the playback starts");
+    play_animation(&mut world, &declared, instance(1), generation, Tick(0))
+        .expect("the playback starts");
     advance_animation(&mut world, Tick(SYNTHETIC_CARGO_ATTACH_TICK));
     assert_eq!(
         world.get::<ChildOf>(cargo),
@@ -927,6 +949,7 @@ fn accept_f20_c_01_an_unmeasurable_spin_term_still_inherits_the_linear_source() 
             AnimatedNodeBinding {
                 clip: clip.clone(),
                 node: node(SYNTHETIC_CARGO_NODE),
+                instance: instance(1),
                 generation,
             },
             NodeAnimatedAttachment(AttachmentState {
@@ -1001,10 +1024,12 @@ fn accept_f20_c_01_a_parent_inside_the_nodes_own_subtree_is_refused() {
     world.entity_mut(cargo).insert(AnimatedNodeBinding {
         clip: clip.clone(),
         node: node(SYNTHETIC_CARGO_NODE),
+        instance: instance(1),
         generation,
     });
 
-    play_animation(&mut world, &declared, generation, Tick(0)).expect("the playback starts");
+    play_animation(&mut world, &declared, instance(1), generation, Tick(0))
+        .expect("the playback starts");
     advance_animation(&mut world, Tick(SYNTHETIC_CARGO_ATTACH_TICK));
 
     assert!(
