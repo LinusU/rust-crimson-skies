@@ -49,6 +49,13 @@
 //! 5. **Teardown ends the session.** [`teardown`] despawns every batch entity
 //!    and drops the state; a second call is a no-op, and a frame synced after
 //!    it is refused because there is no session ([`SyncError::NoSession`]).
+//! 6. **What is drawn comes from the composed visibility verdict.** Each row's
+//!    draw state is [`crate::render::visibility::row_draw`], which reads the one
+//!    verdict F11-C and F20-C.03 compose out of the LOD/damage record and a
+//!    playing clip's own visibility record, and is reported in
+//!    [`FrameSync::visibility`]. This consumer ranks nothing of its own: it
+//!    places the rows the verdict draws, withholds the rest before the first
+//!    entity of that batch is written, and counts every row it decided about.
 //!
 //! # What the presentation reaches, and what it does not
 //!
@@ -59,7 +66,10 @@
 //! [`FrameSync::presentation`], including a count that is **zero** — a profile
 //! that reached no camera is a reportable fact, not a success. Nothing else in
 //! the world is touched: an enhancement cannot reach a material, a sort, a
-//! collider or a visibility rule (spec F17 non-negotiable 5).
+//! collider or a visibility rule (spec F17 non-negotiable 5). Rule 6 is the same
+//! either way: the draw decision is the composed verdict, and a profile switch
+//! cannot move a row
+//! (`accept_f20_c_draw_a_profile_switch_never_reaches_the_visibility_rule`).
 //!
 //! The apply happens at the *end* of [`sync_frame`], not in
 //! [`process_render_profile_request`], so it is counted with the frame it

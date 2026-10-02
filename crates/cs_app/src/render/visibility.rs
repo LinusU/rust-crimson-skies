@@ -8,7 +8,9 @@
 //! F20-C.03 composes **one** draw verdict for a node
 //! ([`composed_visibility_verdict`], whose [`DrawVerdict`] is `Drawn`,
 //! `HiddenByAnimation`, `LodCulled` or `Disabled`) out of two records: F11-C's
-//! [`NodePresentation`] and F20's [`NodeAnimatedVisibility`]. That composition
+//! [`NodePresentation`](crate::scene::NodePresentation) and F20's
+//! [`NodeAnimatedVisibility`](crate::animation::visibility::NodeAnimatedVisibility).
+//! That composition
 //! had no reader, and the render path did not draw from it: the only thing that
 //! kept a part off the screen was the batcher, and it decided from a *different
 //! and older* record — a copy of the damage state taken when the frame was
@@ -46,12 +48,13 @@
 //!   would let a missing scene silently delete every draw — and F17
 //!   non-negotiable 4 forbids a visual decision that removes gameplay geometry.
 //!   This is the same rule the composition already states about a missing
-//!   [`NodePresentation`], applied one level up.
+//!   [`NodePresentation`](crate::scene::NodePresentation), applied one level up.
 //!
 //! # Which entity a row's verdict is read from
 //!
 //! Through [`LiveAirframeScene`], the ownership record the F11-C load path
-//! publishes: it maps a [`SceneNodeId`] to the entity of the generation that is
+//! publishes: it maps a
+//! [`SceneNodeId`](cs_content::scene::SceneNodeId) to the entity of the generation that is
 //! live, and F11-C states that nothing outside it may address a scene node. A
 //! superseded generation is therefore unreachable from here even in the frame
 //! where a reload has committed the new one and not yet released the old, so a
@@ -105,7 +108,9 @@ pub fn presentation_entity(world: &World, part: PartRef<'_>) -> Option<Entity> {
 /// world holds right now.
 ///
 /// The read is a composition, not one writer's opinion: a distance pass that
-/// rewrote [`NodePresentation`] under a clip's [`NodeAnimatedVisibility`] is
+/// rewrote [`NodePresentation`](crate::scene::NodePresentation) under a clip's
+/// [`NodeAnimatedVisibility`](crate::animation::visibility::NodeAnimatedVisibility)
+/// is
 /// exactly the case this answers, and neither record can lose the other's
 /// decision because neither is consulted for authority.
 #[must_use]
