@@ -274,8 +274,30 @@ By the implementer, before handover:
 - the eight mutation probes above — each probe's selection exited 101 and named
   at least one failing test; every file was restored.
 
-By the reviewer, after its own fixes (see "Review record" below): the full four
-checks again, plus `accept_f20` and the four reviewer probes.
+By the reviewer, after its own fixes and after rebasing onto `origin/main`:
+
+- `cargo fmt --all -- --check` — exit 0.
+- `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
+  — exit 0.
+- `cargo test --workspace --locked` — exit 0, **252 suites ok, 2531 passed, 0
+  failed**.
+- `cargo test --workspace --locked -- accept_f20_c_04_ --include-ignored` —
+  exit 0, **8 tests matched**, all passing, none `#[ignore]`d.
+- `cargo test --workspace --locked -- accept_f20 --include-ignored` — exit 0,
+  **63 passed, 0 failed** across the whole F20 selection, so no earlier F20
+  assertion moved.
+- the four reviewer probes above.
+
+The rebase brought in `573eca9` (the F20-C spawn-side binding producer and
+`commit_session_tick`), which conflicts in this crate's module docs and also
+edits `crates/cs_app/src/lib.rs` — one of this branch's own files — so the
+**full** four checks were run rather than the lighter post-rebase set. The
+conflict was two paragraphs appended to the same sentence in the crate docs and
+was resolved by keeping both. `573eca9` adds no `NodeColliderPresence` writer, so
+the opt-in boundary documented above still describes the tree; its
+`commit_session_tick` runs in `FixedPostUpdate` after the step and **before**
+`advance_animation_on_session_tick`, so the commit → advance → presence order
+this pass relies on is unchanged.
 
 No command needed `CS_GAME_DIR`, and `CS_CAPABILITIES` was not exercised: this
 stage reads no original data.
