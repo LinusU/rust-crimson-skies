@@ -1452,7 +1452,11 @@ fn evidence_report_t444_writes_the_acceptance_report() {
              deepseek-1/deepseek-1 on the same retail fingerprint, with CS_FFMPEG set, to retire \
              the entry-point statements that task #524 made stale: that regeneration changed no \
              decoder, no acceptance test and no measurement, and the #444 review above is \
-             unchanged"
+             unchanged. Rally #530's own review: deepseek-1/deepseek-1 (Rally #530 review claim \
+             of 2026-10-02T18:49:37Z) — the same agent identity as the #530 implementer, so it is \
+             not independent review; it re-ran the four project checks and the retail acceptance \
+             selection, re-validated this report with tools/validate_evidence.py --require-pass, \
+             and made no change to the decoder, the measurements or the acceptance tests"
         ),
         jstr(&format!(
             "acceptance suite run locally with the retail capability; this harness derives every \
