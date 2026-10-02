@@ -334,9 +334,13 @@ content they affect. Deleting the `unknowns` to turn the flag green would be
 the thing the contract forbids. The report's `claim` is `implemented`: a merge
 awards `checked` at most, and nothing here observed the original game running.
 
-The reviewer regenerates the report on the rebased commit and compares it; the
-report's `candidate_tree` must equal `git rev-parse 'HEAD^{tree}'` of the tested
-commit, and the harness refuses to write otherwise.
+The report's `candidate_tree` is the tree the recorded runs were made on
+(`CS_CANDIDATE_TREE`, as `docs/contracts/CLI-EVIDENCE.md` requires), and the
+harness refuses to write unless the working tree is clean, that tree exists,
+and **nothing but a `docs/` path has changed between it and `HEAD`** — so a
+report describing different code cannot be produced. The reviewer regenerates
+the report on the rebased commit and compares it, per
+[Commands](#commands).
 
 ## Commands
 
@@ -349,9 +353,11 @@ checks; the last two are the report generation and validation):
 | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
 | `cargo test --workspace --locked` | 0 (2 432 passed, 0 failed, 226 ignored) |
 | `cargo test --workspace --locked -- accept_f12_d_accounting_ --include-ignored` | 0 (10 tests, 10 passed, 0 failed — 8 synthetic and 2 retail) |
-| `env -u CS_GAME_DIR cargo test --workspace --locked --no-fail-fast -- accept_f12_d_accounting_ --include-ignored` | nonzero — both retail tests fail loudly with `CS_GAME_DIR is not set` |
+| `env -u CS_GAME_DIR cargo test --workspace --locked --no-fail-fast -- accept_f12_d_accounting_ --include-ignored` | 101 — both retail tests fail loudly with `CS_GAME_DIR is not set` |
+| `cs-inspect inventory --cs-path "$CS_GAME_DIR" --out <private>/inventory.json` | 0 |
 | `cs-inspect config-account --cs-path "$CS_GAME_DIR" --out <private>/config-account.json` | 0 |
-| `python3 tools/validate_evidence.py private/evidence/F12-D-ACCOUNTING/acceptance.json --artifact-root private/evidence/F12-D-ACCOUNTING` | 0 (`structurally_valid: true`) |
+| `CS_CANDIDATE_TREE=$(git rev-parse '018f628^{tree}') CS_ACCEPT_EXIT_CODE=0 CS_TEST_LOG_EXIT=0 CS_NODATA_EXIT=101 python3 private/evidence/F12-D-ACCOUNTING/harness.py` | 0 |
+| `python3 tools/validate_evidence.py private/evidence/F12-D-ACCOUNTING/acceptance.json --artifact-root private/evidence/F12-D-ACCOUNTING` | 0 (`structurally_valid: true`, 5 artifacts) |
 | the same command **with** `--require-pass` | **3** (`Unresolved issues`) — expected: the seven recorded unknowns are the pinned properties, not failed assertions |
 
 ## What is not claimed
