@@ -279,6 +279,10 @@ unmeasured.
 - **The campaign `dzones.zrd` semantics remain unmeasured** (`objective_numbers`
   joins, `disable`, `nosnapshot`), as `docs/findings/2026-10-02-t463-stunt-encoding-and-gate-geometry.md`
   left them; task #513 owns that member's framing.
+- **The fly-through selector's label rule is undecided** (three campaign records
+  carry the help label and no category label). Affected content: those three
+  records and every downstream stunt count built on the stricter selector.
+  Resolving task: #533 (`T465-flythrough-selector`), filed by this task.
 
 ## What was built
 
