@@ -365,3 +365,116 @@ Two limits on what that table proves, stated rather than glossed:
   `debug = true` binary above, instead of paying another 400-crate rebuild
   here; CI, which exports no `CARGO_PROFILE_*` at all, exercises the manifest
   path on every push.
+
+## Occurrences reported after this finding, and the state after the fix (#439)
+
+Added 2026-10-02 by task #439, which is the **third** Rally task to carry this
+one fault: #432 reported it (created 2026-09-30 15:44), #430 fixed it, and
+#439 was created at 18:36 — 16 minutes *before* the fix landed — and
+re-reported it from the same logs. Nothing here changes the diagnosis or the
+fix; this section exists so the occurrence list is complete in one place and
+the next agent does not re-investigate it. Every number below is read from the
+GitHub Actions API (`gh run view --json databaseId,headBranch,headSha,
+createdAt,conclusion`, `run_attempt`, and the per-attempt `attempts/{n}`
+endpoints) or from a run log, not inferred.
+
+### The runs the tables above do not have
+
+All on 2026-09-30, all before the fix landed:
+
+| run | ref | head | created (UTC) | attempts | outcome |
+|---|---|---|---|---|---|
+| 36737158225 | main | b2a9ff34 | 15:29:43 | 1 | failed at this link |
+| 36741900357 | main | 14fa9c82 | 16:07:30 | 1 | failed at this link |
+| 36753936929 | main | 9127d98b | 17:47:38 | 3 | passed, then crashed, then passed |
+| 36757800725 | rally/88-… | e3ac6d16 | 18:19:53 | 5 | failed at this link, 5 attempts |
+| 36758755794 | rally/434-… | 7c711fdb | 18:27:54 | 3 | failed at this link, 3 attempts |
+
+The four failures carry the signature of "The failure" above, re-read from
+each run's own log: `test crates/cs_app/src/livery.rs - livery (line 49) ...
+FAILED`, `collect2: fatal error: ld terminated with signal 7 [Bus error]`,
+and in three of the four the `llvm::parallelFor` frame. Two of the five heads
+(`b2a9ff34`, `14fa9c82`) are commits that reached `main`, so no task branch is
+needed to hit this, and the head commit CI built in **all four** failures
+changes no file in `crates/cs_app/src/livery.rs` (`git show --name-only` on
+`b2a9ff34`, `14fa9c82`, `e3ac6d16`, `7c711fdb`: no match), so the doctest that
+died is the same code in all of them.
+
+**Attempt counts decide which green rows are controls, and one quoted green
+run is not one.** `run_attempt` for every failure in this finding, plus the
+runs quoted as passing:
+
+| run | attempts | conclusion |
+|---|---|---|
+| 36722210693 | 1 | success |
+| 36728100091 | 1 | success |
+| 36723571849 | 2 | failure |
+| 36725414616 | 2 | failure |
+| 36728255759 | 2 | failure |
+| 36729946195 | **4** | failure |
+| 36737158225 | 1 | failure |
+| 36741900357 | 1 | failure |
+| 36753936929 | **3** | success |
+| 36757800725 | 5 | failure |
+| 36758755794 | 3 | failure |
+
+The two attempt-1 passes (`36722210693`, `36728100091`) do hold as controls.
+`36753936929` — the `main` run quoted as green on 2026-09-30 — is the sharpest
+evidence in this finding, and it is not a control: read per attempt
+(`gh api repos/LinusU/rust-crimson-skies/actions/runs/36753936929/attempts/{1,2,3}`),
+it **passed on attempt 1, failed on attempt 2 and passed again on attempt 3,
+all on the same `9127d98b`**, and attempt 2's own log carries the signature of
+"The failure" verbatim — `test crates/cs_app/src/livery.rs - livery (line 49)
+... FAILED`, `collect2: fatal error: ld terminated with signal 7 [Bus error]`
+and the `llvm::parallelFor` frame, from the `cargo test` step. So one commit,
+one restored cache and one step produced a pass, this exact crash and another
+pass: a green `cargo test` is not evidence about this fault in either
+direction, and re-running a red job is not a diagnosis. It also corrects one
+row of "The failure": 36729946195 is listed there at two timestamps (14:33 and
+14:55) and in fact ran four attempts.
+
+`#439`'s own description named 36741900357 and 36758755794 as its two
+reproductions; those are the 16:07 `main` run and the 18:27 `rally/434` run
+above. The `#432` and `#430` tables between them assign a few of the earlier
+run ids to slightly different refs; that is left as those reports wrote it,
+because adjudicating rows this task did not measure would be a guess.
+
+### After the fix
+
+The fix landed as `66835918` at 2026-09-30T18:52:45Z — 25 minutes after the
+last failure in the table above. Snapshot taken 2026-10-02T12:41Z, 41.8 h
+later (`gh run list --branch main --created '>=2026-09-30T18:52:45Z'`):
+
+* `main`: **151 runs, no failure.** 111 of them are pushes that carry the
+  `rust` job — 109 success, 2 cancelled (`36761712081` and `36856635509`,
+  both superseded re-pushes of a commit that landed through a `rally-land`
+  run, not test failures) — and 40 are `rally-land` runs, which have no
+  `rust` job at all.
+* All branches in the same window: 300 runs, 3 failures, **none of them this
+  signature**. `36998537888` (rally/510) and `36977817705` (rally/415) fail
+  in `cargo test` on real assertions — `crates/cs_app/src/scene.rs` and
+  `crates/cs_app/tests/accept_doclib_conflict.rs` respectively — and
+  `37005795167` (rally/431) fails in `cargo clippy`, so it never reaches a
+  link. Each is tracked by its own task.
+* The doctest still links and runs rather than being skipped: `test
+  crates/cs_app/src/livery.rs - livery (line 49) ... ok` appears in the
+  `cargo test` logs of nine runs sampled across the window
+  (`36765394390`, `36769369617`, `36772691811`, `36780660319`, `36785669594`
+  on 2026-09-30; `36999153296`, `37001320478`, `37003016045`, `37006261548`
+  on 2026-10-02). The fence at `crates/cs_app/src/livery.rs:49`
+  is a bare ` ``` ` — no `ignore`, `no_run` or `compile_fail` — and is the
+  only code fence in the file, so nothing was weakened to make this green;
+  it is still the doctest that has to link the whole `cs_app` + Bevy/Avian
+  graph, which is why it is the one that reported the disk pressure.
+
+**What this does not establish.** 41.8 h and 111 `rust` jobs with no
+recurrence is consistent with the fix holding; it is not a proof, and the
+fault was intermittent enough that the pre-fix window needed repeated runs to
+characterise. The free-space margin at the last link is still **unmeasured**
+(same unknown as `#432`'s criterion 4 and "Left to the owner" above): a
+passing run reports no disk high-water mark, and measuring it needs a `df -h`
+step in `.github/`. The cache-key change (#438) also remains the owner's
+prerequisite for the footprint saving to be collected rather than only for
+speed; until it lands, each run restores the pre-fix full-DWARF tree *and*
+builds the line-tables-only tree beside it, so the margin above is the worse
+of the two, not the one this finding measured.
