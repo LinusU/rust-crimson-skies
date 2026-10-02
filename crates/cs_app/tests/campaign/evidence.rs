@@ -3687,20 +3687,27 @@ fn evidence_report_m10_a_writes_the_acceptance_report() {
         assertion_array(&suite.assertions),
         artifact_array(&artifacts),
         jstr(
-            "implementer: devin-1 (Rally #285, SWE-2 High, session of 2026-10-02); reviewer: not \
-             yet recorded — the reviewing agent regenerates this report on the rebased commit \
-             and records itself here. No agent review replaces the owner's human approval"
+            "implementer: devin-1 (Rally #285, SWE-2 High, session of 2026-10-01T23:27Z); \
+             reviewer: devin-1 (Devin, SWE-2 High, session of 2026-10-02T01:28Z, fresh context — \
+             a later session of the same agent label and model, not a different model). An agent \
+             review is not independent original-reference evidence and no agent review replaces \
+             the owner's human approval"
         ),
         jstr(
-            "acceptance suite run locally with the retail capability; this harness derives every \
-             field from the recorded log, production discovery of $CS_GAME_DIR and the binding \
-             `SourceContext::read` + `SourceContext::bind` derive from it (all five critical \
-             dependencies resolved; checklist entries still unknown are recorded in \
+            "acceptance suite run locally with the retail capability by the implementer and \
+             re-run by the reviewer on the commit below after rebasing onto origin/main \
+             (resolving the M16-A overlaps in main.rs, evidence.rs and README.md); this harness \
+             derives every field from the recorded log, production discovery of $CS_GAME_DIR and \
+             the binding `SourceContext::read` + `SourceContext::bind` derive from it (all five \
+             critical dependencies resolved; checklist entries still unknown are recorded in \
              missions/bindings/M10.json, not dropped). No production code changed at M10-A: the \
              join, its corroboration and the guard are M02-A's, and this stage exercises them at \
              the tenth campaign position, the last mission of chapter 2 and the last row of the \
              localized long names' second region group, where the chapter's campaign order is not \
-             its directory order; claim is implemented only; validated with \
+             its directory order. The reviewer re-derived the retail facts independently of the \
+             binding code (the ZBD chapter/mission directory layout: C2 holds M01,M02,M03,M05 and \
+             C2B holds M04; zrdr.zbd 50721 bytes; the verbatim and region-prefixed rows of \
+             langui.dll) and found no defect. Claim is implemented only; validated with \
              tools/validate_evidence.py --require-pass. `candidate_tree` is the tree of the \
              commit the suite ran on: the only later delta is this report's own copy under \
              docs/findings/evidence/, whose bytes are this file"

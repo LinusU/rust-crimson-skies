@@ -5,9 +5,11 @@ Date: 2026-10-02. Task: M10-A "Bind original mission data and branches"
 `docs/contracts/SCRIPT-MISSION.md`; identity rules
 `docs/contracts/IDENTITY-CONTENT.md`. Capabilities used: `retail`
 (`$CS_GAME_DIR` read-only, never written), `synthetic`. Implementer:
-**devin-1** (SWE-2 High, session of 2026-10-02). No reviewer
-yet; the implementer's own run is not independent review and no agent review
-replaces the owner's human approval.
+**devin-1** (SWE-2 High, session of 2026-10-01T23:27Z). Reviewer:
+**devin-1** (SWE-2 High, session of 2026-10-02T01:28Z, fresh context — a
+later session of the same agent label and model, not a different model). An
+agent review is not independent original-reference evidence and no agent
+review replaces the owner's human approval.
 
 The minimum acceptance scenario, *"Source-derived binding has no unresolved
 critical dependencies"*, holds for M10.
@@ -94,6 +96,19 @@ reverted:
 | --- | --- |
 | `missions/bindings/M10.json`: `ch2-m05` changed to `ch2-m04` | 1 failure: `…the_committed_record_is_what_the_installation_derives` |
 | `campaign_position_for` answers position 8 for every confirmed row | 6 of 9 fail: `…source_derived_binding…`, `…the_committed_record…`, `…the_join_is_corroborated…`, `…the_position_is_the_last_row…`, `…the_chapter_order…`, `…a_contradicted_corroboration…` |
+
+## Review
+
+Reviewer **devin-1** (a later session of the same agent label and model,
+fresh context) re-derived the retail facts without the binding code: the
+`ZBD/` directory listing puts chapter 2's missions in `C2` (`M01`, `M02`,
+`M03`, `M05`) and `C2B` (`M04`), so position 8 is `ch2-m04` in `c2b` and
+position 9 is `ch2-m05` back in `c2`; `ZBD/C2/M05/zrdr.zbd` is 50 721 bytes
+with SHA-256 `df57933f…e7b4390` as recorded; and `langui.dll` carries the
+verbatim `Mercy's Errand` row exactly once in the short-name block while the
+second campaign-length block's same index reads `Northwest - Nathan Zachary
+& Mercy's Errand`. The review found no defect; the suite was re-run on the
+rebased commit and the evidence report regenerated (see `Checks`).
 
 ## Test inventory (`accept_m10_a_*`, 9 tests)
 
