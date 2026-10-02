@@ -516,7 +516,7 @@ mod tests {
     use cs_formats::zbd::{
         GAMEZ_SIGNATURE, GAMEZ_VERSION, INDEX_ENTRY_BYTES, INDEX_NAME_BYTES,
         INDEX_UNEXPLAINED_BYTES, INTERP_SIGNATURE, INTERP_VERSION, TRAILER_VERSION_ONE,
-        WAVE_FORMAT_IMA_ADPCM, WAVE_FORMAT_PCM, ZbdFamily,
+        WAVE_FORMAT_IMA_ADPCM, WAVE_FORMAT_MS_ADPCM, WAVE_FORMAT_PCM, ZbdFamily,
     };
 
     static NEXT_TREE: AtomicU64 = AtomicU64::new(0);
@@ -771,8 +771,15 @@ mod tests {
         assert!(report.contains("\"passes\": true"));
         assert!(report.contains("\"summary\": {\"containers\": 1, \"members\": 2, \"failures\": 0, \"uninterpreted\": 0}"));
 
-        // An ADPCM member is sound but not decoded: a readable row carrying
-        // its own tag. Only strict fails on it.
+        // A sound member whose `fmt ` chunk declares a tag with no layout to
+        // read it under is a `readable` row carrying its own tag: this
+        // fixture's `fmt ` payload is the 16 common bytes and nothing else, so
+        // it declares 0x0011 without the `wSamplesPerBlock` and block geometry a
+        // block codec needs. No retail member looks like this — task #444
+        // measured 5,019 compressed members and every one declares a full block
+        // layout, so all of them decode (the retail test counts them) — so this
+        // row stands for an incomplete declaration, not for ADPCM. Only strict
+        // fails on it.
         tree.write(
             "ZBD/soundsh.zbd",
             &archive(
@@ -789,6 +796,10 @@ mod tests {
         match &adpcm.members[0].verdict {
             MemberVerdict::Readable { reason } => {
                 assert!(reason.contains("0x0011 (ima_adpcm)"), "{reason}");
+                assert!(
+                    reason.contains("cannot decode from the declaration it carries"),
+                    "{reason}"
+                );
             }
             other => panic!("{other:?}"),
         }
@@ -921,24 +932,128 @@ mod tests {
         u32::from_le_bytes(bytes[at..at + 4].try_into().expect("four bytes"))
     }
 
-    /// Independent of the production readers: for one version-one archive,
-    /// the declared member count and how many members' `fmt ` tag (at member
-    /// offset 20, where task #344 found every retail member's `fmt ` payload)
-    /// is PCM.
-    fn independent_counts(bytes: &[u8], sound: bool) -> (usize, usize) {
+    /// How many members of one sound archive declare each `wFormatTag`, in the
+    /// census's own count.
+    ///
+    /// Task #344 measured that every retail sound member carries a `fmt `
+    /// payload and named the three tags the archives use: `0x0001` PCM,
+    /// `0x0002` Microsoft ADPCM and `0x0011` Intel/IMA ADPCM. Task #444 taught
+    /// `cs_formats` to decode the two block layouts and task #524 routed the
+    /// runtime consumer through the block-aware plan, so all three tags are
+    /// `decoded` rows today: `0x0001` since stage F06-C, `0x0002` and `0x0011`
+    /// since task #444.
+    #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+    struct SoundCensus {
+        /// Members declaring `0x0001` under a layout PCM can be read as.
+        pcm: usize,
+        /// Members declaring `0x0011` under task #444's IMA block layout.
+        ima_adpcm: usize,
+        /// Members declaring `0x0002` under task #444's Microsoft block layout.
+        ms_adpcm: usize,
+        /// Members this census cannot count as decoded: no `fmt ` chunk, a tag
+        /// outside the three, or a declaration without the geometry its tag
+        /// needs.
+        undecodable: usize,
+    }
+
+    impl SoundCensus {
+        /// The members this census reads as decoded.
+        fn decoded(&self) -> usize {
+            self.pcm + self.ima_adpcm + self.ms_adpcm
+        }
+
+        fn merge(&mut self, other: Self) {
+            self.pcm += other.pcm;
+            self.ima_adpcm += other.ima_adpcm;
+            self.ms_adpcm += other.ms_adpcm;
+            self.undecodable += other.undecodable;
+        }
+    }
+
+    /// One member's `wFormatTag` and whether it declares a layout that tag can
+    /// be decoded under, read from its own `fmt ` and `data` chunks at the
+    /// offsets the RIFF specification fixes.
+    ///
+    /// A tag alone is not a decodable declaration: a block codec needs the
+    /// `fmt ` extension behind it (`wSamplesPerBlock`, and for Microsoft the
+    /// coefficient count in front of the table), and a member needs a nonzero
+    /// `nBlockAlign` and a `data` payload holding at least one block. `None` is
+    /// a member that carries no readable `fmt ` chunk at all.
+    fn declared_wave_layout(member: &[u8]) -> Option<(u16, bool)> {
+        if member.len() < 12 || member[..4] != *b"RIFF" || member[8..12] != *b"WAVE" {
+            return None;
+        }
+        let u16_at = |at: usize| u16::from_le_bytes([member[at], member[at + 1]]);
+        let mut fmt = None;
+        let mut data = None;
+        let mut at = 12usize;
+        while at + 8 <= member.len() {
+            let length = le_u32(member, at + 4) as usize;
+            let end = at.checked_add(8)?.checked_add(length)?;
+            if end > member.len() {
+                return None;
+            }
+            match &member[at..at + 4] {
+                b"fmt " => fmt = Some((at + 8, length)),
+                b"data" => data = Some(length),
+                _ => {}
+            }
+            // Chunks are padded to an even length.
+            at = end + (length % 2);
+        }
+        let (at, length) = fmt?;
+        if length < 16 {
+            return None;
+        }
+        let tag = u16_at(at);
+        let block_align = u64::from(u16_at(at + 12));
+        let Some(data) = data else {
+            return Some((tag, false));
+        };
+        let data = u64::try_from(data).unwrap_or(u64::MAX);
+        let usable = block_align > 0 && data > 0;
+        let layout = match tag {
+            // An uncompressed member must be a whole number of frames.
+            WAVE_FORMAT_PCM => usable && data % block_align == 0,
+            // 4 and 6 bytes of `fmt ` extension behind the 16 common ones.
+            WAVE_FORMAT_IMA_ADPCM => usable && length >= 20,
+            WAVE_FORMAT_MS_ADPCM => usable && length >= 22,
+            _ => false,
+        };
+        Some((tag, layout))
+    }
+
+    /// Independent of the production readers: for one version-one archive, the
+    /// declared member count and the census of its sound members' `fmt ` tags.
+    ///
+    /// `sound` is false for the reader family, whose entries are not WAVE
+    /// members and are therefore counted by the trailer alone.
+    fn independent_counts(bytes: &[u8], sound: bool) -> (usize, SoundCensus) {
         let size = bytes.len();
         assert_eq!(le_u32(bytes, size - 8), 1, "trailer version one");
         let count = le_u32(bytes, size - 4) as usize;
         let table = size - 8 - count * INDEX_ENTRY_BYTES as usize;
-        let mut pcm = 0;
+        if !sound {
+            return (count, SoundCensus::default());
+        }
+        let mut census = SoundCensus::default();
         for entry in 0..count {
             let at = table + entry * INDEX_ENTRY_BYTES as usize;
             let start = le_u32(bytes, at) as usize;
-            if sound && bytes[start + 12..start + 16] == *b"fmt " {
-                pcm += usize::from(u16::from_le_bytes([bytes[start + 20], bytes[start + 21]]) == 1);
+            let length = le_u32(bytes, at + 4) as usize;
+            let Some(member) = bytes.get(start..start + length) else {
+                // A member reaching past the file is a row for the audit, not a
+                // declaration this census can read.
+                continue;
+            };
+            match declared_wave_layout(member) {
+                Some((WAVE_FORMAT_PCM, true)) => census.pcm += 1,
+                Some((WAVE_FORMAT_IMA_ADPCM, true)) => census.ima_adpcm += 1,
+                Some((WAVE_FORMAT_MS_ADPCM, true)) => census.ms_adpcm += 1,
+                Some(_) | None => census.undecodable += 1,
             }
         }
-        (count, pcm)
+        (count, census)
     }
 
     #[test]
@@ -976,25 +1091,42 @@ mod tests {
         assert_eq!(audit.failures(), 0, "{:?}", result.diagnostics);
         assert!(audit.passes(false));
 
-        // Member rows match an independent read of every trailer, and the
-        // decoded members are exactly the PCM members.
+        // Member rows match an independent read of every trailer, and a sound
+        // member's `decoded` row is the one its own `fmt ` declaration earns:
+        // task #344 named the three tags the archives use, tasks #444 and #524
+        // made all three decode, so every retail sound member is decoded now
+        // and none of them is left `readable`.
         let mut expected_members = 0;
-        let mut expected_pcm = 0;
+        let mut expected = SoundCensus::default();
+        let mut per_archive: BTreeMap<&str, SoundCensus> = BTreeMap::new();
         for (spelling, host) in &files {
             let row = container(audit, spelling);
             match row.family {
                 Some(family @ (ZbdFamily::Sound | ZbdFamily::Reader)) => {
                     let bytes = fs::read(host).expect("readable archive");
-                    let (count, pcm) = independent_counts(&bytes, family == ZbdFamily::Sound);
+                    let sound = family == ZbdFamily::Sound;
+                    let (count, census) = independent_counts(&bytes, sound);
                     assert_eq!(row.members.len(), count, "{spelling}");
-                    assert_eq!(row.decoded_members(), pcm, "{spelling}");
+                    assert_eq!(row.decoded_members(), census.decoded(), "{spelling}");
+                    if sound {
+                        // The census counts every member of a sound archive, so
+                        // the rows it did not call decoded are the readable and
+                        // failed ones beside it.
+                        assert_eq!(
+                            row.readable_members() + row.failed_members().count(),
+                            census.undecodable,
+                            "{spelling}"
+                        );
+                        assert_eq!(row.readable_members(), 0, "{spelling}");
+                        per_archive.insert(spelling.as_str(), census);
+                    }
                     assert_eq!(row.verdict, ContainerVerdict::Listed, "{spelling}");
                     assert!(
                         row.uncovered.is_empty(),
                         "{spelling}: members tile the data"
                     );
                     expected_members += count;
-                    expected_pcm += pcm;
+                    expected.merge(census);
                 }
                 _ => {
                     assert!(
@@ -1013,17 +1145,69 @@ mod tests {
             .sum();
         assert_eq!(members, expected_members);
         assert_eq!(members, 6334, "task #343 counted 6334 members");
-        assert_eq!(decoded, expected_pcm);
-        // Task #344: 11 PCM members in `soundsl`, 11 in `soundsh`.
-        assert_eq!(decoded, 22, "task #344 counted 22 PCM members");
+        // The census tasks #344 and #444 measured on this installation: 22 PCM
+        // members (11 in `soundsl`, 11 in `soundsh`), 555 IMA ADPCM members in
+        // `soundsl` and 4,464 Microsoft ADPCM members across the two archives.
+        // Tasks #444 (the two block codecs) and #524 (the consumer reading
+        // them) turned the 5,019 compressed members into decoded rows, so the
+        // sound family's decoded census is all 5,041 of its members.
+        assert_eq!(expected.pcm, 22, "task #344 counted 22 PCM members");
+        assert_eq!(
+            expected.ima_adpcm, 555,
+            "task #444 measured 555 IMA ADPCM members"
+        );
+        assert_eq!(
+            expected.ms_adpcm, 4_464,
+            "task #444 measured 4,464 Microsoft ADPCM members"
+        );
+        assert_eq!(
+            expected.undecodable, 0,
+            "every retail sound member declares one of the three decoded tags"
+        );
+        assert_eq!(decoded, expected.decoded());
+        assert_eq!(
+            decoded, 5_041,
+            "the 22 PCM members plus task #444's 5,019 compressed ones"
+        );
+        // The census of each archive on its own, measured here from the
+        // archives' own bytes and recorded in the F06-D finding: only `soundsl`
+        // declares the IMA codec, and both archives hold 11 PCM members.
+        assert_eq!(
+            per_archive["ZBD/soundsl.zbd"],
+            SoundCensus {
+                pcm: 11,
+                ima_adpcm: 555,
+                ms_adpcm: 1_954,
+                undecodable: 0
+            },
+            "the census of `soundsl`"
+        );
+        assert_eq!(
+            per_archive["ZBD/soundsh.zbd"],
+            SoundCensus {
+                pcm: 11,
+                ima_adpcm: 0,
+                ms_adpcm: 2_510,
+                undecodable: 0
+            },
+            "the census of `soundsh`"
+        );
 
-        // Strict: the corpus is not fully interpreted, and says so.
+        // Strict: the corpus is not fully interpreted, and says so. Nothing
+        // about sound is left uninterpreted any more; the 1,293 reader members
+        // (F06-B's encoding is undocumented) and the 120 containers no F06
+        // reader member-lists are.
         assert_eq!(result.exit_code, 3);
         assert_eq!(audit.uninterpreted(), members - decoded + 184 - 64);
+        assert_eq!(audit.uninterpreted(), 1293 + 120);
         println!(
-            "{} containers, {members} members, {decoded} decoded, {} uninterpreted",
+            "{} containers, {members} members, {decoded} decoded ({} PCM, {} IMA ADPCM, \
+             {} Microsoft ADPCM), {} uninterpreted; per archive {per_archive:?}",
             audit.containers.len(),
-            audit.uninterpreted()
+            expected.pcm,
+            expected.ima_adpcm,
+            expected.ms_adpcm,
+            audit.uninterpreted(),
         );
     }
 
@@ -1292,6 +1476,27 @@ mod tests {
             0,
             "the retail corpus audit must find no corruption"
         );
+        let decoded: usize = audit
+            .containers
+            .iter()
+            .map(ContainerAudit::decoded_members)
+            .sum();
+        // Every sound member decodes: tasks #444 (the two block codecs) and
+        // #524 (the consumer reading them under their own declaration) turned
+        // the 5,019 compressed members into decoded rows, so the sound census
+        // the retail test re-reads from the archives' own bytes (22 PCM, 555 IMA
+        // ADPCM, 4,464 Microsoft ADPCM) is all 5,041 members of the family.
+        assert_eq!(decoded, 5_041, "every retail sound member is a decoded row");
+        assert_eq!(
+            audit
+                .containers
+                .iter()
+                .filter(|row| row.family == Some(ZbdFamily::Sound))
+                .map(|row| row.readable_members())
+                .sum::<usize>(),
+            0,
+            "no retail sound member is left readable"
+        );
         let found = cs_assets::install::discover(&root).expect("discovery");
         let install_sha256 = cs_assets::install::fingerprint(&found.manifest).to_hex();
         let content_sha256 = cs_assets::install::content_fingerprint(&found.manifest).to_hex();
@@ -1305,11 +1510,6 @@ mod tests {
             )
         };
         let members: usize = audit.containers.iter().map(|row| row.members.len()).sum();
-        let decoded: usize = audit
-            .containers
-            .iter()
-            .map(ContainerAudit::decoded_members)
-            .sum();
         // What stays uninterpreted is part of the method text: the schema's
         // `unknowns` must be empty for a passing report, and the unknowns
         // themselves are recorded in the F06-D findings.
@@ -1317,17 +1517,22 @@ mod tests {
             "acceptance suite run locally with the retail capability; this harness derives \
              every field from the recorded log, production discovery of $CS_GAME_DIR, the \
              production `cs-inspect zbd-audit --strict` run over every retail ZBD container \
-             (zbd-audit.json; the retail acceptance test checks its member and PCM counts \
-             against an independent read of every trailer and fmt tag), rustc and Cargo.lock; \
-             validated with tools/validate_evidence.py --require-pass. The audit found {} \
-             corrupt containers or members; {} of {members} members are structurally sound but \
-             not interpreted (reader encoding undocumented, ADPCM not decoded) and the \
-             texture, interp, GameZ and animation containers are routed but not member-listed, \
-             so the strict audit exits {}; these unknowns are recorded in \
+             (zbd-audit.json; the retail acceptance test checks its member count and its decoded \
+             census of all three decoded `fmt ` tags -- 0x0001 PCM, 0x0002 Microsoft ADPCM and \
+             0x0011 IMA ADPCM, decoded since tasks #444 and #524 -- against an independent read \
+             of every trailer and fmt tag), rustc and Cargo.lock; validated with \
+             tools/validate_evidence.py --require-pass. The audit found {} corrupt containers or \
+             members; of {members} members {decoded} are decoded sound members (the census the \
+             retail test re-reads from the archives' own bytes is 22 PCM, 555 IMA ADPCM and \
+             4,464 Microsoft ADPCM) and {} are reader members that are structurally sound but \
+             not interpreted (F06-B's entry encoding is undocumented); with the texture, interp, \
+             GameZ and animation containers routed but not member-listed, the strict audit exits \
+             {} on {} uninterpreted items; these unknowns are recorded in \
              docs/findings/2026-09-28-f06-d-zbd-corpus-audit.md",
             audit.failures(),
             members - decoded,
-            audited.exit_code
+            audited.exit_code,
+            audit.uninterpreted()
         );
         let report = format!(
             "{{\n\
@@ -1374,8 +1579,12 @@ mod tests {
             artifact(&log_path, "log"),
             artifact(&audit_path, "json"),
             super::jstr(
-                "claude-1 (implementing agent, then Rally reviewer; regenerated on the reviewed \
-                 and rebased commit)"
+                "implementer: bunny-alpha-1/bunny-alpha-1 (Rally task #525, the implement claim \
+                 of 2026-10-02T18:16:34Z). No independent review has been made yet: this \
+                 report is the implementer's own evidence run over the candidate tree, so the \
+                 Rally reviewer for #525 has to re-run the harness and record their own \
+                 identity here (and the findings' review section) before this may be read as \
+                 reviewed. No agent review replaces the owner's approval"
             ),
             super::jstr(&method),
         );
