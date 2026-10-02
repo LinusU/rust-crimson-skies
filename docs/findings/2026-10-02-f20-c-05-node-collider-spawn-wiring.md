@@ -207,8 +207,7 @@ By the implementer, before handover:
 - `cargo fmt --all -- --check` — exit 0.
 - `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
   — exit 0.
-- `cargo test --workspace --locked` — exit 0, 253 suites ok, 2536 tests passed,
-  0 failed.
+- `cargo test --workspace --locked` — exit 0, 2548 tests passed, 0 failed.
 - `cargo test --workspace --locked -- accept_f20_c_05_ --include-ignored` —
   exit 0, **5 tests matched**, all passing, none `#[ignore]`d.
 - `cargo test --workspace --locked -- accept_f20 --include-ignored` — exit 0,
@@ -225,6 +224,15 @@ By the implementer, before handover:
 
 No command needed `CS_GAME_DIR`, and `CS_CAPABILITIES` was not exercised: this
 stage reads no original data.
+
+The branch was then rebased onto a newer `origin/main`, which brought in F20-C's
+render-side draw consumer (`crates/cs_app/src/render/{sync,visibility}.rs` and
+its finding). It touches no file this branch changes and no `Cargo.toml`/
+`Cargo.lock`, and the rebase applied without a conflict — but the **full** four
+checks were run again on the rebased tree rather than the lighter post-rebase
+set, and the numbers above are from that run. F20-C.04's constraint is unchanged:
+`apply_collider_presence` still runs after the animation advance, and the draw
+consumer reads the composed verdict, so the two do not compete for a writer.
 
 ## What one earlier test had to change, and why it is not a weakening
 
