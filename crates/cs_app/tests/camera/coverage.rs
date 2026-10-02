@@ -34,10 +34,10 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use cs_app::camera::coverage::{
-    CameraOperation, CockpitAirframe, CockpitBindingClaim, CockpitCoverageError,
-    CockpitEyeCoverage, CockpitFinding, CockpitNodeCoverage, ViewCommandClaim, ViewControlCoverage,
-    ViewControlEffect, ViewControlError, ViewControlFinding, audit_cockpit_coverage,
-    discover_cockpit_bindings, discover_view_controls, eye_placement,
+    AirframeCockpitCoverage, CameraOperation, CockpitAirframe, CockpitBindingClaim,
+    CockpitCoverageError, CockpitEyeCoverage, CockpitFinding, CockpitNodeCoverage,
+    ViewCommandClaim, ViewControlCoverage, ViewControlEffect, ViewControlError, ViewControlFinding,
+    audit_cockpit_coverage, discover_cockpit_bindings, discover_view_controls, eye_placement,
 };
 use cs_content::cameras::CockpitBindingSource;
 use cs_content::mesh::RenderMesh;
@@ -551,6 +551,25 @@ fn accept_f21_d_the_declared_camera_commands_are_censused_with_their_scripts_and
         census.is_clean(),
         "an authored container is walked without findings"
     );
+    // The census records every head the container stores, so a claim list that
+    // missed a command would be visible rather than silently narrow.
+    assert_eq!(
+        census.heads().len(),
+        9,
+        "the authored container stores nine distinct heads: set, source, FindNode and the six \
+         claimed camera commands"
+    );
+    assert_eq!(
+        census.heads().get("FindNode"),
+        Some(&2),
+        "with the count the container really stores for each: camera1 and spyglass"
+    );
+    let unclaimed: Vec<&str> = census.unclaimed_heads().map(|(head, _)| head).collect();
+    assert_eq!(
+        unclaimed,
+        ["FindNode", "set", "source"],
+        "and the heads no claim matched are exactly the non-camera commands"
+    );
     assert_eq!(
         census.unconsumed().count(),
         4,
@@ -590,6 +609,46 @@ fn accept_f21_d_the_declared_camera_commands_are_censused_with_their_scripts_and
             .map(|row| row.coverage().label()),
         Some("player_rig"),
         "a consumed verdict names the operation that consumes it"
+    );
+    assert_eq!(
+        census
+            .row("CameraSetHorizon")
+            .map(|row| row.effect().label()),
+        Some("levels_horizon"),
+        "a command whose spelling and argument name an operation is classified as one"
+    );
+    assert_eq!(
+        ViewControlEffect::Undetermined.to_string(),
+        "undetermined",
+        "and a command whose operation nothing readable establishes is reported undetermined \
+         rather than filed under an operation nobody measured"
+    );
+    let undetermined = container(&[(
+        b"support\\display.gw",
+        vec![line(&[b"CameraSetObjectHSETest", b"off"])],
+    )]);
+    let undetermined_census = discover_view_controls(
+        &decode(&undetermined),
+        &[ViewCommandClaim::try_new(
+            "CameraSetObjectHSETest",
+            2,
+            ViewControlEffect::Undetermined,
+            ViewControlCoverage::Unconsumed {
+                reason: "the hull-sensitivity probe has no counterpart in this contract".to_owned(),
+            },
+            observed(0, 8),
+        )
+        .expect("the claim is well formed")],
+        FIXTURE,
+        observed(0, 16),
+    )
+    .expect("the container writes the claimed command");
+    assert_eq!(
+        undetermined_census
+            .row("CameraSetObjectHSETest")
+            .map(|row| row.effect().label()),
+        Some("undetermined"),
+        "the census carries the caller's verdict verbatim instead of inferring one"
     );
 }
 
@@ -666,6 +725,61 @@ fn accept_f21_d_a_claim_the_container_never_writes_is_refused_rather_than_report
             command: "CameraSetWindow".to_owned()
         }),
         "an unconsumed verdict must name what the camera contract would have to gain"
+    );
+
+    // A command the container stores but only in a shape the claim does not
+    // describe is a different failure from one it never stores: saying the
+    // corpus lacks it would contradict the container's own bytes.
+    let malformed = container(&[(
+        b"support\\c1\\load.gw",
+        vec![
+            line(&[b"CameraSetHorizon"]),
+            line(&[b"CameraSetHorizon", b"horizon", b"extra"]),
+            line(&[b"CameraSetHorizon", &[0xff, 0xfe, 0x80]]),
+        ],
+    )]);
+    let decoded_malformed = decode(&malformed);
+    let mut wrong_arity = view_claims();
+    wrong_arity.clear();
+    wrong_arity.push(
+        ViewCommandClaim::try_new(
+            "CameraSetHorizon",
+            2,
+            ViewControlEffect::LevelsHorizon,
+            ViewControlCoverage::Consumed {
+                operation: CameraOperation::PlayerRig,
+            },
+            observed(0, 8),
+        )
+        .expect("the claim is well formed"),
+    );
+    let refusal =
+        discover_view_controls(&decoded_malformed, &wrong_arity, FIXTURE, observed(0, 16))
+            .expect_err("no stored line has the claimed shape, so there is nothing to census");
+    let ViewControlError::ClaimUnreadable {
+        command,
+        stored_lines,
+        findings,
+    } = &refusal
+    else {
+        panic!(
+            "a command the container stores in another shape is ClaimUnreadable, got {refusal:?}"
+        )
+    };
+    assert_eq!(command, "CameraSetHorizon");
+    assert_eq!(
+        *stored_lines, 3,
+        "and the refusal counts the lines the container really stores with it"
+    );
+    assert_eq!(
+        findings.len(),
+        3,
+        "carrying every finding that says why none of them was an occurrence, rather than \
+         discarding them: {findings:?}"
+    );
+    assert!(
+        refusal.to_string().contains("CameraSetHorizon"),
+        "the message names the command: {refusal}"
     );
 
     // A bounded name: an unbounded string from an unfingerprinted file cannot be
@@ -817,6 +931,17 @@ fn accept_f21_d_the_cockpit_bindings_the_original_declares_are_measured_in_store
         discovery.binding("nosedamage").is_none(),
         "a node addressed after a variable the claim did not declare is not a binding of this \
          aircraft"
+    );
+    // Lookups match the way the walk matches names, on stored bytes and without
+    // regard to case: a lookup that missed the row the walk itself produced
+    // would report a binding that the container really declares as absent.
+    assert!(
+        discovery.binding("GUNGAUGE").is_some(),
+        "a name the container stores in another case is the same binding"
+    );
+    assert!(
+        discovery.binding("GunGauge").is_some(),
+        "and the same whatever the case of the caller"
     );
     assert!(
         !discovery.is_empty() && discovery.lines_walked() > 0,
@@ -1086,6 +1211,14 @@ fn accept_f21_d_cockpit_coverage_resolves_each_binding_against_its_own_airframe_
         !report.is_complete(),
         "the report is complete only when every airframe resolved every binding"
     );
+    // The same rule on stored bytes: the root key and the archive's node name
+    // come from two containers whose encodings this project has not
+    // established, so a lookup that demanded an exact spelling would report an
+    // aircraft as missing from an archive that holds it.
+    assert!(
+        report.row("AIRFRAME/SYNTHETIC.KESTREL").is_some(),
+        "a row the audit wrote is found whatever the case of the caller's id"
+    );
     assert_eq!(
         report.drawable_meshes(),
         [
@@ -1143,6 +1276,66 @@ fn accept_f21_d_cockpit_coverage_resolves_each_binding_against_its_own_airframe_
             root: "player_kestrel".to_owned()
         }),
         "a duplicated root is refused before any row is written"
+    );
+
+    // The archive's stored name is matched the way the script's name is. Here the
+    // container stores the root and its gauges in another case than the script
+    // spells them, which an exact comparison would report as an archive that
+    // holds no such aircraft at all.
+    let recased = [
+        Node {
+            name: "PLAYER_KESTREL",
+            parent: None,
+            children: vec![1, 2, 3],
+            mesh_index: -1,
+        },
+        Node {
+            name: "GUNGAUGE",
+            parent: Some(0),
+            children: Vec::new(),
+            mesh_index: 41,
+        },
+        Node {
+            name: "4char_ammo",
+            parent: Some(0),
+            children: Vec::new(),
+            mesh_index: 42,
+        },
+        Node {
+            name: "MISSILEGAUGE",
+            parent: Some(0),
+            children: Vec::new(),
+            mesh_index: 42,
+        },
+    ];
+    let recased_archive = cs_formats::gamez::GameZNodes {
+        nodes: recased
+            .iter()
+            .enumerate()
+            .map(|(index, spec)| raw_node(spec, index as u32))
+            .collect(),
+        ..synthetic_archive()
+    };
+    let recased_report = audit_cockpit_coverage(
+        &discovery,
+        &[airframe("synthetic.kestrel", "player_kestrel")],
+        &recased_archive,
+        &archive_id(),
+    )
+    .expect("the root is in the archive whatever case it is stored in");
+    let recased_row = recased_report
+        .row("airframe/synthetic.kestrel")
+        .expect("the airframe has a row");
+    assert_eq!(
+        recased_row.drawable_meshes(),
+        [("gungauge", 41), ("4char_ammo", 42), ("missilegauge", 42)],
+        "and every binding resolves to the recased node that carries its mesh, rather than \
+         reporting an aircraft the archive holds as missing"
+    );
+    assert_eq!(
+        recased_row.root(),
+        "PLAYER_KESTREL",
+        "the row reports the name the archive stores, not the spelling the caller passed"
     );
 
     // An airframe that lives in another archive is not audited against this one.
@@ -1584,10 +1777,22 @@ fn accept_f21_d_retail_the_installation_declares_its_camera_commands_and_cockpit
     let container_label = "ZBD/interp.zbd";
     let bytes = std::fs::read(game_dir.join("ZBD").join("interp.zbd"))
         .expect("the loading-script container must be there");
+    // The bytes this test walks are the bytes the installation's own manifest
+    // declares: production discovery hashed every inventoried file, so a
+    // mismatch here would mean the census describes a different installation
+    // than the one the evidence record fingerprints.
+    let declared = discovery
+        .manifest
+        .files
+        .iter()
+        .find(|row| row.relative_spelling.logical_key() == "zbd/interp.zbd")
+        .map(|row| row.sha256)
+        .expect("the loading-script container is inventoried");
     assert_eq!(
         cs_assets::install::sha256(&bytes),
-        cs_assets::install::sha256(&bytes),
-        "the digest is measured, not asserted against itself"
+        declared,
+        "the bytes the census walks are the bytes the installation manifest \
+         declares for zbd/interp.zbd"
     );
     let decoded = decode_interp(&mut ParseContext::with_defaults(container_label), &bytes)
         .expect("the real container decodes");
@@ -1702,6 +1907,40 @@ fn accept_f21_d_retail_the_installation_declares_its_camera_commands_and_cockpit
          coverage gap the stage records rather than hides"
     );
 
+    // Completeness of the *claim list*, checked against the corpus rather than
+    // asserted about it: the census records every distinct head the container
+    // stores, so an eighth camera command the corpus held would be visible here
+    // instead of silently missing from every coverage verdict.
+    assert_eq!(
+        census.heads().len(),
+        RETAIL_COMMAND_HEADS,
+        "the census walked every command head the real container stores"
+    );
+    let unclaimed_camera: Vec<(&str, usize)> = census
+        .unclaimed_heads()
+        .filter(|(head, _)| head.to_ascii_lowercase().contains("camera"))
+        .collect();
+    assert!(
+        unclaimed_camera.is_empty(),
+        "no camera command in the container is missing from the claim list: {unclaimed_camera:?}"
+    );
+    // And the claim list adds nothing the container does not hold, which is
+    // what makes the seven rows above a census rather than a wish list.
+    let claimed_not_stored: Vec<&str> = RETAIL_CAMERA_COMMAND_COUNTS
+        .iter()
+        .map(|(command, _)| *command)
+        .filter(|command| {
+            !census
+                .heads()
+                .keys()
+                .any(|head| head.eq_ignore_ascii_case(command))
+        })
+        .collect();
+    assert!(
+        claimed_not_stored.is_empty(),
+        "every claimed command is a head the container really stores: {claimed_not_stored:?}"
+    );
+
     // The installation and canonical-content fingerprints the evidence report
     // carries, measured here so the report's `source` block is not typed in.
     let content_sha256 = cs_assets::install::content_fingerprint(&discovery.manifest);
@@ -1768,6 +2007,19 @@ fn accept_f21_d_retail_every_declared_cockpit_binding_is_resolved_or_reported_by
     .expect("the normalized install-file key is a valid id key");
     let planes = std::fs::read(game_dir.join("ZBD").join("planes.zbd"))
         .expect("the shared airframe archive must be there");
+    let declared_archive = discovery
+        .manifest
+        .files
+        .iter()
+        .find(|row| row.relative_spelling.logical_key() == "zbd/planes.zbd")
+        .map(|row| row.sha256)
+        .expect("the airframe archive is inventoried");
+    assert_eq!(
+        cs_assets::install::sha256(&planes),
+        declared_archive,
+        "the node array the audit walks is the array the installation manifest declares for \
+         zbd/planes.zbd"
+    );
     let nodes = read_gamez_nodes(&mut ParseContext::with_defaults(archive_label), &planes)
         .expect("the airframe archive's node array reads");
 
@@ -1804,6 +2056,60 @@ fn accept_f21_d_retail_every_declared_cockpit_binding_is_resolved_or_reported_by
         "at least one declared cockpit node resolves to real geometry, or the audit has found \
          nothing at all"
     );
+    // The exact resolution counts the finding quotes, pinned here so the
+    // published table is a measurement rather than a transcription of one run:
+    // 220 declared (airframe, binding) pairs, 176 resolved, 44 unresolved, and
+    // the same sixteen resolved per aircraft on all eleven.
+    assert_eq!(
+        resolved_total + unresolved.len(),
+        report.declared_per_airframe() * report.rows().len(),
+        "every declared pair is either resolved or reported unresolved"
+    );
+    assert_eq!(resolved_total, 176, "the measured number of resolved pairs");
+    assert_eq!(
+        unresolved.len(),
+        44,
+        "the measured number of unresolved pairs"
+    );
+    let per_airframe: Vec<usize> = report
+        .rows()
+        .iter()
+        .map(AirframeCockpitCoverage::bound)
+        .collect();
+    assert_eq!(
+        per_airframe,
+        vec![16; RETAIL_AIRFRAMES],
+        "and each airframe resolves the same sixteen of its twenty"
+    );
+    // The unresolved set is the same four container-shaped names everywhere,
+    // each in one of the two named states — the audit is not losing a binding
+    // that resolved for one aircraft and not another.
+    let mut unresolved_names: BTreeSet<&str> = BTreeSet::new();
+    for row in report.rows() {
+        // In the declaring script's order, not sorted: the audit reports what it
+        // walked, and re-ordering it here would hide a change in that walk.
+        assert_eq!(
+            row.unresolved()
+                .iter()
+                .map(|binding| binding.node())
+                .collect::<Vec<_>>(),
+            ["gungauge", "4char_ammo", "missilegauge", "6char_type"],
+            "{} resolves everything except the same four container-shaped names",
+            row.airframe()
+        );
+        for binding in row.unresolved() {
+            unresolved_names.insert(binding.node());
+            assert!(
+                matches!(
+                    binding.coverage(),
+                    CockpitNodeCoverage::NoMesh { .. } | CockpitNodeCoverage::Ambiguous { .. }
+                ),
+                "an unresolved binding is one of the two named states, got {:?}",
+                binding.coverage()
+            );
+        }
+    }
+    assert_eq!(unresolved_names.len(), 4);
     eprintln!(
         "F21-D retail: {}/{} cockpit bindings resolved across {} airframes; {} unresolved",
         resolved_total,
@@ -1816,7 +2122,34 @@ fn accept_f21_d_retail_every_declared_cockpit_binding_is_resolved_or_reported_by
     }
 
     // Every unresolved binding is one of the three named states, and every
-    // resolved one names a mesh the archive really holds.
+    // resolved one names a node the archive really holds at that index. Whether
+    // the mesh slot the node associates holds geometry is the mesh section's
+    // answer, so it is checked here against the real mesh array rather than
+    // assumed: `read_gamez_meshes` over the same file.
+    let meshes = cs_formats::gamez::read_gamez_meshes(
+        &mut ParseContext::with_defaults(archive_label),
+        archive_label,
+        &planes,
+    )
+    .expect("the archive's mesh section reads");
+    let mut checked_slots = 0_usize;
+    for (_, _, mesh_index) in report.drawable_meshes() {
+        let slot = meshes
+            .meshes
+            .get(mesh_index as usize)
+            .unwrap_or_else(|| panic!("mesh {mesh_index} is inside the archive's mesh array"));
+        assert!(
+            slot.is_some(),
+            "mesh {mesh_index} is a stored mesh, not an empty stub slot: a node's `mesh_index` \
+             is an association into the mesh array, and this audit's `Bound` verdict claims the \
+             association, so a stub would mean the verdict is about nothing drawable"
+        );
+        checked_slots += 1;
+    }
+    assert_eq!(
+        checked_slots, resolved_total,
+        "every resolved pair's mesh slot was checked against the archive's own mesh array"
+    );
     for row in report.rows() {
         for binding in row.bindings() {
             match binding.coverage() {
@@ -1853,7 +2186,18 @@ fn accept_f21_d_retail_every_declared_cockpit_binding_is_resolved_or_reported_by
 
     // And the pilot's eye is undeclared however much of the cockpit resolved.
     assert_eq!(report.eye(), CockpitEyeCoverage::Undeclared);
-    assert!(!report.complete().count() == 0 || !report.is_complete());
+    // No airframe resolves all twenty, and the report says so rather than
+    // reporting a partial result as a complete one.
+    assert_eq!(
+        report.complete().count(),
+        0,
+        "every one of the eleven airframes carries four container-shaped \
+         bindings, so none of them resolves all twenty"
+    );
+    assert!(
+        !report.is_complete(),
+        "the report's own completeness verdict follows from its rows"
+    );
 
     write_coverage_census(
         &report,
@@ -1992,8 +2336,14 @@ fn write_coverage_census(
     // one's argument list (a clippy `format_in_format_args` failure) and so each
     // block reads as one value.
     let camera_commands = format!(
-        "{{\"lines_walked\":{},\"occurrences\":{},\"unconsumed_occurrences\":{},\"rows\":[{}]}}",
+        "{{\"lines_walked\":{},\"distinct_command_heads\":{},\"unclaimed_camera_commands\":{},\
+          \"occurrences\":{},\"unconsumed_occurrences\":{},\"rows\":[{}]}}",
         census.lines_walked(),
+        census.heads().len(),
+        census
+            .unclaimed_heads()
+            .filter(|(head, _)| head.to_ascii_lowercase().contains("camera"))
+            .count(),
         census.occurrences(),
         census.unconsumed().count(),
         commands.join(",")
@@ -2219,6 +2569,16 @@ const RETAIL_CAMERA_COMMAND_COUNTS: [(&str, usize); 7] = [
     ("CameraSetObjectHSETest", 1),
 ];
 
+/// How many distinct command heads the real container stores across its 98
+/// scripts.
+///
+/// Measured by the retail census above, which fails if the count moves. It is
+/// here so the claim list's **completeness** is checkable: the census records
+/// every head, and the retail test asserts that every head spelling `camera` is
+/// claimed, so "seven camera commands" is a fact about the corpus rather than
+/// about the seven spellings somebody happened to type.
+const RETAIL_COMMAND_HEADS: usize = 85;
+
 /// The distinct cockpit node names `support\cockpit.gw` binds, in first-use
 /// order.
 ///
@@ -2335,7 +2695,10 @@ fn retail_view_claims(install_sha256: ContentHash) -> Vec<ViewCommandClaim> {
         (
             "CameraSetObjectHSETest",
             2,
-            ViewControlEffect::LevelsHorizon,
+            // Not a horizon operation: nothing in a readable file says what an
+            // object hull-sensitivity test does to a camera, so it is reported
+            // undetermined rather than filed under an operation nobody measured.
+            ViewControlEffect::Undetermined,
             ViewControlCoverage::Unconsumed {
                 reason: "the hull-sensitivity probe has no counterpart in this contract".to_owned(),
             },

@@ -103,7 +103,9 @@ NewCamera %camName%          CameraSetActive on      CameraSetWorld %worldName% 
 NewCamera spyglass           CameraSetActive on      CameraSetWorld %worldName%   CameraSetWindow sgwin
 ```
 
-and every world group's `load.gw` levels a camera's up axis against a horizon:
+and every world group's `load.gw` levels a camera's up axis against a horizon
+(`support\c1`, `c1b`, `c1c`, `c2`, `c2b`, `c3`, `c4`, `c5` — eight groups, each
+writing it twice, for `camera1` and for `spyglass`):
 
 ```text
 FindNode camera1  CameraSetHorizon horizon  CameraSetHorizonXZ zone2_cloud_floor
@@ -121,7 +123,16 @@ with `cs_formats::interp::decode_interp`:
 | `CameraSetWindow` | 2 | `support\display.gw` | **unconsumed** |
 | `CameraSetHorizon` | 16 | every world group's `load.gw`, plus `support\c1b\load.gw` twice | **unconsumed** |
 | `CameraSetHorizonXZ` | 4 | `support\c1\load.gw` and `support\c1b\load.gw` | **unconsumed** |
-| `CameraSetObjectHSETest` | 1 | `support\display.gw` | **unconsumed** |
+| `CameraSetObjectHSETest` | 1 | `support\display.gw`, argument `off` | **unconsumed**, effect **undetermined** |
+
+**Completeness of that table.** A census driven by a caller's claim list would
+otherwise say only "these seven commands exist", not "these are the camera
+commands the corpus holds". So the census records **every distinct command head**
+the container stores — **85** across its 98 scripts and 5 083 lines — and the
+retail test asserts that every head whose spelling contains `camera` is claimed
+and that every claimed spelling is a head the container really stores. The
+unclaimed-camera list is empty, so an eighth camera command cannot be missing from
+the verdicts above without a test failing.
 
 29 occurrences in total, **23 of them unconsumed**: four of the seven declared
 camera commands have no consumer anywhere in `cs_app::camera`, and the
@@ -179,9 +190,16 @@ eleven airframes F11-D2's roster discovery declares (`player_pfighter`,
 | --- | --- |
 | declared bindings per airframe | 20 |
 | (airframe, binding) pairs | 220 |
-| resolved to a node with stored geometry | **176** |
+| resolved to a node that stores a mesh association | **176** |
 | unresolved | **44** — the same four names on every aircraft |
 | airframes whose 20 bindings all resolved | **0 of 11** (each resolves 16) |
+| resolved mesh slots checked against the archive's own mesh array | **176 of 176 present, 0 empty stub slots** |
+
+Every one of those numbers is now **pinned by the retail acceptance test**, not
+only transcribed here: `176` resolved, `44` unresolved, sixteen per aircraft on
+all eleven, the unresolved set identical on every aircraft and in the declaring
+script's order, and each resolved mesh slot checked to be a present slot of the
+`ZBD/planes.zbd` mesh array rather than an all-zero stub.
 
 The four unresolved names are container-shaped, and each state is measured from
 the node's own bytes:
@@ -199,6 +217,16 @@ their **descendants**, and this stage does not resolve a whole cockpit subtree �
 so "the pilot's eye is at the root of an instrument panel" is not measured, not
 assumed and not invented. A cockpit-content pass that walks the subtree is the
 obvious next step and is filed below.
+
+**What `Bound` claims, exactly.** `Bound` means *exactly one node of that
+airframe's own subtree carries this name and it stores a non-negative mesh
+association*. It does **not** mean the mesh slot holds geometry: the node reader
+does not hold the mesh section and says so through
+`GameZNodes::mesh_index_bounds`, so the range question belongs to the mesh
+reader. Rather than leave that as a caveat, the retail test closes it against
+the real bytes — `read_gamez_meshes` over the same `ZBD/planes.zbd`, all 176
+resolved slots present, none an empty stub — so the verdict is verified here even
+though the production audit does not claim it.
 
 So: **176 of 220 declared (airframe, binding) pairs resolve to real stored
 cockpit geometry, and every one of the 176 resolves inside its own aircraft.**
@@ -259,15 +287,56 @@ mutation-checked:
 
 | # | defect | how it was reached | fix |
 | --- | --- | --- | --- |
-| R1 | **`subtree_indices` followed every parent word, including a root's own.** A root that names a parent (the corpus's parent and child words can both produce that) would pull the parent in and from there its whole subtree, so one aircraft's coverage row could resolve another aircraft's nodes. The retail run never hit it — all eleven declared roots have no parent — which is exactly why it needed a test rather than a rerun. | a synthetic archive with a `world1` node above both airframe roots, the kestrel root naming it as its parent | the walk is the root's **children closure**, plus a repair from a node's own parent word only when that parent is already inside the closure (which is what makes an incomplete child list recoverable, per F11-D2's measurement); the root's own parent is never followed. `accept_f21_d_a_subtree_walk_never_leaves_the_aircraft_it_started_from` pins it |
+| R1 | **`subtree_indices` followed every parent word, including a root's own.** A root that names a parent (the corpus's parent and child words can both produce that) would pull the parent in and from there its whole subtree, so one aircraft's coverage row could resolve another aircraft's nodes. The retail run never hit it — all eleven declared roots have no parent — which is exactly why it needed a test rather than a rerun. | a synthetic archive with a `world1` node above both airframe roots, the kestrel root naming it as its parent | the walk is the root's **children closure**; the root's own parent is never followed. `accept_f21_d_a_subtree_walk_never_leaves_the_aircraft_it_started_from` pins it |
+
+## Review pass (Rally review claim, 2026-10-03)
+
+The review pass is the **same agent instance and model as the implementer**
+(`opencode/bunny-alpha-2`, separate session), which AGENTS.md is explicit is
+**not** independent evidence. It re-measured the corpus independently and fixed
+six defects it found:
+
+| # | defect | how it was reached | fix |
+| --- | --- | --- | --- |
+| R2 | **R1's "repair" was dead code.** The branch the implementer added after R1 pushed a node's parent onto the queue *only when that parent was already in the visited set* — so the push was always a no-op and the walk was already a pure children closure. The finding and the function's doc both described a repair that could not run. | reading the walk against its own `visited` set; then measuring a *real* repair pass over `ZBD/planes.zbd` (pull in every node whose parent word names a node already in the closure, to a fixpoint): **zero** added nodes for all eleven roots | the dead branch is deleted, both doc comments now say what the walk does, and the measurement is recorded in the code |
+| R3 | **A claim the container stores in an unreadable shape was reported as `ClaimUnseen`** — whose message asserts the corpus stores *no* line with that command, which its own bytes contradict — and the findings that said why were discarded. | a synthetic container whose only `CameraSetHorizon` lines carry the wrong arity or a non-ASCII argument | new `ViewControlError::ClaimUnreadable { command, stored_lines, findings }`, distinct from `ClaimUnseen`, carrying the count and the findings; the message names the lines and why |
+| R4 | **"Seven camera commands" was a fact about the claim list, not about the corpus.** Nothing checked that the seven spellings were *all* the camera commands the container holds, so an eighth would have been silently absent from every verdict. | the census walks every line anyway, so the distinct heads are free to record; a scratch probe over the real container found 85 distinct heads | `ViewControlCensus::heads()` / `unclaimed_heads()`; the retail test pins 85 heads and asserts both directions (no unclaimed camera command, no claimed command the container lacks) |
+| R5 | **`CameraSetObjectHSETest` was classified as `LevelsHorizon`** — a guessed original semantic in the one field documented as "what this command asks the original's camera system to do", contradicting its own reason string ("the hull-sensitivity probe"). | reading the retail claims against the measured argument (`off`) | `ViewControlEffect::Undetermined`, used by that claim, with a test pinning that the census carries the caller's verdict verbatim |
+| R6 | **Names were compared case-insensitively everywhere except where they meet the archive.** `audit_cockpit_coverage` matched `node.name == binding.node()` and `node.name == root_name` exactly, and `row()`/`binding()` did too — so an archive storing a node in another case than the script spells it would report the aircraft as missing. | the module's own `same_name` helper and the finding's "names are compared case-insensitively on stored bytes" | every name comparison goes through `same_name`; a synthetic archive storing `PLAYER_KESTREL` / `GUNGAUGE` / `MISSILEGAUGE` pins it |
+| R7 | **The retail test asserted `sha256(&bytes) == sha256(&bytes)`** with the message "the digest is measured, not asserted against itself" — a tautology that checked nothing, standing where a real provenance check belonged. | reading the test | both containers the retail tests walk are now checked against the digest the installation's own manifest records for them, so the census provably describes the installation the evidence record fingerprints |
+
+Two of the review's findings are about what is *claimed* rather than what is
+computed, and both are now measured instead:
+
+- **`Bound` was documented as "references a stored mesh"** while the audit only
+  reads a non-negative `mesh_index` — and `cs_formats::gamez` states outright
+  that the node reader cannot range-check it. The doc now says exactly what is
+  decided, and the retail test checks all 176 slots against the real mesh array
+  (all present, no stubs), so the stronger claim holds on these bytes without the
+  production audit overreaching.
+- **The numbers in the tables above were transcribed, not pinned.** They are now
+  asserted by the retail test (`176` / `44` / sixteen each / zero complete / the
+  identical unresolved set in declared order).
+
+The review also re-measured, without changing anything: the seven camera commands
+and their counts; the 85 distinct heads; `NewCamera spyglass` and
+`CameraSetWindow sgwin` verbatim; 158 lines and 20 bindings in
+`support\cockpit.gw`; the eleven roots with 174–235 nodes each; `gungauge` /
+`missilegauge` carrying `mesh_index == -1` and `4char_ammo` / `6char_type`
+naming two nodes apiece, identically on all eleven; and `cockpit1` present once
+per aircraft as a child of the `geometry` node `support\util\planesurgery.gw`
+creates. Both GPU captures reproduced on the same adapter.
 
 Same-agent review is **not** independent evidence: it says the branch has no
-known defect, not that the numbers describe the original. The reviewer Rally
-assigns should re-measure the corpus itself.
+known defect, not that the numbers describe the original. AGENTS.md asks for a
+different agent instance or model, with fresh context, for format, mission
+semantics and fidelity claims, and none of the above substitutes for the owner's
+human approval.
 
 ## Test sensitivity
 
-Eight mutations, applied and reverted against production code, run as
+Eight mutations from the implementer and six from the review pass, applied and
+reverted against production code, run as
 `cargo test -p cs_app --test camera -- accept_f21_d_ --include-ignored`:
 
 | # | mutation | tests that died |
@@ -280,13 +349,19 @@ Eight mutations, applied and reverted against production code, run as
 | 6 | `stored_root_name` stops deriving the bare node name | **4** (coverage, ambiguity, eye, retail coverage) |
 | 7 | `verified_bindings` includes unresolved bindings | **1** (coverage) |
 | 8 | `subtree_indices` follows the root's own parent word again | **1** (`a_subtree_walk_never_leaves_the_aircraft_it_started_from`) |
+| 9 | `ClaimUnreadable` collapses back into `ClaimUnseen` | **1** (`a_claim_the_container_never_writes_is_refused_rather_than_reported_as_no_coverage`) |
+| 10 | the head census records only unclaimed heads | **2** (census shape, claim refusal) |
+| 11 | `unclaimed_heads()` returns the claimed heads instead | **1** (census shape) |
+| 12 | the archive's node names are matched exactly again | **1** (coverage) |
+| 13 | `row()` / `binding()` / `CockpitCoverageReport::row()` match exactly again | **2** (binding order, coverage) |
+| 14 | the pinned head count 85 becomes 86 | **1** (retail census) |
 
 Mutation 7 did **not** fail on the first pass: the coverage test asserted the
 verified list only for the airframe whose bindings all resolved, so a
 `verified_bindings` that returned every binding agreed with it. The test now
 asserts the warhawk row's verified list (one binding) and that the two
-airframes' lists differ, and mutation 7 dies. All seven were reverted; the tree
-is back to the implementation under review.
+airframes' lists differ, and mutation 7 dies. All fourteen were reverted; the
+tree is back to the implementation under review.
 
 ## Commands run (exit codes)
 

@@ -318,10 +318,13 @@ fn capture_artifacts(evidence_dir: &Path) -> Vec<(String, String, String)> {
 fn review_identity() -> String {
     String::from(
         "Implementer: opencode Space Bunny Alpha (opencode/bunny-alpha-2, Rally #117, implement \
-         claim, session of 2026-10-02). Reviewer: not yet assigned — Rally assigns it. Per \
-         AGENTS.md this report cannot be `checked` on the strength of the implementer's own run: \
-         an independent review of format, mission and fidelity semantics is requested, and no \
-         agent review of this evidence replaces the owner's human approval.",
+         claim, session of 2026-10-02). Reviewer: opencode Space Bunny Alpha \
+         (opencode/bunny-alpha-2, Rally #117, review claim, session of 2026-10-03) — the **same \
+         agent instance and model as the implementer**, on a separate session. Per AGENTS.md that \
+         is **not** independent review: it says the branch has no known defect, not that the \
+         numbers describe the original. AGENTS.md asks for a different agent instance or model \
+         with fresh context for format, mission-semantics and fidelity claims, and no agent \
+         review of this evidence replaces the owner's human approval.",
     )
 }
 

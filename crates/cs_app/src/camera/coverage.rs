@@ -63,7 +63,7 @@
 //! The measured write-up is
 //! `docs/findings/2026-10-03-f21-d-original-view-controls-and-cockpit-coverage.md`.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use cs_content::cameras::CockpitBindingSource;
@@ -153,6 +153,12 @@ impl fmt::Display for CameraOperation {
 /// The vocabulary is **project design** and deliberately describes operations
 /// rather than original semantics: no value here is a measurement, and the
 /// coverage claim that uses it is what a reader checks against this engine.
+/// Every value is this project's reading of the command's own **spelling and
+/// its stored argument**, so a command whose operation cannot be read from those
+/// is [`Self::Undetermined`] — which is where `CameraSetObjectHSETest off` sits,
+/// because nothing in a readable file says what an object hull-sensitivity test
+/// does to a camera, and giving it one of the operations below would be a guess
+/// presented as a classification.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ViewControlEffect {
     /// Creates a named camera object.
@@ -167,6 +173,12 @@ pub enum ViewControlEffect {
     LevelsHorizon,
     /// Levels a camera's up axis against a named zone's plane.
     LevelsHorizonToZone,
+    /// The operation is not established by the command's spelling or its stored
+    /// argument.
+    ///
+    /// Recorded as its own value so an unclassified command is visible as one
+    /// rather than filed under an operation nobody measured.
+    Undetermined,
 }
 
 impl ViewControlEffect {
@@ -180,6 +192,7 @@ impl ViewControlEffect {
             Self::BindsCameraToWindow => "binds_camera_to_window",
             Self::LevelsHorizon => "levels_horizon",
             Self::LevelsHorizonToZone => "levels_horizon_to_zone",
+            Self::Undetermined => "undetermined",
         }
     }
 }
@@ -434,6 +447,7 @@ pub struct ViewControlCensus {
     container: String,
     rows: Vec<ViewControlRow>,
     lines_walked: usize,
+    heads: BTreeMap<String, usize>,
 }
 
 impl ViewControlCensus {
@@ -449,10 +463,44 @@ impl ViewControlCensus {
         &self.rows
     }
 
+    /// Every distinct command head the container stores, and how many lines
+    /// store it, in stored spelling order.
+    ///
+    /// This is the census's **completeness instrument**. The rows above cover
+    /// only the commands a caller claimed, so "seven camera commands" is a fact
+    /// about the *claim list* unless something checks it against the whole
+    /// container; this is that something. Without it an eighth camera command
+    /// the corpus stores would be silently absent from every coverage verdict,
+    /// which is exactly the "ignoring an opcode" the project's rules forbid.
+    #[must_use]
+    pub fn heads(&self) -> &BTreeMap<String, usize> {
+        &self.heads
+    }
+
+    /// The stored heads no claim matched, with their line counts.
+    ///
+    /// Not refusals — an unclaimed head may be an ordinary script command. It
+    /// is the list a caller reads to decide whether its claim list *missed*
+    /// something it meant to cover.
+    pub fn unclaimed_heads(&self) -> impl Iterator<Item = (&str, usize)> {
+        self.heads.iter().filter_map(|(head, count)| {
+            let claimed = self
+                .rows
+                .iter()
+                .any(|row| same_name(head.as_bytes(), &row.command));
+            (!claimed).then_some((head.as_str(), *count))
+        })
+    }
+
     /// The row for one claimed spelling.
+    ///
+    /// Compared the way the walk compares names — case-insensitively on stored
+    /// bytes — so a lookup cannot miss the row the walk itself matched.
     #[must_use]
     pub fn row(&self, command: &str) -> Option<&ViewControlRow> {
-        self.rows.iter().find(|row| row.command == command)
+        self.rows
+            .iter()
+            .find(|row| same_name(row.command.as_bytes(), command))
     }
 
     /// How many lines the walk read.
@@ -519,6 +567,22 @@ pub enum ViewControlError {
         /// The spelling.
         command: String,
     },
+    /// The container does store lines with this spelling, but none of them is a
+    /// shape the claim describes, so the row would hold no occurrence.
+    ///
+    /// Distinct from [`Self::ClaimUnseen`] on purpose. The corpus *has* the
+    /// command; the claim's arity or its encoding assumption is wrong, and the
+    /// findings carried here say which lines said so. Reporting this as
+    /// `ClaimUnseen` would assert that the corpus lacks a command its own bytes
+    /// contain.
+    ClaimUnreadable {
+        /// The spelling.
+        command: String,
+        /// How many lines the container stores with it.
+        stored_lines: usize,
+        /// Why each of them was not an occurrence.
+        findings: Vec<ViewControlFinding>,
+    },
 }
 
 impl fmt::Display for ViewControlError {
@@ -544,11 +608,43 @@ impl fmt::Display for ViewControlError {
                 "the container stores no line with the claimed command {command}, so no coverage \
                  verdict about it could be measured"
             ),
+            Self::ClaimUnreadable {
+                command,
+                stored_lines,
+                findings,
+            } => write!(
+                f,
+                "the container stores {stored_lines} line(s) with {command}, but none is a shape \
+                 the claim describes: {}",
+                describe_findings(findings)
+            ),
         }
     }
 }
 
 impl std::error::Error for ViewControlError {}
+
+/// One line's finding in a single clause: enough to say which line and why,
+/// with no original bytes — offsets, counts and the command's own spelling only.
+fn describe_findings(findings: &[ViewControlFinding]) -> String {
+    if findings.is_empty() {
+        return "no line was read".to_owned();
+    }
+    findings
+        .iter()
+        .map(|finding| match finding {
+            ViewControlFinding::LineUnreadable {
+                offset,
+                stored_arguments,
+                ..
+            } => format!("at {offset} stored with {stored_arguments} argument(s)"),
+            ViewControlFinding::ArgumentNotAscii { offset, .. } => {
+                format!("at {offset} stored a non-ASCII argument")
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
 /// Walks a decoded loading-script container and censuses the claimed camera
 /// commands.
@@ -562,9 +658,16 @@ impl std::error::Error for ViewControlError {}
 ///
 /// # Errors
 ///
-/// [`ViewControlError`] for an empty claim list, a duplicated spelling or a
-/// spelling the container never stores. Line-level problems are findings, not
-/// errors: one unreadable line must not hide the lines the walk did read.
+/// [`ViewControlError`] for an empty claim list, a duplicated spelling, a
+/// spelling the container never stores, or a spelling whose every stored line is
+/// a shape the claim does not describe. Line-level problems are otherwise
+/// findings, not errors: one unreadable line must not hide the lines the walk
+/// did read.
+///
+/// The census also records **every** distinct head the container stores, claimed
+/// or not — see [`ViewControlCensus::heads`] — so "these are the camera commands
+/// the corpus holds" is checkable against the corpus rather than asserted about
+/// it.
 pub fn discover_view_controls<'bytes>(
     decoded: &DecodedInterp<'bytes>,
     claims: &[ViewCommandClaim],
@@ -596,6 +699,7 @@ pub fn discover_view_controls<'bytes>(
         .collect();
 
     let mut lines_walked = 0_usize;
+    let mut heads: BTreeMap<String, usize> = BTreeMap::new();
     for script in decoded.scripts() {
         let script_name = display(script.name());
         for line in script.lines() {
@@ -603,6 +707,9 @@ pub fn discover_view_controls<'bytes>(
             let Some(head) = line_head(line) else {
                 continue;
             };
+            // Every distinct head the container stores, claimed or not, so the
+            // census can be checked for completeness rather than trusted to be.
+            *heads.entry(display(head)).or_default() += 1;
             let Some(index) = claims
                 .iter()
                 .position(|claim| same_name(head, claim.command()))
@@ -646,9 +753,26 @@ pub fn discover_view_controls<'bytes>(
         }
     }
 
+    // Two failures that must not be reported as one: a claim about a command the
+    // container never writes is a claim about nothing, while a command the
+    // container writes *only* in a shape the claim does not describe is a claim
+    // with the wrong arity. Reporting the second as the first would assert
+    // something about the corpus its own bytes contradict, and would discard the
+    // findings that say exactly what was wrong.
     if let Some(unseen) = rows.iter().find(|row| row.occurrences.is_empty()) {
-        return Err(ViewControlError::ClaimUnseen {
-            command: unseen.command.clone(),
+        let command = unseen.command.clone();
+        let stored_lines = heads
+            .iter()
+            .find(|(head, _)| same_name(head.as_bytes(), &command))
+            .map_or(0, |(_, count)| *count);
+        return Err(if stored_lines == 0 {
+            ViewControlError::ClaimUnseen { command }
+        } else {
+            ViewControlError::ClaimUnreadable {
+                command,
+                stored_lines,
+                findings: unseen.findings.clone(),
+            }
         });
     }
 
@@ -656,6 +780,7 @@ pub fn discover_view_controls<'bytes>(
         container: container.to_owned(),
         rows,
         lines_walked,
+        heads,
     })
 }
 
@@ -855,9 +980,14 @@ impl CockpitBindingDiscovery {
     }
 
     /// The binding for one node name.
+    ///
+    /// Compared the way the walk compares names — case-insensitively on stored
+    /// bytes — so a lookup cannot miss the binding the walk itself deduplicated.
     #[must_use]
     pub fn binding(&self, node: &str) -> Option<&CockpitBinding> {
-        self.bindings.iter().find(|binding| binding.node == node)
+        self.bindings
+            .iter()
+            .find(|binding| same_name(binding.node.as_bytes(), node))
     }
 
     /// Everything the walk could not read.
@@ -1209,11 +1339,19 @@ impl From<&DiscoveredAirframe> for CockpitAirframe {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CockpitNodeCoverage {
     /// Exactly one node of the airframe's subtree carries this name, and it
-    /// references a stored mesh.
+    /// stores a non-negative mesh association.
+    ///
+    /// "Stores a non-negative `mesh_index`" and "holds drawable geometry" are
+    /// two claims, and only the first is this module's: the node reader does
+    /// not hold the mesh section and says so through
+    /// `GameZNodes::mesh_index_bounds`, so a caller that needs the second must
+    /// read the mesh array itself. A binding the original's own script names
+    /// and the archive's own node array carries is still the verified binding
+    /// F21 non-negotiable behavior 1 asks for; it just is not a proof of pixels.
     Bound {
         /// The node's index in the airframe archive's node array.
         node_index: u32,
-        /// The mesh index its node references.
+        /// The mesh index its node stores.
         mesh_index: u32,
     },
     /// More than one node of the subtree carries this name, so no single
@@ -1348,8 +1486,8 @@ impl AirframeCockpitCoverage {
         self.root_index
     }
 
-    /// How many nodes the root's subtree holds, measured over the raw parent and
-    /// child arrays.
+    /// How many nodes the root's subtree holds, measured over the archive's own
+    /// child array.
     #[must_use]
     pub const fn subtree_nodes(&self) -> usize {
         self.subtree_nodes
@@ -1467,9 +1605,14 @@ impl CockpitCoverageReport {
     }
 
     /// The row for one airframe.
+    ///
+    /// Compared the way every other name here is compared — case-insensitively
+    /// on stored bytes — so a lookup cannot miss a row the audit wrote.
     #[must_use]
     pub fn row(&self, airframe: &str) -> Option<&AirframeCockpitCoverage> {
-        self.rows.iter().find(|row| row.airframe == airframe)
+        self.rows
+            .iter()
+            .find(|row| same_name(row.airframe.as_bytes(), airframe))
     }
 
     /// How many bindings the declaring script declares, once per airframe.
@@ -1491,6 +1634,13 @@ impl CockpitCoverageReport {
 
     /// Every `(airframe, node, mesh index)` triple the audit resolved, in row
     /// order: the geometry a capture may draw.
+    ///
+    /// The mesh index is the node's own stored association. Nothing here holds
+    /// the archive's mesh section, so whether the slot holds geometry is the
+    /// mesh reader's answer and not this one's — see
+    /// `cs_formats::gamez::GameZNodes::mesh_index_bounds`, which is where a
+    /// caller checks the range. What is decided here is that the node
+    /// **associates** a mesh, which is what "the node exists" is not.
     #[must_use]
     pub fn drawable_meshes(&self) -> Vec<(&str, &str, u32)> {
         self.rows
@@ -1524,11 +1674,12 @@ pub const fn eye_placement() -> CockpitEyeCoverage {
 /// archive, once per audited airframe.
 ///
 /// Each binding is looked up by **name inside that airframe's own subtree**,
-/// walked over the raw parent and child arrays: a node with the same name under
+/// walked over the archive's own child array: a node with the same name under
 /// a different aircraft is another aircraft's node, and an airframe must never
 /// be given another's geometry. A node that resolves but references no stored
 /// mesh is [`CockpitNodeCoverage::NoMesh`] — present, named by the original, and
 /// not drawable — because "the node exists" is not "there is a cockpit there".
+/// See [`subtree_indices`] for what the walk follows and what it measures.
 ///
 /// # Errors
 ///
@@ -1566,14 +1717,21 @@ pub fn audit_cockpit_coverage(
                 measured: archive_label.to_owned(),
             });
         }
-        let declared = archive_label;
         let (root_name, root_ref) = stored_root_name(airframe)?;
         if !roots.insert(root_name) {
             return Err(CockpitCoverageError::DuplicateRoot {
                 root: root_name.to_owned(),
             });
         }
-        let Some(root) = archive.nodes.iter().find(|node| node.name == root_name) else {
+        // The archive's own stored name is compared the way every name here is
+        // (see [`same_name`]): the root key is normalized by `ContentId`, but
+        // the node array stores the original's bytes, and an exact match would
+        // report an aircraft the archive really holds as missing.
+        let Some(root) = archive
+            .nodes
+            .iter()
+            .find(|node| same_name(node.name.as_bytes(), root_name))
+        else {
             return Err(CockpitCoverageError::RootMissing {
                 airframe: airframe.airframe().as_str().to_owned(),
                 root: root_name.to_owned(),
@@ -1590,7 +1748,7 @@ pub fn audit_cockpit_coverage(
                     .filter(|index| {
                         archive
                             .get(*index)
-                            .is_some_and(|node| node.name == binding.node())
+                            .is_some_and(|node| same_name(node.name.as_bytes(), binding.node()))
                     })
                     .collect();
                 found.sort_unstable();
@@ -1620,7 +1778,7 @@ pub fn audit_cockpit_coverage(
             airframe: airframe.airframe().as_str().to_owned(),
             root: root.name.clone(),
             root_ref: root_ref.to_owned(),
-            container: declared.to_owned(),
+            container: archive_label.to_owned(),
             root_index: root.index,
             subtree_nodes: subtree.len(),
             bindings,
@@ -1655,18 +1813,29 @@ fn stored_root_name(airframe: &CockpitAirframe) -> Result<(&str, &str), CockpitC
     }
 }
 
-/// Every node index in one root's subtree, the root first, in array order.
+/// Every node index in one root's **children closure**, the root first, in array
+/// order.
 ///
 /// Iterative on purpose: the archive's own arrays are the only structure walked,
 /// an untrusted graph gets no recursion depth from this function, and a cycle
-/// in the parent/child arrays stops at the already-visited set instead of
-/// looping forever. A node whose stored index is past the array is skipped and
-/// counted nowhere, because there is no node to attribute it to.
+/// in the child arrays stops at the already-visited set instead of looping
+/// forever. A node whose stored index is past the array is skipped and counted
+/// nowhere, because there is no node to attribute it to.
 ///
-/// The walk is the root's **children closure**, plus a repair from each node's
-/// own parent word when that parent is already inside the closure; it never
-/// leaves the closure. That is what keeps one aircraft's coverage row from
-/// reaching another's nodes.
+/// Only the **child** words are followed, never a parent word, and that is the
+/// whole of the walk. A parent word points the other way: following one would
+/// let a root that names a parent pull that parent in, and from there its whole
+/// subtree — so a world node above every airframe would hand one aircraft's
+/// coverage row the other aircraft's nodes.
+///
+/// A missing child edge would make this closure smaller than the aircraft, so
+/// the shape of the walk is measured rather than assumed: over `ZBD/planes.zbd`
+/// a *repair* pass — pulling in every node whose own parent word names a node
+/// already inside the closure, to a fixpoint — added **zero** nodes for all
+/// eleven declared airframe roots, so the closures the audit measured are the
+/// aircrafts' own. A corpus where the repair does add nodes is a different
+/// corpus, and the audit's per-binding state would then have to say which edges
+/// it followed; nothing here assumes it in advance.
 fn subtree_indices(archive: &GameZNodes, root: u32) -> Vec<u32> {
     let mut visited: BTreeSet<u32> = BTreeSet::new();
     let mut queue = vec![root];
@@ -1679,19 +1848,6 @@ fn subtree_indices(archive: &GameZNodes, root: u32) -> Vec<u32> {
         };
         for child in node.children.iter().copied() {
             queue.push(child);
-        }
-        // A node's parent is followed **only** when that parent is already in the
-        // subtree. The corpus's child lists do not always cover every node that
-        // names a parent — F11-D2 measured eight world containers refusing to
-        // convert for exactly that reason — so a missing child edge is repaired
-        // from the child's own parent word, and the root's own parent word is
-        // never followed: a root that names a parent must not drag the rest of
-        // the container into "this aircraft's subtree".
-        if let Some(parent) = node.parent
-            && index != root
-            && visited.contains(&parent)
-        {
-            queue.push(parent);
         }
     }
     visited.into_iter().collect()
