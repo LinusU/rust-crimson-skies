@@ -1938,22 +1938,30 @@ fn evidence_report_m16_a_writes_the_acceptance_report() {
         artifact_array(&artifacts),
         jstr(
             "implementer: claude-1 (Rally #303, Claude Sonnet 5.5, session of 2026-10-02T00:23Z); \
-             reviewer: none yet. The implementer's own run is not independent review, is not \
-             independent original-reference evidence, and no agent review replaces the owner's \
-             human approval"
+             reviewer: bunny-alpha-1 (OpenCode, Space Bunny Alpha, session of 2026-10-02T00:58Z, \
+             fresh context and a different agent instance from the implementer's). An agent review \
+             is not independent original-reference evidence and no agent review replaces the \
+             owner's human approval"
         ),
         jstr(
-            "acceptance suite run locally with the retail capability by the implementer; this \
-             harness derives every field from the recorded log, production discovery of \
-             $CS_GAME_DIR and the binding `SourceContext::read` + `SourceContext::bind` derive \
-             from it (all five critical dependencies resolved; checklist entries still unknown are \
-             recorded in missions/bindings/M16.json, not dropped). No production code changed at \
-             M16-A: the join, its corroboration and the guard are M02-A's, and this stage exercises \
-             them at the sixteenth campaign position, the first mission of chapter 4 and the first row of \
-             the localized long names' fourth region group, whose world group c4 is the whole chapter; claim is implemented only; validated \
-             with tools/validate_evidence.py --require-pass. `candidate_tree` is the tree of the \
-             commit the suite ran on: the only later delta is this report's own copy under \
-             docs/findings/evidence/, whose bytes are this file"
+            "acceptance suite run locally with the retail capability by the implementer and \
+             re-run by the reviewer on the commit below, each test also executed alone with \
+             `--exact`; this harness derives every field from the recorded log, production \
+             discovery of $CS_GAME_DIR and the binding `SourceContext::read` + \
+             `SourceContext::bind` derive from it (all five critical dependencies resolved; \
+             checklist entries still unknown are recorded in missions/bindings/M16.json, not \
+             dropped). No production code changed at M16-A: the join, its corroboration and the \
+             guard are M02-A's, and this stage exercises them at the sixteenth campaign position, \
+             the first mission of chapter 4 and the first row of the localized long names' fourth \
+             region group, whose world group c4 is the whole chapter. The reviewer re-derived the \
+             retail facts independently of the binding code (the ZBD chapter/mission directory \
+             layout and the UTF-16 region-prefixed long-name rows of langui.dll, group sizes \
+             5/5/5/5/4) and corrected a stale M06-A comment, a weak `entry.chapter > 3` bound and \
+             this report's own reviewer identity; see \
+             docs/findings/2026-10-02-m16-a-source-binding.md. Claim is implemented only; \
+             validated with tools/validate_evidence.py --require-pass. `candidate_tree` is the \
+             tree of the commit the suite ran on: the only later delta is this report's own copy \
+             under docs/findings/evidence/, whose bytes are this file"
         ),
     );
 

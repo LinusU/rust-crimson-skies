@@ -316,8 +316,8 @@ fn accept_m16_a_the_original_name_is_confirmed_against_the_local_strings() {
     // identities. Confirm the title against local strings; do not key runtime
     // logic by this discovery label." This measures what that confirmation
     // actually is: the declared title equals the display text of exactly one
-    // retail row, and it is a *different* string from both the region-prefixed
-    // long name the installation gives the same mission and from M03's.
+    // retail row, and it is a *different* string from the region-prefixed long
+    // name the installation gives the same mission.
     let context = context();
     let binding = binding();
     let title = discovery_title();
@@ -599,12 +599,11 @@ fn accept_m16_a_the_join_is_corroborated_by_the_long_name_rows() {
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m16_a_the_position_is_the_first_row_of_the_fourth_chapter_and_region_group() {
-    // M16 is the first campaign position M01-A … M12-A did not cover, and it is
-    // a genuine boundary: with the campaign ordered by `(chapter, mission
-    // number)`, position 15 is the first mission of chapter 4, and the localized
-    // long names' first region group ends on that same row. Both structures
-    // put a boundary at row 5, so a join that divided either group one row off
-    // would move the bound identity.
+    // M16 is a genuine boundary, and the first one after chapter 3: with the
+    // campaign ordered by `(chapter, mission number)`, position 15 is the first
+    // mission of chapter 4, and the localized long names' *fourth* region group
+    // starts on that same row. Both structures put the boundary at row 15, so a
+    // join that divided either group one row off would move the bound identity.
     let context = context();
     let binding = binding();
     let campaign = context.campaign();
@@ -616,9 +615,9 @@ fn accept_m16_a_the_position_is_the_first_row_of_the_fourth_chapter_and_region_g
         entry.mission_number, 1,
         "M16 is not its chapter's first mission: {entry:?}"
     );
-    assert!(
-        entry.chapter > 3,
-        "M16 is not in a later chapter: {entry:?}"
+    assert_eq!(
+        entry.chapter, 4,
+        "M16 is not in the fourth chapter: {entry:?}"
     );
     assert_eq!(
         campaign

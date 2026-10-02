@@ -5,9 +5,11 @@ Date: 2026-10-02. Task: M16-A "Bind original mission data and branches"
 `docs/contracts/SCRIPT-MISSION.md`; identity rules
 `docs/contracts/IDENTITY-CONTENT.md`. Capabilities used: `retail`
 (`$CS_GAME_DIR` read-only, never written), `synthetic`. Implementer:
-**claude-1** (Claude Sonnet 5.5, session of 2026-10-02T00:23Z). No reviewer
-yet; the implementer's own run is not independent review and no agent review
-replaces the owner's human approval.
+**claude-1** (Claude Sonnet 5.5, session of 2026-10-02T00:23Z). Reviewer:
+**bunny-alpha-1** (OpenCode, Space Bunny Alpha, session of 2026-10-02T00:58Z,
+fresh context, not the implementer's instance). An agent review is not
+independent original-reference evidence and no agent review replaces the
+owner's human approval.
 
 The minimum acceptance scenario, *"Source-derived binding has no unresolved
 critical dependencies"*, holds for M16.
@@ -25,7 +27,7 @@ only: `crates/cs_app/tests/campaign/main.rs` (`mod m16_a;`).
 
 | Fact | Value |
 | --- | --- |
-| `install_sha256` | `b4e780ab…c631978` (same installation as M01-A … M12-A) |
+| `install_sha256` | `b4e780ab…c631978` (same installation as M01-A … M13-A) |
 | Title | exactly one localized row equals `Raid on the Rocky Express` (campaign position 15) |
 | Mission id | `mission/ch4-m01` (chapter 4, mission 1) |
 | World group | `world/c4` (`ZBD/C4`) |
@@ -34,9 +36,13 @@ only: `crates/cs_app/tests/campaign/main.rs` (`mod m16_a;`).
 ## What is different at M16
 
 - **First mission of chapter 4.** Position 15 is the first mission of
-  chapter 4 (positions 15..20). As at M06, the layout's chapter boundary and
-  the localized long names' region boundary fall on the same row, so a join
-  that divided either group one row off would move the bound identity.
+  chapter 4 (positions 15..19; chapter 5 starts at 20). The localized long
+  names' region groups come out `Hawaii` (5), `Northwest` (5), `Hollywood`
+  (5), `Rocky Mountains` (5) and `Manhattan` (4) — the layout's chapter sizes
+  `[5, 5, 5, 5, 4]` — and the fourth of them *starts* on row 15, so the
+  layout's chapter boundary and the localized region boundary fall on the
+  same row. A join that divided either group one row off would move the bound
+  identity.
   `accept_m16_a_the_position_is_the_first_row_of_the_fourth_chapter_and_region_group`
   asserts the previous position belongs to another chapter and that both
   structures place the boundary at position 15.
@@ -65,11 +71,55 @@ shape and re-derived for chapter 4; the others pin the scenario, the committed
 record, the title confirmation, the join corroboration, the world group, the
 unready campaign, and the two synthetic predicate guards.
 
+## Review (bunny-alpha-1, independent of the implementer)
+
+The reviewer re-derived the retail facts from the installation without using
+the binding code, and corrected the following:
+
+- `ZBD` holds 24 `M<digits>` mission directories: `C1` 3 + `C1B` 1 + `C1C` 1,
+  `C2` 4 + `C2B` 1, `C3` 5, `C4` 5 and `C5` 4, so the campaign is 24 missions
+  in chapters of `5, 5, 5, 5, 4` and position 15 is `ZBD/C4/M01` — the record's
+  `mission/ch4-m01`, `world/c4`, `script/c4-m01-zrdr` and
+  `ZBD/C4/M01/zrdr.zbd` agree with the directory layout read by hand.
+- Reading the UTF-16 rows of `GOSDATA/ASSETS/BINARIES/langui.dll` directly, the
+  region-prefixed long names are `Hawaii` (M01-M05), `Northwest` (M06-M10),
+  `Hollywood` (M11-M15), `Rocky Mountains` (M16-M20) and `Manhattan` (M21-M24)
+  — group sizes `5, 5, 5, 5, 4`, equal to the chapter sizes, with
+  `Rocky Mountains - Raid on the Rocky Express` the sixteenth row. The
+  corroboration the suite asserts is therefore real, and M16's short-name row
+  (`Raid on the Rocky Express`) is a different string from that long name.
+- Fixed: the position test's comment still said the *first* region group ends
+  on the boundary row and that the boundary is at "row 5" (both carried over
+  from M06-A, where the boundary really was at row 5); the fourth region group
+  *starts* at row 15.
+- Fixed: `entry.chapter > 3` is now `entry.chapter == 4`, matching the test's
+  own name, and this record's chapter-4 span is 15..19, not 15..20.
+- Fixed: the evidence report said `reviewer: none yet` and that only the
+  implementer ran the suite; the regenerated report on the reviewed commit
+  names both and records the reviewer's own `--include-ignored` run.
+
 ## Checks
 
 | Command | Exit |
 | --- | --- |
 | `cargo test --workspace --locked -- accept_m16_a_ --include-ignored` | 0 (9 tests) |
+| each of the 9 tests alone with `--exact` | 0 |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
+| `cargo test --workspace --locked` | 0 |
+| `tools/validate_evidence.py … --require-pass` | 0 |
+
+## Open findings filed as follow-up tasks
+
+- #478 — the `source_spans` entry recorded for the title string is the whole PE
+  string *bundle* the row sits in (M16-A: offset 95304, length 876 — sixteen
+  unrelated short names), not the row's own bytes. Pre-existing behaviour from
+  M01-A, unchanged here; filed as its own task rather than widened into this
+  stage.
+- #479 — the already-merged reports `M01-A`, `M05-A`, `M08-A`, `M12-A` and
+  `M13-A` still read `reviewer: none yet` although their tasks were reviewed.
+  Fixed here for M16-A only, because rewriting those reports' reviewer identity
+  is outside this stage's slice.
 
 ## Recorded unknowns (not guessed)
 
