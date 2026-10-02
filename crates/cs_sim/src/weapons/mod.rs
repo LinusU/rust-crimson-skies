@@ -1,17 +1,17 @@
 //! Guns, ammunition, hardpoints and swept ballistic hits (F27).
 //!
 //! Spec: `specs/F27-guns-ammunition-hardpoints-and-ballistic-hits.md`, stages
-//! `### F27-A` and `### F27-C`. Shared contract:
+//! `### F27-A`, `### F27-C` and `### F27-D`. Shared contract:
 //! `docs/contracts/FLIGHT-PHYSICS.md`.
 //!
 //! Stage **F27-A** defined the typed fire contract, the swept-hit query and
 //! a minimal synthetic fixture. Stage **F27-C** adds the query stage that
 //! turns a sweep into damage — where candidate filtering lives and why, in
 //! `docs/findings/2026-10-02-f27-c-candidate-filtering-and-hit-damage-routing.md`.
-//! Still unowned: the per-tick cadence loop and the mount transforms read out
-//! of the live aircraft hierarchy (F27-B), the ECS-side effects, audio and
-//! bank-selection wiring (F27-C's application half) and the original
-//! gun/ammunition audit (F27-D).
+//! Stage **F27-D** adds the audit half: what the original's gun/ammunition
+//! surface was *measured* to be, and the registry that maps each ammunition
+//! type a session can fire to the damage consumer that applies it, in
+//! `docs/findings/2026-10-03-f27-d-original-ammunition-and-loadout-audit.md`.
 //!
 //! [`guns`] is that one part:
 //!
@@ -37,6 +37,10 @@
 //!   the rules filter it under — and [`guns::GunHitRouter`] turns one
 //!   accepted shot's swept contacts into [`crate::damage::HitEvent`]s
 //!   carrying the gun definition's own per-channel damage amounts.
+//! * [`guns::ORIGINAL_GUN_GROUPS`] and [`guns::AmmunitionRegistry`] are the
+//!   F27-D audit half: what the original's loadout surface was measured to
+//!   declare, and which ammunition types a session can actually fire, each
+//!   mapped to the production path that consumes its damage.
 //!
 //! `cs_sim` may depend only on [`cs_types`] and [`cs_script`]
 //! (`docs/01-ARCHITECTURE.md`), so every record here is built from those
@@ -80,17 +84,23 @@ pub use ordnance::{
 };
 
 pub use guns::{
-    AmmunitionId, AmmunitionIdError, Ballistics, CadenceRefusal, FireDenialReason, FireError,
-    FireEvent, FireEventId, FireIntent, FireIntentId, FireResolution, FireResolver,
+    AmmunitionDamageConsumer, AmmunitionId, AmmunitionIdError, AmmunitionRefusal,
+    AmmunitionRegistry, Ballistics, CadenceRefusal, DAMAGE_CONSUMED_BY_ROUTER, FireDenialReason,
+    FireError, FireEvent, FireEventId, FireIntent, FireIntentId, FireResolution, FireResolver,
     FriendlyFireRule, GunBank, GunBankError, GunCadence, GunDefinition, GunDefinitionError,
-    GunHitRouter, GunMountKind, GunRate, GunStateError, InheritanceRule, IntentRefusal,
-    LiveProjectile, MountTransform, MountTransformError, ProjectileId, ProjectileRuntime,
+    GunGroupName, GunHitRouter, GunMountKind, GunRate, GunStateError, InheritanceRule,
+    IntentRefusal, LiveProjectile, MountTransform, MountTransformError, ORIGINAL_AMMO_NAME_BLOCKS,
+    ORIGINAL_AMMUNITION_TYPES, ORIGINAL_GUN_GROUP_NAMES_BASE_ID, ORIGINAL_GUN_GROUP_NAMES_LAST_ID,
+    ORIGINAL_GUN_GROUPS, ORIGINAL_GUN_SLOTS, ORIGINAL_HARDPOINT_POINTS, ORIGINAL_RESOURCE_HEADER,
+    ORIGINAL_ROCKET_SLOTS, ORIGINAL_SELECTABLE_GUNS, ProjectileId, ProjectileRuntime,
     ProjectileRuntimeError, ProjectileSegment, ProjectileSpawn, ProjectileTick, RoutedHit,
     SYNTHETIC_AMMO_KEY, SYNTHETIC_ARMOR_DAMAGE, SYNTHETIC_CALIBER, SYNTHETIC_EFFECT_KEY,
     SYNTHETIC_GUN_MOUNT, SYNTHETIC_INTERNAL_DAMAGE, SYNTHETIC_LIFETIME_TICKS,
     SYNTHETIC_MUZZLE_VELOCITY_MPS, SYNTHETIC_SOUND_KEY, SYNTHETIC_SPREAD_HALF_ANGLE_RAD,
     SYNTHETIC_STARTING_ROUNDS, SYNTHETIC_TICKS_BETWEEN_SHOTS, SelfHitRule, SpreadCone,
     SweepCandidate, SweepOutcome, SweepRefusal, SweepTarget, SweepTargetError, SweptContact,
-    SweptHit, WEAPON_DAMAGE_CHANNELS, WeaponDamage, WeaponRules, WeaponState, synthetic_ammunition,
-    synthetic_claim, synthetic_effect, synthetic_gun_definition, synthetic_mount, synthetic_sound,
+    SweptHit, WEAPON_DAMAGE_CHANNELS, WeaponDamage, WeaponRules, WeaponState, covers_group,
+    original_groups_for, original_gun_group_ids, synthetic_ammunition, synthetic_claim,
+    synthetic_effect, synthetic_gun_definition, synthetic_mount, synthetic_sound,
+    uncovered_original_gun_groups,
 };

@@ -35,6 +35,11 @@
 //!   per-tick step that runs selection, fire, the accepted-shot effects,
 //!   the sweep into damage and the retirement of spent rounds, plus
 //!   [`sync_round_mirrors`], the ECS mirror of the authoritative rounds.
+//! * [`session_ammunition_audit`] — the F27-D runtime half of AC04's "maps
+//!   every type to its behavior and damage consumer": the ammunition types
+//!   the session's registered guns actually carry, each mapped to the
+//!   channels the router would emit damage on, with every contradiction
+//!   between two guns reported rather than resolved.
 //!
 //!
 //! Nothing here owns weapon state: the selection, cooldowns, ammunition and
@@ -62,12 +67,13 @@ use cs_sim::damage::{
 };
 use cs_sim::targeting::Allegiance;
 use cs_sim::weapons::{
-    AmmunitionId, AmmunitionIdError, CadenceRefusal, FireDenialReason, FireError, FireEvent,
-    FireIntent, FriendlyFireRule, GunBank, GunCadence, GunDefinition, GunDefinitionError,
-    GunHitRouter, GunMountKind, GunRate, GunStateError, InheritanceRule, LiveProjectile,
-    MountTransform, ProjectileId, ProjectileRuntimeError, ProjectileSegment, SelfHitRule,
-    SpreadCone, SweepCandidate, SweepOutcome, SweepRefusal, SweepTarget, SweepTargetError,
-    WeaponDamage, WeaponRules, WeaponState,
+    AmmunitionDamageConsumer, AmmunitionId, AmmunitionIdError, AmmunitionRefusal,
+    AmmunitionRegistry, CadenceRefusal, FireDenialReason, FireError, FireEvent, FireIntent,
+    FriendlyFireRule, GunBank, GunCadence, GunDefinition, GunDefinitionError, GunHitRouter,
+    GunMountKind, GunRate, GunStateError, InheritanceRule, LiveProjectile, MountTransform,
+    ProjectileId, ProjectileRuntimeError, ProjectileSegment, SelfHitRule, SpreadCone,
+    SweepCandidate, SweepOutcome, SweepRefusal, SweepTarget, SweepTargetError, WeaponDamage,
+    WeaponRules, WeaponState,
 };
 use cs_types::Tick;
 use cs_types::content::{ContentId, Known, Resolved};
@@ -2115,4 +2121,126 @@ fn despawn_round_mirrors(world: &mut World) -> usize {
         world.entity_mut(*entity).despawn();
     }
     mirrors.len()
+}
+
+// ------------------------------------------------ the session ammo/loadout ----
+
+/// One ammunition type a session can fire, mapped to what consumes its damage.
+///
+/// This is the **runtime** row of AC04's "maps every type to its behavior and
+/// damage consumer": the ammunition types the session's registered guns
+/// actually carry, the mounts firing each, and the declared per-channel amounts
+/// the [`GunHitRouter`] would emit for a contact.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SessionAmmunitionRow {
+    ammunition: AmmunitionId,
+    consumer: AmmunitionDamageConsumer,
+    mounts: Vec<DamageNodeKey>,
+}
+
+impl SessionAmmunitionRow {
+    /// The ammunition type.
+    #[must_use]
+    pub const fn ammunition(&self) -> &AmmunitionId {
+        &self.ammunition
+    }
+
+    /// Who consumes this type's declared damage.
+    #[must_use]
+    pub const fn consumer(&self) -> &AmmunitionDamageConsumer {
+        &self.consumer
+    }
+
+    /// The mounts that fire it, in ascending key order.
+    #[must_use]
+    pub fn mounts(&self) -> &[DamageNodeKey] {
+        &self.mounts
+    }
+}
+
+/// The ammunition/loadout audit of one weapon session.
+///
+/// Built by [`session_ammunition_audit`]. It reports every contradiction the
+/// session's registrations carry **without changing any of them**: a refusal is
+/// a fact about the data, and the session's rounds stay as registered.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SessionAmmunitionAudit {
+    rows: Vec<SessionAmmunitionRow>,
+    refused: Vec<AmmunitionRefusal>,
+}
+
+impl SessionAmmunitionAudit {
+    /// One row per ammunition type the session can fire, in ascending id order.
+    #[must_use]
+    pub fn rows(&self) -> &[SessionAmmunitionRow] {
+        &self.rows
+    }
+
+    /// The row for one type, if the session can fire it.
+    #[must_use]
+    pub fn row(&self, ammunition: &AmmunitionId) -> Option<&SessionAmmunitionRow> {
+        self.rows.iter().find(|row| row.ammunition == *ammunition)
+    }
+
+    /// Every contradiction found between two registered guns.
+    #[must_use]
+    pub fn refused(&self) -> &[AmmunitionRefusal] {
+        &self.refused
+    }
+
+    /// Whether every type the session can fire reaches a damage consumer that
+    /// delivers something, and no two guns contradict each other.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.refused.is_empty() && self.rows.iter().all(|row| row.consumer.is_consumed())
+    }
+
+    /// The types the session can fire but that deliver no damage anywhere.
+    ///
+    /// A round of such a type is spawned, consumes a round, sounds and emits an
+    /// effect, and lands — for nothing. That is a data defect, not a physics
+    /// one, so it is reported here and nowhere repaired.
+    #[must_use]
+    pub fn unconsumed(&self) -> Vec<&AmmunitionId> {
+        self.rows
+            .iter()
+            .filter(|row| !row.consumer.is_consumed())
+            .map(|row| &row.ammunition)
+            .collect()
+    }
+}
+
+/// Walks one session's registered guns and reports its ammunition/loadout.
+///
+/// This is the bridge between the two halves of AC04: the session's *lowered*
+/// guns name a runtime [`AmmunitionId`] and carry their own declared damage, so
+/// the [`AmmunitionRegistry`] built here answers, per type, which mounts fire it
+/// and which channels the router would emit damage on. A gun that contradicts
+/// another about the same type is **reported**, not silently resolved: nothing in
+/// the original data says which of the two is right.
+///
+/// A closed session reports nothing, because teardown releases the cadence and
+/// with it every registered gun; there is no ammunition left to audit.
+#[must_use]
+pub fn session_ammunition_audit(session: &WeaponSession) -> SessionAmmunitionAudit {
+    let mut audit = SessionAmmunitionAudit::default();
+    if session.is_closed() {
+        return audit;
+    }
+    let mut registry = AmmunitionRegistry::new();
+    for shooter in session.cadence().resolver().shooters() {
+        for gun in session.cadence().resolver().definitions(&shooter) {
+            if let Err(refusal) = registry.register(gun) {
+                audit.refused.push(refusal);
+            }
+        }
+    }
+    for (ammunition, consumer) in registry.audit() {
+        audit.rows.push(SessionAmmunitionRow {
+            mounts: registry.mounts(&ammunition).to_vec(),
+            ammunition,
+            consumer,
+        });
+    }
+    audit
 }

@@ -46,15 +46,22 @@
 //!
 //! # Designed vocabulary, not original data
 //!
-//! The original gun set, calibers, ammunition types, hardpoint layout,
-//! cadence, muzzle velocities, lifetimes, spread model, damage numbers and
-//! interaction rules are unmeasured (F27 "Research boundary"; the public
-//! manual establishes no ammunition or ballistic table). Every kind, rule
-//! name and fixture value here is **newly authored project design** carrying
+//! The original gun set, calibers, per-type ammunition damage, convergence rule
+//! and interaction rules are unmeasured (F27 "Research boundary"; the public
+//! manual establishes no ammunition or ballistic table). Every kind, rule name
+//! and fixture value here is **newly authored project design** carrying
 //! `Origin::SyntheticFixture` and designed provenance, recorded in
 //! `docs/findings/2026-10-01-f27-a-weapon-ammo-schemas-and-fire-events.md`.
+//!
+//! What F27-D **measured** is the *shape* of the original's loadout surface —
+//! how many ammunition types, guns, gun slots and rocket slots it declares and
+//! which gun groups it names ([`OriginalGunLoadout`], [`ORIGINAL_GUN_GROUPS`]).
+//! [`AmmunitionAudit`] audits a declared catalogue against that surface and
+//! reports every gap by name; it never fills one. What stays unmeasured is
+//! recorded in
+//! `docs/findings/2026-10-03-f27-d-original-ammunition-and-loadout-audit.md`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use cs_types::content::{ContentId, ContentKind, Origin, Provenance, Resolved};
@@ -67,9 +74,12 @@ use crate::scene::SceneNodeId;
 /// Where a weapon sits on the airframe — the declared counterpart of
 /// `cs_sim::weapons::GunMountKind`.
 ///
-/// The list is **designed**, not measured: the original hardpoint layout is
-/// unmeasured and F27-D maps it onto this set. The boundary lowers it
-/// field-wise.
+/// The list is **designed**, not measured: it is the smallest set that states
+/// AC02 ("a disabled *wing* gun") and the per-mount discipline of non-negotiable
+/// 2. F27-D mapped the original's measured hardpoint vocabulary onto it and
+/// reports the part that does not fit — see
+/// [`DeclaredGunMountKind::original_groups`] and
+/// [`uncovered_original_gun_groups`]. The boundary lowers the kind field-wise.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum DeclaredGunMountKind {
     /// A nose or forward-fuselage gun.
@@ -110,6 +120,39 @@ impl DeclaredGunMountKind {
     #[must_use]
     pub const fn is_wing(self) -> bool {
         matches!(self, Self::WingLeft | Self::WingRight)
+    }
+
+    /// The gun-group ids this kind covers, in [`ORIGINAL_GUN_GROUPS`] order.
+    ///
+    /// **A partial mapping, and that is the point.** These are exactly the
+    /// groups whose kind the original's own header macro determines: a label
+    /// that says *left* is a left wing gun, *right* a right wing gun, *nose* a
+    /// nose gun, *rear* a tail gun and *fuselage* a fuselage gun. The remaining
+    /// eleven groups — the inner/outer/middle wing, upper/lower wing and centre
+    /// groups and their `2` variants — name a wing station and often omit the
+    /// side, which needs the per-airframe tables inside the executable. They
+    /// stay uncovered and [`AmmunitionAudit`] reports them; assigning them a
+    /// side would be a guess presented as a mount rule.
+    #[must_use]
+    pub fn original_groups(self) -> Vec<DeclaredGunGroup> {
+        ORIGINAL_GUN_GROUPS
+            .iter()
+            .copied()
+            .filter(|group| self.covers_group(group.id))
+            .collect()
+    }
+
+    /// Whether this kind covers the gun group with string id `id`.
+    #[must_use]
+    pub const fn covers_group(self, id: u32) -> bool {
+        matches!(
+            (self, id),
+            (Self::Nose, 3063 | 3064 | 3071 | 3072 | 3080)
+                | (Self::Tail, 3073)
+                | (Self::Gondola, 3066)
+                | (Self::WingLeft, 3068)
+                | (Self::WingRight, 3067)
+        )
     }
 }
 
@@ -1309,6 +1352,979 @@ impl fmt::Display for LoadoutSchemaError {
 }
 
 impl std::error::Error for LoadoutSchemaError {}
+
+// -------------------------------------------- the original loadout surface ----
+
+/// The container member the original declares its gun and ammunition identity
+/// vocabulary in.
+///
+/// **Measured, not authored.** The retail asset container
+/// `GOSDATA/ASSETS/crimson.rof` ships this member and it is the engine's own
+/// resource header, a C include the original build generated. It is named here
+/// because a claim about the original's loadout has to say where it was read;
+/// the retail acceptance tests re-read this member and re-measure every value
+/// in [`OriginalGunLoadout`] against it.
+pub const ORIGINAL_RESOURCE_HEADER: &str = "ASSETS/SCRIPTS/RESOURCE.H";
+
+/// The first string id of the original's **gun-group** (hardpoint) names.
+///
+/// `3060` introduces the group table and names no group of its own, so the
+/// groups run from `3061`.
+pub const ORIGINAL_GUN_GROUP_NAMES_BASE_ID: u32 = 3061;
+
+/// The last string id of the original's gun-group names.
+pub const ORIGINAL_GUN_GROUP_NAMES_LAST_ID: u32 = 3080;
+
+/// One gun group (hardpoint) the original declares — the declared counterpart
+/// of `cs_sim::weapons::GunGroupName`.
+///
+/// `id` is the string identifier the engine resolves the group's name from and
+/// `label` is the header macro that declares it. Both are original text.
+///
+/// The label says **which group the original names**, not where the group sits:
+/// assigning an inner- or outer-wing group to a side needs the per-airframe gun
+/// tables inside the executable, which no agent can read. So
+/// [`DeclaredGunMountKind::covers_group`] covers only the groups the label
+/// itself determines and [`ORIGINAL_GUN_GROUPS`] keeps every group addressable
+/// whether it is covered or not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DeclaredGunGroup {
+    id: u32,
+    label: &'static str,
+}
+
+impl DeclaredGunGroup {
+    /// A group: the string id it resolves from and the macro that declares it.
+    #[must_use]
+    pub const fn new(id: u32, label: &'static str) -> Self {
+        Self { id, label }
+    }
+
+    /// The string id the engine resolves this group's name from.
+    #[must_use]
+    pub const fn id(self) -> u32 {
+        self.id
+    }
+
+    /// The original's own name for the group, as its resource header spells it.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        self.label
+    }
+
+    /// Looks a group up by its string id.
+    #[must_use]
+    pub fn by_id(id: u32) -> Option<Self> {
+        ORIGINAL_GUN_GROUPS
+            .iter()
+            .copied()
+            .find(|group| group.id == id)
+    }
+
+    /// Whether a [`DeclaredGunMountKind`] covers this group.
+    #[must_use]
+    pub fn is_covered(self) -> bool {
+        DeclaredGunMountKind::ALL
+            .iter()
+            .any(|kind| kind.covers_group(self.id))
+    }
+}
+
+impl fmt::Display for DeclaredGunGroup {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} ({})", self.label, self.id)
+    }
+}
+
+/// Every gun group the original declares, in ascending id order.
+///
+/// **Measured**: twenty contiguous ids in [`ORIGICAL_RESOURCE_HEADER`]. The
+/// names the engine *shows* for these ids live in the runtime string catalog
+/// and are readable from no file, so `label` is the header macro.
+pub const ORIGINAL_GUN_GROUPS: [DeclaredGunGroup; 20] = [
+    DeclaredGunGroup::new(3061, "INNERWINGGUNS"),
+    DeclaredGunGroup::new(3062, "OUTERWINGGUNS"),
+    DeclaredGunGroup::new(3063, "LOWERNOSEGUNS"),
+    DeclaredGunGroup::new(3064, "UPPERNOSEGUNS"),
+    DeclaredGunGroup::new(3065, "CENTERGUNS"),
+    DeclaredGunGroup::new(3066, "RIGHTFUSELAGEGUNS"),
+    DeclaredGunGroup::new(3067, "RIGHTWINGGUNS"),
+    DeclaredGunGroup::new(3068, "LEFTWINGGUNS"),
+    DeclaredGunGroup::new(3069, "OUTERWINGGUNS2"),
+    DeclaredGunGroup::new(3070, "INNERWINGGUNS2"),
+    DeclaredGunGroup::new(3071, "NOSEGUNS"),
+    DeclaredGunGroup::new(3072, "NOSEGUNS2"),
+    DeclaredGunGroup::new(3073, "REARTURRET"),
+    DeclaredGunGroup::new(3074, "LOWINNERWINGGUNS"),
+    DeclaredGunGroup::new(3075, "LOWOUTERWINGGUNS"),
+    DeclaredGunGroup::new(3076, "UPPERINNERWINGGUNS"),
+    DeclaredGunGroup::new(3077, "UPPEROUTERWINGGUNS"),
+    DeclaredGunGroup::new(3078, "CENTERGUNS2"),
+    DeclaredGunGroup::new(3079, "MIDDLEWINGGUNS"),
+    DeclaredGunGroup::new(3080, "NOSETURRET"),
+];
+
+/// The string-id blocks the original allocates to one ammunition type each.
+///
+/// **Measured**: four blocks in [`ORIGINAL_RESOURCE_HEADER`], declared at
+/// `3350`, `3360`, `3365` and `3370`. Each holds
+/// [`ORIGINAL_AMMUNITION_TYPES`] consecutive ids; the ammunition screens index
+/// the description block as `3370 + selection - 1` for `selection` in
+/// `1..=ORIGINAL_AMMUNITION_TYPES`, which reads the same count a second,
+/// independent way.
+pub const ORIGINAL_AMMO_NAME_BLOCKS: [(u32, &'static str); 4] = [
+    (3350, "ammo_long_name"),
+    (3360, "ammo_short_name"),
+    (3365, "ammo_abbreviation"),
+    (3370, "ammo_description"),
+];
+
+/// The number of gun ammunition types the original declares.
+///
+/// **Measured** three independent ways, in agreement: the four name blocks
+/// above are four ids wide, the multiplayer ammunition screen builds one
+/// dropdown row per hardpoint ammunition entry behind a leading header row
+/// (five rows, four types), and the outlaw ammunition screen holds four
+/// selectable entries.
+pub const ORIGINAL_AMMUNITION_TYPES: u32 = 4;
+
+/// The number of distinct guns the original lets one loadout choose from.
+///
+/// **Measured**: the layout file's `GUNS` group holds five entries, the
+/// multiplayer gun screen asks for a five-element gun-name array, and the
+/// outlaw gun screen holds five selectable entries.
+pub const ORIGINAL_SELECTABLE_GUNS: u32 = 5;
+
+/// The number of gun slots one airframe's loadout offers.
+///
+/// **Measured**: the single-player ordinance layout builds four gun-name and
+/// four ammunition dropdowns, and the multiplayer ammunition screen iterates
+/// four gun slots.
+pub const ORIGINAL_GUN_SLOTS: u32 = 4;
+
+/// The number of rocket/ordnance slots one airframe's loadout offers.
+///
+/// **Measured**: the single-player ordinance layout builds eight rocket
+/// dropdowns beside the same four gun slots.
+pub const ORIGINAL_ROCKET_SLOTS: u32 = 8;
+
+/// The number of hardpoint *points* the original's plane construction offers.
+///
+/// **Measured**: the hardpoint page builds two selectable points against the
+/// four gun slots.
+pub const ORIGINAL_HARDPOINT_POINTS: u32 = 2;
+
+/// The gun groups no [`DeclaredGunMountKind`] covers, in
+/// [`ORIGINAL_GUN_GROUPS`] order.
+///
+/// This is the measured size of the gap between the designed mount vocabulary
+/// and the original's. A caller can state it without consulting any table, and
+/// [`AmmunitionAudit`] reports every entry by name.
+#[must_use]
+pub fn uncovered_original_gun_groups() -> Vec<DeclaredGunGroup> {
+    ORIGINAL_GUN_GROUPS
+        .iter()
+        .copied()
+        .filter(|group| !group.is_covered())
+        .collect()
+}
+
+/// What an installation's gun/ammunition surface was **measured** to be.
+///
+/// This is the closure target of AC04's audit: the declared catalogue is only
+/// complete if it enumerates at least as many ammunition types as the
+/// installation declares and its mount kinds cover the groups the installation
+/// names. Without it, "every type" is unfalsifiable — a catalogue holding one
+/// type would satisfy any check there was.
+///
+/// # What is deliberately absent
+///
+/// The *names* of the ammunition types, their calibers, their damage amounts
+/// and the convergence rule are **not** here. They live in the executable's own
+/// tables, which no agent can read: the ammunition screens ask the engine for
+/// the name array (`callback($$E$$,5054,…)`) rather than naming it. A record
+/// that carried a name would be a fabrication, so the surface carries counts
+/// and identifiers only, and the audit reports the rest as unknown.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OriginalGunLoadout {
+    origin: Origin,
+    ammunition_types: u32,
+    selectable_guns: u32,
+    gun_slots: u32,
+    rocket_slots: u32,
+    hardpoint_points: u32,
+    gun_groups: Vec<DeclaredGunGroup>,
+    provenance: Provenance,
+}
+
+impl OriginalGunLoadout {
+    /// Records a measured loadout surface.
+    ///
+    /// # Errors
+    ///
+    /// [`OriginalLoadoutError`] when a count is zero, when the gun-group list is
+    /// empty, or when a group is outside
+    /// `[ORIGINAL_GUN_GROUP_NAMES_BASE_ID, ORIGINAL_GUN_GROUP_NAMES_LAST_ID]`
+    /// or is listed twice. A surface that contradicts the original's own
+    /// identifier range is a misread, and is refused rather than audited.
+    pub fn try_new(
+        origin: Origin,
+        ammunition_types: u32,
+        selectable_guns: u32,
+        gun_slots: u32,
+        rocket_slots: u32,
+        hardpoint_points: u32,
+        gun_groups: Vec<DeclaredGunGroup>,
+        provenance: Provenance,
+    ) -> Result<Self, OriginalLoadoutError> {
+        if ammunition_types == 0 {
+            return Err(OriginalLoadoutError::ZeroCount {
+                field: "ammunition_types",
+            });
+        }
+        if selectable_guns == 0 {
+            return Err(OriginalLoadoutError::ZeroCount {
+                field: "selectable_guns",
+            });
+        }
+        if gun_slots == 0 {
+            return Err(OriginalLoadoutError::ZeroCount { field: "gun_slots" });
+        }
+        if rocket_slots == 0 {
+            return Err(OriginalLoadoutError::ZeroCount {
+                field: "rocket_slots",
+            });
+        }
+        if hardpoint_points == 0 {
+            return Err(OriginalLoadoutError::ZeroCount {
+                field: "hardpoint_points",
+            });
+        }
+        if gun_groups.is_empty() {
+            return Err(OriginalLoadoutError::NoGunGroups);
+        }
+        let mut seen = BTreeMap::new();
+        for group in &gun_groups {
+            if group.id < ORIGINAL_GUN_GROUP_NAMES_BASE_ID
+                || group.id > ORIGINAL_GUN_GROUP_NAMES_LAST_ID
+            {
+                return Err(OriginalLoadoutError::GunGroupOutOfRange { group: *group });
+            }
+            if seen.insert(group.id, ()).is_some() {
+                return Err(OriginalLoadoutError::DuplicateGunGroup { group: *group });
+            }
+        }
+        Ok(Self {
+            origin,
+            ammunition_types,
+            selectable_guns,
+            gun_slots,
+            rocket_slots,
+            hardpoint_points,
+            gun_groups,
+            provenance,
+        })
+    }
+
+    /// Where the surface was read from.
+    #[must_use]
+    pub const fn origin(&self) -> &Origin {
+        &self.origin
+    }
+
+    /// The measured number of gun ammunition types.
+    #[must_use]
+    pub const fn ammunition_types(&self) -> u32 {
+        self.ammunition_types
+    }
+
+    /// The measured number of selectable guns.
+    #[must_use]
+    pub const fn selectable_guns(&self) -> u32 {
+        self.selectable_guns
+    }
+
+    /// The measured number of gun slots per airframe.
+    #[must_use]
+    pub const fn gun_slots(&self) -> u32 {
+        self.gun_slots
+    }
+
+    /// The measured number of rocket slots per airframe.
+    #[must_use]
+    pub const fn rocket_slots(&self) -> u32 {
+        self.rocket_slots
+    }
+
+    /// The measured number of hardpoint points.
+    #[must_use]
+    pub const fn hardpoint_points(&self) -> u32 {
+        self.hardpoint_points
+    }
+
+    /// The measured gun groups, in declared order.
+    #[must_use]
+    pub fn gun_groups(&self) -> &[DeclaredGunGroup] {
+        &self.gun_groups
+    }
+
+    /// The gun groups no declared mount kind covers.
+    #[must_use]
+    pub fn uncovered_gun_groups(&self) -> Vec<DeclaredGunGroup> {
+        self.gun_groups
+            .iter()
+            .copied()
+            .filter(|group| !group.is_covered())
+            .collect()
+    }
+
+    /// Where this surface was measured.
+    #[must_use]
+    pub const fn provenance(&self) -> &Provenance {
+        &self.provenance
+    }
+}
+
+/// Why a measured loadout surface was refused.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OriginalLoadoutError {
+    /// A required count was zero, so the surface describes no loadout at all.
+    ZeroCount {
+        /// The name of the count field.
+        field: &'static str,
+    },
+    /// The surface names no gun group.
+    NoGunGroups,
+    /// A gun group id is outside the original's declared range.
+    GunGroupOutOfRange {
+        /// The offending group.
+        group: DeclaredGunGroup,
+    },
+    /// The same gun group was listed twice.
+    DuplicateGunGroup {
+        /// The duplicated group.
+        group: DeclaredGunGroup,
+    },
+}
+
+impl fmt::Display for OriginalLoadoutError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ZeroCount { field } => {
+                write!(f, "the measured loadout declares no {field}")
+            }
+            Self::NoGunGroups => write!(f, "the measured loadout names no gun group"),
+            Self::GunGroupOutOfRange { group } => write!(
+                f,
+                "gun group {group} is outside the original's declared id range \
+                 {ORIGINAL_GUN_GROUP_NAMES_BASE_ID}..={ORIGINAL_GUN_GROUP_NAMES_LAST_ID}"
+            ),
+            Self::DuplicateGunGroup { group } => write!(f, "gun group {group} is listed twice"),
+        }
+    }
+}
+
+impl std::error::Error for OriginalLoadoutError {}
+
+// ------------------------------------------------------------- the audit ----
+
+/// How one ammunition type behaves, and what a production path does with it.
+///
+/// The split is the point: [`applied`](Self::applied) names the options a
+/// production path reads today, and [`deferred`](Self::deferred) names the ones
+/// that are declared but read by nothing. A deferral is **not** a finding —
+/// it is a standing property of the schema, and [`AmmunitionAuditReport::is_
+/// complete`] would never be reachable if it were. What is a finding is an
+/// option whose *value* is unknown (see
+/// [`AmmoAuditFinding::UnmeasuredRule`]).
+#[derive(Clone, Debug, PartialEq)]
+pub struct AmmoBehavior {
+    rules: InteractionRules,
+    applied: Vec<InteractionOption>,
+    deferred: Vec<(InteractionOption, &'static str, &'static str)>,
+    unmeasured: Vec<InteractionOption>,
+}
+
+impl AmmoBehavior {
+    /// The behavior of one declared ammunition type.
+    #[must_use]
+    pub fn of(rules: &InteractionRules) -> Self {
+        Self {
+            applied: InteractionOption::ALL
+                .iter()
+                .copied()
+                .filter(|option| option.applied_by().is_some())
+                .collect(),
+            deferred: rules.deferred(),
+            unmeasured: InteractionOption::ALL
+                .iter()
+                .copied()
+                .filter(|option| !rules.is_known(*option))
+                .collect(),
+            rules: rules.clone(),
+        }
+    }
+
+    /// The declared rules themselves.
+    #[must_use]
+    pub const fn rules(&self) -> &InteractionRules {
+        &self.rules
+    }
+
+    /// The options a production path applies, in [`InteractionOption::ALL`] order.
+    #[must_use]
+    pub fn applied(&self) -> &[InteractionOption] {
+        &self.applied
+    }
+
+    /// The options no production path applies, with the stage that owes them.
+    #[must_use]
+    pub fn deferred(&self) -> &[(InteractionOption, &'static str, &'static str)] {
+        &self.deferred
+    }
+
+    /// The options whose value this record does not know.
+    #[must_use]
+    pub fn unmeasured(&self) -> &[InteractionOption] {
+        &self.unmeasured
+    }
+
+    /// Whether every declared option has a known value, so the type could
+    /// lower.
+    #[must_use]
+    pub fn is_measurable(&self) -> bool {
+        self.unmeasured.is_empty()
+    }
+}
+
+/// Who consumes one ammunition type's declared damage.
+///
+/// "Consumer" is declared here and resolved to a concrete production path by
+/// [`DAMAGE_CONSUMED_BY_ROUTER`]: a type with **no** known amount on any channel
+/// has no consumer, and this says so instead of naming a path that could never
+/// receive anything.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AmmoDamageConsumer {
+    known: Vec<(DeclaredDamageChannel, f64)>,
+    unmeasured: Vec<DeclaredDamageChannel>,
+}
+
+impl AmmoDamageConsumer {
+    /// The consumer implied by one declared damage profile.
+    #[must_use]
+    pub fn of(damage: &DeclaredWeaponDamage) -> Self {
+        let mut known = Vec::new();
+        let mut unmeasured = Vec::new();
+        for channel in DeclaredDamageChannel::ALL {
+            match damage.channel(*channel) {
+                Some(Resolved::Known(known_value)) => {
+                    known.push((*channel, known_value.value));
+                }
+                _ => unmeasured.push(*channel),
+            }
+        }
+        Self { known, unmeasured }
+    }
+
+    /// The channels with a known amount and the amounts themselves, in
+    /// [`DeclaredDamageChannel::ALL`] order.
+    #[must_use]
+    pub fn known(&self) -> &[(DeclaredDamageChannel, f64)] {
+        &self.known
+    }
+
+    /// The channels whose amount this record does not know.
+    #[must_use]
+    pub fn unmeasured(&self) -> &[DeclaredDamageChannel] {
+        &self.unmeasured
+    }
+
+    /// The known amount on `channel`, if any.
+    #[must_use]
+    pub fn amount(&self, channel: DeclaredDamageChannel) -> Option<f64> {
+        self.known
+            .iter()
+            .find(|(candidate, _)| *candidate == channel)
+            .map(|(_, amount)| *amount)
+    }
+
+    /// Whether any declared amount reaches a consumer.
+    ///
+    /// A known amount of zero counts: the original's data can declare a channel
+    /// it does not damage, and that is a *measurement*, unlike an unknown
+    /// amount. Whether it delivers anything is the runtime registry's question.
+    #[must_use]
+    pub fn is_consumed(&self) -> bool {
+        !self.known.is_empty()
+    }
+
+    /// The production path that applies the declared amounts, when one is
+    /// reached.
+    #[must_use]
+    pub fn consumer(&self) -> Option<&'static str> {
+        self.is_consumed().then_some(DAMAGE_CONSUMED_BY_ROUTER)
+    }
+}
+
+/// The production path that consumes a declared ammunition type's damage:
+/// `cs_sim::weapons::GunHitRouter::route`, which turns a swept contact into
+/// `HitEvent`s on the declared channels for the damage resolver to apply.
+pub const DAMAGE_CONSUMED_BY_ROUTER: &str = "cs_sim::weapons::GunHitRouter::route";
+
+/// One ammunition type's audited row: what it is, how it behaves, who consumes
+/// its damage, and which loadouts pair it with which guns.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AmmoAuditRow {
+    ammunition: AmmunitionId,
+    caliber: Resolved<DeclaredCaliber>,
+    behavior: AmmoBehavior,
+    consumer: AmmoDamageConsumer,
+    guns: Vec<ContentId>,
+    loadouts: Vec<ContentId>,
+    origin: Origin,
+    provenance: Provenance,
+}
+
+impl AmmoAuditRow {
+    /// The ammunition type this row audits.
+    #[must_use]
+    pub const fn ammunition(&self) -> &AmmunitionId {
+        &self.ammunition
+    }
+
+    /// The declared caliber, known or explicitly unknown.
+    #[must_use]
+    pub const fn caliber(&self) -> &Resolved<DeclaredCaliber> {
+        &self.caliber
+    }
+
+    /// The known caliber text, if it is resolved.
+    #[must_use]
+    pub fn known_caliber(&self) -> Option<&str> {
+        match &self.caliber {
+            Resolved::Known(known) => Some(known.value.as_str()),
+            Resolved::Unknown { .. } => None,
+        }
+    }
+
+    /// How this type behaves.
+    #[must_use]
+    pub const fn behavior(&self) -> &AmmoBehavior {
+        &self.behavior
+    }
+
+    /// Who consumes this type's damage.
+    #[must_use]
+    pub const fn consumer(&self) -> &AmmoDamageConsumer {
+        &self.consumer
+    }
+
+    /// The declared guns paired with this type, in ascending id order.
+    #[must_use]
+    pub fn guns(&self) -> &[ContentId] {
+        &self.guns
+    }
+
+    /// The declared loadouts that carry this type, in ascending id order.
+    #[must_use]
+    pub fn loadouts(&self) -> &[ContentId] {
+        &self.loadouts
+    }
+
+    /// Where the type's record came from.
+    #[must_use]
+    pub const fn origin(&self) -> &Origin {
+        &self.origin
+    }
+
+    /// Where the type's record was measured.
+    #[must_use]
+    pub const fn provenance(&self) -> &Provenance {
+        &self.provenance
+    }
+}
+
+/// One gap the audit found, named.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AmmoAuditFinding {
+    /// The installation declares more ammunition types than the declared
+    /// catalogue enumerates, so at least one type has no row at all.
+    UndeclaredAmmunitionType {
+        /// How many types the installation declares.
+        observed: u32,
+        /// How many the catalogue enumerates.
+        declared: u32,
+    },
+    /// A gun group the installation names that no declared mount kind covers.
+    UncoveredGunGroup {
+        /// The group nothing covers.
+        group: DeclaredGunGroup,
+    },
+    /// A declared mount kind a declared gun uses that corresponds to no gun
+    /// group the installation names.
+    UnobservedMountKind {
+        /// The kind with no counterpart.
+        kind: DeclaredGunMountKind,
+    },
+    /// The type declares no known damage amount on any channel, so no consumer
+    /// receives anything from it.
+    NoDamageConsumer {
+        /// The type nothing consumes.
+        ammunition: AmmunitionId,
+    },
+    /// The type declares an interaction option whose value is unknown, so no
+    /// session could lower it.
+    UnmeasuredRule {
+        /// The type with the unknown rule.
+        ammunition: AmmunitionId,
+        /// The option that is unknown.
+        option: InteractionOption,
+    },
+    /// The type's caliber is unknown.
+    UnmeasuredCaliber {
+        /// The type with the unknown caliber.
+        ammunition: AmmunitionId,
+    },
+    /// The type is declared but paired with no gun in any loadout.
+    Unpaired {
+        /// The type no gun fires.
+        ammunition: AmmunitionId,
+    },
+    /// A loadout names a gun that no declared gun record describes.
+    UndescribedGun {
+        /// The loadout that names it.
+        loadout: ContentId,
+        /// The gun nothing describes.
+        gun: ContentId,
+    },
+    /// A loadout names an ammunition type that no declared record describes.
+    UndescribedAmmunition {
+        /// The loadout that names it.
+        loadout: ContentId,
+        /// The type nothing describes.
+        ammunition: AmmunitionId,
+    },
+}
+
+impl AmmoAuditFinding {
+    /// The stable machine-readable label of this finding.
+    #[must_use]
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::UndeclaredAmmunitionType { .. } => "undeclared_ammunition_type",
+            Self::UncoveredGunGroup { .. } => "uncovered_gun_group",
+            Self::UnobservedMountKind { .. } => "unobserved_mount_kind",
+            Self::NoDamageConsumer { .. } => "no_damage_consumer",
+            Self::UnmeasuredRule { .. } => "unmeasured_rule",
+            Self::UnmeasuredCaliber { .. } => "unmeasured_caliber",
+            Self::Unpaired { .. } => "unpaired",
+            Self::UndescribedGun { .. } => "undescribed_gun",
+            Self::UndescribedAmmunition { .. } => "undescribed_ammunition",
+        }
+    }
+}
+
+impl fmt::Display for AmmoAuditFinding {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UndeclaredAmmunitionType { observed, declared } => write!(
+                f,
+                "the installation declares {observed} ammunition types but the catalogue \
+                 enumerates only {declared}"
+            ),
+            Self::UncoveredGunGroup { group } => {
+                write!(f, "gun group {group} is covered by no declared mount kind")
+            }
+            Self::UnobservedMountKind { kind } => {
+                write!(
+                    f,
+                    "mount kind {kind} corresponds to no gun group the installation names"
+                )
+            }
+            Self::NoDamageConsumer { ammunition } => {
+                write!(
+                    f,
+                    "{ammunition} declares no damage amount, so nothing consumes it"
+                )
+            }
+            Self::UnmeasuredRule { ammunition, option } => {
+                write!(f, "{ammunition} leaves its {option} rule unmeasured")
+            }
+            Self::UnmeasuredCaliber { ammunition } => {
+                write!(f, "{ammunition} leaves its caliber unmeasured")
+            }
+            Self::Unpaired { ammunition } => {
+                write!(
+                    f,
+                    "{ammunition} is declared but paired with no gun in any loadout"
+                )
+            }
+            Self::UndescribedGun { loadout, gun } => {
+                write!(
+                    f,
+                    "loadout {loadout} names gun {gun}, which no declared record describes"
+                )
+            }
+            Self::UndescribedAmmunition {
+                loadout,
+                ammunition,
+            } => write!(
+                f,
+                "loadout {loadout} names ammunition {ammunition}, which no declared record describes"
+            ),
+        }
+    }
+}
+
+/// The result of an ammunition/loadout audit.
+///
+/// `complete` is the only verdict, and it is deliberately hard to reach: it
+/// holds when the declared catalogue covers every ammunition type the
+/// installation declares, its mount kinds cover every gun group the
+/// installation names, and every type has a measured caliber, a measurable
+/// interaction rule and a damage consumer. Anything else is a named finding, so
+/// a partial audit reports itself as partial.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AmmunitionAuditReport {
+    rows: Vec<AmmoAuditRow>,
+    findings: Vec<AmmoAuditFinding>,
+}
+
+impl AmmunitionAuditReport {
+    /// One row per declared ammunition type, in ascending id order.
+    #[must_use]
+    pub fn rows(&self) -> &[AmmoAuditRow] {
+        &self.rows
+    }
+
+    /// The row for one type, if it is declared.
+    #[must_use]
+    pub fn row(&self, ammunition: &AmmunitionId) -> Option<&AmmoAuditRow> {
+        self.rows.iter().find(|row| row.ammunition == *ammunition)
+    }
+
+    /// Every gap found, in report order.
+    #[must_use]
+    pub fn findings(&self) -> &[AmmoAuditFinding] {
+        &self.findings
+    }
+
+    /// The findings of one label, so a caller can name one gap at a time.
+    #[must_use]
+    pub fn findings_of(&self, label: &str) -> Vec<&AmmoAuditFinding> {
+        self.findings
+            .iter()
+            .filter(|finding| finding.label() == label)
+            .collect()
+    }
+
+    /// How many ammunition types the catalogue enumerates.
+    #[must_use]
+    pub fn declared_types(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// How many types reached a damage consumer.
+    #[must_use]
+    pub fn consumed_types(&self) -> usize {
+        self.rows
+            .iter()
+            .filter(|row| row.consumer.is_consumed())
+            .count()
+    }
+
+    /// Whether the audit found no gap at all.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.findings.is_empty()
+    }
+}
+
+/// The declared ammunition/loadout audit (AC04).
+///
+/// The audit walks the declared ammunition records, the declared guns and the
+/// declared loadouts of one installation and answers, per ammunition type: what
+/// it is, how it behaves, which guns fire it, which loadouts carry it and who
+/// consumes its damage. It compares the result against a measured
+/// [`OriginalGunLoadout`], because "every type" is only falsifiable against a
+/// number the installation itself declares.
+///
+/// # Why it reports rather than repairs
+///
+/// Nothing here fills a gap. An unnamed ammunition type, an unmeasured damage
+/// amount and an uncovered gun group all stay gaps and are named, because the
+/// alternative — inventing a fourth ammunition type or assigning an inner-wing
+/// group to a side — is precisely the guess F27 non-negotiable 1 and 4 forbid.
+/// An audit that always passed would be worse than none: it would let a
+/// one-type catalogue stand in for the original's four.
+#[derive(Clone, Debug, Default)]
+pub struct AmmunitionAudit {
+    ammunition: Vec<DeclaredAmmunition>,
+    guns: Vec<DeclaredGunDefinition>,
+    loadouts: Vec<DeclaredLoadout>,
+}
+
+impl AmmunitionAudit {
+    /// An empty audit: no declared records, so nothing to cover.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds one declared ammunition record.
+    pub fn add_ammunition(&mut self, record: DeclaredAmmunition) -> &mut Self {
+        self.ammunition.push(record);
+        self
+    }
+
+    /// Adds one declared gun record.
+    pub fn add_gun(&mut self, record: DeclaredGunDefinition) -> &mut Self {
+        self.guns.push(record);
+        self
+    }
+
+    /// Adds one declared loadout record.
+    pub fn add_loadout(&mut self, record: DeclaredLoadout) -> &mut Self {
+        self.loadouts.push(record);
+        self
+    }
+
+    /// How many declared ammunition records the audit holds.
+    #[must_use]
+    pub fn ammunition_count(&self) -> usize {
+        self.ammunition.len()
+    }
+
+    /// How many declared gun records the audit holds.
+    #[must_use]
+    pub fn gun_count(&self) -> usize {
+        self.guns.len()
+    }
+
+    /// How many declared loadout records the audit holds.
+    #[must_use]
+    pub fn loadout_count(&self) -> usize {
+        self.loadouts.len()
+    }
+
+    /// Runs the audit against a measured installation surface.
+    #[must_use]
+    pub fn run(&self, original: &OriginalGunLoadout) -> AmmunitionAuditReport {
+        let mut rows = Vec::new();
+        let mut findings = Vec::new();
+
+        // One row per distinct type, in ascending id order, so two records for
+        // the same type cannot inflate the type count past the closure check.
+        let mut types: BTreeMap<String, &DeclaredAmmunition> = BTreeMap::new();
+        for record in &self.ammunition {
+            types
+                .entry(record.ammunition().as_str().to_owned())
+                .or_insert(record);
+        }
+
+        // The pairing walk: which loadout carries which (gun, type) row.
+        let mut guns_by_type: BTreeMap<String, BTreeSet<ContentId>> = BTreeMap::new();
+        let mut loadouts_by_type: BTreeMap<String, BTreeSet<ContentId>> = BTreeMap::new();
+        let mut described_guns: BTreeMap<ContentId, &DeclaredGunDefinition> = BTreeMap::new();
+        for gun in &self.guns {
+            described_guns.insert(gun.gun().clone(), gun);
+        }
+        for loadout in &self.loadouts {
+            for gun in loadout.guns() {
+                if !described_guns.contains_key(gun) {
+                    findings.push(AmmoAuditFinding::UndescribedGun {
+                        loadout: loadout.subject().clone(),
+                        gun: gun.clone(),
+                    });
+                }
+            }
+            for (gun, ammunition) in loadout.pairings() {
+                if !types.contains_key(ammunition.as_str()) {
+                    findings.push(AmmoAuditFinding::UndescribedAmmunition {
+                        loadout: loadout.subject().clone(),
+                        ammunition: ammunition.clone(),
+                    });
+                    continue;
+                }
+                guns_by_type
+                    .entry(ammunition.as_str().to_owned())
+                    .or_default()
+                    .insert(gun.clone());
+                loadouts_by_type
+                    .entry(ammunition.as_str().to_owned())
+                    .or_default()
+                    .insert(loadout.subject().clone());
+            }
+        }
+
+        for (key, record) in &types {
+            let ammunition = record.ammunition();
+            let guns = guns_by_type.get(key).cloned().unwrap_or_default();
+            let loadouts = loadouts_by_type.get(key).cloned().unwrap_or_default();
+            let behavior = AmmoBehavior::of(record.rules());
+            let consumer = AmmoDamageConsumer::of(record.damage());
+
+            if record.known_caliber().is_none() {
+                findings.push(AmmoAuditFinding::UnmeasuredCaliber {
+                    ammunition: ammunition.clone(),
+                });
+            }
+            for option in behavior.unmeasured() {
+                findings.push(AmmoAuditFinding::UnmeasuredRule {
+                    ammunition: ammunition.clone(),
+                    option: *option,
+                });
+            }
+            if !consumer.is_consumed() {
+                findings.push(AmmoAuditFinding::NoDamageConsumer {
+                    ammunition: ammunition.clone(),
+                });
+            }
+            if guns.is_empty() {
+                findings.push(AmmoAuditFinding::Unpaired {
+                    ammunition: ammunition.clone(),
+                });
+            }
+
+            rows.push(AmmoAuditRow {
+                ammunition: ammunition.clone(),
+                caliber: record.caliber().clone(),
+                behavior,
+                consumer,
+                guns: guns.into_iter().collect(),
+                loadouts: loadouts.into_iter().collect(),
+                origin: record.origin().clone(),
+                provenance: record.provenance().clone(),
+            });
+        }
+
+        // The closure check against the installation: how many types it
+        // declares, and how many the catalogue enumerates.
+        if types.len() < original.ammunition_types() as usize {
+            findings.push(AmmoAuditFinding::UndeclaredAmmunitionType {
+                observed: original.ammunition_types(),
+                declared: types.len() as u32,
+            });
+        }
+
+        // The mount side: every group the installation names that no declared
+        // kind covers, and every declared kind in use that no group backs.
+        for group in original.uncovered_gun_groups() {
+            findings.push(AmmoAuditFinding::UncoveredGunGroup { group });
+        }
+        let mut kinds_in_use: BTreeSet<DeclaredGunMountKind> = BTreeSet::new();
+        for gun in &self.guns {
+            kinds_in_use.insert(gun.mount_kind());
+        }
+        for kind in DeclaredGunMountKind::ALL {
+            if kinds_in_use.contains(kind) && kind.original_groups().is_empty() {
+                findings.push(AmmoAuditFinding::UnobservedMountKind { kind: *kind });
+            }
+        }
+
+        AmmunitionAuditReport { rows, findings }
+    }
+}
 
 // ---------------------------------------------------------------- fixture ----
 

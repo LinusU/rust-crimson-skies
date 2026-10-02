@@ -43,12 +43,27 @@
 //!   [`crate::damage::HitEvent`]s carrying the gun definition's own
 //!   per-channel damage amounts.
 //!
-//! What is therefore still absent, and who owns it: the per-tick cadence loop
-//! and the mount transforms read out of the *live* aircraft hierarchy
-//! (F27-B), an Avian body or collider for a projectile and the collision
-//! features that report a part's swept box (F27-B), the audio and
-//! muzzle-effect consumers and the player's bank-selection input (F27-C's
-//! ECS half), and every original weapon/ammunition measurement (F27-D).
+//! Stage F27-D adds the **audit** half — the answer to AC04's "maps every type
+//! to its behavior and damage consumer":
+//!
+//! * [`ORIGINAL_GUN_GROUPS`] and the rest of the "original's gun vocabulary"
+//!   constants — the gun-group, ammunition-name-block, gun-count and slot-count
+//!   facts **measured** out of the retail installation, plus
+//!   [`covers_group`], which deliberately maps only the gun groups the
+//!   original's own labels determine and leaves the rest uncovered.
+//! * [`AmmunitionRegistry`] and [`AmmunitionDamageConsumer`] — the ammunition
+//!   types one session generation can actually fire, each mapped to the
+//!   production path that consumes its declared damage
+//!   ([`DAMAGE_CONSUMED_BY_ROUTER`]), with a refusal when two guns contradict
+//!   each other about one type.
+//!
+//! What is therefore still absent, and who owns it: an Avian body or collider
+//! for a projectile and the collision features that report a part's swept box
+//! (F27-B), audio-device playback of the emitted effects, and the cockpit
+//! device that sends a bank selection (F46). Every ammunition *name* and
+//! per-type damage amount is absent for a different reason: those live in the
+//! executable's own tables, which no agent can read, so F27-D's audit reports
+//! them as unknown by name rather than filling them in.
 //!
 //! # Designed vocabulary, not original data
 //!
@@ -56,8 +71,16 @@
 //! interaction rule here is **newly authored project design**, carried by
 //! synthetic fixture values. The original ammunition catalogue — slug,
 //! armor-piercing, dum-dum and explosive are *discovery leads* per F27
-//! non-negotiable 1, not measurements — is deliberately **not** enumerated;
+//! non-negotiable 1, not measurements — is deliberately **not** named;
 //! see `docs/findings/2026-10-01-f27-a-weapon-ammo-schemas-and-fire-events.md`.
+//!
+//! What F27-D *did* measure is the shape of the original's loadout surface —
+//! how many ammunition types, guns, gun slots and rocket slots it has and which
+//! gun groups it declares. Those are identifiers and counts read out of the
+//! installation's own resource header, recorded in
+//! `docs/findings/2026-10-03-f27-d-original-ammunition-and-loadout-audit.md`,
+//! and every one of them is re-measured against the installation by the
+//! `accept_f27_d_` retail tests.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -1736,6 +1759,27 @@ impl FireResolver {
             .and_then(|arsenal| arsenal.definitions.get(mount))
     }
 
+    /// The actors with registered guns, in ascending order.
+    ///
+    /// This is what lets a caller ask *which ammunition types are in play*
+    /// without already knowing the mounts: [`AmmunitionRegistry`] is built from
+    /// exactly this walk.
+    #[must_use]
+    pub fn shooters(&self) -> Vec<ActorId> {
+        self.actors.keys().copied().collect()
+    }
+
+    /// One actor's mounted guns, in ascending mount order.
+    ///
+    /// [`GunCadence`] does not re-export this: a caller that needs the whole
+    /// loadout reaches it through [`GunCadence::resolver`].
+    pub fn definitions(&self, shooter: &ActorId) -> Vec<&GunDefinition> {
+        self.actors
+            .get(shooter)
+            .map(|arsenal| arsenal.definitions.values().collect())
+            .unwrap_or_default()
+    }
+
     /// Allocates the next [`ProjectileId`] of this session.
     ///
     /// Serials are never recycled inside a session, so a projectile id
@@ -3394,6 +3438,510 @@ impl GunHitRouter {
         };
         self.next_sequence = self.next_sequence.wrapping_add(1);
         id
+    }
+}
+
+// ------------------------------------------- the original's gun vocabulary ----
+
+/// The container member the original declares its gun and ammunition identity
+/// vocabulary in.
+///
+/// **Measured, not authored.** The retail asset container
+/// `GOSDATA/ASSETS/crimson.rof` ships this member, and it is the engine's own
+/// resource header — a C include the original build generated, not a file this
+/// project made. Every constant in this section was read out of it, and the
+/// `accept_f27_d_` retail tests re-measure each of them against the
+/// installation, so a different installation cannot pass against these values.
+pub const ORIGINAL_RESOURCE_HEADER: &str = "ASSETS/SCRIPTS/RESOURCE.H";
+
+/// The first string id of the original's **gun-group** (hardpoint) names.
+///
+/// `3060` is the header id that introduces the group table and names no group
+/// of its own, so the groups run from `3061`. The ids are contiguous to
+/// [`ORIGINAL_GUN_GROUP_NAMES_LAST_ID`].
+pub const ORIGINAL_GUN_GROUP_NAMES_BASE_ID: u32 = 3061;
+
+/// The last string id of the original's gun-group names.
+pub const ORIGINAL_GUN_GROUP_NAMES_LAST_ID: u32 = 3080;
+
+/// One gun-group (hardpoint) name the original declares.
+///
+/// `id` is the string identifier the engine resolves the group's name from and
+/// `label` is the header macro that declares it. Both are original text: the id
+/// is what the engine looks up, the macro is the original author's own name for
+/// it.
+///
+/// The label is **not** an assertion about where the group sits. Deciding which
+/// side an inner- or outer-wing group belongs to needs the per-airframe gun
+/// tables inside the executable, which no agent can read; so
+/// [`GunMountKind::original_group_ids`] covers only the groups whose kind the
+/// label itself determines, and [`ORIGINAL_GUN_GROUPS`] keeps every group
+/// addressable whether it is covered or not. The uncovered ones are reported by
+/// name rather than assigned a side.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct GunGroupName {
+    id: u32,
+    label: &'static str,
+}
+
+impl GunGroupName {
+    /// A group name: the string id it resolves from and the macro that
+    /// declares it.
+    #[must_use]
+    pub const fn new(id: u32, label: &'static str) -> Self {
+        Self { id, label }
+    }
+
+    /// The string id the engine resolves this group's name from.
+    #[must_use]
+    pub const fn id(self) -> u32 {
+        self.id
+    }
+
+    /// The original's own name for the group, as its resource header spells it.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        self.label
+    }
+}
+
+impl fmt::Display for GunGroupName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} ({})", self.label, self.id)
+    }
+}
+
+/// Every gun group the original declares, in ascending id order.
+///
+/// **Measured**: twenty contiguous ids in [`ORIGINAL_RESOURCE_HEADER`], listed
+/// here with the macro that declares each. The *names* the engine shows for
+/// these ids live in the runtime string catalog and are not readable from any
+/// file, so `label` is the header macro and not a player-visible string.
+pub const ORIGINAL_GUN_GROUPS: [GunGroupName; 20] = [
+    GunGroupName::new(3061, "INNERWINGGUNS"),
+    GunGroupName::new(3062, "OUTERWINGGUNS"),
+    GunGroupName::new(3063, "LOWERNOSEGUNS"),
+    GunGroupName::new(3064, "UPPERNOSEGUNS"),
+    GunGroupName::new(3065, "CENTERGUNS"),
+    GunGroupName::new(3066, "RIGHTFUSELAGEGUNS"),
+    GunGroupName::new(3067, "RIGHTWINGGUNS"),
+    GunGroupName::new(3068, "LEFTWINGGUNS"),
+    GunGroupName::new(3069, "OUTERWINGGUNS2"),
+    GunGroupName::new(3070, "INNERWINGGUNS2"),
+    GunGroupName::new(3071, "NOSEGUNS"),
+    GunGroupName::new(3072, "NOSEGUNS2"),
+    GunGroupName::new(3073, "REARTURRET"),
+    GunGroupName::new(3074, "LOWINNERWINGGUNS"),
+    GunGroupName::new(3075, "LOWOUTERWINGGUNS"),
+    GunGroupName::new(3076, "UPPERINNERWINGGUNS"),
+    GunGroupName::new(3077, "UPPEROUTERWINGGUNS"),
+    GunGroupName::new(3078, "CENTERGUNS2"),
+    GunGroupName::new(3079, "MIDDLEWINGGUNS"),
+    GunGroupName::new(3080, "NOSETURRET"),
+];
+
+/// The string-id blocks the original allocates to one ammunition type each.
+///
+/// **Measured**: four blocks in [`ORIGINAL_RESOURCE_HEADER`], declared at
+/// `3350`, `3360`, `3365` and `3370`. Each block holds
+/// [`ORIGINAL_AMMUNITION_TYPES`] consecutive ids — the ammunition scripts index
+/// the description block as `3370 + selection - 1` for `selection` in
+/// `1..=4`, which is the same count read a second, independent way.
+pub const ORIGINAL_AMMO_NAME_BLOCKS: [(u32, &'static str); 4] = [
+    (3350, "ammo_long_name"),
+    (3360, "ammo_short_name"),
+    (3365, "ammo_abbreviation"),
+    (3370, "ammo_description"),
+];
+
+/// The number of gun ammunition types the original declares.
+///
+/// **Measured** three independent ways, all in agreement: the four name blocks
+/// above are four ids wide, the multiplayer ammunition screen builds one
+/// dropdown row per hardpoint ammunition entry with a leading header row (five
+/// rows, four types), and the outlaw ammunition screen holds four selectable
+/// entries.
+pub const ORIGINAL_AMMUNITION_TYPES: u32 = 4;
+
+/// The number of distinct guns the original lets one loadout choose from.
+///
+/// **Measured**: the layout file's `GUNS` group holds five entries, the
+/// multiplayer gun screen asks for a five-element gun-name array, and the
+/// outlaw gun screen holds five selectable entries.
+pub const ORIGINAL_SELECTABLE_GUNS: u32 = 5;
+
+/// The number of gun slots one airframe's loadout offers.
+///
+/// **Measured**: the single-player ordinance layout builds four gun-name and
+/// four ammunition dropdowns, and the multiplayer ammunition screen iterates
+/// four gun slots.
+pub const ORIGINAL_GUN_SLOTS: u32 = 4;
+
+/// The number of rocket/ordnance slots one airframe's loadout offers.
+///
+/// **Measured**: the single-player ordinance layout builds eight rocket
+/// dropdowns against the same four gun slots.
+pub const ORIGINAL_ROCKET_SLOTS: u32 = 8;
+
+/// The number of hardpoint *points* the original's plane construction offers.
+///
+/// **Measured**: the hardpoint page builds two selectable points against the
+/// four gun slots.
+pub const ORIGINAL_HARDPOINT_POINTS: u32 = 2;
+
+/// The gun-group ids a [`GunMountKind`] covers, measured.
+///
+/// **A partial mapping, and that is the point.** These are exactly the groups
+/// whose kind the original's own header macro determines: a label that says
+/// *left* is a left wing gun, one that says *right* a right wing gun, one that
+/// says *nose* a nose gun, *rear* a tail gun and *fuselage* a fuselage gun.
+/// The remaining eleven groups — the inner/outer/middle wing, upper/lower wing
+/// and centre groups, and their `2` variants — name a wing station and often
+/// omit the side, which needs the per-airframe tables inside the executable.
+/// They stay uncovered and the audit reports them; assigning them a side would
+/// be a guess presented as a mount rule.
+#[must_use]
+pub const fn covers_group(kind: GunMountKind, id: u32) -> bool {
+    matches!(
+        (kind, id),
+        (GunMountKind::Nose, 3063 | 3064 | 3071 | 3072 | 3080)
+            | (GunMountKind::Tail, 3073)
+            | (GunMountKind::Gondola, 3066)
+            | (GunMountKind::WingLeft, 3068)
+            | (GunMountKind::WingRight, 3067)
+    )
+}
+
+/// The original's gun-group ids, in ascending order.
+pub fn original_gun_group_ids() -> Vec<u32> {
+    ORIGINAL_GUN_GROUPS.iter().map(|group| group.id()).collect()
+}
+
+/// The gun groups a [`GunMountKind`] covers, in [`ORIGINAL_GUN_GROUPS`] order.
+///
+/// Empty for a kind the original's own labels do not place; see
+/// [`covers_group`].
+#[must_use]
+pub fn original_groups_for(kind: GunMountKind) -> Vec<GunGroupName> {
+    ORIGINAL_GUN_GROUPS
+        .iter()
+        .copied()
+        .filter(|group| covers_group(kind, group.id()))
+        .collect()
+}
+
+/// The gun groups no [`GunMountKind`] covers, in [`ORIGINAL_GUN_GROUPS`] order.
+///
+/// This is the measured size of the gap between the designed mount vocabulary
+/// and the original's: a caller can state it without consulting the tables
+/// above, and the audit reports every entry by name.
+#[must_use]
+pub fn uncovered_original_gun_groups() -> Vec<GunGroupName> {
+    ORIGINAL_GUN_GROUPS
+        .iter()
+        .copied()
+        .filter(|group| {
+            !GunMountKind::ALL
+                .iter()
+                .any(|kind| covers_group(*kind, group.id()))
+        })
+        .collect()
+}
+
+/// The production path that consumes an ammunition type's declared damage:
+/// [`GunHitRouter`], which turns a swept contact into [`HitEvent`]s on
+/// [`WEAPON_DAMAGE_CHANNELS`] for the [`crate::damage::DamageResolver`] to
+/// apply.
+pub const DAMAGE_CONSUMED_BY_ROUTER: &str = "cs_sim::weapons::GunHitRouter::route";
+
+/// One ammunition type's damage consumer, as the runtime sees it.
+///
+/// "Consumer" is the *runtime* half of AC04's "maps every type to its behavior
+/// and damage consumer": the channels a round of this type delivers on and the
+/// amounts it delivers there. A type whose amounts are zero on every channel
+/// delivers nothing, and `is_consumed` says so rather than leaving a consumer
+/// that can never fire.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AmmunitionDamageConsumer {
+    ammunition: AmmunitionId,
+    channels: [(DamageChannel, f64); WEAPON_DAMAGE_CHANNELS.len()],
+}
+
+impl AmmunitionDamageConsumer {
+    /// The consumer of one type's declared profile.
+    #[must_use]
+    pub fn new(ammunition: AmmunitionId, damage: &WeaponDamage) -> Self {
+        Self {
+            ammunition,
+            channels: [
+                (DamageChannel::Armor, damage.armor),
+                (DamageChannel::Internal, damage.internal),
+            ],
+        }
+    }
+
+    /// The ammunition type this consumer belongs to.
+    #[must_use]
+    pub const fn ammunition(&self) -> &AmmunitionId {
+        &self.ammunition
+    }
+
+    /// The amount a round of this type delivers on `channel`, or [`None`] when
+    /// it delivers nothing there.
+    ///
+    /// A zero amount is `None`, not `Some(0.0)`: a channel that carries no
+    /// damage has no consumer, and reporting it as zero would let a coverage
+    /// check pass on a type that does nothing.
+    #[must_use]
+    pub fn amount(&self, channel: DamageChannel) -> Option<f64> {
+        self.channels
+            .iter()
+            .find(|(candidate, _)| *candidate == channel)
+            .map(|(_, amount)| *amount)
+            .filter(|amount| *amount > 0.0)
+    }
+
+    /// The channels this type delivers on, in [`WEAPON_DAMAGE_CHANNELS`] order.
+    pub fn channels(&self) -> impl Iterator<Item = (DamageChannel, f64)> + '_ {
+        self.channels
+            .iter()
+            .copied()
+            .filter(|(_, amount)| *amount > 0.0)
+    }
+
+    /// How many channels carry damage.
+    #[must_use]
+    pub fn delivering(&self) -> usize {
+        self.channels
+            .iter()
+            .filter(|(_, amount)| *amount > 0.0)
+            .count()
+    }
+
+    /// Whether anything at all consumes this type's rounds.
+    #[must_use]
+    pub fn is_consumed(&self) -> bool {
+        self.delivering() > 0
+    }
+
+    /// The production path that applies the declared amounts.
+    #[must_use]
+    pub const fn consumer(&self) -> &'static str {
+        DAMAGE_CONSUMED_BY_ROUTER
+    }
+}
+
+/// Why an ammunition type was refused into the [`AmmunitionRegistry`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum AmmunitionRefusal {
+    /// Two mounted guns declare the same ammunition type with **different**
+    /// per-channel damage amounts.
+    ///
+    /// One type cannot do two different things, and nothing in the data says
+    /// which gun is right, so the registry keeps the first and refuses the
+    /// second rather than letting the later registration silently change what a
+    /// round already in flight was measured against.
+    DivergentDamage {
+        /// The ammunition type both guns declare.
+        ammunition: AmmunitionId,
+        /// The mount whose declaration is registered.
+        registered_mount: DamageNodeKey,
+        /// The damage the registered mount declared.
+        registered_damage: WeaponDamage,
+        /// The mount that offered the conflicting declaration.
+        offered_mount: DamageNodeKey,
+        /// The damage the offered mount declared.
+        offered_damage: WeaponDamage,
+    },
+    /// Two mounted guns declare the same ammunition type with **different**
+    /// calibers.
+    ///
+    /// The caliber belongs to the round, so the same contradiction holds: the
+    /// registry cannot pick one text, and the caliber feeds no runtime decision
+    /// yet — which is exactly why the conflict is reported instead of
+    /// normalized away.
+    DivergentCaliber {
+        /// The ammunition type both guns declare.
+        ammunition: AmmunitionId,
+        /// The mount whose declaration is registered.
+        registered_mount: DamageNodeKey,
+        /// The caliber the registered mount declared.
+        registered_caliber: String,
+        /// The mount that offered the conflicting declaration.
+        offered_mount: DamageNodeKey,
+        /// The caliber the offered mount declared.
+        offered_caliber: String,
+    },
+}
+
+impl fmt::Display for AmmunitionRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::DivergentDamage {
+                ammunition,
+                registered_mount,
+                registered_damage,
+                offered_mount,
+                offered_damage,
+            } => write!(
+                f,
+                "{ammunition} is declared with two different damage profiles: {registered_mount} \
+                 carries armor {}/internal {} and {offered_mount} carries armor {}/internal {}",
+                registered_damage.armor,
+                registered_damage.internal,
+                offered_damage.armor,
+                offered_damage.internal,
+            ),
+            Self::DivergentCaliber {
+                ammunition,
+                registered_mount,
+                registered_caliber,
+                offered_mount,
+                offered_caliber,
+            } => write!(
+                f,
+                "{ammunition} is declared with two different calibers: \
+                 {registered_mount} carries {registered_caliber:?} and \
+                 {offered_mount} carries {offered_caliber:?}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for AmmunitionRefusal {}
+
+/// One ammunition type the runtime can fire, and the mounts that fire it.
+///
+/// `mounts` is kept sorted so the report is deterministic without a second sort
+/// at every read.
+#[derive(Clone, Debug, PartialEq)]
+struct RegisteredAmmunition {
+    damage: WeaponDamage,
+    caliber: String,
+    mounts: Vec<DamageNodeKey>,
+}
+
+/// The ammunition types one session generation can actually fire, with the
+/// damage consumer of each.
+///
+/// **Why this exists.** The original lets a pilot choose the ammunition type of
+/// every hardpoint independently, so one airframe really can carry several
+/// types — and nothing before this type could say, for a set of registered
+/// guns, *which types are in play* and *who consumes their damage*. The
+/// registry answers exactly that, and it is the runtime half of AC04: a type
+/// with no delivering channel is reported as consumed by nothing rather than
+/// assumed to work.
+///
+/// Registration is **not** a loadout authority: it never picks a gun's
+/// ammunition and never changes a [`GunDefinition`]. It is the set of types the
+/// session holds, plus a refusal when two guns contradict each other about one
+/// of them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct AmmunitionRegistry {
+    types: BTreeMap<AmmunitionId, RegisteredAmmunition>,
+}
+
+impl AmmunitionRegistry {
+    /// An empty registry: no type is in play yet.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Adds one mounted gun's ammunition declaration.
+    ///
+    /// Registering the same type twice from mounts that agree is idempotent: the
+    /// second mount joins the first's entry.
+    ///
+    /// # Errors
+    ///
+    /// [`AmmunitionRefusal`] when the type is already registered with a
+    /// different damage profile or a different caliber.
+    pub fn register(&mut self, gun: &GunDefinition) -> Result<(), AmmunitionRefusal> {
+        let entry = self
+            .types
+            .entry(gun.ammunition().clone())
+            .or_insert_with(|| RegisteredAmmunition {
+                damage: *gun.damage(),
+                caliber: gun.caliber().to_owned(),
+                mounts: Vec::new(),
+            });
+        let registered_mount = entry.mounts.first().cloned();
+        if entry.damage != *gun.damage() {
+            return Err(AmmunitionRefusal::DivergentDamage {
+                ammunition: gun.ammunition().clone(),
+                registered_mount: registered_mount.unwrap_or_else(|| gun.mount().clone()),
+                registered_damage: entry.damage,
+                offered_mount: gun.mount().clone(),
+                offered_damage: *gun.damage(),
+            });
+        }
+        if entry.caliber != gun.caliber() {
+            return Err(AmmunitionRefusal::DivergentCaliber {
+                ammunition: gun.ammunition().clone(),
+                registered_mount: registered_mount.unwrap_or_else(|| gun.mount().clone()),
+                registered_caliber: entry.caliber.clone(),
+                offered_mount: gun.mount().clone(),
+                offered_caliber: gun.caliber().to_owned(),
+            });
+        }
+        if let Err(at) = entry.mounts.binary_search(gun.mount()) {
+            entry.mounts.insert(at, gun.mount().clone());
+        }
+        Ok(())
+    }
+
+    /// The types in play, in ascending id order.
+    #[must_use]
+    pub fn types(&self) -> Vec<AmmunitionId> {
+        self.types.keys().cloned().collect()
+    }
+
+    /// The damage consumer of one type, if it is in play.
+    #[must_use]
+    pub fn consumer(&self, ammunition: &AmmunitionId) -> Option<AmmunitionDamageConsumer> {
+        self.types
+            .get(ammunition)
+            .map(|entry| AmmunitionDamageConsumer::new(ammunition.clone(), &entry.damage))
+    }
+
+    /// The mounts firing one type, in ascending key order.
+    #[must_use]
+    pub fn mounts(&self, ammunition: &AmmunitionId) -> &[DamageNodeKey] {
+        self.types
+            .get(ammunition)
+            .map_or(&[], |entry| entry.mounts.as_slice())
+    }
+
+    /// How many types are in play.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.types.len()
+    }
+
+    /// Whether no type is in play.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.types.is_empty()
+    }
+
+    /// Every type in play, with its consumer, in ascending id order.
+    ///
+    /// This is the runtime report AC04 asks for: one row per ammunition type
+    /// that maps it to the damage consumer that applies it, including the types
+    /// whose consumer delivers nothing.
+    #[must_use]
+    pub fn audit(&self) -> Vec<(AmmunitionId, AmmunitionDamageConsumer)> {
+        self.types
+            .keys()
+            .map(|ammunition| {
+                let consumer = AmmunitionDamageConsumer::new(
+                    ammunition.clone(),
+                    &self.types[ammunition].damage,
+                );
+                (ammunition.clone(), consumer)
+            })
+            .collect()
     }
 }
 
