@@ -82,13 +82,57 @@
 //! before the damage leaves that frame's presentation one verdict behind — a
 //! late update, never a wrong one, because each pass recomputes its own
 //! verdict from the record it owns.
+//!
+//! # The node collider: F20-C's spawn wiring
+//!
+//! The load is also where a node's **collider** comes from, which is the
+//! wiring F20-C.04's [`NodeColliderPresence`](crate::physics::NodeColliderPresence)
+//! needed and could not do itself: that record is an opt-in, and a node without
+//! it is outside the collision policy, so a clip hiding a node whose spawner
+//! never inserted one left an invisible obstacle behind.
+//!
+//! Three decisions, all of them in this module and none of them in the physics
+//! or animation layers:
+//!
+//! * **The collider is on the node's own entity**, which becomes a static Avian
+//!   body. That is the collider-on-body rule
+//!   (`docs/findings/2026-09-30-t424-collider-on-body-invariant.md`) *and* the
+//!   same-entity constraint [`apply_collider_presence`](crate::physics::apply_collider_presence)
+//!   needs: it reads the presence record, the clip's
+//!   [`NodeAnimatedVisibility`](crate::animation::NodeAnimatedVisibility) and
+//!   the Avian [`Collider`](avian3d::prelude::Collider) from one entity, so a
+//!   node whose visibility sat on one entity and whose collider on another
+//!   would give the policy a node it never sees the clip for. The pose is
+//!   Avian's own [`Position`](avian3d::prelude::Position) /
+//!   [`Rotation`](avian3d::prelude::Rotation) and no `Transform` at all, so
+//!   [`NodeVisualTransform`] stays the one visual pose owner and Bevy's
+//!   propagation cannot overwrite it; the authored linear map is placed by
+//!   [`AffinePlacement`], the one decision [`crate::world::affine`] owns.
+//! * **The geometry is declared, never derived.** A [`SceneNode`] carries no
+//!   geometry — its [`MeshBinding`](cs_content::scene::MeshBinding) is an
+//!   address and the converted mesh behind it has no bounds record — so the
+//!   shape arrives in the one-shot [`SceneCollisionGeometry`] resource, keyed
+//!   by stable node id, and a node whose shape nobody declared is **reported**
+//!   ([`SceneEvent::Loaded`]'s `uncollidable`) rather than fitted with a box
+//!   nobody measured. That is F18's rule for a world object restated where it
+//!   is needed, and the mesh-derived shape is deliberately absent because
+//!   F18-B's simplification policy is still undecided.
+//! * **Only the authored role opts a node in.** [`CollisionRole::None`] and an
+//!   explicit unknown get neither record nor collider, so this layer cannot
+//!   re-enable a collider it did not remove, and the animation path is not
+//!   involved at all: it keeps publishing its verdict and the physics layer
+//!   keeps reading it.
 
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
 
+use avian3d::parry::shape::{Cuboid, SharedShape};
+use avian3d::prelude::{
+    Collider, CollisionLayers as AvianCollisionLayers, Position, RigidBody, Rotation,
+};
 use bevy::ecs::component::Component;
 use bevy::math::Mat4;
-use bevy::prelude::{ChildOf, Entity, GlobalTransform, Query, Res, Resource, With, World};
+use bevy::prelude::{ChildOf, Entity, GlobalTransform, Query, Res, Resource, Vec3, With, World};
 use cs_content::scene::{
     CanonicalTransform, CollisionRole, LodInfo, LodSelectError, PartRole, PartSocket, SceneGraph,
     SceneNode, SceneNodeId, select_lod_variant,
@@ -97,6 +141,8 @@ use cs_types::content::{ContentId, Provenance, Resolved};
 use cs_types::space::Meters;
 
 use crate::airframe_visual::AirframeVisual;
+use crate::world::affine::{AffinePlacement, AffinePlacementError};
+use crate::world::spawn::InstanceTransform;
 
 /// The generation of a scene load: a monotonically increasing stamp that
 /// makes stale entity bindings detectable after a reload.
@@ -637,6 +683,357 @@ pub fn select_lod_presentation(
     }
 }
 
+// ------------------------------------------------ node collision geometry ---
+
+/// The declared collision geometry one scene node's collider is built from.
+///
+/// [`CollisionRole::Collider`] says
+/// *whether* a node's geometry collides. It cannot say *with what*: a
+/// [`cs_content::scene::SceneNode`] carries no geometry at all. Its
+/// [`cs_content::scene::MeshBinding`] is an **address** — a stored mesh-array
+/// index plus a resolved catalog id — and the converted mesh behind that id
+/// (`cs_content::mesh::RenderMesh`) has no extents, centre or radius record
+/// either. So the shape is declared here, by whoever measured it, and a node
+/// whose shape was never declared gets no collider and is **reported** rather
+/// than fitted with a guess.
+///
+/// That is F18's rule, not a new one: a world object is collided only from a
+/// declared [`cs_content::world::WorldCollisionShape`], an unknown shape is
+/// reported as [`crate::world::spawn::SkipReason::UnknownCollisionShape`] instead of being
+/// defaulted, and F18-B/D's simplification policy is still undecided — which is
+/// why the **mesh** shape is deliberately absent here. A scene node whose
+/// collision geometry should come from its mesh cannot be built by this stage,
+/// and building a hull or a bounding box for it would be the undecided policy
+/// wearing this stage's clothes (see `affine::AffinePlacement`'s
+/// `bake_shape`, whose tri-mesh branch carries the same "recipe, not capability"
+/// warning).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum NodeCollisionShape {
+    /// An axis-aligned box in the node's own composed frame, with declared
+    /// half extents in metres. The same record
+    /// [`cs_content::world::WorldCollisionShape::Cuboid`] carries, and placed
+    /// the same way (through [`AffinePlacement`]).
+    Cuboid {
+        /// Half of each dimension, in metres. Every component is strictly
+        /// positive and finite: a zero or non-finite extent is a box with no
+        /// volume and is refused by [`NodeCollisionShape::cuboid`] rather than
+        /// spawned as a degenerate solid.
+        half_extents_m: [f64; 3],
+    },
+}
+
+impl NodeCollisionShape {
+    /// A declared box, refusing an extent that cannot bound a solid.
+    ///
+    /// # Errors
+    ///
+    /// [`NodeCollisionError::DegenerateBox`] when a half extent is not finite or
+    /// not strictly positive. The refusal is here rather than at the spawn so
+    /// the geometry table is either wholly usable or refused while it is being
+    /// built, exactly as [`cs_content::world`] refuses an unusable instance.
+    pub fn cuboid(half_extents_m: [f64; 3]) -> Result<Self, NodeCollisionError> {
+        if half_extents_m
+            .iter()
+            .all(|extent| extent.is_finite() && *extent > 0.0)
+        {
+            Ok(Self::Cuboid { half_extents_m })
+        } else {
+            Err(NodeCollisionError::DegenerateBox { half_extents_m })
+        }
+    }
+
+    /// The declared half extents, in metres.
+    #[must_use]
+    pub const fn half_extents_m(&self) -> [f64; 3] {
+        match *self {
+            Self::Cuboid { half_extents_m } => half_extents_m,
+        }
+    }
+
+    /// The stable label used in reports.
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::Cuboid { .. } => "cuboid",
+        }
+    }
+}
+
+/// Why a node's declared collision geometry was refused.
+#[derive(Clone, Debug, PartialEq)]
+pub enum NodeCollisionError {
+    /// Nobody declared a shape for a node whose authored role says it collides.
+    ///
+    /// Not a build error — most nodes of a model carry no collision surface —
+    /// but for a node the evidence says *is* a collider it is a hole a shot
+    /// passes through, so it is reported by name instead of being filled with a
+    /// guessed box. What the node's geometry is derived from — its mesh, its
+    /// authored flag partition, or a measured primitive — is **not** this
+    /// stage's to invent; see [`NodeCollisionShape`].
+    UndeclaredGeometry {
+        /// The node that has no declared geometry.
+        node: SceneNodeId,
+    },
+    /// A declared half extent is not finite or not strictly positive, so it
+    /// bounds no solid.
+    DegenerateBox {
+        /// The refused extents, in metres.
+        half_extents_m: [f64; 3],
+    },
+    /// The node's composed canonical transform has no exact collision
+    /// placement ([`AffinePlacement`]'s verdict, propagated verbatim: an f64
+    /// component that does not survive f32, or a linear map that collapses
+    /// space, or exact collision geometry the physics library could not build).
+    Unplaceable {
+        /// The node that has no placement.
+        node: SceneNodeId,
+        /// The placement's own reason.
+        source: AffinePlacementError,
+    },
+}
+
+impl NodeCollisionError {
+    /// The stable label used in reports.
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::UndeclaredGeometry { .. } => "undeclared_geometry",
+            Self::DegenerateBox { .. } => "degenerate_box",
+            Self::Unplaceable { source, .. } => source.label(),
+        }
+    }
+}
+
+impl core::fmt::Display for NodeCollisionError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::UndeclaredGeometry { node } => {
+                write!(f, "node {node} collides but declared no collision geometry")
+            }
+            Self::DegenerateBox { half_extents_m } => {
+                write!(f, "declared half extents {half_extents_m:?} bound no solid")
+            }
+            Self::Unplaceable { node, source } => {
+                write!(f, "node {node} has no exact collision placement: {source}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for NodeCollisionError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Unplaceable { source, .. } => Some(source),
+            Self::UndeclaredGeometry { .. } | Self::DegenerateBox { .. } => None,
+        }
+    }
+}
+
+/// Resource: the collision geometry the **next** load should build its nodes'
+/// colliders from, keyed by stable [`SceneNodeId`].
+///
+/// A node that is absent from the table is a node whose geometry nobody
+/// declared. That is not an error while the table is built — most nodes of a
+/// real model carry no collision surface at all — but for a node whose authored
+/// [`CollisionRole::Collider`] it is
+/// a **reported gap** (see [`SceneEvent::Loaded`]'s `uncollidable` list), because that node was
+/// authored to collide and cannot.
+///
+/// # Why a resource, and one-shot
+///
+/// The producer inserts it beside the [`AirframeSceneRequest`] that names the
+/// graph, the way it inserts [`AirframeDamageState`] beside the damage it
+/// records, and the load **takes** it: the resource is removed as the load
+/// reads it, on every path including a refused one. So a table cannot outlive
+/// the load it was measured for and be applied by a later one — the same
+/// one-shot rule the request itself follows, and the reason this is not a field
+/// of the request: a map in the request's `Load` variant would make a plain
+/// `Unload` request as large as a filled table.
+///
+/// The cost is stated rather than hidden: a **refused** load consumes the table
+/// too, exactly as it consumes the generation
+/// ([`SceneGenerations::take_next`]), so a retry has to be given the geometry
+/// again. Losing it cannot produce a wrong scene — a load with no table builds
+/// no colliders and reports every collider-role node by name — so the failure
+/// mode is a visible gap, not a silent one.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct SceneCollisionGeometry {
+    shapes: BTreeMap<SceneNodeId, NodeCollisionShape>,
+}
+
+impl SceneCollisionGeometry {
+    /// An empty table: no node has declared geometry.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Declares one node's geometry, refusing a duplicate declaration.
+    ///
+    /// A duplicate is an authoring error rather than a runtime choice, which is
+    /// the same rule [`cs_content::scene::BindingMap::new`] applies to two
+    /// rules naming one path: an ambiguous mapping is refused where it is
+    /// built, not resolved by whoever reads it first.
+    ///
+    /// # Errors
+    ///
+    /// [`DuplicateNodeGeometry`] when the node already has declared geometry.
+    pub fn declare(
+        mut self,
+        node: SceneNodeId,
+        shape: NodeCollisionShape,
+    ) -> Result<Self, DuplicateNodeGeometry> {
+        if self.shapes.contains_key(&node) {
+            return Err(DuplicateNodeGeometry { node });
+        }
+        self.shapes.insert(node, shape);
+        Ok(self)
+    }
+
+    /// The geometry declared for `node`, if any.
+    #[must_use]
+    pub fn shape(&self, node: &SceneNodeId) -> Option<&NodeCollisionShape> {
+        self.shapes.get(node)
+    }
+
+    /// How many nodes have declared geometry.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.shapes.len()
+    }
+
+    /// Whether no node has declared geometry.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.shapes.is_empty()
+    }
+}
+
+/// Why a collision-geometry table was refused: a node already has one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DuplicateNodeGeometry {
+    /// The node that was declared twice.
+    pub node: SceneNodeId,
+}
+
+impl core::fmt::Display for DuplicateNodeGeometry {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "node {} already has declared collision geometry",
+            self.node
+        )
+    }
+}
+
+impl std::error::Error for DuplicateNodeGeometry {}
+
+/// The collision layer a scene node's collider is placed on.
+///
+/// **Designed, not measured.** A scene node is an airframe part, so its
+/// authored collider is aircraft collision surface, and the declared interaction
+/// matrix ([`cs_sim::collision::CollisionLayer::designed_collides_with`]) makes
+/// that interact with aircraft, projectiles, debris and triggers. The engine
+/// body itself is [`avian3d::prelude::RigidBody::Static`] at the node's
+/// composed pose, which is stated rather than hidden: **an airframe's collision
+/// does not fly with the airframe here** — the node carries the pose its
+/// authored transform gave it, and moving an airframe's collision as one body
+/// is the flight/damage stages' decision, not this one's.
+///
+/// The alternative reading ([`cs_sim::collision::CollisionLayer::StaticWorld`])
+/// was not chosen: "immovable world geometry" is not what a wing is, and
+/// choosing it would have made an aircraft part stop `projectile` ordnance on a
+/// different row of the matrix than the rest of its airframe. Which layer the
+/// original used is **unmeasured** and stays recorded as unknown.
+const NODE_COLLISION_LAYER: cs_sim::collision::CollisionLayer =
+    cs_sim::collision::CollisionLayer::Aircraft;
+
+/// The collision bundle one scene node's own entity carries when its authored
+/// role is [`CollisionRole::Collider`]
+/// and its geometry is declared.
+///
+/// # The layout, and why it is this one
+///
+/// * **The collider is on the node's own entity, not on a child.** That is the
+///   collider-on-body rule
+///   (`docs/findings/2026-09-30-t424-collider-on-body-invariant.md`): Avian's
+///   `solve_swept_ccd` resolves candidates through
+///   `Query<(&Collider, &ColliderOf)>`, so a body whose colliders live on
+///   descendants is invisible to a swept body and the sweep passes straight
+///   through it. The node entity is therefore the body, and the node entity is
+///   also the entity that carries [`NodeColliderPresence`] and — once a clip
+///   drives it — the animation layer's own
+///   [`NodeAnimatedVisibility`](crate::animation::NodeAnimatedVisibility).
+///   That is a requirement of
+///   [`apply_collider_presence`](crate::physics::apply_collider_presence), which
+///   reads all three from **one** entity: a scene node whose visibility sat on
+///   one entity and whose collider on another would give the policy a node it
+///   never sees the clip for.
+/// * **No `Transform` and no `GlobalTransform` on the entity.** A scene node's
+///   one visual pose owner is [`NodeVisualTransform`], which is deliberately
+///   *not* a `GlobalTransform` component, and Bevy's transform propagation
+///   overwrites a `GlobalTransform` from a `Transform` on the same entity
+///   (measured in [`crate::world::affine`]). So the collision pose is Avian's
+///   own [`Position`](avian3d::prelude::Position) /
+///   [`Rotation`](avian3d::prelude::Rotation) pair and nothing else, and the
+///   authored **scale** is folded into the shape rather than left for a
+///   `Transform` to carry — the same exact image, reached the other way round.
+/// * **The node is a static body** ([`RigidBody::Static`]), because the stage
+///   that moves an airframe's collision as one body has not been built. A
+///   static body takes no force, so nothing in [`ForceRequests`](crate::physics::ForceRequests)
+///   or [`FlightAircraft`](crate::physics::FlightAircraft) can move it.
+fn node_collider_bundle(
+    world: &mut World,
+    entity: Entity,
+    node: &SceneNodeId,
+    transform: &CanonicalTransform,
+    shape: &NodeCollisionShape,
+) -> Result<(), NodeCollisionError> {
+    let unplaceable = |source| NodeCollisionError::Unplaceable {
+        node: node.clone(),
+        source,
+    };
+    let placement = AffinePlacement::of(transform).map_err(unplaceable)?;
+    let half = Vec3::from_array(shape.half_extents_m().map(|extent| extent as f32));
+    let (geometry, pose) = match placement {
+        // A rotation-times-scale map is reproduced by the decomposition (that
+        // is what `Trs` means: the round trip lands back on the authored
+        // matrix), so the box keeps its own axes and the per-axis scale is
+        // applied to the shape. F18 gets the same image for free because a world
+        // object carries a `Transform` Avian scales the collider from; a scene
+        // node must not, so the scale is folded in here instead.
+        AffinePlacement::Trs { transform } => (
+            SharedShape::new(Cuboid::new(half * transform.scale.abs())),
+            InstanceTransform {
+                scale: Vec3::ONE,
+                ..transform
+            },
+        ),
+        // Anything else carries its linear map inside the shape, so the collider
+        // pose stays an exact translation/rotation/scale. The bake is the same
+        // function, on the same record, the world path uses.
+        sheared @ AffinePlacement::Sheared { .. } => {
+            let geometry = sheared
+                .bake(&SharedShape::new(Cuboid::new(half)))
+                .map_err(unplaceable)?;
+            (geometry, sheared.collider_pose())
+        }
+    };
+    let layer = NODE_COLLISION_LAYER;
+    world.entity_mut(entity).insert((
+        RigidBody::Static,
+        Position(pose.translation),
+        Rotation::from(pose.rotation),
+        Collider::from(geometry),
+        AvianCollisionLayers::from_bits(
+            u32::from(layer.bit()),
+            u32::from(layer.designed_partners().bits()),
+        ),
+        crate::physics::BodyLayer(layer),
+    ));
+    Ok(())
+}
+
 // ------------------------------------------------- load / unload wiring ---
 
 /// Resource: the request the scene loader processes on its next run.
@@ -668,6 +1065,11 @@ pub enum AirframeSceneRequest {
 
 impl AirframeSceneRequest {
     /// A request to import `airframe`'s visual subtree out of `graph`.
+    ///
+    /// The request names no collision geometry: the load reads the
+    /// [`SceneCollisionGeometry`] resource the producer inserted beside it (see
+    /// that type for why the table is a resource and not a field of this
+    /// request).
     #[must_use]
     pub fn load(airframe: AirframeVisual, graph: Arc<SceneGraph>) -> Self {
         Self::Load { airframe, graph }
@@ -866,6 +1268,18 @@ pub enum SceneEvent {
         /// Sockets inside the subtree whose role is an explicit unknown; they
         /// are reported here instead of being given a default role.
         unresolved: Vec<SceneNodeId>,
+        /// Sockets inside the subtree that were authored to collide
+        /// ([`CollisionRole::Collider`])
+        /// and for which no collider could be built, each with the reason.
+        ///
+        /// Reported here, inside the event that describes what the load did,
+        /// rather than as an event of their own: a gap in one node's collision
+        /// is part of *this* load's result, and a load of a model whose collider
+        /// nodes have no measured geometry yet would otherwise append one event
+        /// per node to every load. A node is never fitted with a guessed shape
+        /// instead: it was authored to collide and cannot, and that is a hole a
+        /// shot passes through.
+        uncollidable: Vec<(SceneNodeId, NodeCollisionError)>,
     },
     /// A load request was refused. Nothing was spawned and the running scene
     /// was left exactly as it was, so the request can be retried.
@@ -1058,7 +1472,12 @@ pub fn process_airframe_scene_request(world: &mut World) {
     match request {
         AirframeSceneRequest::Unload => unload_airframe_scene(world),
         AirframeSceneRequest::Load { airframe, graph } => {
-            load_airframe_scene(world, &airframe, graph);
+            // The geometry table is one-shot like the request: the load takes it
+            // on every path, so it cannot be applied by a later load.
+            let collision = world
+                .remove_resource::<SceneCollisionGeometry>()
+                .unwrap_or_default();
+            load_airframe_scene(world, &airframe, graph, &collision);
         }
     }
 }
@@ -1208,7 +1627,12 @@ fn release_scene(world: &mut World, live: &LiveAirframeScene) -> usize {
 }
 
 /// Serves an [`AirframeSceneRequest::Load`]: prepare, release, publish.
-fn load_airframe_scene(world: &mut World, visual: &AirframeVisual, graph: Arc<SceneGraph>) {
+fn load_airframe_scene(
+    world: &mut World,
+    visual: &AirframeVisual,
+    graph: Arc<SceneGraph>,
+    collision: &SceneCollisionGeometry,
+) {
     let airframe = visual.airframe().clone();
     let root = visual.root().root().clone();
     // The generation is consumed before the attempt, so a refused load does
@@ -1245,6 +1669,7 @@ fn load_airframe_scene(world: &mut World, visual: &AirframeVisual, graph: Arc<Sc
     // is reported instead of being given a role.
     let mut sockets: BTreeSet<SceneNodeId> = BTreeSet::new();
     let mut unresolved: Vec<SceneNodeId> = Vec::new();
+    let mut uncollidable: Vec<(SceneNodeId, NodeCollisionError)> = Vec::new();
     for socket in graph.sockets() {
         let Some(entity) = import.entity(socket.node()) else {
             // The socket is on another root of the container: another
@@ -1263,6 +1688,11 @@ fn load_airframe_scene(world: &mut World, visual: &AirframeVisual, graph: Arc<Sc
                     provenance: socket.provenance().clone(),
                 });
                 sockets.insert(socket.node().clone());
+                if let Some(gap) =
+                    opt_node_into_collision_policy(world, entity, socket.node(), &graph, collision)
+                {
+                    uncollidable.push((socket.node().clone(), gap));
+                }
             }
             Resolved::Unknown { .. } => unresolved.push(socket.node().clone()),
         }
@@ -1301,8 +1731,63 @@ fn load_airframe_scene(world: &mut World, visual: &AirframeVisual, graph: Arc<Sc
             nodes,
             sockets: bound,
             unresolved,
+            uncollidable,
         },
     );
+}
+
+/// Puts one bound socket's node under the collision-presence policy, and builds
+/// the collider its authored role asks for.
+///
+/// Returns the reason no collider could be built, or `None` when the node either
+/// did not ask for one or got one. The three cases, all of which are decisions
+/// and none of which is a default:
+///
+/// * a `CollisionRole::None` node, or one whose collision role the evidence
+///   left **unknown**, gets nothing at all — no presence record and no collider,
+///   so [`apply_collider_presence`](crate::physics::apply_collider_presence)
+///   cannot see it and cannot re-enable a collider it did not remove. An
+///   explicit unknown is *not* read as "probably a collider" and not as "fine
+///   either": it is no evidence, so the node is left alone and the unknown stays
+///   readable on its own [`PartBinding`], and a node whose *gameplay* role is
+///   the unknown is reported in [`SceneEvent::Loaded`]'s `unresolved` list as
+///   before;
+/// * a `CollisionRole::Collider` node always gets
+///   [`NodeColliderPresence::Live`](crate::physics::NodeColliderPresence::Live) —
+///   that record is the **opt-in** the collision pass queries on, so a node
+///   without it is outside the policy entirely, and a clip hiding such a node
+///   would leave an invisible obstacle behind (F20-A's rule);
+/// * the collider itself needs **declared geometry**, and its absence or
+///   refusal is returned as the gap it is rather than being papered over with a
+///   box nobody measured. The presence record stays either way, so the physics
+///   layer keeps the node under the policy and reports it in
+///   [`ColliderPresenceReport::without_collider`](crate::physics::ColliderPresenceReport::without_collider)
+///   until a collider is really there.
+fn opt_node_into_collision_policy(
+    world: &mut World,
+    entity: Entity,
+    node: &SceneNodeId,
+    graph: &SceneGraph,
+    collision: &SceneCollisionGeometry,
+) -> Option<NodeCollisionError> {
+    let socket = graph.socket(node)?;
+    if !matches!(
+        socket.collision(),
+        Resolved::Known(known) if known.value == CollisionRole::Collider
+    ) {
+        return None;
+    }
+    world
+        .entity_mut(entity)
+        .insert(crate::physics::NodeColliderPresence::Live);
+    let Some(shape) = collision.shape(node) else {
+        return Some(NodeCollisionError::UndeclaredGeometry { node: node.clone() });
+    };
+    // `PartSocket::pose` is the node's composed canonical transform — the one
+    // value `SceneNode::collision_transform` returns and the render path draws
+    // (F11 non-negotiable behavior 4), copied at build time so the collision
+    // pose cannot become a second one.
+    node_collider_bundle(world, entity, node, socket.pose(), shape).err()
 }
 
 /// Serves an [`AirframeSceneRequest::Unload`].
@@ -2441,6 +2926,23 @@ mod tests {
         );
 
         let log = world.resource::<AirframeSceneLog>().clone();
+        // The fixture's three collider-role nodes carry no declared collision
+        // geometry (nothing inserts a `SceneCollisionGeometry` for them), so
+        // each load reports them as uncollidable. They are inside the `Loaded`
+        // event, so a load still appends exactly one event.
+        let uncollidable = |node: &str| {
+            (
+                node_id(node),
+                NodeCollisionError::UndeclaredGeometry {
+                    node: node_id(node),
+                },
+            )
+        };
+        let uncollidable = vec![
+            uncollidable("fix_planes.main.body"),
+            uncollidable("fix_planes.main.wing"),
+            uncollidable("fix_planes.main.wing.gun"),
+        ];
         assert_eq!(
             log.events(),
             &[
@@ -2451,6 +2953,7 @@ mod tests {
                     nodes: 13,
                     sockets: 5,
                     unresolved: vec![node_id("fix_planes.main.wing.pod")],
+                    uncollidable: uncollidable.clone(),
                 },
                 SceneEvent::Released {
                     airframe: cid(ContentKind::Airframe, "alpha"),
@@ -2464,6 +2967,7 @@ mod tests {
                     nodes: 13,
                     sockets: 5,
                     unresolved: vec![node_id("fix_planes.main.wing.pod")],
+                    uncollidable,
                 },
             ],
             "the reload released the superseded generation and then published the new one"

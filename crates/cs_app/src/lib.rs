@@ -43,6 +43,14 @@
 //! which reflects the recorded [`scene::AirframeDamageState`] onto the
 //! [`scene::NodeDisabled`] markers, so loading and unloading the same
 //! airframe a hundred times leaves the live entity count unchanged (AC03).
+//! The same load also gives a scene node's **collider** a spawn path (F20-C):
+//! a node whose authored [`cs_content::scene::CollisionRole::Collider`] is
+//! opted into [`physics::NodeColliderPresence`] and carries an Avian collider
+//! on its own entity, built from the geometry a load declares in the
+//! [`scene::SceneCollisionGeometry`] resource and placed through the one
+//! affine decision the world path uses — and a node whose geometry nobody
+//! declared is reported by name in [`scene::SceneEvent::Loaded`] instead of
+//! being fitted with a guessed shape.
 //!
 //! [`loading`] is the F15 load pipeline
 //! (`specs/F15-asynchronous-asset-loading-and-private-cache.md`): the
