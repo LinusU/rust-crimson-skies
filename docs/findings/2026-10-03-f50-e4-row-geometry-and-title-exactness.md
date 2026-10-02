@@ -61,15 +61,19 @@ The independent reading is deliberately not a copy:
 | Fact | Value |
 | --- | --- |
 | decoded `RT_STRING` rows | 1616 (101 blocks, ids 0…40175, one language, 1033) |
-| rows holding no text | 369 |
+| rows holding no comparable text | 409 = 369 zero-length units + 40 bare presentation tags (`[COUR9]`, `[TREB10B]`, …), which strip to nothing |
 | rows carrying display text | 1207 |
 | maximal runs of those rows | 76 |
+| rows the two tag strips read differently | 27 (a tag followed by two or more spaces, or a tab); all 27 carry text under both readings, so the present set is the same 1207 rows either way |
 | campaign length, from the `ZBD` layout | 24 missions, chapter sizes `[5, 5, 5, 5, 4]` |
 | runs exactly as long as the campaign | **two**: `3450..3473` (region-prefixed long names) and `3480..3503` (bare short names) |
 | longest run | `40081..40170` (90 rows) |
 | runs of 23, 25 and 26 rows | `10499..10521` (23), `1165..1189` and `40055..40079` (25), `109..134` (26) — so "about the campaign length" would report four or five runs where the exact rule reports two |
 
-The whole 76-run geometry, as the independent reading measured it:
+The whole 76-run geometry, as the independent reading measured it. The same
+seventy-six runs are pinned run for run as `MEASURED_RUNS` in
+`crates/cs_app/tests/campaign/f50_e4.rs`, so a run that moved fails the test
+even when the count stays at 76:
 
 ```
 9..80 82..83 85..88 97..97 100..107 109..134 136..136 200..214 500..508 510..521 700..712
@@ -86,10 +90,11 @@ The whole 76-run geometry, as the independent reading measured it:
 
 Run widths, as a multiset: `1×9, 2×5, 3×4, 4×3, 5×3, 6×3, 7×1, 8×2, 9×2, 10×1,
 11×4, 12×6, 13×6, 14×3, 15×4, 19×1, 20×1, 21×2, 23×1, 24×2, 25×2, 26×1, 32×1,
-37×1, 38×1, 43×1, 46×1, 66×3, 72×1, 90×1`. This table is also what an
-independent Python re-reading of the PE `RT_STRING` tree produced before the
-Rust test existed; the two agree exactly, and the Rust test now derives it from
-the production reader and holds production to it.
+37×1, 38×1, 43×1, 46×1, 66×3, 72×1, 90×1`. The independent re-derivation
+(both the implementer's and the reviewer's, written from the PE `RT_STRING`
+tree in Python and sharing nothing with this crate) produces exactly this table,
+and the Rust test derives it from the production reader and holds production to
+it.
 
 ## The near-miss set, and what the exactness rules do with it
 
@@ -137,8 +142,8 @@ formal:
 
 | Test | What it pins |
 | --- | --- |
-| `accept_f50_e4_the_row_runs_are_exactly_the_ones_an_independent_reading_finds` | the campaign length and chapter sizes re-derived from `ZBD`; the present set, the 76 runs, their maximality, disjointness and ascending order; both campaign-length runs; `campaign_title_blocks` held to them in **both** directions; every run that is not 24 rows refused; the truncated and extended versions of both campaign runs refused; and the 48 campaign rows' own byte ranges re-derived from the decoded units of their `RT_STRING` blocks and decoded back out of the image |
-| `accept_f50_e4_the_confirmed_rows_are_exactly_the_exact_byte_matches` | `title_form` over **every** row against **every** candidate title; `confirm_title` against the independently inverted index for all 219 candidates, in each outcome class; the four outcome classes each exercised at least N times; 17 of 24 declared titles confirmed with one long-name-only and seven refused (named); the both-forms arm; and the five region prefixes, three confirmed and two ambiguous |
+| `accept_f50_e4_the_row_runs_are_exactly_the_ones_an_independent_reading_finds` | the campaign length and chapter sizes re-derived from `ZBD`; the 27 rows the two tag strips read differently, and the present set (1207 rows) under both; the 76 runs, their maximality, disjointness and ascending order, and the whole list pinned run for run; both campaign-length runs; `campaign_title_blocks` held to them in **both** directions; every run that is not 24 rows refused; the truncated and extended versions of both campaign runs refused; and the 48 campaign rows' own byte ranges re-derived from the decoded units of their `RT_STRING` blocks and decoded back out of the image |
+| `accept_f50_e4_the_confirmed_rows_are_exactly_the_exact_byte_matches` | `title_form` over **every** row against **every** candidate title, and over **both** tag-strip readings of the 27 diverging rows; `confirm_title` against the independently inverted index for all 219 candidates, in each outcome class; the four outcome classes each exercised at least N times; 17 of 24 declared titles confirmed with one long-name-only and seven refused (named); the both-forms arm; and the five region prefixes, three confirmed and two ambiguous |
 | `accept_f50_e4_a_fuzzy_matcher_would_confirm_a_near_miss_this_table_refuses` | the three weakened matchers, each measured over the table, each required to have at least ten near misses to take and each refused by `confirm_title`; and the seven refused declared titles, each within 1…=5 edits of a real row |
 
 ## Mutation checks

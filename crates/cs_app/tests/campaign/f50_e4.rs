@@ -25,13 +25,15 @@
 //! * [`accept_f50_e4_the_row_runs_are_exactly_the_ones_an_independent_reading_finds`]
 //!   re-derives the maximal runs of consecutive rows that carry display text,
 //!   the campaign length from the `ZBD` directory layout and the runs that are
-//!   as long as the campaign, then holds `campaign_title_blocks` to that set in
-//!   both directions and re-derives the 48 campaign rows' own byte ranges out
-//!   of the image.
+//!   as long as the campaign, pins all seventy-six runs run for run, holds
+//!   `campaign_title_blocks` to that set in both directions and re-derives the
+//!   48 campaign rows' own byte ranges out of the image.
 //! * [`accept_f50_e4_the_confirmed_rows_are_exactly_the_exact_byte_matches`]
 //!   re-derives, per row, the titles that row carries, and holds `title_form`
 //!   (over every row) and `confirm_title` (over an authored near-miss set built
 //!   from the installation and the committed inventory) to that inverted index.
+//!   It also feeds `title_form` both readings of the 27 rows the two tag strips
+//!   disagree about, so the conclusion does not rest on which strip was used.
 //! * [`accept_f50_e4_a_fuzzy_matcher_would_confirm_a_near_miss_this_table_refuses`]
 //!   shows the near misses are real: for three weakened matchers (a prefix, a
 //!   substring and a case-insensitive comparison) it counts the candidate titles
@@ -97,16 +99,20 @@ fn declared_titles() -> Vec<(String, String)> {
 
 // ------------------------------------------ the independent reading only ---
 
-/// The comparable text of one localized row, re-derived here: a leading display
-/// tag such as `[AB14I]` is a presentation instruction and is not part of the
-/// text, and a row that holds nothing comparable reads as empty.
+/// The comparable text of one localized row as *this stage* measures it: a
+/// leading display tag such as `[AB14I]` is a presentation instruction and is
+/// not part of the text, every space and tab after the closing bracket is
+/// dropped, and a row that holds nothing comparable reads as empty.
 ///
 /// Deliberately *not* `cs_content`'s private `strip_font_tag`, because the rules
-/// under test are measured over this function's output. Where the two could
-/// differ — a tag followed by more than one space — this one drops every space
-/// and tab after the closing bracket, and the difference is measured rather than
-/// assumed: this installation carries no row written either way, so both
-/// readings name the same 1207 rows.
+/// under test are measured over this function's output. The two readings can
+/// differ — production skips exactly the one byte after the closing bracket,
+/// this one trims as much whitespace as is there — and the difference is
+/// **measured** rather than assumed: [`reading_differs_from_production`] counts
+/// the rows it touches and
+/// `accept_f50_e4_the_row_runs_are_exactly_the_ones_an_independent_reading_finds`
+/// holds the present set to the same 1207 rows under both, so the divergence
+/// cannot move a run boundary.
 fn display(row: &StringRow) -> &str {
     let Some(text) = row.text.as_deref() else {
         return "";
@@ -117,6 +123,40 @@ fn display(row: &StringRow) -> &str {
         Some(close) => text[close + 2..].trim_start_matches([' ', '\t']),
         None => text,
     }
+}
+
+/// The comparable text of one localized row as the rule under test reads it:
+/// the same tag strip, but skipping exactly the one byte that follows the
+/// closing bracket and keeping any further whitespace.
+///
+/// This is a *measurement of the difference* between the two readings, written
+/// here rather than borrowed from `cs_content`, which keeps `strip_font_tag`
+/// private. It is never compared against a discovery title: the tests use it to
+/// count the rows the two readings disagree about and to feed production's own
+/// `title_form` both readings of those rows, which shows that production's
+/// answers do not depend on which of the two is used.
+fn reading_under_test(row: &StringRow) -> &str {
+    let Some(text) = row.text.as_deref() else {
+        return "";
+    };
+    match text.strip_prefix('[').and_then(|rest| rest.find(']')) {
+        Some(close) => &text[close + 2..],
+        None => text,
+    }
+}
+
+/// Whether [`display`] and [`reading_under_test`] read this row differently.
+fn reading_differs_from_production(row: &StringRow) -> bool {
+    display(row) != reading_under_test(row)
+}
+
+/// The text without its last character, so a near miss is built by dropping one
+/// character rather than one *byte*: a title ending in a multi-byte character
+/// would otherwise be sliced inside it.
+fn without_last_char(text: &str) -> String {
+    let mut characters: Vec<char> = text.chars().collect();
+    characters.pop();
+    characters.into_iter().collect()
 }
 
 /// The ids of the rows that carry display text, ascending and deduplicated.
@@ -156,6 +196,41 @@ fn maximal_runs(ids: &[u32]) -> Vec<(u32, u32)> {
 fn width(run: (u32, u32)) -> usize {
     usize::try_from(run.1 - run.0 + 1).expect("a run's width fits in usize")
 }
+
+/// Every maximal run of rows carrying display text in the installation this
+/// stage measured, ascending and disjoint: seventy-six runs, from `9..=80` to
+/// `40081..=40170`, spanning one to ninety rows.
+///
+/// Measured by re-reading `GOSDATA/ASSETS/BINARIES/langui.dll` from the PE
+/// `RT_STRING` tree independently of this crate, and held against the reading
+/// [`maximal_runs`] derives here. The run widths fall into
+/// `1×9, 2×5, 3×4, 4×3, 5×3, 6×3, 7×1, 8×2, 9×2, 10×1, 11×4, 12×6, 13×6, 14×3, 15×4,
+/// 19×1, 20×1, 21×2, 23×1, 24×2, 25×2, 26×1, 32×1, 37×1, 38×1, 43×1, 46×1, 66×3, 72×1,
+/// 90×1` — only the 23- and 25-row runs and the two 24-row campaign runs are
+/// named separately in the tests below, because only those decide a campaign
+/// position.
+///
+/// Listed five runs to a line, as `docs/findings/2026-10-03-f50-e4-row-geometry-and-title-exactness.md`
+/// lists them; `rustfmt` would otherwise spend ninety lines on the same data.
+#[rustfmt::skip]
+const MEASURED_RUNS: &[(u32, u32)] = &[
+    (9, 80), (82, 83), (85, 88), (97, 97), (100, 107),
+    (109, 134), (136, 136), (200, 214), (500, 508), (510, 521),
+    (700, 712), (1001, 1032), (1035, 1047), (1052, 1056), (1060, 1074),
+    (1076, 1118), (1120, 1120), (1122, 1129), (1131, 1143), (1149, 1160),
+    (1165, 1189), (1191, 1228), (1251, 1259), (1300, 1301), (1400, 1401),
+    (3000, 3010), (3020, 3030), (3040, 3050), (3060, 3079), (3100, 3165),
+    (3170, 3235), (3240, 3305), (3307, 3307), (3310, 3315),
+    (3320, 3325), (3330, 3335), (3350, 3354), (3360, 3374), (3380, 3391),
+    (3395, 3406), (3410, 3421), (3425, 3438), (3450, 3473), (3480, 3503),
+    (3600, 3618), (3650, 3656), (3660, 3663), (3670, 3682), (3695, 3697),
+    (3700, 3710), (4000, 4009), (10001, 10046), (10048, 10048), (10050, 10050),
+    (10052, 10065), (10067, 10087), (10089, 10103), (10105, 10141), (10143, 10145),
+    (10499, 10521), (10524, 10525), (10532, 10532), (10534, 10536), (10539, 10552),
+    (10554, 10566), (10576, 10580), (10588, 10588), (20000, 20003), (30001, 30002),
+    (40000, 40000), (40002, 40013), (40015, 40035), (40037, 40039), (40041, 40053),
+    (40055, 40079), (40081, 40170),
+];
 
 /// Whether row `id` carries comparable text of its own, read from the table
 /// rather than from any reader of runs.
@@ -418,7 +493,7 @@ fn near_miss_titles(rows: &[StringRow], runs: &[(u32, u32)]) -> Vec<String> {
                 (true, Some(at)) => {
                     let tail = &text[at + SEPARATOR.len()..];
                     titles.push(tail.to_owned());
-                    titles.push(tail[..tail.len() - 1].to_owned());
+                    titles.push(without_last_char(tail));
                     titles.push(format!("{tail}."));
                     titles.push(format!(" {tail}"));
                     titles.push(tail.to_lowercase());
@@ -426,7 +501,7 @@ fn near_miss_titles(rows: &[StringRow], runs: &[(u32, u32)]) -> Vec<String> {
                 // The same four near misses against the verbatim arm.
                 (false, None) => {
                     titles.push(text.to_owned());
-                    titles.push(text[..text.len() - 1].to_owned());
+                    titles.push(without_last_char(text));
                     titles.push(format!("{text} "));
                     titles.push(text.to_uppercase());
                 }
@@ -528,22 +603,61 @@ fn accept_f50_e4_the_row_runs_are_exactly_the_ones_an_independent_reading_finds(
         "the layout's chapter sizes are not the measured ones for this installation"
     );
 
-    // --- the row geometry, re-derived from the table ----------------------
+    // --- the two readings of a tagged row, measured before they are trusted
+    //
+    // `display` trims the whitespace after a presentation tag and the rule under
+    // test skips exactly one byte of it, so the two can disagree about a row
+    // written `[tag]` + two or more spaces. That disagreement is *counted* here
+    // rather than assumed away, and counted twice: how many rows it touches, and
+    // whether it can move the present set at all. It does touch rows — 27 of
+    // them — but it cannot move a run boundary, because all 27 carry text under
+    // both readings. A future edition that wrote a tag followed by whitespace and
+    // nothing else would break the second count here, which is the point.
+    let diverging: Vec<u32> = rows
+        .iter()
+        .filter(|row| reading_differs_from_production(row))
+        .map(|row| row.id)
+        .collect();
+    assert_eq!(
+        diverging.len(),
+        27,
+        "the number of rows the two readings disagree about is not the one measured for this \
+         installation: {diverging:?}"
+    );
     let present = present_ids(rows);
+    let present_under_test: Vec<u32> = rows
+        .iter()
+        .filter(|row| !reading_under_test(row).is_empty())
+        .map(|row| row.id)
+        .collect();
+    assert_eq!(
+        present_under_test, present,
+        "the rule under test and this stage disagree about which rows carry text, so the run \
+         geometry measured here is not the geometry the rule sees: {diverging:?}"
+    );
+
+    // --- the row geometry, re-derived from the table ----------------------
     let runs = maximal_runs(&present);
     assert_eq!(
         present.len(),
         1207,
         "the number of rows carrying display text is not the one measured for this installation \
-         ({STRING_ASSET} decodes 1616 rows, 369 of which hold no text)"
+         ({STRING_ASSET} decodes 1616 rows: 1207 carrying display text and 409 carrying none — \
+         369 empty units and 40 bare presentation tags such as `[COUR9]`, both of which strip to \
+         nothing)"
     );
     assert_eq!(
         runs.len(),
         76,
         "the number of maximal runs is not the one measured for this installation"
     );
+    // The whole geometry, pinned run for run and so length for length: a run
+    // that moved would change the set even when the count stayed at 76, and the
+    // campaign-length runs below are only two of the seventy-six.
     // Maximality and disjointness are properties of *this* derivation, checked
-    // against the table and not against any other reader of runs.
+    // against the table and not against any other reader of runs. They are
+    // checked first, because they are what makes the pinned list below a
+    // statement about runs rather than about a list of numbers.
     for &(first, last) in &runs {
         assert!(
             first == 0 || !carries(rows, first - 1),
@@ -564,6 +678,14 @@ fn accept_f50_e4_the_row_runs_are_exactly_the_ones_an_independent_reading_finds(
             pair[1]
         );
     }
+    // The whole geometry, pinned run for run and so length for length: a run
+    // that moved would change the set even when the count stayed at 76, and the
+    // campaign-length runs below are only two of the seventy-six.
+    assert_eq!(
+        runs, MEASURED_RUNS,
+        "the row runs of this installation are not the measured ones: the measurement is in \
+         MEASURED_RUNS and in docs/findings/2026-10-03-f50-e4-row-geometry-and-title-exactness.md"
+    );
     assert_eq!(
         runs.iter().map(|run| width(*run)).max(),
         Some(90),
@@ -765,6 +887,34 @@ fn accept_f50_e4_the_confirmed_rows_are_exactly_the_exact_byte_matches() {
         compared,
         present_ids(rows).len() * titles.len(),
         "not every row was compared against every candidate title"
+    );
+    // The comparison above ran production over this file's *trimmed* reading of
+    // a tagged row, while `confirm_title` reads the row the rule under test
+    // strips. The 27 rows the two readings disagree about are compared against
+    // every candidate title here too, so the conclusion does not rest on which
+    // of the two was used.
+    let mut compared_both_readings = 0usize;
+    for row in rows
+        .iter()
+        .filter(|row| reading_differs_from_production(row))
+    {
+        for title in &titles {
+            assert_eq!(
+                title_form(reading_under_test(row), title),
+                title_form(display(row), title),
+                "row {} reads differently under the two tag strips ({:?} against {:?}) and the \
+                 rule gives different answers for title {title:?}",
+                row.id,
+                reading_under_test(row).chars().take(40).collect::<String>(),
+                display(row).chars().take(40).collect::<String>(),
+            );
+            compared_both_readings += 1;
+        }
+    }
+    assert_eq!(
+        compared_both_readings,
+        27 * titles.len(),
+        "not every row the two readings disagree about was compared against every candidate title"
     );
 
     // --- the confirmation, held to the inverted index ---------------------
