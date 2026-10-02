@@ -171,13 +171,23 @@ are two entities and a one-sided update is visible.
 * **A body resting against a collider is not released when the collider moves.**
   Measured by despawning and by displacing the panel under a resting body: the
   body's creep is **identical** in all three cases (move, despawn, untouched), so
-  what keeps it there is not the panel. It is the contact itself: a body that
-  arrives with a normal velocity has that velocity killed by the contact, and
-  with no gravity and no drag it then drifts at the residual rate forever. This
-  is ordinary contact behaviour, not an overlay bug, and it is recorded because
-  "the door opened and the body inside it is still stuck" would otherwise look
-  like this stage's fault. The contact/restitution rule that settles it is filed
-  as task **#428**.
+  what keeps it there is not the panel. The resolution is task **#428**
+  (`docs/findings/2026-10-02-t428-contact-restitution-rule-for-a-resting-body.md`),
+  and it **corrects the characterisation in this paragraph**, which originally
+  read the identical creep as "ordinary contact behaviour". It is not: the creep
+  is a contact solver residual of roughly 3% of the impact speed that is constant
+  to float precision and is retired by nothing, so in a world with no gravity and
+  no drag it carries a body forever. The **attribution here was right** — the
+  contact is the cause, not the overlay and not the panel's movement, and the
+  three arms agree precisely because the leak happens before any arm runs — but
+  "a body that arrives with a normal velocity has that velocity killed by the
+  contact, and then drifts at the residual rate" describes the arrival velocity
+  being removed, not the leak that replaces it. #428 measures the leak
+  (1.49 m/s on this depot pair), rules out restitution (binding it explicitly
+  reproduces the default bit for bit) and friction and the substep budget, and
+  adds `cs_app::physics::resting`, which retires it. The door pair is now
+  pinned: the overlay applies, the panel's collided half moves by the authored
+  offset, and the body does not move at all.
 
 ## Test sensitivity (mutation matrix)
 
@@ -288,11 +298,18 @@ F06/F07 measure the original's own trigger and objective semantics.
   has no engine fix; **#427** carries the measurement, and F18-D's
   original-mission integration is where the real distances get read.
 * **A body in contact with world geometry is not released by an overlay that
-  moves that geometry away** — measured, and traced to the contact killing the
-  body's normal velocity rather than to the move (the creep is identical whether
-  the collider moves, is despawned, or is untouched). Affected content: a door
-  that opens while something rests against it. Resolving task: **#428**, in the
-  same physics path as F23's contact work; not an overlay defect.
+  moves that geometry away** — measured, and traced to the contact rather than
+  to the move (the creep is identical whether the collider moves, is despawned,
+  or is untouched). Affected content: a door that opens while something rests
+  against it. **Resolved by #428**
+  (`docs/findings/2026-10-02-t428-contact-restitution-rule-for-a-resting-body.md`):
+  the creep is a contact solver residual that nothing retired, and
+  `cs_app::physics::resting` now retires it. Measured on this depot pair with
+  the world composition: the overlay applies, the panel's collided half moves by
+  the authored offset, and the body — which came to rest before the overlay
+  fired — does not move at all. The limitation above is corrected there: this is
+  a contact defect, not ordinary contact behaviour, though it was never an
+  overlay defect.
 * **The streaming policy is asked about one focus, so a sector an actor other
   than the focus is inside of may be streamed away** — and the ground in it goes
   with it. The player is not affected when the focus *is* the player (a focus
