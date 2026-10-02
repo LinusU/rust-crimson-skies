@@ -64,13 +64,15 @@ the evidence report's artifact.
 
 ## Not known (blocks F56-B and the fidelity claims)
 
-1. **Slot → mode binding.** MP2 reads as capture-the-flag in several groups
-   (`Flag base` text in C1, C2) and MP3 mentions zeppelin data in most groups,
-   but the markers are mixed: C2/MP3 carries both, C3 and C4 mention zeppelin
-   data in MP1 and MP2, C5/MP1 and C5/MP2 carry neither. The binding is
-   `Resolved::Unknown` for every slot. The retail test pins the observed marker
-   table so a change is noticed. Resolving it needs the slot programs decoded
-   (the F37/F50 program route) or a reference capture.
+1. **Slot → mode binding. Resolved at the family level by task #475**
+   (`docs/findings/2026-10-03-f56-a-slot-mode-bindings.md`). Each slot's own
+   `targets.zrd` selects the family: a flag objective is Capture the Flag, a
+   zeppelin objective is Zeppelin vs. Zeppelin, and neither is Deathmatch. The
+   whole-archive markers recorded here stay mixed (C2/MP3 carries both, C3 and
+   C4 mention zeppelin data in MP1 and MP2, C5/MP1 and C5/MP2 carry neither)
+   because the members that carry them are not the mode selector; they are kept
+   as the weaker evidence. The two deathmatch variants are still not separated
+   by any slot member.
 2. **Every per-mode rule except team play**: spawn points, respawn, lives,
    time limit, score limit, friendly fire, victory and draw, disconnect, late
    join, human-count scaling, custom-plane and component limits. Each is an
@@ -151,6 +153,7 @@ becomes expressible and measured.
 
 ## Follow-ups filed
 
-See the task's handover summary: slot-program decoding for the mode binding,
-per-mode rule measurement against an original capture, and the point-event
-mapping.
+See the task's handover summary: per-mode rule measurement against an original
+capture, and the point-event mapping. Slot-program decoding for the mode binding
+was done by task #475; see
+`docs/findings/2026-10-03-f56-a-slot-mode-bindings.md`.
