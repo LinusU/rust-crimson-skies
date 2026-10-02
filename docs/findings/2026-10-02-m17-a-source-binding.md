@@ -35,6 +35,63 @@ corroboration (M02-A) resolve M17 as they stand. Added:
 Wiring only: `crates/cs_app/tests/campaign/main.rs` (`mod m17_a;` plus the
 module doc's list of retail suites).
 
+## Review changes (Rally #306 review, 2026-10-02)
+
+The reviewing agent (`bunny-alpha-1`, fresh context that did not do the
+implementation) re-derived every retail fact in the table above from the
+installation *without* using the binding code — the `ZBD` chapter/mission
+directory walk, the `RT_STRING` resource blocks of
+`GOSDATA/ASSETS/BINARIES/langui.dll` (block 219 holds rows 3488..3503 at file
+offset 95 304, length 876; the two campaign-length row runs are 3450..3473 and
+3480..3503) and the byte lengths and SHA-256 of the chapter-4 archives. Every
+fact matched, and so did the seven-title measurement and the M18 observation.
+Three defects were found and fixed:
+
+1. **A wrong claim about a previous stage, repeated in five places** (this
+   document, `crates/cs_app/tests/campaign/m17_a.rs`'s module doc and the
+   `only_the_short_name_row…` comment, `missions/bindings/README.md`, and the
+   report's `review.method` text): all of them said the absence of a
+   `title spelling` unknown was "the opposite of M05-A **and M16-A**".
+   `missions/bindings/M16.json` carries no such unknown, and neither does
+   `M12.json` — their titles are carried verbatim *and* as a long-name tail, so
+   `TitleForm::Verbatim` wins and the spelling arm is never reached. Only
+   `M05.json` records one. Corrected everywhere, and the reason M12/M16 differ
+   from M17 is now stated instead.
+2. **A literal `\n` inside a `//!` doc comment** in
+   `crates/cs_app/tests/campaign/evidence.rs` (a bad substitution left
+   ``… `M17.json`\n//! and in`` on one source line). It compiled, but it
+   garbled the module documentation. Fixed.
+3. **A real coverage gap: the resolved identities' *values* were never pinned.**
+   The scenario test asserted only that `catalog_id`, `world_id` and
+   `program_id` had the right `ContentKind`; the tests that compared id *keys*
+   either compared them with `binding()` itself or only the byte-pinned
+   committed record caught a wrong derivation. Mutating the production
+   `mission_key`, `program_key` or world-id derivation, or shifting
+   `campaign_position_for` by one row inside its block, left 9 of the 10 tests
+   green. The review added assertions that compare each id against the key
+   built from the **retail layout entry** the position selected
+   (`layout_mission_id`, `layout_program_id`, `world/<world group>`), that the
+   cited archive really sits in a `M02`-shaped mission directory of the
+   `C4`-shaped world group the key encodes, and that no sibling of the chapter
+   may be substituted for the program id. All four mutations now fail
+   `accept_m17_a_source_derived_binding_has_no_unresolved_critical_dependencies`
+   itself (the join mutation trips 7 of the 10).
+
+The branch was then rebased twice onto `origin/main`, which had meanwhile
+merged M07-A, M19-A, M21-A and M24-A. Those stages touch the same three files
+this one does — `crates/cs_app/tests/campaign/evidence.rs`,
+`crates/cs_app/tests/campaign/main.rs` and `missions/bindings/README.md` — so
+each rebase conflicted and was resolved by keeping **both** sides: main's
+M07/M19/M21/M24 harnesses, test-name tables, module declarations and README
+entries next to the M17-A ones, in campaign-position order, with no conflict
+marker left anywhere. Nothing main carries was dropped, and the M17-A
+corrections above were kept through both resolutions. The rebases also exposed
+that main's own "not here yet" list still claimed `M24.json` was missing; since
+this branch already owns that hunk, the list is now the exact nine unbound work
+orders (`M09`, `M10`, `M11`, `M14`, `M15`, `M18`, `M20`, `M22`, `M23`) written
+out one by one, because `M19`, `M21` and `M24` are bound while `M18`, `M20`,
+`M22` and `M23` are not and a range hides that.
+
 ## What was read from the installation
 
 | Fact | Value |
@@ -66,22 +123,27 @@ group into `Hawaii`(5) / `Northwest`(5) / `Hollywood`(5) / `Rocky Mountains`(5) 
   confirms M17 `TitleForm::Verbatim` and `TitleForm::RegionPrefixedLongName`
   matches nothing at all for this title.
 
-  The consequence is the opposite of M05-A and M16-A: because the
-  confirmation did not come through the long-name form, `SourceContext::bind`
-  records **no** `title spelling` unknown, and `M17.json` carries only the
-  thirteen checklist entries every source binding leaves unknown.
-  `accept_m17_a_only_the_short_name_row_carries_the_declared_title` asserts
-  that absence positively, so a stage that copied M05-A's or M16-A's
-  expectation cannot pass here.
+  The consequence is the opposite of M05-A: because the confirmation did not
+  come through the long-name form, `SourceContext::bind` records **no**
+  `title spelling` unknown, and `M17.json` carries only the thirteen checklist
+  entries every source binding leaves unknown. (M05-A is the stage that does
+  record one: its declared title `The Union Jack's Revenge` is carried by the
+  region-prefixed long-name row 3454 alone, its short name reading
+  `Union Jack's Revenge`.) `M12.json` and `M16.json` also carry no such
+  unknown, but for the other reason — their titles are carried verbatim *and*
+  as a long-name tail, so `TitleForm::Verbatim` wins and the spelling arm is
+  never reached. `accept_m17_a_only_the_short_name_row_carries_the_declared_title`
+  asserts M17's absence positively, so a stage that copied M05-A's expectation
+  cannot pass here.
 
-  Both spellings still agree about *which* mission: binding from the long
-  name's own tail resolves to the same campaign position and therefore the
-  same `mission/ch4-m02` / `world/c4` / `script/c4-m02-zrdr`, while recording
-  the spelling difference that M17's own record does not reach. That is what
-  lets `M17-BIND` say "the original localized string wins" without keying
-  runtime logic to the discovery label. Neither claim says the *name* is
-  settled; the guide's label and the installation's two spellings remain three
-  different strings.
+  What M17's own long name *does* resolve is the same mission: binding from the
+  long name's own tail resolves to the same campaign position and therefore
+  the same `mission/ch4-m02` / `world/c4` / `script/c4-m02-zrdr`, while
+  recording the spelling difference that M17's own record does not reach. That
+  is what lets `M17-BIND` say "the original localized string wins" without
+  keying runtime logic to the discovery label. Neither claim says the *name*
+  is settled; the guide's label and the installation's two spellings remain
+  three different strings.
 
 - **The position is interior, one row past a boundary.** Position 16 is the
   *second* mission of chapter 4 (positions 15..19). The layout's chapter
@@ -169,13 +231,13 @@ and nothing here is `verified_original`.
 
 | Test | Kind | What it pins |
 | --- | --- | --- |
-| `…_source_derived_binding_has_no_unresolved_critical_dependencies` | retail | the acceptance scenario: all five `CriticalDependency` rows resolved in checklist order, each with the evidence class its role implies; the install hash re-measured by production discovery; position 16, its identities' kinds, its program's existence; every cited span's digest recomputed from the asset; `verified` false with the checklist unknowns still present |
+| `…_source_derived_binding_has_no_unresolved_critical_dependencies` | retail | the acceptance scenario: all five `CriticalDependency` rows resolved in checklist order, each with the evidence class its role implies; the install hash re-measured by production discovery; position 16, its program's existence; **each identity's canonical id compared with the key built from the retail layout entry that position selected**, and the cited archive proven to sit in the `M02`/`C4` directories the program key encodes; every cited span's digest recomputed from the asset; `verified` false with the checklist unknowns still present |
 | `…_the_committed_record_is_what_the_installation_derives` | retail | the committed `missions/bindings/M17.json` equals `SourceBinding::to_json` byte for byte, has the schema's shape, and leaves the seven unbound id lists empty rather than filling them with invented ids |
 | `…_the_original_name_is_confirmed_against_the_local_strings` | retail | `M17-BIND`: exactly one retail row carries the declared title, the block it sits in is campaign-length, and the other display form at the same position is a different, region-prefixed string. **Failure cases:** a spelling no row carries (`The Pirates Duel`) and a real display text the table carries twice (read from the installation, not authored) each leave `TitleString` plus the three position-dependent dependencies unresolved, cite no source span, and leave `MissionIdentity` `Unknown` |
 | `…_only_the_short_name_row_carries_the_declared_title` | retail | M17's specific display-form fact: `Verbatim` confirmation, **no** `title spelling` unknown, the long name's tail differs and strictly extends the title, and starting the join from that tail selects the same position and the same three identities while *it* does record the spelling difference |
 | `…_the_join_is_corroborated_by_the_long_name_rows` | retail | `JoinCorroboration::Agreed`, every listed block campaign-length, the grouped block is not M17's own, and every row of the corroborating block selects the position its index names through the production join |
 | `…_the_position_is_interior_to_the_fourth_chapter_and_its_region_group` | retail | M17 is chapter 4's second mission; the boundary is exactly one row above in the layout, both structures put it at 15, the region prefix changes on that row and does not change on the next, and the chapter-size slice index equals the chapter's index |
-| `…_the_program_archive_alone_singles_this_mission_out_of_its_chapter` | retail | `world/c4` holds the whole chapter, mission number 2 names one mission per chapter, the record cites only its own archive, its span length is that archive's byte length, chapter-4 archive lengths are pairwise distinct and M17's is the shortest |
+| `…_the_program_archive_alone_singles_this_mission_out_of_its_chapter` | retail | `world/c4` holds the whole chapter, mission number 2 names one mission per chapter, **the program id is the key of the selected entry and of no sibling**, the record cites only its own archive, its span length is that archive's byte length, chapter-4 archive lengths are pairwise distinct and M17's is the shortest |
 | `…_the_campaign_keeps_everything_else_unresolved_and_unready` | retail | coverage over the frozen 24-mission denominator: 1 complete cell out of `24×7`, 0 missing, all subsystem rows unresolved, all progressions unknown, `is_ready()` false; M17's identity rows carry the three retail ids with the right kinds; closure reaches only M17 and is incomplete; no other mission's cells changed |
 | `…_a_title_block_must_be_exactly_the_campaign_length` | synthetic | the run rule without an installation: a gap ends a run, one row short/long is not a campaign, two campaign-length runs are both listed |
 | `…_a_contradicted_corroboration_establishes_no_position` | synthetic | the guard's arms, including the contradiction no retail installation produces: a contradicted table selects no position even for a confirmed row, each refusal names its own cause, `Unavailable` is not a contradiction, and a fully resolved-but-unknown record is still not verified |
@@ -186,6 +248,8 @@ tests are `#[ignore = "requires CS_GAME_DIR"]` and are run with
 also executed alone with `--exact`: all ten pass individually.
 
 ## Verification performed
+
+The implementer ran:
 
 ```sh
 cargo fmt --all -- --check                                                     # exit 0
@@ -201,7 +265,27 @@ branches"* — and its `candidate_tree` is that commit's tree. The only delta
 between that commit and the branch head is the report's own copy under
 `docs/findings/evidence/`.
 
+The reviewing agent re-ran the same four checks on the reviewed commits (after
+the second rebase, onto `origin/main` c8b35db: fmt exit 0, clippy exit 0,
+workspace `2422` tests in 238 suites with 0 failed, `accept_m17_a_` 10 passed,
+and each of the ten also alone with `--exact`), plus a mutation sweep over the
+production derivation (each mutation reverted immediately, with
+`crates/cs_content/src/campaign_bindings.rs` byte-identical to `origin/main`
+afterwards):
+
+| Mutation in production code | Before the review | After the review |
+| --- | --- | --- |
+| `mission_key` formats the next mission number | only the byte-pinned record and the corroboration test failed | also the acceptance-scenario test |
+| `program_key` formats the next mission number | only the byte-pinned record failed | also the acceptance-scenario and the sibling test |
+| world id built from the chapter instead of the world group | only the byte-pinned record failed | also the acceptance-scenario test |
+| `campaign_position_for` off by one inside its row block | 3 of 10 failed | 7 of 10 failed |
+
 Evidence report: `private/evidence/M17-A/acceptance.json` (harness
 `evidence_report_m17_a_writes_the_acceptance_report`), validated with
 `tools/validate_evidence.py --require-pass`, copy committed as
-`docs/findings/evidence/M17-A.json`. `claim: implemented`.
+`docs/findings/evidence/M17-A.json`. `claim: implemented`. The report was
+regenerated after the review changes, so its `review.identity` names the
+reviewing agent and its `review.method` carries the corrected account of what
+M17-A differs on; its `candidate_tree` is the tree of the reviewed
+implementation commit, and the only delta to the branch head is the report's own
+copy.

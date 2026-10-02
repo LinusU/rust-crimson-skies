@@ -39,7 +39,8 @@
 //! The reports' `unknowns` are *those tasks'* blockers and are empty because
 //! the acceptance run passed. The bindings' own unbound checklist entries are
 //! **not** dropped anywhere: they are carried in
-//! `missions/bindings/M01.json` … `missions/bindings/M08.json`, `M12.json`, `M13.json`, `M16.json`, `M17.json`, `M19.json`, `M21.json`, `M24.json` and in
+//! `missions/bindings/M01.json` … `missions/bindings/M08.json`, `M12.json`,
+//! `M13.json`, `M16.json`, `M17.json`, `M19.json`, `M21.json`, `M24.json` and in
 //! `docs/findings/`, which is where the product-incompleteness state lives
 //! (`AUDIT-PLAN-SYNC`: keep the states separate). The claim is `implemented`,
 //! never `checked` or `verified_original`.

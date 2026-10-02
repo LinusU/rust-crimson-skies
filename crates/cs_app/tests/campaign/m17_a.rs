@@ -20,9 +20,12 @@
 //!   the separator is *not* the declared title.
 //!   [`accept_m17_a_only_the_short_name_row_carries_the_declared_title`] pins
 //!   that, and with it the consequence that this record carries **no**
-//!   `title spelling` unknown — the opposite of M05-A and M16-A — while both
-//!   spellings still select the same campaign position and therefore the same
-//!   three retail identities.
+//!   `title spelling` unknown — the opposite of M05-A, whose declared title
+//!   only the long-name row carries. (`M12-A` and `M16-A` also carry no such
+//!   unknown, but for the other reason: their titles are carried verbatim
+//!   *and* as a long-name tail, so the verbatim form wins and the spelling arm
+//!   is never reached.) Either way the long name's own tail still selects the
+//!   same campaign position and therefore the same three retail identities.
 //! * **The position is interior, one row past a chapter boundary.** Position 16
 //!   is the *second* mission of chapter 4, so it sits one row above the
 //!   layout's chapter boundary and the localized long names' fourth region
@@ -48,7 +51,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use cs_content::campaign_bindings::{
@@ -224,6 +227,61 @@ fn accept_m17_a_source_derived_binding_has_no_unresolved_critical_dependencies()
     assert!(
         program_path.is_file(),
         "the program archive {} the record cites does not exist",
+        entry.program_asset
+    );
+
+    // The identities name *this* campaign entry, not merely ids of the right
+    // kind. The expected keys are built from the layout entry the position
+    // selected — chapter, mission number and world group as the installation
+    // spells them — so a derivation that formatted the right kind of id from
+    // the wrong mission, or from a sibling of the same chapter, is caught
+    // here rather than only by the byte-pinned record.
+    for (name, id, expected) in [
+        ("catalog_id", mission, layout_mission_id(entry)),
+        ("world_id", world, format!("world/{}", entry.world_group)),
+        ("program_id", program, layout_program_id(entry)),
+    ] {
+        assert_eq!(
+            id.as_str(),
+            expected,
+            "{name} does not name the campaign position {position} selected"
+        );
+    }
+    // And the program key describes the archive the record cites: the archive
+    // lives in a world-group directory and a mission-number directory whose
+    // names are the ones the key encodes, so the id cannot drift away from the
+    // file it is supposed to name.
+    let archive = PathBuf::from(&entry.program_asset);
+    let mission_dir = archive
+        .parent()
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .unwrap_or_else(|| panic!("{} is not inside a mission directory", entry.program_asset));
+    let world_dir = archive
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::file_name)
+        .and_then(|name| name.to_str())
+        .unwrap_or_else(|| panic!("{} is not inside a world group", entry.program_asset));
+    assert!(
+        mission_dir.eq_ignore_ascii_case(&format!("M{:02}", entry.mission_number)),
+        "the cited archive {mission_dir:?} is not mission {} of the chapter the position selected",
+        entry.mission_number
+    );
+    assert!(
+        world_dir.eq_ignore_ascii_case(&entry.world_group),
+        "the cited archive's world group {world_dir:?} is not {}",
+        entry.world_group
+    );
+    let stem = archive
+        .file_stem()
+        .and_then(|stem| stem.to_str())
+        .unwrap_or_else(|| panic!("{} has no file name", entry.program_asset));
+    assert_eq!(
+        program.as_str().rsplit('-').next(),
+        Some(stem),
+        "the program id {} does not name the reader archive {}",
+        program.as_str(),
         entry.program_asset
     );
 
@@ -507,6 +565,32 @@ fn block_containing(context: &SourceContext, id: u32) -> TitleBlock {
         .unwrap_or_else(|| panic!("string id {id} sits in no campaign-length row block"))
 }
 
+/// The mission id key the campaign position selected *should* carry, built here
+/// from the layout entry the installation spelled — its chapter and mission
+/// number — rather than from the production function that formats the record's
+/// own id. A derivation that formatted the right kind of id from the wrong
+/// mission is therefore visible here.
+fn layout_mission_key(entry: &CampaignMission) -> String {
+    format!("ch{}-m{:02}", entry.chapter, entry.mission_number)
+}
+
+/// The program id key the campaign position selected *should* carry, built from
+/// the world group and mission number the installation spelled. See
+/// [`layout_mission_key`].
+fn layout_program_key(entry: &CampaignMission) -> String {
+    format!("{}-m{:02}-zrdr", entry.world_group, entry.mission_number)
+}
+
+/// The canonical `mission/…` id the selected layout entry should produce.
+fn layout_mission_id(entry: &CampaignMission) -> String {
+    format!("mission/{}", layout_mission_key(entry))
+}
+
+/// The canonical `script/…` id the selected layout entry should produce.
+fn layout_program_id(entry: &CampaignMission) -> String {
+    format!("script/{}", layout_program_key(entry))
+}
+
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m17_a_only_the_short_name_row_carries_the_declared_title() {
@@ -514,9 +598,10 @@ fn accept_m17_a_only_the_short_name_row_carries_the_declared_title() {
     // verbatim. The installation's other display form for this campaign
     // position inserts a name between the region prefix and the title, so its
     // tail after the observed separator is not the declared title and no long
-    // name confirms it. M05-A and M16-A recorded a `title spelling` unknown for
-    // exactly that reason; this record must carry none, and the test says so,
-    // so a stage that copied their expectation cannot pass here.
+    // name confirms it. M05-A recorded a `title spelling` unknown for exactly
+    // that reason — there the long-name row was the *only* carrier; this record
+    // must carry none, and the test says so, so a stage that copied M05-A's
+    // expectation cannot pass here.
     let context = context();
     let binding = binding();
     let title = discovery_title();
@@ -997,6 +1082,26 @@ fn accept_m17_a_the_program_archive_alone_singles_this_mission_out_of_its_chapte
             other.program_asset, entry.program_asset,
             "two missions share the program archive {}",
             entry.program_asset
+        );
+    }
+    // The world group and the mission number each name several missions, so
+    // neither of them can be what the program id encodes: the id has to be the
+    // key of *this* entry, and no sibling's key may be substituted for it.
+    let program = binding.program_id.as_ref().expect("program id resolved");
+    assert_eq!(
+        program.as_str(),
+        layout_program_id(entry),
+        "the program id does not name the mission the position selected"
+    );
+    for sibling in chapter
+        .iter()
+        .filter(|other| other.mission_number != entry.mission_number)
+    {
+        assert_ne!(
+            program.as_str(),
+            layout_program_id(sibling),
+            "the program id names sibling {} instead",
+            sibling.program_asset
         );
     }
 
