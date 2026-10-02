@@ -69,6 +69,7 @@ use cs_types::net::SessionId;
 use cs_types::space::{UnitVec3, WorldPosition};
 
 use crate::damage::{ActorId, DamageChannel, DamageNodeKey, HitEvent, HitEventError, HitEventId};
+use crate::environment::{air_relative_velocity_m_s, world_velocity_from_air_m_s};
 use crate::targeting::Allegiance;
 
 // ---------------------------------------------------------------- identity ----
@@ -2370,6 +2371,574 @@ fn earliest_time_of_impact(segment: &ProjectileSegment, target: &SweepTarget) ->
         }
     }
     Some(enter)
+}
+
+// ------------------------------------------------- projectile runtime ----
+//
+// F27-B. The swept query above answers "does this segment cross this box?" for
+// one tick. This section is the *runtime* that owns the rounds themselves: the
+// per-tick cadence that turns accepted fire events into moving projectiles,
+// keeps their swept segments, applies the shared wind conversion and retires a
+// round when its declared lifetime is spent.
+//
+// It is deliberately platform-independent: no Bevy, no Avian, no renderer. The
+// ECS side (`cs_app::weapons`) mirrors these positions onto Avian bodies and
+// reads the live mount transforms; the geometry and the accounting live here.
+
+/// One live projectile's authoritative motion state.
+///
+/// A round carries a **constant air-relative velocity**. It is spawned from
+/// the accepted fire event's own world velocity with the wind removed once, by
+/// the shared [`air_relative_velocity_m_s`], and every tick's world velocity
+/// is the shared [`world_velocity_from_air_m_s`] of that air velocity and the
+/// tick's wind. No drag, no gravity and no wind shear are applied: F27's
+/// research boundary leaves them unmeasured and F19-B deliberately modelled
+/// none of them (`docs/findings/2026-09-30-f19-wind-conversion-ownership.md`).
+///
+/// `previous` is where the round was at the start of the tick and `current`
+/// where it is now; together they are the swept segment the query above tests.
+/// The position is the *authoritative* one: an ECS body is a mirror, not a
+/// second integrator.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LiveProjectile {
+    projectile: ProjectileId,
+    shooter: ActorId,
+    previous: WorldPosition,
+    current: WorldPosition,
+    air_velocity_m_s: [f64; 3],
+    ticks_remaining: u64,
+}
+
+impl LiveProjectile {
+    /// The projectile's stable identity.
+    #[must_use]
+    pub const fn projectile(&self) -> ProjectileId {
+        self.projectile
+    }
+
+    /// The actor that fired it.
+    #[must_use]
+    pub const fn shooter(&self) -> ActorId {
+        self.shooter
+    }
+
+    /// Where the round was at the start of the current tick.
+    #[must_use]
+    pub const fn previous(&self) -> WorldPosition {
+        self.previous
+    }
+
+    /// Where the round is now.
+    #[must_use]
+    pub const fn current(&self) -> WorldPosition {
+        self.current
+    }
+
+    /// The constant air-relative velocity the round flies with.
+    #[must_use]
+    pub const fn air_velocity_m_s(&self) -> [f64; 3] {
+        self.air_velocity_m_s
+    }
+
+    /// How many further ticks the round lives.
+    #[must_use]
+    pub const fn ticks_remaining(&self) -> u64 {
+        self.ticks_remaining
+    }
+
+    /// The swept segment the round covered over the current tick.
+    #[must_use]
+    pub const fn segment(&self) -> ProjectileSegment {
+        ProjectileSegment {
+            projectile: self.projectile,
+            previous: self.previous,
+            current: self.current,
+        }
+    }
+
+    /// The world velocity the round has in `wind`: the shared conversion of
+    /// its constant air-relative velocity into the world frame. The wind is
+    /// therefore subtracted exactly once, at spawn, and added back here.
+    #[must_use]
+    pub fn world_velocity_m_s(&self, wind_velocity_m_s: [f64; 3]) -> [f64; 3] {
+        world_velocity_from_air_m_s(self.air_velocity_m_s, wind_velocity_m_s)
+    }
+}
+
+/// One tick's accounting of the live projectiles.
+///
+/// `segments` is one swept segment per round that was live for the tick, in
+/// ascending [`ProjectileId`] order (the map's own stable order). `expired`
+/// names the rounds whose declared lifetime was spent on this tick, *after*
+/// their final segment was produced: a caller sweeps the segment, then
+/// retires the body the id names.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ProjectileTick {
+    /// The swept segment each live round covered over the tick.
+    pub segments: Vec<ProjectileSegment>,
+    /// The rounds that reached the end of their declared lifetime this tick.
+    pub expired: Vec<ProjectileId>,
+}
+
+impl ProjectileTick {
+    /// Whether the tick produced no segment and retired no round.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.segments.is_empty() && self.expired.is_empty()
+    }
+}
+
+/// Why a [`ProjectileRuntime`] operation was refused.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ProjectileRuntimeError {
+    /// The fire event belongs to another session generation.
+    ForeignSession {
+        /// The runtime's session.
+        expected: u64,
+        /// The session the event carried.
+        found: u64,
+    },
+    /// A round with this identity is already live. A projectile is spawned
+    /// once; a duplicate event must not give one id two bodies.
+    DuplicateProjectile {
+        /// The repeated projectile.
+        projectile: ProjectileId,
+    },
+    /// A spawn world velocity had a non-finite component.
+    NonFiniteVelocity {
+        /// The offending axis: `0` X, `1` Y, `2` Z.
+        component: usize,
+    },
+    /// A wind velocity had a non-finite component.
+    NonFiniteWind {
+        /// The offending axis: `0` X, `1` Y, `2` Z.
+        component: usize,
+    },
+    /// The tick length was negative, NaN or infinite.
+    NonFiniteExtent {
+        /// The field that was refused (`dt_s`).
+        field: &'static str,
+    },
+    /// Advancing a round produced a non-finite position.
+    NonFinitePosition {
+        /// The round whose position left the representable range.
+        projectile: ProjectileId,
+    },
+    /// A fire event declared a zero-tick lifetime, so the round could never
+    /// exist as a projectile.
+    ZeroLifetime {
+        /// The round with no life.
+        projectile: ProjectileId,
+    },
+}
+
+impl ProjectileRuntimeError {
+    /// The stable label used in reports.
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::ForeignSession { .. } => "foreign_session",
+            Self::DuplicateProjectile { .. } => "duplicate_projectile",
+            Self::NonFiniteVelocity { .. } => "non_finite_velocity",
+            Self::NonFiniteWind { .. } => "non_finite_wind",
+            Self::NonFiniteExtent { .. } => "non_finite_extent",
+            Self::NonFinitePosition { .. } => "non_finite_position",
+            Self::ZeroLifetime { .. } => "zero_lifetime",
+        }
+    }
+}
+
+impl fmt::Display for ProjectileRuntimeError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ForeignSession { expected, found } => write!(
+                f,
+                "a projectile belongs to session {found}, but this runtime is session {expected}"
+            ),
+            Self::DuplicateProjectile { projectile } => {
+                write!(f, "{projectile} is already live")
+            }
+            Self::NonFiniteVelocity { component } => {
+                write!(f, "a spawn velocity component {component} must be finite")
+            }
+            Self::NonFiniteWind { component } => {
+                write!(f, "a wind component {component} must be finite")
+            }
+            Self::NonFiniteExtent { field } => write!(f, "{field} must be finite and non-negative"),
+            Self::NonFinitePosition { projectile } => {
+                write!(f, "{projectile} left the representable position range")
+            }
+            Self::ZeroLifetime { projectile } => {
+                write!(f, "{projectile} was declared with a zero-tick lifetime")
+            }
+        }
+    }
+}
+
+impl std::error::Error for ProjectileRuntimeError {}
+
+/// The per-session set of live projectiles.
+///
+/// This is the F27-B runtime half the swept query above was missing: a fire
+/// event spawns a round here, each tick advances every round along its
+/// constant air-relative velocity (converted to the world frame through the
+/// shared wind functions), and a round whose declared lifetime is spent is
+/// retired after its final segment. The swept query stays a pure function of
+/// one segment and a target list; this type is what produces the segments and
+/// the identities they belong to.
+///
+/// It is keyed by [`ProjectileId`], so ids are never recycled: a round can be
+/// removed and its id never reissued (`FireResolver::next_projectile_id`).
+#[derive(Clone, Debug)]
+pub struct ProjectileRuntime {
+    session: u64,
+    live: BTreeMap<ProjectileId, LiveProjectile>,
+}
+
+impl ProjectileRuntime {
+    /// Opens a runtime for one session generation.
+    #[must_use]
+    pub const fn new(session: u64) -> Self {
+        Self {
+            session,
+            live: BTreeMap::new(),
+        }
+    }
+
+    /// The session generation this runtime is confined to.
+    #[must_use]
+    pub const fn session(&self) -> u64 {
+        self.session
+    }
+
+    /// One live round, if it is still flying.
+    #[must_use]
+    pub fn get(&self, projectile: ProjectileId) -> Option<&LiveProjectile> {
+        self.live.get(&projectile)
+    }
+
+    /// Every live round, in ascending id order.
+    pub fn iter(&self) -> impl Iterator<Item = &LiveProjectile> {
+        self.live.values()
+    }
+
+    /// How many rounds are live.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.live.len()
+    }
+
+    /// Whether no round is live.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.live.is_empty()
+    }
+
+    /// Every live round's current swept segment, in ascending id order.
+    #[must_use]
+    pub fn segments(&self) -> Vec<ProjectileSegment> {
+        self.live.values().map(LiveProjectile::segment).collect()
+    }
+
+    /// Spawns one round from an accepted fire event.
+    ///
+    /// The event's projectile world velocity has the wind removed once, by the
+    /// shared [`air_relative_velocity_m_s`], and the result is what the round
+    /// keeps: `world_velocity_from_air_m_s` reconstructs the world velocity
+    /// every tick from the current wind. This is the only conversion site, so
+    /// the subtraction is never written out again
+    /// (`docs/findings/2026-09-30-f19-wind-conversion-ownership.md`).
+    ///
+    /// # Errors
+    ///
+    /// [`ProjectileRuntimeError`] when the event belongs to another session, a
+    /// round with the same id is already live, a velocity or wind component is
+    /// non-finite, or the declared lifetime is zero.
+    pub fn spawn(
+        &mut self,
+        event: &FireEvent,
+        wind_velocity_m_s: [f64; 3],
+    ) -> Result<ProjectileId, ProjectileRuntimeError> {
+        if event.id.session != self.session {
+            return Err(ProjectileRuntimeError::ForeignSession {
+                expected: self.session,
+                found: event.id.session,
+            });
+        }
+        let projectile = event.projectile.projectile;
+        if self.live.contains_key(&projectile) {
+            return Err(ProjectileRuntimeError::DuplicateProjectile { projectile });
+        }
+        for (component, value) in event.projectile.velocity_mps.iter().enumerate() {
+            if !value.is_finite() {
+                return Err(ProjectileRuntimeError::NonFiniteVelocity { component });
+            }
+        }
+        check_finite_wind(wind_velocity_m_s)?;
+        if event.projectile.lifetime_ticks == 0 {
+            return Err(ProjectileRuntimeError::ZeroLifetime { projectile });
+        }
+        let air_velocity_m_s =
+            air_relative_velocity_m_s(event.projectile.velocity_mps, wind_velocity_m_s);
+        let origin = event.projectile.origin;
+        self.live.insert(
+            projectile,
+            LiveProjectile {
+                projectile,
+                shooter: event.shooter,
+                previous: origin,
+                current: origin,
+                air_velocity_m_s,
+                ticks_remaining: event.projectile.lifetime_ticks,
+            },
+        );
+        Ok(projectile)
+    }
+
+    /// Advances every live round by one tick of `dt_s` seconds.
+    ///
+    /// The returned [`ProjectileTick`] names each round's swept segment and
+    /// the rounds whose lifetime ended this tick. Expired rounds are removed
+    /// from the runtime *after* their final segment is recorded, so one caller
+    /// pass can sweep the last segment and then retire the body it names.
+    ///
+    /// The tick is **all-or-nothing**: the next state is built beside the live
+    /// one and installed only once every round has advanced, so a round whose
+    /// next position is not representable (an arithmetic overflow from
+    /// otherwise finite inputs) refuses the whole tick and leaves every round
+    /// exactly where it was.
+    ///
+    /// # Errors
+    ///
+    /// [`ProjectileRuntimeError::NonFiniteExtent`] when `dt_s` is NaN,
+    /// infinite or negative, [`ProjectileRuntimeError::NonFiniteWind`] when a
+    /// wind component is not finite, and
+    /// [`ProjectileRuntimeError::NonFinitePosition`] when a round's next
+    /// position is not representable.
+    pub fn advance(
+        &mut self,
+        dt_s: f64,
+        wind_velocity_m_s: [f64; 3],
+    ) -> Result<ProjectileTick, ProjectileRuntimeError> {
+        if !dt_s.is_finite() || dt_s < 0.0 {
+            return Err(ProjectileRuntimeError::NonFiniteExtent { field: "dt_s" });
+        }
+        check_finite_wind(wind_velocity_m_s)?;
+        let mut next = self.live.clone();
+        let mut tick = ProjectileTick::default();
+        for live in next.values_mut() {
+            live.previous = live.current;
+            let velocity = world_velocity_from_air_m_s(live.air_velocity_m_s, wind_velocity_m_s);
+            let mut moved = live.current.to_array();
+            for axis in 0..3 {
+                moved[axis] += velocity[axis] * dt_s;
+            }
+            let current = WorldPosition::try_new(moved).map_err(|_| {
+                ProjectileRuntimeError::NonFinitePosition {
+                    projectile: live.projectile,
+                }
+            })?;
+            live.current = current;
+            tick.segments.push(live.segment());
+            live.ticks_remaining = live.ticks_remaining.saturating_sub(1);
+            if live.ticks_remaining == 0 {
+                tick.expired.push(live.projectile);
+            }
+        }
+        for projectile in &tick.expired {
+            next.remove(projectile);
+        }
+        self.live = next;
+        Ok(tick)
+    }
+
+    /// Removes one round, as a hit or a teardown does, returning it.
+    ///
+    /// A removed id is never reissued by this runtime; the id cursor belongs to
+    /// [`FireResolver`].
+    pub fn remove(&mut self, projectile: ProjectileId) -> Option<LiveProjectile> {
+        self.live.remove(&projectile)
+    }
+}
+
+/// Refuses a non-finite wind component.
+fn check_finite_wind(wind_velocity_m_s: [f64; 3]) -> Result<(), ProjectileRuntimeError> {
+    for (component, value) in wind_velocity_m_s.iter().enumerate() {
+        if !value.is_finite() {
+            return Err(ProjectileRuntimeError::NonFiniteWind { component });
+        }
+    }
+    Ok(())
+}
+
+/// Why the per-tick gun cadence refused to fire.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CadenceRefusal {
+    /// The whole intent was refused; nothing fired and nothing was spawned.
+    Intent(IntentRefusal),
+    /// The intent resolved into shots, but a spawned round was refused by the
+    /// projectile runtime.
+    ///
+    /// Unreachable for a normally resolved event — the resolver allocates a
+    /// fresh id, refuses non-finite geometry at the mount, and never declares a
+    /// zero lifetime — it is mapped rather than unwrapped so a future event
+    /// cannot take the simulation down mid-fire.
+    Projectile(ProjectileRuntimeError),
+}
+
+impl fmt::Display for CadenceRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Intent(source) => write!(f, "the fire intent was refused: {source}"),
+            Self::Projectile(source) => {
+                write!(f, "an accepted shot's projectile was refused: {source}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for CadenceRefusal {}
+
+/// The per-tick gun cadence: one session's resolver and live projectiles,
+/// advanced as one step.
+///
+/// This is the loop F27-A left unowned (`docs/findings/2026-10-01-f27-a-weapon-ammo-schemas-and-fire-events.md`):
+/// [`GunCadence::advance_to`] walks the cooldowns exactly like
+/// [`FireResolver::advance_to`], [`GunCadence::fire`] resolves one intent and
+/// spawns every accepted shot's projectile in the same call, and
+/// [`GunCadence::advance_projectiles`] moves the rounds. A caller therefore
+/// cannot resolve a shot and forget to spawn its round, and a refused intent
+/// (`IntentRefusal`) spawns nothing because the resolver produced no event.
+///
+/// It owns no ECS state: the live mount transforms are supplied per intent, and
+/// the ECS mirror of the projectile positions is `cs_app::weapons`'s. The
+/// cadence is where the *simulation* authority over the rounds lives.
+#[derive(Clone, Debug)]
+pub struct GunCadence {
+    resolver: FireResolver,
+    projectiles: ProjectileRuntime,
+}
+
+impl GunCadence {
+    /// Opens a cadence for one session generation, positioned at `tick`.
+    #[must_use]
+    pub fn new(session: u64, tick: Tick) -> Self {
+        Self {
+            resolver: FireResolver::new(session, tick),
+            projectiles: ProjectileRuntime::new(session),
+        }
+    }
+
+    /// The session generation this cadence is confined to.
+    #[must_use]
+    pub const fn session(&self) -> u64 {
+        self.resolver.session()
+    }
+
+    /// The tick this cadence is currently resolving.
+    #[must_use]
+    pub const fn tick(&self) -> Tick {
+        self.resolver.tick()
+    }
+
+    /// Advances the cadence to `tick`, ticking every cooldown down once per
+    /// elapsed tick. Time never runs backwards.
+    pub fn advance_to(&mut self, tick: Tick) {
+        self.resolver.advance_to(tick);
+    }
+
+    /// Registers one actor's guns, exactly as [`FireResolver::register`] does.
+    ///
+    /// # Errors
+    ///
+    /// [`FireError`] when the actor is registered already or two definitions
+    /// share a mount.
+    pub fn register(
+        &mut self,
+        shooter: ActorId,
+        definitions: Vec<GunDefinition>,
+        state: WeaponState,
+    ) -> Result<(), FireError> {
+        self.resolver.register(shooter, definitions, state)
+    }
+
+    /// One actor's weapon state, if registered.
+    #[must_use]
+    pub fn state(&self, shooter: &ActorId) -> Option<&WeaponState> {
+        self.resolver.state(shooter)
+    }
+
+    /// One actor's mutable weapon state, if registered.
+    pub fn state_mut(&mut self, shooter: &ActorId) -> Option<&mut WeaponState> {
+        self.resolver.state_mut(shooter)
+    }
+
+    /// One actor's mounted gun on `mount`, if any.
+    #[must_use]
+    pub fn definition(&self, shooter: &ActorId, mount: &DamageNodeKey) -> Option<&GunDefinition> {
+        self.resolver.definition(shooter, mount)
+    }
+
+    /// The live projectiles this cadence owns.
+    #[must_use]
+    pub const fn projectiles(&self) -> &ProjectileRuntime {
+        &self.projectiles
+    }
+
+    /// The resolver this cadence drives, for callers that need a query it
+    /// already exposes but the cadence does not re-export.
+    #[must_use]
+    pub const fn resolver(&self) -> &FireResolver {
+        &self.resolver
+    }
+
+    /// Resolves one fire intent and spawns every accepted shot's projectile.
+    ///
+    /// A refused intent (`CadenceRefusal::Intent`) changes no state: no round
+    /// is consumed, no cooldown starts and no projectile exists. That is the
+    /// AC02 gate seen from the cadence: a disabled mount is refused per mount,
+    /// so its shot is absent from `accepted`, spawns nothing here, and an
+    /// accepted sibling shot on the same intent still fires.
+    ///
+    /// # Errors
+    ///
+    /// [`CadenceRefusal::Intent`] for a whole-intent refusal and
+    /// [`CadenceRefusal::Projectile`] for a spawn the runtime refused.
+    pub fn fire(
+        &mut self,
+        intent: &FireIntent,
+        transforms: &BTreeMap<DamageNodeKey, MountTransform>,
+        wind_velocity_m_s: [f64; 3],
+    ) -> Result<FireResolution, CadenceRefusal> {
+        let resolution = self
+            .resolver
+            .resolve(intent, transforms)
+            .map_err(CadenceRefusal::Intent)?;
+        for event in &resolution.accepted {
+            self.projectiles
+                .spawn(event, wind_velocity_m_s)
+                .map_err(CadenceRefusal::Projectile)?;
+        }
+        Ok(resolution)
+    }
+
+    /// Advances every live projectile by one cadence tick of `dt_s` seconds.
+    ///
+    /// # Errors
+    ///
+    /// [`ProjectileRuntimeError`] as [`ProjectileRuntime::advance`].
+    pub fn advance_projectiles(
+        &mut self,
+        dt_s: f64,
+        wind_velocity_m_s: [f64; 3],
+    ) -> Result<ProjectileTick, ProjectileRuntimeError> {
+        self.projectiles.advance(dt_s, wind_velocity_m_s)
+    }
+
+    /// Removes one round, as a hit despawn does.
+    pub fn remove_projectile(&mut self, projectile: ProjectileId) -> Option<LiveProjectile> {
+        self.projectiles.remove(projectile)
+    }
 }
 
 // ------------------------------------------------- sweep → damage routing ----
