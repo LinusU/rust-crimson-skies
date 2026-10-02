@@ -3,8 +3,9 @@
   "task": "M16-A-FU2 (#479)",
   "purpose": "The campaign-binding evidence reports under docs/findings/evidence/ must name the implementer and the reviewer that actually ran, including whether the reviewer's context was fresh (docs/contracts/CLI-EVIDENCE.md, 'Evidence record minimum'; owner ruling 2026-09-28). Rally is not reachable from CI or from an offline check, so the review facts read out of the Rally activity log are committed here and enforced against the reports and against the harness that writes them by tools/tests/test_evidence_review_identity.py.",
   "source": "Rally activity log of project crimson-skies, read with the `rally` MCP server (get_task history per task) on 2026-10-02T01:22Z by bunny-2/bunny-2, agent instance acting under M16-A-FU2 (#479).",
-  "read_at": "2026-10-02T01:22:00Z",
+  "read_at": "2026-10-02T01:22:00Z, re-read at 2026-10-02T02:10Z after M07-A (#276) and M16-A (#303) landed on main",
   "read_by": "bunny-2/bunny-2",
+  "claim_started_source": "Rally's `task.started` event where the history window returned it; otherwise the session start the stage's own report states. M07-A's `task.started` is older than the window `get_task` returned, so its 22:49Z comes from its report.",
   "review_event_types": ["review.started", "task.approved", "task.merged"],
   "actor_meaning": "Rally actor strings are `<agent instance>/<session label>`. Two claims from the same actor string are the same agent instance, so the second is not independent of the first (owner ruling 2026-09-28, review policy).",
   "independent_is_derived": "The check derives independence from actor equality; this file records the actors and the event timestamps, not a verdict.",
@@ -113,6 +114,28 @@
         "actor": "deepseek-1/deepseek-1",
         "review_claim_started": "2026-10-01T21:12:39Z",
         "merge_event": {"type": "task.approved", "actor": "deepseek-1/deepseek-1", "at": "2026-10-01T21:36:57Z"}
+      },
+      "report_written_by": "reviewer",
+      "report_regenerated_on_reviewed_commit": true
+    },
+    {
+      "task_key": "M07-A",
+      "rally_task": 276,
+      "evidence_report": "docs/findings/evidence/M07-A.json",
+      "merged_sha": "6035707f3f3110fce715712a0db7bfa4d080782a",
+      "implementer": {
+        "actor": "deepseek-1/deepseek-1",
+        "claim_started": "2026-10-01T22:49:00Z",
+        "submitted": "2026-10-01T23:36:02Z"
+      },
+      "reviewer": {
+        "actor": "claude-2/claude-1",
+        "review_claim_started": "2026-10-02T00:57:15Z",
+        "merge_event": {"type": "task.merged", "actor": "claude-2/claude-1", "at": "2026-10-02T01:58:23Z"},
+        "earlier_review_claims": [
+          {"actor": "claude-2/claude-1", "review_claim_started": "2026-10-02T01:39:38Z", "outcome": "approved, then the landing attempt failed on a rebase conflict and the same agent reviewed again"},
+          {"actor": "deepseek-1/deepseek-1", "review_claim_started": "2026-10-01T23:36:18Z", "outcome": "approved, then the landing attempt failed on a rebase conflict"}
+        ]
       },
       "report_written_by": "reviewer",
       "report_regenerated_on_reviewed_commit": true

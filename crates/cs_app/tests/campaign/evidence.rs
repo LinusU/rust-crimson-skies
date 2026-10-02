@@ -3519,10 +3519,15 @@ fn evidence_report_m07_a_writes_the_acceptance_report() {
         assertion_array(&suite.assertions),
         artifact_array(&artifacts),
         jstr(
-            "implementer: deepseek-1 (Rally #276, DeepSeek V4.1 Flash, session of \
-             2026-10-01T22:49Z); reviewer: not yet assigned at hand-over. The implementer's own \
-             run is not independent review and is not independent original-reference evidence; \
-             no agent review replaces the owner's human approval"
+            "implementer: deepseek-1/deepseek-1 (Rally #276, DeepSeek V4.1 Flash, session of \
+             2026-10-01T22:49Z); reviewer: claude-2/claude-1, on the Rally review claims of \
+             2026-10-02T00:57Z and 2026-10-02T01:39Z, the second of which approved the merge — a \
+             different agent instance from the implementer, in a separate session with fresh \
+             context, the only campaign-binding stage reviewed by another instance, and still not \
+             independent original-reference evidence; the implementer's own earlier review claim of \
+             2026-10-01T23:36Z (deepseek-1/deepseek-1) is its own instance and not independent. \
+             The implementer's own run is not independent review and is not independent \
+             original-reference evidence; no agent review replaces the owner's human approval"
         ),
         jstr(
             "acceptance suite run locally with the retail capability; this harness derives every \

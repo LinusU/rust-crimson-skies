@@ -104,6 +104,19 @@ def read_reports(directory=REPORTS):
                            for path in sorted(Path(directory).glob('*.json')))}
 
 
+def reviewer_actors(task, role):
+    """Every agent that held a claim of `role` on this task, latest first.
+
+    A stage can be reviewed more than once (M07-A was approved twice before the
+    lander could apply it), so an earlier review claim is still a claim the
+    report has to account for.
+    """
+    if role == 'implementer':
+        return [task['implementer']['actor']]
+    return [task['reviewer']['actor']] + [claim['actor']
+                                          for claim in task['reviewer'].get('earlier_review_claims', [])]
+
+
 def review_problems(snapshot, harnesses, reports):
     """Everything wrong with the campaign-binding reports' reviewer records."""
     problems = []
@@ -137,9 +150,9 @@ def review_problems(snapshot, harnesses, reports):
                 problems.append(f'{where}: `review.identity` still says {placeholder!r} while Rally'
                                 f' records a review claim for {key} by {task["reviewer"]["actor"]}')
         for role in ('implementer', 'reviewer'):
-            actor = task[role]['actor']
-            if actor not in identity:
-                problems.append(f'{where}: `review.identity` does not name the {role} {actor!r}')
+            for actor in reviewer_actors(task, role):
+                if actor not in identity:
+                    problems.append(f'{where}: `review.identity` does not name the {role} {actor!r}')
         if task['implementer']['actor'] == task['reviewer']['actor'] \
                 and 'not independent' not in identity.lower():
             problems.append(f'{where}: the reviewer is the implementer\'s own instance'
