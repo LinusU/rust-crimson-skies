@@ -21,7 +21,7 @@ The airframe-prefix helper covers HOPLITE, BALMORAL, BLOODHAWK, BRIGAND, DEVASTA
 | Unknown | Why it matters | Closure owner |
 |---|---|---|
 | Actual install/patch/locale hashes and full inventory | Fixes the denominator and compatibility profile | F02/F14 |
-| ROF compressed length-field interpretation | Avoids reading adjacent entries or truncating streams | F05 |
+| ROF compressed length-field interpretation (resolved by F05-D: first word = decoded byte count, second = stored byte count, the opposite of what the names suggest; see `docs/findings/2026-09-28-f05-d-resolve-compressed-length-semantics.md`, `docs/findings/evidence/F05-D.json`) | Avoids reading adjacent entries or truncating streams | F05 (closed) |
 | Complete CS GameZ variants, material flags and collision roles | Prevents visible/collision omissions and false materials | F10/F11/F18 |
 | Coordinate handedness, scale and angle units | A visually plausible world can have entirely wrong motion | F16/F26 |
 | Mission programs, opcodes, host behavior and timing | Required for an actual campaign rather than generic fights | F13/F37/F38/F39 |

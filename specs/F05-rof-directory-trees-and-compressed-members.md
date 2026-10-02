@@ -79,7 +79,7 @@ A code/test pass awards at most **checked**. The reviewer must inspect runtime w
 
 ## Research boundary
 
-The compressed length-field semantics are a known research blocker. The provided synthetic fixture covers only the uncompressed observed subset; it is not proof of retail compressed support.
+The compressed length-field semantics were resolved by F05-D (`docs/findings/2026-09-28-f05-d-resolve-compressed-length-semantics.md`, `docs/findings/evidence/F05-D.json`): the record's first length word is the decoded byte count and the second is the stored byte count, the opposite of what the field names suggest. The provided synthetic fixture covers only the uncompressed observed subset; it is not proof of retail compressed support.
 
 ## References
 
