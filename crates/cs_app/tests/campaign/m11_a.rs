@@ -255,7 +255,7 @@ fn accept_m11_a_the_declared_title_is_carried_by_no_retail_row() {
         .collect();
     assert_eq!(carrier_counts.len(), inventory().len());
     assert!(
-        carrier_counts.iter().any(|count| *count == 1),
+        carrier_counts.contains(&1),
         "no declared title is carried by exactly one row, so the scan above proves nothing: \
          {carrier_counts:?}"
     );
@@ -578,9 +578,8 @@ fn accept_m11_a_the_declared_order_agrees_with_the_retail_campaign_order_where_i
         Some(declared_index()),
         "the carried spelling does not select M11's declared index of the inventory"
     );
-    assert_eq!(
+    assert!(
         borrowed.localized_title_id.is_some(),
-        true,
         "the borrowed record cites no localized row"
     );
     // The two records differ only in what they were asked, and the asked-for
@@ -916,8 +915,26 @@ fn accept_m11_a_only_an_exact_title_or_an_exact_long_name_tail_confirms() {
         ("The Stolen Scarlet ", declared, "a trailing space differs"),
         ("The Stolen", declared, "a word is missing"),
         ("The Stolen Scarlet of the Sea", declared, "a word is added"),
-        ("the stolen starlet", declared, "case differs"),
-        ("THE STOLEN STARLET", declared, "case differs"),
+        (
+            "the stolen starlet",
+            "The Stolen Starlet",
+            "case alone differs",
+        ),
+        (
+            "THE STOLEN STARLET",
+            "The Stolen Starlet",
+            "case alone differs",
+        ),
+        (
+            "Hawaii - THE STOLEN STARLET",
+            "The Stolen Starlet",
+            "case alone differs in the tail",
+        ),
+        (
+            "the stolen scarlet",
+            "The Stolen Scarlet",
+            "case alone differs from the declared title",
+        ),
         ("Stolen Starlet", declared, "a leading word is missing"),
         ("", declared, "an empty row carries nothing"),
         (declared, "", "an empty title is carried by nothing"),

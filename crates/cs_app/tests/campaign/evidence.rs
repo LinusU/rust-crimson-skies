@@ -1,9 +1,10 @@
 //! Evidence-report harnesses for the per-mission binding stages M01-A,
-//! M02-A, M03-A, M04-A, M05-A, M06-A, M08-A, M12-A and M13-A (`docs/contracts/CLI-EVIDENCE.md`,
-//! schema `schemas/evidence.schema.json`).
+//! M02-A, M03-A, M04-A, M05-A, M06-A, M08-A, M11-A, M12-A and M13-A
+//! (`docs/contracts/CLI-EVIDENCE.md`, schema `schemas/evidence.schema.json`).
 //!
 //! These tests are deliberately **not** named `accept_m01_a_*` …
-//! `accept_m06_a_*` … `accept_m08_a_*` … `accept_m12_a_*` … `accept_m13_a_*`: they are not part of the acceptance suites, they fail
+//! `accept_m06_a_*` … `accept_m08_a_*` … `accept_m11_a_*` … `accept_m12_a_*` …
+//! `accept_m13_a_*`: they are not part of the acceptance suites, they fail
 //! loudly when their inputs are missing instead of passing vacuously, and a
 //! task's test selection must never pick them up as acceptance tests. Run
 //! from the workspace root, after the acceptance suite, exactly as (with
@@ -34,13 +35,21 @@
 //! production code derives from it, `rustc --version` and `Cargo.lock`.
 //! Nothing is typed in by hand.
 //!
-//! The reports' `unknowns` are *those tasks'* blockers and are empty because
-//! the acceptance run passed. The bindings' own unbound checklist entries are
-//! **not** dropped anywhere: they are carried in
-//! `missions/bindings/M01.json` … `missions/bindings/M06.json`, `M08.json`, `M12.json`, `M13.json` and in
-//! `docs/findings/`, which is where the product-incompleteness state lives
-//! (`AUDIT-PLAN-SYNC`: keep the states separate). The claim is `implemented`,
-//! never `checked` or `verified_original`.
+//! The reports' `unknowns` are *those tasks'* blockers. They are empty for
+//! M01-A … M06-A, M08-A, M12-A and M13-A because their acceptance runs passed
+//! with every critical dependency resolved. **M11-A is the exception**: its
+//! declared discovery title is carried by no localized row, so four of the five
+//! critical dependencies are unresolved, its report lists them in `unknowns`
+//! and is therefore *expected* not to validate under `--require-pass`. Dropping
+//! them to make a validator pass is forbidden, so the honest report is the one
+//! that keeps them.
+//!
+//! The bindings' own unbound checklist entries are **not** dropped anywhere:
+//! they are carried in `missions/bindings/M01.json` … `missions/bindings/M06.json`,
+//! `M08.json`, `M11.json`, `M12.json`, `M13.json` and in `docs/findings/`, which
+//! is where the product-incompleteness state lives (`AUDIT-PLAN-SYNC`: keep the
+//! states separate). The claim is `implemented`, never `checked` or
+//! `verified_original`.
 
 use std::collections::VecDeque;
 use std::fs;
@@ -1981,6 +1990,272 @@ fn evidence_report_m05_a_writes_the_acceptance_report() {
 /// [`parse_suite`] with this task's test prefix.
 fn parse_m05_a_suite(log: &str) -> Suite {
     parse_suite_prefixed(log, "accept_m05_a_")
+}
+
+/// The retail acceptance tests M11-A's capabilities are judged on.
+const RETAIL_TESTS_M11_A: &[&str] = &[
+    "accept_m11_a_the_declared_title_is_carried_by_no_retail_row",
+    "accept_m11_a_the_source_derived_binding_keeps_m11_unresolved_and_says_why",
+    "accept_m11_a_the_committed_record_is_what_the_installation_derives",
+    "accept_m11_a_the_declared_order_agrees_with_the_retail_campaign_order_where_it_is_carried",
+    "accept_m11_a_the_position_the_declared_order_would_select_is_read_from_the_installation",
+    "accept_m11_a_the_campaign_keeps_everything_else_unresolved_and_unready",
+];
+
+/// The synthetic predicate tests M11-A's report must also record.
+const SYNTHETIC_TESTS_M11_A: &[&str] = &[
+    "accept_m11_a_only_an_exact_title_or_an_exact_long_name_tail_confirms",
+    "accept_m11_a_an_unresolved_critical_dependency_is_named_in_the_records_unknowns",
+];
+
+/// Evidence-report harness for task M11-A, the eleventh mission's source
+/// binding. It follows the sequence in this module's doc with `M11-A` and
+/// `accept_m11_a_` in place of `M01-A` and `accept_m01_a_`, and differs from
+/// the M01-A report above in one way that matters:
+///
+/// **This task does not meet its minimum acceptance scenario, and the report
+/// says so.** The scenario is "Source-derived binding has no unresolved
+/// critical dependencies"; M11's declared discovery title is carried by no
+/// localized row of the installation, so four of the five critical dependencies
+/// are unresolved. Every other harness above asserts
+/// `unresolved_critical().is_empty()` before it writes anything; this one
+/// asserts the *expected unresolved set* and the refusal each dependency
+/// carries, writes those refusals into the report's `unknowns`, and prints
+/// that the report is therefore **expected not to validate** under
+/// `--require-pass`. Dropping an unresolved issue to make a validator pass is
+/// forbidden (`docs/contracts/CLI-EVIDENCE.md`, AUDIT-PLAN-SYNC 2026-10-01), so
+/// the honest report is the one that keeps them.
+///
+/// The acceptance suite itself passes: what it asserts is that the refusal is
+/// real, exact and recorded — not that M11 is bound. Which retail string names
+/// M11 is Rally #470 `M05-A-GUIDE-TITLES`, an owner decision recorded as
+/// `blocked`.
+///
+/// Everything else — the toolchain versions, the installation hashes, the
+/// candidate tree, the counts, the digests and the timestamps — is derived from
+/// the same real inputs as the M01-A report.
+#[test]
+#[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_GAME_DIR"]
+fn evidence_report_m11_a_writes_the_acceptance_report() {
+    let evidence_dir = workspace_path(&env_var("CS_EVIDENCE_DIR"));
+    let candidate_tree = env_var("CS_CANDIDATE_TREE");
+    let argv: Vec<String> = env_var("CS_EVIDENCE_ARGV")
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+    assert!(
+        !argv.is_empty(),
+        "CS_EVIDENCE_ARGV must hold the acceptance command (space-separated)"
+    );
+    let exit_code: i32 = env_var("CS_EVIDENCE_EXIT_CODE")
+        .parse()
+        .expect("CS_EVIDENCE_EXIT_CODE must be the exit status of the acceptance run");
+    let game_dir = PathBuf::from(env_var("CS_GAME_DIR"));
+
+    let head_tree = git(&["rev-parse", "HEAD^{tree}"]);
+    assert_eq!(
+        candidate_tree, head_tree,
+        "CS_CANDIDATE_TREE must be `git rev-parse 'HEAD^{{tree}}'` of the tested commit; \
+         old reports cannot be reused for new code"
+    );
+
+    let log_path = evidence_dir.join("cargo-test.log");
+    let log = fs::read_to_string(&log_path).unwrap_or_else(|error| {
+        panic!(
+            "cannot read the acceptance log {}: {error} (step 1 must tee its output there)",
+            log_path.display()
+        )
+    });
+    let suite = parse_m11_a_suite(&log);
+    assert!(
+        suite.passed > 0 && !suite.assertions.is_empty(),
+        "no `accept_m11_a_` tests were recorded in {}",
+        log_path.display()
+    );
+
+    for retail_test in RETAIL_TESTS_M11_A {
+        let status = suite
+            .assertions
+            .iter()
+            .find(|(name, _)| name == retail_test)
+            .map(|(_, status)| *status)
+            .unwrap_or_else(|| {
+                panic!(
+                    "{retail_test} did not run: M11-A requires capability `retail`, run step 1 \
+                     with `--include-ignored` and CS_GAME_DIR set"
+                )
+            });
+        assert_eq!(
+            status, "pass",
+            "{retail_test} must pass; got status {status}"
+        );
+    }
+    for synthetic_test in SYNTHETIC_TESTS_M11_A {
+        let status = suite
+            .assertions
+            .iter()
+            .find(|(name, _)| name == synthetic_test)
+            .map(|(_, status)| *status)
+            .unwrap_or_else(|| {
+                panic!("{synthetic_test} did not run: it pins predicates the retail tests assume")
+            });
+        assert_eq!(
+            status, "pass",
+            "{synthetic_test} must pass; got status {status}"
+        );
+    }
+
+    let found = discover(&game_dir)
+        .expect("production discovery must read the original installation for the evidence record");
+    let install_sha256 = fingerprint(&found.manifest).to_hex();
+    let content_sha256 = content_fingerprint(&found.manifest).to_hex();
+
+    // The stage's own state: M11 is not bound, and the report must not imply
+    // otherwise. The unresolved set is checked against the installation's
+    // measured refusal rather than written in by hand.
+    let source_binding = source_binding_for(&game_dir, "M11");
+    assert!(
+        !source_binding.unresolved_critical().is_empty(),
+        "M11 resolved every critical dependency, so this stage's refusal is stale; the report and \
+         the finding must be rewritten before it is produced"
+    );
+    assert!(
+        !source_binding.is_verified() && !source_binding.unknowns.is_empty(),
+        "the M11 record reads as verified or complete; this stage binds nothing"
+    );
+    let binding_path = evidence_dir.join("m11-binding.json");
+    fs::write(&binding_path, source_binding.to_json())
+        .unwrap_or_else(|error| panic!("write {}: {error}", binding_path.display()));
+    let mut artifacts = vec![artifact(&log_path, "log", &evidence_dir)];
+    artifacts.push(artifact(&binding_path, "json", &evidence_dir));
+
+    // The report's `unknowns` are this task's blockers, read from the record
+    // production code derived from the installation.
+    let unknowns: Vec<String> = source_binding
+        .unresolved_critical()
+        .iter()
+        .map(|id| {
+            let reason = match source_binding.dependency(*id) {
+                Some(cs_content::campaign_bindings::DependencyState::Unresolved {
+                    reason, ..
+                }) => reason.clone(),
+                _ => panic!("{id} is listed as unresolved but carries no refusal"),
+            };
+            format!("{}: unresolved — {reason}", id.label())
+        })
+        .collect();
+    assert!(
+        unknowns.contains(&format!(
+            "{}: unresolved — {}",
+            cs_content::campaign_bindings::CriticalDependency::TitleString.label(),
+            cs_content::campaign_bindings::UNCARRIED_TITLE_REFUSAL
+        )),
+        "the report's unknowns do not name the uncarried title, so they are not this task's \
+         real blockers: {unknowns:?}"
+    );
+    let unknown_array = {
+        let items: Vec<String> = unknowns.iter().map(|entry| jstr(entry)).collect();
+        format!("[{}]", items.join(", "))
+    };
+
+    let engine = Engine {
+        rust: rustc_version(),
+        bevy: locked_version("bevy"),
+        avian: locked_version("avian3d"),
+    };
+
+    let report = format!(
+        "{{\n\
+         \x20\"schema_version\": 1,\n\
+         \x20\"task_id\": \"M11-A\",\n\
+         \x20\"candidate_tree\": {},\n\
+         \x20\"engine\": {},\n\
+         \x20\"created_at\": {},\n\
+         \x20\"command\": {{\"argv\": {}, \"cwd\": {}, \"exit_code\": {}}},\n\
+         \x20\"source\": {{\"install_sha256\": {}, \"content_sha256\": {}}},\n\
+         \x20\"seed\": 0,\n\
+         \x20\"ticks\": {{\"start\": 0, \"end\": 0}},\n\
+         \x20\"overrides\": [],\n\
+         \x20\"capabilities\": [\"retail\", \"synthetic\"],\n\
+         \x20\"tests\": {{\"discovered\": {}, \"executed\": {}, \"passed\": {}, \"failed\": {}, \"ignored\": {}}},\n\
+         \x20\"assertions\": [{}],\n\
+         \x20\"artifacts\": [{}],\n\
+         \x20\"unknowns\": {},\n\
+         \x20\"review\": {{\"identity\": {}, \"method\": {}}},\n\
+         \x20\"claim\": \"implemented\"\n\
+         }}\n",
+        jstr(&candidate_tree),
+        engine_json(&engine),
+        jstr(&iso_utc_now()),
+        str_array(&argv),
+        jstr(&git(&["rev-parse", "--show-toplevel"])),
+        exit_code,
+        jstr(&install_sha256),
+        jstr(&content_sha256),
+        suite.discovered,
+        suite.executed,
+        suite.passed,
+        suite.failed,
+        suite.ignored,
+        assertion_array(&suite.assertions),
+        artifact_array(&artifacts),
+        unknown_array,
+        jstr(
+            "implementer: bunny-alpha-1/bunny-alpha-1 (Rally #288, session of 2026-10-02T00:00Z); \
+             reviewer: none yet — this report was written by the implementing session, so no \
+             review has taken place. No agent review replaces the owner's human approval, and no \
+             agent may self-award checked, verified_original or release_approved"
+        ),
+        jstr(
+            "acceptance suite run locally with the retail capability; this harness derives every \
+             field from the recorded log, production discovery of $CS_GAME_DIR and the binding \
+             `SourceContext::read` + `SourceContext::bind` derive from it. The suite passes and \
+             M11 is still UNBOUND: the declared discovery title is carried by no localized row, \
+             so four of the five critical dependencies are unresolved and the mission, world and \
+             program identities are null. This report is therefore expected NOT to validate under \
+             tools/validate_evidence.py --require-pass, which rejects a report with unresolved \
+             issues; removing them to make it pass is forbidden. Resolving them needs Rally #470 \
+             M05-A-GUIDE-TITLES, an owner decision. M11-A's production change names every \
+             unresolved critical dependency in the record's own unknowns; claim is implemented \
+             only. `candidate_tree` is the tree of the commit the suite ran on"
+        ),
+    );
+
+    let out = evidence_dir.join("acceptance.json");
+    fs::write(&out, &report).unwrap_or_else(|error| panic!("write {}: {error}", out.display()));
+
+    let written = fs::read_to_string(&out).expect("the report reads back");
+    for needle in [
+        "\"schema_version\": 1",
+        "\"task_id\": \"M11-A\"",
+        "\"claim\": \"implemented\"",
+        "\"install_sha256\"",
+        "\"assertions\": [",
+        "\"artifacts\": [",
+        "\"unknowns\": [\"mission_id: unresolved",
+    ] {
+        assert!(
+            written.contains(needle),
+            "the written report is missing {needle:?}:\n{written}"
+        );
+    }
+    assert!(
+        suite.failed == 0 && exit_code == 0,
+        "the acceptance run failed (exit {exit_code}, {} failed): the report was written \
+         honestly and must NOT validate; fix the tests first",
+        suite.failed
+    );
+    println!(
+        "wrote {} — M11-A does not meet its minimum acceptance scenario, so this report is \
+         expected NOT to validate under --require-pass; that is the honest state, not a defect \
+         of the harness",
+        out.display()
+    );
+}
+
+/// [`parse_suite`] with this task's test prefix.
+fn parse_m11_a_suite(log: &str) -> Suite {
+    parse_suite_prefixed(log, "accept_m11_a_")
 }
 
 // ---------------------------------------------------------------- inputs ---

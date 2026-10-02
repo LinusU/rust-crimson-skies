@@ -82,6 +82,20 @@ directory is original game data — no assets, scripts or extracted bytes.
   structures must place it strictly inside a group. It shares `world/c2` with
   M06 (see `docs/findings/2026-10-02-m08-a-source-binding.md`). Same five
   resolved critical dependencies, same unverified status.
+- `M11.json` — the M11 binding output (stage M11-A), generated and pinned the
+  same way by `accept_m11_a_the_committed_record_is_what_the_installation_derives`.
+  **This one is not source-derived: M11 stays unbound.** The installation
+  carries no localized row for the declared title `The Stolen Scarlet`, so
+  `catalog_id`, `world_id` and `program_id` are `null`, `source_spans` is
+  empty and four of the five critical dependencies are unresolved. Only the
+  installation hash is resolved. The record names each unresolved dependency
+  and the refusal that caused it — `unresolved_critical_entries`, production
+  code M11-A adds — because `to_json` carries no dependency states and a record
+  of three `null` identities with no reason is indistinguishable from one
+  nobody reached. Which retail string names M11 is Rally #470
+  `M05-A-GUIDE-TITLES`, an owner decision recorded as `blocked`; see
+  `docs/findings/2026-10-02-m11-a-source-binding.md` for the measured evidence
+  and for the two routes the owner has.
 - `M12.json` — the M12 binding output (stage M12-A), generated and pinned the
   same way by `accept_m12_a_the_committed_record_is_what_the_installation_derives`.
   No production code changed for it either: M12 is the twelfth campaign
@@ -106,13 +120,13 @@ totals and closure reports — live in
 
 ## What is not here yet
 
-- `M07.json`, `M09.json` … `M11.json` and `M14.json` … `M24.json` — the
-  per-mission binding outputs of M07-A, M09-A … M11-A and M14-A … M24-A, created from original data the same way. Every one of them starts
-  unresolved.
+- `M07.json`, `M09.json` … `M10.json` and `M14.json` … `M24.json` — the
+  per-mission binding outputs of M07-A, M09-A … M10-A and M14-A … M24-A,
+  created from original data the same way. Every one of them starts unresolved.
 - Titles the installation spells differently again — M09, M11, M14, M15, M20,
   M22 and M23 — match neither display form and stay `Uncarried`. Which retail
-  mission they name is not established here; see
-  `docs/findings/2026-10-01-m05-a-source-binding.md`.
+  mission each one names is not established here; see
+  `docs/findings/2026-10-01-m05-a-source-binding.md` and Rally #470.
 
 Readiness, coverage and closure are reported, never awarded: synthetic
 fixtures prove the schema and its validation only (F50 owner ruling,
