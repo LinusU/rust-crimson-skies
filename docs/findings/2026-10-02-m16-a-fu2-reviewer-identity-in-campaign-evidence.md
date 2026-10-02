@@ -14,7 +14,7 @@ Implementer: **bunny-2/bunny-2** (session of 2026-10-02T01:14Z).
 
 Every campaign-binding report under `docs/findings/evidence/` is written by
 `crates/cs_app/tests/campaign/evidence.rs` and puts a `review.identity` string
-into the report. Six of them named no reviewer at all:
+into the report. Seven of them named no reviewer at all:
 
 | report | committed `review.identity` said | merged |
 | --- | --- | --- |
@@ -24,6 +24,7 @@ into the report. Six of them named no reviewer at all:
 | `M08-A.json` | `reviewer: none yet` | 2026-10-01T23:58Z |
 | `M12-A.json` | `reviewer: none yet` | 2026-10-02T00:10Z |
 | `M13-A.json` | `reviewer: none yet` | 2026-10-02T00:34Z |
+| `M19-A.json` | `reviewer: none yet (the implementer's own run only; an independent review is pending)` | 2026-10-02T02:17Z |
 
 Every one of those stages was reviewed and merged, so "no reviewer" was not true
 at merge time. `M01-A`, `M02-A`, `M05-A` and `M06-A` already named their
@@ -56,17 +57,20 @@ the same agent instance and the second is not independent of the first.
 | M12-A (#291) | `claude-2/claude-1` 23:58:58Z | `claude-2/claude-1` 00:05:28Z | same instance, not independent |
 | M13-A (#294) | `claude-2/claude-1` 00:10:14Z | `claude-2/claude-1` 00:15:25Z | same instance, not independent |
 | M16-A (#303) | `claude-2/claude-1` 00:23:41Z | `bunny-alpha-1/bunny-alpha-1` 00:58:00Z | different instance, fresh context |
+| M19-A (#312) | `claude-2/claude-1` 02:05:09Z | `claude-2/claude-1` 02:12:38Z | same instance six seconds after the hand-over: the same session continuing |
 
-Nine of the eleven campaign-binding stages were reviewed by the same agent
+Ten of the twelve campaign-binding stages were reviewed by the same agent
 instance that implemented them. That is the honest state of the record and it is
 now what the reports say. M07-A and M16-A are the two exceptions: both were
 reviewed by an instance other than the implementer's, and both reports now say
 so — M16-A already did, M07-A did not and is fixed here.
 
-Every single review claim in the table follows its own `submit_for_review` by 7
+Every single review claim in the table follows its own `submit_for_review` by 6
 seconds to 55 minutes, so the log shows a second *claim* but cannot prove a
 fresh *context* on its own; the rewritten identities for M03-A, M04-A, M08-A,
-M12-A and M13-A therefore state that a fresh context is not claimed.
+M12-A, M13-A and M19-A therefore state that a fresh context is not claimed, and
+M19-A's says outright that its review claim came six seconds after the hand-over
+and is the same session continuing.
 `M01-A`'s existing wording ("a separate session with fresh context"),
 `M02-A`'s ("the reviewer's context was fresh … but a fresh context does not make
 a reviewer independent"), M07-A's and M16-A's ("a separate session with fresh
@@ -84,18 +88,20 @@ report names both agents.
 ## What changed
 
 - `crates/cs_app/tests/campaign/evidence.rs`: the `jstr` `review.identity`
-  literal of the M01-A, M02-A, M03-A, M04-A, M07-A, M08-A, M12-A, M13-A and
-  M16-A harnesses, plus a module-doc paragraph telling a new stage to add
+  literal of the M01-A, M02-A, M03-A, M04-A, M07-A, M08-A, M12-A, M13-A, M16-A
+  and M19-A harnesses, plus a module-doc paragraph telling a new stage to add
   itself to the snapshot. M05-A and M06-A already named the full actor and are
   untouched. The literals now name the implementer and the reviewer as the two
   Rally actor strings, say that the review is not independent, and say what is
   and is not claimed about the reviewer's context. Each keeps the sentence that
   the implementer's own run is not independent evidence.
-- `docs/findings/evidence/{M01-A,M02-A,M03-A,M04-A,M07-A,M08-A,M12-A,M13-A,M16-A}.json`:
+- `docs/findings/evidence/{M01-A,M02-A,M03-A,M04-A,M07-A,M08-A,M12-A,M13-A,M16-A,M19-A}.json`:
   the `review.identity` value, changed to exactly the bytes the matching
   harness writes. Nothing else in those files moved. M07-A's and M16-A's
   reports were written by their reviewers and their `candidate_tree` is the
-  reviewed commit; only the reviewer string changed.
+  reviewed commit; only the reviewer string changed. M19-A's report was written
+  by the implementer and its reviewer never regenerated it, so its identity now
+  names the same-instance review that actually merged it.
 - `docs/findings/2026-10-02-m16-a-fu2-rally-review-snapshot.json`: the review
   facts above, committed because Rally is not reachable from an offline check.
 - `tools/tests/test_evidence_review_identity.py`: the check described below.
@@ -108,7 +114,7 @@ code, so re-running the four-step sequence would have invalidated
 `candidate_tree` and the recorded test counts for nothing. The recorded trees
 are therefore left exactly as their runs produced them. For the record:
 
-- All eleven `candidate_tree` objects are still present in the object store
+- All twelve `candidate_tree` objects are still present in the object store
   (`git cat-file -t <tree>`), so no recorded hash is dangling.
 - The commits whose trees are `M03-A` (`77bfbbfc…`), `M08-A` (`e7003e77…`) and
   `M13-A` (`0f944b4d…`) are no longer reachable from any ref: the lander
@@ -117,7 +123,7 @@ are therefore left exactly as their runs produced them. For the record:
   reviewer who wants the report to describe a reachable commit must follow the
   four-step sequence in `evidence.rs` on the reviewed commit; that is a
   separate, deliberate act, not a side effect of this text fix.
-- `claim` stays `implemented` in all eleven. A merge awards `checked` only, and
+- `claim` stays `implemented` in all twelve. A merge awards `checked` only, and
   no agent self-awards a level; the check enforces this.
 - `review.method` is untouched: it describes the run these reports record,
   which for the rewrites is still the implementer's own run. What each reviewer
@@ -146,9 +152,16 @@ and awards `checked`, and requires each mutation to be reported. A fifth test
 parses the harness's Rust string literals out of the source, so the reader
 itself is covered.
 
-The check earned its place on the first day: M07-A merged during this task
-with the same `not yet assigned at hand-over` placeholder, and the coverage
-test failed on it the moment `main` moved. Fixing it is the fifth report above.
+The check earned its place on the first day, twice: M07-A merged during this
+task with the same `not yet assigned at hand-over` placeholder, and M19-A merged
+with `reviewer: none yet (… an independent review is pending)` while its review
+had already run and merged it. The coverage test failed on each of them the
+moment `main` moved, which is how both landed in this branch instead of
+surviving to the next campaign stage.
+
+While the campaign keeps landing stages, keeping the snapshot current is one
+JSON entry and one identity line per stage; the harness module doc and the test
+docstring say so where the next stage's author will read it.
 
 Known limitation, filed as follow-up #480 (M16-A-FU3) rather than fixed here:
 the CI workflow runs the Rust checks, the synthetic-fixture comparison and the
