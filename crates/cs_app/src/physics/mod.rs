@@ -103,8 +103,8 @@ pub use preflight::{
     SPAWN_CONTACT_OVERLAP_M, SpawnPreflight, SpawnPreflightEvent, SpawnPreflightLog,
 };
 pub use resting::{
-    RESTING_STILL_EPSILON_M_S, RESTING_STILL_TICKS, RestingBodiesPlugin, RestingContact,
-    RestingReports, resting_reports,
+    RESTING_RELEASE_TICKS, RESTING_STILL_EPSILON_M_S, RESTING_STILL_TICKS, RestingBodiesPlugin,
+    RestingContact, RestingReports, resting_reports,
 };
 pub use session::{
     PhysicsSession, PhysicsSessionBuilder, PhysicsSessionError, SessionFrame, SpawnOutcome,

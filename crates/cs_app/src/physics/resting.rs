@@ -65,13 +65,14 @@
 //!   what a body being pushed, dragged, thrust along or bounced does;
 //! * [`RESTING_STILL_TICKS`] consecutive unchanged ticks retire the body's
 //!   linear *and* angular velocity to zero and mark it [`RestingContact`];
-//! * a marked body stops being at rest when a velocity above the epsilon comes
-//!   back and **stays** for [`RESTING_RELEASE_TICKS`], or immediately if it is
-//!   touching nothing (free motion is never a contact's tail). A marked body at
-//!   or below the epsilon is held at zero. The rule holds a body only while
-//!   nothing is acting on it, so it cannot fight gameplay — and it does not
-//!   decelerate a body on its way out of resting, because a moving body is not
-//!   written to at all.
+//! * a marked body stops being at rest when its velocity keeps **changing** for
+//!   [`RESTING_RELEASE_TICKS`] consecutive ticks — measured to be the signal
+//!   that separates gameplay from the contact's own solver bias — or
+//!   immediately if it is touching nothing (free motion is never a contact's
+//!   tail). Otherwise it is held at zero. The rule holds a body only while
+//!   nothing is acting on it, so it cannot fight gameplay, and it does not
+//!   decelerate a body on its way out of resting, because a body that is moving
+//!   is released rather than written to.
 //!
 //! It writes **velocity only**. The pose is never touched: a crashed body stops
 //! where the contact left it, which is the whole point of the rule and the
@@ -159,6 +160,36 @@ pub const RESTING_STILL_EPSILON_M_S: f32 = 1.0e-3;
 /// the count is too *long*.
 pub const RESTING_STILL_TICKS: u32 = 4;
 
+/// Consecutive ticks of *changing* velocity that take a marked body out of rest.
+///
+/// **Frozen from the measurement the release signal needs, and the signal itself
+/// is measured rather than assumed.** The obvious release test — "is the body's
+/// speed above the epsilon?" — **cannot work here**: a genuinely resting body in
+/// contact is handed a *non-zero* speed every tick by the solver's own
+/// soft-constraint bias, 0.0638 m/s on the depot's door panel. A speed test
+/// would release every resting body on its next tick and hand back exactly the
+/// drift this rule exists to remove. (Measured: with a speed-based release the
+/// depot probe cycled mark → drift → re-mark, and the `retired` counter reached
+/// three for one body.)
+///
+/// Velocity **change** separates the two instead, because the bias *decays to a
+/// constant* rather than staying constant: on the depot panel it falls
+/// 0.0638 → 0.0036 m/s over **nineteen** consecutive ticks as the soft
+/// constraint bleeds the initial overlap off, and only then stops changing at
+/// all. Anything actually driving the body, by contrast, changes its velocity
+/// every tick by `a·dt` — a 3 kN force on a 250 kg body at 120 Hz is `0.1 m/s`
+/// per tick, a hundred times the epsilon.
+///
+/// **Nineteen is the number the constant is built from**, measured on the depot
+/// panel across impacts from 5 to 100 m/s (worst run 19; the plain wall fixture
+/// is 1, because its overlap is shallow). Twenty-four is that plus five ticks of
+/// margin, because the length of the decay is a property of how deeply the pair
+/// overlaps and this repository has not measured every geometry that could
+/// overlap more deeply. The cost of the margin is measured and named: a marked
+/// body that gameplay starts driving is released after 24 ticks, 1/5 s of
+/// simulated time at 120 Hz.
+pub const RESTING_RELEASE_TICKS: u32 = 24;
+
 /// This dynamic body is at rest: the resting rule retired the velocity its
 /// contact left behind, and nothing has moved it since.
 ///
@@ -226,7 +257,13 @@ struct BodyState {
     /// Consecutive ticks whose velocity changed by at most
     /// [`RESTING_STILL_EPSILON_M_S`]. The run that retires the body.
     still_ticks: u32,
-    /// The velocity that run started from.
+    /// Consecutive ticks whose velocity changed by *more* than
+    /// [`RESTING_STILL_EPSILON_M_S`] since it was marked. The run that releases
+    /// it. See [`RESTING_RELEASE_TICKS`] for why the signal is change and not
+    /// speed.
+    moving_ticks: u32,
+    /// The velocity that run started from, and the one the release run is
+    /// measured against.
     reference: Vec3,
     /// Whether the body currently carries [`RestingContact`].
     marked: bool,
@@ -343,8 +380,10 @@ struct QuietBodies<'w, 's> {
 ///    at or below [`RESTING_STILL_EPSILON_M_S`] extends its unchanged run and
 ///    any larger change resets it, so anything acting on the body restarts the
 ///    count. A body it *has* marked is at rest for as long as it is still
-///    touching the geometry that stopped it, and stops being at rest the moment
-///    it is touching nothing again.
+///    touching the geometry that stopped it and its velocity is not *changing*;
+///    it stops being at rest when either the contact goes or
+///    [`RESTING_RELEASE_TICKS`] consecutive ticks of changing velocity say
+///    something else is driving it.
 /// 3. **Change.** [`RESTING_STILL_TICKS`] unchanged ticks retire the body's
 ///    linear and angular velocity and mark it [`RestingContact`]; a marked body
 ///    is held at zero on every tick it is still touching, which is what absorbs
@@ -357,6 +396,16 @@ struct QuietBodies<'w, 's> {
 /// moves away is free, because it was never held by the panel in the first
 /// place. See [`RestingContact`] for why the mark cannot instead be tied to the
 /// body's velocity.
+///
+/// A marked body is **not** held against gameplay, and this is the half of the
+/// rule that is easy to get wrong. Holding unconditionally is not a stronger
+/// statement of "at rest"; it is a body the game can no longer move. Measured
+/// with the hold unconditional: a 3 kN force into a wall left the marked body's
+/// speed at exactly zero for sixty ticks, and a steady 0.5 m/s velocity write
+/// never took effect at all, because the hold rewrote it every tick. The
+/// release signal is therefore velocity **change**, not speed — see
+/// [`RESTING_RELEASE_TICKS`], where the measurement that forces that choice is
+/// recorded.
 ///
 /// A **sleeping** body is never written to. Avian puts a body to sleep after a
 /// settled period, so it is at rest by the engine's own statement, and writing
@@ -396,37 +445,63 @@ fn retire_contact_residual(
         let asleep = quiet.sleeping.contains(entity);
         let touching_now = touching.contains(&entity);
 
-        // 2/3. A marked body: held at rest, released when it leaves the geometry.
+        // 2/3. A marked body: held at rest, released when it leaves the geometry
+        // or when something starts driving it.
         if let Some(entry) = state.bodies.get_mut(&entity).filter(|e| e.marked) {
-            if touching_now {
-                // The contact is still there and nothing else is acting, so the
-                // body is at rest — including on the ticks where the contact's
-                // own solver bias hands it a fresh velocity. Measured on the
-                // depot's door panel: the panel keeps nudging a body it has
-                // already stopped at 0.064 m/s for the sixteen ticks it takes
-                // its soft-constraint bias to bleed the initial overlap off. A
-                // rule that read that as "something is moving it again" would
-                // release a body that is in fact resting, and hand it the drift
-                // the rule exists to remove.
-                //
-                // Idempotent, and never applied to a sleeping body: writing a
-                // velocity component is the one thing that would wake a body
-                // the engine has already settled.
-                if !asleep && (linear.0 != Vec3::ZERO || angular.0 != Vec3::ZERO) {
-                    linear.0 = Vec3::ZERO;
-                    angular.0 = Vec3::ZERO;
-                }
+            if !touching_now {
+                eprintln!("DEBUG release-on-contact-loss");
+                // Nothing is touching it, so nothing is holding it there either.
+                // The mark goes and the rule never touches the body again until
+                // it is in contact and settles afresh.
+                entry.marked = false;
+                entry.still_ticks = 0;
+                entry.moving_ticks = 0;
+                entry.reference = linear.0;
+                reports.released += 1;
+                reports.resting = reports.resting.saturating_sub(1);
+                commands.entity(entity).remove::<RestingContact>();
                 continue;
             }
-            // Nothing is touching it, so nothing is holding it there either.
-            // The mark goes and the rule never touches the body again until it
-            // is in contact and settles afresh.
-            entry.marked = false;
-            entry.still_ticks = 0;
+
+            // The contact is still there. Something may still be driving this
+            // body, and the rule must not hold a body gameplay is acting on —
+            // measured: with the hold unconditional, a 3 kN force into a wall
+            // left a marked body's speed at exactly zero for sixty ticks, and a
+            // steady tangential velocity wrote of 0.5 m/s never took effect at
+            // all. So the release test is velocity **change**, not speed:
+            // a resting body's post-step velocity is the solver's own constant
+            // bias and does not change tick to tick, while anything driving the
+            // body changes it every tick. See [`RESTING_RELEASE_TICKS`].
+            let change = (linear.0 - entry.reference).length();
+            if change > RESTING_STILL_EPSILON_M_S {
+                entry.moving_ticks += 1;
+            } else {
+                entry.moving_ticks = 0;
+            }
             entry.reference = linear.0;
-            reports.released += 1;
-            reports.resting = reports.resting.saturating_sub(1);
-            commands.entity(entity).remove::<RestingContact>();
+            if entry.moving_ticks >= RESTING_RELEASE_TICKS {
+                eprintln!("DEBUG release-on-drive moving_ticks={}", entry.moving_ticks);
+                entry.marked = false;
+                entry.still_ticks = 0;
+                entry.moving_ticks = 0;
+                entry.reference = linear.0;
+                reports.released += 1;
+                reports.resting = reports.resting.saturating_sub(1);
+                commands.entity(entity).remove::<RestingContact>();
+                continue;
+            }
+
+            // Still resting. Hold it at zero — including on the ticks where the
+            // contact's own solver bias hands it a fresh velocity, which is
+            // exactly the `entry.reference` this run is measured against.
+            //
+            // Idempotent, and never applied to a sleeping body: writing a
+            // velocity component is the one thing that would wake a body
+            // the engine has already settled.
+            if !asleep && (linear.0 != Vec3::ZERO || angular.0 != Vec3::ZERO) {
+                linear.0 = Vec3::ZERO;
+                angular.0 = Vec3::ZERO;
+            }
             continue;
         }
 
@@ -439,6 +514,7 @@ fn retire_contact_residual(
 
         let entry = state.bodies.entry(entity).or_insert(BodyState {
             still_ticks: 0,
+            moving_ticks: 0,
             reference: linear.0,
             marked: false,
         });
@@ -458,7 +534,8 @@ fn retire_contact_residual(
         angular.0 = Vec3::ZERO;
         entry.marked = true;
         entry.still_ticks = 0;
-        entry.reference = Vec3::ZERO;
+        entry.moving_ticks = 0;
+        entry.reference = linear.0;
         if was_moving {
             reports.retired += 1;
         }
