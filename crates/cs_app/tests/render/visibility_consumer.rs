@@ -48,8 +48,9 @@ use cs_app::render::sync::{
 };
 use cs_app::render::visibility::VisibilityReport;
 use cs_app::scene::{
-    AirframeDamageState, AirframeSceneRequest, LiveAirframeScene, LodDistance,
-    apply_airframe_damage, process_airframe_scene_request, select_lod_presentation,
+    AirframeDamageState, AirframeSceneRequest, LiveAirframeScene, LodDistance, NodePresentation,
+    PresentationState, SceneGeneration, SceneNodeBinding, apply_airframe_damage,
+    process_airframe_scene_request, select_lod_presentation,
 };
 use cs_content::animation::{
     SYNTHETIC_BREAKABLE_HIDDEN_TICK, SYNTHETIC_BREAKABLE_SHOWN_TICK,
@@ -861,6 +862,54 @@ fn accept_f20_c_draw_a_withheld_row_reports_the_composed_verdicts_own_reason() {
         cs_app::render::visibility::row_draw(&world, PartRef::Known(&unknown)),
         cs_app::render::visibility::decide(None),
         "absence of a record is its own state, not a withheld draw"
+    );
+}
+
+/// The row's verdict is read from the entity the **live** scene owns, so a node
+/// entity left behind by a superseded generation cannot decide a draw.
+///
+/// The leftover is spawned before the load, carries the same stable node id as
+/// the far band and reports itself `Drawn`, and nothing releases it — the state
+/// a reload that has committed the new scene but not yet released the old one
+/// leaves behind. F11-C states that nothing outside the live scene's record may
+/// address a scene node, so this entity's own verdict is not consulted: the far
+/// band stays culled at this distance and its row is not placed.
+#[test]
+fn accept_f20_c_draw_a_superseded_binding_never_decides_a_row() {
+    let scene = scene();
+    let mut world = render_world();
+    world.spawn((
+        SceneNodeBinding {
+            node: cid(ContentKind::SceneNode, "synthetic.plane.wing_lod1"),
+            generation: SceneGeneration::default(),
+        },
+        NodePresentation(PresentationState::Drawn),
+    ));
+    let mut damage = AirframeDamageState::new();
+    damage.destroy(node_id("synthetic.plane.tail"));
+    world.insert_resource(damage);
+    set_distance(&mut world, NEAR_METRES);
+    world.insert_resource(AirframeSceneRequest::load(
+        fixture_airframe(),
+        fixture_graph(),
+    ));
+    process_airframe_scene_request(&mut world);
+    apply_airframe_damage(&mut world);
+    run_lod_pass(&mut world);
+
+    let far = node_id("synthetic.plane.wing_lod1");
+    assert_eq!(
+        cs_app::render::visibility::row_draw(&world, PartRef::Known(&far)).reason(),
+        Some("lod culled"),
+        "the far band's own live entity decides, not the leftover's Drawn"
+    );
+
+    let report = sync(&mut world, &scene);
+    assert_eq!(report.visibility.lod_culled, 1);
+    assert_eq!(
+        placed_items(&world),
+        ["a.hatch", "a.wing_near"],
+        "the superseded binding puts no extra draw on screen"
     );
 }
 
