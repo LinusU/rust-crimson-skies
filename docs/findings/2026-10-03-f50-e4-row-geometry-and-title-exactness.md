@@ -228,12 +228,13 @@ CI contract depends on was confirmed locally: a plain
 `cargo test --locked -p cs_app --test campaign` runs the rest of the campaign
 suite (63 passed) and reports these three as `ignored, requires CS_GAME_DIR`.
 
-`docs/findings/evidence/F50-E4.json` was generated on the tree of commit
-`95f6940d` (tree `a46e38ce…`) — the last commit that changes a test or the
-harness — and validated with `--require-pass`. The only later delta is this
-report's own copy under `docs/findings/evidence/` (commit `52f98abc`); a
-reviewer who re-runs the harness on the reviewed tree gets the same
-measurements and a fresh `candidate_tree`.
+`docs/findings/evidence/F50-E4.json` was generated on tree `d6fa6b3a…` — the
+tree of the last commit on this branch that changes a test or the harness — and
+validated with `--require-pass`. It was regenerated after the branch was rebased
+onto the current `origin/main`; the rebased-in commits touch none of this
+stage's files and no `Cargo.toml` or `Cargo.lock`, so every measurement in it is
+unchanged, and a reviewer who re-runs the harness on the reviewed tree gets the
+same numbers and a fresh `candidate_tree`.
 
 ## Sources
 
