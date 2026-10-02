@@ -121,32 +121,34 @@ fn evidence_report_t465_writes_the_acceptance_report() {
                     "{{\"blocks\": {}, \"keys\": {}, \"stunt_conditions\": {}, \"travellers\": {}, \"span\": {}}}",
                     machine.machine().blocks(),
                     pairs_json(machine.machine().keys()),
-                    machine
-                        .machine()
-                        .stunt_conditions()
-                        .iter()
-                        .map(|condition| format!(
-                            "{{\"objective\": {}, \"zones\": {}, \"required_count\": {}}}",
-                            jstr(condition.objective()),
-                            str_list(condition.zones()),
-                            option_u32(condition.required_count())
-                        ))
-                        .collect::<Vec<_>>()
-                        .join(", "),
-                    machine
-                        .machine()
-                        .travellers()
-                        .iter()
-                        .map(|condition| format!(
-                            "{{\"objective\": {}, \"subject\": {}, \"relation\": {}, \"target\": {}, \"danger_zone_label\": {}}}",
-                            jstr(condition.objective()),
-                            subject_json(condition.subject()),
-                            option_str(condition.relation()),
-                            option_str(condition.target()),
-                            condition.target_is_danger_zone_label()
-                        ))
-                        .collect::<Vec<_>>()
-                        .join(", "),
+                    object_array(
+                        &machine
+                            .machine()
+                            .stunt_conditions()
+                            .iter()
+                            .map(|condition| format!(
+                                "{{\"objective\": {}, \"zones\": {}, \"required_count\": {}}}",
+                                jstr(condition.objective()),
+                                str_array(condition.zones()),
+                                option_u32(condition.required_count())
+                            ))
+                            .collect::<Vec<_>>(),
+                    ),
+                    object_array(
+                        &machine
+                            .machine()
+                            .travellers()
+                            .iter()
+                            .map(|condition| format!(
+                                "{{\"objective\": {}, \"subject\": {}, \"relation\": {}, \"target\": {}, \"danger_zone_label\": {}}}",
+                                jstr(condition.objective()),
+                                subject_json(condition.subject()),
+                                option_str(condition.relation()),
+                                option_str(condition.target()),
+                                condition.target_is_danger_zone_label()
+                            ))
+                            .collect::<Vec<_>>(),
+                    ),
                     span_json(machine.span())
                 ),
                 None => "null".to_owned(),
@@ -155,23 +157,24 @@ fn evidence_report_t465_writes_the_acceptance_report() {
                 Some(scenario) => {
                     let aircraft = scenario.aircraft();
                     format!(
-                        "{{\"mission_type\": {}, \"player_plane\": {}, \"wingmen\": {}, \"enemy_groups\": [{}], \"summed_enemy_group_counts\": {}, \"ace\": {{\"name_label\": {}, \"plane\": {}, \"skill\": {}}}, \"span\": {}}}",
+                        "{{\"mission_type\": {}, \"player_plane\": {}, \"wingmen\": {}, \"enemy_groups\": {}, \"summed_enemy_group_counts\": {}, \"ace\": {{\"name_label\": {}, \"plane\": {}, \"skill\": {}}}, \"span\": {}}}",
                         jstr(scenario.mission_type()),
                         option_str(aircraft.player_plane()),
                         option_u32(aircraft.wingmen()),
-                        aircraft
-                            .enemy_groups()
-                            .iter()
-                            .map(|group| format!(
-                                "{{\"index\": {}, \"count\": {}, \"name_label\": {}, \"plane\": {}, \"skill\": {}}}",
-                                group.index(),
-                                option_u32(group.count()),
-                                option_str(group.name_label()),
-                                option_str(group.plane()),
-                                option_str(group.skill())
-                            ))
-                            .collect::<Vec<_>>()
-                            .join(", "),
+                        object_array(
+                            &aircraft
+                                .enemy_groups()
+                                .iter()
+                                .map(|group| format!(
+                                    "{{\"index\": {}, \"count\": {}, \"name_label\": {}, \"plane\": {}, \"skill\": {}}}",
+                                    group.index(),
+                                    option_u32(group.count()),
+                                    option_str(group.name_label()),
+                                    option_str(group.plane()),
+                                    option_str(group.skill())
+                                ))
+                                .collect::<Vec<_>>(),
+                        ),
                         aircraft.summed_enemy_group_counts(),
                         option_str(aircraft.ace().name_label()),
                         option_str(aircraft.ace().plane()),
@@ -190,13 +193,44 @@ fn evidence_report_t465_writes_the_acceptance_report() {
                 scenario
             )
         })
-        .collect::<Vec<_>>()
-        .join(", ");
+        .collect::<Vec<_>>();
     let census_path = evidence_dir.join("authority-census.json");
+    // The two fields the census reports as lists are **measured**, never
+    // hard-wired to `[]`: a hard-wired empty list is indistinguishable from a
+    // survey that never looked, which is the failure this whole report exists to
+    // rule out.
+    let authority_keys: Vec<String> = survey
+        .keys_naming_an_authority()
+        .into_iter()
+        .map(|(container, key)| {
+            format!(
+                "{{\"container\": {}, \"key\": {}}}",
+                jstr(&container),
+                jstr(&key)
+            )
+        })
+        .collect();
+    let non_player_zone_conditions: Vec<String> = survey
+        .rows()
+        .iter()
+        .filter_map(|row| row.machine())
+        .flat_map(|machine| machine.machine().travellers())
+        .filter(|condition| {
+            condition.target_is_danger_zone_label() && condition.subject_is_non_player()
+        })
+        .map(|condition| {
+            format!(
+                "{{\"objective\": {}, \"subject\": {}, \"target\": {}}}",
+                jstr(condition.objective()),
+                subject_json(condition.subject()),
+                option_str(condition.target())
+            )
+        })
+        .collect();
     fs::write(
         &census_path,
         format!(
-            "{{\"install_sha256\": {}, \"candidate_tree\": {}, \"readers\": {}, \"objective_records\": {}, \"fly_through\": {}, \"fly_through_labelled\": {}, \"team_scoped\": {}, \"objective_blocks\": {}, \"objective_keys\": {}, \"keys_naming_an_authority\": [], \"stunt_conditions\": {}, \"travellers\": {}, \"traveller_subject_census\": {{\"player\": {}, \"named\": {}, \"indexed\": {}, \"unreadable\": {}}}, \"non_player_subjects\": {}, \"non_player_danger_zone_conditions\": [], \"scenarios\": {}, \"earning_authority_is_measured\": false, \"rows\": [{}]}}\n",
+            "{{\"install_sha256\": {}, \"candidate_tree\": {}, \"readers\": {}, \"objective_records\": {}, \"fly_through\": {}, \"fly_through_labelled\": {}, \"team_scoped\": {}, \"objective_blocks\": {}, \"objective_keys\": {}, \"keys_naming_an_authority\": {}, \"stunt_conditions\": {}, \"travellers\": {}, \"traveller_subject_census\": {{\"player\": {}, \"named\": {}, \"indexed\": {}, \"unreadable\": {}}}, \"non_player_subjects\": {}, \"non_player_danger_zone_conditions\": {}, \"scenarios\": {}, \"earning_authority_is_measured\": false, \"rows\": {}}}\n",
             jstr(&install_sha256),
             jstr(&candidate_tree),
             survey.len(),
@@ -206,6 +240,7 @@ fn evidence_report_t465_writes_the_acceptance_report() {
             survey.team_scoped_objectives(),
             survey.objective_blocks(),
             pairs_json(&survey.objective_keys()),
+            object_array(&authority_keys),
             survey.stunt_conditions().count(),
             survey.travellers().count(),
             census.player,
@@ -218,11 +253,19 @@ fn evidence_report_t465_writes_the_acceptance_report() {
                     .map(str::to_owned)
                     .collect::<Vec<String>>(),
             ),
+            object_array(&non_player_zone_conditions),
             survey.scenarios().count(),
-            rows,
+            object_array(&rows),
         ),
     )
     .expect("write authority-census.json");
+    // The census is a committed evidence artifact, so it has to be valid JSON.
+    // A hand-rolled renderer silently writes `"key": ,` for an empty list
+    // unless the brackets come from `object_array`, and nothing downstream
+    // (including `tools/validate_evidence.py`, which only checks digests) would
+    // notice. Check the document's own shape here, where the write happened.
+    let census_text = fs::read_to_string(&census_path).expect("re-read authority-census.json");
+    assert_well_formed_json(&census_text, &census_path.display().to_string());
 
     let artifacts = vec![
         artifact(&log_path, "log", &evidence_dir),
@@ -463,6 +506,108 @@ fn engine_json(engine: &Engine) -> String {
     )
 }
 
+/// Whether a rendered JSON document is well formed: balanced braces and
+/// brackets outside strings, no empty value where one is required, no trailing
+/// comma.
+///
+/// This is not a JSON parser. It is the small set of properties a hand-rolled
+/// renderer of this shape breaks, and it is checked in the harness that writes
+/// the document, because a malformed evidence artifact would otherwise be
+/// committed as if it were a measurement.
+fn assert_well_formed_json(text: &str, what: &str) {
+    let mut braces = 0_i64;
+    let mut brackets = 0_i64;
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut previous = '\0';
+    let bytes = text.as_bytes();
+    for (index, character) in text.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                in_string = false;
+            }
+            previous = character;
+            continue;
+        }
+        match character {
+            '"' => in_string = true,
+            '{' => braces += 1,
+            '}' => braces -= 1,
+            '[' => brackets += 1,
+            ']' => brackets -= 1,
+            // `": ,`, `": }` and `": ]`: an empty value where the grammar
+            // requires one, which is what an unbracketed empty list produces.
+            ':' => {
+                let next = bytes.get(index + 1).map(|byte| char::from(*byte));
+                assert!(
+                    !matches!(next, Some(',' | '}' | ']')),
+                    "{what}: a JSON key with an empty value at byte {index}"
+                );
+            }
+            _ => {}
+        }
+        assert!(
+            braces >= 0 && brackets >= 0,
+            "{what}: unbalanced JSON at byte {index} ({character:?})"
+        );
+        if previous == ',' {
+            assert!(
+                !matches!(character, '}' | ']'),
+                "{what}: a trailing comma before byte {index} ({character:?})"
+            );
+        }
+        previous = character;
+    }
+    assert!(
+        !in_string && braces == 0 && brackets == 0,
+        "{what}: unbalanced JSON (braces {braces}, brackets {brackets}, in string {in_string})"
+    );
+}
+
+/// Already-rendered JSON objects as a JSON array, brackets included.
+///
+/// The brackets must come from here, not from a bare `join(", ")`: an empty
+/// collection joined without them writes `"key": ,`, which is **not valid
+/// JSON**, and the census is a committed evidence artifact that has to parse.
+fn object_array(items: &[String]) -> String {
+    // Every element must be a rendered **object**. An element that is itself an
+    // array means a caller passed something already bracketed — a double wrap,
+    // which is still valid JSON and therefore slips past a grammar check.
+    assert!(
+        items
+            .iter()
+            .all(|item| item.starts_with('{') && item.ends_with('}')),
+        "object_array takes rendered objects, got {:?}",
+        items
+            .iter()
+            .find(|item| !(item.starts_with('{') && item.ends_with('}')))
+    );
+    format!("[{}]", items.join(", "))
+}
+
+/// Already-rendered JSON arrays as a JSON array of arrays, brackets included.
+///
+/// Separate from [`object_array`] so that a list of pairs (`pairs_json`) cannot
+/// be passed where a list of objects is meant: the two render identically apart
+/// from their element shape, and swapping them is otherwise invisible.
+fn array_array(items: &[String]) -> String {
+    assert!(
+        items
+            .iter()
+            .all(|item| item.starts_with('[') && item.ends_with(']')),
+        "array_array takes rendered arrays, got {:?}",
+        items
+            .iter()
+            .find(|item| !(item.starts_with('[') && item.ends_with(']')))
+    );
+    format!("[{}]", items.join(", "))
+}
+
+/// The assertion list of the report.
 fn assertion_array(assertions: &[(String, &'static str)]) -> String {
     let items: Vec<String> = assertions
         .iter()
@@ -474,9 +619,10 @@ fn assertion_array(assertions: &[(String, &'static str)]) -> String {
             )
         })
         .collect();
-    items.join(", ")
+    object_array(&items)
 }
 
+/// The artifact list of the report.
 fn artifact_array(artifacts: &[(String, String, String)]) -> String {
     let items: Vec<String> = artifacts
         .iter()
@@ -487,26 +633,22 @@ fn artifact_array(artifacts: &[(String, String, String)]) -> String {
             )
         })
         .collect();
-    items.join(", ")
+    object_array(&items)
 }
 
+/// A list of strings as a JSON array.
 fn str_array(items: &[String]) -> String {
     let quoted: Vec<String> = items.iter().map(|item| jstr(item)).collect();
     format!("[{}]", quoted.join(", "))
 }
 
-fn str_list(items: &[String]) -> String {
-    let quoted: Vec<String> = items.iter().map(|item| jstr(item)).collect();
-    format!("[{}]", quoted.join(", "))
-}
-
-/// A `[(key, count)]` inventory as JSON.
+/// A `[(key, count)]` inventory as a JSON array of two-element arrays.
 fn pairs_json(items: &[(String, u32)]) -> String {
     let quoted: Vec<String> = items
         .iter()
         .map(|(key, count)| format!("[{}, {count}]", jstr(key)))
         .collect();
-    format!("[{}]", quoted.join(", "))
+    array_array(&quoted)
 }
 
 fn span_json(span: &cs_content::stunts::StuntEncodingSpan) -> String {

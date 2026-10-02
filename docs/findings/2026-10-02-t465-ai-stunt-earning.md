@@ -81,7 +81,7 @@ actor vocabulary for a rule (or missed a non-player subject) fails a test.
 
 Every number below comes from the owner's installation through read-only access,
 and every one is reproducible from the code in this branch over
-`$CS_GAME_DIR`. The corpus is **every reader archive in the installation**: 61
+`$CS_GAME_DIR`. The corpus is **every reader archive in the installation**: 62
 `zrdr.zbd` containers, of which 53 carry objective records, 53 carry an
 objective state machine, 40 carry numbered `OBJECTIVE<N>` blocks, 8 carry an
 instant-action scenario descriptor and 23 carry a detection-zone member.
@@ -339,6 +339,37 @@ The first row is the reason the authored installation contains a `player_only`
 objective key: a scan that always answered "no authority is recorded" would pass
 every measured assertion over the retail corpus and still be worthless.
 
+## Defects the review found and fixed
+
+The review of this task was performed by the same agent identity that wrote it
+(`bunny-2/bunny-2`, in a later session with a **fresh context**, but the **same
+model**). Per `AGENTS.md` that is **not independent evidence**, and no agent
+review replaces the owner's approval; the numbers below were additionally
+re-measured from scratch by a separate agent instance parsing the installation
+without reading this branch's Rust. Three real defects were found and fixed:
+
+1. **The committed evidence artifact was not valid JSON.** The harness rendered
+   every list with a bare `.join(", ")`, so an empty list wrote `"key": ,` and a
+   non-empty one wrote `"key": {..}, {..}` — both malformed. The census is
+   committed as evidence, `tools/validate_evidence.py` only checks its digest,
+   and nothing else parsed it, so the defect was invisible to every check in
+   this repository. All list rendering now goes through helpers that own their
+   brackets, the harness asserts the document's balance and emptiness grammar
+   before the write is trusted, and the harness additionally refuses a list of
+   the wrong element shape (a double-wrapped array is *valid* JSON and would
+   still slip past a grammar check).
+2. **Two census fields were hard-wired to `[]`.**
+   `keys_naming_an_authority` and `non_player_danger_zone_conditions` were
+   written as literals rather than measured — exactly the "a scan that always
+   answers *none*" failure this task's own one-observable-failure note is about,
+   committed as if it were a measurement. Both are now computed from the survey.
+   Both still measure empty over the owner's installation, and that is now a
+   result rather than a constant.
+3. **This document claimed 61 reader archives** where the corpus is 62 (and
+   where the acceptance test, the survey and the installation itself all say
+   62). Corrected in both places. Every other number in this document was
+   re-checked against the regenerated census and is unchanged.
+
 ## Checks run
 
 * `cargo fmt --all -- --check` = 0,
@@ -363,7 +394,7 @@ every measured assertion over the retail corpus and still be worthless.
   `crates/cs_formats/src/script_raw/discovery.rs` (the production reader-archive
   discovery) and `docs/findings/2026-10-02-f09-palette-original-faction-palettes.md`
   (the `.zrd` grammar).
-- The owner's installation, read-only, over `$CS_GAME_DIR`: all 61 reader
+- The owner's installation, read-only, over `$CS_GAME_DIR`: all 62 reader
   archives (`ZBD/**/zrdr.zbd`) and their `targets.zrd`, `objectives.zrd`,
   `dzones.zrd` and `ia.zrd` members. Installation fingerprint above.
 
