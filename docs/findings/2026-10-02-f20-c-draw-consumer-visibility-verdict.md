@@ -200,10 +200,10 @@ P1 and P3 were re-run against the final base (after F20-C.03's review fix added
 the `NodeDisabled` read to the composition) with the same outcome.
 `grep -rn "MUTATION PROBE" crates/` is empty.
 
-The **review** column is the #503 reviewer's own re-run of all six probes on
-this base (`1505dbd`), each mutated file restored afterwards and the tree
-confirmed clean. P1 is the acceptance criterion "removing the animation's
-record from the world's draw decision fails the test", and it holds: dropping
+The **review** column is the #503 reviewer's own re-run of all six probes at
+base `1505dbd`, each mutated file restored afterwards and the tree confirmed
+clean. P1 is the acceptance criterion "removing the animation's record from
+the world's draw decision fails the test", and it holds: dropping
 `NodeAnimatedVisibility` from the consumer's composition fails 4 of the 8
 tests, two of them on the placement itself rather than on a reason code.
 
@@ -214,11 +214,11 @@ tree and re-ran every check and every probe rather than trusting this
 document, but a same-agent review is not a second opinion and no agent review
 replaces the owner's human approval.
 
-## Checks (all exit 0, on the pushed tree, base `1505dbd`)
+## Checks (all exit 0, on the reviewed tree, base `573eca9`)
 
 * `cargo fmt --all -- --check`
 * `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
-* `cargo test --workspace --locked` — **2524 passed, 0 failed, 261 ignored**
+* `cargo test --workspace --locked` — **2531 passed, 0 failed, 261 ignored**
   (the ignored ones are the `#[ignore = "requires CS_GAME_DIR"]` retail tests)
 * `cargo test --workspace --locked -- accept_f20_c_draw_ --include-ignored` —
   **8 matched, 8 passed**, none `#[ignore]`d
@@ -226,6 +226,16 @@ replaces the owner's human approval.
   every existing `accept_f17_c_*` assertion unchanged and still green)
 * `cargo test -p cs_app --locked --test accept_f20_c_03_visibility_lod_ownership`
   — 8 passed: the consumer changed nothing upstream.
+* `cargo doc -p cs_app --no-deps --locked` — no new warning from any file this
+  slice touches (the unresolved `composed_visibility_verdict` link the first
+  pass left in `render/mod.rs` is fixed; the remaining warnings are older than
+  this slice).
+* The branch was rebased onto `573eca9` (the F20-C wired-session integration,
+  which added the animation path's producers) after those checks: the rebase
+  applied without a conflict, and the commit it brought in touches no file this
+  branch changes and no `Cargo.toml`/`Cargo.lock`. Two statements above were
+  corrected for it — the animation producers now exist, so the "nothing writes
+  `CommittedSessionTick`" claim is gone.
 
 No evidence report: ordinary build/test only, no `CS_GAME_DIR`, no render, no
 audio.
@@ -289,8 +299,14 @@ crossing despawns and respawns the one placement and adds nothing to a store.
   slice writes a collider.
 * **Whether a frame is presented before or after the animation pass.** The
   verdict is read when the frame is synced, so the answer is always the last
-  committed tick's fact — but which system runs first in the real schedule is
-  still unwired (nothing writes `CommittedSessionTick` yet).
+  committed tick's fact. The animation side of that clock now has its producer
+  (`animation::bind_animated_node` and `animation::AnimationPlugin`'s
+  `commit_session_tick`, merged after this slice was first written), so a
+  committed tick does exist in a running session; what is still undecided is
+  where the **sync** sits relative to it, because `sync_frame` has no Bevy
+  caller yet. A frame presented before that frame's animation advance therefore
+  answers from the previous committed tick, which is F11-C's "late update"
+  shape rather than a wrong answer — but it is undetermined, not designed.
 * **What the original drew for a part that is both LOD-culled and clip-hidden.**
   The composed verdict reports LOD's reason, which is a presentation-reporting
   choice, not a measurement of the original's.
@@ -325,9 +341,14 @@ crossing despawns and respawns the one placement and adds nothing to a store.
   (`F17-C-release-returns-store-assets`): a released batch's mesh and material
   stay in the asset stores. This slice adds the release condition that makes it
   reachable on a gameplay-rate path and does not fix the leak itself.
-* Nothing produces `AnimatedNodeBinding`, nothing writes `CommittedSessionTick`,
-  and the gameplay-marker consumer of `AnimationLog` is still F20-C's — unchanged
-  by this slice (a note on #75 carries them).
+* The animation path's producers now exist on `main`
+  (`animation::bind_animated_node` writes the generation-stamped
+  `AnimatedNodeBinding`, `animation::AnimationPlugin` commits the session tick
+  and installs the fixed-tick advance), so the clip record this consumer reads
+  has a real writer; that landed after this slice was first written and changed
+  nothing here. What is still absent is the **render** caller (`sync_frame` from
+  no Bevy system, above) and the gameplay-marker consumer of `AnimationLog`,
+  which is F37/F39's (a note on #75 carries it).
 
 ## Sources
 
