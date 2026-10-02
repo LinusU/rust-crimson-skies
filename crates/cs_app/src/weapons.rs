@@ -39,7 +39,9 @@
 //! [`DamageResolver`]: cs_sim::damage::DamageResolver
 //! [`HitEvent`]: cs_sim::damage::HitEvent
 
+use avian3d::prelude::LinearVelocity;
 use bevy::ecs::component::Component;
+use bevy::prelude::{ChildOf, Entity, World};
 use cs_content::scene::SceneNodeId;
 use cs_content::weapons::{
     AmmunitionId as DeclaredAmmunitionId, DeclaredAmmunition, DeclaredFriendlyFireRule,
@@ -49,17 +51,19 @@ use cs_content::weapons::{
 use cs_sim::damage::{
     ActorId, DamageError, DamageNodeKey, DamageResolver, NodeKeyError, TickResolution,
 };
+use cs_sim::targeting::Allegiance;
 use cs_sim::weapons::{
     AmmunitionId, AmmunitionIdError, FireEvent, FriendlyFireRule, GunDefinition,
-    GunDefinitionError, GunHitRouter, GunMountKind, GunRate, InheritanceRule, ProjectileSegment,
-    SelfHitRule, SpreadCone, SweepCandidate, SweepOutcome, SweepRefusal, WeaponDamage, WeaponRules,
+    GunDefinitionError, GunHitRouter, GunMountKind, GunRate, InheritanceRule, MountTransform,
+    ProjectileSegment, SelfHitRule, SpreadCone, SweepCandidate, SweepOutcome, SweepRefusal,
+    SweepTarget, SweepTargetError, WeaponDamage, WeaponRules,
 };
 use cs_types::Tick;
 use cs_types::content::{ContentId, Known, Resolved};
 use cs_types::evidence::ClaimId;
-use cs_types::space::Radians;
+use cs_types::space::{Radians, UnitVec3, WorldPosition};
 
-use crate::scene::SceneGeneration;
+use crate::scene::{NodeVisualTransform, SceneGeneration};
 
 /// Why a declared weapon record could not be lowered to the runtime records.
 #[derive(Clone, Debug, PartialEq)]
@@ -339,6 +343,447 @@ fn known_or_refuse<T: Clone>(
 #[must_use]
 pub fn declared_scene_binding(gun: &DeclaredGunDefinition) -> Option<&Resolved<SceneNodeId>> {
     gun.scene_binding()
+}
+
+// ------------------------------------------------------ F27-B live geometry ---
+//
+// F27-B. `lower_gun` deliberately drops the declared gun's visual
+// `SceneNodeId` (F27-A): the runtime gun carries gameplay state, and the
+// *live* hierarchy is where the muzzle pose and the airframe's velocity
+// actually are. This section is that read.
+//
+// Two producers turn live ECS state into the runtime geometry `cs_sim`'s
+// resolver and swept query consume:
+//
+// * [`live_mount_transforms`] turns the mount nodes of one actor's live
+//   hierarchy into the `DamageNodeKey -> MountTransform` map a `FireIntent`
+//   resolves against. A muzzle origin, forward axis and inherited velocity
+//   come from the node's composed [`NodeVisualTransform`] and the airframe
+//   body's live `LinearVelocity` — never from a fixed center-screen origin
+//   (F27 non-negotiable 2).
+// * [`part_sweep_candidates`] turns the live part boxes into the
+//   [`SweepCandidate`]s the swept query tests, so a round sweeps against the
+//   target's real geometry and its motion through the tick (F27
+//   non-negotiable 3).
+//
+// Both are pure `&World` reads that report a refusal by name for every node
+// they could not read. Nothing is dropped silently: a mount with no readable
+// pose is named here *and* refused by the resolver as
+// `MissingMountTransform`, so a gun never fires from the world origin because
+// a walk quietly skipped it.
+//
+// The ECS systems that call these producers, the Avian projectile body and the
+// effects/audio consumers are F27-C's application half
+// (`docs/findings/2026-10-02-f27-c-candidate-filtering-and-hit-damage-routing.md`).
+
+/// Reason: one live mount node's pose could not become a [`MountTransform`].
+///
+/// Every variant names the mount, so a caller can attribute a missing or
+/// refused pose to the gun that needed it instead of guessing which node was
+/// bad.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MountPoseRefusal {
+    /// The node carries a [`MountPoseBinding`] from another scene generation:
+    /// its pose belongs to a hierarchy that was replaced.
+    StaleGeneration {
+        /// The mount the stale binding named.
+        mount: DamageNodeKey,
+        /// The generation the binding was stamped with.
+        found: SceneGeneration,
+        /// The generation being read.
+        expected: SceneGeneration,
+    },
+    /// The mount node carries no [`NodeVisualTransform`], so its live pose is
+    /// unknown.
+    MissingPose {
+        /// The mount with no pose.
+        mount: DamageNodeKey,
+    },
+    /// The node's composed translation was not finite.
+    NonFiniteOrigin {
+        /// The mount with the bad origin.
+        mount: DamageNodeKey,
+    },
+    /// The node's forward axis was zero-length or non-finite, so it cannot be
+    /// a direction.
+    ZeroForward {
+        /// The mount with the bad forward axis.
+        mount: DamageNodeKey,
+    },
+    /// No ancestor of the mount (up to the actor root) carries a live
+    /// `LinearVelocity`, so the airframe's inherited velocity is unknown.
+    MissingAirframeVelocity {
+        /// The mount whose airframe velocity is unknown.
+        mount: DamageNodeKey,
+    },
+    /// The airframe's live velocity had a non-finite component.
+    NonFiniteVelocity {
+        /// The mount with the bad inherited velocity.
+        mount: DamageNodeKey,
+    },
+}
+
+impl MountPoseRefusal {
+    /// The stable label used in reports.
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::StaleGeneration { .. } => "stale_generation",
+            Self::MissingPose { .. } => "missing_pose",
+            Self::NonFiniteOrigin { .. } => "non_finite_origin",
+            Self::ZeroForward { .. } => "zero_forward",
+            Self::MissingAirframeVelocity { .. } => "missing_airframe_velocity",
+            Self::NonFiniteVelocity { .. } => "non_finite_velocity",
+        }
+    }
+
+    /// The mount this refusal is about.
+    #[must_use]
+    pub const fn mount(&self) -> &DamageNodeKey {
+        match self {
+            Self::StaleGeneration { mount, .. }
+            | Self::MissingPose { mount }
+            | Self::NonFiniteOrigin { mount }
+            | Self::ZeroForward { mount }
+            | Self::MissingAirframeVelocity { mount }
+            | Self::NonFiniteVelocity { mount } => mount,
+        }
+    }
+}
+
+/// The live mount poses read for one actor: the transforms a `FireIntent`
+/// resolves against, and the mounts that could not be read.
+///
+/// A `FireResolver` consumes [`Self::transforms`] directly; the refused mounts
+/// are the evidence for the `MissingMountTransform` refusal that follows. A
+/// mount appears in at most one of the two lists.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LiveMountTransforms {
+    /// The readable mount poses, keyed by damage-node key.
+    pub transforms: std::collections::BTreeMap<DamageNodeKey, MountTransform>,
+    /// The mounts whose live pose could not be read, by name.
+    pub refused: Vec<MountPoseRefusal>,
+}
+
+impl LiveMountTransforms {
+    /// Whether the read found no readable mount pose.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.transforms.is_empty()
+    }
+
+    /// One mount's live pose, if it was read.
+    #[must_use]
+    pub fn get(&self, mount: &DamageNodeKey) -> Option<&MountTransform> {
+        self.transforms.get(mount)
+    }
+}
+
+/// Reads one actor's live mount poses from the ECS hierarchy.
+///
+/// `actor` and `generation` select the actor root: the entity carrying a
+/// matching [`WeaponActorBinding`], which is the live hierarchy the mounts
+/// hang under. Every descendant carrying a [`MountPoseBinding`] is turned into
+/// a [`MountTransform`]:
+///
+/// * the **origin** is the node's composed [`NodeVisualTransform`] translation,
+///   so a muzzle tracks the animated airframe pose rather than a fixed
+///   center-screen point (F27 non-negotiable 2);
+/// * the **forward** is that transform's `-Z` axis, the canonical forward
+///   (FLIGHT-PHYSICS, "Coordinate convention");
+/// * the **inherited velocity** is the first `LinearVelocity` found walking
+///   from the mount up to the actor root — the airframe body's live velocity,
+///   which is exactly the vector F27 non-negotiable 2 leaves as a supplied,
+///   explicit input.
+///
+/// A mount whose binding belongs to a stale generation is refused, not read;
+/// so is one with no pose, a non-finite origin, a zero forward axis, or no
+/// reachable airframe velocity. An actor with no live root yields an empty
+/// read (the resolver then refuses the intent's mounts one by one).
+#[must_use]
+pub fn live_mount_transforms(
+    world: &World,
+    actor: ActorId,
+    generation: SceneGeneration,
+) -> LiveMountTransforms {
+    let Some(root) = actor_root(world, actor, generation) else {
+        return LiveMountTransforms::default();
+    };
+
+    let mut read = LiveMountTransforms::default();
+    for entity_ref in world.iter_entities() {
+        let entity = entity_ref.id();
+        let Some(binding) = entity_ref.get::<MountPoseBinding>() else {
+            continue;
+        };
+        if !is_descendant_of(world, entity, root) {
+            continue;
+        }
+        let mount = binding.mount.clone();
+        if binding.generation != generation {
+            read.refused.push(MountPoseRefusal::StaleGeneration {
+                mount,
+                found: binding.generation,
+                expected: generation,
+            });
+            continue;
+        }
+        let Some(visual) = entity_ref.get::<NodeVisualTransform>() else {
+            read.refused.push(MountPoseRefusal::MissingPose { mount });
+            continue;
+        };
+
+        let global = visual.global();
+        let translation = global.translation();
+        let origin = [
+            f64::from(translation.x),
+            f64::from(translation.y),
+            f64::from(translation.z),
+        ];
+        let Ok(origin) = WorldPosition::try_new(origin) else {
+            read.refused
+                .push(MountPoseRefusal::NonFiniteOrigin { mount });
+            continue;
+        };
+        let forward = global.forward().as_vec3();
+        let Ok(forward) = UnitVec3::try_new([
+            f64::from(forward.x),
+            f64::from(forward.y),
+            f64::from(forward.z),
+        ]) else {
+            read.refused.push(MountPoseRefusal::ZeroForward { mount });
+            continue;
+        };
+        let Some(velocity) = airframe_velocity(world, entity) else {
+            read.refused
+                .push(MountPoseRefusal::MissingAirframeVelocity { mount });
+            continue;
+        };
+        match MountTransform::try_new(origin, forward, velocity) {
+            Ok(transform) => {
+                read.transforms.insert(mount, transform);
+            }
+            Err(_) => read
+                .refused
+                .push(MountPoseRefusal::NonFiniteVelocity { mount }),
+        }
+    }
+    read
+}
+
+/// The live actor root whose hierarchy a mount read starts from: the entity
+/// stamped with a matching [`WeaponActorBinding`], or `None` when no live
+/// actor root exists for `generation`.
+fn actor_root(world: &World, actor: ActorId, generation: SceneGeneration) -> Option<Entity> {
+    world.iter_entities().find_map(|entity_ref| {
+        let binding = entity_ref.get::<WeaponActorBinding>()?;
+        (binding.actor == actor && binding.generation == generation).then(|| entity_ref.id())
+    })
+}
+
+/// Whether `entity` is `root` or a descendant of it in the live `ChildOf`
+/// hierarchy.
+fn is_descendant_of(world: &World, mut entity: Entity, root: Entity) -> bool {
+    loop {
+        if entity == root {
+            return true;
+        }
+        match world.get::<ChildOf>(entity) {
+            Some(child_of) => entity = child_of.parent(),
+            None => return false,
+        }
+    }
+}
+
+/// The live airframe velocity for a mount node: the first `LinearVelocity`
+/// found walking from the node up to the hierarchy root, in world m/s.
+fn airframe_velocity(world: &World, entity: Entity) -> Option<[f64; 3]> {
+    let mut current = Some(entity);
+    while let Some(node) = current {
+        if let Some(velocity) = world.get::<LinearVelocity>(node) {
+            return Some([
+                f64::from(velocity.x),
+                f64::from(velocity.y),
+                f64::from(velocity.z),
+            ]);
+        }
+        current = world.get::<ChildOf>(node).map(ChildOf::parent);
+    }
+    None
+}
+
+/// Component: the declared swept-box geometry of one damage-node part.
+///
+/// The box's **centre and motion are not here**: the part entity's composed
+/// [`NodeVisualTransform`] is the one pose owner (the same value collision
+/// evaluates, F11 non-negotiable 4) and the airframe body's `LinearVelocity`
+/// is the one velocity owner. This component carries only the part's identity
+/// and its box half extents, so [`part_sweep_candidates`] reads a live pose
+/// instead of a baked one.
+///
+/// A part record is a *collision feature's* record: F27-C's finding assigns
+/// the part geometry that feeds a [`SweepCandidate`] to F27-B, while the
+/// system that calls it is F27-C's. The box is the declared geometry the
+/// evidence gives; where the original's part shapes are unmeasured, this
+/// stage records the unknown rather than inventing one.
+#[derive(Component, Clone, Debug, PartialEq)]
+pub struct PartSweptBox {
+    /// The actor the part belongs to.
+    pub actor: ActorId,
+    /// The damage-graph node a contact with the box damages.
+    pub node: DamageNodeKey,
+    /// The box's half extents, in meters. Each must be finite and
+    /// non-negative; [`part_sweep_candidates`] refuses the rest by name.
+    pub half_extents_m: [f64; 3],
+}
+
+impl PartSweptBox {
+    /// Binds one part's box geometry and damage node to its actor.
+    #[must_use]
+    pub const fn new(actor: ActorId, node: DamageNodeKey, half_extents_m: [f64; 3]) -> Self {
+        Self {
+            actor,
+            node,
+            half_extents_m,
+        }
+    }
+}
+
+/// Why one live part could not become a [`SweepCandidate`].
+#[derive(Clone, Debug, PartialEq)]
+pub enum PartSweepRefusal {
+    /// The part entity carries no [`NodeVisualTransform`], so its live centre
+    /// is unknown.
+    MissingPose {
+        /// The part's damage node.
+        node: DamageNodeKey,
+    },
+    /// The part's composed translation was not finite.
+    NonFinitePose {
+        /// The part's damage node.
+        node: DamageNodeKey,
+    },
+    /// The swept box was refused by the shared geometry vocabulary (a
+    /// non-finite or negative half extent, or a non-finite centre).
+    Target {
+        /// The part's damage node.
+        node: DamageNodeKey,
+        /// Why the box was refused.
+        source: SweepTargetError,
+    },
+}
+
+impl PartSweepRefusal {
+    /// The stable label used in reports.
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::MissingPose { .. } => "missing_pose",
+            Self::NonFinitePose { .. } => "non_finite_pose",
+            Self::Target { .. } => "target",
+        }
+    }
+
+    /// The part this refusal is about.
+    #[must_use]
+    pub const fn node(&self) -> &DamageNodeKey {
+        match self {
+            Self::MissingPose { node }
+            | Self::NonFinitePose { node }
+            | Self::Target { node, .. } => node,
+        }
+    }
+}
+
+/// The live part candidates read for a swept query, and the parts that could
+/// not be read.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PartSweepCandidates {
+    /// The part boxes the swept query may cross, in ascending entity order.
+    pub candidates: Vec<SweepCandidate>,
+    /// The parts whose geometry could not be read, by name.
+    pub refused: Vec<PartSweepRefusal>,
+}
+
+impl PartSweepCandidates {
+    /// Whether no part could be read.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.candidates.is_empty()
+    }
+}
+
+/// Reads the live part boxes of a world into [`SweepCandidate`]s.
+///
+/// Each entity carrying a [`PartSweptBox`] contributes one candidate:
+///
+/// * its **centre** is the part's composed [`NodeVisualTransform`] translation
+///   at the end of the tick;
+/// * its **previous centre** is the same position less the airframe body's
+///   live `LinearVelocity` over `dt_s`, so a round sweeping a moving target
+///   crosses the box where it actually was (F27 non-negotiable 3). The
+///   original's per-part motion (in particular any angular contribution) is
+///   unmeasured and is *not* applied: the finding records the omission rather
+///   than inventing a rule.
+/// * its **relation** comes from `relation(target_actor)`, so the declared
+///   allegiance vocabulary decides admission and an undeclared pair stays
+///   `None` (the exact statement `FriendlyFireRule` needs).
+///
+/// `dt_s` is the tick length the previous centre is reconstructed over. A
+/// part with no pose, a non-finite pose, or a box the shared geometry
+/// vocabulary refuses is named in [`PartSweepCandidates::refused`]; one bad
+/// part never drops the others, because a refused contact is a reported defect
+/// in one candidate, not a licence to lose the round.
+#[must_use]
+pub fn part_sweep_candidates(
+    world: &World,
+    dt_s: f64,
+    relation: impl Fn(ActorId) -> Option<Allegiance>,
+) -> PartSweepCandidates {
+    let mut read = PartSweepCandidates::default();
+    for entity_ref in world.iter_entities() {
+        let entity = entity_ref.id();
+        let Some(box_record) = entity_ref.get::<PartSweptBox>() else {
+            continue;
+        };
+        let node = box_record.node.clone();
+        let Some(visual) = entity_ref.get::<NodeVisualTransform>() else {
+            read.refused.push(PartSweepRefusal::MissingPose { node });
+            continue;
+        };
+
+        let current = visual.global().translation();
+        let current = [
+            f64::from(current.x),
+            f64::from(current.y),
+            f64::from(current.z),
+        ];
+        if !current.iter().all(|value| value.is_finite()) {
+            read.refused.push(PartSweepRefusal::NonFinitePose { node });
+            continue;
+        }
+        let velocity = airframe_velocity(world, entity).unwrap_or([0.0; 3]);
+        let previous = [
+            current[0] - velocity[0] * dt_s,
+            current[1] - velocity[1] * dt_s,
+            current[2] - velocity[2] * dt_s,
+        ];
+
+        match SweepTarget::try_new(
+            box_record.actor,
+            previous,
+            current,
+            box_record.half_extents_m,
+        ) {
+            Ok(target) => read.candidates.push(SweepCandidate::new(
+                target,
+                node,
+                relation(box_record.actor),
+            )),
+            Err(source) => read.refused.push(PartSweepRefusal::Target { node, source }),
+        }
+    }
+    read
 }
 
 // ---------------------------------------------- the swept-hit → damage seam ---
