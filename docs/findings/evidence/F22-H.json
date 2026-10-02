@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "F22-H",
+ "candidate_tree": "a8f449f77593c252ff93751049ae56d6bcd7d5f9",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-10-02T09:23:25Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_f22_h_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/deepseek-1", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail"],
+ "tests": {"discovered": 3, "executed": 3, "passed": 3, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_f22_h_the_comparison_covers_every_declared_command", "status": "pass", "evidence": ["cargo-test.log", "vocabulary.json"]}, {"id": "accept_f22_h_retail_the_game_executable_and_control_scripts_expose_the_key_vocabulary", "status": "pass", "evidence": ["cargo-test.log", "vocabulary.json"]}, {"id": "accept_f22_h_retail_strings_dll_names_the_original_command_vocabulary", "status": "pass", "evidence": ["cargo-test.log", "vocabulary.json"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "def53dd91f819b815eec4858b3addac550d2a6c815ebd52bade031dc746769f1", "kind": "log"}, {"path": "vocabulary.json", "sha256": "ceebe94bde12ef355e2ad21c610b58c37d3dd98636077732b06e1766b72b5bac", "kind": "json"}],
+ "unknowns": ["The original's default bindings (which key, mouse button/axis, gamepad or joystick control each command binds to) are not observable from the shipped files: the control UI fetches every row from native callbacks in the packed executable, and no control-profile file exists in the installation.", "The ordered command list the control UI enumerates, and the mapping from each measured label id to a command slot, are produced by native callbacks 2115/2120/2139/2140 and are not in any readable file.", "Which key actually fires which command in the running game, what the original does while text is entered, and what it does on focus loss, are runtime questions; they need an owner-supplied original run (task #358 REF-OWNER-FIRST-CAPTURE)."],
+ "review": {"identity": "implementer: deepseek-1/deepseek-1 (deepseek-v4.1-flash); implementer-produced report at the implemented gate, pending regeneration by an independent fresh-context reviewer at complete_review", "method": "Acceptance suite run locally with the retail capability; the report is derived from the recorded log, production discovery of $CS_GAME_DIR and a second production run of the readers recorded in vocabulary.json. Claim is implemented only: the observable original control vocabulary (65 named command labels across the two control ranges, their 15/50 label counts, the control categories, the two device-family modes, the key/button labels, the 120-name executable key pool and the control scripts) is measured; the default bindings and the runtime questions are NOT observable from files and are kept in `unknowns`. LIMITS (all outside F22-H's file-readable scope and listed in docs/findings/2026-10-02-f22-h-original-control-vocabulary.md): (1) the original's default bindings are native data in the packed executable, not shipped as a readable file (task #358 REF-OWNER-FIRST-CAPTURE); (2) the ordered command list and the mapping of each label id to a command slot are produced by native callbacks 2115/2120/2139/2140; (3) which key fires in the running game, text-entry suppression and focus-loss behavior need an owner-supplied original run. The report is validated with tools/validate_evidence.py; --require-pass exits 3 on the preserved unknowns."},
+ "claim": "implemented"
+}
