@@ -554,20 +554,15 @@ impl DeclaredCameraMode {
 ///
 /// The launchable half is expressed as [`ContentKind::is_launchable`] rather
 /// than as a restated list, so the owner vocabulary cannot drift from the
-/// launchable baseline the catalog already measures readiness over. Every
-/// other kind is refused, including [`ContentKind::CameraTrack`]: a camera
-/// track is an authored sequence, which a mode of kind
-/// [`CameraModeKind::AuthoredSequence`] will reference (F21-C) — it is never
-/// the subject that owns a view set.
+/// launchable baseline the catalog already measures readiness over: a kind
+/// that becomes launchable owns a view set without this function being
+/// edited. Every other kind is refused, including
+/// [`ContentKind::CameraTrack`]: a camera track is an authored sequence,
+/// which a mode of kind [`CameraModeKind::AuthoredSequence`] will reference
+/// (F21-C) — it is never the subject that owns a view set.
 #[must_use]
 pub const fn owns_camera_modes(kind: ContentKind) -> bool {
-    matches!(
-        kind,
-        ContentKind::Airframe
-            | ContentKind::Mission
-            | ContentKind::IaScenario
-            | ContentKind::MultiplayerScenario
-    )
+    matches!(kind, ContentKind::Airframe) || kind.is_launchable()
 }
 
 /// Why a [`DeclaredCameraModes`] set was rejected.

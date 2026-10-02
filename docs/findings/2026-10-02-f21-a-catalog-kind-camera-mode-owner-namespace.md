@@ -29,6 +29,15 @@ camera, and the only kinds that may own one are:**
 | the aircraft a session flies | `Airframe` | the views that aircraft offers, including whether a `cockpit` mode exists at all | F21 non-negotiable behavior 1: "Cockpit viewpoint comes from verified model/config bindings" — a cockpit projection is authored *against an aircraft*, and an aircraft with no verified cockpit binding declares no cockpit mode |
 | the launchable content a session starts from | every kind `ContentKind::is_launchable()` accepts: `Mission`, `IaScenario`, `MultiplayerScenario` | the view a session begins in | the set's `default_mode` is a property of *starting* something; expressing the launchable half as `is_launchable()` instead of a restated list keeps the owner vocabulary from drifting from the launchable baseline the catalog already measures readiness over |
 
+The rule is written exactly that way, so the claim is structural rather than
+promised:
+
+```rust
+pub const fn owns_camera_modes(kind: ContentKind) -> bool {
+    matches!(kind, ContentKind::Airframe) || kind.is_launchable()
+}
+```
+
 So the id scheme is: **a mode set is addressed by its owner's `ContentId`** —
 it has no id of its own, and nothing in the record gives it an identity
 separate from the element that owns the camera. The production rule is one
@@ -41,6 +50,12 @@ pub const fn owns_camera_modes(kind: ContentKind) -> bool
 
 `DeclaredCameraModes::try_new` refuses any other subject with
 `CameraModesError::SubjectKindMismatch`.
+
+A consequence worth stating, because it is a decision and not an accident: a
+kind that *becomes* launchable later (say a campaign container) owns a mode set
+automatically, without editing `owns_camera_modes`. That is the intended
+direction of the drift — "may a session start this?" is a catalog-wide fact,
+and the owner vocabulary inherits it instead of restating it.
 
 This is the same shape the workspace already uses for a record the catalog
 has no namespace for: `cs_content::world::SectorId` /
@@ -117,7 +132,9 @@ Three consequences, all in the tree today:
 
 * `crates/cs_content/src/cameras.rs`
   * new `owns_camera_modes` — the total owner rule, documented with both
-    roles and the reason `CameraTrack` is not one;
+    roles and the reason `CameraTrack` is not one. The launchable half calls
+    `ContentKind::is_launchable()` instead of listing the three kinds, so the
+    documented rationale and the code are the same statement;
   * `DeclaredCameraModes::try_new` validates against that rule;
     `CameraModesError::SubjectKindMismatch`'s message now names the two
     roles instead of "the camera namespace";
@@ -130,9 +147,19 @@ Three consequences, all in the tree today:
     an aircraft exists.
 * `crates/cs_app/tests/camera/records.rs`: the fixture and the set-rule tests
   assert the airframe owner; new
-  `accept_f21_a_catalog_kind_mode_set_owner_vocabulary_is_an_airframe_or_launchable_content`.
+  `accept_f21_a_catalog_kind_mode_set_owner_vocabulary_is_an_airframe_or_launchable_content`. It
+  pins the vocabulary from three directions that are independent of the
+  production expression: production must accept exactly the four restated
+  `OWNERS`; the launchable half of `OWNERS` must be exactly what
+  `is_launchable()` returns over `ContentKind::ALL`; and `try_new` must accept
+  and refuse exactly those kinds, by error variant. Comparing production
+  against `Airframe || is_launchable` directly would be tautological now that
+  the rule is written that way, so the restated list is the check.
 * `crates/cs_app/tests/camera/modes.rs`: new
-  `accept_f21_a_catalog_kind_a_mode_set_lowers_for_every_owner_kind`.
+  `accept_f21_a_catalog_kind_a_mode_set_lowers_for_every_owner_kind`. It walks
+  `ContentKind::ALL` filtered by `owns_camera_modes` — so a widened vocabulary
+  is lowered here too — and first asserts the walk found exactly the decided
+  four, so the test cannot pass by lowering nothing.
 * `crates/cs_types/src/content.rs` and `docs/contracts/IDENTITY-CONTENT.md`:
   **unchanged.** The decision is precisely that the catalog does not change.
 * No runtime consumer changes: `cs_app::camera::lower_camera_modes` never
@@ -177,24 +204,32 @@ against.
 
 ## Test sensitivity
 
-One mutation, applied and reverted, against production code: `owns_camera_modes`
-replaced by the pre-decision rule `matches!(kind, ContentKind::CameraTrack)`.
-`cargo test -p cs_app --test camera -- accept_f21_a` → **9 of 15 failed**,
-including both new
-`accept_f21_a_catalog_kind_*` tests ("airframe: the launchable half of the
-vocabulary must stay expressed as is_launchable"), the fixture test (its
-airframe owner is refused) and the two pre-existing tests that assert the
-subject id. Reverted; the tree is back to the implementation above.
+Mutations against production code, each applied and reverted, all with
+`cargo test -p cs_app --test camera -- accept_f21_a` (15 tests):
+
+| mutation to `owns_camera_modes` | result |
+| --- | --- |
+| the pre-decision rule `matches!(kind, ContentKind::CameraTrack)` | **9 of 15 failed**, including both `accept_f21_a_catalog_kind_*` tests, the fixture test (its airframe owner is refused) and the pre-existing tests that assert the subject id |
+| `true` — accept every kind | **3 failed**: both `accept_f21_a_catalog_kind_*` tests and the set-rule refusal test |
+| `matches!(kind, ContentKind::Airframe)` — drop the launchable half | **2 failed**: both `accept_f21_a_catalog_kind_*` tests |
+
+The second and third matter because the first alone would also be caught by
+the older subject-id assertions: the narrower "drop one half of the
+vocabulary" mutation is what proves the launchable half is pinned rather than
+merely present. The tree is back to the implementation above.
 
 ## Commands run (exit codes)
 
 ```text
 cargo fmt --all -- --check                                            → 0
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings → 0
-cargo test --workspace --locked                                       → 0 (255 test suites, 0 failed)
+cargo test --workspace --locked                                       → 0 (257 test suites, 0 failed)
 cargo test --workspace --locked -- accept_f21_a_ --include-ignored    → 0 (15 tests, 0 failed)
 cargo test -p cs_app --test camera -- accept_f21_a                    → 0 (15 tests, 0 failed)
 ```
+
+(Re-run in review on the reviewed head; the workspace suite count grows with
+whatever else has landed on `main`.)
 
 The selection discovers the 15 `accept_f21_a_*` tests in
 `crates/cs_app/tests/camera/` (13 from F21-A plus the two added here). None

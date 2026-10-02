@@ -2,8 +2,9 @@
 //!
 //! These tests exercise the production record constructors and validators:
 //! the synthetic fixture, the corrupt-known-value refusals, the set-level
-//! rules (unique kinds, present default, camera namespace) and the validated
-//! scalar types. Removing a range check or the set validation fails them.
+//! rules (unique kinds, present default, an owner kind that may own a mode
+//! set) and the validated scalar types. Removing a range check or the set
+//! validation fails them.
 
 use cs_content::cameras::{
     AspectFraming, AspectRatio, AspectRatioError, CameraModeError, CameraModeKind,
@@ -273,12 +274,13 @@ fn accept_f21_a_aspect_ratio_and_magnification_reject_unusable_values() {
 /// session flies and the launchable content a session starts from.
 ///
 /// Each way the vocabulary could drift fails here independently:
-/// `owns_camera_modes` is total over `ContentKind::ALL` and agrees with
-/// `is_launchable`; `try_new` accepts and refuses exactly the documented
-/// kinds; `camera_track` keeps the owner it already had (an authored
-/// in-engine camera sequence, `cs_content::cinematics`) instead of becoming a
-/// view set's namespace; and no label a future camera-mode kind would claim
-/// resolves to a kind today.
+/// `owns_camera_modes` is total over `ContentKind::ALL` and accepts exactly
+/// the decided vocabulary; that vocabulary's launchable half is exactly
+/// `ContentKind::is_launchable`; `try_new` accepts and refuses exactly the
+/// documented kinds; `camera_track` keeps the owner it already had (an
+/// authored in-engine camera sequence, `cs_content::cinematics`) instead of
+/// becoming a view set's namespace; and no label a future camera-mode kind
+/// would claim resolves to a kind today.
 #[test]
 fn accept_f21_a_catalog_kind_mode_set_owner_vocabulary_is_an_airframe_or_launchable_content() {
     /// The decided vocabulary, restated so a drift in the production rule
@@ -289,6 +291,19 @@ fn accept_f21_a_catalog_kind_mode_set_owner_vocabulary_is_an_airframe_or_launcha
         ContentKind::IaScenario,
         ContentKind::MultiplayerScenario,
     ];
+
+    // The launchable half of the restatement is the catalog's own launchable
+    // baseline, and nothing else: a kind that becomes launchable must not
+    // silently become a camera-mode owner without this test failing first.
+    assert_eq!(
+        ContentKind::ALL
+            .iter()
+            .copied()
+            .filter(|kind| kind.is_launchable())
+            .collect::<Vec<_>>(),
+        OWNERS[1..],
+        "the decided vocabulary's launchable half must be exactly is_launchable()"
+    );
 
     let mut accepted = Vec::new();
     for kind in ContentKind::ALL {
@@ -306,8 +321,8 @@ fn accept_f21_a_catalog_kind_mode_set_owner_vocabulary_is_an_airframe_or_launcha
 
         assert_eq!(
             owns_camera_modes(*kind),
-            *kind == ContentKind::Airframe || kind.is_launchable(),
-            "{kind}: the launchable half of the vocabulary must stay expressed as is_launchable"
+            OWNERS.contains(kind),
+            "{kind}: the rule must accept exactly the decided owner vocabulary"
         );
         let decided_owner = OWNERS.contains(kind);
         match built {

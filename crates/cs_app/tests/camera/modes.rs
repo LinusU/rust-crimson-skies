@@ -10,7 +10,7 @@ use cs_app::camera::{
 };
 use cs_content::cameras::{
     AspectFraming, AspectRatio, CameraModeKind, DeclaredCameraModes, FovAxis, Magnification,
-    ProjectionPolicy, declared_synthetic_camera_modes,
+    ProjectionPolicy, declared_synthetic_camera_modes, owns_camera_modes,
 };
 use cs_types::content::{ContentId, ContentKind, Provenance, Resolved};
 use cs_types::space::{Meters, Radians};
@@ -133,12 +133,26 @@ fn accept_f21_a_unknown_mode_fields_refuse_to_lower() {
 fn accept_f21_a_catalog_kind_a_mode_set_lowers_for_every_owner_kind() {
     let fixture = declared_synthetic_camera_modes();
 
-    for kind in [
-        ContentKind::Airframe,
-        ContentKind::Mission,
-        ContentKind::IaScenario,
-        ContentKind::MultiplayerScenario,
-    ] {
+    // Walk the rule rather than a hand-written list, so a widened vocabulary
+    // is covered here too — and assert the walk found exactly the decided
+    // vocabulary, so this test cannot pass by lowering nothing.
+    let owners: Vec<ContentKind> = ContentKind::ALL
+        .iter()
+        .copied()
+        .filter(|kind| owns_camera_modes(*kind))
+        .collect();
+    assert_eq!(
+        owners,
+        [
+            ContentKind::Airframe,
+            ContentKind::Mission,
+            ContentKind::IaScenario,
+            ContentKind::MultiplayerScenario,
+        ],
+        "the decided owner vocabulary must be reached by owns_camera_modes"
+    );
+
+    for kind in owners {
         let owner = ContentId::from_source(kind, "synthetic.camera-owner").expect("a valid id");
         let declared = DeclaredCameraModes::try_new(
             owner.clone(),
