@@ -212,7 +212,13 @@ Task #420's 2x2, on the same probe, speed and wall span:
   `docs/findings/2026-09-30-t424-collider-on-body-invariant.md`.
 
 The F18-A measured interaction between swept CCD and *sensor* volumes
-(task #401) is unchanged and still applies to mesh-derived trigger volumes.
+(task #401) was **resolved on 2026-10-02** and applied to the mesh path here: a
+`WorldCollisionRole::Sensor` object is spawned on an entity with **no rigid
+body**, which Avian's `SweptCcdBodyQuery` cannot resolve, so a swept body is
+neither held by a mesh trigger volume nor by a cuboid one. The decision, its
+measurements and the limitation it leaves (a trigger volume's report is a
+discrete overlap) are in
+`docs/findings/2026-10-02-t401-trigger-volume-and-swept-ccd.md`.
 
 ## Other limitations this stage met
 

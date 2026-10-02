@@ -131,24 +131,34 @@ are two entities and a one-sided update is visible.
   leaves the suite green, which is the right outcome for a write with no reader
   in between.
 * **A swept body *does* reach a trigger volume closely enough to fire the
-  overlay.** This is what task #401 asked this stage to verify, and it holds: the
-  production body configuration (F23's `SweptCcd` + `SpeculativeMargin::ZERO`)
-  crossing the depot's 1 m trigger volume produces a `CollisionStart`, the
-  producer queues it and the consumer applies the door overlay.
-* **…and it pays for the sensor face.** F18-A measured Avian's swept CCD holding
-  a body at a sensor volume's near face with no `Sensor` filter in the sweep
+  overlay**, and after task #401 it reaches it **without paying for it**. This is
+  what task #401 asked this stage to verify, and the re-measurement for the
+  decided configuration holds on both halves: the production body configuration
+  (F23's `SweptCcd` + `SpeculativeMargin::ZERO`) crossing the depot's 1 m trigger
+  volume produces a `CollisionStart`, the producer queues it and the consumer
+  applies the door overlay — at 60 m/s, and **no tick that carries the body across
+  the volume is short**, at 60 m/s or at 400 m/s. The clamp F18-A measured (below)
+  is gone: a `WorldCollisionRole::Sensor` object is spawned on an entity with no
+  rigid body, which Avian's `SweptCcdBodyQuery` cannot resolve. The decision and
+  its measurements are `docs/findings/2026-10-02-t401-trigger-volume-and-swept-ccd.md`.
+* **…and the flip side, which is now the limitation instead.** F18-A measured
+  Avian's swept CCD holding a body at a sensor volume's near face with no
+  `Sensor` filter in the sweep
   (`avian3d-0.7.0/src/dynamics/ccd/mod.rs`, `solve_swept_ccd`). Measured here at
-  400 m/s (3.33 m of travel per tick) against a 1 m volume: the body covers
+  400 m/s (3.33 m of travel per tick) against a 1 m volume: the body covered
   **0.58 m** on the crossing tick instead of 3.33 m, clamped exactly at the
-  volume's near face minus its own half extent, and the **next** tick is free
-  travel again. So the volume is not a wall, but a fast aircraft loses travel on
-  every trigger it crosses. F18-A measured the same rule on an 8 m volume (2.416
-  m): the loss is the distance from the previous sample to the face. The loss
-  scales with the volume, so this stage's trigger is thin by design; a retail
-  trigger's thickness and a mission's trigger placement are unmeasured and are
-  filed as task **#427**. **No fidelity claim is made here that a swept body
-  passes a sensor volume untouched**, and task #401 remains the resolving task
-  for the interaction itself.
+  volume's near face minus its own half extent, and the **next** tick was free
+  travel again. Holding the body is also what *produced* the report at that speed,
+  because it forced the body onto the volume's surface: with the body no longer
+  held, a 400 m/s tick (3.33 m) steps clean over a 1 m volume and **no discrete
+  sample lands inside it**, so the overlay does not fire at that speed. The
+  limitation is now the report's dependence on discrete overlap, and it is
+  specific to a volume thinner than a tick: the depot's own volume is a cuboid
+  and is reported wherever a sample lands in it. Affected content and the
+  resolving task (a swept crossing report, F39's trigger semantics) are in the
+  #401 record; the retail trigger thickness and a mission's trigger placement
+  remain unmeasured and are filed as task **#427**. **No claim is made that a
+  swept body crossing a *mesh-derived* trigger volume always fires its overlay.**
 * **The panel is 4 m ahead of the volume, which is 1.2 ticks at 400 m/s.** A body
   that fast therefore still meets the *closed* panel on the tick after the
   volume, and is stopped by it before the effect lands. That is a property of
@@ -256,14 +266,21 @@ F06/F07 measure the original's own trigger and objective semantics.
 
 ## Known limitations that gate later stages (not silently dropped)
 
-* **A swept body pays travel at every trigger volume** (measured: 0.58 m at
-  400 m/s against the depot's 1 m volume; F18-A measured the same rule at
-  2.416 m against 8 m). Affected content: every world object with
-  `WorldCollisionRole::Sensor` — the depot's `trigger.depot`, any retail trigger
-  or objective volume F18-D imports — when the body reaching it carries
-  `SweptCcd` (F23's aircraft). Resolving task for the interaction: **#401**.
-  Retail volume thickness and mission trigger placement: **#427**. Until both
-  are done, no claim is made that a swept body passes a sensor volume untouched.
+* **A trigger volume's report is a discrete overlap, so a body whose tick outruns
+  the volume is not reported of it** (measured: a 3.33 m tick over a 1 m volume
+  reports nothing, while 0.25 m and 0.5 m ticks report it; a *mesh-derived*
+  volume also goes quiet when the body lands deep inside it, where a cuboid one
+  does not, because parry's EPA produces a deep contact and a trimesh does not).
+  Affected content: every world object with `WorldCollisionRole::Sensor` — the
+  depot's `trigger.depot`, any retail trigger or objective volume F18-D imports —
+  when the reaching body is fast enough that one tick crosses the whole volume.
+  Resolved for the *hold* (which was the opposite defect) by **#401**: a
+  `Sensor` object is spawned on an entity with no rigid body, and a swept body now
+  crosses a trigger volume at full speed. The report boundary that leaves behind
+  is a swept crossing report, F39's trigger semantics; retail volume thickness
+  and mission trigger placement: **#427**. Until the crossing report exists, no
+  claim is made that a swept body crossing a *mesh-derived* trigger volume always
+  fires its overlay.
 * **A door opens one tick after the body that triggered it arrives at the
   panel**, if the trigger is closer to the panel than one tick of travel at the
   body's speed. Affected content: every mission overlay a fast aircraft can
@@ -388,9 +405,11 @@ thing as the module documentation instead of a stronger and wrong version.
 ## Sources
 
 No external sources were consulted. The record shapes follow
-`docs/contracts/IDENTITY-CONTENT.md` and F18-A's and F18-B's findings; the
-entity layout is F18-B's collider-on-body rule
+`docs/contracts/IDENTITY-CONTENT.md` and F18-A's and F18-B's findings; the entity
+layout is F18-B's collider-on-body rule
 (`docs/findings/2026-09-30-t424-collider-on-body-invariant.md`); the swept-CCD
-interaction is F18-A's, and task #401 carries the resolution. Every Avian, Bevy
-and parry statement above was read from the pinned sources in the local cargo
-registry and then *measured* by running the fixture.
+interaction is F18-A's, and task #401 resolved it in
+`docs/findings/2026-10-02-t401-trigger-volume-and-swept-ccd.md`, which also
+re-measures this stage's door flight for the decided configuration. Every Avian,
+Bevy and parry statement above was read from the pinned sources in the local
+cargo registry and then *measured* by running the fixture.

@@ -138,11 +138,20 @@ geometry is needed as long as any real collider sits on the root.
   `spawn_static_mesh_collider_on_body` instead. The audit above is what
   stops a caller from reintroducing the arrangement for swept-relevant
   geometry.
-* The `Sensor`/swept interaction measured by F18-A (task #401) is unchanged
-  by this decision: it was measured with colliders on body entities.
-* Task #401 is a sibling of this question, not a duplicate: the sensor stop
-  happens through the same swept path the layout rule repairs, so a
-  sensor on a child node is invisible to it too.
+* The `Sensor`/swept interaction measured by F18-A was **resolved by task #401
+  on 2026-10-02**: a `Sensor` object is now spawned on an entity with no rigid
+  body — the same "the sweep can only stop a body against a resolvable body"
+  mechanism, used the other way round. It was measured with colliders on body
+  entities, so this decision did not change it, and neither does it change this
+  one: the collider-on-body rule still governs everything a swept body must stop
+  against. See
+  `docs/findings/2026-10-02-t401-trigger-volume-and-swept-ccd.md`.
+* Task #401 turned out to be a sibling of this question rather than a duplicate,
+  for the reason this record predicted: the sensor stop happened through the same
+  swept path the layout rule repairs, so a sensor on a child node would have been
+  invisible to it too. A trigger volume now has no body at all, which is the one
+  layout that is invisible to the sweep *by design* — and which #424's audit, a
+  query over `With<RigidBody>`, therefore does not see.
 * Fixture notes, measured while reviewing. Both are properties of this
   open-box wall mesh — two zero-thickness quads with no thickness between them
   — and neither is about swept CCD:

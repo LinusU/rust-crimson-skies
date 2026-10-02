@@ -111,12 +111,14 @@ flight height `y = 1.5`, arch legs 1 m thick along `x`.
 * **Rotation is honoured.** The water patch authored at 4×0.1×4 m rotated 30°
   about `+y` lands with a broad-phase half-width of 5.469 m versus the
   reference 5.464 m, and the collider's own box is still 4×0.1×4 m.
-* **A swept body is stopped by a sensor volume; a non-swept one is not.**
-  Measured on the trigger volume (`trigger.sensor`, 8 m along the flight
-  axis, x ∈ [6, 14]): with `SweptCcd` on the probe, the probe ends at
-  `x = 19.0835` instead of `21.5` — a loss of 2.416 m, which is exactly the
-  distance from its previous sample (`x = 4.8333`) to the sensor's near face
-  (`x = 5.75` including the probe's half extent). Reading
+* **A swept body is stopped by a sensor volume; a non-swept one is not** —
+  *measured 2026-09-30, and resolved by task #401 on 2026-10-02; the numbers and
+  the layout below are what was measured then, and are kept because they are the
+  reason the layout changed.* Measured on the trigger volume (`trigger.sensor`,
+  8 m along the flight axis, x ∈ [6, 14]): with `SweptCcd` on the probe, the
+  probe ended at `x = 19.0835` instead of `21.5` — a loss of 2.416 m, which is
+  exactly the distance from its previous sample (`x = 4.8333`) to the sensor's
+  near face (`x = 5.75` including the probe's half extent). Reading
   `avian3d-0.7.0/src/dynamics/ccd/mod.rs::solve_swept_ccd` explains it: the
   swept query stops a body at the first time of impact against **any**
   collider its path reaches, with no `Sensor` filter. The same probe spawned
@@ -124,8 +126,13 @@ flight height `y = 1.5`, arch legs 1 m thick along `x`.
   drift < 0.01 m, unchanged velocity, and a `CollisionStart` naming
   `trigger.sensor`. Sensors have no contact response of their own — it is the
   CCD that holds the body — so the role's "never blocks motion" is measured
-  with a non-swept body, and the swept/sensor interaction is a recorded
-  limitation (below), not a property of the role.
+  with a non-swept body, and the swept/sensor interaction was recorded as a
+  limitation (below).
+  **Resolved:** a `WorldCollisionRole::Sensor` object is now spawned on an
+  entity with **no rigid body**, which `SweptCcdBodyQuery` cannot resolve, so
+  the same swept probe crosses the volume with free travel on all fifteen ticks
+  (50.00 m, drift < 0.01 m) **and** the crossing is still reported once. See
+  `docs/findings/2026-10-02-t401-trigger-volume-and-swept-ccd.md`.
 
 ## Test sensitivity (mutation matrix)
 
@@ -203,16 +210,22 @@ guessed here:
   authored matrix is sheared or mirrored, discovered by **F18-B** when it
   imports real geometry; `spawn_discrete`/mesh colliders, which can follow the
   render path's full affine, are **F18-B**'s answer to this for real geometry.
-* **Swept CCD stops a body at a sensor volume** (measured above). Affected
+* ~~**Swept CCD stops a body at a sensor volume** (measured above). Affected
   content: every world object with `WorldCollisionRole::Sensor` —
   `trigger.sensor` in this fixture, and any retail trigger or objective volume
   **F18-B** imports or **F18-C** binds to mission overlays — when the body
   reaching it carries `SweptCcd` (F23's aircraft probe/airframes). Resolving
-  task: **#401** (filed by this review, after F18-B); **F18-B** decides how a
-  real trigger volume is spawned or how the CCD is configured around it,
-  **F18-C** verifies the chosen configuration still fires overlays. Until
-  #401 is done, no "a sensor volume never blocks a swept body" fidelity claim
-  is made.
+  task: **#401** (filed by this review).~~ **Resolved by #401 (2026-10-02):** a
+  `Sensor` object is spawned on an entity with no rigid body, which Avian's
+  `SweptCcdBodyQuery` cannot resolve, so a swept body crosses a trigger volume
+  untouched and the crossing is still reported once. What replaced it as a
+  limitation is the *report* boundary, not the hold: a trigger volume's report is
+  a discrete overlap, so a body whose tick outruns the volume's thickness is not
+  reported of it, and a **mesh-derived** volume also goes quiet when a body lands
+  deep inside it. Affected content: a retail trigger volume thinner than one
+  tick of travel at the reaching body's speed. Resolving task: a swept crossing
+  report (F39's trigger semantics). See
+  `docs/findings/2026-10-02-t401-trigger-volume-and-swept-ccd.md`.
 * `WorldContacts` records only pairs with **exactly one** world collider: an
   actor touching world geometry. Two static world objects resting against each
   other is authoring, not gameplay, and is deliberately not logged.
