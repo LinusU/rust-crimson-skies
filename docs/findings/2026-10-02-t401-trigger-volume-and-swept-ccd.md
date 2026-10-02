@@ -252,13 +252,14 @@ contact, which is why the arch world's volume is reported at 400 m/s.
 * Does not affect: F18-C's own trigger volumes (the depot's is a cuboid), and any
   volume thicker than a tick — which includes every mission-sized volume the
   fixtures author.
-* Resolving task: a **swept crossing report** for trigger volumes — the crossing
-  decided from the body's own motion over the tick rather than from a sampled
-  overlap. F39 owns trigger semantics ("objectives, triggers, timers, spawn
-  groups"); F23's AC02 ("high-speed crossing of a thin wall/trigger is detected
-  exactly once") is the same question from the body side. Filed as a follow-up by
-  task #401; until it lands, no claim is made that a swept body crossing a
-  **mesh-derived** trigger volume always fires its overlay.
+* Resolving task: **#498** (`F18-trigger-swept-crossing`), filed by this task —
+  a **swept crossing report** for trigger volumes, the crossing decided from the
+  body's own motion over the tick rather than from a sampled overlap. F39 owns
+  trigger semantics ("objectives, triggers, timers, spawn groups"); F23's AC02
+  ("high-speed crossing of a thin wall/trigger is detected exactly once") is the
+  same question from the body side. Until #498 lands, no claim is made that a
+  swept body crossing a **mesh-derived** trigger volume — or one thinner than a
+  tick — always fires its overlay.
 
 ## Known limitations that gate later stages (not silently dropped)
 

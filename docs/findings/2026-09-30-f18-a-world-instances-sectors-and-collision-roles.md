@@ -223,8 +223,8 @@ guessed here:
   a discrete overlap, so a body whose tick outruns the volume's thickness is not
   reported of it, and a **mesh-derived** volume also goes quiet when a body lands
   deep inside it. Affected content: a retail trigger volume thinner than one
-  tick of travel at the reaching body's speed. Resolving task: a swept crossing
-  report (F39's trigger semantics). See
+  tick of travel at the reaching body's speed. Resolving task: **#498**, a swept
+  crossing report (F39's trigger semantics). See
   `docs/findings/2026-10-02-t401-trigger-volume-and-swept-ccd.md`.
 * `WorldContacts` records only pairs with **exactly one** world collider: an
   actor touching world geometry. Two static world objects resting against each

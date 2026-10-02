@@ -155,8 +155,8 @@ are two entities and a one-sided update is visible.
   limitation is now the report's dependence on discrete overlap, and it is
   specific to a volume thinner than a tick: the depot's own volume is a cuboid
   and is reported wherever a sample lands in it. Affected content and the
-  resolving task (a swept crossing report, F39's trigger semantics) are in the
-  #401 record; the retail trigger thickness and a mission's trigger placement
+  resolving task (#498, a swept crossing report, F39's trigger semantics) are in
+  the #401 record; the retail trigger thickness and a mission's trigger placement
   remain unmeasured and are filed as task **#427**. **No claim is made that a
   swept body crossing a *mesh-derived* trigger volume always fires its overlay.**
 * **The panel is 4 m ahead of the volume, which is 1.2 ticks at 400 m/s.** A body
@@ -277,8 +277,8 @@ F06/F07 measure the original's own trigger and objective semantics.
   Resolved for the *hold* (which was the opposite defect) by **#401**: a
   `Sensor` object is spawned on an entity with no rigid body, and a swept body now
   crosses a trigger volume at full speed. The report boundary that leaves behind
-  is a swept crossing report, F39's trigger semantics; retail volume thickness
-  and mission trigger placement: **#427**. Until the crossing report exists, no
+  is **#498** (a swept crossing report, F39's trigger semantics); retail volume
+  thickness and mission trigger placement: **#427**. Until the crossing report exists, no
   claim is made that a swept body crossing a *mesh-derived* trigger volume always
   fires its overlay.
 * **A door opens one tick after the body that triggered it arrives at the
