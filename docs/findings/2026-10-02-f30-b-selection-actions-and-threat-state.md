@@ -128,22 +128,15 @@ wiring and no reticle rendering — F30-C/D own those. The task awards at most
 
 ## Reviewer sensitivity probes
 
-The reviewer should be able to break these by, one at a time:
+The implementer ran these probes before handing over (each reverted
+afterwards; no probe is committed, and the branch is byte-identical to the
+pushed commit afterwards):
 
-1. deriving `Reticle::hostile` from anything other than the phase's own
-   allegiance read (a cached value, a class heuristic, a proximity rule) —
-   `accept_f30_b_faction_change_updates_reticle_and_ai_hostility_in_one_phase`
-   must fail at the second phase;
-2. minting a cue for a refused hit (dropping the `HitApplied` filter in
-   `apply_target_damage`) — `accept_f30_b_damage_tick_feeds_threats_and_lifecycle`
-   must report `not_applied == 1` and still record one attack;
-3. answering `MissingCrosshair` with "no target" — both the sim and app
-   crosshair tests must fail;
-4. purging the ledger on `record_lifecycle` instead of on `unregister` —
-   `accept_f30_b_destroyed_selection_clears_in_the_phase_record` must fail on
-   the surviving evidence assertion;
-5. applying the edge table through a `HashMap` (iteration order) — the
-   binding-order assertion in `accept_f30_b_command_edges_run_the_bound_actions`
-   must fail;
-6. coalescing repeated edges in one frame — the two-press cycle in
-   `accept_f30_b_session_runs_edges_and_publishes_the_phase_record` must fail.
+| Probe | Result |
+| --- | --- |
+| 1. `Reticle::hostile` hardcoded to `true` (a reticle that does not re-derive hostility) | `accept_f30_b_faction_change_updates_reticle_and_ai_hostility_in_one_phase` and `accept_f30_b_declared_filters_reach_the_bound_actions` **failed** |
+| 2. `apply_target_damage` mints from every submitted hit instead of the resolver's `HitApplied` | `accept_f30_b_damage_tick_feeds_threats_and_lifecycle` **failed** (`applied` 2 vs 1) |
+| 3. a frame with no crosshair ray answers "no target" instead of `MissingCrosshair` | `accept_f30_b_command_edges_run_the_bound_actions` and `accept_f30_b_session_runs_edges_and_publishes_the_phase_record` **failed** |
+| 4. the threat ledger purged on `record_lifecycle` instead of on `unregister` | `accept_f30_b_destroyed_selection_clears_in_the_phase_record` **failed** on the surviving-evidence assertion |
+| 5. repeated edges coalesced within one frame | `accept_f30_b_session_runs_edges_and_publishes_the_phase_record` **failed** |
+| 6. the whole F30-B production path removed from `cs_sim::targeting` | the three acceptance files fail to compile — the tests call production code, not a parallel test-only implementation |
