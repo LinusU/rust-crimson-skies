@@ -1,8 +1,10 @@
 //! The audio application boundary: declared records lowered into runtime
-//! routing records and the generation-stamped ECS emitter binding (F41-A).
+//! routing records, the generation-stamped ECS emitter binding, the loop
+//! lifecycle, the engine smoothing and the mixer that drives an output device.
 //!
-//! Spec: `specs/F41-audio-music-radio-dialogue-and-spatial-mixing.md`, stage
-//! `### F41-A`. Shared contract: `docs/contracts/IDENTITY-CONTENT.md`.
+//! Spec: `specs/F41-audio-music-radio-dialogue-and-spatial-mixing.md`, stages
+//! `### F41-A` and `### F41-B`. Shared contract:
+//! `docs/contracts/IDENTITY-CONTENT.md`.
 //!
 //! This module sits between the declared audio catalog
 //! ([`cs_content::audio`]) and the session router
@@ -18,22 +20,46 @@
 //!   session-qualified [`cs_sim::audio_events::AudioEmitterId`], bus and asset,
 //!   generation-stamped like [`crate::scene::SceneNodeBinding`] and
 //!   [`crate::damage::DamageActorBinding`] so a reload can never leave a stale
-//!   binding looking live.
+//!   binding looking live;
+//! * [`loops::AudioSession`] and [`loops::sync_emitter_loops`] — the loop
+//!   lifecycle: bindings starting, swapping and stopping loops, every outcome
+//!   and refusal recorded by name and never played;
+//! * [`engine`] — engine pitch and volume smoothed from the **fixed-tick**
+//!   engine spool, so the mix follows measured engine state rather than render
+//!   FPS (F41 non-negotiable behavior 1);
+//! * [`mixer`] — the consumer that turns the session's outcomes and the spatial
+//!   law into device commands, with [`mixer::device_lost`] as the
+//!   device-failure path that leaves the simulation untouched (behavior 2);
+//! * [`handoff::insert_audio_session`] and [`AudioPlugin`] — the wiring: the
+//!   loading handoff owns the session, and the plugin registers the systems in
+//!   the app schedule.
 //!
-//! Nothing here owns audio state: the one-shot ledger, the loop registry and
-//! the actual mixing are F41-B's; these are the conversion and binding records
-//! its wiring consumes.
-//!
-//! Every value is newly authored project design; no original audio was read.
+//! Every value here is newly authored project design; no original audio was
+//! read. The loop regions remain unknown (no `smpl` chunks in any retail
+//! member) and the attenuation law is designed rather than measured; both are
+//! recorded in
+//! `docs/findings/2026-10-01-f41-b-loops-and-spatial-emitters.md` and gate
+//! every fidelity claim.
 
+pub mod engine;
+pub mod handoff;
 pub mod loops;
 pub mod lower;
+pub mod mixer;
+pub mod plugin;
 
+pub use engine::{EngineVoiceFollow, EngineVoices, smooth_engine_voices};
+pub use handoff::{
+    AudioHandoffLog, AudioHandoffRefusal, AudioInstall, DeclaredAudioCatalog, insert_audio_session,
+};
 pub use loops::{AudioSession, LOOP_PRODUCER, LoopRefusal, advance_radio, sync_emitter_loops};
-
 pub use lower::{
     AudioLowerError, LoweredAudioAsset, lower_bus, lower_catalog, lower_mode, lower_record,
 };
+pub use mixer::{
+    AudioMixReport, AudioOutput, AudioSpatial, device_lost, device_restored, mix_session,
+};
+pub use plugin::{AudioPlugin, designed_spatial};
 
 use bevy::ecs::component::Component;
 use cs_sim::audio_events::{AudioBus, AudioEmitterId};
@@ -49,6 +75,11 @@ use crate::scene::SceneGeneration;
 /// and stale ones are identified by mismatch, never by surviving pointers (the
 /// `STATE-TRANSACTIONS` session-generation discipline; the same rule
 /// [`crate::damage::DamageActorBinding`] follows).
+///
+/// An emitter the mixer can place also carries a `Transform`, so
+/// [`GlobalTransform`](bevy::prelude::GlobalTransform) gives
+/// [`mix_session`](mix_session) a pose. One without one is *not* assumed to be
+/// at the listener: it is reported as unplaced and keeps its last mix.
 #[derive(Component, Clone, Debug, PartialEq)]
 pub struct AudioEmitterBinding {
     /// The router emitter this entity drives.

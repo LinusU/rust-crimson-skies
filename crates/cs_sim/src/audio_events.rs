@@ -48,6 +48,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::{Arc, Mutex};
 
 use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind};
@@ -875,6 +876,1152 @@ pub fn spatialize(
     Ok(SpatialMix { gain, pan })
 }
 
+// -------------------------------------------------- engine voice smoothing --
+
+/// Why a designed engine smoothing law was refused.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum EngineAudioError {
+    /// A field was NaN or infinite.
+    NonFinite {
+        /// The offending field.
+        field: &'static str,
+    },
+    /// A rate was not strictly positive.
+    NonPositiveRate {
+        /// The offending field.
+        field: &'static str,
+        /// The rejected value.
+        value: f64,
+    },
+    /// A gain was negative or above [`MAX_AUDIO_GAIN`].
+    BadGain {
+        /// The offending field.
+        field: &'static str,
+        /// The rejected value.
+        value: f64,
+    },
+    /// A pitch ratio was not strictly positive.
+    NonPositivePitch {
+        /// The offending field.
+        field: &'static str,
+        /// The rejected value.
+        value: f64,
+    },
+}
+
+impl fmt::Display for EngineAudioError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NonFinite { field } => write!(f, "engine smoothing {field} must be finite"),
+            Self::NonPositiveRate { field, value } => {
+                write!(
+                    f,
+                    "engine smoothing {field} must be greater than zero, got {value}"
+                )
+            }
+            Self::BadGain { field, value } => {
+                write!(
+                    f,
+                    "engine smoothing {field} must be within 0..={MAX_AUDIO_GAIN}, got {value}"
+                )
+            }
+            Self::NonPositivePitch { field, value } => {
+                write!(
+                    f,
+                    "engine smoothing {field} must be greater than zero, got {value}"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for EngineAudioError {}
+
+/// One continuous voice's smoothed level: a linear gain and a pitch ratio
+/// applied to the sample rate a loop plays at.
+///
+/// `pitch` is a *ratio*, not a rate: `1.0` plays the recorded sample rate, a
+/// smaller ratio slows the loop down. Both fields carry the same validated
+/// domain as the rest of the module, so a mixer never forwards a NaN.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VoiceLevel {
+    /// Linear gain in `0.0..=MAX_AUDIO_GAIN`.
+    pub gain: f64,
+    /// Playback ratio in `(0.0, inf)`.
+    pub pitch: f64,
+}
+
+impl VoiceLevel {
+    /// Full volume at the recorded sample rate: what a voice that is not
+    /// driven by any simulation state plays at.
+    pub const UNITY: Self = Self {
+        gain: 1.0,
+        pitch: 1.0,
+    };
+
+    /// Assembles a level without validating it; [`Self::validate`] refuses a
+    /// corrupt one.
+    #[must_use]
+    pub const fn new(gain: f64, pitch: f64) -> Self {
+        Self { gain, pitch }
+    }
+
+    /// Applies the same gain rules as [`validate_gain`] and requires a
+    /// strictly positive pitch ratio.
+    ///
+    /// # Errors
+    ///
+    /// [`EngineAudioError::BadGain`] or [`EngineAudioError::NonPositivePitch`].
+    pub fn validate(&self) -> Result<(), EngineAudioError> {
+        if !self.gain.is_finite() {
+            return Err(EngineAudioError::NonFinite {
+                field: "voice gain",
+            });
+        }
+        if self.gain < 0.0 || self.gain > MAX_AUDIO_GAIN {
+            return Err(EngineAudioError::BadGain {
+                field: "voice gain",
+                value: self.gain,
+            });
+        }
+        if !self.pitch.is_finite() {
+            return Err(EngineAudioError::NonFinite {
+                field: "voice pitch",
+            });
+        }
+        if self.pitch <= 0.0 {
+            return Err(EngineAudioError::NonPositivePitch {
+                field: "voice pitch",
+                value: self.pitch,
+            });
+        }
+        Ok(())
+    }
+}
+
+/// The designed smoothing law of one continuous engine voice.
+///
+/// F41 non-negotiable behavior 1 requires engine pitch and volume to depend on
+/// *measured* throttle/engine state with stable smoothing "not render FPS".
+/// The state it depends on is the caller-supplied [`EngineState`] spool
+/// (below); the law itself is **designed, not measured**: the original engine
+/// audio's attack, release and pitch range are unmeasured (see
+/// `docs/findings/2026-10-01-f41-b-loops-and-spatial-emitters.md` and the F41
+/// research boundary), so every value here is a project choice that a later
+/// evidence stage may replace, and nothing in this file claims the original's
+/// numbers.
+///
+/// The step law is a bounded linear ramp: one tick moves the gain toward its
+/// target by `rate * dt`, never past it, and never leaves the gain untouched on
+/// a zero or corrupt `dt`. Because the step is clamped at the target, the same
+/// elapsed time lands on the same value however it was divided into steps —
+/// that is what makes the smoothing stable across frame rates, and it is
+/// checked directly by `accept_f41_b_smoothing_is_step_invariant`.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EngineSmoothing {
+    gain_attack_per_s: f64,
+    gain_release_per_s: f64,
+    pitch_rate_per_s: f64,
+    idle_gain: f64,
+    full_gain: f64,
+    idle_pitch: f64,
+    full_pitch: f64,
+}
+
+impl EngineSmoothing {
+    /// The designed law a voice starts from unless the content declares
+    /// another: the gain opens at 2.0/s and closes at 1.5/s, the pitch ratio
+    /// sweeps at 3.0/s, and the spool spans gain `0.25 .. 1.0` and pitch ratio
+    /// `0.7 .. 1.6`.
+    ///
+    /// These are project defaults for the *shape* of the response. They are not
+    /// measurements of the original engine's audio and must not be read as
+    /// such.
+    pub const DESIGNED_DEFAULT: Self = Self {
+        gain_attack_per_s: 2.0,
+        gain_release_per_s: 1.5,
+        pitch_rate_per_s: 3.0,
+        idle_gain: 0.25,
+        full_gain: 1.0,
+        idle_pitch: 0.7,
+        full_pitch: 1.6,
+    };
+
+    /// Validates a law: finite, strictly positive rates, gains inside the
+    /// module's ceiling and strictly positive pitch ratios.
+    ///
+    /// # Errors
+    ///
+    /// [`EngineAudioError::NonFinite`], [`EngineAudioError::NonPositiveRate`],
+    /// [`EngineAudioError::BadGain`] or [`EngineAudioError::NonPositivePitch`],
+    /// naming the first offending field.
+    pub fn try_new(
+        gain_attack_per_s: f64,
+        gain_release_per_s: f64,
+        pitch_rate_per_s: f64,
+        idle_gain: f64,
+        full_gain: f64,
+        idle_pitch: f64,
+        full_pitch: f64,
+    ) -> Result<Self, EngineAudioError> {
+        let law = Self {
+            gain_attack_per_s,
+            gain_release_per_s,
+            pitch_rate_per_s,
+            idle_gain,
+            full_gain,
+            idle_pitch,
+            full_pitch,
+        };
+        law.validate()?;
+        Ok(law)
+    }
+
+    /// Validates the law, applying nothing.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::try_new`].
+    pub fn validate(&self) -> Result<(), EngineAudioError> {
+        for (field, value) in [
+            ("gain_attack_per_s", self.gain_attack_per_s),
+            ("gain_release_per_s", self.gain_release_per_s),
+            ("pitch_rate_per_s", self.pitch_rate_per_s),
+        ] {
+            if !value.is_finite() {
+                return Err(EngineAudioError::NonFinite { field });
+            }
+            if value <= 0.0 {
+                return Err(EngineAudioError::NonPositiveRate { field, value });
+            }
+        }
+        for (field, value) in [("idle_gain", self.idle_gain), ("full_gain", self.full_gain)] {
+            if !value.is_finite() {
+                return Err(EngineAudioError::NonFinite { field });
+            }
+            if value < 0.0 || value > MAX_AUDIO_GAIN {
+                return Err(EngineAudioError::BadGain { field, value });
+            }
+        }
+        for (field, value) in [
+            ("idle_pitch", self.idle_pitch),
+            ("full_pitch", self.full_pitch),
+        ] {
+            if !value.is_finite() {
+                return Err(EngineAudioError::NonFinite { field });
+            }
+            if value <= 0.0 {
+                return Err(EngineAudioError::NonPositivePitch { field, value });
+            }
+        }
+        Ok(())
+    }
+
+    /// How fast the gain opens, in gains per second.
+    #[must_use]
+    pub const fn gain_attack_per_s(self) -> f64 {
+        self.gain_attack_per_s
+    }
+
+    /// How fast the gain closes, in gains per second.
+    #[must_use]
+    pub const fn gain_release_per_s(self) -> f64 {
+        self.gain_release_per_s
+    }
+
+    /// How fast the pitch ratio sweeps, in ratios per second.
+    #[must_use]
+    pub const fn pitch_rate_per_s(self) -> f64 {
+        self.pitch_rate_per_s
+    }
+
+    /// The gain a running engine holds at zero throttle.
+    #[must_use]
+    pub const fn idle_gain(self) -> f64 {
+        self.idle_gain
+    }
+
+    /// The gain a full throttle reaches.
+    #[must_use]
+    pub const fn full_gain(self) -> f64 {
+        self.full_gain
+    }
+
+    /// The pitch ratio a running engine holds at zero throttle.
+    #[must_use]
+    pub const fn idle_pitch(self) -> f64 {
+        self.idle_pitch
+    }
+
+    /// The pitch ratio a full throttle reaches.
+    #[must_use]
+    pub const fn full_pitch(self) -> f64 {
+        self.full_pitch
+    }
+
+    /// The level a throttle `spool` in `[0, 1]` asks for: the gain and pitch
+    /// span interpolated along the spool, and silence for an engine that is
+    /// not running.
+    ///
+    /// A spool outside `[0, 1]` or a non-finite one is clamped into the span
+    /// rather than propagated: this reads simulation state, and the caller
+    /// that produced it is already responsible for its own invariants
+    /// (`cs_sim::flight::EngineState` clamps at construction).
+    #[must_use]
+    pub fn target(self, running: bool, spool: f64) -> VoiceLevel {
+        if !running {
+            return VoiceLevel::new(0.0, self.idle_pitch);
+        }
+        let spool = if spool.is_finite() {
+            spool.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        VoiceLevel::new(
+            self.idle_gain + (self.full_gain - self.idle_gain) * spool,
+            self.idle_pitch + (self.full_pitch - self.idle_pitch) * spool,
+        )
+    }
+}
+
+/// One engine voice's smoothed state: where the gain and pitch ratio are right
+/// now, and the single place they move.
+///
+/// This is state, not a force law, exactly like
+/// [`cs_sim::flight::EngineState`](crate::flight::EngineState): the caller reads
+/// [`Self::level`] and never writes the fields, so no smoothing can be skipped
+/// by a path that forgets to advance.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EngineVoice {
+    gain: f64,
+    pitch: f64,
+}
+
+impl EngineVoice {
+    /// A voice that starts where a running engine at zero throttle belongs,
+    /// so the first tick of a mission is a valid mix rather than a jump from
+    /// silence.
+    #[must_use]
+    pub fn at_idle(smoothing: &EngineSmoothing) -> Self {
+        let level = smoothing.target(true, 0.0);
+        Self {
+            gain: level.gain,
+            pitch: level.pitch,
+        }
+    }
+
+    /// The smoothed level.
+    #[must_use]
+    pub const fn level(&self) -> VoiceLevel {
+        VoiceLevel {
+            gain: self.gain,
+            pitch: self.pitch,
+        }
+    }
+
+    /// The smoothed linear gain.
+    #[must_use]
+    pub const fn gain(&self) -> f64 {
+        self.gain
+    }
+
+    /// The smoothed playback ratio.
+    #[must_use]
+    pub const fn pitch(&self) -> f64 {
+        self.pitch
+    }
+
+    /// Moves one step of `dt_s` toward `target` under `smoothing`.
+    ///
+    /// The gain opens at the law's attack rate and closes at its release rate;
+    /// the pitch ratio sweeps at one rate in both directions. Each value moves
+    /// at most `rate * dt_s`, so it can neither overshoot the target nor leave
+    /// its valid domain, and the same elapsed time reaches the same value
+    /// however many steps it was split into. A non-finite or non-positive
+    /// `dt_s` changes nothing — a corrupt clock cannot move a voice.
+    pub fn advance(&mut self, smoothing: &EngineSmoothing, target: VoiceLevel, dt_s: f64) {
+        if !dt_s.is_finite() || dt_s <= 0.0 {
+            return;
+        }
+        let gain_rate = if target.gain >= self.gain {
+            smoothing.gain_attack_per_s
+        } else {
+            smoothing.gain_release_per_s
+        };
+        self.gain += (target.gain - self.gain).clamp(-gain_rate * dt_s, gain_rate * dt_s);
+        self.pitch += (target.pitch - self.pitch).clamp(
+            -smoothing.pitch_rate_per_s * dt_s,
+            smoothing.pitch_rate_per_s * dt_s,
+        );
+    }
+}
+
+// ------------------------------------------------------------------ device --
+
+/// A voice id one device assigned to one started loop.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DeviceVoiceId(pub u64);
+
+/// What a mixer asks a device to start.
+#[derive(Clone, Debug, PartialEq)]
+pub struct VoiceStart {
+    /// The audio asset the voice loops.
+    pub asset: ContentId,
+    /// The bus the voice mixes on.
+    pub bus: AudioBus,
+    /// The loop's declared linear gain, before engine and spatial terms.
+    pub gain: f64,
+    /// Initial stereo placement in `-1.0 ..= 1.0`.
+    pub pan: f64,
+    /// Initial playback ratio.
+    pub pitch: f64,
+}
+
+/// What a mixer asks a device to change on a voice already sounding.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct VoiceUpdate {
+    /// The final linear gain: loop gain × engine gain × spatial gain.
+    pub gain: f64,
+    /// The stereo placement.
+    pub pan: f64,
+    /// The playback ratio.
+    pub pitch: f64,
+}
+
+/// Why a device refused a command.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DeviceError {
+    /// A stable machine-readable code, for reports and evidence.
+    pub code: &'static str,
+    /// A human-readable detail, naming what the device was doing.
+    pub detail: String,
+}
+
+impl DeviceError {
+    /// Assembles a device error.
+    #[must_use]
+    pub fn new(code: &'static str, detail: impl Into<String>) -> Self {
+        Self {
+            code,
+            detail: detail.into(),
+        }
+    }
+}
+
+impl fmt::Display for DeviceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "audio device {}: {}", self.code, self.detail)
+    }
+}
+
+impl std::error::Error for DeviceError {}
+
+/// Why a voice stopped, as the device records it: the router's own
+/// [`EmitterStopReason`], or `None` when the mixer stopped a voice whose loop
+/// no longer exists and has therefore no reason to report.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VoiceStop {
+    /// The voice the device owned.
+    pub voice: DeviceVoiceId,
+    /// The reason, when the mixer has one.
+    pub reason: Option<EmitterStopReason>,
+}
+
+/// The output device the mixer drives.
+///
+/// This is the whole of the audio boundary a device has to implement: five
+/// commands and no game state. Nothing above it — the router, the session, the
+/// radio queue's timing, mission progression — may consult the device, which is
+/// what keeps F41 non-negotiable behavior 2 true: losing an output must not be
+/// able to stall a mission.
+///
+/// **No implementation in this workspace opens hardware yet.** Reaching an
+/// original audible review needs the `audio` capability and is F41-D
+/// (`specs/F41-audio-music-radio-dialogue-and-spatial-mixing.md`, stage
+/// `### F41-D`); what exists here is the boundary and
+/// [`RecordingAudioDevice`], which records what a real device would have been
+/// asked to do.
+pub trait AudioDevice: fmt::Debug + Send + Sync {
+    /// Whether the device currently accepts commands.
+    fn is_open(&self) -> bool;
+
+    /// Opens the device.
+    ///
+    /// # Errors
+    ///
+    /// [`DeviceError`] when the device cannot be opened.
+    fn open(&mut self) -> Result<(), DeviceError>;
+
+    /// Closes the device, silencing every voice it holds.
+    fn close(&mut self);
+
+    /// Starts one looping voice and returns the id the device gave it.
+    ///
+    /// # Errors
+    ///
+    /// [`DeviceError`] when the device refuses the voice.
+    fn start_voice(&mut self, start: VoiceStart) -> Result<DeviceVoiceId, DeviceError>;
+
+    /// Stops one voice.
+    ///
+    /// # Errors
+    ///
+    /// [`DeviceError`] when the device refuses the stop.
+    fn stop_voice(&mut self, stop: VoiceStop) -> Result<(), DeviceError>;
+
+    /// Changes the gain, pan or pitch of a voice already sounding.
+    ///
+    /// # Errors
+    ///
+    /// [`DeviceError`] when the device refuses the change.
+    fn update_voice(
+        &mut self,
+        voice: DeviceVoiceId,
+        update: VoiceUpdate,
+    ) -> Result<(), DeviceError>;
+}
+
+/// One command a [`RecordingAudioDevice`] received.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DeviceCommand {
+    /// The device was opened.
+    Opened,
+    /// The device was closed.
+    Closed,
+    /// A voice started.
+    Started {
+        /// The id the device assigned.
+        voice: DeviceVoiceId,
+        /// What it was asked to play.
+        start: VoiceStart,
+    },
+    /// A voice's mix changed.
+    Updated {
+        /// The voice.
+        voice: DeviceVoiceId,
+        /// The change.
+        update: VoiceUpdate,
+    },
+    /// A voice stopped.
+    Stopped {
+        /// The voice.
+        voice: DeviceVoiceId,
+        /// Why, when the mixer had a reason.
+        reason: Option<EmitterStopReason>,
+    },
+}
+
+impl fmt::Display for DeviceCommand {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Opened => f.write_str("device opened"),
+            Self::Closed => f.write_str("device closed"),
+            Self::Started { voice, start } => write!(
+                f,
+                "voice {} started {} on {} at gain {} pan {} pitch {}",
+                voice.0, start.asset, start.bus, start.gain, start.pan, start.pitch
+            ),
+            Self::Updated { voice, update } => write!(
+                f,
+                "voice {} set to gain {} pan {} pitch {}",
+                voice.0, update.gain, update.pan, update.pitch
+            ),
+            Self::Stopped { voice, reason } => match reason {
+                Some(reason) => write!(f, "voice {} stopped: {reason}", voice.0),
+                None => write!(f, "voice {} stopped: no loop remains", voice.0),
+            },
+        }
+    }
+}
+
+/// A device that records every command and makes no sound.
+///
+/// It is the production stand-in while no hardware backend exists — the mixer
+/// is a real consumer either way — and the probe an evidence stage reads to
+/// learn what the simulation *asked* for. It is explicitly **not** proof that
+/// a user heard anything (F41 non-negotiable behavior 5): it holds no samples
+/// and opens no hardware.
+///
+/// The log is shared: [`Self::handle`] is a second handle onto the *same*
+/// device, which is how a caller hands the device to a world and still reads
+/// back what the world asked of it.
+#[derive(Clone, Debug, Default)]
+pub struct RecordingAudioDevice {
+    log: Arc<Mutex<RecordingLog>>,
+}
+
+#[derive(Debug, Default)]
+struct RecordingLog {
+    open: bool,
+    voices: BTreeMap<DeviceVoiceId, VoiceStart>,
+    next_voice: u64,
+    commands: Vec<DeviceCommand>,
+}
+
+impl RecordingAudioDevice {
+    /// A closed device with an empty log.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// A second handle onto this same device.
+    #[must_use]
+    pub fn handle(&self) -> Self {
+        Self {
+            log: Arc::clone(&self.log),
+        }
+    }
+
+    /// Every command since the last [`Self::clear`], in arrival order.
+    #[must_use]
+    pub fn commands(&self) -> Vec<DeviceCommand> {
+        self.read().commands.clone()
+    }
+
+    /// Empties the command log; the sounding voices are untouched.
+    pub fn clear(&self) {
+        self.write().commands.clear();
+    }
+
+    /// The voices this device is sounding, in id order.
+    #[must_use]
+    pub fn voices(&self) -> Vec<(DeviceVoiceId, VoiceStart)> {
+        self.read()
+            .voices
+            .iter()
+            .map(|(voice, start)| (*voice, start.clone()))
+            .collect()
+    }
+
+    /// Whether `voice` is still sounding.
+    #[must_use]
+    pub fn is_sounding(&self, voice: DeviceVoiceId) -> bool {
+        self.read().voices.contains_key(&voice)
+    }
+
+    /// How many voices are sounding.
+    #[must_use]
+    pub fn sounding(&self) -> usize {
+        self.read().voices.len()
+    }
+
+    /// The last command the device received, if any.
+    #[must_use]
+    pub fn last_command(&self) -> Option<DeviceCommand> {
+        self.read().commands.last().cloned()
+    }
+
+    fn read(&self) -> std::sync::MutexGuard<'_, RecordingLog> {
+        self.log
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    fn write(&self) -> std::sync::MutexGuard<'_, RecordingLog> {
+        self.read()
+    }
+}
+
+impl AudioDevice for RecordingAudioDevice {
+    fn is_open(&self) -> bool {
+        self.read().open
+    }
+
+    fn open(&mut self) -> Result<(), DeviceError> {
+        let mut log = self.write();
+        log.open = true;
+        log.commands.push(DeviceCommand::Opened);
+        Ok(())
+    }
+
+    fn close(&mut self) {
+        let mut log = self.write();
+        log.open = false;
+        log.voices.clear();
+        log.commands.push(DeviceCommand::Closed);
+    }
+
+    fn start_voice(&mut self, start: VoiceStart) -> Result<DeviceVoiceId, DeviceError> {
+        let mut log = self.write();
+        if !log.open {
+            return Err(DeviceError::new("closed", "the device is not open"));
+        }
+        let voice = DeviceVoiceId(log.next_voice);
+        log.next_voice += 1;
+        log.voices.insert(voice, start.clone());
+        log.commands.push(DeviceCommand::Started { voice, start });
+        Ok(voice)
+    }
+
+    fn stop_voice(&mut self, stop: VoiceStop) -> Result<(), DeviceError> {
+        let mut log = self.write();
+        if !log.open {
+            return Err(DeviceError::new("closed", "the device is not open"));
+        }
+        log.voices.remove(&stop.voice);
+        log.commands.push(DeviceCommand::Stopped {
+            voice: stop.voice,
+            reason: stop.reason,
+        });
+        Ok(())
+    }
+
+    fn update_voice(
+        &mut self,
+        voice: DeviceVoiceId,
+        update: VoiceUpdate,
+    ) -> Result<(), DeviceError> {
+        let mut log = self.write();
+        if !log.open {
+            return Err(DeviceError::new("closed", "the device is not open"));
+        }
+        log.commands.push(DeviceCommand::Updated { voice, update });
+        Ok(())
+    }
+}
+
+// ------------------------------------------------------------------- mixer --
+
+/// One emitter's continuous state for one mix pass: where it is and what level
+/// its simulation state asks for.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EmitterMix {
+    /// The emitter being mixed.
+    pub emitter: AudioEmitterId,
+    /// Its position, in the listener's own frame, in meters.
+    pub position_m: [f64; 3],
+    /// The level its simulation state asks for — [`VoiceLevel::UNITY`] for an
+    /// emitter nothing drives.
+    pub level: VoiceLevel,
+}
+
+/// Why the mixer could not carry out what an outcome asked.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MixerRefusal {
+    /// The outcome named an emitter of another session generation.
+    ForeignSession {
+        /// The refused emitter.
+        emitter: AudioEmitterId,
+        /// The session the mixer serves.
+        session: u64,
+    },
+    /// A start outcome had no live loop binding to play.
+    NoBinding {
+        /// The emitter.
+        emitter: AudioEmitterId,
+    },
+    /// A stop outcome named an emitter the mixer never started.
+    NoActiveVoice {
+        /// The emitter.
+        emitter: AudioEmitterId,
+        /// Why the stop was requested.
+        reason: EmitterStopReason,
+    },
+    /// The emitter's position could not be placed.
+    NotPlaced {
+        /// The emitter.
+        emitter: AudioEmitterId,
+        /// Why.
+        error: SpatialError,
+    },
+    /// A voice was still sounding although no loop remains for its emitter, so
+    /// the mixer stopped it without a reason to report.
+    OrphanedVoice {
+        /// The emitter.
+        emitter: AudioEmitterId,
+    },
+    /// The device refused a command, so the voice is not sounding as asked.
+    Device {
+        /// The emitter.
+        emitter: AudioEmitterId,
+        /// The device's code.
+        code: &'static str,
+    },
+}
+
+impl fmt::Display for MixerRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ForeignSession { emitter, session } => write!(
+                f,
+                "{emitter} belongs to another audio session than the mixer's {session}"
+            ),
+            Self::NoBinding { emitter } => {
+                write!(f, "{emitter} was asked to start a loop it no longer holds")
+            }
+            Self::NoActiveVoice { emitter, reason } => {
+                write!(
+                    f,
+                    "{emitter} was asked to stop ({reason}) but was not sounding"
+                )
+            }
+            Self::NotPlaced { emitter, error } => {
+                write!(f, "{emitter} could not be placed: {error}")
+            }
+            Self::OrphanedVoice { emitter } => write!(
+                f,
+                "{emitter} was still sounding although no loop remains, so it was stopped"
+            ),
+            Self::Device { emitter, code } => {
+                write!(f, "the device refused a command for {emitter}: {code}")
+            }
+        }
+    }
+}
+
+/// What one mix pass did, in emitter order per phase.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MixerReport {
+    /// Voices that started from nothing.
+    pub started: Vec<AudioEmitterId>,
+    /// Voices whose loop was replaced.
+    pub swapped: Vec<AudioEmitterId>,
+    /// Voices that stopped.
+    pub stopped: Vec<AudioEmitterId>,
+    /// Voices whose mix was updated.
+    pub updated: Vec<AudioEmitterId>,
+    /// Everything the mixer could not do, in arrival order.
+    pub refusals: Vec<MixerRefusal>,
+}
+
+/// One voice the mixer owns on the device.
+#[derive(Clone, Debug, PartialEq)]
+struct MixerVoice {
+    device: DeviceVoiceId,
+    gain: f64,
+}
+
+/// The device-independent mixer: the consumer of the session's loop outcomes
+/// and of the spatial law.
+///
+/// It holds no game state and consults no device for a decision — the device is
+/// only *told* what to play — so a mission can be simulated end to end with no
+/// output at all, and a lost device cannot change what the simulation decided
+/// (F41 non-negotiable behaviors 1 and 2).
+///
+/// One pass is two phases, in this order:
+///
+/// 1. **Lifecycle.** Every [`LoopOutcome`] the session recorded is carried out:
+///    a start opens a device voice from the loop the router still holds, a swap
+///    closes the old voice and opens the new one, a stop closes the voice. A
+///    voice whose loop has gone — because the session was replaced under the
+///    mixer — is closed as [`MixerRefusal::OrphanedVoice`], so a reload cannot
+///    leave the previous load audible.
+/// 2. **Placement.** Every voice still sounding is given the mix its
+///    [`EmitterMix`] and the listener imply: `loop gain × engine gain ×
+///    spatial gain`, the spatial pan, and the engine's pitch ratio.
+#[derive(Clone, Debug)]
+pub struct AudioMixer {
+    session: u64,
+    voices: BTreeMap<AudioEmitterId, MixerVoice>,
+}
+
+impl AudioMixer {
+    /// A mixer for `session`, with nothing sounding.
+    #[must_use]
+    pub fn new(session: u64) -> Self {
+        Self {
+            session,
+            voices: BTreeMap::new(),
+        }
+    }
+
+    /// The session generation this mixer serves.
+    #[must_use]
+    pub const fn session(&self) -> u64 {
+        self.session
+    }
+
+    /// The voices the mixer owns, in emitter order.
+    pub fn emitters(&self) -> impl Iterator<Item = &AudioEmitterId> {
+        self.voices.keys()
+    }
+
+    /// How many voices the mixer owns.
+    #[must_use]
+    pub fn voice_count(&self) -> usize {
+        self.voices.len()
+    }
+
+    /// The device voice one emitter owns, if any.
+    #[must_use]
+    pub fn device_voice(&self, emitter: &AudioEmitterId) -> Option<DeviceVoiceId> {
+        self.voices.get(emitter).map(|voice| voice.device)
+    }
+
+    /// One mix pass: lifecycle first, then placement.
+    ///
+    /// A closed device is **opened** first — the output becomes available when
+    /// there is something to play, not at plugin-build time. A device that
+    /// refuses to open makes every outcome a [`MixerRefusal::Device`] rather
+    /// than a silent success, and the caller reports it.
+    ///
+    /// An emitter with no [`EmitterMix`] this pass keeps the mix it last
+    /// received: an emitter whose pose the caller does not know is not a reason
+    /// to move a sounding voice.
+    pub fn mix(
+        &mut self,
+        router: &AudioRouter,
+        outcomes: &[LoopOutcome],
+        states: &[EmitterMix],
+        listener: &Listener,
+        policy: &SpatialPolicy,
+        device: &mut dyn AudioDevice,
+    ) -> MixerReport {
+        let mut report = MixerReport::default();
+        if !device.is_open()
+            && let Err(error) = device.open()
+        {
+            report.refusals = outcomes
+                .iter()
+                .map(outcome_emitter)
+                .map(|emitter| MixerRefusal::Device {
+                    emitter,
+                    code: error.code,
+                })
+                .collect();
+            return report;
+        }
+        for outcome in outcomes {
+            match outcome {
+                LoopOutcome::Started { emitter } => {
+                    if let Some(refusal) = self.foreign(*emitter, &mut report) {
+                        report.refusals.push(refusal);
+                        continue;
+                    }
+                    if self.start(*emitter, router, device, &mut report) {
+                        report.started.push(*emitter);
+                    }
+                }
+                LoopOutcome::Swapped { emitter, .. } => {
+                    if let Some(refusal) = self.foreign(*emitter, &mut report) {
+                        report.refusals.push(refusal);
+                        continue;
+                    }
+                    self.close(
+                        *emitter,
+                        Some(EmitterStopReason::EmitterSwapped),
+                        device,
+                        &mut report,
+                    );
+                    if self.start(*emitter, router, device, &mut report) {
+                        report.swapped.push(*emitter);
+                    }
+                }
+                LoopOutcome::Stopped { emitter, reason } => {
+                    if let Some(refusal) = self.foreign(*emitter, &mut report) {
+                        report.refusals.push(refusal);
+                        continue;
+                    }
+                    if self.voices.contains_key(emitter) {
+                        self.close(*emitter, Some(*reason), device, &mut report);
+                        report.stopped.push(*emitter);
+                    } else {
+                        report.refusals.push(MixerRefusal::NoActiveVoice {
+                            emitter: *emitter,
+                            reason: *reason,
+                        });
+                    }
+                }
+                LoopOutcome::NotActive { emitter, reason } => {
+                    if let Some(refusal) = self.foreign(*emitter, &mut report) {
+                        report.refusals.push(refusal);
+                        continue;
+                    }
+                    report.refusals.push(MixerRefusal::NoActiveVoice {
+                        emitter: *emitter,
+                        reason: *reason,
+                    });
+                }
+                LoopOutcome::RefusedForeignSession { emitter, session } => {
+                    report.refusals.push(MixerRefusal::ForeignSession {
+                        emitter: *emitter,
+                        session: *session,
+                    });
+                }
+            }
+        }
+        // A voice whose loop has gone — a replaced session, a stop that reached
+        // the router without passing through this mixer — must not stay audible.
+        let orphans: Vec<AudioEmitterId> = self
+            .voices
+            .keys()
+            .copied()
+            .filter(|emitter| router.active_loop(emitter).is_none())
+            .collect();
+        for emitter in orphans {
+            self.close(emitter, None, device, &mut report);
+            report.stopped.push(emitter);
+            report
+                .refusals
+                .push(MixerRefusal::OrphanedVoice { emitter });
+        }
+
+        for state in states {
+            let Some(voice) = self.voices.get(&state.emitter) else {
+                continue;
+            };
+            let spatial = match spatialize(policy, listener, state.position_m) {
+                Ok(spatial) => spatial,
+                Err(error) => {
+                    report.refusals.push(MixerRefusal::NotPlaced {
+                        emitter: state.emitter,
+                        error,
+                    });
+                    continue;
+                }
+            };
+            let update = VoiceUpdate {
+                gain: voice.gain * state.level.gain * spatial.gain,
+                pan: spatial.pan,
+                pitch: state.level.pitch,
+            };
+            match device.update_voice(voice.device, update) {
+                Ok(()) => report.updated.push(state.emitter),
+                Err(error) => report.refusals.push(MixerRefusal::Device {
+                    emitter: state.emitter,
+                    code: error.code,
+                }),
+            }
+        }
+        report
+    }
+
+    /// The session this mixer served is gone: every voice stops with no reason to
+    /// report, and the mixer keeps none.
+    ///
+    /// This is the reload path: the session and its mixer are replaced together
+    /// when a new load is delivered, and the previous load's voices must not
+    /// survive into it. Nothing is remembered for retry — the *new* session's
+    /// own loops are what sound after a reload, so keeping a copy of the old
+    /// ones here would be a second source of truth about what is playing.
+    pub fn release(&mut self, device: &mut dyn AudioDevice) -> MixerReport {
+        let mut report = MixerReport::default();
+        let live: Vec<AudioEmitterId> = self.voices.keys().copied().collect();
+        for emitter in live {
+            self.close(emitter, None, device, &mut report);
+            report.stopped.push(emitter);
+            report
+                .refusals
+                .push(MixerRefusal::OrphanedVoice { emitter });
+        }
+        report
+    }
+
+    /// The output device is gone: every voice stops as
+    /// [`EmitterStopReason::DeviceLost`] and the device is closed.
+    ///
+    /// The mixer keeps no voice to restore — the session holds the loops it
+    /// stopped and re-issues them when the device returns, so what sounds
+    /// afterwards comes from the session's own state rather than from a second
+    /// copy of it here.
+    pub fn device_lost(&mut self, device: &mut dyn AudioDevice) -> MixerReport {
+        let mut report = MixerReport::default();
+        let lost: Vec<AudioEmitterId> = self.voices.keys().copied().collect();
+        for emitter in lost {
+            self.close(
+                emitter,
+                Some(EmitterStopReason::DeviceLost),
+                device,
+                &mut report,
+            );
+            report.stopped.push(emitter);
+        }
+        device.close();
+        report
+    }
+
+    /// Re-opens a closed device. Every loop the session re-binds afterwards
+    /// reaches the device through [`Self::mix`].
+    ///
+    /// # Errors
+    ///
+    /// [`DeviceError`] when the device cannot be re-opened.
+    pub fn device_restored(&mut self, device: &mut dyn AudioDevice) -> Result<(), DeviceError> {
+        device.open()
+    }
+
+    fn foreign(&self, emitter: AudioEmitterId, _report: &mut MixerReport) -> Option<MixerRefusal> {
+        (emitter.session != self.session).then_some(MixerRefusal::ForeignSession {
+            emitter,
+            session: self.session,
+        })
+    }
+
+    fn start(
+        &mut self,
+        emitter: AudioEmitterId,
+        router: &AudioRouter,
+        device: &mut dyn AudioDevice,
+        report: &mut MixerReport,
+    ) -> bool {
+        let Some(binding) = router.active_loop(&emitter) else {
+            report.refusals.push(MixerRefusal::NoBinding { emitter });
+            return false;
+        };
+        let start = VoiceStart {
+            asset: binding.asset.clone(),
+            bus: binding.bus,
+            gain: binding.gain,
+            pan: 0.0,
+            pitch: 1.0,
+        };
+        let gain = binding.gain;
+        match device.start_voice(start) {
+            Ok(voice) => {
+                self.voices.insert(
+                    emitter,
+                    MixerVoice {
+                        device: voice,
+                        gain,
+                    },
+                );
+                true
+            }
+            Err(error) => {
+                report.refusals.push(MixerRefusal::Device {
+                    emitter,
+                    code: error.code,
+                });
+                false
+            }
+        }
+    }
+
+    fn close(
+        &mut self,
+        emitter: AudioEmitterId,
+        reason: Option<EmitterStopReason>,
+        device: &mut dyn AudioDevice,
+        report: &mut MixerReport,
+    ) {
+        let Some(voice) = self.voices.remove(&emitter) else {
+            return;
+        };
+        if let Err(error) = device.stop_voice(VoiceStop {
+            voice: voice.device,
+            reason,
+        }) {
+            report.refusals.push(MixerRefusal::Device {
+                emitter,
+                code: error.code,
+            });
+        }
+    }
+}
+
+/// The emitter every loop outcome names.
+fn outcome_emitter(outcome: &LoopOutcome) -> AudioEmitterId {
+    match outcome {
+        LoopOutcome::Started { emitter }
+        | LoopOutcome::Swapped { emitter, .. }
+        | LoopOutcome::Stopped { emitter, .. }
+        | LoopOutcome::NotActive { emitter, .. }
+        | LoopOutcome::RefusedForeignSession { emitter, .. } => *emitter,
+    }
+}
+
 // ---------------------------------------------------------- radio queue ----
 
 /// Maximum lines waiting behind the active radio line; a designed bound.
@@ -1518,5 +2665,80 @@ mod tests {
                 found: PlaybackMode::OneShot
             })
         );
+    }
+
+    /// The designed default law is a valid law, so a voice built from it can
+    /// never refuse its own smoothing.
+    #[test]
+    fn accept_f41_b_designed_smoothing_law_validates() {
+        let law = EngineSmoothing::DESIGNED_DEFAULT;
+        assert!(law.validate().is_ok(), "the designed law is valid");
+        assert!(matches!(
+            EngineSmoothing::try_new(f64::NAN, 1.5, 3.0, 0.25, 1.0, 0.7, 1.6),
+            Err(EngineAudioError::NonFinite {
+                field: "gain_attack_per_s"
+            })
+        ));
+        assert!(matches!(
+            EngineSmoothing::try_new(2.0, 0.0, 3.0, 0.25, 1.0, 0.7, 1.6),
+            Err(EngineAudioError::NonPositiveRate {
+                field: "gain_release_per_s",
+                ..
+            })
+        ));
+        assert!(matches!(
+            EngineSmoothing::try_new(2.0, 1.5, 3.0, 0.25, 9.0, 0.7, 1.6),
+            Err(EngineAudioError::BadGain {
+                field: "full_gain",
+                ..
+            })
+        ));
+        assert!(matches!(
+            EngineSmoothing::try_new(2.0, 1.5, 3.0, 0.25, 1.0, 0.0, 1.6),
+            Err(EngineAudioError::NonPositivePitch {
+                field: "idle_pitch",
+                ..
+            })
+        ));
+    }
+
+    /// A stopped engine asks for silence; a running one interpolates the
+    /// spool along the designed span, and a corrupt spool reads as idle.
+    #[test]
+    fn accept_f41_b_stopped_engine_asks_for_silence() {
+        let law = EngineSmoothing::DESIGNED_DEFAULT;
+        assert_eq!(
+            law.target(false, 1.0),
+            VoiceLevel::new(0.0, law.idle_pitch())
+        );
+        assert_eq!(
+            law.target(true, 0.0),
+            VoiceLevel::new(law.idle_gain(), law.idle_pitch())
+        );
+        assert_eq!(
+            law.target(true, 1.0),
+            VoiceLevel::new(law.full_gain(), law.full_pitch())
+        );
+        let half = law.target(true, 0.5);
+        assert!((half.gain - (law.idle_gain() + law.full_gain()) / 2.0).abs() < 1e-12);
+        assert!((half.pitch - (law.idle_pitch() + law.full_pitch()) / 2.0).abs() < 1e-12);
+        assert_eq!(law.target(true, f64::NAN), law.target(true, 0.0));
+        assert_eq!(law.target(true, 4.0), law.target(true, 1.0));
+    }
+
+    /// A corrupt clock cannot move a voice, and a voice never leaves its
+    /// validated domain.
+    #[test]
+    fn accept_f41_b_corrupt_step_changes_no_voice() {
+        let law = EngineSmoothing::DESIGNED_DEFAULT;
+        let mut voice = EngineVoice::at_idle(&law);
+        let before = voice.level();
+        for dt in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            voice.advance(&law, VoiceLevel::new(1.0, 1.6), dt);
+            assert_eq!(voice.level(), before, "dt {dt} must change nothing");
+        }
+        voice.advance(&law, VoiceLevel::new(1.0, 1.6), 10.0);
+        assert!(voice.level().validate().is_ok());
+        assert!(voice.gain() <= law.full_gain() && voice.pitch() <= law.full_pitch());
     }
 }

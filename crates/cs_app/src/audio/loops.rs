@@ -135,6 +135,17 @@ impl AudioSession {
         )
     }
 
+    /// Takes the accumulated outcomes, leaving the refusals for a consumer that
+    /// reports them.
+    ///
+    /// This is what [`mix_session`](super::mix_session) calls every frame: the
+    /// mixer is the only routine consumer of outcomes, while refusals name
+    /// content that will *not* play and belong in a UI log or a report rather
+    /// than in a per-frame drain nobody reads.
+    pub fn drain_outcomes(&mut self) -> Vec<LoopOutcome> {
+        std::mem::take(&mut self.outcomes)
+    }
+
     /// Takes the accumulated radio events.
     pub fn drain_radio(&mut self) -> Vec<RadioEvent> {
         std::mem::take(&mut self.radio_events)
@@ -255,11 +266,21 @@ impl AudioSession {
 }
 
 /// Binds added emitters and stops despawned ones; removals first.
+///
+/// A world with no [`AudioSession`] syncs nothing: the loading handoff
+/// installs the session when a load is delivered
+/// ([`insert_audio_session`](super::insert_audio_session)), and a world that
+/// has loaded nothing has no audio to bind. The system therefore tolerates the
+/// resource's absence instead of aborting the frame, which is what lets
+/// [`AudioPlugin`](super::AudioPlugin) register it unconditionally.
 pub fn sync_emitter_loops(
-    mut session: ResMut<AudioSession>,
+    mut session: Option<ResMut<AudioSession>>,
     mut removed: RemovedComponents<AudioEmitterBinding>,
     added: Query<(Entity, &AudioEmitterBinding), Added<AudioEmitterBinding>>,
 ) {
+    let Some(session) = session.as_mut() else {
+        return;
+    };
     for entity in removed.read() {
         session.unbind(entity);
     }
@@ -269,7 +290,12 @@ pub fn sync_emitter_loops(
 }
 
 /// Advances the radio queue to the session tick; completion is tick-driven.
-pub fn advance_radio(mut session: ResMut<AudioSession>) {
+///
+/// Like [`sync_emitter_loops`], a world with no session advances nothing.
+pub fn advance_radio(mut session: Option<ResMut<AudioSession>>) {
+    let Some(session) = session.as_mut() else {
+        return;
+    };
     let now = session.tick;
     let events = session.radio.advance(now);
     session.radio_events.extend(events);
