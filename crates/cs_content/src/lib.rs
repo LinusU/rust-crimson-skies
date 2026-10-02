@@ -434,9 +434,12 @@
 //! (`specs/F56-original-multiplayer-scenarios-and-mode-rules.md`, stage
 //! `### F56-A`): [`multiplayer::discover_modes`] reads the modes the localized
 //! string table names and their briefings, [`multiplayer::discover_slots`]
-//! inventories the `MP<n>` scenario slots of every world group, and what the
-//! installation does not state (per-mode rules, the slot-to-mode binding)
-//! stays an explicit [`cs_types::content::Resolved::Unknown`].
+//! inventories the `MP<n>` scenario slots of every world group and binds each
+//! to the [`multiplayer::ScenarioMode`] family its own decoded `targets.zrd`
+//! names, and what the installation does not state (every per-mode rule, and
+//! which deathmatch variant a [`multiplayer::ScenarioMode::Deathmatch`] slot
+//! launches under) stays an explicit
+//! [`cs_types::content::Resolved::Unknown`].
 //!
 //! [`replay`] is the F59-A replay, capture and evidence schema
 //! (`specs/F59-replays-captures-probes-and-acceptance-evidence.md`, stage
