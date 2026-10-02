@@ -305,14 +305,16 @@ set, and the numbers above are from that run. F20-C.04's constraint is unchanged
 consumer reads the composed verdict, so the two do not compete for a writer.
 
 By the reviewer, on the branch with the three findings above fixed — the full
-four checks, not the lighter post-rebase set, and this time with no rebase
-involved:
+four checks, not the lighter post-rebase set, and again on the rebased tree
+after `origin/main` brought in F29's damage-zone collider work (a clean rebase,
+no overlapping file and no `Cargo.toml`/`Cargo.lock`):
 
 - `cargo fmt --all -- --check` — exit 0.
 - `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
   — exit 0.
-- `cargo test --workspace --locked` — exit 0, 2550 passed, 0 failed (the two
-  added tests).
+- `cargo test --workspace --locked` — exit 0, **2566 passed, 0 failed** on the
+  rebased tree (2550 before the rebase; the difference is F29's tests, which
+  arrived with `main`).
 - `cargo test --workspace --locked -- accept_f20_c_05_ --include-ignored` —
   exit 0, **7 matched**, all passing, none `#[ignore]`d.
 - `cargo test --workspace --locked -- accept_f20 --include-ignored` — exit 0,
@@ -323,6 +325,9 @@ involved:
   not gate on rustdoc, and the review's three new intra-doc links added nothing:
   the error set is byte-identical with the review changes stashed (89 lines,
   diff empty).
+
+The only commit after the last full run is this section, which is markdown: it
+cannot change the build, and CI runs the workspace suite on the pushed commit.
 
 ## What one earlier test had to change, and why it is not a weakening
 
