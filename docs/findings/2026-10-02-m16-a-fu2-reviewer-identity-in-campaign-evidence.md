@@ -217,6 +217,14 @@ owner pushes it nothing enforces this check and a campaign stage can still land
 with the placeholder. Nothing about that gap is closed by this task, and the
 next stage's reviewer should expect to be the one who catches it.
 
+The check is also scoped to one harness family. It reads
+`crates/cs_app/tests/campaign/evidence.rs` and nothing else, so the other
+committed reports under `docs/findings/evidence/` keep the hand-over wording
+their tasks shipped with (`F02-B`, `F02-C`, `F02-D`, `F04-D`, `F12-K`, `T340`,
+`T343`, `T344` all still say `self-check` or `not yet independently reviewed`).
+That is the same defect this task removes, in a family it deliberately did not
+touch, and it is filed as #483 (M16-A-FU4) rather than fixed here.
+
 ## Review
 
 Reviewed on 2026-10-02 by **bunny-2/bunny-2**, the same agent instance that
