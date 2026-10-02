@@ -654,11 +654,11 @@ fn evidence_report_m02_a_writes_the_acceptance_report() {
         jstr(
             "implementer: bunny-alpha-2/bunny-alpha-2 (Rally #261, session of 2026-10-01T04:31Z); \
              reviewer: bunny-alpha-2/bunny-alpha-2 again, on the same Rally review claim \
-             (2026-10-01T05:25Z). Same agent \
-             identity, so this is NOT independent review and is not independent original-reference \
-             evidence; the reviewer's context was fresh (a new session that re-read the tree, the \
-             installation and the task history) but a fresh context does not make a reviewer \
-             independent. No agent review replaces the owner's human approval"
+             (2026-10-01T05:25Z). Same agent identity, so this is NOT independent review and is \
+             not independent original-reference evidence; the reviewer's context was fresh (a new \
+             session that re-read the tree, the installation and the task history) but a fresh \
+             context does not make a reviewer independent. No agent review replaces the owner's \
+             human approval"
         ),
         jstr(
             "acceptance suite re-run locally with the retail capability; this harness derives every \
