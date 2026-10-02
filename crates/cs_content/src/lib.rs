@@ -62,7 +62,21 @@
 //! [`scene::SceneNodeId`] records (rejecting cycles, dangling parents and
 //! ambiguous roots), canonical [`scene::CanonicalTransform`] composition that
 //! preserves nested transforms and negative scale, and the evidence-backed
-//! [`scene::BindingMap`] semantic-binding records.
+//! [`scene::BindingMap`] semantic-binding records. Task #392 adds the half that
+//! turns a real container into those records:
+//! [`scene::parsed_nodes_from_gamez`] maps
+//! `cs_formats::gamez::read_gamez_nodes`'s output onto [`scene::ParsedNode`]
+//! without inventing anything the store has not earned — an authored name
+//! crosses over verbatim, an object record keeps the stored matrix exactly when
+//! it disagrees with its own euler triple, a LOD near bound is resolved from
+//! the square the record stores, and a `mesh_index` the supplied
+//! [`scene::MeshSlot`] catalog cannot answer stays an explicit
+//! `Resolved::Unknown` — and [`scene::scene_graph_from_gamez`] runs the
+//! hierarchy build on top. The store's records, the typed records and the
+//! canonical graph stay three separate steps, so a container that reads but
+//! does not convert is reported as exactly that
+//! ([`scene::GameZSceneError::Build`]). The layout and its measurements are in
+//! `docs/findings/2026-10-02-gamez-node-array-layout.md`.
 //!
 //! [`config`] holds lossless configuration documents with provenance and
 //! key accounting (`specs/F12-text-configuration-strings-and-pe-

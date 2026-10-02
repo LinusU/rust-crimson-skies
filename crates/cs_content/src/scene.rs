@@ -116,7 +116,10 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 
-use cs_types::content::{ContentId, ContentIdError, ContentKind, Provenance, Resolved};
+use cs_formats::gamez::{
+    GameZNodes, NodeKind as StoredNodeKind, RawLodData, RawNode, RawObject3dData,
+};
+use cs_types::content::{ContentId, ContentIdError, ContentKind, Known, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
 use cs_types::space::{Meters, SpaceError};
 
@@ -3247,4 +3250,317 @@ impl std::error::Error for SceneError {
             _ => None,
         }
     }
+}
+
+// ------------------------------------------ the GameZ node array to records ---
+
+/// The claim a node's stored `mesh_index` is refused under when the container's
+/// mesh catalog cannot answer it.
+///
+/// A `mesh_index` is the *only* address a mesh has — the mesh array carries no
+/// names — so a slot this stage cannot resolve stays an explicit unknown with
+/// this claim and a reason, and never becomes an invented id.
+const MESH_SLOT_UNRESOLVED: &str = "f11-node-array.mesh-slot-unresolved";
+
+/// One mesh-array slot's catalog element: the id a node's stored `mesh_index`
+/// resolves to, and the provenance of that id.
+///
+/// The table is **input**, not something this module derives: which catalog
+/// element a mesh-array slot stands for is F10-C.03's discovery, and carrying
+/// the id together with its own [`Provenance`] is what keeps "the mapping
+/// exists" a checkable claim instead of an assumption made here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MeshSlot {
+    id: ContentId,
+    provenance: Provenance,
+}
+
+impl MeshSlot {
+    /// Binds one mesh-array slot to a catalog element.
+    ///
+    /// # Errors
+    ///
+    /// [`GameZSceneError::MeshKind`] when `id` is not in the `mesh` namespace.
+    /// A node's `mesh_index` can only ever name a mesh, so a slot that names
+    /// anything else is a catalog error, refused where it is declared rather
+    /// than at the first node that happens to use it.
+    pub fn new(id: ContentId, provenance: Provenance) -> Result<Self, GameZSceneError> {
+        if id.kind() != ContentKind::Mesh {
+            return Err(GameZSceneError::MeshKind {
+                node: u32::MAX,
+                index: u32::MAX,
+                kind: id.kind(),
+            });
+        }
+        Ok(Self { id, provenance })
+    }
+
+    /// The catalog element this slot stands for.
+    #[must_use]
+    pub fn id(&self) -> &ContentId {
+        &self.id
+    }
+
+    /// Where that element was discovered.
+    #[must_use]
+    pub fn provenance(&self) -> &Provenance {
+        &self.provenance
+    }
+}
+
+/// Why a decoded GameZ node array could not become [`ParsedNode`] records.
+///
+/// The variants carry node indices and counts only, never archive bytes. A
+/// refusal here is about *one record*; a refusal from
+/// [`SceneGraph::build`] is about the *hierarchy* and arrives as
+/// [`GameZSceneError::Build`], so the two are never confused.
+#[derive(Clone, Debug, PartialEq)]
+pub enum GameZSceneError {
+    /// A mesh slot's catalog element is not in the `mesh` namespace.
+    MeshKind {
+        /// The node that used the slot, or [`u32::MAX`] when the slot itself
+        /// was refused at construction.
+        node: u32,
+        /// The stored `mesh_index`, or [`u32::MAX`] for the same reason.
+        index: u32,
+        /// The namespace the element really is in.
+        kind: ContentKind,
+    },
+    /// A LOD record's near bound is stored as a negative square, so it has no
+    /// real root and the near distance does not exist.
+    LodNearBound {
+        /// The node's stored array slot.
+        node: u32,
+        /// The stored value.
+        found: f32,
+    },
+    /// The hierarchy was refused by [`SceneGraph::build`], verbatim. The
+    /// records above were still produced; this is the conversion's own verdict
+    /// on them, kept as its own variant so a caller can report "read, not
+    /// converted" instead of "not read".
+    Build(SceneError),
+}
+
+impl GameZSceneError {
+    /// Stable lowercase identifier for logs and structured diagnostics.
+    #[must_use]
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::MeshKind { .. } => "mesh_kind",
+            Self::LodNearBound { .. } => "lod_near_bound",
+            Self::Build(_) => "build",
+        }
+    }
+
+    /// The node's stored array slot, when the failure is about one node.
+    #[must_use]
+    pub const fn node(&self) -> Option<u32> {
+        match self {
+            Self::MeshKind { node, .. } | Self::LodNearBound { node, .. } => Some(*node),
+            Self::Build(_) => None,
+        }
+    }
+}
+
+impl fmt::Display for GameZSceneError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MeshKind { node, index, kind } => write!(
+                f,
+                "mesh slot {index} (used by node {node}) names a {kind} element, not a mesh"
+            ),
+            Self::LodNearBound { node, found } => write!(
+                f,
+                "node {node} stores a near LOD bound of {found}, which has no real root"
+            ),
+            Self::Build(error) => write!(f, "{error}"),
+        }
+    }
+}
+
+impl std::error::Error for GameZSceneError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Build(error) => Some(error),
+            _ => None,
+        }
+    }
+}
+
+impl From<SceneError> for GameZSceneError {
+    fn from(error: SceneError) -> Self {
+        Self::Build(error)
+    }
+}
+
+/// Converts one decoded GameZ node array into [`ParsedNode`] records.
+///
+/// The input is `cs_formats::gamez::read_gamez_nodes`'s output: the store's own
+/// records, every unmeasured word still on
+/// [`RawNode::info`](cs_formats::gamez::RawNode::info) and every record's bytes
+/// still addressable. This function is the *typed input* half of F11-A and adds
+/// no interpretation the store has not earned:
+///
+/// * a **kind** is the store's own tag, one for one;
+/// * an **object node** carries its authored transform verbatim, with the
+///   stored `matrix` kept only when it disagrees with the one its own euler
+///   triple derives ([`AuthoredTransform::matrix`]) — the reference corpus
+///   disagrees in a small, measured fraction of objects, and where they differ
+///   the stored matrix is what the file holds;
+/// * a **LOD node** carries the resolved near and far distances, the near bound
+///   being the root of the square the record stores;
+/// * every **other kind** stores no transform in its record at all, so its
+///   authored transform is [`AuthoredTransform::IDENTITY`] — the identity is
+///   stated as a fact about the record, not invented;
+/// * `flags`, `zone_id`, the parent slot and the child slots cross over
+///   untouched, and a node's **name** crosses over exactly as stored,
+///   including a name the id grammar will later refuse. Whether a name can
+///   form a `scene_node` key is [`SceneGraph::build`]'s verdict, not this
+///   function's: transliterating it here would invent an identity the store
+///   never had;
+/// * a `mesh_index` of `-1` means no mesh and produces no binding; a
+///   non-negative one resolves through `meshes`, or stays an explicit
+///   [`Resolved::Unknown`] under claim `f11-node-array.mesh-slot-unresolved`
+///   with the index and the slot count in its reason.
+///
+/// `meshes` is the container's mesh catalog in **mesh-array slot order**, so
+/// `meshes[index]` is the element the store's `mesh_index` names. An index past
+/// the table is **not** a refusal: the association and its stored index are
+/// kept and the resolution is an explicit unknown, because the caller may simply
+/// not have catalogued that slot yet, and refusing the whole record would throw
+/// away a hierarchy that is otherwise exact. An empty table is legal input.
+///
+/// # Errors
+///
+/// [`GameZSceneError::LodNearBound`] for a LOD record whose near bound has no
+/// real root. The hierarchy is **not** checked here: a cycle, a dangling
+/// parent, an inconsistent link, an unusable name or a derived-id collision is
+/// [`SceneGraph::build`]'s refusal and is reported by
+/// [`scene_graph_from_gamez`], so the records survive a conversion that failed.
+pub fn parsed_nodes_from_gamez(
+    records: &GameZNodes,
+    meshes: &[MeshSlot],
+) -> Result<Vec<ParsedNode>, GameZSceneError> {
+    records
+        .nodes
+        .iter()
+        .map(|node| parsed_node_from_gamez(node, meshes))
+        .collect()
+}
+
+/// Converts one stored node record into one [`ParsedNode`].
+fn parsed_node_from_gamez(
+    node: &RawNode,
+    meshes: &[MeshSlot],
+) -> Result<ParsedNode, GameZSceneError> {
+    let kind = parsed_kind(node)?;
+    let mesh = match u32::try_from(node.mesh_index()) {
+        Err(_) => None,
+        Ok(index) => Some(MeshBinding {
+            index,
+            mesh: match meshes.get(index as usize) {
+                Some(slot) => Resolved::Known(Known::new(slot.id.clone(), slot.provenance.clone())),
+                None => Resolved::unknown(
+                    ClaimId::new(MESH_SLOT_UNRESOLVED).expect("the claim id is valid"),
+                    &format!(
+                        "the node stores mesh index {index} and the container's mesh catalog holds \
+                         {} slot(s), so no element answers it",
+                        meshes.len()
+                    ),
+                )
+                .expect("the reason is not empty"),
+            },
+        }),
+    };
+    Ok(ParsedNode {
+        index: node.index,
+        name: node.name.clone(),
+        kind,
+        transform: authored_transform(node),
+        parent: node.parent,
+        children: node.children.clone(),
+        mesh,
+        zone_id: node.zone_id(),
+        flags: node.flags(),
+    })
+}
+
+/// The authored transform a stored record carries, or the identity for a kind
+/// whose record carries none.
+fn authored_transform(node: &RawNode) -> AuthoredTransform {
+    match node.object3d() {
+        // A record the store flagged as storing no transform holds exactly the
+        // identity, so the identity is what crosses over rather than four
+        // words that happen to be zero.
+        Some(RawObject3dData { flags, .. })
+            if flags == cs_formats::gamez::OBJECT3D_FLAGS_IDENTITY =>
+        {
+            AuthoredTransform::IDENTITY
+        }
+        Some(object) => AuthoredTransform {
+            rotation: object.rotation,
+            scale: object.scale,
+            matrix: object.matrix_disagrees().then_some(object.matrix),
+            translation: object.translation,
+        },
+        None => AuthoredTransform::IDENTITY,
+    }
+}
+
+/// The typed kind of one stored record, with a LOD node's near bound resolved.
+fn parsed_kind(node: &RawNode) -> Result<ParsedNodeKind, GameZSceneError> {
+    Ok(match node.kind {
+        StoredNodeKind::World(_) => ParsedNodeKind::World,
+        StoredNodeKind::Camera => ParsedNodeKind::Camera,
+        StoredNodeKind::Window => ParsedNodeKind::Window,
+        StoredNodeKind::Display => ParsedNodeKind::Display,
+        StoredNodeKind::Light => ParsedNodeKind::Light,
+        StoredNodeKind::Object3d(_) => ParsedNodeKind::Object3d,
+        StoredNodeKind::Lod(RawLodData {
+            level,
+            range_far,
+            range_near_sq,
+            ..
+        }) => {
+            let range_min = range_near_sq.sqrt();
+            if !range_min.is_finite() {
+                return Err(GameZSceneError::LodNearBound {
+                    node: node.index,
+                    found: range_near_sq,
+                });
+            }
+            ParsedNodeKind::Lod {
+                // The record stores a boolean and nothing says which value means
+                // what, so it crosses over as the stored bit and no more.
+                level: level != 0,
+                range_min,
+                range_max: range_far,
+            }
+        }
+    })
+}
+
+/// Decodes a container's node array and converts it into a [`SceneGraph`].
+///
+/// This is the whole path the F11 stages were waiting for: the store's own
+/// reader, this crate's [`ParsedNode`] records, and the canonical conversion
+/// with its rejections. The three steps stay separate on purpose —
+/// [`parsed_nodes_from_gamez`] produces the records and
+/// [`SceneGraph::build`] judges the hierarchy — so a container whose records
+/// read but whose hierarchy does not convert is reported as exactly that.
+///
+/// # Errors
+///
+/// Every [`GameZSceneError`]: the record-level refusals from
+/// [`parsed_nodes_from_gamez`], and [`GameZSceneError::Build`] carrying
+/// [`SceneGraph::build`]'s own typed refusal verbatim.
+pub fn scene_graph_from_gamez(
+    container: &ContentId,
+    records: &GameZNodes,
+    meshes: &[MeshSlot],
+    adapter: &SourceAdapter,
+    bindings: &BindingMap,
+) -> Result<SceneGraph, GameZSceneError> {
+    let nodes = parsed_nodes_from_gamez(records, meshes)?;
+    Ok(SceneGraph::build(container, &nodes, adapter, bindings)?)
 }
