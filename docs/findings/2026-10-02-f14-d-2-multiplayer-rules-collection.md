@@ -115,11 +115,23 @@ No wiring edit was needed: `catalog::baseline` was already public.
 
 ## Reviewer notes
 
+- The committed `docs/findings/evidence/F14-D.2.json` is the implementer's
+  own run: its `review.identity` literal says so, and
+  `crates/cs_content/tests/evidence_report_f14_d_2.rs::review_identity` is the
+  text `tools/tests/test_evidence_review_identity.py` cross-checks against it.
+  Regenerate on the reviewed and rebased commit with `CS_EVIDENCE_REVIEW` set
+  to your own identity and method, and replace that literal with the same text
+  in the same commit (`docs/contracts/CLI-EVIDENCE.md`).
 - Mutation probes to repeat: remove the `multiplayer_rules_rows` call from
-  `retail_baseline` (the four synthetic tests fail), return
-  `multiplayer_rules` rows from a hand-built list without the F56-A unknowns
-  (the reason assertions fail), and set `CollectionStatus::diagnostic` to
-  `None` on the unread paths (the two gap tests fail).
+  `retail_baseline` (four integration tests fail — verified), build the rows
+  without F56-A's unknowns (the reason assertions fail), and set
+  `CollectionStatus::diagnostic` to `None` on the unread paths (the two gap
+  tests fail).
+- All four mode rows of one installation share a span: the four mode names lie
+  in one `RT_STRING` block, and `cs_content::config::StringCatalog` gives every
+  row of a block that block's extent. That is the block the name was read
+  from, not the individual string, and neither the row nor the tests claim
+  otherwise.
 - The F14-D evidence copy (`docs/findings/evidence/F14-D.json`) records the
   F14-D candidate tree and quotes "only three collections are populated"; that
   text describes F14-D's own candidate, and this finding plus the F14-D.2
