@@ -71,6 +71,13 @@
 //!    live entity still draws with is left in place
 //!    ([`FrameSync::reclaimed`]).
 //!
+//!    An entity that no longer carries the material component of its own kind
+//!    is not reused at all: [`reuse_batch`] releases it through the same
+//!    [`release_entity`] the stale batch goes through, and the frame spawns a
+//!    fresh entity for the draw. A replacement entry is therefore always added
+//!    by a spawn that records it, and a live owner record never names an entry
+//!    its entity does not draw with.
+//!
 //!    Rules 3 and 7 together are what keep a frame path that releases and
 //!    respawns a batch every other tick: rule 6's own release path. Without
 //!    rule 7 that path would leave one mesh and one material in their stores
@@ -1058,6 +1065,7 @@ pub fn sync_frame(
         let existing = reuse_batch(
             &mut previous,
             key,
+            batch.material_kind(),
             world,
             &mut report.released,
             &mut report.reclaimed,
@@ -1298,6 +1306,18 @@ fn set_material(world: &mut World, entity: Entity, material: BatchMaterial) {
 /// released and a fresh entity is spawned rather than repaired in place, and a
 /// key whose entity is already gone is simply dropped from the map.
 ///
+/// "The draw's components" is all of them, including the material of the batch's
+/// own `kind`. The material is checked here for the reason [`BatchAssets`]
+/// exists: this module *owns* the entry [`add_material`] adds, and a reused
+/// entity that lost its material component would otherwise take a replacement
+/// entry that no record names — an entry no release could hand back — while the
+/// record it already carries kept naming the entry it no longer draws with.
+/// Treating that entity as not usable routes it through [`release_entity`], so
+/// the replacement is a spawn that records what it added and the stores do not
+/// grow. `kind` is the batch's own class ([`InstanceBatch::material_kind`]),
+/// which the key's state already covers, so an entity of the right kind is
+/// checked for that kind's component.
+///
 /// A released entity here hands its own store entries back exactly like the
 /// stale batch at the end of [`sync_frame`] does: both go through
 /// [`release_entity`], so the repair path cannot be a second place a mesh or a
@@ -1305,6 +1325,7 @@ fn set_material(world: &mut World, entity: Entity, material: BatchMaterial) {
 fn reuse_batch(
     previous: &mut BTreeMap<[u8; 32], Entity>,
     key: [u8; 32],
+    kind: MaterialKind,
     world: &mut World,
     released: &mut usize,
     reclaimed: &mut ReclaimedAssets,
@@ -1315,7 +1336,8 @@ fn reuse_batch(
     }
     let usable = world
         .get_entity(entity)
-        .is_ok_and(|found| found.contains::<BatchDraw>() && found.contains::<Mesh3d>());
+        .is_ok_and(|found| found.contains::<BatchDraw>() && found.contains::<Mesh3d>())
+        && stored_material(world, entity, kind).is_some();
     if !usable {
         reclaimed.absorb(release_entity(entity, world, released));
         return None;
