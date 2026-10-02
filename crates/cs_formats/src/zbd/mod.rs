@@ -33,10 +33,17 @@
 //!   reader archive into the member extents those readers list (task #343).
 //! * [`wave`] reads the RIFF/WAVE header of one sound member into the
 //!   descriptor [`sound_archive`] reports (task #344).
+//! * [`adpcm`] reads the `fmt ` extension the two ADPCM tags carry and decodes
+//!   their blocks: the layouts `wFormatTag` `0x0011` (IMA) and `0x0002`
+//!   (Microsoft) name, with the per-member values the member itself declares
+//!   (task #444).
 //! * [`sound_sample`] decodes a member's `data` payload under the format its
-//!   own WAVE header declares (stage F06-C). Uncompressed PCM only: an ADPCM
-//!   member is an [`sound_sample::SampleError::UnsupportedFormat`] row
-//!   carrying its declared tag, never an approximation.
+//!   own WAVE header declares (stage F06-C). [`sound_sample::SampleFormat::from_header`]
+//!   is that stage's plan and decodes uncompressed PCM;
+//!   [`sound_sample::SampleFormat::from_member`] is task #444's plan and also
+//!   decodes the two block codecs, whose geometry and codebook live in
+//!   [`adpcm`]. A compressed member is never approximated and never passed
+//!   through as if it were PCM.
 //!
 //! The evidence behind every rule, the design decisions and the recorded
 //! unknowns are written down in
@@ -54,6 +61,7 @@
 //! authored synthetic bytes; nothing here is derived from original game
 //! data.
 
+pub mod adpcm;
 pub mod archive;
 pub mod dispatch;
 pub mod family;
@@ -65,6 +73,13 @@ pub mod sound_sample;
 pub mod trailer;
 pub mod wave;
 
+pub use adpcm::{
+    ADAPTATION_TABLE, AdpcmError, AdpcmExtension, AdpcmLayout, IMA_BLOCK_HEADER_BYTES,
+    IMA_EXTENSION_BYTES, INDEX_TABLE, MAX_MS_DELTA, MAX_STEP_INDEX, MIN_MS_DELTA,
+    MS_BLOCK_HEADER_BYTES_PER_CHANNEL, MS_COEFFICIENT_BYTES, MS_COEFFICIENT_PAIRS,
+    MS_EXTENSION_BYTES, MsAdpcmCoefficient, MsAdpcmCoefficients, STEP_TABLE, STEP_TABLE_ENTRIES,
+    read_adpcm_extension,
+};
 pub use archive::{
     ArchiveListing, CONTAINER_ENTRYPOINT, ContainerError, ContainerStatus, FamilyMismatch,
     FamilyOrigin, MEMBER_ROW_BYTES, MemberError, MemberExtent, MemberRow, MemberStatus,
@@ -94,7 +109,7 @@ pub use sound_archive::{
 };
 pub use sound_sample::{
     DecodedSound, PcmLayout, SAMPLE_ENTRYPOINT, SAMPLE_VALUE_BYTES, SampleError, SampleFormat,
-    SampleFormatError, decode_payload, decode_sound_sample,
+    SampleFormatError, SampleLayout, decode_payload, decode_sound_sample,
 };
 pub use trailer::{
     EntryAnomaly, INDEX_ENTRY_BYTES, INDEX_NAME_BYTES, INDEX_ROW_BYTES, INDEX_UNEXPLAINED_BYTES,

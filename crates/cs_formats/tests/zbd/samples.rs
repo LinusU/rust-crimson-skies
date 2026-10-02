@@ -15,7 +15,7 @@
 //! the member's own bytes.
 
 use cs_formats::zbd::{
-    PcmLayout, SampleError, SampleFormat, SampleFormatError, WAVE_FORMAT_IMA_ADPCM,
+    PcmLayout, SampleError, SampleFormat, SampleFormatError, SampleLayout, WAVE_FORMAT_IMA_ADPCM,
     WAVE_FORMAT_MS_ADPCM, WAVE_FORMAT_PCM, decode_payload, decode_sound_sample, read_wave_header,
 };
 use cs_formats::{ParseContext, ParseErrorKind};
@@ -201,7 +201,7 @@ fn accept_f06_c_a_short_sound_sample_matches_its_declared_byte_and_sample_count(
     let declared = plan(&member);
 
     // The plan is the member's own header, read by the production reader.
-    assert_eq!(declared.layout(), PcmLayout::Signed16Le);
+    assert_eq!(declared.layout(), SampleLayout::Pcm(PcmLayout::Signed16Le));
     assert_eq!(declared.channels(), 1);
     assert_eq!(declared.rate_hz(), 22_050);
     assert_eq!(declared.block_align(), 2);
@@ -222,7 +222,11 @@ fn accept_f06_c_a_short_sound_sample_matches_its_declared_byte_and_sample_count(
     assert_eq!(decoded.sample_count(), 8);
     assert_eq!(
         decoded.byte_len(),
-        decoded.sample_count() * declared.layout().bytes_per_sample(),
+        decoded.sample_count()
+            * declared
+                .layout()
+                .stored_bytes_per_sample()
+                .expect("a PCM frame stores whole samples"),
         "byte count = sample count * bytes per sample"
     );
     assert_eq!(
@@ -300,7 +304,7 @@ fn accept_f06_c_the_declared_format_decides_what_a_frame_is() {
     // 32-bit mono: four bytes per frame, so eight frames.
     let wide = wave_member(&Fmt::pcm32(), &data);
     let declared = plan(&wide);
-    assert_eq!(declared.layout(), PcmLayout::Signed32Le);
+    assert_eq!(declared.layout(), SampleLayout::Pcm(PcmLayout::Signed32Le));
     assert_eq!(declared.frame_bytes(), 4);
     let decoded = decode_sound_sample(&mut context, &wide, &declared).expect("8 whole frames");
     assert_eq!(decoded.frames(), 8);
