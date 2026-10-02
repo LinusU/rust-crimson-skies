@@ -18,9 +18,19 @@
 //! 2026-09-28). Binding real identities and running the real campaign stay
 //! with F50-B/C/D.
 //!
-//! `m01_a.rs` … `m08_a.rs`, `m10_a.rs`, `m12_a.rs`, `m13_a.rs`, `m16_a.rs`, `m17_a.rs`, `m19_a.rs`, `m21_a.rs` and `m24_a.rs` are the
+<<<<<<< HEAD
+//! `m01_a.rs` … `m08_a.rs`, `m10_a.rs`, `m12_a.rs`, `m13_a.rs`, `m16_a.rs`,
+//! `m17_a.rs`, `m19_a.rs`, `m21_a.rs` and `m24_a.rs` are the
 //! exception that proves the rule: their `accept_m01_a_*` / … /
 //! `accept_m08_a_*` / `accept_m10_a_*` / `accept_m12_a_*` / `accept_m13_a_*` / `accept_m16_a_*` / `accept_m17_a_*` / `accept_m19_a_*` / `accept_m21_a_*` / `accept_m24_a_*`
+=======
+//! `m01_a.rs` … `m08_a.rs`, `m10_a.rs`, `m12_a.rs`, `m13_a.rs`, `m16_a.rs`,
+//! `m17_a.rs`, `m18_a.rs`, `m19_a.rs`, `m21_a.rs` and `m24_a.rs` are the
+//! exception that proves the rule: their `accept_m01_a_*` / … /
+//! `accept_m08_a_*` / `accept_m10_a_*` / `accept_m12_a_*` / `accept_m13_a_*` /
+//! `accept_m16_a_*` / `accept_m17_a_*` / `accept_m18_a_*` / `accept_m19_a_*` /
+//! `accept_m21_a_*` / `accept_m24_a_*`
+>>>>>>> 671df5f (Bind the eighteenth mission's original data and branches)
 //! retail tests read `$CS_GAME_DIR`
 //! through production code and are marked
 //! `#[ignore = "requires CS_GAME_DIR"]`, so CI skips them and the
@@ -49,6 +59,7 @@ mod m13_a;
 mod m16_a;
 mod m16_a_fu1;
 mod m17_a;
+mod m18_a;
 mod m19_a;
 mod m21_a;
 mod m24_a;

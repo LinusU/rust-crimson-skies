@@ -1,0 +1,24 @@
+{
+ "schema_version": 1,
+ "work_order": "M18",
+ "discovery_title": "Deceit at Devil's Horn",
+ "verified": false,
+ "install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978",
+ "catalog_id": "mission/ch4-m03",
+ "world_id": "world/c4",
+ "program_id": "script/c4-m03-zrdr",
+ "closure_sha256": null,
+ "source_spans": [
+    {"asset_id": "GOSDATA/ASSETS/BINARIES/langui.dll", "offset": 95304, "length": 876, "sha256": "357e6bb05f1d2872a00e0976fdde44561cd5bb6a56d9f555d85d0ff1481faf49"},
+    {"asset_id": "ZBD/C4/M03/zrdr.zbd", "offset": 0, "length": 90978, "sha256": "0eff1e9444c23a1cc0fcba3d7a5c18f0c3b53fc5c9b967cad40ada242687c002"}
+  ],
+ "required_actor_ids": [],
+ "objective_ids": [],
+ "interaction_ids": [],
+ "media_ids": [],
+ "stunt_ids": [],
+ "reward_ids": [],
+ "difficulty_ids": [],
+ "unknowns": ["initial player and wingmate configurations: not bound from original data at this stage", "actor/spawn/route sets: not bound from original data at this stage", "objective graph: not bound from original data at this stage", "interaction authorizations: not bound from original data at this stage", "script/native coverage: the mission opcode table is unmeasured, so F13-C probes every program against an empty signature table", "required geometry/collision/materials: not bound from original data at this stage", "audio/dialogue/video/camera cues: not bound from original data at this stage", "initial and terminal campaign state: not bound from original data at this stage", "optional/stunt/reward ids: not bound from original data at this stage", "difficulty branches: not bound from original data at this stage", "exact failure/success precedence: not measured", "campaign progression: the successor mission is not bound to original mission ids", "closure_sha256: the mission dependency closure hash needs the retail content catalog (F14-D) and decoded mission programs (F37/F38)"],
+ "evidence_ids": []
+}
