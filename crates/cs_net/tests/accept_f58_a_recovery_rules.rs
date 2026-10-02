@@ -268,3 +268,48 @@ fn accept_f58_a_a_reconnect_reopens_on_a_fresh_epoch_with_no_old_windows() {
         "sequence 2 is legal in the fresh epoch"
     );
 }
+
+#[test]
+fn accept_f58_a_a_full_session_refuses_a_returning_pilot() {
+    let live = session(30);
+    let mut generations = SessionGenerations::starting_at(30);
+    let mut peers = PeerAllocator::new();
+    for _ in 0..cs_net::bounds::MAX_SESSION_PEERS {
+        peers
+            .allocate()
+            .expect("the session is not yet at its peer cap");
+    }
+
+    // Even a reconnect is refused once no peer id remains, with the cap named
+    // rather than silently admitted beyond the declared bound.
+    assert_eq!(
+        cs_net::recovery::decide_recovery(
+            &policy(LateJoin::Open),
+            &mut generations,
+            &mut peers,
+            &request(RecoveryKind::Reconnect, live, Vec::new()),
+        )
+        .refusal(),
+        Some(RecoveryRefusal::SessionFull {
+            max: cs_net::bounds::MAX_SESSION_PEERS,
+        })
+    );
+}
+
+#[test]
+fn accept_f58_a_an_exhausted_epoch_space_refuses_a_reconnect() {
+    let live = session(31);
+    let mut generations = SessionGenerations::starting_at(u64::MAX);
+    // No fresh epoch can be issued, so the reconnect is refused rather than
+    // resumed under a reused or wrapped session id.
+    assert_eq!(
+        cs_net::recovery::decide_recovery(
+            &policy(LateJoin::Open),
+            &mut generations,
+            &mut PeerAllocator::new(),
+            &request(RecoveryKind::Reconnect, live, Vec::new()),
+        )
+        .refusal(),
+        Some(RecoveryRefusal::SessionSpaceExhausted)
+    );
+}
