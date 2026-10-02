@@ -49,6 +49,8 @@ const ANALOG_READING: f32 = 0.85;
 const TRIGGER_PULL: f32 = 1.0;
 /// One mouse frame's motion, in device counts, on a channel that moved.
 const MOUSE_MOTION: f32 = 0.8;
+/// One mouse frame's wheel scroll, in the same device counts as the motion.
+const MOUSE_WHEEL: f32 = 0.6;
 /// How far a measured axis value may differ from the value the report asked
 /// for: `AxisValue` quantizes to `i16`, about 3e-5 of full scale.
 const QUANTIZATION_TOLERANCE: f32 = 1e-3;
@@ -117,10 +119,12 @@ fn reading(source: BindingSource) -> f32 {
         | BindingSource::GamepadButton(_)
         | BindingSource::JoystickButton(_) => 1.0,
         BindingSource::MouseAxis(MouseAxis::X | MouseAxis::Y) => MOUSE_MOTION,
-        BindingSource::MouseAxis(MouseAxis::Wheel) => panic!(
-            "the mouse wheel has no field in DeviceEvent::MouseFrame, so no report \
-             can carry it"
-        ),
+        // The wheel is a declared mouse channel with a field in
+        // `DeviceEvent::MouseFrame` (#412 F22-I), so a report can carry it
+        // like any other relative reading. It is unbound in the designed map,
+        // so the case below never drives it; the reading is here so a binding
+        // that does bind it is exercised rather than panicking.
+        BindingSource::MouseAxis(MouseAxis::Wheel) => MOUSE_WHEEL,
         BindingSource::GamepadAxis(GamepadAxis::LeftTrigger | GamepadAxis::RightTrigger) => {
             TRIGGER_PULL
         }
@@ -141,6 +145,7 @@ fn raw_for(source: BindingSource) -> f32 {
             TRIGGER_PULL
         }
         BindingSource::GamepadAxis(_) | BindingSource::JoystickAxis { .. } => ANALOG_READING,
+        BindingSource::MouseAxis(MouseAxis::Wheel) => MOUSE_WHEEL,
         BindingSource::MouseAxis(_) => MOUSE_MOTION,
         BindingSource::Key(_)
         | BindingSource::MouseButton(_)
@@ -183,6 +188,11 @@ fn report(class: DeviceClass, sources: &[BindingSource]) -> DeviceEvent {
                 },
                 motion_y: if moves(MouseAxis::Y) {
                     MOUSE_MOTION
+                } else {
+                    0.0
+                },
+                wheel: if moves(MouseAxis::Wheel) {
+                    MOUSE_WHEEL
                 } else {
                     0.0
                 },

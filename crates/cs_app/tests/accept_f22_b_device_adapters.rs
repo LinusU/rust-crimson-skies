@@ -846,6 +846,7 @@ fn accept_f22_b_every_device_family_reaches_the_control_buffer() {
                 buttons: vec![MouseButton::Left],
                 motion_x: 0.5,
                 motion_y: -0.5,
+                wheel: 0.0,
             },
             DeviceEvent::KeyboardFrame {
                 device: keyboard(),

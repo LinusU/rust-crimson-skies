@@ -175,7 +175,23 @@ pub enum DeviceEvent {
         /// The keys down during this frame.
         keys: Vec<Key>,
     },
-    /// A mouse reported its buttons and the motion since the last frame.
+    /// A mouse reported its buttons, its motion and its wheel since the last
+    /// frame.
+    ///
+    /// All three analog readings are **deltas since the last frame** in the
+    /// mouse's own device counts, so a report that lists none of them is a
+    /// mouse that did not move. `0.0` is therefore "no movement", not "a
+    /// deflection of zero", and the calibration pass reads it that way.
+    ///
+    /// `wheel` is the wheel's scroll delta, in the same units and the same
+    /// direction convention as `motion_x`/`motion_y` (one count is one detent
+    /// the platform reported, sign as the platform reported it). The wheel is
+    /// deliberately **unbound** in
+    /// [`ActionMap::designed_default`](cs_types::input::ActionMap::designed_default)
+    /// — which binding it to a command is a design decision, not a fact about
+    /// the original game — so today a wheel reading is calibrated and validated
+    /// and then drives nothing. It is still calibrated: a platform that reports
+    /// a nonsense wheel is a fault whether or not a binding reads the channel.
     MouseFrame {
         /// The mouse.
         device: DeviceId,
@@ -185,6 +201,9 @@ pub enum DeviceEvent {
         motion_x: f32,
         /// Vertical motion since the last frame, in device counts.
         motion_y: f32,
+        /// Wheel scroll since the last frame, in the same device counts as
+        /// `motion_x`/`motion_y`.
+        wheel: f32,
     },
     /// A gamepad reported its buttons and axes.
     GamepadFrame {
@@ -843,7 +862,9 @@ impl DeviceAdapters {
     /// half-established hold, no forgotten axis and no counted report.
     ///
     /// An unbound channel is calibrated too: a driver that reports nonsense is
-    /// a real fault whether or not a binding happens to read the channel.
+    /// a real fault whether or not a binding happens to read the channel. That
+    /// is what makes the wheel a first-class reading rather than a field
+    /// nothing looks at: it is validated, shaped and refused on its own terms.
     fn calibrated_readings(
         &self,
         event: &DeviceEvent,
@@ -852,9 +873,18 @@ impl DeviceAdapters {
         let mut readings = Vec::new();
         match event {
             DeviceEvent::MouseFrame {
-                motion_x, motion_y, ..
+                motion_x,
+                motion_y,
+                wheel,
+                ..
             } => {
-                for (axis, motion) in [(MouseAxis::X, *motion_x), (MouseAxis::Y, *motion_y)] {
+                // Every declared mouse axis is read here, so a channel that no
+                // binding drives is still calibrated and can still be refused.
+                for (axis, motion) in [
+                    (MouseAxis::X, *motion_x),
+                    (MouseAxis::Y, *motion_y),
+                    (MouseAxis::Wheel, *wheel),
+                ] {
                     // A relative channel that did not move is not a drive at
                     // all, so a stopped mouse reads as nothing rather than as
                     // a deflection of zero.
@@ -1600,7 +1630,8 @@ mod tests {
             .expect("the frame applies");
         assert_eq!(frame.edges().len(), 1);
 
-        // Mouse: the left button fires and the motion drives yaw and pitch.
+        // Mouse: the left button fires and the motion drives yaw and pitch. The
+        // wheel is not moved here, so it contributes nothing to the frame.
         let mut frame = InputFrame::new(Tick(2));
         adapters
             .apply(
@@ -1609,6 +1640,7 @@ mod tests {
                     buttons: vec![MouseButton::Left],
                     motion_x: 0.5,
                     motion_y: -0.25,
+                    wheel: 0.0,
                 },
                 &map(),
                 InputContext::Flight,
