@@ -37,6 +37,7 @@ paragraph. Wiring only: `crates/cs_app/tests/campaign/main.rs` (`mod m18_a;`).
 | World group | `world/c4` (`ZBD/C4`) |
 | Program | `script/c4-m03-zrdr`, `ZBD/C4/M03/zrdr.zbd`, 90 978 bytes, SHA-256 `0eff1e94…c002` |
 | Second display form | row 3467, `Rocky Mountains - Deceit at Devil's Horn` |
+| Title row's own bytes | `langui.dll` `95792 + 60` — 29 UTF-16 code units plus the `u16` count, inside block 219 (`95304 + 876`) |
 
 ## What is different at M18
 
@@ -68,6 +69,17 @@ paragraph. Wiring only: `crates/cs_app/tests/campaign/main.rs` (`mod m18_a;`).
   campaign-length row block (3480..3503); the corroborating region-prefixed
   block is the first (3450..3473), so the corroboration does not come from
   M18's own block.
+- **The title's cited span is the row's own bytes, not its block.** The
+  `RT_STRING` block that encloses row 3497 (`95304 + 876`) holds the short
+  names of sixteen other missions, so a span of it does not identify a
+  string. M18-A originally cited that whole block, as every binding did
+  before M16-A-FU1 (#478); the review's rebase brought in that fix, the
+  record was re-pinned to `95792 + 60`, and
+  `…_source_derived_binding_has_no_unresolved_critical_dependencies` now pins
+  the property rather than only the record: the cited bytes must carry M18's
+  confirmed row **and no other row of either campaign-length block**.
+  Containment alone would not have proved it — the block carries this row's
+  text too — so the check runs both ways.
 - **A confirmed row can still select no position — and M18's own region prefix
   is such a row.** This is the refusal arm no earlier binding stage exercised
   on real data. The installation carries `Rocky Mountains` as a standalone
@@ -119,7 +131,7 @@ facts, plus two arms no earlier stage had and one the review added:
 
 | Test | What it pins |
 | --- | --- |
-| `…_source_derived_binding_has_no_unresolved_critical_dependencies` | the stage's minimum scenario, provenance classes, re-measured install hash, span digests, unverified status |
+| `…_source_derived_binding_has_no_unresolved_critical_dependencies` | the stage's minimum scenario, provenance classes, re-measured install hash, span digests, the title span being the row's own bytes, unverified status |
 | `…_the_committed_record_is_what_the_installation_derives` | `M18.json` is exactly what production code derives |
 | `…_the_original_name_is_confirmed_against_the_local_strings` | `M18-BIND`: exactly one retail row carries the declared title; the second display form is the same title behind a region prefix and no spelling note is invented; three failure titles (a spelling no row carries, the composed long name of a mission the strings do not spell, a display text the table carries twice) all leave the title unresolved |
 | `…_the_join_is_corroborated_by_the_long_name_rows` | `Agreed` across two independent campaign-length row blocks; every long-name row selects the position its index names |
@@ -147,6 +159,7 @@ one at a time, each reverted before the next. Every one is caught:
 | `SourceBinding::is_verified` ignores the unknowns | 4 tests — **but see the review below: this mutation was too strong, and a weaker one survived** |
 | `bind` reads the campaign entry one position earlier | 4 tests |
 | `title_form` accepts a tail that merely *starts with* the title | `…_a_near_miss_title_is_never_confirmed` only |
+| `row_byte_span` made to return `None`, regressing the title span to the enclosing block | the record-pinning test and the span-property assertion the review added |
 
 The seventh was **initially missed**: the retail installation offers no near
 miss that would expose a fuzzy comparison, so the eight retail tests all
@@ -198,6 +211,19 @@ Three smaller things were also fixed in review:
   `M14`, `M15`, `M20`, `M22` and `M23`. After the resolution there are 16
   evidence harnesses, 30 test-name constants and 16 `m*_a` module
   declarations, with no duplicate.
+- A **second** rebase, onto `35e325b`, brought in M16-A-FU1 (#478), which
+  changed `SourceBinding` — a new `title_enclosure` field — and re-pinned every
+  binding that had landed after the FU1 branch was cut. M18 is one of those,
+  so `missions/bindings/M18.json` was stale: its title span was the enclosing
+  `95304 + 876` block. `accept_m18_a_the_committed_record_is_what_the_installation_derives`
+  failed on the rebased tree, exactly as it is meant to. The reviewer
+  re-generated the record from `SourceBinding::to_json` (`95304`+876 →
+  `95792`+60, the row's own 29 UTF-16 code units) and added the span-property
+  assertion described under *What is different at M18*, so the property is
+  pinned in this suite too and not only in FU1's. `main.rs` and `evidence.rs`
+  were the two overlapping files; `evidence.rs` resolved with no content
+  conflict. Because the rebase overlapped the branch's own files and the
+  production code, the full check set was re-run rather than the lighter one.
 
 Nothing the reviewer found contradicts the stage's claims, and nothing in the
 record is over-claimed: `verified` is still `false`, the join is still an
@@ -249,12 +275,17 @@ either side — it now names exactly `M09`, `M10`, `M11`, `M14`, `M15`, `M20`,
 `M22` and `M23`. Because the rebase overlapped the branch's own files, the
 full check set was re-run rather than the lighter one.
 
+**A sixth rebase was needed at review**, onto `35e325b`, which brought in
+M16-A-FU1's title-span fix and its re-pinning of every binding that landed
+after that branch was cut. M18 is one of those, so `missions/bindings/M18.json`
+had to be re-pinned here (`95304`+876 → `95792`+60) and the span property is
+now asserted in M18's own suite. See the review section above.
+
 `candidate_tree` in `docs/findings/evidence/M18-A.json` is the tree of the
-commit the acceptance suite actually ran on, `6428ee40` — the reviewer's
-`is_verified` fix. The only later delta is this report's own copy under
-`docs/findings/evidence/` and the `Checks`, `Rebase` and `Review` sections of
-this file, which record the run; no production code, no test and no binding
-record changed after it.
+commit the acceptance suite actually ran on, as recorded there. The only later
+delta is this report's own copy under `docs/findings/evidence/` and the
+`Checks`, `Rebase` and `Review` sections of this file, which record the run; no
+production code, no test and no binding record changed after it.
 
 ## Recorded unknowns (not guessed)
 
@@ -268,12 +299,15 @@ record changed after it.
   localization other than the English table read here. **Unknown; see the
   note above.**
 
-## Follow-ups filed
+## Follow-ups
 
-- #478 — the `source_spans` entry recorded for the title string is the whole PE
-  string *bundle* the row sits in, not the row's own bytes. Pre-existing
-  behaviour from M01-A, unchanged here (M18's title span is offset 95304,
-  length 876, the same bundle M16 recorded).
+- **#478 — resolved during this review, not by this stage.** The `source_spans`
+  entry recorded for the title string was the whole PE string *bundle* the row
+  sits in, not the row's own bytes. It was pre-existing behaviour from M01-A
+  and this stage filed it rather than fixing it out of its slice; M16-A-FU1
+  then fixed it in production, and the review's rebase brought that fix in.
+  `missions/bindings/M18.json` was re-pinned here accordingly, and M18's suite
+  now asserts the span property itself.
 - #479 — several already-merged evidence reports still read
   `reviewer: none yet`. Out of this stage's slice.
 - #481 (F50-E4) — a retail comparison test for `campaign_title_blocks` and
@@ -281,11 +315,14 @@ record changed after it.
   the installation as well as on authored values. Every `accept_m18_a_` test
   here asserts against a fact re-read from `$CS_GAME_DIR` or a committed
   record, but none of them re-derives the string table's row geometry by hand
-  the way the M16-A review did.
+  the way the M16-A review did. The review narrowed this gap a little — the
+  title-span assertion now reads both campaign-length blocks' rows — but the
+  row-offset arithmetic is still only re-derived in M16-A-FU1's suite.
 
 ## Sources
 
 `$CS_GAME_DIR` read-only through `cs_assets::install::discover`,
 `cs_content::config::StringCatalog`; `schemas/mission-binding.schema.json`;
 `missions/M18.md`; `docs/findings/2026-10-02-m16-a-source-binding.md`;
-`docs/findings/2026-10-02-m13-a-source-binding.md`.
+`docs/findings/2026-10-02-m13-a-source-binding.md`;
+`docs/findings/2026-10-02-m16-a-fu1-title-row-span.md`.

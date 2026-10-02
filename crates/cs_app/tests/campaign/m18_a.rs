@@ -41,6 +41,12 @@
 //!   mission's title.
 //!   [`accept_m18_a_a_near_miss_title_is_never_confirmed`] proves
 //!   [`title_form`]'s exactness arm by arm on authored values.
+//! * **The title's cited span is the row's own bytes, not its block.** The
+//!   localized `RT_STRING` block that encloses M18's confirmed row holds up
+//!   to sixteen unrelated names, so containment proves nothing on its own; the
+//!   cited bytes must carry M18's row and no other row of either
+//!   campaign-length block. Pinned here because the rebase onto main brought in
+//!   M16-A-FU1's fix (#478) and this record had to be re-pinned with it.
 //! * **`is_verified` is a conjunction, and M18's own record cannot tell its
 //!   conditions apart.** M18 is unverified for four separate reasons, and its
 //!   closure hash and evidence list are empty as well as its unknowns, so an
@@ -307,6 +313,62 @@ fn accept_m18_a_source_derived_binding_has_no_unresolved_critical_dependencies()
             .any(|span| span.asset_id == entry.program_asset),
         "the record cites no span of the program archive it names"
     );
+
+    // The title's cited span must be the confirmed row's *own* bytes, not the
+    // `RT_STRING` block that encloses up to sixteen unrelated names
+    // (M16-A-FU1, #478). Containment alone cannot prove that — the block
+    // carries this row's text too — so the check is both ways: the cited bytes
+    // must carry M18's row, and must carry no other row of either
+    // campaign-length block. Pinned here, in M18's own suite, so this record
+    // cannot drift back to citing the block.
+    let title_span = binding
+        .source_spans
+        .iter()
+        .find(|span| span.asset_id.ends_with("langui.dll"))
+        .expect("the record cites the localized image the title row was decoded from");
+    let image = game_dir().join(&title_span.asset_id);
+    let bytes = fs::read(&image).expect("the localized image re-reads");
+    let start = usize::try_from(title_span.offset).expect("offset fits usize");
+    let end = start
+        .checked_add(usize::try_from(title_span.length).expect("length fits usize"))
+        .expect("offset + length does not overflow");
+    let cited = &bytes[start..end];
+    let confirmed = binding
+        .localized_title_id
+        .expect("the title dependency is resolved, so a row confirmed it");
+    let carries = |row_id: u32| -> bool {
+        // The localized image stores each row as a little-endian `u16`
+        // code-unit count followed by that many UTF-16 code units, so a row's
+        // text is searched for in the cited bytes as UTF-16LE, past the count.
+        let encoded: Vec<u8> = context()
+            .string_rows()
+            .iter()
+            .find(|row| row.id == row_id)
+            .and_then(|row| row.text.as_deref())
+            .map(|text| {
+                text.encode_utf16()
+                    .flat_map(u16::to_le_bytes)
+                    .collect::<Vec<u8>>()
+            })
+            .unwrap_or_default();
+        !encoded.is_empty() && cited.windows(encoded.len()).any(|w| w == encoded)
+    };
+    assert!(
+        carries(confirmed),
+        "the cited span of {} does not carry the confirmed row {confirmed}",
+        title_span.asset_id
+    );
+    for block in context().campaign_title_blocks() {
+        for row_id in block.first_id()..=block.last_id() {
+            if row_id != confirmed {
+                assert!(
+                    !carries(row_id),
+                    "the cited span carries row {row_id} as well as the confirmed row \
+                     {confirmed}: it is the enclosing block, not the row"
+                );
+            }
+        }
+    }
 
     // Source-derived is not verified: the unbound checklist entries are all
     // still there, and they say why.
@@ -1708,6 +1770,7 @@ fn synthetic_binding(
         source_spans: Vec::new(),
         identity_source: None,
         title_source: None,
+        title_enclosure: None,
         closure_sha256,
         evidence_ids: evidence_ids
             .into_iter()

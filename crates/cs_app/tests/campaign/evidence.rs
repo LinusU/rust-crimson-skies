@@ -4373,12 +4373,19 @@ fn evidence_report_m18_a_writes_the_acceptance_report() {
              blank line inside this module's doc comment and the three rebase conflicts against \
              main's M17-A, and re-ran the suite after the rebase, which touched three of this \
              stage's files, so the full check set was re-run rather than the lighter one the owner \
-             directive of 2026-10-01 allows when it does not. Claim is implemented only; validated \
-             with tools/validate_evidence.py --require-pass. `candidate_tree` is the tree of the \
-             commit the suite ran on: the only later delta is this report's own copy under \
-             docs/findings/evidence/ and the Checks, Rebase and Review sections of \
-             docs/findings/2026-10-02-m18-a-source-binding.md, which record the run; no production \
-             code, test or binding record changed after it"
+             directive of 2026-10-01 allows when it does not. A second rebase brought in \
+             M16-A-FU1's title-span fix, which had re-pinned every binding that landed after that \
+             branch was cut and so made missions/bindings/M18.json stale (it still cited the \
+             enclosing RT_STRING block); the record-pinning test failed on the rebased tree, the \
+             reviewing agent re-derived it from SourceBinding::to_json (95792 + 60, the \
+             confirmed row's own 29 UTF-16 code units) and added an assertion that the cited \
+             bytes carry M18's row and no other row of either campaign-length block — \
+             containment alone proves nothing, because the block carries this row's text too. \
+             Claim is implemented only; validated with tools/validate_evidence.py --require-pass. \
+             `candidate_tree` is the tree of the commit the suite ran on: the only later delta is \
+             this report's own copy under docs/findings/evidence/ and the Checks, Rebase and \
+             Review sections of docs/findings/2026-10-02-m18-a-source-binding.md, which record the \
+             run; no production code, test or binding record changed after it"
         ),
     );
 
