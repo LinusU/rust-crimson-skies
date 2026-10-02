@@ -64,10 +64,10 @@ use cs_sim::targeting::Allegiance;
 use cs_sim::weapons::{
     AmmunitionId, AmmunitionIdError, CadenceRefusal, FireDenialReason, FireError, FireEvent,
     FireIntent, FriendlyFireRule, GunBank, GunCadence, GunDefinition, GunDefinitionError,
-    GunHitRouter, GunMountKind, GunRate, GunStateError, InheritanceRule, MountTransform,
-    ProjectileId, ProjectileRuntimeError, ProjectileSegment, SelfHitRule, SpreadCone,
-    SweepCandidate, SweepOutcome, SweepRefusal, SweepTarget, SweepTargetError, WeaponDamage,
-    WeaponRules, WeaponState,
+    GunHitRouter, GunMountKind, GunRate, GunStateError, InheritanceRule, LiveProjectile,
+    MountTransform, ProjectileId, ProjectileRuntimeError, ProjectileSegment, SelfHitRule,
+    SpreadCone, SweepCandidate, SweepOutcome, SweepRefusal, SweepTarget, SweepTargetError,
+    WeaponDamage, WeaponRules, WeaponState,
 };
 use cs_types::Tick;
 use cs_types::content::{ContentId, Known, Resolved};
@@ -967,18 +967,19 @@ pub fn resolve_swept_damage(
 /// it is not the round. Its [`Transform`] is **written** by
 /// [`sync_round_mirrors`] from the authoritative
 /// [`cs_sim::weapons::LiveProjectile`], never integrated, and it carries no
-/// collider. `generation` is the scene generation the mirror was stamped under,
-/// so a reloaded scene's orphan is identifiable by mismatch rather than by a
-/// surviving pointer (the same rule [`crate::scene::SceneNodeBinding`] and
-/// [`crate::damage::DamageActorBinding`] follow).
+/// collider. The fields are exactly what the authoritative round names —
+/// the round's id, who fired it, and the scene generation the mirror was
+/// stamped under, so a reloaded scene's orphan is identifiable by mismatch
+/// rather than by a surviving pointer (the same rule
+/// [`crate::scene::SceneNodeBinding`] and [`crate::damage::DamageActorBinding`]
+/// follow). Which mount fired is a property of the *shot*, and it reaches
+/// consumers as the [`WeaponEffect`] the accepted event produced.
 #[derive(Component, Clone, Debug, PartialEq)]
 pub struct WeaponRoundMirror {
     /// The authoritative round this entity mirrors.
     pub projectile: ProjectileId,
     /// Who fired the round.
     pub shooter: ActorId,
-    /// Which mount fired it.
-    pub mount: DamageNodeKey,
     /// The scene generation the mirror was stamped under.
     pub generation: SceneGeneration,
 }
@@ -1012,6 +1013,27 @@ pub struct WeaponEffect {
     pub origin: WorldPosition,
     /// The tick the shot was accepted on.
     pub at: Tick,
+}
+
+impl WeaponEffect {
+    /// The effect one accepted shot produced, on the tick it was accepted.
+    ///
+    /// Everything here is read off the [`FireEvent`], so an effect cannot name
+    /// a resource the gun did not declare nor a position the muzzle did not
+    /// have. There is no other constructor: this is what "derived from an
+    /// accepted fire event" means in code.
+    #[must_use]
+    pub fn of(shot: &FireEvent, at: Tick) -> Self {
+        Self {
+            projectile: shot.projectile.projectile,
+            shooter: shot.shooter,
+            mount: shot.mount.clone(),
+            effect: shot.effect.clone(),
+            sound: shot.sound.clone(),
+            origin: shot.projectile.origin,
+            at,
+        }
+    }
 }
 
 /// The effects one session has emitted, drained by the presentation side.
@@ -1180,22 +1202,26 @@ impl std::fmt::Display for StepRefusal {
 
 impl std::error::Error for StepRefusal {}
 
-/// Why a live round's segment could not even be routed.
+/// Why a live round's segment could not be routed.
+///
+/// Both arms are structurally prevented by this session's own API — the record
+/// is stored when the shot is accepted and released only with the round — and
+/// both exist so a round that reached the runtime by some *other* route is
+/// reported by name instead of being swept with a guessed attacker or a
+/// default hostility test.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RoutingRefusal {
     /// The session holds a live round whose accepted shot it does not know.
     ///
     /// Routing needs the shot for the attacker, the projectile identity and the
     /// declared damage profile, so a round whose shot was lost is reported here
-    /// instead of being swept with a guessed profile.
+    /// rather than swept with a guessed profile.
     UnknownRound {
         /// The round whose shot is missing.
         projectile: ProjectileId,
     },
-    /// The round's mount has no lowered interaction rules.
-    ///
-    /// The rules decide admission, so a round without them is refused by name
-    /// rather than swept against a default hostility test.
+    /// An accepted shot's gun has no lowered interaction rules, so the round it
+    /// spawned cannot be admitted against anything.
     MissingInteractionRules {
         /// The round that cannot be routed.
         projectile: ProjectileId,
@@ -1232,6 +1258,18 @@ impl std::fmt::Display for RoutingRefusal {
 }
 
 impl std::error::Error for RoutingRefusal {}
+
+/// One live round's routing inputs: the accepted shot it is routed with and the
+/// declared interaction rules of the gun that fired it.
+///
+/// The two travel together because they must: a round that outlives the tick it
+/// was fired on can only be routed with the shot that spawned it, and it can
+/// only be admitted against the rules that shot's gun declared.
+#[derive(Clone, Debug, PartialEq)]
+struct RoundRecord {
+    shot: FireEvent,
+    rules: WeaponRules,
+}
 
 /// One mounted gun the session registered, in the runtime form the ECS binds.
 ///
@@ -1338,7 +1376,7 @@ pub struct WeaponSession {
     cadence: GunCadence,
     router: GunHitRouter,
     rules: BTreeMap<ActorId, BTreeMap<DamageNodeKey, WeaponRules>>,
-    rounds: BTreeMap<ProjectileId, FireEvent>,
+    rounds: BTreeMap<ProjectileId, RoundRecord>,
     effects: WeaponEffectLog,
     resolved_through: Option<Tick>,
     closed: bool,
@@ -1445,6 +1483,17 @@ impl WeaponSession {
     /// The accepted shot a live round is routed with, if the session holds it.
     #[must_use]
     pub fn shot(&self, projectile: &ProjectileId) -> Option<&FireEvent> {
+        self.rounds.get(projectile).map(|record| &record.shot)
+    }
+
+    /// The declared interaction rules a live round is admitted against.
+    #[must_use]
+    pub fn round_rules(&self, projectile: &ProjectileId) -> Option<&WeaponRules> {
+        self.rounds.get(projectile).map(|record| &record.rules)
+    }
+
+    /// The whole routing record of one live round, for the step that routes it.
+    fn round_record(&self, projectile: &ProjectileId) -> Option<&RoundRecord> {
         self.rounds.get(projectile)
     }
 
@@ -1543,26 +1592,56 @@ impl WeaponSession {
         Ok(())
     }
 
-    /// Records one accepted shot: the round's own record for later ticks, and
-    /// the effect a consumer plays.
-    fn accept(&mut self, event: &FireEvent, at: Tick) -> WeaponEffect {
+    /// Records one accepted shot: the round's own routing record for the rest
+    /// of its life, and the effect a consumer plays.
+    fn accept(&mut self, event: &FireEvent, at: Tick) -> Result<WeaponEffect, RoutingRefusal> {
         let projectile = event.projectile.projectile;
-        let effect = WeaponEffect {
-            projectile,
-            shooter: event.shooter,
-            mount: event.mount.clone(),
-            effect: event.effect.clone(),
-            sound: event.sound.clone(),
-            origin: event.projectile.origin,
-            at,
+        let effect = WeaponEffect::of(event, at);
+        // The rules are the gun's, and the gun was registered, so this cannot
+        // be missing for a shot the session itself accepted; the record keeps
+        // them beside the shot so routing never looks them up again.
+        let Some(rules) = self
+            .rules
+            .get(&event.shooter)
+            .and_then(|by_mount| by_mount.get(&event.mount))
+            .cloned()
+        else {
+            return Err(RoutingRefusal::MissingInteractionRules {
+                projectile,
+                mount: event.mount.clone(),
+            });
         };
-        self.rounds.insert(projectile, event.clone());
+        self.rounds.insert(
+            projectile,
+            RoundRecord {
+                shot: event.clone(),
+                rules,
+            },
+        );
         self.effects.record(effect.clone());
-        effect
+        Ok(effect)
     }
 
-    /// Releases one retired round's accepted-shot record.
-    fn release(&mut self, projectile: &ProjectileId) -> Option<FireEvent> {
+    /// Removes one live round, as a scripted despawn does, and releases its
+    /// routing record with it.
+    ///
+    /// A round is **not** removed because it hit something: that would be a
+    /// penetration rule, and `WeaponRules::penetration` and `ricochet` are
+    /// declared, unapplied and deferred to F27-D. The once-per-`(projectile,
+    /// actor)` ledger, not a despawn, is what stops a round from applying its
+    /// damage twice.
+    pub fn remove_round(&mut self, projectile: ProjectileId) -> Option<LiveProjectile> {
+        let removed = self.cadence.remove_projectile(projectile);
+        self.rounds.remove(&projectile);
+        removed
+    }
+
+    /// Releases one *retired* round's routing record, leaving the round's own
+    /// retirement to the runtime that already removed it.
+    ///
+    /// The runtime retires a spent round itself, after its last segment has been
+    /// swept, so the record is all that is left to release here.
+    fn forget(&mut self, projectile: &ProjectileId) -> Option<RoundRecord> {
         self.rounds.remove(projectile)
     }
 
@@ -1652,8 +1731,6 @@ pub struct MirrorReport {
     pub despawned: Vec<ProjectileId>,
     /// Mirrors written onto this tick's authoritative position.
     pub moved: usize,
-    /// Live rounds with no accepted shot, which therefore have no mirror.
-    pub unmirrored: Vec<ProjectileId>,
 }
 
 /// The world inputs one weapon step needs.
@@ -1803,7 +1880,17 @@ pub fn step_weapon_session(
                                 reason: reason.clone(),
                             }));
                         for event in &resolution.accepted {
-                            tick.effects.push(session.accept(event, step.at));
+                            match session.accept(event, step.at) {
+                                Ok(effect) => tick.effects.push(effect),
+                                Err(refusal) => {
+                                    // The shot happened and consumed its round,
+                                    // so its effect is still the gun's declared
+                                    // one — but a round nothing can admit is
+                                    // reported instead of being swept blind.
+                                    tick.effects.push(WeaponEffect::of(event, step.at));
+                                    tick.routing_refused.push(refusal);
+                                }
+                            }
                         }
                         tick.accepted.extend(resolution.accepted);
                     }
@@ -1840,21 +1927,21 @@ pub fn step_weapon_session(
     // accepted shot goes with it: the session keeps a record only while the
     // round that needs it is live.
     for projectile in &tick.retired {
-        session.release(projectile);
+        session.forget(projectile);
     }
     tick.mirrors = sync_round_mirrors(world, session, step.generation);
     tick
 }
 
-/// Routes one live round's segment through the declared rules and the damage
-/// authority.
+/// Routes one live round's segment through its gun's declared rules and the
+/// damage authority.
 ///
 /// # Errors
 ///
-/// [`RoutingRefusal`] when the session no longer holds the round's accepted shot
-/// or the round's mount has no lowered rules — both reported by name, because a
-/// round swept with a guessed attacker or a default hostility test would apply
-/// damage no rule stands behind.
+/// [`RoutingRefusal::UnknownRound`] when the session does not hold the round's
+/// routing record — reported by name, because a round swept with a guessed
+/// attacker and a default hostility test would apply damage no rule stands
+/// behind.
 fn route_round(
     session: &mut WeaponSession,
     damage: &mut DamageResolver,
@@ -1862,24 +1949,18 @@ fn route_round(
     candidates: &[SweepCandidate],
     step: &WeaponStep<'_>,
 ) -> Result<RoutedRound, RoutingRefusal> {
-    let Some(shot) = session.shot(&segment.projectile).cloned() else {
+    let Some(record) = session.round_record(&segment.projectile).cloned() else {
         return Err(RoutingRefusal::UnknownRound {
             projectile: segment.projectile,
-        });
-    };
-    let Some(rules) = session.rules(&shot.shooter, &shot.mount).cloned() else {
-        return Err(RoutingRefusal::MissingInteractionRules {
-            projectile: segment.projectile,
-            mount: shot.mount.clone(),
         });
     };
     Ok(RoutedRound {
         projectile: segment.projectile,
         outcome: resolve_swept_damage(
             &mut session.router,
-            &rules,
+            &record.rules,
             damage,
-            &shot,
+            &record.shot,
             segment,
             candidates.iter().cloned(),
             step.at,
@@ -1891,15 +1972,10 @@ fn route_round(
 ///
 /// Every live round gets a [`WeaponRoundMirror`] entity whose [`Transform`] is
 /// written from the runtime's own position, and a mirror whose round is gone —
-/// retired this tick, removed by a hit, released by teardown, or left behind by
-/// a reloaded scene — is despawned. The pass *reconciles* rather than tracks:
+/// retired this tick, removed by a despawn, released by teardown, or left behind
+/// by a reloaded scene — is despawned. The pass *reconciles* rather than tracks:
 /// it looks for what is there and for what is live, so no entity id is stored
 /// and a stale mirror cannot survive a reload by pointing at the past.
-///
-/// A round the session cannot name — live without an accepted shot, which the
-/// session's own API cannot produce — is reported in
-/// [`MirrorReport::unmirrored`] rather than mirrored under an invented
-/// identity.
 ///
 /// The mirror carries no collider and is never integrated: the authoritative
 /// position lives in [`cs_sim::weapons::LiveProjectile`], so Avian never
@@ -1914,49 +1990,41 @@ pub fn sync_round_mirrors(
     generation: SceneGeneration,
 ) -> MirrorReport {
     let mut report = MirrorReport::default();
-    let live: BTreeMap<ProjectileId, WorldPosition> = session
+    let live: BTreeMap<ProjectileId, (ActorId, WorldPosition)> = session
         .cadence
         .projectiles()
         .iter()
-        .map(|round| (round.projectile(), round.current()))
+        .map(|round| (round.projectile(), (round.shooter(), round.current())))
         .collect();
 
     let mut present: BTreeMap<ProjectileId, Entity> = BTreeMap::new();
-    let mut stale: Vec<Entity> = Vec::new();
+    let mut stale: Vec<(Entity, ProjectileId)> = Vec::new();
     for entity_ref in world.iter_entities() {
         let Some(mirror) = entity_ref.get::<WeaponRoundMirror>() else {
             continue;
         };
         if mirror.generation != generation || !live.contains_key(&mirror.projectile) {
-            stale.push(entity_ref.id());
+            stale.push((entity_ref.id(), mirror.projectile));
             continue;
         }
         present.insert(mirror.projectile, entity_ref.id());
     }
-    for entity in stale {
-        let Some(mirror) = world.get::<WeaponRoundMirror>(entity).cloned() else {
-            continue;
-        };
+    for (entity, projectile) in stale {
         world.entity_mut(entity).despawn();
-        report.despawned.push(mirror.projectile);
+        report.despawned.push(projectile);
     }
 
-    for (projectile, position) in &live {
+    for (projectile, (shooter, position)) in &live {
         match present.get(projectile) {
             Some(entity) => {
                 world.entity_mut(*entity).insert(transform_of(*position));
                 report.moved += 1;
             }
             None => {
-                let Some(shot) = session.shot(projectile).cloned() else {
-                    report.unmirrored.push(*projectile);
-                    continue;
-                };
                 world.spawn((
                     WeaponRoundMirror {
                         projectile: *projectile,
-                        shooter: shot.shooter,
-                        mount: shot.mount.clone(),
+                        shooter: *shooter,
                         generation,
                     },
                     transform_of(*position),

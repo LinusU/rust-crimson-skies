@@ -308,6 +308,16 @@
 //! reaches the graph through the one authority that owns it. The boundary
 //! decision this implements is recorded in
 //! `docs/findings/2026-10-02-f27-c-candidate-filtering-and-hit-damage-routing.md`.
+//! Stage `### F27-C`'s application half (task #119) is the same module:
+//! [`weapons::WeaponSession`] is one session generation's authority over the
+//! cadence, the router, the lowered interaction rules, the live rounds and the
+//! effects, [`weapons::step_weapon_session`] is the single per-tick step that
+//! runs the selection, the fire, the accepted-shot effects, the swept damage
+//! and the retirement of spent rounds, and [`weapons::sync_round_mirrors`]
+//! reconciles the ECS mirror of the authoritative rounds — each round's
+//! `Transform` written from the simulation's own position and carrying no
+//! collider, so Avian never becomes a second contact authority. The design
+//! record is `docs/findings/2026-10-02-f27-c-weapon-session-wiring.md`.
 //!
 //! [`ordnance`] is the F28-A ordnance boundary
 //! (`specs/F28-rockets-special-ordnance-counter-effects-and-nitro.md`, stage
