@@ -171,11 +171,12 @@ two cannot drift.
   `CollectionStatus::diagnostic` to `None` on the unread paths (the two
   diagnostic tests fail). The two unit tests are shape/render tests and do not
   fail for any of these, which is what they are for.
-- Not fixed in review, filed instead: `tools/cs_inspect`'s `catalog` command
-  documentation (`tools/cs_inspect/src/catalog.rs`, `main.rs`) still describes
-  the baseline report as "one row per inventoried file, one row per campaign
-  mission program, one declared launchable row per campaign mission" and does
-  not mention the source-derived collections or `collection_status`. Those files
+- Not fixed in review, filed as #497 (`F14-D-DOCS`):
+  `tools/cs_inspect`'s `catalog` command documentation
+  (`tools/cs_inspect/src/catalog.rs`, `main.rs`) still describes the baseline
+  report as "one row per inventoried file, one row per campaign mission
+  program, one declared launchable row per campaign mission" and does not
+  mention the source-derived collections or `collection_status`. Those files
   are another stage's owner paths, so the wording is a follow-up task rather
   than an edit here.
 - All four mode rows of one installation share a span: the four mode names lie
