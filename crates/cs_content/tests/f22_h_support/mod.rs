@@ -474,10 +474,10 @@ pub fn parse_name_id_table(strings: &[u8]) -> BTreeMap<String, u32> {
         let id = u32::from_le_bytes(strings[offset + 4..offset + 8].try_into().unwrap());
         if pointer >= low && pointer < high && (NAME_ID_MIN..100_000).contains(&id) {
             let at = (pointer - image_base) as usize;
-            if let Some(name) = zero_terminated_ascii(strings, at) {
-                if (2..=60).contains(&name.len()) {
-                    table.insert(name, id);
-                }
+            if let Some(name) = zero_terminated_ascii(strings, at)
+                && (2..=60).contains(&name.len())
+            {
+                table.insert(name, id);
             }
         }
         offset += 8;
