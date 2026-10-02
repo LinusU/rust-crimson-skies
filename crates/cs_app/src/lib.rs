@@ -289,9 +289,12 @@
 //! `cs_sim::damage::DamageGraph` the session resolver registers with every
 //! `Resolved::Unknown` carried through; [`damage::lower_policy`], which
 //! lowers the graph's declared lethal-attribution rule and refuses an
-//! unknown one outright; and the generation-stamped
+//! unknown one outright; the generation-stamped
 //! [`damage::DamageActorBinding`] ECS record tying an entity to its
-//! session-qualified actor and damage-graph subject.
+//! session-qualified actor and damage-graph subject; and the damage-to-collider
+//! bridge ([`damage::DamageZoneBinding`], [`damage::apply_damage_events`],
+//! [`damage::repair_damage_zone`]) that decides a destroyed zone's collider and
+//! calls the F20-C.04 collision seam.
 //!
 //! [`targeting`] is the F30-A targeting boundary
 //! (`specs/F30-targeting-classification-aim-assistance-and-threat-cues.md`,
