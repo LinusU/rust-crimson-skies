@@ -29,7 +29,8 @@ use cs_app::weapons::{
     WeaponStep, step_weapon_session, sync_round_mirrors,
 };
 use cs_content::weapons::{
-    DeclaredDamageChannel, DeclaredGunDefinition, DeclaredGunMountKind, declared_synthetic_gun,
+    DeclaredDamageChannel, DeclaredGunDefinition, DeclaredGunMountKind, DeclaredGunRate,
+    SYNTHETIC_TICKS_BETWEEN_SHOTS, declared_synthetic_gun,
 };
 use cs_sim::damage::{
     ActorId, AttributionRule, DamageEventKind, DamageNodeKey, DamagePolicy, DamageResolver,
@@ -88,6 +89,22 @@ fn known<T>(value: T) -> Resolved<T> {
 /// fixture's own declared record, so the assertions read the same numbers the
 /// content schema holds.
 fn declared_on(mount: &str, kind: DeclaredGunMountKind, lifetime: u64) -> DeclaredGunDefinition {
+    declared_with(mount, kind, lifetime, SYNTHETIC_TICKS_BETWEEN_SHOTS)
+}
+
+/// The declared fixture gun on `mount`, as a `kind` gun whose round lives
+/// `lifetime` ticks and which must wait `ticks_between_shots` ticks between two
+/// accepted shots.
+///
+/// Lifetime and cadence are the only values these tests change, so a test that
+/// needs one mount to be *ready* while another still serves a cooldown declares
+/// its own rate instead of waiting the fixture's four ticks out.
+fn declared_with(
+    mount: &str,
+    kind: DeclaredGunMountKind,
+    lifetime: u64,
+    ticks_between_shots: u32,
+) -> DeclaredGunDefinition {
     let fixture = declared_synthetic_gun();
     DeclaredGunDefinition::try_new(
         fixture.gun().clone(),
@@ -97,7 +114,9 @@ fn declared_on(mount: &str, kind: DeclaredGunMountKind, lifetime: u64) -> Declar
         fixture.scene_binding().cloned(),
         fixture.caliber().clone(),
         fixture.ammunition().clone(),
-        fixture.rate().clone(),
+        known(DeclaredGunRate {
+            ticks_between_shots,
+        }),
         fixture.muzzle_velocity_mps().clone(),
         known(lifetime),
         fixture.spread().clone(),
@@ -140,11 +159,18 @@ fn declared_ids() -> (String, String) {
 /// The shooter's live hierarchy: an actor root carrying the binding and the
 /// airframe velocity, with one mount node per mount.
 fn shooter_world(world: &mut World, mounts: &[&str]) -> bevy::prelude::Entity {
+    shooter_root(world, actor(1), mounts)
+}
+
+/// One shooter's live hierarchy: an actor root carrying the binding and the
+/// airframe velocity, with one mount node per mount at the muzzle depth these
+/// tests fire from.
+fn shooter_root(world: &mut World, shooter: ActorId, mounts: &[&str]) -> bevy::prelude::Entity {
     let fixture = declared_synthetic_gun();
     let root = world
         .spawn((
             WeaponActorBinding {
-                actor: actor(1),
+                actor: shooter,
                 guns: vec![fixture.gun().clone()],
                 loadout: fixture.gun().clone(),
                 generation: GENERATION,
@@ -169,9 +195,15 @@ fn shooter_world(world: &mut World, mounts: &[&str]) -> bevy::prelude::Entity {
 /// The target aircraft: a root with a live velocity and one part box at the
 /// origin whose declared geometry the swept query tests.
 fn target_world(world: &mut World, half_extents_m: [f64; 3]) {
+    part_box(world, actor(2), half_extents_m);
+}
+
+/// One aircraft's part box: a root carrying the live velocity the previous
+/// centre is reconstructed from, and one swept box at the origin.
+fn part_box(world: &mut World, owner: ActorId, half_extents_m: [f64; 3]) {
     let root = world.spawn(LinearVelocity(Vec3::ZERO)).id();
     world.spawn((
-        PartSweptBox::new(actor(2), key(HULL), half_extents_m),
+        PartSweptBox::new(owner, key(HULL), half_extents_m),
         NodeVisualTransform(GlobalTransform::from_xyz(0.0, 0.0, 0.0)),
         ChildOf(root),
     ));
@@ -227,12 +259,16 @@ fn session_with_one_gun(lifetime: u64) -> (WeaponSession, Vec<RegisteredWeapon>)
     (session, registered)
 }
 
-/// The declared relation of the shooter to the one hostile target.
-fn hostile_relation(actor_id: ActorId) -> Option<Allegiance> {
-    (actor_id == actor(2)).then_some(Allegiance::Hostile)
+/// The declared relation of the player to the one hostile target: every other
+/// pair is undeclared.
+fn hostile_relation(_shooter: ActorId, target: ActorId) -> Option<Allegiance> {
+    (target == actor(2)).then_some(Allegiance::Hostile)
 }
 
-fn step<'a>(at: Tick, relation: &'a dyn Fn(ActorId) -> Option<Allegiance>) -> WeaponStep<'a> {
+fn step<'a>(
+    at: Tick,
+    relation: &'a dyn Fn(ActorId, ActorId) -> Option<Allegiance>,
+) -> WeaponStep<'a> {
     WeaponStep {
         at,
         dt_s: DT_S,
@@ -242,15 +278,22 @@ fn step<'a>(at: Tick, relation: &'a dyn Fn(ActorId) -> Option<Allegiance>) -> We
     }
 }
 
+/// The player shooter's intent on `tick`.
 fn intent(tick: u64, sequence: u32) -> FireIntent {
+    fire_intent(actor(1), tick, sequence)
+}
+
+/// One shooter's intent on `tick`. The producer is the firing actor's own
+/// serial, so two shooters firing on one tick never share an intent id.
+fn fire_intent(shooter: ActorId, tick: u64, sequence: u32) -> FireIntent {
     FireIntent {
         id: FireIntentId {
             session: SESSION,
             tick: Tick(tick),
-            producer: 1,
+            producer: u32::try_from(shooter.serial).expect("a small actor serial"),
             sequence,
         },
-        shooter: actor(1),
+        shooter,
     }
 }
 
@@ -853,6 +896,18 @@ fn accept_f27_c_teardown_releases_the_rounds_and_refuses_later_orders() {
         Err(WeaponRegistrationError::Closed),
         "a closed session registers nothing"
     );
+    assert_eq!(
+        session.state(&actor(1)),
+        None,
+        "a closed session exposes no weapon state to read"
+    );
+    assert_eq!(
+        session
+            .state_mut(&actor(1))
+            .map(|state| state.enable(&key(WING_MOUNT))),
+        None,
+        "a closed session exposes no weapon state to mutate: a late repair cannot re-enable a gun whose session is gone"
+    );
 }
 
 /// A selection for an actor this session never registered is refused by name
@@ -945,7 +1000,7 @@ fn accept_f27_c_the_declared_rules_admit_candidates_through_the_step() {
 
     let (mut session, _) = session_with_two_guns(90);
     let mut damage = damage_resolver();
-    let relation = |actor_id: ActorId| match actor_id {
+    let relation = |_shooter: ActorId, target: ActorId| match target {
         id if id == actor(2) => Some(Allegiance::Hostile),
         id if id == actor(3) => Some(Allegiance::Friendly),
         _ => None,
@@ -1046,4 +1101,228 @@ fn accept_f27_c_removing_a_round_releases_its_record_and_its_mirror() {
         "the removed round's accepted shot went with it"
     );
     assert_eq!(session.round_ids().len(), 1, "one round is left");
+}
+
+/// The switch reaches the fire on the *same* tick: a bank switched to a mount
+/// that is ready fires it exactly once, the mount still serving its cooldown is
+/// denied by name, and neither bank is refilled.
+#[test]
+fn accept_f27_c_a_switched_bank_fires_its_ready_mount_once_and_refills_nothing() {
+    let mut world = World::new();
+    shooter_world(&mut world, &[NOSE_MOUNT, WING_MOUNT]);
+    // The nose gun keeps the fixture's four-tick cadence, so it is still cooling
+    // down on the next tick; the wing gun is declared with a one-tick gap, so it
+    // never fired and is ready.
+    let nose = declared_on(NOSE_MOUNT, DeclaredGunMountKind::Nose, 90);
+    let wing = declared_with(WING_MOUNT, DeclaredGunMountKind::WingLeft, 90, 1);
+    let mut session = WeaponSession::new(SESSION, Tick(0), ROUTER_PRODUCER)
+        .expect("a nonzero session generation opens");
+    session
+        .register(
+            actor(1),
+            &[nose, wing],
+            bank(&[NOSE_MOUNT]),
+            SYNTHETIC_STARTING_ROUNDS,
+        )
+        .expect("the declared guns register");
+    let mut damage = damage_resolver();
+    let relation = hostile_relation;
+    let ammunition = |session: &WeaponSession, mount: &DamageNodeKey| {
+        session
+            .state(&actor(1))
+            .expect("registered")
+            .ammunition(mount)
+    };
+
+    // Tick 0: only the nose mount is selected, so only it fires.
+    let fired = step_weapon_session(
+        &mut world,
+        &mut session,
+        &mut damage,
+        &[WeaponOrder::Fire(intent(0, 0))],
+        &step(Tick(0), &relation),
+    );
+    assert_eq!(fired.accepted.len(), 1, "the nose mount fired alone");
+    assert!(
+        ammunition(&session, &key(WING_MOUNT)) == SYNTHETIC_STARTING_ROUNDS,
+        "an unselected mount fires nothing: {}",
+        ammunition(&session, &key(WING_MOUNT))
+    );
+
+    // Tick 1: the bank is widened to both mounts *before* the fire order is
+    // read, so the switch applies to this tick's shot.
+    let switched = step_weapon_session(
+        &mut world,
+        &mut session,
+        &mut damage,
+        &[
+            WeaponOrder::SelectBank {
+                shooter: actor(1),
+                bank: bank(&[NOSE_MOUNT, WING_MOUNT]),
+            },
+            WeaponOrder::Fire(intent(1, 1)),
+        ],
+        &step(Tick(1), &relation),
+    );
+    assert_eq!(
+        switched
+            .accepted
+            .iter()
+            .map(|shot| shot.mount.clone())
+            .collect::<Vec<_>>(),
+        vec![key(WING_MOUNT)],
+        "exactly one shot happened, from the mount the switch added"
+    );
+    assert_eq!(
+        switched.denied,
+        vec![cs_app::weapons::DeniedShot {
+            intent: intent(1, 1).id,
+            reason: FireDenialReason::Cooldown {
+                mount: key(NOSE_MOUNT),
+                remaining_ticks: u64::from(SYNTHETIC_TICKS_BETWEEN_SHOTS) - 1,
+            },
+        }],
+        "the mount still serving its cooldown is refused by name"
+    );
+    assert_eq!(
+        switched
+            .effects
+            .iter()
+            .map(|effect| effect.mount.clone())
+            .collect::<Vec<_>>(),
+        vec![key(WING_MOUNT)],
+        "the accepted shot emitted its declared effect and nothing else"
+    );
+    assert_eq!(
+        (
+            ammunition(&session, &key(NOSE_MOUNT)),
+            ammunition(&session, &key(WING_MOUNT))
+        ),
+        (SYNTHETIC_STARTING_ROUNDS - 1, SYNTHETIC_STARTING_ROUNDS - 1),
+        "the switch refilled nothing and the accepted shot drained exactly one round"
+    );
+    assert_eq!(
+        session.round_ids().len(),
+        2,
+        "one round per accepted shot exists: no duplicate fire"
+    );
+}
+
+/// The declared relation is the *firing* actor's own: a box that is an enemy of
+/// the player and an ally of a second shooter takes the player's round and is
+/// excluded from the second shooter's, in the same tick and the same world read.
+#[test]
+fn accept_f27_c_the_relation_follows_the_firing_actor_not_the_target() {
+    const CONTESTED_MOUNT: &str = "gun_mount_2";
+    let mut world = World::new();
+    shooter_root(&mut world, actor(1), &[NOSE_MOUNT]);
+    shooter_root(&mut world, actor(2), &[CONTESTED_MOUNT]);
+    // Both boxes sit on the flight path, so only the declared relation differs.
+    part_box(&mut world, actor(3), [3.0, 3.0, 40.0]);
+    part_box(&mut world, actor(4), [3.0, 3.0, 40.0]);
+
+    let mut session = WeaponSession::new(SESSION, Tick(0), ROUTER_PRODUCER)
+        .expect("a nonzero session generation opens");
+    session
+        .register(
+            actor(1),
+            &[declared_on(NOSE_MOUNT, DeclaredGunMountKind::Nose, 90)],
+            bank(&[NOSE_MOUNT]),
+            SYNTHETIC_STARTING_ROUNDS,
+        )
+        .expect("the player's gun registers");
+    session
+        .register(
+            actor(2),
+            &[declared_on(CONTESTED_MOUNT, DeclaredGunMountKind::Nose, 90)],
+            bank(&[CONTESTED_MOUNT]),
+            SYNTHETIC_STARTING_ROUNDS,
+        )
+        .expect("the second shooter's gun registers");
+
+    let mut damage = damage_resolver();
+    for target in [actor(3), actor(4)] {
+        damage
+            .register_actor(
+                target,
+                synthetic_airframe_graph(),
+                DamagePolicy {
+                    attribution: AttributionRule::FirstLethalHit,
+                },
+            )
+            .expect("the target registers under the same synthetic graph");
+    }
+    // The player's declared relation: the shared target is hostile, the
+    // contested aircraft is hostile. The second shooter's: the shared target is
+    // hostile, the contested aircraft is its ally.
+    let relation = |shooter: ActorId, target: ActorId| match (shooter, target) {
+        (id, _) if id == actor(1) && target == actor(4) => Some(Allegiance::Hostile),
+        (_, id) if id == actor(4) => Some(Allegiance::Friendly),
+        (_, id) if id == actor(3) => Some(Allegiance::Hostile),
+        _ => None,
+    };
+
+    let fired = step_weapon_session(
+        &mut world,
+        &mut session,
+        &mut damage,
+        &[
+            WeaponOrder::Fire(fire_intent(actor(1), 0, 0)),
+            WeaponOrder::Fire(fire_intent(actor(2), 0, 0)),
+        ],
+        &step(Tick(0), &relation),
+    );
+    assert_eq!(fired.accepted.len(), 2, "both shooters fired");
+    assert_eq!(fired.routed.len(), 2, "both rounds were swept");
+
+    let targets_of = |shooter: ActorId| {
+        let projectile = fired
+            .accepted
+            .iter()
+            .find(|shot| shot.shooter == shooter)
+            .expect("an accepted shot")
+            .projectile
+            .projectile;
+        let routed = fired
+            .routed
+            .iter()
+            .find(|routed| routed.projectile == projectile)
+            .expect("that round was routed");
+        let mut targets: Vec<ActorId> = routed
+            .outcome
+            .sweep
+            .hits
+            .iter()
+            .map(|hit| hit.hit.target)
+            .collect();
+        targets.sort();
+        targets.dedup();
+        targets
+    };
+    assert_eq!(
+        targets_of(actor(1)),
+        vec![actor(3), actor(4)],
+        "the player's rounds admit the contested aircraft, which is hostile to it"
+    );
+    assert_eq!(
+        targets_of(actor(2)),
+        vec![actor(3)],
+        "the second shooter's rounds do not, because the same aircraft is its ally"
+    );
+    assert_eq!(
+        fired.routing_refused,
+        Vec::new(),
+        "an excluded candidate is a miss, not a refusal"
+    );
+    let internal = declared_internal_damage();
+    assert_eq!(
+        damage.remaining_integrity(&actor(3), &key(HULL)),
+        Some(40.0 - 2.0 * internal),
+        "the aircraft hostile to both took one declared amount per round"
+    );
+    assert_eq!(
+        damage.remaining_integrity(&actor(4), &key(HULL)),
+        Some(40.0 - internal),
+        "the contested aircraft took only the player's round, not both"
+    );
 }
