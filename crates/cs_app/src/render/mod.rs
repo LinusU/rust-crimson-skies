@@ -113,8 +113,21 @@
 //! `MaterialGap` and `FrameSync::unmaterialed` are gone with it: no class can
 //! reach the consumer without a material, so the additive pass is placed like
 //! any other batch instead of being counted as a gap. [`sync::FrameSync`]
-//! reports only what it did — spawned, reused, placed, released, withheld — so
-//! nothing is left in it that could only ever be zero.
+//! reports only what it did — spawned, reused, placed, released, reclaimed,
+//! withheld — so nothing is left in it that could only ever be zero.
+//!
+//! # Store lifetime of a released batch
+//!
+//! The consumer adds a mesh and a material for every batch it spawns, and before
+//! Rally #512 it removed neither when the batch was released: a spawn-then-
+//! release cycle left one orphaned entry in each store for the life of the
+//! session, which is a leak on a gameplay path now that the F20-C draw consumer
+//! releases a batch whenever the composed visibility verdict withholds all of
+//! its rows. `sync::release_entity` now owns that rule for all three release
+//! call sites — the stale-batch loop, the repair in `reuse_batch` and
+//! [`sync::teardown`] — and reports it as [`sync::ReclaimedAssets`]. The
+//! `accept_t512_` selection in `crates/cs_app/tests/render/release_assets.rs`
+//! covers it, including the additive class's separate material store.
 //!
 //! # Acceptance tests
 //!

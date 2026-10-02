@@ -16,7 +16,11 @@
 //! content only, proving the contract rather than the original renderer. The
 //! `accept_f17_c_paint_` follow-up adds one `#[ignore]`d retail test and its
 //! evidence harness, which read the original installation at `$CS_GAME_DIR`
-//! only when run locally with `--include-ignored`.
+//! only when run locally with `--include-ignored`. The `accept_t512_`
+//! selection in `release_assets.rs` covers the store lifetime of a released
+//! batch (Rally #512): what a spawn adds to `Assets<Mesh>` and to a material
+//! store, what a release hands back, and what a frame that reuses every batch
+//! adds.
 
 mod adapters;
 mod additive_material;
@@ -26,4 +30,5 @@ mod frame_capture;
 mod golden_scene;
 mod paint;
 mod profiles;
+mod release_assets;
 mod visibility_consumer;

@@ -38,7 +38,7 @@
 //!    previous frame spawned and this one does not claim is despawned — with
 //!    the per-instance entities below it, which a recursive despawn takes with
 //!    it. Reloading a frame a hundred times leaves the live entity count
-//!    unchanged.
+//!    unchanged — and, by rule 6, the store counts unchanged with it.
 //! 4. **Nothing is drawn from nothing.** A world with no asset store is
 //!    refused ([`SyncError::NoAssetStore`]) rather than drawn with unbound
 //!    textures, and every batch draws with the material its own render state
@@ -56,6 +56,26 @@
 //!    [`FrameSync::visibility`]. This consumer ranks nothing of its own: it
 //!    places the rows the verdict draws, withholds the rest before the first
 //!    entity of that batch is written, and counts every row it decided about.
+//!
+//!    This is also what makes rule 7 a gameplay-frequency rule rather than a rare
+//!    one: a verdict that withholds *every* row of a batch releases that batch,
+//!    and a verdict that starts drawing them again spawns it.
+//! 7. **A released batch takes its assets back with it.** A batch entity
+//!    *owns* the two store entries this module added for it: the
+//!    [`Assets<Mesh>`] entry the spawn uploaded and the material entry
+//!    [`add_material`] created. Its per-instance entities *borrow* those
+//!    two handles ([`BatchAssets`]). Releasing the batch despawns the entity
+//!    and its placements first and only then hands each owned entry back to
+//!    its store, and hands back only an entry no live batch still names
+//!    ([`BatchAssetRefs`]), so one entry is returned once and a handle some
+//!    live entity still draws with is left in place
+//!    ([`FrameSync::reclaimed`]).
+//!
+//!    Rules 3 and 7 together are what keep a frame path that releases and
+//!    respawns a batch every other tick: rule 6's own release path. Without
+//!    rule 7 that path would leave one mesh and one material in their stores
+//!    on each pass, the way a reused batch would leave one material per frame
+//!    if [`add_material`] had no reuse guard either.
 //!
 //! # What the presentation reaches, and what it does not
 //!
@@ -98,7 +118,7 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use bevy::asset::{Assets, Handle};
+use bevy::asset::{AssetId, Assets, Handle};
 use bevy::core_pipeline::tonemapping::Tonemapping as BevyTonemapping;
 use bevy::ecs::entity::Entity;
 use bevy::ecs::hierarchy::{ChildOf, Children};
@@ -323,6 +343,103 @@ impl BatchDraw {
 #[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
 struct BatchEntities(BTreeMap<[u8; 32], Entity>);
 
+/// Component: the two store entries this batch added, and is answerable for.
+///
+/// The ownership rule in one place. A batch entity **owns** the
+/// [`Assets<Mesh>`] entry [`sync_frame`] added when it spawned the batch and the
+/// material entry [`add_material`] created for it, and nothing else owns them:
+/// this module adds both and puts them on the entity that draws them. Its
+/// per-instance entities **borrow** the very same two handles, and the batch's
+/// despawn is recursive, so every borrow ends with the owner.
+///
+/// Recorded on the entity rather than kept beside it because the release path
+/// reads it *there*, before the despawn that takes it away: an entry is looked up
+/// by the id its owner recorded, so a released batch hands back exactly the two
+/// entries it added and cannot hand back the same entry twice.
+///
+/// An entity found under a batch key that carries no such record owns nothing —
+/// it was spawned by something else, or its record is gone — and a release leaves
+/// the stores alone.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+struct BatchAssets {
+    mesh: AssetId<Mesh>,
+    material: OwnedMaterial,
+}
+
+/// The material store entry a batch owns.
+///
+/// Which store an id belongs to is a function of the batch's own render state,
+/// and a `Handle` cannot say, so the id travels with its store: this is the
+/// field that makes one release able to return both kinds of entry.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum OwnedMaterial {
+    /// An `Assets<StandardMaterial>` entry, for the five non-additive classes.
+    Standard(AssetId<StandardMaterial>),
+    /// An `Assets<AdditiveMaterial>` entry, for the additive class.
+    Additive(AssetId<AdditiveMaterial>),
+}
+
+/// Resource: how many live batch entities own each store entry this module
+/// added.
+///
+/// Kept beside the entities because the two are changed together: an entry is
+/// registered by the spawn that added it and dropped by the release that ended
+/// its owner, so "no live batch names this entry any more" is a count that
+/// reaches zero rather than a guess about what else in the world might still be
+/// holding the handle. A release therefore drops one owner and returns an entry
+/// only when that was the last one — which is what "a still-referenced handle is
+/// not removed" means here.
+///
+/// One owner is the ordinary case, because a spawn adds a fresh mesh and a fresh
+/// material for every batch it creates. The count is per id rather than per
+/// batch so that the two-owner case is a decision the code makes rather than an
+/// assumption it documents: if a future change hands one entry to two batches —
+/// the mesh path sharing by geometry fingerprint, the way the image path already
+/// shares by paint fingerprint — the first release to end does not pull the
+/// entry out from under the other.
+#[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
+struct BatchAssetRefs {
+    meshes: BTreeMap<AssetId<Mesh>, usize>,
+    materials: BTreeMap<OwnedMaterial, usize>,
+}
+
+impl BatchAssetRefs {
+    /// Registers one new owner of the two entries a spawn added.
+    fn own(&mut self, owned: BatchAssets) {
+        *self.meshes.entry(owned.mesh).or_default() += 1;
+        *self.materials.entry(owned.material).or_default() += 1;
+    }
+
+    /// Drops one owner of a mesh entry and reports whether any owner is left.
+    fn drop_mesh(&mut self, mesh: AssetId<Mesh>) -> bool {
+        Self::drop_owner(&mut self.meshes, mesh)
+    }
+
+    /// Drops one owner of a material entry and reports whether any owner is left.
+    fn drop_material(&mut self, material: OwnedMaterial) -> bool {
+        Self::drop_owner(&mut self.materials, material)
+    }
+
+    /// Drops one owner and reports whether the entry is unowned.
+    ///
+    /// An entry nobody registered is reported unowned: nothing in this module
+    /// names it, so a release that drops it removes one store entry and reports
+    /// whether there was one to remove.
+    fn drop_owner<K: Ord>(owners: &mut BTreeMap<K, usize>, key: K) -> bool {
+        match owners.get_mut(&key) {
+            Some(count) => {
+                *count -= 1;
+                if *count > 0 {
+                    return false;
+                }
+                owners.remove(&key);
+                true
+            }
+            None => true,
+        }
+    }
+}
+
 /// Component: one row of a batch, placed in the world.
 ///
 /// A batch is *one draw of one geometry*, so the *n* instances it covers are
@@ -369,6 +486,31 @@ pub struct PresentationReach {
     pub windows: usize,
 }
 
+/// Store entries a sync or a teardown handed back to their stores.
+///
+/// Counted per store and only when a removal actually removed something, so a
+/// second release of the same batch adds nothing here and the counts are the
+/// number of entries that really left, not the number of release attempts.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ReclaimedAssets {
+    /// `Assets<Mesh>` entries a released batch owned.
+    pub meshes: usize,
+    /// `Assets<StandardMaterial>` entries a released batch owned.
+    pub materials: usize,
+    /// `Assets<AdditiveMaterial>` entries a released batch owned.
+    pub additive_materials: usize,
+}
+
+impl ReclaimedAssets {
+    /// Folds another release's counts into this one's, so a sync or a teardown
+    /// that releases several batches reports one total.
+    fn absorb(&mut self, other: Self) {
+        self.meshes += other.meshes;
+        self.materials += other.materials;
+        self.additive_materials += other.additive_materials;
+    }
+}
+
 /// What [`sync_frame`] did.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct FrameSync {
@@ -378,6 +520,10 @@ pub struct FrameSync {
     pub reused: usize,
     /// Entities the previous frame spawned and this one does not claim.
     pub released: usize,
+    /// Store entries the released batches owned and handed back: the other half
+    /// of [`FrameSync::released`], and the count that keeps a frame path which
+    /// releases and respawns a batch from growing a store every other tick.
+    pub reclaimed: ReclaimedAssets,
     /// Per-instance entities the live batches carry. Equal to the frame's
     /// instance count when every row is placed, which is what makes "each
     /// aircraft is drawn at its own place" a reported fact rather than an
@@ -406,6 +552,8 @@ pub struct FrameSync {
 pub struct RenderTeardown {
     /// Batch entities despawned.
     pub entities: usize,
+    /// Store entries the despawned batches owned and handed back.
+    pub reclaimed: ReclaimedAssets,
     /// Whether a session state was dropped.
     pub sessions: bool,
 }
@@ -743,6 +891,12 @@ fn push_optional_hash(bytes: &mut Vec<u8>, hash: Option<ContentHash>) {
 /// batch that samples no image binds nothing for its paint — a material with
 /// no texture slot has no texels to paint.
 ///
+/// A batch this frame spawns records the mesh and material entries it added
+/// ([`BatchAssets`]), and a batch it releases hands them back
+/// ([`FrameSync::reclaimed`]). A frame that reuses every batch does neither, so
+/// neither the reuse path nor the release path grows a store: one asset per
+/// batch per frame would be a leak only a store count sees.
+///
 /// # Errors
 ///
 /// [`SyncError`] before anything is written, [`SyncError::NoSubmittedDraw`]
@@ -897,11 +1051,22 @@ pub fn sync_frame(
             // placed for it is released below with everything else this frame
             // no longer claims. `previous` is deliberately not touched here —
             // a released batch must go through the one release path, so the
-            // count in `released` and the live map cannot disagree.
+            // count in `released`, what that path hands back to the stores, and
+            // the live map cannot disagree.
             continue;
         }
-        let existing = reuse_batch(&mut previous, key, world, &mut report.released);
+        let existing = reuse_batch(
+            &mut previous,
+            key,
+            world,
+            &mut report.released,
+            &mut report.reclaimed,
+        );
         let reused = existing.is_some();
+        // What a spawn added, recorded for the release that will end it. A
+        // reused batch adds nothing and owns nothing new, so its own record —
+        // already on the entity it reused — stays as it is.
+        let mut added_mesh = None;
         let (entity, mesh) = match existing {
             Some(found) => {
                 report.reused += 1;
@@ -911,6 +1076,7 @@ pub fn sync_frame(
                 let mesh = world
                     .resource_mut::<Assets<Mesh>>()
                     .add(upload.geometry().mesh().clone());
+                added_mesh = Some(mesh.id());
                 let entity = world.spawn_empty().id();
                 world.entity_mut(entity).insert(Mesh3d(mesh.clone()));
                 report.spawned += 1;
@@ -957,11 +1123,30 @@ pub fn sync_frame(
         // counts batches would see. The upload's material value is therefore
         // *borrowed* here and only built by [`add_material`] in the branch that
         // actually adds one: a frame that reuses every batch copies a handle per
-        // batch, not a whole `StandardMaterial` per batch.
-        let material = match stored_material(world, entity, upload.material().kind()) {
-            Some(current) => current,
-            None => add_material(world, upload.material(), image.clone()),
-        };
+        // batch, not a whole `StandardMaterial` per batch. The other half of
+        // that same rule is [`release_entity`], which hands back what a spawn
+        // added when the batch that owns it ends.
+        let (material, added_material) =
+            match stored_material(world, entity, upload.material().kind()) {
+                Some(current) => (current, None),
+                None => {
+                    let (material, added) = add_material(world, upload.material(), image.clone());
+                    (material, Some(added))
+                }
+            };
+        // The owner record, for the batch that added both entries. Paired
+        // rather than recorded field by field: a batch that owned half of what it
+        // added would hand back one entry and leak the other, so an owner record
+        // exists only when both exist.
+        if let Some(owned) = added_mesh
+            .zip(added_material)
+            .map(|(mesh, material)| BatchAssets { mesh, material })
+        {
+            world.entity_mut(entity).insert(owned);
+            world
+                .get_resource_or_insert_with(BatchAssetRefs::default)
+                .own(owned);
+        }
         world.entity_mut(entity).insert(BatchDraw {
             key: digest,
             phase: batch.phase(),
@@ -979,9 +1164,11 @@ pub fn sync_frame(
     }
 
     // Everything the previous frame spawned and this frame does not claim is
-    // released, so a reload leaves no stale geometry behind.
+    // released, so a reload leaves no stale geometry behind — and no orphaned
+    // mesh or material behind it either.
     for entity in previous.values() {
-        release_entity(*entity, world, &mut report.released);
+        let reclaimed = release_entity(*entity, world, &mut report.released);
+        report.reclaimed.absorb(reclaimed);
     }
     world.insert_resource(BatchEntities(live));
     report.presentation = apply_presentation(world, presentation, msaa);
@@ -1040,30 +1227,32 @@ enum BatchMaterial {
 ///
 /// The value is cloned out of `material` here, in the one branch that needs an
 /// owned value to hand to a store, so a frame that reuses every batch does not
-/// pay for a material per batch.
+/// pay for a material per batch. The id of the entry added is returned beside
+/// the handle, because the caller is the one that knows what the batch owns and
+/// the release that has to hand it back.
 fn add_material(
     world: &mut World,
     material: &DrawableMaterial,
     image: Option<Handle<Image>>,
-) -> BatchMaterial {
+) -> (BatchMaterial, OwnedMaterial) {
     match material {
         DrawableMaterial::Standard(standard) => {
             let mut standard = standard.as_ref().clone();
             standard.base_color_texture = image;
-            BatchMaterial::Standard(
-                world
-                    .resource_mut::<Assets<StandardMaterial>>()
-                    .add(standard),
-            )
+            let handle = world
+                .resource_mut::<Assets<StandardMaterial>>()
+                .add(standard);
+            let owned = OwnedMaterial::Standard(handle.id());
+            (BatchMaterial::Standard(handle), owned)
         }
         DrawableMaterial::Additive(additive) => {
             let mut additive = additive.clone();
             additive.base_color_texture = image;
-            BatchMaterial::Additive(
-                world
-                    .resource_mut::<Assets<AdditiveMaterial>>()
-                    .add(additive),
-            )
+            let handle = world
+                .resource_mut::<Assets<AdditiveMaterial>>()
+                .add(additive);
+            let owned = OwnedMaterial::Additive(handle.id());
+            (BatchMaterial::Additive(handle), owned)
         }
     }
 }
@@ -1108,11 +1297,17 @@ fn set_material(world: &mut World, entity: Entity, material: BatchMaterial) {
 /// draw. One that no longer carries the draw's components is not it: it is
 /// released and a fresh entity is spawned rather than repaired in place, and a
 /// key whose entity is already gone is simply dropped from the map.
+///
+/// A released entity here hands its own store entries back exactly like the
+/// stale batch at the end of [`sync_frame`] does: both go through
+/// [`release_entity`], so the repair path cannot be a second place a mesh or a
+/// material is orphaned.
 fn reuse_batch(
     previous: &mut BTreeMap<[u8; 32], Entity>,
     key: [u8; 32],
     world: &mut World,
     released: &mut usize,
+    reclaimed: &mut ReclaimedAssets,
 ) -> Option<(Entity, Handle<Mesh>)> {
     let entity = previous.remove(&key)?;
     if world.get_entity(entity).is_err() {
@@ -1122,7 +1317,7 @@ fn reuse_batch(
         .get_entity(entity)
         .is_ok_and(|found| found.contains::<BatchDraw>() && found.contains::<Mesh3d>());
     if !usable {
-        release_entity(entity, world, released);
+        reclaimed.absorb(release_entity(entity, world, released));
         return None;
     }
     let mesh = world
@@ -1133,13 +1328,74 @@ fn reuse_batch(
     Some((entity, mesh))
 }
 
-/// Despawns `entity` and its placements, counting it, if it is still alive.
-fn release_entity(entity: Entity, world: &mut World, released: &mut usize) {
-    if world.get_entity(entity).is_ok() {
-        *released += 1;
-        // Recursive: the per-instance entities go with the batch.
-        world.entity_mut(entity).despawn();
+/// Despawns `entity` and its placements, counting it, if it is still alive, and
+/// returns the store entries it owned.
+///
+/// The order is the rule: the entries the entity owns are read first, then the
+/// entity and every placement under it are despawned — which drops every
+/// reference this module made to those entries, because a placement draws with
+/// the batch's own handles — and only then is an unowned entry removed from its
+/// store. Removing first would leave the placements holding a handle that no
+/// longer resolves, which is a live entity drawing an asset that is gone.
+///
+/// Returns nothing for an entity that is already gone or owns no entries: the
+/// entry is looked up by the id the owner recorded, so a second release of the
+/// same batch finds no record and removes nothing.
+fn release_entity(entity: Entity, world: &mut World, released: &mut usize) -> ReclaimedAssets {
+    if world.get_entity(entity).is_err() {
+        return ReclaimedAssets::default();
     }
+    // Read before the despawn: the record goes with the entity.
+    let owned = world.get::<BatchAssets>(entity).copied();
+    *released += 1;
+    // Recursive: the per-instance entities go with the batch.
+    world.entity_mut(entity).despawn();
+    owned.map_or_else(ReclaimedAssets::default, |owned| {
+        reclaim_store_entries(world, owned)
+    })
+}
+
+/// Hands a released batch's own entries back to the stores they came from.
+///
+/// [`BatchAssetRefs`] decides *whether* an entry goes back: this call drops one
+/// owner of each, and an entry that still has an owner is left in place, because
+/// a live batch is still drawing it. The removal is a lookup by the id the owner
+/// recorded and is counted only when it removed something, so one entry is
+/// returned once however many releases pass through here.
+///
+/// A missing store is skipped rather than panicked on: a teardown of a world
+/// that never had one is a no-op, the same way [`teardown`] despawns nothing when
+/// nothing is live. [`sync_frame`] is the only caller that can reach a world
+/// whose stores are absent, and it refuses such a world before writing anything
+/// ([`SyncError::NoAssetStore`]).
+fn reclaim_store_entries(world: &mut World, owned: BatchAssets) -> ReclaimedAssets {
+    let mut refs = world
+        .remove_resource::<BatchAssetRefs>()
+        .unwrap_or_default();
+    let mesh_unowned = refs.drop_mesh(owned.mesh);
+    let material_unowned = refs.drop_material(owned.material);
+    world.insert_resource(refs);
+    let mut reclaimed = ReclaimedAssets::default();
+    if mesh_unowned && let Some(mut meshes) = world.get_resource_mut::<Assets<Mesh>>() {
+        reclaimed.meshes = usize::from(meshes.remove(owned.mesh).is_some());
+    }
+    match owned.material {
+        OwnedMaterial::Standard(id) => {
+            if material_unowned
+                && let Some(mut materials) = world.get_resource_mut::<Assets<StandardMaterial>>()
+            {
+                reclaimed.materials = usize::from(materials.remove(id).is_some());
+            }
+        }
+        OwnedMaterial::Additive(id) => {
+            if material_unowned
+                && let Some(mut materials) = world.get_resource_mut::<Assets<AdditiveMaterial>>()
+            {
+                reclaimed.additive_materials = usize::from(materials.remove(id).is_some());
+            }
+        }
+    }
+    reclaimed
 }
 
 /// Puts one placed entity per row under `batch`, and returns how many rows are
@@ -1264,17 +1520,109 @@ fn apply_presentation(
 ///
 /// The despawn is recursive, so the per-instance entities under each batch go
 /// with it; a teardown that left them would strand geometry in the world with
-/// nothing tracking it, which is the one thing rule 3 above forbids.
+/// nothing tracking it, which is the one thing rule 3 above forbids. Each
+/// released entity also hands back the mesh and material entries it added
+/// ([`RenderTeardown::reclaimed`]), so a session that ends leaves no orphan in a
+/// store either.
 ///
 /// A no-op when nothing is live, so a repeated teardown, a teardown after a
-/// refused request and a teardown at shutdown are all safe.
+/// refused request and a teardown at shutdown are all safe. The owner counts in
+/// [`BatchAssetRefs`] are left in place: they are the accounting for live
+/// owners, every release above already dropped the one it held, and an owner that
+/// a caller dropped without releasing would be a leak to report rather than a
+/// count to reset behind.
 pub fn teardown(world: &mut World) -> RenderTeardown {
     let mut report = RenderTeardown::default();
     if let Some(entities) = world.remove_resource::<BatchEntities>() {
         for entity in entities.0.values() {
-            release_entity(*entity, world, &mut report.entities);
+            let reclaimed = release_entity(*entity, world, &mut report.entities);
+            report.reclaimed.absorb(reclaimed);
         }
     }
     report.sessions = world.remove_resource::<RenderSessionState>().is_some();
     report
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A store entry two live batches name is handed back by neither of them
+    /// alone: the first release reports the entry as still owned and the second
+    /// reports it free, so it leaves its store once and not before a live entity
+    /// stopped drawing it.
+    ///
+    /// This is the branch of the release rule that a spawn cannot reach — a spawn
+    /// adds a fresh mesh and a fresh material for every batch — so it is checked
+    /// on the counter the release path itself uses, through the same
+    /// [`BatchAssetRefs`] the production [`release_entity`] consults. A counter
+    /// that reported "unowned" for the first of two releases would remove a
+    /// handle a live entity still draws with.
+    #[test]
+    fn accept_t512_a_store_entry_two_live_batches_name_is_handed_back_once() {
+        let mesh = AssetId::<Mesh>::invalid();
+        let material = OwnedMaterial::Standard(AssetId::<StandardMaterial>::invalid());
+        let owned = BatchAssets { mesh, material };
+        let mut refs = BatchAssetRefs::default();
+
+        refs.own(owned);
+        refs.own(owned);
+        assert_eq!(refs.meshes.get(&mesh), Some(&2));
+        assert_eq!(refs.materials.get(&material), Some(&2));
+
+        // The first owner to go leaves the entry alone: another live batch is
+        // still drawing it.
+        assert!(!refs.drop_mesh(mesh), "one owner of two is still an owner");
+        assert!(
+            !refs.drop_material(material),
+            "one owner of two is still an owner"
+        );
+
+        // The second one frees it, and the entry stops being counted so a third
+        // release finds nothing to drop.
+        assert!(refs.drop_mesh(mesh));
+        assert!(refs.drop_material(material));
+        assert!(!refs.meshes.contains_key(&mesh));
+        assert!(!refs.materials.contains_key(&material));
+        assert!(refs.drop_mesh(mesh), "an entry nobody owns is unowned");
+        assert!(refs.meshes.is_empty(), "and dropping it twice counts once");
+
+        // The two material stores are counted apart, so dropping one standard
+        // entry cannot free the additive store's.
+        let other = OwnedMaterial::Standard(AssetId::<StandardMaterial>::invalid());
+        let additive = OwnedMaterial::Additive(AssetId::<AdditiveMaterial>::invalid());
+        refs.own(BatchAssets {
+            mesh,
+            material: additive,
+        });
+        refs.own(BatchAssets {
+            mesh,
+            material: other,
+        });
+        refs.own(BatchAssets {
+            mesh,
+            material: other,
+        });
+        assert!(
+            !refs.drop_material(other),
+            "one standard owner of two is still an owner"
+        );
+        assert_eq!(
+            refs.materials.get(&additive),
+            Some(&1),
+            "dropping a standard entry did not touch the additive store's count"
+        );
+        assert!(refs.drop_material(other));
+        assert!(refs.drop_material(additive));
+        assert!(refs.materials.is_empty(), "both stores are empty again");
+        assert_eq!(
+            refs.meshes.get(&mesh),
+            Some(&3),
+            "the mesh owner count followed the three spawns"
+        );
+        assert!(!refs.drop_mesh(mesh), "two mesh owners are left");
+        assert!(!refs.drop_mesh(mesh), "and then one");
+        assert!(refs.drop_mesh(mesh));
+        assert!(refs.meshes.is_empty());
+    }
 }
