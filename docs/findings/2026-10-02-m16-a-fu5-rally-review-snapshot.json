@@ -1,0 +1,71 @@
+{
+  "schema": "rally-review-snapshot/1",
+  "task": "M16-A-FU5 (#484)",
+  "purpose": "The three committed evidence reports that named only an implementer or only a reviewer, and carried no hand-over placeholder, must name the implementer and the reviewer that actually ran, including whether the reviewer's context was fresh (docs/contracts/CLI-EVIDENCE.md, 'Evidence record minimum'; owner ruling 2026-09-28). M16-A-FU4 (#483) found them, recorded them as out of its scope and filed this follow-up. Rally is not reachable from CI or from an offline check, so the review facts read out of the Rally activity log are committed here and enforced against the reports and against the harness that writes them by tools/tests/test_evidence_review_identity.py.",
+  "source": "Rally activity log of project crimson-skies, read with the `rally` MCP server (get_task history per task) on 2026-10-02T04:36Z by deepseek-1/deepseek-1, agent instance acting under M16-A-FU5 (#484). The number given in the task description for each stage was confirmed against the key of the task that owns the branch and the report's `candidate_tree`; the description's #128 for F07-D was a typo (F07-D is #32, F31-D is #128).",
+  "read_at": "2026-10-02T04:36:00Z",
+  "read_by": "deepseek-1/deepseek-1",
+  "claim_started_source": "Rally's `task.started` event (none of these three was resumed by a different agent after a lapsed implement lease), and the `task.submitted` event for the hand-over time.",
+  "review_event_types": ["review.started", "task.approved", "task.merged"],
+  "actor_meaning": "Rally actor strings are `<agent instance>/<session label>`. Two claims from the same actor string are the same agent instance, so the second is not independent of the first (owner ruling 2026-09-28, review policy).",
+  "independent_is_derived": "The check derives independence from actor equality; this file records the actors and the event timestamps, not a verdict.",
+  "every_merged_stage_has_a_review_claim": "Rally only merges a stage through complete_review or its landing queue, so every stage listed here has at least one review claim and a reviewer to name.",
+  "scope": "Only the three reports that named a single agent rather than both an implementer and a reviewer and carried no hand-over placeholder: F05-D (reviewer and no implementer), F07-D (implementer and no reviewer) and F31-D (implementer and no reviewer). Every other committed report is either already honest, already covered by another snapshot, or written by a harness that reads the reviewer from the environment (shape `runtime`).",
+  "report_written_by_meaning": "Derived from the report's own Git history and `created_at` against the claim windows in the Rally log: a `created_at` inside a review claim means the reviewer regenerated the report, one inside the implement claim means the committed copy is the implementer's. `report_regenerated_on_reviewed_commit` is `true` only when the reviewer's run wrote the copy that reached `main`.",
+  "tasks": [
+    {
+      "task_key": "F05-D",
+      "rally_task": 24,
+      "evidence_report": "docs/findings/evidence/F05-D.json",
+      "merged_sha": "a14fda96d4927f069b37e001bc2e157534bf6af8",
+      "implementer": {
+        "actor": "bunny-1/bunny-1",
+        "claim_started": "2026-09-28T20:29:00Z",
+        "submitted": "2026-09-28T21:20:37Z"
+      },
+      "reviewer": {
+        "actor": "bunny-1/bunny-1",
+        "review_claim_started": "2026-09-28T21:20:49Z",
+        "merge_event": {"type": "task.merged", "actor": "bunny-1/bunny-1", "at": "2026-09-28T22:36:52Z"}
+      },
+      "report_written_by": "reviewer",
+      "report_regenerated_on_reviewed_commit": true
+    },
+    {
+      "task_key": "F07-D",
+      "rally_task": 32,
+      "evidence_report": "docs/findings/evidence/F07-D.json",
+      "merged_sha": "8f490bf048cd3d965f0f6f9599cd8700127b67c3",
+      "implementer": {
+        "actor": "glm-1/deepseek-1",
+        "claim_started": "2026-09-28T20:29:27Z",
+        "submitted": "2026-09-28T21:17:41Z"
+      },
+      "reviewer": {
+        "actor": "glm-1/deepseek-1",
+        "review_claim_started": "2026-09-28T21:17:57Z",
+        "merge_event": {"type": "task.merged", "actor": "glm-1/deepseek-1", "at": "2026-09-28T21:26:53Z"}
+      },
+      "report_written_by": "implementer",
+      "report_regenerated_on_reviewed_commit": false
+    },
+    {
+      "task_key": "F31-D",
+      "rally_task": 128,
+      "evidence_report": "docs/findings/evidence/F31-D.json",
+      "merged_sha": "90a5c331816b6a694bae979eab9ffd8909e414ba",
+      "implementer": {
+        "actor": "deepseek-1/deepseek-1",
+        "claim_started": "2026-10-01T07:03:40Z",
+        "submitted": "2026-10-01T07:28:32Z"
+      },
+      "reviewer": {
+        "actor": "deepseek-1/deepseek-1",
+        "review_claim_started": "2026-10-01T07:28:49Z",
+        "merge_event": {"type": "task.merged", "actor": "deepseek-1/deepseek-1", "at": "2026-10-01T09:35:14Z"}
+      },
+      "report_written_by": "reviewer",
+      "report_regenerated_on_reviewed_commit": true
+    }
+  ]
+}

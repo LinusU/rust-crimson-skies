@@ -211,9 +211,7 @@ fn evidence_report_f31_d_writes_the_acceptance_report() {
         assertion_array(&suite.assertions),
         artifact_array(&artifacts),
         jstr(
-            "implementer: deepseek-1, the agent that implemented and submitted #128. This stage \
-              makes no original-reference claim: it records a retail carrier-coverage audit and \
-              its own production tests, not a decoded original route."
+            "implementer: deepseek-1/deepseek-1 (Rally #128, implement claim of 2026-10-01T07:03:40Z, handed over at 07:28:32Z); reviewer: deepseek-1/deepseek-1 again, on the review claim of 2026-10-01T07:28:49Z, which re-ran the accept_f31_d_ selection with the retail capability and regenerated this report on the reviewed and rebased commit before merging it at 09:35:14Z. The same agent instance is on both sides, so this review is not independent and is not independent original-reference evidence; the review claim started seventeen seconds after the hand-over, so the activity log cannot prove a fresh context and none is claimed. No agent review replaces the owner's human approval. This stage makes no original-reference claim: it records a retail carrier-coverage audit and its own production tests, not a decoded original route."
         ),
         jstr(
             "acceptance suite run locally with the retail capability; this harness derives every \

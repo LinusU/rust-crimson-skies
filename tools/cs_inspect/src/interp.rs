@@ -2741,7 +2741,9 @@ mod tests {
             artifact(&log_path, "log"),
             artifact(&audit_path, "json"),
             artifact(&classes_copy, "txt"),
-            super::jstr("deepseek-1 (implementing agent)"),
+            super::jstr(
+                "implementer: glm-1/deepseek-1 (Rally #32, implement claim of 2026-09-28T20:29:27Z, handed over at 21:17:41Z), which ran the accept_f07_d_ selection with the retail capability and wrote this report in the implementing session; reviewer: glm-1/deepseek-1 again, on the review claim of 2026-09-28T21:17:57Z, which merged it at 21:26:53Z without regenerating the report. The same agent instance is on both sides, so this review is not independent and is not independent original-reference evidence; the review claim started sixteen seconds after the hand-over, so the activity log cannot prove a fresh context and none is claimed. No agent review replaces the owner's human approval",
+            ),
             super::jstr(&method),
         );
         let out = evidence_dir.join("acceptance.json");
