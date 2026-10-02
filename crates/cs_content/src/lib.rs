@@ -150,18 +150,24 @@
 //! `cs_sim::animated_object`; the conversion boundary is
 //! `cs_app::animation`.
 //!
-//! [`cameras`] is the F21-A declared camera contract
-//! (`specs/F21-cameras-cockpit-views-and-spyglass.md`, stage `### F21-A`):
+//! [`cameras`] is the F21-A/F21-B declared camera contract
+//! (`specs/F21-cameras-cockpit-views-and-spyglass.md`, stages `### F21-A` and
+//! `### F21-B`):
 //! the provenance-carrying [`cameras::DeclaredCameraModes`] set of
 //! [`cameras::DeclaredCameraMode`] records (a designed
 //! [`cameras::CameraModeKind`] vocabulary, each mode's
-//! [`cameras::ProjectionPolicy`], its [`cameras::Magnification`] and its
-//! target-tracking flag) and the [`cameras::AspectFraming`] rule. Every
+//! [`cameras::ProjectionPolicy`], its [`cameras::Magnification`], its
+//! target-tracking flag, its [`cameras::DeclaredPlacement`] — a
+//! [`cameras::CockpitViewpoint`] bound to a named
+//! [`cameras::CockpitBindingSource`] or a [`cameras::BodyOffset`] — and its
+//! [`cameras::LookLimits`]) and the [`cameras::AspectFraming`] rule. A
+//! cockpit mode may only declare a bound viewpoint, so an aircraft with no
+//! verified cockpit binding declares no cockpit view at all. Every
 //! load-bearing value is a `Resolved` and the original PC view list, field
-//! of view, axis, clipping planes and magnification are unmeasured, so the
-//! synthetic fixture is designed content and never an original measurement.
-//! Its runtime counterpart (the lowered projection and the framing math) is
-//! `cs_app::camera`.
+//! of view, axis, clipping planes, magnification, cockpit bindings and look
+//! range are unmeasured, so the synthetic fixture is designed content and
+//! never an original measurement. Its runtime counterpart (the lowered
+//! records, the projection math and the rigs) is `cs_app::camera`.
 //!
 //! [`flight_tuning`] is the F24-A provenance-carrying tuning schema
 //! (`specs/F24-fixed-wing-flight-engine-stall-and-arcade-assists.md`, stage

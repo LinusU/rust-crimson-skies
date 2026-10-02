@@ -31,6 +31,14 @@
 //! * [`DeclaredCameraMode`] and [`DeclaredCameraModes`] — one mode, and one
 //!   owner's set with a declared default. A set names at most one mode of
 //!   each kind and its default must be present.
+//! * [`BodyOffset`], [`CockpitViewpoint`], [`CockpitBindingSource`],
+//!   [`DeclaredPlacement`] and [`LookLimits`] — the F21-B stage's records:
+//!   **where** a mode's camera sits relative to the aircraft it follows. A
+//!   cockpit mode may only declare a [`CockpitViewpoint`] — a named
+//!   model/config binding — so F21 non-negotiable behavior 1 ("cockpit
+//!   viewpoint comes from verified model/config bindings", and a HUD-only
+//!   synthetic camera is not a replacement for every original cockpit) is
+//!   enforced by the record rather than by a renderer's good intentions.
 //! * [`owns_camera_modes`] — the canonical rule for which catalog kind a mode
 //!   set may be attached to, decided in task #431 (`F21-A-CATALOG-KIND`).
 //!
@@ -355,6 +363,399 @@ impl fmt::Display for Magnification {
     }
 }
 
+/// A placement expressed in the **aircraft's own body frame**: metres along
+/// the body's right, up and forward axes (F16 canonical axes: `+X` right,
+/// `+Y` up, `-Z` forward).
+///
+/// A body-frame offset is deliberately *not* a world offset: it is the same
+/// three numbers for every aircraft pose, so a rig applies it to the
+/// authoritative pose it reads instead of caching a world position that a
+/// later pose would contradict.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct BodyOffset {
+    right_m: Meters,
+    up_m: Meters,
+    forward_m: Meters,
+}
+
+impl BodyOffset {
+    /// The aircraft's own origin: the camera sits exactly on the body
+    /// origin, with no offset along any axis.
+    pub const ZERO: Self = Self {
+        right_m: Meters(0.0),
+        up_m: Meters(0.0),
+        forward_m: Meters(0.0),
+    };
+
+    /// Assembles a body-frame offset.
+    ///
+    /// # Errors
+    ///
+    /// [`ViewpointError::NonFiniteOffset`] when a component is NaN or
+    /// infinite. Negative components are ordinary — "behind the aircraft" is
+    /// a negative forward distance — so only non-finite input is refused.
+    pub fn new(right_m: Meters, up_m: Meters, forward_m: Meters) -> Result<Self, ViewpointError> {
+        const AXES: [(&str, Meters); 3] = [
+            ("right_m", Meters(0.0)),
+            ("up_m", Meters(0.0)),
+            ("forward_m", Meters(0.0)),
+        ];
+        let values = [right_m, up_m, forward_m];
+        for ((axis, _), value) in AXES.into_iter().zip(values) {
+            if !value.0.is_finite() {
+                return Err(ViewpointError::NonFiniteOffset { axis });
+            }
+        }
+        Ok(Self {
+            right_m,
+            up_m,
+            forward_m,
+        })
+    }
+
+    /// The offset along the body's right axis (`+X`).
+    #[must_use]
+    pub const fn right_m(self) -> Meters {
+        self.right_m
+    }
+
+    /// The offset along the body's up axis (`+Y`).
+    #[must_use]
+    pub const fn up_m(self) -> Meters {
+        self.up_m
+    }
+
+    /// The offset along the body's forward axis (`-Z`).
+    #[must_use]
+    pub const fn forward_m(self) -> Meters {
+        self.forward_m
+    }
+}
+
+/// The longest cockpit binding name this contract accepts, in bytes.
+///
+/// Bounded because the name is a stable key an importer reads out of a model
+/// node or a configuration file: it is echoed into diagnostics and evidence
+/// records, so it cannot be an unbounded string from an untrusted source.
+pub const MAX_COCKPIT_BINDING_NAME: usize = 64;
+
+/// Where a cockpit viewpoint was bound from.
+///
+/// F21 non-negotiable behavior 1 requires the cockpit viewpoint to come from
+/// a *verified model/config binding*. Making the source part of the record is
+/// what lets a consumer ask that question later instead of assuming it: a
+/// binding names the model node or the configuration key it was read from,
+/// and the mode set's [`Origin`](cs_types::content::Origin) says whether those
+/// bytes were the owner's installation or a synthetic fixture.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub enum CockpitBindingSource {
+    /// Read from a node of the aircraft's cockpit model.
+    ModelNode {
+        /// The node the viewpoint was read from.
+        node: String,
+    },
+    /// Read from a configuration key.
+    ConfigKey {
+        /// The configuration key the viewpoint was read from.
+        key: String,
+    },
+}
+
+impl CockpitBindingSource {
+    /// The bound name — a model node or a configuration key.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        match self {
+            Self::ModelNode { node } => node,
+            Self::ConfigKey { key } => key,
+        }
+    }
+
+    /// The stable label used in reports.
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::ModelNode { .. } => "model_node",
+            Self::ConfigKey { .. } => "config_key",
+        }
+    }
+}
+
+impl fmt::Display for CockpitBindingSource {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}:{}", self.label(), self.name())
+    }
+}
+
+/// A verified cockpit viewpoint: the binding it was read from, where it sits
+/// in the aircraft's body frame, and how the pilot's head is oriented there.
+///
+/// The yaw and pitch are [`Resolved`] like every other unmeasured value in
+/// this module: an importer that read a viewpoint position but not its
+/// orientation leaves the orientation an explicit unknown and the lowering
+/// boundary refuses rather than assuming the pilot looks along the nose.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CockpitViewpoint {
+    source: CockpitBindingSource,
+    offset: BodyOffset,
+    yaw: Resolved<Radians>,
+    pitch: Resolved<Radians>,
+}
+
+impl CockpitViewpoint {
+    /// Assembles a cockpit viewpoint.
+    ///
+    /// # Errors
+    ///
+    /// [`ViewpointError`] when the binding name is empty or longer than
+    /// [`MAX_COCKPIT_BINDING_NAME`]. Only *known* orientation values are
+    /// range-checked; an unknown is a valid declared state that the lowering
+    /// boundary refuses.
+    pub fn try_new(
+        source: CockpitBindingSource,
+        offset: BodyOffset,
+        yaw: Resolved<Radians>,
+        pitch: Resolved<Radians>,
+    ) -> Result<Self, ViewpointError> {
+        match source.name().len() {
+            0 => return Err(ViewpointError::EmptyBindingName),
+            len if len > MAX_COCKPIT_BINDING_NAME => {
+                return Err(ViewpointError::BindingNameTooLong { len });
+            }
+            _ => {}
+        }
+        if let Resolved::Known(known) = &yaw {
+            require_finite_angle("yaw", known.value)?;
+        }
+        if let Resolved::Known(known) = &pitch {
+            require_finite_angle("pitch", known.value)?;
+        }
+        Ok(Self {
+            source,
+            offset,
+            yaw,
+            pitch,
+        })
+    }
+
+    /// The model node or configuration key this viewpoint was bound from.
+    #[must_use]
+    pub const fn source(&self) -> &CockpitBindingSource {
+        &self.source
+    }
+
+    /// Where the eye sits in the aircraft's body frame.
+    #[must_use]
+    pub const fn offset(&self) -> BodyOffset {
+        self.offset
+    }
+
+    /// The pilot's head yaw, or its explicit unknown.
+    #[must_use]
+    pub const fn yaw(&self) -> &Resolved<Radians> {
+        &self.yaw
+    }
+
+    /// The pilot's head pitch, or its explicit unknown.
+    #[must_use]
+    pub const fn pitch(&self) -> &Resolved<Radians> {
+        &self.pitch
+    }
+}
+
+/// The declared placement of one mode's camera relative to its aircraft.
+#[derive(Clone, Debug, PartialEq)]
+pub enum DeclaredPlacement {
+    /// A verified cockpit model/config binding (F21 non-negotiable behavior
+    /// 1). Only a [`CameraModeKind::Cockpit`] mode may declare it.
+    ///
+    /// Boxed because a viewpoint carries two provenance-carrying angles and
+    /// an enum is as large as its largest variant: without the box every
+    /// external and spyglass placement would carry a cockpit record's worth
+    /// of inline space. Build it with [`DeclaredPlacement::at_cockpit`].
+    Cockpit(Box<CockpitViewpoint>),
+    /// A body-frame offset from the aircraft's origin, with the camera
+    /// oriented along the aircraft's own axes.
+    BodyOffset(BodyOffset),
+}
+
+impl DeclaredPlacement {
+    /// A placement at a verified cockpit viewpoint.
+    #[must_use]
+    pub fn at_cockpit(viewpoint: CockpitViewpoint) -> Self {
+        Self::Cockpit(Box::new(viewpoint))
+    }
+
+    /// The stable label used in reports.
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::Cockpit(_) => "cockpit_viewpoint",
+            Self::BodyOffset(_) => "body_offset",
+        }
+    }
+
+    /// The cockpit binding, when this placement is one.
+    #[must_use]
+    pub const fn cockpit(&self) -> Option<&CockpitViewpoint> {
+        match self {
+            Self::Cockpit(viewpoint) => Some(viewpoint),
+            Self::BodyOffset(_) => None,
+        }
+    }
+
+    /// The body-frame offset, whichever placement this is.
+    #[must_use]
+    pub const fn offset(&self) -> BodyOffset {
+        match self {
+            Self::Cockpit(viewpoint) => viewpoint.offset(),
+            Self::BodyOffset(offset) => *offset,
+        }
+    }
+}
+
+impl fmt::Display for DeclaredPlacement {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Cockpit(viewpoint) => write!(f, "cockpit_viewpoint({})", viewpoint.source()),
+            Self::BodyOffset(offset) => write!(
+                f,
+                "body_offset(right {} m, up {} m, forward {} m)",
+                offset.right_m().0,
+                offset.up_m().0,
+                offset.forward_m().0
+            ),
+        }
+    }
+}
+
+/// The limits of a free-look offset, in radians.
+///
+/// Free look is **enhanced** support: the sheet's deliverable keeps "modern
+/// free-look/controller support" separate from the original default
+/// mappings, so these limits are project design, not a claim about the
+/// original game. They are declared per mode because they are a property of
+/// the rig, and they are typed because an unclamped look would flip the
+/// camera's up axis and turn a view into a disorientation.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LookLimits {
+    yaw: Radians,
+    pitch: Radians,
+}
+
+impl LookLimits {
+    /// A mode that does not free-look: every offset is clamped to zero.
+    pub const FIXED: Self = Self {
+        yaw: Radians(0.0),
+        pitch: Radians(0.0),
+    };
+
+    /// Assembles the limits from a half-extent per axis.
+    ///
+    /// # Errors
+    ///
+    /// [`ViewpointError`] when a half-extent is not finite, the yaw is not
+    /// inside `(-π, π)` or the pitch is not inside `(-π/2, π/2]`. The pitch
+    /// bound keeps the camera's up axis from becoming parallel to its view
+    /// direction, where no right axis exists.
+    pub fn new(yaw: Radians, pitch: Radians) -> Result<Self, ViewpointError> {
+        require_finite_angle("yaw", yaw)?;
+        require_finite_angle("pitch", pitch)?;
+        if yaw.0.abs() >= std::f64::consts::PI {
+            return Err(ViewpointError::LookYawOutOfRange { radians: yaw.0 });
+        }
+        if pitch.0.abs() > std::f64::consts::FRAC_PI_2 {
+            return Err(ViewpointError::LookPitchOutOfRange { radians: pitch.0 });
+        }
+        Ok(Self { yaw, pitch })
+    }
+
+    /// The yaw half-extent.
+    #[must_use]
+    pub const fn yaw(self) -> Radians {
+        self.yaw
+    }
+
+    /// The pitch half-extent.
+    #[must_use]
+    pub const fn pitch(self) -> Radians {
+        self.pitch
+    }
+}
+
+/// Rejects a NaN or infinite look angle, naming the axis.
+fn require_finite_angle(field: &'static str, value: Radians) -> Result<(), ViewpointError> {
+    if value.0.is_finite() {
+        Ok(())
+    } else {
+        Err(ViewpointError::LookAngleNonFinite { field })
+    }
+}
+
+/// Why a viewpoint, offset or look-limit record was rejected.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ViewpointError {
+    /// A body offset carried a NaN or infinite component.
+    NonFiniteOffset {
+        /// Which axis it was, `"right_m"`, `"up_m"` or `"forward_m"`.
+        axis: &'static str,
+    },
+    /// A cockpit binding named no model node or configuration key.
+    EmptyBindingName,
+    /// A cockpit binding name exceeded [`MAX_COCKPIT_BINDING_NAME`].
+    BindingNameTooLong {
+        /// The rejected name length in bytes.
+        len: usize,
+    },
+    /// A look angle was NaN or infinite.
+    LookAngleNonFinite {
+        /// Which angle it was, `"yaw"` or `"pitch"`.
+        field: &'static str,
+    },
+    /// A yaw half-extent fell outside `(-π, π)`.
+    LookYawOutOfRange {
+        /// The rejected angle in radians.
+        radians: f64,
+    },
+    /// A pitch half-extent fell outside `(-π/2, π/2]`.
+    LookPitchOutOfRange {
+        /// The rejected angle in radians.
+        radians: f64,
+    },
+}
+
+impl fmt::Display for ViewpointError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NonFiniteOffset { axis } => write!(f, "the body offset {axis} must be finite"),
+            Self::EmptyBindingName => {
+                write!(
+                    f,
+                    "a cockpit viewpoint must name the model node or configuration key it was read from"
+                )
+            }
+            Self::BindingNameTooLong { len } => write!(
+                f,
+                "a cockpit binding name is at most {MAX_COCKPIT_BINDING_NAME} bytes, got {len}"
+            ),
+            Self::LookAngleNonFinite { field } => {
+                write!(f, "the look limit {field} must be finite")
+            }
+            Self::LookYawOutOfRange { radians } => {
+                write!(f, "the look limit yaw {radians} rad is outside (-π, π)")
+            }
+            Self::LookPitchOutOfRange { radians } => {
+                write!(
+                    f,
+                    "the look limit pitch {radians} rad is outside (-π/2, π/2]"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for ViewpointError {}
+
 /// The declared projection policy of one camera mode.
 ///
 /// Every field is a [`Resolved`]: an importer that could not evidence a
@@ -433,6 +834,30 @@ pub enum CameraModeError {
         /// The rejected factor.
         value: f64,
     },
+    /// A cockpit mode declared a bare body offset instead of a verified
+    /// cockpit viewpoint.
+    ///
+    /// F21 non-negotiable behavior 1: the cockpit viewpoint comes from
+    /// verified model/config bindings, and a HUD-only synthetic camera is not
+    /// a replacement for every original cockpit. A mode that cannot name a
+    /// binding therefore declares no cockpit at all rather than an invented
+    /// eye.
+    CockpitViewpointRequired {
+        /// The mode kind that lacked one.
+        kind: CameraModeKind,
+    },
+    /// A mode that is not a cockpit declared a cockpit viewpoint.
+    ///
+    /// Only a [`CameraModeKind::Cockpit`] mode *is* a cockpit view; the
+    /// other kinds place themselves with a body offset, and claiming the
+    /// binding would let an external or spyglass view be described as
+    /// "the cockpit" while sitting somewhere else.
+    UnexpectedCockpitViewpoint {
+        /// The mode kind that declared it.
+        kind: CameraModeKind,
+    },
+    /// A placement or look-limit record was rejected.
+    Viewpoint(ViewpointError),
 }
 
 impl fmt::Display for CameraModeError {
@@ -457,24 +882,56 @@ impl fmt::Display for CameraModeError {
             Self::UnexpectedMagnification { kind, value } => {
                 write!(f, "the {kind} mode must not magnify, but declared {value}x")
             }
+            Self::CockpitViewpointRequired { kind } => write!(
+                f,
+                "the {kind} mode must place itself with a verified cockpit viewpoint binding, \
+                 not a bare body offset"
+            ),
+            Self::UnexpectedCockpitViewpoint { kind } => write!(
+                f,
+                "only a cockpit mode declares a cockpit viewpoint; the {kind} mode must use a body offset"
+            ),
+            Self::Viewpoint(error) => write!(f, "{error}"),
         }
     }
 }
 
-impl std::error::Error for CameraModeError {}
+impl std::error::Error for CameraModeError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            Self::Viewpoint(error) => Some(error),
+            _ => None,
+        }
+    }
+}
 
-/// One declared camera mode: its kind, its projection and its behavior
-/// flags.
+impl From<ViewpointError> for CameraModeError {
+    fn from(error: ViewpointError) -> Self {
+        Self::Viewpoint(error)
+    }
+}
+
+/// One declared camera mode: its kind, its projection, its placement and its
+/// behavior flags.
 ///
 /// The mode is a *sub-record* of a [`DeclaredCameraModes`] set, so it carries
 /// no subject of its own — its `kind` is its identity within the set. The
 /// [`Resolved`] fields carry their own provenance.
+///
+/// `placement` is **where** this mode's camera sits relative to the aircraft
+/// it follows (F21-B), and `look_limits` is how far a free-look offset may
+/// turn the view. Both belong to the mode because both are properties of the
+/// view rather than of the session: an aircraft with no verified cockpit
+/// binding declares no cockpit mode at all (F21 non-negotiable behavior 1),
+/// and every aircraft that does declare one shares the same eye and limits.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DeclaredCameraMode {
     kind: CameraModeKind,
     projection: ProjectionPolicy,
     magnification: Resolved<Magnification>,
     tracks_target: Resolved<bool>,
+    placement: DeclaredPlacement,
+    look_limits: Resolved<LookLimits>,
 }
 
 impl DeclaredCameraMode {
@@ -483,17 +940,22 @@ impl DeclaredCameraMode {
     /// Only *known* values are range-checked; an unknown is a valid declared
     /// state that the lowering boundary refuses. A non-spyglass mode must
     /// declare [`Magnification::ONE`] when it declares a magnification at
-    /// all.
+    /// all, and the placement must match the kind: a cockpit mode needs a
+    /// [`CockpitViewpoint`], every other kind a [`BodyOffset`].
     ///
     /// # Errors
     ///
     /// [`CameraModeError`] for a corrupt known field of view or clipping
-    /// range, or a non-spyglass magnification.
+    /// range, a non-spyglass magnification, a placement that does not match
+    /// the mode's kind, or a rejected [`ViewpointError`].
+    #[allow(clippy::too_many_arguments)]
     pub fn try_new(
         kind: CameraModeKind,
         projection: ProjectionPolicy,
         magnification: Resolved<Magnification>,
         tracks_target: Resolved<bool>,
+        placement: DeclaredPlacement,
+        look_limits: Resolved<LookLimits>,
     ) -> Result<Self, CameraModeError> {
         validate_projection(&projection)?;
         if let Resolved::Known(known) = &magnification
@@ -505,11 +967,23 @@ impl DeclaredCameraMode {
                 value: known.value.value(),
             });
         }
+        match (&placement, kind) {
+            (DeclaredPlacement::Cockpit(_), CameraModeKind::Cockpit) => {}
+            (DeclaredPlacement::Cockpit(_), kind) => {
+                return Err(CameraModeError::UnexpectedCockpitViewpoint { kind });
+            }
+            (DeclaredPlacement::BodyOffset(_), CameraModeKind::Cockpit) => {
+                return Err(CameraModeError::CockpitViewpointRequired { kind });
+            }
+            (DeclaredPlacement::BodyOffset(_), _) => {}
+        }
         Ok(Self {
             kind,
             projection,
             magnification,
             tracks_target,
+            placement,
+            look_limits,
         })
     }
 
@@ -535,6 +1009,18 @@ impl DeclaredCameraMode {
     #[must_use]
     pub const fn tracks_target(&self) -> &Resolved<bool> {
         &self.tracks_target
+    }
+
+    /// Where this mode's camera sits relative to the aircraft it follows.
+    #[must_use]
+    pub const fn placement(&self) -> &DeclaredPlacement {
+        &self.placement
+    }
+
+    /// The free-look limits of this mode, or its explicit unknown.
+    #[must_use]
+    pub const fn look_limits(&self) -> &Resolved<LookLimits> {
+        &self.look_limits
     }
 }
 
@@ -780,6 +1266,14 @@ fn degrees(value: f64) -> Radians {
 /// near/far planes and a 4x magnification to exercise the mode-specific
 /// fields; the cockpit and external views declare [`Magnification::ONE`].
 ///
+/// The placements are designed the same way: the cockpit binds a **synthetic**
+/// model node (`synthetic.pilot_eye`) one and a half metres forward and 1.2 m
+/// above the body origin, the chase view sits 12 m behind and 3 m above it, and
+/// the spyglass looks through the body origin. The cockpit node name is a
+/// fixture key: it is not a node of any original model, and the fixture's
+/// [`Origin::SyntheticFixture`] is exactly what keeps that from being read as
+/// a verified binding.
+///
 /// The owner is a synthetic **airframe** (`airframe/synthetic.camera-plane`),
 /// because a view set is what an aircraft offers a session: the cockpit mode
 /// is only available to an aircraft with a verified cockpit binding (F21
@@ -792,6 +1286,19 @@ pub fn declared_synthetic_camera_modes() -> DeclaredCameraModes {
         ProjectionPolicy::designed(degrees(60.0), 0.1, 10_000.0),
         known(Magnification::ONE),
         known(false),
+        DeclaredPlacement::at_cockpit(
+            CockpitViewpoint::try_new(
+                CockpitBindingSource::ModelNode {
+                    node: "synthetic.pilot_eye".to_owned(),
+                },
+                BodyOffset::new(Meters(0.0), Meters(1.2), Meters(-1.5))
+                    .expect("the synthetic pilot eye offset is finite"),
+                known(Radians(0.0)),
+                known(Radians(0.0)),
+            )
+            .expect("the synthetic cockpit viewpoint is valid"),
+        ),
+        known(synthetic_look_limits()),
     )
     .expect("the synthetic cockpit mode is valid");
     let external = DeclaredCameraMode::try_new(
@@ -799,6 +1306,11 @@ pub fn declared_synthetic_camera_modes() -> DeclaredCameraModes {
         ProjectionPolicy::designed(degrees(55.0), 0.1, 10_000.0),
         known(Magnification::ONE),
         known(false),
+        DeclaredPlacement::BodyOffset(
+            BodyOffset::new(Meters(0.0), Meters(3.0), Meters(-12.0))
+                .expect("the synthetic chase offset is finite"),
+        ),
+        known(synthetic_look_limits()),
     )
     .expect("the synthetic external mode is valid");
     let spyglass = DeclaredCameraMode::try_new(
@@ -806,6 +1318,11 @@ pub fn declared_synthetic_camera_modes() -> DeclaredCameraModes {
         ProjectionPolicy::designed(degrees(20.0), 1.0, 20_000.0),
         known(Magnification::new(4.0).expect("4.0 is a valid magnification")),
         known(true),
+        // The spyglass looks *through* the aircraft along the selected
+        // target, so its own eye is the body origin; the frustum it uses is
+        // the spyglass mode's, with the spyglass's own clipping planes.
+        DeclaredPlacement::BodyOffset(BodyOffset::ZERO),
+        known(synthetic_look_limits()),
     )
     .expect("the synthetic spyglass mode is valid");
 
@@ -818,4 +1335,18 @@ pub fn declared_synthetic_camera_modes() -> DeclaredCameraModes {
         Provenance::designed(claim()),
     )
     .expect("the declared synthetic camera mode fixture is valid")
+}
+
+/// The synthetic airframe's free-look limits: 120° either way and 60° up or
+/// down.
+///
+/// Project design, not a measured original range (see [`LookLimits`]): the
+/// numbers only have to keep the camera's up axis away from its view
+/// direction and give a pilot a wide glance.
+fn synthetic_look_limits() -> LookLimits {
+    LookLimits::new(
+        Radians(120.0_f64.to_radians()),
+        Radians(60.0_f64.to_radians()),
+    )
+    .expect("the synthetic look limits are in range")
 }
