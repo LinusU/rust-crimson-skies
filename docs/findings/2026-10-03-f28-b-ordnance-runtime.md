@@ -13,15 +13,16 @@ no audio, so no `private/evidence/` report is produced and none is claimed.
   `OrdnanceRuntimeError`, `LiveOrdnance`, `OrdnanceTick`, `GuidanceTick`,
   `OrdnanceRuntime` (with `launch`, `advance`, `decide`, `guidance_tick`,
   `apply_statuses`, `advance_status`, `route_trigger`, `register_nitro`,
-  `request_nitro`, `remove`) and the private `check_finite_wind`. One F28-A
-  function, `OrdnanceState::fuse_decision`, gains the retired-item branch
+  `request_nitro`, `remove`) and the private `check_finite_wind`. Two F28-A
+  functions are touched, `OrdnanceState::fuse_decision` (the retired-item
+  branch) and `OrdnanceState::advance` (a retired dud still ages), both
   described below.
 - `crates/cs_sim/src/weapons/mod.rs` (wiring only): the flat re-export list.
-- `crates/cs_sim/tests/accept_f28_b_ordnance_runtime.rs` (**new**, 12 tests).
+- `crates/cs_sim/tests/accept_f28_b_ordnance_runtime.rs` (**new**, 13 tests).
 - This file.
 
 No protected path, no `Cargo.toml`/`Cargo.lock` change, no original data, no
-binary. Task test prefix `accept_f28_b_`; 12 tests, all passing.
+binary. Task test prefix `accept_f28_b_`; 13 tests, all passing.
 
 **One observable failure, before the change:** F28-A defined every record and
 every *pure* decision, but nothing owned a **live** item or drove those
@@ -55,10 +56,10 @@ dependency, exactly the split F27-B made for gun rounds
   velocity and `advance` rebuilds the world frame each tick through
   `world_velocity_from_air_m_s`. A targeted component registers its
   `GuidanceTracker` at launch. A foreign-session item, a foreign-session
-  shooter, a duplicate id, a non-finite wind or release velocity, and a
-  zero-tick lifetime are each refused **by name**. The shooter and the item are
-  checked separately so the error's `found` names the generation that was
-  actually wrong.
+  shooter, a foreign-session designated target, a duplicate id, a non-finite
+  wind or release velocity, and a zero-tick lifetime are each refused **by
+  name**. The shooter, the item and the target are checked separately so the
+  error's `found` names the generation that was actually wrong.
 * **`advance`** is **all-or-nothing**: every item's next position is validated
   before any item moves, so a single non-representable next position refuses
   the whole tick and leaves every item exactly where it was. The returned
@@ -89,13 +90,14 @@ dependency, exactly the split F27-B made for gun rounds
   `OrdnanceRuntimeError::AlreadyRouted`, which is how "apply damage once even
   if several collision features report the same hit" becomes structural here
   too. An un-triggered item is refused by name rather than silently skipped.
-* **`register_nitro` / `request_nitro`** wrap one actor's `NitroLedger`. The
+* **`register_nitro` / `request_nitro`** wrap one actor's `NitroLedger`, and
+  registration refuses a foreign-session actor by name like `launch` does. The
   request takes the held control and a tick, never a duration, and a refused
   activation consumes nothing. The whole runtime exposes no pose and no method
   takes a `std::time::Duration`, so AC04's "boost must never teleport or scale
   render dt" is structural rather than a convention.
 
-## The one F28-A function F28-B changes
+## The two F28-A functions F28-B changes
 
 `OrdnanceState::fuse_decision` now returns `FuseInert::AlreadyTriggered` first
 for a **retired** (`destroyed`) item. F28-A's `retire` documents exactly this
@@ -107,6 +109,19 @@ arming/impact/proximity tests and could still trigger. That is the case
 `guidance_tick` retires the item on a `Disarm` loss, and its fuse must never
 fire afterwards. The change is a two-line early return at the top of the
 function and no F28-A test regressed.
+
+`OrdnanceState::advance` now ages a **retired** (`destroyed`) item instead of
+freezing its clock. F28-A's `retire` ends the item's *fuse*, not its lifetime,
+and `LostTargetBehavior::Disarm` documents that the dud "remains visible until
+its lifetime expires" — but the old `destroyed || is_triggered` early return
+froze `ticks_live`, so `is_expired` could never become true and the runtime
+never removed the dud: it stayed live forever while `advance` kept moving it.
+Dropping the `destroyed` term lets the runtime's own lifetime accounting retire
+it. `accept_f28_b_a_retired_dud_expires_after_its_declared_lifetime` pins that:
+it retires a guided item through a `Disarm` loss, then spends its declared
+lifetime and asserts the runtime reports it expired and is empty. An item that
+has already *triggered* still stops counting, because the runtime retires such
+an item from its live set on the next tick. No F28-A test regressed.
 
 ## What this stage does not do (F28-C's and F28-D's halves)
 
@@ -152,7 +167,8 @@ Seven mutations were applied to the production code on the submitted
 signatures and the F28-B test binary re-run after each (a plain
 `cargo test -p cs_sim --test accept_f28_b_ordnance_runtime` is enough because
 the mutated code is exercised from that binary); the file was restored from a
-byte-identical backup (`shasum`) after each probe:
+byte-identical backup (`shasum`) after each probe. An eighth was added in
+review for the retired-dud expiry fix:
 
 | mutation | caught by |
 | --- | --- |
@@ -163,6 +179,7 @@ byte-identical backup (`shasum`) after each probe:
 | `route_trigger` drops the un-triggered check | `accept_f28_b_routing_refuses_an_untriggered_or_unknown_item` |
 | `advance` no longer removes expired items | `accept_f28_b_an_item_retires_after_its_declared_lifetime` |
 | `fuse_decision` drops the retired-item branch | `accept_f28_b_a_disarmed_item_can_never_fire_its_fuse` |
+| `advance` freezes a retired dud's clock again | `accept_f28_b_a_retired_dud_expires_after_its_declared_lifetime` |
 
 The minimum scenario itself is the first four rows: guidance loss is reported,
 enforced (the item ends or is retired) and terminal, and the tracker cannot

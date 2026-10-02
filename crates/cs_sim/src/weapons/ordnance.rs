@@ -2470,8 +2470,14 @@ impl OrdnanceState {
     /// The distance is the swept segment's own length, so it is the path the
     /// item actually flew rather than a speed multiplied by a nominal tick
     /// length.
+    ///
+    /// A **retired** item (`destroyed`) still ages: `retire` ends the item's
+    /// fuse, not its clock, so a dud stays visible until its own lifetime is
+    /// spent and the runtime can then expire it. Only an item that has already
+    /// triggered stops counting, because the runtime retires such an item from
+    /// its live set on the next tick.
     pub fn advance(&mut self, segment: &ProjectileSegment) {
-        if self.destroyed || self.is_triggered() {
+        if self.is_triggered() {
             return;
         }
         let from = segment.previous.to_array();
@@ -2488,7 +2494,9 @@ impl OrdnanceState {
     /// The order is the contract, and each step is a refusal the next one
     /// cannot override:
     ///
-    /// 1. already triggered → [`FuseInert::AlreadyTriggered`];
+    /// 1. already ended — triggered **or** retired — →
+    ///    [`FuseInert::AlreadyTriggered`]. A retired item is a dud, so its
+    ///    fuse can never fire, exactly as [`retire`](Self::retire) documents;
     /// 2. **not armed** → [`FuseInert::NotArmed`], whatever else this tick
     ///    reported. This is AC01's "not before arming";
     /// 3. a swept contact in `impacts` → [`FuseTrigger::Impact`];
@@ -4113,10 +4121,10 @@ impl OrdnanceRuntime {
     ///
     /// # Errors
     ///
-    /// [`OrdnanceRuntimeError`] when the item or the shooter is from another
-    /// session, a projectile with the same id is already live, a release
-    /// velocity or wind component is non-finite, or the declared lifetime is
-    /// zero.
+    /// [`OrdnanceRuntimeError`] when the item, the shooter or the designated
+    /// target is from another session, a projectile with the same id is
+    /// already live, a release velocity or wind component is non-finite, or
+    /// the declared lifetime is zero.
     pub fn launch(
         &mut self,
         shooter: ActorId,
@@ -4136,6 +4144,16 @@ impl OrdnanceRuntime {
             return Err(OrdnanceRuntimeError::ForeignSession {
                 expected: self.session,
                 found: shooter.session.get(),
+            });
+        }
+        if let Some(target) = target
+            && target.session.get() != self.session
+        {
+            // A tracker may only ever name a target of its own generation, so
+            // no id from one session can be resolved in another.
+            return Err(OrdnanceRuntimeError::ForeignSession {
+                expected: self.session,
+                found: target.session.get(),
             });
         }
         if self.live.contains_key(&projectile) {
@@ -4427,11 +4445,28 @@ impl OrdnanceRuntime {
     }
 
     /// Registers one actor's booster, starting it at full capacity.
-    pub fn register_nitro(&mut self, shooter: ActorId, parameters: NitroParameters) {
+    ///
+    /// # Errors
+    ///
+    /// [`OrdnanceRuntimeError::ForeignSession`] when the actor is from
+    /// another session generation: a booster is session-confined like every
+    /// other piece of the runtime's state.
+    pub fn register_nitro(
+        &mut self,
+        shooter: ActorId,
+        parameters: NitroParameters,
+    ) -> Result<(), OrdnanceRuntimeError> {
+        if shooter.session.get() != self.session {
+            return Err(OrdnanceRuntimeError::ForeignSession {
+                expected: self.session,
+                found: shooter.session.get(),
+            });
+        }
         self.nitro.insert(
             shooter,
             NitroLedger::new(self.session, self.tick, self.rate, parameters),
         );
+        Ok(())
     }
 
     /// Resolves one actor's nitro activation request for one tick.

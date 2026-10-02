@@ -312,6 +312,60 @@ fn accept_f28_b_a_disarmed_item_can_never_fire_its_fuse() {
     );
 }
 
+/// A retired dud is not immortal: it still ages with the session and is
+/// removed once its declared lifetime is spent, so a `Disarm` loss cannot leak
+/// a live item past the lifetime the component declared.
+#[test]
+fn accept_f28_b_a_retired_dud_expires_after_its_declared_lifetime() {
+    let definition = guided_with(
+        "synthetic.fixture_guided_disarm_expiry",
+        LostTargetBehavior::Disarm,
+    );
+    let target = actor(9);
+    let mut runtime = runtime();
+    runtime
+        .launch(
+            actor(1),
+            projectile(1),
+            &definition,
+            &transform(),
+            Some(target),
+            STILL_AIR,
+        )
+        .expect("the fixture launches");
+    let lifetime = runtime
+        .get(&projectile(1))
+        .expect("live")
+        .state()
+        .lifetime_ticks();
+
+    runtime.guidance_tick(SESSION, TargetObservation::destroyed(target, tick(1)));
+    assert!(
+        runtime
+            .get(&projectile(1))
+            .expect("a dud stays visible")
+            .state()
+            .is_retired(),
+        "the disarm loss retires the item"
+    );
+
+    let mut expired = false;
+    for _ in 0..lifetime {
+        let step = runtime.advance(tick_seconds(), STILL_AIR).expect("advance");
+        if step.expired.contains(&projectile(1)) {
+            expired = true;
+        }
+    }
+    assert!(
+        expired,
+        "a retired dud still reaches its declared lifetime and is reported expired"
+    );
+    assert!(
+        runtime.is_empty(),
+        "a retired dud does not leak past its declared lifetime"
+    );
+}
+
 /// Removing an item drops its tracker, so teardown cannot leave a stale id
 /// behind; an unguided item registers no tracker at all.
 #[test]
@@ -576,8 +630,26 @@ fn accept_f28_b_a_timed_status_effect_expires_on_its_tick_and_resets() {
 /// no pose or duration, and an unavailable activation consumes nothing.
 #[test]
 fn accept_f28_b_nitro_changes_thrust_and_consumption_but_never_a_pose() {
+    let mut foreign = runtime();
+    assert_eq!(
+        foreign.register_nitro(
+            ActorId {
+                session: session(SESSION + 1),
+                serial: 1,
+            },
+            synthetic_nitro_parameters(),
+        ),
+        Err(OrdnanceRuntimeError::ForeignSession {
+            expected: SESSION,
+            found: SESSION + 1,
+        }),
+        "a booster from another generation is refused"
+    );
+
     let mut boosted = runtime();
-    boosted.register_nitro(actor(1), synthetic_nitro_parameters());
+    boosted
+        .register_nitro(actor(1), synthetic_nitro_parameters())
+        .expect("the booster registers for this session");
 
     // The ledger opens at tick 0; the first elapsed tick is tick 1, which is
     // the first tick that can consume capacity.
@@ -595,18 +667,20 @@ fn accept_f28_b_nitro_changes_thrust_and_consumption_but_never_a_pose() {
     // A tiny tank exhausts in one tick; the next request is refused and
     // consumes nothing at all.
     let mut drained = runtime();
-    drained.register_nitro(
-        actor(1),
-        cs_sim::weapons::ordnance::NitroParameters::try_new(
-            0.1,
-            3.0,
-            0.0,
-            4200.0,
-            NitroActivationRule::WhileHeld,
-            NitroTradeoffs::UNMEASURED,
+    drained
+        .register_nitro(
+            actor(1),
+            cs_sim::weapons::ordnance::NitroParameters::try_new(
+                0.1,
+                3.0,
+                0.0,
+                4200.0,
+                NitroActivationRule::WhileHeld,
+                NitroTradeoffs::UNMEASURED,
+            )
+            .expect("the tiny fixture is valid"),
         )
-        .expect("the tiny fixture is valid"),
-    );
+        .expect("the tiny booster registers for this session");
     let first = drained
         .request_nitro(&actor(1), tick(1), true)
         .expect("the first request is accepted");
@@ -661,6 +735,24 @@ fn accept_f28_b_launch_refuses_a_bad_request_by_name() {
             found: SESSION + 1,
         }),
         "a shooter from another generation is refused"
+    );
+    assert_eq!(
+        runtime.launch(
+            actor(1),
+            projectile(1),
+            &definition,
+            &transform(),
+            Some(ActorId {
+                session: session(SESSION + 1),
+                serial: 9,
+            }),
+            STILL_AIR,
+        ),
+        Err(OrdnanceRuntimeError::ForeignSession {
+            expected: SESSION,
+            found: SESSION + 1,
+        }),
+        "a designated target from another generation is refused"
     );
     assert_eq!(
         runtime.launch(
