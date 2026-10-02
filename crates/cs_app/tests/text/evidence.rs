@@ -360,13 +360,13 @@ fn review_identity() -> String {
         "implementer: deepseek-1/deepseek-1 (Rally #207, implement claim of \
             2026-10-01T13:02:33Z, handed over at 13:45:59Z); reviewer: deepseek-1/deepseek-1 \
             again, on the review claim of 2026-10-01T13:46:16Z, which re-ran the accept_f51_d_ \
-            selection, regenerated the report and found it matched the committed copy, whose \
-            created_at falls in the implement claim and is therefore this report's own bytes, and \
-            merged it at 14:04:32Z. The same agent instance is on both sides, so this review is \
-            not independent and is not independent original-reference evidence; the review claim \
-            started seventeen seconds after the hand-over, so the activity log cannot prove a \
-            fresh context and none is claimed. No agent review replaces the owner's human \
-            approval",
+            selection, regenerated the report, found it matched and merged it at 14:04:32Z. The \
+            bytes committed here are the implementer's own run, not the reviewer's: this report's \
+            created_at falls inside the implement claim. The same agent instance is on both sides, \
+            so this review is not independent and is not independent original-reference evidence; \
+            the review claim started seventeen seconds after the hand-over, so the activity log \
+            cannot prove a fresh context and none is claimed. No agent review replaces the owner's \
+            human approval",
     )
 }
 

@@ -139,7 +139,7 @@ nothing was regenerated and no claim level moved.
   been.** `created_at` is `iso_utc_now()` in that harness, so a regeneration
   during the review carries the review's own clock. The Rally log says
   "regenerated evidence (matched)"; the identity now says exactly that, and
-  records why the committed copy is still the implementer's bytes.
+  says in its own sentence that the bytes committed are the implementer's run.
 
 The counts in this note were wrong in three places and are corrected above: 36
 `literal` and 7 `runtime` harnesses (not 37 and 6), 38 harnesses compared
