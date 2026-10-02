@@ -1907,26 +1907,33 @@ impl TravellerCondition {
 /// completes a numbered objective.
 ///
 /// The condition carries zone names and an optional required count. It carries
-/// **no subject**, which is the measurement task #465 exists to record.
+/// **no subject**, which is the measurement task #465 exists to record. Its
+/// [`Self::keys`] are the **complete** field inventory of the block it lives
+/// in (not only the fields this reader interprets), which is the surface task
+/// #464 measures a payout or a repeat policy against: a block that paid a
+/// reward or stated a repeat rule would carry that key here.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StuntCompletionCondition {
     objective: String,
     zones: Vec<String>,
     required_count: Option<u32>,
+    keys: Vec<(String, u32)>,
 }
 
 impl StuntCompletionCondition {
-    /// Assembles one condition.
+    /// Assembles one condition with the complete key inventory of its block.
     #[must_use]
     pub fn new(
         objective: impl Into<String>,
         zones: Vec<String>,
         required_count: Option<u32>,
+        keys: Vec<(String, u32)>,
     ) -> Self {
         Self {
             objective: objective.into(),
             zones,
             required_count,
+            keys,
         }
     }
 
@@ -1947,6 +1954,26 @@ impl StuntCompletionCondition {
     #[must_use]
     pub const fn required_count(&self) -> Option<u32> {
         self.required_count
+    }
+
+    /// The complete key vocabulary of the block, sorted by key, with the number
+    /// of times each key occurs in it.
+    #[must_use]
+    pub fn keys(&self) -> &[(String, u32)] {
+        &self.keys
+    }
+
+    /// The keys of the block that name a payout, per [`REWARD_KEY_VOCABULARY`].
+    #[must_use]
+    pub fn reward_keys(&self) -> Vec<&str> {
+        vocabulary_keys(&self.keys, &REWARD_KEY_VOCABULARY)
+    }
+
+    /// The keys of the block that name a repeat policy, per
+    /// [`REPEAT_KEY_VOCABULARY`].
+    #[must_use]
+    pub fn repeat_keys(&self) -> Vec<&str> {
+        vocabulary_keys(&self.keys, &REPEAT_KEY_VOCABULARY)
     }
 }
 
@@ -1990,9 +2017,10 @@ impl ObjectiveStateMachine {
     }
 }
 
-/// The record an `objectives.zrd` member wraps: measured in every member of the
+/// The record a wrapped `.zrd` member holds: measured in every member of the
 /// installation, the root is a one-element list holding one flat alternating
-/// record.
+/// record. This is the shape of both `objectives.zrd` and the global reader's
+/// `player.zrd` (the score table), so the unwrapping is shared.
 ///
 /// A document that is already a record (or whose single child is not a record)
 /// is read as itself, so a hand-authored document needs no wrapper and a
@@ -2022,8 +2050,11 @@ pub fn objective_state_machine(document: &ZrdValue) -> ObjectiveStateMachine {
         machine.blocks += 1;
         let mut zones: Vec<String> = Vec::new();
         let mut required_count = None;
+        let mut block_counts: std::collections::BTreeMap<String, u32> =
+            std::collections::BTreeMap::new();
         for (field, field_value) in zrd_flat_fields(value) {
             *counts.entry(field.to_owned()).or_insert(0) += 1;
+            *block_counts.entry(field.to_owned()).or_insert(0) += 1;
             match field {
                 OBJECTIVE_DANGER_ZONES_KEY => {
                     zones = field_value
@@ -2068,6 +2099,7 @@ pub fn objective_state_machine(document: &ZrdValue) -> ObjectiveStateMachine {
                 block,
                 zones,
                 required_count,
+                block_counts.into_iter().collect(),
             ));
         }
     }
@@ -2158,6 +2190,20 @@ impl RetailObjectiveCorpus {
             .filter(|key| AUTHORITY_KEY_VOCABULARY.contains(key))
             .collect()
     }
+
+    /// The keys of this corpus that name a payout, per
+    /// [`REWARD_KEY_VOCABULARY`].
+    #[must_use]
+    pub fn reward_keys(&self) -> Vec<&str> {
+        vocabulary_keys(&self.keys, &REWARD_KEY_VOCABULARY)
+    }
+
+    /// The keys of this corpus that name a repeat policy, per
+    /// [`REPEAT_KEY_VOCABULARY`].
+    #[must_use]
+    pub fn repeat_keys(&self) -> Vec<&str> {
+        vocabulary_keys(&self.keys, &REPEAT_KEY_VOCABULARY)
+    }
 }
 
 /// The measured objective state machine of one reader.
@@ -2196,6 +2242,19 @@ impl RetailObjectiveMachine {
             .map(|(key, _)| key.as_str())
             .filter(|key| AUTHORITY_KEY_VOCABULARY.contains(key))
             .collect()
+    }
+
+    /// The machine keys that name a payout, per [`REWARD_KEY_VOCABULARY`].
+    #[must_use]
+    pub fn reward_keys(&self) -> Vec<&str> {
+        vocabulary_keys(&self.machine.keys, &REWARD_KEY_VOCABULARY)
+    }
+
+    /// The machine keys that name a repeat policy, per
+    /// [`REPEAT_KEY_VOCABULARY`].
+    #[must_use]
+    pub fn repeat_keys(&self) -> Vec<&str> {
+        vocabulary_keys(&self.machine.keys, &REPEAT_KEY_VOCABULARY)
     }
 }
 
@@ -2566,6 +2625,464 @@ impl RetailStuntAuthoritySurvey {
     /// settles it.
     #[must_use]
     pub const fn earning_authority_is_measured(&self) -> bool {
+        false
+    }
+}
+
+// ------------------------------- the reward and repeat surface (task #464) ---
+//
+// #463 measured *where* a stunt is spelled and #465 measured *who* may earn
+// one. Neither can say what a completion **pays** or whether a second pass
+// pays again, because the objective bytes that spell a stunt name a zone and
+// an objective number and nothing else. Task #464 asks the payout question
+// directly, and its answer has three measured parts:
+//
+//   * the objective **blocks** that carry the original's own stunt completion
+//     condition (`DANGER_ZONES_COMPLETED`) carry a complete, closed key
+//     inventory, and **none** of those keys names a payout or a repeat policy;
+//   * the objective **records** and the objective **state machine** carry no
+//     such key either;
+//   * the only numeric score table in the whole installation is the five-key
+//     `score_*` multiplayer match table in the global reader's `player.zrd`
+//     (kill, return flag, suicide, zep, enemy flag), and it names no stunt,
+//     no danger zone and no photo.
+//
+// What is **not** measured, and is not a field anywhere below: how many fame
+// points or how much cash the original paid for a stunt, and whether a repeat
+// traversal paid again. No file records either. The survey reports the surface
+// it measured and answers "unmeasured" with
+// `RetailStuntRewardSurvey::reward_is_measured()` and
+// `RetailStuntRewardSurvey::repeat_is_measured()`, so a consumer cannot mistake
+// "the data names no payout" for "the original paid nothing".
+
+/// The reader-archive member the original's only numeric score table lives in
+/// (measured: one reader carries it, the installation's global `zbd/zrdr.zbd`).
+pub const SCORE_CONFIG_MEMBER: &str = "player.zrd";
+
+/// The measured prefix of every key of that table (`score_kill`,
+/// `score_return_flag`, `score_suicide`, `score_zep`, `score_enemy_flag`).
+pub const SCORE_KEY_PREFIX: &str = "score_";
+
+/// The keys an objective record or objective block would carry **if** the
+/// original paid a reward for completing it.
+///
+/// Measured: none of them occurs anywhere in the installation's objective
+/// records or objective blocks. The list is a declared search vocabulary, not a
+/// claim that these are the spellings the original would have used.
+pub const REWARD_KEY_VOCABULARY: [&str; 16] = [
+    "fame",
+    "cash",
+    "money",
+    "score",
+    "reward",
+    "bonus",
+    "payout",
+    "pay",
+    "prize",
+    "points",
+    "credit",
+    "credits",
+    "award",
+    "medal",
+    "achievement",
+    "unlock",
+];
+
+/// The keys an objective record or objective block would carry **if** the
+/// original stated whether a completion may repeat.
+///
+/// Measured: none of them occurs anywhere in the installation's objective
+/// records or objective blocks. The original's only count-like field on a
+/// stunt block is [`OBJECTIVE_DANGER_ZONE_COUNT_KEY`], which says how many of
+/// the listed zones complete the objective — not how many times it may pay.
+pub const REPEAT_KEY_VOCABULARY: [&str; 10] = [
+    "repeat",
+    "repeatable",
+    "repeat_count",
+    "once",
+    "one_time",
+    "one-time",
+    "recurring",
+    "respawn",
+    "reset",
+    "reset_count",
+];
+
+/// The keys of `keys` that exactly equal an entry of `vocabulary`, in `keys`
+/// order.
+///
+/// Exact matching on purpose: a substring scan would read
+/// `DANGER_ZONES_COMPLETION_COUNT` as a repeat count, which is exactly the
+/// false positive a payout census must not have.
+#[must_use]
+pub fn vocabulary_keys<'a>(keys: &'a [(String, u32)], vocabulary: &[&str]) -> Vec<&'a str> {
+    keys.iter()
+        .map(|(key, _)| key.as_str())
+        .filter(|key| vocabulary.contains(key))
+        .collect()
+}
+
+/// One numeric entry of the measured `score_*` table.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScoreEntry {
+    key: String,
+    raw: u32,
+}
+
+impl ScoreEntry {
+    /// Assembles one entry from its measured key and stored word.
+    #[must_use]
+    pub fn new(key: impl Into<String>, raw: u32) -> Self {
+        Self {
+            key: key.into(),
+            raw,
+        }
+    }
+
+    /// The table key (`score_kill`).
+    #[must_use]
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// The stored word, exactly as the record holds it.
+    #[must_use]
+    pub const fn raw(&self) -> u32 {
+        self.raw
+    }
+
+    /// The same word read as a signed 32-bit score.
+    ///
+    /// The stored word is unsigned; `score_suicide` is the only entry whose
+    /// signed reading is negative, so this is a documented reinterpretation of
+    /// the measured word, not a decoded schema.
+    #[must_use]
+    pub const fn signed(&self) -> i32 {
+        self.raw as i32
+    }
+}
+
+/// The measured `score_*` entries of one `.zrd` record (the global `player.zrd`).
+///
+/// The real member wraps its record in a one-element list, so the document is
+/// unwrapped with [`objective_record`] exactly as `objectives.zrd` is. A record
+/// that carries no `score_*` key yields an empty list, never a zero-filled
+/// table: the absence of a payout is a measurement, not a default.
+#[must_use]
+pub fn score_entries(document: &ZrdValue) -> Vec<ScoreEntry> {
+    zrd_flat_fields(objective_record(document))
+        .into_iter()
+        .filter(|(key, _)| key.starts_with(SCORE_KEY_PREFIX))
+        .filter_map(|(key, value)| {
+            zrd_wrapped_int(value).map(|raw| ScoreEntry::new(key.to_owned(), raw))
+        })
+        .collect()
+}
+
+/// The measured `score_*` table of one reader, with the provenance of the
+/// member its bytes came from.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RetailScoreTable {
+    entries: Vec<ScoreEntry>,
+    span: StuntEncodingSpan,
+}
+
+impl RetailScoreTable {
+    /// Assembles one table row.
+    #[must_use]
+    pub fn new(entries: Vec<ScoreEntry>, span: StuntEncodingSpan) -> Self {
+        Self { entries, span }
+    }
+
+    /// The measured entries, in authored order.
+    #[must_use]
+    pub fn entries(&self) -> &[ScoreEntry] {
+        &self.entries
+    }
+
+    /// How many entries the table declares.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    /// Whether the table declares no `score_*` entry at all.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    /// The table keys, in authored order.
+    #[must_use]
+    pub fn keys(&self) -> Vec<&str> {
+        self.entries.iter().map(ScoreEntry::key).collect()
+    }
+
+    /// The stored word of `key`, when the table declares it.
+    #[must_use]
+    pub fn raw(&self, key: &str) -> Option<u32> {
+        self.entries
+            .iter()
+            .find(|entry| entry.key == key)
+            .map(ScoreEntry::raw)
+    }
+
+    /// Where the member's bytes are.
+    #[must_use]
+    pub const fn span(&self) -> &StuntEncodingSpan {
+        &self.span
+    }
+}
+
+/// One reader archive's measured payout/repeat surface.
+///
+/// A member is [`None`] when the reader carries none: only the installation's
+/// global reader carries `player.zrd`, and not every reader carries objectives.
+/// That is a measured absence, not a skipped row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RetailRewardRow {
+    container: String,
+    container_sha256: String,
+    objectives: Option<RetailObjectiveCorpus>,
+    machine: Option<RetailObjectiveMachine>,
+    score: Option<RetailScoreTable>,
+}
+
+impl RetailRewardRow {
+    /// Assembles one row.
+    #[must_use]
+    pub fn new(
+        container: impl Into<String>,
+        container_sha256: impl Into<String>,
+        objectives: Option<RetailObjectiveCorpus>,
+        machine: Option<RetailObjectiveMachine>,
+        score: Option<RetailScoreTable>,
+    ) -> Self {
+        Self {
+            container: container.into(),
+            container_sha256: container_sha256.into(),
+            objectives,
+            machine,
+            score,
+        }
+    }
+
+    /// The reader archive's logical key.
+    #[must_use]
+    pub fn container(&self) -> &str {
+        &self.container
+    }
+
+    /// SHA-256 of that whole container, from production discovery.
+    #[must_use]
+    pub fn container_sha256(&self) -> &str {
+        &self.container_sha256
+    }
+
+    /// The reader's objective records, when it declares any.
+    #[must_use]
+    pub const fn objectives(&self) -> Option<&RetailObjectiveCorpus> {
+        self.objectives.as_ref()
+    }
+
+    /// The reader's objective state machine, when it declares one.
+    #[must_use]
+    pub const fn machine(&self) -> Option<&RetailObjectiveMachine> {
+        self.machine.as_ref()
+    }
+
+    /// The reader's `score_*` table, when it carries one.
+    #[must_use]
+    pub const fn score(&self) -> Option<&RetailScoreTable> {
+        self.score.as_ref()
+    }
+}
+
+/// The measured payout/repeat surface of a whole installation (task #464).
+///
+/// One row per reader archive. The survey reports what the objective data
+/// **contains** — its complete key vocabularies, the complete key inventory of
+/// every stunt completion block, and the only numeric score table the
+/// installation carries — and answers the rule itself with
+/// [`Self::reward_is_measured`] and [`Self::repeat_is_measured`], which are
+/// `false`: no measured file records what a stunt paid or whether it paid
+/// again.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RetailStuntRewardSurvey {
+    install_sha256: String,
+    rows: Vec<RetailRewardRow>,
+}
+
+impl RetailStuntRewardSurvey {
+    /// Assembles the survey. Rows are keyed by their own container, so a
+    /// duplicate is impossible and no validation is needed.
+    #[must_use]
+    pub fn new(install_sha256: impl Into<String>, rows: Vec<RetailRewardRow>) -> Self {
+        Self {
+            install_sha256: install_sha256.into(),
+            rows,
+        }
+    }
+
+    /// The installation fingerprint the measurement was taken over.
+    #[must_use]
+    pub fn install_sha256(&self) -> &str {
+        &self.install_sha256
+    }
+
+    /// Every measured reader archive, in inventory order.
+    #[must_use]
+    pub fn rows(&self) -> &[RetailRewardRow] {
+        &self.rows
+    }
+
+    /// How many reader archives were walked.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// Whether no reader archive was walked.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    /// Every measured objective record.
+    #[must_use]
+    pub fn objective_records(&self) -> u32 {
+        self.rows
+            .iter()
+            .filter_map(|row| row.objectives())
+            .map(RetailObjectiveCorpus::count)
+            .sum()
+    }
+
+    /// Every measured numbered objective block.
+    #[must_use]
+    pub fn objective_blocks(&self) -> u32 {
+        self.rows
+            .iter()
+            .filter_map(|row| row.machine())
+            .map(|machine| machine.machine().blocks())
+            .sum()
+    }
+
+    /// The complete key vocabulary of the objective records **and** of the
+    /// objective blocks, summed over every row and sorted by key.
+    #[must_use]
+    pub fn objective_keys(&self) -> Vec<(String, u32)> {
+        let mut counts: std::collections::BTreeMap<String, u32> = std::collections::BTreeMap::new();
+        for row in &self.rows {
+            if let Some(corpus) = row.objectives() {
+                for (key, count) in &corpus.keys {
+                    *counts.entry(key.clone()).or_insert(0) += count;
+                }
+            }
+            if let Some(machine) = row.machine() {
+                for (key, count) in machine.machine().keys() {
+                    *counts.entry(key.clone()).or_insert(0) += count;
+                }
+            }
+        }
+        counts.into_iter().collect()
+    }
+
+    /// Every `(container, key)` whose key names a payout, per
+    /// [`REWARD_KEY_VOCABULARY`], in row order.
+    ///
+    /// Measured over the owner's installation: **empty**. That is a statement
+    /// about the objective data's vocabulary, not about what the game paid.
+    #[must_use]
+    pub fn reward_keys(&self) -> Vec<(String, String)> {
+        self.vocabulary_hits(&REWARD_KEY_VOCABULARY)
+    }
+
+    /// Every `(container, key)` whose key names a repeat policy, per
+    /// [`REPEAT_KEY_VOCABULARY`], in row order.
+    ///
+    /// Measured over the owner's installation: **empty**.
+    #[must_use]
+    pub fn repeat_keys(&self) -> Vec<(String, String)> {
+        self.vocabulary_hits(&REPEAT_KEY_VOCABULARY)
+    }
+
+    /// The `(container, key)` pairs of every objective key that exactly equals
+    /// an entry of `vocabulary`, over both the record and the machine surface.
+    fn vocabulary_hits(&self, vocabulary: &[&str]) -> Vec<(String, String)> {
+        let mut found = Vec::new();
+        for row in &self.rows {
+            if let Some(corpus) = row.objectives() {
+                for key in vocabulary_keys(&corpus.keys, vocabulary) {
+                    found.push((row.container.clone(), key.to_owned()));
+                }
+            }
+            if let Some(machine) = row.machine() {
+                for key in vocabulary_keys(&machine.machine().keys, vocabulary) {
+                    found.push((row.container.clone(), key.to_owned()));
+                }
+            }
+        }
+        found
+    }
+
+    /// Every measured stunt completion condition, in row then authored order.
+    pub fn stunt_conditions(&self) -> impl Iterator<Item = &StuntCompletionCondition> {
+        self.rows
+            .iter()
+            .filter_map(|row| row.machine())
+            .flat_map(|machine| machine.machine().stunt_conditions())
+    }
+
+    /// The complete key vocabulary of every measured stunt completion block,
+    /// summed over the installation and sorted by key.
+    ///
+    /// This is the closed surface a payout or a repeat policy would have to
+    /// appear on: every field of every block that carries
+    /// [`OBJECTIVE_DANGER_ZONES_KEY`].
+    #[must_use]
+    pub fn stunt_block_keys(&self) -> Vec<(String, u32)> {
+        let mut counts: std::collections::BTreeMap<String, u32> = std::collections::BTreeMap::new();
+        for condition in self.stunt_conditions() {
+            for (key, count) in condition.keys() {
+                *counts.entry(key.clone()).or_insert(0) += count;
+            }
+        }
+        counts.into_iter().collect()
+    }
+
+    /// Every measured `score_*` table, in row order.
+    pub fn score_tables(&self) -> impl Iterator<Item = &RetailScoreTable> {
+        self.rows.iter().filter_map(|row| row.score())
+    }
+
+    /// Every measured score entry with its container, in row then authored
+    /// order.
+    pub fn score_entries(&self) -> impl Iterator<Item = (&str, &ScoreEntry)> {
+        self.rows
+            .iter()
+            .filter_map(|row| row.score().map(|table| (row.container.as_str(), table)))
+            .flat_map(|(container, table)| {
+                table.entries().iter().map(move |entry| (container, entry))
+            })
+    }
+
+    /// Whether this survey measured **what a stunt pays**. It did not, and it
+    /// cannot: the objective data names no payout for a completion.
+    ///
+    /// A consumer must treat the *contents* of this survey (the key
+    /// inventories, the stunt-block surface and the score table) as what was
+    /// measured, and any payout as still unknown until an original run settles
+    /// it.
+    #[must_use]
+    pub const fn reward_is_measured(&self) -> bool {
+        false
+    }
+
+    /// Whether this survey measured **whether a repeat traversal pays again**.
+    /// It did not, for the same reason as [`Self::reward_is_measured`].
+    #[must_use]
+    pub const fn repeat_is_measured(&self) -> bool {
         false
     }
 }

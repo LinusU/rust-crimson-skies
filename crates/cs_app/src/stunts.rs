@@ -312,13 +312,13 @@ use std::path::Path;
 
 use cs_assets::install::{self, DiscoveryError};
 use cs_content::stunts::{
-    RetailObjectiveAuthorityRow, RetailObjectiveCorpus, RetailObjectiveMachine,
-    RetailScenarioAuthority, RetailStuntAuthoritySurvey, RetailStuntEncodingSurvey,
-    RetailStuntGate, SCENARIO_MEMBER, SCENARIO_OBJECTIVES_MEMBER, SCENARIO_TARGETS_MEMBER,
-    StuntEncodingSpan, decode_zrd, fly_through_labelled_objectives, objective_record_count,
-    objective_record_keys, objective_state_machine, scenario_fly_through_targets,
-    scenario_mission_type, scenario_non_player_aircraft, scenario_zone_bindings,
-    team_scoped_objectives,
+    RetailObjectiveAuthorityRow, RetailObjectiveCorpus, RetailObjectiveMachine, RetailRewardRow,
+    RetailScenarioAuthority, RetailScoreTable, RetailStuntAuthoritySurvey,
+    RetailStuntEncodingSurvey, RetailStuntGate, RetailStuntRewardSurvey, SCENARIO_MEMBER,
+    SCENARIO_OBJECTIVES_MEMBER, SCENARIO_TARGETS_MEMBER, SCORE_CONFIG_MEMBER, StuntEncodingSpan,
+    decode_zrd, fly_through_labelled_objectives, objective_record_count, objective_record_keys,
+    objective_state_machine, scenario_fly_through_targets, scenario_mission_type,
+    scenario_non_player_aircraft, scenario_zone_bindings, score_entries, team_scoped_objectives,
 };
 use cs_content::world::{RetailTriggerVolume, WorldId};
 use cs_formats::script_raw::{ContainerDiscovery, LocatedProgram, discover_container};
@@ -766,6 +766,188 @@ fn decode_member(
     program: &LocatedProgram<'_>,
 ) -> Result<cs_content::stunts::ZrdValue, StuntAuthoritySurveyError> {
     decode_zrd(program.bytes()).map_err(|error| StuntAuthoritySurveyError::Decode {
+        container: container.to_owned(),
+        member: member.to_owned(),
+        code: error.code(),
+        offset: error.offset(),
+    })
+}
+
+// ------------------------------- the reward and repeat survey (task #464) ----
+//
+// Task #464 asks what an original stunt paid and whether a second pass paid
+// again. The objective bytes that spell a stunt carry no payout: this survey
+// measures the surface the question needs over **every** reader archive —
+//
+//   * the objective records' and the objective machine's complete key
+//     vocabularies, and whether any key names a payout or a repeat policy
+//     (`RetailStuntRewardSurvey::reward_keys` / `repeat_keys`);
+//   * the complete key inventory of every stunt completion block
+//     (`DANGER_ZONES_COMPLETED`), the one place a payout would have to appear
+//     (`RetailStuntRewardSurvey::stunt_block_keys`);
+//   * the only numeric score table in the installation, the `score_*` match
+//     table in the global reader's `player.zrd`.
+//
+// The survey never turns "the data names no payout" into "the original paid
+// nothing": `reward_is_measured()` and `repeat_is_measured()` are `false`,
+// because the payout and the repeat rule are runtime behaviour no file records.
+
+/// Why a retail reward/repeat survey could not be produced.
+#[derive(Debug)]
+pub enum StuntRewardSurveyError {
+    /// The installation could not be discovered.
+    Discovery(DiscoveryError),
+    /// No reader archive carried an objective record or an objective state
+    /// machine, so the payout vocabulary scan would be empty for want of data
+    /// rather than for want of a payout.
+    NoObjectiveReaders,
+    /// A reader archive could not be read from disk or is missing from the
+    /// inventory.
+    Read {
+        /// The container's logical key.
+        container: String,
+        /// Why the read failed.
+        reason: String,
+    },
+    /// A member did not decode as `.zrd`.
+    Decode {
+        /// The container's logical key.
+        container: String,
+        /// The member's name.
+        member: String,
+        /// The decoder's refusal code.
+        code: &'static str,
+        /// Offset of the refusal inside the member.
+        offset: u64,
+    },
+}
+
+impl fmt::Display for StuntRewardSurveyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Discovery(error) => write!(f, "the installation is undiscoverable: {error}"),
+            Self::NoObjectiveReaders => write!(
+                f,
+                "no reader archive carries an objective record or an objective state machine"
+            ),
+            Self::Read { container, reason } => {
+                write!(f, "container {container} could not be read: {reason}")
+            }
+            Self::Decode {
+                container,
+                member,
+                code,
+                offset,
+            } => write!(
+                f,
+                "container {container} member {member} is not decodable at {offset} ({code})"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for StuntRewardSurveyError {}
+
+/// Measures every reader archive's payout and repeat surface.
+///
+/// One production discovery, one production reader-archive discovery per
+/// container and the `.zrd` decoder task #463 measured. A member a reader does
+/// not carry is a measured absence (`None` on the row); a member that is present
+/// and undecodable is a **refusal** naming its container, member, code and
+/// offset, so a shorter row list can never be mistaken for less content.
+///
+/// # Errors
+///
+/// [`StuntRewardSurveyError`] in every case.
+pub fn survey_retail_stunt_reward(
+    install_root: &Path,
+) -> Result<RetailStuntRewardSurvey, StuntRewardSurveyError> {
+    let found = install::discover(install_root).map_err(StuntRewardSurveyError::Discovery)?;
+    let install_sha256 = install::fingerprint(&found.manifest).to_hex();
+
+    let mut rows = Vec::new();
+    let mut objective_readers = 0_usize;
+    for record in &found.manifest.files {
+        let container_key = record.relative_spelling.logical_key();
+        if !container_key.ends_with(READER_ARCHIVE_SUFFIX) {
+            continue;
+        }
+        let container_sha256 = record.sha256.to_hex();
+        let spelling = record.relative_spelling.as_str();
+        let bytes = fs::read(found.manifest.host_root.join(spelling)).map_err(|error| {
+            StuntRewardSurveyError::Read {
+                container: container_key.clone(),
+                reason: error.to_string(),
+            }
+        })?;
+        let path = RelativePath::new(spelling).map_err(|error| StuntRewardSurveyError::Read {
+            container: container_key.clone(),
+            reason: error.to_string(),
+        })?;
+        let discovery = discover_container(&container_key, &path, &bytes);
+
+        let objectives = match optional_member(&discovery, SCENARIO_TARGETS_MEMBER) {
+            Some(program) => {
+                let root = decode_reward_member(&container_key, SCENARIO_TARGETS_MEMBER, program)?;
+                objective_readers += 1;
+                Some(RetailObjectiveCorpus::new(
+                    objective_record_count(&root),
+                    scenario_fly_through_targets(&root).len() as u32,
+                    fly_through_labelled_objectives(&root),
+                    team_scoped_objectives(&root),
+                    objective_record_keys(&root),
+                    span_of(&container_key, &container_sha256, program),
+                ))
+            }
+            None => None,
+        };
+
+        let machine = match optional_member(&discovery, SCENARIO_OBJECTIVES_MEMBER) {
+            Some(program) => {
+                let root =
+                    decode_reward_member(&container_key, SCENARIO_OBJECTIVES_MEMBER, program)?;
+                objective_readers += 1;
+                Some(RetailObjectiveMachine::new(
+                    objective_state_machine(&root),
+                    span_of(&container_key, &container_sha256, program),
+                ))
+            }
+            None => None,
+        };
+
+        let score = match optional_member(&discovery, SCORE_CONFIG_MEMBER) {
+            Some(program) => {
+                let root = decode_reward_member(&container_key, SCORE_CONFIG_MEMBER, program)?;
+                Some(RetailScoreTable::new(
+                    score_entries(&root),
+                    span_of(&container_key, &container_sha256, program),
+                ))
+            }
+            None => None,
+        };
+
+        rows.push(RetailRewardRow::new(
+            container_key,
+            container_sha256,
+            objectives,
+            machine,
+            score,
+        ));
+    }
+
+    if objective_readers == 0 {
+        return Err(StuntRewardSurveyError::NoObjectiveReaders);
+    }
+    Ok(RetailStuntRewardSurvey::new(install_sha256, rows))
+}
+
+/// Decodes one located member, naming its container in a reward-survey refusal.
+fn decode_reward_member(
+    container: &str,
+    member: &'static str,
+    program: &LocatedProgram<'_>,
+) -> Result<cs_content::stunts::ZrdValue, StuntRewardSurveyError> {
+    decode_zrd(program.bytes()).map_err(|error| StuntRewardSurveyError::Decode {
         container: container.to_owned(),
         member: member.to_owned(),
         code: error.code(),
