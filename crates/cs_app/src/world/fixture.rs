@@ -1552,6 +1552,14 @@ pub fn world_app() -> App {
         // all.
         super::contacts::WorldPlugin,
         super::overlays::WorldOverlayPlugin,
+        // The resting rule (#428). The world composition does not install
+        // `PhysicsBodiesPlugin` — it needs the world contact log and the
+        // overlay pass, not the spawn preflight — so the resting rule is added
+        // here explicitly. A body that has struck world geometry comes to rest
+        // against it, which is what makes "the door opened" and "the body on it
+        // moved" two separately recorded facts rather than one ambiguous
+        // observation.
+        crate::physics::RestingBodiesPlugin,
         crate::physics::PhysicsAdapterPlugin::new(crate::physics::BASELINE_FIXED_HZ),
     ));
     app.insert_resource(TimeUpdateStrategy::ManualDuration(frame));

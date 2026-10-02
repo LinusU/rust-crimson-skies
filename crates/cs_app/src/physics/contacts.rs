@@ -236,5 +236,9 @@ impl Plugin for PhysicsBodiesPlugin {
         // The spawn-side half of the bodies runtime: first-tick swept
         // preflight for the CCD layers (F23-C).
         preflight::install(app);
+        // The resting rule (#428): a body whose contact residual never decays
+        // comes to rest. It is a plugin of its own because the world
+        // composition needs it too and does not install this one.
+        app.add_plugins(super::resting::RestingBodiesPlugin);
     }
 }

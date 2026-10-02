@@ -34,6 +34,11 @@
 //! [`preflight`] closes the measured first-tick hole in Avian's swept
 //! detection: a fast body spawned inside one tick's travel of an obstacle is
 //! shape-cast ahead and clamped to the contact, not allowed to tunnel.
+//! [`resting`] is the contact/restitution rule (#428): a body whose velocity
+//! stops changing while it touches immovable world geometry is not being acted
+//! on by anything, so the contact solver's residual drift is retired and the
+//! body comes to rest — measured on the pinned pair, and independent of any
+//! overlay.
 //! [`fixture`] is the asset-free production harness an acceptance test drives;
 //! it spawns a known [`Mass`](avian3d::prelude::Mass) and adds the real
 //! adapters.
@@ -61,6 +66,7 @@ pub mod evidence;
 pub mod fixture;
 pub mod flight;
 pub mod preflight;
+pub mod resting;
 pub mod session;
 
 pub use adapter::{
@@ -95,6 +101,10 @@ pub use flight::{
 };
 pub use preflight::{
     SPAWN_CONTACT_OVERLAP_M, SpawnPreflight, SpawnPreflightEvent, SpawnPreflightLog,
+};
+pub use resting::{
+    RESTING_STILL_EPSILON_M_S, RESTING_STILL_TICKS, RestingBodiesPlugin, RestingContact,
+    RestingReports, resting_reports,
 };
 pub use session::{
     PhysicsSession, PhysicsSessionBuilder, PhysicsSessionError, SessionFrame, SpawnOutcome,
