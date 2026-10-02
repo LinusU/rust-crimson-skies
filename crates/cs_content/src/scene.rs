@@ -116,9 +116,7 @@
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
 
-use cs_formats::gamez::{
-    GameZNodes, NodeKind as StoredNodeKind, RawLodData, RawNode, RawObject3dData,
-};
+use cs_formats::gamez::{GameZNodes, NodeKind as StoredNodeKind, RawLodData, RawNode};
 use cs_types::content::{ContentId, ContentIdError, ContentKind, Known, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
 use cs_types::space::{Meters, SpaceError};
@@ -3406,7 +3404,10 @@ impl From<SceneError> for GameZSceneError {
 ///   stored `matrix` kept only when it disagrees with the one its own euler
 ///   triple derives ([`AuthoredTransform::matrix`]) — the reference corpus
 ///   disagrees in a small, measured fraction of objects, and where they differ
-///   the stored matrix is what the file holds;
+///   the stored matrix is what the file holds; a record the store flags as
+///   holding no transform becomes [`AuthoredTransform::IDENTITY`] **only when it
+///   really is the identity**, so a flagged record that stores something else
+///   keeps its own words rather than having them discarded here;
 /// * a **LOD node** carries the resolved near and far distances, the near bound
 ///   being the root of the square the record stores;
 /// * every **other kind** stores no transform in its record at all, so its
@@ -3491,9 +3492,17 @@ fn authored_transform(node: &RawNode) -> AuthoredTransform {
     match node.object3d() {
         // A record the store flagged as storing no transform holds exactly the
         // identity, so the identity is what crosses over rather than four
-        // words that happen to be zero.
-        Some(RawObject3dData { flags, .. })
-            if flags == cs_formats::gamez::OBJECT3D_FLAGS_IDENTITY =>
+        // words that happen to be zero. The check is on the flag **and** on the
+        // record really being the identity: a record whose flag says "no
+        // transform" while storing something else is reported by the reader as
+        // `ObjectIdentityNotIdentity`, and discarding its numbers here would
+        // throw away the only trace of the disagreement before any caller
+        // could see it. The store's own words cross over in that case.
+        Some(object)
+            if object.stores_identity()
+                && object.rotation == [0.0; 3]
+                && object.translation == [0.0; 3]
+                && object.scale == [1.0; 3] =>
         {
             AuthoredTransform::IDENTITY
         }

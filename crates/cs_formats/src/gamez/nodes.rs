@@ -6,7 +6,7 @@
 //! pinned legacy CS-capable reference, mech3ax **v0.6.0**, commit
 //! `d3521a9721be731d365504568ddcd78e3f9846bb` ([S02], [S17] in
 //! `docs/research/SOURCES.md`), and then **measured against every GameZ
-//! archive of the original installation** — nine archives, 57 856 stored node
+//! archive of the original installation** — nine archives, 56 620 stored node
 //! records — with the per-archive numbers in
 //! `docs/findings/2026-10-02-gamez-node-array-layout.md`. That evidence class
 //! is `ObservedTool`: documented in a reference tool and reproduced from the
@@ -93,14 +93,31 @@ use super::reader::{GameZHeader, read_container_header};
 /// Error scope stamped onto failures raised while reading the node array.
 pub const NODES_ENTRYPOINT: &str = "gamez.nodes";
 
-/// Bytes of one stored node info record ([`RawNodeInfo`]): `NodeCsC`, twenty-six
-/// 4-byte fields, one 8-byte area partition and three 24-byte bounding boxes,
-/// `static_assert_size!(NodeCsC, 208)`.
+/// Bytes of one stored node's whole info slot: the 36-byte name field followed
+/// by [`RawNodeInfo`], `static_assert_size!(NodeCsC, 208)` in the pinned
+/// reference.
+///
+/// This is the size of the **slot**, not of [`RawNodeInfo`]: the name is read as
+/// a bounded C string and kept as a `String`, so the record struct holds only
+/// the 172 bytes that follow it. Every field name on [`RawNodeInfo`] is the
+/// offset the reference gives that field in the whole `NodeCsC`, so a field
+/// named `unk040` is the record's **first** field even though the reference
+/// spells it 40. The two sizes are tied together by a compile-time assertion in
+/// the same module, and by `NODE_TYPE_OFFSET`, which is what a diagnostic needs.
 pub const NODE_INFO_BYTES: u64 = 208;
 
 /// Bytes of the 4-byte word that follows every node info record: the node's
 /// own `node_index`.
 pub const NODE_INDEX_BYTES: u64 = 4;
+
+/// Offset of the `node_type` word **inside one 212-byte info slot**: the
+/// 36-byte name field, then eleven 4-byte words (`flags`, `unk040`, `unk044`,
+/// `zone_id` and the tag itself).
+///
+/// The offset is counted from the start of the slot rather than from the start
+/// of [`RawNodeInfo`], because every field name in this module is the offset the
+/// pinned reference gives it in the whole `NodeCsC`, which includes the name.
+pub const NODE_TYPE_OFFSET: u64 = 52;
 
 /// Bytes of one node's entry in the info array: the info record and its
 /// `node_index` word, interleaved. This is the stride of the info array, not
@@ -200,7 +217,8 @@ pub const LIGHT_DATA_BYTES: u64 = 256;
 /// representation.
 pub const MATRIX_AGREEMENT_TOLERANCE: f32 = 1.0e-4;
 
-/// One stored node's 208-byte info record, decoded field by field.
+/// One stored node's info record, decoded field by field: the 172 bytes of
+/// `NodeCsC` that follow its 36-byte name field.
 ///
 /// Every word is kept, including the ones no measured meaning attaches to:
 /// `unk040`, `unk044`, `environment_data`, `action_priority`,
@@ -210,6 +228,12 @@ pub const MATRIX_AGREEMENT_TOLERANCE: f32 = 1.0e-4;
 /// here is what lets a later stage re-derive them from the record instead of
 /// from a guess (F11-A finding, "Unmeasured stored fields are not carried by
 /// the typed input").
+///
+/// **Each field's name is the offset the pinned reference gives it in the whole
+/// 208-byte `NodeCsC`, which includes the name.** So this struct is 172 bytes,
+/// [`NODE_INFO_BYTES`] is the 208-byte slot the name shares, and `unk040` is the
+/// struct's first field rather than its fortieth. A stage that re-derives a
+/// field's position from its name has to add [`NODE_NAME_BYTES`] first.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct RawNodeInfo {
     /// `flags`: the CS node flag word. Every bit is `UNK*` in the reference,
@@ -292,6 +316,21 @@ impl RawNodeInfo {
         self.parent_count != 0
     }
 }
+
+/// The slot is the record plus its name, and the walk reads them in that order.
+/// If either size drifts, every record after the first lands at the wrong
+/// offset, so the arithmetic is pinned at compile time rather than discovered
+/// nine archives later.
+const _: () = {
+    assert!(
+        size_of::<RawNodeInfo>() as u64 + NODE_NAME_BYTES == NODE_INFO_BYTES,
+        "the info record and its name field must fill the 208-byte slot"
+    );
+    assert!(
+        NODE_TYPE_OFFSET < NODE_INFO_BYTES,
+        "node_type is a word inside the slot"
+    );
+};
 
 /// One object node's own 144-byte record: the authored transform, and the
 /// fields around it the reference pins to zero.
@@ -1258,7 +1297,7 @@ fn read_nodes(
         if NodeKind::from_tag(info.node_type).is_none() {
             return Err(GameZNodeError::NodeType {
                 node: index,
-                offset: info_offset + u64::from(index) * NODE_SLOT_BYTES + NODE_NAME_BYTES + 52,
+                offset: info_offset + u64::from(index) * NODE_SLOT_BYTES + NODE_TYPE_OFFSET,
                 found: info.node_type,
             });
         }
@@ -1597,17 +1636,21 @@ fn read_world(
     let mut partition_values = 0u64;
     for _ in 0..cells {
         // The per-cell `count` is the eighth `u16` of the 88-byte record, not
-        // its first word, so the cell is opened rather than assumed.
+        // its first word, so the cell is opened rather than assumed. Its values
+        // follow the cell, so a cell whose own count does not fit what is left
+        // of the data section is refused with the grid's own reason instead of
+        // surfacing as a bare truncation.
         data.skip("world.partition", 58)?;
         let count = u64::from(data.read_u16("world.partition.count")?);
         data.skip("world.partition", (WORLD_PARTITION_BYTES - 60) as usize)?;
-        let values = count.checked_mul(WORLD_PARTITION_VALUE_BYTES).ok_or(
-            GameZNodeError::PartitionGrid {
+        let values = count
+            .checked_mul(WORLD_PARTITION_VALUE_BYTES)
+            .filter(|values| *values <= data.remaining() as u64)
+            .ok_or(GameZNodeError::PartitionGrid {
                 node,
                 cells,
                 available,
-            },
-        )?;
+            })?;
         data.skip("world.partition.values", values as usize)?;
         partition_bytes += WORLD_PARTITION_BYTES + values;
         partition_values += count;

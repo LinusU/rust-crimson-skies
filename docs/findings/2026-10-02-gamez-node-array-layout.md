@@ -134,8 +134,10 @@ the offsets the walk reached, and that every `node_index` word's top byte is
 | `ZBD/C4/gamez.zbd` | 8 102 080 | 8 289 | 7 563 object, 719 LOD, 1 world, 2 window, 2 camera, 1 display, 1 light | 6 864 412..8 102 080 | 3 657 / 3 906 | 11 | 719 | 4 929 | 0..2 489 |
 | `ZBD/C5/gamez.zbd` | 9 385 808 | 11 438 | 10 230 object, 1 201 LOD, 1 world, 2 window, 2 camera, 1 display, 1 light | 7 684 148..9 385 808 | 4 104 / 6 126 | 3 | 1 201 | 6 003 | 0..2 850 |
 
-Totals: **56 620 node records** — 51 611 object, 4 953 LOD, 9 world, 18 window,
-10 camera, 9 display, 9 light. Every `flags == 40` object record (31 548 of
+Totals: **56 620 node records** — 51 611 object, 4 953 LOD, 8 world, 16 window,
+16 camera, 8 display, 8 light. (The six singleton kinds occur once per **world**
+container, and there are eight of them: `planes.zbd` holds neither a world node
+nor a window, camera, display or light one.) Every `flags == 40` object record (31 548 of
 them) is exactly the identity transform; every one of the 20 063 `flags == 32`
 records has `scale == 1.0` exactly; **148** stored matrices disagree with the
 matrix their own euler triple derives, which is the disagreement the reference
@@ -197,21 +199,43 @@ below.
 | `typed_records_keep_the_stored_transform_and_resolve_meshes` | stored-matrix precedence where the two disagree and its absence where they agree; the identity for a `flags == 40` record; a mesh slot resolved with the catalog's own provenance; a slot past the catalog as an explicit unknown naming the index and the count | the euler triple overrides a disagreeing stored matrix, a resolved binding loses its provenance, or an unresolved slot is given an id |
 | `a_mesh_index_past_the_catalog_stays_an_explicit_unknown` | the association and its index survive an unresolvable slot; a catalog element in the wrong namespace is refused at construction | the record is refused for a missing catalog row, or a non-`mesh` element is accepted |
 | `scene_graph_is_built_from_a_decoded_node_array` | a decoded forest becomes a real `SceneGraph` with a name-path-derived id, a preserved mesh association, the shared visual/collision transform, a hand-computed composition under a 90° yaw, a LOD pair whose range converts to metres and drives the selection rule, a detached cycle, a rootless forest and an unspellable name — each as its own typed refusal | the id derivation, the composition order, the unit conversion, the LOD range or any of the four refusals changes |
-| `a_broken_node_array_is_refused_with_its_own_reason` | an undefined kind tag, a `data_ptr` off the walk, an out-of-range parent slot, an out-of-range child slot, a world grid that does not fit, a grid whose product overflows, a truncated info array, trailing bytes the walk does not account for, and a name with no terminator | any of the nine becomes a silent truncation, a wrong answer or the wrong error variant |
-| `records_outside_the_asserted_profile_are_reported_not_dropped` | all eleven `NodeFinding` variants fire with their own codes and node indices while every record is still read; a negative LOD near bound is refused by the conversion | a finding is promoted to an error, a record is dropped, or the conversion turns a negative square into a NaN distance |
+| `a_broken_node_array_is_refused_with_its_own_reason` | a header that is not a GameZ container, a `nodes_offset` with no room, an undefined kind tag, a `data_ptr` off the walk, an out-of-range parent slot, an out-of-range child slot, a world cell whose value count does not fit, a world grid that does not fit, a grid whose product overflows, a truncated info array, trailing bytes the walk does not account for, a name with no terminator, and an empty declared array | any of the thirteen becomes a silent truncation, a wrong answer or the wrong error variant |
+| `every_node_kind_keeps_the_data_walk_in_step` | one container holding all seven kinds at once: the world's 204-byte record, its child-value word and a 2×2 grid of cells that carry their own values; the window, camera, display and light record sizes; and a light node whose parent word is consumed although the record declares no parent | any of those six record lengths is wrong, the world's child-value word is skipped, the per-cell value bytes are not sized from the cell's own count, or the light's parent word stops being unconditional |
+| `an_unknown_node_kind_is_refused_by_its_tag` | five undefined tags, each refused by the tag itself with the refusal anchored at the `node_type` word it read | an unknown tag is accepted, or its refusal points somewhere other than the word |
+| `records_outside_the_asserted_profile_are_reported_not_dropped` | all eleven `NodeFinding` variants fire with their own codes and node indices while every record is still read; a record flagged as holding no transform that stores a translation keeps its own words; a negative LOD near bound is refused by the conversion | a finding is promoted to an error, a record is dropped, a flagged-but-not-identity record is silently relabelled as the identity, or the conversion turns a negative square into a NaN distance |
 | `retail_planes_node_array_decodes_and_its_conversion_verdict_is_typed` (retail) | the real `planes.zbd`: the reference's recorded header words, the two passes tiling the container, the 3 230/87 kind split, the strict forest with 3 289 agreeing links, the mesh bounds, the 107 stored-matrix disagreements and no other finding, 3 317 converted records, and the typed `NodeId` refusal on node 640 with exactly six affected nodes | the layout mis-walks, the forest is not strict, the finding counts move, or the refusal is worked around |
+| `retail_every_gamez_archive_walks_to_its_container_end` (retail) | **all nine** archives, not one: each one's stored record count, its info array starting on the header's own `nodes_offset`, its per-archive disagreement count with no other finding, and its data section ending exactly on its container's last byte; plus the corpus totals (56 620 records, 148 disagreements, the per-kind split) | any archive mis-walks, its disagreement count moves, a second deviation from the reference's profile appears, or the per-kind totals stop matching the measurement |
 
-**Sensitivity check.** The following were mutated and reverted while
-implementing, and each killed a named test: reading the object record as 96 bytes
-instead of 144 (`node_array_decodes_every_stored_field_into_its_own_slot`, on
-`data_bytes`); reading the LOD record without its trailing 12 bytes (the same
-test, on the LOD pair's offsets); reading the light node's parent word
-conditionally (the retail test, on `data_end`); reading the world's grid counts
-from the wrong header offset (the same, on the world containers' tiling);
-reading the partition cell's `count` from the cell's first word instead of offset
-58 (the same); following `data_ptr` instead of walking (`DataOffset` fires on
+**Sensitivity check.** Mutations applied and reverted. The implementer's own:
+reading the object record as 96 bytes instead of 144
+(`node_array_decodes_every_stored_field_into_its_own_slot`, on `data_bytes`);
+reading the LOD record without its trailing 12 bytes (the same test, on the LOD
+pair's offsets); reading the light node's parent word conditionally (the retail
+test, on `data_end`); reading the world's grid counts from the wrong header
+offset; reading the partition cell's `count` from the cell's first word instead
+of offset 58; following `data_ptr` instead of walking (`DataOffset` fires on
 node 1 of `planes.zbd`); and clamping an out-of-range mesh index instead of
-leaving it unknown (`a_mesh_index_past_the_catalog_stays_an_explicit_unknown`).
+leaving it unknown
+(`a_mesh_index_past_the_catalog_stays_an_explicit_unknown`).
+
+The review added fifteen more, and every one is now killed by a test **CI can
+run** (the two retail tests are `#[ignore]`d and are not):
+
+| mutation | killed by |
+| --- | --- |
+| the light node's parent word read conditionally | `every_node_kind_keeps_the_data_walk_in_step` (before the review only the retail test caught it) |
+| the world's grid counts read 8 bytes early | `every_node_kind_keeps_the_data_walk_in_step`, `a_broken_node_array_…` |
+| the world's child-value word not consumed | four tests |
+| the partition cell sized at 80 bytes | `every_node_kind_keeps_the_data_walk_in_step`, `records_outside_…` |
+| the partition cell's `count` read at the cell's first word | `every_node_kind_keeps_the_data_walk_in_step` |
+| the camera record at 256 bytes, the window at 128, the display at 64 | `every_node_kind_keeps_the_data_walk_in_step` |
+| the world's own children-count check dropped | `records_outside_…` (before the review nothing caught it) |
+| each of the object-flags, object-identity, LOD-level, LOD-far-square, LOD-near-square, `unk196`, `parent_count` and `mesh_index`-sentinel findings suppressed | `records_outside_the_asserted_profile_are_reported_not_dropped` |
+| the stored matrix dropped even where it disagrees | `typed_records_keep_the_stored_transform_and_resolve_meshes` |
+| the LOD near bound left unresolved from its stored square | `scene_graph_is_built_from_a_decoded_node_array` (before the review only `range_max` was asserted) |
+| the LOD level boolean inverted | `scene_graph_is_built_from_a_decoded_node_array` |
+| a node's name trimmed instead of crossing over verbatim | the graph test and the retail `planes.zbd` test |
+| `zone_id`, `flags`, `parent`, `children` or `index` dropped or substituted | the reader test, the graph test and the retail `planes.zbd` test (before the review `zone_id` and `flags` survived) |
 
 ## Unknowns and limitations (all recorded, none guessed)
 
@@ -346,3 +370,51 @@ leaving it unknown (`a_mesh_index_past_the_catalog_stays_an_explicit_unknown`).
 - `crates/cs_content/src/{scene,coordinates}.rs` and
   `crates/cs_types/src/{content,space}.rs` (the F11-A and F16-A contracts this
   stage plugs into, and the id grammar the refusal above comes from).
+
+## Review, 2026-10-02
+
+Reviewed by `bunny-alpha-2`, which is **the same agent instance that
+implemented this task**: the implementer and the reviewer identities are the
+same, so this is not independent review of the format work. AGENTS.md asks for a
+different instance or model with a fresh context there, and that remains
+outstanding. What the review did do was re-derive the layout from the pinned
+reference and re-measure the corpus, rather than take either on trust.
+
+**The layout itself checks out.** Every field offset, record size and parent-word
+rule was compared against mech3ax v0.6.0 at the pinned commit: `NodeCsC` 208
+with `node_type` at 52 and `mesh_index` at 60, `Object3dCsC` 144 with the
+rotation at 24 and the trailing 48 zero bytes, `LodCsC` 92, `WorldCsC` 204
+followed by one child-value word and a grid of 88-byte `PartitionCsC` cells whose
+`count` is the eighth `u16`, `LightCsC` 256 plus one unconditional word the
+reference reads "as a result of `parent_count`, but is always 0", and the
+two-pass `NODE_CS_C_SIZE * array_size + 4 * array_size` info array with the
+sequential data walk after it. The light judgement call the handover flagged is
+correct against the reference.
+
+**Two recorded numbers were wrong and are corrected above**: the per-kind corpus
+totals (counted as though all nine containers were world containers) and the
+`57 856` in this module's own provenance header. Everything else in the
+measurement table re-measured identically: bytes, data-section ranges, the
+object 32/40 split, the mesh bounds and index ranges, the per-archive
+disagreement counts, `unk196`, `parent_count`, the LOD ranges and levels. The
+new retail test pins all of it, so the table is now falsifiable rather than
+prose.
+
+**One production fix.** The conversion substituted
+`AuthoredTransform::IDENTITY` for every record flagged as holding no transform.
+The reader reports `ObjectIdentityNotIdentity` for a flagged record that stores
+something else — but the conversion then discarded exactly the numbers that
+disagreed, so the disagreement was unreportable through the typed record. It now
+substitutes the identity only when the record really is the identity.
+
+**Two coverage fixes that mattered.** The light node's unconditional parent word
+was covered only by a `#[ignore]`d retail test, which CI never runs, so the one
+judgement call the handover asked reviewers to check was the one thing a
+mutation could remove silently. The world's own children-count check was covered
+by nothing at all. Both are now killed by synthetic tests. Fifteen mutations in
+total are listed above; each is killed by a test CI runs.
+
+**Not changed, and why.** The `brigturret2 ` refusal, the world containers'
+partial child lists and the un-range-checked `mesh_index` stand: they are facts
+about the data or the F11-A contract, already recorded as limitations above and
+filed as follow-ups, and a reviewer resolving them would be inventing.

@@ -22,6 +22,8 @@
 //! `$CS_GAME_DIR`; nothing derived from them beyond counts, offsets and
 //! digests is committed.
 
+use std::collections::BTreeMap;
+
 use cs_content::coordinates::SourceAdapter;
 use cs_content::scene::{
     AirframeBlocker, AirframeRoster, AnimationBinding, AuditGap, AuthoredTransform, BindingMap,
@@ -3107,16 +3109,23 @@ impl NodeSpec {
             3 => 248,
             4 => 28,
             9 => 256,
-            other => panic!("{other} is not a CS node type"),
+            // Any tag outside the layout is laid out with the object record's
+            // length, so that the reader's refusal is the tag's own rather than
+            // a walk that stopped at the wrong place.
+            _ => 144,
         };
         fixed + 4 * usize::from(self.parent_word_is_present()) + 4 * self.children.len()
     }
 
-    /// Whether the record stores the parent word at all. A LOD record always
-    /// does, because a LOD variant cannot stand alone; every other kind follows
-    /// the `parent_count` boolean.
+    /// Whether the record stores the parent word at all.
+    ///
+    /// A LOD record always does, because a LOD variant cannot stand alone. A
+    /// **light** record always does too, even though its own `parent_count`
+    /// boolean is clear: the reference reads that word "as a result of
+    /// `parent_count`, but is always 0", so the word is there and has to be
+    /// consumed. Every other kind follows the `parent_count` boolean.
     fn parent_word_is_present(&self) -> bool {
-        self.parent.is_some() || self.kind == 6
+        self.parent.is_some() || matches!(self.kind, 6 | 9)
     }
 }
 
@@ -3127,6 +3136,11 @@ impl NodeSpec {
 /// the node array are none: the data section has to end exactly at the
 /// container's end, which is one of the checks the reader makes.
 fn write_container(nodes: &[NodeSpec]) -> Vec<u8> {
+    if nodes.is_empty() {
+        panic!(
+            "the fixture always declares at least one node; an empty array is written by patching a written one"
+        );
+    }
     // The data section starts where the fixed-stride info array ends, so its
     // per-node offsets are computable before anything is written.
     let mut data_offset = FIXTURE_NODES_OFFSET + 212 * nodes.len() as u32;
@@ -3234,17 +3248,46 @@ fn write_container(nodes: &[NodeSpec]) -> Vec<u8> {
                 word(&mut bytes, at + 156, spec.partition_y_count);
                 word(&mut bytes, at + 176, spec.own_children_count);
                 at += 208;
-                // The grid is written for as many cells as the buffer holds, so
-                // a record whose stored counts are impossible is laid out
-                // honestly at the length the writer chose and the reader has to
-                // be the one that refuses the counts.
-                let available = (node.written_len().saturating_sub(208)) / 88;
-                for cell in 0..available {
-                    let at = at + cell * 88;
+                // Each cell is 88 bytes followed by its own `count` × 12-byte
+                // values, and both are laid out: the cell's `count` is what tells
+                // the reader how many values follow it, so a cell written
+                // without them would not be a record this layout describes.
+                //
+                // Cells are written for as many as the buffer really holds, so a
+                // record whose stored counts are impossible is laid out honestly
+                // at the length the caller chose and the counts are the only
+                // thing wrong — which is what makes the refusal the grid's.
+                let values_bytes = usize::from(spec.values_per_cell) * 12;
+                let per_cell = 88 + values_bytes;
+                let declared_cells = usize::try_from(spec.partition_x_count)
+                    .expect("the fixture grid fits")
+                    * usize::try_from(spec.partition_y_count).expect("the fixture grid fits");
+                let mut room = node
+                    .written_len()
+                    .saturating_sub(at - offsets[index] as usize);
+                let mut cell = 0;
+                while cell < declared_cells {
+                    // The cell's `count` is what tells the reader how many values
+                    // follow it, so the header is written whenever the header
+                    // itself fits — even when its values cannot. That is exactly
+                    // the record a reader has to refuse; writing no `count` at
+                    // all would hand it a grid that reads as empty instead.
+                    if room < 88 {
+                        break;
+                    }
                     word(&mut bytes, at, 0x100);
                     half(&mut bytes, at + 58, spec.values_per_cell);
+                    if room < per_cell {
+                        // The declared `count` does not fit. The record is laid
+                        // out honestly at the length the caller chose, and the
+                        // count is the only thing wrong.
+                        at += room;
+                        break;
+                    }
+                    at += per_cell;
+                    room -= per_cell;
+                    cell += 1;
                 }
-                at += available * 88;
             }
             // A tag outside the layout: the object record's length is written,
             // so the walk would be in step if the tag were accepted — which is
@@ -3259,9 +3302,14 @@ fn write_container(nodes: &[NodeSpec]) -> Vec<u8> {
             3 => at += 248,
             4 => at += 28,
             9 => at += 256,
-            other => panic!("{other} is not a CS node type"),
+            // Any other tag, the same: an undefined kind is written with the
+            // object record's length so the refusal is the tag's own.
+            _ => at += 144,
         }
         if node.parent_word_is_present() {
+            // A light's word is written even when the record declares no
+            // parent: the reference stores 0 there (the world node's index),
+            // so that is what the writer stores too.
             word(&mut bytes, at, node.parent.unwrap_or(0));
             at += 4;
         }
@@ -3373,6 +3421,21 @@ fn accept_t392_node_array_decodes_every_stored_field_into_its_own_slot() {
     }
     assert_eq!(records.get(1).expect("wing").zone_id(), 3);
     assert_eq!(records.get(0).expect("root").zone_id(), 255);
+
+    // The same two words cross over into the typed records unchanged: a zone id
+    // and an uninterpreted flag word are F11-B's input, and a conversion that
+    // substituted a constant for either would silently relabel the content.
+    let typed =
+        parsed_nodes_from_gamez(&records, &fixture_mesh_slots(16)).expect("the records convert");
+    assert_eq!(
+        typed.iter().map(|node| node.zone_id).collect::<Vec<_>>(),
+        vec![255, 3, 255, 255, 255, 255],
+        "every zone id crosses over exactly as stored"
+    );
+    assert!(
+        typed.iter().all(|node| node.flags == 0x0180_0000),
+        "every raw flag word crosses over uninterpreted"
+    );
 
     // The hierarchy crosses over as stored slots, both directions.
     assert_eq!(records.get(0).expect("root").parent, None);
@@ -3503,8 +3566,16 @@ fn accept_t392_typed_records_keep_the_stored_transform_and_resolve_meshes() {
     assert_eq!(parsed[2].transform.translation, [1.0, 0.0, 0.0]);
 
     // A record the store flagged as storing no transform carries the identity,
-    // not four words that happen to be zero.
-    assert_eq!(parsed[3].transform, AuthoredTransform::IDENTITY);
+    // not four words that happen to be zero. The store holds exactly that, so
+    // the two spellings agree here — what is asserted is that the conversion
+    // took the flag's branch rather than reading the four zeroed words.
+    assert_eq!(
+        parsed[3].transform,
+        AuthoredTransform::IDENTITY,
+        "a flags == 40 record is the identity by the store's own rule"
+    );
+    assert_eq!(parsed[3].transform.scale, [1.0; 3]);
+    assert_eq!(parsed[3].transform.matrix, None);
 
     // A mesh slot inside the catalog resolves with the catalog's own
     // provenance; one past it is an explicit unknown with a reason, never an
@@ -3516,12 +3587,21 @@ fn accept_t392_typed_records_keep_the_stored_transform_and_resolve_meshes() {
         Resolved::Unknown { claim_id, reason } => {
             assert_eq!(claim_id, &claim("f11-node-array.mesh-slot-unresolved"));
             assert!(
-                reason.contains('1') && reason.contains("10"),
+                reason.contains("mesh index 11") && reason.contains("10 slot"),
                 "the reason names the index and the slot count: {reason}"
             );
         }
         other => panic!("a slot past the catalog must stay unknown, got {other:?}"),
     }
+
+    // The whole conversion still produced every record: one unresolvable slot is
+    // not a refusal, because refusing would throw away an exact hierarchy over a
+    // missing catalog row.
+    assert_eq!(
+        parsed.len(),
+        4,
+        "no record is dropped over a missing catalog row"
+    );
 
     // A slot the catalog does answer resolves to its own element.
     let with_slot = vec![
@@ -3573,7 +3653,7 @@ fn accept_t392_a_mesh_index_past_the_catalog_stays_an_explicit_unknown() {
         Resolved::Unknown { claim_id, reason } => {
             assert_eq!(claim_id, &claim("f11-node-array.mesh-slot-unresolved"));
             assert!(
-                reason.contains("mesh index 3") && reason.contains('3'),
+                reason.contains("mesh index 3") && reason.contains("3 slot"),
                 "the reason names the index and the slot count: {reason}"
             );
         }
@@ -3730,6 +3810,16 @@ fn accept_t392_scene_graph_is_built_from_a_decoded_node_array() {
     );
     // `canonical` is one unit per metre, so the stored 0..100 stays 0..100 m.
     assert_eq!(bands[0].range_max, Meters(100.0));
+    // The record stores the near bound **squared**, so a conversion that forgot
+    // to take the root would produce a band boundary nine orders of magnitude
+    // out — a distance no later stage could notice.
+    assert_eq!(
+        bands[0].range_min,
+        Meters(0.0),
+        "the stored near bound is resolved from its square"
+    );
+    assert_eq!(bands[1].range_min, Meters(100.0));
+    assert_eq!(bands[1].range_max, Meters(1000.0));
     assert!(
         bands[0].level,
         "the stored level boolean crosses over as stored"
@@ -3826,6 +3916,15 @@ fn accept_t392_scene_graph_is_built_from_a_decoded_node_array() {
     );
 }
 
+/// Two well-formed records, the smallest container that still has a data
+/// section.
+fn two_record_fixture() -> Vec<NodeSpec> {
+    vec![
+        NodeSpec::new("a", 5).object(ObjectSpec::identity()),
+        NodeSpec::new("b", 5).object(ObjectSpec::identity()),
+    ]
+}
+
 /// **Every byte-accounting failure is a typed refusal, never a wrong answer.**
 #[test]
 fn accept_t392_a_broken_node_array_is_refused_with_its_own_reason() {
@@ -3908,6 +4007,68 @@ fn accept_t392_a_broken_node_array_is_refused_with_its_own_reason() {
         "{error}"
     );
 
+    // A header the container does not have: the signature is checked before the
+    // node array is located, so a wrong one is a header refusal and never a
+    // walk error.
+    let two = two_record_fixture();
+    let mut wrong_signature = write_container(&two);
+    wrong_signature[0..4].copy_from_slice(&0xDEAD_BEEFu32.to_le_bytes());
+    let mut context = cs_formats::ParseContext::with_defaults("fixture.wrong-signature");
+    let error = cs_formats::gamez::read_gamez_nodes(&mut context, &wrong_signature)
+        .expect_err("a container that is not a GameZ container is refused");
+    assert!(
+        matches!(error, cs_formats::gamez::GameZNodeError::Header(_)),
+        "{error}"
+    );
+    assert!(
+        error.code() == "header",
+        "the refusal says which condition it is: {error}"
+    );
+
+    // A `nodes_offset` that is not inside the container: the array cannot start in
+    // the file at all, which is a different condition from an array that does
+    // not fit once it has started. The shared header check already refuses an
+    // offset *past* the end, so this variant's own case is an offset landing
+    // exactly on the end — in bounds by the header's rule, with nothing left to
+    // read.
+    let mut moved_offset = write_container(&two);
+    let at_the_end = u32::try_from(moved_offset.len()).expect("a fixture fits in u32");
+    moved_offset[36..40].copy_from_slice(&at_the_end.to_le_bytes());
+    let mut context = cs_formats::ParseContext::with_defaults("fixture.moved-nodes-offset");
+    let error = cs_formats::gamez::read_gamez_nodes(&mut context, &moved_offset)
+        .expect_err("a node array outside the container is refused");
+    assert!(
+        matches!(
+            error,
+            cs_formats::gamez::GameZNodeError::NodesOffsetOutOfBounds { .. }
+        ),
+        "{error}"
+    );
+
+    // One world cell whose own value count does not fit what is left of the data
+    // section. The grid itself is one cell of 88 bytes, so the cell check passes
+    // and it is the per-cell `count` that is impossible — a different way to
+    // reach the same condition, and it must arrive as the grid's refusal rather
+    // than as a bare truncation.
+    let greedy_cell = vec![
+        NodeSpec::new("world1", 2)
+            .world(WorldSpec {
+                partition_x_count: 1,
+                partition_y_count: 1,
+                values_per_cell: u16::MAX,
+                own_children_count: 1,
+            })
+            .declared_len(208 + 88),
+    ];
+    let error = read_nodes_expecting_error("fixture.greedy-cell", &greedy_cell);
+    match error {
+        cs_formats::gamez::GameZNodeError::PartitionGrid { node, cells, .. } => {
+            assert_eq!(node, 0);
+            assert_eq!(cells, 1, "the grid itself fits: one cell");
+        }
+        other => panic!("an impossible per-cell count is a grid refusal, got {other}"),
+    }
+
     // A world grid far larger than the data section that follows it. The record
     // is laid out with two cells, so the buffer is small and the stored counts
     // are the only thing wrong — which is what makes the refusal the grid's.
@@ -3961,23 +4122,22 @@ fn accept_t392_a_broken_node_array_is_refused_with_its_own_reason() {
     );
 
     // A truncated info array: the second record's bytes are simply not there.
-    let two = vec![
-        NodeSpec::new("a", 5).object(ObjectSpec::identity()),
-        NodeSpec::new("b", 5).object(ObjectSpec::identity()),
-    ];
+    // The header still declares both records, so the refusal is the *read*
+    // running off the end — not the extent check, which passes because the
+    // declared array does fit before the container's new end.
+    let two = two_record_fixture();
     let mut truncated = write_container(&two);
     truncated.truncate(truncated.len() - 8);
     let mut context = cs_formats::ParseContext::with_defaults("fixture.truncated");
     let error = cs_formats::gamez::read_gamez_nodes(&mut context, &truncated)
         .expect_err("an info array that does not fit is refused");
-    assert!(
-        matches!(
-            error,
-            cs_formats::gamez::GameZNodeError::Parse(_)
-                | cs_formats::gamez::GameZNodeError::NodeArrayOutOfBounds { .. }
+    match error {
+        cs_formats::gamez::GameZNodeError::Parse(ref error) => assert!(
+            error.offset >= u64::from(FIXTURE_NODES_OFFSET) + 212,
+            "the refusal points at the second record, past the first: {error}"
         ),
-        "{error}"
-    );
+        other => panic!("a read past the end is a parse failure, got {other}"),
+    }
 
     // Trailing bytes the data section does not account for: the walk ends early,
     // so the container does not end where the reader reached.
@@ -4002,6 +4162,20 @@ fn accept_t392_a_broken_node_array_is_refused_with_its_own_reason() {
         matches!(error, cs_formats::gamez::GameZNodeError::Parse(_)),
         "{error}"
     );
+
+    // An empty node array: a container this layout does not describe, refused as
+    // such rather than decoded into zero records. The header's own word says
+    // zero and the body is left as padding, so nothing else is wrong.
+    let mut empty = write_container(&two);
+    empty[28..32].copy_from_slice(&0u32.to_le_bytes());
+    empty.truncate(FIXTURE_NODES_OFFSET as usize + 16);
+    let mut context = cs_formats::ParseContext::with_defaults("fixture.empty-array");
+    let error = cs_formats::gamez::read_gamez_nodes(&mut context, &empty)
+        .expect_err("a container declaring an empty node array is refused");
+    assert!(
+        matches!(error, cs_formats::gamez::GameZNodeError::NodeArrayEmpty),
+        "{error}"
+    );
 }
 
 /// Reads a fixture expecting the production reader to refuse it.
@@ -4013,6 +4187,142 @@ fn read_nodes_expecting_error(
     let mut context = cs_formats::ParseContext::with_defaults(label);
     cs_formats::gamez::read_gamez_nodes(&mut context, &bytes)
         .expect_err("the fixture must be refused")
+}
+
+/// **The non-object kinds keep the walk in step, and the world's grid is sized
+/// from its own counts.**
+///
+/// Six of the seven kinds are read for their length alone, and three of them
+/// (window, camera, light) carry a parent word the object's record does not.
+/// The walk is the only check on those sizes: a record read at the wrong length
+/// leaves every later node mis-placed, and the container's end is where the
+/// error surfaces. So this fixture holds one of every kind in a single container
+/// — with a world grid that has cells and values, and a light node whose parent
+/// word must be consumed although the reference asserts the boolean is clear for
+/// it — and demands that the data section still end exactly at the container's
+/// end.
+#[test]
+fn accept_t392_every_node_kind_keeps_the_data_walk_in_step() {
+    let nodes = vec![
+        // A world node: the 204-byte record, the one child-value word the
+        // reference reads as a result of the record's own children count, and a
+        // 2x2 grid whose cells carry values of their own.
+        NodeSpec::new("world", 2)
+            .world(WorldSpec {
+                partition_x_count: 2,
+                partition_y_count: 2,
+                values_per_cell: 2,
+                own_children_count: 1,
+            })
+            .children(&[1, 2]),
+        NodeSpec::new("display", 4).parent(0),
+        NodeSpec::new("window", 3).parent(0),
+        // A camera with a child, and a light node that declares **no** parent.
+        NodeSpec::new("camera", 1).parent(0).children(&[4]),
+        // The light's stored `parent_count` is clear — the reference asserts it
+        // is clear for every light — and its parent word is still in the
+        // record. A reader that consulted the boolean here would stop 4 bytes
+        // short and the container would not end where it was walked to.
+        NodeSpec::new("light", 9),
+    ];
+    let bytes = write_container(&nodes);
+    let mut context = cs_formats::ParseContext::with_defaults("fixture.every-kind");
+    let records = cs_formats::gamez::read_gamez_nodes(&mut context, &bytes)
+        .expect("one container holding every kind must read");
+
+    assert_eq!(
+        records.data_end,
+        bytes.len() as u64,
+        "five kinds with three different parent-word rules and a variable world \
+         block still land on the container's last byte"
+    );
+    assert_eq!(
+        records.findings.is_empty(),
+        records.nodes.iter().all(|node| node.info.parent_count <= 1),
+        "a fixture inside the asserted profile raises no finding: {:?}",
+        records.findings
+    );
+
+    // The world's grid is what makes its variable-length block knowable: four
+    // cells of 88 bytes, each followed by its own two 12-byte values.
+    let world = records.get(0).expect("world").kind;
+    let cs_formats::gamez::NodeKind::World(world) = world else {
+        panic!("node 0 is a world record")
+    };
+    assert_eq!(world.partition_x_count, 2);
+    assert_eq!(world.partition_y_count, 2);
+    assert_eq!(world.partition_values, 8, "four cells, two values each");
+    assert_eq!(
+        world.partition_bytes,
+        4 * (88 + 2 * 12),
+        "the block is the cells and their values together"
+    );
+
+    // A light node's parent word is read even though the record declares no
+    // parent, and it is not exposed as a parent link. Both halves matter: the
+    // word has to be consumed for the walk to stay in step, and reporting it as
+    // a parent would invent a hierarchy the record does not declare.
+    let light = records.get(4).expect("light");
+    assert!(
+        matches!(light.kind, cs_formats::gamez::NodeKind::Light),
+        "node 4 is a light record, got {:?}",
+        light.kind
+    );
+    assert_eq!(
+        light.info.parent_count, 0,
+        "this fixture clears the boolean the reference says is clear for a light"
+    );
+    assert_eq!(
+        light.parent, None,
+        "a word the record does not declare as a parent is not exposed as one"
+    );
+    // Its 256-byte record plus the parent word is exactly its data extent.
+    assert_eq!(
+        light.data_bytes,
+        256 + 4,
+        "the 256-byte record and the unconditional parent word"
+    );
+
+    // Every other kind's own bytes stay addressable, which is how a later stage
+    // reads the camera's FOV or the window's flags without this reader having to
+    // have guessed them.
+    assert_eq!(records.get(1).expect("display").data_bytes, 28 + 4);
+    assert_eq!(records.get(2).expect("window").data_bytes, 248 + 4);
+    assert_eq!(records.get(3).expect("camera").data_bytes, 488 + 4 + 4);
+}
+
+/// **A node kind the layout does not define is refused, whatever its bytes.**
+///
+/// The tag is checked while the info array is being read, so a container whose
+/// second record carries an unknown kind must not be reported as a truncation or
+/// a walk error: the refusal names the node and the word it read.
+#[test]
+fn accept_t392_an_unknown_node_kind_is_refused_by_its_tag() {
+    for tag in [cs_formats::gamez::NODE_TYPE_EMPTY, 7, 8, 10, 0xFFFF_FFFF] {
+        let nodes = vec![
+            NodeSpec::new("good", 5).object(ObjectSpec::identity()),
+            NodeSpec::new("odd", tag).object(ObjectSpec::identity()),
+        ];
+        let error = read_nodes_expecting_error("fixture.unknown-kind", &nodes);
+        match error {
+            cs_formats::gamez::GameZNodeError::NodeType {
+                node,
+                offset,
+                found,
+            } => {
+                assert_eq!(node, 1, "the second record is the odd one");
+                assert_eq!(found, tag);
+                assert_eq!(
+                    offset,
+                    // The `node_type` word sits at offset 52 of the 212-byte slot:
+                    // the 36-byte name field, then the eleven words before it.
+                    u64::from(FIXTURE_NODES_OFFSET) + 212 + cs_formats::gamez::NODE_TYPE_OFFSET,
+                    "the refusal is anchored at the node_type word it read"
+                );
+            }
+            other => panic!("tag {tag} must be refused as an unknown kind, got {other}"),
+        }
+    }
 }
 
 /// **A record outside the reference's asserted profile is read and reported.**
@@ -4059,11 +4369,21 @@ fn accept_t392_records_outside_the_asserted_profile_are_reported_not_dropped() {
             .parent(0)
             .node_index(0x0100_0007)
             .object(ObjectSpec::identity()),
+        // A world record whose **own** children count is not the one the
+        // reference asserts. It is a different field from the info record's
+        // `children_count`, which is what the child slots follow, so nothing
+        // about the walk depends on it and the record is still read whole.
+        NodeSpec::new("world", 2).parent(0).world(WorldSpec {
+            partition_x_count: 1,
+            partition_y_count: 1,
+            values_per_cell: 0,
+            own_children_count: 2,
+        }),
     ];
     let records = read_fixture("fixture.findings", &nodes);
 
     // Every record is still read: a finding is not a refusal.
-    assert_eq!(records.nodes.len(), 10);
+    assert_eq!(records.nodes.len(), 11);
     assert_eq!(
         records
             .get(3)
@@ -4074,6 +4394,13 @@ fn accept_t392_records_outside_the_asserted_profile_are_reported_not_dropped() {
         7.0
     );
     assert_eq!(records.get(0).expect("root").name, "root");
+    // The world's own children count is not the field the walk uses, so the
+    // record reads whole and its grid is still the one its counts declare.
+    let cs_formats::gamez::NodeKind::World(world) = records.get(10).expect("world").kind else {
+        panic!("node 10 is a world record")
+    };
+    assert_eq!(world.partition_x_count, 1);
+    assert_eq!(world.partition_bytes, 88);
 
     let codes: Vec<(&str, u32)> = records
         .findings
@@ -4090,12 +4417,36 @@ fn accept_t392_records_outside_the_asserted_profile_are_reported_not_dropped() {
         ("parent_count", 7),
         ("mesh_index_sentinel", 8),
         ("node_index_top_bits", 9),
+        ("world_children_count", 10),
     ] {
         assert!(
             codes.contains(&expected),
             "expected {expected:?} among {codes:?}"
         );
     }
+
+    // A record the store flags as holding no transform but which stores a
+    // translation anyway keeps its own words. The reader has already reported
+    // the disagreement; discarding the numbers here would erase the only trace
+    // of it before a caller could see it.
+    let parsed = parsed_nodes_from_gamez(
+        &read_fixture(
+            "fixture.flagged-not-identity",
+            &[NodeSpec::new("flagged", 5).object(identity_but_not)],
+        ),
+        &[],
+    )
+    .expect("a flagged record that stores a translation is not a refusal");
+    assert_eq!(
+        parsed[0].transform.translation,
+        [1.0, 0.0, 0.0],
+        "the store's own words survive the conversion"
+    );
+    assert_ne!(
+        parsed[0].transform,
+        AuthoredTransform::IDENTITY,
+        "and the record is not silently relabelled as the identity"
+    );
 
     // A negative near bound has no real root, so the typed conversion refuses
     // that one record rather than producing a NaN distance.
@@ -4267,5 +4618,127 @@ fn accept_t392_retail_planes_node_array_decodes_and_its_conversion_verdict_is_ty
     assert_eq!(
         refused, 6,
         "the six nodes whose name-path carries the space: 640 and its five descendants"
+    );
+}
+
+/// Every GameZ archive of the installation, with the numbers the layout's
+/// central claim rests on: the stored record count, the offset the array starts
+/// at, and how many records store a matrix their own euler triple does not
+/// derive.
+///
+/// The spelling is written out rather than derived from the logical key,
+/// because this test reads files and no discovery decides their spelling. The
+/// `nodes_offset` column is not repeated here: [`RETAIL_GAMEZ_NODES_OFFSET`]
+/// already pins it against the pinned reference, and this test checks that the
+/// array *starts* on the header's own word.
+const RETAIL_NODE_ARRAYS: [(&str, u32, u32); 9] = [
+    ("ZBD/planes.zbd", 3_317, 107),
+    ("ZBD/C1/gamez.zbd", 7_064, 5),
+    ("ZBD/C1B/gamez.zbd", 5_603, 1),
+    ("ZBD/C1C/gamez.zbd", 5_644, 1),
+    ("ZBD/C2/gamez.zbd", 4_956, 1),
+    ("ZBD/C2B/gamez.zbd", 4_901, 1),
+    ("ZBD/C3/gamez.zbd", 5_408, 18),
+    ("ZBD/C4/gamez.zbd", 8_289, 11),
+    ("ZBD/C5/gamez.zbd", 11_438, 3),
+];
+
+/// **The layout holds on every GameZ archive of the installation, not one.**
+///
+/// The claim the whole worksheet rests on is that the data section is
+/// variable-length and ends **exactly** at each container's end. That is
+/// falsifiable per container and only nine containers exist, so it is pinned
+/// here for all nine: each one reads, each one's info array starts on the
+/// header's own `nodes_offset`, and each one's walk lands on its container's
+/// last byte. A record read at the wrong length would leave every later node
+/// mis-placed and stop short, so this is the test that would catch it.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_t392_retail_every_gamez_archive_walks_to_its_container_end() {
+    use cs_formats::gamez::{NodeFinding, NodeKind};
+
+    let mut total_nodes = 0u64;
+    let mut kinds: BTreeMap<&'static str, u64> = BTreeMap::new();
+    let mut total_disagreements = 0u64;
+    for (relative, expected_nodes, expected_disagreements) in RETAIL_NODE_ARRAYS {
+        let path = retail_dir().join(relative);
+        let bytes = std::fs::read(&path)
+            .unwrap_or_else(|error| panic!("{relative}: the installation must hold it: {error}"));
+        let mut context = cs_formats::ParseContext::with_defaults(relative);
+        let records = cs_formats::gamez::read_gamez_nodes(&mut context, &bytes)
+            .unwrap_or_else(|error| panic!("{relative}: the retail node array must read: {error}"));
+
+        assert_eq!(records.header.node_array_size, expected_nodes, "{relative}");
+        assert_eq!(records.nodes.len() as u32, expected_nodes, "{relative}");
+        assert_eq!(
+            records.info_offset,
+            u64::from(records.header.nodes_offset),
+            "{relative}: the info array starts on the header's own word"
+        );
+        assert_eq!(
+            records.data_offset,
+            records.header.nodes_offset as u64 + 212 * u64::from(expected_nodes),
+            "{relative}: 212 bytes per slot, info record then node index word"
+        );
+        assert_eq!(records.data_offset, records.info_end, "{relative}");
+        assert_eq!(
+            records.data_end,
+            bytes.len() as u64,
+            "{relative}: the data section ends exactly at the container's end"
+        );
+
+        let disagreements = records
+            .findings
+            .iter()
+            .filter(|finding| matches!(finding, NodeFinding::ObjectMatrixDisagrees { .. }))
+            .count() as u64;
+        assert_eq!(
+            disagreements,
+            u64::from(expected_disagreements),
+            "{relative}: the stored-matrix disagreement count"
+        );
+        for finding in &records.findings {
+            assert_eq!(
+                finding.code(),
+                "object_matrix_disagrees",
+                "{relative}: no other deviation from the reference's profile: {finding}"
+            );
+        }
+
+        total_nodes += records.nodes.len() as u64;
+        total_disagreements += disagreements;
+        for node in &records.nodes {
+            let label = match node.kind {
+                NodeKind::World(_) => "world",
+                NodeKind::Camera => "camera",
+                NodeKind::Window => "window",
+                NodeKind::Display => "display",
+                NodeKind::Light => "light",
+                NodeKind::Object3d(_) => "object3d",
+                NodeKind::Lod(_) => "lod",
+            };
+            *kinds.entry(label).or_default() += 1;
+        }
+    }
+
+    // The corpus totals, as measured: nine containers, 56 620 stored records,
+    // and 148 of them storing a matrix their own euler triple does not derive.
+    assert_eq!(total_nodes, 56_620);
+    assert_eq!(total_disagreements, 148);
+    // Eight of the nine containers are world containers, so the six singleton
+    // kinds occur eight times each — two windows and two cameras per world
+    // container, one display and one light. `planes.zbd` holds neither.
+    assert_eq!(
+        kinds,
+        BTreeMap::from([
+            ("object3d", 51_611),
+            ("lod", 4_953),
+            ("world", 8),
+            ("window", 16),
+            ("camera", 16),
+            ("display", 8),
+            ("light", 8),
+        ]),
+        "every kind the CS layout defines occurs, and the split is the measured one"
     );
 }
