@@ -89,6 +89,25 @@
 //! the [`AnimationLog`](playback::AnimationLog) drain is the seam it will bind
 //! to, recorded in
 //! `docs/findings/2026-10-02-f20-c-wired-session-integration.md`.
+//!
+//! Stage `### F20-D` adds the two measured halves of the original-family
+//! validation:
+//!
+//! * [`survey`] — [`survey::survey_animation_families`] walks the original
+//!   installation and validates every carrier of the two mission-critical
+//!   animation families (`mis_anim.zbd` per launchable scope, `cam_anim.zbd`
+//!   per world group): the production two-key dispatch on the carrier's own
+//!   header, the manifest fingerprint, and the paired `*.zrd` record plus
+//!   every other `*anim*` member of the sibling reader archive. Missing
+//!   carriers, refused headers and absent members are per-scope
+//!   [`survey::CarrierBlocker`]s — a row is never dropped. The container
+//!   payloads stay **undecoded**: the survey validates and fingerprints
+//!   them, it does not interpret them;
+//! * [`capture`] — [`capture::capture_animated_pose`] draws a production
+//!   [`RenderMesh`](cs_content::mesh::RenderMesh) at an evaluated
+//!   [`PoseSample`](cs_sim::animated_object::PoseSample) on the real GPU and
+//!   writes a measured PNG, which is the `gpu` half of the stage: the
+//!   evidence that an animation output actually reaches a rendered frame.
 
 use std::fmt;
 
@@ -99,10 +118,12 @@ use crate::scene::SceneGeneration;
 
 pub mod attachment;
 pub mod binding;
+pub mod capture;
 pub mod lower;
 pub mod playback;
 pub mod presentation;
 pub mod schedule;
+pub mod survey;
 pub mod visibility;
 
 pub use attachment::{
@@ -111,6 +132,10 @@ pub use attachment::{
     release_attachments_before_despawn,
 };
 pub use binding::{AnimatedNodeBindError, bind_animated_node};
+pub use capture::{
+    POSE_CAPTURE_HEIGHT, POSE_CAPTURE_WIDTH, PoseCapture, PoseCaptureError, PoseCaptureRequest,
+    capture_animated_pose,
+};
 pub use playback::{
     AnimationLog, AnimationPlayError, AnimationPlayback, AnimationRefusal, BlockedTrack,
     InstanceKey, NodeAnimatedAttachment, NodeAnimatedMaterial, NodeAnimatedPose, TrackKind,
@@ -119,6 +144,10 @@ pub use playback::{
 pub use schedule::{
     AnimationPlugin, AnimationSchedulePlugin, CommittedSessionTick,
     advance_animation_on_session_tick, commit_session_tick, release_superseded_instances,
+};
+pub use survey::{
+    AnimationFamilySurvey, AnimationSurveyError, CarrierBlocker, CarrierKind, CarrierRecord,
+    MemberRecord, PayloadFamily, SurveyedScope, UnpairedMember, survey_animation_families,
 };
 pub use visibility::{
     ColliderVerdict, DrawVerdict, NodeAnimatedVisibility, VisibilityVerdict,
