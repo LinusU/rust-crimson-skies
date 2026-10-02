@@ -459,9 +459,9 @@ impl Baseline {
 /// shared campaign layout ([`crate::campaign_bindings::campaign_layout`]) for
 /// the mission directories, each mission's reader archive for its span and
 /// digest, and the string image F56-A reads the multiplayer mode table from
-/// ([`multiplayer_rules_rows`]). Rows are inserted in a fixed order and every
-/// report array is rendered from canonical id order, so the same installation
-/// yields the same bytes (spec F14 AC02).
+/// ([`MODE_STRING_IMAGE`], one row per mode). Rows are inserted in a fixed
+/// order and every report array is rendered from canonical id order, so the
+/// same installation yields the same bytes (spec F14 AC02).
 ///
 /// # Errors
 ///

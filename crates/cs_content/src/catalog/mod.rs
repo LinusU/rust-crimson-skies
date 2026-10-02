@@ -32,7 +32,11 @@
 //! of supported rows. [`reader_dirs`] (F14-D.1) classifies the reader-archive
 //! directories the campaign walk leaves over from their own member index: the
 //! instant-action and multiplayer scenario directories join the denominator,
-//! the shared readers are recorded as not launchable.
+//! the shared readers are recorded as not launchable. The source-derived
+//! collections a completed producing stage can read arrive in the same builder
+//! (F14-D.2 and its follow-ups), each read through that stage's own parser and
+//! each reported in [`baseline::CollectionStatus`] together with what the
+//! parser could not answer.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
