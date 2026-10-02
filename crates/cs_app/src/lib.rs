@@ -207,6 +207,20 @@
 //! fixture. It is the only place the pinned Avian force accumulator is driven;
 //! body creation, sweeps and kinematic transitions are F23-B.
 //!
+//! [`objectives`] is the F39 trigger consumer
+//! (`specs/F39-objectives-triggers-timers-spawn-groups-and-dialogue-cues.md`,
+//! which owns trigger semantics): [`objectives::SpawnTickTriggerPlugin`] and
+//! [`objectives::TriggerCrossings`], the one place the swept spawn preflight's
+//! sensor record becomes a gameplay [`objectives::TriggerCrossing`] — a trigger
+//! a body crossed inside the tick it spawned in, which the engine reports
+//! nothing for because a sensor must not stop or delay a spawn (F23-C) and a
+//! freshly spawned body is not yet in the broad phase (F23-B). The crossing is
+//! decided from the body's own swept motion, delivered once per
+//! `(actor, volume)` pair on the tick it happened, and the delivery is a pure
+//! read: it cannot move a body. The decision, its measurement and the
+//! boundaries of the claim are in
+//! `docs/findings/2026-10-02-t415-spawn-tick-trigger-crossing.md`.
+//!
 //! [`weapons`] is the F27-A weapon boundary
 //! (`specs/F27-guns-ammunition-hardpoints-and-ballistic-hits.md`, stage
 //! `### F27-A`): [`weapons::lower_gun`], which lowers a declared
@@ -392,6 +406,7 @@ pub mod interaction;
 pub mod livery;
 pub mod loading;
 pub mod network;
+pub mod objectives;
 pub mod ordnance;
 pub mod origin;
 pub mod physics;
