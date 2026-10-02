@@ -81,14 +81,30 @@ fn mouse_frame(device: &DeviceId, buttons: Vec<MouseButton>, wheel: f32) -> Devi
     }
 }
 
-/// An action map with the wheel bound to one continuous axis and the mouse's
-/// left button to one edge: the map F22-I needs so a wheel reading has a
-/// command to reach and a report can name both an edge and an analog reading.
-/// The designed default map deliberately leaves the wheel unbound, which
+/// An action map for a mouse family that is fully wired: the two motion axes
+/// to two continuous commands, the wheel to a third, and the left button to
+/// one edge. It is the map F22-I needs so a wheel reading has a command to
+/// reach *and* a motion reading has a different one, which is what makes "the
+/// wheel did not leak into the motion channels" a checkable claim. The designed
+/// default map deliberately leaves the wheel unbound, which
 /// `accept_f22_wheel_an_unbound_wheel_drives_nothing_and_is_still_validated`
 /// pins separately.
 fn wheel_map() -> ActionMap {
     ActionMap::try_new(vec![
+        Binding {
+            source: BindingSource::MouseAxis(MouseAxis::X),
+            target: BindingTarget::Axis {
+                command: FlightCommand::Yaw,
+                scale: 1.0,
+            },
+        },
+        Binding {
+            source: BindingSource::MouseAxis(MouseAxis::Y),
+            target: BindingTarget::Axis {
+                command: FlightCommand::Pitch,
+                scale: 1.0,
+            },
+        },
         Binding {
             source: BindingSource::MouseAxis(MouseAxis::Wheel),
             target: BindingTarget::Axis {
@@ -101,7 +117,7 @@ fn wheel_map() -> ActionMap {
             target: BindingTarget::Command(FlightCommand::FirePrimary),
         },
     ])
-    .expect("two bindings that touch different targets are well formed")
+    .expect("four bindings that touch different targets are well formed")
 }
 
 /// Adapters with the fixture mouse connected, ready for one report.
@@ -164,7 +180,11 @@ fn accept_f22_wheel_a_scrolled_wheel_is_calibrated_like_any_relative_channel() {
     let expected = calibration
         .apply(WHEEL_SCROLL)
         .expect("a scroll inside the calibrated range is accepted");
-    assert!((roll.as_unit() - expected).abs() < QUANTIZATION_TOLERANCE);
+    assert!(
+        (roll.as_unit() - expected).abs() < QUANTIZATION_TOLERANCE,
+        "the bound axis holds the calibrated scroll {expected}, got {}",
+        roll.as_unit()
+    );
     assert!(
         (expected - 0.2).abs() < 1e-6,
         "the wheel channel's own dead zone shapes the reading: (0.6 - 0.5) / 0.5 = \
@@ -385,8 +405,8 @@ fn accept_f22_wheel_a_refused_wheel_reading_leaves_no_partial_state() {
         "a refused report neither adds nor releases a hold"
     );
 
-    // So the loss still names the axis, and the next good report is not a
-    // second press of the button.
+    // So a later loss still reports what the device was really holding and
+    // driving: the refusal changed nothing the loss depends on.
     adapters.disconnect(&device).expect("the mouse disconnects");
     let losses = adapters.take_losses();
     assert_eq!(losses.len(), 1);
