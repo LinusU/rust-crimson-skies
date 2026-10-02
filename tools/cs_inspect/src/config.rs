@@ -112,14 +112,18 @@
 //! * every **string image** is read as inert PE data into a
 //!   [`StringCatalog`], never loaded.
 //!
-//! Nothing is written inside the installation, no original text reaches the
-//! report (counts, ids, digests and byte extents only), and the exit code
-//! follows `docs/contracts/CLI-EVIDENCE.md`: `0` when no gameplay-critical
-//! entry is unconsumed, `3` when one is, or a member/image could not be read,
-//! `2` invalid input, `4` no installation selected, `1` a runtime failure. A
-//! gameplay-critical entry is one whose member the command declares
-//! gameplay-critical ([`GAMEPLAY_CRITICAL_MEMBERS`]) **or** one it has not
-//! classified, which fails closed.
+//! Nothing is written inside the installation, and the report carries only
+//! **structural** facts about it — counts, ids, digests, byte extents,
+//! provenance and the identifier text a member's own keys and `#define` names
+//! are made of — never a localizable display string. The exit code follows
+//! `docs/contracts/CLI-EVIDENCE.md`: `0` when every routed member was
+//! accounted and no gameplay-critical entry is unconsumed, `3` when one is or
+//! a member/image could not be read, `2` invalid input, `4` no installation
+//! selected, `1` a runtime failure. A gameplay-critical entry is one whose
+//! member the command declares gameplay-critical ([`GAMEPLAY_CRITICAL_MEMBERS`])
+//! **or** one it has not classified, which fails closed; and `parity.holds` is
+//! false while any routed member produced no account row at all, so a run that
+//! accounted for nothing cannot report a parity it never measured.
 
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
@@ -132,7 +136,7 @@ use std::process::ExitCode;
 use cs_assets::rof::{RofSource, mount_rof_with_limits};
 use cs_assets::vfs::{ContentSession, MountBuilder, SessionBuilder};
 use cs_content::config::{
-    ConfigDocument, ConfigError, FieldBinding, FieldSpec, Parity, StringCatalog,
+    ConfigDocument, ConfigError, FieldBinding, FieldSpec, MemberAccount, Parity, StringCatalog,
     StringCatalogError, StringLookup, TuningOutcome, TuningReport, ValueWidth, resolve_tunings,
 };
 use cs_formats::ParseContext;
@@ -1158,9 +1162,14 @@ pub fn account_command_result(args: &[String], env_cs_path: Option<OsString>) ->
 
     let mut member_json: Vec<String> = Vec::new();
     let mut blocking = 0usize;
+    // Routed members the census produced no account row for. `holds` is false
+    // while any is left, so a run in which every member was refused cannot
+    // report a parity it never measured.
+    let mut unaccounted = 0usize;
     for (_, member) in &keyed_rules {
         let Some(source) = containers.source_of(member) else {
             exit_code = EXIT_REFUSED;
+            unaccounted += 1;
             let message =
                 format!("{member}: the inventory routes it but the container does not hold it");
             diagnostics.push(message.clone());
@@ -1172,6 +1181,7 @@ pub fn account_command_result(args: &[String], env_cs_path: Option<OsString>) ->
                 blocking += blockers;
                 if entries == 0 {
                     exit_code = EXIT_REFUSED;
+                    unaccounted += 1;
                     diagnostics.push(format!(
                         "{member}: no entry at all, so the account covers nothing"
                     ));
@@ -1180,6 +1190,7 @@ pub fn account_command_result(args: &[String], env_cs_path: Option<OsString>) ->
             }
             Err(message) => {
                 exit_code = EXIT_REFUSED;
+                unaccounted += 1;
                 diagnostics.push(message.clone());
                 member_json.push(refused_json("keyed_list", &message));
             }
@@ -1194,6 +1205,7 @@ pub fn account_command_result(args: &[String], env_cs_path: Option<OsString>) ->
     for (_, member) in &header_rules {
         let Some(source) = containers.source_of(member) else {
             exit_code = exit_code.max(EXIT_REFUSED);
+            unaccounted += 1;
             diagnostics.push(format!(
                 "{member}: the inventory routes it but the container does not hold it"
             ));
@@ -1203,6 +1215,7 @@ pub fn account_command_result(args: &[String], env_cs_path: Option<OsString>) ->
             Ok(decoded) => {
                 if decoded.trailing_len != 0 {
                     exit_code = exit_code.max(EXIT_REFUSED);
+                    unaccounted += 1;
                     diagnostics.push(format!(
                         "{member}: {} bytes sit unread after the end of the stream inside the \
                          stored extent",
@@ -1214,6 +1227,7 @@ pub fn account_command_result(args: &[String], env_cs_path: Option<OsString>) ->
             }
             Err(message) => {
                 exit_code = exit_code.max(EXIT_REFUSED);
+                unaccounted += 1;
                 diagnostics.push(message);
             }
         }
@@ -1278,15 +1292,23 @@ pub fn account_command_result(args: &[String], env_cs_path: Option<OsString>) ->
             Ok(catalog) => image_json.push(image_account_json(&catalog, &headers)),
             Err(error) => {
                 exit_code = exit_code.max(EXIT_REFUSED);
+                unaccounted += 1;
                 diagnostics.push(format!("{spelling}: the image is refused: {error}"));
                 image_json.push(refused_json("pe_resources", error.code()));
             }
         }
     }
+    if unaccounted > 0 {
+        // A member the inventory routes and this run could not account for is
+        // a hole in the census, so the run refuses just as an unconsumed
+        // gameplay-critical entry does.
+        exit_code = exit_code.max(EXIT_REFUSED);
+    }
     let report = format!(
         "{{\"version\":{},\"host_root\":{},\"install_sha256\":{},\"content_sha256\":{},\
          \"dialects\":{{\"keyed_list\":[{}],\"resource_header\":[{}],\"pe_resources\":[{}]}},\
-         \"parity\":{{\"gameplay_critical_unconsumed\":{blocking},\"holds\":{}}}}}\n",
+         \"parity\":{{\"gameplay_critical_unconsumed\":{blocking},\
+         \"unaccounted_members\":{unaccounted},\"holds\":{}}}}}\n",
         jstr(ACCOUNT_REPORT_VERSION),
         jstr(&cs_path.to_string_lossy()),
         jstr(&install_sha256.to_hex()),
@@ -1294,7 +1316,7 @@ pub fn account_command_result(args: &[String], env_cs_path: Option<OsString>) ->
         member_json.join(","),
         header_json(&header_bytes, &headers),
         image_json.join(","),
-        bool_json(blocking == 0),
+        bool_json(blocking == 0 && unaccounted == 0),
     );
     if blocking > 0 {
         // A gameplay-critical entry no declaration consumed is the spec's
@@ -1591,24 +1613,20 @@ fn keyed_member(
     let mut context = ParseContext::with_defaults(member.to_owned());
     let document = ConfigDocument::read(&mut context, decoded.span, &decoded.bytes)
         .map_err(|error| format!("{member}: the member is refused: {error}"))?;
-    let parity = member_parity(member);
-    let blocking = document.member_account(parity).blocking();
-    let entries = document.accounting().entries;
+    // One account, computed once: the blocking count, the entry count and the
+    // JSON row all come from the same roll-up, so they cannot disagree.
+    let account = document.member_account(member_parity(member));
+    let blocking = account.blocking();
+    let entries = account.keys().entries;
     let json = member_account_json(
-        &document,
-        parity,
+        &account,
         Some((decoded.stored_len, u64::from(decoded.compressed))),
     );
     Ok((json, blocking, entries))
 }
 
 /// One member's whole account, as JSON.
-fn member_account_json(
-    document: &ConfigDocument,
-    parity: Parity,
-    stored: Option<(u64, u64)>,
-) -> String {
-    let account = document.member_account(parity);
+fn member_account_json(account: &MemberAccount<'_>, stored: Option<(u64, u64)>) -> String {
     let keys = account.keys();
     // Every declaration code is always present, so the row is a census of the
     // three possibilities rather than a set that grows and shrinks with the
@@ -1689,6 +1707,11 @@ fn member_account_json(
         })
         .collect();
     let placeholders = account.placeholders();
+    // The account's own list of entries no declaration consumed is keyed
+    // `undeclared`, after `EntryDeclaration::Undeclared` and after the
+    // `entries` census above, so it cannot be read as the document's own
+    // `accounting.unconsumed`, which counts entries no *lookup* returned and is
+    // therefore `entries` in a census that performs none.
     format!(
         "{{\"source\":{},\"stored\":{},\"dialect\":{},\"parity\":{},\
          \"accounting\":{{\"entries\":{},\"consumed\":{},\"unconsumed\":{},\
@@ -1696,7 +1719,7 @@ fn member_account_json(
          \"schemas\":[{}],\"placeholders\":{{\"definitions\":{},\"local_definitions\":{},\
          \"global_definitions\":{},\"references\":{},\"resolved_local\":{},\
          \"resolved_global\":{},\"unresolved\":{}}},\"unclassified\":[{}],\
-         \"unconsumed\":[{}],\"blocking\":{},\"parity_holds\":{}}}",
+         \"undeclared\":[{}],\"blocking\":{},\"parity_holds\":{}}}",
         source_json(account.source()),
         stored.map_or_else(
             || "null".to_owned(),
@@ -2867,7 +2890,10 @@ LOOSE=not,declared,anywhere\r\n";
             "{report}"
         );
         assert!(
-            report.contains("\"parity\":{\"gameplay_critical_unconsumed\":0,\"holds\":true}"),
+            report.contains(
+                "\"parity\":{\"gameplay_critical_unconsumed\":0,\"unaccounted_members\":0,\
+                 \"holds\":true}"
+            ),
             "{report}"
         );
 
@@ -2977,12 +3003,15 @@ LOOSE=not,declared,anywhere\r\n";
         assert_eq!(run.exit_code, EXIT_REFUSED, "{:?}", run.diagnostics);
         let report = run.report.expect("a report even when parity fails");
         assert!(
-            report.contains("\"parity\":{\"gameplay_critical_unconsumed\":1,\"holds\":false}"),
+            report.contains(
+                "\"parity\":{\"gameplay_critical_unconsumed\":1,\"unaccounted_members\":0,\
+                 \"holds\":false}"
+            ),
             "{report}"
         );
         // The entry is listed with its line, its section and its key.
         assert!(
-            report.contains("\"unconsumed\":[{\"line\":7,\"section\":\"PANEL\",\"key\":\"LOOSE\""),
+            report.contains("\"undeclared\":[{\"line\":7,\"section\":\"PANEL\",\"key\":\"LOOSE\""),
             "{report}"
         );
         assert!(
@@ -3035,6 +3064,16 @@ LOOSE=not,declared,anywhere\r\n";
         // rather than reporting a shorter census as complete.
         let report = run.report.expect("a report even when a member is refused");
         assert!(report.contains("\"status\":\"refused\""), "{report}");
+        // Three routed members produced no account row — the scrapbook member
+        // and the two headers — so the census says the parity does not hold
+        // rather than reporting a hole as a pass.
+        assert!(
+            report.contains(
+                "\"parity\":{\"gameplay_critical_unconsumed\":0,\"unaccounted_members\":3,\
+                 \"holds\":false}"
+            ),
+            "{report}"
+        );
     }
 
     /// The argument surface: an unsupported flag and an `--out` inside the
@@ -3106,8 +3145,12 @@ LOOSE=not,declared,anywhere\r\n";
         assert_eq!(run.exit_code, 0, "{:?}", run.diagnostics);
         let report = run.report.expect("a report");
         assert!(
-            report.contains("\"parity\":{\"gameplay_critical_unconsumed\":0,\"holds\":true}"),
-            "no gameplay-critical entry is unconsumed: {report}"
+            report.contains(
+                "\"parity\":{\"gameplay_critical_unconsumed\":0,\"unaccounted_members\":0,\
+                 \"holds\":true}"
+            ),
+            "every routed member was accounted and no gameplay-critical entry is unconsumed: \
+             {report}"
         );
 
         // The installation fingerprint, from the production discovery.
@@ -3206,10 +3249,17 @@ LOOSE=not,declared,anywhere\r\n";
         assert!(language.contains("\"blocks\":3"), "{language}");
         assert!(language.contains("\"strings\":48"), "{language}");
 
-        // No original text and no `#define` name reached the report: the
-        // define names the test itself authored appear, and the retail ones do
-        // not spell a display string.
-        assert!(!report.contains("\\u0000"), "{report}");
+        // What the report does and does not carry, stated precisely: it carries
+        // the **identifier text** of the members themselves — a keyed-list
+        // entry's key and section, and every `#define`'s name and value —
+        // because those name the rows an account is about. It does not
+        // carry any localizable display string, and every byte that is not
+        // printable ASCII is escaped by `bytes_text`/`jstr`, so the report
+        // stays a single line of JSON with no raw control byte in it.
+        assert!(
+            report.trim_end().chars().all(|c| !c.is_control()),
+            "the report carries no unescaped control byte: {report}"
+        );
     }
 
     /// The JSON of one image's row, sliced out of the whole report so a

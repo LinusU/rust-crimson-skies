@@ -61,10 +61,22 @@ of what is referenced**:
 3. **A surface.** `cs-inspect config-account --cs-path <dir> [--out <file>]`
    emits the whole census as JSON. The member list comes from the dialect
    inventory, not from a hand-typed pair of names, so a member the inventory
-   learns about is accounted by the next run. Exit `0` when no
-   gameplay-critical entry is unconsumed, `3` when one is or a member could not
-   be read, `2` invalid input, `4` no installation selected, `1` a runtime
-   failure, per `docs/contracts/CLI-EVIDENCE.md`.
+   learns about is accounted by the next run. Exit `0` when every routed
+   member was accounted and no gameplay-critical entry is unconsumed, `3` when
+   one is or a member could not be read, `2` invalid input, `4` no
+   installation selected, `1` a runtime failure, per
+   `docs/contracts/CLI-EVIDENCE.md`.
+
+   The report's top-level `parity` object carries
+   `gameplay_critical_unconsumed`, `unaccounted_members` (routed members this
+   run produced no account row for) and `holds`, which is true only when both
+   counts are zero — so a run in which every member was refused reports
+   `holds: false` rather than a parity it never measured. The report carries
+   **structural** facts about the installation: counts, ids, digests, byte
+   extents, provenance, and the identifier text a member is itself named by (a
+   keyed-list entry's key and section, every `#define`'s name and value). It
+   carries no localizable display string, and every byte that is not
+   printable ASCII is escaped, so it stays one line of well-formed JSON.
 
 ## The shipped keyed-list members
 
@@ -91,7 +103,7 @@ length were the stored count would not describe the parsed bytes.
 | `<NAME>` references / resolved / unresolved | 1 313 / 1 313 / **0** |
 | unclassified lines | **1** (line 101, `no_separator`) |
 | unsplit values | 0 |
-| fields split out | 6 852 |
+| fields split out | **6 900** (the `fields` column of the ten rows below, summed) |
 | gameplay-critical unconsumed entries | **0** |
 
 Every entry of the shipped layout member is covered by a declaration, so no
@@ -114,7 +126,8 @@ not zero:
 
 The `SoundObject` kind is documented but absent from the shipped member, so it
 contributes no row; the ten above are the whole census. The per-position
-detail behind the two non-zero columns:
+detail behind them: every position that carries **no documented name** or whose
+census is **not uniform** across the records that reached it.
 
 | schema | position | name | kind | reached | described | untyped | placeholders | empty | off-kind |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -206,18 +219,22 @@ value names are **2, 3, 4, 5, 190, 195, 196, 197, 198, 200, 201, 202, 204, 205,
 Both are **the numbers task #368 measured with an independent walk of the
 resource directories, reproduced exactly** — including its 775/782 headline,
 its seven misses and its eighteen unaddressed blocks. The 605 + 173 = 778
-present ids and 7 absent ids are 785 rows, three of which (`10064`, `10065`,
-`10143`) both headers name, so the union is the 775 the finding reports. That
-agreement is the point: the account is a production derivation, and it can be
-compared with a measurement that did not go through this engine's reader.
+present rows and the 7 absent rows are 785 rows over a union of
+612 + 173 − 3 = 782 distinct ids: three of them (`101`, `1000` and `40001`)
+both headers name, so the 778 present rows collapse to the 775 the finding
+reports and the 7 absent rows are the union's. That agreement is the point:
+the account is a production derivation, and it can be compared with a
+measurement that did not go through this engine's reader.
 
 The `string_*` columns are a **second scope, not a filter**: `IDS_`/`STR_`/`SB_`
 are the prefixes task #368 counted string-table names under, and the account
 reports both the whole id set and that scope so a name category outside those
-prefixes is never silently dropped. Against `strings.dll` the string-name scope
-is 77 present and 269 absent, and against `language.dll` 0 present and 346
-absent — the two headers describe `langui.dll`, not those images, and the
-account says so with numbers rather than with a claim.
+prefixes is never silently dropped. In the `RESOURCE.H` row the string-name
+scope is 77 present and 269 absent against `strings.dll`, and 0 present and
+346 absent against `language.dll`; over both headers the union is 77 present
+and 440 absent for `strings.dll` and 0 present and 517 absent for
+`language.dll`. Either way the two headers describe `langui.dll`, not those
+images, and the account says so with numbers rather than with a claim.
 
 ## Recorded unknowns
 
@@ -288,8 +305,8 @@ if the behaviour it pins is removed or changed.
 | `accept_f12_d_accounting_string_ids_cross_names_and_blocks_both_ways` | an image with blocks 1, 3 and 5 against a header naming ids 0, 16, 32, 48, 900 plus one `0x`-prefixed value: present/absent in both directions, the undecoded value counted and kept out of both id sets, the `IDS_`/`STR_`/`SB_` scope as a second scope and not a filter, the unnamed blocks, and the union over two headers |
 | `accept_f12_d_accounting_retail_census_matches_the_recorded_measurements` | retail: the installed members' 822/636/186 and 461/461, the ten record kinds' records/fields/untyped/off-kind, the button's five underdetermined positions individually, the text colour position's 199/94/4, the scrapbook's 1 377, the one unclassified line, and the string-id account of all three images against both headers including the seven absent ids and the eighteen unnamed blocks |
 | `accept_f12_d_accounting_command_reports_the_whole_installation_census` | the command over a synthetic installation (an authored container with the four routed members and three authored images): exit 0, the installation's own fingerprints, both members with their provenance and entry/declaration counts, the per-position census, both headers with every define and its parsed id (and a non-decimal value with `id: null`), and all three images with their own block counts and absent-id sets |
-| `accept_f12_d_accounting_command_exits_three_on_an_unconsumed_gameplay_key` | the same tree with one undeclared entry: exit 3, `parity.holds: false`, the unconsumed list naming the line, section and key, and the other member still accounted |
-| `accept_f12_d_accounting_command_refuses_a_member_the_container_does_not_hold` | a container missing three routed members: exit 3, one diagnostic per missing member naming the inventory rule, and a refusal row in the report rather than a silently shorter census |
+| `accept_f12_d_accounting_command_exits_three_on_an_unconsumed_gameplay_key` | the same tree with one undeclared entry: exit 3, `parity.holds: false` with `gameplay_critical_unconsumed: 1` and `unaccounted_members: 0`, the account's `undeclared` list naming the line, section and key, and the other member still accounted |
+| `accept_f12_d_accounting_command_refuses_a_member_the_container_does_not_hold` | a container missing three routed members: exit 3, one diagnostic per missing member naming the inventory rule, `unaccounted_members: 3` with `holds: false`, and a refusal row in the report rather than a silently shorter census |
 | `accept_f12_d_accounting_command_refuses_invalid_input_and_no_installation` | an unsupported flag, a flag without a value and an `--out` inside the installation all exit 2 with no report; no installation (and an exported but empty `CS_GAME_DIR`) exit 4 with a diagnostic naming both ways of selecting one |
 | `accept_f12_d_accounting_retail_command_reports_the_installed_census` | retail, end to end through the command: exit 0 with `gameplay_critical_unconsumed: 0`, both installation fingerprints, the per-member numbers above, the two headers' lengths, and the three images' block/unit/named counts, the eighteen unnamed blocks and the seven absent ids |
 
@@ -345,13 +362,14 @@ the report on the rebased commit and compares it, per
 ## Commands
 
 Run on this branch's candidate tree (the first four are this repo's required
-checks; the last two are the report generation and validation):
+checks; the last two are the report generation and validation). The reviewer
+re-ran all of them on the corrected tree after the rebase onto `2b8b0f4`:
 
 | Command | Exit |
 | --- | --- |
 | `cargo fmt --all -- --check` | 0 |
 | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
-| `cargo test --workspace --locked` | 0 (2 436 passed, 0 failed, 239 ignored on the rebased candidate tree; 2 432/226 before the rebase brought in the upstream campaign stages) |
+| `cargo test --workspace --locked` | 0 (2 436 passed, 0 failed, 239 ignored) — the reviewer's rerun on the rebased, corrected tree, and the tree the committed report names |
 | `cargo test --workspace --locked -- accept_f12_d_accounting_ --include-ignored` | 0 (10 tests, 10 passed, 0 failed — 8 synthetic and 2 retail) |
 | `env -u CS_GAME_DIR cargo test --workspace --locked --no-fail-fast -- accept_f12_d_accounting_ --include-ignored` | 101 — both retail tests fail loudly with `CS_GAME_DIR is not set` |
 | `cs-inspect inventory --cs-path "$CS_GAME_DIR" --out <private>/inventory.json` | 0 |
@@ -365,11 +383,13 @@ checks; the last two are the report generation and validation):
 - No behaviour of the original game is claimed or implied. The original
   executable was not run; `retail` here means read access to the installation's
   files.
-- `parity_holds: true` is a statement about the unconsumed-entry rule over one
-  installation. It is **not** a localization claim (AC04 stays open), **not** a
-  claim that the members are *understood* — the 1 514 recorded-unknown values
-  and the four off-kind values are named, not resolved — and **not** a
-  readiness or `verified_original` claim about the UI layout or the scrapbook.
+- `parity_holds: true` is a statement about the undeclared-entry rule over one
+  installation, and only over a run in which every routed member produced an
+  account row (`unaccounted_members: 0`). It is **not** a localization claim
+  (AC04 stays open), **not** a claim that the members are *understood* — the
+  1 514 recorded-unknown values and the four off-kind values are named, not
+  resolved — and **not** a readiness or `verified_original` claim about the UI
+  layout or the scrapbook.
 - A gameplay-critical classification is a **declared** argument, not a
   measurement: the command declares `ASSETS/LAYOUT.CSV` and
   `ASSETS/SCRAPBOOK.CSV` gameplay-critical, and a member it has not classified
@@ -383,10 +403,73 @@ checks; the last two are the report generation and validation):
 - The `string_id` numbering is used, not settled; see the seventh recorded
   unknown.
 
-**Identities.** Implementer: `bunny-alpha-2` (Space Bunny Alpha), in this
-session. Not yet reviewed: the Rally reviewer's identity and fresh-context
-status are recorded at review time in the report's `review` field, which
-regenerates with the report.
+**Identities.** Implementer: `bunny-alpha-2` (Space Bunny Alpha), in the
+session that produced this file. Reviewer: `bunny-alpha-2/bunny-alpha-2` (Space
+Bunny Alpha), a **different session with a fresh context** but the **same
+agent identity**, as Rally assigned the review back to the implementing agent
+name. That is not independent review, and per `AGENTS.md` ("Reviewing") this
+task's format-and-fidelity claims still want a different agent instance or
+model before a merge treats them as independently checked. Nothing in this
+file was rewritten to hide the reviewer's changes; the corrections it made are
+listed in [Review corrections](#review-corrections).
+
+## Review corrections
+
+The reviewer re-derived every number in this file from the committed evidence
+artifact `docs/findings/evidence/F12-D-ACCOUNTING.json` and its `config-account
+.json` rather than trusting the prose, and fixed:
+
+1. **`parity.holds` could report a pass over a census that accounted for
+   nothing.** `holds` was `blocking == 0`, so a run in which every routed
+   member was refused emitted `"parity":{…,"holds":true}` — a parity the run
+   never measured, in the one report whose subject is parity. The top-level
+   object now carries `unaccounted_members` (every routed member that produced
+   no account row: a member the container does not hold, a member that read to
+   zero entries, a member the reader refused, an unreadable or refused string
+   image) and `holds` is true only when both counts are zero.
+   `accept_f12_d_accounting_command_refuses_a_member_the_container_does_not_hold`
+   now pins `unaccounted_members: 3` with `holds: false`.
+2. **Two numbers in this file were wrong.** The layout member's split fields
+   were given as 6 852; the census sums the ten `fields` rows to **6 900**
+   (1 975 + 954 + 2 673 + 44 + 54 + 144 + 104 + 840 + 60 + 52), which is what
+   the command reports. And the three ids **both** resource headers name were
+   given as `10064`, `10065` and `10143`; the measured intersection of the two
+   id sets is **`101`, `1000` and `40001`** (`10064`/`10065`/`10143` are
+   `RESOURCE.H`'s own absent string-name ids against `strings.dll`, a different
+   quantity). The 778-present-rows arithmetic and the 775 union are unaffected
+   and still hold.
+3. **An imprecise scope.** "the string-name scope is 77 present and 269 absent"
+   named one header's row while reading like the union; it now gives the
+   `RESOURCE.H` row and the union over both headers (77/440 for `strings.dll`,
+   0/517 for `language.dll`).
+4. **A false claim about what the report contains.** The command's module
+   doc, its `--help` paragraph and one retail test comment all said "no original
+   text reaches the report". The report *does* carry the identifier text the
+   members are named by — every `#define` name and value, and an unconsumed
+   entry's key and section — and that is deliberate. All three now say
+   precisely that the report carries structural facts and identifier text and
+   no localizable display string, and the retail assertion that pretended to
+   prove the old claim now pins the property that is real (no unescaped
+   control byte, so the report stays one line of well-formed JSON).
+5. **A duplicated roll-up.** `keyed_member` built the whole member account
+   twice — once for the blocking count and again inside the JSON writer — so
+   the number the command failed on and the row it wrote came from two
+   independent computations. It is now computed once and both read it.
+6. **One word meant two things in the same row.** The member row carried
+   `accounting.unconsumed` (the document's own count of entries no *lookup*
+   returned, which is `entries` in a census that performs none) and, beside
+   it, `unconsumed` for the account's own list of entries **no declaration
+   consumed** — 822 against an empty list, with `parity_holds: true`. The
+   account's list is now keyed `undeclared`, after
+   `EntryDeclaration::Undeclared` and after the `entries` census, so the two
+   cannot be read as one number.
+7. A caption ("the per-position detail behind the two non-zero columns")
+   described a table that also lists unnamed positions whose two named columns
+   are zero; it now describes what the table actually lists.
+
+Nothing else was changed: the account's vocabulary, its arithmetic, the three
+recorded deliveries, the seven recorded unknowns and the evidence report's
+seven assertions all stood up to the reviewer's re-derivation.
 
 ## Sources
 

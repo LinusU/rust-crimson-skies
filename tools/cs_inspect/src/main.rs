@@ -160,13 +160,17 @@ COMMANDS
         reader and crossed with the ids the three string images actually
         carry, in both directions: the ids a header names whose block an
         image lacks, and the blocks of an image no header value names. The
-        report carries counts, ids, digests and byte extents only, never
-        original text. Exits 0 when no gameplay-critical entry is
-        unconsumed, 3 when one is or a member could not be read, 2 on invalid
-        input (including an --out inside the installation), 4 when no
-        installation is selected and 1 on a runtime failure. A member this
-        command has not classified is treated as gameplay-critical, so an
-        unconsumed entry blocks rather than passing.
+        report carries counts, ids, digests, byte extents, provenance and
+        the identifier text of the members themselves (entry keys, section
+        names, #define names and values), never a localizable display
+        string. Exits 0 when every routed member was accounted and no
+        gameplay-critical entry is unconsumed, 3 when one is or a member
+        could not be read, 2 on invalid input (including an --out inside
+        the installation), 4 when no installation is selected and 1 on a
+        runtime failure. A member this command has not classified is
+        treated as gameplay-critical, so an unconsumed entry blocks rather
+        than passing, and parity.holds is false while any routed member
+        produced no account row at all.
 
     scripts [--cs-path <dir>] [--coverage] [--signatures <file>]
             [--word-bytes <n>] [--budget <n>] [--out <file>]
