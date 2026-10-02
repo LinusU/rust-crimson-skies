@@ -1363,11 +1363,11 @@ fn release_entity(entity: Entity, world: &mut World, released: &mut usize) -> Re
 /// recorded and is counted only when it removed something, so one entry is
 /// returned once however many releases pass through here.
 ///
-/// A missing store is skipped rather than panicked on: a teardown of a world
-/// that never had one is a no-op, the same way [`teardown`] despawns nothing when
-/// nothing is live. [`sync_frame`] is the only caller that can reach a world
-/// whose stores are absent, and it refuses such a world before writing anything
-/// ([`SyncError::NoAssetStore`]).
+/// A missing store is skipped rather than panicked on: a [`teardown`] of a world
+/// that never had one is a no-op, the same way it despawns nothing when nothing
+/// is live. [`sync_frame`] refuses a world without a store before it writes
+/// anything ([`SyncError::NoAssetStore`]), so the only caller that can arrive
+/// here without one is a teardown.
 fn reclaim_store_entries(world: &mut World, owned: BatchAssets) -> ReclaimedAssets {
     // Scoped so the resource borrow ends before the stores are touched: the
     // counter and the assets are one transaction, not two overlapping ones.

@@ -158,6 +158,16 @@ neutralised so only the observable store lengths remain, they still fail:
 which is the reviewer's monotone growth, reproduced by the same numbers they
 measured.
 
+Reproduced independently during review (bunny-alpha-2, 2026-10-02) by a second
+mutation of the same function: keep the counter and the report exactly as they
+are, and let `reclaimed` count a removal the stores never make — the report lies,
+the leak stays. The `reclaimed` assertions still hold, and the three integration
+tests fail on the **store lengths alone**, at the same two places: `meshes` is 1
+after the first release where 0 is required (`cycle 1: its mesh went back`) and
+2 after the first repair-and-respawn where 1 is required (`cycle 1: no mesh per
+repair`); the additive test fails on `additive_materials` 1 where 0 is required.
+So the store counts, not the reported counters, are what carry this selection.
+
 The reuse guarantee is asserted in the same test and is unchanged: three resyncs
 of a frame that reuses every batch report `spawned: 0`, `reused: 1` and grow no
 store.
@@ -175,6 +185,25 @@ piece of design, filed as task #514
 (`F17-C-followup-released-image-store`) rather than folded in here. The image
 counts are deliberately not asserted in this task's tests; the fixture uses no
 image at all so the mesh and material stores are the only thing under test.
+
+**A reused batch that adds a replacement material owns nothing.** Found while
+reviewing this branch (bunny-alpha-2, 2026-10-02), not fixed here. The owner
+record is written only when the call adds *both* entries
+(`added_mesh.zip(added_material)`), and `added_mesh` is `Some` only on the spawn
+branch. `reuse_batch` accepts an entity carrying `BatchDraw` + `Mesh3d` without
+looking at its material component, so a live batch entity that loses
+`MeshMaterial3d<…>` behind the sync path's back takes `stored_material`'s
+"missing or damaged" `None` branch, `add_material` adds a new entry, and the
+`zip` records nothing: the entry just added can never be handed back, and the
+record still names the entry the entity no longer draws with, so a release
+reports a removal that is not what the batch used. Not reachable by a class
+change — `batch_key` digests `key.state()`, which digests the class, and
+`frame_fingerprint` in `batch.rs` documents that `material_kind` is
+deliberately not digested for that reason — and nothing in the workspace removes
+that component, so only a test that removes it can get there. Before this change
+the same path leaked that entry *and* the previous one, so it is an unfinished
+half of the rule rather than a regression. Filed as task #516
+(`F17-C-followup-reused-material-ownership`).
 
 **An owner dropped without a release leaks.** `teardown` releases through
 `BatchEntities`, and nothing in the workspace can drop that resource while leaving
