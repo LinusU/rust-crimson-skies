@@ -47,8 +47,8 @@ use cs_types::input::{
     MouseButton, ResponseCurve,
 };
 
-/// The scroll a report carries, in the mouse's own device counts, the same
-/// units and sign convention as its `motion_x`/`motion_y`.
+/// The scroll a report carries, in the mouse's own device units scaled into
+/// `[-1, 1]`, the same units and sign convention as its `motion_x`/`motion_y`.
 const WHEEL_SCROLL: f32 = 0.6;
 /// A wheel reading inside the fixture's wide dead zone.
 const WHEEL_IN_DEAD_ZONE: f32 = 0.4;

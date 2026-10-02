@@ -39,12 +39,11 @@ fail while the wheel is not in the calibration pass.
 ## What changed, and what stays the same
 
 - `DeviceEvent::MouseFrame` carries `wheel: f32`, the wheel's scroll delta since
-  the last frame **in the same device-count units and the same sign convention
-  as `motion_x`/`motion_y`**. One count is one detent the platform reported;
-  the sign is the sign the platform reported. `0.0` means the wheel did not move,
-  which is what makes the existing "no movement is no drive" rule apply to it
-  unchanged: a stopped mouse, stopped wheel included, contributes no reading at
-  all rather than a deflection of zero.
+  the last frame **in the same device units and the same sign convention as
+  `motion_x`/`motion_y`**. `0.0` means the wheel did not move, which is what
+  makes the existing "no movement is no drive" rule apply to it unchanged: a
+  stopped mouse, stopped wheel included, contributes no reading at all rather
+  than a deflection of zero.
 - The wheel is read by the same `calibrate` call as the motion axes, on the
   same `AxisChannel::Mouse(MouseAxis::Wheel)` key the settings and persistence
   paths already use. It therefore gets the same dead zone, inversion, response
@@ -101,13 +100,29 @@ them, and no test claims anything about them:
   project choice; F22-H (#411) measures the original's own control vocabulary
   and bindings from the installation.
 - **The original's wheel sensitivity, detent size and direction convention.**
-  `DeviceEvent::MouseFrame::wheel`'s units (device counts, sign as the platform
-  reports) are this project's *seam* convention, chosen to match `motion_x` and
-  `motion_y`; they are not a measurement of the original or of any driver.
+  `DeviceEvent::MouseFrame::wheel`'s units (the mouse's own device units, scaled
+  into `[-1, 1]`, sign as the platform reports) are this project's *seam*
+  convention, chosen to match `motion_x` and `motion_y`; they are not a
+  measurement of the original or of any driver.
 - **Which current platforms report a wheel delta at all**, and whether any of
   them reports it in detents, lines or pixels. F22-F will have to state the
-  unit it normalizes to; this stage only requires that a reported reading be
+  unit it scales from; this stage only requires that a reported reading be
   finite and inside `[-1, 1]` or be refused by name.
+- **How a platform's mouse counts are scaled into `[-1, 1]`, for motion as well
+  as for the wheel** (recorded by the review of this stage). Measured facts:
+  `AxisCalibration::apply` (`crates/cs_types/src/input.rs`) refuses any raw
+  reading outside `[-1, 1]` with `ReadingOutOfRange`, and
+  `DeviceAdapters::calibrated_readings` hands `motion_x`, `motion_y` and `wheel`
+  to it unchanged — there is no mouse normalizer, while the gamepad family has
+  the declared `normalize_gamepad_axis`. So a report whose motion or scroll
+  delta exceeds full scale refuses the *whole* mouse report, including the
+  buttons it named. The fixture readings here (`0.4`–`0.8`) are inside the range
+  a real mouse exceeds within one frame at ordinary speed, so a producer that
+  passed platform counts through unmodified would be refused almost always.
+  Which scale each platform needs (counts per frame, lines, pixels, detents) is
+  **unmeasured**; this stage documents the requirement in the field docs and
+  invents no conversion. Resolving task: **#405 `F22-F`**, whose Bevy producer
+  must state the unit it scales from before it reports a mouse frame.
 - **Whether a wheel should ever drive an edge target.** The generic
   `AxisCalibration::activation` threshold makes that possible (a wheel bound to
   a command fires while the calibrated reading is at or above the threshold and

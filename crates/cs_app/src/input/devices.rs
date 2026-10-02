@@ -179,14 +179,24 @@ pub enum DeviceEvent {
     /// frame.
     ///
     /// All three analog readings are **deltas since the last frame** in the
-    /// mouse's own device counts, so a report that lists none of them is a
+    /// mouse's own device units, so a report that lists none of them is a
     /// mouse that did not move. `0.0` is therefore "no movement", not "a
     /// deflection of zero", and the calibration pass reads it that way.
     ///
+    /// **The producer scales them into `[-1, 1]`.** These are the calibrated
+    /// pipeline's inputs, and [`AxisCalibration::apply`] refuses a reading
+    /// outside `[-1, 1]` with [`CalibrationError::ReadingOutOfRange`], which
+    /// refuses the *whole* mouse report. A platform that reports tens of
+    /// counts, lines or pixels of motion in one frame must therefore be scaled
+    /// at the seam before it is reported here. The gamepad family has a
+    /// declared normalizer ([`normalize_gamepad_axis`]); the mouse family has
+    /// none yet, and which scale any platform needs is unmeasured — this
+    /// documents the requirement, not a conversion.
+    ///
     /// `wheel` is the wheel's scroll delta, in the same units and the same
-    /// direction convention as `motion_x`/`motion_y` (one count is one detent
-    /// the platform reported, sign as the platform reported it). The wheel is
-    /// deliberately **unbound** in
+    /// direction convention as `motion_x`/`motion_y` (the platform's own delta,
+    /// sign as the platform reported it). The wheel is deliberately
+    /// **unbound** in
     /// [`ActionMap::designed_default`](cs_types::input::ActionMap::designed_default)
     /// — which binding it to a command is a design decision, not a fact about
     /// the original game — so today a wheel reading is calibrated and validated
@@ -197,12 +207,13 @@ pub enum DeviceEvent {
         device: DeviceId,
         /// The buttons down during this frame.
         buttons: Vec<MouseButton>,
-        /// Horizontal motion since the last frame, in device counts.
+        /// Horizontal motion since the last frame, in the mouse's device units
+        /// scaled into `[-1, 1]`.
         motion_x: f32,
-        /// Vertical motion since the last frame, in device counts.
+        /// Vertical motion since the last frame, in the same units.
         motion_y: f32,
-        /// Wheel scroll since the last frame, in the same device counts as
-        /// `motion_x`/`motion_y`.
+        /// Wheel scroll since the last frame, in the same units and the same
+        /// sign convention as `motion_x`/`motion_y`.
         wheel: f32,
     },
     /// A gamepad reported its buttons and axes.

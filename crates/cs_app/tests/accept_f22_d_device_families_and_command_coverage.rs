@@ -47,9 +47,10 @@ const ANALOG_READING: f32 = 0.85;
 /// A trigger pulled all the way: the driver reports `[0, 1]`, and
 /// `normalize_gamepad_axis` maps a full pull onto the axis maximum.
 const TRIGGER_PULL: f32 = 1.0;
-/// One mouse frame's motion, in device counts, on a channel that moved.
+/// One mouse frame's motion, in device units scaled into `[-1, 1]`, on a
+/// channel that moved.
 const MOUSE_MOTION: f32 = 0.8;
-/// One mouse frame's wheel scroll, in the same device counts as the motion.
+/// One mouse frame's wheel scroll, in the same units as the motion.
 const MOUSE_WHEEL: f32 = 0.6;
 /// How far a measured axis value may differ from the value the report asked
 /// for: `AxisValue` quantizes to `i16`, about 3e-5 of full scale.
@@ -138,7 +139,7 @@ fn reading(source: BindingSource) -> f32 {
 }
 
 /// The raw reading a driver reports for `source`: sticks in `[-1, 1]`, a
-/// trigger in `[0, 1]`, mouse motion in device counts.
+/// trigger in `[0, 1]`, mouse motion in device units scaled into `[-1, 1]`.
 fn raw_for(source: BindingSource) -> f32 {
     match source {
         BindingSource::GamepadAxis(GamepadAxis::LeftTrigger | GamepadAxis::RightTrigger) => {
