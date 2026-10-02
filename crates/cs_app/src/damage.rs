@@ -1,7 +1,8 @@
-//! The damage application boundary (F29-A).
+//! The damage application boundary (F29-A/B/C).
 //!
-//! Spec: `specs/F29-damage-zones-armor-destruction-and-bailout.md`, stage
-//! `### F29-A`. Shared contract: `docs/contracts/STATE-TRANSACTIONS.md`.
+//! Spec: `specs/F29-damage-zones-armor-destruction-and-bailout.md`, stages
+//! `### F29-A`, `### F29-B` and `### F29-C`. Shared contract:
+//! `docs/contracts/STATE-TRANSACTIONS.md`.
 //!
 //! This module sits between the declared damage schema
 //! ([`cs_content::damage`]) and the session resolver
@@ -23,6 +24,13 @@
 //!   subject, generation-stamped like
 //!   [`crate::scene::SceneNodeBinding`] so a reload can never leave a
 //!   stale binding looking live.
+//! * [`apply_damage_state`] — the F29-C consumer seam: it reads the
+//!   resolver's authoritative part state for one actor and rewrites the
+//!   weapon firing gate ([`FireResolver`]'s disabled-mount set) and the
+//!   visual damage record ([`AirframeDamageState`]) to agree with it. A
+//!   destroyed weapon mount stops firing and its part is presented
+//!   destroyed; a repair brings both back. Every refusal is named in the
+//!   returned [`DamageConsumerLog`].
 //!
 //! Nothing here owns damage state: pools, lifecycle records and event
 //! sequences are the resolver's; these are the conversion and binding
@@ -64,15 +72,17 @@ use cs_content::damage::{
 use cs_content::scene::SceneNodeId;
 use cs_sim::damage::{
     ActorId, AttributionRule, DamageEvent, DamageEventKind, DamageGraph, DamageGraphError,
-    DamageNode, DamageNodeKey, DamageNodeKind, DamagePolicy, NodeKeyError, PartState, SystemKind,
+    DamageNode, DamageNodeKey, DamageNodeKind, DamagePolicy, DamageResolver, NodeKeyError,
+    PartState, SystemKind,
 };
+use cs_sim::weapons::FireResolver;
 use cs_types::content::{ContentId, Known, Resolved};
 use cs_types::evidence::ClaimId;
 
 use crate::physics::{
     ColliderDecisionError, remove_collider_for_damage, restore_collider_after_repair,
 };
-use crate::scene::SceneGeneration;
+use crate::scene::{AirframeDamageState, SceneGeneration};
 
 /// Why a declared graph could not be lowered to the runtime records.
 #[derive(Clone, Debug, PartialEq)]
@@ -668,4 +678,469 @@ pub fn repair_damage_zone(
     let outcome = apply_zone_decision(world, actor, node, Some(ZoneColliderDecision::Restore));
     report.record(outcome);
     report
+}
+
+// ------------------------------------------ the damage → consumers seam ---
+//
+// F29-C. The resolver (F29-A/F29-B) is the *producer*: it owns the
+// authoritative part and system state and emits the ordered events. These are
+// the consumers the sheet names for this stage's minimum scenario — the weapon
+// firing gate and the visual damage record. The firing gate is
+// [`FireResolver`]'s per-mount disabled set, which `fire_one_mount` checks
+// before a round is ever consumed (so a disabled mount cannot fire, and the
+// refusal is `FireDenialReason::MountDisabled`); the visual record is
+// [`AirframeDamageState`], whose single owner `scene::apply_airframe_damage`
+// projects it onto the `NodeDisabled` marker and the render/LOD pass.
+//
+// The pass is **state-driven**, not event-replayed: it reads the resolver's
+// [`part_state`](DamageResolver::part_state) and rewrites the consumers to
+// agree with it. That is F29 non-negotiable 1 ("Damaged visuals consume
+// authoritative state") and it makes the pass convergent — running it twice, or
+// after a reload, changes nothing the second time. Every refusal (a foreign
+// actor, an unarmed actor, a carrier with no gun, an unresolved pool, a binding
+// that is not a scene node) is named in the returned [`DamageConsumerLog`]
+// instead of being swallowed, the way [`apply_damage_events`] reports its
+// collider refusals.
+//
+// Only [`SystemKind::Weapon`] is wired here. `Propulsion`'s consumer is the
+// flight-authority gate (`cs_sim::flight`), and debris, scoring and the bailout
+// mission transition need consumers that do not exist on this branch yet; they
+// are recorded as follow-ups, never guessed. Nothing in this pass *decides*
+// damage — it only reflects the resolver's state onto the two consumers.
+
+/// Why the damage → consumer pass could not update a consumer.
+///
+/// A refusal is a returned record, not a dropped update: the pass stays
+/// deterministic and says exactly which consumer it could not reach and why.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DamageConsumerRefusal {
+    /// The actor's session is not the resolver's. A restarted or swapped actor
+    /// is a new generation; nothing from the old one is applied.
+    ForeignSession {
+        /// The resolver's session generation.
+        expected: u64,
+        /// The session the named actor carried.
+        found: u64,
+    },
+    /// The actor is not registered with the resolver.
+    UnknownActor {
+        /// The unknown actor.
+        actor: ActorId,
+    },
+    /// A weapon carrier is destroyed but the actor has no weapon state in the
+    /// firing gate, so the mount cannot be taken out of the simulation.
+    UnarmedActor {
+        /// The actor with no registered weapons.
+        actor: ActorId,
+    },
+    /// The firing gate has no gun on the carrier's mount, so disabling it
+    /// would name a weapon that does not exist.
+    UnmountedMount {
+        /// The actor.
+        actor: ActorId,
+        /// The carrier's mount, which carries no gun.
+        mount: DamageNodeKey,
+    },
+    /// A part declares a visual binding that is unresolved: its scene node
+    /// cannot be named, so neither destroying nor repairing it is guessed.
+    UnresolvedVisual {
+        /// The actor.
+        actor: ActorId,
+        /// The part with the unresolved binding.
+        node: DamageNodeKey,
+        /// The claim the unknown binding is recorded under.
+        claim_id: ClaimId,
+        /// Why the binding is unknown.
+        reason: String,
+    },
+    /// A part's scene binding does not name a `scene_node`, so it cannot be a
+    /// visual part of the live scene.
+    NonSceneVisual {
+        /// The actor.
+        actor: ActorId,
+        /// The part with the non-scene binding.
+        node: DamageNodeKey,
+        /// The binding's actual catalog id.
+        id: ContentId,
+    },
+    /// A part's integrity is unresolved, so whether it is destroyed cannot be
+    /// asserted; the consumer is left exactly as it is.
+    UnresolvedIntegrity {
+        /// The actor.
+        actor: ActorId,
+        /// The part with the unresolved pool.
+        node: DamageNodeKey,
+        /// The claim the unknown pool is recorded under.
+        claim_id: ClaimId,
+        /// Why the pool is unknown.
+        reason: String,
+    },
+}
+
+/// One update the damage → consumer pass applied, or one refusal.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DamageConsumerEvent {
+    /// A destroyed weapon carrier's mount was disabled in the firing gate.
+    MountDisabled {
+        /// The actor.
+        actor: ActorId,
+        /// The disabled mount.
+        mount: DamageNodeKey,
+    },
+    /// A mount the state says is not destroyed was re-enabled — a repair, or
+    /// the convergence that clears a stale disable.
+    MountEnabled {
+        /// The actor.
+        actor: ActorId,
+        /// The re-enabled mount.
+        mount: DamageNodeKey,
+    },
+    /// A destroyed part was recorded as destroyed in the visual state.
+    VisualDestroyed {
+        /// The actor.
+        actor: ActorId,
+        /// The destroyed part.
+        node: DamageNodeKey,
+        /// The visual part it presents as.
+        scene_node: SceneNodeId,
+    },
+    /// A part the state says is not destroyed was recorded as repaired in the
+    /// visual state.
+    VisualRepaired {
+        /// The actor.
+        actor: ActorId,
+        /// The repaired part.
+        node: DamageNodeKey,
+        /// The visual part it presents as.
+        scene_node: SceneNodeId,
+    },
+    /// The update could not be applied; see [`DamageConsumerRefusal`].
+    Refused(DamageConsumerRefusal),
+}
+
+/// The append-only record of what the damage → consumer pass changed, oldest
+/// first.
+///
+/// A log entry is written only for a real change or a refusal, never for a
+/// consumer that already agreed with the state, so the log is how idempotence
+/// is observed: running the pass twice logs nothing the second time.
+#[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
+pub struct DamageConsumerLog {
+    events: Vec<DamageConsumerEvent>,
+}
+
+impl DamageConsumerLog {
+    /// An empty log.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Appends one event.
+    pub fn push(&mut self, event: DamageConsumerEvent) {
+        self.events.push(event);
+    }
+
+    /// Every event, oldest first.
+    #[must_use]
+    pub fn events(&self) -> &[DamageConsumerEvent] {
+        &self.events
+    }
+
+    /// The most recent event.
+    #[must_use]
+    pub fn last(&self) -> Option<&DamageConsumerEvent> {
+        self.events.last()
+    }
+
+    /// How many events the log holds.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.events.len()
+    }
+
+    /// Whether the log is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+}
+
+/// What one damage → consumer pass changed.
+///
+/// The counters are how a caller observes convergence: the same state applied
+/// twice reports zero the second time.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DamageConsumerReport {
+    /// Destroyed carriers whose mount was disabled.
+    pub mounts_disabled: u32,
+    /// Not-destroyed carriers whose mount was re-enabled.
+    pub mounts_enabled: u32,
+    /// Parts newly recorded destroyed in the visual state.
+    pub visuals_destroyed: u32,
+    /// Parts newly recorded repaired in the visual state.
+    pub visuals_repaired: u32,
+    /// Updates that could not be applied.
+    pub refused: u32,
+}
+
+impl DamageConsumerReport {
+    /// Whether the pass changed nothing and refused nothing.
+    #[must_use]
+    pub const fn is_noop(&self) -> bool {
+        self.mounts_disabled == 0
+            && self.mounts_enabled == 0
+            && self.visuals_destroyed == 0
+            && self.visuals_repaired == 0
+            && self.refused == 0
+    }
+}
+
+/// One damage → consumer pass's report and its log.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DamageConsumerOutcome {
+    /// What the pass changed.
+    pub report: DamageConsumerReport,
+    /// Every change and refusal, oldest first.
+    pub log: DamageConsumerLog,
+}
+
+/// Applies one actor's authoritative damage state to the consumers it drives:
+/// the weapon firing gate and the visual damage record.
+///
+/// For every node of the actor's registered graph this pass:
+///
+/// * records the part as destroyed in `visuals` when its
+///   [`PartState`] is [`Destroyed`](PartState::Destroyed), and as repaired
+///   when it is `Intact` or `Damaged` — a part with no visual binding is
+///   simply skipped, and a declared-but-unresolved binding is refused rather
+///   than guessed;
+/// * disables the mount on a destroyed [`SystemKind::Weapon`] carrier in
+///   `fire`, and re-enables it when the state says it is not destroyed, so the
+///   gate stops firing exactly while the mount is a wreck and comes back on a
+///   repair.
+///
+/// `log`-free callers read the returned [`DamageConsumerOutcome`]; an
+/// `Unknown` integrity asserts neither direction and is refused by name.
+#[must_use]
+pub fn apply_damage_state(
+    resolver: &DamageResolver,
+    actor: ActorId,
+    fire: &mut FireResolver,
+    visuals: &mut AirframeDamageState,
+) -> DamageConsumerOutcome {
+    let mut outcome = DamageConsumerOutcome::default();
+
+    if actor.session != resolver.session() {
+        refusals::foreign_session(&mut outcome, resolver.session(), actor.session);
+        return outcome;
+    }
+    let Some(graph) = resolver.graph(&actor) else {
+        refusals::unknown_actor(&mut outcome, actor);
+        return outcome;
+    };
+
+    // An unarmed actor is reported once, not once per carrier.
+    let mut unarmed_reported = false;
+    for node in graph.nodes() {
+        let node_key = node.key();
+        let destroyed = match resolver.part_state(&actor, node_key) {
+            Some(PartState::Destroyed) => Some(true),
+            Some(PartState::Intact | PartState::Damaged) => Some(false),
+            // Unresolved, or a node the resolver does not know: assert nothing.
+            Some(PartState::Unknown) | None => None,
+        };
+
+        if destroyed.is_none() {
+            refusals::unresolved_integrity(&mut outcome, actor, node);
+        } else {
+            apply_visual(&mut outcome, actor, node, destroyed == Some(true), visuals);
+        }
+
+        if node.disables() == Some(SystemKind::Weapon) {
+            if fire.state(&actor).is_none() {
+                if !unarmed_reported {
+                    unarmed_reported = true;
+                    refusals::unarmed_actor(&mut outcome, actor);
+                }
+                continue;
+            }
+            if fire.definition(&actor, node_key).is_none() {
+                refusals::unmounted_mount(&mut outcome, actor, node_key.clone());
+                continue;
+            }
+            let Some(destroyed) = destroyed else {
+                // Already reported as an unresolved integrity above.
+                continue;
+            };
+            apply_mount(&mut outcome, actor, node_key, destroyed, fire);
+        }
+    }
+
+    outcome
+}
+
+/// Records one part's destroyed/repaired state in the visual record, or
+/// refuses a binding that cannot name a scene node.
+fn apply_visual(
+    outcome: &mut DamageConsumerOutcome,
+    actor: ActorId,
+    node: &DamageNode,
+    destroyed: bool,
+    visuals: &mut AirframeDamageState,
+) {
+    let scene_node = match node.scene_binding() {
+        None => return,
+        Some(Resolved::Known(known)) => match SceneNodeId::from_content_id(known.value.clone()) {
+            Ok(scene_node) => scene_node,
+            Err(_) => {
+                outcome.report.refused += 1;
+                outcome.log.push(DamageConsumerEvent::Refused(
+                    DamageConsumerRefusal::NonSceneVisual {
+                        actor,
+                        node: node.key().clone(),
+                        id: known.value.clone(),
+                    },
+                ));
+                return;
+            }
+        },
+        Some(Resolved::Unknown { claim_id, reason }) => {
+            outcome.report.refused += 1;
+            outcome.log.push(DamageConsumerEvent::Refused(
+                DamageConsumerRefusal::UnresolvedVisual {
+                    actor,
+                    node: node.key().clone(),
+                    claim_id: claim_id.clone(),
+                    reason: reason.clone(),
+                },
+            ));
+            return;
+        }
+    };
+
+    if destroyed {
+        let was = visuals.is_destroyed(&scene_node);
+        visuals.destroy(scene_node.clone());
+        if !was {
+            outcome.report.visuals_destroyed += 1;
+            outcome.log.push(DamageConsumerEvent::VisualDestroyed {
+                actor,
+                node: node.key().clone(),
+                scene_node,
+            });
+        }
+    } else if visuals.repair(&scene_node) {
+        outcome.report.visuals_repaired += 1;
+        outcome.log.push(DamageConsumerEvent::VisualRepaired {
+            actor,
+            node: node.key().clone(),
+            scene_node,
+        });
+    }
+}
+
+/// Disables or re-enables one mount on the firing gate, logging a real change.
+fn apply_mount(
+    outcome: &mut DamageConsumerOutcome,
+    actor: ActorId,
+    mount: &DamageNodeKey,
+    destroyed: bool,
+    fire: &mut FireResolver,
+) {
+    let state = fire
+        .state_mut(&actor)
+        .expect("the caller checked the actor has weapon state");
+    let was_disabled = state.is_disabled(mount);
+    if destroyed {
+        state.disable(mount);
+        if !was_disabled {
+            outcome.report.mounts_disabled += 1;
+            outcome.log.push(DamageConsumerEvent::MountDisabled {
+                actor,
+                mount: mount.clone(),
+            });
+        }
+    } else {
+        state.enable(mount);
+        if was_disabled {
+            outcome.report.mounts_enabled += 1;
+            outcome.log.push(DamageConsumerEvent::MountEnabled {
+                actor,
+                mount: mount.clone(),
+            });
+        }
+    }
+}
+
+/// The refusal constructors, so [`apply_damage_state`] stays readable.
+mod refusals {
+    use cs_sim::damage::{ActorId, DamageNode, DamageNodeKey};
+    use cs_types::content::Resolved;
+    use cs_types::evidence::ClaimId;
+
+    use super::{DamageConsumerOutcome, DamageConsumerRefusal};
+
+    /// The actor belongs to another session generation.
+    pub(super) fn foreign_session(outcome: &mut DamageConsumerOutcome, expected: u64, found: u64) {
+        outcome.report.refused += 1;
+        outcome.log.push(super::DamageConsumerEvent::Refused(
+            DamageConsumerRefusal::ForeignSession { expected, found },
+        ));
+    }
+
+    /// The actor is not registered with the resolver.
+    pub(super) fn unknown_actor(outcome: &mut DamageConsumerOutcome, actor: ActorId) {
+        outcome.report.refused += 1;
+        outcome.log.push(super::DamageConsumerEvent::Refused(
+            DamageConsumerRefusal::UnknownActor { actor },
+        ));
+    }
+
+    /// A destroyed weapon carrier on an actor with no weapon state.
+    pub(super) fn unarmed_actor(outcome: &mut DamageConsumerOutcome, actor: ActorId) {
+        outcome.report.refused += 1;
+        outcome.log.push(super::DamageConsumerEvent::Refused(
+            DamageConsumerRefusal::UnarmedActor { actor },
+        ));
+    }
+
+    /// The firing gate has no gun on the carrier's mount.
+    pub(super) fn unmounted_mount(
+        outcome: &mut DamageConsumerOutcome,
+        actor: ActorId,
+        mount: DamageNodeKey,
+    ) {
+        outcome.report.refused += 1;
+        outcome.log.push(super::DamageConsumerEvent::Refused(
+            DamageConsumerRefusal::UnmountedMount { actor, mount },
+        ));
+    }
+
+    /// A part's integrity is unresolved; neither direction is asserted.
+    pub(super) fn unresolved_integrity(
+        outcome: &mut DamageConsumerOutcome,
+        actor: ActorId,
+        node: &DamageNode,
+    ) {
+        let (claim_id, reason) = match node.integrity() {
+            Resolved::Unknown { claim_id, reason } => (claim_id.clone(), reason.clone()),
+            // `part_state` only reports `Unknown` for an unresolved pool, so
+            // this arm is unreachable; it keeps the refusal total rather than
+            // unwrapping a condition the caller already knows.
+            Resolved::Known(_) => (
+                ClaimId::new("f29c.unknown-integrity").expect("the claim id is valid"),
+                "the pool state is unknown".to_owned(),
+            ),
+        };
+        outcome.report.refused += 1;
+        outcome.log.push(super::DamageConsumerEvent::Refused(
+            DamageConsumerRefusal::UnresolvedIntegrity {
+                actor,
+                node: node.key().clone(),
+                claim_id,
+                reason,
+            },
+        ));
+    }
 }
