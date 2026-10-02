@@ -12,8 +12,8 @@
 //! short sound sample and compare the byte and sample counts with what its
 //! declared format implies.
 //!
-//! Two entry points, because the stage that added a codec is a separate piece
-//! of work and its consumer switch is a third:
+//! Two entry points, kept separate because the stage that added a codec is a
+//! different piece of work from the consumer that switches to it:
 //!
 //! * [`SampleFormat::from_header`] is stage F06-C's plan. It decodes
 //!   uncompressed PCM and refuses a compressed member with
@@ -22,12 +22,15 @@
 //!   PCM, IMA ADPCM ([`crate::zbd::adpcm`]) and MS ADPCM from the member's own
 //!   bytes, including the `fmt ` extension those two tags carry.
 //!
-//! The runtime consumer in `cs_assets` still calls the F06-C entry point, so a
-//! retail ADPCM member is still reported `UnsupportedFormat` there until that
-//! consumer is switched; nothing in this module claims otherwise, and the
-//! decoders below are the same ones that entry point will use. The block
-//! geometry and codebook live in [`crate::zbd::adpcm`], and every value they
-//! need that varies per member is read from the member.
+//! The two entry points still differ — [`SampleFormat::from_header`] never
+//! decodes a block codec — but the runtime consumer in `cs_assets` no longer
+//! calls it: since Rally task #524 that consumer plans each member through this
+//! module's block-aware entry point
+//! ([`SampleFormat::from_header_with_blocks`], which
+//! [`SampleFormat::from_member`] wraps), so a retail ADPCM member is decoded
+//! rather than reported `UnsupportedFormat`. The block geometry and codebook
+//! live in [`crate::zbd::adpcm`], and every value they need that varies per
+//! member is read from the member.
 //!
 //! A compressed member is never approximated, never silently passed through as
 //! if it were PCM and never refused for want of a value this crate could have

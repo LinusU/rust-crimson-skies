@@ -25,18 +25,18 @@ Two entry points exist, and that is deliberate:
 
 | Entry point | Decodes | Used by |
 | --- | --- | --- |
-| `SampleFormat::from_header` (stage F06-C) | uncompressed PCM only; a compressed tag is refused as `UnsupportedFormat` carrying its own tag and RFC 2361 name | `crates/cs_assets/src/zbd.rs` (`SoundAsset::decode`, `SoundAssets::new`) |
-| `SampleFormat::from_member` (this task) | PCM, IMA ADPCM and MS ADPCM, including the `fmt ` extension | this task's tests; the runtime consumer switch is task #524 |
+| `SampleFormat::from_header` (stage F06-C) | uncompressed PCM only; a compressed tag is refused as `UnsupportedFormat` carrying its own tag and RFC 2361 name | stage F06-C's own tests; **not** the runtime consumer since Rally #524 |
+| `SampleFormat::from_member` / `from_header_with_blocks` (this task) | PCM, IMA ADPCM and MS ADPCM, including the `fmt ` extension | `crates/cs_assets/src/zbd.rs` (`SoundAsset`, `SoundAssets::new`) since Rally #524 |
 
-The F06-C entry point is unchanged, so `SoundReadiness::UnsupportedFormat` for a
-compressed member is still true in `cs_assets` and its F06-C tests still pass.
-That file is outside this task's owner paths, and switching the consumer changes
-a published contract of it, so the switch is filed as its own task (Rally #524,
-"Switch the `cs_assets` sound consumer to the block-aware decode plan") rather
-than made here. Nothing in this task's code claims the runtime consumer already
-reports these members as decoded; the module documentation says so explicitly,
-and until #524 lands every retail sound member is still `UnsupportedFormat` at
-runtime.
+The F06-C entry point is unchanged and still refuses a compressed member with its
+own tag, and its F06-C tests still pass; the two entry points are pinned apart by
+`accept_t444_the_pcm_entry_point_still_refuses_a_compressed_member_with_its_tag`.
+The consumer switch was outside this task's owner paths, so it was filed on its
+own (Rally #524, "Switch the `cs_assets` sound consumer to the block-aware decode
+plan") and has since landed: `cs_assets` now plans each member through
+`SampleFormat::from_header_with_blocks`, so every retail sound member — 5,019
+compressed and 22 PCM — is reported `SoundReadiness::Decoded` rather than
+`UnsupportedFormat`.
 
 ## Sources
 
@@ -277,6 +277,46 @@ and is expected to differ from FFmpeg.
   spatialisation, mixing — is not decided by these bytes and is not decided
   here. That is F41's work, and the decoded values are handed over unchanged.
 
+## The zero-extension ADPCM classification recorded for #530
+
+`read_adpcm_extension` returns `AdpcmExtension::Absent` for a known ADPCM tag
+whose `fmt ` payload holds only the 16 common fields, while a payload with 1 or
+more but still too few extension bytes is `AdpcmExtension::Short`. Through
+`SampleFormat::from_declared` the two become different refusals: `Short` becomes
+`AdpcmExtensionShort`, which the runtime consumer reports as `Undecodable { code:
+"adpcm_extension_short" }`, and `Absent` becomes `UnsupportedFormat` carrying the
+member's own tag and RFC 2361 name, which it reports as
+`SoundReadiness::UnsupportedFormat`. A bare-16 ADPCM member is therefore reported
+`UnsupportedFormat` at runtime even though this crate does read its tag.
+
+This was left as it is. The reasons are the code and the consumer contract, not
+preference:
+
+- Rally #524's consumer contract already pins the distinction.
+  `accept_t524_a_block_coded_member_without_a_readable_fmt_extension_is_refused`
+  in `crates/cs_assets/src/zbd.rs` asserts `SoundReadiness::UnsupportedFormat`
+  for an IMA member with no extension, and `Undecodable { code:
+  "adpcm_extension_short" }` only for the `short.wav` fixture whose MS payload
+  stops after `cbSize`. Returning `Short` for a zero-extension known tag would
+  change that published consumer row, and `crates/cs_assets/` is not an owner
+  path of this work.
+- `Absent` means "no ADPCM extension is declared or present", and the refusal it
+  produces keeps the member's own tag and name visible, so no fact about the
+  member is lost: an `UnsupportedFormat` row still says exactly which codec the
+  member claims.
+- Either classification still refuses the member; neither weakens a refusal. The
+  F06-C `from_header` path is unaffected either way, because it refuses a
+  non-PCM tag before any extension is consulted.
+
+The alternative — returning `AdpcmExtension::Short { declared_len: 16, needed:
+20 for IMA / 22 for MS }` for a known ADPCM tag with no extension bytes — is
+therefore not taken. `crates/cs_formats`' own synthetic test
+`accept_t444_a_compressed_member_without_a_readable_fmt_extension_is_refused`
+pins the decision: it asserts `AdpcmExtension::Absent` and
+`SampleFormatError::UnsupportedFormat` for the bare-16 IMA member, and
+`AdpcmExtensionShort { declared_len: 18, needed: 22 }` for the MS member that
+stops after `cbSize`.
+
 ## Tests
 
 `crates/cs_formats/tests/zbd/t444.rs`, prefix `accept_t444_`:
@@ -295,7 +335,7 @@ and is expected to differ from FFmpeg.
 | `a_compressed_member_without_a_readable_fmt_extension_is_refused` | `AdpcmExtensionShort` with the member's own tag and lengths, `Absent`, an unnamed tag, and `AdpcmCoefficientTableTooLong` for a `wNumCoefs` the layout does not reserve |
 | `a_declaration_the_block_layouts_cannot_honour_is_refused` | `wSamplesPerBlock` against the block size, a block too small for its header, a width that is not 4, and both unobserved channel counts |
 | `the_block_decode_is_bounded_by_the_parse_allocation_budget` | the booked charge from the geometry, a refusal one byte short of it, and the funded retry |
-| `the_pcm_entry_point_still_refuses_a_compressed_member_with_its_own_tag` | the staged split between the two entry points, and an unreadable header refused by the new one |
+| `the_pcm_entry_point_still_refuses_a_compressed_member_with_its_tag` | the deliberate split between the two entry points: `from_header` still refuses a compressed member with its own tag, and an unreadable header is refused by the new one |
 | `retail_every_compressed_sound_member_decodes_to_its_declared_counts` | all 5,019 compressed members of both archives: every one decodes, every count matches the declared geometry, every MS member declares seven coefficient pairs, and the seven distinct shapes are the measured ones |
 
 `accept_t444_retail_every_compressed_sound_member_decodes_to_its_declared_counts`

@@ -965,9 +965,10 @@ fn accept_t444_the_block_decode_is_bounded_by_the_parse_allocation_budget() {
 fn accept_t444_the_pcm_entry_point_still_refuses_a_compressed_member_with_its_tag() {
     // Stage F06-C's entry point decodes uncompressed PCM only and says so with
     // the member's own tag; task #444's entry point decodes the same member. The
-    // staged split is deliberate: it keeps the F06-C consumer's contract
-    // (`SoundReadiness::UnsupportedFormat` for a compressed member) true until
-    // that consumer is switched over.
+    // split stays deliberate: `from_header` keeps its PCM-only contract and must
+    // refuse a compressed member, while the runtime consumer in `cs_assets` now
+    // plans through the block-aware entry point (Rally task #524) and decodes it
+    // instead. This test pins `from_header`'s own contract, not the consumer's.
     let bytes = member(
         &fmt(WAVE_FORMAT_IMA_ADPCM, 1, 11_025, 8, &ima_tail(9)),
         &ima_block(7, 0, &[0, 0, 0, 0, 0, 0, 0, 0]),
@@ -1358,16 +1359,6 @@ fn evidence_report_t444_writes_the_acceptance_report() {
                    covered by synthetic tests only",
             affected: "0 retail members",
         },
-        Unknown {
-            item: "whether the `cs_assets` consumer (which still calls stage F06-C's \
-                   `SampleFormat::from_header`) reports these members as decoded",
-            status: "known gap, filed as Rally task #524 (\"Switch the `cs_assets` sound consumer \
-                     to the block-aware decode plan\")",
-            why: "switching that consumer changes its F06-C `SoundReadiness::UnsupportedFormat` \
-                   contract and is outside this task's owner paths; until #444's #524 lands, every \
-                   retail sound member is still UnsupportedFormat at runtime",
-            affected: "every sound member at runtime",
-        },
     ];
     // The report's `unknowns` list is empty because `tools/validate_evidence.py
     // --require-pass` treats a non-empty list as a failed run, and because
@@ -1456,7 +1447,12 @@ fn evidence_report_t444_writes_the_acceptance_report() {
              block layouts and the three codebooks, mutation-checked the decode (IMA nibble \
              order, the predictor division, the summed term), and regenerated this report with \
              CS_FFMPEG set. A review by the same agent identity as the implementer is not \
-             independent evidence, and no agent review replaces the owner's human approval"
+             independent evidence, and no agent review replaces the owner's human approval. \
+             This report was regenerated for Rally task #530 by implementer \
+             deepseek-1/deepseek-1 on the same retail fingerprint, with CS_FFMPEG set, to retire \
+             the entry-point statements that task #524 made stale: that regeneration changed no \
+             decoder, no acceptance test and no measurement, and the #444 review above is \
+             unchanged"
         ),
         jstr(&format!(
             "acceptance suite run locally with the retail capability; this harness derives every \
@@ -1466,6 +1462,11 @@ fn evidence_report_t444_writes_the_acceptance_report() {
              (zbd-adpcm-decode.json); when CS_FFMPEG names an ffmpeg binary it also compares \
              production decodes with that independent implementation of the same two documented \
              formats sample for sample; validated with tools/validate_evidence.py --require-pass.{} \
+             The runtime consumer in `cs_assets` was switched to this module's block-aware entry \
+             point by Rally task #524 (\"Switch the `cs_assets` sound consumer to the block-aware \
+             decode plan\"), so every retail sound member is planned through it and reports \
+             `SoundReadiness::Decoded`; the entry-point split remains and is pinned by this suite's \
+             `the_pcm_entry_point_still_refuses_a_compressed_member_with_its_tag`. \
              The decode is a checked format claim, not a claim about how the original executable \
              played the sound. Unresolved issues are recorded in the task's finding document \
              (docs/findings/2026-10-02-t444-ima-and-ms-adpcm-block-decoding.md, section \
