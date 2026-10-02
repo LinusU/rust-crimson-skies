@@ -106,6 +106,11 @@ use crate::scene::LiveAirframeScene;
 ///   producer/scene mismatch that is counted in [`VisibilityReport::no_record`]
 ///   rather than guessed around.
 ///
+/// F11-C publishes one live scene, so the last case is also every part of a
+/// second airframe in the same frame: the row finds no evidence, is counted,
+/// and is drawn. See the module section on which entity a row's verdict is
+/// read from.
+///
 /// [`limitation_codes::UNRESOLVED_PART_IDENTITY`]:
 ///   crate::render::batch::limitation_codes::UNRESOLVED_PART_IDENTITY
 #[must_use]
