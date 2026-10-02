@@ -85,13 +85,15 @@ pub fn rotate_vector(rotation: Quaternion, value: [f64; 3]) -> Result<[f64; 3], 
     Ok(rotated)
 }
 
-/// A yaw about `+Y` composed with a pitch about the yawed `+X`: the rotation
-/// a head turn or a free-look offset is.
+/// A yaw about `+Y` composed with a pitch about `+X`: the rotation a head
+/// turn or a free-look offset is.
 ///
 /// Positive yaw turns the forward axis toward `-X` (the canonical left) and
-/// positive pitch toward `+Y` (up), both by the right-hand rule. The two are
-/// applied in that order so a pitch is always about the *turned* right axis
-/// and the view never rolls.
+/// positive pitch toward `+Y` (up), both by the right-hand rule. The pitch is
+/// applied first, about the body's own right axis, and the yaw second, about
+/// the canonical up: `compose(yaw, pitch)` composes them that way. That is the
+/// order that never rolls — yaw applied first would tilt the right axis the
+/// pitch then turns about.
 ///
 /// # Errors
 ///

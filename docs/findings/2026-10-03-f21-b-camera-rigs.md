@@ -52,11 +52,11 @@ of the declared mode:
 
 | record | answers | type |
 | --- | --- | --- |
-| `BodyOffset` | where, in the aircraft's own body frame | metres along the body's right/up/forward axes; only non-finite input is refused |
+| `BodyOffset` | where, in the aircraft's own body frame | metres along the body's right/up/forward axes (`forward_m` is a distance along `-Z`, so **negative is astern**); only non-finite input is refused |
 | `CockpitBindingSource` | which binding the eye was read from | `ModelNode { node }` \| `ConfigKey { key }`, name non-empty and ≤ 64 bytes |
 | `CockpitViewpoint` | the verified cockpit viewpoint | binding + `BodyOffset` + `Resolved` yaw and pitch |
 | `DeclaredPlacement` | which of the two a mode declares | `Cockpit(CockpitViewpoint)` \| `BodyOffset(BodyOffset)` |
-| `LookLimits` | how far a free-look offset may turn the view | yaw in `(-π, π)`, pitch in `(-π/2, π/2]` |
+| `LookLimits` | how far a free-look offset may turn the view | yaw in `(-π, π)`, pitch in `[-π/2, π/2]` |
 
 Three decisions are worth recording:
 
@@ -176,8 +176,12 @@ heuristic:
 A `Rebase` does **not** reseat and needs no conversion: the rig's state is
 canonical f64 world space, which a rebase leaves alone (F16 non-negotiable
 behavior 5). `accept_f21_b_a_rebase_moves_the_local_frame_without_moving_the_camera`
-drives the real `OriginShift` over a real `SpatialAnchor` and compares every
-frame against a control rig that is never told a rebase happened.
+drives the real `OriginShift` over a real `SpatialAnchor` holding the camera's
+own world pose, tells the rig a rebase happened on every frame (there is no
+"nothing changed" `OriginChange` variant, so a control rig told the same thing
+would be the same experiment) and asserts the claim directly: no frame reseats
+while the camera is still following, and the run ends on the smoothing law's
+closed form.
 
 ## Test sensitivity
 
@@ -234,13 +238,54 @@ named with the stage that resolves it:
 | The original camera's smoothing rate and whether it lags position, rotation or both | `CameraRig::DEFAULT_RESPONSE_PER_S` is 12/s and the lag is a project choice; the *law* is required, the rate is not | F21-D |
 | Whether the original camera looks at the selected target with the aircraft's attitude as its up hint, or with a fixed world up | `rig::aim_at` uses the aircraft's up with the aircraft's right as the documented fallback | F21-D |
 | Whether the original's cockpit/chase/spyglass modes have their own clipping planes as ours do | the fixture gives the spyglass 1 m/20 km against the others' 0.1 m/10 km, which is design | F21-D |
-| Whether the original magnifies by narrowing the field of view, by scaling the projection, or by rendering a separate pass | `Magnification` is reported per frame and the lowered projection narrows the FOV; a renderer still has to choose how to draw it | F21-C (wiring) and F21-D |
+| Whether the original magnifies by narrowing the field of view, by scaling the projection, or by rendering a separate pass | `Magnification` is carried per frame and is **not** folded into the lowered projection — `LoweredProjection` holds only the declared field of view, reference aspect, framing and clipping planes, so a renderer still has to choose how to apply the factor | F21-C (wiring) and F21-D |
 
 A follow-up this stage found and did **not** fix, because it is outside the
 owner paths: `cs_types::space::UnitVec3` names the canonical forward and up axes
 as constants and leaves the right axis to each caller, so
 `camera::orientation::canonical_right` restates `+X`. That is a naming gap in
 `cs_types`, not a defect; it is filed as a follow-up task.
+
+## Review corrections (task #115 review)
+
+Two defects were found while reviewing this branch and fixed in it.
+
+1. **The chase view was in front of the aircraft, looking away from it.**
+   `BodyOffset::forward_m` was documented as a distance along the body's
+   forward axis (`-Z`) and `BodyOffset::new` said "behind the aircraft is a
+   negative forward distance", but `rig::oriented_pose` fed it into
+   `rotate_vector` as the canonical `+Z` component. The two fixture offsets then
+   contradicted each other: the cockpit's `-1.5`, documented as "1.5 m
+   forward", and the chase's `-12`, documented as "12 m behind", are the same
+   sign with opposite meanings, and only one can be true. Under the code as
+   submitted the chase eye sat 12 m *ahead* of an aircraft flying at it,
+   framing empty sky. The convention is now the documented one —
+   `forward_m` is a distance along `-Z`, negated once in `oriented_pose` — and
+   the cockpit fixture's value became `+1.5`. The test that discriminates it
+   asserts the aircraft itself is in front of the chase eye, which is what
+   `framing_of` refuses when it is not.
+2. **The origin-rebase test could not fail.** It resolved the *same* inputs
+   through two rigs and compared them, so a rig that reseated on a rebase
+   produced two identical "wrong" answers and the test passed. It now asserts
+   the claim directly — no frame reseats while the camera is following, and the
+   run ends on the smoothing law's closed form — while keeping the real
+   `OriginShift`/`SpatialAnchor` bookkeeping assertions.
+
+Both fixes were mutation-checked, as the ones above were:
+
+* dropping the negation in `oriented_pose` (the submitted behaviour) → **10 of
+  26 fail**: both cockpit/chase placement tests, `every_owner_kind`, and all
+  seven smoothing tests that read a declared eye;
+* making the rig reseat on `OriginChange::Rebase` → **6 of 26 fail**, including
+  the rebase test. Against the *submitted* rebase test the same mutation
+  passes, which is what "could not fail" means.
+
+Two documentation claims were also corrected rather than left to mislead a
+later reader: `LookLimits` documented a pitch range of `(-π/2, π/2]` that its
+check does not enforce (it accepts `±π/2`), and this file claimed the lowered
+projection narrows the field of view by the magnification, which
+`LoweredProjection` does not do — the factor is carried per frame for a
+renderer to apply.
 
 ## What is not claimed
 

@@ -21,6 +21,12 @@
 //! | [`ViewRig::Look`] | unchanged — a look turns the view, it does not move the eye | the current rig's orientation with the clamped look offset | as before |
 //! | [`ViewRig::Spyglass`] | the spyglass mode's own placement | aimed at the session's **selected** target | the mode's declared magnification |
 //!
+//! Both offsets are declared in the **aircraft's body frame** and read in that
+//! frame's own convention: `forward_m` is a distance along the body's forward
+//! axis, so a chase view's negative value puts the camera astern and looking
+//! the way the aircraft flies. [`oriented_pose`] is where that convention is
+//! turned into a world position, once, for every rig.
+//!
 //! The spyglass is the interesting one, because it is the only rig with an
 //! input that can change underneath it mid-frame. F21 non-negotiable behavior
 //! 3 requires it to show the selected target, handle invalid targets, obey its
@@ -857,9 +863,14 @@ fn oriented_pose(
     aircraft: CameraPose,
 ) -> Result<(WorldPosition, Quaternion), RigError> {
     let offset = placement.offset();
+    // The declared `forward_m` is a distance along the body's *forward* axis,
+    // which is canonical `-Z`, so it enters the canonical component vector
+    // negated. Getting this wrong does not look like a sign error: the eye
+    // lands 12 m in front of an aircraft that is flying away from it, and the
+    // chase view shows the pilot empty sky.
     let rotated = orientation::rotate_vector(
         aircraft.rotation(),
-        [offset.right_m().0, offset.up_m().0, offset.forward_m().0],
+        [offset.right_m().0, offset.up_m().0, -offset.forward_m().0],
     )?;
     let [px, py, pz] = aircraft.position().to_array();
     let eye = WorldPosition::try_new([px + rotated[0], py + rotated[1], pz + rotated[2]])?;

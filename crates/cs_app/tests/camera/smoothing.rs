@@ -157,8 +157,8 @@ fn accept_f21_b_smoothing_is_frame_rate_independent_at_30_60_and_144_fps() {
     // number is the one that would differ if the law were per-frame.
     //
     // The fixture's chase offset is 3 m up and 12 m behind the body origin,
-    // which for an unrotated aircraft is 12 m along canonical `-Z`.
-    let desired = [target[0], target[1] + 3.0, target[2] - 12.0];
+    // which for an unrotated aircraft is 12 m along canonical `+Z`.
+    let desired = [target[0], target[1] + 3.0, target[2] + 12.0];
     let residual = (-CameraRig::DEFAULT_RESPONSE_PER_S).exp();
     for (frame_rate, pose, _) in &runs {
         for (axis, value) in pose.position().to_array().into_iter().enumerate() {
@@ -206,7 +206,7 @@ fn accept_f21_b_a_zero_length_frame_does_not_move_the_camera() {
     assert_eq!(
         rig.smoother().desired(),
         Some(cs_app::camera::CameraPose::new(
-            world([500.0, 3.0, -12.0]),
+            world([500.0, 3.0, 12.0]),
             Quaternion::IDENTITY
         )),
         "and the rig remembers what it was asked for, which it is not at yet"
@@ -265,7 +265,7 @@ fn accept_f21_b_a_teleport_reseats_the_camera_instead_of_drags_it() {
     assert_eq!(frame.smoothing, SmoothingState::Reseated);
     assert_close_position(
         frame.pose.position(),
-        [10_000.0, 3.0, -12.0],
+        [10_000.0, 3.0, 12.0],
         1e-9,
         "a teleport reseats the camera at the new declared eye",
     );
@@ -320,7 +320,7 @@ fn accept_f21_b_a_plane_swap_reseats_the_camera() {
     );
     assert_close_position(
         frame.pose.position(),
-        [5_000.0, 3.0, -12.0],
+        [5_000.0, 3.0, 12.0],
         1e-9,
         "at the new aircraft's declared eye",
     );
@@ -331,33 +331,65 @@ fn accept_f21_b_a_plane_swap_reseats_the_camera() {
 /// bookkeeping: a rebase moves the local frame and the epoch and leaves world
 /// identity alone, so the camera neither jumps nor restarts following.
 ///
-/// The failure this discriminates: a camera that smoothed a *local* pose would
-/// be displaced by the origin offset at the rebase, which is a visible jump of
-/// the whole world for a change that must move nothing in the world.
+/// The failure this discriminates: a camera that smoothed a *local* pose, or
+/// that reseated on a rebase, is displaced by the origin offset at the rebase —
+/// a visible jump of the whole world for a change that must move nothing in
+/// the world.
+///
+/// `OriginChange` has no "nothing happened" variant, so there is no control rig
+/// to compare against: a second rig told the same thing would be the same
+/// experiment. The claim is therefore asserted directly — no frame after the
+/// first reseats, and the run ends on the smoothing law's own closed form,
+/// which a rebase cannot produce without moving the camera.
 #[test]
 fn accept_f21_b_a_rebase_moves_the_local_frame_without_moving_the_camera() {
     let origin = WorldOrigin::new(
         OriginEpoch(0),
         WorldPosition::try_new([0.0, 0.0, 0.0]).expect("finite"),
     );
+    // The rebase puts the world's local origin where the aircraft now is.
+    let moved_to = WorldPosition::try_new([1_200.0, 300.0, -800.0]).expect("finite");
     let aircraft = aircraft_pose([1_200.0, 300.0, -800.0], Quaternion::IDENTITY);
 
-    // The camera history is the same record F16 names for a camera, so the
-    // shift that moves every subsystem is exercised on the camera's own pose.
-    let mut anchor = SpatialAnchor::new(&origin, aircraft.position()).expect("finite");
-    let shift = OriginShift::rebase(
-        origin,
-        WorldPosition::try_new([1_200.0, 300.0, -800.0]).expect("finite"),
-    )
-    .expect("epoch 0 can rebase");
+    // The fixture's chase eye: 3 m up and 12 m astern of the body origin, and
+    // the aircraft starts at the world origin so the camera can be parked
+    // there before the run.
+    let parked_eye = [0.0, 3.0, 12.0];
+    let declared_eye = [1_200.0, 303.0, -788.0];
 
-    let mut with_rebase = chase_rig(12.0);
-    let mut control = chase_rig(12.0);
-    let total = Duration::from_millis(300);
-    let spans = frames_at(60, total);
+    // The camera's own world record is the record F16 names for a camera, so
+    // the shift that moves every subsystem is exercised on the camera's pose.
+    let mut anchor = SpatialAnchor::new(&origin, world(parked_eye)).expect("finite");
+    let shift = OriginShift::rebase(origin, moved_to).expect("epoch 0 can rebase");
+
+    let mut rig = chase_rig(CameraRig::DEFAULT_RESPONSE_PER_S);
+    let spans = frames_at(60, Duration::from_millis(300));
+
+    // Frame 0 reseats on an aircraft at the world origin.
+    let parked = rig
+        .resolve(&frame_inputs(
+            0,
+            actor(1),
+            aircraft_pose([0.0, 0.0, 0.0], Quaternion::IDENTITY),
+            spans[0],
+            OriginChange::Rebase,
+        ))
+        .expect("the first frame reseats");
+    assert_eq!(parked.smoothing, SmoothingState::Reseated);
+    assert_close_position(
+        parked.pose.position(),
+        parked_eye,
+        1e-12,
+        "the parked chase eye",
+    );
+
+    // Every later frame follows an aircraft 1.5 km away and is told a rebase
+    // happened, so a rig that reseated on one would report `Reseated` here.
+    let mut follow = Duration::ZERO;
     let mut rebased_at = None;
-
-    for (tick, (index, span)) in (1..).zip(spans.iter().enumerate()) {
+    for (index, span) in spans.iter().enumerate().skip(1) {
+        let tick = index as u64;
+        follow += *span;
         if rebased_at.is_none() {
             let before = anchor.local();
             shift
@@ -372,8 +404,8 @@ fn accept_f21_b_a_rebase_moves_the_local_frame_without_moving_the_camera() {
                 "a rebase advances the epoch"
             );
             assert_eq!(
-                anchor.world(),
-                aircraft.position(),
+                anchor.world().to_array(),
+                parked_eye,
                 "world identity survives"
             );
             assert_ne!(
@@ -392,18 +424,7 @@ fn accept_f21_b_a_rebase_moves_the_local_frame_without_moving_the_camera() {
             );
         }
 
-        let rebased_frame = with_rebase
-            .resolve(&frame_inputs(
-                tick,
-                actor(1),
-                aircraft,
-                *span,
-                // Every frame is told a rebase happened: the claim is that the
-                // rig's answer is identical to one that is never told.
-                OriginChange::Rebase,
-            ))
-            .expect("the rig resolves");
-        let control_frame = control
+        let frame = rig
             .resolve(&frame_inputs(
                 tick,
                 actor(1),
@@ -413,25 +434,31 @@ fn accept_f21_b_a_rebase_moves_the_local_frame_without_moving_the_camera() {
             ))
             .expect("the rig resolves");
         assert_eq!(
-            rebased_frame.pose, control_frame.pose,
-            "frame {index}: a rebase must not change the camera at all"
-        );
-        assert_eq!(
-            rebased_frame.smoothing, control_frame.smoothing,
-            "frame {index}: and must not change how it got there"
+            frame.smoothing,
+            SmoothingState::Tracking,
+            "frame {index} (rebase at {rebased_at:?}): a rebase must not reset a camera that is \
+             still following"
         );
     }
 
-    let pose = with_rebase.smoother().pose().expect("a pose");
-    assert_eq!(
-        pose.position(),
-        control.smoother().pose().expect("a pose").position(),
-        "after the whole run the two cameras are identical"
-    );
+    // And the run ends exactly where the exponential law says it should: the
+    // residual `exp(-k·T)` of the parked pose against the declared eye. A
+    // rebase that moved or reset the camera could not land here.
+    let residual = (-CameraRig::DEFAULT_RESPONSE_PER_S * follow.as_secs_f64()).exp();
+    let pose = rig.smoother().pose().expect("a pose");
+    for (axis, value) in pose.position().to_array().into_iter().enumerate() {
+        let expected = declared_eye[axis] + residual * (parked_eye[axis] - declared_eye[axis]);
+        assert_close(
+            value,
+            expected,
+            1e-6,
+            &format!("axis {axis}: the camera kept following through the rebase"),
+        );
+    }
     assert_ne!(
-        pose.position(),
-        world([0.0, 0.0, 0.0]),
-        "and the run was not a no-op"
+        pose.position().to_array(),
+        declared_eye,
+        "and the run was not a no-op the rebase could have snapped"
     );
 }
 
@@ -474,7 +501,7 @@ fn accept_f21_b_reset_clears_the_session_camera_state() {
     assert_eq!(frame.smoothing, SmoothingState::Reseated);
     assert_close_position(
         frame.pose.position(),
-        [900.0, 3.0, -12.0],
+        [900.0, 3.0, 12.0],
         1e-9,
         "and the new session starts at its own declared eye",
     );
@@ -538,7 +565,7 @@ fn accept_f21_b_the_default_response_rate_is_the_measured_one() {
     assert_eq!(
         rig.smoother().desired(),
         Some(cs_app::camera::CameraPose::new(
-            world([1_000.0, 3.0, -12.0]),
+            world([1_000.0, 3.0, 12.0]),
             Quaternion::IDENTITY
         )),
         "and it was asked to be at the new aircraft's declared eye"

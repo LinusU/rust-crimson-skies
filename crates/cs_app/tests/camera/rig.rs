@@ -40,20 +40,26 @@ use crate::common::{
 };
 
 /// The fixture airframe's pilot: 1.2 m above and 1.5 m forward of the body
-/// origin.
+/// origin. The declared `forward_m` is a distance along the body's forward
+/// axis (`-Z`), so forward is a positive `forward_m` and the world `Z` of an
+/// unrotated eye is its negative.
 const COCKPIT_UP_M: f64 = 1.2;
 const COCKPIT_FORWARD_M: f64 = -1.5;
-/// The fixture airframe's chase view: 3 m above and 12 m behind the origin.
+/// The fixture airframe's chase view: 3 m above and 12 m **behind** the body
+/// origin, so its declared `forward_m` is negative and an unrotated eye sits
+/// at `+Z`. Under the 90° yaw below the body's `+Z` maps to world `+X`, so
+/// the eye is at `[12, 3, 0]` looking along `-X` at the aircraft: a camera
+/// that landed on the other side of the plane would be looking away from it.
 const CHASE_UP_M: f64 = 3.0;
-const CHASE_BACK_M: f64 = -12.0;
+const CHASE_BACK_M: f64 = 12.0;
 
 /// A +90° yaw about the canonical up axis.
 ///
 /// +90° about `+Y` turns the canonical forward `-Z` into `-X` (right-hand
-/// rule), and turns the body offset `(right, up, forward)` into
-/// `(forward, up, -right)` — which is what makes the expected eye positions
-/// below exact hand-computed numbers rather than a second implementation of
-/// the rotation.
+/// rule), and it maps a body offset `(right, up, forward)` — whose canonical
+/// component vector is `(right, up, -forward)` — to `(-forward, up, -right)`.
+/// That is what makes the expected eye positions below exact hand-computed
+/// numbers rather than a second implementation of the rotation.
 fn yawed_right() -> Quaternion {
     Quaternion::from_axis_angle(UnitVec3::UP, Radians(std::f64::consts::FRAC_PI_2))
         .expect("a right-angle yaw is a usable rotation")
@@ -118,7 +124,8 @@ fn accept_f21_b_cockpit_eye_comes_from_the_declared_binding_and_names_it() {
         .expect("the cockpit rig exists");
 
     // 90° of yaw, so the declared body offset becomes an exact world offset:
-    // `(0, 1.2, -1.5)` rotated right is `(-1.5, 1.2, 0)`.
+    // the canonical `(0, 1.2, -1.5)` rotated right is `(-1.5, 1.2, 0)`, which
+    // is 1.5 m *ahead* of an aircraft flying along `-X`.
     let aircraft = aircraft_pose([1_000.0, -250.0, 500.0], yawed_right());
     let frame = rig
         .resolve(&inputs(aircraft))
@@ -180,13 +187,14 @@ fn accept_f21_b_cockpit_eye_comes_from_the_declared_binding_and_names_it() {
 
     // A *different* declared binding moves the eye, which is what "comes from
     // the binding" means operationally: the rig reads the record, it does not
-    // remember a constant.
+    // remember a constant. This one is taller and further forward — declared
+    // `forward_m = 2.0`, so 2 m further along the body's forward axis.
     let tall = DeclaredPlacement::at_cockpit(
         CockpitViewpoint::try_new(
             CockpitBindingSource::ConfigKey {
                 key: "synthetic.tall_eye".to_owned(),
             },
-            body_offset(0.0, 2.5, -2.0),
+            body_offset(0.0, 2.5, 2.0),
             known(Radians(0.0)),
             known(Radians(0.0)),
         )
@@ -331,7 +339,8 @@ fn accept_f21_b_chase_view_sits_at_the_declared_body_offset_and_follows_the_airc
     );
 
     // Framing composes: an invariant world point keeps a viewport coordinate
-    // that comes from the chase mode's own frustum, not the cockpit's.
+    // that comes from the chase mode's own frustum, not the cockpit's. The
+    // view runs along `-X`, so "in front" is a smaller `X`.
     let framing = frame
         .framing_of(world([CHASE_BACK_M - 40.0, CHASE_UP_M, 0.0]))
         .expect("the point is in front of the chase eye");
@@ -342,6 +351,14 @@ fn accept_f21_b_chase_view_sits_at_the_declared_body_offset_and_follows_the_airc
         "a point on the view axis is centred",
     );
     assert_close(framing.x(), 0.0, 1e-12, "on both axes");
+
+    // The eye is *astern* of the aircraft, so the aircraft is in front of it.
+    // A chase offset read with the wrong sign lands on the far side of the
+    // plane and the view frames empty sky; this is the assertion that fails.
+    assert!(
+        frame.framing_of(aircraft.position()).is_ok(),
+        "the chase eye is behind the aircraft, not in front of it"
+    );
 }
 
 /// Free look turns the view without moving the eye, and it is clamped to the

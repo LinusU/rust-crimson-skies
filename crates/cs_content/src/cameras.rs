@@ -367,6 +367,13 @@ impl fmt::Display for Magnification {
 /// the body's right, up and forward axes (F16 canonical axes: `+X` right,
 /// `+Y` up, `-Z` forward).
 ///
+/// Each component is a *distance along the axis it names*, not that axis's
+/// canonical component: a positive [`forward_m`](Self::forward_m) puts the
+/// camera ahead of the body origin along the body's forward direction, and a
+/// negative one puts it behind. The sign is stated here because a chase view
+/// that lands *in front of* the aircraft, looking the way the aircraft flies,
+/// shows the pilot nothing at all.
+///
 /// A body-frame offset is deliberately *not* a world offset: it is the same
 /// three numbers for every aircraft pose, so a rig applies it to the
 /// authoritative pose it reads instead of caching a world position that a
@@ -395,13 +402,8 @@ impl BodyOffset {
     /// infinite. Negative components are ordinary — "behind the aircraft" is
     /// a negative forward distance — so only non-finite input is refused.
     pub fn new(right_m: Meters, up_m: Meters, forward_m: Meters) -> Result<Self, ViewpointError> {
-        const AXES: [(&str, Meters); 3] = [
-            ("right_m", Meters(0.0)),
-            ("up_m", Meters(0.0)),
-            ("forward_m", Meters(0.0)),
-        ];
-        let values = [right_m, up_m, forward_m];
-        for ((axis, _), value) in AXES.into_iter().zip(values) {
+        const AXES: [&str; 3] = ["right_m", "up_m", "forward_m"];
+        for (axis, value) in AXES.into_iter().zip([right_m, up_m, forward_m]) {
             if !value.0.is_finite() {
                 return Err(ViewpointError::NonFiniteOffset { axis });
             }
@@ -425,7 +427,8 @@ impl BodyOffset {
         self.up_m
     }
 
-    /// The offset along the body's forward axis (`-Z`).
+    /// The distance along the body's forward axis (`-Z`): positive is ahead
+    /// of the body origin, negative is behind it.
     #[must_use]
     pub const fn forward_m(self) -> Meters {
         self.forward_m
@@ -655,7 +658,7 @@ impl LookLimits {
     /// # Errors
     ///
     /// [`ViewpointError`] when a half-extent is not finite, the yaw is not
-    /// inside `(-π, π)` or the pitch is not inside `(-π/2, π/2]`. The pitch
+    /// inside `(-π, π)` or the pitch is not inside `[-π/2, π/2]`. The pitch
     /// bound keeps the camera's up axis from becoming parallel to its view
     /// direction, where no right axis exists.
     pub fn new(yaw: Radians, pitch: Radians) -> Result<Self, ViewpointError> {
@@ -717,7 +720,7 @@ pub enum ViewpointError {
         /// The rejected angle in radians.
         radians: f64,
     },
-    /// A pitch half-extent fell outside `(-π/2, π/2]`.
+    /// A pitch half-extent fell outside `[-π/2, π/2]`.
     LookPitchOutOfRange {
         /// The rejected angle in radians.
         radians: f64,
@@ -747,7 +750,7 @@ impl fmt::Display for ViewpointError {
             Self::LookPitchOutOfRange { radians } => {
                 write!(
                     f,
-                    "the look limit pitch {radians} rad is outside (-π/2, π/2]"
+                    "the look limit pitch {radians} rad is outside [-π/2, π/2]"
                 )
             }
         }
@@ -1291,7 +1294,7 @@ pub fn declared_synthetic_camera_modes() -> DeclaredCameraModes {
                 CockpitBindingSource::ModelNode {
                     node: "synthetic.pilot_eye".to_owned(),
                 },
-                BodyOffset::new(Meters(0.0), Meters(1.2), Meters(-1.5))
+                BodyOffset::new(Meters(0.0), Meters(1.2), Meters(1.5))
                     .expect("the synthetic pilot eye offset is finite"),
                 known(Radians(0.0)),
                 known(Radians(0.0)),
@@ -1307,6 +1310,8 @@ pub fn declared_synthetic_camera_modes() -> DeclaredCameraModes {
         known(Magnification::ONE),
         known(false),
         DeclaredPlacement::BodyOffset(
+            // Negative is behind: the chase view is 12 m astern and 3 m above
+            // the body origin, which is the whole point of a chase view.
             BodyOffset::new(Meters(0.0), Meters(3.0), Meters(-12.0))
                 .expect("the synthetic chase offset is finite"),
         ),

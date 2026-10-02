@@ -170,7 +170,7 @@ pub fn placement(kind: CameraModeKind) -> DeclaredPlacement {
                 CockpitBindingSource::ModelNode {
                     node: "synthetic.test_eye".to_owned(),
                 },
-                body_offset(0.0, 1.0, -1.0),
+                body_offset(0.0, 1.0, 1.0),
                 known(Radians(0.0)),
                 known(Radians(0.0)),
             )
