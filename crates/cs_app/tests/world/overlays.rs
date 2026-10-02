@@ -68,6 +68,12 @@ const TICKS: u64 = 120;
 /// than the trigger volume is thick.
 const SWEPT_SPEED_M_S: f64 = 400.0;
 
+/// The probe's own half extent, in meters. One constant, because
+/// [`assert_the_volume_crossing_is_free`] decides which ticks carry the body's
+/// **box** into the volume and must not measure a different body from the one the
+/// flight spawns.
+const PROBE_HALF_M: f64 = 0.25;
+
 /// The speed the overlay measurement is taken at, in m/s: 60 m/s is 0.5 m per
 /// tick, half the depot trigger volume's thickness, so a discrete sample is
 /// guaranteed to land inside it and the crossing is a real overlap.
@@ -457,7 +463,7 @@ fn accept_f18_c_a_swept_body_crosses_a_trigger_volume_and_the_overlay_still_fire
         &ProbeSpec {
             position_m: [PROBE_START_X_M, PROBE_Y_M, 0.0],
             velocity_m_s: [OVERLAY_SPEED_M_S, 0.0, 0.0],
-            half_extents_m: [0.25, 0.25, 0.25],
+            half_extents_m: [PROBE_HALF_M, PROBE_HALF_M, PROBE_HALF_M],
             mass_kg: 250.0,
         },
     )
@@ -503,7 +509,7 @@ fn accept_f18_c_a_swept_body_crosses_a_trigger_volume_and_the_overlay_still_fire
         "and the body went on through the volume rather than being held in it: it \
          ended at x = {end}"
     );
-    assert_the_volume_crossing_is_free(&trace, free, OVERLAY_SPEED_M_S);
+    assert_the_volume_crossing_is_free(&trace, free, PROBE_HALF_M as f32, OVERLAY_SPEED_M_S);
 
     // The speed the hold was measured at: the same statement, where a hold would
     // be several metres of a single tick.
@@ -513,7 +519,7 @@ fn accept_f18_c_a_swept_body_crosses_a_trigger_volume_and_the_overlay_still_fire
         &ProbeSpec {
             position_m: [PROBE_START_X_M, PROBE_Y_M, 0.0],
             velocity_m_s: [SWEPT_SPEED_M_S, 0.0, 0.0],
-            half_extents_m: [0.25, 0.25, 0.25],
+            half_extents_m: [PROBE_HALF_M, PROBE_HALF_M, PROBE_HALF_M],
             mass_kg: 250.0,
         },
     )
@@ -530,7 +536,7 @@ fn accept_f18_c_a_swept_body_crosses_a_trigger_volume_and_the_overlay_still_fire
                 .x,
         );
     }
-    assert_the_volume_crossing_is_free(&trace, free, SWEPT_SPEED_M_S);
+    assert_the_volume_crossing_is_free(&trace, free, PROBE_HALF_M as f32, SWEPT_SPEED_M_S);
 }
 
 /// Asserts that **every tick the body spends crossing the depot trigger volume**
@@ -546,10 +552,9 @@ fn accept_f18_c_a_swept_body_crosses_a_trigger_volume_and_the_overlay_still_fire
 /// * at the tunnelling speed the overlay never fires, so the **door stays shut**
 ///   and stops the body on the tick after the volume — a stop the record asked
 ///   for, which this assertion must not read as a hold.
-fn assert_the_volume_crossing_is_free(trace: &[f32], free: f32, speed_m_s: f64) {
+fn assert_the_volume_crossing_is_free(trace: &[f32], free: f32, probe_half_m: f32, speed_m_s: f64) {
     let near = DEPOT_TRIGGER_POS_M[0] as f32 - DEPOT_TRIGGER_HALF_M[0] as f32;
     let far = DEPOT_TRIGGER_POS_M[0] as f32 + DEPOT_TRIGGER_HALF_M[0] as f32;
-    let half = 0.25_f32;
     let mut positions = vec![PROBE_START_X_M as f32];
     positions.extend_from_slice(trace);
     // The tick that first brings the body's own box to the volume, and the ticks
@@ -558,7 +563,7 @@ fn assert_the_volume_crossing_is_free(trace: &[f32], free: f32, speed_m_s: f64) 
     // that is still inside it after eight has been stopped, not passed.
     const MAX_CROSSING_TICKS: usize = 8;
     let first = (0..positions.len())
-        .find(|i| positions[*i] + half > near)
+        .find(|i| positions[*i] + probe_half_m > near)
         .unwrap_or_else(|| {
             panic!(
                 "the fixture must fly the body to the volume at {speed_m_s} m/s: the \
@@ -566,7 +571,10 @@ fn assert_the_volume_crossing_is_free(trace: &[f32], free: f32, speed_m_s: f64) 
             )
         })
         .saturating_sub(1);
-    for (index, crossing_tick) in (first..positions.len()).zip(0..) {
+    // Every step out of `positions`, so `positions[index + 1]` is always in
+    // range: a body that never clears the volume has to come out of the loop and
+    // be named below, not out of bounds.
+    for (index, crossing_tick) in (first..positions.len() - 1).zip(0..) {
         assert!(
             crossing_tick < MAX_CROSSING_TICKS,
             "the body did not clear the volume within {MAX_CROSSING_TICKS} ticks at \
@@ -592,7 +600,7 @@ fn assert_the_volume_crossing_is_free(trace: &[f32], free: f32, speed_m_s: f64) 
             positions[index],
             positions[index + 1]
         );
-        if positions[index + 1] - half > far {
+        if positions[index + 1] - probe_half_m > far {
             return;
         }
     }

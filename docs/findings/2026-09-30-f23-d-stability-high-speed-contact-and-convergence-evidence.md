@@ -324,10 +324,14 @@ at most **checked**.
 Affected content: the swept layers' spawn path and the trigger rules.
 Resolving tasks: **F24-C** (equipment/trigger consumer), **F26**
 (calibration), **#415** (the trigger-crossing decision this stage declined to
-invent), **#416** (the substep policy in every world bootstrap), and **#401**
-for the swept-CCD/sensor interaction (which is a different failure of the same
-pair: a swept body being *held* by a sensor rather than passing through one
-unrecorded).
+invent), **#416** (the substep policy in every world bootstrap), and — *resolved
+by task #401 on 2026-10-02* — the swept-CCD/sensor **hold**, which was the other
+half of that pair: a `WorldCollisionRole::Sensor` object is now spawned on an
+entity with no rigid body, so a swept body is no longer *held* at a sensor's face
+(`docs/findings/2026-10-02-t401-trigger-volume-and-swept-ccd.md`). Limitation 1
+below is unchanged and is **not** fixed by that: a crossing that no discrete
+sample sees is still unreported during ordinary flight either, which is the
+sibling task **#498** (`F18-trigger-swept-crossing`) filed by #401.
 
 1. **A trigger crossed entirely inside the spawn tick is not reported.** F23-C's
    acceptance criterion `accept_f23_c_preflight_never_stops_on_a_sensor`

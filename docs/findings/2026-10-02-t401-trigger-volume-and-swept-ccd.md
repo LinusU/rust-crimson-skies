@@ -109,9 +109,14 @@ Every number below was produced by running the production composition
 
 Tick positions after the change, unchanged from a free flight:
 `-25.17, -21.83, -18.50, -15.17, -11.83, -8.50, -5.17, -1.83, 1.50, 4.83, 8.17,
-11.50, 14.83, 18.17, 21.50`. The contact is logged on tick 11 (`x = 11.50`,
-inside the volume at `x ∈ [6, 14]`) and stays at one entry — reported **once**,
-which is F23's AC02 property as well as F18's role claim.
+11.50, 14.83, 18.17, 21.50`. The contact is logged on the **twelfth** of those
+samples (`x = 11.50`, inside the volume at `x ∈ [6, 14]`) and stays at one entry
+— reported **once**, which is F23's AC02 property as well as F18's role claim.
+(The log turns up one step after the first sample that is itself inside the
+volume, `x = 8.17`. That one-step lag is measured, not explained: the report is a
+`CollisionStart` on the pair the broad phase created, and this record does not
+claim to know why that pair appears a step after the geometry it is built from.
+What the test pins is the count, and it is one.)
 
 Pinned by
 `trigger::accept_f18_b_a_swept_body_crosses_a_world_trigger_volume_untouched`.
@@ -133,9 +138,10 @@ One `RigidBody::Static` put back on the mesh trigger volume — all it takes to
 restore the old behaviour, through the same production spawn — and the same
 400 m/s flight (15 ticks from `x = -28.5`):
 
-* per-tick travel
-  `[3.333 ×8, 0.887, 0.030, 3.333, 3.333, 0.584, 0.750]`: the body is **held in
-  four of fifteen ticks** and loses **11.08 m**, ending at `x = 13.75` instead of
+* per-tick travel over the fourteen steps between the fifteen samples
+  `[3.333 ×8, 0.887, 0.030, 3.333, 3.333, 0.584, 0.750]`: the body is **held
+  across four of those steps** (the test counts a step as held when it is under
+  half a free tick) and loses **11.08 m**, ending at `x = 13.75` instead of
   `21.5`;
 * the crossing **is** reported — once. Holding the body at the volume's surface
   is exactly what gives the narrow phase something to see, so the clamp bought a
@@ -245,26 +251,43 @@ contact, which is why the arch world's volume is reported at 400 m/s.
 * Not caused by this decision: a body *parked* inside such a volume was never
   reported either. What the clamp did was force a moving body onto the surface,
   which looked like a report.
-* Affects: any retail trigger or objective volume whose collision is mesh-derived
-  and whose thickness is under one tick of travel at the reaching body's speed.
-  At 120 Hz that is 3.33 m of thickness at 400 m/s and 1.6 m at a dive's
-  194 m/s, so a thin authored volume can be missed by a fast aircraft.
-* Does not affect: F18-C's own trigger volumes (the depot's is a cuboid), and any
-  volume thicker than a tick — which includes every mission-sized volume the
-  fixtures author.
+* Affects: **any** trigger or objective volume whose thickness is under one tick
+  of travel at the reaching body's speed, mesh-derived or not. At 120 Hz that is
+  3.33 m of thickness at 400 m/s and 1.6 m at a dive's 194 m/s, so a thin
+  authored volume can be missed by a fast aircraft. **Measured on F18-C's own
+  depot volume**, which is a *cuboid*: at 30 m/s and 60 m/s (0.25 m and 0.5 m of
+  travel against its 1 m thickness) the contact stream names `trigger.depot`; at
+  400 m/s (3.33 m) it names only `depot.door` — no sample of that flight lands
+  inside the volume, cuboid or not, and parry's deep-penetration contact has
+  nothing to be deep about. (Re-measured during the #401 review; an earlier
+  draft of this record claimed the depot volume was unaffected because it is a
+  cuboid, which its own §6 and this measurement both contradict.)
+* Does not affect: any volume **thicker than one tick** of travel at the
+  reaching body's speed, whatever its shape — which includes every mission-sized
+  volume the fixtures author. A mesh-derived volume has that one boundary and a
+  second, separate one: the deep-inside gap above, which a cuboid does not have.
 * Resolving task: **#498** (`F18-trigger-swept-crossing`), filed by this task —
   a **swept crossing report** for trigger volumes, the crossing decided from the
   body's own motion over the tick rather than from a sampled overlap. F39 owns
   trigger semantics ("objectives, triggers, timers, spawn groups"); F23's AC02
   ("high-speed crossing of a thin wall/trigger is detected exactly once") is the
-  same question from the body side. Until #498 lands, no claim is made that a
+  same question from the body side. **#498 is not the same task as #415**
+  ("decide and implement consumption of the spawn-tick trigger crossing record",
+  filed by the F23-D review), which covers the same question at the *spawn* tick
+  and already records a non-blocking `SpawnPreflightEvent::passed` there. The two
+  are the same boundary at two entry points: ordinary flight and the spawn tick.
+  Whoever takes either should read the other, so the crossing is decided once and
+  reported the same way in both places. Until #498 lands, no claim is made that a
   swept body crossing a **mesh-derived** trigger volume — or one thinner than a
   tick — always fires its overlay.
 
 ## Known limitations that gate later stages (not silently dropped)
 
-* The limitation above: the discrete report boundary of a mesh-derived trigger
-  volume, with the affected content and the resolving task named.
+* The limitation above: the discrete report boundary of a trigger volume — a
+  volume thinner than one tick of the reaching body's travel is not reported at
+  all, and a *mesh-derived* one additionally goes quiet when a body lands deep
+  inside it — with the affected content, the measured depot case and the
+  resolving task named.
 * **`SpawnedCollider::body` is now `Option<Entity>`.** A consumer that stamps,
   moves or despawns *by body entity* must handle `None`. The only body-less
   objects are `Sensor` ones, and the load transaction despawns
@@ -295,25 +318,43 @@ contact, which is why the arch world's volume is reported at 400 m/s.
 
 ## Test sensitivity (mutation matrix)
 
-Every mutation below was applied, `cargo test -p cs_app --test world -- accept_f18_b_`
-was run, and the source was restored. All 38 tests under the `accept_f18_b_`
-prefix pass unmutated (32 from F18-B/#421, 6 from this task).
+Every mutation below was applied, the whole `crates/cs_app/tests/world` binary was
+run (`cargo test -p cs_app --test world` — a `accept_f18_b_` filter would hide the
+`accept_f18_a_` and `accept_f18_c_` failures the first four rows report), and the
+source was restored. All 38 tests under the `accept_f18_b_` prefix pass
+unmutated (32 from F18-B/#421, 6 from this task).
 
 | mutation | tests that failed |
 | --- | --- |
 | the cuboid sensor gets a `RigidBody::Static` back | `spawn::..._every_collision_role_decides_what_is_spawned`, `trigger::..._the_layout_is_the_recorded_role_and_nothing_else`, `trigger::..._a_swept_body_crosses_a_world_trigger_volume_untouched`, `overlays::..._a_swept_body_crosses_a_trigger_volume_and_the_overlay_still_fires` (4) |
-| the mesh sensor goes back to `spawn_static_mesh_collider_on_body` | `trigger::..._a_body_bearing_trigger_volume_holds_a_swept_body_in_four_ticks`, `trigger::..._the_trigger_and_solid_mesh_paths_differ_only_in_the_body`, `trigger::..._the_swept_visible_body_audit_still_holds`, `trigger::..._a_mesh_trigger_volume_reports_a_swept_body_where_a_sample_lands` (4) |
+| the mesh sensor goes back to `spawn_static_mesh_collider_on_body` | `trigger::..._a_body_bearing_trigger_volume_holds_a_swept_body_in_four_ticks`, `trigger::..._the_trigger_and_solid_mesh_paths_differ_only_in_the_body`, `trigger::..._the_swept_visible_body_audit_still_holds`, `trigger::..._a_mesh_trigger_volume_reports_a_swept_body_where_a_sample_lands`, `import::..._a_mesh_role_solid_stops_a_body_and_sensor_only_reports_one` (5) |
 | the report always names a body (`body: Some(entity)`) | `spawn::..._every_collision_role_decides_what_is_spawned`, `trigger::..._the_layout_is_the_recorded_role_and_nothing_else` (2) |
 | the cuboid sensor loses the Avian `Sensor` marker | `shear::..._a_sheared_object_still_follows_its_declared_role`, `spawn::..._every_collision_role_decides_what_is_spawned`, `trigger::..._the_layout_is_the_recorded_role_and_nothing_else` (3) |
 | the mesh sensor loses the Avian `Sensor` marker | `trigger::..._the_trigger_and_solid_mesh_paths_differ_only_in_the_body` (1) |
 
+The #401 review re-applied all five and confirmed every row above, the counts
+included. (The second row listed four; it is five — the F18-B import test that
+holds a mesh `Sensor` role against a solid one fails as well, and should have
+been in the list.)
+
 The fourth row is worth reading rather than skipping: **the crossing test does not
 catch a missing `Sensor` marker**, and neither does the mesh report test. A
-body-less collider is not resolved by the solver in any case (a pair with a `None`
-body generates no manifold), so dropping the marker changes what the volume
-*means* to Avian without changing what it does to a body. The marker is pinned by
-the role tests, which is where its meaning is; the crossing tests are about
-motion, and say nothing about it.
+body-less collider is not resolved by the solver in any case — the narrow phase
+sets `GENERATE_CONSTRAINTS` off for any pair with a `None` body *before* it looks
+at either collider (`collision/narrow_phase/system_param.rs`, `is_disabled`), so
+dropping the marker changes what the volume *means* to Avian without changing
+what it does to a body. The marker is pinned by the role tests, which is where its
+meaning is; the crossing tests are about motion, and say nothing about it.
+
+That is a statement about the *body-less* layout, not a licence to spawn a sensor
+without the marker. A body-*bearing* collider that loses the marker is a solid
+wall: both sides of the pair then have a body and neither is a sensor, so
+`is_disabled` is false, constraints are generated, and the solver stops the body
+where the volume is. Measured during the #401 review by putting the body back
+*and* dropping the marker together: the same 400 m/s flight ends at `x = 5.66`
+after being held at `x = 5.75` and then pushed out along `y` and `z`. Row 1 and
+row 4 are the same experiment from opposite ends, and the marker is load-bearing
+in both.
 
 ## Evidence
 
@@ -327,6 +368,26 @@ cargo test --workspace --locked                                   # exit 0
 cargo test --workspace --locked -- accept_f18_b_ --include-ignored
 #   38 tests run, 38 passed (crates/cs_app/tests/world)
 ```
+
+**Review (#401, `bunny-2`, fresh context).** Every number in §1–§6 was
+re-measured through the same production composition, all five mutations were
+re-applied and reverted, and the four checks plus the three task selections were
+re-run on the rebased tree:
+
+```sh
+cargo test --workspace --locked -- accept_f18_b_ --include-ignored   # 38 run, 38 passed
+cargo test --workspace --locked -- accept_f18_c_ --include-ignored   # 18 run, 18 passed
+cargo test --workspace --locked -- accept_t424_ --include-ignored    # 12 run, 12 passed
+```
+
+Reproduced exactly: the arch flight's fifteen samples and its 3.8 µm of drift;
+the mesh volume reported once at 30 m/s and not at all at 400 m/s; the rejected
+layout's `[3.333 ×8, 0.887, 0.030, 3.333, 3.333, 0.584, 0.750]`, its 11.08 m loss
+and its single report; and the mutation rows above, with one correction (the
+second row listed four failures, not five). The one measurement the review added
+is the depot's own 1 m **cuboid** trigger volume at 30, 60 and 400 m/s, which
+corrected the "does not affect" line in the limitation section above. No original
+data was read and nothing here is `verified_original`.
 
 The six acceptance tests this task adds, all in
 `crates/cs_app/tests/world/trigger.rs`:
