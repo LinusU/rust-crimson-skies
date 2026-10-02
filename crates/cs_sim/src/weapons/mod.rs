@@ -1,13 +1,17 @@
 //! Guns, ammunition, hardpoints and swept ballistic hits (F27).
 //!
-//! Spec: `specs/F27-guns-ammunition-hardpoints-and-ballistic-hits.md`, stage
-//! `### F27-A`. Shared contract: `docs/contracts/FLIGHT-PHYSICS.md`.
+//! Spec: `specs/F27-guns-ammunition-hardpoints-and-ballistic-hits.md`, stages
+//! `### F27-A` and `### F27-C`. Shared contract:
+//! `docs/contracts/FLIGHT-PHYSICS.md`.
 //!
-//! Stage **F27-A** defines the typed fire contract, the swept-hit query and
-//! a minimal synthetic fixture — not the per-tick cadence loop and the mount
-//! transforms read out of the live aircraft hierarchy (F27-B), not the
-//! wiring into damage, effects, audio and bank selection (F27-C), and not
-//! the original gun/ammunition audit (F27-D).
+//! Stage **F27-A** defined the typed fire contract, the swept-hit query and
+//! a minimal synthetic fixture. Stage **F27-C** adds the query stage that
+//! turns a sweep into damage — where candidate filtering lives and why, in
+//! `docs/findings/2026-10-02-f27-c-candidate-filtering-and-hit-damage-routing.md`.
+//! Still unowned: the per-tick cadence loop and the mount transforms read out
+//! of the live aircraft hierarchy (F27-B), the ECS-side effects, audio and
+//! bank-selection wiring (F27-C's application half) and the original
+//! gun/ammunition audit (F27-D).
 //!
 //! [`guns`] is that one part:
 //!
@@ -28,6 +32,11 @@
 //!   segment-vs-box slab test, earliest time of impact with a stable
 //!   tie-breaker, and the `(ProjectileId, ActorId)` ledger that makes one
 //!   projectile apply a hit at most once.
+//! * [`guns::SweepCandidate`] is the F27-C query's candidate — a swept box,
+//!   the damage node a contact with it lands on, and the declared relation
+//!   the rules filter it under — and [`guns::GunHitRouter`] turns one
+//!   accepted shot's swept contacts into [`crate::damage::HitEvent`]s
+//!   carrying the gun definition's own per-channel damage amounts.
 //!
 //! `cs_sim` may depend only on [`cs_types`] and [`cs_script`]
 //! (`docs/01-ARCHITECTURE.md`), so every record here is built from those
@@ -71,13 +80,14 @@ pub use ordnance::{
 pub use guns::{
     AmmunitionId, AmmunitionIdError, Ballistics, FireDenialReason, FireError, FireEvent,
     FireEventId, FireIntent, FireIntentId, FireResolution, FireResolver, FriendlyFireRule, GunBank,
-    GunBankError, GunDefinition, GunDefinitionError, GunMountKind, GunRate, GunStateError,
-    InheritanceRule, IntentRefusal, MountTransform, MountTransformError, ProjectileId,
-    ProjectileSegment, ProjectileSpawn, SYNTHETIC_AMMO_KEY, SYNTHETIC_ARMOR_DAMAGE,
-    SYNTHETIC_CALIBER, SYNTHETIC_EFFECT_KEY, SYNTHETIC_GUN_MOUNT, SYNTHETIC_INTERNAL_DAMAGE,
-    SYNTHETIC_LIFETIME_TICKS, SYNTHETIC_MUZZLE_VELOCITY_MPS, SYNTHETIC_SOUND_KEY,
-    SYNTHETIC_SPREAD_HALF_ANGLE_RAD, SYNTHETIC_STARTING_ROUNDS, SYNTHETIC_TICKS_BETWEEN_SHOTS,
-    SelfHitRule, SpreadCone, SweepTarget, SweepTargetError, SweptHit, WeaponDamage, WeaponRules,
-    WeaponState, synthetic_ammunition, synthetic_claim, synthetic_effect, synthetic_gun_definition,
-    synthetic_mount, synthetic_sound,
+    GunBankError, GunDefinition, GunDefinitionError, GunHitRouter, GunMountKind, GunRate,
+    GunStateError, InheritanceRule, IntentRefusal, MountTransform, MountTransformError,
+    ProjectileId, ProjectileSegment, ProjectileSpawn, RoutedHit, SYNTHETIC_AMMO_KEY,
+    SYNTHETIC_ARMOR_DAMAGE, SYNTHETIC_CALIBER, SYNTHETIC_EFFECT_KEY, SYNTHETIC_GUN_MOUNT,
+    SYNTHETIC_INTERNAL_DAMAGE, SYNTHETIC_LIFETIME_TICKS, SYNTHETIC_MUZZLE_VELOCITY_MPS,
+    SYNTHETIC_SOUND_KEY, SYNTHETIC_SPREAD_HALF_ANGLE_RAD, SYNTHETIC_STARTING_ROUNDS,
+    SYNTHETIC_TICKS_BETWEEN_SHOTS, SelfHitRule, SpreadCone, SweepCandidate, SweepOutcome,
+    SweepRefusal, SweepTarget, SweepTargetError, SweptContact, SweptHit, WEAPON_DAMAGE_CHANNELS,
+    WeaponDamage, WeaponRules, WeaponState, synthetic_ammunition, synthetic_claim,
+    synthetic_effect, synthetic_gun_definition, synthetic_mount, synthetic_sound,
 };

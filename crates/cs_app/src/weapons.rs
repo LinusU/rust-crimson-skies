@@ -23,12 +23,21 @@
 //!   the declared loadout they came from, generation-stamped like
 //!   [`crate::scene::SceneNodeBinding`] so a reload can never leave a stale
 //!   binding looking live.
+//! * [`resolve_swept_damage`] — the F27-C application consumer: it runs one
+//!   accepted shot's swept contacts through the declared rules, the swept
+//!   geometry and the [`GunHitRouter`], and hands the resulting
+//!   [`HitEvent`]s to the authoritative [`DamageResolver`], so a gun's
+//!   declared per-channel damage becomes applied damage through the one
+//!   authority that owns it. Every refusal is returned, never swallowed.
 //!
 //! Nothing here owns weapon state: the selection, cooldowns, ammunition and
-//! disabled mounts are the [`FireResolver`]'s; these are the conversion and
-//! binding records the ECS wiring consumes (F27-B/C).
+//! disabled mounts are the [`FireResolver`]'s; these are the conversion,
+//! binding and application records the ECS wiring consumes (F27-B/C).
 //!
 //! [`FireResolver`]: cs_sim::weapons::FireResolver
+//! [`GunHitRouter`]: cs_sim::weapons::GunHitRouter
+//! [`DamageResolver`]: cs_sim::damage::DamageResolver
+//! [`HitEvent`]: cs_sim::damage::HitEvent
 
 use bevy::ecs::component::Component;
 use cs_content::scene::SceneNodeId;
@@ -37,11 +46,15 @@ use cs_content::weapons::{
     DeclaredGunDefinition, DeclaredGunMountKind, DeclaredInheritanceRule, DeclaredSelfHitRule,
     DeclaredSpreadCone, DeclaredWeaponDamage, InteractionRules,
 };
-use cs_sim::damage::{ActorId, DamageNodeKey, NodeKeyError};
-use cs_sim::weapons::{
-    AmmunitionId, AmmunitionIdError, FriendlyFireRule, GunDefinition, GunDefinitionError,
-    GunMountKind, GunRate, InheritanceRule, SelfHitRule, SpreadCone, WeaponDamage, WeaponRules,
+use cs_sim::damage::{
+    ActorId, DamageError, DamageNodeKey, DamageResolver, NodeKeyError, TickResolution,
 };
+use cs_sim::weapons::{
+    AmmunitionId, AmmunitionIdError, FireEvent, FriendlyFireRule, GunDefinition,
+    GunDefinitionError, GunHitRouter, GunMountKind, GunRate, InheritanceRule, ProjectileSegment,
+    SelfHitRule, SpreadCone, SweepCandidate, SweepOutcome, WeaponDamage, WeaponRules,
+};
+use cs_types::Tick;
 use cs_types::content::{ContentId, Known, Resolved};
 use cs_types::evidence::ClaimId;
 use cs_types::space::Radians;
@@ -156,6 +169,14 @@ pub fn lower_gun(gun: &DeclaredGunDefinition) -> Result<GunDefinition, WeaponLow
 /// become "excluded" and an unmeasured penetration rule does not become
 /// "false" — no session runs a gun under a guessed interaction rule
 /// (F27 non-negotiable 4).
+///
+/// The three options that **no production code applies** — `penetration`,
+/// `ricochet` and `ammo_switching` — are carried here too, because the
+/// declared record is their only home and dropping them at the boundary would
+/// make the declared schema and the runtime disagree about what a gun carries.
+/// Their deferral to F27-D, and why none of them is applied, is reported by
+/// `cs_content::weapons::InteractionRules::deferred` rather than only in a
+/// findings file.
 ///
 /// # Errors
 ///
@@ -318,4 +339,117 @@ fn known_or_refuse<T: Clone>(
 #[must_use]
 pub fn declared_scene_binding(gun: &DeclaredGunDefinition) -> Option<&Resolved<SceneNodeId>> {
     gun.scene_binding()
+}
+
+// ---------------------------------------------- the swept-hit → damage seam ---
+//
+// F27-C. The gun half (`cs_sim::weapons::guns`) owns the *shape* of a swept
+// hit: [`GunHitRouter::route`] filters candidates by the declared rules,
+// sweeps and converts each contact into one `HitEvent` per non-zero declared
+// damage channel. It deliberately does not apply anything — `cs_sim::damage`
+// is the only authority that may turn a hit into destroyed structure.
+//
+// This function is the production caller that closes the loop: it takes the
+// routed hits and resolves them through the session's [`DamageResolver`].
+// Nothing else in the codebase consumes a `RoutedHit`, so without this the
+// sweep would compute a hit nobody could act on.
+//
+// # Ordering and failure
+//
+// The routing runs first and produces the whole batch, which is then handed
+// to the resolver in one call. Routing first means the resolver sees a
+// *complete* tick's damage from this shot, so its same-tick lethal and
+// attribution rules apply across the whole batch rather than per shot.
+//
+// The resolver's error is returned, not swallowed: a `ForeignSession` or a
+// `DuplicateHit` means the batch was wrong before anything was applied, and
+// the routing outcome is still returned alongside so the caller can see which
+// contacts produced it. A routing refusal does **not** stop the batch: the
+// other contacts' damage is still the gun's declared damage and is still
+// applied, because a refused contact is a reported defect in one candidate,
+// not a licence to drop the rest of the round's damage.
+//
+// # What this does not do
+//
+// It does not select the bank, play the sound, spawn the muzzle effect or
+// move a mount's transform: the accepted fire event already carries the sound
+// and effect ids (F27-A) and F27-B owns the hierarchy walk. It does not decide
+// eligibility either — the lowered [`WeaponRules`] do, by declaration.
+
+/// What one shot's swept hits produced: the routing outcome and the damage
+/// resolution, or the reason the damage could not be resolved.
+///
+/// Both are returned together, always: a caller must be able to see *which
+/// contacts produced damage* and *which damage was refused* in the same pass,
+/// so a lost hit is never invisible behind a successful resolution.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SweptDamageOutcome {
+    /// The routing: which candidates were admitted, which hits they produced
+    /// and which contacts were refused by name.
+    pub sweep: SweepOutcome,
+    /// The resolver's output for the routed hits, when the batch resolved.
+    pub damage: Result<TickResolution, DamageError>,
+}
+
+impl SweptDamageOutcome {
+    /// Whether the shot's contacts produced no hit at all.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.sweep.is_empty()
+    }
+
+    /// The contacts the routing refused, by name.
+    #[must_use]
+    pub fn refused_contacts(&self) -> &[cs_sim::weapons::SweepRefusal] {
+        &self.sweep.refused
+    }
+}
+
+/// Runs one accepted shot's swept contacts through the declared rules, the
+/// swept geometry and the damage authority.
+///
+/// `candidates` are the world candidates the collision features reported for
+/// this projectile's segment; each names the damage node a contact with it
+/// lands on. `at` is the tick being resolved, and it is what the resulting
+/// hits are stamped with — a round fired on one tick lands on another.
+///
+/// The damage resolver is the session's authority: nothing here bypasses it,
+/// and the gun's declared per-channel damage amounts reach the graph only
+/// through the [`cs_sim::damage::HitEvent`]s it resolves.
+///
+/// # Errors
+///
+/// The error is the [`DamageResolver`]'s own, returned inside
+/// [`SweptDamageOutcome::damage`] rather than as this function's `Err`: the
+/// routing outcome is still meaningful, and dropping it would hide which
+/// contacts produced the batch that could not be applied. See the module
+/// section above.
+#[must_use]
+pub fn resolve_swept_damage(
+    router: &mut GunHitRouter,
+    rules: &WeaponRules,
+    damage: &mut DamageResolver,
+    shot: &FireEvent,
+    segment: &ProjectileSegment,
+    candidates: impl IntoIterator<Item = SweepCandidate>,
+    at: Tick,
+) -> SweptDamageOutcome {
+    let sweep = router.route(shot, segment, candidates, rules, at);
+    let routed = sweep.damage();
+    let resolved = if routed.is_empty() {
+        // A round that crossed nothing resolves no batch: calling the resolver
+        // with an empty slice would still advance nothing but would report a
+        // `TickResolution` for a tick that had no weapon damage in it, which a
+        // caller could mistake for "the round hit and did nothing".
+        Ok(TickResolution {
+            tick: at,
+            events: Vec::new(),
+        })
+    } else {
+        damage.resolve(at, &routed)
+    };
+    SweptDamageOutcome {
+        sweep,
+        damage: resolved,
+    }
 }

@@ -417,6 +417,28 @@ impl fmt::Display for DeclaredInheritanceRule {
 /// stays an explicit unknown and refuses to lower, so no session runs a gun
 /// under a guessed self-hit, friendly-fire, penetration, ricochet or
 /// ammo-switching rule (F27 non-negotiable 4).
+///
+/// # Declared is not the same as applied
+///
+/// `self_hit` and `friendly_fire` are **applied**: the lowering boundary
+/// carries them into `cs_sim::weapons::WeaponRules`, whose
+/// `admit_candidates` decides every sweep's candidate list from them.
+///
+/// `penetration`, `ricochet` and `ammo_switching` are declared, typed and
+/// carried, but **no production code reads them**. They are not placeholders
+/// for a feature this stage should have built: a penetration or ricochet
+/// *model* is exactly the "simulator features unsupported by game content"
+/// F27 non-negotiable 4 forbids inventing, and in-flight ammunition switching
+/// needs a multi-type per-mount inventory whose selection rule is unmeasured.
+/// The original behavior is unmeasured as well (F27 "Research boundary"), so
+/// implementing any of them now would be guesswork.
+///
+/// The deferral is therefore **part of the schema**, not only prose in a
+/// findings file: [`InteractionOption`] names each option, and
+/// [`InteractionRules::applied_by`] / [`InteractionRules::deferred`] report
+/// which production path applies it and which stage must resolve it, so an
+/// audit can ask the content contract itself. `cs_sim::weapons::WeaponRules`
+/// carries the same two booleans and the same note.
 #[derive(Clone, Debug, PartialEq)]
 pub struct InteractionRules {
     /// Whether a round may hit the airframe that fired it.
@@ -424,11 +446,181 @@ pub struct InteractionRules {
     /// Which declared relations a round may damage.
     pub friendly_fire: Resolved<DeclaredFriendlyFireRule>,
     /// Whether this ammunition type is declared to penetrate what it hits.
+    ///
+    /// **Declared, not applied**: no production code reads it. See
+    /// [`InteractionRules`] and [`InteractionOption::Penetration`].
     pub penetration: Resolved<bool>,
     /// Whether this ammunition type is declared to ricochet.
+    ///
+    /// **Declared, not applied**: no production code reads it. See
+    /// [`InteractionRules`] and [`InteractionOption::Ricochet`].
     pub ricochet: Resolved<bool>,
     /// Whether a pilot may change ammunition type in flight.
+    ///
+    /// **Declared, not applied**: no production code reads it. See
+    /// [`InteractionRules`] and [`InteractionOption::AmmoSwitching`].
     pub ammo_switching: Resolved<bool>,
+}
+
+/// One declared interaction option of [`InteractionRules`].
+///
+/// Naming the options makes "declared but not applied" a queryable fact about
+/// the schema rather than a claim in prose: [`InteractionRules::deferred`]
+/// reports the ones no production path reads, and
+/// [`InteractionRules::applied_by`] names the path that reads the rest.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum InteractionOption {
+    /// Whether a round may hit the airframe that fired it.
+    SelfHit,
+    /// Which declared relations a round may damage.
+    FriendlyFire,
+    /// Whether a round is declared to penetrate what it hits.
+    Penetration,
+    /// Whether a round is declared to ricochet.
+    Ricochet,
+    /// Whether a pilot may change ammunition type in flight.
+    AmmoSwitching,
+}
+
+impl InteractionOption {
+    /// Every option, in a stable order.
+    pub const ALL: &'static [InteractionOption] = &[
+        Self::SelfHit,
+        Self::FriendlyFire,
+        Self::Penetration,
+        Self::Ricochet,
+        Self::AmmoSwitching,
+    ];
+
+    /// The stable label used in reports.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::SelfHit => "self_hit",
+            Self::FriendlyFire => "friendly_fire",
+            Self::Penetration => "penetration",
+            Self::Ricochet => "ricochet",
+            Self::AmmoSwitching => "ammo_switching",
+        }
+    }
+
+    /// The name of the production path that **applies** this option today, or
+    /// [`None`] when no production code reads it.
+    ///
+    /// The name is a pointer, not a claim that the path decides the option
+    /// alone: [`APPLIED_BY_SELF_HIT_FILTER`] and
+    /// [`APPLIED_BY_FRIENDLY_FIRE_FILTER`] are the same
+    /// `cs_sim::weapons::WeaponRules::admit_candidates` predicate, which
+    /// consults both declared rules together.
+    #[must_use]
+    pub const fn applied_by(self) -> Option<&'static str> {
+        match self {
+            Self::SelfHit | Self::FriendlyFire => Some(APPLIED_BY_CANDIDATE_FILTER),
+            Self::Penetration | Self::Ricochet | Self::AmmoSwitching => None,
+        }
+    }
+
+    /// The stage that must resolve this option when no production path
+    /// applies it, with the reason it is not applied yet.
+    ///
+    /// `None` for an applied option: there is nothing outstanding to resolve
+    /// *as a deferral* (the option's *value* may still be unknown, which is
+    /// what `Resolved` is for).
+    #[must_use]
+    pub const fn deferred_to(self) -> Option<(&'static str, &'static str)> {
+        match self {
+            Self::SelfHit | Self::FriendlyFire => None,
+            Self::Penetration => Some((
+                DEFERRAL_STAGE,
+                "a penetration model would have to invent what a round does after \
+                 it passes through a part; F27 non-negotiable 4 forbids a simulator \
+                 feature game content does not support, and the original ammunition's \
+                 behavior is unmeasured",
+            )),
+            Self::Ricochet => Some((
+                DEFERRAL_STAGE,
+                "a ricochet model would have to invent the direction a round leaves \
+                 a part in; the original's behavior is unmeasured, so a modeled \
+                 reflection would be a guess presented as a rule",
+            )),
+            Self::AmmoSwitching => Some((
+                DEFERRAL_STAGE,
+                "switching ammunition type in flight needs a per-mount inventory of \
+                 several types and a selection rule over them; neither exists, and \
+                 selecting a gun bank (cs_sim::weapons::WeaponState::select) is a \
+                 different rule that must not be mistaken for it",
+            )),
+        }
+    }
+}
+
+impl fmt::Display for InteractionOption {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+/// The production path that applies the declared self-hit and friendly-fire
+/// rules: `cs_sim::weapons::WeaponRules::admit_candidates`, the F27-C
+/// candidate query every swept hit passes through.
+pub const APPLIED_BY_CANDIDATE_FILTER: &str = "cs_sim::weapons::WeaponRules::admit_candidates";
+
+/// The stage a declared-but-unapplied interaction option is deferred to.
+///
+/// F27-D is the stage whose scenario is the original ammo/loadout audit
+/// ("every type maps to its behavior and damage consumer"), so it is where a
+/// measured rule can replace a deferral.
+pub const DEFERRAL_STAGE: &str = "F27-D";
+
+impl InteractionRules {
+    /// The production path that applies `option` today, or [`None`] when no
+    /// production code reads it.
+    ///
+    /// This reads the **schema**, not this record's values: a
+    /// `Resolved::Unknown` self-hit rule is still an option a production path
+    /// consults — it is the lowering boundary that refuses it, which is a
+    /// different question from whether anything applies the rule.
+    #[must_use]
+    pub const fn applied_by(&self, option: InteractionOption) -> Option<&'static str> {
+        option.applied_by()
+    }
+
+    /// The options no production path applies yet, in
+    /// [`InteractionOption::ALL`] order, each with the stage that must resolve
+    /// it.
+    ///
+    /// An empty result means every declared option has an applying path; a
+    /// non-empty one names the gap explicitly, so the deferral survives in the
+    /// machine-readable contract and not only in a findings file.
+    #[must_use]
+    pub fn deferred(&self) -> Vec<(InteractionOption, &'static str, &'static str)> {
+        InteractionOption::ALL
+            .iter()
+            .filter_map(|option| {
+                let (stage, reason) = (*option).deferred_to()?;
+                Some((*option, stage, reason))
+            })
+            .collect()
+    }
+
+    /// Whether `option`'s value is known.
+    ///
+    /// An unknown option refuses to lower, whatever
+    /// [`InteractionRules::applied_by`] says: the option is *consulted* by a
+    /// production path, and this record cannot answer what it is. The two
+    /// questions are separate and are reported separately, so "we apply the
+    /// self-hit rule" and "we know what the self-hit rule is" never get
+    /// confused.
+    #[must_use]
+    pub fn is_known(&self, option: InteractionOption) -> bool {
+        match option {
+            InteractionOption::SelfHit => self.self_hit.is_known(),
+            InteractionOption::FriendlyFire => self.friendly_fire.is_known(),
+            InteractionOption::Penetration => self.penetration.is_known(),
+            InteractionOption::Ricochet => self.ricochet.is_known(),
+            InteractionOption::AmmoSwitching => self.ammo_switching.is_known(),
+        }
+    }
 }
 
 /// Why a declared weapon record was rejected.

@@ -1,8 +1,8 @@
 //! Guns, ammunition, hardpoints and swept ballistic hits (F27-A).
 //!
-//! Spec: `specs/F27-guns-ammunition-hardpoints-and-ballistic-hits.md`, stage
-//! `### F27-A`. Shared contract: `docs/contracts/FLIGHT-PHYSICS.md`,
-//! "Collision and ballistic tests".
+//! Spec: `specs/F27-guns-ammunition-hardpoints-and-ballistic-hits.md`, stages
+//! `### F27-A` and `### F27-C`. Shared contract:
+//! `docs/contracts/FLIGHT-PHYSICS.md`, "Collision and ballistic tests".
 //!
 //! This module is the **runtime** half of the weapon contract: the records
 //! one session resolves against, with no Bevy, Avian, renderer or file
@@ -12,7 +12,7 @@
 //!
 //! # What is defined here and what is not
 //!
-//! Stage F27-A defines the *typed* contract and a minimal synthetic fixture:
+//! Stage F27-A defined the *typed* contract and a minimal synthetic fixture:
 //!
 //! * [`GunDefinition`] — one gun's declared behavior, with every field the
 //!   sheet's deliverable names kept separate: mount, caliber, ammunition
@@ -29,11 +29,26 @@
 //!   and a once-per-projectile ledger. This is AC01's minimum scenario at
 //!   this stage.
 //!
-//! What F27-B and F27-C own, and what is therefore deliberately absent: the
-//! per-tick cadence loop, the mount transforms read out of the *live*
-//! aircraft hierarchy, an Avian body or collider for a projectile, the
-//! routing of a swept hit into a [`crate::damage::HitEvent`], the audio and
-//! muzzle-effect consumers and the player's bank-selection input.
+//! Stage F27-C adds the **query stage** that turns a sweep into damage, and
+//! decides where the seam between declared policy and geometry runs — see
+//! `docs/findings/2026-10-02-f27-c-candidate-filtering-and-hit-damage-routing.md`:
+//!
+//! * [`SweepCandidate`] — one world candidate: a swept box, the damage node a
+//!   contact with it lands on, and the declared relation the rules filter it
+//!   under.
+//! * [`WeaponRules::admitted`] — the declared-policy half of the query, and
+//!   [`Ballistics::sweep_with_sources`] its geometry half, kept as two
+//!   functions so neither can grow the other's rules.
+//! * [`GunHitRouter`] — the conversion: one accepted shot's contacts become
+//!   [`crate::damage::HitEvent`]s carrying the gun definition's own
+//!   per-channel damage amounts.
+//!
+//! What is therefore still absent, and who owns it: the per-tick cadence loop
+//! and the mount transforms read out of the *live* aircraft hierarchy
+//! (F27-B), an Avian body or collider for a projectile and the collision
+//! features that report a part's swept box (F27-B), the audio and
+//! muzzle-effect consumers and the player's bank-selection input (F27-C's
+//! ECS half), and every original weapon/ammunition measurement (F27-D).
 //!
 //! # Designed vocabulary, not original data
 //!
@@ -52,7 +67,7 @@ use cs_types::content::{ContentId, ContentKind};
 use cs_types::evidence::ClaimId;
 use cs_types::space::{UnitVec3, WorldPosition};
 
-use crate::damage::{ActorId, DamageChannel, DamageNodeKey};
+use crate::damage::{ActorId, DamageChannel, DamageNodeKey, HitEvent, HitEventError, HitEventId};
 use crate::targeting::Allegiance;
 
 // ---------------------------------------------------------------- identity ----
@@ -279,6 +294,18 @@ pub struct WeaponDamage {
     /// Damage routed on [`DamageChannel::Internal`].
     pub internal: f64,
 }
+
+/// The channels a gun's damage profile routes on, in the order the F27-C
+/// routing emits them: armor first, then internal.
+///
+/// The order is a declared property of the routing rather than of the damage
+/// graph: it is what makes the emitted [`HitEventId`]s deterministic, because
+/// the two channels of one contact take consecutive sequence numbers in this
+/// order. `DamageChannel` is the damage layer's vocabulary and this crate
+/// states the weapon-side order explicitly instead of borrowing a list from
+/// a module F27 does not own.
+pub const WEAPON_DAMAGE_CHANNELS: [DamageChannel; 2] =
+    [DamageChannel::Armor, DamageChannel::Internal];
 
 impl WeaponDamage {
     /// Builds a damage profile, refusing non-finite or negative amounts.
@@ -726,11 +753,22 @@ impl fmt::Display for FriendlyFireRule {
 /// (non-negotiable 4).
 ///
 /// `penetration`, `ricochet` and `ammo_switching` are declared and carried
-/// but not consumed at this stage. They are behaviors a content schema must
-/// be able to state before F27-C routes a swept hit into damage and before
-/// F27-D audits what the original actually did; inventing a penetration or
+/// but **read by no production code**, at this stage or after F27-C's routing.
+/// They are behaviors a content schema must be able to state before F27-D
+/// audits what the original actually did; inventing a penetration or
 /// ricochet *model* here would be exactly the "simulator features
-/// unsupported by game content" F27 non-negotiable 4 forbids.
+/// unsupported by game content" F27 non-negotiable 4 forbids, and in-flight
+/// ammunition switching needs a multi-type per-mount inventory whose
+/// selection rule is unmeasured.
+///
+/// The gap is therefore **deferred to F27-D, not silently left open**, and
+/// the deferral is visible in the schema rather than only in prose:
+/// `cs_content::weapons::InteractionOption::use_of` reports each option as
+/// [`Consumed`](cs_content::weapons::OptionUse::Consumed) or
+/// [`Deferred`](cs_content::weapons::OptionUse::Deferred) with the stage that
+/// must resolve it and why nothing reads it yet, so an audit can ask the
+/// content contract instead of trusting a findings file. F27-D closes it
+/// against the installation's ammunition data, or the options stay unknown.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WeaponRules {
     /// Whether a round may hit the airframe that fired it.
@@ -771,6 +809,37 @@ impl WeaponRules {
             .into_iter()
             .filter(|(target, relation)| self.admits(shooter, target.actor, *relation))
             .map(|(target, _)| target)
+            .collect()
+    }
+
+    /// The F27-C candidate query's **declared-policy half**: which of these
+    /// world candidates this gun's rules admit, keeping each admitted
+    /// candidate whole — its swept box, the damage node a contact with it
+    /// lands on and the relation it was offered under.
+    ///
+    /// This is where the boundary decision recorded in
+    /// `docs/findings/2026-10-02-f27-c-candidate-filtering-and-hit-damage-routing.md`
+    /// lives. Filtering is a *rules query*, not geometry and not damage:
+    /// [`Ballistics::sweep`] stays a pure slab test over an already-filtered
+    /// list, and `cs_sim::damage::DamageResolver` consumes typed hits and
+    /// knows nothing about allegiance or gun rules. So a declared rule is
+    /// applied exactly here, and never by proximity or inside the sweep.
+    ///
+    /// The admitted order is the caller's candidate order, unchanged: the
+    /// filter never reorders, so a caller's stable candidate list keeps its
+    /// own tie-breaking.
+    ///
+    /// [`WeaponRules::eligible`] is this query with the nodes and relations
+    /// dropped; both decide through the same [`WeaponRules::admits`].
+    #[must_use]
+    pub fn admit_candidates(
+        &self,
+        shooter: ActorId,
+        candidates: impl IntoIterator<Item = SweepCandidate>,
+    ) -> Vec<SweepCandidate> {
+        candidates
+            .into_iter()
+            .filter(|candidate| self.admits(shooter, candidate.target.actor, candidate.relation))
             .collect()
     }
 }
@@ -1991,6 +2060,80 @@ impl fmt::Display for SweepTargetError {
 
 impl std::error::Error for SweepTargetError {}
 
+/// One candidate a sweep is handed: a swept box, the damage node a contact
+/// with it lands on, and the declared relation the rules filter it under.
+///
+/// The **node** is what the F27-C routing needs and a [`SweepTarget`] cannot
+/// supply: a swept hit names an *actor* and a time of impact, while a
+/// [`crate::damage::HitEvent`] names the damage-graph node the round damaged,
+/// and which of an aircraft's parts a round reached is not derivable from one
+/// actor-level box — the original's part collision shapes are unmeasured
+/// (F27-D) and no part is chosen here by proximity or by a default node. So
+/// the collision feature that owns part geometry reports the node *with* the
+/// box it reports, and the contact that wins the sweep routes the node of
+/// the candidate it came from.
+///
+/// A candidate is a `(box, node)` pair, so a target whose parts are reported
+/// separately contributes one candidate per part; the sweep's
+/// once-per-`(projectile, actor)` ledger is what keeps that from applying one
+/// round several times to one aircraft.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SweepCandidate {
+    /// The swept box over the tick.
+    pub target: SweepTarget,
+    /// The damage-graph node a contact with this box damages.
+    pub node: DamageNodeKey,
+    /// The declared relation of the firing actor to `target.actor`, in the
+    /// F30-A [`Allegiance`] vocabulary. `None` is an *undeclared* pair, which
+    /// is not the same statement as "friendly": only
+    /// [`FriendlyFireRule::Everyone`] admits it.
+    pub relation: Option<Allegiance>,
+}
+
+impl SweepCandidate {
+    /// Assembles a candidate.
+    ///
+    /// Infallible by construction: the box was validated by
+    /// [`SweepTarget::try_new`], and the node and the relation are typed
+    /// values that carry their own validity.
+    #[must_use]
+    pub const fn new(
+        target: SweepTarget,
+        node: DamageNodeKey,
+        relation: Option<Allegiance>,
+    ) -> Self {
+        Self {
+            target,
+            node,
+            relation,
+        }
+    }
+
+    /// The candidate's damage node.
+    #[must_use]
+    pub const fn node(&self) -> &DamageNodeKey {
+        &self.node
+    }
+
+    /// The candidate's swept box.
+    #[must_use]
+    pub const fn target(&self) -> &SweepTarget {
+        &self.target
+    }
+
+    /// The candidate's declared relation.
+    #[must_use]
+    pub const fn relation(&self) -> Option<Allegiance> {
+        self.relation
+    }
+}
+
+impl fmt::Display for SweepCandidate {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} on {}", self.target.actor, self.node)
+    }
+}
+
 /// One hit a swept segment produced.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct SweptHit {
@@ -2003,6 +2146,43 @@ pub struct SweptHit {
     /// happened four tenths of the way through the tick, *before* the
     /// projectile's end position.
     pub time_of_impact: f64,
+}
+
+/// One swept hit together with the supplied candidate it came from.
+///
+/// [`Ballistics::sweep_with_sources`] returns these; a caller that only needs
+/// to know *that* an actor was hit takes [`SweptHit`]s from
+/// [`Ballistics::sweep`] instead, which is the same test with the index
+/// dropped.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SweptContact {
+    /// The hit itself: which projectile, which actor, when.
+    pub hit: SweptHit,
+    /// The index into the target slice the sweep was given. The candidate it
+    /// names is the one whose box the round reached first — which, for a
+    /// target whose parts were reported as separate candidates, is the part
+    /// the hit landed on.
+    pub candidate: usize,
+}
+
+impl SweptContact {
+    /// The actor this contact hit.
+    #[must_use]
+    pub const fn target(&self) -> ActorId {
+        self.hit.target
+    }
+
+    /// The projectile that made this contact.
+    #[must_use]
+    pub const fn projectile(&self) -> ProjectileId {
+        self.hit.projectile
+    }
+
+    /// The index of the candidate this contact came from.
+    #[must_use]
+    pub const fn candidate(&self) -> usize {
+        self.candidate
+    }
 }
 
 /// The per-session swept-ballistics query.
@@ -2036,28 +2216,67 @@ impl Ballistics {
     ///
     /// Targets arrive already filtered by the caller: this function is
     /// geometry. Eligibility — allegiance, self-hit exclusion, layer rules —
-    /// belongs to the query that assembles the candidate list, which is
-    /// F27-C's wiring. What the sweep owns is the segment-vs-box test, the
-    /// deterministic ordering and the once-per-`(projectile, actor)`
-    /// guarantee.
+    /// belongs to the query that assembles the candidate list,
+    /// [`WeaponRules::admit_candidates`], which is F27-C's wiring. What the
+    /// sweep owns
+    /// is the segment-vs-box test, the deterministic ordering and the
+    /// once-per-`(projectile, actor)` guarantee.
     ///
     /// A candidate list may name the same actor more than once: several
     /// collision features reporting one contact is a documented case
     /// (`FLIGHT-PHYSICS`, "Apply damage once even if several collision
     /// features report the same hit"). Duplicates are collapsed to the
     /// earliest time of impact rather than each producing a hit.
+    ///
+    /// This is [`Ballistics::sweep_with_sources`] with the source index
+    /// dropped: the geometry, the ordering and the ledger are one test, so a
+    /// caller that needs the winning candidate asks for it here rather than
+    /// re-deriving it.
     pub fn sweep(&mut self, segment: &ProjectileSegment, targets: &[SweepTarget]) -> Vec<SweptHit> {
-        let mut candidates: Vec<(f64, ActorId)> = targets
+        self.sweep_with_sources(segment, targets)
+            .into_iter()
+            .map(|contact| contact.hit)
+            .collect()
+    }
+
+    /// The swept test that also reports which supplied candidate each hit
+    /// came from.
+    ///
+    /// Same test as [`Ballistics::sweep`] — same relative motion, same slab
+    /// test, same ascending time of impact with the actor id as the
+    /// tie-breaker, same once-per-`(projectile, actor)` ledger — returning
+    /// [`SweptContact`]s that additionally name the candidate the contact
+    /// came from.
+    ///
+    /// The source index is what makes the F27-C routing possible without a
+    /// second geometry test: several part boxes of one actor are separate
+    /// candidates, and the contact that wins the sweep is the one whose box
+    /// the round reached first, so its index names the damage node the hit
+    /// routes to. Duplicate candidates for one actor still collapse to the
+    /// earliest contact *and its source* — several collision features
+    /// reporting one contact yield one hit naming the part that was reached
+    /// first.
+    pub fn sweep_with_sources(
+        &mut self,
+        segment: &ProjectileSegment,
+        targets: &[SweepTarget],
+    ) -> Vec<SweptContact> {
+        let mut candidates: Vec<(f64, ActorId, usize)> = targets
             .iter()
-            .filter(|target| !self.has_hit(segment.projectile, target.actor))
-            .filter_map(|target| {
-                earliest_time_of_impact(segment, target).map(|t| (t, target.actor))
+            .enumerate()
+            .filter(|(_, target)| !self.has_hit(segment.projectile, target.actor))
+            .filter_map(|(index, target)| {
+                earliest_time_of_impact(segment, target).map(|t| (t, target.actor, index))
             })
             .collect();
-        // Ascending time of impact, actor id as the stable tie-breaker: a
-        // total order that does not depend on the caller's target order.
-        candidates.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
-        let mut hits = Vec::with_capacity(candidates.len());
+        // Ascending time of impact, actor id as the stable tie-breaker, and
+        // the supplied index as the last one: a total order that does not
+        // depend on the caller's target order. The index only decides between
+        // two candidates of the *same* actor at the same time, where either
+        // answer applies one hit — it makes the choice explicit instead of
+        // leaving it to the sort's stability.
+        candidates.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.cmp(&b.2)));
+        let mut contacts = Vec::with_capacity(candidates.len());
         // One entry in `reported` per actor this call has already emitted, so
         // a candidate list that names the same actor twice — several collision
         // features reporting one contact in the *same* sweep, which the
@@ -2065,18 +2284,21 @@ impl Ballistics {
         // — still yields one hit. Ordering decides which: the first, i.e. the
         // earliest time of impact.
         let mut reported: BTreeSet<ActorId> = BTreeSet::new();
-        for (time_of_impact, actor) in candidates {
+        for (time_of_impact, actor, candidate) in candidates {
             if !reported.insert(actor) {
                 continue;
             }
             self.applied.insert((segment.projectile, actor));
-            hits.push(SweptHit {
-                projectile: segment.projectile,
-                target: actor,
-                time_of_impact,
+            contacts.push(SweptContact {
+                hit: SweptHit {
+                    projectile: segment.projectile,
+                    target: actor,
+                    time_of_impact,
+                },
+                candidate,
             });
         }
-        hits
+        contacts
     }
 
     /// Whether this projectile has already applied a hit on this actor.
@@ -2144,6 +2366,420 @@ fn earliest_time_of_impact(segment: &ProjectileSegment, target: &SweepTarget) ->
         }
     }
     Some(enter)
+}
+
+// ------------------------------------------------- sweep → damage routing ----
+
+/// One accepted shot's swept hit, routed into the damage inputs it became.
+///
+/// This is the record F27-C produces: the hit the geometry found, the damage
+/// node whose box was reached first, and the [`HitEvent`]s the round's
+/// **declared per-channel damage amounts** became. Nothing here invents a
+/// multiplier, a penetration or a ricochet: each channel carries the gun
+/// definition's own amount, and which node a contact lands on is the
+/// candidate's, not a proximity guess.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RoutedHit {
+    /// The hit the sweep reported: which projectile, which actor, when.
+    pub hit: SweptHit,
+    /// The damage node the contact landed on, taken from the winning
+    /// candidate.
+    pub node: DamageNodeKey,
+    /// The damage inputs this contact became, in
+    /// [`WEAPON_DAMAGE_CHANNELS`] order: one per channel whose declared
+    /// amount is above zero.
+    ///
+    /// A channel whose declared amount is zero produces **no** hit. That is
+    /// not an optimization: a zero-amount hit would be a damage record
+    /// carrying no damage, and the resolver would have to treat "applied 0"
+    /// and "never routed" as the same thing. Emitting nothing keeps "this
+    /// round does no internal damage" a statement about the gun's declared
+    /// profile rather than a distinction a consumer must rediscover.
+    ///
+    /// Channels are *not* merged: a round with a nonzero armor amount and a
+    /// nonzero internal amount produces two [`HitEvent`]s on the same node,
+    /// because the resolver routes each channel through its own declared
+    /// armor interception and overflow chain.
+    pub damage: Vec<HitEvent>,
+}
+
+impl RoutedHit {
+    /// Whether this contact produced no damage input at all.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.damage.is_empty()
+    }
+
+    /// The amount this contact routed on `channel`, summed over every hit
+    /// routed on it. One hit per channel, so this is that hit's amount, or
+    /// `0.0` when the channel declared nothing.
+    #[must_use]
+    pub fn amount_on(&self, channel: DamageChannel) -> f64 {
+        self.damage
+            .iter()
+            .filter(|hit| hit.channel == channel)
+            .map(|hit| hit.damage)
+            .sum()
+    }
+}
+
+/// Why a swept hit could not be routed into a damage input.
+///
+/// Every arm is a *named* refusal rather than a dropped hit: a contact that
+/// produced no damage must say which of these it was, because a silently
+/// missing hit looks exactly like a projectile that missed.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SweepRefusal {
+    /// The routing produced no candidate for a hit the sweep reported.
+    ///
+    /// Defensive: the candidate index a
+    /// [`Ballistics::sweep_with_sources`] reports names an element of the
+    /// very slice it was given, and this routing hands it the admitted
+    /// candidates unchanged. The arm keeps the join total rather than
+    /// indexing on a condition the sweep already guarantees.
+    UnknownCandidate {
+        /// The projectile that hit.
+        projectile: ProjectileId,
+        /// The actor that was hit.
+        target: ActorId,
+        /// The candidate index the sweep reported.
+        candidate: usize,
+    },
+    /// A per-channel damage amount could not form a [`HitEvent`].
+    ///
+    /// Defensive: [`WeaponDamage::try_new`] refuses a non-finite or negative
+    /// amount where the gun definition is built, and the shot carries that
+    /// profile verbatim, so this arm is unreachable today. It is mapped
+    /// rather than unwrapped so a future damage source cannot take the
+    /// simulation down mid-routing.
+    InvalidDamage {
+        /// The actor that was hit.
+        target: ActorId,
+        /// The channel whose amount was refused.
+        channel: DamageChannel,
+        /// Why the runtime refused it.
+        source: HitEventError,
+    },
+    /// The swept hit names a projectile this shot did not spawn.
+    ///
+    /// The routing is per shot: it applies the shot's declared damage, so a
+    /// segment belonging to a different round must be refused rather than
+    /// damage one aircraft with another round's profile.
+    ForeignProjectile {
+        /// The projectile the accepted shot spawned.
+        expected: ProjectileId,
+        /// The projectile the swept segment belongs to.
+        found: ProjectileId,
+    },
+    /// The accepted shot belongs to another session generation.
+    ForeignSession {
+        /// The routing's session generation.
+        expected: u64,
+        /// The session the shot carried.
+        found: u64,
+    },
+}
+
+impl SweepRefusal {
+    /// The stable label used in reports.
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::UnknownCandidate { .. } => "unknown_candidate",
+            Self::InvalidDamage { .. } => "invalid_damage",
+            Self::ForeignProjectile { .. } => "foreign_projectile",
+            Self::ForeignSession { .. } => "foreign_session",
+        }
+    }
+}
+
+impl fmt::Display for SweepRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::UnknownCandidate {
+                projectile,
+                target,
+                candidate,
+            } => write!(
+                f,
+                "{projectile} hit {target} on candidate {candidate}, which this routing did not supply"
+            ),
+            Self::InvalidDamage {
+                target,
+                channel,
+                source,
+            } => write!(
+                f,
+                "the {} damage routed onto {target} was refused: {source}",
+                channel.label()
+            ),
+            Self::ForeignProjectile { expected, found } => write!(
+                f,
+                "the swept segment belongs to {found}, but this shot spawned {expected}"
+            ),
+            Self::ForeignSession { expected, found } => write!(
+                f,
+                "the accepted shot belongs to session {found}, but this routing is session {expected}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SweepRefusal {}
+
+/// One routing pass's whole result: the candidates the rules admitted, the
+/// hits they produced, and every refusal by name.
+///
+/// The three lists together are the whole outcome, so a caller cannot read
+/// "hits" without also being able to see what was admitted and what was
+/// refused. A pass that admitted nothing and refused nothing means the shot
+/// crossed nothing — an empty [`SweepOutcome::hits`] is a *miss*, which is
+/// why refusals are reported rather than dropped.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct SweepOutcome {
+    /// The candidates the declared rules admitted, in the order the sweep
+    /// received them.
+    pub admitted: Vec<SweepCandidate>,
+    /// The hits the sweep produced, in ascending time of impact, each with
+    /// the damage inputs it became.
+    pub hits: Vec<RoutedHit>,
+    /// The contacts that produced no damage input, with the reason.
+    pub refused: Vec<SweepRefusal>,
+}
+
+impl SweepOutcome {
+    /// Whether the pass produced no hit at all.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.hits.is_empty()
+    }
+
+    /// Every [`HitEvent`] the pass produced, in hit order.
+    #[must_use]
+    pub fn damage(&self) -> Vec<HitEvent> {
+        self.hits
+            .iter()
+            .flat_map(|hit| hit.damage.iter().cloned())
+            .collect()
+    }
+}
+
+/// The per-session stage that turns one accepted shot's swept contacts into
+/// damage inputs.
+///
+/// This is the F27-C decision, recorded in
+/// `docs/findings/2026-10-02-f27-c-candidate-filtering-and-hit-damage-routing.md`:
+/// **the declared-rule filter stays in
+/// [`WeaponRules::admit_candidates`], the geometry stays in
+/// [`Ballistics::sweep_with_sources`], and the conversion into damage lives
+/// here** — neither inside the sweep (which would make declared policy
+/// reachable from geometry) nor inside `cs_sim::damage` (which consumes typed
+/// hits and must know nothing about allegiance, gun banks or projectiles).
+///
+/// The three steps of one [`GunHitRouter::route`] call are exactly that
+/// order, and each is observable: the admitted candidates, the swept hits
+/// with their sources, and the routed [`HitEvent`]s.
+///
+/// It is session-confined: a shot from another generation is refused whole,
+/// so a restarted session's projectile can never apply its damage to this
+/// one's actors.
+///
+/// It **owns** the [`Ballistics`] ledger rather than borrowing one, because
+/// the ledger's lifetime has to be the session's: the once-per-`(projectile,
+/// actor)` guarantee only holds if the same ledger is consulted on every tick
+/// a round is live, and a caller that supplied a fresh one per pass could
+/// defeat it by accident. Holding it makes teardown *drop the router* — there
+/// is nothing else to unwind and no retry path that has to restore a ledger
+/// someone else owns. [`Ballistics`] stays public and usable on its own for
+/// callers that only want the geometry.
+#[derive(Clone, Debug)]
+pub struct GunHitRouter {
+    session: u64,
+    producer: u32,
+    next_sequence: u32,
+    ballistics: Ballistics,
+}
+
+impl GunHitRouter {
+    /// Opens a router for one session generation, stamping the [`HitEvent`]s
+    /// it routes with producer serial `producer`.
+    ///
+    /// The producer is the *routing system's* serial, not the shooter's: a
+    /// [`HitEventId`] carries a `u32` producer while an [`ActorId`] serial is
+    /// never recycled inside a session, so narrowing a shooter's serial into
+    /// it could give two shooters the same producer. The session's schedule
+    /// allocates one serial for this stage, exactly as it does for
+    /// `DamageResolver::new`'s producer.
+    #[must_use]
+    pub fn new(session: u64, producer: u32) -> Self {
+        Self {
+            session,
+            producer,
+            next_sequence: 0,
+            ballistics: Ballistics::new(),
+        }
+    }
+
+    /// The session's swept-hit ledger, for a caller that needs to ask what
+    /// this router has already applied — and for the geometry-only uses that
+    /// never route damage at all.
+    #[must_use]
+    pub const fn ballistics(&self) -> &Ballistics {
+        &self.ballistics
+    }
+
+    /// The session generation this router is confined to.
+    #[must_use]
+    pub const fn session(&self) -> u64 {
+        self.session
+    }
+
+    /// The producer serial stamped into the hit ids it routes.
+    #[must_use]
+    pub const fn producer(&self) -> u32 {
+        self.producer
+    }
+
+    /// How many [`HitEvent`]s this router has routed.
+    #[must_use]
+    pub const fn routed(&self) -> u32 {
+        self.next_sequence
+    }
+
+    /// Routes one accepted shot's swept contacts into damage inputs.
+    ///
+    /// `segment` is the projectile's motion across the tick being resolved and
+    /// `candidates` are the world candidates the collision features reported
+    /// for it. The pass:
+    ///
+    /// 1. filters the candidates through the gun's declared rules
+    ///    ([`WeaponRules::admit_candidates`]) — self-hit exclusion and
+    ///    friendly fire are decided by declaration, never by proximity;
+    /// 2. sweeps the survivors against the segment, keeping which candidate
+    ///    each hit came from;
+    /// 3. converts every hit into one [`HitEvent`] per non-zero declared
+    ///    damage channel, on the node the winning candidate named.
+    ///
+    /// `shot` supplies the attacker, the projectile identity and the declared
+    /// per-channel damage amounts; the *node* comes from the candidate, never
+    /// from the shot, because the shot describes the shooter and not the
+    /// target's parts.
+    ///
+    /// `at` is the tick being resolved, and it — **not** `shot.id.tick` — is
+    /// what the routed hits are stamped with. A projectile is fired on one
+    /// tick and can land several ticks later, so the hit belongs to the tick
+    /// its contact happened on: `DamageResolver::resolve` refuses a batch
+    /// whose hits carry any other tick, and stamping a landing with its
+    /// muzzle's tick would make every travelling round unresolvable.
+    ///
+    /// Nothing here applies the damage: the [`HitEvent`]s are inputs the
+    /// authoritative `DamageResolver` resolves, so this stage cannot destroy
+    /// anything. A retried route is caught by this router's own
+    /// once-per-`(projectile, actor)` ledger rather than by a refusal, and a
+    /// refused contact is reported in [`SweepOutcome::refused`] rather than
+    /// dropped — an empty [`SweepOutcome::hits`] must be readable as "this
+    /// round crossed nothing" rather than "this round hit something and the
+    /// damage was lost".
+    ///
+    /// Teardown is dropping the router: the ledger and the hit-identity
+    /// cursor are its own state, so there is nothing to unwind and a fresh
+    /// session starts both again.
+    pub fn route(
+        &mut self,
+        shot: &FireEvent,
+        segment: &ProjectileSegment,
+        candidates: impl IntoIterator<Item = SweepCandidate>,
+        rules: &WeaponRules,
+        at: Tick,
+    ) -> SweepOutcome {
+        let mut outcome = SweepOutcome::default();
+        if shot.id.session != self.session {
+            outcome.refused.push(SweepRefusal::ForeignSession {
+                expected: self.session,
+                found: shot.id.session,
+            });
+            return outcome;
+        }
+        if segment.projectile != shot.projectile.projectile {
+            outcome.refused.push(SweepRefusal::ForeignProjectile {
+                expected: shot.projectile.projectile,
+                found: segment.projectile,
+            });
+            return outcome;
+        }
+
+        outcome.admitted = rules.admit_candidates(shot.shooter, candidates);
+        let admitted: Vec<SweepTarget> = outcome.admitted.iter().map(|c| c.target).collect();
+        for contact in self.ballistics.sweep_with_sources(segment, &admitted) {
+            let Some(candidate) = outcome.admitted.get(contact.candidate) else {
+                outcome.refused.push(SweepRefusal::UnknownCandidate {
+                    projectile: contact.hit.projectile,
+                    target: contact.hit.target,
+                    candidate: contact.candidate,
+                });
+                continue;
+            };
+            let mut damage = Vec::new();
+            let mut refused = None;
+            for channel in WEAPON_DAMAGE_CHANNELS {
+                let amount = shot.damage.amount_on(channel);
+                if amount == 0.0 {
+                    continue;
+                }
+                match HitEvent::try_new(
+                    self.next_hit_id(at),
+                    Some(shot.shooter),
+                    contact.hit.target,
+                    candidate.node.clone(),
+                    channel,
+                    amount,
+                ) {
+                    Ok(hit) => damage.push(hit),
+                    Err(source) => {
+                        refused = Some(SweepRefusal::InvalidDamage {
+                            target: contact.hit.target,
+                            channel,
+                            source,
+                        });
+                        break;
+                    }
+                }
+            }
+            // A contact whose *second* channel is refused discards the first:
+            // a half-applied contact would be damage that exists with no rule
+            // behind it. Nothing is consumed either way beyond the id
+            // sequence, which advances whether or not the hit is kept, so a
+            // retried route never reissues an id.
+            if let Some(refusal) = refused {
+                outcome.refused.push(refusal);
+                continue;
+            }
+            outcome.hits.push(RoutedHit {
+                hit: contact.hit,
+                node: candidate.node.clone(),
+                damage,
+            });
+        }
+        outcome
+    }
+
+    /// Allocates the next hit id of this session.
+    ///
+    /// The cursor is `u32` because a [`HitEventId`]'s sequence is, and it
+    /// only ever increases: a wrap would reissue an id a batch already
+    /// resolved. A session that routed more than `u32::MAX` hits would need a
+    /// new producer serial, which is the schedule's decision and not a
+    /// silent wrap here.
+    fn next_hit_id(&mut self, tick: Tick) -> HitEventId {
+        let id = HitEventId {
+            session: self.session,
+            tick,
+            producer: self.producer,
+            sequence: self.next_sequence,
+        };
+        self.next_sequence = self.next_sequence.wrapping_add(1);
+        id
+    }
 }
 
 // ---------------------------------------------------------------- fixture ----

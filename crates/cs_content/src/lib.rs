@@ -193,7 +193,13 @@
 //! silent default; the [`weapons::AmmunitionId`] that keeps ammunition an
 //! opaque `ammo` catalog id instead of an invented enum; the
 //! [`weapons::InteractionRules`] whose self-hit, friendly-fire, penetration,
-//! ricochet and ammo-switching options each refuse to lower while unknown;
+//! ricochet and ammo-switching options each refuse to lower while unknown,
+//! and whose [`weapons::InteractionOption`] /
+//! [`weapons::InteractionRules::deferred`] make "declared but not applied"
+//! a queryable fact of the schema: self-hit and friendly fire are applied by
+//! `cs_sim::weapons::WeaponRules::admit_candidates`, while penetration,
+//! ricochet and ammo switching are deferred to F27-D with their reasons, so
+//! the gap is visible to an audit without reading a findings file;
 //! and the [`weapons::DeclaredLoadout`] whose gun/ammunition pairings are
 //! the rows F27-D's ammunition audit walks. Its runtime counterpart is
 //! `cs_sim::weapons`; the conversion boundary is `cs_app::weapons`.

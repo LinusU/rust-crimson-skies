@@ -271,10 +271,21 @@
 //! whose muzzle velocity, cadence, spread or damage was invented;
 //! [`weapons::lower_rules`], which lowers the declared self-hit,
 //! friendly-fire, penetration, ricochet and ammo-switching options into the
-//! runtime rules a sweep filters candidates with and refuses each unknown;
+//! runtime rules a sweep filters candidates with and refuses each unknown
+//! (penetration, ricochet and ammo switching are *deferred* to F27-D and named
+//! as such by `cs_content::weapons::InteractionRules::deferred`, so no runtime
+//! code pretends to apply them);
 //! [`weapons::lower_ammunition`]; the [`weapons::MountPoseBinding`] and
 //! generation-stamped [`weapons::WeaponActorBinding`] ECS records that keep
-//! a mount's live hierarchy pose session- and generation-qualified.
+//! a mount's live hierarchy pose session- and generation-qualified; and the
+//! F27-C application consumer [`weapons::resolve_swept_damage`], which is the
+//! production caller of `cs_sim::weapons::GunHitRouter` — it turns one
+//! accepted shot's swept contacts into `cs_sim::damage::HitEvent`s carrying
+//! the gun definition's own per-channel damage amounts and hands them to the
+//! session's authoritative `DamageResolver`, so a gun's declared damage
+//! reaches the graph through the one authority that owns it. The boundary
+//! decision this implements is recorded in
+//! `docs/findings/2026-10-02-f27-c-candidate-filtering-and-hit-damage-routing.md`.
 //!
 //! [`ordnance`] is the F28-A ordnance boundary
 //! (`specs/F28-rockets-special-ordnance-counter-effects-and-nitro.md`, stage
