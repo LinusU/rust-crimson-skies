@@ -1472,7 +1472,7 @@ pub const ORIGINAL_GUN_GROUPS: [DeclaredGunGroup; 20] = [
 /// the description block as `3370 + selection - 1` for `selection` in
 /// `1..=ORIGINAL_AMMUNITION_TYPES`, which reads the same count a second,
 /// independent way.
-pub const ORIGINAL_AMMO_NAME_BLOCKS: [(u32, &'static str); 4] = [
+pub const ORIGINAL_AMMO_NAME_BLOCKS: [(u32, &str); 4] = [
     (3350, "ammo_long_name"),
     (3360, "ammo_short_name"),
     (3365, "ammo_abbreviation"),
@@ -1529,6 +1529,60 @@ pub fn uncovered_original_gun_groups() -> Vec<DeclaredGunGroup> {
         .collect()
 }
 
+/// The five counts a measured loadout surface carries.
+///
+/// Grouped so the surface's constructor stays small and so a zero count is
+/// refused *here*, by name, before a surface that describes no loadout can be
+/// built at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OriginalLoadoutCounts {
+    /// How many gun ammunition types the installation declares.
+    pub ammunition_types: u32,
+    /// How many distinct guns one loadout may choose from.
+    pub selectable_guns: u32,
+    /// How many gun slots one airframe's loadout offers.
+    pub gun_slots: u32,
+    /// How many rocket/ordnance slots one airframe's loadout offers.
+    pub rocket_slots: u32,
+    /// How many hardpoint points plane construction offers.
+    pub hardpoint_points: u32,
+}
+
+impl OriginalLoadoutCounts {
+    /// The counts a surface was measured to hold, refusing a zero in any of
+    /// them.
+    ///
+    /// # Errors
+    ///
+    /// [`OriginalLoadoutError::ZeroCount`] naming the field that was zero.
+    pub fn try_new(
+        ammunition_types: u32,
+        selectable_guns: u32,
+        gun_slots: u32,
+        rocket_slots: u32,
+        hardpoint_points: u32,
+    ) -> Result<Self, OriginalLoadoutError> {
+        for (field, value) in [
+            ("ammunition_types", ammunition_types),
+            ("selectable_guns", selectable_guns),
+            ("gun_slots", gun_slots),
+            ("rocket_slots", rocket_slots),
+            ("hardpoint_points", hardpoint_points),
+        ] {
+            if value == 0 {
+                return Err(OriginalLoadoutError::ZeroCount { field });
+            }
+        }
+        Ok(Self {
+            ammunition_types,
+            selectable_guns,
+            gun_slots,
+            rocket_slots,
+            hardpoint_points,
+        })
+    }
+}
+
 /// What an installation's gun/ammunition surface was **measured** to be.
 ///
 /// This is the closure target of AC04's audit: the declared catalogue is only
@@ -1548,11 +1602,7 @@ pub fn uncovered_original_gun_groups() -> Vec<DeclaredGunGroup> {
 #[derive(Clone, Debug, PartialEq)]
 pub struct OriginalGunLoadout {
     origin: Origin,
-    ammunition_types: u32,
-    selectable_guns: u32,
-    gun_slots: u32,
-    rocket_slots: u32,
-    hardpoint_points: u32,
+    counts: OriginalLoadoutCounts,
     gun_groups: Vec<DeclaredGunGroup>,
     provenance: Provenance,
 }
@@ -1562,44 +1612,18 @@ impl OriginalGunLoadout {
     ///
     /// # Errors
     ///
-    /// [`OriginalLoadoutError`] when a count is zero, when the gun-group list is
-    /// empty, or when a group is outside
+    /// [`OriginalLoadoutError::NoGunGroups`] when the surface names no group,
+    /// or [`OriginalLoadoutError::GunGroupOutOfRange`] /
+    /// [`OriginalLoadoutError::DuplicateGunGroup`] when a group id is outside
     /// `[ORIGINAL_GUN_GROUP_NAMES_BASE_ID, ORIGINAL_GUN_GROUP_NAMES_LAST_ID]`
     /// or is listed twice. A surface that contradicts the original's own
     /// identifier range is a misread, and is refused rather than audited.
     pub fn try_new(
         origin: Origin,
-        ammunition_types: u32,
-        selectable_guns: u32,
-        gun_slots: u32,
-        rocket_slots: u32,
-        hardpoint_points: u32,
+        counts: OriginalLoadoutCounts,
         gun_groups: Vec<DeclaredGunGroup>,
         provenance: Provenance,
     ) -> Result<Self, OriginalLoadoutError> {
-        if ammunition_types == 0 {
-            return Err(OriginalLoadoutError::ZeroCount {
-                field: "ammunition_types",
-            });
-        }
-        if selectable_guns == 0 {
-            return Err(OriginalLoadoutError::ZeroCount {
-                field: "selectable_guns",
-            });
-        }
-        if gun_slots == 0 {
-            return Err(OriginalLoadoutError::ZeroCount { field: "gun_slots" });
-        }
-        if rocket_slots == 0 {
-            return Err(OriginalLoadoutError::ZeroCount {
-                field: "rocket_slots",
-            });
-        }
-        if hardpoint_points == 0 {
-            return Err(OriginalLoadoutError::ZeroCount {
-                field: "hardpoint_points",
-            });
-        }
         if gun_groups.is_empty() {
             return Err(OriginalLoadoutError::NoGunGroups);
         }
@@ -1616,11 +1640,7 @@ impl OriginalGunLoadout {
         }
         Ok(Self {
             origin,
-            ammunition_types,
-            selectable_guns,
-            gun_slots,
-            rocket_slots,
-            hardpoint_points,
+            counts,
             gun_groups,
             provenance,
         })
@@ -1632,34 +1652,40 @@ impl OriginalGunLoadout {
         &self.origin
     }
 
+    /// Every measured count.
+    #[must_use]
+    pub const fn counts(&self) -> &OriginalLoadoutCounts {
+        &self.counts
+    }
+
     /// The measured number of gun ammunition types.
     #[must_use]
     pub const fn ammunition_types(&self) -> u32 {
-        self.ammunition_types
+        self.counts.ammunition_types
     }
 
     /// The measured number of selectable guns.
     #[must_use]
     pub const fn selectable_guns(&self) -> u32 {
-        self.selectable_guns
+        self.counts.selectable_guns
     }
 
     /// The measured number of gun slots per airframe.
     #[must_use]
     pub const fn gun_slots(&self) -> u32 {
-        self.gun_slots
+        self.counts.gun_slots
     }
 
     /// The measured number of rocket slots per airframe.
     #[must_use]
     pub const fn rocket_slots(&self) -> u32 {
-        self.rocket_slots
+        self.counts.rocket_slots
     }
 
     /// The measured number of hardpoint points.
     #[must_use]
     pub const fn hardpoint_points(&self) -> u32 {
-        self.hardpoint_points
+        self.counts.hardpoint_points
     }
 
     /// The measured gun groups, in declared order.
@@ -2230,6 +2256,11 @@ impl AmmunitionAudit {
             described_guns.insert(gun.gun().clone(), gun);
         }
         for loadout in &self.loadouts {
+            // Each dangling reference is reported once, not once per pairing:
+            // `DeclaredLoadout::pairings` crosses every gun with every type, so
+            // walking it for these checks would report one undeclared type
+            // twice — or `guns * ammunition` times — and a caller counting
+            // findings could not tell a real second gap from an echo.
             for gun in loadout.guns() {
                 if !described_guns.contains_key(gun) {
                     findings.push(AmmoAuditFinding::UndescribedGun {
@@ -2238,12 +2269,16 @@ impl AmmunitionAudit {
                     });
                 }
             }
-            for (gun, ammunition) in loadout.pairings() {
+            for ammunition in loadout.ammunition() {
                 if !types.contains_key(ammunition.as_str()) {
                     findings.push(AmmoAuditFinding::UndescribedAmmunition {
                         loadout: loadout.subject().clone(),
                         ammunition: ammunition.clone(),
                     });
+                }
+            }
+            for (gun, ammunition) in loadout.pairings() {
+                if !types.contains_key(ammunition.as_str()) {
                     continue;
                 }
                 guns_by_type
@@ -2307,17 +2342,33 @@ impl AmmunitionAudit {
             });
         }
 
-        // The mount side: every group the installation names that no declared
-        // kind covers, and every declared kind in use that no group backs.
+        // The mount side, both directions: every group the installation names
+        // that no declared kind covers, and every declared kind *in use* that
+        // covers none of the groups this installation names. The second test is
+        // about the surface, not about the kind in the abstract: `WingLeft`
+        // covers a real measured group, so on a surface that names only a nose
+        // group it is the wing kind that is unobserved here.
         for group in original.uncovered_gun_groups() {
             findings.push(AmmoAuditFinding::UncoveredGunGroup { group });
         }
+        let surface_groups: BTreeSet<u32> = original
+            .gun_groups()
+            .iter()
+            .map(|group| group.id())
+            .collect();
         let mut kinds_in_use: BTreeSet<DeclaredGunMountKind> = BTreeSet::new();
         for gun in &self.guns {
             kinds_in_use.insert(gun.mount_kind());
         }
         for kind in DeclaredGunMountKind::ALL {
-            if kinds_in_use.contains(kind) && kind.original_groups().is_empty() {
+            if !kinds_in_use.contains(kind) {
+                continue;
+            }
+            let covered = kind
+                .original_groups()
+                .iter()
+                .any(|group| surface_groups.contains(&group.id()));
+            if !covered {
                 findings.push(AmmoAuditFinding::UnobservedMountKind { kind: *kind });
             }
         }

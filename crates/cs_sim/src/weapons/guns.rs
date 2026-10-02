@@ -3547,7 +3547,7 @@ pub const ORIGINAL_GUN_GROUPS: [GunGroupName; 20] = [
 /// [`ORIGINAL_AMMUNITION_TYPES`] consecutive ids — the ammunition scripts index
 /// the description block as `3370 + selection - 1` for `selection` in
 /// `1..=4`, which is the same count read a second, independent way.
-pub const ORIGINAL_AMMO_NAME_BLOCKS: [(u32, &'static str); 4] = [
+pub const ORIGINAL_AMMO_NAME_BLOCKS: [(u32, &str); 4] = [
     (3350, "ammo_long_name"),
     (3360, "ammo_short_name"),
     (3365, "ammo_abbreviation"),
@@ -3731,78 +3731,151 @@ impl AmmunitionDamageConsumer {
     }
 }
 
+/// Which of a type's two declarations two mounted guns contradict.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Divergence {
+    /// The two guns declare different per-channel damage amounts.
+    Damage,
+    /// The two guns declare different calibers.
+    Caliber,
+}
+
+impl Divergence {
+    /// The stable label used in reports.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Damage => "damage",
+            Self::Caliber => "caliber",
+        }
+    }
+}
+
+impl fmt::Display for Divergence {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+/// One mounted gun's declaration about an ammunition type.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AmmunitionDeclaration {
+    mount: DamageNodeKey,
+    damage: WeaponDamage,
+    caliber: Box<str>,
+}
+
+impl AmmunitionDeclaration {
+    /// The mount the declaration came from.
+    #[must_use]
+    pub fn mount(&self) -> &DamageNodeKey {
+        &self.mount
+    }
+
+    /// The declared per-channel damage amounts.
+    #[must_use]
+    pub const fn damage(&self) -> &WeaponDamage {
+        &self.damage
+    }
+
+    /// The declared caliber text.
+    #[must_use]
+    pub fn caliber(&self) -> &str {
+        &self.caliber
+    }
+}
+
+/// One ammunition type's declaration as two mounted guns state it.
+///
+/// One type cannot do two different things, and nothing in the data says which
+/// gun is right, so a contradiction is always reported through this record and
+/// never resolved.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DivergentAmmunition {
+    ammunition: AmmunitionId,
+    kind: Divergence,
+    registered: AmmunitionDeclaration,
+    offered: AmmunitionDeclaration,
+}
+
+impl DivergentAmmunition {
+    /// The ammunition type both guns declare.
+    #[must_use]
+    pub const fn ammunition(&self) -> &AmmunitionId {
+        &self.ammunition
+    }
+
+    /// Which declaration the two guns contradict.
+    #[must_use]
+    pub const fn kind(&self) -> Divergence {
+        self.kind
+    }
+
+    /// The declaration already registered.
+    #[must_use]
+    pub const fn registered(&self) -> &AmmunitionDeclaration {
+        &self.registered
+    }
+
+    /// The declaration that was refused.
+    #[must_use]
+    pub const fn offered(&self) -> &AmmunitionDeclaration {
+        &self.offered
+    }
+}
+
 /// Why an ammunition type was refused into the [`AmmunitionRegistry`].
+///
+/// One variant, boxed: the detail is a report rather than a control value, and
+/// the error a `Result` carries out of this crate should stay small. Nothing is
+/// lost — [`AmmunitionRefusal::divergence`] carries *which* of the two
+/// declarations conflicts ([`Divergence`]) and both declarations in full, so a
+/// caller that wants the amounts reads one field and a caller that wants the
+/// mounts reads another.
 #[derive(Clone, Debug, PartialEq)]
 pub enum AmmunitionRefusal {
-    /// Two mounted guns declare the same ammunition type with **different**
-    /// per-channel damage amounts.
+    /// Two mounted guns declare the same ammunition type differently.
     ///
-    /// One type cannot do two different things, and nothing in the data says
-    /// which gun is right, so the registry keeps the first and refuses the
-    /// second rather than letting the later registration silently change what a
-    /// round already in flight was measured against.
-    DivergentDamage {
-        /// The ammunition type both guns declare.
-        ammunition: AmmunitionId,
-        /// The mount whose declaration is registered.
-        registered_mount: DamageNodeKey,
-        /// The damage the registered mount declared.
-        registered_damage: WeaponDamage,
-        /// The mount that offered the conflicting declaration.
-        offered_mount: DamageNodeKey,
-        /// The damage the offered mount declared.
-        offered_damage: WeaponDamage,
-    },
-    /// Two mounted guns declare the same ammunition type with **different**
-    /// calibers.
-    ///
-    /// The caliber belongs to the round, so the same contradiction holds: the
-    /// registry cannot pick one text, and the caliber feeds no runtime decision
-    /// yet — which is exactly why the conflict is reported instead of
-    /// normalized away.
-    DivergentCaliber {
-        /// The ammunition type both guns declare.
-        ammunition: AmmunitionId,
-        /// The mount whose declaration is registered.
-        registered_mount: DamageNodeKey,
-        /// The caliber the registered mount declared.
-        registered_caliber: String,
-        /// The mount that offered the conflicting declaration.
-        offered_mount: DamageNodeKey,
-        /// The caliber the offered mount declared.
-        offered_caliber: String,
-    },
+    /// The registry keeps the first declaration and refuses the second, so a
+    /// later registration cannot silently change what a round already in flight
+    /// was measured against.
+    Divergent(Box<DivergentAmmunition>),
+}
+
+impl AmmunitionRefusal {
+    /// The contradicted declaration this refusal carries.
+    #[must_use]
+    pub const fn divergence(&self) -> &DivergentAmmunition {
+        match self {
+            Self::Divergent(detail) => detail,
+        }
+    }
 }
 
 impl fmt::Display for AmmunitionRefusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::DivergentDamage {
-                ammunition,
-                registered_mount,
-                registered_damage,
-                offered_mount,
-                offered_damage,
-            } => write!(
+        let detail = self.divergence();
+        match detail.kind() {
+            Divergence::Damage => write!(
                 f,
-                "{ammunition} is declared with two different damage profiles: {registered_mount} \
-                 carries armor {}/internal {} and {offered_mount} carries armor {}/internal {}",
-                registered_damage.armor,
-                registered_damage.internal,
-                offered_damage.armor,
-                offered_damage.internal,
+                "{} is declared with two different damage profiles: {} carries armor {}/internal \
+                 {} and {} carries armor {}/internal {}",
+                detail.ammunition(),
+                detail.registered().mount(),
+                detail.registered().damage().armor,
+                detail.registered().damage().internal,
+                detail.offered().mount(),
+                detail.offered().damage().armor,
+                detail.offered().damage().internal,
             ),
-            Self::DivergentCaliber {
-                ammunition,
-                registered_mount,
-                registered_caliber,
-                offered_mount,
-                offered_caliber,
-            } => write!(
+            Divergence::Caliber => write!(
                 f,
-                "{ammunition} is declared with two different calibers: \
-                 {registered_mount} carries {registered_caliber:?} and \
-                 {offered_mount} carries {offered_caliber:?}"
+                "{} is declared with two different calibers: {} carries {:?} and {} carries {:?}",
+                detail.ammunition(),
+                detail.registered().mount(),
+                detail.registered().caliber(),
+                detail.offered().mount(),
+                detail.offered().caliber(),
             ),
         }
     }
@@ -3858,6 +3931,11 @@ impl AmmunitionRegistry {
     /// [`AmmunitionRefusal`] when the type is already registered with a
     /// different damage profile or a different caliber.
     pub fn register(&mut self, gun: &GunDefinition) -> Result<(), AmmunitionRefusal> {
+        let offered = AmmunitionDeclaration {
+            mount: gun.mount().clone(),
+            damage: *gun.damage(),
+            caliber: gun.caliber().into(),
+        };
         let entry = self
             .types
             .entry(gun.ammunition().clone())
@@ -3866,24 +3944,31 @@ impl AmmunitionRegistry {
                 caliber: gun.caliber().to_owned(),
                 mounts: Vec::new(),
             });
-        let registered_mount = entry.mounts.first().cloned();
-        if entry.damage != *gun.damage() {
-            return Err(AmmunitionRefusal::DivergentDamage {
-                ammunition: gun.ammunition().clone(),
-                registered_mount: registered_mount.unwrap_or_else(|| gun.mount().clone()),
-                registered_damage: entry.damage,
-                offered_mount: gun.mount().clone(),
-                offered_damage: *gun.damage(),
-            });
-        }
-        if entry.caliber != gun.caliber() {
-            return Err(AmmunitionRefusal::DivergentCaliber {
-                ammunition: gun.ammunition().clone(),
-                registered_mount: registered_mount.unwrap_or_else(|| gun.mount().clone()),
-                registered_caliber: entry.caliber.clone(),
-                offered_mount: gun.mount().clone(),
-                offered_caliber: gun.caliber().to_owned(),
-            });
+        let kind = if entry.damage != *gun.damage() {
+            Some(Divergence::Damage)
+        } else if entry.caliber != gun.caliber() {
+            Some(Divergence::Caliber)
+        } else {
+            None
+        };
+        if let Some(kind) = kind {
+            let registered = AmmunitionDeclaration {
+                mount: entry
+                    .mounts
+                    .first()
+                    .cloned()
+                    .unwrap_or_else(|| gun.mount().clone()),
+                damage: entry.damage,
+                caliber: entry.caliber.as_str().into(),
+            };
+            return Err(AmmunitionRefusal::Divergent(Box::new(
+                DivergentAmmunition {
+                    ammunition: gun.ammunition().clone(),
+                    kind,
+                    registered,
+                    offered,
+                },
+            )));
         }
         if let Err(at) = entry.mounts.binary_search(gun.mount()) {
             entry.mounts.insert(at, gun.mount().clone());
