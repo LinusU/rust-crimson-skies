@@ -116,6 +116,14 @@ directory is original game data — no assets, scripts or extracted bytes.
   identifies the chapter and not the mission (see
   `docs/findings/2026-10-02-m16-a-source-binding.md`). Same five resolved
   critical dependencies, same unverified status.
+- `M19.json` — the M19 binding output (stage M19-A), generated and pinned the
+  same way by `accept_m19_a_the_committed_record_is_what_the_installation_derives`.
+  No production code changed for it either: M19 is the nineteenth campaign
+  position and the fourth of chapter 4's five missions, so the layout's
+  chapter end and the localized region end both fall one row after it. It
+  shares `world/c4` with M16, which is the whole chapter (see
+  `docs/findings/2026-10-02-m19-a-source-binding.md`). Same five resolved
+  critical dependencies, same unverified status.
 
 The typed records those missions fill in — the seven required content
 categories, one unresolved dependency row per required subsystem, coverage
