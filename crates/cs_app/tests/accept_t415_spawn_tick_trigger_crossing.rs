@@ -574,14 +574,15 @@ fn accept_t415_a_every_probed_rate_and_speed_delivers_exactly_one_crossing() {
             // reporter's own pair order is Bevy's `Entity` ordering (by
             // generation, then index), so the pair is not `(volume, body)` by
             // construction and the filter asks only which roles are in it.
-            let engine_reports = history
+            let engine_report_ticks: Vec<u64> = history
                 .iter()
                 .flat_map(|state| state.reports.iter())
                 .filter(|((first, second), ..)| {
                     [*first, *second].contains(&TRIGGER_ROLE)
                         && [*first, *second].contains(&BODY_ROLE)
                 })
-                .count();
+                .map(|(_, _, tick)| *tick)
+                .collect();
             let delivered = crossings(&session);
             let crossing = delivered.crossings().first().copied().unwrap_or_else(|| {
                 panic!("{fixed_hz} Hz at {speed_m_s} m/s delivered no crossing: {history:?}")
@@ -605,11 +606,20 @@ fn accept_t415_a_every_probed_rate_and_speed_delivers_exactly_one_crossing() {
                  spawn tick's {travel_m} m of travel, at {}",
                 crossing.distance_m
             );
+            // The crossing is never *later* than the engine's own stream, which
+            // is the ordering the decision rests on: where the discrete narrow
+            // phase happens to find a sample at all it reports the pair on a
+            // later tick, and where it finds none the crossing is the only
+            // report there will ever be. The count itself is deliberately not
+            // pinned — a future engine that closed the hole would add reports,
+            // and the invariant worth keeping is that this crossing is not one
+            // of them.
             assert!(
-                engine_reports <= 1,
-                "{fixed_hz} Hz at {speed_m_s} m/s: the engine's own stream reports \
-                 the same pair {engine_reports} times, so the discrete narrow phase \
-                 is not what this test is measuring: {history:?}"
+                engine_report_ticks.iter().all(|tick| *tick > crossing.tick),
+                "{fixed_hz} Hz at {speed_m_s} m/s: the engine's own stream named \
+                 the pair on ticks {engine_report_ticks:?} against a crossing on \
+                 tick {}: {history:?}",
+                crossing.tick
             );
             let pose = session.pose(body).expect("the body is still in the world");
             assert!(
@@ -620,7 +630,7 @@ fn accept_t415_a_every_probed_rate_and_speed_delivers_exactly_one_crossing() {
             );
             rows.push(format!(
                 "{fixed_hz} Hz / {speed_m_s} m/s: travel {:.2} m, crossing at \
-                 {:.3} m, engine reports {engine_reports}",
+                 {:.3} m, engine reports {engine_report_ticks:?}",
                 travel_m, crossing.distance_m
             ));
         }
@@ -683,6 +693,114 @@ fn accept_t415_a_a_body_that_spawns_inside_a_volume_enters_once_and_dwells() {
     let record = &history[0].spawns[0];
     assert!(!record.clamped, "a volume never clamps a spawn: {record:?}");
     assert!(!record.stopped, "{record:?}");
+}
+
+/// The other half of the finding's spawn-tick claim, pinned: a body that
+/// *spawns already inside* a volume is the case the engine is **not** blind to,
+/// because the body is a sample inside the volume from the start. All four
+/// probed combinations are measured, and each one requires the engine's own
+/// classified stream to report the pair on the spawn tick.
+///
+/// That is what separates the two spawn-tick cases from each other. A body that
+/// flies through a volume leaves it inside the tick it is invisible to the
+/// broad phase, so no sample ever lands inside and the engine reports nothing
+/// (the 12-cell matrix above); a body that appears inside one has a sample
+/// there, so the engine's discrete narrow phase finds it on the first tick it
+/// runs. Without this assertion the record could be misread as a general
+/// spawn-tick overlap detector, and the reason F23-D needed a second cast at
+/// all would be lost.
+#[test]
+fn accept_t415_a_the_spawn_inside_case_is_where_the_engine_is_not_blind() {
+    let mut rows: Vec<String> = Vec::new();
+    for (fixed_hz, speed_m_s) in [(60u32, 60.0f32), (60, 1.0), (120, 0.5), (240, 60.0)] {
+        let mut session = consuming_session(fixed_hz);
+        let trigger = session
+            .spawn(&trigger_spec(0.0))
+            .expect("the trigger is valid")
+            .entity;
+        // The body's centre is the volume's centre, so its 10 cm extent already
+        // encloses the 2 cm volume: it is inside before the first tick runs.
+        let body = session
+            .spawn(&projectile_spec(0.0, speed_m_s))
+            .expect("the projectile is valid")
+            .entity;
+        let history = trace(&mut session, body, &[trigger, body], 3);
+
+        let record = history
+            .iter()
+            .flat_map(|state| state.spawns.iter())
+            .find(|event| event.passed == Some(TRIGGER_ROLE))
+            .unwrap_or_else(|| {
+                panic!("{fixed_hz} Hz at {speed_m_s} m/s recorded no crossing: {history:?}")
+            });
+        assert_eq!(
+            record.passed_distance_m,
+            Some(0.0),
+            "{fixed_hz} Hz at {speed_m_s} m/s: the body met the volume before it \
+             moved, so the distance is the spawn position itself: {record:?}"
+        );
+        assert!(
+            !record.clamped && !record.stopped,
+            "{fixed_hz} Hz at {speed_m_s} m/s: a sensor is not an obstacle, even \
+             for a body inside one: {record:?}"
+        );
+
+        // The engine's own classified stream, the distinction this test exists
+        // for: the body is a sample inside the volume on the spawn tick, so the
+        // discrete narrow phase finds the overlap *on that tick* — no hole here.
+        // The exact single report is asserted rather than "at least one",
+        // because this is the measurement the finding's pass-through / overlap
+        // distinction rests on: if the engine ever stopped reporting it, the
+        // second cast would be carrying this case too and the record would have
+        // to be re-read.
+        let engine_kinds: Vec<(ContactKind, u64)> = history
+            .iter()
+            .flat_map(|state| state.reports.iter())
+            .filter(|((first, second), ..)| {
+                [*first, *second].contains(&TRIGGER_ROLE) && [*first, *second].contains(&BODY_ROLE)
+            })
+            .map(|(_, kind, tick)| (*kind, *tick))
+            .collect();
+        assert_eq!(
+            engine_kinds,
+            vec![(ContactKind::SensorOverlap, 1)],
+            "{fixed_hz} Hz at {speed_m_s} m/s: a body that spawns inside a volume \
+             is reported by the engine itself — once, as a sensor overlap, on the \
+             spawn tick. This is the case F23-D's second cast is *not* needed \
+             for: {history:?}"
+        );
+
+        let delivered = crossings(&session);
+        assert_eq!(
+            delivered.delivered(),
+            1,
+            "{fixed_hz} Hz at {speed_m_s} m/s: one entry for the pair, whatever \
+             the engine also reported: {history:?}"
+        );
+        let crossing = delivered.crossings()[0];
+        assert!(crossing.is_entry(), "{crossing:?}");
+        assert_eq!(
+            crossing.tick, 1,
+            "{fixed_hz} Hz at {speed_m_s} m/s: {crossing:?}"
+        );
+        assert_eq!(
+            crossing.distance_m,
+            record.passed_distance_m.unwrap(),
+            "{fixed_hz} Hz at {speed_m_s} m/s: the crossing carries the producer's \
+             geometry unchanged"
+        );
+        rows.push(format!(
+            "{fixed_hz} Hz at {speed_m_s} m/s: crossing at {} m on tick {}, engine \
+             reported {engine_kinds:?}",
+            crossing.distance_m, crossing.tick
+        ));
+    }
+    assert_eq!(
+        rows.len(),
+        4,
+        "every probed combination was measured: {rows:?}"
+    );
+    println!("{}", rows.join("\n"));
 }
 
 /// The crossing a consumer reads names the actor, the volume, the tick and the

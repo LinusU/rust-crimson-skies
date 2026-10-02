@@ -23,11 +23,12 @@
 //! crosses it and leaves at its fired speed with zero contact reports, at every
 //! probed speed and rate.
 //!
-//! The second, non-blocking cast in [`SpawnPreflightEvent::passed`] records that
-//! crossing, with the distance at which the body's own collider met the volume,
-//! whether or not a solid obstacle stopped the same tick. F23-D wrote down that
-//! *"whether gameplay consumes that field as a trigger crossing is a rule
-//! F23-C's criterion does not decide"*. This module is that decision:
+//! The second, non-blocking cast in
+//! [`SpawnPreflightEvent::passed`](crate::physics::SpawnPreflightEvent::passed)
+//! records that crossing, with the distance at which the body's own collider met
+//! the volume, whether or not a solid obstacle stopped the same tick. F23-D
+//! wrote down that *"whether gameplay consumes that field as a trigger crossing
+//! is a rule F23-C's criterion does not decide"*. This module is that decision:
 //!
 //! > **The spawn-tick crossing is delivered as a gameplay crossing.** It is not
 //! > a diagnostic. A trigger crossed inside the spawn tick reaches the
@@ -61,7 +62,7 @@
 //!   inside a volume, or a record a multi-tick frame re-reads, produces no
 //!   second entry. `duplicates` counts the ones that were refused rather than
 //!   letting a second entry through;
-//! * delivery is a *read*. [`deliver_spawn_tick_crossings`] takes the preflight
+//! * delivery is a *read*. `deliver_spawn_tick_crossings` takes the preflight
 //!   log and this module's own resource and nothing else — no `Query`, no
 //!   `Commands`, no mutable access to a pose or a velocity — so it cannot stop
 //!   or delay a body even by accident, and a trigger is never an obstacle.
@@ -177,8 +178,7 @@ impl TriggerCrossing {
 
 /// The crossings delivered to gameplay, in the order they were decided.
 ///
-/// A drain-what-you-read buffer in the shape of
-/// [`SpawnPreflightLog`](crate::physics::SpawnPreflightLog) and
+/// A drain-what-you-read buffer in the shape of [`SpawnPreflightLog`] and
 /// [`ContactReports`](crate::physics::ContactReports): a crossing is appended
 /// once and a consumer takes the whole batch, so a crossing can never fire
 /// twice or be silently dropped. It reads the preflight log **without**
@@ -257,6 +257,13 @@ impl TriggerCrossings {
 
     /// The one place a crossing enters the stream.
     ///
+    /// This is the **producer** seam, not a consumer's: a crossing is decided
+    /// by the producer that measured the swept segment, and gameplay reads the
+    /// stream with [`take`](Self::take). It is public because a second producer
+    /// — the ordinary-flight path of task #498 — has to record into the same
+    /// per-pair ledger, or the two would each fire their own duplicate for a
+    /// pair the other already reported.
+    ///
     /// Returns whether it was delivered. A `(actor, volume)` pair that is
     /// already in the stream is a duplicate: it is counted and refused, so a
     /// crossing fires exactly once however many times its record is read.
@@ -322,10 +329,18 @@ fn deliver_spawn_tick_crossings(
 /// place an app composes one. Without it the preflight still records the
 /// crossing and gameplay still sees nothing, which is the gap this task closed.
 ///
-/// The plugin needs [`PhysicsTickLedger`](crate::physics::PhysicsTickLedger) to
-/// stamp a crossing with its tick and uses `0` when it is absent, like the
-/// contact reporter does: an undated crossing is still a crossing, and a
-/// missing ledger is not a reason to drop one.
+/// It **requires** the preflight: the delivery reads
+/// [`SpawnPreflightLog`], which
+/// [`PhysicsBodiesPlugin`](crate::physics::PhysicsBodiesPlugin) owns. A world
+/// that installs this plugin without one panics on its first fixed tick rather
+/// than delivering nothing, which is the failure a composition mistake should
+/// make. `world_app()` is such a world today — the finding records that gap and
+/// the task that owns it.
+///
+/// The plugin needs [`PhysicsTickLedger`] to stamp a crossing with its tick and
+/// uses `0` when it is absent, like the contact reporter does: an undated
+/// crossing is still a crossing, and a missing ledger is not a reason to drop
+/// one.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct SpawnTickTriggerPlugin;
 

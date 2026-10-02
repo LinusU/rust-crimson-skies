@@ -71,7 +71,8 @@ the spawn 0.4 ticks of travel short of the volume — F23-B's first-tick hole,
 where the body is not yet in the broad phase. Every row is one
 `accept_t415_a_every_probed_rate_and_speed_delivers_exactly_one_crossing`
 world; "engine reports" counts the classified contact reports naming that
-volume over the four ticks.
+volume over the four ticks, and the test prints the tick each of them landed on
+so the table's one exception can be checked rather than believed.
 
 | rate | speed | travel/tick | crossing distance | engine reports | crossing tick |
 | --- | --- | --- | --- | --- | --- |
@@ -98,13 +99,23 @@ Reading the table:
   rest *inside* the volume, and the engine's own stream reports the overlap on
   **tick 2** — one tick late. The crossing this task delivers is stamped tick 1
   in all twelve cells, so the swept decision is never later than the discrete
-  one, and it exists where the discrete one does not.
+  one, and it exists where the discrete one does not. That ordering is pinned
+  as an assertion rather than a table: wherever the engine's stream does report
+  the pair, the test requires its tick to be **strictly greater** than the
+  crossing's tick. The exact count is deliberately not asserted — a future
+  Avian that closed the hole would add reports, and the invariant worth
+  keeping is that this project's crossing is not one of them.
 * **The decision is rate-independent, as the rule requires.** The same body
   covering the same volume is one crossing at every rate, and the recorded
   distance is always strictly inside that tick's travel (0.39 m of 1.00 m at
   60 Hz/60 m/s, 0.19 m of 0.50 m at 120 Hz/60 m/s, 0.09 m of 0.25 m at 240 Hz /
-  60 m/s — the same 0.06 m of lead, which is the volume's half thickness plus
-  the body's half extent).
+  60 m/s — each exactly `0.4 × travel − 0.01 m`, so the offset from the spawn
+  distance is the same **0.01 m** in every cell, which is the volume's half
+  thickness). The body's own 0.05 m half extent does not appear in that
+  constant because the probe's spawn position already discounts it:
+  `x = −(0.4 × travel + 0.05)` puts the body's *front face* exactly 0.4 ticks
+  of travel behind the volume's centre, and the sweep stops when that face
+  reaches the volume's near face, 0.01 m in front of the centre.
 * **A body that spawns already inside a volume is a different case and is
   measured separately** (60 Hz, 1 m/s, a 2 cm volume the body dwells in for
   several ticks): the preflight's cast reports the volume at distance **0.0**,
@@ -114,7 +125,14 @@ Reading the table:
   120 Hz/0.5 m/s and 240 Hz/60 m/s: the record exists in every case, at
   distance 0.0, and the body is never clamped. So the record is not only a
   pass-through detector, and the engine is not blind to *every* spawn-tick
-  trigger case — it is blind to the ones a body flies through.
+  trigger case — it is blind to the ones a body flies through. Unlike the
+  pass-through matrix, this part is **pinned**: all four combinations are run
+  by `accept_t415_a_the_spawn_inside_case_is_where_the_engine_is_not_blind`,
+  which requires the record at distance 0.0, a crossing delivered once on the
+  spawn tick, no clamp, *and* a classified `SensorOverlap` from the engine's own
+  stream on that same tick. Without that last assertion the pass-through /
+  overlap distinction — the one that keeps the record from being misread as a
+  general spawn-tick overlap detector — would be prose only.
 * **The delivery does not move or delay the body.**
   `accept_t415_a_the_delivery_does_not_move_or_delay_the_body` runs F23-D's
   geometry twice — a 2 cm trigger at `x = -0.10`, a 2 cm wall at `x = +0.10`,
@@ -123,12 +141,14 @@ Reading the table:
   tick-by-tick traces value for value: every classified contact (pair, kind,
   tick), every preflight record (clamp, stop, obstacle role, distance, crossed
   volume role, distance), and every end-of-tick position and velocity. They are
-  **equal**, over all six ticks, including the resting pose `x = 0.0406681`
-  and the residual `v = -0.0018856069` the solver leaves on the wall's face.
-  The crossing was measured at 0.24 m into the tick and the wall at 0.44 m, the
-  wall still reported exactly one `SolidContact`, and the body still rests on
-  the wall's near face rather than rebounding — a delivery that stopped or
-  delayed the body could not produce two identical trajectories.
+  **equal**, over all six ticks, including the first tick's end-of-tick pose
+  `x = 0.0406681` and the residual `v = -0.0018856069` the solver leaves on the
+  wall's face (the solver keeps easing it in over the following ticks, so those
+  are the tick-1 values, not a fixed point). The crossing was measured at 0.24 m
+  into the tick and the wall at 0.44 m, the wall still reported exactly one
+  `SolidContact`, and the body still rests on the wall's near face rather than
+  rebounding — a delivery that stopped or delayed the body could not produce
+  two identical trajectories.
 * **"Exactly once" is a property of the consumer, not of the frame length.** A
   three-tick render frame reads the same preflight record on all three ticks
   (the session drains the log at the *end* of the frame), so a consumer that
@@ -147,22 +167,30 @@ The system itself is a second, structural measurement: it takes
 mutable access to a pose or a velocity. A delivery that cannot name a body's
 components cannot change one. The ordering is load-bearing in the same way and
 is measured by a mutation below: dropping `.after(PhysicsSystems::StepSimulation)`
-lets the consumer run before the preflight has written the record, and five of
-the seven acceptance tests fail on the tick stamps.
+lets the consumer run before the preflight has written the record, and six of
+the eight acceptance tests fail on the tick stamps.
 
 ## Mutation / removal checks
 
 Each mutation was applied to `crates/cs_app/src/objectives.rs`, run, and
-reverted on this branch. "Failing of 7" counts
-`accept_t415_a_*` tests.
+reverted on this branch. "Failing" counts `accept_t415_a_*` tests. The review
+re-applied every row independently and re-measured them against the eighth
+test (`accept_t415_a_the_spawn_inside_case_is_where_the_engine_is_not_blind`,
+added by the review); the counts below are the review's, and they differ from
+the implementer's submission in one row.
 
-| Mutation | Failing tests | What it shows |
+| Mutation | Failing | What it shows |
 | --- | --- | --- |
-| the once-per-pair ledger deleted from `TriggerCrossings::record` (every read delivered) | 2 | the dedup is load-bearing for a multi-tick frame, not decoration |
-| the delivery's schedule slot dropped (unordered with the preflight) | 5 | the crossing is stamped with the tick it happened on only because the consumer is ordered after the producer |
-| the delivery given a `Query<&mut LinearVelocity>` that zeroes the actor's velocity | 3 | the trajectory-identity test fails when a delivery touches a body — the non-blocking claim is measured, not asserted |
-| the delivered `kind` changed from `Entry` to `Exit` | 4 | a crossing is an event, not a level, and a consumer can read which without matching on fields |
-| the consumer removed (the plugin adds no systems) | 7 | the crossing leaves no trace anywhere without it — the state F23-D's review called out |
+| the once-per-pair ledger deleted from `TriggerCrossings::record` (every read delivered) | 2 of 8 | the dedup is load-bearing for a multi-tick frame, not decoration |
+| the delivery's schedule slot dropped (unordered with the preflight) | 6 of 8 | the crossing is stamped with the tick it happened on only because the consumer is ordered after the producer |
+| the delivery given a `Query<&mut LinearVelocity>` that zeroes the actor's velocity | 3 of 8 | the trajectory-identity test fails when a delivery touches a body — the non-blocking claim is measured, not asserted |
+| the delivered `kind` changed from `Entry` to `Exit` | 5 of 8 | a crossing is an event, not a level, and a consumer can read which without matching on fields |
+| the delivery system removed (the plugin installs only the resource) | 7 of 8 | the crossing leaves no trace anywhere without it — the state F23-D's review called out. The one survivor is `accept_t415_a_body_that_crosses_no_trigger_delivers_nothing`, which asserts that *nothing* is delivered and is therefore satisfied vacuously; that is what makes it the negative case and not a seventh positive assertion. (The implementer's submission recorded this row as "7 of 7"; the count was wrong, and the error was the count only, not the claim.) |
+
+The two assertions the review added are load-bearing rather than decorative:
+the `Entry → Exit` row went from 4 failures to 5 because the new spawn-inside
+test reads the kind, and the schedule-slot row went from 5 to 6 for the same
+reason.
 
 ## Two composition gaps this task found and did not fix
 
