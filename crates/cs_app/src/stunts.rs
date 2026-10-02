@@ -312,9 +312,13 @@ use std::path::Path;
 
 use cs_assets::install::{self, DiscoveryError};
 use cs_content::stunts::{
-    RetailStuntEncodingSurvey, RetailStuntGate, SCENARIO_MEMBER, SCENARIO_TARGETS_MEMBER,
-    StuntEncodingSpan, decode_zrd, scenario_fly_through_targets, scenario_mission_type,
-    scenario_zone_bindings,
+    RetailObjectiveAuthorityRow, RetailObjectiveCorpus, RetailObjectiveMachine,
+    RetailScenarioAuthority, RetailStuntAuthoritySurvey, RetailStuntEncodingSurvey,
+    RetailStuntGate, SCENARIO_MEMBER, SCENARIO_OBJECTIVES_MEMBER, SCENARIO_TARGETS_MEMBER,
+    StuntEncodingSpan, decode_zrd, fly_through_labelled_objectives, objective_record_count,
+    objective_record_keys, objective_state_machine, scenario_fly_through_targets,
+    scenario_mission_type, scenario_non_player_aircraft, scenario_zone_bindings,
+    team_scoped_objectives,
 };
 use cs_content::world::{RetailTriggerVolume, WorldId};
 use cs_formats::script_raw::{ContainerDiscovery, LocatedProgram, discover_container};
@@ -564,4 +568,207 @@ fn span_of(
         locator.span().offset,
         locator.span().len,
     )
+}
+
+// ------------------------------------------- the earning-authority survey ----
+//
+// Task #465 asked whether an AI aircraft or another non-player authority can
+// earn an original stunt. #463 measured where a stunt is spelled; this survey
+// measures the rest of the surface the question needs, over **every** reader
+// archive the installation inventories:
+//
+//   * the objective records' complete key vocabulary, and whether any key names
+//     an earning authority (`RetailStuntAuthoritySurvey::keys_naming_an_authority`);
+//   * the objective state machine's stunt completion conditions
+//     (`DANGER_ZONES_COMPLETED`, which carries zone names and no subject) and its
+//     actor-scoped conditions (`TRAVELERS`, whose subject is measured);
+//   * each instant-action scenario's declared non-player aircraft, so a consumer
+//     can see that AI aircraft share every measured stunt scenario.
+//
+// The survey never turns "the data names no actor" into "an AI can never earn":
+// `RetailStuntAuthoritySurvey::earning_authority_is_measured()` is `false`,
+// because the rule is runtime behaviour no file records.
+
+/// The suffix every scenario or mission reader archive's key ends with.
+const READER_ARCHIVE_SUFFIX: &str = "/zrdr.zbd";
+
+/// Why a retail earning-authority survey could not be produced.
+#[derive(Debug)]
+pub enum StuntAuthoritySurveyError {
+    /// The installation could not be discovered.
+    Discovery(DiscoveryError),
+    /// The installation declares no world group, so no scenario can be placed.
+    NoWorldGroups,
+    /// No reader archive carried an instant-action scenario descriptor, so the
+    /// non-player aircraft half of the measurement would be empty for want of
+    /// data rather than for want of aircraft.
+    NoScenarioReaders,
+    /// A reader archive could not be read from disk or is missing from the
+    /// inventory.
+    Read {
+        /// The container's logical key.
+        container: String,
+        /// Why the read failed.
+        reason: String,
+    },
+    /// A member did not decode as `.zrd`.
+    Decode {
+        /// The container's logical key.
+        container: String,
+        /// The member's name.
+        member: String,
+        /// The decoder's refusal code.
+        code: &'static str,
+        /// Offset of the refusal inside the member.
+        offset: u64,
+    },
+}
+
+impl fmt::Display for StuntAuthoritySurveyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Discovery(error) => write!(f, "the installation is undiscoverable: {error}"),
+            Self::NoWorldGroups => write!(f, "the installation declares no world group"),
+            Self::NoScenarioReaders => write!(
+                f,
+                "no reader archive carries an instant-action scenario descriptor"
+            ),
+            Self::Read { container, reason } => {
+                write!(f, "container {container} could not be read: {reason}")
+            }
+            Self::Decode {
+                container,
+                member,
+                code,
+                offset,
+            } => write!(
+                f,
+                "container {container} member {member} is not decodable at {offset} ({code})"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for StuntAuthoritySurveyError {}
+
+/// Measures every reader archive's earning-authority surface.
+///
+/// One production discovery, one production reader-archive discovery per
+/// container, and the `.zrd` decoder task #463 measured. A member a reader does
+/// not carry is a measured absence (`None` on the row), because a reader archive
+/// may carry any subset; a member that is present and undecodable is a **refusal**
+/// naming its container, member, code and offset, so a shorter row list can
+/// never be mistaken for less content.
+///
+/// # Errors
+///
+/// [`StuntAuthoritySurveyError`] in every case.
+pub fn survey_retail_stunt_authority(
+    install_root: &Path,
+) -> Result<RetailStuntAuthoritySurvey, StuntAuthoritySurveyError> {
+    let found = install::discover(install_root).map_err(StuntAuthoritySurveyError::Discovery)?;
+    let install_sha256 = install::fingerprint(&found.manifest).to_hex();
+    if found.diagnosis.world_groups.is_empty() {
+        return Err(StuntAuthoritySurveyError::NoWorldGroups);
+    }
+
+    let mut rows = Vec::new();
+    let mut scenarios = 0_usize;
+    for record in &found.manifest.files {
+        let container_key = record.relative_spelling.logical_key();
+        if !container_key.ends_with(READER_ARCHIVE_SUFFIX) {
+            continue;
+        }
+        let container_sha256 = record.sha256.to_hex();
+        let spelling = record.relative_spelling.as_str();
+        let bytes = fs::read(found.manifest.host_root.join(spelling)).map_err(|error| {
+            StuntAuthoritySurveyError::Read {
+                container: container_key.clone(),
+                reason: error.to_string(),
+            }
+        })?;
+        let path =
+            RelativePath::new(spelling).map_err(|error| StuntAuthoritySurveyError::Read {
+                container: container_key.clone(),
+                reason: error.to_string(),
+            })?;
+        let discovery = discover_container(&container_key, &path, &bytes);
+
+        let objectives = match optional_member(&discovery, SCENARIO_TARGETS_MEMBER) {
+            Some(program) => {
+                let root = decode_member(&container_key, SCENARIO_TARGETS_MEMBER, program)?;
+                Some(RetailObjectiveCorpus::new(
+                    objective_record_count(&root),
+                    scenario_fly_through_targets(&root).len() as u32,
+                    fly_through_labelled_objectives(&root),
+                    team_scoped_objectives(&root),
+                    objective_record_keys(&root),
+                    span_of(&container_key, &container_sha256, program),
+                ))
+            }
+            None => None,
+        };
+
+        let machine = match optional_member(&discovery, SCENARIO_OBJECTIVES_MEMBER) {
+            Some(program) => {
+                let root = decode_member(&container_key, SCENARIO_OBJECTIVES_MEMBER, program)?;
+                Some(RetailObjectiveMachine::new(
+                    objective_state_machine(&root),
+                    span_of(&container_key, &container_sha256, program),
+                ))
+            }
+            None => None,
+        };
+
+        let scenario = match optional_member(&discovery, SCENARIO_MEMBER) {
+            Some(program) => {
+                let root = decode_member(&container_key, SCENARIO_MEMBER, program)?;
+                scenarios += 1;
+                Some(RetailScenarioAuthority::new(
+                    scenario_mission_type(&root).unwrap_or_default(),
+                    scenario_non_player_aircraft(&root),
+                    span_of(&container_key, &container_sha256, program),
+                ))
+            }
+            None => None,
+        };
+
+        rows.push(RetailObjectiveAuthorityRow::new(
+            container_key,
+            container_sha256,
+            objectives,
+            machine,
+            scenario,
+        ));
+    }
+
+    if scenarios == 0 {
+        return Err(StuntAuthoritySurveyError::NoScenarioReaders);
+    }
+    Ok(RetailStuntAuthoritySurvey::new(install_sha256, rows))
+}
+
+/// The located member with `name`, when the container carries one.
+fn optional_member<'d, 'a>(
+    discovery: &'d ContainerDiscovery<'a>,
+    name: &'static str,
+) -> Option<&'d LocatedProgram<'a>> {
+    discovery
+        .programs()
+        .iter()
+        .find(|program| program.locator().member() == Some(name))
+}
+
+/// Decodes one located member, naming its container in a refusal.
+fn decode_member(
+    container: &str,
+    member: &'static str,
+    program: &LocatedProgram<'_>,
+) -> Result<cs_content::stunts::ZrdValue, StuntAuthoritySurveyError> {
+    decode_zrd(program.bytes()).map_err(|error| StuntAuthoritySurveyError::Decode {
+        container: container.to_owned(),
+        member: member.to_owned(),
+        code: error.code(),
+        offset: error.offset(),
+    })
 }

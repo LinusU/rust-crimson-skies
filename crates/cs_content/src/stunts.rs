@@ -1316,6 +1316,1260 @@ impl RetailStuntEncodingSurvey {
     }
 }
 
+// --------------------------------- the earning-authority surface (task #465) ---
+//
+// #463 measured *where* a stunt is spelled. It could not say **who** may earn
+// one, because that is not a property of the bytes it measured. Task #465 asks
+// the question directly, and its answer has three measured parts:
+//
+//   * the objective **records** (`targets.zrd`) carry six keys in total across
+//     the whole installation, and none of them names a subject, an owner, a
+//     team or an aircraft;
+//   * the objective **state machine** (`objectives.zrd`) has exactly one
+//     actor-scoped completion condition — `TRAVELERS`, whose first field is the
+//     subject — and the original *does* use it with named non-player actors
+//     (`secfury_5`, `wingman_3`, `devastator_1`, …). Its stunt completion
+//     condition, `DANGER_ZONES_COMPLETED`, takes world zone names and **no**
+//     actor at all;
+//   * the instant-action scenario that declares the stunt zones also declares
+//     non-player aircraft (wingmen, four enemy groups, a named ace), so AI
+//     aircraft are part of every measured stunt scenario.
+//
+// What is **not** measured, and is not a field anywhere below: which aircraft the
+// original credits for a zone crossing. No file records it. The survey reports
+// the surface it measured and answers "unmeasured" with
+// `RetailStuntAuthoritySurvey::earning_authority_is_measured()`, so a consumer
+// cannot mistake "the data names no actor" for "an AI can never earn one".
+
+/// The reader-archive member the objective state machine lives in (measured:
+/// every reader that carries objectives declares one).
+pub const SCENARIO_OBJECTIVES_MEMBER: &str = "objectives.zrd";
+
+/// The measured marker key on an objective record with no value: the record is
+/// a numbered objective rather than an ambient target.
+pub const TARGET_OBJECTIVE_KEY: &str = "objective";
+
+/// The measured marker key naming a second target of an objective.
+pub const TARGET_OTHER_TARGET_KEY: &str = "other_target";
+
+/// The measured `help_label` of a team-one objective (multiplayer readers).
+pub const TEAM_ONE_HELP_LABEL: &str = "MSG_OBJ_TEAM_1";
+
+/// The measured `help_label` of a team-two objective (multiplayer readers).
+pub const TEAM_TWO_HELP_LABEL: &str = "MSG_OBJ_TEAM_2";
+
+/// The prefix of a numbered objective block in the state machine
+/// (`OBJECTIVE1`, `OBJECTIVE17`, …).
+pub const OBJECTIVE_BLOCK_PREFIX: &str = "OBJECTIVE";
+
+/// The original's own stunt completion condition: its value is a list of
+/// `dzpath<N>` world detection-zone names and **no subject** (measured in 31
+/// blocks).
+pub const OBJECTIVE_DANGER_ZONES_KEY: &str = "DANGER_ZONES_COMPLETED";
+
+/// How many of [`OBJECTIVE_DANGER_ZONES_KEY`]'s zones complete an objective
+/// (measured in 6 blocks; absent from the other 25).
+pub const OBJECTIVE_DANGER_ZONE_COUNT_KEY: &str = "DANGER_ZONES_COMPLETION_COUNT";
+
+/// The only actor-scoped completion condition in the measured state machine.
+/// Its first field is the subject (`player`, a named non-player actor, or a bare
+/// index), its second the relation (`APPROACHING` / `LEAVING`), its third the
+/// target.
+pub const OBJECTIVE_TRAVELERS_KEY: &str = "TRAVELERS";
+
+/// The scenario field naming the player's own aircraft.
+pub const SCENARIO_PLAYER_PLANE_KEY: &str = "player_plane";
+
+/// The scenario field counting the player's AI wingmen.
+pub const SCENARIO_WINGMEN_KEY: &str = "num_wingmen";
+
+/// The prefix of an enemy-group record in a scenario (`group1` … `group4`).
+pub const SCENARIO_ENEMY_GROUP_PREFIX: &str = "group";
+
+/// The enemy-group field counting its aircraft.
+pub const ENEMY_COUNT_KEY: &str = "num_enemies";
+
+/// The enemy-group field naming its aircraft.
+pub const ENEMY_NAME_KEY: &str = "enemy_name";
+
+/// The enemy-group field naming its aircraft type.
+pub const ENEMY_PLANE_KEY: &str = "enemy_plane";
+
+/// The enemy-group field naming its skill tier.
+pub const ENEMY_SKILL_KEY: &str = "enemy_skill";
+
+/// The measured `ace_name`: the label of the scenario's named ace.
+pub const SCENARIO_ACE_NAME_KEY: &str = "ace_name";
+
+/// The measured `ace_plane`: the aircraft type of the scenario's named ace.
+pub const SCENARIO_ACE_PLANE_KEY: &str = "ace_plane";
+
+/// The measured `ace_skill`: the skill tier of the scenario's named ace.
+pub const SCENARIO_ACE_SKILL_KEY: &str = "ace_skill";
+
+/// The measured lowest enemy skill tier.
+pub const ENEMY_SKILL_NOVICE: &str = "novice";
+
+/// The measured middle enemy skill tier.
+pub const ENEMY_SKILL_VETERAN: &str = "veteran";
+
+/// The measured highest enemy skill tier.
+pub const ENEMY_SKILL_ACE: &str = "ace";
+
+/// The actor name the original spells for the player (measured 43 times as the
+/// subject of [`OBJECTIVE_TRAVELERS_KEY`]).
+pub const PLAYER_ACTOR: &str = "player";
+
+/// The prefix of a scenario-local detection-zone label (`dz1` … `dz18`).
+///
+/// Measured in #463's `dzones` bindings. It is a **lower bound**: the original
+/// also authors named labels (`sghangar`, `h3_marker`), so a record carrying a
+/// named label is not recognized by this prefix. The survey therefore reports
+/// every [`OBJECTIVE_TRAVELERS_KEY`] target it read, not only the ones this
+/// prefix claims.
+pub const DANGER_ZONE_LABEL_PREFIX: &str = "dz";
+
+/// The keys an objective record or objective block would carry **if** the
+/// original scoped a completion to an earning authority.
+///
+/// Measured: none of them occurs anywhere in the installation's objective
+/// records or objective blocks. The list is a declared search vocabulary, not a
+/// claim that these are the spellings the original would have used.
+pub const AUTHORITY_KEY_VOCABULARY: [&str; 12] = [
+    "player",
+    "player_only",
+    "actor",
+    "subject",
+    "owner",
+    "who",
+    "pilot",
+    "aircraft",
+    "plane",
+    "squadron",
+    "faction",
+    "team",
+];
+
+/// The flat alternating `.zrd` record shape, as a field list.
+///
+/// #463 measured two shapes: `ia.zrd` and `objectives.zrd` are *flat
+/// alternating* (`["key", value, "key", value, …]`) while every `targets.zrd`
+/// objective is a *list of pairs*. This reader is deliberately flat-only: a
+/// shape-agnostic walk would read a value that happens to be a two-element list
+/// (`INACTIVE1 ["fuel_truck01", "tank"]`) as a key/value pair and invent keys
+/// out of the data, which is exactly the failure the authority census must not
+/// have. A child that is not text is skipped, so a malformed tail cannot shift
+/// the pairing for the rest of the record.
+#[must_use]
+pub fn zrd_flat_fields(node: &ZrdValue) -> Vec<(&str, &ZrdValue)> {
+    let Some(children) = node.as_list() else {
+        return Vec::new();
+    };
+    let mut fields = Vec::new();
+    let mut index = 0;
+    while index + 1 < children.len() {
+        if let Some(name) = children[index].as_text() {
+            fields.push((name, &children[index + 1]));
+            index += 2;
+        } else {
+            index += 1;
+        }
+    }
+    fields
+}
+
+/// The keys every objective record in one `targets.zrd` member uses, with the
+/// number of records each key appears in, sorted by key.
+///
+/// The result is a **complete inventory**, not a filtered one: a caller can
+/// check the whole vocabulary, which is what makes "no objective record names an
+/// earning authority" a measurement instead of an assumption. A record that is
+/// not a list contributes nothing rather than a key of its own.
+#[must_use]
+pub fn objective_record_keys(targets: &ZrdValue) -> Vec<(String, u32)> {
+    let mut counts: std::collections::BTreeMap<String, u32> = std::collections::BTreeMap::new();
+    for record in targets.as_list().unwrap_or_default() {
+        for child in record.as_list().unwrap_or_default() {
+            let Some(pair) = child.as_list() else {
+                continue;
+            };
+            let Some(name) = pair.first().and_then(ZrdValue::as_text) else {
+                continue;
+            };
+            *counts.entry(name.to_owned()).or_insert(0) += 1;
+        }
+    }
+    counts.into_iter().collect()
+}
+
+/// How many objective records one `targets.zrd` member declares.
+///
+/// The member's root is the list of records, so this is its length; a member
+/// whose root is not a list declares none rather than being read as one record.
+#[must_use]
+pub fn objective_record_count(targets: &ZrdValue) -> u32 {
+    targets.as_list().map_or(0, <[ZrdValue]>::len) as u32
+}
+
+/// Whether one objective record is **labelled** a fly-through danger-zone
+/// target, reading either measured label.
+///
+/// This is the looser of the two readings and is deliberately kept beside
+/// [`scenario_fly_through_targets`], whose selector additionally requires a
+/// `category_label`. Measured over the whole installation the two disagree by
+/// **three** records — all of them campaign-mission objectives that carry
+/// `help_label = MSG_OBJ_FLYTHROUGH` and no `category_label` at all (C1/M02's
+/// `h3_marker`, C4/M03's `dz2`, C5/M02's `dz1`) — so a survey that reported only
+/// the stricter count would under-report the original's stunt records by three.
+#[must_use]
+pub fn is_fly_through_labelled(record: &ZrdValue) -> bool {
+    let category = zrd_field(record, TARGET_CATEGORY_KEY).and_then(ZrdValue::as_text);
+    let help = zrd_field(record, TARGET_HELP_KEY).and_then(ZrdValue::as_text);
+    category == Some(FLY_THROUGH_CATEGORY_LABEL) || help == Some(FLY_THROUGH_HELP_LABEL)
+}
+
+/// How many objective records in one `targets.zrd` member are labelled a
+/// fly-through danger-zone target by [`is_fly_through_labelled`].
+#[must_use]
+pub fn fly_through_labelled_objectives(targets: &ZrdValue) -> u32 {
+    targets
+        .as_list()
+        .unwrap_or_default()
+        .iter()
+        .filter(|record| is_fly_through_labelled(record))
+        .count() as u32
+}
+
+/// How many objective records in one `targets.zrd` member are **team**-scoped.
+///
+/// Measured: the multiplayer readers carry objectives whose `help_label` is
+/// [`TEAM_ONE_HELP_LABEL`] or [`TEAM_TWO_HELP_LABEL`]. That is the one owning
+/// authority the original's objective *record* layer does carry — a team, never
+/// an aircraft — and it is why "an objective record never names an owner" would
+/// be too strong a reading.
+#[must_use]
+pub fn team_scoped_objectives(targets: &ZrdValue) -> u32 {
+    targets
+        .as_list()
+        .unwrap_or_default()
+        .iter()
+        .filter(|record| {
+            let help = zrd_field(record, TARGET_HELP_KEY).and_then(ZrdValue::as_text);
+            help == Some(TEAM_ONE_HELP_LABEL) || help == Some(TEAM_TWO_HELP_LABEL)
+        })
+        .count() as u32
+}
+
+/// One enemy group a scenario declares at its root.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScenarioEnemyGroup {
+    index: u32,
+    name_label: Option<String>,
+    plane: Option<String>,
+    skill: Option<String>,
+    count: Option<u32>,
+}
+
+impl ScenarioEnemyGroup {
+    /// Assembles one group from the measured `group<N>` record.
+    #[must_use]
+    pub fn new(
+        index: u32,
+        name_label: Option<String>,
+        plane: Option<String>,
+        skill: Option<String>,
+        count: Option<u32>,
+    ) -> Self {
+        Self {
+            index,
+            name_label,
+            plane,
+            skill,
+            count,
+        }
+    }
+
+    /// The record's own number, as the author wrote it (`group3` → `3`).
+    #[must_use]
+    pub const fn index(&self) -> u32 {
+        self.index
+    }
+
+    /// The localized label of the group's aircraft, when the record names one.
+    #[must_use]
+    pub fn name_label(&self) -> Option<&str> {
+        self.name_label.as_deref()
+    }
+
+    /// The group's aircraft type (`Firebrand`, …), when the record names one.
+    #[must_use]
+    pub fn plane(&self) -> Option<&str> {
+        self.plane.as_deref()
+    }
+
+    /// The group's skill tier (`novice` / `veteran` / `ace`), when declared.
+    #[must_use]
+    pub fn skill(&self) -> Option<&str> {
+        self.skill.as_deref()
+    }
+
+    /// How many aircraft the record declares, when it declares a count.
+    ///
+    /// This is an authored number, not a spawn count: nothing in the data says
+    /// every declared aircraft is placed.
+    #[must_use]
+    pub const fn count(&self) -> Option<u32> {
+        self.count
+    }
+}
+
+/// The named ace a scenario declares at its root.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ScenarioAce {
+    name_label: Option<String>,
+    plane: Option<String>,
+    skill: Option<String>,
+}
+
+impl ScenarioAce {
+    /// The localized label of the ace (`MSG_SSCRAWFORD_NAME`), when declared.
+    #[must_use]
+    pub fn name_label(&self) -> Option<&str> {
+        self.name_label.as_deref()
+    }
+
+    /// The ace's aircraft type, when declared.
+    #[must_use]
+    pub fn plane(&self) -> Option<&str> {
+        self.plane.as_deref()
+    }
+
+    /// The ace's skill tier, when declared.
+    #[must_use]
+    pub fn skill(&self) -> Option<&str> {
+        self.skill.as_deref()
+    }
+
+    /// Whether the scenario declared any part of an ace.
+    #[must_use]
+    pub const fn is_declared(&self) -> bool {
+        self.name_label.is_some() || self.plane.is_some() || self.skill.is_some()
+    }
+}
+
+/// The non-player aircraft one scenario declares.
+///
+/// This is the measured hazard for the runtime's `StuntAuthority::AiFlight`
+/// refusal: the four scenarios the original marks `stunt_flying` each declare
+/// wingmen, four enemy groups and an ace **in the same record that declares
+/// their stunt zones**. Nothing here says which of those aircraft may fly a
+/// gate; that is the unmeasured question.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ScenarioNonPlayerAircraft {
+    player_plane: Option<String>,
+    wingmen: Option<u32>,
+    enemy_groups: Vec<ScenarioEnemyGroup>,
+    ace: ScenarioAce,
+}
+
+impl ScenarioNonPlayerAircraft {
+    /// The player's own aircraft type, when the scenario names one.
+    #[must_use]
+    pub fn player_plane(&self) -> Option<&str> {
+        self.player_plane.as_deref()
+    }
+
+    /// How many AI wingmen the scenario declares, when it declares a count.
+    #[must_use]
+    pub const fn wingmen(&self) -> Option<u32> {
+        self.wingmen
+    }
+
+    /// The enemy groups, ordered by their authored record number.
+    #[must_use]
+    pub fn enemy_groups(&self) -> &[ScenarioEnemyGroup] {
+        &self.enemy_groups
+    }
+
+    /// The scenario's named ace.
+    #[must_use]
+    pub const fn ace(&self) -> &ScenarioAce {
+        &self.ace
+    }
+
+    /// Whether the scenario declares at least one **measurable** non-player
+    /// aircraft fact.
+    ///
+    /// A group record the reader found but whose fields are all absent
+    /// (`group3` with a value that is not a record) contributes nothing here:
+    /// the record's presence is reported by [`Self::enemy_groups`], its content
+    /// by this predicate.
+    #[must_use]
+    pub fn is_declared(&self) -> bool {
+        self.wingmen.is_some()
+            || self.ace.is_declared()
+            || self.enemy_groups.iter().any(|group| {
+                group.count.is_some()
+                    || group.plane.is_some()
+                    || group.skill.is_some()
+                    || group.name_label.is_some()
+            })
+    }
+
+    /// The sum of the enemy groups' authored counts.
+    ///
+    /// Arithmetic over measured values, deliberately **not** a total aircraft
+    /// count: the ace, the wingmen and any aircraft an enemy group spawns at
+    /// runtime are not part of it.
+    #[must_use]
+    pub fn summed_enemy_group_counts(&self) -> u32 {
+        self.enemy_groups
+            .iter()
+            .filter_map(ScenarioEnemyGroup::count)
+            .sum()
+    }
+}
+
+/// One text value the original wraps in a one-element list (`["Kestrel"]`).
+fn zrd_wrapped_text(value: &ZrdValue) -> Option<String> {
+    if let Some(text) = value.as_text() {
+        return Some(text.to_owned());
+    }
+    let list = value.as_list()?;
+    if list.len() == 1 {
+        return list[0].as_text().map(str::to_owned);
+    }
+    None
+}
+
+/// One integer value the original wraps in a one-element list (`[3]`).
+fn zrd_wrapped_int(value: &ZrdValue) -> Option<u32> {
+    if let Some(number) = value.as_int() {
+        return Some(number);
+    }
+    let list = value.as_list()?;
+    if list.len() == 1 {
+        return list[0].as_int();
+    }
+    None
+}
+
+/// `group3` → `Some(3)`; anything else → `None`.
+fn enemy_group_index(key: &str) -> Option<u32> {
+    key.strip_prefix(SCENARIO_ENEMY_GROUP_PREFIX)
+        .filter(|digits| !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit()))
+        .and_then(|digits| digits.parse().ok())
+}
+
+/// `OBJECTIVE17` → `Some("OBJECTIVE17")`; `OBJECTIVE_X` → `None`.
+fn objective_block_id(key: &str) -> Option<&str> {
+    key.strip_prefix(OBJECTIVE_BLOCK_PREFIX).and_then(|digits| {
+        (!digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())).then_some(key)
+    })
+}
+
+/// The non-player aircraft one scenario descriptor declares.
+///
+/// Measured shape: `ia.zrd` is a flat alternating record whose root carries
+/// `player_plane`, `num_wingmen`, `group1` … `group4` and `ace_*`. A scenario
+/// that declares none of them yields an all-empty record with
+/// [`ScenarioNonPlayerAircraft::is_declared`] false — never a zero filled in as
+/// if it were measured.
+#[must_use]
+pub fn scenario_non_player_aircraft(scenario: &ZrdValue) -> ScenarioNonPlayerAircraft {
+    let mut aircraft = ScenarioNonPlayerAircraft::default();
+    let mut groups: Vec<ScenarioEnemyGroup> = Vec::new();
+    for (key, value) in zrd_flat_fields(scenario) {
+        match key {
+            SCENARIO_PLAYER_PLANE_KEY => aircraft.player_plane = zrd_wrapped_text(value),
+            SCENARIO_WINGMEN_KEY => aircraft.wingmen = zrd_wrapped_int(value),
+            SCENARIO_ACE_NAME_KEY => aircraft.ace.name_label = zrd_wrapped_text(value),
+            SCENARIO_ACE_PLANE_KEY => aircraft.ace.plane = zrd_wrapped_text(value),
+            SCENARIO_ACE_SKILL_KEY => aircraft.ace.skill = zrd_wrapped_text(value),
+            _ => {
+                let Some(index) = enemy_group_index(key) else {
+                    continue;
+                };
+                let mut group = ScenarioEnemyGroup::new(index, None, None, None, None);
+                for (field, field_value) in zrd_flat_fields(value) {
+                    match field {
+                        ENEMY_COUNT_KEY => group.count = zrd_wrapped_int(field_value),
+                        ENEMY_NAME_KEY => group.name_label = zrd_wrapped_text(field_value),
+                        ENEMY_PLANE_KEY => group.plane = zrd_wrapped_text(field_value),
+                        ENEMY_SKILL_KEY => group.skill = zrd_wrapped_text(field_value),
+                        _ => {}
+                    }
+                }
+                groups.push(group);
+            }
+        }
+    }
+    groups.sort_by_key(ScenarioEnemyGroup::index);
+    aircraft.enemy_groups = groups;
+    aircraft
+}
+
+/// The subject of one measured [`OBJECTIVE_TRAVELERS_KEY`] condition.
+///
+/// `Player` is the original's own spelling. `Named` is a non-player actor the
+/// data names outright (an AI aircraft or a zeppelin). `Indexed` is a bare
+/// integer: the corpus contains six, they are **not decoded** here, and
+/// correlating them with the scenario's actor name table is a lead, not a
+/// measurement. `Unreadable` is a first field that is neither text nor int,
+/// recorded so a shape change is reported instead of dropped.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TravellerSubject {
+    /// The original's `player` actor.
+    Player,
+    /// A named actor, which in the measured corpus is a non-player aircraft or
+    /// zeppelin.
+    Named(String),
+    /// A bare index whose meaning is not measured.
+    Indexed(u32),
+    /// A first field of a shape this reader does not decode.
+    Unreadable,
+}
+
+/// One measured actor-scoped completion condition.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TravellerCondition {
+    objective: String,
+    subject: TravellerSubject,
+    relation: Option<String>,
+    target: Option<String>,
+    danger_zone_label: bool,
+}
+
+impl TravellerCondition {
+    /// Assembles one condition from its measured fields.
+    #[must_use]
+    pub fn new(
+        objective: impl Into<String>,
+        subject: TravellerSubject,
+        relation: Option<String>,
+        target: Option<String>,
+    ) -> Self {
+        let danger_zone_label = target
+            .as_deref()
+            .is_some_and(|target| target.starts_with(DANGER_ZONE_LABEL_PREFIX));
+        Self {
+            objective: objective.into(),
+            subject,
+            relation,
+            target,
+            danger_zone_label,
+        }
+    }
+
+    /// The numbered objective block the condition belongs to (`OBJECTIVE17`).
+    #[must_use]
+    pub fn objective(&self) -> &str {
+        &self.objective
+    }
+
+    /// Who the condition is about.
+    #[must_use]
+    pub const fn subject(&self) -> &TravellerSubject {
+        &self.subject
+    }
+
+    /// The relation the original spells (`APPROACHING`, `LEAVING`).
+    #[must_use]
+    pub fn relation(&self) -> Option<&str> {
+        self.relation.as_deref()
+    }
+
+    /// The condition's target: a node name, a label, or — measured three times —
+    /// a detection-zone label.
+    #[must_use]
+    pub fn target(&self) -> Option<&str> {
+        self.target.as_deref()
+    }
+
+    /// Whether the target starts with the measured detection-zone label prefix.
+    ///
+    /// A **lower bound**: a named label (`sghangar`) is a zone target too and is
+    /// not recognized by the prefix, so a consumer must read
+    /// [`Self::target`] as well.
+    #[must_use]
+    pub const fn target_is_danger_zone_label(&self) -> bool {
+        self.danger_zone_label
+    }
+
+    /// Whether the subject is anything other than [`TravellerSubject::Player`].
+    #[must_use]
+    pub const fn subject_is_non_player(&self) -> bool {
+        !matches!(self.subject, TravellerSubject::Player)
+    }
+}
+
+/// One measured stunt completion condition: the danger zones whose completion
+/// completes a numbered objective.
+///
+/// The condition carries zone names and an optional required count. It carries
+/// **no subject**, which is the measurement task #465 exists to record.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct StuntCompletionCondition {
+    objective: String,
+    zones: Vec<String>,
+    required_count: Option<u32>,
+}
+
+impl StuntCompletionCondition {
+    /// Assembles one condition.
+    #[must_use]
+    pub fn new(
+        objective: impl Into<String>,
+        zones: Vec<String>,
+        required_count: Option<u32>,
+    ) -> Self {
+        Self {
+            objective: objective.into(),
+            zones,
+            required_count,
+        }
+    }
+
+    /// The numbered objective block the condition belongs to.
+    #[must_use]
+    pub fn objective(&self) -> &str {
+        &self.objective
+    }
+
+    /// The `dzpath<N>` world zones the condition names, in authored order.
+    #[must_use]
+    pub fn zones(&self) -> &[String] {
+        &self.zones
+    }
+
+    /// How many of [`Self::zones`] complete the objective, when the block
+    /// declares a count. `None` means the block declared none — not "zero".
+    #[must_use]
+    pub const fn required_count(&self) -> Option<u32> {
+        self.required_count
+    }
+}
+
+/// The measured objective state machine of one reader.
+///
+/// Everything in it is a **field name or a field order**, never a decoded
+/// behaviour: which objective number a completion wakes, what a nap duration
+/// means and what an integer subject indexes are all unmeasured.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ObjectiveStateMachine {
+    blocks: u32,
+    keys: Vec<(String, u32)>,
+    stunt_conditions: Vec<StuntCompletionCondition>,
+    travellers: Vec<TravellerCondition>,
+}
+
+impl ObjectiveStateMachine {
+    /// How many numbered `OBJECTIVE<N>` blocks the member declares.
+    #[must_use]
+    pub const fn blocks(&self) -> u32 {
+        self.blocks
+    }
+
+    /// The complete key vocabulary inside the blocks, sorted by key, with the
+    /// number of blocks each key appears in.
+    #[must_use]
+    pub fn keys(&self) -> &[(String, u32)] {
+        &self.keys
+    }
+
+    /// Every measured stunt completion condition, in authored order.
+    #[must_use]
+    pub fn stunt_conditions(&self) -> &[StuntCompletionCondition] {
+        &self.stunt_conditions
+    }
+
+    /// Every measured actor-scoped condition, in authored order.
+    #[must_use]
+    pub fn travellers(&self) -> &[TravellerCondition] {
+        &self.travellers
+    }
+}
+
+/// The record an `objectives.zrd` member wraps: measured in every member of the
+/// installation, the root is a one-element list holding one flat alternating
+/// record.
+///
+/// A document that is already a record (or whose single child is not a record)
+/// is read as itself, so a hand-authored document needs no wrapper and a
+/// wrapper-only document cannot hide its record.
+#[must_use]
+pub fn objective_record(document: &ZrdValue) -> &ZrdValue {
+    match document.as_list() {
+        Some([only]) if only.as_list().is_some() => only,
+        _ => document,
+    }
+}
+
+/// The objective state machine one `objectives.zrd` member declares.
+///
+/// Measured over the installation: the keys inside the numbered blocks are the
+/// objective machine's complete vocabulary, [`OBJECTIVE_DANGER_ZONES_KEY`] is the
+/// original's own stunt completion condition and [`OBJECTIVE_TRAVELERS_KEY`] the
+/// only actor-scoped one. Nothing here decodes what a block *does*.
+#[must_use]
+pub fn objective_state_machine(document: &ZrdValue) -> ObjectiveStateMachine {
+    let mut counts: std::collections::BTreeMap<String, u32> = std::collections::BTreeMap::new();
+    let mut machine = ObjectiveStateMachine::default();
+    for (key, value) in zrd_flat_fields(objective_record(document)) {
+        let Some(block) = objective_block_id(key) else {
+            continue;
+        };
+        machine.blocks += 1;
+        let mut zones: Vec<String> = Vec::new();
+        let mut required_count = None;
+        for (field, field_value) in zrd_flat_fields(value) {
+            *counts.entry(field.to_owned()).or_insert(0) += 1;
+            match field {
+                OBJECTIVE_DANGER_ZONES_KEY => {
+                    zones = field_value
+                        .as_list()
+                        .unwrap_or_default()
+                        .iter()
+                        .filter_map(ZrdValue::as_text)
+                        .map(str::to_owned)
+                        .collect();
+                }
+                OBJECTIVE_DANGER_ZONE_COUNT_KEY => required_count = zrd_wrapped_int(field_value),
+                OBJECTIVE_TRAVELERS_KEY => {
+                    let Some(entries) = field_value.as_list() else {
+                        continue;
+                    };
+                    let subject = match entries.first() {
+                        Some(ZrdValue::Text(name)) if name == PLAYER_ACTOR => {
+                            TravellerSubject::Player
+                        }
+                        Some(ZrdValue::Text(name)) => TravellerSubject::Named(name.clone()),
+                        Some(ZrdValue::Int(index)) => TravellerSubject::Indexed(*index),
+                        _ => TravellerSubject::Unreadable,
+                    };
+                    machine.travellers.push(TravellerCondition::new(
+                        block,
+                        subject,
+                        entries
+                            .get(1)
+                            .and_then(ZrdValue::as_text)
+                            .map(str::to_owned),
+                        entries
+                            .get(2)
+                            .and_then(ZrdValue::as_text)
+                            .map(str::to_owned),
+                    ));
+                }
+                _ => {}
+            }
+        }
+        if !zones.is_empty() {
+            machine.stunt_conditions.push(StuntCompletionCondition::new(
+                block,
+                zones,
+                required_count,
+            ));
+        }
+    }
+    machine.keys = counts.into_iter().collect();
+    machine
+}
+
+/// The measured objective records of one `targets.zrd` member.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RetailObjectiveCorpus {
+    count: u32,
+    fly_through: u32,
+    fly_through_labelled: u32,
+    team_scoped: u32,
+    keys: Vec<(String, u32)>,
+    span: StuntEncodingSpan,
+}
+
+impl RetailObjectiveCorpus {
+    /// Assembles one corpus.
+    #[must_use]
+    pub fn new(
+        count: u32,
+        fly_through: u32,
+        fly_through_labelled: u32,
+        team_scoped: u32,
+        keys: Vec<(String, u32)>,
+        span: StuntEncodingSpan,
+    ) -> Self {
+        Self {
+            count,
+            fly_through,
+            fly_through_labelled,
+            team_scoped,
+            keys,
+            span,
+        }
+    }
+
+    /// How many objective records the member declares.
+    #[must_use]
+    pub const fn count(&self) -> u32 {
+        self.count
+    }
+
+    /// How many are fly-through danger-zone targets (task #463's selector, which
+    /// requires a `category_label` as well as the help label).
+    #[must_use]
+    pub const fn fly_through(&self) -> u32 {
+        self.fly_through
+    }
+
+    /// How many carry **either** measured fly-through label, whether or not the
+    /// record also carries the other one.
+    ///
+    /// Measured over the whole installation this is three records higher than
+    /// [`Self::fly_through`]; see [`is_fly_through_labelled`].
+    #[must_use]
+    pub const fn fly_through_labelled(&self) -> u32 {
+        self.fly_through_labelled
+    }
+
+    /// How many are team-scoped objectives (`MSG_OBJ_TEAM_1` / `_2`).
+    #[must_use]
+    pub const fn team_scoped(&self) -> u32 {
+        self.team_scoped
+    }
+
+    /// The member's complete objective key vocabulary, sorted by key.
+    #[must_use]
+    pub fn keys(&self) -> &[(String, u32)] {
+        &self.keys
+    }
+
+    /// Where the member's bytes are.
+    #[must_use]
+    pub const fn span(&self) -> &StuntEncodingSpan {
+        &self.span
+    }
+
+    /// The keys of this corpus that name an earning authority, per
+    /// [`AUTHORITY_KEY_VOCABULARY`].
+    #[must_use]
+    pub fn authority_keys(&self) -> Vec<&str> {
+        self.keys
+            .iter()
+            .map(|(key, _)| key.as_str())
+            .filter(|key| AUTHORITY_KEY_VOCABULARY.contains(key))
+            .collect()
+    }
+}
+
+/// The measured objective state machine of one reader.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RetailObjectiveMachine {
+    machine: ObjectiveStateMachine,
+    span: StuntEncodingSpan,
+}
+
+impl RetailObjectiveMachine {
+    /// Assembles one machine row.
+    #[must_use]
+    pub fn new(machine: ObjectiveStateMachine, span: StuntEncodingSpan) -> Self {
+        Self { machine, span }
+    }
+
+    /// The extracted machine.
+    #[must_use]
+    pub const fn machine(&self) -> &ObjectiveStateMachine {
+        &self.machine
+    }
+
+    /// Where the member's bytes are.
+    #[must_use]
+    pub const fn span(&self) -> &StuntEncodingSpan {
+        &self.span
+    }
+
+    /// The machine keys that name an earning authority, per
+    /// [`AUTHORITY_KEY_VOCABULARY`].
+    #[must_use]
+    pub fn authority_keys(&self) -> Vec<&str> {
+        self.machine
+            .keys
+            .iter()
+            .map(|(key, _)| key.as_str())
+            .filter(|key| AUTHORITY_KEY_VOCABULARY.contains(key))
+            .collect()
+    }
+}
+
+/// The measured scenario descriptor of one instant-action reader.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RetailScenarioAuthority {
+    mission_type: String,
+    aircraft: ScenarioNonPlayerAircraft,
+    span: StuntEncodingSpan,
+}
+
+impl RetailScenarioAuthority {
+    /// Assembles one scenario row.
+    #[must_use]
+    pub fn new(
+        mission_type: impl Into<String>,
+        aircraft: ScenarioNonPlayerAircraft,
+        span: StuntEncodingSpan,
+    ) -> Self {
+        Self {
+            mission_type: mission_type.into(),
+            aircraft,
+            span,
+        }
+    }
+
+    /// The scenario mode the descriptor declares.
+    #[must_use]
+    pub fn mission_type(&self) -> &str {
+        &self.mission_type
+    }
+
+    /// The non-player aircraft the same record declares.
+    #[must_use]
+    pub const fn aircraft(&self) -> &ScenarioNonPlayerAircraft {
+        &self.aircraft
+    }
+
+    /// Where the member's bytes are.
+    #[must_use]
+    pub const fn span(&self) -> &StuntEncodingSpan {
+        &self.span
+    }
+}
+
+/// One reader archive's measured earning-authority surface.
+///
+/// A member is [`None`] when the reader carries none: an instant-action reader
+/// has no objective state machine block set and a campaign mission has no
+/// `ia.zrd`. That is a measured absence, not a skipped row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RetailObjectiveAuthorityRow {
+    container: String,
+    container_sha256: String,
+    objectives: Option<RetailObjectiveCorpus>,
+    machine: Option<RetailObjectiveMachine>,
+    scenario: Option<RetailScenarioAuthority>,
+}
+
+impl RetailObjectiveAuthorityRow {
+    /// Assembles one row.
+    #[must_use]
+    pub fn new(
+        container: impl Into<String>,
+        container_sha256: impl Into<String>,
+        objectives: Option<RetailObjectiveCorpus>,
+        machine: Option<RetailObjectiveMachine>,
+        scenario: Option<RetailScenarioAuthority>,
+    ) -> Self {
+        Self {
+            container: container.into(),
+            container_sha256: container_sha256.into(),
+            objectives,
+            machine,
+            scenario,
+        }
+    }
+
+    /// The reader archive's logical key.
+    #[must_use]
+    pub fn container(&self) -> &str {
+        &self.container
+    }
+
+    /// SHA-256 of that whole container, from production discovery.
+    #[must_use]
+    pub fn container_sha256(&self) -> &str {
+        &self.container_sha256
+    }
+
+    /// The reader's objective records, when it declares any.
+    #[must_use]
+    pub const fn objectives(&self) -> Option<&RetailObjectiveCorpus> {
+        self.objectives.as_ref()
+    }
+
+    /// The reader's objective state machine, when it declares one.
+    #[must_use]
+    pub const fn machine(&self) -> Option<&RetailObjectiveMachine> {
+        self.machine.as_ref()
+    }
+
+    /// The reader's scenario descriptor, when it carries one.
+    #[must_use]
+    pub const fn scenario(&self) -> Option<&RetailScenarioAuthority> {
+        self.scenario.as_ref()
+    }
+}
+
+/// How many measured conditions name each kind of subject.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct TravellerSubjectCensus {
+    /// Conditions whose subject is the original's `player` actor.
+    pub player: u32,
+    /// Conditions whose subject is a named non-player actor.
+    pub named: u32,
+    /// Conditions whose subject is a bare, undecoded index.
+    pub indexed: u32,
+    /// Conditions whose subject this reader could not decode.
+    pub unreadable: u32,
+}
+
+/// The measured earning-authority surface of a whole installation (task #465).
+///
+/// One row per reader archive. The survey reports what the objective data
+/// **contains** — its complete key vocabularies, its stunt completion
+/// conditions, its actor-scoped conditions and each scenario's declared
+/// aircraft — and answers the rule itself with
+/// [`Self::earning_authority_is_measured`], which is `false`: no measured file
+/// records which aircraft a zone crossing credits.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RetailStuntAuthoritySurvey {
+    install_sha256: String,
+    rows: Vec<RetailObjectiveAuthorityRow>,
+}
+
+impl RetailStuntAuthoritySurvey {
+    /// Assembles the survey. Rows are keyed by their own container, so a
+    /// duplicate is impossible and no validation is needed.
+    #[must_use]
+    pub fn new(install_sha256: impl Into<String>, rows: Vec<RetailObjectiveAuthorityRow>) -> Self {
+        Self {
+            install_sha256: install_sha256.into(),
+            rows,
+        }
+    }
+
+    /// The installation fingerprint the measurement was taken over.
+    #[must_use]
+    pub fn install_sha256(&self) -> &str {
+        &self.install_sha256
+    }
+
+    /// Every measured reader archive, in inventory order.
+    #[must_use]
+    pub fn rows(&self) -> &[RetailObjectiveAuthorityRow] {
+        &self.rows
+    }
+
+    /// How many reader archives were walked.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.rows.len()
+    }
+
+    /// Whether no reader archive was walked.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.rows.is_empty()
+    }
+
+    /// Every measured objective record.
+    #[must_use]
+    pub fn objective_records(&self) -> u32 {
+        self.rows
+            .iter()
+            .filter_map(|row| row.objectives())
+            .map(RetailObjectiveCorpus::count)
+            .sum()
+    }
+
+    /// Every measured fly-through danger-zone objective (task #463's selector).
+    #[must_use]
+    pub fn fly_through_objectives(&self) -> u32 {
+        self.rows
+            .iter()
+            .filter_map(|row| row.objectives())
+            .map(RetailObjectiveCorpus::fly_through)
+            .sum()
+    }
+
+    /// Every objective record that carries **either** measured fly-through
+    /// label.
+    ///
+    /// Measured over the owner's installation: three more than
+    /// [`Self::fly_through_objectives`], because three campaign-mission records
+    /// carry `help_label = MSG_OBJ_FLYTHROUGH` and no `category_label`. A
+    /// consumer that reported only the stricter count would under-report the
+    /// original's own stunt records.
+    #[must_use]
+    pub fn fly_through_labelled_objectives(&self) -> u32 {
+        self.rows
+            .iter()
+            .filter_map(|row| row.objectives())
+            .map(RetailObjectiveCorpus::fly_through_labelled)
+            .sum()
+    }
+
+    /// Every measured team-scoped objective.
+    #[must_use]
+    pub fn team_scoped_objectives(&self) -> u32 {
+        self.rows
+            .iter()
+            .filter_map(|row| row.objectives())
+            .map(RetailObjectiveCorpus::team_scoped)
+            .sum()
+    }
+
+    /// Every measured numbered objective block.
+    #[must_use]
+    pub fn objective_blocks(&self) -> u32 {
+        self.rows
+            .iter()
+            .filter_map(|row| row.machine())
+            .map(|machine| machine.machine().blocks())
+            .sum()
+    }
+
+    /// The complete key vocabulary of the objective records **and** of the
+    /// objective blocks, summed over every row and sorted by key.
+    #[must_use]
+    pub fn objective_keys(&self) -> Vec<(String, u32)> {
+        let mut counts: std::collections::BTreeMap<String, u32> = std::collections::BTreeMap::new();
+        for row in &self.rows {
+            if let Some(corpus) = row.objectives() {
+                for (key, count) in &corpus.keys {
+                    *counts.entry(key.clone()).or_insert(0) += count;
+                }
+            }
+            if let Some(machine) = row.machine() {
+                for (key, count) in machine.machine().keys() {
+                    *counts.entry(key.clone()).or_insert(0) += count;
+                }
+            }
+        }
+        counts.into_iter().collect()
+    }
+
+    /// Every `(container, key)` whose key names an earning authority, per
+    /// [`AUTHORITY_KEY_VOCABULARY`], in row order.
+    ///
+    /// Measured over the owner's installation: **empty**. That is a statement
+    /// about the objective data's vocabulary, not about what the game does.
+    #[must_use]
+    pub fn keys_naming_an_authority(&self) -> Vec<(String, String)> {
+        let mut found = Vec::new();
+        for row in &self.rows {
+            if let Some(corpus) = row.objectives() {
+                for key in corpus.authority_keys() {
+                    found.push((row.container.clone(), key.to_owned()));
+                }
+            }
+            if let Some(machine) = row.machine() {
+                for key in machine.authority_keys() {
+                    found.push((row.container.clone(), key.to_owned()));
+                }
+            }
+        }
+        found
+    }
+
+    /// Every measured stunt completion condition, in row then authored order.
+    pub fn stunt_conditions(&self) -> impl Iterator<Item = &StuntCompletionCondition> {
+        self.rows
+            .iter()
+            .filter_map(|row| row.machine())
+            .flat_map(|machine| machine.machine().stunt_conditions())
+    }
+
+    /// Every measured actor-scoped condition, in row then authored order.
+    pub fn travellers(&self) -> impl Iterator<Item = &TravellerCondition> {
+        self.rows
+            .iter()
+            .filter_map(|row| row.machine())
+            .flat_map(|machine| machine.machine().travellers())
+    }
+
+    /// How many measured conditions name each kind of subject.
+    #[must_use]
+    pub fn traveller_subject_census(&self) -> TravellerSubjectCensus {
+        let mut census = TravellerSubjectCensus::default();
+        for condition in self.travellers() {
+            match condition.subject() {
+                TravellerSubject::Player => census.player += 1,
+                TravellerSubject::Named(_) => census.named += 1,
+                TravellerSubject::Indexed(_) => census.indexed += 1,
+                TravellerSubject::Unreadable => census.unreadable += 1,
+            }
+        }
+        census
+    }
+
+    /// The distinct non-player subjects the original names outright, sorted.
+    #[must_use]
+    pub fn non_player_subjects(&self) -> Vec<&str> {
+        let mut names: Vec<&str> = self
+            .travellers()
+            .filter_map(|condition| match condition.subject() {
+                TravellerSubject::Named(name) => Some(name.as_str()),
+                _ => None,
+            })
+            .collect();
+        names.sort_unstable();
+        names.dedup();
+        names
+    }
+
+    /// The actor-scoped conditions whose target is a detection-zone label.
+    ///
+    /// A lower bound by construction ([`TravellerCondition::target_is_danger_zone_label`]
+    /// recognizes the measured `dz…` prefix only); read
+    /// [`TravellerCondition::target`] for the rest.
+    pub fn traveller_conditions_naming_a_danger_zone(
+        &self,
+    ) -> impl Iterator<Item = &TravellerCondition> {
+        self.travellers()
+            .filter(|condition| condition.target_is_danger_zone_label())
+    }
+
+    /// The actor-scoped conditions that name a detection-zone label **and** a
+    /// non-player subject.
+    ///
+    /// Measured over the owner's installation: **empty** — every measured stunt
+    /// condition is either anonymous ([`Self::stunt_conditions`]) or names
+    /// `player` as its subject.
+    pub fn non_player_danger_zone_conditions(&self) -> impl Iterator<Item = &TravellerCondition> {
+        self.traveller_conditions_naming_a_danger_zone()
+            .filter(|condition| condition.subject_is_non_player())
+    }
+
+    /// Every measured scenario descriptor.
+    pub fn scenarios(&self) -> impl Iterator<Item = &RetailScenarioAuthority> {
+        self.rows.iter().filter_map(|row| row.scenario())
+    }
+
+    /// The scenario descriptors that also declare non-player aircraft.
+    pub fn scenarios_declaring_non_player_aircraft(
+        &self,
+    ) -> impl Iterator<Item = &RetailScenarioAuthority> {
+        self.scenarios()
+            .filter(|scenario| scenario.aircraft().is_declared())
+    }
+
+    /// The scenario descriptors of the scenarios the original marks
+    /// [`STUNT_MISSION_TYPE`].
+    pub fn stunt_flying_scenarios(&self) -> impl Iterator<Item = &RetailScenarioAuthority> {
+        self.scenarios()
+            .filter(|scenario| scenario.mission_type() == STUNT_MISSION_TYPE)
+    }
+
+    /// Whether this survey measured **which actor may earn a stunt**. It did
+    /// not, and it cannot: no measured file records the earning authority of a
+    /// zone crossing.
+    ///
+    /// A consumer must treat the *contents* of this survey (the key
+    /// vocabularies, the conditions, the declared aircraft) as what was
+    /// measured, and any earning rule as still unknown until an original run
+    /// settles it.
+    #[must_use]
+    pub const fn earning_authority_is_measured(&self) -> bool {
+        false
+    }
+}
+
 // -------------------------------------------------------------- fixture ----
 
 /// The designed aperture of [`declared_synthetic_gate_stunt`]: a 24 m wide,
