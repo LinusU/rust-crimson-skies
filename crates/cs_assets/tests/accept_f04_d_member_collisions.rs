@@ -873,7 +873,7 @@ fn accept_f04_d_member_collisions_retail_every_member_collision_is_blocked_or_di
 
 // ------------------------------------------------------ evidence harness ---
 
-/// Evidence-report harness for task #345 (`docs/contracts/CLI-EVIDENCE.md`,
+/// Evidence-report harness for task #342 (`docs/contracts/CLI-EVIDENCE.md`,
 /// schema `schemas/evidence.schema.json`). Not an acceptance test: it fails
 /// loudly when its inputs are missing. `CS_EVIDENCE_REVIEWER` names the agent
 /// that ran it and is recorded in the report; it is not baked in, because the
@@ -892,7 +892,7 @@ fn accept_f04_d_member_collisions_retail_every_member_collision_is_blocked_or_di
 ///    CS_EVIDENCE_ARGV="cargo test --workspace --locked -- accept_f04_d_member_collisions_ --include-ignored" \
 ///    CS_EVIDENCE_EXIT_CODE=<status from step 1> \
 ///    CS_EVIDENCE_REVIEWER="<agent running this harness>" \
-///      cargo test --locked -p cs_assets --test accept_f04_d_rof_member_collisions -- evidence_report_t342 --ignored
+///      cargo test --locked -p cs_assets --test accept_f04_d_member_collisions -- evidence_report_t342 --ignored
 ///    ```
 /// 3. ```sh
 ///    python3 tools/validate_evidence.py private/evidence/T342/acceptance.json \
