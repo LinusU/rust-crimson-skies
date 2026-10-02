@@ -1338,6 +1338,51 @@ fn accept_f21_d_cockpit_coverage_resolves_each_binding_against_its_own_airframe_
         "the row reports the name the archive stores, not the spelling the caller passed"
     );
 
+    // Two archive nodes carry the root's name: the audit refuses rather than
+    // picking the first, because auditing whichever came first would read the
+    // other one's subtree.
+    let twin_archive = cs_formats::gamez::GameZNodes {
+        nodes: [
+            Node {
+                name: "player_kestrel",
+                parent: None,
+                children: vec![1],
+                mesh_index: -1,
+            },
+            Node {
+                name: "gungauge",
+                parent: Some(0),
+                children: Vec::new(),
+                mesh_index: 41,
+            },
+            Node {
+                name: "player_kestrel",
+                parent: None,
+                children: Vec::new(),
+                mesh_index: -1,
+            },
+        ]
+        .iter()
+        .enumerate()
+        .map(|(index, spec)| raw_node(spec, index as u32))
+        .collect(),
+        ..synthetic_archive()
+    };
+    assert_eq!(
+        audit_cockpit_coverage(
+            &discovery,
+            &[airframe("synthetic.kestrel", "player_kestrel")],
+            &twin_archive,
+            &archive_id(),
+        ),
+        Err(CockpitCoverageError::RootAmbiguous {
+            airframe: "airframe/synthetic.kestrel".to_owned(),
+            root: "player_kestrel".to_owned(),
+            node_indices: vec![0, 2],
+        }),
+        "a root the archive holds twice is refused, never resolved by array position"
+    );
+
     // An airframe that lives in another archive is not audited against this one.
     let elsewhere = CockpitAirframe::new(
         ContentId::from_source(ContentKind::Airframe, "synthetic.elsewhere").expect("a valid id"),

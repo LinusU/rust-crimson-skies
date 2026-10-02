@@ -1062,6 +1062,21 @@ pub enum CockpitCoverageError {
         /// The root the roster declares.
         root: String,
     },
+    /// More than one node of the airframe archive carries the root's name, so
+    /// which one is *the* aircraft's root is not answerable.
+    ///
+    /// Refused rather than resolved by array position: the first of two
+    /// candidates would audit one aircraft against the other's subtree, which is
+    /// the wrong-aircraft frame this audit exists to prevent. It is the same
+    /// hazard [`CockpitNodeCoverage::Ambiguous`] reports for a binding.
+    RootAmbiguous {
+        /// The airframe.
+        airframe: String,
+        /// The root the roster declares.
+        root: String,
+        /// The candidate node indices, in array order.
+        node_indices: Vec<u32>,
+    },
     /// Two audited airframes declare the same root, so a per-airframe audit
     /// would attribute one airframe's geometry to another.
     DuplicateRoot {
@@ -1116,6 +1131,17 @@ impl fmt::Display for CockpitCoverageError {
                 f,
                 "the airframe {airframe} declares the root {root:?}, which the airframe archive \
                  does not hold"
+            ),
+            Self::RootAmbiguous {
+                airframe,
+                root,
+                node_indices,
+            } => write!(
+                f,
+                "the airframe {airframe} declares the root {root:?}, which {count} nodes of the \
+                 archive carry, so auditing the first of them would read another aircraft's \
+                 subtree",
+                count = node_indices.len()
             ),
             Self::DuplicateRoot { root } => write!(
                 f,
@@ -1691,10 +1717,13 @@ pub const fn eye_placement() -> CockpitEyeCoverage {
 ///
 /// [`CockpitCoverageError::ContainerMismatch`] when an airframe's declared
 /// container is not the measured archive, [`CockpitCoverageError::DuplicateRoot`]
-/// when two airframes claim one root, and
-/// [`CockpitCoverageError::RootMissing`] when an airframe's root has no node at
-/// all. An airframe that cannot be located is refused rather than reported
-/// empty: "no cockpit" and "no aircraft" are different findings.
+/// when two airframes claim one root,
+/// [`CockpitCoverageError::RootAmbiguous`] when the archive carries that name on
+/// more than one node, and [`CockpitCoverageError::RootMissing`] when an
+/// airframe's root has no node at all. An airframe that cannot be located, or
+/// cannot be located *uniquely*, is refused rather than reported empty or
+/// resolved by position: "no cockpit" and "no aircraft" are different findings,
+/// and so are "this aircraft" and "whichever of two nodes came first".
 pub fn audit_cockpit_coverage(
     discovery: &CockpitBindingDiscovery,
     airframes: &[CockpitAirframe],
@@ -1727,16 +1756,33 @@ pub fn audit_cockpit_coverage(
         // (see [`same_name`]): the root key is normalized by `ContentId`, but
         // the node array stores the original's bytes, and an exact match would
         // report an aircraft the archive really holds as missing.
-        let Some(root) = archive
+        //
+        // Two nodes carrying one root name is the same ambiguity a binding gets
+        // [`CockpitNodeCoverage::Ambiguous`] for, and it is refused rather than
+        // resolved by array position: picking the first of two candidate roots
+        // would silently audit one aircraft against another one's subtree,
+        // which is the exact wrong-aircraft frame this module exists to prevent.
+        let mut candidates = archive
             .nodes
             .iter()
-            .find(|node| same_name(node.name.as_bytes(), root_name))
-        else {
+            .filter(|node| same_name(node.name.as_bytes(), root_name));
+        let Some(root) = candidates.next() else {
             return Err(CockpitCoverageError::RootMissing {
                 airframe: airframe.airframe().as_str().to_owned(),
                 root: root_name.to_owned(),
             });
         };
+        let node_indices: Vec<u32> = std::iter::once(root.index)
+            .chain(candidates.map(|node| node.index))
+            .collect();
+        if node_indices.len() > 1 {
+            return Err(CockpitCoverageError::RootAmbiguous {
+                airframe: airframe.airframe().as_str().to_owned(),
+                root: root_name.to_owned(),
+                node_indices,
+            });
+        }
+        let root = root.clone();
         let subtree = subtree_indices(archive, root.index);
         let bindings = discovery
             .bindings()

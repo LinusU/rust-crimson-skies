@@ -294,7 +294,7 @@ mutation-checked:
 The review pass is the **same agent instance and model as the implementer**
 (`opencode/bunny-alpha-2`, separate session), which AGENTS.md is explicit is
 **not** independent evidence. It re-measured the corpus independently and fixed
-six defects it found:
+seven defects it found:
 
 | # | defect | how it was reached | fix |
 | --- | --- | --- | --- |
@@ -304,6 +304,7 @@ six defects it found:
 | R5 | **`CameraSetObjectHSETest` was classified as `LevelsHorizon`** — a guessed original semantic in the one field documented as "what this command asks the original's camera system to do", contradicting its own reason string ("the hull-sensitivity probe"). | reading the retail claims against the measured argument (`off`) | `ViewControlEffect::Undetermined`, used by that claim, with a test pinning that the census carries the caller's verdict verbatim |
 | R6 | **Names were compared case-insensitively everywhere except where they meet the archive.** `audit_cockpit_coverage` matched `node.name == binding.node()` and `node.name == root_name` exactly, and `row()`/`binding()` did too — so an archive storing a node in another case than the script spells it would report the aircraft as missing. | the module's own `same_name` helper and the finding's "names are compared case-insensitively on stored bytes" | every name comparison goes through `same_name`; a synthetic archive storing `PLAYER_KESTREL` / `GUNGAUGE` / `MISSILEGAUGE` pins it |
 | R7 | **The retail test asserted `sha256(&bytes) == sha256(&bytes)`** with the message "the digest is measured, not asserted against itself" — a tautology that checked nothing, standing where a real provenance check belonged. | reading the test | both containers the retail tests walk are now checked against the digest the installation's own manifest records for them, so the census provably describes the installation the evidence record fingerprints |
+| R8 | **The audit's root lookup resolved by array position** where its own binding lookup refuses ambiguity: `archive.nodes.iter().find(...)` took the first node carrying the root's name, so an archive holding that name twice would have been audited against whichever subtree came first — the wrong-aircraft frame the module exists to prevent, silently. | re-reading the audit against its own `Ambiguous` state and `DuplicateRoot` refusal | `CockpitCoverageError::RootAmbiguous`, refused before any row is written, with the candidate indices; a synthetic archive with two `player_kestrel` nodes pins it |
 
 Two of the review's findings are about what is *claimed* rather than what is
 computed, and both are now measured instead:
@@ -335,8 +336,8 @@ human approval.
 
 ## Test sensitivity
 
-Eight mutations from the implementer and six from the review pass, applied and
-reverted against production code, run as
+Fifteen mutations — eight from the implementer, seven from the review pass —
+applied and reverted against production code, run as
 `cargo test -p cs_app --test camera -- accept_f21_d_ --include-ignored`:
 
 | # | mutation | tests that died |
@@ -355,12 +356,16 @@ reverted against production code, run as
 | 12 | the archive's node names are matched exactly again | **1** (coverage) |
 | 13 | `row()` / `binding()` / `CockpitCoverageReport::row()` match exactly again | **2** (binding order, coverage) |
 | 14 | the pinned head count 85 becomes 86 | **1** (retail census) |
+| 15 | the root lookup resolves by array position again | **1** (coverage) |
+
+(Fifteen, not fourteen: the count above is the table's own; mutations 1–8 are
+the implementer's and 9–15 the review's.)
 
 Mutation 7 did **not** fail on the first pass: the coverage test asserted the
 verified list only for the airframe whose bindings all resolved, so a
 `verified_bindings` that returned every binding agreed with it. The test now
 asserts the warhawk row's verified list (one binding) and that the two
-airframes' lists differ, and mutation 7 dies. All fourteen were reverted; the
+airframes' lists differ, and mutation 7 dies. All fifteen were reverted; the
 tree is back to the implementation under review.
 
 ## Commands run (exit codes)
