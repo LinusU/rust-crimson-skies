@@ -146,6 +146,12 @@ The counts in this note were wrong in three places and are corrected above: 36
 byte-for-byte, and six harnesses in five production `src/` files. Of the 29
 advisory reports, 26 are honest records and three are #484's.
 
+The corpus has since grown by one: `T374` landed on `main` after this note was
+written, and the discovering reader picked it up with no change — 54 reports, 46
+harnesses, 30 advisories, and `T374`'s harness and report agree. That is the
+point of not listing the harness files, so the numbers here are a reading of one
+moment and the check is not.
+
 ## What deliberately did *not* change
 
 - **No report was regenerated.** `docs/contracts/CLI-EVIDENCE.md` requires a
