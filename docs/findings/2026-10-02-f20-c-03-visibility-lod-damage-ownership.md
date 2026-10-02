@@ -181,20 +181,48 @@ extension removes a component that no earlier test's entity carries.
 
 | test | what it pins |
 | --- | --- |
-| `accept_f20_c_03_the_breakable_fixture_drives_the_production_lowering` | the fixture's declared shape (id, origin, loop mode, node, every visibility key and tick, the one gameplay marker) and that `lower_clip` produces a runtime clip with that visibility channel, whose evaluated state at the break tick is `Hidden` with `collider_enabled() == false` — the ECS path is driven by the evaluator, not by a test-authored value |
-| `accept_f20_c_03_a_hidden_node_stays_hidden_across_a_lod_selection_pass` (minimum) | the fixed-tick entry at the hide tick applies `Hidden` and the composed verdict is not drawn with `NoCollider`; the **real** `select_lod_presentation` then rewrites `NodePresentation` (asserted: the field changed to `LodCulled` at a far distance, back to `Drawn` at a near one) and the verdict stays not drawn with `NoCollider` both times |
-| `accept_f20_c_03_showing_the_node_again_is_the_symmetric_verdict` | at the show tick the record is `Visible` and the verdict is `Drawn`/`Undecided`, and a far-distance LOD pass culls it with `Undecided` again: the clip stops deciding collision the moment it stops hiding |
-| `accept_f20_c_03_a_destroyed_node_is_never_restored_by_a_loop_pass_or_an_lod_pass` | damage's `NodeDisabled` marker outranks the clip: over four loop passes — including every re-show tick — the verdict is `Disabled` and never drawn, at two distances, and still `Disabled` after the instance is torn down; the same teardown on an undamaged node releases the record and returns it to `Drawn` |
-| `accept_f20_c_03_the_visibility_verdict_is_written_only_when_it_changes` | the apply is idempotent: a second advance of the same tick writes the component **again in no observable way** (its last-change tick is unchanged across an `increment_change_tick`), the log publishes nothing, and composing the verdict twice yields the same answer |
-| `accept_f20_c_03_an_unbound_or_stale_generation_entity_is_never_written` | of three entities, only the verified binding receives the record; a stale-generation binding and an unbound entity keep `Drawn`, and a stopped instance drives nothing on a later advance |
+| `accept_f20_c_03_the_breakable_fixture_drives_the_production_lowering` | the fixture's declared shape (id, origin, loop mode, node, every visibility key and tick, the one gameplay marker and that it is a gameplay cue) and that `lower_clip` produces a runtime clip with that visibility channel, whose evaluated state at the break tick is `Hidden` with `collider_enabled() == false` — the ECS path is driven by the evaluator, not by a test-authored value |
+| `accept_f20_c_03_a_hidden_node_stays_hidden_across_a_lod_selection_pass` (minimum) | the wired fixed-tick entry at the hide tick applies `Hidden` and the composed verdict is not drawn with `NoCollider`, the gameplay cue fired once; then the **real** `select_lod_presentation` rewrites `NodePresentation` (asserted: `LodCulled` at a far distance, `Drawn` again at a near one) and the verdict stays not drawn with `NoCollider` both times, reporting LOD's own reason at the far distance |
+| `accept_f20_c_03_showing_the_node_again_is_the_symmetric_verdict` | at the show tick the record is `Visible`, the verdict is `Drawn`/`Undecided`, the loop's second pass re-fires nothing, and a far-distance LOD pass culls it with `Undecided` again: the clip stops deciding collision the moment it stops hiding |
+| `accept_f20_c_03_a_destroyed_node_is_never_restored_by_a_loop_pass_or_an_lod_pass` | damage's `NodeDisabled` marker outranks the clip: over four loop passes — every re-show tick included, and the count of those re-shows is asserted so the test cannot pass vacuously — the verdict is `Disabled` and never drawn, the marker is never touched, the one-shot cue still fires once, a mesh under the destroyed part is not drawn, two distances change nothing, and the teardown does not either |
+| `accept_f20_c_03_a_released_instance_hands_a_live_node_back_to_lod` | the mirror: the teardown releases the record, an undamaged node returns to LOD's `Drawn`/`Undecided`, and a later advance of the same track drives nothing |
+| `accept_f20_c_03_the_visibility_verdict_is_written_only_when_it_changes` | idempotence observed through a real `On<Insert, NodeAnimatedVisibility>` counter: the break tick inserts once, a second advance of the same tick inserts nothing, the real LOD pass inserts nothing, and the show tick inserts again (2) — a value comparison could not have told "written again" from "not written" |
+| `accept_f20_c_03_an_unbound_or_stale_generation_entity_is_never_written` | of four entities, only the verified binding receives the record: a superseded generation, an entity with no binding and a binding to a node the clip does not drive keep `None` and stay drawn |
 
 ## Mutation probes
 
-(filled in after the run — see below)
+Run locally with a rerunnable driver: each probe edited one production file,
+ran the selection `cargo test -p cs_app --locked --test accept_f20_c_03_visibility_lod_ownership`
+(exit 101 each time), then restored the file with `git checkout --`. `grep -rn "MUTATION PROBE"
+crates/` returns nothing, `git status` shows no probe edit, and the selection is green again.
+
+| probe | edit | tests that fail (of 7) |
+| --- | --- | --- |
+| P1 the visibility write removed | the `if let Some(visibility) = state.visibility()` block in `advance_animation` reads into `_visibility` and writes nothing | 6 (everything but the fixture test) |
+| P2 the composition ignores damage and LOD | both `Some(PresentationState::…)` arms in `VisibilityVerdict::compose` fall through to `DrawVerdict::Drawn`, so only the clip decides | 4: `..._a_hidden_node_stays_hidden_across_a_lod_selection_pass`, `..._showing_the_node_again_is_the_symmetric_verdict`, `..._a_released_instance_hands_a_live_node_back_to_lod`, `..._a_destroyed_node_is_never_restored_...` |
+| P3 the composition ignores the clip | `let hidden = false` in `VisibilityVerdict::compose` | 4: `..._a_hidden_node_stays_hidden_across_a_lod_selection_pass`, `..._showing_the_node_again_is_the_symmetric_verdict`, `..._the_visibility_verdict_is_written_only_when_it_changes`, `..._a_released_instance_hands_a_live_node_back_to_lod` |
+| P4 the teardown keeps the record | `release_instance` no longer removes `NodeAnimatedVisibility` | 2: `..._a_released_instance_hands_a_live_node_back_to_lod`, `..._a_destroyed_node_is_never_restored_...` |
+| P5 the collider half ignores the hide | `VisibilityVerdict::compose` always answers `ColliderVerdict::Undecided` | 2: `..._a_hidden_node_stays_hidden_across_a_lod_selection_pass`, `..._the_visibility_verdict_is_written_only_when_it_changes` |
+| P6 the write is not idempotent | `apply_write` inserts the visibility record unconditionally instead of through `insert_changed` | 1: `..._the_visibility_verdict_is_written_only_when_it_changes` |
 
 ## Checks run
 
-(filled in after the run — see below)
+- `cargo fmt --all -- --check` — exit 0.
+- `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`
+  — exit 0.
+- `cargo test --workspace --locked` — exit 0, no failing suite (248 suites ok, 0
+  failed). The 7 `accept_f20_a_*`, 7 `accept_f20_b_*`, 8 `accept_f20_c_01_*`
+  and 9 `accept_f20_c_02_*` tests are unchanged and still pass; the whole
+  `accept_f20_*` selection is 47 tests, 0 failed.
+- `cargo test --workspace --locked -- accept_f20_c_03_ --include-ignored` —
+  exit 0, **7 tests matched** in
+  `crates/cs_app/tests/accept_f20_c_03_visibility_lod_ownership.rs`, all
+  passing; none of them is `#[ignore]`d.
+- the six mutation probes above — each probe's selection exited 101 and the
+  files were restored.
+
+No command needed `CS_GAME_DIR`, and `CS_CAPABILITIES`
+(`retail,gpu,audio`) was not exercised: this stage reads no original data.
 
 ## Unknowns
 
@@ -214,9 +242,17 @@ extension removes a component that no earlier test's entity carries.
 
 ## Follow-ups filed
 
-- (see the create_tasks call made with this handover): the render and collision
-  consumers of the composed verdict, and the F20-C spawn wiring that binds
-  animated nodes in the first place.
+* **#503 `F20-C-visibility-draw-consumer`** — the render-side draw consumer:
+  nothing reads `NodePresentation` today, so the composed verdict's
+  `drawn()` has no implementation. It must read the composed verdict rather
+  than re-derive the priority.
+* **#504 `F20-C-visibility-collider-consumer`** — the collision side:
+  `ColliderVerdict::NoCollider` has no reader because no collision-enable
+  record exists in the engine (`grep -rn CollisionEnabled crates/` is empty).
+  The task carries the decision of which record a hidden node's collision
+  state belongs to, and the unknown original coupling with it.
+* The spawn wiring and the `CommittedSessionTick` driver stay F20-C's (recorded
+  as a note on task #75, as F20-C.02 already recorded them).
 
 ## Evidence
 
