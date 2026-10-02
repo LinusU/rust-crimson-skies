@@ -509,7 +509,7 @@ fn accept_f27_d_the_fixture_gun_is_never_presented_as_original_data() {
 
 /// Every test in this file carries the task prefix.
 #[test]
-fn accept_f27_d_this_file_only_declares_the_task_test_prefix() {
+fn accept_f27_d_the_runtime_suite_declares_only_the_task_test_prefix() {
     assert_eq!(PREFIX, "accept_f27_d_");
     for name in [
         "accept_f27_d_every_type_in_play_maps_to_its_damage_consumer",
@@ -521,7 +521,7 @@ fn accept_f27_d_this_file_only_declares_the_task_test_prefix() {
         "accept_f27_d_the_registry_is_built_from_a_resolver_s_registered_guns",
         "accept_f27_d_the_measured_original_surface_is_the_audit_closure_target",
         "accept_f27_d_the_fixture_gun_is_never_presented_as_original_data",
-        "accept_f27_d_this_file_only_declares_the_task_test_prefix",
+        "accept_f27_d_the_runtime_suite_declares_only_the_task_test_prefix",
     ] {
         assert!(name.starts_with(PREFIX), "{name} is outside the prefix");
     }

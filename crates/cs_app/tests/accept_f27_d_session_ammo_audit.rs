@@ -480,7 +480,7 @@ fn accept_f27_d_the_session_audit_is_a_pure_read() {
 
 /// Every test in this file carries the task prefix.
 #[test]
-fn accept_f27_d_this_file_only_declares_the_task_test_prefix() {
+fn accept_f27_d_the_session_suite_declares_only_the_task_test_prefix() {
     assert_eq!(PREFIX, "accept_f27_d_");
     for name in [
         "accept_f27_d_a_session_audits_every_type_it_can_fire",
@@ -490,7 +490,7 @@ fn accept_f27_d_this_file_only_declares_the_task_test_prefix() {
         "accept_f27_d_an_empty_or_closed_session_audits_to_nothing",
         "accept_f27_d_the_session_audit_spans_every_registered_actor",
         "accept_f27_d_the_session_audit_is_a_pure_read",
-        "accept_f27_d_this_file_only_declares_the_task_test_prefix",
+        "accept_f27_d_the_session_suite_declares_only_the_task_test_prefix",
     ] {
         assert!(name.starts_with(PREFIX), "{name} is outside the prefix");
     }

@@ -890,7 +890,7 @@ fn accept_f27_d_the_measured_ammunition_blocks_are_four_ids_wide() {
 /// named with it, so `cargo test --workspace -- accept_f27_d_` selects exactly
 /// these and the ignored retail tests and nothing else.
 #[test]
-fn accept_f27_d_this_file_only_declares_the_task_test_prefix() {
+fn accept_f27_d_the_catalogue_suite_declares_only_the_task_test_prefix() {
     assert_eq!(PREFIX, "accept_f27_d_");
     for name in [
         "accept_f27_d_a_fully_declared_catalogue_is_complete",
@@ -909,7 +909,7 @@ fn accept_f27_d_this_file_only_declares_the_task_test_prefix() {
         "accept_f27_d_an_empty_catalogue_is_incomplete",
         "accept_f27_d_a_contradictory_measured_surface_is_refused",
         "accept_f27_d_the_measured_ammunition_blocks_are_four_ids_wide",
-        "accept_f27_d_this_file_only_declares_the_task_test_prefix",
+        "accept_f27_d_the_catalogue_suite_declares_only_the_task_test_prefix",
     ] {
         assert!(name.starts_with(PREFIX), "{name} is outside the prefix");
     }
