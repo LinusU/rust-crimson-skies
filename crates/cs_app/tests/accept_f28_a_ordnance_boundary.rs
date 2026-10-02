@@ -39,6 +39,7 @@ use cs_sim::weapons::ordnance::{
 };
 use cs_types::content::{ContentId, ContentKind, Known, Origin, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
+use cs_types::net::SessionId;
 
 fn claim() -> ClaimId {
     ClaimId::new("f28a.test-boundary").expect("a valid claim id")
@@ -58,7 +59,7 @@ fn weapon_id(key: &str) -> ContentId {
 
 fn actor(serial: u64) -> ActorId {
     ActorId {
-        session: 11,
+        session: SessionId::new(11).expect("a nonzero session generation"),
         serial,
     }
 }

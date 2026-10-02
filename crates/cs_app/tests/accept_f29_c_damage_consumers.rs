@@ -44,6 +44,7 @@ use cs_sim::weapons::{
 use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind, Known, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
+use cs_types::net::SessionId;
 use cs_types::space::{UnitVec3, WorldPosition};
 
 const SESSION: u64 = 41;
@@ -51,9 +52,13 @@ const PRODUCER: u32 = 1;
 
 // ----------------------------------------------------------------- helpers ---
 
+fn session(value: u64) -> SessionId {
+    SessionId::new(value).expect("a nonzero session generation")
+}
+
 fn actor(serial: u64) -> ActorId {
     ActorId {
-        session: SESSION,
+        session: session(SESSION),
         serial,
     }
 }
@@ -95,7 +100,7 @@ fn registered() -> DamageResolver {
     let declared = declared_synthetic_airframe_damage();
     let graph = lower_graph(&declared).expect("the declared graph lowers");
     let policy = lower_policy(&declared).expect("the declared policy lowers");
-    let mut resolver = DamageResolver::new(SESSION, PRODUCER);
+    let mut resolver = DamageResolver::new(session(SESSION), PRODUCER);
     resolver
         .register_actor(actor(1), graph, policy)
         .expect("the lowered actor registers");
@@ -124,7 +129,7 @@ fn armed() -> FireResolver {
 fn hit(node: &DamageNodeKey, damage: f64) -> HitEvent {
     HitEvent::try_new(
         HitEventId {
-            session: SESSION,
+            session: session(SESSION),
             tick: Tick(0),
             producer: PRODUCER,
             sequence: 0,
@@ -405,7 +410,7 @@ fn accept_f29_c_a_foreign_or_unknown_actor_is_refused_and_changes_nothing() {
     let mut visuals = AirframeDamageState::new();
 
     let foreign = ActorId {
-        session: SESSION + 1,
+        session: session(SESSION + 1),
         serial: 1,
     };
     let outcome = apply_damage_state(&resolver, foreign, &mut fire, &mut visuals);
@@ -467,7 +472,7 @@ fn accept_f29_c_an_unarmed_actor_and_an_unmounted_carrier_are_reported() {
         ],
     )
     .expect("the phantom graph is valid");
-    let mut phantom = DamageResolver::new(SESSION, PRODUCER);
+    let mut phantom = DamageResolver::new(session(SESSION), PRODUCER);
     phantom
         .register_actor(actor(1), graph, policy())
         .expect("the actor registers");
@@ -507,7 +512,7 @@ fn accept_f29_c_unresolvable_visual_bindings_are_refused_not_guessed() {
         ],
     )
     .expect("the visual graph is valid");
-    let mut resolver = DamageResolver::new(SESSION, PRODUCER);
+    let mut resolver = DamageResolver::new(session(SESSION), PRODUCER);
     resolver
         .register_actor(actor(1), graph, policy())
         .expect("the actor registers");
@@ -560,7 +565,7 @@ fn accept_f29_c_an_unresolved_pool_asserts_neither_visual_nor_mount() {
         ],
     )
     .expect("an unknown pool still validates");
-    let mut resolver = DamageResolver::new(SESSION, PRODUCER);
+    let mut resolver = DamageResolver::new(session(SESSION), PRODUCER);
     resolver
         .register_actor(actor(1), graph, policy())
         .expect("the actor registers");

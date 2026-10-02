@@ -65,14 +65,19 @@ use cs_sim::damage::ActorId;
 use cs_sim::flight::{EngineState, FlightInput, FlightModel, synthetic_fixed_wing};
 use cs_types::content::{ContentId, ContentKind, Known, Origin, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
+use cs_types::net::SessionId;
 
 /// The serial of the fixture AI actor.
 const ACTOR_SERIAL: u64 = 7;
 
+fn session(value: u64) -> SessionId {
+    SessionId::new(value).expect("a nonzero session generation")
+}
+
 /// The fixture actor, in the fixture session.
 fn actor(serial: u64) -> ActorId {
     ActorId {
-        session: SYNTHETIC_NAVIGATION_SESSION,
+        session: session(SYNTHETIC_NAVIGATION_SESSION),
         serial,
     }
 }

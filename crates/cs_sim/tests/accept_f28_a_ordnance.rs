@@ -39,14 +39,19 @@ use cs_sim::weapons::ordnance::{
 use cs_sim::weapons::{InheritanceRule, MountTransform, ProjectileId, ProjectileSegment};
 use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind};
+use cs_types::net::SessionId;
 use cs_types::space::{UnitVec3, WorldPosition};
 
 const SESSION: u64 = 11;
 const TICKS_PER_SECOND: u32 = 30;
 
+fn session(value: u64) -> SessionId {
+    SessionId::new(value).expect("a nonzero session generation")
+}
+
 fn actor(serial: u64) -> ActorId {
     ActorId {
-        session: SESSION,
+        session: session(SESSION),
         serial,
     }
 }

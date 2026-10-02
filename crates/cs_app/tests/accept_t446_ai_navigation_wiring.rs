@@ -36,14 +36,19 @@ use cs_sim::ai::navigation::{
 };
 use cs_sim::damage::ActorId;
 use cs_sim::flight::{EngineState, FlightInput, FlightModel, synthetic_fixed_wing};
+use cs_types::net::SessionId;
 
 /// The serial of the fixture AI actor.
 const ACTOR_SERIAL: u64 = 7;
 
+fn session(value: u64) -> SessionId {
+    SessionId::new(value).expect("a nonzero session generation")
+}
+
 /// The fixture actor, in the fixture session.
 fn actor(serial: u64) -> ActorId {
     ActorId {
-        session: SYNTHETIC_NAVIGATION_SESSION,
+        session: session(SYNTHETIC_NAVIGATION_SESSION),
         serial,
     }
 }
@@ -529,7 +534,7 @@ fn accept_t446_despawn_removes_pursuit_state_and_a_fresh_session_cannot_inherit_
     let foreign = spawn_ai_aircraft(
         &mut fixture,
         ActorId {
-            session: SYNTHETIC_NAVIGATION_SESSION + 1,
+            session: session(SYNTHETIC_NAVIGATION_SESSION + 1),
             serial: 99,
         },
         bound_moving_route(),
@@ -541,7 +546,7 @@ fn accept_t446_despawn_removes_pursuit_state_and_a_fresh_session_cannot_inherit_
     let tick_report = report(&fixture);
     assert!(
         !navigation(&fixture).is_registered(ActorId {
-            session: SYNTHETIC_NAVIGATION_SESSION + 1,
+            session: session(SYNTHETIC_NAVIGATION_SESSION + 1),
             serial: 99,
         }),
         "a foreign-session actor is not registered"

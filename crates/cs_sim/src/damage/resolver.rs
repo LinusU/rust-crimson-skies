@@ -141,7 +141,10 @@ impl fmt::Display for DamageError {
             Self::DuplicateHit { id } => write!(
                 f,
                 "hit {}:{}:{}:{} appears twice in one batch",
-                id.session.get(), id.tick.0, id.producer, id.sequence
+                id.session.get(),
+                id.tick.0,
+                id.producer,
+                id.sequence
             ),
             Self::DuplicateActor { actor } => write!(f, "{actor} is already registered"),
             Self::UnknownActor { actor } => write!(f, "{actor} is not registered"),

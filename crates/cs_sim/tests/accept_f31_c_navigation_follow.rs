@@ -17,9 +17,10 @@
 use cs_sim::ai::navigation::{
     Blocker, FollowPlan, NavState, NavigationCadence, NavigationError, NavigationSet, Navigator,
     ReferenceFrameSample, RouteFrame, RouteGraph, RouteGraphError, RouteNode, RouteNodeId,
-    SYNTHETIC_PURSUIT_DT_S, SYNTHETIC_PURSUIT_SEED, SYNTHETIC_PURSUIT_SESSION, follow_route,
-    heading_from_direction, synthetic_maneuver_envelope, synthetic_pursuit_actor,
-    synthetic_pursuit_route, synthetic_pursuit_set,
+    SYNTHETIC_PURSUIT_DT_S, SYNTHETIC_PURSUIT_SEED, SYNTHETIC_PURSUIT_SESSION,
+    SYNTHETIC_PURSUIT_SESSION_ID, follow_route, heading_from_direction,
+    synthetic_maneuver_envelope, synthetic_pursuit_actor, synthetic_pursuit_route,
+    synthetic_pursuit_set,
 };
 use cs_sim::damage::ActorId;
 
@@ -180,7 +181,7 @@ fn accept_f31_c_follow_route_refuses_an_unknown_actor() {
     let route = synthetic_pursuit_route();
     let mut set = synthetic_pursuit_set(1);
     let stranger = ActorId {
-        session: SYNTHETIC_PURSUIT_SESSION,
+        session: SYNTHETIC_PURSUIT_SESSION_ID,
         serial: 42,
     };
     assert_eq!(

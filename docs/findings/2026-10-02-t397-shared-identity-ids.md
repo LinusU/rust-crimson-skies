@@ -91,16 +91,17 @@ The task says "any other ad-hoc session/tick/producer/sequence stamps … where
 applicable". Three nearby shapes exist; none is the same identity domain, and
 each is recorded rather than silently conflated.
 
-1. **Damage identity — deferred to #442.** `cs_sim::damage` defines
-   `ActorId { session: u64, serial: u64 }`, `HitEventId` and `DamageEventId`
-   with the same field shapes. Migrating them is not a mechanical rename: the
-   damage graph key and its actor/event ids span `cs_sim::damage`,
-   `cs_sim::targeting`, `cs_sim::weapons`, `cs_content::damage`,
-   `cs_content::weapons` and `cs_app`. Task **#442** already owns that
-   unification ("Record that F27-A reuses the F29/F30 key and ActorId
-   duplication rather than resolving it in cs_types"), and `cs_types::net`'s
-   own `ActorId` doc already names it as follow-up. Duplicating that work here
-   would collide with #442 and exceed this task's bounded slice.
+1. **Damage identity — completed by #442.** When #397 was written,
+   `cs_sim::damage` defined `ActorId { session: u64, serial: u64 }`,
+   `HitEventId` and `DamageEventId` with the same field shapes, spanning
+   `cs_sim::damage`, `cs_sim::targeting`, `cs_sim::weapons`,
+   `cs_content::damage`, `cs_content::weapons` and `cs_app`. Task **#442**
+   (`T-DAMAGE-IDENTITY`) owned that unification and has since done it:
+   `cs_sim::damage::ActorId` is now the shared `cs_types::net::ActorId`,
+   `HitEventId`/`DamageEventId` are the damage-facing names of
+   `cs_types::net::EventId`, and the node key is the one
+   `cs_types::content::DamageNodeKey`. This entry is kept for the audit
+   trail; the deferral is closed.
 
 2. **Audio identity — a new follow-up task.** `cs_sim::audio_events` defines
    `AudioEventId { session: u64, tick: Tick, producer: u32, sequence: u32 }`

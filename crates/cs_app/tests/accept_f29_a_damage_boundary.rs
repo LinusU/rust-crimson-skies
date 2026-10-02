@@ -23,12 +23,17 @@ use cs_sim::damage::{
 use cs_types::Tick;
 use cs_types::content::{ContentKind, Resolved};
 use cs_types::evidence::ClaimId;
+use cs_types::net::SessionId;
 
 const SESSION: u64 = 3;
 
+fn session(value: u64) -> SessionId {
+    SessionId::new(value).expect("a nonzero session generation")
+}
+
 fn actor(serial: u64) -> ActorId {
     ActorId {
-        session: SESSION,
+        session: session(SESSION),
         serial,
     }
 }
@@ -164,7 +169,7 @@ fn accept_f29_a_lowered_graph_resolves_a_single_kill() {
     let policy = lower_policy(&declared).expect("policy lowers");
 
     let target = actor(1);
-    let mut resolver = DamageResolver::new(SESSION, 1);
+    let mut resolver = DamageResolver::new(session(SESSION), 1);
     resolver
         .register_actor(target, graph, policy)
         .expect("registers");
@@ -172,7 +177,7 @@ fn accept_f29_a_lowered_graph_resolves_a_single_kill() {
     let hit = |producer: u32, attacker: ActorId| {
         HitEvent::try_new(
             HitEventId {
-                session: SESSION,
+                session: session(SESSION),
                 tick: Tick(9),
                 producer,
                 sequence: 0,

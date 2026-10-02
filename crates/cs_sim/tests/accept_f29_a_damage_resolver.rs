@@ -25,13 +25,18 @@ use cs_sim::damage::{
 use cs_types::Tick;
 use cs_types::content::{Known, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
+use cs_types::net::SessionId;
 
 const SESSION: u64 = 7;
 const RESOLVER_PRODUCER: u32 = 1;
 
+fn session(value: u64) -> SessionId {
+    SessionId::new(value).expect("a nonzero session generation")
+}
+
 fn actor(serial: u64) -> ActorId {
     ActorId {
-        session: SESSION,
+        session: session(SESSION),
         serial,
     }
 }
@@ -53,7 +58,7 @@ fn hit(
 ) -> HitEvent {
     HitEvent::try_new(
         HitEventId {
-            session: SESSION,
+            session: session(SESSION),
             tick: Tick(tick),
             producer,
             sequence,
@@ -68,7 +73,7 @@ fn hit(
 }
 
 fn resolver(policy: DamagePolicy, target: ActorId) -> DamageResolver {
-    let mut resolver = DamageResolver::new(SESSION, RESOLVER_PRODUCER);
+    let mut resolver = DamageResolver::new(session(SESSION), RESOLVER_PRODUCER);
     resolver
         .register_actor(target, synthetic_airframe_graph(), policy)
         .expect("the synthetic actor registers");
@@ -556,12 +561,12 @@ fn accept_f29_a_foreign_sessions_and_ticks_are_refused() {
     let mut resolver = resolver(first_lethal(), target);
 
     let mut foreign = hit(1, 0, None, target, "hull", DamageChannel::Internal, 10.0, 5);
-    foreign.id.session = SESSION + 1;
+    foreign.id.session = session(SESSION + 1);
     assert_eq!(
         resolver.resolve(Tick(5), &[foreign]),
         Err(DamageError::ForeignSession {
-            expected: SESSION,
-            found: SESSION + 1,
+            expected: session(SESSION),
+            found: session(SESSION + 1),
         })
     );
 
@@ -586,14 +591,14 @@ fn accept_f29_a_foreign_sessions_and_ticks_are_refused() {
     );
 
     let foreign_actor = ActorId {
-        session: SESSION + 1,
+        session: session(SESSION + 1),
         serial: 1,
     };
     assert_eq!(
         resolver.register_actor(foreign_actor, synthetic_airframe_graph(), first_lethal()),
         Err(DamageError::ForeignSession {
-            expected: SESSION,
-            found: SESSION + 1,
+            expected: session(SESSION),
+            found: session(SESSION + 1),
         })
     );
     assert_eq!(
@@ -642,7 +647,7 @@ fn accept_f29_a_unknown_targets_and_nodes_are_refused_visibly() {
         vec![
             &DamageEventKind::HitRefused {
                 hit: HitEventId {
-                    session: SESSION,
+                    session: session(SESSION),
                     tick: Tick(5),
                     producer: 1,
                     sequence: 0,
@@ -651,7 +656,7 @@ fn accept_f29_a_unknown_targets_and_nodes_are_refused_visibly() {
             },
             &DamageEventKind::HitRefused {
                 hit: HitEventId {
-                    session: SESSION,
+                    session: session(SESSION),
                     tick: Tick(5),
                     producer: 1,
                     sequence: 1,
@@ -715,7 +720,7 @@ fn accept_f29_a_unknown_integrity_blocks_the_hit_visibly() {
         .expect("graph with an unknown pool still validates");
 
     let target = actor(1);
-    let mut resolver = DamageResolver::new(SESSION, RESOLVER_PRODUCER);
+    let mut resolver = DamageResolver::new(session(SESSION), RESOLVER_PRODUCER);
     resolver
         .register_actor(target, graph, first_lethal())
         .expect("registers");
@@ -740,7 +745,7 @@ fn accept_f29_a_unknown_integrity_blocks_the_hit_visibly() {
         kinds,
         vec![&DamageEventKind::HitBlocked {
             hit: HitEventId {
-                session: SESSION,
+                session: session(SESSION),
                 tick: Tick(5),
                 producer: 1,
                 sequence: 0,
@@ -874,7 +879,7 @@ fn accept_f29_a_graph_validation_rejects_malformed_graphs() {
 #[test]
 fn accept_f29_a_hit_inputs_reject_non_finite_and_negative_damage() {
     let id = HitEventId {
-        session: SESSION,
+        session: session(SESSION),
         tick: Tick(5),
         producer: 1,
         sequence: 0,
@@ -964,7 +969,7 @@ fn accept_f29_a_actors_resolve_under_their_own_declared_rules() {
         attribution: AttributionRule::GreatestDamage,
     };
 
-    let mut resolver = DamageResolver::new(SESSION, RESOLVER_PRODUCER);
+    let mut resolver = DamageResolver::new(session(SESSION), RESOLVER_PRODUCER);
     resolver
         .register_actor(aircraft, synthetic_airframe_graph(), first_lethal())
         .expect("aircraft registers");

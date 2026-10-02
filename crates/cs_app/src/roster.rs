@@ -349,6 +349,7 @@ mod tests {
     };
     use cs_types::content::{ContentKind, Known, Origin, Provenance};
     use cs_types::evidence::ClaimId;
+    use cs_types::net::SessionId;
 
     fn id(kind: ContentKind, key: &str) -> ContentId {
         ContentId::from_source(kind, key).expect("test id is valid")
@@ -524,13 +525,13 @@ mod tests {
     fn accept_f33_a_roster_binding_is_generation_stamped() {
         let binding = RosterBinding {
             actor: ActorId {
-                session: 3,
+                session: SessionId::new(3).expect("a nonzero session generation"),
                 serial: 2,
             },
             roster: id(ContentKind::IaScenario, "synthetic.roster"),
             generation: SceneGeneration(4),
         };
-        assert_eq!(binding.actor.session, 3);
+        assert_eq!(binding.actor.session.get(), 3);
         assert_eq!(binding.roster.as_str(), "ia_scenario/synthetic.roster");
         assert_eq!(binding.generation, SceneGeneration(4));
 

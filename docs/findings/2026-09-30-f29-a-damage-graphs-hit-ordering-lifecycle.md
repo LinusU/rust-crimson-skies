@@ -132,6 +132,9 @@ project design** (`Origin::Designed`/`Origin::SyntheticFixture`,
    by F20-A), and `DamageNodeKey` duplicates the content-key grammar in
    both `cs_sim` and `cs_content` because `cs_types` is outside this
    task's owner paths. Migrate to the shared types when they exist.
+   **Resolved by #442** (`T-DAMAGE-IDENTITY`): `cs_types::net` and
+   `cs_types::content` now own `ActorId`/`EventId` and `DamageNodeKey`,
+   and `cs_sim::damage`, `cs_content::damage` and `cs_app` re-use them.
 2. **No actor spawn/registration wiring.** The resolver is a plain
    session object; which producer emits `HitEvent`s (weapons F27/F28,
    contacts F23-B), how `DamageActorBinding`s spawn, and where

@@ -37,13 +37,18 @@ use cs_sim::weapons::{
 use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind, Origin, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
+use cs_types::net::SessionId;
 use cs_types::space::{UnitVec3, WorldPosition};
 
 const SESSION: u64 = 13;
 
+fn session(value: u64) -> SessionId {
+    SessionId::new(value).expect("a nonzero session generation")
+}
+
 fn actor(serial: u64) -> ActorId {
     ActorId {
-        session: SESSION,
+        session: session(SESSION),
         serial,
     }
 }
@@ -527,7 +532,7 @@ fn accept_f27_a_binding_records_are_generation_stamped() {
         loadout: loadout.subject().clone(),
         generation: SceneGeneration(4),
     };
-    assert_eq!(binding.actor.session, SESSION);
+    assert_eq!(binding.actor.session, session(SESSION));
     assert_eq!(
         binding.loadout.as_str(),
         "loadout/synthetic.fixture_loadout"

@@ -23,7 +23,12 @@ use cs_sim::ai::combat::{
 use cs_sim::damage::{ActorId, HitEventId};
 use cs_sim::targeting::Allegiance;
 use cs_types::Tick;
+use cs_types::net::SessionId;
 use cs_types::space::WorldPosition;
+
+fn session(value: u64) -> SessionId {
+    SessionId::new(value).expect("a nonzero session generation")
+}
 
 /// The protected charge of the AC01 scenario: the bomber the escort is
 /// assigned to defend.
@@ -781,7 +786,7 @@ fn accept_f32_a_a_real_damage_event_destroys_the_charge_and_its_id_is_the_threat
     let planner = synthetic_combat_planner();
     let assignment = escort_assignment();
 
-    let mut resolver = DamageResolver::new(SYNTHETIC_SESSION, 2);
+    let mut resolver = DamageResolver::new(session(SYNTHETIC_SESSION), 2);
     resolver
         .register_actor(
             synthetic_actor(CHARGE),
@@ -793,7 +798,7 @@ fn accept_f32_a_a_real_damage_event_destroys_the_charge_and_its_id_is_the_threat
         .expect("the charge is a synthetic-session actor");
     let hit = HitEvent::try_new(
         HitEventId {
-            session: SYNTHETIC_SESSION,
+            session: session(SYNTHETIC_SESSION),
             tick: Tick(AC01_ATTACK_TICK),
             producer: 2,
             sequence: 0,

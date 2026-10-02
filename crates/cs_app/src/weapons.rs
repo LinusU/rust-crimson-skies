@@ -51,9 +51,9 @@ use crate::scene::SceneGeneration;
 /// Why a declared weapon record could not be lowered to the runtime records.
 #[derive(Clone, Debug, PartialEq)]
 pub enum WeaponLowerError {
-    /// A declared mount key could not form a runtime key. Unreachable while
-    /// both crates apply the same grammar, kept so the boundary stays
-    /// honest if they ever diverge.
+    /// A declared mount key could not form a runtime key. Retained for
+    /// signature compatibility: declared and runtime keys are now the one
+    /// shared [`cs_types::content::DamageNodeKey`], so this is unreachable.
     MountKey {
         /// The declared key text.
         key: String,
@@ -244,14 +244,11 @@ pub struct WeaponActorBinding {
 fn lower_mount_key(
     key: &cs_content::damage::DamageNodeKey,
 ) -> Result<DamageNodeKey, WeaponLowerError> {
-    // Both crates apply the same key grammar, so a declared key always
-    // forms a runtime key; the boundary maps by text and a failure here
-    // would mean the two grammars had diverged — a refused lower, not a
-    // crash, matches `cs_app::damage`'s `lower_key`.
-    DamageNodeKey::new(key.as_str()).map_err(|source| WeaponLowerError::MountKey {
-        key: key.as_str().to_owned(),
-        source,
-    })
+    // The declared and runtime mount keys are now one shared
+    // `cs_types::content::DamageNodeKey`, so lowering is an identity map.
+    // The `Result` is kept for the boundary's existing signatures; this
+    // cannot fail.
+    Ok(key.clone())
 }
 
 fn lower_mount_kind(kind: DeclaredGunMountKind) -> GunMountKind {

@@ -26,13 +26,18 @@ use cs_sim::targeting::{
 };
 use cs_types::content::{ContentId, ContentKind, Known, Origin, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
+use cs_types::net::SessionId;
 use cs_types::space::Radians;
 
 const SESSION: u64 = 5;
 
+fn session(value: u64) -> SessionId {
+    SessionId::new(value).expect("a nonzero session generation")
+}
+
 fn actor(serial: u64) -> ActorId {
     ActorId {
-        session: SESSION,
+        session: session(SESSION),
         serial,
     }
 }
@@ -208,7 +213,7 @@ fn accept_f30_a_targetable_binding_is_generation_stamped() {
         rules: declared.subject().clone(),
         generation: SceneGeneration(3),
     };
-    assert_eq!(binding.actor.session, SESSION);
+    assert_eq!(binding.actor.session, session(SESSION));
     assert_eq!(binding.rules.as_str(), "ia_scenario/synthetic.target-range");
     assert_eq!(binding.generation, SceneGeneration(3));
 

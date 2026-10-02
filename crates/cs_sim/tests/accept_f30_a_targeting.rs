@@ -27,13 +27,18 @@ use cs_sim::targeting::{
 };
 use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind};
+use cs_types::net::SessionId;
 use cs_types::space::{Radians, UnitVec3, WorldPosition};
 
 const SESSION: u64 = 7;
 
+fn session(value: u64) -> SessionId {
+    SessionId::new(value).expect("a nonzero session generation")
+}
+
 fn actor(serial: u64) -> ActorId {
     ActorId {
-        session: SESSION,
+        session: session(SESSION),
         serial,
     }
 }
@@ -304,7 +309,7 @@ fn accept_f30_a_threat_cues_come_from_authoritative_attack_events() {
         victim: actor(1),
         at: Tick(tick),
         evidence: HitEventId {
-            session: SESSION,
+            session: session(SESSION),
             tick: Tick(tick),
             producer: attacker as u32,
             sequence,
@@ -370,7 +375,7 @@ fn accept_f30_a_threat_cues_come_from_authoritative_attack_events() {
     // Attacks must be session-qualified and name registered actors.
     let foreign = cs_sim::targeting::AttackEvent {
         attacker: ActorId {
-            session: SESSION + 1,
+            session: session(SESSION + 1),
             serial: 1,
         },
         ..attack(9, 20, 1)
@@ -383,7 +388,7 @@ fn accept_f30_a_threat_cues_come_from_authoritative_attack_events() {
         })
     );
     let mut foreign_evidence = attack(9, 20, 1);
-    foreign_evidence.evidence.session = SESSION + 1;
+    foreign_evidence.evidence.session = session(SESSION + 1);
     assert_eq!(
         store.record_attack(foreign_evidence),
         Err(TargetError::ForeignSession {
@@ -549,7 +554,7 @@ fn accept_f30_a_foreign_session_and_unknown_actors_are_refused() {
 
     let foreign = cs_sim::targeting::TargetRecord {
         actor: ActorId {
-            session: SESSION + 1,
+            session: session(SESSION + 1),
             serial: 1,
         },
         ..synthetic_roster(SESSION)[0].clone()

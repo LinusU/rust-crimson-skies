@@ -254,8 +254,7 @@ impl InteractionId {
     /// Whether both actors belong to this interaction's session generation.
     #[must_use]
     pub const fn is_same_generation(&self) -> bool {
-        self.initiator.session.get() == self.session
-            && self.target.session.get() == self.session
+        self.initiator.session.get() == self.session && self.target.session.get() == self.session
     }
 }
 

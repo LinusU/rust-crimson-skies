@@ -458,12 +458,14 @@ impl DamageNodeKey {
     /// [`DamageNodeKeyError`] when the key is empty, too long, carries a
     /// character outside `[a-z0-9._-]` or has no alphanumeric.
     pub fn new(key: &str) -> Result<Self, DamageNodeKeyError> {
-        normalize_grammar(key, MAX_NODE_KEY_LEN).map(Self).map_err(|error| match error {
-            KeyGrammarError::Empty => DamageNodeKeyError::Empty,
-            KeyGrammarError::TooLong { len } => DamageNodeKeyError::TooLong { len },
-            KeyGrammarError::BadCharacter { ch } => DamageNodeKeyError::BadCharacter { ch },
-            KeyGrammarError::NoAlphanumeric => DamageNodeKeyError::NoAlphanumeric,
-        })
+        normalize_grammar(key, MAX_NODE_KEY_LEN)
+            .map(Self)
+            .map_err(|error| match error {
+                KeyGrammarError::Empty => DamageNodeKeyError::Empty,
+                KeyGrammarError::TooLong { len } => DamageNodeKeyError::TooLong { len },
+                KeyGrammarError::BadCharacter { ch } => DamageNodeKeyError::BadCharacter { ch },
+                KeyGrammarError::NoAlphanumeric => DamageNodeKeyError::NoAlphanumeric,
+            })
     }
 
     /// The normalized key text.

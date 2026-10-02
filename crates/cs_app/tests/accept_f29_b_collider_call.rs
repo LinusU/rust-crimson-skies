@@ -88,7 +88,7 @@ const THROUGH_X_M: f32 = 1.5;
 
 fn actor() -> ActorId {
     ActorId {
-        session: SESSION,
+        session: session(SESSION),
         serial: ACTOR_SERIAL,
     }
 }
@@ -123,7 +123,7 @@ fn generation() -> SceneGeneration {
 
 /// A resolver with the synthetic airframe registered under the declared rule.
 fn resolver() -> DamageResolver {
-    let mut resolver = DamageResolver::new(SESSION, 1);
+    let mut resolver = DamageResolver::new(session(SESSION), 1);
     resolver
         .register_actor(
             actor(),
@@ -152,7 +152,7 @@ fn resolve_destroyed(
 fn hit(node: &DamageNodeKey, damage: f64) -> HitEvent {
     HitEvent::try_new(
         HitEventId {
-            session: SESSION,
+            session: session(SESSION),
             tick: Tick(0),
             producer: 1,
             sequence: 0,

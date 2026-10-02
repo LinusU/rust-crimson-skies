@@ -148,7 +148,7 @@
 //! (`specs/F33-wingmates-factions-neutral-traffic-and-pilot-identity.md`,
 //! stage `### F33-A`): the per-session [`allies::AlliesRoster`] whose
 //! [`allies::AllyRecord`] keeps [`allies::PilotId`], [`allies::FactionId`],
-//! [`allies::GeometryId`] and the damage-scoped [`damage::ActorId`] as four
+//! [`allies::GeometryId`] and the shared [`damage::ActorId`] identity as four
 //! distinct types; the [`allies::WingmateAssignment`] store and
 //! [`allies::SurvivabilityPolicy`]; and [`allies::AlliesRoster::capture`],
 //! the ownership transaction that changes an actor's faction and returns the

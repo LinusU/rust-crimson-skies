@@ -27,7 +27,8 @@ use cs_inspect::routes::{RouteProjectionError, project_route};
 use cs_sim::ai::navigation::{
     FollowPlan, NavState, NavigationCadence, NavigationSet, Navigator, ReferenceFrameSample,
     RouteTermination as NavRouteTermination, SYNTHETIC_PURSUIT_DT_S, SYNTHETIC_PURSUIT_SEED,
-    SYNTHETIC_PURSUIT_SESSION, follow_route, synthetic_maneuver_envelope,
+    SYNTHETIC_PURSUIT_SESSION, SYNTHETIC_PURSUIT_SESSION_ID, follow_route,
+    synthetic_maneuver_envelope,
 };
 use cs_types::content::{ContentId, ContentKind, Known, Origin, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
@@ -121,7 +122,7 @@ fn accept_t447_a_projected_loop_route_is_flown_for_several_laps() {
     .expect("the synthetic envelope and cadence are valid");
     let mut set = NavigationSet::new(SYNTHETIC_PURSUIT_SESSION, SYNTHETIC_PURSUIT_SEED, navigator);
     let actor = cs_sim::damage::ActorId {
-        session: SYNTHETIC_PURSUIT_SESSION,
+        session: SYNTHETIC_PURSUIT_SESSION_ID,
         serial: 1,
     };
     set.register(actor).expect("the fixture actor registers");

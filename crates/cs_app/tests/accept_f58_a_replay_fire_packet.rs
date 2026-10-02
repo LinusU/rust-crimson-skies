@@ -95,13 +95,13 @@ fn accept_f58_a_replaying_a_prior_session_fire_packet_spawns_no_projectile() {
         live,
         Tick(10),
         SimActorId {
-            session: live.get(),
+            session: live,
             serial: 4,
         },
     );
     let before = resolver
         .state(&SimActorId {
-            session: live.get(),
+            session: live,
             serial: 4,
         })
         .expect("registered")
@@ -153,7 +153,7 @@ fn accept_f58_a_replaying_a_prior_session_fire_packet_spawns_no_projectile() {
     assert_eq!(
         resolver
             .state(&SimActorId {
-                session: live.get(),
+                session: live,
                 serial: 4,
             })
             .expect("registered")
@@ -198,7 +198,7 @@ fn accept_f58_a_a_replayed_live_fire_packet_spawns_only_once() {
         live,
         Tick(7),
         SimActorId {
-            session: live.get(),
+            session: live,
             serial: 1,
         },
     );

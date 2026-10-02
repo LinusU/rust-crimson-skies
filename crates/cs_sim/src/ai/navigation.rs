@@ -2847,7 +2847,8 @@ mod tests {
         );
 
         let foreign = ActorId {
-            session: SYNTHETIC_PURSUIT_SESSION + 1,
+            session: SessionId::new(SYNTHETIC_PURSUIT_SESSION + 1)
+                .expect("a nonzero session generation"),
             serial: 9,
         };
         assert_eq!(
@@ -2860,7 +2861,7 @@ mod tests {
 
         let route = synthetic_pursuit_route();
         let unknown = ActorId {
-            session: SYNTHETIC_PURSUIT_SESSION,
+            session: SYNTHETIC_PURSUIT_SESSION_ID,
             serial: 42,
         };
         let request = PursuitRequest {

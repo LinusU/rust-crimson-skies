@@ -93,9 +93,10 @@ impl fmt::Display for PeerId {
 /// (`docs/contracts/UI-NETWORK.md`: "Interpolation buffers separate actor
 /// generations").
 ///
-/// `cs_sim::damage` and `cs_script::ir` currently carry equivalent
-/// damage/script-scoped realizations of this shape; migrating them onto this
-/// shared type is follow-up work recorded in the F29-A findings.
+/// `cs_sim::damage` uses this type directly for damage actors:
+/// `cs_sim::damage::ActorId` *is* this type (task #442). `cs_script::ir`
+/// still carries a script-scoped realization of the shape; migrating it is
+/// separate follow-up work recorded in the F29-A findings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ActorId {
     /// The session generation the actor belongs to.

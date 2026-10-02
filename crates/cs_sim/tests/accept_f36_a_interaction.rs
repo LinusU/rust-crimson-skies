@@ -22,6 +22,11 @@ use cs_sim::interaction::{
     synthetic_docking_transaction, synthetic_hook_trajectory,
 };
 use cs_types::Tick;
+use cs_types::net::SessionId;
+
+fn session(value: u64) -> SessionId {
+    SessionId::new(value).expect("a nonzero session generation")
+}
 
 /// The slow, aligned approach the minimum scenario's positive case reuses:
 /// the initiator sits 3 m behind the hook and closes at 1 m/s relative.
@@ -390,11 +395,11 @@ fn accept_f36_a_id_binds_actors_and_session() {
         7,
         3,
         ActorId {
-            session: 7,
+            session: session(7),
             serial: 1,
         },
         ActorId {
-            session: 7,
+            session: session(7),
             serial: 2,
         },
     );
@@ -403,11 +408,11 @@ fn accept_f36_a_id_binds_actors_and_session() {
         7,
         3,
         ActorId {
-            session: 7,
+            session: session(7),
             serial: 1,
         },
         ActorId {
-            session: 8,
+            session: session(8),
             serial: 9,
         },
     );
@@ -418,11 +423,11 @@ fn accept_f36_a_id_binds_actors_and_session() {
             7,
             1,
             ActorId {
-                session: 7,
+                session: session(7),
                 serial: 1
             },
             ActorId {
-                session: 7,
+                session: session(7),
                 serial: 2
             }
         )

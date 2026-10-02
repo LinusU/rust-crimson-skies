@@ -83,6 +83,7 @@ use cs_sim::damage::ActorId;
 use cs_types::Tick;
 use cs_types::content::{ContentId, Provenance, Resolved};
 use cs_types::install::RelativePath;
+use cs_types::net::SessionId;
 
 use crate::catalog::{json_string, report_run, write_atomic};
 
@@ -921,7 +922,7 @@ fn build_follow_report() -> Result<BuiltFollowReport, String> {
     let torn_down = removed && set.is_empty();
     let retry_session = SYNTHETIC_PURSUIT_SESSION + 1;
     let retry_actor = ActorId {
-        session: retry_session,
+        session: SessionId::new(retry_session).expect("a nonzero retry session generation"),
         serial: 1,
     };
     let mut retry = NavigationSet::new(retry_session, SYNTHETIC_PURSUIT_SEED, *set.navigator());

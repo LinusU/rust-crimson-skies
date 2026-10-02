@@ -690,7 +690,7 @@ mod tests {
 
     fn actor(serial: u64) -> ActorId {
         ActorId {
-            session: SESSION,
+            session: SessionId::new(SESSION).expect("a nonzero session generation"),
             serial,
         }
     }
@@ -769,7 +769,7 @@ mod tests {
         assert_eq!(
             roster.capture(
                 ActorId {
-                    session: SESSION + 1,
+                    session: SessionId::new(SESSION + 1).expect("a nonzero session generation"),
                     serial: 9
                 },
                 synthetic_faction("synthetic.nathan"),

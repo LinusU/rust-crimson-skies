@@ -87,9 +87,9 @@ use crate::scene::{AirframeDamageState, SceneGeneration};
 /// Why a declared graph could not be lowered to the runtime records.
 #[derive(Clone, Debug, PartialEq)]
 pub enum DamageLowerError {
-    /// A declared node key could not form a runtime key — unreachable
-    /// while both crates apply the same grammar, kept so the boundary
-    /// stays honest if they ever diverge.
+    /// A declared node key could not form a runtime key. Retained for
+    /// signature compatibility: declared and runtime keys are now the one
+    /// shared [`cs_types::content::DamageNodeKey`], so this is unreachable.
     NodeKey {
         /// The declared key text.
         key: String,
@@ -137,9 +137,10 @@ impl std::error::Error for DamageLowerError {}
 ///
 /// # Errors
 ///
-/// [`DamageLowerError::NodeKey`] when a declared key cannot form a runtime
-/// key, [`DamageLowerError::Graph`] when
+/// [`DamageLowerError::Graph`] when
 /// [`cs_sim::damage::DamageGraph::try_new`] refuses the assembled record.
+/// Node keys are no longer re-validated here: declared and runtime node keys
+/// are the one shared [`cs_types::content::DamageNodeKey`].
 pub fn lower_graph(graph: &DeclaredDamageGraph) -> Result<DamageGraph, DamageLowerError> {
     let nodes = graph
         .nodes()
@@ -211,10 +212,11 @@ fn lower_node(node: &DeclaredDamageNode) -> Result<DamageNode, DamageLowerError>
 }
 
 fn lower_key(key: &cs_content::damage::DamageNodeKey) -> Result<DamageNodeKey, DamageLowerError> {
-    DamageNodeKey::new(key.as_str()).map_err(|source| DamageLowerError::NodeKey {
-        key: key.as_str().to_owned(),
-        source,
-    })
+    // The declared and runtime node keys are now one shared
+    // `cs_types::content::DamageNodeKey`, so lowering is an identity map.
+    // The `Result` is kept for the boundary's existing signatures; this
+    // cannot fail.
+    Ok(key.clone())
 }
 
 /// A scene binding without its [`SceneNodeId`] wrapper, keeping the
@@ -936,11 +938,7 @@ pub fn apply_damage_state(
     let mut outcome = DamageConsumerOutcome::default();
 
     if actor.session != resolver.session() {
-        refusals::foreign_session(
-            &mut outcome,
-            resolver.session().get(),
-            actor.session.get(),
-        );
+        refusals::foreign_session(&mut outcome, resolver.session().get(), actor.session.get());
         return outcome;
     }
     let Some(graph) = resolver.graph(&actor) else {

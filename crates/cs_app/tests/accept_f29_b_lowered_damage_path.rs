@@ -27,13 +27,18 @@ use cs_sim::damage::{
 use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind, Known, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
+use cs_types::net::SessionId;
 
 const SESSION: u64 = 23;
 const PRODUCER: u32 = 1;
 
+fn session(value: u64) -> SessionId {
+    SessionId::new(value).expect("a nonzero session generation")
+}
+
 fn actor(serial: u64) -> ActorId {
     ActorId {
-        session: SESSION,
+        session: session(SESSION),
         serial,
     }
 }
@@ -45,7 +50,7 @@ fn key(name: &str) -> DamageNodeKey {
 fn hit(sequence: u32, node: &str, channel: DamageChannel, damage: f64) -> HitEvent {
     HitEvent::try_new(
         HitEventId {
-            session: SESSION,
+            session: session(SESSION),
             tick: Tick(2),
             producer: 1,
             sequence,
@@ -62,7 +67,7 @@ fn hit(sequence: u32, node: &str, channel: DamageChannel, damage: f64) -> HitEve
 fn registered(declared: &DeclaredDamageGraph) -> DamageResolver {
     let graph = lower_graph(declared).expect("the declared graph lowers");
     let policy = lower_policy(declared).expect("the declared policy lowers");
-    let mut resolver = DamageResolver::new(SESSION, PRODUCER);
+    let mut resolver = DamageResolver::new(session(SESSION), PRODUCER);
     resolver
         .register_actor(actor(1), graph, policy)
         .expect("the lowered actor registers");

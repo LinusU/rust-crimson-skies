@@ -29,6 +29,7 @@ use cs_sim::interaction::{
 use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind, Known, Origin, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
+use cs_types::net::SessionId;
 
 fn claim(id: &str) -> ClaimId {
     ClaimId::new(id).expect("the test claim id is valid")
@@ -43,7 +44,10 @@ fn designed(value: f64) -> Resolved<f64> {
 }
 
 fn actor(serial: u64) -> ActorId {
-    ActorId { session: 7, serial }
+    ActorId {
+        session: SessionId::new(7).expect("a nonzero session generation"),
+        serial,
+    }
 }
 
 fn identity() -> InteractionId {

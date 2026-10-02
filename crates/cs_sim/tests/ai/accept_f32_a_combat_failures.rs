@@ -20,11 +20,16 @@ use cs_sim::ai::combat::{
 use cs_sim::damage::{ActorId, DamageNodeKey, HitEventId};
 use cs_sim::targeting::Allegiance;
 use cs_types::Tick;
+use cs_types::net::SessionId;
 use cs_types::space::WorldPosition;
 
 const CHARGE: u64 = 10;
 const ATTACKER: u64 = 2;
 const BYSTANDER: u64 = 5;
+
+fn session(value: u64) -> SessionId {
+    SessionId::new(value).expect("a nonzero session generation")
+}
 
 fn position(x: f64) -> WorldPosition {
     WorldPosition::try_new([x, 0.0, 0.0]).expect("the fixture position is finite")
@@ -91,7 +96,7 @@ fn accept_f32_a_foreign_session_identities_are_refused() {
     let assignment = escort_assignment();
     let candidates = candidates();
     let foreign = ActorId {
-        session: SYNTHETIC_SESSION + 1,
+        session: session(SYNTHETIC_SESSION + 1),
         serial: 1,
     };
 
@@ -112,7 +117,7 @@ fn accept_f32_a_foreign_session_identities_are_refused() {
     // A candidate from another session generation is refused too, even
     // behind a valid observer and with valid-looking evidence.
     let foreign_candidate = ActorId {
-        session: SYNTHETIC_SESSION + 1,
+        session: session(SYNTHETIC_SESSION + 1),
         serial: 9,
     };
     let mixed = vec![
@@ -156,7 +161,7 @@ fn accept_f32_a_foreign_session_identities_are_refused() {
             synthetic_actor(CHARGE),
             Tick(3_990),
             HitEventId {
-                session: SYNTHETIC_SESSION + 5,
+                session: session(SYNTHETIC_SESSION + 5),
                 tick: Tick(3_990),
                 producer: 2,
                 sequence: 0,
@@ -185,13 +190,13 @@ impl ThreatEvidenceForeign {
     fn build() -> cs_sim::ai::combat::ThreatEvidence {
         cs_sim::ai::combat::ThreatEvidence::new(
             ActorId {
-                session: SYNTHETIC_SESSION + 1,
+                session: session(SYNTHETIC_SESSION + 1),
                 serial: 9,
             },
             synthetic_actor(CHARGE),
             Tick(3_900),
             HitEventId {
-                session: SYNTHETIC_SESSION + 1,
+                session: session(SYNTHETIC_SESSION + 1),
                 tick: Tick(3_900),
                 producer: 2,
                 sequence: 0,
@@ -619,7 +624,7 @@ fn accept_f32_a_foreign_formation_leader_is_refused() {
     let facts = FormationFacts {
         formation: FormationId(1),
         leader: ActorId {
-            session: SYNTHETIC_SESSION + 2,
+            session: session(SYNTHETIC_SESSION + 2),
             serial: 0,
         },
         leader_alive: false,
@@ -645,7 +650,7 @@ fn accept_f32_a_foreign_formation_leader_is_refused() {
     let foreign_target = FormationFacts {
         leader: synthetic_actor(2),
         assigned_target: Some(ActorId {
-            session: SYNTHETIC_SESSION + 3,
+            session: session(SYNTHETIC_SESSION + 3),
             serial: 8,
         }),
         assigned_target_alive: true,
@@ -662,7 +667,7 @@ fn accept_f32_a_foreign_formation_leader_is_refused() {
         .expect_err("a foreign assigned target is refused");
     match err {
         CombatError::ForeignSession { actor, session } => {
-            assert_eq!(actor.session, SYNTHETIC_SESSION + 3);
+            assert_eq!(actor.session.get(), SYNTHETIC_SESSION + 3);
             assert_eq!(session, SYNTHETIC_SESSION);
         }
         other => panic!("expected a session refusal for the assigned target, got {other}"),
@@ -678,7 +683,7 @@ fn accept_f32_a_foreign_protected_actor_is_refused_without_a_lifecycle_report() 
     let planner = synthetic_combat_planner();
     let candidates = candidates();
     let foreign_charge = ActorId {
-        session: SYNTHETIC_SESSION + 4,
+        session: session(SYNTHETIC_SESSION + 4),
         serial: CHARGE,
     };
     let assignment =

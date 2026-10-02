@@ -27,12 +27,17 @@ use cs_sim::allies::{
 use cs_sim::damage::ActorId;
 use cs_types::content::{ContentId, ContentKind, Known, Origin, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
+use cs_types::net::SessionId;
 
 const SESSION: u64 = 11;
 
+fn session(value: u64) -> SessionId {
+    SessionId::new(value).expect("a nonzero session generation")
+}
+
 fn actor(serial: u64) -> ActorId {
     ActorId {
-        session: SESSION,
+        session: session(SESSION),
         serial,
     }
 }
@@ -154,7 +159,7 @@ fn accept_f33_a_capture_refuses_unknown_and_foreign_actors() {
     assert_eq!(
         roster.capture(
             ActorId {
-                session: SESSION + 1,
+                session: session(SESSION + 1),
                 serial: 9
             },
             lowered.player_faction.clone(),
@@ -255,7 +260,7 @@ fn accept_f33_a_roster_binding_is_generation_stamped() {
         roster: declared.subject().clone(),
         generation: SceneGeneration(6),
     };
-    assert_eq!(binding.actor.session, SESSION);
+    assert_eq!(binding.actor.session, session(SESSION));
     assert_eq!(binding.roster.as_str(), "ia_scenario/synthetic.roster");
     assert_eq!(binding.generation, SceneGeneration(6));
 
