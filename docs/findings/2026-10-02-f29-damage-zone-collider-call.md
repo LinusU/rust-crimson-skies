@@ -139,18 +139,20 @@ the production contact reporter or Avian's own marker; none calls
 
 ## Mutation probes
 
-Each probe edited one production line, ran
+Each probe edited one production line in `crates/cs_app/src/damage.rs`, ran
 `cargo test -p cs_app --locked --test accept_f29_b_collider_call`, recorded the
 failing tests and reverted the edit with `git checkout --`:
 
 | probe | edit | result |
 | --- | --- | --- |
-| the bridge decides nothing | `apply_damage_events` returns an empty report without applying | selection FAILED, the contact-sensitive tests |
-| the rule only removes | `zone_collider_decision` never returns `Restore` | the repair tests FAILED |
-| the refusal is swallowed | the `UnmanagedNode` arm returns without logging | the unmanaged test FAILED |
+| the bridge decides nothing | `apply_damage_events` iterates no events, applying nothing | 5 failed: `..._a_destroyed_zone_removes_the_collider_and_a_repair_restores_it`, `..._a_looping_clip_cannot_restore_a_destroyed_zones_collider`, `..._a_repair_under_a_still_hiding_clip_does_not_expose_the_node`, `..._applying_the_same_transition_twice_changes_nothing`, `..._an_unmanaged_zone_is_reported_not_swallowed` |
+| the rule only removes | the `Destroyed → Intact/Damaged` arm of `zone_collider_decision` returns `None` | `..._the_rule_ignores_non_destroying_transitions` failed |
+| the refusal is swallowed | the `UnmanagedNode` arm returns without logging | `..._an_unmanaged_zone_is_reported_not_swallowed` failed |
 
-(The implementer's mutation matrix is filled in during the checks run; see the
-handover.)
+Probe two also locates the boundary: `repair_damage_zone` is the repair path's
+explicit entry and decides `Restore` itself, so a broken rule arm is caught by
+the pure table test while the repair entry stays green; a bridge that applied
+nothing (probe one) fails every contact-sensitive test.
 
 ## Unknowns
 
