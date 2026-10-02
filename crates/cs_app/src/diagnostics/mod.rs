@@ -12,9 +12,9 @@
 //!   for speed), the hardware profile a budget is stated for and the budget
 //!   evaluation. A budget without a measured baseline is `Unset` and reports
 //!   [`scenario::Verdict::Unevaluated`], never a pass.
-//! * [`soak`] is AC01: the designed 60-minute mission / AI / menu soak, the
-//!   samples taken at each cycle's menu boundary and the evaluation that
-//!   bounds the memory trend and refuses any leaked entity, asset handle,
+//! * [`soak`] is AC01: the designed 60-minute mission / Instant Action / menu
+//!   soak, the samples taken at each cycle's menu boundary and the evaluation
+//!   that bounds the memory trend and refuses any leaked entity, asset handle,
 //!   audio loop or task.
 //!
 //! All numbers are authored development targets, not measurements of the

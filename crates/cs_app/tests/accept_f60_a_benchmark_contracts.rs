@@ -33,13 +33,38 @@ fn accept_f60_a_designed_soak_is_sixty_minutes_and_passes_when_flat() {
     assert!(
         plan.cycle
             .iter()
-            .any(|(p, _)| *p == SoakPhase::AiEngagement)
+            .any(|(p, _)| *p == SoakPhase::InstantAction)
     );
     // Flat after the one-off warm-up fill: the warm-up must not read as growth.
     let samples = synthetic_soak_samples(&plan, 0, 0);
     let report = evaluate_soak(&plan, MemoryTrendBound::DESIGNED, &samples).expect("judged");
     assert!(report.passed(), "{report:?}");
     assert_eq!(report.growth_bytes_per_hour, 0);
+}
+
+/// AC01 says "mission/IA/menu". `IA` is this project's abbreviation for
+/// Instant Action (F49), not an AI phase: the designed cycle is campaign
+/// mission, then an Instant Action mission, then the menu. This fails if the
+/// middle phase regresses to an AI-engagement reading.
+#[test]
+fn accept_f60_a_soak_cycle_is_mission_instant_action_menu() {
+    let plan = SoakPlan::designed();
+    let phases: Vec<SoakPhase> = plan.cycle.iter().map(|(p, _)| *p).collect();
+    assert_eq!(
+        phases,
+        vec![
+            SoakPhase::MissionPlay,
+            SoakPhase::InstantAction,
+            SoakPhase::MenuReturn
+        ]
+    );
+    assert_eq!(
+        plan.cycle
+            .iter()
+            .find(|(p, _)| *p == SoakPhase::InstantAction)
+            .map(|(_, t)| *t),
+        Some(2 * 60 * 120)
+    );
 }
 
 #[test]

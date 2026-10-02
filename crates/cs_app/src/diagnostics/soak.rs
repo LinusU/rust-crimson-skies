@@ -1,10 +1,11 @@
 //! The designed 60-minute soak and its memory-trend bound (F60-A, AC01).
 //!
-//! A soak is a repeating cycle of mission play, an AI engagement and a return
-//! to the menu. One [`SoakSample`] is taken at the end of every cycle's menu
-//! phase, where a correct game is back in a known state, so a counter that does
-//! not return to its baseline there is a leak (sheet rule 4), and the resident
-//! memory of those samples must not trend upward past the bound. The first
+//! A soak is a repeating cycle of campaign mission play, an Instant Action (IA)
+//! mission and a return to the menu. One [`SoakSample`] is taken at the end of
+//! every cycle's menu phase, where a correct game is back in a known state, so
+//! a counter that does not return to its baseline there is a leak (sheet rule
+//! 4), and the resident memory of those samples must not trend upward past the
+//! bound. The first
 //! `warmup_cycles` cycles are excluded from the trend because caches fill
 //! there; the leak baseline is the last warm-up sample.
 //!
@@ -18,7 +19,11 @@ use super::scenario::SIM_HZ;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SoakPhase {
     MissionPlay,
-    AiEngagement,
+    /// An Instant Action mission (F49). The sheet's AC01 names the
+    /// "mission/IA/menu" cycle; `IA` is this project's abbreviation for
+    /// Instant Action, not an AI phase. AI runs inside both mission phases and
+    /// must stay enabled (`scenario::SystemKind::Ai`).
+    InstantAction,
     MenuReturn,
 }
 
@@ -34,13 +39,15 @@ impl SoakPlan {
     /// Minimum soak length from the sheet, in ticks.
     pub const MIN_TICKS: u64 = 60 * 60 * SIM_HZ;
 
-    /// Ten 6-minute cycles (3 mission, 2 AI, 1 menu): exactly 60 minutes.
+    /// Ten 6-minute cycles (3 mission, 2 Instant Action, 1 menu): exactly 60
+    /// minutes. The sheet's AC01 names this cycle "mission/IA/menu"; `IA` is
+    /// Instant Action (F49).
     pub fn designed() -> Self {
         let minute = 60 * SIM_HZ;
         Self {
             cycle: vec![
                 (SoakPhase::MissionPlay, 3 * minute),
-                (SoakPhase::AiEngagement, 2 * minute),
+                (SoakPhase::InstantAction, 2 * minute),
                 (SoakPhase::MenuReturn, minute),
             ],
             cycles: 10,
@@ -64,7 +71,7 @@ impl SoakPlan {
     pub fn validate(&self) -> Result<(), SoakError> {
         let has = |p| self.cycle.iter().any(|(q, t)| *q == p && *t > 0);
         if !(has(SoakPhase::MissionPlay)
-            && has(SoakPhase::AiEngagement)
+            && has(SoakPhase::InstantAction)
             && has(SoakPhase::MenuReturn))
         {
             return Err(SoakError::PlanMissingPhase);
@@ -151,7 +158,12 @@ pub enum SoakError {
 impl fmt::Display for SoakError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::PlanMissingPhase => write!(f, "soak cycle lacks a mission, AI or menu phase"),
+            Self::PlanMissingPhase => {
+                write!(
+                    f,
+                    "soak cycle lacks a mission, Instant Action or menu phase"
+                )
+            }
             Self::PlanTooShort { ticks, required } => {
                 write!(f, "soak is {ticks} ticks, needs {required}")
             }

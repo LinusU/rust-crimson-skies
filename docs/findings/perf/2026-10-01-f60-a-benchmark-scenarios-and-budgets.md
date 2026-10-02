@@ -26,9 +26,13 @@ authored design; nothing was measured on any machine or on the original game.
 
 - **Reference machine:** the owner's machine (CPU, GPU, RAM, OS) is not
   recorded, so `HardwareProfile::baseline_measured` is false everywhere. Needs
-  an owner-supplied profile before F60-B/D can set measured budgets.
-- **"IA" in AC01:** read as an AI engagement phase. If the sheet meant
-  something else the phase list in `SoakPlan::designed` changes.
+  an owner-supplied profile before F60-B/D can set measured budgets. The exact
+  fields the owner must supply and how they are consumed are recorded in
+  `2026-10-02-f60-reference-machine-and-ia-reading.md` (#469).
+- **"IA" in AC01:** confirmed to be **Instant Action** (F49), not an AI
+  engagement. The soak's middle phase is an Instant Action mission; the
+  previous "AI engagement" reading was a misread and `SoakPhase` now names it
+  `InstantAction` (#469, see the reference-machine finding).
 - **Memory source:** which counter feeds `resident_bytes` (process RSS vs
   allocator) is decided by F60-B instrumentation.
 - Platform smoke (AC03) and device-loss/focus/resize/sleep (AC04) are F60-C/D.
