@@ -195,6 +195,9 @@
 //! `configure` seam drives the whole path. The mission-marker consumer of
 //! [`animation::AnimationLog`] is still absent (the mission/objective layers
 //! are F37/F39) and is filed as a follow-up rather than stubbed.
+//! `### F20-C.04` gives the verdict's collider half its reader in
+//! [`physics::collider`], so the clip's half of the verdict now reaches the
+//! simulation and the animation path still writes nothing but its own record.
 //!
 //! [`camera`] is the F21-A camera boundary
 //! (`specs/F21-cameras-cockpit-views-and-spyglass.md`, stage `### F21-A`):
@@ -241,7 +244,15 @@
 //! `### F23-A`): the fixed-rate schedule adapter, the one-tick force/torque
 //! request queue and the tick/integration ledger, plus a minimal synthetic
 //! fixture. It is the only place the pinned Avian force accumulator is driven;
-//! body creation, sweeps and kinematic transitions are F23-B.
+//! body creation, sweeps and kinematic transitions are F23-B. Stage
+//! `### F20-C.04` adds [`physics::collider`], the collision-side consumer of
+//! the animation layer's visibility verdict:
+//! [`physics::NodeColliderPresence`] is the record this layer owns for a node's
+//! collider, [`physics::apply_collider_presence`] merges the composed
+//! [`animation::ColliderVerdict`] into it and projects it onto Avian's
+//! `ColliderDisabled` marker, and a damage removal recorded there is terminal
+//! for the pass, so no clip verdict can re-enable a collider the damage side
+//! removed.
 //!
 //! [`weapons`] is the F27-A weapon boundary
 //! (`specs/F27-guns-ammunition-hardpoints-and-ballistic-hits.md`, stage
