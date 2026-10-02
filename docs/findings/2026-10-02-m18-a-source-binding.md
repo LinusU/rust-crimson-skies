@@ -291,6 +291,19 @@ either side — it now names exactly `M09`, `M10`, `M11`, `M14`, `M15`, `M20`,
 `M22` and `M23`. Because the rebase overlapped the branch's own files, the
 full check set was re-run rather than the lighter one.
 
+**Two more rebases were needed at review.** The ninth, onto `2b8b0f4`
+(F05-D's ROF length-semantics note, docs only), and the tenth, onto `e2b93ab`
+(T374, which pinned the Win32 string-table numbering and corrected the
+`string_id` docs). T374 touched `crates/cs_formats/src/pe_resources.rs`,
+`crates/cs_formats/tests/string_id.rs` and `docs/` — none of this stage's
+files, and no `Cargo.toml` or `Cargo.lock` — so the owner directive of
+2026-10-01 permits the lighter check set after it, which was used: `cargo fmt
+--check`, `clippy -D warnings` and the `accept_m18_a_` selection with
+`--include-ignored`, all 0, the selection 13/13. T374's `string_id` body is
+unchanged (the commit is a doc comment and two tests), which matters here
+because M18's localized row ids come from it; M18's row ids measured the same
+after the rebase.
+
 **A seventh rebase was needed at review**, onto `ae8454e`, which brought in
 M10-A and the M16-A-FU2 reviewer-identity check. See the review section above.
 
