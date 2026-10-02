@@ -211,6 +211,21 @@ Three smaller things were also fixed in review:
   `M14`, `M15`, `M20`, `M22` and `M23`. After the resolution there are 16
   evidence harnesses, 30 test-name constants and 16 `m*_a` module
   declarations, with no duplicate.
+- A **third** rebase, onto `ae8454e`, brought in M10-A plus the M16-A-FU2
+  reviewer-identity work (a committed snapshot of the Rally review facts and
+  `tools/tests/test_evidence_review_identity.py`, which resolves every
+  harness `review.identity` literal against it). The three overlapping files
+  conflicted again and were resolved by keeping both sides. The README's "not
+  here yet" list was again re-derived from the directory: with M10 bound it now
+  names exactly `M09`, `M11`, `M14`, `M15`, `M20`, `M22` and `M23`.
+  `tools/tests/test_evidence_review_identity.py` reports M18-A as an advisory
+  "no Rally review facts in the snapshot yet" note, exactly as it does for
+  M10-A, M16-A-FU1 and M17-A, and passes. M18-A does not add itself to
+  `docs/findings/2026-10-02-m16-a-fu2-rally-review-snapshot.json`: that file
+  belongs to another task, it records a `merge_event` that has not happened for
+  M18-A yet, and filling it in now would be writing a review fact that does
+  not exist. Its own report names the two actors that really ran, which is what
+  the check enforces.
 - A **second** rebase, onto `35e325b`, brought in M16-A-FU1 (#478), which
   changed `SourceBinding` — a new `title_enclosure` field — and re-pinned every
   binding that had landed after the FU1 branch was cut. M18 is one of those,
@@ -274,6 +289,9 @@ and 16 `m*_a` module declarations, with no duplicate; the
 either side — it now names exactly `M09`, `M10`, `M11`, `M14`, `M15`, `M20`,
 `M22` and `M23`. Because the rebase overlapped the branch's own files, the
 full check set was re-run rather than the lighter one.
+
+**A seventh rebase was needed at review**, onto `ae8454e`, which brought in
+M10-A and the M16-A-FU2 reviewer-identity check. See the review section above.
 
 **A sixth rebase was needed at review**, onto `35e325b`, which brought in
 M16-A-FU1's title-span fix and its re-pinning of every binding that landed
