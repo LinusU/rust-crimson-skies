@@ -61,6 +61,18 @@
 //! [`schedule::release_superseded_instances`] is the teardown half: a scene
 //! load that superseded an instance's generation releases what that instance
 //! applied, for its own entities only.
+//!
+//! Stage `### F20-C.03` adds [`visibility`], the **consumer half of the
+//! visibility channel** and the ownership decision F20-B refused to guess:
+//! [`visibility::NodeAnimatedVisibility`] is the clip's evaluated visibility
+//! applied through the same verified-binding path as the other three channels,
+//! and [`visibility::VisibilityVerdict`] is the single **composed** verdict
+//! that [`visibility::composed_visibility_verdict`] reads out of that record
+//! and F11-C's `NodePresentation` — damage outranks LOD, LOD's own cull
+//! outranks the clip's reason, and a hidden node carries no collider whatever
+//! the draw verdict says. The composition is computed on read and nothing
+//! writes `NodePresentation`, so neither the LOD pass nor an animation pass
+//! can silently lose the other's decision (F20 non-negotiable behavior 3).
 
 use std::fmt;
 
@@ -74,6 +86,7 @@ pub mod lower;
 pub mod playback;
 pub mod presentation;
 pub mod schedule;
+pub mod visibility;
 
 pub use attachment::{
     AppliedAttachment, AttachmentRecord, AttachmentRefusalReason, RefusedAttachment,
@@ -88,6 +101,10 @@ pub use playback::{
 pub use schedule::{
     AnimationSchedulePlugin, CommittedSessionTick, advance_animation_on_session_tick,
     release_superseded_instances,
+};
+pub use visibility::{
+    ColliderVerdict, DrawVerdict, NodeAnimatedVisibility, VisibilityVerdict,
+    composed_visibility_verdict,
 };
 
 /// The identity of one live instance of an `animation_track`.

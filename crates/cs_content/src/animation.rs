@@ -884,3 +884,84 @@ pub fn declared_synthetic_cargo_clip() -> AnimationClip {
     )
     .expect("the declared synthetic cargo fixture is valid")
 }
+
+// -------------------------------------------------- breakable fixture -----
+
+/// The node the synthetic breakable clip drives (`scene_node` kind).
+pub const SYNTHETIC_BREAKABLE_NODE: &str = "synthetic.plane.hatch";
+/// The duration of the synthetic breakable clip, in ticks.
+pub const SYNTHETIC_BREAKABLE_DURATION: u64 = 6;
+/// The clip tick the node is hidden from.
+pub const SYNTHETIC_BREAKABLE_HIDDEN_TICK: u64 = 2;
+/// The clip tick the node is shown again from.
+pub const SYNTHETIC_BREAKABLE_SHOWN_TICK: u64 = 4;
+/// The clip tick of the one-shot gameplay marker that announces the break.
+pub const SYNTHETIC_BREAKABLE_BREAK_TICK: u64 = 2;
+/// The stable key of that marker.
+pub const SYNTHETIC_BREAKABLE_MARKER: &str = "hatch_broken";
+
+/// The declared fixture that carries a **visibility channel**: a breakable
+/// node that is hidden from [`SYNTHETIC_BREAKABLE_HIDDEN_TICK`] to
+/// [`SYNTHETIC_BREAKABLE_SHOWN_TICK`] of a [`SYNTHETIC_BREAKABLE_DURATION`]-tick
+/// clip, with one one-shot gameplay marker at the break tick.
+///
+/// The clip **loops**, so every pass re-shows the node: that is what makes it
+/// the stress case for F20-C's destruction rule — a looping visibility track
+/// tries to restore the node on every pass, and a destroyed node must still
+/// not come back (F20 non-negotiable behavior 3). The marker is a gameplay
+/// cue, so it fires once per activation however often the visibility cycles
+/// (AC02).
+///
+/// It is the only declared fixture with a visibility channel, because the
+/// three others exist to pin the transform, material and attachment paths; the
+/// visibility path is driven through this one rather than by moving an
+/// identity an earlier stage's test already pins.
+///
+/// Newly authored development content under [`Origin::SyntheticFixture`].
+#[must_use]
+pub fn declared_synthetic_breakable_clip() -> AnimationClip {
+    let hatch = SceneNodeId::from_content_id(
+        ContentId::from_source(ContentKind::SceneNode, SYNTHETIC_BREAKABLE_NODE)
+            .expect("fixture id is valid"),
+    )
+    .expect("fixture id names a scene node");
+    let designed = || {
+        Provenance::designed(ClaimId::new("f20c.synthetic-breakable").expect("claim id is valid"))
+    };
+    AnimationClip::try_new(
+        ContentId::from_source(ContentKind::AnimationTrack, "synthetic.breakable")
+            .expect("fixture id is valid"),
+        Origin::SyntheticFixture,
+        SYNTHETIC_BREAKABLE_DURATION,
+        LoopMode::Loop,
+        vec![AnimationChannel::Visibility(VisibilityChannel {
+            target: hatch,
+            keys: vec![
+                VisibilityKey {
+                    tick: 0,
+                    visibility: NodeVisibility::Visible,
+                },
+                VisibilityKey {
+                    tick: SYNTHETIC_BREAKABLE_HIDDEN_TICK,
+                    visibility: NodeVisibility::Hidden,
+                },
+                VisibilityKey {
+                    tick: SYNTHETIC_BREAKABLE_SHOWN_TICK,
+                    visibility: NodeVisibility::Visible,
+                },
+            ],
+        })],
+        vec![EventMarker {
+            tick: SYNTHETIC_BREAKABLE_BREAK_TICK,
+            key: SYNTHETIC_BREAKABLE_MARKER.to_owned(),
+            effect: Resolved::Known(Known::new(
+                MarkerEffect::Gameplay {
+                    cue: "synthetic.plane.hatch_broken".to_owned(),
+                },
+                designed(),
+            )),
+        }],
+        designed(),
+    )
+    .expect("the declared synthetic breakable fixture is valid")
+}

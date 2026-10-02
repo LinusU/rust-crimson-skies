@@ -20,9 +20,10 @@
 //!   the clip does not survive the boundary;
 //! * [`advance_animation`] is the fixed-tick entry: once per committed
 //!   session tick it advances every playing instance, publishes the markers
-//!   it crossed into the [`AnimationLog`], and applies the three track kinds
+//!   it crossed into the [`AnimationLog`], and applies the four track kinds
 //!   this stage owns to the entities bound to them. F20-C.02 places it on the
-//!   schedule: see [`super::schedule`];
+//!   schedule: see [`super::schedule`]; the visibility channel's LOD/damage
+//!   ownership is [`super::visibility`];
 //! * [`stop_animation`] ends one instance **and releases what that instance
 //!   applied** — its animation-managed hierarchy links first, then its applied
 //!   components and its bindings, for that instance's entities only.
@@ -75,14 +76,15 @@
 //! The transform track is published as [`NodeAnimatedPose`], one component
 //! per node: the pose a render and a collision consumer both read, so neither
 //! can diverge (the F20-A `mesh_pose`/`collider_pose` rule carried into the
-//! ECS). Recomposing descendants' world poses from it, reparenting entities,
-//! inherited detach velocity, visibility/`NodePresentation` ordering with LOD
-//! selection and mission-marker consumption are F20-C's other consumers; the
-//! hierarchy half of that is [`super::attachment`], and the schedule placement
-//! of the advance is [`super::schedule`]. See
-//! `docs/findings/2026-09-30-f20-b-transform-material-attachment-tracks.md`
+//! ECS). Recomposing descendants' world poses from it, reparenting entities
+//! and inherited detach velocity are the consumers' work; the hierarchy half is
+//! [`super::attachment`], the schedule placement of the advance is
+//! [`super::schedule`], and the visibility channel's ownership against LOD and
+//! damage is [`super::visibility`]. See
+//! `docs/findings/2026-09-30-f20-b-transform-material-attachment-tracks.md`,
+//! `docs/findings/2026-10-02-f20-c-02-fixed-tick-instances-and-teardown.md`
 //! and
-//! `docs/findings/2026-10-02-f20-c-02-fixed-tick-instances-and-teardown.md`.
+//! `docs/findings/2026-10-02-f20-c-03-visibility-lod-damage-ownership.md`.
 
 use std::collections::{BTreeMap, HashSet};
 use std::fmt;
@@ -93,6 +95,7 @@ use bevy::prelude::{Entity, Resource};
 use cs_content::animation::AnimationClip;
 use cs_sim::animated_object::{
     AnimatedNodeState, AnimatedObject, AnimationEvent, AttachmentState, BlockedMarker, PoseSample,
+    Visibility,
 };
 use cs_types::Tick;
 use cs_types::content::{ContentId, Resolved};
@@ -105,6 +108,7 @@ use super::AnimatedNodeBinding;
 use super::AnimationInstance;
 use super::attachment::AttachmentRecord;
 use super::lower::{LowerError, lower_clip};
+use super::visibility::NodeAnimatedVisibility;
 
 // --------------------------------------------------------------- tracks ---
 
@@ -179,6 +183,12 @@ impl NodeAnimatedAttachment {
 }
 
 /// Which `Resolved` track kind an application refused.
+///
+/// The visibility channel is deliberately absent: a visibility key carries a
+/// `NodeVisibility`, not a `Resolved<_>`, so it has no unknown to block. Its
+/// blocking rules are the ones every aspect shares — an unreached key writes
+/// nothing, and an unverified binding is never written (see
+/// [`super::visibility`]).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TrackKind {
     /// A material-swap key that resolved to nothing.
@@ -789,6 +799,7 @@ pub(crate) fn release_instance(world: &mut World, clip: &ContentId, instance: An
             .remove::<NodeAnimatedPose>()
             .remove::<NodeAnimatedMaterial>()
             .remove::<NodeAnimatedAttachment>()
+            .remove::<NodeAnimatedVisibility>()
             .remove::<super::attachment::AppliedAttachment>()
             .remove::<super::attachment::RefusedAttachment>()
             .remove::<AnimatedNodeBinding>();
@@ -943,6 +954,15 @@ pub fn advance_animation(world: &mut World, at: Tick) {
         if let Some(pose) = state.pose().copied() {
             writes.push((entity, NodeWrite::Pose(pose)));
         }
+        if let Some(visibility) = state.visibility() {
+            // The visibility channel carries no `Resolved` reference, so it
+            // has no blocked-track case: a reached key is a definite
+            // `Visible`/`Hidden`. A node whose channel has reached no key
+            // yet contributes nothing, which keeps the previously applied
+            // value (the base state the object was spawned with) — the same
+            // rule every aspect of a node follows.
+            writes.push((entity, NodeWrite::Visibility(visibility)));
+        }
         if let Some(Resolved::Known(known)) = state.material() {
             writes.push((entity, NodeWrite::Material(known.value.clone())));
         }
@@ -1016,6 +1036,8 @@ fn publish_blocked(
 enum NodeWrite {
     /// The transform track's pose.
     Pose(PoseSample),
+    /// The visibility channel's verdict.
+    Visibility(Visibility),
     /// The material track's resolved material.
     Material(ContentId),
     /// The attachment track's parent change.
@@ -1030,6 +1052,11 @@ fn apply_write(world: &mut World, entity: Entity, write: NodeWrite) {
         NodeWrite::Pose(pose) => {
             insert_changed::<NodeAnimatedPose>(world, entity, NodeAnimatedPose(pose))
         }
+        NodeWrite::Visibility(visibility) => insert_changed::<NodeAnimatedVisibility>(
+            world,
+            entity,
+            NodeAnimatedVisibility::new(visibility),
+        ),
         NodeWrite::Material(material) => {
             insert_changed::<NodeAnimatedMaterial>(world, entity, NodeAnimatedMaterial(material))
         }

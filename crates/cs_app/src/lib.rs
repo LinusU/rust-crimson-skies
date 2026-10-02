@@ -146,8 +146,8 @@
 //! lowered instance of a declared clip in the [`animation::AnimationPlayback`]
 //! resource, [`animation::advance_animation`] is the fixed-tick entry that
 //! advances every instance, publishes its markers into the
-//! [`animation::AnimationLog`] and applies the transform, material and
-//! attachment tracks to the entities whose binding verifies — a playing
+//! [`animation::AnimationLog`] and applies the transform, visibility, material
+//! and attachment tracks to the entities whose binding verifies — a playing
 //! instance, the live scene generation and a node the clip actually drives —
 //! while an unknown material or parent is blocked and reported instead of
 //! applied, and [`animation::stop_animation`] ends one instance and releases
@@ -168,7 +168,21 @@
 //! physics step — advances the playback once per **committed tick change**,
 //! nothing without the stamp and nothing for a repeated one, while
 //! [`animation::release_superseded_instances`] releases what the instances of
-//! a superseded scene generation had applied.
+//! a superseded scene generation had applied. Stage `### F20-C.03` adds
+//! [`animation::visibility`], the consumer half of the visibility channel and
+//! the ownership decision against the two systems that also decide whether a
+//! node is drawn: [`animation::NodeAnimatedVisibility`] is the clip's
+//! evaluated visibility applied on the same verified path as the other
+//! channels, and [`animation::composed_visibility_verdict`] returns the
+//! single [`animation::VisibilityVerdict`] a render or collision consumer
+//! reads — composed on read out of that record and F11-C's
+//! [`scene::NodePresentation`], with damage outranking LOD, LOD's cull
+//! outranking the clip's reason, and a clip-hidden node carrying no collider
+//! whatever the draw verdict says. Nothing in the animation path writes
+//! [`scene::NodePresentation`] or [`scene::NodeDisabled`], so neither the LOD
+//! pass nor an animation pass can silently lose the other's decision and a
+//! destroyed node is never re-drawn by a loop pass or a distance change
+//! (non-negotiable behavior 3).
 //!
 //! [`camera`] is the F21-A camera boundary
 //! (`specs/F21-cameras-cockpit-views-and-spyglass.md`, stage `### F21-A`):
