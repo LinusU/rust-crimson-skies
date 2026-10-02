@@ -89,9 +89,15 @@ the spawn/resolution path owns the identity and performs one atomic step.
 
 `ColliderDecisionError` is handled arm by arm, as the task requires:
 
-- `UnknownEntity` — the bound node is gone (the teardown released it). A no-op;
-  recorded as `DamageColliderEvent::ReleasedNode` so the release is visible
-  rather than silent. The seam changed nothing and neither does the bridge.
+- `UnknownEntity` — the bound node is gone. A no-op; recorded as
+  `DamageColliderEvent::ReleasedNode` so the release is visible rather than
+  silent. The seam changed nothing and neither does the bridge. This arm is
+  **defensive**: the bridge resolves a zone from a *live* `DamageZoneBinding`,
+  so a zone whose entity the teardown released is indistinguishable from one the
+  spawn path never bound and currently surfaces as `UnboundZone`, not
+  `ReleasedNode`. The arm stays because the seam's error type can carry it and
+  the match must stay exhaustive; a caller that holds an entity handle is what
+  would produce it.
 - `UnmanagedNode` — the entity carries no `NodeColliderPresence`, so the spawner
   never put its collider under the policy. This is a **wiring gap**, reported as
   `DamageColliderEvent::UnmanagedNode` through `DamageColliderLog`, the way

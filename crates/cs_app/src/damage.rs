@@ -321,7 +321,10 @@ pub const fn zone_collider_decision(
 /// One entry in a [`DamageColliderLog`].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DamageColliderEvent {
-    /// A destroyed zone's collider left the simulation.
+    /// A destroyed zone's damage removal was applied to its collider policy.
+    ///
+    /// The managed entity's Avian [`Collider`](avian3d::prelude::Collider) is
+    /// disabled, not despawned, so a repair re-enables the same one.
     Removed {
         /// The zone's actor.
         actor: ActorId,
@@ -330,7 +333,12 @@ pub enum DamageColliderEvent {
         /// The collider-managed entity.
         entity: Entity,
     },
-    /// A repaired zone's collider returned.
+    /// A repaired zone's damage removal was lifted.
+    ///
+    /// This records the damage side's decision only. The collider itself is
+    /// **not** necessarily engaged afterwards: a repair under a clip that still
+    /// hides the node lands on `HiddenByAnimation`, and the collider returns
+    /// when the clip shows the node or stops hiding it.
     Restored {
         /// The zone's actor.
         actor: ActorId,
@@ -366,9 +374,17 @@ pub enum DamageColliderEvent {
         /// The bound entity, which is not under the policy.
         entity: Entity,
     },
-    /// The bound entity was already gone when the decision arrived — the
-    /// teardown released it. A no-op (the removal changed nothing), recorded so
-    /// the release is visible rather than silent.
+    /// The bound entity was already gone when the decision arrived.
+    ///
+    /// A no-op (the removal changed nothing), recorded so the release is
+    /// visible rather than silent.
+    ///
+    /// Defensive: the bridge resolves a zone from a *live*
+    /// [`DamageZoneBinding`], so a despawned zone is currently
+    /// indistinguishable from one the spawn path never bound and surfaces as
+    /// [`Self::UnboundZone`]. The arm keeps the match exhaustive against the
+    /// seam's own error type and is the record a future caller that holds an
+    /// entity handle would produce.
     ReleasedNode {
         /// The zone's actor.
         actor: ActorId,
@@ -438,15 +454,17 @@ impl DamageColliderLog {
 
 /// What one damage → collider application changed or refused.
 ///
-/// `removed` and `restored` count applied changes; `unbound`, `unmanaged` and
+/// `removed` and `restored` count applied decisions; `unbound`, `unmanaged` and
 /// `released` count the three reasons nothing was applied. The counters are
 /// how a caller observes idempotence: applying the same transition twice
 /// reports zero on the second call.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct DamageColliderReport {
-    /// Destroyed zones whose collider left the simulation.
+    /// Destroyed zones whose damage removal was applied.
     pub removed: u32,
-    /// Repaired zones whose collider returned.
+    /// Repaired zones whose damage removal was lifted. The collider is not
+    /// necessarily engaged afterwards: a repair under a clip that still hides
+    /// the node lands on `HiddenByAnimation`.
     pub restored: u32,
     /// Transitions that named a zone no entity is bound to.
     pub unbound: u32,
@@ -518,6 +536,12 @@ fn log_damage_collider_event(world: &mut World, event: DamageColliderEvent) {
 /// and a no-op, an
 /// [`UnmanagedNode`](ColliderDecisionError::UnmanagedNode) is a wiring gap and
 /// is reported. Every other refusal is likewise logged, never swallowed.
+///
+/// The `UnknownEntity` arm is defensive: `bound_entity` only yields entities
+/// that are in the world, so a zone whose entity the teardown released is
+/// reported as [`DamageColliderEvent::UnboundZone`] rather than
+/// [`DamageColliderEvent::ReleasedNode`]. The arm stays because the seam's
+/// error type can carry it and the match must stay exhaustive.
 fn apply_zone_decision(
     world: &mut World,
     actor: ActorId,
