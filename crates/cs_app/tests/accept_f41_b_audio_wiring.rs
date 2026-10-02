@@ -43,8 +43,8 @@ use cs_app::physics::{
 use cs_app::scene::{SceneGeneration, SceneGenerations};
 use cs_content::audio::declared_synthetic_audio_catalog;
 use cs_sim::audio_events::{
-    AudioBus, AudioEmitterId, DeviceCommand, EmitterStopReason, Listener, RecordingAudioDevice,
-    SpatialPolicy, VoiceLevel,
+    AudioBus, AudioDevice, AudioEmitterId, DeviceCommand, EmitterStopReason, Listener,
+    RecordingAudioDevice, SpatialPolicy, VoiceLevel,
 };
 use cs_sim::flight::{EngineState, FlightInput, FlightModel, synthetic_fixed_wing};
 use cs_types::asset_id::{AssetKey, ResolveContext, WorldGroup};
@@ -357,13 +357,20 @@ fn accept_f41_b_undeclared_delivered_sound_is_refused_by_the_handoff() {
 
 /// A world with no delivered load has no audio session at all, and the systems
 /// the plugin registered do nothing rather than panic on a missing resource.
+///
+/// The device-failure path is total even here: there is no mixer to stop, but
+/// the output is still the world's, so losing it closes it and restoring it
+/// opens it. A device the caller declared gone must be observably gone in every
+/// world, not only in one that happens to have loaded something.
 #[test]
 fn accept_f41_b_unloaded_world_has_no_session_and_mixes_nothing() {
+    let device = RecordingAudioDevice::new();
     let mut app = App::new();
     app.add_plugins((
         MinimalPlugins,
         TransformPlugin,
-        AudioPlugin::new(declared_synthetic_audio_catalog(), spatial()),
+        AudioPlugin::new(declared_synthetic_audio_catalog(), spatial())
+            .with_device(Box::new(device.handle())),
     ));
     app.update();
     app.update();
@@ -376,6 +383,21 @@ fn accept_f41_b_unloaded_world_has_no_session_and_mixes_nothing() {
         0,
         "and the mixer never ran"
     );
+
+    device_lost(app.world_mut());
+    assert!(
+        device.commands().contains(&DeviceCommand::Closed),
+        "the output closed even with nothing loaded: {:?}",
+        device.commands()
+    );
+    assert!(!device.is_open(), "and it stayed closed");
+    device_restored(app.world_mut()).expect("an empty output still opens");
+    assert!(
+        device.is_open(),
+        "a restore works without a mixer: {:?}",
+        device.commands()
+    );
+    assert!(!device.commands().is_empty(), "the device was told");
 }
 
 /// The loader and the mixer are one consumer pair: a reload installs a session
@@ -391,10 +413,9 @@ fn accept_f41_b_reload_replaces_the_session_and_stops_the_old_voices() {
     let first = world.session().router.session();
 
     // A second load in a *new* content session, delivered into the same world.
-    let device = RecordingAudioDevice::new();
-    let _ = device;
     let generation = deliver(world.app.world_mut(), vec![sound_item(ENGINE_KEY)]);
     assert_ne!(generation, first, "a reload runs in a new content session");
+    world.device.clear();
     world.app.update();
     assert!(
         world
@@ -407,6 +428,29 @@ fn accept_f41_b_reload_replaces_the_session_and_stops_the_old_voices() {
     );
     assert_eq!(world.session().router.session(), generation);
     assert_eq!(world.log().installs, 2);
+    // The load the new session replaced released its voices: the previous load
+    // is not left audible with nothing left to stop it.
+    assert!(
+        world
+            .device
+            .commands()
+            .iter()
+            .any(|command| matches!(command, DeviceCommand::Stopped { .. })),
+        "the previous load's voice was stopped at the device: {:?}",
+        world.device.commands()
+    );
+    assert_eq!(
+        world.device.sounding(),
+        0,
+        "the previous load is silent: {:?}",
+        world.device.commands()
+    );
+    assert_eq!(
+        world.log().released,
+        vec![world.emitter(1)],
+        "the handoff names the emitters it silenced: {:?}",
+        world.log().released
+    );
 }
 
 /// The spatial law reaches the device: an emitter to the right pans right and
@@ -495,6 +539,33 @@ fn accept_f41_b_device_loss_stops_voices_and_leaves_simulation_running() {
             .active_loop(&world.emitter(1))
             .is_none(),
         "the loop stopped as DeviceLost"
+    );
+
+    // A lost device stays lost: the mixer opens a closed device on demand, so
+    // without the session's own authority as a gate the next frame would
+    // re-open the device nobody restored and the loss would leave no trace in
+    // the log but a `Closed` and an `Opened` a frame apart.
+    world.device.clear();
+    world.app.update();
+    world.app.update();
+    assert!(
+        !world.device.is_open(),
+        "no mix pass re-opened a device the caller declared lost: {:?}",
+        world.device.commands()
+    );
+    assert!(
+        !world
+            .device
+            .commands()
+            .iter()
+            .any(|command| matches!(command, DeviceCommand::Opened)),
+        "and nothing asked it to play: {:?}",
+        world.device.commands()
+    );
+    assert_eq!(
+        world.mix().passes,
+        2,
+        "and no mix pass ran either: a world with no usable output records nothing"
     );
 
     // The device comes back: the session re-binds the loop it remembered, and

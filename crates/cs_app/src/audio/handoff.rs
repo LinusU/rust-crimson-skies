@@ -141,6 +141,16 @@ pub struct AudioHandoffLog {
     pub released: Vec<AudioEmitterId>,
 }
 
+/// Which of two loads came later: the content session generation first, then
+/// the process-wide serial within it.
+///
+/// [`LoadIdentity`] itself is `Eq` but deliberately unordered, so the
+/// comparison the handoff needs is spelled out here instead of being inferred
+/// from a derive it does not have.
+fn load_key(load: LoadIdentity) -> (u64, u64) {
+    (load.session.get(), load.serial.get())
+}
+
 /// Installs the [`AudioSession`] a delivered load owns.
 ///
 /// Runs in `PreUpdate` (see [`AudioPlugin`](super::AudioPlugin)), which is after
@@ -152,17 +162,40 @@ pub struct AudioHandoffLog {
 /// carrying this load's session, is left exactly as it is. Every refusal is
 /// recorded by name in the [`AudioHandoffLog`].
 pub fn insert_audio_session(world: &mut World) {
+    // Three passes over the delivered bindings, and none of them clones a
+    // binding. A `LoadedItemBinding` owns a `ContentId` (its id and key) and an
+    // `AssetKey` (its relative path and a cached logical key), so collecting the
+    // world's delivered items into a `Vec` every frame would allocate four
+    // strings per delivered mesh, texture and sound in the level to look at the
+    // handful that are audio — and this runs in `PreUpdate`, in every frame of
+    // every mission. `LoadIdentity` is `Copy`, so the passes that only need to
+    // know *which* load owns this world cost nothing.
     let mut query = world.query::<&LoadedItemBinding>();
-    let delivered: Vec<LoadedItemBinding> = query.iter(world).cloned().collect();
-    let Some(newest) = delivered
-        .iter()
-        .map(|binding| binding.load)
-        .max_by_key(|load| (load.session.get(), load.serial.get()))
-    else {
+    let mut newest: Option<LoadIdentity> = None;
+    for binding in query.iter(world) {
+        newest = Some(match newest {
+            Some(current) if load_key(current) >= load_key(binding.load) => current,
+            _ => binding.load,
+        });
+    }
+    let Some(newest) = newest else {
         // Nothing was delivered into this world: it has no audio, which is not
         // a failure.
         return;
     };
+    // Only once the owner is known can the loads it replaced be named: one
+    // pass cannot tell a superseded load from the newest one it had not reached
+    // yet.
+    let mut superseded: Option<LoadIdentity> = None;
+    for binding in query.iter(world) {
+        if binding.load == newest {
+            continue;
+        }
+        superseded = Some(match superseded {
+            Some(current) if load_key(current) <= load_key(binding.load) => current,
+            _ => binding.load,
+        });
+    }
     let mut log = world
         .remove_resource::<AudioHandoffLog>()
         .unwrap_or_default();
@@ -176,12 +209,7 @@ pub fn insert_audio_session(world: &mut World) {
         world.insert_resource(log);
         return;
     }
-    if let Some(superseded) = delivered
-        .iter()
-        .map(|binding| binding.load)
-        .filter(|load| *load != newest)
-        .min_by_key(|load| (load.session.get(), load.serial.get()))
-    {
+    if let Some(superseded) = superseded {
         // Two delivered closures live in one world. The newest load owns the
         // session; the older entities are named here rather than silently
         // folded into it.
@@ -207,8 +235,8 @@ pub fn insert_audio_session(world: &mut World) {
     let mut specs: Vec<AudioAssetSpec> = Vec::new();
     let mut lowered = 0;
     let mut refused = 0;
-    for binding in delivered.iter().filter(|binding| binding.load == newest) {
-        if !is_audio_kind(binding.content.kind()) {
+    for binding in query.iter(world) {
+        if binding.load != newest || !is_audio_kind(binding.content.kind()) {
             continue;
         }
         let Some(record) = catalog.catalog().get(&binding.content) else {

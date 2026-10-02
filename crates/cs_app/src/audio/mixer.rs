@@ -48,6 +48,10 @@ use super::loops::AudioSession;
 /// way, and the log it keeps is readable by a test or a probe. A caller with a
 /// real backend installs its own through
 /// [`AudioPlugin::with_device`](super::AudioPlugin::with_device).
+///
+/// The device is opened by the first [`mix_session`] that has something to
+/// play, and is closed again by [`device_lost`] until a caller calls
+/// [`device_restored`].
 #[derive(Resource, Debug)]
 pub struct AudioOutput(Box<dyn AudioDevice>);
 
@@ -161,6 +165,16 @@ pub struct AudioMixReport {
 /// into it — or with no mixer, no device or no spatial configuration mixes
 /// nothing and records nothing: audio that was never loaded is silence, not an
 /// error.
+///
+/// A world whose device is **lost** mixes nothing either, even though it still
+/// has a session, a mixer and an output. [`AudioMixer::mix`] opens a closed
+/// device on demand, so without this gate the frame after
+/// [`device_lost`] would re-open the very device that was just declared gone
+/// and the loss would be invisible to every observer of the device log. The
+/// session is the authority on whether an output exists — it is what
+/// [`device_lost`] clears and [`device_restored`] restores — so the gate lives
+/// here, above the mixer, and the device stays closed until a caller restores
+/// it.
 pub fn mix_session(
     mut mixing: Option<ResMut<AudioMixing>>,
     mut output: Option<ResMut<AudioOutput>>,
@@ -178,6 +192,9 @@ pub fn mix_session(
     ) else {
         return;
     };
+    if !session.device_available() {
+        return;
+    }
     let mut placed = Vec::with_capacity(emitters.iter().len());
     let mut unplaced = 0;
     for (binding, transform) in &emitters {
@@ -231,6 +248,13 @@ pub fn device_lost(world: &mut World) {
     let mut output = world.remove_resource::<AudioOutput>();
     let lost = match (mixing.as_mut(), output.as_mut()) {
         (Some(mixing), Some(output)) => Some(mixing.mixer_mut().device_lost(output.device_mut())),
+        // No mixer to stop through, but the output is still there and still
+        // open: the device is the thing that was lost, so it is closed either
+        // way.
+        (_, Some(output)) => {
+            output.device_mut().close();
+            None
+        }
         _ => None,
     };
     if let Some(mixing) = mixing {
@@ -263,6 +287,10 @@ pub fn device_restored(world: &mut World) -> Result<Option<MusicCue>, DeviceErro
     let mut output = world.remove_resource::<AudioOutput>();
     let opened = match (mixing.as_mut(), output.as_mut()) {
         (Some(mixing), Some(output)) => mixing.mixer_mut().device_restored(output.device_mut()),
+        // No mixer to reopen through, but an output that is still there is
+        // opened directly: a restore that only worked when a mixer happened to
+        // exist would leave the device closed in every other world.
+        (_, Some(output)) => output.device_mut().open(),
         _ => Ok(()),
     };
     if let Some(mixing) = mixing {

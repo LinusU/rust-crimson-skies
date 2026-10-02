@@ -1589,7 +1589,8 @@ impl AudioDevice for RecordingAudioDevice {
 pub struct EmitterMix {
     /// The emitter being mixed.
     pub emitter: AudioEmitterId,
-    /// Its position, in the listener's own frame, in meters.
+    /// Its position, in the same origin-rebased frame as the
+    /// [`Listener`]'s own position and right axis, in meters.
     pub position_m: [f64; 3],
     /// The level its simulation state asks for — [`VoiceLevel::UNITY`] for an
     /// emitter nothing drives.
@@ -1756,6 +1757,11 @@ impl AudioMixer {
     /// there is something to play, not at plugin-build time. A device that
     /// refuses to open makes every outcome a [`MixerRefusal::Device`] rather
     /// than a silent success, and the caller reports it.
+    ///
+    /// The caller owns the device-failure policy, because only it knows whether
+    /// an output is supposed to exist: pass no device while the world believes
+    /// the output is lost, or this pass will re-open the device that
+    /// [`Self::device_lost`] closed.
     ///
     /// An emitter with no [`EmitterMix`] this pass keeps the mix it last
     /// received: an emitter whose pose the caller does not know is not a reason

@@ -43,7 +43,14 @@ read; every value below is authored project data.
   listener and policy (`AudioSpatial`), runs `mix_session` after
   `sync_emitter_loops`, and exposes `device_lost`/`device_restored`, which stop
   every voice, close the device and let the session retry — while radio timing
-  and mission state stay untouched (F41 non-negotiable behavior 2).
+  and mission state stay untouched (F41 non-negotiable behavior 2). The session
+  is the authority on whether an output exists, so **no mix pass runs while the
+  device is lost**: `AudioMixer::mix` opens a closed device on demand, and
+  without that gate the frame after `device_lost` re-opened the device nobody
+  had restored, leaving nothing but a `Closed` and an `Opened` a frame apart in
+  the device log. Both halves of the device-failure path are total in the
+  *device*, not only in the mixer: a world with an output and no mixer (nothing
+  loaded) still closes and re-opens it.
 - **Loading handoff and schedule registration.**
   `cs_app::audio::handoff::insert_audio_session` installs the `AudioSession`
   (and the session's `AudioMixer`) that a delivered F15 load owns: the session
@@ -54,7 +61,11 @@ read; every value below is authored project data.
   `insert_audio_session` in `PreUpdate`, `smooth_engine_voices` in
   `FixedUpdate`, and `sync_emitter_loops → advance_radio → mix_session` in
   `Update`. A reload replaces the session and releases the replaced mixer's
-  voices, so the previous load cannot stay audible.
+  voices, so the previous load cannot stay audible. The handoff reads the
+  delivered bindings in three passes over the query and clones no binding: a
+  `LoadedItemBinding` owns four `String`s, so collecting the world's delivered
+  items into a `Vec` every `PreUpdate` would allocate for every mesh and texture
+  in the level to look at the handful that are audio.
 - Tests: `cs_app/tests/accept_f41_b_audio_wiring.rs` (8 scenarios, production
   plugin + real F15 handoff + real flight body + real fixed clock) and
   `cs_sim/tests/accept_f41_b_engine_voice_smoothing.rs`. Measured probes:
@@ -65,6 +76,18 @@ read; every value below is authored project data.
 
 ## Still not done / still unmeasured (gates fidelity claims)
 
+- **Nothing in production attaches an emitter binding yet.** The whole path
+  this task wired is the consumer half: `sync_emitter_loops`,
+  `smooth_engine_voices` and `mix_session` all key off
+  `AudioEmitterBinding` (and `EngineVoiceFollow`), but no spawn path in
+  `cs_app` inserts those components, so a real mission delivers a session,
+  installs a mixer and then mixes silence. The scenarios drive the production
+  consumer with hand-spawned bindings because that is all that exists today.
+  Until an aircraft/world spawn path attaches bindings for its airframe's and
+  the world's declared sound content, no original aircraft sound, gunfire loop
+  or environment loop can play, and no "audio works in a mission" claim is
+  supportable. This is the same gap F41-B's own handoff item recorded, one
+  level further out.
 - **Loop regions are unknown.** No retail member carries an `smpl` chunk, so no
   loop start/end was invented; the loops bind whole assets and loop seams stay
   unevidenced until F41-D has an original run to measure.
