@@ -151,7 +151,29 @@ pub const RT_STRING: u32 = 6;
 /// `RT_STRING` blocks hold sixteen string ids each (`Documented`).
 pub const STRING_UNITS_PER_BLOCK: usize = 16;
 
-/// The `id` a string carries: `(block - 1) * 16 + index` (`Documented`).
+/// The `id` a string carries: `(block - 1) * 16 + index` — the Win32
+/// string-table numbering (`Documented` rule, measured directory entries).
+///
+/// Microsoft documents the rule in terms of the string *identifier*: "RC
+/// allocates 16 strings per section and uses the identifier value to determine
+/// which section is to contain the string. Strings whose identifiers differ
+/// only in the bottom 4 bits are placed in the same section" (`STRINGTABLE
+/// resource`,
+/// <https://learn.microsoft.com/en-us/windows/win32/menurc/stringtable-resource>).
+/// `block_id` is therefore the **directory-entry name**, not the string
+/// identifier: `block_id * 16 + index` would treat the entry name as the
+/// identifier and name a string one block (16) too high.
+///
+/// That the `RT_STRING` directory entries are counted from one — so entry `b`
+/// holds identifiers `(b - 1) * 16 ..= (b - 1) * 16 + 15` — is **not** stated
+/// by that page or by `LoadString`'s reference, so the entry numbering is
+/// measured rather than documented. Task #368 measured that the
+/// resource-compiler headers' contiguous identifier run `40000..=40170` is
+/// stored under `langui.dll` sections `2501..=2511` — all present, each a full
+/// sixteen units — while the zero-based `block_id * 16 + index` reading would
+/// need section `2500`, which does not exist. Task #374 re-measured the same
+/// image and recorded the contrary hypothesis and why it is rejected, in
+/// `docs/findings/2026-10-02-t374-string-id-numbering.md`.
 pub fn string_id(block_id: u16, index: u8) -> u32 {
     u32::from(block_id.saturating_sub(1)) * STRING_UNITS_PER_BLOCK as u32 + u32::from(index)
 }

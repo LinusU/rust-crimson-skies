@@ -101,6 +101,14 @@ M01-A is unaffected either way. Which numbering the project intends is
 **not** established here: recorded as an unknown below and filed as #374,
 not guessed.
 
+**Corrected by #374 (2026-10-02).** The claim just above that the documented
+Win32 rule is `name * 16 + index = 3496` is wrong. Microsoft documents the
+rule in terms of the string *identifier*, and the one-based section entry
+`218` carries identifier `(218 - 1) * 16 + 8 = 3480`; the production
+numbering *is* the Win32 numbering. The id 3480 recorded in the table above
+is unchanged. Evidence and the rejected reading:
+`docs/findings/2026-10-02-t374-string-id-numbering.md`.
+
 ## How the work order was matched to a retail mission
 
 `missions/M01.md` says *"Find the corresponding original catalog/program/
